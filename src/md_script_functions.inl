@@ -74,8 +74,8 @@
 #define as_irange(arg) (*((irange_t*)((arg).ptr)))
 #define as_irange_arr(arg) ((irange_t*)((arg).ptr))
 
-#define as_string(arg) (*((str_t*)((arg).ptr)))
-#define as_string_arr(arg) ((str_t*)((arg).ptr))
+#define as_string(arg) (*((md_str_t*)((arg).ptr)))
+#define as_string_arr(arg) ((md_str_t*)((arg).ptr))
 
 #define as_bitset(arg) ((md_bitset_t*)((arg).ptr))
 #define as_bondset(arg) ((bondset_t*)((arg).ptr))
@@ -706,368 +706,368 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // @TODO: Add your values here
 static constant_t constants[] = {
-    {STR_INIT("PI"),     _PI,  {.base = {.dim.angle = 1 }, .mult = 1.0}},
-    {STR_INIT("TAU"),    _TAU, {.base = {.dim.angle = 1 }, .mult = 1.0}},
-    {STR_INIT("E"),      _E,   {.mult = 1.0}},
+    {MD_STR_INIT("PI"),     _PI,  {.base = {.dim.angle = 1 }, .mult = 1.0}},
+    {MD_STR_INIT("TAU"),    _TAU, {.base = {.dim.angle = 1 }, .mult = 1.0}},
+    {MD_STR_INIT("E"),      _E,   {.mult = 1.0}},
 };
 
 // IMPLICIT CASTS/CONVERSIONS
 static procedure_t casts[] = {
-    {STR_INIT("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
-    {STR_INIT("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
-    {STR_INIT("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
-    {STR_INIT("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
-    {STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
-    {STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_ATOMSET_ARR},  _join_bf_arr},
+    {MD_STR_INIT("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
+    {MD_STR_INIT("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
+    {MD_STR_INIT("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
+    {MD_STR_INIT("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
+    {MD_STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
+    {MD_STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_ATOMSET_ARR},  _join_bf_arr},
 
-    //{STR_INIT("cast"),    TI_FLOAT3_ARR,    1,  {TI_COORDINATE_ARR},  _coordinate, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
+    //{MD_STR_INIT("cast"),    TI_FLOAT3_ARR,    1,  {TI_COORDINATE_ARR},  _coordinate, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
 };
 
 static procedure_t operators[] = {
-    {STR_INIT("not"),    TI_BOOL,           1,  {TI_BOOL},                  _op_not_b},
-    {STR_INIT("or"),     TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_or_b_b},
-    {STR_INIT("xor"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_xor_b_b},
-    {STR_INIT("and"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_and_b_b},
+    {MD_STR_INIT("not"),    TI_BOOL,           1,  {TI_BOOL},                  _op_not_b},
+    {MD_STR_INIT("or"),     TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_or_b_b},
+    {MD_STR_INIT("xor"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_xor_b_b},
+    {MD_STR_INIT("and"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_and_b_b},
 
     // Element-wise logic on bool arrays
-    {STR_INIT("not"),    TI_BOOL_ARR,       1,  {TI_BOOL_ARR},                  _op_not_barr,       FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("or"),     TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_or_barr_b,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("xor"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_xor_barr_b,     FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_and_barr_b,     FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("or"),     TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_or_barr_barr,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("xor"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_xor_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_and_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("not"),    TI_BOOL_ARR,       1,  {TI_BOOL_ARR},                  _op_not_barr,       FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("or"),     TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_or_barr_b,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("xor"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_xor_barr_b,     FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL},         _op_and_barr_b,     FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("or"),     TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_or_barr_barr,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("xor"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_xor_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_and_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // BITFIELD NOT
-    {STR_INIT("not"),    TI_ATOMSET,       1,  {TI_ATOMSET_ARR},                  _not,   FLAG_FLATTEN},
-    {STR_INIT("and"),    TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _and,   FLAG_FLATTEN},
-    {STR_INIT("or"),     TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _or,    FLAG_FLATTEN},
-    {STR_INIT("xor"),    TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _xor,   FLAG_FLATTEN},
+    {MD_STR_INIT("not"),    TI_ATOMSET,       1,  {TI_ATOMSET_ARR},                  _not,   FLAG_FLATTEN},
+    {MD_STR_INIT("and"),    TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _and,   FLAG_FLATTEN},
+    {MD_STR_INIT("or"),     TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _or,    FLAG_FLATTEN},
+    {MD_STR_INIT("xor"),    TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _xor,   FLAG_FLATTEN},
 
     // BONDSET LOGIC, on the union of each side
-    {STR_INIT("not"),    TI_BONDSET,       1,  {TI_BONDSET_ARR},                  _bond_not},
-    {STR_INIT("and"),    TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_and},
-    {STR_INIT("or"),     TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_or},
-    {STR_INIT("xor"),    TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_xor},
+    {MD_STR_INIT("not"),    TI_BONDSET,       1,  {TI_BONDSET_ARR},                  _bond_not},
+    {MD_STR_INIT("and"),    TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_and},
+    {MD_STR_INIT("or"),     TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_or},
+    {MD_STR_INIT("xor"),    TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_xor},
 
     // Comparison. The scalar overload comes first and the array/array overload last, so that a scalar operand is
     // matched against the broadcasting overloads before it is treated as a length-one array.
-    {STR_INIT("<"),     TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_lt_f_f},
-    {STR_INIT("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("<"),     TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_lt_f_f},
+    {MD_STR_INIT("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("<"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT(">"),     TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_gt_f_f},
-    {STR_INIT(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT(">"),     TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_gt_f_f},
+    {MD_STR_INIT(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT(">"),     TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("<="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_le_f_f},
-    {STR_INIT("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("<="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_le_f_f},
+    {MD_STR_INIT("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("<="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_le,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT(">="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_ge_f_f},
-    {STR_INIT(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT(">="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_ge_f_f},
+    {MD_STR_INIT(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT(">="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_ge,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("=="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_eq_f_f},
-    {STR_INIT("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("=="),    TI_BOOL,           2,  {TI_FLOAT,     TI_FLOAT},     _cmp_eq_f_f},
+    {MD_STR_INIT("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("=="),    TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_eq,   FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary add
-    {STR_INIT("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
-    {STR_INIT("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
+    {MD_STR_INIT("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
 
-    {STR_INIT("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {STR_INIT("+"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_add_i_i},
-    {STR_INIT("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("+"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_add_i_i},
+    {MD_STR_INIT("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Unary negation
-    {STR_INIT("-"),      TI_FLOAT,          1,  {TI_FLOAT},                             _op_neg_f},
-    {STR_INIT("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_INT,            1,  {TI_INT},                               _op_neg_i},
-    {STR_INIT("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_FLOAT,          1,  {TI_FLOAT},                             _op_neg_f},
+    {MD_STR_INIT("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_INT,            1,  {TI_INT},                               _op_neg_i},
+    {MD_STR_INIT("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
 
     // Binary sub
-    {STR_INIT("-"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_sub_f_f},
+    {MD_STR_INIT("-"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_sub_f_f},
     // Not commutative: the scalar on either side has an overload of its own (FLAG_SYMMETRIC_ARGS would swap the operands)
-    {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT,      TI_FLOAT_ARR},          _op_sub_f_farr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT,      TI_FLOAT_ARR},          _op_sub_f_farr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
 
-    {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_VOLUME,         2,  {TI_FLOAT,   TI_VOLUME},                _op_simd_sub_f_farr,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_VOLUME,         2,  {TI_FLOAT,   TI_VOLUME},                _op_simd_sub_f_farr,    FLAG_DEDUCE_LENGTH_FROM_ARG},
 
-    {STR_INIT("-"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_sub_i_i},
-    {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT,        TI_INT_ARR},            _op_sub_i_iarr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("-"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_sub_i_i},
+    {MD_STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT,        TI_INT_ARR},            _op_sub_i_iarr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary mul
-    {STR_INIT("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul1_f},
-    {STR_INIT("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul1arr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul1arr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul1_f},
+    {MD_STR_INIT("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul1arr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul1arr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // A distribution only scales (its values, not its weights): other arithmetic on it is not defined (see pool)
-    {STR_INIT("*"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_scale,           FLAG_QUERYABLE_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("*"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_scale,           FLAG_QUERYABLE_LENGTH | FLAG_SYMMETRIC_ARGS},
 
-    {STR_INIT("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul1arr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul1arr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul1arr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul1arr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {STR_INIT("*"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_mul_i_i},
-    {STR_INIT("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("*"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_mul_i_i},
+    {MD_STR_INIT("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary div
-    {STR_INIT("/"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_div_f_f},
-    {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT,      TI_FLOAT_ARR},          _op_div_f_farr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("/"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_div_f_f},
+    {MD_STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT,      TI_FLOAT_ARR},          _op_div_f_farr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("/"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_div,             FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("/"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_div,             FLAG_QUERYABLE_LENGTH},
     
-    {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("/"),      TI_VOLUME,         2,  {TI_FLOAT,   TI_VOLUME},                _op_simd_div_f_farr,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("/"),      TI_VOLUME,         2,  {TI_FLOAT,   TI_VOLUME},                _op_simd_div_f_farr,    FLAG_DEDUCE_LENGTH_FROM_ARG},
 
-    {STR_INIT("//"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
-    {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT,        TI_INT_ARR},            _op_div_i_iarr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("//"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
+    {MD_STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT,        TI_INT_ARR},            _op_div_i_iarr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 };
 
 static procedure_t procedures[] = {
     // NATIVE FUNCS
-    {STR_INIT("sqrt"),   TI_FLOAT, 1, {TI_FLOAT}, _sqrtf},
-    {STR_INIT("cbrt"),   TI_FLOAT, 1, {TI_FLOAT}, _cbrtf},
-    {STR_INIT("abs"),    TI_FLOAT, 1, {TI_FLOAT}, _fabsf},
-    {STR_INIT("floor"),  TI_FLOAT, 1, {TI_FLOAT}, _floorf},
-    {STR_INIT("ceil"),   TI_FLOAT, 1, {TI_FLOAT}, _ceilf},
-    {STR_INIT("cos"),    TI_FLOAT, 1, {TI_FLOAT}, _cosf},
-    {STR_INIT("sin"),    TI_FLOAT, 1, {TI_FLOAT}, _sinf},
-    {STR_INIT("asin"),   TI_FLOAT, 1, {TI_FLOAT}, _asinf},
-    {STR_INIT("acos"),   TI_FLOAT, 1, {TI_FLOAT}, _acosf},
-    {STR_INIT("atan"),   TI_FLOAT, 1, {TI_FLOAT}, _atanf},
-    {STR_INIT("log"),    TI_FLOAT, 1, {TI_FLOAT}, _logf},
-    {STR_INIT("exp"),    TI_FLOAT, 1, {TI_FLOAT}, _expf},
-    {STR_INIT("log2"),   TI_FLOAT, 1, {TI_FLOAT}, _log2f},
-    {STR_INIT("exp2"),   TI_FLOAT, 1, {TI_FLOAT}, _exp2f},
-    {STR_INIT("log10"),  TI_FLOAT, 1, {TI_FLOAT}, _log10f},
+    {MD_STR_INIT("sqrt"),   TI_FLOAT, 1, {TI_FLOAT}, _sqrtf},
+    {MD_STR_INIT("cbrt"),   TI_FLOAT, 1, {TI_FLOAT}, _cbrtf},
+    {MD_STR_INIT("abs"),    TI_FLOAT, 1, {TI_FLOAT}, _fabsf},
+    {MD_STR_INIT("floor"),  TI_FLOAT, 1, {TI_FLOAT}, _floorf},
+    {MD_STR_INIT("ceil"),   TI_FLOAT, 1, {TI_FLOAT}, _ceilf},
+    {MD_STR_INIT("cos"),    TI_FLOAT, 1, {TI_FLOAT}, _cosf},
+    {MD_STR_INIT("sin"),    TI_FLOAT, 1, {TI_FLOAT}, _sinf},
+    {MD_STR_INIT("asin"),   TI_FLOAT, 1, {TI_FLOAT}, _asinf},
+    {MD_STR_INIT("acos"),   TI_FLOAT, 1, {TI_FLOAT}, _acosf},
+    {MD_STR_INIT("atan"),   TI_FLOAT, 1, {TI_FLOAT}, _atanf},
+    {MD_STR_INIT("log"),    TI_FLOAT, 1, {TI_FLOAT}, _logf},
+    {MD_STR_INIT("exp"),    TI_FLOAT, 1, {TI_FLOAT}, _expf},
+    {MD_STR_INIT("log2"),   TI_FLOAT, 1, {TI_FLOAT}, _log2f},
+    {MD_STR_INIT("exp2"),   TI_FLOAT, 1, {TI_FLOAT}, _exp2f},
+    {MD_STR_INIT("log10"),  TI_FLOAT, 1, {TI_FLOAT}, _log10f},
 
-    {STR_INIT("atan"),   TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _atan2f},
-    {STR_INIT("atan2"),  TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _atan2f},
-    {STR_INIT("pow"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _powf},
-    {STR_INIT("min"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fminf},
-    {STR_INIT("max"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fmaxf},
+    {MD_STR_INIT("atan"),   TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _atan2f},
+    {MD_STR_INIT("atan2"),  TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _atan2f},
+    {MD_STR_INIT("pow"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _powf},
+    {MD_STR_INIT("min"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fminf},
+    {MD_STR_INIT("max"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fmaxf},
 
     // ARRAY VERSIONS OF NATIVE FUNCS
-    {STR_INIT("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr, FLAG_UNIT_OF_ARG},
-    {STR_INIT("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr, FLAG_UNIT_OF_ARG},
-    {STR_INIT("sum"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _sum_farr, FLAG_UNIT_OF_ARG},
+    {MD_STR_INIT("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr, FLAG_UNIT_OF_ARG},
+    {MD_STR_INIT("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr, FLAG_UNIT_OF_ARG},
+    {MD_STR_INIT("sum"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _sum_farr, FLAG_UNIT_OF_ARG},
 
     // VECTORIZED VERSIONS FOR ARRAYS OF BIGGER DATA
-    {STR_INIT("abs"),    TI_VOLUME, 1,  {TI_VOLUME}, _op_simd_abs_farr},
-    {STR_INIT("min"),    TI_VOLUME, 2,  {TI_VOLUME, TI_FLOAT},  _op_simd_min_farr_f,    FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("min"),    TI_VOLUME, 2,  {TI_VOLUME, TI_VOLUME}, _op_simd_min_farr_farr},
-    {STR_INIT("max"),    TI_VOLUME, 2,  {TI_VOLUME, TI_FLOAT},  _op_simd_max_farr_f,    FLAG_SYMMETRIC_ARGS},
-    {STR_INIT("max"),    TI_VOLUME, 2,  {TI_VOLUME, TI_VOLUME}, _op_simd_max_farr_farr},
+    {MD_STR_INIT("abs"),    TI_VOLUME, 1,  {TI_VOLUME}, _op_simd_abs_farr},
+    {MD_STR_INIT("min"),    TI_VOLUME, 2,  {TI_VOLUME, TI_FLOAT},  _op_simd_min_farr_f,    FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("min"),    TI_VOLUME, 2,  {TI_VOLUME, TI_VOLUME}, _op_simd_min_farr_farr},
+    {MD_STR_INIT("max"),    TI_VOLUME, 2,  {TI_VOLUME, TI_FLOAT},  _op_simd_max_farr_f,    FLAG_SYMMETRIC_ARGS},
+    {MD_STR_INIT("max"),    TI_VOLUME, 2,  {TI_VOLUME, TI_VOLUME}, _op_simd_max_farr_farr},
 
     // LINEAR ALGEBRA
-    {STR_INIT("dot"),       TI_FLOAT,       2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
-    {STR_INIT("cross"),     TI_FLOAT3,      2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
-    {STR_INIT("length"),    TI_FLOAT,       1, {TI_FLOAT_ARR},                  _length},
-    {STR_INIT("normalize"), TI_FLOAT_ARR,   1, {TI_FLOAT_ARR},                  _normalize, FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("mul"),       TI_FLOAT44,     2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
-    {STR_INIT("mul"),       TI_FLOAT4,      2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
+    {MD_STR_INIT("dot"),       TI_FLOAT,       2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
+    {MD_STR_INIT("cross"),     TI_FLOAT3,      2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
+    {MD_STR_INIT("length"),    TI_FLOAT,       1, {TI_FLOAT_ARR},                  _length},
+    {MD_STR_INIT("normalize"), TI_FLOAT_ARR,   1, {TI_FLOAT_ARR},                  _normalize, FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("mul"),       TI_FLOAT44,     2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
+    {MD_STR_INIT("mul"),       TI_FLOAT4,      2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
 
     // CONSTRUCTORS
-    {STR_INIT("vec2"),   TI_FLOAT2,  2, {TI_FLOAT, TI_FLOAT},                       _vec2},
-    {STR_INIT("vec3"),   TI_FLOAT3,  3, {TI_FLOAT, TI_FLOAT, TI_FLOAT},             _vec3},
-    {STR_INIT("vec4"),   TI_FLOAT4,  4, {TI_FLOAT, TI_FLOAT, TI_FLOAT, TI_FLOAT},   _vec4},
+    {MD_STR_INIT("vec2"),   TI_FLOAT2,  2, {TI_FLOAT, TI_FLOAT},                       _vec2},
+    {MD_STR_INIT("vec3"),   TI_FLOAT3,  3, {TI_FLOAT, TI_FLOAT, TI_FLOAT},             _vec3},
+    {MD_STR_INIT("vec4"),   TI_FLOAT4,  4, {TI_FLOAT, TI_FLOAT, TI_FLOAT, TI_FLOAT},   _vec4},
 
     // --- SELECTORS ---
 
     // Atom level
-    {STR_INIT("all"),           TI_ATOMSET, 0, {0},                _all},
-    {STR_INIT("ion"),           TI_ATOMSET, 0, {0},                _ion},
-    {STR_INIT("backbone"),      TI_ATOMSET, 0, {0},                _backbone},
-    {STR_INIT("side"),          TI_ATOMSET, 0, {0},                _side},
-    {STR_INIT("sidechain"),     TI_ATOMSET, 0, {0},                _sidechain},
-    {STR_INIT("nucleoside"),    TI_ATOMSET, 0, {0},                _nucleoside},
-    {STR_INIT("nucleobase"),    TI_ATOMSET, 0, {0},                _nucleobase},
+    {MD_STR_INIT("all"),           TI_ATOMSET, 0, {0},                _all},
+    {MD_STR_INIT("ion"),           TI_ATOMSET, 0, {0},                _ion},
+    {MD_STR_INIT("backbone"),      TI_ATOMSET, 0, {0},                _backbone},
+    {MD_STR_INIT("side"),          TI_ATOMSET, 0, {0},                _side},
+    {MD_STR_INIT("sidechain"),     TI_ATOMSET, 0, {0},                _sidechain},
+    {MD_STR_INIT("nucleoside"),    TI_ATOMSET, 0, {0},                _nucleoside},
+    {MD_STR_INIT("nucleobase"),    TI_ATOMSET, 0, {0},                _nucleobase},
     // The parts of lipids (md_lipid_data_t): their heads, and one selection per tail
-    {STR_INIT("head"),          TI_ATOMSET, 0, {0},                _head},
-    {STR_INIT("tail"),          TI_ATOMSET_ARR, 0, {0},            _tail,          FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {MD_STR_INIT("head"),          TI_ATOMSET, 0, {0},                _head},
+    {MD_STR_INIT("tail"),          TI_ATOMSET_ARR, 0, {0},            _tail,          FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
-    {STR_INIT("type"),      TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
-    {STR_INIT("name"),      TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
-    {STR_INIT("label"),     TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
-    {STR_INIT("element"),   TI_ATOMSET, 1, {TI_STRING_ARR},        _element_str,   FLAG_STATIC_VALIDATION},
-    {STR_INIT("element"),   TI_ATOMSET, 1, {TI_IRANGE_ARR},        _element_irng,  FLAG_STATIC_VALIDATION},
-    {STR_INIT("atom"),      TI_ATOMSET, 1, {TI_IRANGE_ARR},        _atom_irng,     FLAG_STATIC_VALIDATION},
-    {STR_INIT("atom"),      TI_ATOMSET, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("type"),      TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("name"),      TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("label"),     TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("element"),   TI_ATOMSET, 1, {TI_STRING_ARR},        _element_str,   FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("element"),   TI_ATOMSET, 1, {TI_IRANGE_ARR},        _element_irng,  FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("atom"),      TI_ATOMSET, 1, {TI_IRANGE_ARR},        _atom_irng,     FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("atom"),      TI_ATOMSET, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
     
-    {STR_INIT("ring"),      TI_ATOMSET_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {MD_STR_INIT("ring"),      TI_ATOMSET_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
     // By position: listed after the pattern, so that ring() (no pattern, an absent argument) stays the one above
-    {STR_INIT("ring"),      TI_ATOMSET_ARR, 3, {TI_IRANGE_ARR, TI_STRING_ARR, TI_IRANGE}, _ring_irng, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {MD_STR_INIT("ring"),      TI_ATOMSET_ARR, 3, {TI_IRANGE_ARR, TI_STRING_ARR, TI_IRANGE}, _ring_irng, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Structure matching: one selection per occurrence of a SMILES pattern, or of a reference structure
-    {STR_INIT("smiles"),    TI_ATOMSET_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("match"),     TI_ATOMSET_ARR, 4, {TI_ATOMSET, TI_STRING, TI_STRING, TI_STRING}, _match,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("smiles"),    TI_ATOMSET_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("match"),     TI_ATOMSET_ARR, 4, {TI_ATOMSET, TI_STRING, TI_STRING, TI_STRING}, _match,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Parts by their kind (md_part_kind_t), one set per part: the strands of a polymer, the waters
-    {STR_INIT("polymer"),   TI_ATOMSET_ARR, 0, {0},                _polymer,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("polymer"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _polymer_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("protein"),   TI_ATOMSET_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("protein"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _protein_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("nucleic"),   TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("nucleic"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _nucleic_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("water"),     TI_ATOMSET_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("polymer"),   TI_ATOMSET_ARR, 0, {0},                _polymer,       FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("polymer"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _polymer_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("protein"),   TI_ATOMSET_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("protein"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _protein_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("nucleic"),   TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("nucleic"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _nucleic_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("water"),     TI_ATOMSET_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
 
     // Residue level
-    {STR_INIT("nucleotide"),TI_ATOMSET_ARR, 0, {0},                _nucleotide,    FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("lipid"),     TI_ATOMSET_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("glycan"),    TI_ATOMSET_ARR, 0, {0},                _glycan,        FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("nucleotide"),TI_ATOMSET_ARR, 0, {0},                _nucleotide,    FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("lipid"),     TI_ATOMSET_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("glycan"),    TI_ATOMSET_ARR, 0, {0},                _glycan,        FLAG_QUERYABLE_LENGTH},
 
     // A compile error where the system has no such region: a QM region, and atoms which are not in it
-    {STR_INIT("qm"),          TI_ATOMSET_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("environment"), TI_ATOMSET_ARR, 0, {0},              _environment,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("resname"),   TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _res_name,      FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("residue"),   TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _res_name,      FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _res_name,      FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("resid"),     TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _res_seq_id,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("residue"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _res,           FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _res,           FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("qm"),          TI_ATOMSET_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("environment"), TI_ATOMSET_ARR, 0, {0},              _environment,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("resname"),   TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _res_name,      FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("residue"),   TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _res_name,      FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _res_name,      FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("resid"),     TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _res_seq_id,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("residue"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _res,           FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _res,           FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Instance level
     // A chain id is a label: every atom which carries it, as one set (see md_chain_data_t). chain_id() and auth_id()
     // are other names of it. The position of a chain is that of a structure, one set per chain, as residue(i) is.
-    {STR_INIT("chain"),        TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
-    {STR_INIT("chain_id"),     TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
-    {STR_INIT("auth_id"),      TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
-    {STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("chain"),        TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("chain_id"),     TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("auth_id"),      TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     // Molecules (md_molecule_data_t): by position, one set each
-    {STR_INIT("molecule"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _molecule_irng,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("molecule"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _molecule_irng,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     // Parts (md_part_data_t): a strand, a glycan tree, a ligand, an ion, a water; by position, one set each
-    {STR_INIT("part"),         TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _part_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("part"),         TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _part_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single atomset, but the number of atoms within is not fixed)
-    {STR_INIT("within_x"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_x,     FLAG_DYNAMIC},
-    {STR_INIT("within_y"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_y,     FLAG_DYNAMIC},
-    {STR_INIT("within_z"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
-    {STR_INIT("within_xyz"),    TI_ATOMSET, 3, {TI_FRANGE, TI_FRANGE, TI_FRANGE}, _within_xyz,     FLAG_DYNAMIC},
+    {MD_STR_INIT("within_x"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_x,     FLAG_DYNAMIC},
+    {MD_STR_INIT("within_y"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_y,     FLAG_DYNAMIC},
+    {MD_STR_INIT("within_z"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
+    {MD_STR_INIT("within_xyz"),    TI_ATOMSET, 3, {TI_FRANGE, TI_FRANGE, TI_FRANGE}, _within_xyz,     FLAG_DYNAMIC},
 
-    {STR_INIT("within"),    TI_ATOMSET, 2, {TI_FLOAT,  TI_COORDINATE_ARR}, _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
-    {STR_INIT("within"),    TI_ATOMSET, 2, {TI_FRANGE, TI_COORDINATE_ARR}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {MD_STR_INIT("within"),    TI_ATOMSET, 2, {TI_FLOAT,  TI_COORDINATE_ARR}, _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {MD_STR_INIT("within"),    TI_ATOMSET, 2, {TI_FRANGE, TI_COORDINATE_ARR}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
 
-    {STR_INIT("within"),    TI_ATOMSET, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
-    {STR_INIT("within"),    TI_ATOMSET, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {MD_STR_INIT("within"),    TI_ATOMSET, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {MD_STR_INIT("within"),    TI_ATOMSET, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
 
     // --- PROPERTY COMPUTE ---
-    {STR_INIT("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN },
-    {STR_INIT("distance_min"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("distance_max"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN },
+    {MD_STR_INIT("distance_min"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("distance_max"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
 
-    {STR_INIT("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("dihedral"),  TI_FLOAT,   4,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {MD_STR_INIT("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {MD_STR_INIT("dihedral"),  TI_FLOAT,   4,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
-    {STR_INIT("rmsd"),      TI_FLOAT_ARR, 1, {TI_ATOMSET_ARR}, _rmsd,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {MD_STR_INIT("rmsd"),      TI_FLOAT_ARR, 1, {TI_ATOMSET_ARR}, _rmsd,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
-    {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {MD_STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {MD_STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
-    {STR_INIT("density"),   {TYPE_DISTRIBUTION, {3,MD_DIST_BINS}}, 1, {TI_ATOMSET_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("density_x"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_x,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("density_y"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_y,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("density_z"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_z,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("pool"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_DISTRIBUTION_ARR}, _dist_pool, FLAG_QUERYABLE_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {MD_STR_INIT("density"),   {TYPE_DISTRIBUTION, {3,MD_DIST_BINS}}, 1, {TI_ATOMSET_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {MD_STR_INIT("density_x"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_x,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {MD_STR_INIT("density_y"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_y,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {MD_STR_INIT("density_z"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_z,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {MD_STR_INIT("pool"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_DISTRIBUTION_ARR}, _dist_pool, FLAG_QUERYABLE_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("sdf"),       TI_VOLUME, 3,   {TI_ATOMSET_ARR, TI_ATOMSET, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
+    {MD_STR_INIT("sdf"),       TI_VOLUME, 3,   {TI_ATOMSET_ARR, TI_ATOMSET, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
 
-    {STR_INIT("count"),     TI_FLOAT,  1,   {TI_ATOMSET_ARR},              _count},
-    {STR_INIT("count"),     TI_FLOAT,  2,   {TI_ATOMSET_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("count"),     TI_FLOAT,  1,   {TI_ATOMSET_ARR},              _count},
+    {MD_STR_INIT("count"),     TI_FLOAT,  2,   {TI_ATOMSET_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
-    {STR_INIT("porosity"), TI_FLOAT,  1,   {TI_ATOMSET},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("porosity"), TI_FLOAT,  1,   {TI_ATOMSET},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
 
-    {STR_INIT("contact_count"), TI_FLOAT_ARR,  3,   {TI_ATOMSET_ARR, TI_ATOMSET, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {MD_STR_INIT("contact_count"), TI_FLOAT_ARR,  3,   {TI_ATOMSET_ARR, TI_ATOMSET, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     // Contacts between groups, see md_contact.h
-    {STR_INIT("contacts"),  TI_CONTACT,    7,   {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_FLOAT, TI_INT, TI_INT, TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _contacts, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {STR_INIT("count"),     TI_FLOAT,      1,   {TI_CONTACT},               _count_contact},
-    {STR_INIT("count"),     TI_FLOAT,      2,   {TI_CONTACT, TI_STRING},    _count_contact_unit, FLAG_STATIC_VALIDATION},
-    {STR_INIT("degree"),    TI_FLOAT_ARR,  1,   {TI_CONTACT},               _degree_contact, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("chunks"),    TI_ATOMSET_ARR, 2, {TI_ATOMSET_ARR, TI_INT},  _chunks, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("contacts"),  TI_CONTACT,    7,   {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_FLOAT, TI_INT, TI_INT, TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _contacts, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {MD_STR_INIT("count"),     TI_FLOAT,      1,   {TI_CONTACT},               _count_contact},
+    {MD_STR_INIT("count"),     TI_FLOAT,      2,   {TI_CONTACT, TI_STRING},    _count_contact_unit, FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("degree"),    TI_FLOAT_ARR,  1,   {TI_CONTACT},               _degree_contact, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("chunks"),    TI_ATOMSET_ARR, 2, {TI_ATOMSET_ARR, TI_INT},  _chunks, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // --- GEOMETRICAL OPERATIONS ---
-    {STR_INIT("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {MD_STR_INIT("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     // One plane per group, or one through positions. The groups come first: an atomset is a position as well, and the
     // first overload which takes the arguments as they are wins. One plane through all the groups is plane(union(...)).
-    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_ATOMSET_ARR},    _plane_groups,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_COORDINATE_ARR},  _plane_points,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("centroid"),      TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_centroid,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("normal"),        TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_normal,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("deviation"),     TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_deviation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("angle"),         TI_FLOAT_ARR,   2,  {TI_PLANE_ARR, TI_PLANE_ARR}, _plane_angle, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_ATOMSET_ARR},    _pucker_rings,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_INT_ARR},         _pucker_atoms,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("amplitude"),     TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_amplitude, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("phase"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_phase,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("theta"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_theta,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("pseudorotation"), TI_FLOAT_ARR,  1,  {TI_PUCKER_ARR},      _pucker_pseudorotation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("shape_weights"), TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {MD_STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_ATOMSET_ARR},    _plane_groups,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_COORDINATE_ARR},  _plane_points,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("centroid"),      TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_centroid,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("normal"),        TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_normal,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("deviation"),     TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_deviation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("angle"),         TI_FLOAT_ARR,   2,  {TI_PLANE_ARR, TI_PLANE_ARR}, _plane_angle, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_ATOMSET_ARR},    _pucker_rings,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_INT_ARR},         _pucker_atoms,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("amplitude"),     TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_amplitude, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("phase"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_phase,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("theta"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_theta,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("pseudorotation"), TI_FLOAT_ARR,  1,  {TI_PUCKER_ARR},      _pucker_pseudorotation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("shape_weights"), TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
-    {STR_INIT("coord"),      TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("coord_x"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("coord_y"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("coord_z"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord"),      TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord_x"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord_y"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord_z"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
-    {STR_INIT("coord_xy"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_xy,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("coord_xz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_xz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
-    {STR_INIT("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord_xy"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_xy,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord_xz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_xz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {MD_STR_INIT("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
-    {STR_INIT("union"),     TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {MD_STR_INIT("union"),     TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_bf_arr,  FLAG_FLATTEN},
     // The old name of union: it compiles, with a warning (as flatten of selections does, see static_check_flatten)
-    {STR_INIT("join"),      TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_deprecated, FLAG_FLATTEN | FLAG_STATIC_VALIDATION},
-    {STR_INIT("flatten"),   TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {MD_STR_INIT("join"),      TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_deprecated, FLAG_FLATTEN | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("flatten"),   TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_bf_arr,  FLAG_FLATTEN},
 
-    {STR_INIT("split"),     TI_ATOMSET_ARR, 2,  {TI_ATOMSET, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("split"),     TI_ATOMSET_ARR, 2,  {TI_ATOMSET, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
-    {STR_INIT("residue"),   TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_res,   FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_chain, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("molecule"),  TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_molecule, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("part"),      TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_part,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("residue"),   TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_res,   FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_chain, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("molecule"),  TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_molecule, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {MD_STR_INIT("part"),      TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_part,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
     // --- BONDS ---
     // The atoms overload first: bond() without arguments is that one
-    {STR_INIT("bond"),       TI_BONDSET_ARR, 6, {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("bond"),       TI_BONDSET,     6, {TI_BOND_DELTA,  TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond_of_delta, FLAG_STATIC_VALIDATION},
-    {STR_INIT("atom"),       TI_ATOMSET_ARR, 1, {TI_BONDSET_ARR},   _bond_atoms,    FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("count"),      TI_FLOAT,       1, {TI_BONDSET_ARR},   _count_bonds},
-    {STR_INIT("length"),     TI_FLOAT_ARR,   1, {TI_BONDSET_ARR},   _bond_length,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("bond_delta"), TI_BOND_DELTA,  3, {TI_ATOMSET_ARR, TI_FLOAT, TI_STRING_ARR}, _bond_delta, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
-    {STR_INIT("formed"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_formed},
-    {STR_INIT("broken"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_broken},
+    {MD_STR_INIT("bond"),       TI_BONDSET_ARR, 6, {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("bond"),       TI_BONDSET,     6, {TI_BOND_DELTA,  TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond_of_delta, FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("atom"),       TI_ATOMSET_ARR, 1, {TI_BONDSET_ARR},   _bond_atoms,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {MD_STR_INIT("count"),      TI_FLOAT,       1, {TI_BONDSET_ARR},   _count_bonds},
+    {MD_STR_INIT("length"),     TI_FLOAT_ARR,   1, {TI_BONDSET_ARR},   _bond_length,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {MD_STR_INIT("bond_delta"), TI_BOND_DELTA,  3, {TI_ATOMSET_ARR, TI_FLOAT, TI_STRING_ARR}, _bond_delta, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("formed"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_formed},
+    {MD_STR_INIT("broken"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_broken},
 };
 
 // Parameter names, declared per procedure NAME and shared by all of its overloads (see NAMED ARGUMENTS in
@@ -1083,53 +1083,53 @@ static procedure_t procedures[] = {
 //     left out: required parameters after a PARAM_DEFAULT or PARAM_NULLABLE one are PARAM_KW_ONLY.
 //   - Procedures with FLAG_SYMMETRIC_ARGS get no entry: swapping arguments given by name has no meaning.
 //   - Names cannot be keywords of the language (in, of, out, and, or, xor, not).
-#define REQ(name) {STR_INIT(name), PARAM_REQUIRED}
-#define OPT(name) {STR_INIT(name), PARAM_OPTIONAL}
-#define NUL(name) {STR_INIT(name), PARAM_NULLABLE}
-#define KW_REQ(name) {STR_INIT(name), PARAM_REQUIRED | PARAM_KW_ONLY}
-#define KW_NUL(name) {STR_INIT(name), PARAM_NULLABLE | PARAM_KW_ONLY}
-#define KW_INT(name, value) {STR_INIT(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_INT, {._int = (value)}}
-#define KW_STR(name, value) {STR_INIT(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_STRING, {._string = STR_INIT(value)}}
+#define REQ(name) {MD_STR_INIT(name), PARAM_REQUIRED}
+#define OPT(name) {MD_STR_INIT(name), PARAM_OPTIONAL}
+#define NUL(name) {MD_STR_INIT(name), PARAM_NULLABLE}
+#define KW_REQ(name) {MD_STR_INIT(name), PARAM_REQUIRED | PARAM_KW_ONLY}
+#define KW_NUL(name) {MD_STR_INIT(name), PARAM_NULLABLE | PARAM_KW_ONLY}
+#define KW_INT(name, value) {MD_STR_INIT(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_INT, {._int = (value)}}
+#define KW_STR(name, value) {MD_STR_INIT(name), PARAM_DEFAULT | PARAM_KW_ONLY, TI_STRING, {._string = MD_STR_INIT(value)}}
 
 static const proc_sig_t signatures[] = {
-    {STR_INIT("distance"),      2, {REQ("a"), REQ("b")}},
-    {STR_INIT("distance_min"),  2, {REQ("a"), REQ("b")}},
-    {STR_INIT("distance_max"),  2, {REQ("a"), REQ("b")}},
-    {STR_INIT("distance_pair"), 2, {REQ("a"), REQ("b")}},
+    {MD_STR_INIT("distance"),      2, {REQ("a"), REQ("b")}},
+    {MD_STR_INIT("distance_min"),  2, {REQ("a"), REQ("b")}},
+    {MD_STR_INIT("distance_max"),  2, {REQ("a"), REQ("b")}},
+    {MD_STR_INIT("distance_pair"), 2, {REQ("a"), REQ("b")}},
     // angle(a, b, c) of three positions, angle(a, b) between two sets of planes
-    {STR_INIT("angle"),         3, {REQ("a"), REQ("b"), OPT("c")}},
-    {STR_INIT("dihedral"),      4, {REQ("a"), REQ("b"), REQ("c"), REQ("d")}},
+    {MD_STR_INIT("angle"),         3, {REQ("a"), REQ("b"), OPT("c")}},
+    {MD_STR_INIT("dihedral"),      4, {REQ("a"), REQ("b"), REQ("c"), REQ("d")}},
 
     // within(radius) takes its centre from the context ('within(3) in x'), within(radius, around) explicitly
-    {STR_INIT("within"),        2, {REQ("radius"), OPT("around")}},
-    {STR_INIT("within_xyz"),    3, {REQ("x"), REQ("y"), REQ("z")}},
+    {MD_STR_INIT("within"),        2, {REQ("radius"), OPT("around")}},
+    {MD_STR_INIT("within_xyz"),    3, {REQ("x"), REQ("y"), REQ("z")}},
 
-    {STR_INIT("rdf"),           3, {REQ("a"), REQ("b"), REQ("cutoff")}},
+    {MD_STR_INIT("rdf"),           3, {REQ("a"), REQ("b"), REQ("cutoff")}},
     // The structures are superimposed onto the first, the density of target is accumulated around them within extent
-    {STR_INIT("sdf"),           3, {REQ("structures"), REQ("target"), REQ("extent")}},
+    {MD_STR_INIT("sdf"),           3, {REQ("structures"), REQ("target"), REQ("extent")}},
 
-    {STR_INIT("count"),         2, {REQ("sel"), OPT("unit")}},
-    {STR_INIT("split"),         2, {REQ("sel"), REQ("parts")}},
-    {STR_INIT("contact_count"), 3, {REQ("a"), REQ("b"), REQ("cutoff")}},
+    {MD_STR_INIT("count"),         2, {REQ("sel"), OPT("unit")}},
+    {MD_STR_INIT("split"),         2, {REQ("sel"), REQ("parts")}},
+    {MD_STR_INIT("contact_count"), 3, {REQ("a"), REQ("b"), REQ("cutoff")}},
 
     // contacts(a, b = none, *, cutoff, exclude_bonds = 3, min_separation = 0, parent = none, exclude_within = none)
-    {STR_INIT("contacts"),      7, {REQ("a"), NUL("b"), KW_REQ("cutoff"), KW_INT("exclude_bonds", 3), KW_INT("min_separation", 0), KW_NUL("parent"), KW_NUL("exclude_within")}},
-    {STR_INIT("degree"),        1, {REQ("c")}},
-    {STR_INIT("chunks"),        2, {REQ("sel"), REQ("size")}},
+    {MD_STR_INIT("contacts"),      7, {REQ("a"), NUL("b"), KW_REQ("cutoff"), KW_INT("exclude_bonds", 3), KW_INT("min_separation", 0), KW_NUL("parent"), KW_NUL("exclude_within")}},
+    {MD_STR_INIT("degree"),        1, {REQ("c")}},
+    {MD_STR_INIT("chunks"),        2, {REQ("sel"), REQ("size")}},
 
     // smiles(pattern, *, level = "molecule", mode = "unique"), match(ref, *, by = "element", level = "molecule", mode = "unique")
-    {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "molecule"), KW_STR("mode", "unique")}},
-    {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "molecule"), KW_STR("mode", "unique")}},
+    {MD_STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "molecule"), KW_STR("mode", "unique")}},
+    {MD_STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "molecule"), KW_STR("mode", "unique")}},
 
     // ring(pattern = none, *, kind = none, size = none), see _ring. The first is a pattern or, in the other overload, an
     // index (_ring_irng): 'pattern' names it in both.
-    {STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
+    {MD_STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
 
     // bond(a = none, b = none, *, kind = none, order = none, resonance = none, origin = none), see _bond, and bond(d, ...),
     // whose 'a' is a bond_delta (_bond_of_delta)
-    {STR_INIT("bond"),          6, {NUL("a"), NUL("b"), KW_NUL("kind"), KW_NUL("order"), KW_NUL("resonance"), KW_NUL("origin")}},
+    {MD_STR_INIT("bond"),          6, {NUL("a"), NUL("b"), KW_NUL("kind"), KW_NUL("order"), KW_NUL("resonance"), KW_NUL("origin")}},
     // bond_delta(scope = none, *, tolerance = none, breakable = none), see _bond_delta
-    {STR_INIT("bond_delta"),    3, {NUL("scope"), KW_NUL("tolerance"), KW_NUL("breakable")}},
+    {MD_STR_INIT("bond_delta"),    3, {NUL("scope"), KW_NUL("tolerance"), KW_NUL("breakable")}},
 };
 
 #undef REQ
@@ -1148,64 +1148,64 @@ static const proc_sig_t signatures[] = {
 // Checked by the unittest 'script.completion_domain_table': every procedure with a string parameter has an entry.
 // attr() is parsed rather than looked up in the procedure table, but its path is declared here all the same.
 static const param_domain_t param_domains[] = {
-    {STR_INIT("name"),      0, DOMAIN_ATOM_NAME},
-    {STR_INIT("type"),      0, DOMAIN_ATOM_NAME},
-    {STR_INIT("label"),     0, DOMAIN_ATOM_NAME},
-    {STR_INIT("element"),   0, DOMAIN_ELEMENT},
-    {STR_INIT("resname"),   0, DOMAIN_RES_NAME},
-    {STR_INIT("residue"),   0, DOMAIN_RES_NAME},
-    {STR_INIT("component"), 0, DOMAIN_RES_NAME},
-    {STR_INIT("chain"),     0, DOMAIN_CHAIN_ID},
-    {STR_INIT("chain_id"),  0, DOMAIN_CHAIN_ID},
-    {STR_INIT("auth_id"),   0, DOMAIN_CHAIN_ID},
+    {MD_STR_INIT("name"),      0, DOMAIN_ATOM_NAME},
+    {MD_STR_INIT("type"),      0, DOMAIN_ATOM_NAME},
+    {MD_STR_INIT("label"),     0, DOMAIN_ATOM_NAME},
+    {MD_STR_INIT("element"),   0, DOMAIN_ELEMENT},
+    {MD_STR_INIT("resname"),   0, DOMAIN_RES_NAME},
+    {MD_STR_INIT("residue"),   0, DOMAIN_RES_NAME},
+    {MD_STR_INIT("component"), 0, DOMAIN_RES_NAME},
+    {MD_STR_INIT("chain"),     0, DOMAIN_CHAIN_ID},
+    {MD_STR_INIT("chain_id"),  0, DOMAIN_CHAIN_ID},
+    {MD_STR_INIT("auth_id"),   0, DOMAIN_CHAIN_ID},
     // count(contacts, unit) takes 'atom' or 'group' instead, which cannot be told apart without knowing the type of
     // the first argument. Counting selections is the common case.
-    {STR_INIT("count"),     1, DOMAIN_COUNT_UNIT},
-    {STR_INIT("attr"),      0, DOMAIN_ATTR_PATH},
-    {STR_INIT("smiles"),    0, DOMAIN_SMILES},
-    {STR_INIT("smiles"),    1, DOMAIN_MATCH_LEVEL},
-    {STR_INIT("smiles"),    2, DOMAIN_MATCH_MODE},
-    {STR_INIT("match"),     1, DOMAIN_MATCH_LABEL},
-    {STR_INIT("match"),     2, DOMAIN_MATCH_LEVEL},
-    {STR_INIT("match"),     3, DOMAIN_MATCH_MODE},
-    {STR_INIT("ring"),      0, DOMAIN_SMILES},
-    {STR_INIT("ring"),      1, DOMAIN_RING_KIND},
-    {STR_INIT("bond"),      2, DOMAIN_BOND_KIND},
-    {STR_INIT("bond"),      4, DOMAIN_BOND_RESONANCE},
-    {STR_INIT("bond"),      5, DOMAIN_BOND_ORIGIN},
-    {STR_INIT("bond_delta"), 2, DOMAIN_BOND_ORIGIN},
+    {MD_STR_INIT("count"),     1, DOMAIN_COUNT_UNIT},
+    {MD_STR_INIT("attr"),      0, DOMAIN_ATTR_PATH},
+    {MD_STR_INIT("smiles"),    0, DOMAIN_SMILES},
+    {MD_STR_INIT("smiles"),    1, DOMAIN_MATCH_LEVEL},
+    {MD_STR_INIT("smiles"),    2, DOMAIN_MATCH_MODE},
+    {MD_STR_INIT("match"),     1, DOMAIN_MATCH_LABEL},
+    {MD_STR_INIT("match"),     2, DOMAIN_MATCH_LEVEL},
+    {MD_STR_INIT("match"),     3, DOMAIN_MATCH_MODE},
+    {MD_STR_INIT("ring"),      0, DOMAIN_SMILES},
+    {MD_STR_INIT("ring"),      1, DOMAIN_RING_KIND},
+    {MD_STR_INIT("bond"),      2, DOMAIN_BOND_KIND},
+    {MD_STR_INIT("bond"),      4, DOMAIN_BOND_RESONANCE},
+    {MD_STR_INIT("bond"),      5, DOMAIN_BOND_ORIGIN},
+    {MD_STR_INIT("bond_delta"), 2, DOMAIN_BOND_ORIGIN},
 };
 
 // The values of the string parameters of smiles() and match()
 typedef struct match_name_t {
-    str_t name;
+    md_str_t name;
     int   value;
 } match_name_t;
 
 // "chain": within one chain (md_chain_data_t), the chains given to md_match as its units
 #define MATCH_LEVEL_CHAIN -1
 static const match_name_t match_levels[] = {
-    {STR_INIT("molecule"),  MD_MATCH_LEVEL_MOLECULE},
-    {STR_INIT("residue"),   MD_MATCH_LEVEL_RESIDUE},
-    {STR_INIT("component"), MD_MATCH_LEVEL_RESIDUE},
-    {STR_INIT("part"),      MD_MATCH_LEVEL_PART},
-    {STR_INIT("chain"),     MATCH_LEVEL_CHAIN},
+    {MD_STR_INIT("molecule"),  MD_MATCH_LEVEL_MOLECULE},
+    {MD_STR_INIT("residue"),   MD_MATCH_LEVEL_RESIDUE},
+    {MD_STR_INIT("component"), MD_MATCH_LEVEL_RESIDUE},
+    {MD_STR_INIT("part"),      MD_MATCH_LEVEL_PART},
+    {MD_STR_INIT("chain"),     MATCH_LEVEL_CHAIN},
 };
 
 // 'whole' is UNIQUE with MD_MATCH_FLAG_WHOLE: a match which is all of its unit is the only one of the unit, so the
 // other modes come to the same, and ALL would only add the symmetric mappings of the same atoms to a selection.
 #define MATCH_MODE_WHOLE -1
 static const match_name_t match_modes[] = {
-    {STR_INIT("unique"),       MD_MATCH_MODE_UNIQUE},
-    {STR_INIT("all"),          MD_MATCH_MODE_ALL},
-    {STR_INIT("one_per_unit"), MD_MATCH_MODE_ONE_PER_UNIT},
-    {STR_INIT("disjoint"),     MD_MATCH_MODE_DISJOINT},
-    {STR_INIT("whole"),        MATCH_MODE_WHOLE},
+    {MD_STR_INIT("unique"),       MD_MATCH_MODE_UNIQUE},
+    {MD_STR_INIT("all"),          MD_MATCH_MODE_ALL},
+    {MD_STR_INIT("one_per_unit"), MD_MATCH_MODE_ONE_PER_UNIT},
+    {MD_STR_INIT("disjoint"),     MD_MATCH_MODE_DISJOINT},
+    {MD_STR_INIT("whole"),        MATCH_MODE_WHOLE},
 };
 
 static const match_name_t match_labels[] = {
-    {STR_INIT("element"), MD_MATCH_LABEL_ELEMENT},
-    {STR_INIT("name"),    MD_MATCH_LABEL_NAME},
+    {MD_STR_INIT("element"), MD_MATCH_LABEL_ELEMENT},
+    {MD_STR_INIT("name"),    MD_MATCH_LABEL_NAME},
 };
 
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
@@ -1289,7 +1289,7 @@ static inline void push_sphere(vec3_t xyz, float r, uint32_t color, md_script_vi
 static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis) {
     MD_ASSERT(vis);
     MD_ASSERT(vis->alloc);
-    md_script_vis_text_t text = {xyz, str_copy_cstr(cstr, vis->alloc) };
+    md_script_vis_text_t text = {xyz, md_str_copy_cstr(cstr, vis->alloc) };
     md_array_push(vis->text, text, vis->alloc);
 } 
 
@@ -1315,7 +1315,7 @@ static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, 
 
     md_script_vis_text_t text = {
         .pos   = xyz,
-        .str   = str_copy((str_t){buf, len}, vis->alloc),
+        .str   = md_str_copy((md_str_t){buf, len}, vis->alloc),
         .value = value,
         .unit  = unit,
     };
@@ -1432,9 +1432,9 @@ static int32_t find_val(const int32_t* arr, int64_t count, int32_t val) {
     return -1;
 }
 
-static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
+static int32_t find_label(const md_label_t* arr, int64_t count, md_str_t lbl) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
-        if (str_eq(LBL_TO_STR(arr[i]), lbl)) {
+        if (md_str_eq(LBL_TO_STR(arr[i]), lbl)) {
             return i;
         }
     }
@@ -2183,13 +2183,13 @@ done:
 
 // The names that name(), resname() and chain() are given match what they select by glob_match: '*' stands for any
 // run of characters, "C*" (begins with C), "*A" (ends with A), "*A*" (contains A), "C*A". Nothing matches an empty name.
-static bool match_query(str_t query, str_t str) {
+static bool match_query(md_str_t query, md_str_t str) {
     if (query.len == 0 || str.len == 0) return false;
     return glob_match(query, str);
 }
 
 // Any pattern is one, except the empty one, which matches nothing
-static bool validate_query(str_t query) {
+static bool validate_query(md_str_t query) {
     return query.len > 0;
 }
 
@@ -2516,7 +2516,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     MD_ASSERT(ctx && ctx->sys);
 
-    const str_t* str = as_string_arr(arg[0]);
+    const md_str_t* str = as_string_arr(arg[0]);
     const size_t num_str = element_count(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
@@ -2527,7 +2527,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitset_test(*ctx->mol_ctx, i)) continue;
             
-            str_t atom_id = md_atom_name(&ctx->sys->atom, i);
+            md_str_t atom_id = md_atom_name(&ctx->sys->atom, i);
             for (size_t j = 0; j < num_str; ++j) {
                 if (match_query(str[j], atom_id)) {
                     md_bitmask_set_bit(&b, (uint32_t)i);
@@ -2545,7 +2545,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitset_test(*ctx->mol_ctx, i)) continue;
-                str_t atom_id = md_atom_name(&ctx->sys->atom, i);
+                md_str_t atom_id = md_atom_name(&ctx->sys->atom, i);
                 if (match_query(str[j], atom_id)) {
                     match = true;
                     break;
@@ -2568,7 +2568,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_atomic_number_t* query_z = 0;
 
     const size_t num_str = element_count(arg[0]);
-    const str_t* str = as_string_arr(arg[0]);
+    const md_str_t* str = as_string_arr(arg[0]);
 
     for (size_t i = 0; i < num_str; ++i) {
         md_atomic_number_t z = md_atomic_number_from_symbol(str[i], false);
@@ -2616,7 +2616,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!found) {
-                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Element '" STR_FMT "' was not found within structure.", STR_ARG(str[j]));
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Element '" MD_STR_FMT "' was not found within structure.", MD_STR_ARG(str[j]));
                 return -1;
             }
         }
@@ -3256,9 +3256,9 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // smiles() and match(), see md_match.h. The matches depend on the topology only, so both are static; within an 'in'
 // context only the atoms of the context are searched.
 
-static bool match_lookup(int* out, const match_name_t* table, size_t count, str_t str) {
+static bool match_lookup(int* out, const match_name_t* table, size_t count, md_str_t str) {
     for (size_t i = 0; i < count; ++i) {
-        if (str_eq(table[i].name, str)) {
+        if (md_str_eq(table[i].name, str)) {
             *out = table[i].value;
             return true;
         }
@@ -3266,12 +3266,12 @@ static bool match_lookup(int* out, const match_name_t* table, size_t count, str_
     return false;
 }
 
-static void match_report_unknown(eval_context_t* ctx, int arg, const char* what, const match_name_t* table, size_t count, str_t str) {
+static void match_report_unknown(eval_context_t* ctx, int arg, const char* what, const match_name_t* table, size_t count, md_str_t str) {
     md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
     for (size_t i = 0; i < count; ++i) {
-        md_str_writer_fmt(&sb, "%s'" STR_FMT "'", i ? ", " : "", STR_ARG(table[i].name));
+        md_str_writer_fmt(&sb, "%s'" MD_STR_FMT "'", i ? ", " : "", MD_STR_ARG(table[i].name));
     }
-    EVAL_LOG_ERROR(ctx, ctx->arg_tokens[arg], "Unknown %s '" STR_FMT "', valid ones are: " STR_FMT, what, STR_ARG(str), STR_ARG(md_str_writer_to_str(&sb)));
+    EVAL_LOG_ERROR(ctx, ctx->arg_tokens[arg], "Unknown %s '" MD_STR_FMT "', valid ones are: " MD_STR_FMT, what, MD_STR_ARG(str), MD_STR_ARG(md_str_writer_to_str(&sb)));
 }
 
 // Runs the query in the context and fills dst, or returns the number of matches when validating
@@ -3407,7 +3407,7 @@ static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(ctx && ctx->sys);
     MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING));
 
-    const str_t pattern = as_string(arg[0]);
+    const md_str_t pattern = as_string(arg[0]);
     md_match_query_t query = {0};
     md_smiles_error_t err = {0};
     if (!md_match_query_init_smiles(&query, pattern, ctx->temp_alloc, &err)) {
@@ -3487,11 +3487,11 @@ typedef enum ring_kind_t {
 } ring_kind_t;
 
 static const match_name_t ring_kinds[] = {
-    {STR_INIT("aromatic"),       RING_KIND_AROMATIC},          // Every bond of the ring aromatic
-    {STR_INIT("aliphatic"),      RING_KIND_ALIPHATIC},         // Not aromatic
-    {STR_INIT("hetero"),         RING_KIND_HETERO},            // An atom other than C in the ring
-    {STR_INIT("heteroaromatic"), RING_KIND_HETEROAROMATIC},    // Both
-    {STR_INIT("sugar"),          RING_KIND_SUGAR},             // A furanose or pyranose, see MD_RING_FLAG_SUGAR
+    {MD_STR_INIT("aromatic"),       RING_KIND_AROMATIC},          // Every bond of the ring aromatic
+    {MD_STR_INIT("aliphatic"),      RING_KIND_ALIPHATIC},         // Not aromatic
+    {MD_STR_INIT("hetero"),         RING_KIND_HETERO},            // An atom other than C in the ring
+    {MD_STR_INIT("heteroaromatic"), RING_KIND_HETEROAROMATIC},    // Both
+    {MD_STR_INIT("sugar"),          RING_KIND_SUGAR},             // A furanose or pyranose, see MD_RING_FLAG_SUGAR
 };
 
 static bool ring_is_kind(md_ring_flags_t f, int kind) {
@@ -3506,7 +3506,7 @@ static bool ring_is_kind(md_ring_flags_t f, int kind) {
 }
 
 // Reports a SMILES syntax error, at the offending character when the pattern is a string literal of its own
-static void report_smiles_error(eval_context_t* ctx, int arg, str_t pattern, const md_smiles_error_t* err) {
+static void report_smiles_error(eval_context_t* ctx, int arg, md_str_t pattern, const md_smiles_error_t* err) {
     token_t tok = ctx->arg_tokens[arg];
     if (tok.type == TOKEN_STRING && tok.str.len == pattern.len + 2) {
         tok.beg = tok.beg + 1 + (int)err->offset;
@@ -3517,7 +3517,7 @@ static void report_smiles_error(eval_context_t* ctx, int arg, str_t pattern, con
 }
 
 // The query of a ring pattern, or false (reported when validating) if it cannot be along a ring
-static bool ring_pattern_query(md_match_query_t* query, str_t pattern, bool report, eval_context_t* ctx) {
+static bool ring_pattern_query(md_match_query_t* query, md_str_t pattern, bool report, eval_context_t* ctx) {
     md_smiles_error_t err = {0};
     if (!md_match_query_init_smiles(query, pattern, ctx->temp_alloc, &err)) {
         if (report) report_smiles_error(ctx, 0, pattern, &err);
@@ -3541,13 +3541,13 @@ static bool ring_pattern_query(md_match_query_t* query, str_t pattern, bool repo
     }
     for (size_t i = 0; i < n; ++i) {
         if (degree[i] > 2) {
-            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "ring: '" STR_FMT "' branches, and a ring atom has two neighbors along the ring: use smiles() for substituents", STR_ARG(pattern));
+            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "ring: '" MD_STR_FMT "' branches, and a ring atom has two neighbors along the ring: use smiles() for substituents", MD_STR_ARG(pattern));
             md_match_query_free(query);
             return false;
         }
     }
     if (num_heavy > MD_RING_MAX_SIZE) {
-        if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "ring: '" STR_FMT "' has %zu atoms, more than the largest ring (%d)", STR_ARG(pattern), num_heavy, MD_RING_MAX_SIZE);
+        if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "ring: '" MD_STR_FMT "' has %zu atoms, more than the largest ring (%d)", MD_STR_ARG(pattern), num_heavy, MD_RING_MAX_SIZE);
         md_match_query_free(query);
         return false;
     }
@@ -3564,7 +3564,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     uint32_t kind_mask = 0;
     if (!is_absent_type(arg[1].type)) {
         MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING_ARR));
-        const str_t* kinds = as_string_arr(arg[1]);
+        const md_str_t* kinds = as_string_arr(arg[1]);
         const size_t num_kinds = element_count(arg[1]);
         for (size_t i = 0; i < num_kinds; ++i) {
             int kind = 0;
@@ -3593,7 +3593,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     uint8_t* has_pattern = NULL;
     if (!is_absent_type(arg[0].type)) {
         MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-        const str_t* patterns = as_string_arr(arg[0]);
+        const md_str_t* patterns = as_string_arr(arg[0]);
         const size_t num_patterns = element_count(arg[0]);
         has_pattern = md_alloc(ctx->temp_alloc, MD_MAX(num_rings, 1));
         MD_MEMSET(has_pattern, 0, MD_MAX(num_rings, 1));
@@ -4349,7 +4349,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     const size_t num_queries = element_count(arg[0]);
-    const str_t* queries = as_string_arr(arg[0]);
+    const md_str_t* queries = as_string_arr(arg[0]);
     
     // Here we only pick the residues which are represented within the context (by having bits set)
     int32_t* res_indices = get_res_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
@@ -4522,15 +4522,15 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_system_t* sys = ctx->sys;
 
     const size_t num_str = element_count(arg[0]);
-    const str_t* str = as_string_arr(arg[0]);
+    const md_str_t* str = as_string_arr(arg[0]);
     md_array(int32_t) chains = get_chain_indices_in_context(sys, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
         MD_ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < md_array_size(chains); ++i) {
-            const str_t id = md_system_chain_id(sys, (size_t)chains[i]);
-            if (str_empty(id)) continue;
+            const md_str_t id = md_system_chain_id(sys, (size_t)chains[i]);
+            if (md_str_empty(id)) continue;
             for (size_t j = 0; j < num_str; ++j) {
                 if (match_query(str[j], id)) {
                     chain_set_bits(&b, sys, (size_t)chains[i]);
@@ -4549,29 +4549,29 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     for (size_t j = 0; j < num_str; ++j) {
         if (!validate_query(str[j])) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' is not a valid query", STR_ARG(str[j]));
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" MD_STR_FMT "' is not a valid query", MD_STR_ARG(str[j]));
             return -1;
         }
         bool match = false;
         for (size_t i = 0; i < md_array_size(chains) && !match; ++i) {
-            const str_t id = md_system_chain_id(sys, (size_t)chains[i]);
-            match = !str_empty(id) && match_query(str[j], id);
+            const md_str_t id = md_system_chain_id(sys, (size_t)chains[i]);
+            match = !md_str_empty(id) && match_query(str[j], id);
         }
         if (!match) {
             // The ids there are, when they are few enough to list
             md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
             size_t listed = 0;
             for (size_t i = 0; i < md_array_size(chains) && listed <= 16; ++i) {
-                const str_t id = md_system_chain_id(sys, (size_t)chains[i]);
-                if (str_empty(id)) continue;
-                md_str_writer_fmt(&sb, "%s'" STR_FMT "'", listed ? ", " : "", STR_ARG(id));
+                const md_str_t id = md_system_chain_id(sys, (size_t)chains[i]);
+                if (md_str_empty(id)) continue;
+                md_str_writer_fmt(&sb, "%s'" MD_STR_FMT "'", listed ? ", " : "", MD_STR_ARG(id));
                 listed += 1;
             }
             const char* where = ctx->mol_ctx ? " within the context" : "";
             if (listed == 0 || listed > 16) {
-                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' did not match any chain id%s", STR_ARG(str[j]), where);
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" MD_STR_FMT "' did not match any chain id%s", MD_STR_ARG(str[j]), where);
             } else {
-                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' did not match any chain id%s, they are " STR_FMT, STR_ARG(str[j]), where, STR_ARG(md_str_writer_to_str(&sb)));
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" MD_STR_FMT "' did not match any chain id%s, they are " MD_STR_FMT, MD_STR_ARG(str[j]), where, MD_STR_ARG(md_str_writer_to_str(&sb)));
             }
             return -1;
         }
@@ -7063,18 +7063,18 @@ typedef enum {
     COUNT_TYPE_COUNT
 } count_type_t;
 
-static const str_t count_type_str[] = {
-    STR_INIT(""),
-    STR_INIT("atom"),
-    STR_INIT("residue"),
-    STR_INIT("part"),
-    STR_INIT("chain"),
-    STR_INIT("molecule"),
+static const md_str_t count_type_str[] = {
+    MD_STR_INIT(""),
+    MD_STR_INIT("atom"),
+    MD_STR_INIT("residue"),
+    MD_STR_INIT("part"),
+    MD_STR_INIT("chain"),
+    MD_STR_INIT("molecule"),
 };
 
-count_type_t count_type_from_str(str_t str) {
+count_type_t count_type_from_str(md_str_t str) {
     for (size_t i = 0; i < COUNT_TYPE_COUNT; ++i) {
-        if (str_eq(str, count_type_str[i])) {
+        if (md_str_eq(str, count_type_str[i])) {
             return (count_type_t)i;
         }
     }
@@ -7168,14 +7168,14 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
         count_type_t type = count_type_from_str(as_string(arg[1]));
         as_float(*dst) = (float)internal_count(bf, len, type, ctx);
     } else {
-        str_t str = as_string(arg[1]);
+        md_str_t str = as_string(arg[1]);
         count_type_t type = count_type_from_str(str);
         if (type == COUNT_TYPE_UNKNOWN) {
             md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
             for (int i = 1; i < COUNT_TYPE_COUNT; ++i) {
-                md_str_writer_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
+                md_str_writer_fmt(&sb, "\""MD_STR_FMT"\"\n", MD_STR_ARG(count_type_str[i]));
             }
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_str_writer_to_str(&sb)));
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"MD_STR_FMT"', valid arguments are:\n"MD_STR_FMT, MD_STR_ARG(str), MD_STR_ARG(md_str_writer_to_str(&sb)));
             return -1;
         }
     }
@@ -7223,9 +7223,9 @@ static inline bool are_bitfields_equivalent(const md_bitset_t bitfields[], size_
                 return false;
             } else {
                 // Test the type labels
-                str_t lbl_idx = md_atom_name(&sys->atom, idx);
-                str_t lbl_ref = md_atom_name(&sys->atom, ref_idx);
-                if (!str_eq(lbl_idx, lbl_ref)) {
+                md_str_t lbl_idx = md_atom_name(&sys->atom, idx);
+                md_str_t lbl_ref = md_atom_name(&sys->atom, ref_idx);
+                if (!md_str_eq(lbl_idx, lbl_ref)) {
                     return false;
                 }
             }
@@ -8002,9 +8002,9 @@ static int _count_contact(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // count(c, unit): 'group' counts group pairs, 'atom' the particle pairs behind them
 static int _count_contact_unit(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    const str_t unit = as_string(arg[1]);
-    const bool atom  = str_eq(unit, STR_LIT("atom"));
-    const bool group = str_eq(unit, STR_LIT("group"));
+    const md_str_t unit = as_string(arg[1]);
+    const bool atom  = md_str_eq(unit, MD_STR_LIT("atom"));
+    const bool group = md_str_eq(unit, MD_STR_LIT("group"));
     if (!dst) {
         if (!atom && !group) {
             EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "count: the unit of a contact set is 'group' (pairs of groups) or 'atom' (pairs of particles)");
@@ -8117,9 +8117,9 @@ static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // frame, and the procedures below turn them into atoms and numbers.
 
 static const match_name_t bond_resonances[] = {
-    {STR_INIT("aromatic"),    MD_BOND_FLAG_AROMATIC},
-    {STR_INIT("delocalized"), MD_BOND_FLAG_DELOCALIZED},
-    {STR_INIT("localized"),   MD_BOND_FLAG_NONE},
+    {MD_STR_INIT("aromatic"),    MD_BOND_FLAG_AROMATIC},
+    {MD_STR_INIT("delocalized"), MD_BOND_FLAG_DELOCALIZED},
+    {MD_STR_INIT("localized"),   MD_BOND_FLAG_NONE},
 };
 
 // The persistent bonds of the system: the graph, then the non-covalent bonds (md_bond_data_t)
@@ -8270,9 +8270,9 @@ typedef struct bond_filter_t {
     uint32_t origin;            // Bits of 1 << md_bond_origin_t, 0: any
 } bond_filter_t;
 
-static bool bond_origin_lookup(int* out, str_t name) {
+static bool bond_origin_lookup(int* out, md_str_t name) {
     for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) {
-        if (str_eq_cstr(name, md_bond_origin_name((md_bond_origin_t)o))) {
+        if (md_str_eq_cstr(name, md_bond_origin_name((md_bond_origin_t)o))) {
             *out = o;
             return true;
         }
@@ -8280,16 +8280,16 @@ static bool bond_origin_lookup(int* out, str_t name) {
     return false;
 }
 
-static void bond_report_unknown_origin(eval_context_t* ctx, int arg, str_t name) {
+static void bond_report_unknown_origin(eval_context_t* ctx, int arg, md_str_t name) {
     match_name_t names[4];
-    for (int o = 0; o < 4; ++o) names[o] = (match_name_t){ str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)), o };
+    for (int o = 0; o < 4; ++o) names[o] = (match_name_t){ md_str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)), o };
     match_report_unknown(ctx, arg, "bond origin", names, MD_COUNTOF(names), name);
 }
 
 // The origins of a string argument as a mask, or false (reported when validating)
 static bool bond_origin_mask(uint32_t* out, data_t arg, int arg_idx, bool report, eval_context_t* ctx) {
     *out = 0;
-    const str_t* names = as_string_arr(arg);
+    const md_str_t* names = as_string_arr(arg);
     for (size_t i = 0; i < element_count(arg); ++i) {
         int o = 0;
         if (!bond_origin_lookup(&o, names[i])) {
@@ -8306,14 +8306,14 @@ static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report,
     if (!is_absent_type(arg[2].type)) {
         size_t count = 0;
         const md_bond_kind_name_t* table = md_bond_kind_names(&count);
-        const str_t* names = as_string_arr(arg[2]);
+        const md_str_t* names = as_string_arr(arg[2]);
         for (size_t i = 0; i < element_count(arg[2]); ++i) {
             size_t k = 0;
-            while (k < count && !str_eq_cstr(names[i], table[k].name)) ++k;
+            while (k < count && !md_str_eq_cstr(names[i], table[k].name)) ++k;
             if (k == count) {
                 if (report) {
                     match_name_t valid[16];
-                    for (size_t j = 0; j < count && j < MD_COUNTOF(valid); ++j) valid[j] = (match_name_t){ str_from_cstr(table[j].name), (int)j };
+                    for (size_t j = 0; j < count && j < MD_COUNTOF(valid); ++j) valid[j] = (match_name_t){ md_str_from_cstr(table[j].name), (int)j };
                     match_report_unknown(ctx, 2, "bond kind", valid, MD_MIN(count, MD_COUNTOF(valid)), names[i]);
                 }
                 return false;
@@ -8332,10 +8332,10 @@ static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report,
         f->order_hi = r.end;
     }
     if (!is_absent_type(arg[4].type)) {
-        const str_t* names = as_string_arr(arg[4]);
+        const md_str_t* names = as_string_arr(arg[4]);
         for (size_t i = 0; i < element_count(arg[4]); ++i) {
             size_t k = 0;
-            while (k < MD_COUNTOF(bond_resonances) && !str_eq(names[i], bond_resonances[k].name)) ++k;
+            while (k < MD_COUNTOF(bond_resonances) && !md_str_eq(names[i], bond_resonances[k].name)) ++k;
             if (k == MD_COUNTOF(bond_resonances)) {
                 if (report) match_report_unknown(ctx, 4, "bond resonance", bond_resonances, MD_COUNTOF(bond_resonances), names[i]);
                 return false;

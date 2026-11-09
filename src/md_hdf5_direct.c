@@ -454,7 +454,7 @@ static bool direct_decode(uint8_t* out, size_t out_bytes, const uint8_t* stored,
 }
 
 // The decoded bytes of chunk c, kept by io when there is one
-static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t chunk_bytes, str_t path, md_attribute_io_t* io, md_temp_scope_t temp) {
+static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t chunk_bytes, md_str_t path, md_attribute_io_t* io, md_temp_scope_t temp) {
     const md_hdf5_direct_chunk_t* e = &d->table[c];
     const uint64_t key = md_attribute_io_block_key(path, e->offset);
     bool hit = false;
@@ -475,7 +475,7 @@ static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t
         ok = stored && md_attribute_io_read_at(io, path, e->offset, stored, e->size) == e->size &&
              direct_decode(out, chunk_bytes, stored, e->size, d, e->filter_mask, &bad_checksum, temp);
         if (bad_checksum) {
-            MD_LOG_ERROR("HDF5: the chunk at %" PRId64 " of '" STR_FMT "' does not match its Fletcher-32 checksum: the file is damaged", e->offset, STR_ARG(path));
+            MD_LOG_ERROR("HDF5: the chunk at %" PRId64 " of '" MD_STR_FMT "' does not match its Fletcher-32 checksum: the file is damaged", e->offset, MD_STR_ARG(path));
         }
     }
     if (!ok) {
@@ -486,7 +486,7 @@ static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t
 }
 
 // Through HDF5, under the lock: the rows of axis 1 the range touches, then the range of them
-static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale) {
+static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, md_str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale) {
     size_t inner = 1;
     for (uint32_t i = 2; i < d->rank; ++i) inner *= (size_t)d->dims[i];
     hsize_t start[MD_HDF5_DIRECT_MAX_RANK] = {0}, extent[MD_HDF5_DIRECT_MAX_RANK] = {0};
@@ -504,7 +504,7 @@ static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, str_t path, 
     }
 
     char cpath[4096];
-    str_copy_to_char_buf(cpath, sizeof(cpath), path);
+    md_str_copy_to_char_buf(cpath, sizeof(cpath), path);
     md_temp_scope_t temp = md_temp_begin();
     float* buf = total == count ? out : md_temp_alloc_array(temp, float, total);
     bool ok = false;
@@ -544,7 +544,7 @@ static bool direct_next(size_t* k, const size_t* lo, const size_t* hi, uint32_t 
 
 // The chunked read: every chunk of the frame's slab whose elements reach into the range, and of each the runs along
 // the last axis that do. 1 when read, 0 when it failed, -1 when a chunk it needs was never written.
-static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, str_t path, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io, md_temp_scope_t temp) {
+static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, md_str_t path, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io, md_temp_scope_t temp) {
     const uint32_t r = d->rank;
     const uint32_t L = r - 1;           // the last axis
     const size_t last = first + count;  // exclusive
@@ -605,7 +605,7 @@ static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, str_t path
     return 1;
 }
 
-bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io) {
+bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, md_str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io) {
     if (!d || !out || frame >= d->dims[0] || count == 0) return false;
     const size_t row = direct_row_length(d);
     if (first + count > row) return false;

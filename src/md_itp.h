@@ -29,16 +29,16 @@ struct md_system_t;
 // field read here is ever a macro.
 
 typedef struct md_itp_atomtype_t {
-    str_t   name;
+    md_str_t   name;
     int32_t atomic_number;  // -1 when the line has no atomic number column
     float   mass;
     float   charge;
 } md_itp_atomtype_t;
 
 typedef struct md_itp_atom_t {
-    str_t   type;
-    str_t   name;
-    str_t   res_name;
+    md_str_t   type;
+    md_str_t   name;
+    md_str_t   res_name;
     int32_t res_nr;
     float   charge;         // Only meaningful when has_charge
     float   mass;           // Only meaningful when has_mass
@@ -47,7 +47,7 @@ typedef struct md_itp_atom_t {
 } md_itp_atom_t;
 
 typedef struct md_itp_moleculetype_t {
-    str_t   name;
+    md_str_t   name;
     int32_t nrexcl;
     md_itp_atom_t*  atoms;    // md_array
     // Connectivity in local, zero based atom indices, i < j, sorted and unique. The union of [ bonds ]
@@ -62,12 +62,12 @@ typedef struct md_itp_moleculetype_t {
 } md_itp_moleculetype_t;
 
 typedef struct md_itp_molecules_t {
-    str_t   name;
+    md_str_t   name;
     int32_t count;
 } md_itp_molecules_t;
 
 typedef struct md_itp_data_t {
-    str_t system_name;
+    md_str_t system_name;
     md_itp_atomtype_t*     atomtypes;      // md_array
     md_itp_moleculetype_t* moleculetypes;  // md_array
     md_itp_molecules_t*    molecules;      // md_array, empty for a plain .itp
@@ -82,8 +82,8 @@ typedef struct md_itp_instance_t {
 
 // Strings and arrays in 'data' are allocated from alloc. base_folder resolves #include in a string
 // (may be empty, in which case only absolute includes and $GMXLIB are tried).
-bool md_itp_data_parse_str (md_itp_data_t* data, str_t str, str_t base_folder, struct md_allocator_i* alloc);
-bool md_itp_data_parse_file(md_itp_data_t* data, str_t filename, struct md_allocator_i* alloc);
+bool md_itp_data_parse_str (md_itp_data_t* data, md_str_t str, md_str_t base_folder, struct md_allocator_i* alloc);
+bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, struct md_allocator_i* alloc);
 void md_itp_data_free(md_itp_data_t* data, struct md_allocator_i* alloc);
 
 // Places the topology's molecules onto the system's atoms.
@@ -111,7 +111,7 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 //   reference coordinates).
 // Returns false if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);
-bool md_itp_system_supplement_from_file(struct md_system_t* sys, str_t filename);
+bool md_itp_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
 
 #ifdef __cplusplus
 }

@@ -186,16 +186,16 @@ static bool n_conjugated_by_graph(const md_system_t* sys, size_t i) {
 }
 
 // Base of a nucleotide residue name: A, C, G, T or U, 0 if unknown. Covers A, DA, RA, DA5, DA3, ADE, ...
-static char nucleobase_letter(str_t name) {
-    name = str_trim(name);
+static char nucleobase_letter(md_str_t name) {
+    name = md_str_trim(name);
     if (name.len == 0) return 0;
     const char c0 = name.ptr[0];
     if (name.len >= 3) {
-        if (str_eq_cstr(name, "ADE")) return 'A';
-        if (str_eq_cstr(name, "CYT")) return 'C';
-        if (str_eq_cstr(name, "GUA")) return 'G';
-        if (str_eq_cstr(name, "THY")) return 'T';
-        if (str_eq_cstr(name, "URA") || str_eq_cstr(name, "URI")) return 'U';
+        if (md_str_eq_cstr(name, "ADE")) return 'A';
+        if (md_str_eq_cstr(name, "CYT")) return 'C';
+        if (md_str_eq_cstr(name, "GUA")) return 'G';
+        if (md_str_eq_cstr(name, "THY")) return 'T';
+        if (md_str_eq_cstr(name, "URA") || md_str_eq_cstr(name, "URI")) return 'U';
     }
     const char* bases = "ACGTU";
     if (name.len == 1 || (name.len <= 3 && name.ptr[1] >= '0' && name.ptr[1] <= '9')) {
@@ -212,25 +212,25 @@ static char nucleobase_letter(str_t name) {
 // Nitrogens of the standard residues whose lone pair is never free: the backbone N, the side chain N of Arg, Lys
 // (protonated by name), Asn, Gln and Trp, and the amino and glycosidic N of the nucleobases. These are decided by name
 // so that they come out right also without hydrogens, where the bond graph cannot tell an NH from a free lone pair.
-static bool standard_n_without_lone_pair(str_t res, str_t atom, bool amino_acid, bool nucleotide) {
-    res  = str_trim(res);
-    atom = str_trim(atom);
+static bool standard_n_without_lone_pair(md_str_t res, md_str_t atom, bool amino_acid, bool nucleotide) {
+    res  = md_str_trim(res);
+    atom = md_str_trim(atom);
     if (amino_acid) {
-        if (str_eq_cstr(atom, "N")) return true;
-        if (str_eq_cstr(res, "ARG")) return str_eq_cstr(atom, "NE") || str_eq_cstr(atom, "NH1") || str_eq_cstr(atom, "NH2");
-        if (str_eq_cstr(res, "LYS")) return str_eq_cstr(atom, "NZ");
-        if (str_eq_cstr(res, "ASN")) return str_eq_cstr(atom, "ND2");
-        if (str_eq_cstr(res, "GLN")) return str_eq_cstr(atom, "NE2");
-        if (str_eq_cstr(res, "TRP")) return str_eq_cstr(atom, "NE1");
+        if (md_str_eq_cstr(atom, "N")) return true;
+        if (md_str_eq_cstr(res, "ARG")) return md_str_eq_cstr(atom, "NE") || md_str_eq_cstr(atom, "NH1") || md_str_eq_cstr(atom, "NH2");
+        if (md_str_eq_cstr(res, "LYS")) return md_str_eq_cstr(atom, "NZ");
+        if (md_str_eq_cstr(res, "ASN")) return md_str_eq_cstr(atom, "ND2");
+        if (md_str_eq_cstr(res, "GLN")) return md_str_eq_cstr(atom, "NE2");
+        if (md_str_eq_cstr(res, "TRP")) return md_str_eq_cstr(atom, "NE1");
         return false;
     }
     if (nucleotide) {
         switch (nucleobase_letter(res)) {
-        case 'A': return str_eq_cstr(atom, "N9") || str_eq_cstr(atom, "N6");
-        case 'G': return str_eq_cstr(atom, "N9") || str_eq_cstr(atom, "N1") || str_eq_cstr(atom, "N2");
-        case 'C': return str_eq_cstr(atom, "N1") || str_eq_cstr(atom, "N4");
+        case 'A': return md_str_eq_cstr(atom, "N9") || md_str_eq_cstr(atom, "N6");
+        case 'G': return md_str_eq_cstr(atom, "N9") || md_str_eq_cstr(atom, "N1") || md_str_eq_cstr(atom, "N2");
+        case 'C': return md_str_eq_cstr(atom, "N1") || md_str_eq_cstr(atom, "N4");
         case 'T':
-        case 'U': return str_eq_cstr(atom, "N1") || str_eq_cstr(atom, "N3");
+        case 'U': return md_str_eq_cstr(atom, "N1") || md_str_eq_cstr(atom, "N3");
         default:  return false;
         }
     }
@@ -291,7 +291,7 @@ static uint8_t perceive_atom_role(uint8_t* out_cap, const md_system_t* sys, cons
             if (acc && !naive) {
                 const md_residue_idx_t residue = md_system_residue_find_by_atom_idx(sys, i);
                 if (residue >= 0) {
-                    const str_t res = md_system_residue_name(sys, residue);
+                    const md_str_t res = md_system_residue_name(sys, residue);
                     const md_residue_kind_t ck = md_system_residue_kind(sys, residue);
                     const bool aa  = ck == MD_RESIDUE_KIND_AMINO_ACID || md_util_resname_amino_acid(res);
                     const bool nuc = ck == MD_RESIDUE_KIND_NUCLEOTIDE || md_util_resname_nucleotide(res);

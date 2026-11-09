@@ -245,7 +245,7 @@ struct token_t {
     int col_end;
     int beg;
     int end;
-    str_t str;
+    md_str_t str;
 };
 
 struct frange_t {
@@ -339,7 +339,7 @@ struct data_t {
 
 // This is data stored directly in the nodes of the AST tree
 union value_t {
-    str_t           _string;
+    md_str_t           _string;
     float           _float;
     int             _int;
     frange_t        _frange;
@@ -349,7 +349,7 @@ union value_t {
 };
 
 struct identifier_t {
-    str_t       name;
+    md_str_t       name;
     ast_node_t* node;    // This is the node to evaluate in order to generate the data for the identifier
     data_t*     data;    // This is the data to fill in...
     const md_bitset_t* mol_ctx; // Dynamic identifiers: the context the value was evaluated in
@@ -358,7 +358,7 @@ struct identifier_t {
 };
 
 struct constant_t {
-    str_t     name;
+    md_str_t     name;
     float     value;
     md_unit_t unit;
 };
@@ -448,7 +448,7 @@ typedef struct eval_context_t {
 } eval_context_t;
 
 struct procedure_t {
-    str_t name;
+    md_str_t name;
     type_info_t return_type;
     size_t num_args;
     type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
@@ -474,14 +474,14 @@ typedef enum param_flags_t {
 } param_flags_t;
 
 typedef struct param_sig_t {
-    str_t       name;
+    md_str_t       name;
     uint32_t    flags;
     type_info_t def_type;   // PARAM_DEFAULT only, must be a scalar type
     value_t     def;        // PARAM_DEFAULT only
 } param_sig_t;
 
 typedef struct proc_sig_t {
-    str_t       proc;       // Procedure name, shared by all of its overloads
+    md_str_t       proc;       // Procedure name, shared by all of its overloads
     size_t      num_params;
     param_sig_t param[MAX_SUPPORTED_PROC_ARGS];
 } proc_sig_t;
@@ -508,7 +508,7 @@ typedef enum value_domain_t {
 } value_domain_t;
 
 typedef struct param_domain_t {
-    str_t           proc;   // Procedure name, shared by all of its overloads
+    md_str_t           proc;   // Procedure name, shared by all of its overloads
     uint32_t        param;  // Position of the parameter
     value_domain_t  domain;
 } param_domain_t;
@@ -516,15 +516,15 @@ typedef struct param_domain_t {
 // One attribute that attr() reads. Ids rather than pointers: an attribute pointer dies with the next
 // create or remove on the table, an id is stable for as long as the path exists.
 typedef struct attr_member_t {
-    str_t             path;     // absolute
-    str_t             label;    // what it is called as a member of a pattern's array (attr_member_labels), empty otherwise
+    md_str_t             path;     // absolute
+    md_str_t             label;    // what it is called as a member of a pattern's array (attr_member_labels), empty otherwise
     md_attribute_id_t id;       // what is read
     md_attribute_id_t axis_id;  // its frame axis
 } attr_member_t;
 
 // An argument of a procedure call as written in the source
 typedef struct named_arg_t {
-    str_t   name;   // Empty for a positional argument
+    md_str_t   name;   // Empty for a positional argument
     token_t token;  // Spans 'name=value' for a named argument
 } named_arg_t;
 
@@ -546,7 +546,7 @@ struct ast_node_t {
     uint32_t            proc_flags; // Additional flags used for e.g. swapping arguments which may be required for the procedure call
 
     // IDENTIFIER
-    str_t               ident;      // Identifier reference (also used for procedure name lookup)
+    md_str_t               ident;      // Identifier reference (also used for procedure name lookup)
 
     // ARRAY SUBSCRIPT
     irange_t            subscript_ranges[MAX_NUM_DIMS]; // The ranges for the array subscript operator
@@ -555,7 +555,7 @@ struct ast_node_t {
     // ATTRIBUTE
     // Resolved by the static check. A path reads one attribute, a pattern ('*' in it) every one it
     // matches, in path order, as an array over them (also when that is one): its members.
-    str_t               attr_path;      // the resolved, absolute path, or the pattern as it was given
+    md_str_t               attr_path;      // the resolved, absolute path, or the pattern as it was given
     attr_member_t*      attr_members;   // md_array: what is read
     bool                attr_pattern;
     md_attribute_id_t   run_axis_id;    // the frame axis of the run being evaluated
@@ -573,7 +573,7 @@ struct ast_node_t {
 };
 
 typedef struct tokenizer_t {
-    str_t   str;
+    md_str_t   str;
     int     cur;
     int     line;
     int     line_offset;  // offset to the current line
@@ -595,7 +595,7 @@ struct md_script_ir_t {
     // We could use a direct raw interface here to save some function pointer indirections
     struct md_allocator_i *arena;
 
-    str_t str;      // Original string containing the 'source'
+    md_str_t str;      // Original string containing the 'source'
     uint32_t flags; // special flags which have been assigned during compile time
     
     md_array(ast_node_t*) nodes;                        // All nodes in the AST tree
@@ -607,21 +607,21 @@ struct md_script_ir_t {
     // These form the basis for 'static' common subexpression elimination
     md_array(data_t)    static_expression_data;         // Static expressions which are constant and evaluated during static analysis.
     md_array(uint64_t)  static_expression_hash;         // hash of expression
-    md_array(str_t)     static_expression_str;          // string for debugging
+    md_array(md_str_t)     static_expression_str;          // string for debugging
     
     md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
     md_array(contact_query_entry_t) contact_queries;    // Prepared contacts() call sites, allocated in the arena
 
     md_array(md_script_property_flags_t) property_flags;    // List of property infos
     md_array(const ast_node_t*)          property_nodes;    // List of property nodes;
-    md_array(str_t)                      property_names;    // List of property names
+    md_array(md_str_t)                      property_names;    // List of property names
     md_array(uint64_t)                   property_fingerprints; // What each property is computed from (see md_script_ir_property_fingerprint)
 
     // These are the final products which can be read through the public part of the structure
     md_array(md_log_token_t)        warnings;
     md_array(md_log_token_t)        errors;
     md_array(md_script_vis_token_t) vis_tokens;
-    md_array(str_t)                 identifier_names;
+    md_array(md_str_t)                 identifier_names;
 
     const char* stage;      // This is just to supply a context for the errors i.e. in which compilation stage the error occured
     bool record_log;        // This is to toggle if new errors should be registered... We don't want to flood the errors
@@ -636,7 +636,7 @@ struct md_script_ir_t {
 // evaluation keeps while it accumulates - the observed extremes and the running mean counter.
 // Everything a consumer reads is in the table under script/<ident>; see md_script_eval_attributes.
 typedef struct eval_property_t {
-    str_t                      ident;
+    md_str_t                      ident;
     md_script_property_flags_t kind;        // exactly one of TEMPORAL, DISTRIBUTION or VOLUME
 
     uint32_t count;         // values per frame (temporal), bins (distribution), voxels (volume)
@@ -1035,7 +1035,7 @@ static size_t base_type_element_byte_size(base_type_t type) {
     case TYPE_FRANGE:   return sizeof(frange_t);
     case TYPE_IRANGE:   return sizeof(irange_t);
     case TYPE_ATOMSET: return sizeof(md_bitset_t);
-    case TYPE_STRING:   return sizeof(str_t);
+    case TYPE_STRING:   return sizeof(md_str_t);
     case TYPE_CONTACT:  return sizeof(md_contact_set_t);
     case TYPE_DISTRIBUTION: return sizeof(float);
     case TYPE_PLANE:    return sizeof(plane_t);
@@ -1501,8 +1501,8 @@ static token_t concat_tokens(token_t a, token_t b) {
     t.beg = MD_MIN(a.beg, b.beg);
     t.end = MD_MAX(a.end, b.end);
 
-    t.str.ptr = MD_MIN(str_beg(a.str), str_beg(b.str));
-    t.str.len = MD_MAX(str_end(a.str), str_end(b.str)) - str_beg(t.str);
+    t.str.ptr = MD_MIN(md_str_beg(a.str), md_str_beg(b.str));
+    t.str.len = MD_MAX(md_str_end(a.str), md_str_end(b.str)) - md_str_beg(t.str);
     return t;
 }
 
@@ -1532,7 +1532,7 @@ static const char* get_value_type_str(base_type_t type) {
 #define LOG_WARNING_STR(ir, tok, str)   create_log_token_str(LOG_LEVEL_WARNING, ir, tok, str)
 #define LOG_ERROR_STR(ir, tok, str)     create_log_token_str(LOG_LEVEL_ERROR, ir, tok, str)
 
-static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t token, str_t str) {
+static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t token, md_str_t str) {
     MD_ASSERT(ir);
     if (!ir->record_log) return;
 
@@ -1545,7 +1545,7 @@ static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t 
         // The arguments of a procedure are checked again once it is resolved: a warning about one is made twice
         for (size_t i = 0; i < md_array_size(ir->warnings); ++i) {
             const md_log_token_t* w = &ir->warnings[i];
-            if (w->range.beg == token.beg && w->range.end == token.end && str_eq(w->text, str)) return;
+            if (w->range.beg == token.beg && w->range.end == token.end && md_str_eq(w->text, str)) return;
         }
     }
 
@@ -1554,7 +1554,7 @@ static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t 
             .beg = token.beg,
             .end = token.end,
         },
-        .text = str_copy(str, ir->arena),
+        .text = md_str_copy(str, ir->arena),
     };
 
     switch (level) {
@@ -1578,14 +1578,14 @@ static void create_log_token_fmt(log_level_t level, md_script_ir_t* ir, token_t 
 
     len = MD_MAX(len, 0);
 
-    str_t str = {buf, len};
+    md_str_t str = {buf, len};
     create_log_token_str(level, ir, token, str);
 }
 
 // Diagnostics raised where an eval_context_t is at hand: in the static checks of a compilation, and in the
 // procedures, which run in compilations and evaluations alike. A compilation records them in its IR,
 // which is how they reach the editor. An evaluation does not write to the IR: they go to its log.
-static void eval_log_str(log_level_t level, const eval_context_t* ctx, token_t token, str_t str) {
+static void eval_log_str(log_level_t level, const eval_context_t* ctx, token_t token, md_str_t str) {
     MD_ASSERT(ctx);
     if (ctx->compile_ir) {
         create_log_token_str(level, ctx->compile_ir, token, str);
@@ -1594,7 +1594,7 @@ static void eval_log_str(log_level_t level, const eval_context_t* ctx, token_t t
 
     eval_log_t* log = ctx->log;
     if (!log) {
-        MD_LOG_DEBUG("Script evaluation %s: "STR_FMT, level >= LOG_LEVEL_ERROR ? "error" : "warning", STR_ARG(str));
+        MD_LOG_DEBUG("Script evaluation %s: "MD_STR_FMT, level >= LOG_LEVEL_ERROR ? "error" : "warning", MD_STR_ARG(str));
         return;
     }
     if (log->full) return;
@@ -1608,7 +1608,7 @@ static void eval_log_str(log_level_t level, const eval_context_t* ctx, token_t t
             .beg = token.beg,
             .end = token.end,
         },
-        .text = str_copy(str, log->alloc),
+        .text = md_str_copy(str, log->alloc),
     };
     if (level >= LOG_LEVEL_ERROR) {
         md_array_push(log->errors, log_tok, log->alloc);
@@ -1626,7 +1626,7 @@ static void eval_log_fmt(log_level_t level, const eval_context_t* ctx, token_t t
 
     len = MD_CLAMP(len, 0, (int)MD_COUNTOF(buf) - 1);
 
-    str_t str = {buf, (size_t)len};
+    md_str_t str = {buf, (size_t)len};
     eval_log_str(level, ctx, token, str);
 }
 
@@ -1650,7 +1650,7 @@ static void internal_error(const eval_context_t* ctx, token_t tok, const char* w
 // character for itself, case and all. Several '*' anywhere: "C*", "*A", "*A*", "C*A", "C*1*". What a '*' takes is
 // tried shortest first and widened when the rest does not match, which backtracks to the last '*' only: an earlier
 // one never needs more, since the later one can take whatever it would have.
-static bool glob_match(str_t pattern, str_t str) {
+static bool glob_match(md_str_t pattern, md_str_t str) {
     size_t p = 0, s = 0;
     size_t star = SIZE_MAX;     // the last '*' seen in the pattern
     size_t star_s = 0;          // where in str what it takes ends, so far
@@ -1673,49 +1673,49 @@ static bool glob_match(str_t pattern, str_t str) {
     return p == pattern.len;
 }
 
-static inline bool str_has_glob(str_t str) {
-    return str_find_char(NULL, str, '*');
+static inline bool str_has_glob(md_str_t str) {
+    return md_str_find_char(NULL, str, '*');
 }
 
 // Whether path matches pattern segment by segment: as many segments, each matching its own. A '*' does not reach
 // across a '/', so 'edr/*' is what the group edr holds and not what the groups below it hold.
-static bool glob_match_path(str_t pattern, str_t path) {
+static bool glob_match_path(md_str_t pattern, md_str_t path) {
     for (;;) {
         size_t pl = 0, sl = 0;
-        const bool p_more = str_find_char(&pl, pattern, '/');
-        const bool s_more = str_find_char(&sl, path, '/');
+        const bool p_more = md_str_find_char(&pl, pattern, '/');
+        const bool s_more = md_str_find_char(&sl, path, '/');
         if (p_more != s_more) return false;
         if (!p_more) return glob_match(pattern, path);
-        if (!glob_match(str_substr(pattern, 0, pl), str_substr(path, 0, sl))) return false;
-        pattern = str_substr(pattern, pl + 1, SIZE_MAX);
-        path    = str_substr(path, sl + 1, SIZE_MAX);
+        if (!glob_match(md_str_substr(pattern, 0, pl), md_str_substr(path, 0, sl))) return false;
+        pattern = md_str_substr(pattern, pl + 1, SIZE_MAX);
+        path    = md_str_substr(path, sl + 1, SIZE_MAX);
     }
 }
 
 // The segments of path that a '*' of pattern (which it matches, glob_match_path) stood in, joined by '/': the part of
 // what a pattern matches that differs from one match to the next. "coul_sr_sol" of "edr/coul_sr_*".
-static str_t glob_varying_segments(str_t pattern, str_t path, md_allocator_i* alloc) {
+static md_str_t glob_varying_segments(md_str_t pattern, md_str_t path, md_allocator_i* alloc) {
     md_str_writer_t w = md_str_writer_create(alloc);
     for (;;) {
         size_t pl = 0, sl = 0;
-        const bool more = str_find_char(&pl, pattern, '/') && str_find_char(&sl, path, '/');
-        const str_t p_seg = more ? str_substr(pattern, 0, pl) : pattern;
-        const str_t s_seg = more ? str_substr(path, 0, sl) : path;
+        const bool more = md_str_find_char(&pl, pattern, '/') && md_str_find_char(&sl, path, '/');
+        const md_str_t p_seg = more ? md_str_substr(pattern, 0, pl) : pattern;
+        const md_str_t s_seg = more ? md_str_substr(path, 0, sl) : path;
         if (str_has_glob(p_seg)) {
             if (md_str_writer_len(&w)) md_str_writer_push_char(&w, '/');
             md_str_writer_push_str(&w, s_seg);
         }
         if (!more) break;
-        pattern = str_substr(pattern, pl + 1, SIZE_MAX);
-        path    = str_substr(path, sl + 1, SIZE_MAX);
+        pattern = md_str_substr(pattern, pl + 1, SIZE_MAX);
+        path    = md_str_substr(path, sl + 1, SIZE_MAX);
     }
     return md_str_writer_to_str(&w);
 }
 
 // The last segment of a path
-static str_t path_leaf(str_t path) {
+static md_str_t path_leaf(md_str_t path) {
     size_t loc;
-    return str_rfind_char(&loc, path, '/') ? str_substr(path, loc + 1, SIZE_MAX) : path;
+    return md_str_rfind_char(&loc, path, '/') ? md_str_substr(path, loc + 1, SIZE_MAX) : path;
 }
 
 // Include all procedures, operators and defines
@@ -1755,19 +1755,19 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
     return type == TYPE_BOOL || type == TYPE_ATOMSET || type == TYPE_BONDSET;
 }
 
-static inline bool is_identifier_static_procedure(str_t ident) {
-    if (str_eq(ident, STR_LIT("attr"))) {
+static inline bool is_identifier_static_procedure(md_str_t ident) {
+    if (md_str_eq(ident, MD_STR_LIT("attr"))) {
         return true;
     }
-    else if (str_eq(ident, STR_LIT("flatten"))) {
+    else if (md_str_eq(ident, MD_STR_LIT("flatten"))) {
         return true;
     }
     return false;
 }
 
-static inline bool is_identifier_procedure(str_t ident) {
+static inline bool is_identifier_procedure(md_str_t ident) {
     for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
-        if (str_eq(ident, procedures[i].name)) {
+        if (md_str_eq(ident, procedures[i].name)) {
             return true;
         }
     }
@@ -1902,12 +1902,12 @@ static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_type
     return cost;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], size_t num_arg_types, procedure_t candidates[], size_t num_cantidates, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(md_str_t name, const type_info_t arg_types[], size_t num_arg_types, procedure_t candidates[], size_t num_cantidates, bool allow_implicit_conversions) {
     procedure_match_result_t res = {0};
 
     for (size_t i = 0; i < num_cantidates; ++i) {
         procedure_t* proc = &candidates[i];
-        if (str_eq(proc->name, name)) {
+        if (md_str_eq(proc->name, name)) {
             if (num_arg_types == proc->num_args) {
                 if (compare_type_info_array(arg_types, proc->arg_type, num_arg_types)) {
                     res.success = true;
@@ -1940,7 +1940,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
 
         for (size_t i = 0; i < num_cantidates; ++i) {
             procedure_t* proc = &candidates[i];
-            if (str_eq(proc->name, name)) {
+            if (md_str_eq(proc->name, name)) {
                 if (num_arg_types == proc->num_args) {
                     // Same name and same number of args...
 
@@ -1976,30 +1976,30 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
     return res;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types(str_t name, const type_info_t arg_types[], size_t num_arg_types, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types(md_str_t name, const type_info_t arg_types[], size_t num_arg_types, bool allow_implicit_conversions) {
     return find_procedure_supporting_arg_types_in_candidates(name, arg_types, num_arg_types, procedures, MD_COUNTOF(procedures), allow_implicit_conversions);
 }
 
 static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op, const type_info_t arg_types[], size_t num_arg_types, bool allow_implicit_conversions) {
     // Map marker type to string which we use to identify operator procedures
-    str_t name = {0};
+    md_str_t name = {0};
     switch(op) {
-    case AST_ADD: name = STR_LIT("+");   break;
+    case AST_ADD: name = MD_STR_LIT("+");   break;
     case AST_UNARY_NEG:
-    case AST_SUB: name = STR_LIT("-");   break;
-    case AST_MUL: name = STR_LIT("*");   break;
-    case AST_DIV: name = STR_LIT("/");   break;
-    case AST_INT_DIV: name = STR_LIT("//"); break;
-    case AST_AND: name = STR_LIT("and"); break;
-    case AST_OR:  name = STR_LIT("or");  break;
-    case AST_XOR: name = STR_LIT("xor");  break;
-    case AST_NOT: name = STR_LIT("not"); break;
-    case AST_EQ:  name = STR_LIT("==");  break;
-    case AST_NE:  name = STR_LIT("!=");  break;
-    case AST_LT:  name = STR_LIT("<");   break;
-    case AST_GT:  name = STR_LIT(">");   break;
-    case AST_LE:  name = STR_LIT("<=");  break;
-    case AST_GE:  name = STR_LIT(">=");  break;
+    case AST_SUB: name = MD_STR_LIT("-");   break;
+    case AST_MUL: name = MD_STR_LIT("*");   break;
+    case AST_DIV: name = MD_STR_LIT("/");   break;
+    case AST_INT_DIV: name = MD_STR_LIT("//"); break;
+    case AST_AND: name = MD_STR_LIT("and"); break;
+    case AST_OR:  name = MD_STR_LIT("or");  break;
+    case AST_XOR: name = MD_STR_LIT("xor");  break;
+    case AST_NOT: name = MD_STR_LIT("not"); break;
+    case AST_EQ:  name = MD_STR_LIT("==");  break;
+    case AST_NE:  name = MD_STR_LIT("!=");  break;
+    case AST_LT:  name = MD_STR_LIT("<");   break;
+    case AST_GT:  name = MD_STR_LIT(">");   break;
+    case AST_LE:  name = MD_STR_LIT("<=");  break;
+    case AST_GE:  name = MD_STR_LIT(">=");  break;
 
     default:
         MD_ASSERT(false);
@@ -2008,33 +2008,33 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     return find_procedure_supporting_arg_types_in_candidates(name, arg_types, num_arg_types, operators, MD_COUNTOF(operators), allow_implicit_conversions);
 }
 
-static constant_t* find_constant(str_t name) {
+static constant_t* find_constant(md_str_t name) {
     for (size_t i = 0; i < MD_COUNTOF(constants); ++i) {
-        if (str_eq(constants[i].name, name)) {
+        if (md_str_eq(constants[i].name, name)) {
             return &constants[i];
         }
     }
     return NULL;
 }
 
-static identifier_t* find_identifier(str_t name, identifier_t* identifiers, size_t count) {
+static identifier_t* find_identifier(md_str_t name, identifier_t* identifiers, size_t count) {
     for (size_t i = 0; i < count; ++i) {
-        if (str_eq(name, identifiers[i].name)) {
+        if (md_str_eq(name, identifiers[i].name)) {
             return &identifiers[i];
         }
     }
     return NULL;
 }
 
-static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
+static identifier_t* get_identifier(md_script_ir_t* ir, md_str_t name) {
     return find_identifier(name, ir->identifiers, md_array_size(ir->identifiers));
 }
 
 // The same lookup for an evaluation, which only reads the IR
-static const identifier_t* find_ir_identifier(const md_script_ir_t* ir, str_t name) {
+static const identifier_t* find_ir_identifier(const md_script_ir_t* ir, md_str_t name) {
     if (ir) {
         for (size_t i = 0; i < md_array_size(ir->identifiers); ++i) {
-            if (str_eq(name, ir->identifiers[i].name)) {
+            if (md_str_eq(name, ir->identifiers[i].name)) {
                 return &ir->identifiers[i];
             }
         }
@@ -2042,7 +2042,7 @@ static const identifier_t* find_ir_identifier(const md_script_ir_t* ir, str_t na
     return NULL;
 }
 
-static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
+static identifier_t* create_identifier(md_script_ir_t* ir, md_str_t name) {
     if (find_constant(name)) {
         return NULL;
     }
@@ -2052,7 +2052,7 @@ static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
     }
 
     identifier_t ident = {
-        .name = str_copy(name, ir->arena),
+        .name = md_str_copy(name, ir->arena),
         .node = 0,
         .data = 0,
     };
@@ -2067,7 +2067,7 @@ static inline bool is_token_type_comparison(token_type_t type) {
 
 static bool expect_token_type(md_script_ir_t* ir, token_t token, token_type_t type) {
     if (token.type != type) {
-        LOG_ERROR(ir, token, "Unexpected token '"STR_FMT"', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
+        LOG_ERROR(ir, token, "Unexpected token '"MD_STR_FMT"', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
         return false;
     }
     return true;
@@ -2135,29 +2135,29 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             // Keywords
             const int n = j - i;
             if (n == 2) {
-                str_t str = {buf+i, 2};
-                if (str_eq(str, STR_LIT("or"))) {
+                md_str_t str = {buf+i, 2};
+                if (md_str_eq(str, MD_STR_LIT("or"))) {
                     token.type = TOKEN_OR;
                 }
-                else if (str_eq(str, STR_LIT("in"))) {
+                else if (md_str_eq(str, MD_STR_LIT("in"))) {
                     token.type = TOKEN_IN;
                 }
-                else if (str_eq(str, STR_LIT("of"))) {
+                else if (md_str_eq(str, MD_STR_LIT("of"))) {
                     token.type = TOKEN_OF;
                 }
             }
             else if (n == 3) {
-                str_t str = {buf+i, 3};
-                if (str_eq(str, STR_LIT("and"))) {
+                md_str_t str = {buf+i, 3};
+                if (md_str_eq(str, MD_STR_LIT("and"))) {
                     token.type = TOKEN_AND;
                 }
-                else if (str_eq(str, STR_LIT("not"))) {
+                else if (md_str_eq(str, MD_STR_LIT("not"))) {
                     token.type = TOKEN_NOT;
                 }
-                else if (str_eq(str, STR_LIT("xor"))) {
+                else if (md_str_eq(str, MD_STR_LIT("xor"))) {
                     token.type = TOKEN_XOR;
                 }
-                else if (str_eq(str, STR_LIT("out"))) {
+                else if (md_str_eq(str, MD_STR_LIT("out"))) {
                     token.type = TOKEN_OUT;
                 }
             }
@@ -2221,9 +2221,9 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             
             // Match buf + i against the longest accepted symbol that we can find.
             if (n == 2) {
-                str_t str = {buf + i, 2};
+                md_str_t str = {buf + i, 2};
                 for (size_t k = 0; k < MD_COUNTOF(symbols_2); ++k) {
-                    if (str_eq(str, (str_t){symbols_2[k].str, 2})) {
+                    if (md_str_eq(str, (md_str_t){symbols_2[k].str, 2})) {
                         token.type = symbols_2[k].type;
                         j = i + 2;
                         break;
@@ -2302,7 +2302,7 @@ end:
     return token;
 }
 
-static tokenizer_t tokenizer_init(str_t str) {
+static tokenizer_t tokenizer_init(md_str_t str) {
     tokenizer_t tokenizer = {
         .str = str,
         .line = 1
@@ -2438,8 +2438,8 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
             }
             case TYPE_STRING:
             {
-                str_t str = *(str_t*)data.ptr;
-                PRINT(STR_FMT, STR_ARG(str));
+                md_str_t str = *(md_str_t*)data.ptr;
+                PRINT(MD_STR_FMT, MD_STR_ARG(str));
                 break;
             }
             case TYPE_DISTRIBUTION:
@@ -2706,7 +2706,7 @@ static void print_label(md_file_t  file, const ast_node_t* node) {
         break;
     case AST_PROC_CALL:
         if (node->proc) {
-            md_file_printf(file, ""STR_FMT"", (int)node->proc->name.len, node->proc->name.ptr);
+            md_file_printf(file, ""MD_STR_FMT"", (int)node->proc->name.len, node->proc->name.ptr);
         }
         else {
             md_file_printf(file, "NULL");
@@ -2722,7 +2722,7 @@ static void print_label(md_file_t  file, const ast_node_t* node) {
         md_file_printf(file, "cast (%s) ->", buf);
         break;
     case AST_IDENTIFIER:
-        md_file_printf(file, ""STR_FMT"", (int)node->ident.len, node->ident.ptr);
+        md_file_printf(file, ""MD_STR_FMT"", (int)node->ident.len, node->ident.ptr);
         md_file_printf(file, " (identifier)");
         break;
     case AST_ARRAY:
@@ -2795,7 +2795,7 @@ static void print_node(md_file_t  file, const ast_node_t* node, int depth) {
     md_file_printf(file, "},\n");
 }
 
-static void print_expr(md_file_t  file, str_t str) {
+static void print_expr(md_file_t  file, md_str_t str) {
     // We need to add escape character to quotation marks, since they are not representable within a json string...
     char buf[1024] = {0};
     int len = 0;
@@ -2815,10 +2815,10 @@ static void print_expr(md_file_t  file, str_t str) {
             buf[len++] = *c;
         }
     }
-    md_file_printf(file, "\""STR_FMT"\"\n", len, buf);
+    md_file_printf(file, "\""MD_STR_FMT"\"\n", len, buf);
 }
 
-static void ast_to_json(const ast_node_t* node, str_t filename) {
+static void ast_to_json(const ast_node_t* node, md_str_t filename) {
     if (!node) return;
     md_file_t file = {0};
     if (md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -2887,12 +2887,12 @@ static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t*
             token_t name_tok = tokenizer_consume_next(ctx->tokenizer);
             tokenizer_consume_next(ctx->tokenizer); // '='
             if (!out_named) {
-                LOG_ERROR(ctx->ir, name_tok, "Named arguments ('"STR_FMT"=') are only valid in procedure calls", STR_ARG(name_tok.str));
+                LOG_ERROR(ctx->ir, name_tok, "Named arguments ('"MD_STR_FMT"=') are only valid in procedure calls", MD_STR_ARG(name_tok.str));
                 return NULL;
             }
             for (size_t i = 0; i < md_array_size(named); ++i) {
-                if (str_eq(named[i].name, name_tok.str)) {
-                    LOG_ERROR(ctx->ir, name_tok, "The argument '"STR_FMT"' is given more than once", STR_ARG(name_tok.str));
+                if (md_str_eq(named[i].name, name_tok.str)) {
+                    LOG_ERROR(ctx->ir, name_tok, "The argument '"MD_STR_FMT"' is given more than once", MD_STR_ARG(name_tok.str));
                     return NULL;
                 }
             }
@@ -2909,7 +2909,7 @@ static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t*
         next = tokenizer_peek_next(ctx->tokenizer);
         if (arg && (next.type == ',' || next.type == token_type)) {
             md_array_push(args, arg, ctx->temp_alloc);
-            if (!str_empty(arg_name.name)) {
+            if (!md_str_empty(arg_name.name)) {
                 arg_name.token = concat_tokens(arg_name.token, arg->token);
             }
             md_array_push(named, arg_name, ctx->temp_alloc);
@@ -2942,7 +2942,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
         next = tokenizer_consume_next(ctx->tokenizer);
         if (expect_token_type(ctx->ir, next, ')')) {
             node = create_node(ctx->ir, AST_PROC_CALL, token);
-            node->ident = str_copy(token.str, ctx->ir->arena);
+            node->ident = md_str_copy(token.str, ctx->ir->arena);
             const size_t num_args = md_array_size(args);
             if (num_args) {
                 md_array_push_array(node->children, args, num_args, ctx->ir->arena);
@@ -2958,7 +2958,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
         }
     } else {
         node = create_node(ctx->ir, AST_PROC_CALL, token);
-        node->ident = str_copy(token.str, ctx->ir->arena);
+        node->ident = md_str_copy(token.str, ctx->ir->arena);
     }
 
     return node;
@@ -2968,8 +2968,8 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
 // bound against a signature. Named arguments would silently be ignored there, so they are rejected up front.
 static bool reject_named_arguments(parse_context_t* ctx, const ast_node_t* node) {
     for (size_t i = 0; i < md_array_size(node->named_args); ++i) {
-        if (!str_empty(node->named_args[i].name)) {
-            LOG_ERROR(ctx->ir, node->named_args[i].token, "'"STR_FMT"' does not accept named arguments", STR_ARG(node->ident));
+        if (!md_str_empty(node->named_args[i].name)) {
+            LOG_ERROR(ctx->ir, node->named_args[i].token, "'"MD_STR_FMT"' does not accept named arguments", MD_STR_ARG(node->ident));
             return false;
         }
     }
@@ -2985,27 +2985,27 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         return NULL;
     }
     
-    const str_t ident = token.str;
+    const md_str_t ident = token.str;
     ast_node_t* node = 0;
     constant_t* c = 0;
     
-    if (str_eq(ident, STR_LIT("import"))) {
+    if (md_str_eq(ident, MD_STR_LIT("import"))) {
         // Gone: data from files is loaded into the system's attributes and read with attr().
         LOG_ERROR(ctx->ir, token, "import() has been removed: load the file alongside the trajectory, and read what it holds with attr(\"<path>\")");
         return NULL;
-    } else if (str_eq(ident, STR_LIT("attr"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("attr"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
             if (!reject_named_arguments(ctx, node)) return NULL;
             node->type = AST_ATTRIBUTE;
         }
-    } else if (str_eq(ident, STR_LIT("flatten"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("flatten"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
             if (!reject_named_arguments(ctx, node)) return NULL;
             node->type = AST_FLATTEN;
         }
-    } else if (str_eq(ident, STR_LIT("transpose"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("transpose"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
             if (!reject_named_arguments(ctx, node)) return NULL;
@@ -3023,13 +3023,13 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         node->data.size = sizeof(float);
         node->data.type = (type_info_t)TI_FLOAT;
         node->flags |= FLAG_CONSTANT;
-        node->ident = str_copy(ident, ctx->ir->arena);
+        node->ident = md_str_copy(ident, ctx->ir->arena);
     } else {
         // Identifier
         token_t next = tokenizer_peek_next(ctx->tokenizer);
         if (next.type == '(') {
             // This is an intended procedure call, but has no matching procedure by that name
-            LOG_ERROR(ctx->ir, token, "Undefined procedure '"STR_FMT"'", ident.len, ident.ptr);
+            LOG_ERROR(ctx->ir, token, "Undefined procedure '"MD_STR_FMT"'", ident.len, ident.ptr);
 
             token_type_t token_types[] = {'(', ')', ';'};
             int paren_bal = 0;
@@ -3052,7 +3052,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         } else {
             // Identifier reference, resolve this later in the static check
             node = create_node(ctx->ir, AST_IDENTIFIER, token);
-            node->ident = str_copy(ident, ctx->ir->arena);
+            node->ident = md_str_copy(ident, ctx->ir->arena);
         }
     }
     return node;
@@ -3143,7 +3143,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
     
     ast_node_t* lhs = ctx->node;
     if (!lhs) {
-        LOG_ERROR(ctx->ir, token, "Invalid comparison, left operand of '"STR_FMT"' is missing.", STR_ARG(token.str));
+        LOG_ERROR(ctx->ir, token, "Invalid comparison, left operand of '"MD_STR_FMT"' is missing.", MD_STR_ARG(token.str));
         return NULL;
     }
 
@@ -3152,7 +3152,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
     ast_node_t* node = 0;
 
     if (!rhs) {
-        LOG_ERROR(ctx->ir, token, "Invalid comparison, right operand of '"STR_FMT"' is missing.", STR_ARG(token.str));
+        LOG_ERROR(ctx->ir, token, "Invalid comparison, right operand of '"MD_STR_FMT"' is missing.", MD_STR_ARG(token.str));
     } else {
         ast_type_t type = 0;
         switch(token.type) {
@@ -3180,7 +3180,7 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     // Only '-' has a unary form. Any other operator without a left operand, e.g. the '*' of 'f(1, *2)', would get a
     // NULL child, which nothing after the parser expects
     if (!lhs && token.type != '-') {
-        LOG_ERROR(ctx->ir, token, "Invalid arithmetic expression, left operand of '"STR_FMT"' is missing.", STR_ARG(token.str));
+        LOG_ERROR(ctx->ir, token, "Invalid arithmetic expression, left operand of '"MD_STR_FMT"' is missing.", MD_STR_ARG(token.str));
         return NULL;
     }
 
@@ -3299,7 +3299,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     }
     else if (token.type == TOKEN_STRING) {
         node->data.type = (type_info_t)TI_STRING;
-        node->value._string = str_copy(str_substr(token.str, 1, MD_MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
+        node->value._string = md_str_copy(md_str_substr(token.str, 1, MD_MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
     }
     else {
         MD_ASSERT(false);
@@ -3526,7 +3526,7 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             tokenizer_consume_next(ctx->tokenizer);
             return NULL;
         default:
-            LOG_ERROR(ctx->ir, token, "Unexpected token: '"STR_FMT"'", token.str.len, token.str.ptr);
+            LOG_ERROR(ctx->ir, token, "Unexpected token: '"MD_STR_FMT"'", token.str.len, token.str.ptr);
             return NULL;
         }
         if (!ctx->node) goto done;
@@ -3741,20 +3741,20 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
         const md_attribute_t* attr    = md_attributes_get(attributes, member->id);
         const md_attribute_t* attr_ax = md_attributes_get(attributes, member->axis_id);
         if (!attr || !attr_ax || !run_ax) {
-            MD_LOG_ERROR("attr: '"STR_FMT"' is no longer in the system", STR_ARG(member->path));
+            MD_LOG_ERROR("attr: '"MD_STR_FMT"' is no longer in the system", MD_STR_ARG(member->path));
             return false;
         }
 
         size_t row;
         if (!md_attribute_axis_map(&row, run_ax, frame, attr_ax)) {
-            MD_LOG_ERROR("attr: '"STR_FMT"' has no value at frame %zu", STR_ARG(member->path), frame);
+            MD_LOG_ERROR("attr: '"MD_STR_FMT"' has no value at frame %zu", MD_STR_ARG(member->path), frame);
             return false;
         }
 
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
         const size_t count = md_attribute_slice_count(attr, slice);
         if (count > cap) {
-            MD_LOG_ERROR("attr: '"STR_FMT"' changed shape since the script was compiled", STR_ARG(member->path));
+            MD_LOG_ERROR("attr: '"MD_STR_FMT"' changed shape since the script was compiled", MD_STR_ARG(member->path));
             return false;
         }
         if (md_attribute_extract_f32(out, count, attr, slice, md_unit_none()) != count) {
@@ -3863,14 +3863,14 @@ static bool evaluate_transpose(data_t* dst, const ast_node_t* node, eval_context
     }
 }
 
-static const identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
+static const identifier_t* find_static_identifier(md_str_t name, eval_context_t* ctx) {
     MD_ASSERT(ctx);
 
     // Static Identifiers from Compilation
     if (ctx->ir) {
         for (size_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
             // Only return IR identifiers if they are constant
-            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && str_eq(name, ctx->ir->identifiers[i].name)) {
+            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && md_str_eq(name, ctx->ir->identifiers[i].name)) {
                 return &ctx->ir->identifiers[i];
             }
         }
@@ -3880,12 +3880,12 @@ static const identifier_t* find_static_identifier(str_t name, eval_context_t* ct
 }
 
 // This should only called in an evaluation context
-static identifier_t* find_dynamic_identifier(str_t name, eval_context_t* ctx) {
+static identifier_t* find_dynamic_identifier(md_str_t name, eval_context_t* ctx) {
     MD_ASSERT(ctx);
 
     // Dynamic Identifiers from Evaluation
     for (size_t i = 0; i < md_array_size(ctx->identifiers); ++i) {
-        if (str_eq(name, ctx->identifiers[i].name)) {
+        if (md_str_eq(name, ctx->identifiers[i].name)) {
             return &ctx->identifiers[i];
         }
     }
@@ -3898,7 +3898,7 @@ static identifier_t* find_dynamic_identifier(str_t name, eval_context_t* ctx) {
 // so within a frame the value is available by the time anything refers to it. It can only stand in for the
 // expression when referenced in the same context it was evaluated in: 'd in residue(1:3)' evaluates the
 // expression of d once per residue, which is a different value.
-static const data_t* find_evaluated_identifier(str_t name, eval_context_t* ctx) {
+static const data_t* find_evaluated_identifier(md_str_t name, eval_context_t* ctx) {
     const identifier_t* ident = find_dynamic_identifier(name, ctx);
     if (ident && ident->data && ident->data->ptr && ident->mol_ctx == ctx->mol_ctx) {
         return ident->data;
@@ -3930,7 +3930,7 @@ static bool evaluate_identifier_element(data_t* dst, const identifier_t* decl, c
             };
             result = copy_data(dst, &elem, ctx);
         } else {
-            MD_LOG_ERROR("Script: size mismatch when extracting element %u of '"STR_FMT"'", decl->elem_idx, STR_ARG(decl->name));
+            MD_LOG_ERROR("Script: size mismatch when extracting element %u of '"MD_STR_FMT"'", decl->elem_idx, MD_STR_ARG(decl->name));
             result = false;
         }
     }
@@ -4746,7 +4746,7 @@ static bool evaluate_proc_call_alloc(data_t* out, const ast_node_t* node, eval_c
             // Only checked statically for lengths known at compile time
             for (size_t i = 1; i < args.count; ++i) {
                 if (type_info_array_len(args.data[i].type) != type_info_array_len(args.data[0].type)) {
-                    MD_LOG_ERROR("Script: '"STR_FMT"': arguments of different length (%i and %i)", STR_ARG(node->token.str),
+                    MD_LOG_ERROR("Script: '"MD_STR_FMT"': arguments of different length (%i and %i)", MD_STR_ARG(node->token.str),
                         type_info_array_len(args.data[0].type), type_info_array_len(args.data[i].type));
                     result = false;
                 }
@@ -4773,7 +4773,7 @@ static bool evaluate_proc_call_alloc(data_t* out, const ast_node_t* node, eval_c
             type.dim[0] = length;
         }
         if (result && is_variable_length(type)) {
-            MD_LOG_ERROR("Script: failed to determine the length of '"STR_FMT"'", STR_ARG(node->token.str));
+            MD_LOG_ERROR("Script: failed to determine the length of '"MD_STR_FMT"'", MD_STR_ARG(node->token.str));
             result = false;
         }
     }
@@ -4832,7 +4832,7 @@ static bool evaluate_node_alloc(data_t* out, const ast_node_t* node, eval_contex
         }
 
         if (!finalize_type(&type, node, ctx)) {
-            MD_LOG_ERROR("Script: failed to determine the length of '"STR_FMT"'", STR_ARG(node->token.str));
+            MD_LOG_ERROR("Script: failed to determine the length of '"MD_STR_FMT"'", MD_STR_ARG(node->token.str));
             return false;
         }
     }
@@ -5173,7 +5173,7 @@ typedef enum attr_readable_t {
 } attr_readable_t;
 
 typedef struct attr_read_info_t {
-    str_t                 run;          // 'run/<name>', a view into the path of the attribute
+    md_str_t                 run;          // 'run/<name>', a view into the path of the attribute
     const md_attribute_t* run_axis;     // The frames of the run
     const md_attribute_t* attr_axis;    // The frames of the attribute
 } attr_read_info_t;
@@ -5190,14 +5190,14 @@ static attr_readable_t attr_readable(const md_attributes_t* attributes, const md
     }
 
     // The run is the first two segments, and its frames are the ones the script steps through.
-    const str_t full = attr->path;
+    const md_str_t full = attr->path;
     size_t name_len = 0;
-    if (!str_begins_with(full, STR_LIT("run/")) || !str_find_char(&name_len, str_substr(full, 4, SIZE_MAX), '/')) {
+    if (!md_str_begins_with(full, MD_STR_LIT("run/")) || !md_str_find_char(&name_len, md_str_substr(full, 4, SIZE_MAX), '/')) {
         return ATTR_NOT_IN_RUN;
     }
-    info->run = str_substr(full, 0, 4 + name_len);
+    info->run = md_str_substr(full, 0, 4 + name_len);
 
-    info->run_axis = md_attributes_find_in(attributes, info->run, STR_LIT("time"));
+    info->run_axis = md_attributes_find_in(attributes, info->run, MD_STR_LIT("time"));
     if (!info->run_axis || md_attributes_axis(attributes, info->run_axis) != info->run_axis) {
         return ATTR_RUN_WITHOUT_AXIS;
     }
@@ -5216,12 +5216,12 @@ static attr_readable_t attr_readable(const md_attributes_t* attributes, const md
 // The path attr() reads attr by in its shortest form: relative to its run where that names it alone, in full where it
 // does not. The path as given is looked for first and then in every run (static_check_attribute), so the relative one
 // must name nothing else, neither outside the runs nor in another one.
-static str_t attr_short_path(const md_attributes_t* attributes, const md_attribute_t* attr, str_t run) {
-    const str_t relative = str_substr(attr->path, run.len + 1, SIZE_MAX);
+static md_str_t attr_short_path(const md_attributes_t* attributes, const md_attribute_t* attr, md_str_t run) {
+    const md_str_t relative = md_str_substr(attr->path, run.len + 1, SIZE_MAX);
     if (md_attributes_find(attributes, relative)) {
         return attr->path;
     }
-    for (md_attribute_iter_t it = md_attributes_iter_children(attributes, STR_LIT("run")); md_attributes_next(&it);) {
+    for (md_attribute_iter_t it = md_attributes_iter_children(attributes, MD_STR_LIT("run")); md_attributes_next(&it);) {
         const md_attribute_t* other = md_attributes_find_in(attributes, it.child_path, relative);
         if (other && other != attr) {
             return attr->path;
@@ -5230,13 +5230,13 @@ static str_t attr_short_path(const md_attributes_t* attributes, const md_attribu
     return relative;
 }
 
-str_t md_script_attr_path(const md_attributes_t* attributes, const md_attribute_t* attr) {
+md_str_t md_script_attr_path(const md_attributes_t* attributes, const md_attribute_t* attr) {
     if (!attributes || !attr) {
-        return (str_t){0};
+        return (md_str_t){0};
     }
     attr_read_info_t info;
     if (attr_readable(attributes, attr, &info) != ATTR_READABLE) {
-        return (str_t){0};
+        return (md_str_t){0};
     }
     return attr_short_path(attributes, attr, info.run);
 }
@@ -5263,15 +5263,15 @@ static uint64_t attr_member_version(uint64_t h, const md_attribute_t* attr, cons
 // when every one has one and no two the same, otherwise the segments of their paths that the pattern's '*' stood in
 // ("coul_sr_protein_sol" of "edr/coul_sr_*"), the part of them that differs. subjects are the paths the pattern was
 // matched against (relative to the run where the pattern is).
-static void attr_member_labels(attr_member_t* members, const str_t* subjects, size_t count, str_t pattern, const md_attributes_t* attributes, md_allocator_i* alloc) {
+static void attr_member_labels(attr_member_t* members, const md_str_t* subjects, size_t count, md_str_t pattern, const md_attributes_t* attributes, md_allocator_i* alloc) {
     bool own = true;
     for (size_t i = 0; i < count && own; ++i) {
         const md_attribute_t* a = md_attributes_get(attributes, members[i].id);
-        own = a && !str_empty(a->label);
+        own = a && !md_str_empty(a->label);
         for (size_t j = 0; j < i && own; ++j) {
-            own = !str_eq(members[j].label, a->label);
+            own = !md_str_eq(members[j].label, a->label);
         }
-        if (own) members[i].label = str_copy(a->label, alloc);
+        if (own) members[i].label = md_str_copy(a->label, alloc);
     }
     if (!own) {
         for (size_t i = 0; i < count; ++i) {
@@ -5284,27 +5284,27 @@ static void attr_member_labels(attr_member_t* members, const str_t* subjects, si
 // float[n] for n scalars, float[n][3] for n vectors. Absolute or relative to a run like a path, and all of the matches
 // from one run. A frame axis is never one: it is the time the others are sampled at, not one of them. The matches have
 // to agree on what one value is and on its unit to make one array, and each is read on its own frame axis.
-static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, str_t pattern, eval_context_t* ctx) {
+static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, md_str_t pattern, eval_context_t* ctx) {
     const md_attributes_t* attributes = &ctx->sys->attributes;
     md_allocator_i* arena = ctx->compile_ir->arena;
-    const bool absolute = str_begins_with(pattern, STR_LIT("run/"));
+    const bool absolute = md_str_begins_with(pattern, MD_STR_LIT("run/"));
 
     md_array(attr_member_t) members = 0;
-    md_array(str_t) subjects = 0;           // what the pattern matched in each: the path, or the part below the run
-    md_array(str_t) runs = 0;               // the runs they are from, each once
+    md_array(md_str_t) subjects = 0;           // what the pattern matched in each: the path, or the part below the run
+    md_array(md_str_t) runs = 0;               // the runs they are from, each once
     const md_attribute_t* run_axis = NULL;  // of the first
     size_t num_unreadable = 0;
     size_t num_axes = 0;
 
-    for (md_attribute_iter_t it = md_attributes_iter(attributes, STR_LIT("run")); md_attributes_next(&it);) {
+    for (md_attribute_iter_t it = md_attributes_iter(attributes, MD_STR_LIT("run")); md_attributes_next(&it);) {
         const md_attribute_t* a = it.attr;
-        if (!str_begins_with(a->path, STR_LIT("run/"))) continue;
-        str_t subject = a->path;
+        if (!md_str_begins_with(a->path, MD_STR_LIT("run/"))) continue;
+        md_str_t subject = a->path;
         if (!absolute) {
             size_t loc;
-            const str_t below = str_substr(a->path, 4, SIZE_MAX);
-            if (!str_find_char(&loc, below, '/')) continue;
-            subject = str_substr(below, loc + 1, SIZE_MAX);
+            const md_str_t below = md_str_substr(a->path, 4, SIZE_MAX);
+            if (!md_str_find_char(&loc, below, '/')) continue;
+            subject = md_str_substr(below, loc + 1, SIZE_MAX);
         }
         if (!glob_match_path(pattern, subject)) continue;
 
@@ -5318,11 +5318,11 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, str_t 
             continue;
         }
 
-        if (!md_array_size(runs) || !str_eq(runs[md_array_size(runs) - 1], info.run)) {
+        if (!md_array_size(runs) || !md_str_eq(runs[md_array_size(runs) - 1], info.run)) {
             md_array_push(runs, info.run, ctx->temp_alloc);
         }
         if (!run_axis) run_axis = info.run_axis;
-        attr_member_t m = { .path = str_copy(a->path, arena), .id = a->id, .axis_id = info.attr_axis->id };
+        attr_member_t m = { .path = md_str_copy(a->path, arena), .id = a->id, .axis_id = info.attr_axis->id };
         md_array_push(members, m, arena);
         md_array_push(subjects, subject, ctx->temp_alloc);
     }
@@ -5330,28 +5330,28 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, str_t 
     const size_t num = md_array_size(members);
     if (num == 0) {
         if (num_axes && !num_unreadable) {
-            EVAL_LOG_ERROR(ctx, tok, "attr: '"STR_FMT"' matches only frame axes, the times the others are sampled at, which a pattern leaves out", STR_ARG(pattern));
+            EVAL_LOG_ERROR(ctx, tok, "attr: '"MD_STR_FMT"' matches only frame axes, the times the others are sampled at, which a pattern leaves out", MD_STR_ARG(pattern));
         } else if (num_unreadable) {
-            EVAL_LOG_ERROR(ctx, tok, "attr: '"STR_FMT"' matches %zu %s, but none that attr() reads: numbers that vary over the frames of a run",
-                STR_ARG(pattern), num_unreadable, num_unreadable == 1 ? "attribute" : "attributes");
+            EVAL_LOG_ERROR(ctx, tok, "attr: '"MD_STR_FMT"' matches %zu %s, but none that attr() reads: numbers that vary over the frames of a run",
+                MD_STR_ARG(pattern), num_unreadable, num_unreadable == 1 ? "attribute" : "attributes");
         } else {
-            EVAL_LOG_ERROR(ctx, tok, "attr: nothing in any run matches '"STR_FMT"'", STR_ARG(pattern));
+            EVAL_LOG_ERROR(ctx, tok, "attr: nothing in any run matches '"MD_STR_FMT"'", MD_STR_ARG(pattern));
         }
         return false;
     }
     if (md_array_size(runs) > 1) {
         // The pattern below the run, which each run is suggested with
-        str_t below = pattern;
+        md_str_t below = pattern;
         size_t loc;
-        if (absolute && str_find_char(&loc, str_substr(pattern, 4, SIZE_MAX), '/')) {
-            below = str_substr(pattern, 4 + loc + 1, SIZE_MAX);
+        if (absolute && md_str_find_char(&loc, md_str_substr(pattern, 4, SIZE_MAX), '/')) {
+            below = md_str_substr(pattern, 4 + loc + 1, SIZE_MAX);
         }
         md_str_writer_t w = md_str_writer_create(ctx->temp_alloc);
         for (size_t i = 0; i < md_array_size(runs); ++i) {
-            md_str_writer_fmt(&w, "  '"STR_FMT"/"STR_FMT"'\n", STR_ARG(runs[i]), STR_ARG(below));
+            md_str_writer_fmt(&w, "  '"MD_STR_FMT"/"MD_STR_FMT"'\n", MD_STR_ARG(runs[i]), MD_STR_ARG(below));
         }
-        EVAL_LOG_ERROR(ctx, tok, "attr: '"STR_FMT"' matches in more than one run, name the run:\n"STR_FMT,
-            STR_ARG(pattern), STR_ARG(md_str_writer_to_str(&w)));
+        EVAL_LOG_ERROR(ctx, tok, "attr: '"MD_STR_FMT"' matches in more than one run, name the run:\n"MD_STR_FMT,
+            MD_STR_ARG(pattern), MD_STR_ARG(md_str_writer_to_str(&w)));
         return false;
     }
 
@@ -5359,7 +5359,7 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, str_t 
     const md_attribute_t* first = md_attributes_get(attributes, members[0].id);
     const uint32_t member_dims = (first->format.rank - 1) + (first->format.components > 1 ? 1 : 0);
     if (1 + member_dims > MAX_NUM_DIMS) {
-        EVAL_LOG_ERROR(ctx, tok, "attr: an array of what '"STR_FMT"' matches has more dimensions than a script value can hold (%d)", STR_ARG(pattern), MAX_NUM_DIMS);
+        EVAL_LOG_ERROR(ctx, tok, "attr: an array of what '"MD_STR_FMT"' matches has more dimensions than a script value can hold (%d)", MD_STR_ARG(pattern), MAX_NUM_DIMS);
         return false;
     }
     type_info_t type = { .base_type = TYPE_FLOAT, .dim = { (int)num } };
@@ -5379,15 +5379,15 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, str_t 
             print_type_info(tb, sizeof(tb), one_b);
             md_unit_print(ua, sizeof(ua), first->unit);
             md_unit_print(ub, sizeof(ub), a->unit);
-            EVAL_LOG_ERROR(ctx, tok, "attr: what '"STR_FMT"' matches does not make one array: '"STR_FMT"' is %s (%s), '"STR_FMT"' is %s (%s)",
-                STR_ARG(pattern), STR_ARG(members[0].path), ta, ua[0] ? ua : "no unit", STR_ARG(members[i].path), tb, ub[0] ? ub : "no unit");
+            EVAL_LOG_ERROR(ctx, tok, "attr: what '"MD_STR_FMT"' matches does not make one array: '"MD_STR_FMT"' is %s (%s), '"MD_STR_FMT"' is %s (%s)",
+                MD_STR_ARG(pattern), MD_STR_ARG(members[0].path), ta, ua[0] ? ua : "no unit", MD_STR_ARG(members[i].path), tb, ub[0] ? ub : "no unit");
             return false;
         }
         version = attr_member_version(version, a, md_attributes_get(attributes, members[i].axis_id));
     }
     attr_member_labels(members, subjects, num, pattern, attributes, arena);
 
-    node->attr_path    = str_copy(pattern, arena);
+    node->attr_path    = md_str_copy(pattern, arena);
     node->attr_members = members;
     node->attr_pattern = true;
     node->run_axis_id  = run_axis->id;
@@ -5425,8 +5425,8 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     }
 
     const md_attributes_t* attributes = &ctx->sys->attributes;
-    const str_t path = args[0]->value._string;
-    if (str_empty(path)) {
+    const md_str_t path = args[0]->value._string;
+    if (md_str_empty(path)) {
         EVAL_LOG_ERROR(ctx, args[0]->token, "attr: empty path");
         return false;
     }
@@ -5444,47 +5444,47 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
         // Relative to a run: look in every one and insist on exactly one match.
         size_t num_matches = 0;
         md_str_writer_t candidates = md_str_writer_create(ctx->temp_alloc);
-        for (md_attribute_iter_t run = md_attributes_iter_children(attributes, STR_LIT("run")); md_attributes_next(&run);) {
+        for (md_attribute_iter_t run = md_attributes_iter_children(attributes, MD_STR_LIT("run")); md_attributes_next(&run);) {
             const md_attribute_t* a = md_attributes_find_in(attributes, run.child_path, path);
             if (a) {
                 attr = a;
                 num_matches += 1;
-                md_str_writer_fmt(&candidates, "  '"STR_FMT"'\n", STR_ARG(a->path));
+                md_str_writer_fmt(&candidates, "  '"MD_STR_FMT"'\n", MD_STR_ARG(a->path));
             }
         }
         if (num_matches == 0) {
-            EVAL_LOG_ERROR(ctx, args[0]->token, "attr: no attribute '"STR_FMT"' in the system or in any run", STR_ARG(path));
+            EVAL_LOG_ERROR(ctx, args[0]->token, "attr: no attribute '"MD_STR_FMT"' in the system or in any run", MD_STR_ARG(path));
             return false;
         }
         if (num_matches > 1) {
-            EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' exists in more than one run, name it in full:\n"STR_FMT,
-                STR_ARG(path), STR_ARG(md_str_writer_to_str(&candidates)));
+            EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"MD_STR_FMT"' exists in more than one run, name it in full:\n"MD_STR_FMT,
+                MD_STR_ARG(path), MD_STR_ARG(md_str_writer_to_str(&candidates)));
             return false;
         }
     }
 
     attr_read_info_t info;
-    const str_t full = attr->path;
+    const md_str_t full = attr->path;
     switch (attr_readable(attributes, attr, &info)) {
     case ATTR_READABLE:
         break;
     case ATTR_NOT_TEMPORAL:
-        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' does not vary over the trajectory; attr() reads temporal attributes", STR_ARG(full));
+        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"MD_STR_FMT"' does not vary over the trajectory; attr() reads temporal attributes", MD_STR_ARG(full));
         return false;
     case ATTR_NOT_NUMERIC:
-        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' does not hold numbers", STR_ARG(full));
+        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"MD_STR_FMT"' does not hold numbers", MD_STR_ARG(full));
         return false;
     case ATTR_NOT_IN_RUN:
-        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' is not part of a run ('run/<name>/...'), so it has no frames to follow", STR_ARG(full));
+        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"MD_STR_FMT"' is not part of a run ('run/<name>/...'), so it has no frames to follow", MD_STR_ARG(full));
         return false;
     case ATTR_RUN_WITHOUT_AXIS:
-        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: the run '"STR_FMT"' has no frame axis ('"STR_FMT"/time')", STR_ARG(info.run), STR_ARG(info.run));
+        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: the run '"MD_STR_FMT"' has no frame axis ('"MD_STR_FMT"/time')", MD_STR_ARG(info.run), MD_STR_ARG(info.run));
         return false;
     case ATTR_WITHOUT_AXIS:
-        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' has no frame axis", STR_ARG(full));
+        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"MD_STR_FMT"' has no frame axis", MD_STR_ARG(full));
         return false;
     case ATTR_TOO_MANY_DIMS:
-        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' has more dimensions per frame than a script value can hold (%d)", STR_ARG(full), MAX_NUM_DIMS);
+        EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"MD_STR_FMT"' has more dimensions per frame than a script value can hold (%d)", MD_STR_ARG(full), MAX_NUM_DIMS);
         return false;
     }
     const md_attribute_t* run_axis  = info.run_axis;
@@ -5494,7 +5494,7 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     type_info_t type = { .base_type = TYPE_FLOAT, .dim = {1} };
     attr_value_dims(type.dim, 0, attr);
 
-    attr_member_t member = { .path = str_copy(full, ctx->compile_ir->arena), .id = attr->id, .axis_id = attr_axis->id };
+    attr_member_t member = { .path = md_str_copy(full, ctx->compile_ir->arena), .id = attr->id, .axis_id = attr_axis->id };
     md_array_push(node->attr_members, member, ctx->compile_ir->arena);
     node->attr_path    = member.path;
     node->run_axis_id  = run_axis->id;
@@ -5608,18 +5608,18 @@ static bool static_check_transpose(ast_node_t* node, eval_context_t* ctx) {
     }
 }
 
-static const proc_sig_t* find_proc_signature(str_t name) {
+static const proc_sig_t* find_proc_signature(md_str_t name) {
     for (size_t i = 0; i < MD_COUNTOF(signatures); ++i) {
-        if (str_eq(signatures[i].proc, name)) {
+        if (md_str_eq(signatures[i].proc, name)) {
             return &signatures[i];
         }
     }
     return NULL;
 }
 
-static int find_param_index(const proc_sig_t* sig, str_t name) {
+static int find_param_index(const proc_sig_t* sig, md_str_t name) {
     for (size_t i = 0; i < sig->num_params; ++i) {
-        if (str_eq(sig->param[i].name, name)) {
+        if (md_str_eq(sig->param[i].name, name)) {
             return (int)i;
         }
     }
@@ -5660,26 +5660,26 @@ static bool bind_arguments(ast_node_t* node, const proc_sig_t* sig, eval_context
 
     for (size_t i = 0; i < num_args; ++i) {
         size_t p = 0;
-        if (!named || str_empty(named[i].name)) {
+        if (!named || md_str_empty(named[i].name)) {
             // The parser guarantees that positional arguments precede named ones, so the position is the index
             p = i;
             if (p >= sig->num_params) {
-                EVAL_LOG_ERROR(ctx, node->children[i]->token, "Too many arguments, '"STR_FMT"' takes at most %i", STR_ARG(sig->proc), (int)sig->num_params);
+                EVAL_LOG_ERROR(ctx, node->children[i]->token, "Too many arguments, '"MD_STR_FMT"' takes at most %i", MD_STR_ARG(sig->proc), (int)sig->num_params);
                 return false;
             }
             if (sig->param[p].flags & PARAM_KW_ONLY) {
-                EVAL_LOG_ERROR(ctx, node->children[i]->token, "The argument '"STR_FMT"' of '"STR_FMT"' can only be given by name", STR_ARG(sig->param[p].name), STR_ARG(sig->proc));
+                EVAL_LOG_ERROR(ctx, node->children[i]->token, "The argument '"MD_STR_FMT"' of '"MD_STR_FMT"' can only be given by name", MD_STR_ARG(sig->param[p].name), MD_STR_ARG(sig->proc));
                 return false;
             }
         } else {
             const int idx = find_param_index(sig, named[i].name);
             if (idx < 0) {
                 md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
-                md_str_writer_fmt(&sb, "'"STR_FMT"' has no parameter named '"STR_FMT"', valid names are: ", STR_ARG(sig->proc), STR_ARG(named[i].name));
+                md_str_writer_fmt(&sb, "'"MD_STR_FMT"' has no parameter named '"MD_STR_FMT"', valid names are: ", MD_STR_ARG(sig->proc), MD_STR_ARG(named[i].name));
                 for (size_t j = 0; j < sig->num_params; ++j) {
                     md_str_writer_push_str(&sb, sig->param[j].name);
                     if (j + 1 < sig->num_params) {
-                        md_str_writer_push_str(&sb, STR_LIT(", "));
+                        md_str_writer_push_str(&sb, MD_STR_LIT(", "));
                     }
                 }
                 EVAL_LOG_ERROR_STR(ctx, named[i].token, md_str_writer_to_str(&sb));
@@ -5688,7 +5688,7 @@ static bool bind_arguments(ast_node_t* node, const proc_sig_t* sig, eval_context
             p = (size_t)idx;
             if (bound[p]) {
                 // Duplicate names are rejected by the parser, so the earlier binding was positional
-                EVAL_LOG_ERROR(ctx, named[i].token, "The argument '"STR_FMT"' is already given by position", STR_ARG(named[i].name));
+                EVAL_LOG_ERROR(ctx, named[i].token, "The argument '"MD_STR_FMT"' is already given by position", MD_STR_ARG(named[i].name));
                 return false;
             }
         }
@@ -5712,11 +5712,11 @@ static bool bind_arguments(ast_node_t* node, const proc_sig_t* sig, eval_context
         if (bound[p]) continue;
         const param_sig_t* param = &sig->param[p];
         if (!(param->flags & PARAM_OPTIONAL)) {
-            EVAL_LOG_ERROR(ctx, node->token, "Missing argument '"STR_FMT"' in call to '"STR_FMT"'", STR_ARG(param->name), STR_ARG(sig->proc));
+            EVAL_LOG_ERROR(ctx, node->token, "Missing argument '"MD_STR_FMT"' in call to '"MD_STR_FMT"'", MD_STR_ARG(param->name), MD_STR_ARG(sig->proc));
             return false;
         }
         if (p < count) {
-            EVAL_LOG_ERROR(ctx, node->token, "The argument '"STR_FMT"' of '"STR_FMT"' cannot be omitted when a later argument is given", STR_ARG(param->name), STR_ARG(sig->proc));
+            EVAL_LOG_ERROR(ctx, node->token, "The argument '"MD_STR_FMT"' of '"MD_STR_FMT"' cannot be omitted when a later argument is given", MD_STR_ARG(param->name), MD_STR_ARG(sig->proc));
             return false;
         }
     }
@@ -5746,8 +5746,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             }
         } else if (node->named_args) {
             for (size_t i = 0; i < md_array_size(node->named_args); ++i) {
-                if (!str_empty(node->named_args[i].name)) {
-                    EVAL_LOG_ERROR(ctx, node->named_args[i].token, "'"STR_FMT"' does not accept named arguments", STR_ARG(node->ident));
+                if (!md_str_empty(node->named_args[i].name)) {
+                    EVAL_LOG_ERROR(ctx, node->named_args[i].token, "'"MD_STR_FMT"' does not accept named arguments", MD_STR_ARG(node->ident));
                     break;
                 }
             }
@@ -5763,12 +5763,12 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         ctx->eval_flags = flags;
         if (result) {
             const size_t num_args = md_array_size(node->children);
-            const str_t proc_name = node->ident;
+            const md_str_t proc_name = node->ident;
 
             // No procedure takes this many, and the arguments would not fit below (nor where it is evaluated)
             if (num_args >= MAX_SUPPORTED_PROC_ARGS) {
-                EVAL_LOG_ERROR(ctx, node->token, "Too many arguments (%zu) in call to '"STR_FMT"', no procedure takes more than %i",
-                    num_args, STR_ARG(proc_name), MAX_SUPPORTED_PROC_ARGS - 1);
+                EVAL_LOG_ERROR(ctx, node->token, "Too many arguments (%zu) in call to '"MD_STR_FMT"', no procedure takes more than %i",
+                    num_args, MD_STR_ARG(proc_name), MAX_SUPPORTED_PROC_ARGS - 1);
                 ctx->eval_flags = backup_flags;
                 return false;
             }
@@ -5784,7 +5784,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             } else {
                 if (num_args == 0) {
                     EVAL_LOG_ERROR(ctx, node->token,
-                        "Could not find matching procedure '"STR_FMT"' which takes no arguments", STR_ARG(proc_name));
+                        "Could not find matching procedure '"MD_STR_FMT"' which takes no arguments", MD_STR_ARG(proc_name));
                 } else {
                     char buf[512];
                     print_argument_list(buf, MD_COUNTOF(buf), arg_type, num_args);
@@ -5792,8 +5792,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
                     for (size_t i = 0; i < num_args; ++i) bonds |= arg_type[i].base_type == TYPE_BONDSET;
 
                     EVAL_LOG_ERROR(ctx, node->token,
-                        "Could not find matching procedure '"STR_FMT"' which takes the following argument(s): %s%s",
-                        STR_ARG(proc_name), buf, bonds ? BONDS_DO_NOT_MIX_HINT : "");
+                        "Could not find matching procedure '"MD_STR_FMT"' which takes the following argument(s): %s%s",
+                        MD_STR_ARG(proc_name), buf, bonds ? BONDS_DO_NOT_MIX_HINT : "");
                 }
             }
         }
@@ -5840,7 +5840,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
-            //MD_LOG_DEBUG("Static validating procedure: '"STR_FMT"'", STR_ARG(node->ident));
+            //MD_LOG_DEBUG("Static validating procedure: '"MD_STR_FMT"'", MD_STR_ARG(node->ident));
             static_backchannel_t* prev_channel = ctx->backchannel;
             static_backchannel_t channel = {0};
             ctx->backchannel = &channel;
@@ -6191,14 +6191,14 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* ctx) {
     MD_ASSERT(node && node->type == AST_IDENTIFIER);
     
-    if (str_empty(node->ident)) {
+    if (md_str_empty(node->ident)) {
         node->ident = node->token.str;
     }
 
     identifier_t* ident = get_identifier(ctx->compile_ir, node->ident);
     if (ident && ident->node) {
         if (ident->node->data.type.base_type == TYPE_UNDEFINED) {
-            EVAL_LOG_ERROR(ctx, node->token, "Identifier ("STR_FMT") has an unresolved type", ident->name.len, ident->name.ptr);
+            EVAL_LOG_ERROR(ctx, node->token, "Identifier ("MD_STR_FMT") has an unresolved type", ident->name.len, ident->name.ptr);
         } else {
             node->flags = ident->node->flags;
             if (ident->data) {
@@ -6210,7 +6210,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
             return true;
         }
     } else {
-        EVAL_LOG_ERROR(ctx, node->token, "Unresolved reference to identifier ("STR_FMT")", node->ident.len, node->ident.ptr);
+        EVAL_LOG_ERROR(ctx, node->token, "Unresolved reference to identifier ("MD_STR_FMT")", node->ident.len, node->ident.ptr);
     }
     return false;
 }
@@ -6239,7 +6239,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     }
 
     for (int i = 0; i < num_idents; ++i) {
-        str_t ident = idents[i]->ident;
+        md_str_t ident = idents[i]->ident;
         // Assignment, therefore a new identifier
         if (find_constant(ident)) {
             EVAL_LOG_ERROR(ctx, idents[i]->token, "The identifier is occupied by a constant and cannot be assigned.");
@@ -6648,7 +6648,7 @@ static uint64_t hash_node(const ast_node_t* node, uint64_t seed) {
         }
         case TYPE_STRING:
         {
-            const str_t* str = (const str_t*)node->data.ptr;
+            const md_str_t* str = (const md_str_t*)node->data.ptr;
             return md_hash64(str->ptr, str->len, seed);
         }
         default:
@@ -6832,7 +6832,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_system_t* sys, md_all
             md_array_push(ir->type_checked_expressions, ir->parsed_expressions[i], ir->arena);
             ir->flags |= (ir->parsed_expressions[i]->flags & FLAG_IR_PROPAGATION_MASK);
         } else {
-            MD_LOG_DEBUG("Static type checking failed for expression: '"STR_FMT"'", STR_ARG(ir->parsed_expressions[i]->token.str));
+            MD_LOG_DEBUG("Static type checking failed for expression: '"MD_STR_FMT"'", MD_STR_ARG(ir->parsed_expressions[i]->token.str));
             result = false;
         }
     }
@@ -6905,7 +6905,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
         const size_t num_expressions = md_array_size(ctx->compile_ir->static_expression_hash);
         for (size_t i = 0; i < num_expressions; ++i) {
             if (hash == ctx->compile_ir->static_expression_hash[i]) {
-                // str_t str = ctx->compile_ir->static_expression_str[i];
+                // md_str_t str = ctx->compile_ir->static_expression_str[i];
                 node->data = ctx->compile_ir->static_expression_data[i];
                 node->flags |= FLAG_CONSTANT;
                 return true;
@@ -7003,7 +7003,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* sys) {
 
 // A script identifier is one path segment. Nothing in the grammar produces a '/', but a stray one
 // would silently turn the leaf into a group, so it is folded rather than trusted.
-static str_t script_attr_path(char* buf, size_t cap, str_t ident, const char* suffix) {
+static md_str_t script_attr_path(char* buf, size_t cap, md_str_t ident, const char* suffix) {
     size_t len = 0;
 #define SCRIPT_ATTR_PUT(c) do { if (len + 1 < cap) buf[len++] = (c); } while (0)
     for (const char* c = "script/"; *c; ++c) SCRIPT_ATTR_PUT(*c);
@@ -7011,13 +7011,13 @@ static str_t script_attr_path(char* buf, size_t cap, str_t ident, const char* su
     for (const char* c = suffix ? suffix : ""; *c; ++c) SCRIPT_ATTR_PUT(*c);
 #undef SCRIPT_ATTR_PUT
     buf[len] = '\0';
-    return (str_t){buf, len};
+    return (md_str_t){buf, len};
 }
 
 // Reserves zeroed storage inside the table and hands back the writable view. A table that refuses
 // the attribute costs the published NAME and nothing else: the caller still gets a buffer, so a
 // rejected path can never break an evaluation.
-static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* alloc, str_t ident, const char* suffix, md_unit_t unit,
+static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* alloc, md_str_t ident, const char* suffix, md_unit_t unit,
                                   md_attribute_flags_t flags, uint32_t components, uint32_t rank, const uint32_t shape[])
 {
     char buf[512];
@@ -7034,7 +7034,7 @@ static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* a
     md_attribute_id_t id = md_attributes_replace(attributes, &desc);
     float* ptr = id ? (float*)md_attributes_data(attributes, id, MD_ATTRIBUTE_TYPE_F32) : NULL;
     if (!ptr) {
-        MD_LOG_DEBUG("Script eval: could not publish attribute '"STR_FMT"', falling back to plain storage", STR_ARG(desc.path));
+        MD_LOG_DEBUG("Script eval: could not publish attribute '"MD_STR_FMT"', falling back to plain storage", MD_STR_ARG(desc.path));
         const size_t bytes = md_attribute_element_count(&desc.format) * sizeof(float);
         ptr = md_alloc(alloc, bytes);
         MD_MEMSET(ptr, 0, bytes);
@@ -7078,7 +7078,7 @@ static bool same_member_labels(const ast_node_t* a, const ast_node_t* b) {
     const size_t n = md_array_size(a->attr_members);
     if (n != md_array_size(b->attr_members)) return false;
     for (size_t i = 0; i < n; ++i) {
-        if (!str_eq(a->attr_members[i].label, b->attr_members[i].label)) return false;
+        if (!md_str_eq(a->attr_members[i].label, b->attr_members[i].label)) return false;
     }
     return true;
 }
@@ -7110,8 +7110,8 @@ static const ast_node_t* labelled_pattern(const ast_node_t* node, int depth) {
     case AST_PROC_CALL:
         // An arithmetic operator, which the static check made a call of the operator's procedure
         if (node->proc && num_children >= 1 && num_children <= 2 &&
-            (str_eq(node->proc->name, STR_LIT("+")) || str_eq(node->proc->name, STR_LIT("-")) ||
-             str_eq(node->proc->name, STR_LIT("*")) || str_eq(node->proc->name, STR_LIT("/")))) {
+            (md_str_eq(node->proc->name, MD_STR_LIT("+")) || md_str_eq(node->proc->name, MD_STR_LIT("-")) ||
+             md_str_eq(node->proc->name, MD_STR_LIT("*")) || md_str_eq(node->proc->name, MD_STR_LIT("/")))) {
             for (size_t i = 0; i < num_children; ++i) {
                 const ast_node_t* l = labelled_pattern(node->children[i], depth + 1);
                 if (!l) {
@@ -7134,11 +7134,11 @@ static const ast_node_t* labelled_pattern(const ast_node_t* node, int depth) {
 
 // script/<ident>/labels: the names of the members of a temporal property that holds what an attr() pattern matched,
 // one value per member per frame (float[n]), in the order of its population.
-static void publish_property_labels(md_attributes_t* attributes, str_t ident, const ast_node_t* node, md_allocator_i* temp_alloc) {
+static void publish_property_labels(md_attributes_t* attributes, md_str_t ident, const ast_node_t* node, md_allocator_i* temp_alloc) {
     const ast_node_t* src = labelled_pattern(node, 0);
     if (!src || dim_ndims(node->data.type.dim) != 1) return;
     const size_t n = md_array_size(src->attr_members);
-    str_t* labels = md_alloc(temp_alloc, n * sizeof(str_t));
+    md_str_t* labels = md_alloc(temp_alloc, n * sizeof(md_str_t));
     for (size_t i = 0; i < n; ++i) {
         labels[i] = src->attr_members[i].label;
     }
@@ -7146,9 +7146,9 @@ static void publish_property_labels(md_attributes_t* attributes, str_t ident, co
     md_attribute_desc_t desc = {
         .path        = script_attr_path(buf, sizeof(buf), ident, "/labels"),
         .format      = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { (uint32_t)n } },
-        .description = STR_INIT("The names of the members, of what attr() matched"),
+        .description = MD_STR_INIT("The names of the members, of what attr() matched"),
         .data        = labels,
-        .byte_size   = n * sizeof(str_t),
+        .byte_size   = n * sizeof(md_str_t),
     };
     md_attributes_replace(attributes, &desc);
 }
@@ -7156,7 +7156,7 @@ static void publish_property_labels(md_attributes_t* attributes, str_t ident, co
 // Publishes the attributes of one property and points prop at them.
 // unit[0] is the coordinate unit (a distribution's bin axis), unit[1] the unit of the values.
 // flags are those of the property (md_script_ir_property_flags): its kind, and whether it is periodic, in period.
-static void init_property(eval_property_t* prop, md_attributes_t* attributes, str_t ident, md_script_property_flags_t flags,
+static void init_property(eval_property_t* prop, md_attributes_t* attributes, md_str_t ident, md_script_property_flags_t flags,
                           type_info_t type, const md_unit_t unit[2], period_t period, size_t num_frames, md_allocator_i* alloc) {
     MD_ASSERT(prop);
     MD_ASSERT(attributes);
@@ -7474,7 +7474,7 @@ static bool frame_todo(md_script_eval_t* eval, uint32_t f, bool* todo) {
     return any;
 }
 
-static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_t run, const md_script_ir_t* ir, const uint32_t* frames, size_t num_frames) {
+static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, md_str_t run, const md_script_ir_t* ir, const uint32_t* frames, size_t num_frames) {
     MD_ASSERT(eval);
     MD_ASSERT(sys);
     MD_ASSERT(ir);
@@ -7520,7 +7520,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
 
     // One extraction context for the range: the files a run streams from stay open across its
     // frames. It is made on this thread and used by it alone, which is what a context asks for.
-    const str_t coord_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+    const md_str_t coord_paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
     md_system_extract_t* extract = md_system_extract_begin(sys, run, coord_paths, MD_COUNTOF(coord_paths), md_get_heap_allocator());
     if (!extract) {
         MD_LOG_ERROR("Failed to begin extracting frames for evaluation");
@@ -7552,7 +7552,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         .ref_state = &sys->reference,
     };
     {
-        const md_attribute_t* axis = md_attributes_find_in(&sys->attributes, run, STR_LIT("time"));
+        const md_attribute_t* axis = md_attributes_find_in(&sys->attributes, run, MD_STR_LIT("time"));
         ctx.run_axis_id = axis ? axis->id : MD_ATTRIBUTE_INVALID;
     }
 
@@ -7597,10 +7597,10 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
                 continue;
             }
             if (!evaluate_node_alloc(&data[i], expr[i], &ctx, temp_alloc)) {
-                str_t str = expr[i]->token.str;
-                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", STR_ARG(str), (int)f_idx);
+                md_str_t str = expr[i]->token.str;
+                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"MD_STR_FMT"' at frame %i", MD_STR_ARG(str), (int)f_idx);
                 for (size_t e = 0; e < md_array_size(log.errors); ++e) {
-                    MD_LOG_ERROR("    "STR_FMT, STR_ARG(log.errors[e].text));
+                    MD_LOG_ERROR("    "MD_STR_FMT, MD_STR_ARG(log.errors[e].text));
                 }
                 result = false;
                 goto done;
@@ -7621,10 +7621,10 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             prop_data[p] = NULL;
             if (!todo[p]) continue;
             eval_property_t* prop = &eval->props[p];
-            MD_ASSERT(str_eq(prop->ident, ir->property_names[p]));
+            MD_ASSERT(md_str_eq(prop->ident, ir->property_names[p]));
             const identifier_t* ident = find_dynamic_identifier(prop->ident, &ctx);
             if (!ident || !ident->data) {
-                MD_LOG_ERROR("Script eval: no evaluated data for property '"STR_FMT"'", STR_ARG(prop->ident));
+                MD_LOG_ERROR("Script eval: no evaluated data for property '"MD_STR_FMT"'", MD_STR_ARG(prop->ident));
                 result = false;
                 goto done;
             }
@@ -7897,7 +7897,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     char unit_buf[128];
     int unit_len = (int)md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit[1]);
     if (unit_len) {
-        md_str_writer_fmt(&sb, " ("STR_FMT")", unit_len, unit_buf);
+        md_str_writer_fmt(&sb, " ("MD_STR_FMT")", unit_len, unit_buf);
     }
 
     if (node->type == AST_ATTRIBUTE) {
@@ -7905,19 +7905,19 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             // What the pattern matched, in the order of the array
             const size_t num = md_array_size(node->attr_members);
             const size_t shown = MD_MIN(num, 16);
-            md_str_writer_fmt(&sb, "\n"STR_FMT": %zu %s", STR_ARG(node->attr_path), num, num == 1 ? "match" : "matches");
+            md_str_writer_fmt(&sb, "\n"MD_STR_FMT": %zu %s", MD_STR_ARG(node->attr_path), num, num == 1 ? "match" : "matches");
             for (size_t i = 0; i < shown; ++i) {
                 const attr_member_t* m = &node->attr_members[i];
-                md_str_writer_fmt(&sb, "\n  [%zu] "STR_FMT, i + 1, STR_ARG(m->path));
-                if (!str_eq(m->label, path_leaf(m->path))) {
-                    md_str_writer_fmt(&sb, "  "STR_FMT, STR_ARG(m->label));
+                md_str_writer_fmt(&sb, "\n  [%zu] "MD_STR_FMT, i + 1, MD_STR_ARG(m->path));
+                if (!md_str_eq(m->label, path_leaf(m->path))) {
+                    md_str_writer_fmt(&sb, "  "MD_STR_FMT, MD_STR_ARG(m->label));
                 }
             }
             if (shown < num) {
                 md_str_writer_fmt(&sb, "\n  ... and %zu more", num - shown);
             }
         } else {
-            md_str_writer_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
+            md_str_writer_fmt(&sb, "\n"MD_STR_FMT, MD_STR_ARG(node->attr_path));
         }
     } else if (!(node->flags & FLAG_DYNAMIC)) {
         // A name, or what is assigned to it, holds the value of its expression
@@ -7933,13 +7933,13 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             }
         }
     } else {
-        md_str_writer_push_str(&sb, STR_LIT(" [d]"));
+        md_str_writer_push_str(&sb, MD_STR_LIT(" [d]"));
     }
 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
-    vis.text = str_copy(md_str_writer_to_str(&sb), ir->arena);
+    vis.text = md_str_copy(md_str_writer_to_str(&sb), ir->arena);
     vis.ref = make_vis_ref(ir, node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)
@@ -7988,7 +7988,7 @@ static bool extract_identifiers(md_script_ir_t* ir) {
     return true;
 }
 
-static bool create_property(md_script_ir_t* ir, str_t ident, const ast_node_t* node) {
+static bool create_property(md_script_ir_t* ir, md_str_t ident, const ast_node_t* node) {
     const type_info_t type = node->data.type;
     md_script_property_flags_t flags =
         is_temporal_type(type)     ? MD_SCRIPT_PROPERTY_FLAG_TEMPORAL :
@@ -8044,13 +8044,13 @@ md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     return create_ir(alloc);
 }
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_system_t* sys, const md_script_ir_t* ctx_ir) {
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, md_str_t src, const md_system_t* sys, const md_script_ir_t* ctx_ir) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("Script Compile: IR is not valid");
         return false;
     }
 
-    if (str_empty(src)) {
+    if (md_str_empty(src)) {
         MD_LOG_ERROR("Script Compile: Source string was empty");
         return false;
     }
@@ -8060,7 +8060,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
         return false;
     }
     
-    ir->str = str_copy(src, ir->arena);
+    ir->str = md_str_copy(src, ir->arena);
     ir->id  = next_ir_id();
 
     if (ctx_ir) {
@@ -8110,21 +8110,21 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
     return ir->compile_success;
 }
 
-bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, str_t name, md_bitset_t set) {
+bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, md_str_t name, md_bitset_t set) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("IR is not valid");
         return false;
     }
 
     if (!md_script_identifier_name_valid(name)) {
-        MD_LOG_ERROR("'"STR_FMT"' is not a valid identifier", STR_ARG(name));
+        MD_LOG_ERROR("'"MD_STR_FMT"' is not a valid identifier", MD_STR_ARG(name));
         return false;
     }
 
 
     identifier_t* ident = create_identifier(ir, name);
     if (!ident) {
-        MD_LOG_ERROR("Failed to create identifier with name '"STR_FMT"', it is perhaps already taken.", STR_ARG(name));
+        MD_LOG_ERROR("Failed to create identifier with name '"MD_STR_FMT"', it is perhaps already taken.", MD_STR_ARG(name));
         return false;
     }
 
@@ -8141,9 +8141,9 @@ bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, str_t name, md_bitse
     return true;
 }
 
-static bool node_contains_identifier_reference(const ast_node_t* node, str_t name) {
+static bool node_contains_identifier_reference(const ast_node_t* node, md_str_t name) {
     if (node->type == AST_IDENTIFIER) {
-        return str_eq(node->ident, name);
+        return md_str_eq(node->ident, name);
     } else {
         for (size_t i = 0; i < md_array_size(node->children); ++i) {
             if (node_contains_identifier_reference(node->children[i], name)) {
@@ -8154,14 +8154,14 @@ static bool node_contains_identifier_reference(const ast_node_t* node, str_t nam
     return false;
 }
 
-bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, str_t name) {
+bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, md_str_t name) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("IR is not valid");
         return false;
     }
 
     if (!md_script_identifier_name_valid(name)) {
-        MD_LOG_ERROR("'"STR_FMT"' is not a valid identifier", STR_ARG(name));
+        MD_LOG_ERROR("'"MD_STR_FMT"' is not a valid identifier", MD_STR_ARG(name));
         return false;
     }
 
@@ -8259,13 +8259,13 @@ static int diag_num_digits(int x) {
 // <script>:2:5: error: Undefined identifier 'y'
 //     2 | b = y + 2;
 //       |     ^
-static void diag_append(md_writer_i* w, str_t src, const md_log_token_t* tok, bool is_error) {
+static void diag_append(md_writer_i* w, md_str_t src, const md_log_token_t* tok, bool is_error) {
     const char* level = is_error ? "error" : "warning";
-    const str_t text  = str_trim_end(tok->text);
+    const md_str_t text  = md_str_trim_end(tok->text);
     const int   len   = (int)MD_MIN(src.len, (size_t)INT32_MAX);
 
     if (len == 0) {
-        md_writef(w, "%s: %s: " STR_FMT "\n", DIAG_SOURCE_NAME, level, STR_ARG(text));
+        md_writef(w, "%s: %s: " MD_STR_FMT "\n", DIAG_SOURCE_NAME, level, MD_STR_ARG(text));
         return;
     }
 
@@ -8287,7 +8287,7 @@ static void diag_append(md_writer_i* w, str_t src, const md_log_token_t* tok, bo
         col += !diag_utf8_cont(src.ptr[i]);
     }
 
-    md_writef(w, "%s:%d:%d: %s: " STR_FMT "\n", DIAG_SOURCE_NAME, line, col, level, STR_ARG(text));
+    md_writef(w, "%s:%d:%d: %s: " MD_STR_FMT "\n", DIAG_SOURCE_NAME, line, col, level, MD_STR_ARG(text));
 
     // The lines covered: through the one holding the last character of the range, the newline ending it excluded
     int num_lines = 1;
@@ -8446,7 +8446,7 @@ size_t md_script_ir_num_identifiers(const md_script_ir_t* ir) {
     return md_array_size(ir->identifier_names);
 }
 
-const str_t* md_script_ir_identifiers(const md_script_ir_t* ir) {
+const md_str_t* md_script_ir_identifiers(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return NULL;
     }
@@ -8460,7 +8460,7 @@ size_t md_script_ir_property_count(const md_script_ir_t* ir) {
     return md_array_size(ir->property_names);
 }
 
-const str_t* md_script_ir_property_names(const md_script_ir_t* ir) {
+const md_str_t* md_script_ir_property_names(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
     }
@@ -8468,10 +8468,10 @@ const str_t* md_script_ir_property_names(const md_script_ir_t* ir) {
 }
 
 // Index of the named property, -1 if there is none
-static int ir_property_index(const md_script_ir_t* ir, str_t name) {
+static int ir_property_index(const md_script_ir_t* ir, md_str_t name) {
     if (validate_ir(ir)) {
         for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
-            if (str_eq(ir->property_names[i], name)) {
+            if (md_str_eq(ir->property_names[i], name)) {
                 return (int)i;
             }
         }
@@ -8479,17 +8479,17 @@ static int ir_property_index(const md_script_ir_t* ir, str_t name) {
     return -1;
 }
 
-md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, str_t name) {
+md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, md_str_t name) {
     const int idx = ir_property_index(ir, name);
     return idx < 0 ? MD_SCRIPT_PROPERTY_FLAG_NONE : ir->property_flags[idx];
 }
 
-uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, str_t name) {
+uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, md_str_t name) {
     const int idx = ir_property_index(ir, name);
     return (idx < 0 || (size_t)idx >= md_array_size(ir->property_fingerprints)) ? 0 : ir->property_fingerprints[idx];
 }
 
-md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, str_t name) {
+md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, md_str_t name) {
     const int idx = ir_property_index(ir, name);
     if (idx < 0) return (md_script_range_marker_t){0};
     // The assignment, or the name within a list of them: its name either way
@@ -8500,7 +8500,7 @@ md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, s
     return (md_script_range_marker_t){ node->token.beg, node->token.end };
 }
 
-md_script_vis_ref_t md_script_ir_property_vis_ref(const md_script_ir_t* ir, str_t name) {
+md_script_vis_ref_t md_script_ir_property_vis_ref(const md_script_ir_t* ir, md_str_t name) {
     const int idx = ir_property_index(ir, name);
     return idx < 0 ? (md_script_vis_ref_t){0} : make_vis_ref(ir, ir->property_nodes[idx]);
 }
@@ -8509,9 +8509,9 @@ bool md_script_vis_ref_valid(const md_script_ir_t* ir, md_script_vis_ref_t ref) 
     return resolve_vis_ref(ir, ref) != NULL;
 }
 
-str_t md_script_vis_ref_ident(const md_script_ir_t* ir, md_script_vis_ref_t ref) {
+md_str_t md_script_vis_ref_ident(const md_script_ir_t* ir, md_script_vis_ref_t ref) {
     const ast_node_t* node = resolve_vis_ref(ir, ref);
-    return node ? node->ident : (str_t){0};
+    return node ? node->ident : (md_str_t){0};
 }
 
 int md_script_vis_ref_dim(const md_script_ir_t* ir, md_script_vis_ref_t ref) {
@@ -8583,9 +8583,9 @@ static void slot_let_go(eval_slot_t* s) {
     s->count  = 0;
 }
 
-static int find_property(const md_script_eval_t* eval, str_t ident) {
+static int find_property(const md_script_eval_t* eval, md_str_t ident) {
     for (size_t p = 0; p < md_array_size(eval->props); ++p) {
-        if (str_eq(eval->props[p].ident, ident)) return (int)p;
+        if (md_str_eq(eval->props[p].ident, ident)) return (int)p;
     }
     return -1;
 }
@@ -8600,14 +8600,14 @@ static eval_slot_t* find_slot(const md_script_eval_t* eval, uint64_t key, uint32
 }
 
 // The evaluation target which assigns the variable, -1 if none does (a constant, or a name the script does not assign)
-static int target_assigning(const md_script_ir_t* ir, str_t name) {
+static int target_assigning(const md_script_ir_t* ir, md_str_t name) {
     for (size_t t = 0; t < md_array_size(ir->eval_targets); ++t) {
         const ast_node_t* lhs = ir->eval_targets[t]->children[0];
         if (lhs->type == AST_IDENTIFIER) {
-            if (str_eq(lhs->ident, name)) return (int)t;
+            if (md_str_eq(lhs->ident, name)) return (int)t;
         } else if (lhs->type == AST_ARRAY) {
             for (size_t j = 0; j < md_array_size(lhs->children); ++j) {
-                if (lhs->children[j]->type == AST_IDENTIFIER && str_eq(lhs->children[j]->ident, name)) return (int)t;
+                if (lhs->children[j]->type == AST_IDENTIFIER && md_str_eq(lhs->children[j]->ident, name)) return (int)t;
             }
         }
     }
@@ -8723,11 +8723,11 @@ static md_script_eval_t* eval_create(const md_script_ir_t* ir, const md_script_e
     // that. The time of a frame is the trajectory's business.
     if (num_frames > 0) {
         md_attribute_desc_t axis = {
-            .path   = STR_INIT("time"),
+            .path   = MD_STR_INIT("time"),
             .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)num_frames } },
             .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
             .unit   = md_unit_none(),
-            .label  = STR_INIT("Frame"),
+            .label  = MD_STR_INIT("Frame"),
         };
         md_attribute_id_t axis_id = md_attributes_create(attributes, &axis);
         double* ordinals = axis_id ? (double*)md_attributes_data(attributes, axis_id, MD_ATTRIBUTE_TYPE_F64) : NULL;
@@ -8837,7 +8837,7 @@ static int slot_destination(bool* out_held, const md_script_eval_t* eval, const 
     int named = -1, alike = -1;
     for (size_t i = 0; i < md_array_size(eval->props); ++i) {
         const eval_property_t* dst = &eval->props[i];
-        const bool same_name = str_eq(dst->ident, src->ident);
+        const bool same_name = md_str_eq(dst->ident, src->ident);
         if (from[i] >= 0 && dst->fingerprint == src->fingerprint) {
             if (same_name) { *out_held = true; return (int)i; }
             if (alike < 0) alike = (int)i;
@@ -8913,7 +8913,7 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
 
     md_attributes_t* table = &eval->attributes;
     table->version_counter = MD_MAX(table->version_counter, prev->attributes.version_counter);
-    for (md_attribute_iter_t it = md_attributes_iter(table, (str_t){0}); md_attributes_next(&it);) {
+    for (md_attribute_iter_t it = md_attributes_iter(table, (md_str_t){0}); md_attributes_next(&it);) {
         md_attributes_touch(table, it.attr->id);
     }
 
@@ -8966,13 +8966,13 @@ static md_bitset_t frames_held(const md_script_eval_t* eval, uint32_t kinds, int
 
 static const uint32_t all_kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME;
 
-md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, str_t ident, md_allocator_i* alloc) {
+md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, md_str_t ident, md_allocator_i* alloc) {
     if (!validate_eval(eval) || !alloc) return md_bitset_empty_set();
     const int p = find_property(eval, ident);
     return p >= 0 ? frames_held(eval, all_kinds, p, alloc) : md_bitset_empty_set();
 }
 
-uint64_t md_script_eval_property_fingerprint(const md_script_eval_t* eval, str_t ident) {
+uint64_t md_script_eval_property_fingerprint(const md_script_eval_t* eval, md_str_t ident) {
     if (!validate_eval(eval)) return 0;
     const int p = find_property(eval, ident);
     return p >= 0 ? eval->props[p].fingerprint : 0;
@@ -9006,7 +9006,7 @@ bool md_script_eval_plan(md_script_eval_plan_t* out_plans, size_t cap, md_bitset
         }
         const eval_property_t* src = &eval->props[j];
         plan->status     = MD_SCRIPT_EVAL_STATUS_HELD;
-        plan->from       = str_copy(src->ident, alloc);
+        plan->from       = md_str_copy(src->ident, alloc);
         plan->num_frames = (uint32_t)md_bitmask_count(&src->done);
 
         // The frames it does not hold, and those its slots have to add or take out
@@ -9072,7 +9072,7 @@ md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, md_allocator_i
 
 // ### SLOTS ###
 
-bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, str_t ident, const md_bitset_t* frames) {
+bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, md_str_t ident, const md_bitset_t* frames) {
     if (!validate_eval(eval) || !frames) return false;
     const int p = find_property(eval, ident);
     if (p < 0 || !is_aggregate(&eval->props[p])) return false;
@@ -9118,7 +9118,7 @@ bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, str_t ide
     return s != NULL;
 }
 
-void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, str_t ident) {
+void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, md_str_t ident) {
     if (!validate_eval(eval)) return;
     const int p = find_property(eval, ident);
     if (p < 0) return;
@@ -9133,7 +9133,7 @@ void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, str_t ide
 }
 
 // Finds the slot and returns it locked, NULL if there is none
-static eval_slot_t* lock_slot(const md_script_eval_t* eval, uint64_t key, str_t ident) {
+static eval_slot_t* lock_slot(const md_script_eval_t* eval, uint64_t key, md_str_t ident) {
     const int p = find_property(eval, ident);
     if (p < 0) return NULL;
     md_mutex_t* frame_lock = (md_mutex_t*)&eval->frame_lock;
@@ -9164,7 +9164,7 @@ static void slot_info(md_script_eval_slot_info_t* out, const eval_slot_t* s) {
     }
 }
 
-bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, str_t ident) {
+bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, md_str_t ident) {
     if (!validate_eval(eval) || !out_info) return false;
     eval_slot_t* s = lock_slot(eval, key, ident);
     if (!s) return false;
@@ -9187,7 +9187,7 @@ static void write_means(float* out_values, float* out_weights, const double* sum
 }
 
 bool md_script_eval_slot_extract(md_script_eval_slot_info_t* out_info, float* out_values, float* out_weights, size_t num_values,
-                                 const md_script_eval_t* eval, uint64_t key, str_t ident) {
+                                 const md_script_eval_t* eval, uint64_t key, md_str_t ident) {
     if (!validate_eval(eval)) return false;
     eval_slot_t* s = lock_slot(eval, key, ident);
     if (!s) return false;
@@ -9240,7 +9240,7 @@ void md_script_eval_reset_interrupt(md_script_eval_t* eval) {
     }
 }
 
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, uint32_t frame_beg, uint32_t frame_end) {
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, md_str_t run, uint32_t frame_beg, uint32_t frame_end) {
     if (frame_beg > frame_end) {
         MD_LOG_ERROR("Script eval: Invalid frame range");
         return false;
@@ -9256,7 +9256,7 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
     return result;
 }
 
-bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames_to_eval) {
+bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, md_str_t run, const uint32_t* frames, size_t num_frames_to_eval) {
     MD_ASSERT(eval);
 
     if (!ir) {
@@ -9268,10 +9268,10 @@ bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* 
         return false;
     }
 
-    const md_attribute_t* run_axis = str_empty(run) ? NULL : md_attributes_find_in(&sys->attributes, run, STR_LIT("time"));
+    const md_attribute_t* run_axis = md_str_empty(run) ? NULL : md_attributes_find_in(&sys->attributes, run, MD_STR_LIT("time"));
     const uint32_t num_frames = run_axis ? run_axis->format.shape[0] : 0;
     if (num_frames == 0) {
-        MD_LOG_ERROR("Script eval: no frames in the run '" STR_FMT "'", STR_ARG(run));
+        MD_LOG_ERROR("Script eval: no frames in the run '" MD_STR_FMT "'", MD_STR_ARG(run));
         return false;
     }
     for (size_t i = 0; i < num_frames_to_eval; ++i) {
@@ -9292,7 +9292,7 @@ bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* 
     // version. This is the producer saying it is done. Under the lock, as several threads evaluating at once finish
     // at once, and the table's counter is not for them to race on.
     md_mutex_lock(&eval->frame_lock);
-    for (md_attribute_iter_t it = md_attributes_iter(&eval->attributes, (str_t){0}); md_attributes_next(&it);) {
+    for (md_attribute_iter_t it = md_attributes_iter(&eval->attributes, (md_str_t){0}); md_attributes_next(&it);) {
         md_attributes_touch(&eval->attributes, it.attr->id);
     }
     md_mutex_unlock(&eval->frame_lock);
@@ -9357,12 +9357,12 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
     }
 }
 
-static bool eval_expression(data_t* dst, str_t expr, md_system_t* sys, md_allocator_i* alloc) {
+static bool eval_expression(data_t* dst, md_str_t expr, md_system_t* sys, md_allocator_i* alloc) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = str_copy(expr, ir->arena);
+    ir->str = md_str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
@@ -9387,12 +9387,12 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* sys, md_alloca
             allocate_data(dst, node->data.type, alloc);
             if (evaluate_node(dst, node, &ctx)) {
                 if (dst->type.base_type == TYPE_STRING) {
-                    // @HACK: We reallocate strings here here: If the data type is a str_t, then it gets a shallow copy
+                    // @HACK: We reallocate strings here here: If the data type is a md_str_t, then it gets a shallow copy
                     // Which means that the actual string data is contained within the ir->arena => temp_alloc
                     const size_t num_elem = element_count(*dst);
-                    str_t* dst_str = dst->ptr;
+                    md_str_t* dst_str = dst->ptr;
                     for (size_t i = 0; i < num_elem; ++i) {
-                        dst_str[i] = str_copy(dst_str[i], alloc);
+                        dst_str[i] = md_str_copy(dst_str[i], alloc);
                     }
                 }
                 result = true;
@@ -9401,10 +9401,10 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* sys, md_alloca
     }
 
     for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
-        MD_LOG_ERROR(""STR_FMT"", ir->errors[i].text.len, ir->errors[i].text.ptr);
+        MD_LOG_ERROR(""MD_STR_FMT"", ir->errors[i].text.len, ir->errors[i].text.ptr);
     }
     for (size_t i = 0; i < md_array_size(log.errors); ++i) {
-        MD_LOG_ERROR(""STR_FMT"", log.errors[i].text.len, log.errors[i].text.ptr);
+        MD_LOG_ERROR(""MD_STR_FMT"", log.errors[i].text.len, log.errors[i].text.ptr);
     }
 
     md_temp_end(temp_scope);
@@ -9413,11 +9413,11 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* sys, md_alloca
 }
 
 #if MD_DEBUG
-static void parse_type_check_and_print_expression_to_json(str_t expr, const md_system_t* sys, str_t filename) {
+static void parse_type_check_and_print_expression_to_json(md_str_t expr, const md_system_t* sys, md_str_t filename) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = str_copy(expr, ir->arena);
+    ir->str = md_str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     ast_node_t* node = prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc}));
@@ -9446,8 +9446,8 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
 // Returns the checked node, or NULL if it did not compile. A variable length is left to the evaluation,
 // which determines it (evaluate_node_alloc). What went wrong in the compilation is recorded in ir->errors.
 // ctx is left ready for the evaluation: reading ir, and logging to ctx->log.
-static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, str_t expr, const md_script_ir_t* ctx_ir) {
-    ir->str = str_copy(expr, ir->arena);
+static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, md_str_t expr, const md_script_ir_t* ctx_ir) {
+    ir->str = md_str_copy(expr, ir->arena);
     if (ctx_ir) {
         add_ir_ctx(ir, ctx_ir);
     }
@@ -9486,7 +9486,7 @@ static void filter_write_errors(md_filter_result_t* res, const md_script_ir_t* i
     bool first = true;
     for (size_t l = 0; l < MD_COUNTOF(lists); ++l) {
         for (size_t i = 0; i < md_array_size(lists[l]) && len + 1 < cap; ++i) {
-            const int n = md_snprintf(res->error + len, cap - len, "%s" STR_FMT, len ? "\n" : "", STR_ARG(lists[l][i].text));
+            const int n = md_snprintf(res->error + len, cap - len, "%s" MD_STR_FMT, len ? "\n" : "", MD_STR_ARG(lists[l][i].text));
             if (n < 0) return;
             len = MD_MIN(len + (size_t)n, cap - 1);
             if (first) {
@@ -9508,7 +9508,7 @@ typedef struct filter_eval_t {
     ast_node_t*     node;   // NULL if it did not compile
 } filter_eval_t;
 
-static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, const md_filter_context_t* ctx, uint32_t eval_flags, md_allocator_i* temp_alloc) {
+static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, md_str_t expr, const md_filter_context_t* ctx, uint32_t eval_flags, md_allocator_i* temp_alloc) {
     MD_MEMSET(res, 0, sizeof(*res));
     if (!ctx || !ctx->sys) {
         md_snprintf(res->error, sizeof(res->error), "No system to pick atoms from");
@@ -9519,8 +9519,8 @@ static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, 
         return false;
     }
     // Nothing written picks everything, as 'all' does
-    if (str_empty(str_trim(expr))) {
-        expr = STR_LIT("all");
+    if (md_str_empty(md_str_trim(expr))) {
+        expr = MD_STR_LIT("all");
     }
 
     f->ir = create_ir(temp_alloc);
@@ -9556,7 +9556,7 @@ static md_bitset_t filter_bond_atoms(const bondset_t* sets, size_t count, const 
     return md_bitmask_extract(&b, alloc);
 }
 
-md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, md_str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
     MD_ASSERT(dst);
     MD_ASSERT(alloc);
     md_filter_result_t res;
@@ -9600,7 +9600,7 @@ md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const 
     return res;
 }
 
-md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+md_filter_result_t md_filter(md_bitset_t* dst, md_str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
     MD_ASSERT(dst);
     MD_ASSERT(alloc);
     md_filter_result_t res;
@@ -9671,7 +9671,7 @@ md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_conte
     return res;
 }
 
-md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, md_str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
     MD_ASSERT(dst);
     MD_ASSERT(alloc);
     md_filter_result_t res;
@@ -9962,7 +9962,7 @@ size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, 
     return md_buf_writer_to_str(&bw).len;
 }
 
-bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {
+bool md_script_vis_eval_string(md_script_vis_t* vis, md_str_t expr, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {
     MD_ASSERT(vis);
     MD_ASSERT(vis_ctx);
 
@@ -9980,7 +9980,7 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = str_copy(expr, ir->arena);
+    ir->str = md_str_copy(expr, ir->arena);
 
     if (vis_ctx->ir) {
         add_ir_ctx(ir, vis_ctx->ir);
@@ -10111,12 +10111,12 @@ bool md_script_vis_clear(md_script_vis_t* vis) {
     return true;
 }
 
-bool md_script_identifier_name_valid(str_t ident) {
+bool md_script_identifier_name_valid(md_str_t ident) {
     if (!ident.ptr) return false;
     if (!ident.len) return false;
 
-    const char* beg = str_beg(ident);
-    const char* end = str_end(ident);
+    const char* beg = md_str_beg(ident);
+    const char* end = md_str_end(ident);
 
     if (!is_alpha(*beg) && *beg != '_') return false;
     for (const char* c = beg + 1; c < end; ++c) {
@@ -10128,13 +10128,13 @@ bool md_script_identifier_name_valid(str_t ident) {
 
 
 // Keep in step with the tokenizer (tokenizer_get_next_from_buffer)
-static const str_t script_keywords[] = {
-    STR_INIT("and"), STR_INIT("or"), STR_INIT("xor"), STR_INIT("not"), STR_INIT("in"), STR_INIT("of"), STR_INIT("out"),
+static const md_str_t script_keywords[] = {
+    MD_STR_INIT("and"), MD_STR_INIT("or"), MD_STR_INIT("xor"), MD_STR_INIT("not"), MD_STR_INIT("in"), MD_STR_INIT("of"), MD_STR_INIT("out"),
 };
 
 // Procedures that the parser handles itself instead of looking them up in the procedure table
-static const str_t script_intrinsics[] = {
-    STR_INIT("attr"), STR_INIT("flatten"), STR_INIT("transpose"),
+static const md_str_t script_intrinsics[] = {
+    MD_STR_INIT("attr"), MD_STR_INIT("flatten"), MD_STR_INIT("transpose"),
 };
 
 
@@ -10142,18 +10142,18 @@ size_t md_script_num_keywords(void) {
     return MD_COUNTOF(script_keywords);
 }
 
-const str_t* md_script_keywords(void) {
+const md_str_t* md_script_keywords(void) {
     return script_keywords;
 }
 
-static bool procedure_name_before(size_t idx, str_t name) {
+static bool procedure_name_before(size_t idx, md_str_t name) {
     for (size_t i = 0; i < idx; ++i) {
-        if (str_eq(procedures[i].name, name)) return true;
+        if (md_str_eq(procedures[i].name, name)) return true;
     }
     return false;
 }
 
-size_t md_script_builtin_identifiers(str_t* out, size_t cap) {
+size_t md_script_builtin_identifiers(md_str_t* out, size_t cap) {
     size_t count = 0;
     #define EMIT(name) do { if (out && count < cap) out[count] = (name); ++count; } while (0)
 

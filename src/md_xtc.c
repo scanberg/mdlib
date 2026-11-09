@@ -943,7 +943,7 @@ static bool cache_read_block(md_file_t file, void** dst, size_t bytes, md_alloca
 
 // On failure nothing is freed here: alloc is always an arena owned by the caller, which goes as a
 // whole, so there is no partial state to unwind.
-static bool try_read_cache(xtc_cache_t* cache, str_t path, md_allocator_i* alloc) {
+static bool try_read_cache(xtc_cache_t* cache, md_str_t path, md_allocator_i* alloc) {
     md_file_t file = {0};
     if (!md_run_cache_open(&file, &cache->header, path, MD_XTC_CACHE_MAGIC, MD_XTC_CACHE_VERSION)) {
         return false;
@@ -956,13 +956,13 @@ static bool try_read_cache(xtc_cache_t* cache, str_t path, md_allocator_i* alloc
         cache_read_block(file, (void**)&cache->frame_boxes,   n * 9 * sizeof(float),     alloc) &&
         md_file_tell(file) == (int64_t)md_file_size(file);
     if (!ok) {
-        MD_LOG_ERROR("XTC: the cache of '" STR_FMT "' is incomplete", STR_ARG(path));
+        MD_LOG_ERROR("XTC: the cache of '" MD_STR_FMT "' is incomplete", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
 }
 
-static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+static bool write_cache(const xtc_cache_t* cache, md_str_t path, const md_file_info_t* scanned) {
     md_file_t file = {0};
     const size_t n = cache->header.num_frames;
     if (!md_run_cache_create(&file, path, scanned, MD_XTC_CACHE_MAGIC, MD_XTC_CACHE_VERSION, cache->header.num_atoms, n)) {
@@ -974,7 +974,7 @@ static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info
         md_file_write(file, cache->frame_steps,   n * sizeof(int64_t))       == n * sizeof(int64_t) &&
         md_file_write(file, cache->frame_boxes,   n * 9 * sizeof(float))     == n * 9 * sizeof(float);
     if (!ok) {
-        MD_LOG_ERROR("XTC: failed to write the cache of '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("XTC: failed to write the cache of '" MD_STR_FMT "'", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
@@ -982,12 +982,12 @@ static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info
 
 // What the file is, from its cache when that is current and from a scan otherwise (writing the
 // cache unless told not to). path must be canonical; every array is allocated from alloc.
-static bool xtc_index_load(xtc_cache_t* cache, str_t path, uint32_t flags, md_allocator_i* alloc) {
+static bool xtc_index_load(xtc_cache_t* cache, md_str_t path, uint32_t flags, md_allocator_i* alloc) {
     MD_MEMSET(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("XTC: Failed to open file '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("XTC: Failed to open file '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
 
@@ -1031,7 +1031,7 @@ static bool xtc_index_load(xtc_cache_t* cache, str_t path, uint32_t flags, md_al
     if (!(flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         // If we fail to write the cache, that's ok, we can inform about it, but do not halt
         if (write_cache(cache, path, &scanned)) {
-            MD_LOG_INFO("XTC: Successfully created cache file for '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_INFO("XTC: Successfully created cache file for '" MD_STR_FMT "'", MD_STR_ARG(path));
         }
     }
     result = true;
@@ -1056,7 +1056,7 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     }
 
     md_run_source_t src;
-    if (!md_run_source(&src, attributes, attr, STR_LIT("atom/position"))) {
+    if (!md_run_source(&src, attributes, attr, MD_STR_LIT("atom/position"))) {
         return 0;
     }
     const int64_t* offsets = src.offset;
@@ -1076,10 +1076,10 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     }
     // Through io: inside an extraction context the file stays open from frame to frame, which is
     // what makes streaming from a cluster's file server bearable. Without one it is opened here.
-    const str_t file_path = src.path;
+    const md_str_t file_path = src.path;
     const size_t read = frame_data ? md_attribute_io_read_at(io, file_path, offsets[frame], frame_data, frame_size) : 0;
     if (frame_data && read != frame_size) {
-        MD_LOG_ERROR("XTC: Failed to read frame %u from '" STR_FMT "', expected %zu bytes, got %zu", frame, STR_ARG(file_path), frame_size, read);
+        MD_LOG_ERROR("XTC: Failed to read frame %u from '" MD_STR_FMT "', expected %zu bytes, got %zu", frame, MD_STR_ARG(file_path), frame_size, read);
     }
     if (frame_data && read == frame_size) {
         if (slice->num_idx == 1 && cap == num_atoms * 3) {
@@ -1101,15 +1101,15 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     return written;
 }
 
-bool md_xtc_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_xtc_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
     MD_ASSERT(sys);
-    if (str_empty(run)) {
+    if (md_str_empty(run)) {
         MD_LOG_ERROR("XTC: no run to publish into");
         return false;
     }
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = {path_buf, path_len};
+    const md_str_t path = {path_buf, path_len};
 
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
@@ -1151,7 +1151,7 @@ done:
     return result;
 }
 
-size_t md_xtc_file_atom_count(str_t filename) {
+size_t md_xtc_file_atom_count(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
     uint8_t head[8];

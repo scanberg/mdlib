@@ -13,7 +13,7 @@ size_t vial_dtype_size(uint8_t dtype) {
     case VIAL_DT_INT:     return 4;
     case VIAL_DT_FLOAT:   return 4;
     case VIAL_DT_FLOAT64: return 8;
-    case VIAL_DT_STR:     return sizeof(str_t);
+    case VIAL_DT_STR:     return sizeof(md_str_t);
     case VIAL_DT_RANGE:   return 16;
     case VIAL_DT_DRAWING: return sizeof(const vial_drawing_t*);
     default:              return 0;
@@ -63,9 +63,9 @@ vial_val_t vial_val_float64(double f, md_allocator_i* alloc) {
     return v;
 }
 
-vial_val_t vial_val_str(str_t s, md_allocator_i* alloc) {
+vial_val_t vial_val_str(md_str_t s, md_allocator_i* alloc) {
     vial_val_t v = vial_val_make(VIAL_DT_STR, 0, NULL, alloc);
-    *(str_t*)v.data = str_copy(s, alloc);
+    *(md_str_t*)v.data = md_str_copy(s, alloc);
     return v;
 }
 
@@ -121,7 +121,7 @@ static int print_elem(char* buf, size_t cap, const vial_val_t* v, size_t i) {
     case VIAL_DT_FLOAT:   return vial_print_float(buf, cap, ((const float*)v->data)[i], true);
     case VIAL_DT_FLOAT64: return vial_print_float(buf, cap, ((const double*)v->data)[i], false);
     case VIAL_DT_STR: {
-        const str_t s = ((const str_t*)v->data)[i];
+        const md_str_t s = ((const md_str_t*)v->data)[i];
         return snprintf(buf, cap, "'%.*s'", (int)s.len, s.ptr);
     }
     case VIAL_DT_RANGE: {
@@ -218,7 +218,7 @@ bool vial_val_equal(const vial_val_t* a, const vial_val_t* b) {
         return true;
     }
     if (a->dtype == VIAL_DT_STR) {
-        for (size_t i = 0; i < n; ++i) if (!str_eq(((const str_t*)a->data)[i], ((const str_t*)b->data)[i])) return false;
+        for (size_t i = 0; i < n; ++i) if (!md_str_eq(((const md_str_t*)a->data)[i], ((const md_str_t*)b->data)[i])) return false;
         return true;
     }
     if (a->dtype == VIAL_DT_DRAWING) {
@@ -230,7 +230,7 @@ bool vial_val_equal(const vial_val_t* a, const vial_val_t* b) {
             for (uint32_t q = 0; q < nx; ++q) {
                 const vial_prim_t* u = &x->prims[q];
                 const vial_prim_t* w = &y->prims[q];
-                if (u->kind != w->kind || memcmp(u->p, w->p, sizeof(u->p)) || u->r != w->r || !str_eq(u->text, w->text) || u->num_atoms != w->num_atoms) return false;
+                if (u->kind != w->kind || memcmp(u->p, w->p, sizeof(u->p)) || u->r != w->r || !md_str_eq(u->text, w->text) || u->num_atoms != w->num_atoms) return false;
             }
         }
         return true;
@@ -259,7 +259,7 @@ static vial_sets_t* sets_copy(const vial_sets_t* s, md_allocator_i* alloc) {
 static vial_prim_t* prims_copy(vial_prim_t* dst, const vial_prim_t* src, uint32_t n, md_allocator_i* alloc) {
     for (uint32_t i = 0; i < n; ++i) {
         dst[i] = src[i];
-        dst[i].text = src[i].text.len ? str_copy(src[i].text, alloc) : (str_t){0};
+        dst[i].text = src[i].text.len ? md_str_copy(src[i].text, alloc) : (md_str_t){0};
         if (src[i].num_atoms) {
             uint32_t* at = md_alloc(alloc, src[i].num_atoms * sizeof(uint32_t));
             memcpy(at, src[i].atoms, src[i].num_atoms * sizeof(uint32_t));
@@ -310,7 +310,7 @@ vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc) {
     if (v->data && bytes) {
         c.data = md_alloc(alloc, bytes);
         memcpy(c.data, v->data, bytes);
-        if (v->dtype == VIAL_DT_STR) for (size_t i = 0; i < n; ++i) ((str_t*)c.data)[i] = str_copy(((const str_t*)v->data)[i], alloc);
+        if (v->dtype == VIAL_DT_STR) for (size_t i = 0; i < n; ++i) ((md_str_t*)c.data)[i] = md_str_copy(((const md_str_t*)v->data)[i], alloc);
         if (v->dtype == VIAL_DT_DRAWING) {
             for (size_t i = 0; i < n; ++i) {
                 const vial_drawing_t* d = ((const vial_drawing_t**)v->data)[i];

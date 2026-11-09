@@ -59,8 +59,8 @@ enum {
 // The connectivity an atom line of Tinker holds at most (Tinker's own limit is 8)
 #define XYZ_MAX_CONN ((int)(sizeof(((md_xyz_coordinate_t*)0)->connectivity) / sizeof(int)))
 
-static inline bool is_unsigned_int(str_t str) {
-    str = str_trim(str);
+static inline bool is_unsigned_int(md_str_t str) {
+    str = md_str_trim(str);
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
 
@@ -73,18 +73,18 @@ static inline bool is_unsigned_int(str_t str) {
 }
 
 // The name of an atom of Tinker: a letter first ("C", "CT", "HW1", "N3+")
-static inline bool is_atom_name(str_t str) {
+static inline bool is_atom_name(md_str_t str) {
     return str.len > 0 && is_alpha(str.ptr[0]);
 }
 
 // The value of key=value in a comment line of extended XYZ, the key in any case and at the start or after a blank.
 // The value as written: in its quotes, braces or brackets where it has them, else up to the next blank.
-static bool xyz_find_key(str_t* out_value, str_t line, str_t key) {
+static bool xyz_find_key(md_str_t* out_value, md_str_t line, md_str_t key) {
     const char* beg = line.ptr;
     const char* end = line.ptr + line.len;
     for (const char* c = beg; c + key.len < end; ++c) {
         if (c > beg && !is_whitespace(c[-1])) continue;
-        if (c[key.len] != '=' || !str_eq_ignore_case((str_t){c, key.len}, key)) continue;
+        if (c[key.len] != '=' || !md_str_eq_ignore_case((md_str_t){c, key.len}, key)) continue;
         const char* v = c + key.len + 1;
         const char* e = v;
         if (v < end && (*v == '"' || *v == '{' || *v == '[')) {
@@ -99,40 +99,40 @@ static bool xyz_find_key(str_t* out_value, str_t line, str_t key) {
         } else {
             while (e < end && !is_whitespace(*e)) ++e;
         }
-        *out_value = (str_t){ v, (size_t)(e - v) };
+        *out_value = (md_str_t){ v, (size_t)(e - v) };
         return true;
     }
     return false;
 }
 
 // The columns of the atom lines of extended XYZ, from the Properties of its comment line, into flags
-static bool xyz_extended_columns(uint32_t* flags, str_t comment) {
-    str_t props = STR_LIT("species:S:1:pos:R:3");
-    str_t value = props;
-    if (xyz_find_key(&value, comment, STR_LIT("Properties"))) {
+static bool xyz_extended_columns(uint32_t* flags, md_str_t comment) {
+    md_str_t props = MD_STR_LIT("species:S:1:pos:R:3");
+    md_str_t value = props;
+    if (xyz_find_key(&value, comment, MD_STR_LIT("Properties"))) {
         if (value.len >= 2 && value.ptr[0] == '"' && value.ptr[value.len - 1] == '"') {
-            value = str_substr(value, 1, value.len - 2);
+            value = md_str_substr(value, 1, value.len - 2);
         }
         props = value;
     }
 
     int col = 0, species = -1, z = -1, pos = -1;
-    str_t field[3];
+    md_str_t field[3];
     for (;;) {
         size_t n = 0;
         while (n < 3 && extract_token_delim(&field[n], &props, ':')) ++n;
         if (n == 0) break;
         if (n != 3 || !is_unsigned_int(field[2]) || field[1].len != 1) {
-            MD_LOG_ERROR("XYZ: Invalid Properties in the extended XYZ comment line: '" STR_FMT "'", STR_ARG(value));
+            MD_LOG_ERROR("XYZ: Invalid Properties in the extended XYZ comment line: '" MD_STR_FMT "'", MD_STR_ARG(value));
             return false;
         }
         const int count = (int)parse_int(field[2]);
         const char type = field[1].ptr[0];
-        if (count == 1 && (type == 'S' || type == 's') && str_eq_ignore_case(field[0], STR_LIT("species")) && species < 0) {
+        if (count == 1 && (type == 'S' || type == 's') && md_str_eq_ignore_case(field[0], MD_STR_LIT("species")) && species < 0) {
             species = col;
-        } else if (count == 1 && (type == 'I' || type == 'i') && str_eq(field[0], STR_LIT("Z")) && z < 0) {
+        } else if (count == 1 && (type == 'I' || type == 'i') && md_str_eq(field[0], MD_STR_LIT("Z")) && z < 0) {
             z = col;
-        } else if (count == 3 && (type == 'R' || type == 'r') && (str_eq_ignore_case(field[0], STR_LIT("pos")) || str_eq_ignore_case(field[0], STR_LIT("positions"))) && pos < 0) {
+        } else if (count == 3 && (type == 'R' || type == 'r') && (md_str_eq_ignore_case(field[0], MD_STR_LIT("pos")) || md_str_eq_ignore_case(field[0], MD_STR_LIT("positions"))) && pos < 0) {
             pos = col;
         }
         col += count;
@@ -157,18 +157,18 @@ static bool xyz_extended_columns(uint32_t* flags, str_t comment) {
 }
 
 // A number with a Fortran exponent, "1.5D-03", as some older programs write them
-static bool xyz_parse_fortran_f64(double* out, str_t tok) {
+static bool xyz_parse_fortran_f64(double* out, md_str_t tok) {
     char buf[64];
     if (tok.len >= sizeof(buf)) return false;
     MD_MEMCPY(buf, tok.ptr, tok.len);
     for (size_t i = 0; i < tok.len; ++i) {
         if (buf[i] == 'D' || buf[i] == 'd') buf[i] = 'e';
     }
-    return md_parse_f64(out, (str_t){ buf, tok.len }) == tok.len;
+    return md_parse_f64(out, (md_str_t){ buf, tok.len }) == tok.len;
 }
 
 // A coordinate: a number, of a Fortran exponent as well
-static bool xyz_is_float(str_t tok) {
+static bool xyz_is_float(md_str_t tok) {
     double v;
     return is_float(tok) || xyz_parse_fortran_f64(&v, tok);
 }
@@ -177,7 +177,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
     MD_ASSERT(flags);    
 
     // Extract first three lines
-    str_t lines[3];
+    md_str_t lines[3];
     bool extract_lines = (
         md_reader_extract_line(reader, &lines[0]) &&
         md_reader_extract_line(reader, &lines[1]) && 
@@ -193,8 +193,8 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
 
     {
         // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ formats
-        str_t token;
-        str_t line = lines[0];
+        md_str_t token;
+        md_str_t line = lines[0];
         if (!extract_token(&token, &line) || !is_unsigned_int(token)) {
             MD_LOG_ERROR("Invalid format for XYZ: Missing coordinate count");
             return false;
@@ -203,14 +203,14 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
 
     // Extended XYZ: the comment line says what the columns are
     {
-        str_t value;
-        if (xyz_find_key(&value, lines[1], STR_LIT("Properties")) || xyz_find_key(&value, lines[1], STR_LIT("Lattice"))) {
+        md_str_t value;
+        if (xyz_find_key(&value, lines[1], MD_STR_LIT("Properties")) || xyz_find_key(&value, lines[1], MD_STR_LIT("Lattice"))) {
             *flags |= XYZ_EXTENDED;
             if (!xyz_extended_columns(flags, lines[1])) {
                 return false;
             }
-            str_t tok;
-            str_t line = lines[2];
+            md_str_t tok;
+            md_str_t line = lines[2];
             size_t n = 0;
             while (extract_token(&tok, &line)) ++n;
             if (n < XYZ_POS_COL(*flags) + 3) {
@@ -224,8 +224,8 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
     {
         // Test if we have an ARC trajectory
         // Second line should then contain exactly 6 floats
-        str_t token[8];
-        str_t line = lines[1];
+        md_str_t token[8];
+        md_str_t line = lines[1];
         const int64_t num_tokens = extract_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens == 6 &&
@@ -240,8 +240,8 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         // Determine coordinate structure
         // Traditional XYZ only holds 4 fields (atomic number or element symbol and coordinates)
         // Tinker holds additional fields (atom index, atom name, atom type and connectivity): at least 6 fields
-        str_t token[8];
-        str_t line = lines[2];
+        md_str_t token[8];
+        md_str_t line = lines[2];
         int64_t num_tokens = extract_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens >= 6 &&
@@ -275,9 +275,9 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
 // Old style: {} enclosed list 9 elements separated by whitespace: {1 2 3 4 5 6 7 8 9}
 // The cell as written: row i is vector i, in whatever orientation.
 
-static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
-    str_t value;
-    if (!xyz_find_key(&value, line, STR_LIT("Lattice"))) {
+static inline bool extract_extxyz_cell(float cell[3][3], md_str_t line) {
+    md_str_t value;
+    if (!xyz_find_key(&value, line, MD_STR_LIT("Lattice"))) {
         // Lattice information not found, since Lattice is optional, this is not an error
         return true;
     }
@@ -287,15 +287,15 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
         return false;
     }
 
-    str_t tok[9];
+    md_str_t tok[9];
     size_t num_tok = 0;
     const char open = value.ptr[0];
     const char close = value.ptr[value.len - 1];
-    str_t inner = str_substr(value, 1, value.len - 2);
+    md_str_t inner = md_str_substr(value, 1, value.len - 2);
 
     if ((open == '"' && close == '"') || (open == '{' && close == '}')) {
         num_tok = extract_tokens(tok, MD_COUNTOF(tok), &inner);
-        if (extract_token(&(str_t){0}, &inner)) {
+        if (extract_token(&(md_str_t){0}, &inner)) {
             MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
             return false;
         }
@@ -311,16 +311,16 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
                 MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
                 return false;
             }
-            str_t vec = { b + 1, (size_t)(c - b - 1) };
-            inner = (str_t){ c + 1, (size_t)(e - c - 1) };
+            md_str_t vec = { b + 1, (size_t)(c - b - 1) };
+            inner = (md_str_t){ c + 1, (size_t)(e - c - 1) };
             size_t num_sub_toks = extract_tokens_delim(tok + i*3, 3, &vec, ',');
-            if (num_sub_toks != 3 || !str_empty(str_trim(vec))) {
+            if (num_sub_toks != 3 || !md_str_empty(md_str_trim(vec))) {
                 MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
                 return false;
             }
-            tok[i*3+0] = str_trim(tok[i*3+0]);
-            tok[i*3+1] = str_trim(tok[i*3+1]);
-            tok[i*3+2] = str_trim(tok[i*3+2]);
+            tok[i*3+0] = md_str_trim(tok[i*3+0]);
+            tok[i*3+1] = md_str_trim(tok[i*3+1]);
+            tok[i*3+2] = md_str_trim(tok[i*3+2]);
             num_tok += num_sub_toks;
         }
     } else {
@@ -331,7 +331,7 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
     float val[9];
     for (size_t i = 0; i < num_tok; ++i) {
         if (!is_float(tok[i])) {
-            MD_LOG_ERROR("XYZ: Invalid number in Lattice: '" STR_FMT "'", STR_ARG(tok[i]));
+            MD_LOG_ERROR("XYZ: Invalid number in Lattice: '" MD_STR_FMT "'", MD_STR_ARG(tok[i]));
             return false;
         }
         val[i] = (float)parse_float(tok[i]);
@@ -352,40 +352,40 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
 
 // The element of an atom of the symbol or name sym. A plain XYZ file holds element symbols, in any case and some
 // with a number after them ("C", "CL", "C12", "Cl1"); Tinker holds atom names of its force field ("CA" is a carbon)
-static md_atomic_number_t xyz_element(str_t sym, bool tinker) {
+static md_atomic_number_t xyz_element(md_str_t sym, bool tinker) {
     md_atomic_number_t z = md_util_element_lookup(sym, false);
     if (z) return z;
     if (!tinker) {
         z = md_util_element_lookup(sym, true);
         if (z) return z;
     }
-    return md_atomic_number_infer_from_label(sym, (str_t){0}, tinker ? 3 : 0);
+    return md_atomic_number_infer_from_label(sym, (md_str_t){0}, tinker ? 3 : 0);
 }
 
 // The element column of a line: a symbol or name, else an atomic number
-static void xyz_set_element(md_xyz_coordinate_t* coord, str_t tok, uint32_t flags) {
+static void xyz_set_element(md_xyz_coordinate_t* coord, md_str_t tok, uint32_t flags) {
     if ((flags & XYZ_ELEMENT_Z) || !is_alpha(tok.ptr[0])) {
         const int64_t z = parse_int(tok);
         coord->atomic_number = (0 < z && z < 119) ? (int)z : 0;
-        const str_t sym = coord->atomic_number ? md_util_element_symbol((md_element_t)coord->atomic_number) : tok;
-        str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), sym);
+        const md_str_t sym = coord->atomic_number ? md_util_element_symbol((md_element_t)coord->atomic_number) : tok;
+        md_str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), sym);
     } else {
-        str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tok);
+        md_str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tok);
         coord->atomic_number = xyz_element(tok, flags & XYZ_TINKER);
     }
 }
 
-static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_t flags) {
+static inline bool extract_coord(md_xyz_coordinate_t* coord, md_str_t line, uint32_t flags) {
     MD_ASSERT(coord);
 
-    const str_t original = line;
+    const md_str_t original = line;
 
     if (flags & XYZ_TINKER) {
         // Index, name, x, y, z, then the atom type and the bonded atoms
-        str_t tok[6 + 9];
+        md_str_t tok[6 + 9];
         const size_t num_tokens = extract_tokens(tok, MD_COUNTOF(tok), &line);
         if (num_tokens < 5) {
-            MD_LOG_ERROR("Invalid number of tokens in Tinker XYZ coordinate when parsing line: '" STR_FMT "', expected >= 5, got %i", STR_ARG(original), (int)num_tokens);
+            MD_LOG_ERROR("Invalid number of tokens in Tinker XYZ coordinate when parsing line: '" MD_STR_FMT "', expected >= 5, got %i", MD_STR_ARG(original), (int)num_tokens);
             return false;
         }
         coord->atom_index = (int)parse_int(tok[0]);
@@ -398,15 +398,15 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
         }
         for (size_t i = 6; i < num_tokens; ++i) {
             if (!is_unsigned_int(tok[i])) {
-                MD_LOG_ERROR("Invalid connectivity information in XYZ file when parsing line: '" STR_FMT "', token: '" STR_FMT "'", STR_ARG(original), STR_ARG(tok[i]));
+                MD_LOG_ERROR("Invalid connectivity information in XYZ file when parsing line: '" MD_STR_FMT "', token: '" MD_STR_FMT "'", MD_STR_ARG(original), MD_STR_ARG(tok[i]));
                 return false;
             }
             if (i - 6 < (size_t)XYZ_MAX_CONN) {
                 coord->connectivity[i - 6] = (int)parse_int(tok[i]);
             }
         }
-        if (extract_token(&(str_t){0}, &line)) {
-            MD_LOG_ERROR("More bonded atoms than %d in Tinker XYZ line: '" STR_FMT "'", XYZ_MAX_CONN, STR_ARG(original));
+        if (extract_token(&(md_str_t){0}, &line)) {
+            MD_LOG_ERROR("More bonded atoms than %d in Tinker XYZ line: '" MD_STR_FMT "'", XYZ_MAX_CONN, MD_STR_ARG(original));
             return false;
         }
         return true;
@@ -416,12 +416,12 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     const size_t elem_col = (flags & XYZ_NO_ELEMENT) ? SIZE_MAX : XYZ_ELEM_COL(flags);
     const size_t pos_col  = XYZ_POS_COL(flags);
     const size_t need = MD_MAX(pos_col + 3, elem_col != SIZE_MAX ? elem_col + 1 : 0);
-    str_t elem = {0};
-    str_t pos[3];
-    str_t tok;
+    md_str_t elem = {0};
+    md_str_t pos[3];
+    md_str_t tok;
     for (size_t col = 0; col < need; ++col) {
         if (!extract_token(&tok, &line)) {
-            MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate when parsing line: '" STR_FMT "', expected >= %zu, got %zu", STR_ARG(original), need, col);
+            MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate when parsing line: '" MD_STR_FMT "', expected >= %zu, got %zu", MD_STR_ARG(original), need, col);
             return false;
         }
         if (col == elem_col) elem = tok;
@@ -433,7 +433,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     double v[3];
     for (int k = 0; k < 3; ++k) {
         if (md_parse_f64(&v[k], pos[k]) != pos[k].len && !xyz_parse_fortran_f64(&v[k], pos[k])) {
-            MD_LOG_ERROR("Invalid coordinate '" STR_FMT "' in XYZ line: '" STR_FMT "'", STR_ARG(pos[k]), STR_ARG(original));
+            MD_LOG_ERROR("Invalid coordinate '" MD_STR_FMT "' in XYZ line: '" MD_STR_FMT "'", MD_STR_ARG(pos[k]), MD_STR_ARG(original));
             return false;
         }
     }
@@ -450,23 +450,23 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
     MD_ASSERT(reader);
     MD_ASSERT(coord_count);
 
-    str_t line = {0};
-    str_t tokens[8];
+    md_str_t line = {0};
+    md_str_t tokens[8];
 
     if (!md_reader_extract_line(reader, &line)) {
         return false;
     }
 
-    line = str_trim(line);
-    if (str_empty(line)) {
+    line = md_str_trim(line);
+    if (md_str_empty(line)) {
         return false;
     }
 
     // The number of atoms leads the first line
-    str_t rest = line;
-    str_t count_tok;
+    md_str_t rest = line;
+    md_str_t count_tok;
     if (!extract_token(&count_tok, &rest) || !is_unsigned_int(count_tok)) {
-        MD_LOG_ERROR("Failed to extract coordinate count in XYZ header: '" STR_FMT "'", STR_ARG(line));
+        MD_LOG_ERROR("Failed to extract coordinate count in XYZ header: '" MD_STR_FMT "'", MD_STR_ARG(line));
         return false;
     }
     const int64_t count = parse_int(count_tok);
@@ -477,10 +477,10 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
 
     // Tinker has the comment after the number of atoms
     if ((flags & XYZ_TINKER) && (flags & XYZ_STORE_COMMENT)) {
-        const str_t comment = str_trim(rest);
-        if (!str_empty(comment)) {
+        const md_str_t comment = md_str_trim(rest);
+        if (!md_str_empty(comment)) {
             MD_ASSERT(alloc);
-            model->comment = str_copy(comment, alloc);
+            model->comment = md_str_copy(comment, alloc);
         }
     }
 
@@ -491,9 +491,9 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
             return false;
         }
 
-        if (!(flags & XYZ_TINKER) && (flags & XYZ_STORE_COMMENT) && !str_empty(line)) {
+        if (!(flags & XYZ_TINKER) && (flags & XYZ_STORE_COMMENT) && !md_str_empty(line)) {
             MD_ASSERT(alloc);
-            model->comment = str_copy(line, alloc);
+            model->comment = md_str_copy(line, alloc);
         }
     }
 
@@ -568,7 +568,7 @@ static bool xyz_parse(md_xyz_data_t* data, md_reader_i* reader, md_allocator_i* 
         mdl.byte_offset = byte_offset;
         mdl.beg_coord_index = (uint32_t)md_array_size(data->coordinates);
         for (size_t i = 0; i < expected_count; ++i) {
-            str_t line;
+            md_str_t line;
             md_xyz_coordinate_t coord = {0};
             if (md_reader_extract_line(reader, &line) &&
                 extract_coord(&coord, line, flags))
@@ -611,15 +611,15 @@ static bool xyz_parse(md_xyz_data_t* data, md_reader_i* reader, md_allocator_i* 
 // the header for each 'model' which could constitute a frame within an animation
 // (given that the number of coordinates are the same)
 
-bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i* alloc) {
+bool md_xyz_data_parse_str(md_xyz_data_t* data, md_str_t str, struct md_allocator_i* alloc) {
     md_reader_i reader = md_reader_from_str(str);
     return xyz_parse(data, &reader, alloc, false);
 }
 
-bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_allocator_i* alloc) {
+bool md_xyz_data_parse_file(md_xyz_data_t* data, md_str_t filename, struct md_allocator_i* alloc) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("Parse XYZ: Failed to open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Parse XYZ: Failed to open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -641,8 +641,8 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     if (data->coordinates) md_array_free(data->coordinates, alloc);
     if (data->models) {
         for (size_t i = 0; i < data->num_models; ++i) {
-            if (!str_empty(data->models[i].comment)) {
-                str_free(data->models[i].comment, alloc);
+            if (!md_str_empty(data->models[i].comment)) {
+                md_str_free(data->models[i].comment, alloc);
             }
         }
         md_array_free(data->models, alloc);
@@ -727,7 +727,7 @@ static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_stat
     md_array_ensure(sys->atom.flags, reserve_size, sys->alloc);
 
     // Setup particle types including unknown type
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     // A cell in another orientation than md_unitcell_t holds turns the coordinates along with it
     b->rotate = xyz_model_cell(&state->unitcell, b->R, cell);
@@ -746,7 +746,7 @@ static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
         // The symbol as written, not the whole buffer: the rest of it is zeros, which a name would carry along
         size_t symbol_len = 0;
         while (symbol_len < sizeof(c->element_symbol) && c->element_symbol[symbol_len]) ++symbol_len;
-        const str_t symbol = { c->element_symbol, symbol_len };
+        const md_str_t symbol = { c->element_symbol, symbol_len };
         type = md_util_particle_type_find_or_add(sys, &b->type_map, symbol, (md_atomic_number_t)c->atomic_number);
         b->cache_key[slot] = key;
         b->cache_type[slot] = type;
@@ -846,7 +846,7 @@ static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reade
     xyz_builder_t b;
     xyz_builder_begin(&b, sys, state, count, MD_AS_CONST_MAT3(model.cell), temp_alloc);
     for (size_t i = 0; i < count; ++i) {
-        str_t line;
+        md_str_t line;
         md_xyz_coordinate_t coord;
         MD_MEMSET(coord.element_symbol, 0, sizeof(coord.element_symbol));
         coord.atomic_number = 0;
@@ -866,19 +866,19 @@ done:
     return result;
 }
 
-bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_xyz_options_t options) {
+bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, md_xyz_options_t options) {
     MD_ASSERT(sys);
     md_reader_i reader = md_reader_from_str(str);
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
     return xyz_system_load(sys, state, &reader, options);
 }
 
-bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_xyz_options_t options) {
+bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, md_xyz_options_t options) {
     MD_ASSERT(sys);
     
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("Failed to open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Failed to open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 
@@ -904,7 +904,7 @@ typedef struct xyz_cache_t {
 
 // The cache beside path when it was made from the file as it is now: header, num_frames + 1 offsets,
 // 9 cell floats per frame.
-static bool try_read_cache(xyz_cache_t* cache, str_t path, md_allocator_i* alloc) {
+static bool try_read_cache(xyz_cache_t* cache, md_str_t path, md_allocator_i* alloc) {
     MD_ASSERT(cache);
     MD_ASSERT(alloc);
     md_file_t file = {0};
@@ -920,7 +920,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t path, md_allocator_i* alloc
         md_file_read(file, cache->cells,   cell_bytes)   == cell_bytes &&
         md_file_tell(file) == (int64_t)md_file_size(file);
     if (!ok) {
-        MD_LOG_ERROR("The XYZ cache beside '" STR_FMT "' is incomplete", STR_ARG(path));
+        MD_LOG_ERROR("The XYZ cache beside '" MD_STR_FMT "' is incomplete", MD_STR_ARG(path));
         md_free(alloc, cache->offsets, offset_bytes);
         md_free(alloc, cache->cells,   cell_bytes);
         cache->offsets = NULL;
@@ -930,7 +930,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t path, md_allocator_i* alloc
     return ok;
 }
 
-static bool write_cache(const xyz_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+static bool write_cache(const xyz_cache_t* cache, md_str_t path, const md_file_info_t* scanned) {
     md_file_t file = {0};
     if (!md_run_cache_create(&file, path, scanned, MD_XYZ_CACHE_MAGIC, MD_XYZ_CACHE_VERSION, cache->header.num_atoms, cache->header.num_frames)) {
         return false;
@@ -941,7 +941,7 @@ static bool write_cache(const xyz_cache_t* cache, str_t path, const md_file_info
         md_file_write(file, cache->offsets, offset_bytes) == offset_bytes &&
         md_file_write(file, cache->cells,   cell_bytes)   == cell_bytes;
     if (!ok) {
-        MD_LOG_ERROR("Failed to write the XYZ cache beside '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("Failed to write the XYZ cache beside '" MD_STR_FMT "'", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
@@ -951,7 +951,7 @@ static bool write_cache(const xyz_cache_t* cache, str_t path, const md_file_info
 // when that is current, from a scan of the file otherwise (writing the cache unless told not to). The scan reads the
 // header of each model and skips its atom lines.
 // From alloc; the scan's scratch keeps clear of avoid, which is what alloc was made from.
-static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, str_t filename, md_run_flags_t run_flags, md_allocator_i* alloc, md_allocator_i* avoid) {
+static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, md_str_t filename, md_run_flags_t run_flags, md_allocator_i* alloc, md_allocator_i* avoid) {
     MD_MEMSET(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
@@ -1047,7 +1047,7 @@ done:
 
 // The coordinates of atoms [first, first + count) of one frame's text, packed xyz, turned with the frame's cell where
 // md_unitcell_t holds it in another orientation. Returns how many were written.
-static size_t xyz_parse_frame_coords(float* xyz, str_t text, uint32_t flags, size_t first, size_t count) {
+static size_t xyz_parse_frame_coords(float* xyz, md_str_t text, uint32_t flags, size_t first, size_t count) {
     md_reader_i reader = md_reader_from_str(text);
     md_xyz_model_t model = {0};
     size_t coord_count = 0;
@@ -1064,7 +1064,7 @@ static size_t xyz_parse_frame_coords(float* xyz, str_t text, uint32_t flags, siz
     size_t written = 0;
     if (first >= coord_count) return 0;
     if (md_reader_skip_lines(&reader, first) != first) return 0;
-    str_t line;
+    md_str_t line;
     for (size_t i = first; written < count && i < coord_count && md_reader_extract_line(&reader, &line); ++i) {
         md_xyz_coordinate_t coord = {0};
         if (!extract_coord(&coord, line, col_flags)) {
@@ -1086,11 +1086,11 @@ static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t*
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
+    if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
 
-    const int32_t* layout = (const int32_t*)md_attribute_view(md_attributes_find_in(&sys->attributes, src.run, STR_LIT("source/layout")), MD_ATTRIBUTE_TYPE_I32, 1, 0);
+    const int32_t* layout = (const int32_t*)md_attribute_view(md_attributes_find_in(&sys->attributes, src.run, MD_STR_LIT("source/layout")), MD_ATTRIBUTE_TYPE_I32, 1, 0);
     if (!layout) {
-        MD_LOG_ERROR("XYZ: the run '" STR_FMT "' has lost its layout", STR_ARG(src.run));
+        MD_LOG_ERROR("XYZ: the run '" MD_STR_FMT "' has lost its layout", MD_STR_ARG(src.run));
         return 0;
     }
     const uint32_t flags = (uint32_t)layout[0];
@@ -1110,23 +1110,23 @@ static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t*
     size_t written = 0;
     char* text = md_temp_alloc(temp, MD_MAX(frame_size, 1));
     if (text && md_attribute_io_read_at(io, src.path, src.offset[frame], text, frame_size) == frame_size) {
-        if (xyz_parse_frame_coords((float*)dst, (str_t){ text, frame_size }, flags, first, count) == count) {
+        if (xyz_parse_frame_coords((float*)dst, (md_str_t){ text, frame_size }, flags, first, count) == count) {
             written = cap;
         } else {
-            MD_LOG_ERROR("XYZ: frame %u of '" STR_FMT "' has fewer than %zu atoms", frame, STR_ARG(src.path), first + count);
+            MD_LOG_ERROR("XYZ: frame %u of '" MD_STR_FMT "' has fewer than %zu atoms", frame, MD_STR_ARG(src.path), first + count);
         }
     } else {
-        MD_LOG_ERROR("XYZ: Failed to read frame %u from '" STR_FMT "'", frame, STR_ARG(src.path));
+        MD_LOG_ERROR("XYZ: Failed to read frame %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(src.path));
     }
     md_temp_end(temp);
     return written;
 }
 
-bool md_xyz_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_xyz_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
     MD_ASSERT(sys);
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = { path_buf, path_len };
+    const md_str_t path = { path_buf, path_len };
 
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
@@ -1164,9 +1164,9 @@ bool md_xyz_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
     char buf[512];
     const int32_t layout = (int32_t)xyz_flags;
     if (!md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/layout")),
         .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 0 },
-        .unit = md_unit_none(), .description = STR_INIT("Which XYZ dialect the frames are written in"),
+        .unit = md_unit_none(), .description = MD_STR_INIT("Which XYZ dialect the frames are written in"),
         .data = &layout, .byte_size = sizeof(layout)})) {
         md_attributes_remove_prefix(&sys->attributes, run);
         goto done;

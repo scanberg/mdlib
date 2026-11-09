@@ -88,15 +88,15 @@ extern "C" {
 
 // Parse a Molden file into a system, replacing its atoms, its state and its attribute table with
 // what the file carried.
-bool md_molden_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, str_t filename);
+bool md_molden_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename);
 
 // The same, for a file already in memory.
-bool md_molden_system_init_from_str(struct md_system_t* sys, struct md_system_state_t* state, str_t str);
+bool md_molden_system_init_from_str(struct md_system_t* sys, struct md_system_state_t* state, md_str_t str);
 
 // Whether the file looks like Molden: it opens, and the first non-empty line is the [Molden Format]
 // header. Cheap, and meant for a caller deciding which reader to hand a file to - the extension
 // alone does not settle it, since .molden.input and .mold are both in use and .input is not.
-bool md_molden_file_is_molden(str_t filename);
+bool md_molden_file_is_molden(md_str_t filename);
 
 #ifdef __cplusplus
 }

@@ -20,7 +20,7 @@
 #define UNIT_COULOMB        {.base = {.dim = {.time = 1, .current = 1}}, .mult = 1.0}
 #define UNIT_AMPEREHOUR     {.base = {.dim = {.time = 1, .current = 1}}, .mult = 3600.0}
 
-static md_unit_t parse(str_t str) {
+static md_unit_t parse(md_str_t str) {
 	md_unit_t unit;
 	md_unit_parse(&unit, str);
 	return unit;
@@ -59,44 +59,44 @@ UTEST(unit, print) {
 }
 
 UTEST(unit, parse) {
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KILOGRAM,		parse(STR_LIT("kg"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_PASCAL,		parse(STR_LIT("Pa"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NANOMETER,	parse(STR_LIT("nm"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_BAR,			parse(STR_LIT("bar"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			parse(STR_LIT("m/s^2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			parse(STR_LIT("m*s^-2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KJ_MOL,		parse(STR_LIT("kJ/mol"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		parse(STR_LIT("kg*m/s^2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		parse(STR_LIT("m kg/s^2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		parse(STR_LIT("N"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_VOLT,			parse(STR_LIT("V"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_COULOMB,		parse(STR_LIT("C"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_AMPEREHOUR,	parse(STR_LIT("Ah"))));
-	EXPECT_TRUE(md_unit_equal(md_unit_inv(md_unit_second()),parse(STR_LIT("1/s"))));
-	EXPECT_TRUE(md_unit_equal(md_unit_scl(md_unit_meter(), 1e-6), parse(STR_LIT("um"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KILOGRAM,		parse(MD_STR_LIT("kg"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_PASCAL,		parse(MD_STR_LIT("Pa"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NANOMETER,	parse(MD_STR_LIT("nm"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_BAR,			parse(MD_STR_LIT("bar"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			parse(MD_STR_LIT("m/s^2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			parse(MD_STR_LIT("m*s^-2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KJ_MOL,		parse(MD_STR_LIT("kJ/mol"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		parse(MD_STR_LIT("kg*m/s^2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		parse(MD_STR_LIT("m kg/s^2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		parse(MD_STR_LIT("N"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_VOLT,			parse(MD_STR_LIT("V"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_COULOMB,		parse(MD_STR_LIT("C"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_AMPEREHOUR,	parse(MD_STR_LIT("Ah"))));
+	EXPECT_TRUE(md_unit_equal(md_unit_inv(md_unit_second()),parse(MD_STR_LIT("1/s"))));
+	EXPECT_TRUE(md_unit_equal(md_unit_scl(md_unit_meter(), 1e-6), parse(MD_STR_LIT("um"))));
 
 	// Parenthesis, explicit numeric scale and left associative division
 	const md_unit_t J_mol_K = md_unit_div(md_unit_joule(), md_unit_mul(md_unit_mole(), md_unit_kelvin()));
-	EXPECT_TRUE(md_unit_equal(J_mol_K,						parse(STR_LIT("J/(mol*K)"))));
-	EXPECT_TRUE(md_unit_equal(J_mol_K,						parse(STR_LIT("J/mol/K"))));
-	EXPECT_TRUE(md_unit_equal(md_unit_angstrom(),			parse(STR_LIT("1e-10*m"))));
-	EXPECT_TRUE(md_unit_equal(md_unit_scl(md_unit_joule(), 4.184), parse(STR_LIT("4.184*J"))));
+	EXPECT_TRUE(md_unit_equal(J_mol_K,						parse(MD_STR_LIT("J/(mol*K)"))));
+	EXPECT_TRUE(md_unit_equal(J_mol_K,						parse(MD_STR_LIT("J/mol/K"))));
+	EXPECT_TRUE(md_unit_equal(md_unit_angstrom(),			parse(MD_STR_LIT("1e-10*m"))));
+	EXPECT_TRUE(md_unit_equal(md_unit_scl(md_unit_joule(), 4.184), parse(MD_STR_LIT("4.184*J"))));
 }
 
 UTEST(unit, parse_reports_failure) {
 	md_unit_t unit;
 
-	EXPECT_TRUE(md_unit_parse(&unit, STR_LIT("nm")));
+	EXPECT_TRUE(md_unit_parse(&unit, MD_STR_LIT("nm")));
 	EXPECT_TRUE(md_unit_equal(unit, md_unit_nanometer()));
 
 	// An empty string is a successfully parsed 'no unit'
-	EXPECT_TRUE(md_unit_parse(&unit, STR_LIT("")));
+	EXPECT_TRUE(md_unit_parse(&unit, MD_STR_LIT("")));
 	EXPECT_TRUE(md_unit_is_none(unit));
 
-	EXPECT_FALSE(md_unit_parse(&unit, STR_LIT("banana")));
+	EXPECT_FALSE(md_unit_parse(&unit, MD_STR_LIT("banana")));
 	EXPECT_TRUE(md_unit_is_none(unit));
 
-	EXPECT_FALSE(md_unit_parse(&unit, STR_LIT("q m")));
+	EXPECT_FALSE(md_unit_parse(&unit, MD_STR_LIT("q m")));
 	EXPECT_TRUE(md_unit_is_none(unit));
 }
 
@@ -121,7 +121,7 @@ UTEST(unit, print_parse_roundtrip) {
 				EXPECT_GT(len, 0U);
 
 				md_unit_t parsed;
-				EXPECT_TRUE(md_unit_parse(&parsed, (str_t){buf, len}));
+				EXPECT_TRUE(md_unit_parse(&parsed, (md_str_t){buf, len}));
 				EXPECT_TRUE(md_unit_equal(parsed, unit));
 			}
 		}
@@ -136,7 +136,7 @@ UTEST(unit, print_scaled_pair) {
 	md_unit_print(buf, sizeof(buf), potential);
 	EXPECT_STREQ("Ha/e", buf);
 	md_unit_t parsed;
-	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_parse(&parsed, md_str_from_cstr(buf)));
 	EXPECT_TRUE(md_unit_equal(parsed, potential));
 
 	md_unit_print(buf, sizeof(buf), md_unit_div(md_unit_hartree(), md_unit_bohr_radius()));
@@ -146,17 +146,17 @@ UTEST(unit, print_scaled_pair) {
 	const md_unit_t quadrupole = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
 	md_unit_print(buf, sizeof(buf), quadrupole);
 	EXPECT_STREQ("e*bohr^2", buf);
-	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_parse(&parsed, md_str_from_cstr(buf)));
 	EXPECT_TRUE(md_unit_equal(parsed, quadrupole));
 	const md_unit_t gradient = md_unit_div(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 2));
 	md_unit_print(buf, sizeof(buf), gradient);
 	EXPECT_STREQ("Ha/bohr^2", buf);
-	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_parse(&parsed, md_str_from_cstr(buf)));
 	EXPECT_TRUE(md_unit_equal(parsed, gradient));
 	const md_unit_t density = md_unit_div(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 3));
 	md_unit_print(buf, sizeof(buf), density);
 	EXPECT_STREQ("e/bohr^3", buf);
-	EXPECT_TRUE(md_unit_parse(&parsed, str_from_cstr(buf)));
+	EXPECT_TRUE(md_unit_parse(&parsed, md_str_from_cstr(buf)));
 	EXPECT_TRUE(md_unit_equal(parsed, density));
 
 	// Units the SI ones name exactly are left as they were
@@ -252,16 +252,16 @@ UTEST(unit, charge_and_dipole) {
     // print and parse round trip
     char buf[64];
     size_t len = md_unit_print(buf, sizeof(buf), md_unit_debye());
-    EXPECT_TRUE(str_eq(str_from_cstrn(buf, len), STR_LIT("D")));
+    EXPECT_TRUE(md_str_eq(md_str_from_cstrn(buf, len), MD_STR_LIT("D")));
 
     md_unit_t parsed;
-    ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("D")));
+    ASSERT_TRUE(md_unit_parse(&parsed, MD_STR_LIT("D")));
     EXPECT_TRUE(md_unit_equal(parsed, md_unit_debye()));
-    ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("e")));
+    ASSERT_TRUE(md_unit_parse(&parsed, MD_STR_LIT("e")));
     EXPECT_TRUE(md_unit_equal(parsed, md_unit_elementary_charge()));
 
     // adding 'e' to the table must not have shadowed the electronvolt
-    ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("eV")));
+    ASSERT_TRUE(md_unit_parse(&parsed, MD_STR_LIT("eV")));
     EXPECT_TRUE(md_unit_equal(parsed, md_unit_electronvolt()));
 }
 
@@ -282,5 +282,5 @@ UTEST(unit, print_ignores_the_locale) {
 	comma_locale_leave(&loc);
 
 	EXPECT_STREQ(ref, buf);
-	EXPECT_TRUE(md_unit_equal(unit, parse(str_from_cstr(buf))));
+	EXPECT_TRUE(md_unit_equal(unit, parse(md_str_from_cstr(buf))));
 }

@@ -20,8 +20,8 @@ static uint64_t bits_of(double d) {
     return u;
 }
 
-static str_t str_of(const char* cstr) {
-    str_t s = { cstr, strlen(cstr) };
+static md_str_t str_of(const char* cstr) {
+    md_str_t s = { cstr, strlen(cstr) };
     return s;
 }
 
@@ -49,7 +49,7 @@ static parsed_t parse_n(const char* text, size_t len) {
     parsed_t p = {0};
     p.text = malloc(len ? len : 1);
     if (len) memcpy(p.text, text, len);
-    str_t s = { p.text, len };
+    md_str_t s = { p.text, len };
     p.doc = md_json_parse(s, md_get_heap_allocator(), &p.err);
     return p;
 }
@@ -217,7 +217,7 @@ UTEST(json, rejects) {
     }
     {
         md_json_error_t err = {0};
-        str_t null_text = { NULL, 0 };
+        md_str_t null_text = { NULL, 0 };
         EXPECT_TRUE(md_json_parse(null_text, md_get_heap_allocator(), &err) == NULL);
         EXPECT_EQ(0, err.offset);
     }
@@ -607,14 +607,14 @@ UTEST(json, strings) {
     md_allocator_i* heap = md_get_heap_allocator();
     for (size_t i = 0; i < MD_COUNTOF(expected); ++i) {
         const md_json_val_t v = md_json_at(root, i);
-        const str_t want = { expected[i].decoded, expected[i].len };
+        const md_str_t want = { expected[i].decoded, expected[i].len };
 
         EXPECT_TRUE(md_json_string_eq(v, want));
         if (want.len) {
-            const str_t shorter = { want.ptr, want.len - 1 };
+            const md_str_t shorter = { want.ptr, want.len - 1 };
             EXPECT_FALSE(md_json_string_eq(v, shorter));
         }
-        const str_t longer = str_of("plain!");
+        const md_str_t longer = str_of("plain!");
         EXPECT_FALSE(md_json_string_eq(v, longer));
 
         char buf[32];
@@ -624,18 +624,18 @@ UTEST(json, strings) {
         EXPECT_TRUE(memcmp(buf, want.ptr, want.len) == 0);
         EXPECT_EQ('\0', buf[n]);
 
-        const str_t s = md_json_string(v, heap);
+        const md_str_t s = md_json_string(v, heap);
         EXPECT_EQ(want.len, s.len);
         if (s.len) {
             EXPECT_TRUE(memcmp(s.ptr, want.ptr, want.len) == 0);
             EXPECT_EQ('\0', s.ptr[s.len]);
-            str_free(s, heap);
+            md_str_free(s, heap);
         }
     }
 
     // Raw is the text between the quotes
-    EXPECT_TRUE(str_eq(md_json_string_raw(md_json_at(root, 0)), str_of("plain")));
-    EXPECT_TRUE(str_eq(md_json_string_raw(md_json_at(root, 3)), str_of("\\ud83d")));
+    EXPECT_TRUE(md_str_eq(md_json_string_raw(md_json_at(root, 0)), str_of("plain")));
+    EXPECT_TRUE(md_str_eq(md_json_string_raw(md_json_at(root, 3)), str_of("\\ud83d")));
     EXPECT_EQ(0, md_json_string_raw(md_json_at(root, 9)).len);
     release(&p);
 }
@@ -868,14 +868,14 @@ typedef struct check_t {
 } check_t;
 
 static bool check_string(const gen_t* g, const expect_t* e, md_json_val_t v) {
-    const str_t want = { g->strings.ptr + e->str_off, e->str_len };
+    const md_str_t want = { g->strings.ptr + e->str_off, e->str_len };
     if (!md_json_string_eq(v, want)) return false;
     char buf[512];
     const size_t n = md_json_string_copy(buf, sizeof(buf), v);
     if (n != want.len || (n && memcmp(buf, want.ptr, n) != 0)) return false;
-    const str_t s = md_json_string(v, md_get_heap_allocator());
+    const md_str_t s = md_json_string(v, md_get_heap_allocator());
     const bool ok = s.len == want.len && (s.len == 0 || memcmp(s.ptr, want.ptr, s.len) == 0);
-    if (s.len) str_free(s, md_get_heap_allocator());
+    if (s.len) md_str_free(s, md_get_heap_allocator());
     return ok;
 }
 
@@ -890,7 +890,7 @@ static void check_value(check_t* c, md_json_val_t v) {
         if (!check_string(g, e, v)) c->failures++;
         break;
     case MD_JSON_TYPE_NUMBER: {
-        const str_t text = { g->text.ptr + e->num_off, e->num_len };
+        const md_str_t text = { g->text.ptr + e->num_off, e->num_len };
         double want = 0, got = 0;
         md_parse_f64(&want, text);
         if (!md_json_f64(&got, v) || bits_of(want) != bits_of(got)) c->failures++;
@@ -914,7 +914,7 @@ static void check_value(check_t* c, md_json_val_t v) {
                 const expect_t* k = &g->exp[c->next++];
                 if (!k->is_key || !check_string(g, k, md_json_key(m))) c->failures++;
                 // A lookup by this key finds this member, unless a later one repeats it
-                const str_t key = { g->strings.ptr + k->str_off, k->str_len };
+                const md_str_t key = { g->strings.ptr + k->str_off, k->str_len };
                 const md_json_val_t found = md_json_get(v, key);
                 bool repeated = false;
                 for (md_json_val_t later = md_json_next(m); md_json_valid(later); later = md_json_next(later)) {
@@ -1105,8 +1105,8 @@ UTEST(json, temp_arena) {
     md_allocator_i* arena = md_temp_allocator(temp);
     md_json_t* doc = md_json_parse(str_of(water_text), arena, NULL);
     ASSERT_TRUE(doc != NULL);
-    const str_t name = md_json_string(get(md_json_root(doc), "name"), arena);
-    EXPECT_TRUE(str_eq(name, str_of("water")));
+    const md_str_t name = md_json_string(get(md_json_root(doc), "name"), arena);
+    EXPECT_TRUE(md_str_eq(name, str_of("water")));
     md_temp_end(temp);
 }
 
@@ -1143,7 +1143,7 @@ UTEST(json, perf) {
     buf_pushc(&b, "\n            ]\n        }\n    ]\n}\n");
 
     md_tick_t t0 = md_tick_now();
-    md_json_t* doc = md_json_parse((str_t){ b.ptr, b.len }, md_get_heap_allocator(), NULL);
+    md_json_t* doc = md_json_parse((md_str_t){ b.ptr, b.len }, md_get_heap_allocator(), NULL);
     md_tick_t t1 = md_tick_now();
     ASSERT_TRUE(doc != NULL);
 

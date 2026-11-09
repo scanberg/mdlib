@@ -13,7 +13,7 @@
 
 typedef struct {
     double value;
-    str_t  str;
+    md_str_t  str;
     bool   alias;   // Alternative spelling, only considered when parsing
 } si_prefix_t;
 
@@ -48,24 +48,24 @@ static inline bool value_equal(double a, double b) {
     return r <= 1.0 + 16.0 * DBL_EPSILON;
 }
 
-static str_t find_prefix_str_from_value(double value) {
+static md_str_t find_prefix_str_from_value(double value) {
     for (size_t i = 0; i < MD_COUNTOF(si_prefixes); ++i) {
         if (si_prefixes[i].alias) continue;
         if (value_equal(value, si_prefixes[i].value)) return si_prefixes[i].str;
     }
-    return (str_t){0};
+    return (md_str_t){0};
 }
 
-static double find_prefix_value_from_str(str_t str) {
+static double find_prefix_value_from_str(md_str_t str) {
     for (size_t i = 0; i < MD_COUNTOF(si_prefixes); ++i) {
-        if (str_eq(str, si_prefixes[i].str)) return si_prefixes[i].value;
+        if (md_str_eq(str, si_prefixes[i].str)) return si_prefixes[i].value;
     }
     return 0;
 }
 
 typedef struct {
     md_unit_t   unit;
-    str_t       str;
+    md_str_t       str;
 } unit_name_t;
 
 // Physical constants. The elementary charge is exact by the 2019 SI redefinition; the Bohr radius
@@ -179,9 +179,9 @@ static const unit_name_t predefined_units[] = {
     {UNIT_DALTON,       S(u8"Da")},
 };
 
-static bool find_unit_from_predefined(md_unit_t* unit, str_t name) {
+static bool find_unit_from_predefined(md_unit_t* unit, md_str_t name) {
     for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
-        if (str_eq(name, predefined_units[i].str)) {
+        if (md_str_eq(name, predefined_units[i].str)) {
             *unit = predefined_units[i].unit;
             return true;
         }
@@ -189,20 +189,20 @@ static bool find_unit_from_predefined(md_unit_t* unit, str_t name) {
     return false;
 }
 
-static str_t find_name_from_predefined(md_unit_t unit) {
+static md_str_t find_name_from_predefined(md_unit_t unit) {
     for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
         if (md_unit_equal(predefined_units[i].unit, unit)) {
             return predefined_units[i].str;
         }
     }
-    return (str_t){0};
+    return (md_str_t){0};
 }
 
 // Exponents considered when matching a unit against a power of a predefined unit
 #define MAX_UNIT_EXPONENT 12
 
 // True if the name can carry an exponent, a name which already contains one cannot ('m²^6')
-static bool name_can_be_raised(str_t str) {
+static bool name_can_be_raised(md_str_t str) {
     for (size_t i = 0; i < str.len; ++i) {
         const unsigned char c = (unsigned char)str.ptr[i];
         // '^' or the trailing byte of the superscript two and three in UTF-8
@@ -238,7 +238,7 @@ static int compute_match_score(md_unit_t unit, md_unit_t ref, int exponent) {
     const double leftover = md_unit_scale(unit) / md_unit_scale(md_unit_pow(ref, exponent));
     if (value_equal(leftover, 1.0)) {
         score += 8;
-    } else if (!str_empty(find_prefix_str_from_value(leftover))) {
+    } else if (!md_str_empty(find_prefix_str_from_value(leftover))) {
         score += 5;
     }
 
@@ -401,7 +401,7 @@ static size_t print_scale(char* buf, size_t cap, double scale) {
     char tmp[64];
     for (int precision = 6; precision <= 17; ++precision) {
         md_snprintf(tmp, sizeof(tmp), "%.*g", precision, scale);
-        if (value_equal(parse_float(str_from_cstr(tmp)), scale)) {
+        if (value_equal(parse_float(md_str_from_cstr(tmp)), scale)) {
             break;
         }
     }
@@ -413,15 +413,15 @@ static size_t print_scale(char* buf, size_t cap, double scale) {
 static size_t print_predefined(char* buf, size_t cap, md_unit_t unit) {
     size_t len = 0;
 
-    str_t str = find_name_from_predefined(unit);
-    if (!str_empty(str)) {
-        PRINT(STR_FMT, STR_ARG(str));
+    md_str_t str = find_name_from_predefined(unit);
+    if (!md_str_empty(str)) {
+        PRINT(MD_STR_FMT, MD_STR_ARG(str));
         return len;
     }
 
     str = find_name_from_predefined(md_unit_inv(unit));
-    if (!str_empty(str)) {
-        PRINT("1/"STR_FMT, STR_ARG(str));
+    if (!md_str_empty(str)) {
+        PRINT("1/"MD_STR_FMT, MD_STR_ARG(str));
         return len;
     }
 
@@ -447,7 +447,7 @@ static size_t print_predefined_pow(char* buf, size_t cap, md_unit_t unit) {
                         continue;
                     }
 
-                    str_t prefix = STR_INIT("");
+                    md_str_t prefix = MD_STR_INIT("");
                     const double leftover = md_unit_scale(unit) / md_unit_scale(ref);
                     if (!value_equal(leftover, 1.0)) {
                         if (pass == 0) {
@@ -455,7 +455,7 @@ static size_t print_predefined_pow(char* buf, size_t cap, md_unit_t unit) {
                         }
                         // The prefix binds before the exponent, i.e. nm^2 is (1e-9 m)^2
                         prefix = find_prefix_str_from_value(pow(leftover, 1.0 / exp));
-                        if (str_empty(prefix)) {
+                        if (md_str_empty(prefix)) {
                             continue;
                         }
                     }
@@ -463,7 +463,7 @@ static size_t print_predefined_pow(char* buf, size_t cap, md_unit_t unit) {
                     if (exp < 0) {
                         PRINT("1/");
                     }
-                    PRINT(STR_FMT""STR_FMT, STR_ARG(prefix), STR_ARG(predefined_units[i].str));
+                    PRINT(MD_STR_FMT""MD_STR_FMT, MD_STR_ARG(prefix), MD_STR_ARG(predefined_units[i].str));
                     if (mag > 1) {
                         PRINT("^%i", mag);
                     }
@@ -505,12 +505,12 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
     // account since the prefix binds tighter, i.e. 'ns^2' is (1e-9 s)^2 and not 1e-9 * s^2.
     // If no term can absorb it, the scale is printed as an explicit factor.
     const double leftover = md_unit_scale(rem);
-    str_t prefix = STR_INIT("");
+    md_str_t prefix = MD_STR_INIT("");
     size_t prefix_term = num_terms;
     if (!value_equal(leftover, 1.0)) {
         for (size_t i = 0; i < num_terms; ++i) {
-            str_t str = find_prefix_str_from_value(pow(leftover, 1.0 / term[i].exp));
-            if (!str_empty(str)) {
+            md_str_t str = find_prefix_str_from_value(pow(leftover, 1.0 / term[i].exp));
+            if (!md_str_empty(str)) {
                 prefix = str;
                 prefix_term = i;
                 break;
@@ -530,7 +530,7 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
                         const md_unit_t a = md_unit_div(unit, md_unit_pow(predefined_units[j].unit, exp));
                         for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
                             if (i == j || !md_unit_equal(a, predefined_units[i].unit)) continue;
-                            PRINT(STR_FMT"%c"STR_FMT, STR_ARG(predefined_units[i].str), exp < 0 ? '/' : '*', STR_ARG(predefined_units[j].str));
+                            PRINT(MD_STR_FMT"%c"MD_STR_FMT, MD_STR_ARG(predefined_units[i].str), exp < 0 ? '/' : '*', MD_STR_ARG(predefined_units[j].str));
                             if (mag > 1) PRINT("^%i", mag);
                             return len;
                         }
@@ -554,8 +554,8 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
     for (size_t i = 0, printed = 0; i < num_terms; ++i) {
         if (term[i].exp < 0) continue;
         if (printed++ > 0) PRINT("*");
-        if (i == prefix_term) PRINT(STR_FMT, STR_ARG(prefix));
-        PRINT(STR_FMT, STR_ARG(predefined_units[term[i].idx].str));
+        if (i == prefix_term) PRINT(MD_STR_FMT, MD_STR_ARG(prefix));
+        PRINT(MD_STR_FMT, MD_STR_ARG(predefined_units[term[i].idx].str));
         if (term[i].exp > 1) PRINT("^%i", term[i].exp);
     }
 
@@ -565,8 +565,8 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
         for (size_t i = 0, printed = 0; i < num_terms; ++i) {
             if (term[i].exp > 0) continue;
             if (printed++ > 0) PRINT("*");
-            if (i == prefix_term) PRINT(STR_FMT, STR_ARG(prefix));
-            PRINT(STR_FMT, STR_ARG(predefined_units[term[i].idx].str));
+            if (i == prefix_term) PRINT(MD_STR_FMT, MD_STR_ARG(prefix));
+            PRINT(MD_STR_FMT, MD_STR_ARG(predefined_units[term[i].idx].str));
             if (term[i].exp < -1) PRINT("^%i", -term[i].exp);
         }
         if (den_count > 1) PRINT(")");
@@ -578,7 +578,7 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
 // Last resort for units which cannot be decomposed, spell out the SI base dimensions,
 // e.g. '1e-30*m^12*s^-3'
 static size_t print_SI(char* buf, size_t cap, md_unit_t unit) {
-    static const str_t dim_str[8] = {
+    static const md_str_t dim_str[8] = {
         S(u8"m"), S(u8"kg"), S(u8"s"), S(u8"A"), S(u8"mol"), S(u8"K"), S(u8"rad"), S(u8"count"),
     };
 
@@ -593,7 +593,7 @@ static size_t print_SI(char* buf, size_t cap, md_unit_t unit) {
         const int exp = unit.base.arr[i];
         if (exp == 0) continue;
         if (printed++ > 0) PRINT("*");
-        PRINT(STR_FMT, STR_ARG(dim_str[i]));
+        PRINT(MD_STR_FMT, MD_STR_ARG(dim_str[i]));
         if (exp != 1) {
             PRINT("^%i", exp);
         }
@@ -623,9 +623,9 @@ size_t md_unit_print(char* buf, size_t cap, md_unit_t unit) {
 
 #undef PRINT
 
-static bool parse_unit(md_unit_t* unit, str_t str);
+static bool parse_unit(md_unit_t* unit, md_str_t str);
 
-static bool parse_term(md_unit_t* unit, str_t str) {
+static bool parse_term(md_unit_t* unit, md_str_t str) {
     // A numeric factor, either as the numerator of an inverse unit ('1/s') or as an explicit scale ('1e-10*m')
     if (is_digit(str.ptr[0]) || str.ptr[0] == '.') {
         if (!is_float(str)) {
@@ -641,23 +641,23 @@ static bool parse_term(md_unit_t* unit, str_t str) {
     }
 
     // Split off a potential exponent, e.g. 's^-2' or 'm^3kg'
-    str_t base = str;
-    str_t exp  = {0};
-    str_t rest = {0};
+    md_str_t base = str;
+    md_str_t exp  = {0};
+    md_str_t rest = {0};
     size_t loc;
-    if (str_find_char(&loc, str, '^')) {
-        base = str_substr(str, 0, loc);
+    if (md_str_find_char(&loc, str, '^')) {
+        base = md_str_substr(str, 0, loc);
         size_t i = loc + 1;
         if (i < str.len && (str.ptr[i] == '-' || str.ptr[i] == '+')) ++i;
         while (i < str.len && is_digit(str.ptr[i])) ++i;
-        exp  = str_substr(str, loc + 1, i - (loc + 1));
-        rest = str_substr(str, i, str.len);
+        exp  = md_str_substr(str, loc + 1, i - (loc + 1));
+        rest = md_str_substr(str, i, str.len);
     }
 
     // Match against the longest predefined unit which the base ends with, the remainder is an SI prefix
     int best_match_idx = -1;
     for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
-        if (str_ends_with(base, predefined_units[i].str)) {
+        if (md_str_ends_with(base, predefined_units[i].str)) {
             if (best_match_idx == -1 || predefined_units[i].str.len > predefined_units[best_match_idx].str.len) {
                 best_match_idx = (int)i;
             }
@@ -670,8 +670,8 @@ static bool parse_term(md_unit_t* unit, str_t str) {
 
     md_unit_t result = predefined_units[best_match_idx].unit;
 
-    str_t prefix = str_substr(base, 0, base.len - predefined_units[best_match_idx].str.len);
-    if (!str_empty(prefix)) {
+    md_str_t prefix = md_str_substr(base, 0, base.len - predefined_units[best_match_idx].str.len);
+    if (!md_str_empty(prefix)) {
         const double prefix_scale = find_prefix_value_from_str(prefix);
         if (prefix_scale == 0) {
             return false;
@@ -679,15 +679,15 @@ static bool parse_term(md_unit_t* unit, str_t str) {
         result = md_unit_scl(result, prefix_scale);
     }
 
-    if (!str_empty(exp)) {
+    if (!md_str_empty(exp)) {
         int32_t exponent;
-        if (!str_extract_i32(&exponent, &exp)) {
+        if (!md_str_extract_i32(&exponent, &exp)) {
             return false;
         }
         result = md_unit_pow(result, exponent);
     }
 
-    if (!str_empty(rest)) {
+    if (!md_str_empty(rest)) {
         md_unit_t rest_unit;
         if (!parse_unit(&rest_unit, rest)) {
             return false;
@@ -701,7 +701,7 @@ static bool parse_term(md_unit_t* unit, str_t str) {
 
 // Finds the last operator which is not enclosed in parenthesis.
 // Searching from the right yields left associativity, 'a/b/c' is (a/b)/c.
-static bool find_last_operator(size_t* loc, str_t str) {
+static bool find_last_operator(size_t* loc, md_str_t str) {
     int depth = 0;
     for (size_t i = str.len; i > 0; --i) {
         const char c = str.ptr[i-1];
@@ -717,9 +717,9 @@ static bool find_last_operator(size_t* loc, str_t str) {
     return false;
 }
 
-static bool parse_unit(md_unit_t* unit, str_t str) {
-    str = str_trim(str);
-    if (str_empty(str)) {
+static bool parse_unit(md_unit_t* unit, md_str_t str) {
+    str = md_str_trim(str);
+    if (md_str_empty(str)) {
         *unit = md_unit_none();
         return true;
     }
@@ -727,7 +727,7 @@ static bool parse_unit(md_unit_t* unit, str_t str) {
     size_t loc;
     if (find_last_operator(&loc, str)) {
         md_unit_t lhs, rhs;
-        if (!parse_unit(&lhs, str_substr(str, 0, loc)) || !parse_unit(&rhs, str_substr(str, loc + 1, str.len))) {
+        if (!parse_unit(&lhs, md_str_substr(str, 0, loc)) || !parse_unit(&rhs, md_str_substr(str, loc + 1, str.len))) {
             return false;
         }
         *unit = (str.ptr[loc] == '/') ? md_unit_div(lhs, rhs) : md_unit_mul(lhs, rhs);
@@ -738,13 +738,13 @@ static bool parse_unit(md_unit_t* unit, str_t str) {
         if (str.ptr[str.len - 1] != ')') {
             return false;
         }
-        return parse_unit(unit, str_substr(str, 1, str.len - 2));
+        return parse_unit(unit, md_str_substr(str, 1, str.len - 2));
     }
 
     return parse_term(unit, str);
 }
 
-bool md_unit_parse(md_unit_t* unit, str_t str) {
+bool md_unit_parse(md_unit_t* unit, md_str_t str) {
     MD_ASSERT(unit);
 
     if (!parse_unit(unit, str)) {

@@ -214,7 +214,7 @@ static inline bool md_xdr_read_opaque(md_xdr_t* xdr, const uint8_t** out, size_t
 // Variable length opaque data / string: a u32 byte count, the bytes, then padding. The result is a
 // view into the buffer and is NOT zero terminated. max_len guards against a corrupt count asking
 // for more than a sane string could hold; pass SIZE_MAX to accept anything that fits in the buffer.
-static inline bool md_xdr_read_string(md_xdr_t* xdr, str_t* out, size_t max_len) {
+static inline bool md_xdr_read_string(md_xdr_t* xdr, md_str_t* out, size_t max_len) {
     const size_t pos = xdr->pos;
     uint32_t len = 0;
     const uint8_t* p = NULL;
@@ -227,10 +227,10 @@ static inline bool md_xdr_read_string(md_xdr_t* xdr, str_t* out, size_t max_len)
     }
     if (!p) {
         xdr->pos = pos;
-        *out = (str_t){0};
+        *out = (md_str_t){0};
         return false;
     }
-    *out = (str_t){ (const char*)p, len };
+    *out = (md_str_t){ (const char*)p, len };
     return true;
 }
 

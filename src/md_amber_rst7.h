@@ -24,14 +24,14 @@ extern "C" {
 // in the NetCDF format (Conventions "AMBERRESTART") is read by md_amber_netcdf.h.
 
 // True when the file is laid out as above: an atom count on the second line, coordinates in fields of 12 after.
-bool md_amber_rst7_file_is_restart(str_t filename);
+bool md_amber_rst7_file_is_restart(md_str_t filename);
 
 // NATOM of the second line, 0 when the file is not a restart.
-size_t md_amber_rst7_file_atom_count(str_t filename);
+size_t md_amber_rst7_file_atom_count(md_str_t filename);
 
 // Coordinates (Angstrom) and cell into state. num_atoms is what the system expects: the file must hold that many
 // atoms (0 accepts any count). state->alloc must be set.
-bool md_amber_rst7_state_init_from_file(struct md_system_state_t* state, str_t filename, size_t num_atoms);
+bool md_amber_rst7_state_init_from_file(struct md_system_state_t* state, md_str_t filename, size_t num_atoms);
 
 #ifdef __cplusplus
 }

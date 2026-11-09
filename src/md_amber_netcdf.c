@@ -50,19 +50,19 @@ enum {
 #define CDF_MAX_HEADER_BYTES (256ull << 20)
 
 typedef struct cdf_dim_t {
-    str_t    name;
+    md_str_t    name;
     uint64_t len;           // 0 for the record dimension
 } cdf_dim_t;
 
 typedef struct cdf_att_t {
-    str_t          name;
+    md_str_t          name;
     uint32_t       type;
     uint64_t       count;
     const uint8_t* data;    // into the header buffer
 } cdf_att_t;
 
 typedef struct cdf_var_t {
-    str_t      name;
+    md_str_t      name;
     uint32_t   type;
     uint32_t   rank;
     uint32_t   dim[CDF_MAX_RANK];
@@ -125,14 +125,14 @@ static uint64_t cdf_read_offset(cdf_cursor_t* c) {
     return v;
 }
 
-static str_t cdf_read_name(cdf_cursor_t* c) {
+static md_str_t cdf_read_name(cdf_cursor_t* c) {
     const uint64_t len = cdf_read_count(c);
     const uint8_t* ptr = NULL;
     if (len > 4096 || !md_xdr_read_opaque(&c->xdr, &ptr, (size_t)len)) {
         c->xdr.error = true;
-        return (str_t){0};
+        return (md_str_t){0};
     }
-    return (str_t){(const char*)ptr, (size_t)len};
+    return (md_str_t){(const char*)ptr, (size_t)len};
 }
 
 // The list header: its tag, which must be the one given or zero (absent), and the count
@@ -273,10 +273,10 @@ invalid:
 
 // Reads and parses the header of the file. Its size is not known in advance: the first block holds it for any
 // file of the Amber convention, and a larger header is read again with a larger block.
-static cdf_parse_result_t cdf_open(cdf_t* cdf, md_file_t* out_file, str_t path, md_allocator_i* alloc, bool quiet) {
+static cdf_parse_result_t cdf_open(cdf_t* cdf, md_file_t* out_file, md_str_t path, md_allocator_i* alloc, bool quiet) {
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        if (!quiet) MD_LOG_ERROR("Amber NetCDF: cannot open '" STR_FMT "'", STR_ARG(path));
+        if (!quiet) MD_LOG_ERROR("Amber NetCDF: cannot open '" MD_STR_FMT "'", MD_STR_ARG(path));
         return CDF_PARSE_NOT_CDF;
     }
     const uint64_t file_size = (uint64_t)md_file_size(file);
@@ -302,17 +302,17 @@ static cdf_parse_result_t cdf_open(cdf_t* cdf, md_file_t* out_file, str_t path, 
 
 static const cdf_att_t* cdf_find_att(const cdf_att_t* att, size_t count, const char* name) {
     for (size_t i = 0; i < count; ++i) {
-        if (str_eq_cstr(att[i].name, name)) return &att[i];
+        if (md_str_eq_cstr(att[i].name, name)) return &att[i];
     }
     return NULL;
 }
 
-static str_t cdf_att_text(const cdf_att_t* att) {
-    if (!att || att->type != CDF_CHAR) return (str_t){0};
-    str_t s = {(const char*)att->data, (size_t)att->count};
+static md_str_t cdf_att_text(const cdf_att_t* att) {
+    if (!att || att->type != CDF_CHAR) return (md_str_t){0};
+    md_str_t s = {(const char*)att->data, (size_t)att->count};
     // C writers include the terminator in the count
     while (s.len && s.ptr[s.len - 1] == '\0') s.len -= 1;
-    return str_trim(s);
+    return md_str_trim(s);
 }
 
 static bool cdf_att_number(const cdf_att_t* att, double* out) {
@@ -335,14 +335,14 @@ static bool cdf_att_number(const cdf_att_t* att, double* out) {
 
 static const cdf_var_t* cdf_find_var(const cdf_t* cdf, const char* name) {
     for (size_t i = 0; i < cdf->num_var; ++i) {
-        if (str_eq_cstr(cdf->var[i].name, name)) return &cdf->var[i];
+        if (md_str_eq_cstr(cdf->var[i].name, name)) return &cdf->var[i];
     }
     return NULL;
 }
 
 static int cdf_find_dim(const cdf_t* cdf, const char* name) {
     for (size_t i = 0; i < cdf->num_dim; ++i) {
-        if (str_eq_cstr(cdf->dim[i].name, name)) return (int)i;
+        if (md_str_eq_cstr(cdf->dim[i].name, name)) return (int)i;
     }
     return -1;
 }
@@ -350,20 +350,20 @@ static int cdf_find_dim(const cdf_t* cdf, const char* name) {
 // ## THE AMBER CONVENTION
 
 // A token of Conventions, which may list several separated by commas or spaces
-static bool amber_has_convention(str_t conventions, const char* name) {
+static bool amber_has_convention(md_str_t conventions, const char* name) {
     size_t i = 0;
     while (i < conventions.len) {
         while (i < conventions.len && (conventions.ptr[i] == ',' || conventions.ptr[i] == ' ')) ++i;
         size_t j = i;
         while (j < conventions.len && conventions.ptr[j] != ',' && conventions.ptr[j] != ' ') ++j;
-        if (j > i && str_eq_cstr((str_t){conventions.ptr + i, j - i}, name)) return true;
+        if (j > i && md_str_eq_cstr((md_str_t){conventions.ptr + i, j - i}, name)) return true;
         i = j;
     }
     return false;
 }
 
 static md_amber_netcdf_kind_t amber_kind(const cdf_t* cdf) {
-    const str_t conventions = cdf_att_text(cdf_find_att(cdf->gatt, cdf->num_gatt, "Conventions"));
+    const md_str_t conventions = cdf_att_text(cdf_find_att(cdf->gatt, cdf->num_gatt, "Conventions"));
     if (amber_has_convention(conventions, "AMBERRESTART")) return MD_AMBER_NETCDF_RESTART;
     if (amber_has_convention(conventions, "AMBER"))        return MD_AMBER_NETCDF_TRAJECTORY;
     return MD_AMBER_NETCDF_NONE;
@@ -377,7 +377,7 @@ typedef struct amber_section_t {
     uint64_t stride;        // 0 in a restart, which has one frame
     uint64_t bytes;         // of one frame
     double   scale;         // the variable's scale_factor, 1 without one
-    str_t    units;
+    md_str_t    units;
 } amber_section_t;
 
 // What the file is to the reader, from its header
@@ -399,7 +399,7 @@ typedef struct amber_layout_t {
 // The section of variable name, whose dimensions after the frame (in a trajectory) must be inner[]. False with
 // the section absent when the variable is not there; false and logged when it is there but not as the
 // convention has it.
-static bool amber_section(amber_section_t* out, const cdf_t* cdf, const char* name, bool restart, int frame_dim, const int inner[], size_t num_inner, str_t path) {
+static bool amber_section(amber_section_t* out, const cdf_t* cdf, const char* name, bool restart, int frame_dim, const int inner[], size_t num_inner, md_str_t path) {
     MD_MEMSET(out, 0, sizeof(*out));
     const cdf_var_t* v = cdf_find_var(cdf, name);
     if (!v) return true;
@@ -415,7 +415,7 @@ static bool amber_section(amber_section_t* out, const cdf_t* cdf, const char* na
     default: ok = false;
     }
     if (!ok) {
-        MD_LOG_ERROR("Amber NetCDF: the variable '%s' in '" STR_FMT "' is not laid out as the Amber convention has it", name, STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: the variable '%s' in '" MD_STR_FMT "' is not laid out as the Amber convention has it", name, MD_STR_ARG(path));
         return false;
     }
 
@@ -450,25 +450,25 @@ static uint64_t amber_section_frames(const amber_section_t* s, uint64_t file_siz
     return (file_size - s->begin - s->bytes) / s->stride + 1;
 }
 
-static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, str_t path) {
+static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, md_str_t path) {
     MD_MEMSET(out, 0, sizeof(*out));
     out->kind = amber_kind(cdf);
     if (out->kind == MD_AMBER_NETCDF_NONE) {
-        MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is NetCDF but does not follow the Amber convention (no Conventions \"AMBER\" or \"AMBERRESTART\")", STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' is NetCDF but does not follow the Amber convention (no Conventions \"AMBER\" or \"AMBERRESTART\")", MD_STR_ARG(path));
         return false;
     }
     const bool restart = out->kind == MD_AMBER_NETCDF_RESTART;
 
-    const str_t version = cdf_att_text(cdf_find_att(cdf->gatt, cdf->num_gatt, "ConventionVersion"));
-    if (!str_empty(version) && !str_eq_cstr(version, "1.0")) {
-        MD_LOG_INFO("Amber NetCDF: '" STR_FMT "' declares convention version '" STR_FMT "', read as 1.0", STR_ARG(path), STR_ARG(version));
+    const md_str_t version = cdf_att_text(cdf_find_att(cdf->gatt, cdf->num_gatt, "ConventionVersion"));
+    if (!md_str_empty(version) && !md_str_eq_cstr(version, "1.0")) {
+        MD_LOG_INFO("Amber NetCDF: '" MD_STR_FMT "' declares convention version '" MD_STR_FMT "', read as 1.0", MD_STR_ARG(path), MD_STR_ARG(version));
     }
 
     const int atom    = cdf_find_dim(cdf, "atom");
     const int spatial = cdf_find_dim(cdf, "spatial");
     const int frame   = restart ? -1 : cdf_find_dim(cdf, "frame");
     if (atom < 0 || spatial < 0 || (!restart && frame < 0) || cdf->dim[spatial].len != 3 || cdf->dim[atom].len == 0) {
-        MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' lacks the atom, spatial (3) or frame dimensions of the convention", STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' lacks the atom, spatial (3) or frame dimensions of the convention", MD_STR_ARG(path));
         return false;
     }
     out->num_atoms = (size_t)cdf->dim[atom].len;
@@ -492,14 +492,14 @@ static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, str_t path) {
     if (!ok) return false;
 
     if (!out->coordinates.present) {
-        MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' has no coordinates", STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' has no coordinates", MD_STR_ARG(path));
         return false;
     }
     if (out->cell_lengths.present && (cell_spatial < 0 || cdf->dim[cell_spatial].len != 3)) out->cell_lengths.present = false;
     if (out->cell_angles.present  && (cell_angular < 0 || cdf->dim[cell_angular].len != 3)) out->cell_angles.present  = false;
 
-    if (!str_empty(out->coordinates.units) && !str_eq_cstr_ignore_case(out->coordinates.units, "angstrom") && !str_eq_cstr_ignore_case(out->coordinates.units, "angstroms")) {
-        MD_LOG_ERROR("Amber NetCDF: the coordinates of '" STR_FMT "' are in '" STR_FMT "', the convention has angstrom", STR_ARG(path), STR_ARG(out->coordinates.units));
+    if (!md_str_empty(out->coordinates.units) && !md_str_eq_cstr_ignore_case(out->coordinates.units, "angstrom") && !md_str_eq_cstr_ignore_case(out->coordinates.units, "angstroms")) {
+        MD_LOG_ERROR("Amber NetCDF: the coordinates of '" MD_STR_FMT "' are in '" MD_STR_FMT "', the convention has angstrom", MD_STR_ARG(path), MD_STR_ARG(out->coordinates.units));
         return false;
     }
 
@@ -519,32 +519,32 @@ static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, str_t path) {
     }
     if (complete < frames) {
         if (frames != UINT64_MAX) {
-            MD_LOG_INFO("Amber NetCDF: '" STR_FMT "' holds %llu complete frames of the %llu its header says", STR_ARG(path),
+            MD_LOG_INFO("Amber NetCDF: '" MD_STR_FMT "' holds %llu complete frames of the %llu its header says", MD_STR_ARG(path),
                 (unsigned long long)complete, (unsigned long long)frames);
         }
         frames = complete;
     }
     if (frames == 0 || frames > UINT32_MAX) {
-        MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' holds no complete frame", STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' holds no complete frame", MD_STR_ARG(path));
         return false;
     }
     out->num_frames = (size_t)frames;
     return true;
 }
 
-static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_file, str_t path, md_allocator_i* alloc, bool quiet) {
+static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_file, md_str_t path, md_allocator_i* alloc, bool quiet) {
     cdf_t cdf;
     const cdf_parse_result_t r = cdf_open(&cdf, out_file, path, alloc, quiet);
     if (r == CDF_PARSE_HDF5) {
         if (!quiet) {
-            MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is NetCDF-4 (HDF5), which this build reads only with HDF5 (MD_ENABLE_HDF5). "
-                "Convert it with cpptraj or MDAnalysis to the classic format", STR_ARG(path));
+            MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' is NetCDF-4 (HDF5), which this build reads only with HDF5 (MD_ENABLE_HDF5). "
+                "Convert it with cpptraj or MDAnalysis to the classic format", MD_STR_ARG(path));
         }
         return MD_AMBER_NETCDF_HDF5;
     }
     if (r != CDF_PARSE_OK) {
-        if (!quiet && r != CDF_PARSE_NOT_CDF) MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is not a NetCDF file, or its header is damaged", STR_ARG(path));
-        else if (!quiet && md_path_is_valid(path)) MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is not a NetCDF file", STR_ARG(path));
+        if (!quiet && r != CDF_PARSE_NOT_CDF) MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' is not a NetCDF file, or its header is damaged", MD_STR_ARG(path));
+        else if (!quiet && md_path_is_valid(path)) MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' is not a NetCDF file", MD_STR_ARG(path));
         return MD_AMBER_NETCDF_NONE;
     }
     if (quiet) {
@@ -564,7 +564,7 @@ static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_
 }
 
 // NetCDF-4: HDF5 underneath, read by md_amber_netcdf4.c when the build has HDF5
-static bool amber_is_hdf5(str_t filename) {
+static bool amber_is_hdf5(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) return false;
     uint8_t magic[8] = {0};
@@ -573,7 +573,7 @@ static bool amber_is_hdf5(str_t filename) {
     return ok;
 }
 
-md_amber_netcdf_kind_t md_amber_netcdf_file_kind(str_t filename) {
+md_amber_netcdf_kind_t md_amber_netcdf_file_kind(md_str_t filename) {
 #if MD_HDF5
     if (amber_is_hdf5(filename)) {
         const md_amber_netcdf_kind_t kind = md_amber_nc4_file_kind(filename, NULL);
@@ -587,7 +587,7 @@ md_amber_netcdf_kind_t md_amber_netcdf_file_kind(str_t filename) {
     return kind;
 }
 
-size_t md_amber_netcdf_file_atom_count(str_t filename) {
+size_t md_amber_netcdf_file_atom_count(md_str_t filename) {
 #if MD_HDF5
     if (amber_is_hdf5(filename)) {
         size_t n = 0;
@@ -672,7 +672,7 @@ static md_unitcell_t amber_cell(const double lengths[3], const double* angles) {
 
 // ## INITIAL STATE
 
-bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, str_t filename, size_t num_atoms) {
+bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, md_str_t filename, size_t num_atoms) {
     MD_ASSERT(state);
     if (!state->alloc) {
         MD_LOG_ERROR("Amber NetCDF: the state has no allocator");
@@ -690,7 +690,7 @@ bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, str_t filena
 
     const size_t N = layout.num_atoms;
     if (num_atoms && N != num_atoms) {
-        MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' holds %zu atoms, the system %zu", STR_ARG(filename), N, num_atoms);
+        MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' holds %zu atoms, the system %zu", MD_STR_ARG(filename), N, num_atoms);
         goto done;
     }
 
@@ -698,7 +698,7 @@ bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, str_t filena
     const size_t bytes = (size_t)xyz->bytes;
     uint8_t* raw = md_alloc(arena, bytes);
     if (bytes != N * 3 * cdf_type_size(xyz->type) || md_file_read_at(file, (int64_t)xyz->begin, raw, bytes) != bytes) {
-        MD_LOG_ERROR("Amber NetCDF: failed to read the coordinates of '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Amber NetCDF: failed to read the coordinates of '" MD_STR_FMT "'", MD_STR_ARG(filename));
         goto done;
     }
 
@@ -747,19 +747,19 @@ static size_t amber_section_provider(void* dst, size_t cap, const md_attribute_t
     int kind = -1;
     md_run_source_t src = {0};
     for (int i = 0; i < (int)MD_COUNTOF(amber_run_sections); ++i) {
-        if (md_run_source(&src, attributes, attr, str_from_cstr(amber_run_sections[i].leaf))) {
+        if (md_run_source(&src, attributes, attr, md_str_from_cstr(amber_run_sections[i].leaf))) {
             kind = i;
             break;
         }
     }
     if (kind < 0) return 0;
 
-    const md_attribute_t* layout_attr = md_attributes_find_in(attributes, src.run, STR_LIT("source/layout"));
-    const md_attribute_t* scale_attr  = md_attributes_find_in(attributes, src.run, STR_LIT("source/scale"));
+    const md_attribute_t* layout_attr = md_attributes_find_in(attributes, src.run, MD_STR_LIT("source/layout"));
+    const md_attribute_t* scale_attr  = md_attributes_find_in(attributes, src.run, MD_STR_LIT("source/scale"));
     if (!layout_attr || !scale_attr || layout_attr->format.type != MD_ATTRIBUTE_TYPE_I64 || scale_attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
         md_attribute_value_count(&layout_attr->format) != MD_COUNTOF(amber_run_sections) * AMBER_LAYOUT_STRIDE ||
         md_attribute_value_count(&scale_attr->format) != MD_COUNTOF(amber_run_sections) || !layout_attr->data || !scale_attr->data) {
-        MD_LOG_ERROR("Amber NetCDF: the run '" STR_FMT "' has lost its source attributes", STR_ARG(src.run));
+        MD_LOG_ERROR("Amber NetCDF: the run '" MD_STR_FMT "' has lost its source attributes", MD_STR_ARG(src.run));
         return 0;
     }
     const int64_t* layout = (const int64_t*)layout_attr->data + kind * AMBER_LAYOUT_STRIDE;
@@ -790,28 +790,28 @@ static size_t amber_section_provider(void* dst, size_t cap, const md_attribute_t
         amber_convert_f32((float*)dst, raw, type, count * 3, scale);
         written = cap;
     } else {
-        MD_LOG_ERROR("Amber NetCDF: failed to read frame %u from '" STR_FMT "'", frame, STR_ARG(src.path));
+        MD_LOG_ERROR("Amber NetCDF: failed to read frame %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(src.path));
     }
     md_temp_end(temp);
     return written;
 }
 
-static md_unit_t amber_time_unit(str_t units, bool* known) {
+static md_unit_t amber_time_unit(md_str_t units, bool* known) {
     *known = true;
-    if (str_empty(units) || str_eq_cstr_ignore_case(units, "picosecond") || str_eq_cstr_ignore_case(units, "picoseconds") || str_eq_cstr_ignore_case(units, "ps")) {
+    if (md_str_empty(units) || md_str_eq_cstr_ignore_case(units, "picosecond") || md_str_eq_cstr_ignore_case(units, "picoseconds") || md_str_eq_cstr_ignore_case(units, "ps")) {
         return md_unit_picosecond();
     }
-    if (str_eq_cstr_ignore_case(units, "nanosecond") || str_eq_cstr_ignore_case(units, "nanoseconds") || str_eq_cstr_ignore_case(units, "ns")) {
+    if (md_str_eq_cstr_ignore_case(units, "nanosecond") || md_str_eq_cstr_ignore_case(units, "nanoseconds") || md_str_eq_cstr_ignore_case(units, "ns")) {
         return md_unit_nanosecond();
     }
-    if (str_eq_cstr_ignore_case(units, "femtosecond") || str_eq_cstr_ignore_case(units, "femtoseconds") || str_eq_cstr_ignore_case(units, "fs")) {
+    if (md_str_eq_cstr_ignore_case(units, "femtosecond") || md_str_eq_cstr_ignore_case(units, "femtoseconds") || md_str_eq_cstr_ignore_case(units, "fs")) {
         return md_unit_femtosecond();
     }
     *known = false;
     return md_unit_none();
 }
 
-bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_amber_netcdf_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
     MD_ASSERT(sys);
 #if MD_HDF5
     if (amber_is_hdf5(filename)) return md_amber_nc4_system_publish_run(sys, filename, run, flags);
@@ -819,19 +819,19 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
     (void)flags;    // Nothing to index: the header says where every frame is
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = {path_buf, path_len};
+    const md_str_t path = {path_buf, path_len};
 
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
     md_file_t file = {0};
     amber_layout_t layout;
     if (path_len == 0) {
-        MD_LOG_ERROR("Amber NetCDF: cannot resolve '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Amber NetCDF: cannot resolve '" MD_STR_FMT "'", MD_STR_ARG(filename));
         goto done;
     }
     const md_amber_netcdf_kind_t kind = amber_open(&layout, &file, path, arena, false);
     if (kind == MD_AMBER_NETCDF_RESTART) {
-        MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is a restart, a single set of coordinates rather than a trajectory", STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' is a restart, a single set of coordinates rather than a trajectory", MD_STR_ARG(path));
         goto done;
     }
     if (kind != MD_AMBER_NETCDF_TRAJECTORY) goto done;
@@ -839,7 +839,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
     const size_t F = layout.num_frames;
     const size_t N = layout.num_atoms;
     if (layout.coordinates.bytes != N * 3 * cdf_type_size(layout.coordinates.type)) {
-        MD_LOG_ERROR("Amber NetCDF: the coordinates of '" STR_FMT "' do not hold 3 values per atom", STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF: the coordinates of '" MD_STR_FMT "' do not hold 3 values per atom", MD_STR_ARG(path));
         goto done;
     }
 
@@ -852,18 +852,18 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         bool known = false;
         time_unit = amber_time_unit(layout.time.units, &known);
         if (!known) {
-            MD_LOG_INFO("Amber NetCDF: the time of '" STR_FMT "' is in '" STR_FMT "', which is not known here; the frames are numbered instead", STR_ARG(path), STR_ARG(layout.time.units));
+            MD_LOG_INFO("Amber NetCDF: the time of '" MD_STR_FMT "' is in '" MD_STR_FMT "', which is not known here; the frames are numbered instead", MD_STR_ARG(path), MD_STR_ARG(layout.time.units));
         } else if (amber_read_series(times, 1, file, &layout.time, F, arena)) {
             use_time = true;
             for (size_t f = 0; f < F; ++f) {
                 if (!isfinite(times[f]) || (f > 0 && times[f] <= times[f - 1])) {
-                    MD_LOG_INFO("Amber NetCDF: the time of '" STR_FMT "' does not increase from frame to frame (at frame %zu, a file written without time has zeros); the frames are numbered instead", STR_ARG(path), f);
+                    MD_LOG_INFO("Amber NetCDF: the time of '" MD_STR_FMT "' does not increase from frame to frame (at frame %zu, a file written without time has zeros); the frames are numbered instead", MD_STR_ARG(path), f);
                     use_time = false;
                     break;
                 }
             }
         } else {
-            MD_LOG_ERROR("Amber NetCDF: failed to read the time of '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Amber NetCDF: failed to read the time of '" MD_STR_FMT "'", MD_STR_ARG(path));
             goto done;
         }
     }
@@ -880,7 +880,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         double* angles  = layout.cell_angles.present ? md_alloc(arena, F * 3 * sizeof(double)) : NULL;
         if (!amber_read_series(lengths, 3, file, &layout.cell_lengths, F, arena) ||
             (angles && !amber_read_series(angles, 3, file, &layout.cell_angles, F, arena))) {
-            MD_LOG_ERROR("Amber NetCDF: failed to read the cells of '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Amber NetCDF: failed to read the cells of '" MD_STR_FMT "'", MD_STR_ARG(path));
             goto done;
         }
         for (size_t f = 0; f < F; ++f) {
@@ -926,30 +926,30 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
     }
 
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/layout")),
         .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)MD_COUNTOF(layout_values) } },
         .unit = md_unit_none(),
-        .description = STR_INIT("Per section (position, velocity, force): byte offset of frame 0, bytes from frame to frame, NetCDF type, 0"),
+        .description = MD_STR_INIT("Per section (position, velocity, force): byte offset of frame 0, bytes from frame to frame, NetCDF type, 0"),
         .data = layout_values, .byte_size = sizeof(layout_values)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/scale")),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/scale")),
         .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)MD_COUNTOF(scales) } },
         .unit = md_unit_none(),
-        .description = STR_INIT("Per section, the scale_factor its values are multiplied by"),
+        .description = MD_STR_INIT("Per section, the scale_factor its values are multiplied by"),
         .data = scales, .byte_size = sizeof(scales)});
 
     // ## Velocities, forces
     const md_unit_t kcal_per_mol = md_unit_div(md_unit_scl(md_unit_calorie(), 1.0e3), md_unit_mole());
-    const struct { int k; md_unit_t unit; str_t label; } per_atom[] = {
-        { 1, md_unit_div(md_unit_angstrom(), md_unit_picosecond()), STR_INIT("Velocity") },
-        { 2, md_unit_div(kcal_per_mol, md_unit_angstrom()),         STR_INIT("Force") },
+    const struct { int k; md_unit_t unit; md_str_t label; } per_atom[] = {
+        { 1, md_unit_div(md_unit_angstrom(), md_unit_picosecond()), MD_STR_INIT("Velocity") },
+        { 2, md_unit_div(kcal_per_mol, md_unit_angstrom()),         MD_STR_INIT("Force") },
     };
     for (size_t i = 0; ok && i < MD_COUNTOF(per_atom); ++i) {
         const int k = per_atom[i].k;
         if (!sections[k]->present) continue;
         if (sections[k]->bytes != N * 3 * cdf_type_size(sections[k]->type)) continue;
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, str_from_cstr(amber_run_sections[k].leaf)),
+            .path = md_run_path(buf, sizeof(buf), run, md_str_from_cstr(amber_run_sections[k].leaf)),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = { (uint32_t)F, (uint32_t)N } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = per_atom[i].unit, .label = per_atom[i].label,
             .virt = &virt});
@@ -960,15 +960,15 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         double* temp0 = md_alloc(arena, F * sizeof(double));
         if (amber_read_series(temp0, 1, file, &layout.temp0, F, arena)) {
             ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-                .path = md_run_path(buf, sizeof(buf), run, STR_LIT("remd/temp0")),
+                .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("remd/temp0")),
                 .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)F } },
-                .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_kelvin(), .label = STR_INIT("Target temperature"),
+                .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_kelvin(), .label = MD_STR_INIT("Target temperature"),
                 .data = temp0, .byte_size = F * sizeof(double)});
         }
     }
-    const struct { const amber_section_t* s; const char* leaf; str_t label; } indices[] = {
-        { &layout.repidx, "remd/repidx", STR_INIT("Replica index") },
-        { &layout.crdidx, "remd/crdidx", STR_INIT("Coordinate index") },
+    const struct { const amber_section_t* s; const char* leaf; md_str_t label; } indices[] = {
+        { &layout.repidx, "remd/repidx", MD_STR_INIT("Replica index") },
+        { &layout.crdidx, "remd/crdidx", MD_STR_INIT("Coordinate index") },
     };
     for (size_t i = 0; ok && i < MD_COUNTOF(indices); ++i) {
         if (!indices[i].s->present) continue;
@@ -977,14 +977,14 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         if (!amber_read_series(values, 1, file, indices[i].s, F, arena)) continue;
         for (size_t f = 0; f < F; ++f) ints[f] = (int32_t)values[f];
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, str_from_cstr(indices[i].leaf)),
+            .path = md_run_path(buf, sizeof(buf), run, md_str_from_cstr(indices[i].leaf)),
             .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { (uint32_t)F } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .label = indices[i].label,
             .data = ints, .byte_size = F * sizeof(int32_t)});
     }
 
     if (!ok) {
-        MD_LOG_ERROR("Amber NetCDF: failed to publish '" STR_FMT "' as '" STR_FMT "'", STR_ARG(path), STR_ARG(run));
+        MD_LOG_ERROR("Amber NetCDF: failed to publish '" MD_STR_FMT "' as '" MD_STR_FMT "'", MD_STR_ARG(path), MD_STR_ARG(run));
         md_attributes_remove_prefix(attributes, run);
         goto done;
     }

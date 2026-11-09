@@ -269,8 +269,8 @@ static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {
 }
 
 // The string is a view into the buffer
-static str_t rd_string(tpr_reader_t* r) {
-    str_t str = {0};
+static md_str_t rd_string(tpr_reader_t* r) {
+    md_str_t str = {0};
     if (r->in_memory) {
         uint64_t len;
         md_xdr_read_u64(&r->xdr, &len);
@@ -279,7 +279,7 @@ static str_t rd_string(tpr_reader_t* r) {
             rd_fail(r);
             return str;
         }
-        str = (str_t){ (const char*)p, (size_t)len };
+        str = (md_str_t){ (const char*)p, (size_t)len };
     } else {
         // GROMACS writes the length including the terminating zero, followed by an XDR string
         // (length without it, then the characters padded to a multiple of 4)
@@ -297,14 +297,14 @@ static str_t rd_string(tpr_reader_t* r) {
 
 typedef struct tpr_symtab_t {
     size_t count;
-    str_t* str;
+    md_str_t* str;
 } tpr_symtab_t;
 
-static str_t rd_symstr(tpr_reader_t* r, const tpr_symtab_t* symtab) {
+static md_str_t rd_symstr(tpr_reader_t* r, const tpr_symtab_t* symtab) {
     const int32_t idx = rd_int(r);
     if (idx < 0 || (size_t)idx >= symtab->count) {
         rd_fail(r);
-        return (str_t){0};
+        return (md_str_t){0};
     }
     return symtab->str[idx];
 }
@@ -740,7 +740,7 @@ static void rd_moltype(tpr_reader_t* r, md_tpr_moltype_t* mt, const tpr_symtab_t
     }
 }
 
-static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
+static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_string, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     // ## Symbol table: every name in the topology, referred to by index from here on
     tpr_symtab_t symtab = {0};
     {
@@ -749,7 +749,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
             rd_fail(r);
             return;
         }
-        str_t* views = md_alloc(temp_alloc, (count + 1) * sizeof(str_t));
+        md_str_t* views = md_alloc(temp_alloc, (count + 1) * sizeof(md_str_t));
         size_t total = version_string.len;
         for (size_t i = 0; i < count && rd_ok(r); ++i) {
             views[i] = rd_string(r);
@@ -762,7 +762,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         data->str_size = total + 1;
         char* dst = data->str_data;
         MD_MEMCPY(dst, version_string.ptr, version_string.len);
-        data->version_string = (str_t){ dst, version_string.len };
+        data->version_string = (md_str_t){ dst, version_string.len };
         dst += version_string.len;
         for (size_t i = 0; i < count; ++i) {
             MD_MEMCPY(dst, views[i].ptr, views[i].len);
@@ -1140,8 +1140,8 @@ bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t si
     // ## Header (always XDR)
     tpr_reader_t hdr = { .xdr = md_xdr_init(buffer, size) };
 
-    const str_t version_string = rd_string(&hdr);
-    if (!rd_ok(&hdr) || !str_begins_with(version_string, STR_LIT("VERSION"))) {
+    const md_str_t version_string = rd_string(&hdr);
+    if (!rd_ok(&hdr) || !md_str_begins_with(version_string, MD_STR_LIT("VERSION"))) {
         MD_LOG_ERROR("TPR: Not a GROMACS run input file");
         goto done;
     }
@@ -1291,13 +1291,13 @@ done:
     return result;
 }
 
-bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i* alloc) {
+bool md_tpr_data_parse_file(md_tpr_data_t* data, md_str_t filename, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("TPR: Could not open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("TPR: Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 
@@ -1308,9 +1308,9 @@ bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i*
 
     void* buffer = size > 0 ? md_alloc(temp_alloc, (size_t)size) : NULL;
     if (!buffer) {
-        MD_LOG_ERROR("TPR: File '" STR_FMT "' is empty or too large", STR_ARG(filename));
+        MD_LOG_ERROR("TPR: File '" MD_STR_FMT "' is empty or too large", MD_STR_ARG(filename));
     } else if (md_file_read(file, buffer, (size_t)size) != (size_t)size) {
-        MD_LOG_ERROR("TPR: Failed to read file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("TPR: Failed to read file '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         result = md_tpr_data_parse_buffer(data, buffer, (size_t)size, alloc);
     }
@@ -1419,7 +1419,7 @@ static bool tpr_mass_fits_element(md_atomic_number_t z, float mass) {
 // no at.num, typical of hand written ligand parameters). The name says which element is meant and
 // the mass has to agree with it; failing that, a mass that is exactly an element's. Zero when
 // neither holds, which is what a coarse grained bead gives.
-static md_atomic_number_t tpr_infer_atomic_number(str_t name, str_t res_name, size_t res_size, float mass) {
+static md_atomic_number_t tpr_infer_atomic_number(md_str_t name, md_str_t res_name, size_t res_size, float mass) {
     const md_atomic_number_t z_label = md_atomic_number_infer_from_label(name, res_name, res_size);
     if (tpr_mass_fits_element(z_label, mass)) {
         return z_label;
@@ -1483,7 +1483,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // ### Elements
     // An atom without an atomic number is either a coarse grained bead or an atom whose type was
@@ -1781,13 +1781,13 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     // ## Attributes
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, num_atoms);
+    md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, num_atoms);
     if (data->v) {
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), md_unit_div(md_unit_nanometer(), md_unit_picosecond()), 3, data->v, num_atoms);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/velocity"), md_unit_div(md_unit_nanometer(), md_unit_picosecond()), 3, data->v, num_atoms);
     }
 
-    if (!str_empty(data->name)) {
-        sys->description = str_copy(data->name, alloc);
+    if (!md_str_empty(data->name)) {
+        sys->description = md_str_copy(data->name, alloc);
     }
 
     // ## Non-bonded force field, when its interactions can be evaluated pair by pair
@@ -1804,7 +1804,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     return true;
 }
 
-bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
+bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);

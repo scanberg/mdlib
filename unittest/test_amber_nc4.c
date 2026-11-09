@@ -77,7 +77,7 @@ static hid_t nc4_dataset(hid_t file, const char* name, hid_t file_type, int rank
     return d;
 }
 
-static bool nc4_write(str_t path, const nc4_case_t* c, bool restart) {
+static bool nc4_write(md_str_t path, const nc4_case_t* c, bool restart) {
     const hid_t file = H5Fcreate(path.ptr, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
     if (file < 0) return false;
     nc4_text_attr(file, "Conventions", restart ? "AMBERRESTART" : "AMBER");
@@ -151,7 +151,7 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
         { "split frame",       .deflate = 4, .chunk_frames = 1, .chunk_atoms = 16 },
         { "fletcher32",        .fletcher = true, .deflate = 4, .chunk_frames = 1, .chunk_atoms = NC4_ATOMS },
     };
-    const str_t path = STR_LIT("md_unittest_amber4.nc");
+    const md_str_t path = MD_STR_LIT("md_unittest_amber4.nc");
     for (size_t ci = 0; ci < MD_COUNTOF(cases); ++ci) {
         const nc4_case_t* c = &cases[ci];
         md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
@@ -160,24 +160,24 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
         EXPECT_EQ((size_t)NC4_ATOMS, md_amber_netcdf_file_atom_count(path));
 
         md_system_t sys = { .alloc = arena };
-        ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
-        const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/a/time"));
+        ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
+        const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/time"));
         ASSERT_TRUE(time != NULL);
         ASSERT_EQ((size_t)NC4_FRAMES, time->format.shape[0]);
         EXPECT_TRUE(md_unit_equal(time->unit, md_unit_picosecond()));
         EXPECT_EQ(4.0, ((const double*)time->data)[1]);
 
-        const md_attribute_t* cell = md_attributes_find(&sys.attributes, STR_LIT("run/a/unitcell"));
+        const md_attribute_t* cell = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/unitcell"));
         ASSERT_TRUE(cell != NULL);
         EXPECT_NEAR(33.0f, ((const float*)cell->data)[3 * 9 + 0], 1e-4f);
         EXPECT_NEAR(35.0f, ((const float*)cell->data)[3 * 9 + 8], 1e-4f);
-        const md_attribute_t* temp0 = md_attributes_find(&sys.attributes, STR_LIT("run/a/remd/temp0"));
+        const md_attribute_t* temp0 = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/remd/temp0"));
         ASSERT_TRUE(temp0 != NULL);
         EXPECT_EQ(320.0, ((const double*)temp0->data)[2]);
 
         // Every frame, read back in reverse so that no chunk is met in the order it was written
-        const str_t paths[] = { STR_LIT("atom/position") };
-        md_system_extract_t* ex = md_system_extract_begin(&sys, STR_LIT("run/a"), paths, 1, arena);
+        const md_str_t paths[] = { MD_STR_LIT("atom/position") };
+        md_system_extract_t* ex = md_system_extract_begin(&sys, MD_STR_LIT("run/a"), paths, 1, arena);
         ASSERT_TRUE(ex != NULL);
         md_system_state_t s = { .alloc = arena };
         md_system_state_init(&s, NC4_ATOMS);
@@ -196,7 +196,7 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
         if (wrong) printf("%s: %d values wrong\n", c->name, wrong);
 
         // Velocities with their scale factor; one atom of a frame alone
-        const md_attribute_t* vel = md_attributes_find(&sys.attributes, STR_LIT("run/a/atom/velocity"));
+        const md_attribute_t* vel = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/atom/velocity"));
         ASSERT_TRUE(vel != NULL);
         float v[3];
         ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_2(3, 20), md_unit_none()));
@@ -217,7 +217,7 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
 
 UTEST(amber_netcdf4, restart_and_what_is_not_amber) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber4.ncrst");
+    const md_str_t path = MD_STR_LIT("md_unittest_amber4.ncrst");
     const nc4_case_t c = { "restart", .contiguous = true };
     ASSERT_TRUE(nc4_write(path, &c, true));
     EXPECT_EQ(MD_AMBER_NETCDF_RESTART, md_amber_netcdf_file_kind(path));
@@ -234,7 +234,7 @@ UTEST(amber_netcdf4, restart_and_what_is_not_amber) {
     H5Fclose(file);
     EXPECT_EQ(MD_AMBER_NETCDF_NONE, md_amber_netcdf_file_kind(path));
     md_system_t sys = { .alloc = arena };
-    EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
+    EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
     remove(path.ptr);
     md_arena_allocator_destroy(arena);
 }

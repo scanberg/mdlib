@@ -27,7 +27,7 @@ UTEST(writer, str_writer) {
 
     md_str_writer_push_cstr(&sw, "Hej");
     md_str_writer_fmt(&sw, " %d Cool", 2);
-    md_str_writer_push_str(&sw, STR_LIT(" 4 School."));
+    md_str_writer_push_str(&sw, MD_STR_LIT(" 4 School."));
     EXPECT_STREQ("Hej 2 Cool 4 School.", md_str_writer_to_cstr(&sw));
     EXPECT_STREQ("Hej 2 Cool 4 School.", md_str_writer_to_str(&sw).ptr);
     EXPECT_EQ((size_t)20, md_str_writer_len(&sw));
@@ -39,8 +39,8 @@ UTEST(writer, str_writer) {
     EXPECT_TRUE(md_writer_ok(&sw.w));
 
     md_str_writer_pop(&sw, 1);
-    str_t str = md_str_writer_to_str(&sw);
-    EXPECT_TRUE(str_eq(str_substr(str, str.len - 6, 6), STR_LIT("x=1.50")));
+    md_str_t str = md_str_writer_to_str(&sw);
+    EXPECT_TRUE(md_str_eq(md_str_substr(str, str.len - 6, 6), MD_STR_LIT("x=1.50")));
     md_str_writer_pop(&sw, 1000);
     EXPECT_TRUE(md_str_writer_empty(&sw));
 
@@ -69,7 +69,7 @@ UTEST(writer, str_writer_growth) {
     for (int i = 0; i < count; ++i) {
         md_str_writer_fmt(&sw, "%d,", i);
     }
-    str_t str = md_str_writer_to_str(&sw);
+    md_str_t str = md_str_writer_to_str(&sw);
     int expected = 0;
     bool in_order = true;
     for (size_t i = 0; i < str.len;) {
@@ -102,7 +102,7 @@ UTEST(writer, str_writer_release) {
 
     md_str_writer_t sw = md_str_writer_create(arena);
     md_str_writer_push_cstr(&sw, "released");
-    str_t released = md_str_writer_release(&sw);
+    md_str_t released = md_str_writer_release(&sw);
     EXPECT_EQ((size_t)8, released.len);
     EXPECT_STREQ("released", released.ptr);    // terminated
 
@@ -112,14 +112,14 @@ UTEST(writer, str_writer_release) {
     EXPECT_STREQ("again", md_str_writer_to_cstr(&sw));
     md_str_writer_free(&sw);
     EXPECT_STREQ("released", released.ptr);    // the released string is its own
-    str_free(released, arena);
+    md_str_free(released, arena);
 
     md_str_writer_t hw = md_str_writer_create(heap);
     EXPECT_EQ((size_t)0, md_str_writer_release(&hw).len);
     md_str_writer_push_cstr(&hw, "x");
-    str_t x = md_str_writer_release(&hw);
-    EXPECT_TRUE(str_eq(x, STR_LIT("x")));
-    str_free(x, heap);
+    md_str_t x = md_str_writer_release(&hw);
+    EXPECT_TRUE(md_str_eq(x, MD_STR_LIT("x")));
+    md_str_free(x, heap);
     md_str_writer_free(&hw);
 
     md_arena_allocator_destroy(arena);
@@ -147,7 +147,7 @@ UTEST(writer, str_writer_temp_arena) {
     md_str_writer_t expected = md_str_writer_create(md_get_heap_allocator());
     md_str_writer_push_cstr(&expected, "start;");
     for (int i = 0; i < 200; ++i) md_str_writer_fmt(&expected, "line %d;", i);
-    EXPECT_TRUE(str_eq(md_str_writer_to_str(&expected), md_str_writer_to_str(&sw)));
+    EXPECT_TRUE(md_str_eq(md_str_writer_to_str(&expected), md_str_writer_to_str(&sw)));
 
     md_str_writer_free(&expected);
     md_temp_end(temp);
@@ -220,7 +220,7 @@ UTEST(writer, numbers) {
 UTEST(writer, fill_and_reserve) {
     md_str_writer_t sw = md_str_writer_create(md_get_heap_allocator());
     md_write_fill(&sw.w, '~', 1000);
-    str_t str = md_str_writer_to_str(&sw);
+    md_str_t str = md_str_writer_to_str(&sw);
     EXPECT_EQ((size_t)1000, str.len);
     EXPECT_EQ('~', str.ptr[0]);
     EXPECT_EQ('~', str.ptr[999]);
@@ -231,7 +231,7 @@ UTEST(writer, fill_and_reserve) {
     md_writer_commit(&sw.w, 10);
     str = md_str_writer_to_str(&sw);
     EXPECT_EQ((size_t)1010, str.len);
-    EXPECT_TRUE(str_eq(str_substr(str, 1000, 10), STR_LIT("0123456789")));
+    EXPECT_TRUE(md_str_eq(md_str_substr(str, 1000, 10), MD_STR_LIT("0123456789")));
     md_str_writer_free(&sw);
 
     // A writer without a buffer cannot reserve
@@ -255,7 +255,7 @@ static void produce_file_content(md_writer_i* w) {
 
 UTEST(writer, file_writer) {
     md_allocator_i* heap = md_get_heap_allocator();
-    const str_t path = STR_LIT("md_writer_test.tmp");
+    const md_str_t path = MD_STR_LIT("md_writer_test.tmp");
 
     md_str_writer_t expected = md_str_writer_create(heap);
     produce_file_content(&expected.w);
@@ -272,9 +272,9 @@ UTEST(writer, file_writer) {
         EXPECT_TRUE(md_file_writer_close(&fw));
         md_file_close(&file);
 
-        str_t written = load_textfile(path, heap);
-        EXPECT_TRUE(str_eq(md_str_writer_to_str(&expected), written));
-        str_free(written, heap);
+        md_str_t written = md_load_textfile(path, heap);
+        EXPECT_TRUE(md_str_eq(md_str_writer_to_str(&expected), written));
+        md_str_free(written, heap);
     }
 
     md_str_writer_free(&expected);

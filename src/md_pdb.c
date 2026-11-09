@@ -38,22 +38,22 @@ extern "C" {
 // Columns as the format numbers them, from 1, both ends included
 
 // The columns [beg, end], 1 based, of which a line cut short (trailing blanks trimmed) may hold only the first
-static inline float extract_float(str_t line, size_t beg, size_t end) {
+static inline float extract_float(md_str_t line, size_t beg, size_t end) {
     if (line.len < beg) return 0.0f;
-    return (float)parse_float(str_substr(line, beg - 1, MD_MIN(end, line.len) - beg + 1));
+    return (float)parse_float(md_str_substr(line, beg - 1, MD_MIN(end, line.len) - beg + 1));
 }
 
 // A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
 // occupancy and temperature factor): read without a scan when it is laid out that way, and parsed like
 // any other column when it is not
-static MD_FORCE_INLINE float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
+static MD_FORCE_INLINE float extract_fixed_float(md_str_t line, size_t beg, size_t end, size_t decimals) {
     if (line.len < end) return 0.0f;
-    const str_t field = str_substr(line, beg - 1, end-beg + 1);
+    const md_str_t field = md_str_substr(line, beg - 1, end-beg + 1);
     float value;
     return md_parse_fixed_f32(&value, field, decimals) ? value : (float)parse_float(field);
 }
 
-static inline char extract_char(str_t line, size_t idx) {
+static inline char extract_char(md_str_t line, size_t idx) {
     if (line.len < idx) return 0;
     return line.ptr[idx - 1];
 }
@@ -63,7 +63,7 @@ static inline char extract_char(str_t line, size_t idx) {
 // writers put there, or the hexadecimal VMD writes past 99999 ("186a0" for 100000), which is not hybrid-36 (a number
 // which begins with a digit is decimal) and cannot be told from decimal where it has no letter (18700, 100096). Such a
 // file is read by the order of its atoms; only CONECT records refer to atoms by their serials.
-static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num_bad) {
+static inline int32_t parse_id(md_str_t line, size_t beg, size_t end, uint32_t* num_bad) {
     const uint32_t len = (uint32_t)(end - beg) + 1;
     const char* c = line.ptr + beg - 1;
     // Most are blanks and then digits (or blanks alone, 0), which hybrid-36 reads as decimal too
@@ -85,8 +85,8 @@ static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num
 
 // The formal charge of the charge column (79 to 80): a digit and its sign, "1-" or "2+" (and the sign first, as some
 // writers have it). NAN where there is none, which chemistry perception takes as not given (md_chem_perceive).
-static MD_FORCE_INLINE float pdb_charge(str_t field) {
-    field = str_trim(field);
+static MD_FORCE_INLINE float pdb_charge(md_str_t field) {
+    field = md_str_trim(field);
     if (field.len == 1 && field.ptr[0] == '0') return 0.0f;
     if (field.len != 2) return NAN;
     const char a = field.ptr[0], b = field.ptr[1];
@@ -118,7 +118,7 @@ typedef enum {
 
 // The first eight characters of a line, blanks past the end of a shorter one: a record of its name alone (TER, ENDMDL,
 // CRYST) is read as the same line with blanks after it. No load past the line, which may end the string.
-static MD_FORCE_INLINE uint64_t pdb_line_head(str_t line) {
+static MD_FORCE_INLINE uint64_t pdb_line_head(md_str_t line) {
     uint64_t w;
     if (line.len >= 8) {
         MD_MEMCPY(&w, line.ptr, 8);
@@ -133,7 +133,7 @@ static MD_FORCE_INLINE uint64_t pdb_line_head(str_t line) {
 // told by, the atoms first (they are the most). TER and ATOM by their first three and four (TER may be followed by
 // anything, and ATOM by a serial which runs into columns 5 and 6), CRYST1 also as CRYST with a blank where the 1 is, as
 // some tools write it (the Conformational Analysis Tools of CHARMM-GUI's trajectories, with all angles 0).
-static MD_FORCE_INLINE pdb_line_kind_t pdb_line_kind(str_t line) {
+static MD_FORCE_INLINE pdb_line_kind_t pdb_line_kind(md_str_t line) {
     const uint64_t w  = pdb_line_head(line);
     const uint64_t w6 = w & PDB_MASK(6);
     if (((w & PDB_MASK(4)) == PDB_W8('A','T','O','M',0,0,0,0)) | (w6 == PDB_W8('H','E','T','A','T','M',0,0))) {
@@ -153,7 +153,7 @@ static MD_FORCE_INLINE pdb_line_kind_t pdb_line_kind(str_t line) {
 // The cell of a CRYST1 record. No angles at all is a rectangular box whose angles were left out, not a degenerate cell.
 // False for a cell of 1 x 1 x 1 at right angles, which writers put there for a structure of no cell (no periodic
 // boundaries).
-static bool pdb_cryst1_cell(md_unitcell_t* cell, str_t line) {
+static bool pdb_cryst1_cell(md_unitcell_t* cell, md_str_t line) {
     float a = extract_float(line, 7, 15), b = extract_float(line, 16, 24), c = extract_float(line, 25, 33);
     float alpha = extract_float(line, 34, 40), beta = extract_float(line, 41, 47), gamma = extract_float(line, 48, 54);
     if (alpha == 0 && beta == 0 && gamma == 0) {
@@ -197,27 +197,27 @@ typedef struct pdb_extras_t {
 } pdb_extras_t;
 
 // A serial of a CONECT record, 0 where there is none. Serials are hybrid-36 as those of the atoms are, past 99999 atoms.
-static inline int32_t conect_serial(str_t line, size_t beg) {
+static inline int32_t conect_serial(md_str_t line, size_t beg) {
     const size_t end = beg + 4;
     if (line.len < end) return 0;
-    if (str_empty(str_trim(str_substr(line, beg - 1, 5)))) return 0;
+    if (md_str_empty(md_str_trim(md_str_substr(line, beg - 1, 5)))) return 0;
     return parse_id(line, beg, end, NULL);
 }
 
-static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, str_t line) {
+static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t line) {
     md_allocator_i* alloc = x->alloc;
     switch (kind) {
     case PDB_LINE_CRYST1:
         // The first one: a file of models has one for each, the same
         if (!x->seen_cryst1) {
             x->seen_cryst1 = true;
-            x->has_cell = pdb_cryst1_cell(&x->cell, str_trim(line));
+            x->has_cell = pdb_cryst1_cell(&x->cell, md_str_trim(line));
         }
         break;
     case PDB_LINE_CONECT: {
         // The atom of columns 7 to 11 and up to four atoms bonded to it, each a bond. A record of more is continued on
         // the next line, which names the atom again.
-        line = str_trim(line);
+        line = md_str_trim(line);
         const int32_t a = conect_serial(line, 7);
         if (!a) break;
         for (size_t beg = 12; beg <= 27; beg += 5) {
@@ -230,13 +230,13 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, str_t line)
     }
     case PDB_LINE_REMARK_350: {
         // A biomolecule is one or more groups of chains, each followed by the BIOMT transforms which copy them
-        const str_t rest = str_substr(line, 11, SIZE_MAX);
-        if (str_eq_cstr_n(rest, "BIOMOLECULE:", 12)) {
-            x->biomolecule = (int32_t)parse_int(str_trim(str_substr(rest, 12, SIZE_MAX)));
+        const md_str_t rest = md_str_substr(line, 11, SIZE_MAX);
+        if (md_str_eq_cstr_n(rest, "BIOMOLECULE:", 12)) {
+            x->biomolecule = (int32_t)parse_int(md_str_trim(md_str_substr(rest, 12, SIZE_MAX)));
         }
-        else if (str_eq_cstr_n(rest, "APPLY THE FOLLOWING TO CHAINS:", 30) || str_eq_cstr_n(str_trim(rest), "AND CHAINS:", 11)) {
+        else if (md_str_eq_cstr_n(rest, "APPLY THE FOLLOWING TO CHAINS:", 30) || md_str_eq_cstr_n(md_str_trim(rest), "AND CHAINS:", 11)) {
             // A group begins with the chains to apply to, which AND CHAINS lines continue
-            if (str_eq_cstr_n(rest, "APPLY", 5)) {
+            if (md_str_eq_cstr_n(rest, "APPLY", 5)) {
                 const pdb_group_t group = {
                     .id = x->biomolecule,
                     .chain_offset = (uint32_t)md_array_size(x->chains),
@@ -247,12 +247,12 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, str_t line)
             pdb_group_t* group = md_array_last(x->groups);
             if (group) {
                 size_t colon = 0;
-                str_find_char(&colon, rest, ':');
-                str_t chains = str_substr(rest, colon + 1, SIZE_MAX);
-                str_t chain;
+                md_str_find_char(&colon, rest, ':');
+                md_str_t chains = md_str_substr(rest, colon + 1, SIZE_MAX);
+                md_str_t chain;
                 while (extract_token_delim(&chain, &chains, ',')) {
-                    chain = str_trim(chain);
-                    if (str_empty(chain)) continue;
+                    chain = md_str_trim(chain);
+                    if (md_str_empty(chain)) continue;
                     md_array_push(x->chains, chain.ptr[0], alloc);
                     group->chain_count += 1;
                 }
@@ -260,12 +260,12 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, str_t line)
                 MD_LOG_DEBUG("REMARK 350: chains of no biomolecule");
             }
         }
-        else if (str_eq_cstr_n(str_trim(rest), "BIOMT", 5) && line.len > 18) {
+        else if (md_str_eq_cstr_n(md_str_trim(rest), "BIOMT", 5) && line.len > 18) {
             // REMARK 350   BIOMTr   n  m[r][1] m[r][2] m[r][3]  t[r], the rows of transform n of the group
             pdb_group_t* group = md_array_last(x->groups);
             const int32_t row = char_to_digit(line.ptr[18]) - 1;
-            str_t fields = str_substr(line, 19, SIZE_MAX);
-            str_t tok[5];
+            md_str_t fields = md_str_substr(line, 19, SIZE_MAX);
+            md_str_t tok[5];
             const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &fields);
             if (!group || row < 0 || row > 2 || num_tok < 5) {
                 MD_LOG_DEBUG("REMARK 350: a malformed BIOMT record");
@@ -313,7 +313,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
             const char chain = x->chains[group->chain_offset + c];
             bool found = false;
             for (size_t i = 0; i < sys->instance.count; ++i) {
-                const str_t auth = md_system_instance_auth_id(sys, i);
+                const md_str_t auth = md_system_instance_auth_id(sys, i);
                 if (auth.len == 1 && auth.ptr[0] == chain) {
                     md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
                     found = true;
@@ -335,7 +335,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
                 char buf[16];
                 const int len = snprintf(buf, sizeof(buf), "%u", t + 1);
                 md_array_push(transform, M, temp_alloc);
-                md_array_push(oper_id, make_label((str_t){buf, (size_t)MD_MAX(len, 0)}), temp_alloc);
+                md_array_push(oper_id, make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)}), temp_alloc);
             }
             md_array_push(oper, (uint32_t)k, temp_alloc);
         }
@@ -343,7 +343,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
         char buf[16];
         const int len = snprintf(buf, sizeof(buf), "%d", group->id);
         const md_assembly_gen_t row = {
-            .assembly_id = make_label((str_t){buf, (size_t)MD_MAX(len, 0)}),
+            .assembly_id = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)}),
             .inst        = inst,
             .inst_count  = md_array_size(inst),
             .oper        = oper,
@@ -450,7 +450,7 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
 
 // What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),
 // the units of the file (the runs of residues of one chain id) and the assemblies of REMARK 350
-static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const pdb_extras_t* x, const int32_t* atom_serial, const str_t* res_chain_ids, const bool* res_after_ter, md_allocator_i* temp_arena) {
+static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const pdb_extras_t* x, const int32_t* atom_serial, const md_str_t* res_chain_ids, const bool* res_after_ter, md_allocator_i* temp_arena) {
     if (x->has_cell) {
         state->unitcell = x->cell;
     }
@@ -503,7 +503,7 @@ typedef struct pdb_res_fields_t {
     uint16_t hi;
 } pdb_res_fields_t;
 
-static MD_FORCE_INLINE pdb_res_fields_t pdb_res_fields(str_t line) {
+static MD_FORCE_INLINE pdb_res_fields_t pdb_res_fields(md_str_t line) {
     pdb_res_fields_t f;
     if (line.len >= PDB_RES_FIELDS_END) {
         MD_MEMCPY(&f.lo, line.ptr + PDB_RES_FIELDS_BEG, 8);
@@ -528,7 +528,7 @@ static MD_FORCE_INLINE char pdb_res_fields_chain(const pdb_res_fields_t* f) {
 
 // A field of up to 4 columns from offset (from 0) as a label, without the blanks around it: what is at or below ' ' (a
 // tab, a carriage return, a nul) at its ends, which no name has. One word, no loop over its characters.
-static MD_FORCE_INLINE md_label_t pdb_label(str_t line, size_t offset, size_t width) {
+static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t width) {
     uint32_t w = 0x20202020u;
     if (line.len >= offset + width) {
         if (width == 4) MD_MEMCPY(&w, line.ptr + offset, 4);
@@ -550,13 +550,13 @@ static MD_FORCE_INLINE md_label_t pdb_label(str_t line, size_t offset, size_t wi
 
 // The three coordinates of an atom line, "%8.3f" each from column 31: at once (md_parse_fixed_f32x3_w8), and one by one
 // (md_parse_fixed_f32, else parse_float) where any is laid out otherwise or the line is too short for them
-static inline void pdb_coords_scalar(float out[3], str_t line) {
+static inline void pdb_coords_scalar(float out[3], md_str_t line) {
     out[0] = extract_fixed_float(line, 31, 38, 3);
     out[1] = extract_fixed_float(line, 39, 46, 3);
     out[2] = extract_fixed_float(line, 47, 54, 3);
 }
 
-static MD_FORCE_INLINE void pdb_coords(float out[3], str_t line) {
+static MD_FORCE_INLINE void pdb_coords(float out[3], md_str_t line) {
     if (line.len < 54 || !md_parse_fixed_f32x3_w8(out, line.ptr + 30, 3)) pdb_coords_scalar(out, line);
 }
 
@@ -734,7 +734,7 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         bool ter = false, ter_first = false;
         pdb_res_fields_t prev = {0};
         md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
-        str_t line;
+        md_str_t line;
         while (md_text_lines_next(&lines, &line)) {
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM) {
@@ -783,7 +783,7 @@ typedef struct pdb_field_cache_t {
 } pdb_field_cache_t;
 
 // Columns beg to end (from 1, both included) of the line: the occupancy and the b factor ("%6.2f"), or the charge
-static MD_FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, str_t line, size_t beg, size_t end) {
+static MD_FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, md_str_t line, size_t beg, size_t end) {
     const size_t width = end - beg + 1;
     uint64_t raw = 0;
     if (line.len >= end) {
@@ -795,7 +795,7 @@ static MD_FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, str_t li
     }
     if (raw == cache->raw) return cache->value;
     cache->raw = raw;
-    cache->value = width == 2 ? pdb_charge(str_substr(line, beg - 1, 2)) : extract_fixed_float(line, beg, end, 2);
+    cache->value = width == 2 ? pdb_charge(md_str_substr(line, beg - 1, 2)) : extract_fixed_float(line, beg, end, 2);
     return cache->value;
 }
 
@@ -839,7 +839,7 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         const pdb_line_t* lines = piece->lines;
         for (uint32_t i = 0; i < piece->num_lines; ++i) {
             const pdb_line_t ln = lines[i];
-            const str_t line = { L->text + ln.offset, ln.len };
+            const md_str_t line = { L->text + ln.offset, ln.len };
             if (ln.kind != PDB_LINE_ATOM) {
                 rec->offset = ln.offset;
                 rec->len    = ln.len;
@@ -958,10 +958,10 @@ static void pdb_type_overflow(pdb_load_t* L, const pdb_piece_t* piece) {
     for (uint32_t i = 0; i < piece->num_lines; ++i) {
         const pdb_line_t ln = piece->lines[i];
         if (ln.kind != PDB_LINE_ATOM) continue;
-        const str_t line = { L->text + ln.offset, ln.len };
+        const md_str_t line = { L->text + ln.offset, ln.len };
         if (sys->atom.type_idx[atom] == PDB_TYPE_OVERFLOW) {
-            const str_t name = str_trim(str_substr(line, 12, 4));
-            const md_atomic_number_t z = md_atomic_number_from_symbol(str_trim(str_substr(line, 76, 2)), true);
+            const md_str_t name = md_str_trim(md_str_substr(line, 12, 4));
+            const md_atomic_number_t z = md_atomic_number_from_symbol(md_str_trim(md_str_substr(line, 76, 2)), true);
             sys->atom.type_idx[atom] = md_util_particle_type_find_or_add(sys, &L->type_map, name, z);
         }
         ++atom;
@@ -1059,7 +1059,7 @@ static void pdb_read_records(pdb_load_t* L) {
         case PDB_LINE_CRYST1:
         case PDB_LINE_CONECT:
         case PDB_LINE_REMARK_350:
-            pdb_extras_record(&L->extras, rec->kind, (str_t){ L->text + rec->offset, rec->len });
+            pdb_extras_record(&L->extras, rec->kind, (md_str_t){ L->text + rec->offset, rec->len });
             break;
         default:
             break;
@@ -1130,7 +1130,7 @@ static int64_t pdb_tail(md_reader_i* src, int64_t from) {
         if (!md_reader_seek(src, start - 1)) return from;
         md_reader_skip_line(src);
         int64_t found = -1;
-        str_t line;
+        md_str_t line;
         while (md_reader_extract_line(src, &line)) {
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_MODEL || kind == PDB_LINE_ENDMDL) found = md_reader_tell(src);
@@ -1216,7 +1216,7 @@ typedef struct pdb_residues_t {
     const pdb_residue_start_t* starts;
     size_t num_res;
     char*  chain_chars;
-    str_t* chain_ids;
+    md_str_t* chain_ids;
     bool*  after_ter;
 } pdb_residues_t;
 
@@ -1232,7 +1232,7 @@ static void pdb_build_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
         res->seq_id[r] = rs->seq_id;
         res->flags[r]  = MD_RESIDUE_FLAG_NONE;
         rb->chain_chars[r] = rs->chain_id;
-        rb->chain_ids[r] = str_trim((str_t){ &rb->chain_chars[r], 1 });
+        rb->chain_ids[r] = md_str_trim((md_str_t){ &rb->chain_chars[r], 1 });
         rb->after_ter[r] = rs->after_ter;
     }
 }
@@ -1279,7 +1279,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
         .starts = L->res_starts,
         .num_res = num_res,
         .chain_chars = md_alloc(temp, MD_MAX(num_res, 1)),
-        .chain_ids = md_alloc(temp, MD_MAX(num_res, 1) * sizeof(str_t)),
+        .chain_ids = md_alloc(temp, MD_MAX(num_res, 1) * sizeof(md_str_t)),
         .after_ter = md_alloc(temp, MD_MAX(num_res, 1) * sizeof(bool)),
     };
     if (!md_parallel_for(ex, (uint32_t)MD_DIV_UP(num_res, PDB_RES_CHUNK), 1, pdb_build_residues, &rb)) return false;
@@ -1299,7 +1299,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     pdb_lap(L, PDB_PHASE_TYPING, &t);
 
     // The columns which hold more than one value: md_mmcif publishes the same, and they have to agree
-    const str_t col_path[PDB_NUM_COLUMNS] = { STR_LIT("atom/occupancy"), STR_LIT("atom/b_factor"), STR_LIT("atom/formal_charge") };
+    const md_str_t col_path[PDB_NUM_COLUMNS] = { MD_STR_LIT("atom/occupancy"), MD_STR_LIT("atom/b_factor"), MD_STR_LIT("atom/formal_charge") };
     const md_unit_t col_unit[PDB_NUM_COLUMNS] = { md_unit_none(), md_unit_pow(md_unit_angstrom(), 2), md_unit_none() };
     for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
         // Chemistry perception starts from the formal charges the file gives
@@ -1371,7 +1371,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     L.lines = md_alloc(temp, L.lines_cap * sizeof(pdb_line_t));
 
     // Add default unknown particle type at index 0
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     // hy36decode fills its tables of digits on its first call, unguarded (a second thread would read them half filled):
     // once here, before the tasks call it
@@ -1384,7 +1384,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     bool tail = false;      // gone to the end of the file, for its CONECT records
     for (;;) {
         md_tick_t t = md_tick_now();
-        const str_t block = md_reader_block_parallel(src, ex);
+        const md_str_t block = md_reader_block_parallel(src, ex);
         pdb_lap(&L, PDB_PHASE_READ, &t);
         if (block.len == 0) break;
         // The block a pass at a time: what the lines are, then what they hold, of text the first left in the caches
@@ -1422,18 +1422,18 @@ done:
 
 #undef PDB_ROOM
 
-bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_pdb_options_t options, const md_executor_t* executor) {
+bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, md_pdb_options_t options, const md_executor_t* executor) {
     md_reader_i src = md_reader_from_str(str);
     return pdb_load(sys, state, &src, options, executor);
 }
 
-bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
+bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
     // The reader's buffer in a temp scope, below the one of the load (pdb_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
     const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(executor)));
     if (!md_file_reader_open(&fr, filename, cap, md_temp_allocator(temp))) {
-        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         md_temp_end(temp);
         return false;
     }
@@ -1452,7 +1452,7 @@ typedef struct pdb_cache_t {
 
 // The cache beside path when it was made from the file as it is now: header, cell, num_frames + 1
 // model offsets.
-static bool try_read_cache(pdb_cache_t* cache, str_t path, md_allocator_i* alloc) {
+static bool try_read_cache(pdb_cache_t* cache, md_str_t path, md_allocator_i* alloc) {
     MD_ASSERT(cache);
     MD_ASSERT(alloc);
     md_file_t file = {0};
@@ -1466,7 +1466,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t path, md_allocator_i* alloc
         md_file_read(file, cache->frame_offsets, offset_bytes) == offset_bytes &&
         md_file_tell(file) == (int64_t)md_file_size(file);
     if (!ok) {
-        MD_LOG_ERROR("The PDB cache beside '" STR_FMT "' is incomplete", STR_ARG(path));
+        MD_LOG_ERROR("The PDB cache beside '" MD_STR_FMT "' is incomplete", MD_STR_ARG(path));
         md_free(alloc, cache->frame_offsets, offset_bytes);
         cache->frame_offsets = NULL;
     }
@@ -1474,7 +1474,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t path, md_allocator_i* alloc
     return ok;
 }
 
-static bool write_cache(const pdb_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+static bool write_cache(const pdb_cache_t* cache, md_str_t path, const md_file_info_t* scanned) {
     md_file_t file = {0};
     if (!md_run_cache_create(&file, path, scanned, MD_PDB_CACHE_MAGIC, MD_PDB_CACHE_VERSION, cache->header.num_atoms, cache->header.num_frames)) {
         return false;
@@ -1484,7 +1484,7 @@ static bool write_cache(const pdb_cache_t* cache, str_t path, const md_file_info
         md_file_write(file, &cache->cell, sizeof(cache->cell)) == sizeof(cache->cell) &&
         md_file_write(file, cache->frame_offsets, offset_bytes) == offset_bytes;
     if (!ok) {
-        MD_LOG_ERROR("Failed to write the PDB cache beside '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("Failed to write the PDB cache beside '" MD_STR_FMT "'", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
@@ -1494,7 +1494,7 @@ static bool write_cache(const pdb_cache_t* cache, str_t path, const md_file_info
 // file otherwise (writing the cache unless told not to). The scan reads the names of the records, and of the lines
 // nothing else but the first CRYST1's: a model begins at its MODEL record, and its atoms are those the system has of
 // it (the first alternate locations, pdb_line_kind), up to its ENDMDL record or the next MODEL record.
-static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t flags, md_allocator_i* alloc) {
+static bool pdb_index_load(pdb_cache_t* cache, md_str_t filename, md_run_flags_t flags, md_allocator_i* alloc) {
     MD_MEMSET(cache, 0, sizeof(*cache));
 
     if (try_read_cache(cache, filename, alloc)) {
@@ -1505,14 +1505,14 @@ static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t fl
     // The file as it is before the scan is what the cache is stamped with
     md_file_info_t scanned = { 0 };
     if (!md_file_info_extract_from_path(filename, &scanned)) {
-        MD_LOG_ERROR("Failed to extract file info from path '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Failed to extract file info from path '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 
     md_allocator_i* heap = md_get_heap_allocator();
     md_file_reader_t fr;
     if (!md_file_reader_open(&fr, filename, MD_READER_DEFAULT_CAPACITY, heap)) {
-        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 
@@ -1520,7 +1520,7 @@ static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t fl
     md_array(uint32_t) model_atoms = 0;
     pdb_extras_t extras = { .alloc = heap };    // The cell
     bool in_model = false;
-    str_t line;
+    md_str_t line;
     for (;;) {
         const int64_t at = md_reader_tell(&fr.r);   // The offset of the line
         if (!md_reader_extract_line(&fr.r, &line)) break;
@@ -1590,11 +1590,11 @@ done:
 
 // The coordinates of atoms [first, first + count) of one model, packed xyz, straight off its ATOM and HETATM records:
 // those the system has (the first alternate locations), read as the load reads them. Returns how many were written.
-static size_t pdb_parse_model_coords(float* xyz, str_t str, size_t first, size_t count) {
-    str_t line;
+static size_t pdb_parse_model_coords(float* xyz, md_str_t str, size_t first, size_t count) {
+    md_str_t line;
     size_t i = 0;
     size_t written = 0;
-    while (written < count && str_extract_line(&line, &str)) {
+    while (written < count && md_str_extract_line(&line, &str)) {
         if (pdb_line_kind(line) != PDB_LINE_ATOM) continue;
         if (i >= first) {
             xyz[written * 3 + 0] = extract_fixed_float(line, 31, 38, 3);
@@ -1615,7 +1615,7 @@ static size_t pdb_position_provider(void* dst, size_t cap, const md_attribute_t*
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
+    if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
 
     const uint32_t frame = slice->idx[0];
     const size_t N = attr->format.shape[1];
@@ -1632,23 +1632,23 @@ static size_t pdb_position_provider(void* dst, size_t cap, const md_attribute_t*
     size_t written = 0;
     char* text = md_temp_alloc(temp, MD_MAX(frame_size, 1));
     if (text && md_attribute_io_read_at(io, src.path, src.offset[frame], text, frame_size) == frame_size) {
-        if (pdb_parse_model_coords((float*)dst, (str_t){ text, frame_size }, first, count) == count) {
+        if (pdb_parse_model_coords((float*)dst, (md_str_t){ text, frame_size }, first, count) == count) {
             written = cap;
         } else {
-            MD_LOG_ERROR("PDB: model %u of '" STR_FMT "' has fewer than %zu atoms", frame, STR_ARG(src.path), first + count);
+            MD_LOG_ERROR("PDB: model %u of '" MD_STR_FMT "' has fewer than %zu atoms", frame, MD_STR_ARG(src.path), first + count);
         }
     } else {
-        MD_LOG_ERROR("PDB: Failed to read model %u from '" STR_FMT "'", frame, STR_ARG(src.path));
+        MD_LOG_ERROR("PDB: Failed to read model %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(src.path));
     }
     md_temp_end(temp);
     return written;
 }
 
-bool md_pdb_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_pdb_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
     MD_ASSERT(sys);
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = { path_buf, path_len };
+    const md_str_t path = { path_buf, path_len };
 
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
@@ -1715,23 +1715,23 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 		md_atomic_number_t atomic_nr = md_atom_atomic_number(&sys->atom, idx);
 
 		char element[3] = "";
-        str_copy_to_char_buf(element, sizeof(element), md_atomic_number_symbol(atomic_nr));
+        md_str_copy_to_char_buf(element, sizeof(element), md_atomic_number_symbol(atomic_nr));
         
         // Get atom name (use element symbol if not available)
 		char name[5] = "";
-		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
+		md_str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
         
         // Get residue name
 		md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, idx);
 		char resname[5] = "";
-		str_copy_to_char_buf(resname, sizeof(resname), md_system_residue_name(sys, res_idx));
+		md_str_copy_to_char_buf(resname, sizeof(resname), md_system_residue_name(sys, res_idx));
 
 		md_sequence_id_t res_seq = md_system_residue_seq_id(sys, res_idx);
         
         // The chain id, the label the atom is filed under (blank for one in no chain)
         char chain_id[4] = " ";
         const md_chain_idx_t chain_idx = md_system_chain_find_by_atom_idx(sys, idx);
-        if (chain_idx >= 0) str_copy_to_char_buf(chain_id, sizeof(chain_id), md_system_chain_id(sys, (size_t)chain_idx));
+        if (chain_idx >= 0) md_str_copy_to_char_buf(chain_id, sizeof(chain_id), md_system_chain_id(sys, (size_t)chain_idx));
         const md_part_idx_t part_idx = md_system_part_find_by_atom_idx(sys, idx);
 
         char res_seq_str[5] = "";

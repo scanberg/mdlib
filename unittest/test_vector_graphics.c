@@ -12,7 +12,7 @@ UTEST(vector_graphics, svg_export) {
 
     md_vg_scene_t scene = {0};
     md_vg_scene_init(&scene, (vec2_t){ 320.0f, 180.0f }, alloc);
-    md_vg_scene_set_default_font_family(&scene, STR_LIT("Helvetica"));
+    md_vg_scene_set_default_font_family(&scene, MD_STR_LIT("Helvetica"));
 
     md_vg_add_line(&scene, (vec2_t){ 8.0f, 8.0f }, (vec2_t){ 64.0f, 24.0f }, MD_VG_COLOR_RGB(255, 0, 0), 2.0f);
     md_vg_add_rect_filled(&scene, (vec2_t){ 12.0f, 32.0f }, (vec2_t){ 88.0f, 72.0f }, MD_VG_COLOR_RGBA(0, 128, 255, 200), 6.0f);
@@ -36,9 +36,9 @@ UTEST(vector_graphics, svg_export) {
     md_vg_path_close(&scene);
     md_vg_path_fill(&scene, MD_VG_COLOR_RGBA(40, 40, 40, 180));
 
-    md_vg_add_text(&scene, (vec2_t){ 12.0f, 144.0f }, 14.0f, MD_VG_COLOR_RGB(20, 20, 20), STR_LIT("Vector export"));
+    md_vg_add_text(&scene, (vec2_t){ 12.0f, 144.0f }, 14.0f, MD_VG_COLOR_RGB(20, 20, 20), MD_STR_LIT("Vector export"));
 
-    str_t svg = md_vg_scene_to_svg(&scene, alloc);
+    md_str_t svg = md_vg_scene_to_svg(&scene, alloc);
 
     ASSERT_TRUE(svg.ptr != 0);
     ASSERT_TRUE(strstr(svg.ptr, "<svg") != NULL);
@@ -54,6 +54,6 @@ UTEST(vector_graphics, svg_export) {
     ASSERT_TRUE(strstr(svg.ptr, "url(#mdvg-grad-") != NULL);
     ASSERT_TRUE(strstr(svg.ptr, "Vector export") != NULL);
 
-    str_free(svg, alloc);
+    md_str_free(svg, alloc);
     md_vg_scene_free(&scene);
 }

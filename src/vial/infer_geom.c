@@ -19,7 +19,7 @@ static T err(void) { return vial_type_error(); }
 
 static md_unit_t unit_named(const char* name) {
     md_unit_t u = md_unit_none();
-    vial_unit_name(str_from_cstr(name), &u);
+    vial_unit_name(md_str_from_cstr(name), &u);
     return u;
 }
 
@@ -33,7 +33,7 @@ static bool last_is(const T* t, uint32_t n) {
 }
 
 static const char* excerpt(char* buf, size_t cap, infer_t* x, vial_node_id node) {
-    const str_t e = vial_excerpt(buf, cap, vx_text(x, node));
+    const md_str_t e = vial_excerpt(buf, cap, vx_text(x, node));
     (void)e;
     return buf;
 }
@@ -81,7 +81,7 @@ static T coords(void) {
 
 // A fix that writes the whole of a node's text inside pre and post; NULL when it would be too long to offer
 static const char* fix_around(char* buf, size_t cap, infer_t* x, vial_node_id node, const char* pre, const char* post) {
-    const str_t t = vx_text(x, node);
+    const md_str_t t = vx_text(x, node);
     const int n = snprintf(buf, cap, "%s%.*s%s", pre, (int)t.len, t.ptr, post);
     return n > 0 && (size_t)n < cap ? buf : NULL;
 }
@@ -303,9 +303,9 @@ static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t
         if (vx_kind(x, a) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
             if (vn) vx_infer(x, vn);
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+            const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
             uint32_t k = 0;
-            while (k < np && !str_eq(kw, str_from_cstr(params[k].name))) ++k;
+            while (k < np && !md_str_eq(kw, md_str_from_cstr(params[k].name))) ++k;
             if (k == np) {
                 char names[160] = "";
                 size_t n = 0;
@@ -314,12 +314,12 @@ static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t
                 static const char* const renamed[][2] = {{"by", "match"}, {"label", "text"}, {"weight", "weights"}, {"mass_weighted", "weights"}};
                 const char* instead = NULL;
                 for (size_t q = 0; q < MD_COUNTOF(renamed) && !instead; ++q) {
-                    if (!str_eq(kw, str_from_cstr(renamed[q][0]))) continue;
+                    if (!md_str_eq(kw, md_str_from_cstr(renamed[q][0]))) continue;
                     for (uint32_t r = 0; r < np && !instead; ++r) if (!strcmp(params[r].name, renamed[q][1])) instead = renamed[q][1];
                 }
                 char fix[200] = "";
                 if (instead && vn) {
-                    const str_t vt = vx_text(x, vn);
+                    const md_str_t vt = vx_text(x, vn);
                     if (vt.len < 150 && !memchr(vt.ptr, '\n', vt.len) && !memchr(vt.ptr, '\r', vt.len)) snprintf(fix, sizeof(fix), "%s=%.*s", instead, (int)vt.len, vt.ptr);
                 }
                 if (instead) vx_diag_fix(x, "E0202", a, fix[0] ? fix : NULL, "`%s` takes no keyword `%.*s`; it is %s=", fname, (int)kw.len, kw.ptr, instead);
@@ -410,7 +410,7 @@ bool vx_weights_ok(infer_t* x, vial_node_id n, const char* fname, const T* point
     const vial_value_t w = value(x, n);
     const T wt = x->out->types[(n) - x->out->base];
     if (vial_type_is_error(&wt)) return false;
-    if ((w.kind == VIAL_VAL_STR && str_eq(w.s, STR_LIT("mass"))) || wt.dtype == VIAL_DT_NONE) return true;
+    if ((w.kind == VIAL_VAL_STR && md_str_eq(w.s, MD_STR_LIT("mass"))) || wt.dtype == VIAL_DT_NONE) return true;
     const bool num = wt.dtype == VIAL_DT_FLOAT || wt.dtype == VIAL_DT_FLOAT64 || wt.dtype == VIAL_DT_INT || wt.dtype == VIAL_DT_BOOL;
     if (!num || wt.ndim != 1) {
         vx_diag_fix(x, "E0313", n, NULL, "weights= takes 'mass', None, or one number per point, float[n]; this is %s", vx_tstr(&wt));
@@ -467,7 +467,7 @@ static T call_weight(infer_t* x, vial_node_id call) {
 }
 
 // mass, charge, element, name, bfactor: one value per particle of a set
-static T call_property(infer_t* x, vial_node_id call, str_t name) {
+static T call_property(infer_t* x, vial_node_id call, md_str_t name) {
     static const param_t params[] = {{"s", VK_WHOLE, true}};
     vial_node_id args[1];
     char fname[16];
@@ -487,11 +487,11 @@ static T call_property(infer_t* x, vial_node_id call, str_t name) {
         vx_diag_fix(x, "E0318", args[0], fix, "`%s` holds sets whose sizes may differ; their particles' %ss do not form one array", ex, fname);
         return err();
     }
-    const bool str = str_eq(name, STR_LIT("element")) || str_eq(name, STR_LIT("name"));
+    const bool str = md_str_eq(name, MD_STR_LIT("element")) || md_str_eq(name, MD_STR_LIT("name"));
     T t = vial_type_scalar(str ? VIAL_DT_STR : VIAL_DT_FLOAT);
-    if (str_eq(name, STR_LIT("mass")))    t.unit = unit_named("u");
-    if (str_eq(name, STR_LIT("charge")))  t.unit = unit_named("e");
-    if (str_eq(name, STR_LIT("bfactor"))) t.unit = md_unit_mul(unit_named("angstrom"), unit_named("angstrom"));
+    if (md_str_eq(name, MD_STR_LIT("mass")))    t.unit = unit_named("u");
+    if (md_str_eq(name, MD_STR_LIT("charge")))  t.unit = unit_named("e");
+    if (md_str_eq(name, MD_STR_LIT("bfactor"))) t.unit = md_unit_mul(unit_named("angstrom"), unit_named("angstrom"));
     t.stage = s.stage;
     vial_type_push_dim(&t, particle_extent(x, &s, args[0]));
     return t;
@@ -585,7 +585,7 @@ static T call_pair(infer_t* x, vial_node_id call, bool closest) {
         distinct = v.b;
     }
     if (closest && !distinct && shares_units(&sp[0], &sp[1])) {
-        const str_t t = vx_text(x, call);
+        const md_str_t t = vx_text(x, call);
         char fix[160] = "";
         if (t.len > 1 && t.len < 120 && t.ptr[t.len - 1] == ')') snprintf(fix, sizeof(fix), "%.*s, distinct=True)", (int)(t.len - 1), t.ptr);
         vx_diag_fix(x, "W0608", call, fix[0] ? fix : NULL, "`%s` pairs every point with itself, so the shortest distance is zero; distinct=True leaves those pairs out", fname);
@@ -625,30 +625,30 @@ static T call_fit(infer_t* x, vial_node_id call) {
 }
 
 bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
-    const str_t name = str_from_cstr(b->name);
-    if (str_eq(name, STR_LIT("com")))          { *out = call_com(x, call, "com", 0, 0); return true; }
-    if (str_eq(name, STR_LIT("weight")))       { *out = call_weight(x, call); return true; }
-    if (str_eq(name, STR_LIT("mass")) || str_eq(name, STR_LIT("charge")) || str_eq(name, STR_LIT("element")) ||
-        str_eq(name, STR_LIT("name")) || str_eq(name, STR_LIT("bfactor"))) { *out = call_property(x, call, name); return true; }
-    if (str_eq(name, STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }
-    if (str_eq(name, STR_LIT("angle")))         { *out = call_angle(x, call, false); return true; }
-    if (str_eq(name, STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }
-    if (str_eq(name, STR_LIT("closest_pair")))  { *out = call_pair(x, call, true); return true; }
-    if (str_eq(name, STR_LIT("farthest_pair"))) { *out = call_pair(x, call, false); return true; }
-    if (str_eq(name, STR_LIT("fit")))           { *out = call_fit(x, call); return true; }
+    const md_str_t name = md_str_from_cstr(b->name);
+    if (md_str_eq(name, MD_STR_LIT("com")))          { *out = call_com(x, call, "com", 0, 0); return true; }
+    if (md_str_eq(name, MD_STR_LIT("weight")))       { *out = call_weight(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("mass")) || md_str_eq(name, MD_STR_LIT("charge")) || md_str_eq(name, MD_STR_LIT("element")) ||
+        md_str_eq(name, MD_STR_LIT("name")) || md_str_eq(name, MD_STR_LIT("bfactor"))) { *out = call_property(x, call, name); return true; }
+    if (md_str_eq(name, MD_STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("angle")))         { *out = call_angle(x, call, false); return true; }
+    if (md_str_eq(name, MD_STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }
+    if (md_str_eq(name, MD_STR_LIT("closest_pair")))  { *out = call_pair(x, call, true); return true; }
+    if (md_str_eq(name, MD_STR_LIT("farthest_pair"))) { *out = call_pair(x, call, false); return true; }
+    if (md_str_eq(name, MD_STR_LIT("fit")))           { *out = call_fit(x, call); return true; }
     return false;
 }
 
-bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const T* a, str_t name, T* out) {
-    if (str_eq(name, STR_LIT("com"))) {
+bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const T* a, md_str_t name, T* out) {
+    if (md_str_eq(name, MD_STR_LIT("com"))) {
         // s.com is com(s)
         vx_infer(x, on);
         *out = call_com(x, attr, "com", on, 0);
         return true;
     }
     if (a->dtype != VIAL_DT_SET) return false;
-    const bool comp = str_eq(name, STR_LIT("x")) || str_eq(name, STR_LIT("y")) || str_eq(name, STR_LIT("z"));
-    if (!comp && !str_eq(name, STR_LIT("xyz"))) return false;     // an unknown name is E0201, from name resolution
+    const bool comp = md_str_eq(name, MD_STR_LIT("x")) || md_str_eq(name, MD_STR_LIT("y")) || md_str_eq(name, MD_STR_LIT("z"));
+    if (!comp && !md_str_eq(name, MD_STR_LIT("xyz"))) return false;     // an unknown name is E0201, from name resolution
     T t;
     if (!positions_of(x, on, a, attr, &t)) { *out = err(); return true; }
     if (comp) t.ndim -= 1;

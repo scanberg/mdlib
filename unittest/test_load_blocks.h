@@ -24,7 +24,7 @@ static size_t load_blocks_diff(const md_system_t* a, const md_system_state_t* as
     LOAD_BLOCKS_CHECK(memcmp(a->atom.type_idx, b->atom.type_idx, n * sizeof(md_particle_type_idx_t)) == 0, "atom.type_idx");
     LOAD_BLOCKS_CHECK(memcmp(a->atom.flags, b->atom.flags, n * sizeof(md_atom_flags_t)) == 0, "atom.flags");
     for (size_t t = 0; t < a->atom.type.count; ++t) {
-        LOAD_BLOCKS_CHECK(str_eq(md_particle_type_name(&a->atom.type, t), md_particle_type_name(&b->atom.type, t)), "type name");
+        LOAD_BLOCKS_CHECK(md_str_eq(md_particle_type_name(&a->atom.type, t), md_particle_type_name(&b->atom.type, t)), "type name");
         LOAD_BLOCKS_CHECK(a->atom.type.z[t] == b->atom.type.z[t], "type element");
     }
     LOAD_BLOCKS_CHECK(memcmp(a->residue.atom_offset, b->residue.atom_offset, (r + 1) * sizeof(uint32_t)) == 0, "residue.atom_offset");
@@ -43,9 +43,9 @@ static size_t load_blocks_diff(const md_system_t* a, const md_system_state_t* as
     return d;
 }
 
-static bool load_blocks_write(const char* path, str_t text) {
+static bool load_blocks_write(const char* path, md_str_t text) {
     md_file_t f = {0};
-    if (!md_file_open(&f, str_from_cstr(path), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
+    if (!md_file_open(&f, md_str_from_cstr(path), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
     const bool ok = md_file_write(f, text.ptr, text.len) == text.len;
     md_file_close(&f);
     return ok;

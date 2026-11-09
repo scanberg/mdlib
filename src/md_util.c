@@ -47,30 +47,30 @@ enum {
     Hs, Mt, Ds, Rg, Cn, Nh, Fl, Mc, Lv, Ts, Og, Num_Elements
 };
 
-static const str_t element_symbols[] = {
-    STR_INIT("Xx"), STR_INIT("H"),  STR_INIT("He"), STR_INIT("Li"), STR_INIT("Be"), STR_INIT("B"),  STR_INIT("C"),  STR_INIT("N"),  STR_INIT("O"),  STR_INIT("F"),  STR_INIT("Ne"), STR_INIT("Na"), STR_INIT("Mg"), STR_INIT("Al"), STR_INIT("Si"), STR_INIT("P"),  STR_INIT("S"),  STR_INIT("Cl"), STR_INIT("Ar"), STR_INIT("K"),  STR_INIT("Ca"), STR_INIT("Sc"), STR_INIT("Ti"), STR_INIT("V"),
-    STR_INIT("Cr"), STR_INIT("Mn"), STR_INIT("Fe"), STR_INIT("Co"), STR_INIT("Ni"), STR_INIT("Cu"), STR_INIT("Zn"), STR_INIT("Ga"), STR_INIT("Ge"), STR_INIT("As"), STR_INIT("Se"), STR_INIT("Br"), STR_INIT("Kr"), STR_INIT("Rb"), STR_INIT("Sr"), STR_INIT("Y"),  STR_INIT("Zr"), STR_INIT("Nb"), STR_INIT("Mo"), STR_INIT("Tc"), STR_INIT("Ru"), STR_INIT("Rh"), STR_INIT("Pd"), STR_INIT("Ag"),
-    STR_INIT("Cd"), STR_INIT("In"), STR_INIT("Sn"), STR_INIT("Sb"), STR_INIT("Te"), STR_INIT("I"),  STR_INIT("Xe"), STR_INIT("Cs"), STR_INIT("Ba"), STR_INIT("La"), STR_INIT("Ce"), STR_INIT("Pr"), STR_INIT("Nd"), STR_INIT("Pm"), STR_INIT("Sm"), STR_INIT("Eu"), STR_INIT("Gd"), STR_INIT("Tb"), STR_INIT("Dy"), STR_INIT("Ho"), STR_INIT("Er"), STR_INIT("Tm"), STR_INIT("Yb"), STR_INIT("Lu"),
-    STR_INIT("Hf"), STR_INIT("Ta"), STR_INIT("W"),  STR_INIT("Re"), STR_INIT("Os"), STR_INIT("Ir"), STR_INIT("Pt"), STR_INIT("Au"), STR_INIT("Hg"), STR_INIT("Tl"), STR_INIT("Pb"), STR_INIT("Bi"), STR_INIT("Po"), STR_INIT("At"), STR_INIT("Rn"), STR_INIT("Fr"), STR_INIT("Ra"), STR_INIT("Ac"), STR_INIT("Th"), STR_INIT("Pa"), STR_INIT("U"),  STR_INIT("Np"), STR_INIT("Pu"), STR_INIT("Am"),
-    STR_INIT("Cm"), STR_INIT("Bk"), STR_INIT("Cf"), STR_INIT("Es"), STR_INIT("Fm"), STR_INIT("Md"), STR_INIT("No"), STR_INIT("Lr"), STR_INIT("Rf"), STR_INIT("Db"), STR_INIT("Sg"), STR_INIT("Bh"), STR_INIT("Hs"), STR_INIT("Mt"), STR_INIT("Ds"), STR_INIT("Rg"), STR_INIT("Cn"), STR_INIT("Nh"), STR_INIT("Fl"), STR_INIT("Mc"), STR_INIT("Lv"), STR_INIT("Ts"), STR_INIT("Og"),
+static const md_str_t element_symbols[] = {
+    MD_STR_INIT("Xx"), MD_STR_INIT("H"),  MD_STR_INIT("He"), MD_STR_INIT("Li"), MD_STR_INIT("Be"), MD_STR_INIT("B"),  MD_STR_INIT("C"),  MD_STR_INIT("N"),  MD_STR_INIT("O"),  MD_STR_INIT("F"),  MD_STR_INIT("Ne"), MD_STR_INIT("Na"), MD_STR_INIT("Mg"), MD_STR_INIT("Al"), MD_STR_INIT("Si"), MD_STR_INIT("P"),  MD_STR_INIT("S"),  MD_STR_INIT("Cl"), MD_STR_INIT("Ar"), MD_STR_INIT("K"),  MD_STR_INIT("Ca"), MD_STR_INIT("Sc"), MD_STR_INIT("Ti"), MD_STR_INIT("V"),
+    MD_STR_INIT("Cr"), MD_STR_INIT("Mn"), MD_STR_INIT("Fe"), MD_STR_INIT("Co"), MD_STR_INIT("Ni"), MD_STR_INIT("Cu"), MD_STR_INIT("Zn"), MD_STR_INIT("Ga"), MD_STR_INIT("Ge"), MD_STR_INIT("As"), MD_STR_INIT("Se"), MD_STR_INIT("Br"), MD_STR_INIT("Kr"), MD_STR_INIT("Rb"), MD_STR_INIT("Sr"), MD_STR_INIT("Y"),  MD_STR_INIT("Zr"), MD_STR_INIT("Nb"), MD_STR_INIT("Mo"), MD_STR_INIT("Tc"), MD_STR_INIT("Ru"), MD_STR_INIT("Rh"), MD_STR_INIT("Pd"), MD_STR_INIT("Ag"),
+    MD_STR_INIT("Cd"), MD_STR_INIT("In"), MD_STR_INIT("Sn"), MD_STR_INIT("Sb"), MD_STR_INIT("Te"), MD_STR_INIT("I"),  MD_STR_INIT("Xe"), MD_STR_INIT("Cs"), MD_STR_INIT("Ba"), MD_STR_INIT("La"), MD_STR_INIT("Ce"), MD_STR_INIT("Pr"), MD_STR_INIT("Nd"), MD_STR_INIT("Pm"), MD_STR_INIT("Sm"), MD_STR_INIT("Eu"), MD_STR_INIT("Gd"), MD_STR_INIT("Tb"), MD_STR_INIT("Dy"), MD_STR_INIT("Ho"), MD_STR_INIT("Er"), MD_STR_INIT("Tm"), MD_STR_INIT("Yb"), MD_STR_INIT("Lu"),
+    MD_STR_INIT("Hf"), MD_STR_INIT("Ta"), MD_STR_INIT("W"),  MD_STR_INIT("Re"), MD_STR_INIT("Os"), MD_STR_INIT("Ir"), MD_STR_INIT("Pt"), MD_STR_INIT("Au"), MD_STR_INIT("Hg"), MD_STR_INIT("Tl"), MD_STR_INIT("Pb"), MD_STR_INIT("Bi"), MD_STR_INIT("Po"), MD_STR_INIT("At"), MD_STR_INIT("Rn"), MD_STR_INIT("Fr"), MD_STR_INIT("Ra"), MD_STR_INIT("Ac"), MD_STR_INIT("Th"), MD_STR_INIT("Pa"), MD_STR_INIT("U"),  MD_STR_INIT("Np"), MD_STR_INIT("Pu"), MD_STR_INIT("Am"),
+    MD_STR_INIT("Cm"), MD_STR_INIT("Bk"), MD_STR_INIT("Cf"), MD_STR_INIT("Es"), MD_STR_INIT("Fm"), MD_STR_INIT("Md"), MD_STR_INIT("No"), MD_STR_INIT("Lr"), MD_STR_INIT("Rf"), MD_STR_INIT("Db"), MD_STR_INIT("Sg"), MD_STR_INIT("Bh"), MD_STR_INIT("Hs"), MD_STR_INIT("Mt"), MD_STR_INIT("Ds"), MD_STR_INIT("Rg"), MD_STR_INIT("Cn"), MD_STR_INIT("Nh"), MD_STR_INIT("Fl"), MD_STR_INIT("Mc"), MD_STR_INIT("Lv"), MD_STR_INIT("Ts"), MD_STR_INIT("Og"),
 };
 
 
-static const str_t element_names[] = {
-    STR_INIT("Unknown"),     STR_INIT("Hydrogen"),     STR_INIT("Helium"),       STR_INIT("Lithium"),     STR_INIT("Beryllium"),   STR_INIT("Boron"),         STR_INIT("Carbon"),     STR_INIT("Nitrogen"),   STR_INIT("Oxygen"),
-    STR_INIT("Fluorine"),    STR_INIT("Neon"),         STR_INIT("Sodium"),       STR_INIT("Magnesium"),   STR_INIT("Aluminium"),   STR_INIT("Silicon"),       STR_INIT("Phosphorus"), STR_INIT("Sulfur"),     STR_INIT("Chlorine"),
-    STR_INIT("Argon"),       STR_INIT("Potassium"),    STR_INIT("Calcium"),      STR_INIT("Scandium"),    STR_INIT("Titanium"),    STR_INIT("Vanadium"),      STR_INIT("Chromium"),   STR_INIT("Manganese"),  STR_INIT("Iron"),
-    STR_INIT("Cobalt"),      STR_INIT("Nickel"),       STR_INIT("Copper"),       STR_INIT("Zinc"),        STR_INIT("Gallium"),     STR_INIT("Germanium"),     STR_INIT("Arsenic"),    STR_INIT("Selenium"),   STR_INIT("Bromine"),
-    STR_INIT("Krypton"),     STR_INIT("Rubidium"),     STR_INIT("Strontium"),    STR_INIT("Yttrium"),     STR_INIT("Zirconium"),   STR_INIT("Niobium"),       STR_INIT("Molybdenum"), STR_INIT("Technetium"), STR_INIT("Ruthenium"),
-    STR_INIT("Rhodium"),     STR_INIT("Palladium"),    STR_INIT("Silver"),       STR_INIT("Cadmium"),     STR_INIT("Indium"),      STR_INIT("Tin"),           STR_INIT("Antimony"),   STR_INIT("Tellurium"),  STR_INIT("Iodine"),
-    STR_INIT("Xenon"),       STR_INIT("Caesium"),      STR_INIT("Barium"),       STR_INIT("Lanthanum"),   STR_INIT("Cerium"),      STR_INIT("Praseodymium"),  STR_INIT("Neodymium"),  STR_INIT("Promethium"), STR_INIT("Samarium"),
-    STR_INIT("Europium"),    STR_INIT("Gadolinium"),   STR_INIT("Terbium"),      STR_INIT("Dysprosium"),  STR_INIT("Holmium"),     STR_INIT("Erbium"),        STR_INIT("Thulium"),    STR_INIT("Ytterbium"),  STR_INIT("Lutetium"),
-    STR_INIT("Hafnium"),     STR_INIT("Tantalum"),     STR_INIT("Tungsten"),     STR_INIT("Rhenium"),     STR_INIT("Osmium"),      STR_INIT("Iridium"),       STR_INIT("Platinum"),   STR_INIT("Gold"),       STR_INIT("Mercury"),
-    STR_INIT("Thallium"),    STR_INIT("Lead"),         STR_INIT("Bismuth"),      STR_INIT("Polonium"),    STR_INIT("Astatine"),    STR_INIT("Radon"),         STR_INIT("Francium"),   STR_INIT("Radium"),     STR_INIT("Actinium"),
-    STR_INIT("Thorium"),     STR_INIT("Protactinium"), STR_INIT("Uranium"),      STR_INIT("Neptunium"),   STR_INIT("Plutonium"),   STR_INIT("Americium"),     STR_INIT("Curium"),     STR_INIT("Berkelium"),  STR_INIT("Californium"),
-    STR_INIT("Einsteinium"), STR_INIT("Fermium"),      STR_INIT("Mendelevium"),  STR_INIT("Nobelium"),    STR_INIT("Lawrencium"),  STR_INIT("Rutherfordium"), STR_INIT("Dubnium"),    STR_INIT("Seaborgium"), STR_INIT("Bohrium"),
-    STR_INIT("Hassium"),     STR_INIT("Meitnerium"),   STR_INIT("Darmstadtium"), STR_INIT("Roentgenium"), STR_INIT("Copernicium"), STR_INIT("Nihonium"),      STR_INIT("Flerovium"),  STR_INIT("Moscovium"),  STR_INIT("Livermorium"),
-    STR_INIT("Tennessine"),  STR_INIT("Oganesson"),                          
+static const md_str_t element_names[] = {
+    MD_STR_INIT("Unknown"),     MD_STR_INIT("Hydrogen"),     MD_STR_INIT("Helium"),       MD_STR_INIT("Lithium"),     MD_STR_INIT("Beryllium"),   MD_STR_INIT("Boron"),         MD_STR_INIT("Carbon"),     MD_STR_INIT("Nitrogen"),   MD_STR_INIT("Oxygen"),
+    MD_STR_INIT("Fluorine"),    MD_STR_INIT("Neon"),         MD_STR_INIT("Sodium"),       MD_STR_INIT("Magnesium"),   MD_STR_INIT("Aluminium"),   MD_STR_INIT("Silicon"),       MD_STR_INIT("Phosphorus"), MD_STR_INIT("Sulfur"),     MD_STR_INIT("Chlorine"),
+    MD_STR_INIT("Argon"),       MD_STR_INIT("Potassium"),    MD_STR_INIT("Calcium"),      MD_STR_INIT("Scandium"),    MD_STR_INIT("Titanium"),    MD_STR_INIT("Vanadium"),      MD_STR_INIT("Chromium"),   MD_STR_INIT("Manganese"),  MD_STR_INIT("Iron"),
+    MD_STR_INIT("Cobalt"),      MD_STR_INIT("Nickel"),       MD_STR_INIT("Copper"),       MD_STR_INIT("Zinc"),        MD_STR_INIT("Gallium"),     MD_STR_INIT("Germanium"),     MD_STR_INIT("Arsenic"),    MD_STR_INIT("Selenium"),   MD_STR_INIT("Bromine"),
+    MD_STR_INIT("Krypton"),     MD_STR_INIT("Rubidium"),     MD_STR_INIT("Strontium"),    MD_STR_INIT("Yttrium"),     MD_STR_INIT("Zirconium"),   MD_STR_INIT("Niobium"),       MD_STR_INIT("Molybdenum"), MD_STR_INIT("Technetium"), MD_STR_INIT("Ruthenium"),
+    MD_STR_INIT("Rhodium"),     MD_STR_INIT("Palladium"),    MD_STR_INIT("Silver"),       MD_STR_INIT("Cadmium"),     MD_STR_INIT("Indium"),      MD_STR_INIT("Tin"),           MD_STR_INIT("Antimony"),   MD_STR_INIT("Tellurium"),  MD_STR_INIT("Iodine"),
+    MD_STR_INIT("Xenon"),       MD_STR_INIT("Caesium"),      MD_STR_INIT("Barium"),       MD_STR_INIT("Lanthanum"),   MD_STR_INIT("Cerium"),      MD_STR_INIT("Praseodymium"),  MD_STR_INIT("Neodymium"),  MD_STR_INIT("Promethium"), MD_STR_INIT("Samarium"),
+    MD_STR_INIT("Europium"),    MD_STR_INIT("Gadolinium"),   MD_STR_INIT("Terbium"),      MD_STR_INIT("Dysprosium"),  MD_STR_INIT("Holmium"),     MD_STR_INIT("Erbium"),        MD_STR_INIT("Thulium"),    MD_STR_INIT("Ytterbium"),  MD_STR_INIT("Lutetium"),
+    MD_STR_INIT("Hafnium"),     MD_STR_INIT("Tantalum"),     MD_STR_INIT("Tungsten"),     MD_STR_INIT("Rhenium"),     MD_STR_INIT("Osmium"),      MD_STR_INIT("Iridium"),       MD_STR_INIT("Platinum"),   MD_STR_INIT("Gold"),       MD_STR_INIT("Mercury"),
+    MD_STR_INIT("Thallium"),    MD_STR_INIT("Lead"),         MD_STR_INIT("Bismuth"),      MD_STR_INIT("Polonium"),    MD_STR_INIT("Astatine"),    MD_STR_INIT("Radon"),         MD_STR_INIT("Francium"),   MD_STR_INIT("Radium"),     MD_STR_INIT("Actinium"),
+    MD_STR_INIT("Thorium"),     MD_STR_INIT("Protactinium"), MD_STR_INIT("Uranium"),      MD_STR_INIT("Neptunium"),   MD_STR_INIT("Plutonium"),   MD_STR_INIT("Americium"),     MD_STR_INIT("Curium"),     MD_STR_INIT("Berkelium"),  MD_STR_INIT("Californium"),
+    MD_STR_INIT("Einsteinium"), MD_STR_INIT("Fermium"),      MD_STR_INIT("Mendelevium"),  MD_STR_INIT("Nobelium"),    MD_STR_INIT("Lawrencium"),  MD_STR_INIT("Rutherfordium"), MD_STR_INIT("Dubnium"),    MD_STR_INIT("Seaborgium"), MD_STR_INIT("Bohrium"),
+    MD_STR_INIT("Hassium"),     MD_STR_INIT("Meitnerium"),   MD_STR_INIT("Darmstadtium"), MD_STR_INIT("Roentgenium"), MD_STR_INIT("Copernicium"), MD_STR_INIT("Nihonium"),      MD_STR_INIT("Flerovium"),  MD_STR_INIT("Moscovium"),  MD_STR_INIT("Livermorium"),
+    MD_STR_INIT("Tennessine"),  MD_STR_INIT("Oganesson"),                          
 };
 
 // http://dx.doi.org/10.1039/b801115j
@@ -595,54 +595,54 @@ static const char* common_ions[] = { "NA", "K", "CA", "MG", "ZN", "CL", "F", "MN
 */
 
 // If an entry exists in this table, it has order 2
-static str_t intra_bond_order_table[] = {
-    STR_INIT("HIS|CD2|CG"),
-    STR_INIT("HIS|CE1|ND1"),
-    STR_INIT("ARG|CZ|NH2"),
-    STR_INIT("PHE|CE1|CZ"),
-    STR_INIT("PHE|CD2|CE2"),
-    STR_INIT("PHE|CD1|CG"),
-    STR_INIT("TRP|CD1|CG"),
-    STR_INIT("TRP|CD2|CE2"),
-    STR_INIT("TRP|CE3|CZ3"),
-    STR_INIT("TRP|CH2|CZ2"),
-    STR_INIT("ASN|CG|OD1"),
-    STR_INIT("GLN|CD|OE1"),
-    STR_INIT("TYR|CD1|CG"),
-    STR_INIT("TYR|CD2|CE2"),
-    STR_INIT("TYR|CE1|CZ"),
-    STR_INIT("ASP|CG|OD1"),
-    STR_INIT("GLU|CD|OE1"),
+static md_str_t intra_bond_order_table[] = {
+    MD_STR_INIT("HIS|CD2|CG"),
+    MD_STR_INIT("HIS|CE1|ND1"),
+    MD_STR_INIT("ARG|CZ|NH2"),
+    MD_STR_INIT("PHE|CE1|CZ"),
+    MD_STR_INIT("PHE|CD2|CE2"),
+    MD_STR_INIT("PHE|CD1|CG"),
+    MD_STR_INIT("TRP|CD1|CG"),
+    MD_STR_INIT("TRP|CD2|CE2"),
+    MD_STR_INIT("TRP|CE3|CZ3"),
+    MD_STR_INIT("TRP|CH2|CZ2"),
+    MD_STR_INIT("ASN|CG|OD1"),
+    MD_STR_INIT("GLN|CD|OE1"),
+    MD_STR_INIT("TYR|CD1|CG"),
+    MD_STR_INIT("TYR|CD2|CE2"),
+    MD_STR_INIT("TYR|CE1|CZ"),
+    MD_STR_INIT("ASP|CG|OD1"),
+    MD_STR_INIT("GLU|CD|OE1"),
 
-    STR_INIT("G|C8|N7"),
-    STR_INIT("G|C4|C5"),
-    STR_INIT("G|C2|N3"),
-    STR_INIT("G|C6|O6"),
-    STR_INIT("C|C4|N3"),
-    STR_INIT("C|C5|C6"),
-    STR_INIT("C|C2|O2"),
-    STR_INIT("A|C2|N3"),
-    STR_INIT("A|C6|N1"),
-    STR_INIT("A|C4|C5"),
-    STR_INIT("A|C8|N7"),
-    STR_INIT("U|C5|C6"),
-    STR_INIT("U|C2|O2"),
-    STR_INIT("U|C4|O4"),
+    MD_STR_INIT("G|C8|N7"),
+    MD_STR_INIT("G|C4|C5"),
+    MD_STR_INIT("G|C2|N3"),
+    MD_STR_INIT("G|C6|O6"),
+    MD_STR_INIT("C|C4|N3"),
+    MD_STR_INIT("C|C5|C6"),
+    MD_STR_INIT("C|C2|O2"),
+    MD_STR_INIT("A|C2|N3"),
+    MD_STR_INIT("A|C6|N1"),
+    MD_STR_INIT("A|C4|C5"),
+    MD_STR_INIT("A|C8|N7"),
+    MD_STR_INIT("U|C5|C6"),
+    MD_STR_INIT("U|C2|O2"),
+    MD_STR_INIT("U|C4|O4"),
 
-    STR_INIT("DG|C8|N7"),
-    STR_INIT("DG|C4|C5"),
-    STR_INIT("DG|C2|N3"),
-    STR_INIT("DG|C6|O6"),
-    STR_INIT("DC|C4|N3"),
-    STR_INIT("DC|C5|C6"),
-    STR_INIT("DC|C2|O2"),
-    STR_INIT("DA|C2|N3"),
-    STR_INIT("DA|C6|N1"),
-    STR_INIT("DA|C4|C5"),
-    STR_INIT("DA|C8|N7"),
-    STR_INIT("DT|C5|C6"),
-    STR_INIT("DT|C2|O2"),
-    STR_INIT("DT|C4|O4"),
+    MD_STR_INIT("DG|C8|N7"),
+    MD_STR_INIT("DG|C4|C5"),
+    MD_STR_INIT("DG|C2|N3"),
+    MD_STR_INIT("DG|C6|O6"),
+    MD_STR_INIT("DC|C4|N3"),
+    MD_STR_INIT("DC|C5|C6"),
+    MD_STR_INIT("DC|C2|O2"),
+    MD_STR_INIT("DA|C2|N3"),
+    MD_STR_INIT("DA|C6|N1"),
+    MD_STR_INIT("DA|C4|C5"),
+    MD_STR_INIT("DA|C8|N7"),
+    MD_STR_INIT("DT|C5|C6"),
+    MD_STR_INIT("DT|C2|O2"),
+    MD_STR_INIT("DT|C4|O4"),
 };
 #endif
 
@@ -1047,9 +1047,9 @@ static inline size_t bitfield_popcount(const uint64_t* bits, size_t num_bits) {
     return count;
 }
 
-static inline bool find_str_in_str_arr(size_t* out_loc, str_t str, const str_t str_arr[], size_t arr_len) {
+static inline bool find_str_in_str_arr(size_t* out_loc, md_str_t str, const md_str_t str_arr[], size_t arr_len) {
     for (size_t i = 0; i < arr_len; ++i) {
-        if (str_eq(str, str_arr[i])) {
+        if (md_str_eq(str, str_arr[i])) {
             if (out_loc) *out_loc = i;
             return true;
         }
@@ -1057,9 +1057,9 @@ static inline bool find_str_in_str_arr(size_t* out_loc, str_t str, const str_t s
     return false;
 }
 
-static inline bool find_str_in_cstr_arr(size_t* loc, str_t str, const char* arr[], size_t arr_len) {
+static inline bool find_str_in_cstr_arr(size_t* loc, md_str_t str, const char* arr[], size_t arr_len) {
     for (size_t i = 0; i < arr_len; ++i) {
-        if (str_eq_cstr(str, arr[i])) {
+        if (md_str_eq_cstr(str, arr[i])) {
             if (loc) *loc = i;
             return true;
         }
@@ -1068,16 +1068,16 @@ static inline bool find_str_in_cstr_arr(size_t* loc, str_t str, const char* arr[
 }
 
 // Trim whitespace, digits and 'X's
-static inline str_t trim_label(str_t lbl) {
-    const char* beg = str_beg(lbl);
-    const char* end = str_end(lbl);
+static inline md_str_t trim_label(md_str_t lbl) {
+    const char* beg = md_str_beg(lbl);
+    const char* end = md_str_end(lbl);
     const char* c = beg;
     while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
     beg = c;
     while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
     end = c;
 
-    return (str_t) { .ptr = beg, .len = end-beg };
+    return (md_str_t) { .ptr = beg, .len = end-beg };
 }
 
 // Modeled after gromacs implementation which assumes a separation of less than half smallest box dimension (diagonal element)
@@ -1201,17 +1201,17 @@ static inline int simd_xyz_mask(float ext[3]) {
     return mask;
 }
 
-bool md_util_resname_rna(str_t str) {
+bool md_util_resname_rna(md_str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna));
 }
     
-bool md_util_resname_dna(str_t str) {
+bool md_util_resname_dna(md_str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
 }
 
-bool md_util_resname_nucleotide(str_t str) {
+bool md_util_resname_nucleotide(md_str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna)) || find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
 }
@@ -1232,31 +1232,31 @@ void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitset_t* 
     }
 }
 
-bool md_util_resname_acidic(str_t str) {
+bool md_util_resname_acidic(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, acidic, MD_COUNTOF(acidic));
 }
 
-bool md_util_resname_basic(str_t str) {
+bool md_util_resname_basic(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, basic, MD_COUNTOF(basic));
 }
     
-bool md_util_resname_neutral(str_t str) {
+bool md_util_resname_neutral(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, neutral, MD_COUNTOF(neutral));
 }
     
-bool md_util_resname_water(str_t str) {
+bool md_util_resname_water(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, water, MD_COUNTOF(water));
 }
 
-bool md_util_resname_ion(str_t str) {
+bool md_util_resname_ion(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, common_ions, MD_COUNTOF(common_ions));
 }
     
-bool md_util_resname_hydrophobic(str_t str) {
+bool md_util_resname_hydrophobic(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, hydrophobic, MD_COUNTOF(hydrophobic));
 }
     
-bool md_util_resname_amino_acid(str_t str) {
+bool md_util_resname_amino_acid(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, amino_acids, MD_COUNTOF(amino_acids));
 }
 
@@ -1346,15 +1346,15 @@ static inline bool halogen_element(md_element_t elem) {
     }
 }
 
-md_element_t md_util_element_lookup(str_t str, bool ignore_case) {
+md_element_t md_util_element_lookup(md_str_t str, bool ignore_case) {
     if (str.len == 1 || str.len == 2) {
         for (md_element_t i = 0; i < MD_COUNTOF(element_symbols); ++i) {
-            str_t sym = element_symbols[i];
-            if (str_len(sym) != str_len(str)) continue;
+            md_str_t sym = element_symbols[i];
+            if (md_str_len(sym) != md_str_len(str)) continue;
             if (ignore_case) {
-                if (str_eq_ignore_case(str, sym)) return i;   
+                if (md_str_eq_ignore_case(str, sym)) return i;   
             } else {
-                if (str_eq(str, sym)) return i;
+                if (md_str_eq(str, sym)) return i;
             }
         }
     }
@@ -1374,7 +1374,7 @@ static bool water_heuristic(const md_element_t elements[], size_t size) {
     return false;
 }
 
-static inline bool cmp(str_t str, const char* ref, int len) {
+static inline bool cmp(md_str_t str, const char* ref, int len) {
     // We compare against len + 1 to include the zero terminator character
     return MD_MEMCMP(str.ptr, ref, len + 1) == 0;
 }
@@ -1389,8 +1389,8 @@ static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, c
     md_amino_acid_atoms_t aa;
 	MD_MEMSET(&aa, -1, sizeof(md_amino_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
-        str_t id = md_atom_name(atom_data, i);
-        if (str_empty(id)) continue;
+        md_str_t id = md_atom_name(atom_data, i);
+        if (md_str_empty(id)) continue;
 
         if (!(bits & 1)  && cmp(id, "N",  1)) { aa.n  = (md_atom_idx_t)i; bits |= 1;  continue; }
         if (!(bits & 16) && cmp(id, "HN", 2)) { aa.hn = (md_atom_idx_t)i; bits |= 16; continue; }
@@ -1420,10 +1420,10 @@ static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, c
 
 // There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3). How the name matches: 0 not
 // at all, 1 the bare name (C3), 2 the primed name (C3' or C3*).
-static int cmp_nuc_atom(str_t id, const char* base, size_t len) {
-    if (id.len < len || !str_eq_cstr_n(id, base, len)) return 0;
+static int cmp_nuc_atom(md_str_t id, const char* base, size_t len) {
+    if (id.len < len || !md_str_eq_cstr_n(id, base, len)) return 0;
     if (id.len == len) return 1;
-    const char next = str_ptr(id)[len];
+    const char next = md_str_ptr(id)[len];
     return (id.len == len + 1 && (next == '\'' || next == '*')) ? 2 : 0;
 }
 
@@ -1449,8 +1449,8 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
     md_nucleic_acid_atoms_t na;
 	MD_MEMSET(&na, -1, sizeof(md_nucleic_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
-        str_t id = md_atom_name(atom_data, i);
-        if (str_empty(id)) continue;
+        md_str_t id = md_atom_name(atom_data, i);
+        if (md_str_empty(id)) continue;
 
         if (!(bits & 1)  && cmp(id, "P",   1))               { na.p  = i; bits |= 1;  continue; }
         if (nuc_atom_take_slot(&bits, &primed, 2,  cmp_nuc_atom(id, "O5", 2))) { na.o5 = i; continue; }
@@ -1514,11 +1514,11 @@ size_t md_util_element_from_mass(md_element_t element[], const float mass[], siz
     return successful_matches;
 }
 
-const str_t* md_util_element_symbols(void) {
+const md_str_t* md_util_element_symbols(void) {
     return element_symbols;
 }
 
-const str_t* md_util_element_names(void) {
+const md_str_t* md_util_element_names(void) {
     return element_names;
 }
 
@@ -1526,12 +1526,12 @@ const float* md_util_element_vdw_radii(void) {
     return element_vdw_radii;
 }
 
-str_t md_util_element_symbol(md_element_t element) {
+md_str_t md_util_element_symbol(md_element_t element) {
     element = element < Num_Elements ? element : 0;
     return element_symbols[element];
 }
 
-str_t md_util_element_name(md_element_t element) {
+md_str_t md_util_element_name(md_element_t element) {
     element = element < Num_Elements ? element : 0;
     return element_names[element];
 }
@@ -1759,14 +1759,14 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 MD_STATIC_ASSERT(sizeof(md_secondary_structure_t) == sizeof(int32_t), "The secondary structure is stored as I32");
 MD_STATIC_ASSERT(sizeof(md_backbone_angles_t) == 2 * sizeof(float), "The backbone angles are stored as F32 x 2");
 
-static const md_attribute_t* state_backbone_attr(const md_system_state_t* state, str_t path, md_attribute_type_t type, uint32_t components, size_t num_segments) {
+static const md_attribute_t* state_backbone_attr(const md_system_state_t* state, md_str_t path, md_attribute_type_t type, uint32_t components, size_t num_segments) {
     if (!state || num_segments == 0) return NULL;
     const md_attribute_t* attr = md_attributes_find(&state->attributes, path);
     if (!md_attribute_view(attr, type, components, 1) || attr->format.shape[0] != num_segments) return NULL;
     return attr;
 }
 
-static void* state_backbone_write(md_system_state_t* state, const md_system_t* sys, str_t path, md_attribute_type_t type, uint32_t components, md_unit_t unit, str_t label) {
+static void* state_backbone_write(md_system_state_t* state, const md_system_t* sys, md_str_t path, md_attribute_type_t type, uint32_t components, md_unit_t unit, md_str_t label) {
     if (!state || !sys) return NULL;
     const size_t num_segments = sys->protein_backbone.segment.count;
     if (num_segments == 0) return NULL;
@@ -1794,22 +1794,22 @@ static void* state_backbone_write(md_system_state_t* state, const md_system_t* s
 
 const md_backbone_angles_t* md_util_state_backbone_angles(const md_system_state_t* state, const md_system_t* sys) {
     if (!sys) return NULL;
-    const md_attribute_t* attr = state_backbone_attr(state, STR_LIT(MD_BACKBONE_ANGLE_PATH), MD_ATTRIBUTE_TYPE_F32, 2, sys->protein_backbone.segment.count);
+    const md_attribute_t* attr = state_backbone_attr(state, MD_STR_LIT(MD_BACKBONE_ANGLE_PATH), MD_ATTRIBUTE_TYPE_F32, 2, sys->protein_backbone.segment.count);
     return attr ? (const md_backbone_angles_t*)attr->data : NULL;
 }
 
 const md_secondary_structure_t* md_util_state_secondary_structure(const md_system_state_t* state, const md_system_t* sys) {
     if (!sys) return NULL;
-    const md_attribute_t* attr = state_backbone_attr(state, STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH), MD_ATTRIBUTE_TYPE_I32, 1, sys->protein_backbone.segment.count);
+    const md_attribute_t* attr = state_backbone_attr(state, MD_STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH), MD_ATTRIBUTE_TYPE_I32, 1, sys->protein_backbone.segment.count);
     return attr ? (const md_secondary_structure_t*)attr->data : NULL;
 }
 
 md_backbone_angles_t* md_util_state_backbone_angles_write(md_system_state_t* state, const md_system_t* sys) {
-    return (md_backbone_angles_t*)state_backbone_write(state, sys, STR_LIT(MD_BACKBONE_ANGLE_PATH), MD_ATTRIBUTE_TYPE_F32, 2, md_unit_radian(), STR_LIT("Backbone Angles"));
+    return (md_backbone_angles_t*)state_backbone_write(state, sys, MD_STR_LIT(MD_BACKBONE_ANGLE_PATH), MD_ATTRIBUTE_TYPE_F32, 2, md_unit_radian(), MD_STR_LIT("Backbone Angles"));
 }
 
 md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_state_t* state, const md_system_t* sys) {
-    return (md_secondary_structure_t*)state_backbone_write(state, sys, STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH), MD_ATTRIBUTE_TYPE_I32, 1, md_unit_none(), STR_LIT("Secondary Structure"));
+    return (md_secondary_structure_t*)state_backbone_write(state, sys, MD_STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH), MD_ATTRIBUTE_TYPE_I32, 1, md_unit_none(), MD_STR_LIT("Secondary Structure"));
 }
 
 bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t* sys) {
@@ -1832,8 +1832,8 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t*
 static char ramachandran_residue(const md_system_t* sys, const md_protein_backbone_data_t* backbone, size_t i, bool has_prev) {
     const md_residue_idx_t res_idx = backbone->segment.res_idx[i];
     if (res_idx >= 0) {
-        const str_t name = md_system_residue_name(sys, res_idx);
-        return str_eq(name, STR_LIT("GLY")) ? 'G' : str_eq(name, STR_LIT("PRO")) ? 'P' : 0;
+        const md_str_t name = md_system_residue_name(sys, res_idx);
+        return md_str_eq(name, MD_STR_LIT("GLY")) ? 'G' : md_str_eq(name, MD_STR_LIT("PRO")) ? 'P' : 0;
     }
     const md_amino_acid_atoms_t* atoms = &backbone->segment.atoms[i];
     const md_atom_idx_t prev_c = has_prev ? backbone->segment.atoms[i - 1].c : -1;
@@ -1894,7 +1894,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static inline int build_key(char* buf, str_t res, str_t a, str_t b) {
+static inline int build_key(char* buf, md_str_t res, md_str_t a, md_str_t b) {
     int len = 0;
     while (res.len) {
         buf[len++] = *res.ptr++;
@@ -2095,7 +2095,7 @@ static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_ca
 static size_t find_isomorphisms(md_index_data_t*, const graph_t* ,const graph_t* ,md_util_match_mode_t ,int , md_allocator_i*);
 static void find_isomorphisms_callback(const graph_t*, const graph_t*, int, state_t*);
 
-static graph_t smiles_to_graph(str_t smiles_str, md_util_match_flags_t flags, md_allocator_i* arena) {
+static graph_t smiles_to_graph(md_str_t smiles_str, md_util_match_flags_t flags, md_allocator_i* arena) {
     typedef struct vertex_t {
         int type;
         int edge_count;
@@ -2105,9 +2105,9 @@ static graph_t smiles_to_graph(str_t smiles_str, md_util_match_flags_t flags, md
 
     md_temp_scope_t temp = md_temp_begin_avoid(arena);
 
-    size_t node_cap = str_len(smiles_str);
+    size_t node_cap = md_str_len(smiles_str);
     md_smiles_node_t* nodes = md_temp_alloc_array(temp, md_smiles_node_t, node_cap);
-    const size_t num_nodes = md_smiles_parse(nodes, node_cap, str_ptr(smiles_str), str_len(smiles_str));
+    const size_t num_nodes = md_smiles_parse(nodes, node_cap, md_str_ptr(smiles_str), md_str_len(smiles_str));
     vertex_t* verts = md_temp_alloc_array(temp, vertex_t, num_nodes * 4);
     size_t num_verts = 0;
 
@@ -2375,30 +2375,30 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     for (int64_t i = 0; i < bond_count; ++i) {
         const int atom_a = bond_pairs[i].idx[0];
         const int atom_b = bond_pairs[i].idx[1];
-        str_t type_a = LBL_TO_STR(type[atom_a]);
-        str_t type_b = LBL_TO_STR(type[atom_b]);
-        str_t res_a = LBL_TO_STR(resname[atom_a]);
-        str_t res_b = LBL_TO_STR(resname[atom_b]);
+        md_str_t type_a = LBL_TO_STR(type[atom_a]);
+        md_str_t type_b = LBL_TO_STR(type[atom_b]);
+        md_str_t res_a = LBL_TO_STR(resname[atom_a]);
+        md_str_t res_b = LBL_TO_STR(resname[atom_b]);
 
         md_order_t order = 1;
-        if (str_eq(res_a, res_b)) {
-            if (str_cmp_lex(type_a, type_b) > 0) {
-                str_swap(&type_a, &type_b);
+        if (md_str_eq(res_a, res_b)) {
+            if (md_str_cmp_lex(type_a, type_b) > 0) {
+                md_str_swap(&type_a, &type_b);
             }
             // Intra
-            if (str_eq_cstr(type_a, "C") && str_eq_cstr(type_b, "O") && md_util_resname_amino_acid(res_a)) {
+            if (md_str_eq_cstr(type_a, "C") && md_str_eq_cstr(type_b, "O") && md_util_resname_amino_acid(res_a)) {
                 order = 2;
             } else {
                 char buf[32];
                 int len = build_key(buf, res_a, type_a, type_b);
-                if (find_str_in_str_arr(NULL, (str_t){buf,len}, intra_bond_order_table, MD_COUNTOF(intra_bond_order_table))) {
+                if (find_str_in_str_arr(NULL, (md_str_t){buf,len}, intra_bond_order_table, MD_COUNTOF(intra_bond_order_table))) {
                     bond_order[i] = 2;
                 }
             }
         } else {
             // Inter
-            if ( (str_eq_cstr(res_a, "LYS") && str_eq_cstr(type_a, "CZ") && str_eq_cstr(res_b, "RET") && str_eq_cstr(type_b, "C15")) ||
-                 (str_eq_cstr(res_b, "LYS") && str_eq_cstr(type_b, "CZ") && str_eq_cstr(res_a, "RET") && str_eq_cstr(type_a, "C15")) ){
+            if ( (md_str_eq_cstr(res_a, "LYS") && md_str_eq_cstr(type_a, "CZ") && md_str_eq_cstr(res_b, "RET") && md_str_eq_cstr(type_b, "C15")) ||
+                 (md_str_eq_cstr(res_b, "LYS") && md_str_eq_cstr(type_b, "CZ") && md_str_eq_cstr(res_a, "RET") && md_str_eq_cstr(type_a, "C15")) ){
                 bond_order[i] = 2;
             }
         }
@@ -2564,21 +2564,21 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     // The patterns are not strictly matched on the bond order, only on the element (if present) and if its terminal
     // The pattern encodes bond order which is applied if the pattern can be matched
 
-    str_t functional_group_patterns[] = {
-        STR_INIT("[CH](=O)N(*)(*)"),
-        STR_INIT("C(=O)([OH])(*)"),
-        STR_INIT("C(=O)(O*)(*)"),
-        STR_INIT("C(=O)(S*)(*)"),
-        STR_INIT("C(=O)([NH]*)(*)"),
-        STR_INIT("C(=S)(S*)(*)"),
-        STR_INIT("C(=S)([NH]*)(*)"),
-        STR_INIT("C(=N*)([NH]*)([NH]*)"),
-        STR_INIT("C(=[NH])([NH2])(*)"),
-        STR_INIT("[N+](=[N-])(=N*)"),
-        STR_INIT("P(=O)(*)(*)(*)"),
-        STR_INIT("S(=O)(=O)(*)(*)"),
-        STR_INIT("N(=O)(=O)(*)"),
-        STR_INIT("[Se](=O)([OH])(*)"),
+    md_str_t functional_group_patterns[] = {
+        MD_STR_INIT("[CH](=O)N(*)(*)"),
+        MD_STR_INIT("C(=O)([OH])(*)"),
+        MD_STR_INIT("C(=O)(O*)(*)"),
+        MD_STR_INIT("C(=O)(S*)(*)"),
+        MD_STR_INIT("C(=O)([NH]*)(*)"),
+        MD_STR_INIT("C(=S)(S*)(*)"),
+        MD_STR_INIT("C(=S)([NH]*)(*)"),
+        MD_STR_INIT("C(=N*)([NH]*)([NH]*)"),
+        MD_STR_INIT("C(=[NH])([NH2])(*)"),
+        MD_STR_INIT("[N+](=[N-])(=N*)"),
+        MD_STR_INIT("P(=O)(*)(*)(*)"),
+        MD_STR_INIT("S(=O)(=O)(*)(*)"),
+        MD_STR_INIT("N(=O)(=O)(*)"),
+        MD_STR_INIT("[Se](=O)([OH])(*)"),
     };
 
     typedef struct {
@@ -3386,25 +3386,25 @@ static inline bool martini_db_biopolymer(const martini_db_residue_t* res) {
 MD_STATIC_ASSERT(MD_COUNTOF(martini_db_residues) <= UINT16_MAX, "martini_votes keeps the ranges of names as 16 bits");
 
 // The residues of the name, [*beg, *end)
-static void martini_db_find(str_t name, size_t* beg, size_t* end) {
+static void martini_db_find(md_str_t name, size_t* beg, size_t* end) {
     size_t lo = 0, hi = MD_COUNTOF(martini_db_residues);
     while (lo < hi) {
         const size_t mid = (lo + hi) / 2;
-        if (str_cmp_lex(str_from_cstr(martini_db_residues[mid].name), name) < 0) lo = mid + 1; else hi = mid;
+        if (md_str_cmp_lex(md_str_from_cstr(martini_db_residues[mid].name), name) < 0) lo = mid + 1; else hi = mid;
     }
     size_t e = lo;
-    while (e < MD_COUNTOF(martini_db_residues) && str_eq_cstr(name, martini_db_residues[e].name)) ++e;
+    while (e < MD_COUNTOF(martini_db_residues) && md_str_eq_cstr(name, martini_db_residues[e].name)) ++e;
     *beg = lo;
     *end = e;
 }
 
 // Whether the labels are the beads of the residue, each once (in any order). map[i] is then the bead of label i.
-static bool martini_db_match(const martini_db_residue_t* res, const str_t labels[], size_t num_labels, uint8_t map[]) {
+static bool martini_db_match(const martini_db_residue_t* res, const md_str_t labels[], size_t num_labels, uint8_t map[]) {
     if (num_labels != res->num_beads) return false;
     bool used[256] = {0};
     for (size_t i = 0; i < num_labels; ++i) {
         size_t k = 0;
-        while (k < res->num_beads && (used[k] || !str_eq_cstr(labels[i], martini_db_bead(res, k)->name))) ++k;
+        while (k < res->num_beads && (used[k] || !md_str_eq_cstr(labels[i], martini_db_bead(res, k)->name))) ++k;
         if (k == res->num_beads) return false;
         used[k] = true;
         map[i] = (uint8_t)k;
@@ -3414,7 +3414,7 @@ static bool martini_db_match(const martini_db_residue_t* res, const str_t labels
 
 // The molecule (not an amino acid or a nucleotide) a residue of the labels is, of the version if there is one of it,
 // else of any version. NULL when it is none.
-static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, str_t res_name, const str_t labels[], size_t num_labels, uint8_t map[]) {
+static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, md_str_t res_name, const md_str_t labels[], size_t num_labels, uint8_t map[]) {
     if (num_labels == 0 || num_labels > 255) return NULL;
     size_t beg, end;
     martini_db_find(res_name, &beg, &end);
@@ -3434,7 +3434,7 @@ static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, s
 // masses (optional) of its beads. NULL for a single bead, which says too little, and where molecules of different kinds
 // have those beads. The names of a molecule of the Martini force fields are those of its chemistry, so molecules of the
 // same beads are the same molecule as far as anything here goes (its kind, its bonds, its anatomy as a lipid).
-static const martini_db_residue_t* martini_db_match_beads(uint32_t version, const str_t labels[], const float masses[], size_t num_labels, uint8_t map[]) {
+static const martini_db_residue_t* martini_db_match_beads(uint32_t version, const md_str_t labels[], const float masses[], size_t num_labels, uint8_t map[]) {
     if (num_labels < 2 || num_labels > 255) return NULL;
     const martini_db_residue_t* match = NULL;   // Of the version
     const martini_db_residue_t* other = NULL;   // Of any
@@ -3458,7 +3458,7 @@ static const martini_db_residue_t* martini_db_match_beads(uint32_t version, cons
 // not in the database, or a residue edited. NULL for a name of no such molecule, for a single bead (which says too
 // little), and where most labels are not beads of it (atoms named as an atomistic force field names them, of which C1 and
 // C2 are beads of a Martini cholesterol too). Of several molecules of the name, the first.
-static const martini_db_residue_t* martini_db_unknown_variant(str_t res_name, const str_t labels[], size_t num_labels) {
+static const martini_db_residue_t* martini_db_unknown_variant(md_str_t res_name, const md_str_t labels[], size_t num_labels) {
     if (num_labels < 2) return NULL;
     size_t beg, end;
     martini_db_find(res_name, &beg, &end);
@@ -3473,7 +3473,7 @@ static const martini_db_residue_t* martini_db_unknown_variant(str_t res_name, co
         for (size_t k = beg; k < end && !found; ++k) {
             const martini_db_residue_t* res = &martini_db_residues[k];
             if (martini_db_biopolymer(res)) continue;
-            for (size_t b = 0; b < res->num_beads && !found; ++b) found = str_eq_cstr(labels[i], martini_db_bead(res, b)->name);
+            for (size_t b = 0; b < res->num_beads && !found; ++b) found = md_str_eq_cstr(labels[i], martini_db_bead(res, b)->name);
         }
         known += found;
     }
@@ -3481,16 +3481,16 @@ static const martini_db_residue_t* martini_db_unknown_variant(str_t res_name, co
 }
 
 // Whether the residue is a monomer of a polymer: a link names it
-static bool martini_db_linked(str_t name) {
+static bool martini_db_linked(md_str_t name) {
     for (size_t k = 0; k < MD_COUNTOF(martini_db_links); ++k) {
-        if (str_eq_cstr(name, martini_db_links[k].name) || str_eq_cstr(name, martini_db_links[k].next_name)) return true;
+        if (md_str_eq_cstr(name, martini_db_links[k].name) || md_str_eq_cstr(name, martini_db_links[k].next_name)) return true;
     }
     return false;
 }
 
 // Bead idx of an amino acid or a nucleotide of the labels: of the residue of the version whose beads they are, else the
 // first bead of its name in a residue of the version (the residue may lack beads), else in one of any version
-static const martini_db_bead_t* martini_db_biopolymer_bead(uint32_t version, str_t res_name, const str_t labels[], size_t num_labels, size_t idx) {
+static const martini_db_bead_t* martini_db_biopolymer_bead(uint32_t version, md_str_t res_name, const md_str_t labels[], size_t num_labels, size_t idx) {
     size_t beg, end;
     martini_db_find(res_name, &beg, &end);
     if (num_labels <= 255) {
@@ -3500,14 +3500,14 @@ static const martini_db_bead_t* martini_db_biopolymer_bead(uint32_t version, str
             if (martini_db_biopolymer(res) && (res->versions & version) && martini_db_match(res, labels, num_labels, map)) return martini_db_bead(res, map[idx]);
         }
     }
-    const str_t label = labels[idx];
+    const md_str_t label = labels[idx];
     const martini_db_bead_t* other = NULL;
     for (size_t r = beg; r < end; ++r) {
         const martini_db_residue_t* res = &martini_db_residues[r];
         if (!martini_db_biopolymer(res)) continue;
         for (size_t k = 0; k < res->num_beads; ++k) {
             const martini_db_bead_t* bead = martini_db_bead(res, k);
-            if (!str_eq_cstr(label, bead->name)) continue;
+            if (!md_str_eq_cstr(label, bead->name)) continue;
             if (res->versions & version) return bead;
             if (!other) other = bead;
         }
@@ -3530,9 +3530,9 @@ typedef struct martini_votes_t {
     bool   martini;
 } martini_votes_t;
 
-static martini_votes_t martini_votes(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data, size_t res_beg, size_t res_end) {
+static martini_votes_t martini_votes(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data, size_t res_beg, size_t res_end) {
     martini_votes_t v = {0};
-    str_t labels[256];
+    md_str_t labels[256];
     uint8_t map[256];
     // The residues of the database of a name, by the name's word: a system has few names (the amino acids, a few
     // lipids), whose binary searches through the database are done once
@@ -3568,7 +3568,7 @@ static martini_votes_t martini_votes(const md_system_t* sys, str_t (*label)(cons
             versions |= res->versions;
             // No atomistic residue has the name and the atom names of a Martini residue of several beads, of Martini water
             // or of a monomer of a Martini polymer
-            if (n > 1 || res->kind == MD_RESIDUE_KIND_WATER || martini_db_linked(str_from_cstr(res->name))) v.martini = true;
+            if (n > 1 || res->kind == MD_RESIDUE_KIND_WATER || martini_db_linked(md_str_from_cstr(res->name))) v.martini = true;
         }
         if (versions == 0 || versions == MARTINI_ANY) continue;
         if (versions & MARTINI_2)  v.votes[0] += 1;
@@ -3582,7 +3582,7 @@ static martini_votes_t martini_votes(const md_system_t* sys, str_t (*label)(cons
 
 typedef struct martini_vote_task_t {
     const md_system_t* sys;
-    str_t (*label)(const void*, size_t);
+    md_str_t (*label)(const void*, size_t);
     const void* data;
     martini_votes_t* chunk;
 } martini_vote_task_t;
@@ -3596,7 +3596,7 @@ static void martini_vote_chunks(void* arg, uint32_t beg, uint32_t end, uint32_t 
     }
 }
 
-static martini_system_t martini_system_ex(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data, const md_executor_t* ex) {
+static martini_system_t martini_system_ex(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data, const md_executor_t* ex) {
     martini_votes_t v = {0};
     const size_t num_chunks = MD_DIV_UP(sys->residue.count, MARTINI_VOTE_CHUNK);
     if (md_executor_num_threads(ex) > 1 && num_chunks > 1) {
@@ -3619,39 +3619,39 @@ static martini_system_t martini_system_ex(const md_system_t* sys, str_t (*label)
     return result;
 }
 
-static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data) {
+static martini_system_t martini_system(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data) {
     return martini_system_ex(sys, label, data, NULL);
 }
 
 // Lipids by name: those of the Martini lipidomes (whose names the atomistic force fields mostly share: POPC, DPPC, CHOL,
 // ...) and the cholesterol of CHARMM
-bool md_util_resname_lipid(str_t str) {
+bool md_util_resname_lipid(md_str_t str) {
     size_t beg, end;
     martini_db_find(str, &beg, &end);
     for (size_t k = beg; k < end; ++k) {
         if (martini_db_residues[k].kind == MD_RESIDUE_KIND_LIPID) return true;
     }
-    return str_eq_cstr(str, "CHL1");
+    return md_str_eq_cstr(str, "CHL1");
 }
 
-static str_t label_of_array(const void* data, size_t i) {
-    return ((const str_t*)data)[i];
+static md_str_t label_of_array(const void* data, size_t i) {
+    return ((const md_str_t*)data)[i];
 }
 
-static str_t label_of_atom(const void* data, size_t i) {
+static md_str_t label_of_atom(const void* data, size_t i) {
     return md_atom_name((const md_atom_data_t*)data, i);
 }
 
 // The type of the name, element, mass, size and particle kind, added when there is none. md_particle_type_find_or_add goes by
 // name and element alone, which gives every bead of a name the mass and size of the first: a Martini SC1 is 36 in Ala
 // and 54 in Leu (Martini 3), and Trp's SC3 is a massless virtual site.
-static md_particle_type_idx_t find_or_add_particle_type(md_particle_type_data_t* type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, md_allocator_i* alloc) {
+static md_particle_type_idx_t find_or_add_particle_type(md_particle_type_data_t* type, md_str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, md_allocator_i* alloc) {
     for (size_t t = 1; t < type->count; ++t) {
-        if (type->z[t] == z && type->mass[t] == mass && type->radius[t] == radius && md_particle_type_flags(type, t) == flags && str_eq(md_particle_type_name(type, t), name)) {
+        if (type->z[t] == z && type->mass[t] == mass && type->radius[t] == radius && md_particle_type_flags(type, t) == flags && md_str_eq(md_particle_type_name(type, t), name)) {
             return (md_particle_type_idx_t)t;
         }
     }
-    return md_particle_type_add(type, name, (str_t){0}, z, mass, radius, color, flags, alloc);
+    return md_particle_type_add(type, name, (md_str_t){0}, z, mass, radius, color, flags, alloc);
 }
 
 // Coarse grained (Martini) bond inference. A residue whose beads are those of a residue of the Martini force fields
@@ -3695,13 +3695,13 @@ static inline void cg_push_bond(md_array(bond_pair_t)* candidates, int i, int j,
     md_array_push(*candidates, cp, alloc);
 }
 
-static inline bool martini_charge_dummy(str_t atom_name) {
-    return str_eq_cstr(atom_name, "SCP") || str_eq_cstr(atom_name, "SCN");
+static inline bool martini_charge_dummy(md_str_t atom_name) {
+    return md_str_eq_cstr(atom_name, "SCP") || md_str_eq_cstr(atom_name, "SCN");
 }
 
 // The residue of the database a residue is: the one of its name whose beads are its beads, each with the mass of its
 // atom (its type was given by it), and of the version where there are several. map[i] is then the bead of atom i.
-static const martini_db_residue_t* martini_db_match_residue(const md_system_t* sys, size_t res_idx, uint32_t version, str_t labels[], uint8_t map[]) {
+static const martini_db_residue_t* martini_db_match_residue(const md_system_t* sys, size_t res_idx, uint32_t version, md_str_t labels[], uint8_t map[]) {
     const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     const size_t n = range.end - range.beg;
     if (n == 0 || n > 255) return NULL;
@@ -3735,8 +3735,8 @@ static const martini_db_residue_t* martini_db_match_residue(const md_system_t* s
 // (the longest are 4.7 A), unless the numbering starts over: a new chain
 static void cg_polymer_links(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, size_t ci, md_allocator_i* alloc) {
     const float polymer_cap = 6.0f;
-    const str_t prev_name = md_system_residue_name(sys, ci - 1);
-    const str_t name      = md_system_residue_name(sys, ci);
+    const md_str_t prev_name = md_system_residue_name(sys, ci - 1);
+    const md_str_t name      = md_system_residue_name(sys, ci);
     const md_sequence_id_t prev_seq = md_system_residue_seq_id(sys, ci - 1);
     const md_sequence_id_t seq      = md_system_residue_seq_id(sys, ci);
     if (seq < prev_seq && !(seq <= 1 && prev_seq >= 9999)) return;
@@ -3744,10 +3744,10 @@ static void cg_polymer_links(md_array(bond_pair_t)* candidates, const md_system_
     const md_urange_t cur  = md_system_residue_atom_range(sys, ci);
     for (size_t k = 0; k < MD_COUNTOF(martini_db_links); ++k) {
         const martini_db_link_t* link = &martini_db_links[k];
-        if (!str_eq_cstr(prev_name, link->name) || !str_eq_cstr(name, link->next_name)) continue;
+        if (!md_str_eq_cstr(prev_name, link->name) || !md_str_eq_cstr(name, link->next_name)) continue;
         int a = -1, b = -1;
-        for (uint32_t i = prev.beg; i < prev.end && a == -1; ++i) if (str_eq_cstr(md_atom_name(&sys->atom, i), link->bead)) a = (int)i;
-        for (uint32_t i = cur.beg;  i < cur.end  && b == -1; ++i) if (str_eq_cstr(md_atom_name(&sys->atom, i), link->next_bead)) b = (int)i;
+        for (uint32_t i = prev.beg; i < prev.end && a == -1; ++i) if (md_str_eq_cstr(md_atom_name(&sys->atom, i), link->bead)) a = (int)i;
+        for (uint32_t i = cur.beg;  i < cur.end  && b == -1; ++i) if (md_str_eq_cstr(md_atom_name(&sys->atom, i), link->next_bead)) b = (int)i;
         if (a == -1 || b == -1) continue;
         const float d = cg_bead_distance(state, a, b);
         if (d < polymer_cap) cg_push_bond(candidates, a, b, d, alloc);
@@ -3775,7 +3775,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
     size_t prev_ci = 0;
     md_residue_kind_t prev_kind = MD_RESIDUE_KIND_OTHER;
 
-    str_t* labels = md_alloc(alloc, sizeof(str_t) * (max_len + 1));
+    md_str_t* labels = md_alloc(alloc, sizeof(md_str_t) * (max_len + 1));
     uint8_t map[256];
     const uint32_t version = martini_system(sys, label_of_atom, &sys->atom).version;
 
@@ -3824,7 +3824,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
             if (backbone) {
                 if (first_bb == -1) first_bb = (int)i;
                 last_bb = (int)i;
-                if (m3_nucleotide && str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb = (int)i;
+                if (m3_nucleotide && md_str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb = (int)i;
             }
             if (res || martini_charge_dummy(md_atom_name(&sys->atom, i))) continue;
             if (!backbone && side_with_mass && md_atom_mass(&sys->atom, i) == 0.0f) continue;
@@ -3912,10 +3912,10 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
         prev_ci = ci;
         prev_kind = kind;
 
-        const str_t res_name = md_system_residue_name(sys, ci);
-        if (amino_acid && (str_eq_cstr(res_name, "CYS") || str_eq_cstr(res_name, "CYX"))) {
+        const md_str_t res_name = md_system_residue_name(sys, ci);
+        if (amino_acid && (md_str_eq_cstr(res_name, "CYS") || md_str_eq_cstr(res_name, "CYX"))) {
             for (uint32_t i = range.beg; i < range.end; ++i) {
-                if (str_eq_cstr(md_atom_name(&sys->atom, i), "SC1")) md_array_push(cys_sc1, (int)i, alloc);
+                if (md_str_eq_cstr(md_atom_name(&sys->atom, i), "SC1")) md_array_push(cys_sc1, (int)i, alloc);
             }
         }
     }
@@ -5064,7 +5064,7 @@ static void infer_coarse_grained_chain_ends(md_system_t* sys) {
         if (kind == MD_RESIDUE_KIND_AMINO_ACID && (!to_prev || !to_next)) {
             for (uint32_t i = range.beg; i < range.end; ++i) {
                 const md_particle_type_idx_t t = sys->atom.type_idx[i];
-                if (md_particle_type_mass(&sys->atom.type, t) != 54.0f || !str_eq_cstr(md_particle_type_name(&sys->atom.type, t), "BB")) continue;
+                if (md_particle_type_mass(&sys->atom.type, t) != 54.0f || !md_str_eq_cstr(md_particle_type_name(&sys->atom.type, t), "BB")) continue;
                 sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, md_particle_type_name(&sys->atom.type, t), 0, 72.0f, MARTINI_R,
                     md_particle_type_color(&sys->atom.type, t), md_particle_type_flags(&sys->atom.type, t), sys->alloc);
             }
@@ -5102,7 +5102,7 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
     md_array(int) ambigous_nucleotide_indices = 0;
 
     for (size_t residue_idx = 0; residue_idx < sys->residue.count; ++residue_idx) {
-        str_t res_name = md_system_residue_name(sys, residue_idx);
+        md_str_t res_name = md_system_residue_name(sys, residue_idx);
         md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
         size_t len = (size_t)(res_range.end - res_range.beg);
 
@@ -5115,7 +5115,7 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
         // A molecule of the Martini force fields (a lipid, water, an ion, a sugar, ...): the kind of its topology. Its
         // name alone may say something else: PCA, a lipid of Martini 2, is pyroglutamic acid in the PDB.
         if (len <= 255 && atoms_are_beads(sys, res_range)) {
-            str_t labels[256];
+            md_str_t labels[256];
             uint8_t map[256];
             for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, res_range.beg + i);
             const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, res_name, labels, len, map);
@@ -5178,7 +5178,7 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
         MD_LOG_DEBUG("Structure contains %zu amino acid residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_amino_acids);
         for (size_t i = 0; i < MD_MIN(num_ambigous_amino_acids, max_warnings); ++i) {
             int res_idx = ambigous_amino_acid_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_system_residue_name(sys, res_idx)), md_system_residue_seq_id(sys, res_idx));
+            MD_LOG_DEBUG(" - [%d] " MD_STR_FMT " (%d)", res_idx + 1, MD_STR_ARG(md_system_residue_name(sys, res_idx)), md_system_residue_seq_id(sys, res_idx));
         }
         if (num_ambigous_amino_acids > max_warnings) {
             MD_LOG_DEBUG(" - And %zu more...", num_ambigous_amino_acids - max_warnings);
@@ -5190,7 +5190,7 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
         MD_LOG_DEBUG("Structure contains %zu nucleotide residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_nucleotides);
         for (size_t i = 0; i < MD_MIN(num_ambigous_nucleotides, max_warnings); ++i) {
             int res_idx = ambigous_nucleotide_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_system_residue_name(sys, res_idx)), md_system_residue_seq_id(sys, res_idx));
+            MD_LOG_DEBUG(" - [%d] " MD_STR_FMT " (%d)", res_idx + 1, MD_STR_ARG(md_system_residue_name(sys, res_idx)), md_system_residue_seq_id(sys, res_idx));
         }
         if (num_ambigous_nucleotides > max_warnings) {
             MD_LOG_DEBUG(" - And %zu more...", num_ambigous_nucleotides - max_warnings);
@@ -5220,7 +5220,7 @@ static void clear_instances(md_system_t* sys, md_allocator_i* alloc) {
     MD_MEMSET(&sys->instance, 0, sizeof(sys->instance));
 }
 
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]) {
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
         return false;
@@ -5235,16 +5235,16 @@ bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_c
 
     // No ids at all is no units: the data gives none
     bool any_id = false;
-    for (size_t c = 0; c < num_res && !any_id; ++c) any_id = !str_empty(str_trim(res_chain_id[c]));
+    for (size_t c = 0; c < num_res && !any_id; ++c) any_id = !md_str_empty(md_str_trim(res_chain_id[c]));
     if (!any_id) return true;
 
     // The runs of one id. Every residue is in one, as the instances are back to back; a run without an id is an
     // instance the data does not name (md_instance_data_t)
     size_t i = 0;
     while (i < num_res) {
-        const str_t id = str_trim(res_chain_id[i]);
+        const md_str_t id = md_str_trim(res_chain_id[i]);
         size_t j = i + 1;
-        while (j < num_res && str_eq(id, str_trim(res_chain_id[j])) && !(res_unit_begins && res_unit_begins[j])) ++j;
+        while (j < num_res && md_str_eq(id, md_str_trim(res_chain_id[j])) && !(res_unit_begins && res_unit_begins[j])) ++j;
         md_array_push(sys->instance.id, (md_label_t){0}, alloc);
         md_array_push(sys->instance.auth_id, make_label(id), alloc);
         md_array_push(sys->instance.res_offset, (uint32_t)i, alloc);
@@ -5284,9 +5284,9 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     md_array(md_chain_idx_t) run_chain = 0;
 
     for (size_t i = 0; i < num_inst; ++i) {
-        const str_t id = str_trim(md_system_instance_auth_id(sys, i));
+        const md_str_t id = md_str_trim(md_system_instance_auth_id(sys, i));
         const md_urange_t residues = md_system_instance_residue_range(sys, i);
-        if (str_empty(id) || residues.beg >= residues.end || residues.end > num_res) continue;
+        if (md_str_empty(id) || residues.beg >= residues.end || residues.end > num_res) continue;
         const uint64_t key = md_hash64_str(id, 0);
         const uint32_t* found = md_hashmap_get(&chain_of_id, key);
         md_chain_idx_t chain;
@@ -5333,7 +5333,7 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     return true;
 }
 
-md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, str_t name, md_atomic_number_t z) {
+md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, md_str_t name, md_atomic_number_t z) {
     MD_ASSERT(sys && map);
     // The name as the type keeps it, its first 8 characters
     const uint64_t kv[2] = { md_label_key(make_label(name)), (uint64_t)z };
@@ -5354,14 +5354,14 @@ static inline bool residue_kind_is_monomer(md_residue_kind_t kind) {
 // standard names (DA, DC, ... and A, C, ...). Otherwise (ADE, CYT, ... of CHARMM, which are both) the sugar does: a
 // resolved nucleotide with a 2' oxygen is RNA, one without DNA.
 static int nucleotide_type(const md_system_t* sys, size_t res_idx) {
-    const str_t name = md_system_residue_name(sys, res_idx);
+    const md_str_t name = md_system_residue_name(sys, res_idx);
     if (md_util_resname_dna(name)) return 1;
     if (md_util_resname_rna(name)) return 2;
     if (md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_RESOLVED) {
         const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         for (uint32_t i = range.beg; i < range.end; ++i) {
-            const str_t atom = md_atom_name(&sys->atom, i);
-            if (str_eq(atom, STR_LIT("O2'")) || str_eq(atom, STR_LIT("O2*"))) return 2;
+            const md_str_t atom = md_atom_name(&sys->atom, i);
+            if (md_str_eq(atom, MD_STR_LIT("O2'")) || md_str_eq(atom, MD_STR_LIT("O2*"))) return 2;
         }
         return 1;
     }
@@ -5424,21 +5424,21 @@ static md_part_type_idx_t inferred_part_type(md_system_t* sys, md_hashmap32_t* t
     if (found) return (md_part_type_idx_t)*found;
 
     char buf[64];
-    str_t desc = {0};
+    md_str_t desc = {0};
     if (polymer || kind == MD_PART_KIND_WATER) {
-        desc = str_from_cstr(md_part_kind_name(kind));
+        desc = md_str_from_cstr(md_part_kind_name(kind));
     } else if (residues.end - residues.beg <= 4) {
         int len = 0;
         for (uint32_t c = residues.beg; c < residues.end; ++c) {
-            const str_t name = md_system_residue_name(sys, c);
-            len += md_snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, c > residues.beg ? "-" : "", STR_ARG(name));
+            const md_str_t name = md_system_residue_name(sys, c);
+            len += md_snprintf(buf + len, sizeof(buf) - len, "%s" MD_STR_FMT, c > residues.beg ? "-" : "", MD_STR_ARG(name));
             len = MD_MIN(len, (int)sizeof(buf) - 1);
         }
-        desc = (str_t){ buf, (size_t)len };
+        desc = (md_str_t){ buf, (size_t)len };
     } else {
         desc = md_system_residue_name(sys, residues.beg);
     }
-    const md_part_type_idx_t type = md_part_type_data_push(&sys->part.type, STR_LIT(""), md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_INFERRED, kind), desc, sys->alloc);
+    const md_part_type_idx_t type = md_part_type_data_push(&sys->part.type, MD_STR_LIT(""), md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_INFERRED, kind), desc, sys->alloc);
     md_hashmap_add(type_of_key, key, (uint32_t)type);
     return type;
 }
@@ -5516,7 +5516,7 @@ bool md_util_system_infer_parts(md_system_t* sys) {
                 const span_t none = {{covered, r.beg}, -1, false};
                 md_array_push(spans, none, temp_arena);
             }
-            const bool named = !str_empty(md_system_instance_id(sys, i)) || !str_empty(md_system_instance_auth_id(sys, i));
+            const bool named = !md_str_empty(md_system_instance_id(sys, i)) || !md_str_empty(md_system_instance_auth_id(sys, i));
             const span_t span = {r, (md_instance_idx_t)i, named};
             md_array_push(spans, span, temp_arena);
             covered = r.end;
@@ -6240,8 +6240,8 @@ static inline bool cg_chain_restarts(md_sequence_id_t prev_seq, md_sequence_id_t
 }
 
 static inline bool cg_cysteine_sc1(const md_system_t* sys, int32_t res_idx, int32_t atom_idx) {
-    const str_t res_name = md_system_residue_name(sys, res_idx);
-    return (str_eq_cstr(res_name, "CYS") || str_eq_cstr(res_name, "CYX")) && str_eq_cstr(md_atom_name(&sys->atom, atom_idx), "SC1");
+    const md_str_t res_name = md_system_residue_name(sys, res_idx);
+    return (md_str_eq_cstr(res_name, "CYS") || md_str_eq_cstr(res_name, "CYX")) && md_str_eq_cstr(md_atom_name(&sys->atom, atom_idx), "SC1");
 }
 
 size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
@@ -6274,7 +6274,7 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
             if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE)) continue;
             if (first_bb[ci] == -1) first_bb[ci] = (int32_t)i;
             last_bb[ci] = (int32_t)i;
-            if (m3 && kind == MD_RESIDUE_KIND_NUCLEOTIDE && str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb[ci] = (int32_t)i;
+            if (m3 && kind == MD_RESIDUE_KIND_NUCLEOTIDE && md_str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb[ci] = (int32_t)i;
         }
     }
 
@@ -6554,8 +6554,8 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
     if (num_parts > 0) {
         const size_t MAX_SHOWN = 3;
         for (size_t i = 0; i < num_parts && i < MAX_SHOWN; ++i) {
-            const str_t desc = md_system_part_type_description(sys, (size_t)md_system_part_type_idx(sys, (size_t)parts[i]));
-            len += md_snprintf(buf + len, cap - len, "%s" STR_FMT, i > 0 ? " + " : "", STR_ARG(desc));
+            const md_str_t desc = md_system_part_type_description(sys, (size_t)md_system_part_type_idx(sys, (size_t)parts[i]));
+            len += md_snprintf(buf + len, cap - len, "%s" MD_STR_FMT, i > 0 ? " + " : "", MD_STR_ARG(desc));
             len = MD_MIN(len, (int)cap - 1);
         }
         if (num_parts > MAX_SHOWN) {
@@ -6574,8 +6574,8 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
         if (count[MD_Z_C] == 0 && first[k] == MD_Z_H) break;    // Without carbon, H goes in order (Hill)
         const md_atomic_number_t z = first[k];
         if (!count[z]) continue;
-        const str_t sym = md_util_element_symbol(z);
-        len += count[z] > 1 ? md_snprintf(buf + len, cap - len, STR_FMT "%u", STR_ARG(sym), count[z]) : md_snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+        const md_str_t sym = md_util_element_symbol(z);
+        len += count[z] > 1 ? md_snprintf(buf + len, cap - len, MD_STR_FMT "%u", MD_STR_ARG(sym), count[z]) : md_snprintf(buf + len, cap - len, MD_STR_FMT, MD_STR_ARG(sym));
         len = MD_MIN(len, (int)cap - 1);
         count[z] = 0;
     }
@@ -6583,11 +6583,11 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
     for (;;) {
         md_atomic_number_t best = 0;
         for (int z = 1; z < MD_Z_Count; ++z) {
-            if (count[z] && (!best || str_cmp_lex(md_util_element_symbol((md_atomic_number_t)z), md_util_element_symbol(best)) < 0)) best = (md_atomic_number_t)z;
+            if (count[z] && (!best || md_str_cmp_lex(md_util_element_symbol((md_atomic_number_t)z), md_util_element_symbol(best)) < 0)) best = (md_atomic_number_t)z;
         }
         if (!best) break;
-        const str_t sym = md_util_element_symbol(best);
-        len += count[best] > 1 ? md_snprintf(buf + len, cap - len, STR_FMT "%u", STR_ARG(sym), count[best]) : md_snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+        const md_str_t sym = md_util_element_symbol(best);
+        len += count[best] > 1 ? md_snprintf(buf + len, cap - len, MD_STR_FMT "%u", MD_STR_ARG(sym), count[best]) : md_snprintf(buf + len, cap - len, MD_STR_FMT, MD_STR_ARG(sym));
         len = MD_MIN(len, (int)cap - 1);
         count[best] = 0;
     }
@@ -6696,7 +6696,7 @@ static void infer_molecule_types(md_system_t* sys) {
                     }
                 }
                 molecule_type_name(name, sizeof(name), sys, parts, md_array_size(parts), &molecule);
-                type = md_molecule_type_data_push(&mol->type, str_from_cstr(name), MD_MOLECULE_TYPE_FLAG_INFERRED, alloc);
+                type = md_molecule_type_data_push(&mol->type, md_str_from_cstr(name), MD_MOLECULE_TYPE_FLAG_INFERRED, alloc);
                 md_hashmap_add(&type_of_key, key, (uint32_t)type);
             }
         }
@@ -6981,10 +6981,10 @@ static const particle_type_t predefined_particle_types[] = {
     {"C##", "C#?", 0, 1727.7f,   13.5f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
 };
 
-static inline uint64_t gen_key_from_names(str_t res_name, str_t atom_name) {
+static inline uint64_t gen_key_from_names(md_str_t res_name, md_str_t atom_name) {
     char buf[64];
-    int len = md_snprintf(buf, sizeof(buf), STR_FMT "_" STR_FMT, STR_ARG(res_name), STR_ARG(atom_name));
-    str_t str = {buf, (size_t)len};
+    int len = md_snprintf(buf, sizeof(buf), MD_STR_FMT "_" MD_STR_FMT, MD_STR_ARG(res_name), MD_STR_ARG(atom_name));
+    md_str_t str = {buf, (size_t)len};
     return md_hash64_str(str, 0);
 }
 
@@ -7041,7 +7041,7 @@ static bool pattern_match_any(const char* patterns, const char* str) {
 }
 
 // Whether a residue name is that of the kind: what a predefined type without a residue name matches
-static bool resname_of_kind(str_t res_name, md_residue_kind_t kind) {
+static bool resname_of_kind(md_str_t res_name, md_residue_kind_t kind) {
     switch (kind) {
     case MD_RESIDUE_KIND_AMINO_ACID: return md_util_resname_amino_acid(res_name);
     case MD_RESIDUE_KIND_NUCLEOTIDE: return md_util_resname_nucleotide(res_name);
@@ -7049,12 +7049,12 @@ static bool resname_of_kind(str_t res_name, md_residue_kind_t kind) {
     }
 }
 
-static particle_type_t* find_predefined_particle_type(str_t res_name, str_t atom_name) {
+static particle_type_t* find_predefined_particle_type(md_str_t res_name, md_str_t atom_name) {
     // The patterns are matched against C strings, and the names need not end in a zero (a label of 8 characters, a
     // name read from a file)
     char res_buf[32], atom_buf[32];
-    str_copy_to_char_buf(res_buf, sizeof(res_buf), res_name);
-    str_copy_to_char_buf(atom_buf, sizeof(atom_buf), atom_name);
+    md_str_copy_to_char_buf(res_buf, sizeof(res_buf), res_name);
+    md_str_copy_to_char_buf(atom_buf, sizeof(atom_buf), atom_name);
     for (size_t i = 0; i < MD_COUNTOF(predefined_particle_types); ++i) {
         particle_type_t type = predefined_particle_types[i];
         if (!pattern_match_any(type.atom, atom_buf)) continue;
@@ -7098,14 +7098,14 @@ static void add_residue_template(md_hashmap32_t* cache, md_array(residue_templat
 
 typedef struct infer_keys_t {
     const md_system_t* sys;
-    str_t (*label)(const void*, size_t);
+    md_str_t (*label)(const void*, size_t);
     const void* label_data;
     const md_label_t* words;    // The labels as md_label_t, when they are (else NULL)
     uint64_t* key;
     uint8_t*  untyped;
 } infer_keys_t;
 
-static str_t label_of_labels(const void* data, size_t i) {
+static md_str_t label_of_labels(const void* data, size_t i) {
     return md_label_str(&((const md_label_t*)data)[i]);
 }
 
@@ -7120,7 +7120,7 @@ static void infer_residue_keys(void* arg, uint32_t beg, uint32_t end, uint32_t t
         // The labels are part of the key, as which of them a name stands for can depend on the others; and
         // everything the types of the residue's atoms come from is in it, so the atoms of a residue of a key seen
         // before (a water among thousands) take what the first one's did, without a look at each atom
-        const str_t res_name = md_system_residue_name(sys, res_idx);
+        const md_str_t res_name = md_system_residue_name(sys, res_idx);
         uint64_t key = XXH3_64bits_withSeed(res_name.ptr, res_name.len, res_size);
         if (t->words) {
             // Labels as words (zero padded, of no zero byte): equal bytes are equal labels, so the residue's are hashed
@@ -7128,7 +7128,7 @@ static void infer_residue_keys(void* arg, uint32_t beg, uint32_t end, uint32_t t
             key = XXH3_64bits_withSeed(t->words + range.beg, res_size * sizeof(md_label_t), key);
         } else {
             for (size_t i = range.beg; i < range.end; ++i) {
-                const str_t lbl = t->label(t->label_data, i);
+                const md_str_t lbl = t->label(t->label_data, i);
                 key = XXH3_64bits_withSeed(lbl.ptr, lbl.len, key);
             }
         }
@@ -7168,7 +7168,7 @@ static void infer_apply_templates(void* arg, uint32_t beg, uint32_t end, uint32_
 
 // The labels of the atoms through an accessor: an array of strings, or of labels. The residues are typed in order, each
 // the first of its key: the others take what it got, over the threads of ex (NULL: the calling thread), as do the keys.
-static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, size_t), const void* label_data, const md_executor_t* ex) {
+static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* label_data, const md_executor_t* ex) {
     if (!sys) {
         MD_LOG_ERROR("system was null");
         return;
@@ -7194,9 +7194,9 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
         // The masses and sizes of Martini beads depend on the version of Martini
         const martini_system_t martini = martini_system_ex(sys, label, label_data, ex);
         // The molecules of the force field of beads of none of its topologies, by name and size: the first and how many
-        typedef struct { str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
+        typedef struct { md_str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
         md_array(unknown_variant_t) unknown_variants = 0;
-        md_array(str_t) res_labels = 0;
+        md_array(md_str_t) res_labels = 0;
         // The residues whose atoms were typed by a look at each: by their key, the types and roles their atoms got
         md_hashmap32_t residue_template_cache = {.allocator = temp_alloc };
         md_array(residue_template_t) templates = 0;
@@ -7242,14 +7242,14 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
                 }
             }
 
-            str_t res_name         = md_system_residue_name(sys, res_idx);
+            md_str_t res_name         = md_system_residue_name(sys, res_idx);
             md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
             size_t res_size        = res_range.end - res_range.beg;
 
             // The labels of the residue, by its atoms from 0
             md_array_resize(res_labels, res_size, temp_alloc);
             for (size_t k = 0; k < res_size; ++k) res_labels[k] = label(label_data, res_range.beg + k);
-            const str_t* labels = res_labels;
+            const md_str_t* labels = res_labels;
 
             // What the residue's atoms got, for those to follow of its key
             residue_template_t tmpl = { .res_idx = res_idx, .role_offset = md_array_size(template_roles), .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
@@ -7299,7 +7299,7 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
                     apply_predefined_res_kind(sys, res_idx, like->kind);
                     // Told once per name and size
                     size_t u = 0;
-                    while (u < md_array_size(unknown_variants) && !(str_eq(unknown_variants[u].name, res_name) && unknown_variants[u].size == res_size)) ++u;
+                    while (u < md_array_size(unknown_variants) && !(md_str_eq(unknown_variants[u].name, res_name) && unknown_variants[u].size == res_size)) ++u;
                     if (u == md_array_size(unknown_variants)) {
                         unknown_variant_t v = { res_name, res_size, res_idx, 0 };
                         md_array_push(unknown_variants, v, temp_alloc);
@@ -7327,7 +7327,7 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
                     const uint32_t entry = *cached >> 16;
                     predef = entry ? &predefined_particle_types[entry - 1] : NULL;
                 } else {
-                    str_t atom_name = labels[i - res_range.beg];
+                    md_str_t atom_name = labels[i - res_range.beg];
                     md_atomic_number_t z = 0;
                     float mass = 0;
                     float radius = 0;
@@ -7385,22 +7385,22 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
             size_t len = 0;
             beads[0] = '\0';
             for (uint32_t i = range.beg; i < range.end && len + 8 < sizeof(beads); ++i) {
-                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" STR_FMT, len ? " " : "", STR_ARG(label(label_data, i)));
+                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" MD_STR_FMT, len ? " " : "", MD_STR_ARG(label(label_data, i)));
             }
-            MD_LOG_INFO(STR_FMT " of %zu beads (%s), %zu of them: no Martini topology of the name has these beads; shown as regular beads, without bonds",
-                STR_ARG(v->name), v->size, beads, v->count);
+            MD_LOG_INFO(MD_STR_FMT " of %zu beads (%s), %zu of them: no Martini topology of the name has these beads; shown as regular beads, without bonds",
+                MD_STR_ARG(v->name), v->size, beads, v->count);
         }
     } else {
         for (size_t i = 0; i < sys->atom.count; ++i) {
             if (sys->atom.type_idx[i] != 0) continue;
 
-            const str_t atom_label = label(label_data, i);
+            const md_str_t atom_label = label(label_data, i);
             uint64_t key = md_hash64_str(atom_label, 0);
             uint32_t* cached_type = md_hashmap_get(&particle_type_cache, key);
             if (cached_type) {
                 sys->atom.type_idx[i] = (md_particle_type_idx_t)*cached_type;
             } else {
-                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_label, (str_t){0}, 0);
+                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_label, (md_str_t){0}, 0);
                 float mass   = md_atomic_number_mass(z);
                 float radius = md_atomic_number_vdw_radius(z);
                 uint32_t color = md_atomic_number_cpk_color(z);
@@ -7414,7 +7414,7 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
     md_temp_end(temp);
 }
 
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[], const md_executor_t* ex) {
+void md_util_system_infer_particle_types(md_system_t* sys, const md_str_t atom_labels[], const md_executor_t* ex) {
     if (!atom_labels) {
         MD_LOG_ERROR("Must provide atom_labels");
         return;
@@ -7448,12 +7448,12 @@ void md_util_system_augment_particle_types(md_system_t* sys) {
     uint32_t* slot_entry = md_temp_alloc_array(temp, uint32_t, num_types + 1);     // The entry + 1, 0 for none
     MD_MEMSET(slot_run, 0, (num_types + 1) * sizeof(uint32_t));
     uint32_t run = 0;
-    str_t run_name = {0};
+    md_str_t run_name = {0};
     uint64_t run_key = 0;
 
     for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
-        const str_t res_name = md_system_residue_name(sys, res_idx);
-        if (run == 0 || !str_eq(res_name, run_name)) {
+        const md_str_t res_name = md_system_residue_name(sys, res_idx);
+        if (run == 0 || !md_str_eq(res_name, run_name)) {
             run += 1;
             run_name = res_name;
             run_key = md_hash64_str(res_name, 0);
@@ -11985,10 +11985,10 @@ static bool nucleotide_backbone_beads(md_nucleic_acid_atoms_t* out, const md_sys
     const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
-        const str_t name = md_atom_name(&sys->atom, i);
-        if      (str_eq_cstr(name, "BB1")) na.p  = (md_atom_idx_t)i;
-        else if (str_eq_cstr(name, "BB2")) na.c4 = (md_atom_idx_t)i;
-        else if (str_eq_cstr(name, "BB3")) na.c1 = (md_atom_idx_t)i;
+        const md_str_t name = md_atom_name(&sys->atom, i);
+        if      (md_str_eq_cstr(name, "BB1")) na.p  = (md_atom_idx_t)i;
+        else if (md_str_eq_cstr(name, "BB2")) na.c4 = (md_atom_idx_t)i;
+        else if (md_str_eq_cstr(name, "BB3")) na.c1 = (md_atom_idx_t)i;
     }
     if (out) *out = na;
     return na.c4 >= 0 && na.c1 >= 0;
@@ -12068,8 +12068,8 @@ static bool amino_acid_carboxyl_free(const md_system_t* sys, size_t res_idx, md_
     if (has_bonds) return num_o >= 2;
     const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     for (uint32_t i = range.beg; i < range.end; ++i) {
-        const str_t name = md_atom_name(&sys->atom, i);
-        if (str_eq_cstr(name, "OXT") || str_eq_cstr(name, "OT2") || str_eq_cstr(name, "OC2") || str_eq_cstr(name, "O2")) return true;
+        const md_str_t name = md_atom_name(&sys->atom, i);
+        if (md_str_eq_cstr(name, "OXT") || md_str_eq_cstr(name, "OT2") || md_str_eq_cstr(name, "OC2") || md_str_eq_cstr(name, "O2")) return true;
     }
     return false;
 }
@@ -12251,7 +12251,7 @@ static md_atom_idx_t bonded_atom_other(const md_system_t* sys, md_atom_idx_t a, 
 }
 
 // The matches of a query of the backbone atoms in the system, at the structure level, bonds of any order
-static bool backbone_matches(md_match_result_t* out, str_t smiles, const md_system_t* sys, md_allocator_i* alloc) {
+static bool backbone_matches(md_match_result_t* out, md_str_t smiles, const md_system_t* sys, md_allocator_i* alloc) {
     md_match_query_t query = {0};
     if (!md_match_query_init_smiles(&query, smiles, alloc, NULL)) return false;
     const md_match_desc_t desc = {
@@ -12297,7 +12297,7 @@ static void protein_backbones_from_bonds(md_system_t* sys, const md_system_state
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_match_result_t res = {0};
     // Columns: N CA C O
-    if (!backbone_matches(&res, STR_LIT("NCCO"), sys, temp_alloc)) return;
+    if (!backbone_matches(&res, MD_STR_LIT("NCCO"), sys, temp_alloc)) return;
     MD_ASSERT(res.width == 4);
 
     const size_t num_atoms = sys->atom.count;
@@ -12391,7 +12391,7 @@ static void nucleic_backbones_from_bonds(md_system_t* sys, size_t min_length, md
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_match_result_t res = {0};
     // Columns: O5' C5' C4' O4' C1' C2' C3' O3'
-    if (!backbone_matches(&res, STR_LIT("OCC1OCCC1O"), sys, temp_alloc)) return;
+    if (!backbone_matches(&res, MD_STR_LIT("OCC1OCCC1O"), sys, temp_alloc)) return;
     MD_ASSERT(res.width == 8);
 
     const size_t num_atoms = sys->atom.count;
@@ -12534,7 +12534,7 @@ typedef enum {
     LIPID_BEAD_LETTERLESS,
 } lipid_bead_t;
 
-static lipid_bead_t lipid_bead_kind(str_t name, bool sterol) {
+static lipid_bead_t lipid_bead_kind(md_str_t name, bool sterol) {
     if (name.len < 2) return LIPID_BEAD_POLAR;
     const char c = name.ptr[0];
     if (c == 'V' && sterol) return LIPID_BEAD_CHAIN;
@@ -12562,7 +12562,7 @@ static inline bool lipid_atom_is_heavy(const md_system_t* sys, size_t i) {
 }
 
 // A ring bead of a coarse grained sterol (R1 .. R6)
-static inline bool lipid_bead_sterol_ring(str_t name) {
+static inline bool lipid_bead_sterol_ring(md_str_t name) {
     return name.len >= 2 && name.ptr[0] == 'R' && is_digit(name.ptr[1]);
 }
 
@@ -12588,7 +12588,7 @@ static inline bool lipid_candidate_res(const md_system_t* sys, size_t res_idx) {
 
 // A bead named as one of a tail with the letter of its tail (C1A, D2B, T1A, C1A1), as only the lipids of the Martini
 // lipidomes have them
-static inline bool lipid_bead_lettered(str_t name) {
+static inline bool lipid_bead_lettered(md_str_t name) {
     return name.len >= 3 && name.ptr[0] != 'R' && lipid_bead_kind(name, false) == LIPID_BEAD_CHAIN;
 }
 
@@ -13252,7 +13252,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
 
 // The color a new component type starts out with: that of its standard monomer, that of the element of a monatomic
 // ion, and otherwise one of its name, the same in every system
-static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_idx, str_t name, md_residue_kind_t kind, md_monomer_t monomer) {
+static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_idx, md_str_t name, md_residue_kind_t kind, md_monomer_t monomer) {
     if (monomer != MD_MONOMER_NONE) {
         return md_monomer_color(monomer);
     }
@@ -13271,7 +13271,7 @@ static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_id
     return (0xFFu << 24) | (b << 16) | (g << 8) | r;
 }
 
-static inline uint64_t residue_type_key(str_t name, md_residue_kind_t kind) {
+static inline uint64_t residue_type_key(md_str_t name, md_residue_kind_t kind) {
     return md_hash64_str(name, (uint64_t)kind + 1);
 }
 
@@ -13297,13 +13297,13 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
 
     md_array_resize(res->type_idx, res->count, alloc);
     for (size_t c = 0; c < res->count; ++c) {
-        const str_t name = md_system_residue_name(sys, c);
+        const md_str_t name = md_system_residue_name(sys, c);
         const md_residue_kind_t kind = md_system_residue_kind(sys, c);
         const uint64_t key = residue_type_key(name, kind);
 
         md_residue_type_idx_t type_idx = -1;
         const uint32_t* found = md_hashmap_get(&lookup, key);
-        if (found && res->type.kind[*found] == kind && str_eq(LBL_TO_STR(res->type.name[*found]), name)) {
+        if (found && res->type.kind[*found] == kind && md_str_eq(LBL_TO_STR(res->type.name[*found]), name)) {
             type_idx = (md_residue_type_idx_t)*found;
         } else if (found) {
             type_idx = md_residue_type_find(&sys->residue.type, name, kind);       // Two keys which collide
@@ -13659,7 +13659,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         const size_t n = md_array_size(sys->f); \
         if (n) { \
             md_array_resize(work->sys.f, n, alloc); \
-            for (size_t i = 0; i < n; ++i) work->sys.f[i] = str_empty(sys->f[i]) ? (str_t){0} : str_copy(sys->f[i], alloc); \
+            for (size_t i = 0; i < n; ++i) work->sys.f[i] = md_str_empty(sys->f[i]) ? (md_str_t){0} : md_str_copy(sys->f[i], alloc); \
         } \
     } while (0);
 
@@ -13674,7 +13674,7 @@ bool md_util_system_infer_prepare(md_util_infer_work_t* work, const md_system_t*
     work->sys = *sys;
     work->sys.alloc = alloc;
     work->sys.nonbonded = NULL;
-    work->sys.description = (str_t){0};
+    work->sys.description = (md_str_t){0};
     MD_MEMSET(&work->sys.attributes, 0, sizeof(work->sys.attributes));
     work->sys.attributes.alloc = alloc;
     MD_MEMSET(&work->sys.reference, 0, sizeof(work->sys.reference));
@@ -13695,11 +13695,11 @@ bool md_util_system_infer_prepare(md_util_infer_work_t* work, const md_system_t*
 
     // The one attribute inference reads: the formal charges the data gives, which the chemistry starts from
     // (md_chem_perceive)
-    const md_attribute_t* q = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    const md_attribute_t* q = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
     if (q && md_attribute_slice_count(q, md_attribute_slice_all()) == sys->atom.count) {
         const float* values = (const float*)md_attribute_view(q, MD_ATTRIBUTE_TYPE_F32, 1, 1);
         if (values) {
-            md_attributes_publish_atom_column(&work->sys.attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, values, sys->atom.count);
+            md_attributes_publish_atom_column(&work->sys.attributes, MD_STR_LIT("atom/formal_charge"), md_unit_none(), 1, values, sys->atom.count);
         }
     }
 
@@ -13734,7 +13734,7 @@ bool md_util_system_infer_publish(md_system_t* sys, md_util_infer_work_t* work) 
     md_allocator_i* alloc = sys->alloc;
     // What the system had of the derived: given back (to an arena, which frees nothing, this is nothing)
 #define FREE_ARRAY(f) md_array_free(sys->f, alloc);
-#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!str_empty(sys->f[i])) str_free(sys->f[i], alloc); } md_array_free(sys->f, alloc);
+#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_str_free(sys->f[i], alloc); } md_array_free(sys->f, alloc);
     MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
     MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
 #undef FREE_ARRAY

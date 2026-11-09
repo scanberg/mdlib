@@ -390,7 +390,7 @@ static bool bind_element(infer_t* y, vial_node_id target, vial_node_id it, const
         ev = (vial_value_t){.kind = VIAL_VAL_INT, .i = r->lo + (int64_t)k * r->step};
         if (y->ir) {
             vial_val_t iv = vial_val_int((int32_t)ev.i, y->ir->alloc);
-            ssa = vial_ir_const(y->ir, &iv, &et, (str_t){0}, vx_span(y, target));
+            ssa = vial_ir_const(y->ir, &iv, &et, (md_str_t){0}, vx_span(y, target));
         }
     } else if (r->sets) {
         const vial_sets_t* one;
@@ -401,7 +401,7 @@ static bool bind_element(infer_t* y, vial_node_id target, vial_node_id it, const
         if (vial_sets_size(one, 0) == 1) et.flags |= VIAL_TYPE_ONE_PARTICLE;
         if (y->ir) {
             const vial_val_t sv = vial_val_sets(one);
-            ssa = vial_ir_const(y->ir, &sv, &et, (str_t){0}, vx_span(y, target));
+            ssa = vial_ir_const(y->ir, &sv, &et, (md_str_t){0}, vx_span(y, target));
         }
     } else if (y->ir) {
         // An array whose values are not known when compiling, of a static extent: its k-th along the first dimension
@@ -448,7 +448,7 @@ bool vx_check_for(infer_t* x, vial_node_id s) {
     if (!r.known) {
         const bool per_frame = r.extent.kind == VIAL_EXT_DYNAMIC || r.stage != VIAL_STAGE_STATIC;
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, it));
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, it));
         vx_diag_fix(x, "E0801", it, NULL, "a for over `%.*s` is not supported yet: how many times it runs is %s, and a loop is unrolled when "
             "compiling; a comprehension, or a reduction, runs over any number", (int)e.len, e.ptr,
             per_frame ? "known only per frame" : "not known when compiling");
@@ -583,11 +583,11 @@ static T call_fold(infer_t* x, vial_node_id call) {
 bool vx_call_frames2(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out);
 
 bool vx_call_frames(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
-    const str_t name = str_from_cstr(b->name);
-    if (str_eq(name, STR_LIT("fold"))) { *out = call_fold(x, call); return true; }
+    const md_str_t name = md_str_from_cstr(b->name);
+    if (md_str_eq(name, MD_STR_LIT("fold"))) { *out = call_fold(x, call); return true; }
     if (vx_call_frames2(x, call, b, out)) return true;
-    if (str_eq(name, STR_LIT("frame")) || str_eq(name, STR_LIT("time"))) {
-        const bool time = str_eq(name, STR_LIT("time"));
+    if (md_str_eq(name, MD_STR_LIT("frame")) || md_str_eq(name, MD_STR_LIT("time"))) {
+        const bool time = md_str_eq(name, MD_STR_LIT("time"));
         if (vx_num_children(x, call) > 1) {
             for (uint32_t i = 1; i < vx_num_children(x, call); ++i) if (vx_child(x, call, i)) vx_infer(x, vx_child(x, call, i));
             vx_diag_fix(x, "E0204", call, NULL, "`%s` takes no arguments", b->name);
@@ -595,7 +595,7 @@ bool vx_call_frames(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* o
             return true;
         }
         T t = vial_type_scalar(time ? VIAL_DT_FLOAT64 : VIAL_DT_INT);
-        if (time) vial_unit_name(STR_LIT("ps"), &t.unit);
+        if (time) vial_unit_name(MD_STR_LIT("ps"), &t.unit);
         t.stage = VIAL_STAGE_FRAME;
         *out = t;
         return true;
@@ -634,9 +634,9 @@ static bool calls_at(infer_t* x, vial_node_id root) {
     return false;
 }
 
-static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char* fname) {
-    if (str_eq(name, STR_LIT("smooth")) || str_eq(name, STR_LIT("derivative"))) {
-        const bool smooth = str_eq(name, STR_LIT("smooth"));
+static T call_over_frames(infer_t* x, vial_node_id call, md_str_t name, const char* fname) {
+    if (md_str_eq(name, MD_STR_LIT("smooth")) || md_str_eq(name, MD_STR_LIT("derivative"))) {
+        const bool smooth = md_str_eq(name, MD_STR_LIT("smooth"));
         static const vx_param_t ps[] = {{"x", VX_KIND_WHOLE, true}, {"n", VX_KIND_WHOLE, true}};
         static const vx_param_t pd[] = {{"x", VX_KIND_WHOLE, true}};
         vial_node_id a[2] = {0};
@@ -654,14 +654,14 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
         t.pass = vx_pass(&v);
         if (!smooth) {
             md_unit_t ps_unit;
-            vial_unit_name(STR_LIT("ps"), &ps_unit);
+            vial_unit_name(MD_STR_LIT("ps"), &ps_unit);
             if (v.unit_kind == VIAL_UNIT_KNOWN) t.unit = md_unit_div(v.unit, ps_unit);
             t.flags &= ~VIAL_TYPE_PERIODIC;
             if (t.dtype != VIAL_DT_FLOAT64) t.dtype = VIAL_DT_FLOAT;
         }
         return t;
     }
-    if (str_eq(name, STR_LIT("histogram"))) {
+    if (md_str_eq(name, MD_STR_LIT("histogram"))) {
         static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}, {"bins", VX_KIND_WHOLE, true},
                                        {"range", VX_KIND_WHOLE, true}, {"density", VX_KIND_WHOLE, false}};
         vial_node_id a[5];
@@ -670,7 +670,7 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
         if (vial_type_is_error(&v)) return err();
         if (a[1]) {
             const vial_value_t av = vx_value_of(x, a[1]);
-            if (av.kind != VIAL_VAL_STR || !str_eq(av.s, STR_LIT("frame"))) {
+            if (av.kind != VIAL_VAL_STR || !md_str_eq(av.s, MD_STR_LIT("frame"))) {
                 vx_diag_fix(x, "E0316", a[1], NULL, "`histogram` bins over frames, axis='frame'");
                 return err();
             }
@@ -690,7 +690,7 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
         t.pass = vx_pass(&v);
         return t;
     }
-    if (str_eq(name, STR_LIT("autocorrelation"))) {
+    if (md_str_eq(name, MD_STR_LIT("autocorrelation"))) {
         static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"max_lag", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a)) return err();
@@ -707,7 +707,7 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
         t.pass = vx_pass(&v);
         return t;
     }
-    if (str_eq(name, STR_LIT("at"))) {
+    if (md_str_eq(name, MD_STR_LIT("at"))) {
         static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"frame", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a)) return err();
@@ -741,7 +741,7 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
 bool vx_call_frames2(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     static const char* names[] = {"smooth", "derivative", "histogram", "autocorrelation", "at"};
     for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
-        if (strcmp(b->name, names[i]) == 0) { *out = call_over_frames(x, call, str_from_cstr(b->name), b->name); return true; }
+        if (strcmp(b->name, names[i]) == 0) { *out = call_over_frames(x, call, md_str_from_cstr(b->name), b->name); return true; }
     }
     return false;
 }

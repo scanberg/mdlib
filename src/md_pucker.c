@@ -415,7 +415,7 @@ size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const md_system_t*
 // The locant of the atom at position k of a sugar ring: "O" for the ring O, the number in the atom's name otherwise
 static void sugar_locant(char out[8], const md_system_t* sys, int32_t atom, size_t k) {
     if (k == 0) { out[0] = 'O'; out[1] = '\0'; return; }
-    const str_t name = md_atom_name(&sys->atom, atom);
+    const md_str_t name = md_atom_name(&sys->atom, atom);
     size_t n = 0;
     for (size_t i = 0; i < name.len && n < 7; ++i) {
         if (name.ptr[i] >= '0' && name.ptr[i] <= '9') out[n++] = name.ptr[i];
@@ -425,7 +425,7 @@ static void sugar_locant(char out[8], const md_system_t* sys, int32_t atom, size
 }
 
 static void atom_label(char* out, size_t cap, const md_system_t* sys, int32_t atom) {
-    const str_t s = md_atom_name(&sys->atom, atom);
+    const md_str_t s = md_atom_name(&sys->atom, atom);
     md_snprintf(out, cap, "%.*s", (int)MD_MIN(s.len, cap - 1), s.ptr);
 }
 

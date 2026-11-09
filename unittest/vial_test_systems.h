@@ -30,7 +30,7 @@ static inline const md_system_t* vial_test_system(char which) {
         *st = (md_system_state_t){.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         const char* path = i == 0 ? MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb" : MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb";
-        if (md_pdb_system_init_from_file(&sys[i], &state, str_from_cstr(path), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) {
+        if (md_pdb_system_init_from_file(&sys[i], &state, md_str_from_cstr(path), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) {
             md_util_system_infer(&sys[i], &state, MD_UTIL_INFER_ALL, NULL);
             md_system_state_copy(st, &state);
         }
@@ -55,8 +55,8 @@ static inline int64_t vial_test_run(char which) {
         frames[i] = 0;
         md_system_t* sys = (md_system_t*)vial_test_system(which);
         const char* path = i == 0 ? MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb" : MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb";
-        if (sys && md_pdb_system_publish_run(sys, str_from_cstr(path), STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
-            const md_attribute_t* t = md_attributes_find(&sys->attributes, STR_LIT("run/time"));
+        if (sys && md_pdb_system_publish_run(sys, md_str_from_cstr(path), MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
+            const md_attribute_t* t = md_attributes_find(&sys->attributes, MD_STR_LIT("run/time"));
             frames[i] = t ? (int64_t)t->format.shape[0] : 0;
         }
     }

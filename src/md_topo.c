@@ -427,7 +427,7 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 static GLuint create_compute_program(const char* source, size_t length) {
     GLuint program = 0;
     GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-    if (md_gl_shader_compile(shader, (str_t){(const char*)source, length}, 0, 0)) {
+    if (md_gl_shader_compile(shader, (md_str_t){(const char*)source, length}, 0, 0)) {
         GLuint prog = glCreateProgram();
         if (md_gl_program_attach_and_link(prog, &shader, 1)) {
 			program = prog;

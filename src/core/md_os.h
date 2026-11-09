@@ -134,7 +134,7 @@ bool md_os_env_set(const char* name, const char* value);
 // Gets the current working directory
 // Writes into a buffer (up to buf_cap) and returns the number of characters written
 size_t md_path_write_cwd(char* buf, size_t buf_cap);
-bool  md_path_set_cwd(str_t path);
+bool  md_path_set_cwd(md_str_t path);
 
 // Gets the path to the executable
 // Writes into a buffer (up to buf_cap) and returns the number of characters written
@@ -148,21 +148,21 @@ size_t md_path_write_exe(char* buf, size_t buf_cap);
 size_t md_path_write_user_dir(char* buf, size_t buf_cap);
 
 // Writes a canonical path to buf.
-size_t md_path_write_canonical(char* buf, size_t buf_cap, str_t path);
-str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
+size_t md_path_write_canonical(char* buf, size_t buf_cap, md_str_t path);
+md_str_t md_path_make_canonical(md_str_t path, struct md_allocator_i* alloc);
 
 // Writes a relative path from path_from to path_to to buf.
-size_t md_path_write_relative(char* buf, size_t buf_cap, str_t path_from, str_t path_to);
-str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
+size_t md_path_write_relative(char* buf, size_t buf_cap, md_str_t path_from, md_str_t path_to);
+md_str_t md_path_make_relative(md_str_t path_from, md_str_t path_to, struct md_allocator_i* alloc);
 
 // Checks if a path is absolute, i.e. it does not have to be resolved against a base folder.
 // Recognizes both unix roots and windows drive letters / UNC shares on every platform, so
 // that a path stored on one platform can be classified on another.
-bool md_path_is_absolute(str_t path);
+bool md_path_is_absolute(md_str_t path);
 
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.
-bool md_path_is_valid(str_t path);
-bool md_path_is_directory(str_t path);
+bool md_path_is_valid(md_str_t path);
+bool md_path_is_directory(md_str_t path);
 
 // ### TICKS ###
 md_tick_t md_tick_now(void);
@@ -222,7 +222,7 @@ bool md_mutex_unlock(md_mutex_t* mutex);
 // - MD_FILE_SEQUENTIAL and MD_FILE_RANDOM are mutually exclusive hints.
 // - A zero-initialized md_file_t represents an invalid or unopened file.
 // returns true on success and false on failure, in which case out_file is not modified.
-bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags);
+bool md_file_open(md_file_t* out_file, md_str_t filename, md_file_flags_t flags);
 
 // Checks if the file handle is valid
 bool md_file_valid(md_file_t file);
@@ -232,7 +232,7 @@ bool md_file_close(md_file_t* file);
 
 // Queries and stream-position operations.
 bool md_file_info_extract(md_file_t file, md_file_info_t* out_info);
-bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info);
+bool md_file_info_extract_from_path(md_str_t filename, md_file_info_t* out_info);
 
 // The position: not of a handle opened with MD_FILE_CONCURRENT, which has none (-1 and false)
 md_file_offset_t md_file_tell(md_file_t file);

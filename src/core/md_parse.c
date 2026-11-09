@@ -638,7 +638,7 @@ static double float_value(const float_parts_t* p) {
     return p->negative ? -value : value;
 }
 
-size_t md_parse_f64(double* out_value, str_t str) {
+size_t md_parse_f64(double* out_value, md_str_t str) {
     MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
@@ -686,7 +686,7 @@ size_t md_parse_f64(double* out_value, str_t str) {
     return n;
 }
 
-bool md_parse_is_float(str_t str) {
+bool md_parse_is_float(md_str_t str) {
     if (!str.ptr || str.len == 0) return false;
     float_parts_t parts;
     return scan_float(&parts, str.ptr, str.len) == str.len && parts.kind == NUMBER_FINITE;
@@ -694,7 +694,7 @@ bool md_parse_is_float(str_t str) {
 
 
 // md_parse_fixed_f32 for a field wider than a word: the same layout, checked character by character
-bool md_parse_fixed_f32_wide(float* out, str_t field, size_t decimals) {
+bool md_parse_fixed_f32_wide(float* out, md_str_t field, size_t decimals) {
     MD_ASSERT(out);
     const char*  p     = field.ptr;
     const size_t width = field.len;
@@ -715,7 +715,7 @@ bool md_parse_fixed_f32_wide(float* out, str_t field, size_t decimals) {
     }
 
     double value = 0.0;
-    const str_t text = { p + number, width - number };
+    const md_str_t text = { p + number, width - number };
     md_parse_f64(&value, text);
     *out = (float)value;
     return true;

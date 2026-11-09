@@ -13,7 +13,7 @@
 
 // Lines through a file reader (md_reader.h): the search for the line ends, what md_reader_extract_line costs per byte
 UBENCH_EX(str, reader_lines) {
-    str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    md_str_t path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
     md_file_reader_t fr;
     if (!md_file_reader_open(&fr, path, MD_MEGABYTES(1), md_get_heap_allocator())) {
         MD_LOG_ERROR("Could not open file '%.*s'", (int)path.len, path.ptr);
@@ -24,7 +24,7 @@ UBENCH_EX(str, reader_lines) {
 
     UBENCH_DO_BENCHMARK() {
         md_reader_rewind(&fr.r);
-        str_t line;
+        md_str_t line;
         while (md_reader_extract_line(&fr.r, &line)) {
             // do nothing
         }
@@ -34,11 +34,11 @@ UBENCH_EX(str, reader_lines) {
 }
 
 UBENCH_EX(str, parse_int) {
-    str_t str[] = {
-        STR_INIT("1928123123123"),
-        STR_INIT("1123    "),
-        STR_INIT("19228123"),
-        STR_INIT("1921238123"),
+    md_str_t str[] = {
+        MD_STR_INIT("1928123123123"),
+        MD_STR_INIT("1123    "),
+        MD_STR_INIT("19228123"),
+        MD_STR_INIT("1921238123"),
     };
 
     int64_t num_bytes = 0;
@@ -83,11 +83,11 @@ UBENCH_EX(str, strtoll) {
 }
 
 UBENCH_EX(str, parse_float) {
-    str_t str[] = {
-        STR_INIT("1928123.2767"),
-        STR_INIT("19.2    "),
-        STR_INIT("12323   "),
-        STR_INIT("0.000000"),
+    md_str_t str[] = {
+        MD_STR_INIT("1928123.2767"),
+        MD_STR_INIT("19.2    "),
+        MD_STR_INIT("12323   "),
+        MD_STR_INIT("0.000000"),
     };
 
     int64_t num_bytes = 0;

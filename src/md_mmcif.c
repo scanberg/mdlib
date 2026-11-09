@@ -42,28 +42,28 @@ enum {
     ATOM_SITE_COUNT
 };
 
-static const str_t atom_site_labels[] = {
-    STR_INIT("group_PDB"),
-    STR_INIT("id"),
-    STR_INIT("type_symbol"),
-    STR_INIT("label_atom_id"),
-    STR_INIT("label_alt_id"),
-    STR_INIT("label_comp_id"),
-    STR_INIT("label_asym_id"),
-    STR_INIT("label_entity_id"),
-    STR_INIT("label_seq_id"),
-    STR_INIT("pdbx_PDB_ins_code"),
-    STR_INIT("Cartn_x"),
-    STR_INIT("Cartn_y"),
-    STR_INIT("Cartn_z"),
-    STR_INIT("occupancy"),
-    STR_INIT("B_iso_or_equiv"),
-    STR_INIT("pdbx_formal_charge"),
-    STR_INIT("auth_seq_id"),
-    STR_INIT("auth_comp_id"),
-    STR_INIT("auth_asym_id"),
-    STR_INIT("auth_atom_id"),
-    STR_INIT("pdbx_PDB_model_num"),
+static const md_str_t atom_site_labels[] = {
+    MD_STR_INIT("group_PDB"),
+    MD_STR_INIT("id"),
+    MD_STR_INIT("type_symbol"),
+    MD_STR_INIT("label_atom_id"),
+    MD_STR_INIT("label_alt_id"),
+    MD_STR_INIT("label_comp_id"),
+    MD_STR_INIT("label_asym_id"),
+    MD_STR_INIT("label_entity_id"),
+    MD_STR_INIT("label_seq_id"),
+    MD_STR_INIT("pdbx_PDB_ins_code"),
+    MD_STR_INIT("Cartn_x"),
+    MD_STR_INIT("Cartn_y"),
+    MD_STR_INIT("Cartn_z"),
+    MD_STR_INIT("occupancy"),
+    MD_STR_INIT("B_iso_or_equiv"),
+    MD_STR_INIT("pdbx_formal_charge"),
+    MD_STR_INIT("auth_seq_id"),
+    MD_STR_INIT("auth_comp_id"),
+    MD_STR_INIT("auth_asym_id"),
+    MD_STR_INIT("auth_atom_id"),
+    MD_STR_INIT("pdbx_PDB_model_num"),
 };
 
 static const int required_atom_site_fields[] = {
@@ -127,20 +127,20 @@ enum {
     ENTITY_TYPE_WATER,
 };
 
-static const str_t entity_type_str[] = {
-    STR_INIT(""),
-    STR_INIT("branched"),
-    STR_INIT("macrolide"),
-    STR_INIT("non-polymer"),
-    STR_INIT("polymer"),
-    STR_INIT("water"),
+static const md_str_t entity_type_str[] = {
+    MD_STR_INIT(""),
+    MD_STR_INIT("branched"),
+    MD_STR_INIT("macrolide"),
+    MD_STR_INIT("non-polymer"),
+    MD_STR_INIT("polymer"),
+    MD_STR_INIT("water"),
 };
 
 typedef int mmcif_entity_type_t;
 
-static inline mmcif_entity_type_t mmcif_entity_type_from_str(str_t type) {
+static inline mmcif_entity_type_t mmcif_entity_type_from_str(md_str_t type) {
     for (size_t i = 0; i < MD_COUNTOF(entity_type_str); ++i) {
-        if (str_eq(type, entity_type_str[i])) {
+        if (md_str_eq(type, entity_type_str[i])) {
             return (mmcif_entity_type_t)i;
         }
     }
@@ -159,23 +159,23 @@ enum {
     ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE         // RNA
 };
 
-static const str_t entity_poly_type_str[] = {
-    STR_INIT(""),
-    STR_INIT("cyclic-pseudo-peptide"),
-    STR_INIT("other"),
-    STR_INIT("peptide nucleic acid"),
-    STR_INIT("polydeoxyribonucleotide"),
-    STR_INIT("polydeoxyribonucleotide/polyribonucleotide hybrid"),
-    STR_INIT("polypeptide(D)"),
-    STR_INIT("polypeptide(L)"),
-    STR_INIT("polyribonucleotide"),
+static const md_str_t entity_poly_type_str[] = {
+    MD_STR_INIT(""),
+    MD_STR_INIT("cyclic-pseudo-peptide"),
+    MD_STR_INIT("other"),
+    MD_STR_INIT("peptide nucleic acid"),
+    MD_STR_INIT("polydeoxyribonucleotide"),
+    MD_STR_INIT("polydeoxyribonucleotide/polyribonucleotide hybrid"),
+    MD_STR_INIT("polypeptide(D)"),
+    MD_STR_INIT("polypeptide(L)"),
+    MD_STR_INIT("polyribonucleotide"),
 };
 
 typedef int mmcif_entity_poly_type_t;
 
-static inline mmcif_entity_poly_type_t mmcif_entity_poly_type_from_str(str_t type) {
+static inline mmcif_entity_poly_type_t mmcif_entity_poly_type_from_str(md_str_t type) {
     for (size_t i = 0; i < MD_COUNTOF(entity_poly_type_str); ++i) {
-        if (str_eq(type, entity_poly_type_str[i])) {
+        if (md_str_eq(type, entity_poly_type_str[i])) {
             return (mmcif_entity_poly_type_t)i;
         }
     }
@@ -183,10 +183,10 @@ static inline mmcif_entity_poly_type_t mmcif_entity_poly_type_from_str(str_t typ
 }
 
 typedef struct {
-    str_t id;
+    md_str_t id;
     mmcif_entity_type_t type;
     mmcif_entity_poly_type_t poly_type;
-    str_t description;
+    md_str_t description;
 } mmcif_entity_t;
 
 static md_part_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
@@ -222,19 +222,19 @@ static md_part_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
     }
 }
 
-static inline mmcif_entity_t* mmcif_entity_find(md_array(mmcif_entity_t) entities, str_t id) {
+static inline mmcif_entity_t* mmcif_entity_find(md_array(mmcif_entity_t) entities, md_str_t id) {
     for (mmcif_entity_t* it = md_array_beg(entities); it != md_array_end(entities); ++it) {
-        if (str_eq(it->id, id)) return it;
+        if (md_str_eq(it->id, id)) return it;
     }
     return NULL;
 }
 
-static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_t)* entities, str_t id, md_allocator_i* alloc) {
+static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_t)* entities, md_str_t id, md_allocator_i* alloc) {
     mmcif_entity_t* it = mmcif_entity_find(*entities, id);
     if (it) return it;
 
     mmcif_entity_t ent = {
-        .id = str_copy(id, alloc),
+        .id = md_str_copy(id, alloc),
     };
     md_array_push(*entities, ent, alloc);
     return md_array_last(*entities);
@@ -249,18 +249,18 @@ static inline bool float_bits_nan(float v) {
     return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0;
 }
 
-static inline float mmcif_optional_float(const str_t tok[], const int table[], int field) {
+static inline float mmcif_optional_float(const md_str_t tok[], const int table[], int field) {
     if (table[field] == -1) {
         return NAN;
     }
-    str_t t = tok[table[field]];
+    md_str_t t = tok[table[field]];
     if (t.len == 0 || (t.len == 1 && (t.ptr[0] == '.' || t.ptr[0] == '?'))) {
         return NAN;
     }
     return (float)parse_float(t);
 }
 
-static inline int parse_int_with_default(str_t tok, int def) {
+static inline int parse_int_with_default(md_str_t tok, int def) {
     if (tok.len == 0 || tok.ptr[0] == '.' || tok.ptr[0] == '?') {
         return def;
     }
@@ -270,8 +270,8 @@ static inline int parse_int_with_default(str_t tok, int def) {
 typedef struct {
     md_reader_i* reader;
     md_str_writer_t sb;
-    str_t line;
-    str_t peek;
+    md_str_t line;
+    md_str_t peek;
     bool has_peek;
     bool line_start;
     bool in_loop;
@@ -282,20 +282,20 @@ typedef struct {
 
 // Returns true if token was extracted,
 // False if EOF / stream
-static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
-    str_t tok = {0};
+static bool mmcif_fetch_token(md_str_t* out_tok, mmcif_parse_state_t* s) {
+    md_str_t tok = {0};
     s->line_start = s->pending_start;
     s->pending_start = false;
     s->plain = true;
     while (true) {
-        if (str_empty(s->line)) {
+        if (md_str_empty(s->line)) {
             if (!md_reader_extract_line(s->reader, &s->line)) {
                 return false;
             }
             s->line_start = true;
         }
-        if (!extract_token(&tok, &s->line) || str_len(tok) == 0 || (tok.len > 0 && tok.ptr[0] == '#')) {
-            s->line = (str_t){0};
+        if (!extract_token(&tok, &s->line) || md_str_len(tok) == 0 || (tok.len > 0 && tok.ptr[0] == '#')) {
+            s->line = (md_str_t){0};
             continue;
         }
 
@@ -308,7 +308,7 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
                 tok.len -=2;
             } else {
                 size_t loc = 0;
-                if (!str_find_char(&loc, s->line, delim)) {
+                if (!md_str_find_char(&loc, s->line, delim)) {
                     MD_LOG_ERROR("Unmatched string");
                     return false;
                 }
@@ -320,14 +320,14 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
         } else if (first_char == ';') {
             s->plain = false;
             md_str_writer_reset(&s->sb);
-            md_str_writer_push_str(&s->sb, str_substr(tok, 1, SIZE_MAX));
+            md_str_writer_push_str(&s->sb, md_str_substr(tok, 1, SIZE_MAX));
             md_str_writer_push_str(&s->sb, s->line);
 
             bool term = false;
             while (md_reader_extract_line(s->reader, &s->line)) {
                 if (s->line.len > 0 && s->line.ptr[0] == ';') {
                     term = true;
-                    s->line = (str_t) {0};
+                    s->line = (md_str_t) {0};
                     break;
                 }
                 md_str_writer_push_char(&s->sb, '\n');
@@ -346,7 +346,7 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
     return true;
 }
 
-static inline bool mmcif_next_token(str_t* tok, mmcif_parse_state_t* state) {
+static inline bool mmcif_next_token(md_str_t* tok, mmcif_parse_state_t* state) {
     MD_ASSERT(tok);
     MD_ASSERT(state);
     if (state->has_peek) {
@@ -357,7 +357,7 @@ static inline bool mmcif_next_token(str_t* tok, mmcif_parse_state_t* state) {
     return mmcif_fetch_token(tok, state);
 }
 
-static inline bool mmcif_peek_token(str_t* tok, mmcif_parse_state_t* state) {
+static inline bool mmcif_peek_token(md_str_t* tok, mmcif_parse_state_t* state) {
     MD_ASSERT(tok);
     MD_ASSERT(state);
     if (state->has_peek) {
@@ -375,7 +375,7 @@ static inline bool mmcif_peek_token(str_t* tok, mmcif_parse_state_t* state) {
 
 // This is a bit wierd, since were mixing lines and token semantics.
 // But will return the current line within the state that is about to be tokenized
-static inline str_t mmcif_cur_line(mmcif_parse_state_t* s) {
+static inline md_str_t mmcif_cur_line(mmcif_parse_state_t* s) {
     MD_ASSERT(s);     
     return s->line;
 }
@@ -383,7 +383,7 @@ static inline str_t mmcif_cur_line(mmcif_parse_state_t* s) {
 // Advances to the next line, which is not part of a multiline string token
 static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
     MD_ASSERT(s);
-    str_t tok = {0};
+    md_str_t tok = {0};
     while (mmcif_peek_token(&tok, s)) {
         if (s->line_start) return true;
         mmcif_next_token(&tok, s);
@@ -395,16 +395,16 @@ static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
 static inline bool mmcif_advance_to_next_control_token(mmcif_parse_state_t* s) {
     MD_ASSERT(s);
 
-    str_t tok = {0};
+    md_str_t tok = {0};
     while (mmcif_peek_token(&tok, s)) {
         if (tok.len > 0 && s->line_start) {
             const char c0 = tok.ptr[0];
 
             // Category and control keywords:
             if (c0 == '_' || 
-                str_eq(tok, STR_LIT("loop_")) ||
-                str_eq_cstr_n(tok, "data_", 5) ||
-                str_eq_cstr_n(tok, "save_", 5)) 
+                md_str_eq(tok, MD_STR_LIT("loop_")) ||
+                md_str_eq_cstr_n(tok, "data_", 5) ||
+                md_str_eq_cstr_n(tok, "save_", 5)) 
             {
                 return true;
             }
@@ -421,36 +421,36 @@ static inline bool mmcif_advance_to_next_control_token(mmcif_parse_state_t* s) {
 typedef struct {
     size_t num_fields;
     size_t num_rows;
-    str_t* headers;
-    str_t* values;
+    md_str_t* headers;
+    md_str_t* values;
 } mmcif_section_t;
 
 // Help accessors for data in sections
-static inline str_t mmcif_section_header(const mmcif_section_t* sec, size_t col) {
-    if (!sec || col >= sec->num_fields) return (str_t){0};
+static inline md_str_t mmcif_section_header(const mmcif_section_t* sec, size_t col) {
+    if (!sec || col >= sec->num_fields) return (md_str_t){0};
     return sec->headers[col];
 }
 
-static inline str_t mmcif_section_value(const mmcif_section_t* sec, size_t row, size_t col) {
-    if (!sec || col >= sec->num_fields || row >= sec->num_rows) return (str_t){0};
+static inline md_str_t mmcif_section_value(const mmcif_section_t* sec, size_t row, size_t col) {
+    if (!sec || col >= sec->num_fields || row >= sec->num_rows) return (md_str_t){0};
     return sec->values[row * sec->num_fields + col];
 }
 
-static inline bool mmcif_is_item(str_t t) { return t.len && t.ptr[0] == '_'; }
-static inline bool mmcif_is_control(str_t t) {
+static inline bool mmcif_is_item(md_str_t t) { return t.len && t.ptr[0] == '_'; }
+static inline bool mmcif_is_control(md_str_t t) {
     return (t.len >= 5 &&
-        (str_eq(t,STR_LIT("loop_")) ||
-         str_eq(t,STR_LIT("data_")) ||
-         str_eq(t,STR_LIT("save_")) ||
-         str_eq(t,STR_LIT("stop_"))));
+        (md_str_eq(t,MD_STR_LIT("loop_")) ||
+         md_str_eq(t,MD_STR_LIT("data_")) ||
+         md_str_eq(t,MD_STR_LIT("save_")) ||
+         md_str_eq(t,MD_STR_LIT("stop_"))));
 }
 
-static str_t mmcif_category(str_t item) {
-    if (!mmcif_is_item(item)) return (str_t){0};
-    str_t tail = str_substr(item,1,SIZE_MAX);
+static md_str_t mmcif_category(md_str_t item) {
+    if (!mmcif_is_item(item)) return (md_str_t){0};
+    md_str_t tail = md_str_substr(item,1,SIZE_MAX);
     size_t dot;
-    if (str_find_char(&dot, tail, '.')) return (str_t){tail.ptr, dot};
-    return (str_t){0};
+    if (md_str_find_char(&dot, tail, '.')) return (md_str_t){tail.ptr, dot};
+    return (md_str_t){0};
 }
 
 // This is an internal procedure, we do not care about cleaning anything up
@@ -462,13 +462,13 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
 
     if (state->in_loop) {
         // --------------- Collect headers ---------------
-        str_t t;
+        md_str_t t;
         while (mmcif_peek_token(&t, state) && mmcif_is_item(t)) {
             if (!mmcif_next_token(&t, state)) {
                 MD_LOG_ERROR("Unexpected tokenizer failure while reading loop headers");
                 return false;
             }
-            md_array_push(sec->headers, str_copy(t, alloc), alloc);
+            md_array_push(sec->headers, md_str_copy(t, alloc), alloc);
         }
         size_t ncols = md_array_size(sec->headers);
         if (ncols == 0) {
@@ -479,7 +479,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
         // --------------- Collect rows ---------------
         size_t values_read = 0;
         while (true) {
-            str_t look;
+            md_str_t look;
             if (!mmcif_peek_token(&look, state)) {
                 // EOF -> ok end
                 break;
@@ -491,7 +491,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
             // Read one row
             size_t got = 0;
             for (; got < ncols; ++got) {
-                str_t v;
+                md_str_t v;
                 if (!mmcif_next_token(&v, state)) {
                     MD_LOG_ERROR("Unexpected EOF in middle of loop row");
                     return false;
@@ -501,7 +501,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
                     MD_LOG_ERROR("Premature loop termination inside row (got %zu/%zu values)", got, ncols);
                     return false;
                 }
-                md_array_push(sec->values, str_copy(v, alloc), alloc);
+                md_array_push(sec->values, md_str_copy(v, alloc), alloc);
             }
             if (got != ncols) {
                 // Should not happen due to logic above, but guard anyway
@@ -525,35 +525,35 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
         }
     } else {
         // --------------- Unlooped key/value section ---------------
-        str_t first;
+        md_str_t first;
         if (!mmcif_peek_token(&first, state) || !mmcif_is_item(first)) {
             // Nothing to parse (not an error? choose: treat as failure to signal absence)
             return false;
         }
-        str_t cat = mmcif_category(first);
-        if (str_empty(cat)) {
-            MD_LOG_ERROR("Malformed item (missing category segment): " STR_FMT, STR_ARG(first));
+        md_str_t cat = mmcif_category(first);
+        if (md_str_empty(cat)) {
+            MD_LOG_ERROR("Malformed item (missing category segment): " MD_STR_FMT, MD_STR_ARG(first));
             return false;
         }
 
         while (true) {
-            str_t key;
+            md_str_t key;
             if (!mmcif_peek_token(&key, state)) break;
             if (mmcif_is_control(key) || !mmcif_is_item(key)) break;
 
             // Category change ends this section
-            str_t this_cat = mmcif_category(key);
-            if (!str_empty(this_cat) && !str_eq(this_cat, cat)) break;
+            md_str_t this_cat = mmcif_category(key);
+            if (!md_str_empty(this_cat) && !md_str_eq(this_cat, cat)) break;
 
             // Consume key
             if (!mmcif_next_token(&key, state)) {
                 MD_LOG_ERROR("Unexpected tokenizer failure consuming item key");
                 return false;
             }
-            md_array_push(sec->headers, str_copy(key, alloc), alloc);
+            md_array_push(sec->headers, md_str_copy(key, alloc), alloc);
 
             // Value (optional)
-            str_t val;
+            md_str_t val;
             if (!mmcif_peek_token(&val, state) || mmcif_is_control(val) || mmcif_is_item(val)) {
                 // Missing value -> store empty
                 return false;
@@ -562,7 +562,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
                 MD_LOG_ERROR("Unexpected tokenizer failure consuming item value");
                 return false;
             }
-            md_array_push(sec->values, str_copy(val, alloc), alloc);
+            md_array_push(sec->values, md_str_copy(val, alloc), alloc);
         }
 
         sec->num_fields = md_array_size(sec->headers);
@@ -582,9 +582,9 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
     return true;
 }
 
-static inline int mmcif_section_find_col_idx(const mmcif_section_t* sec, str_t field_label) {
+static inline int mmcif_section_find_col_idx(const mmcif_section_t* sec, md_str_t field_label) {
     for (size_t i = 0; i < sec->num_fields; ++i) {
-        if (str_eq(field_label, sec->headers[i])) {
+        if (md_str_eq(field_label, sec->headers[i])) {
             return (int)i;
         }
     }
@@ -607,9 +607,9 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
         goto done;
     }
 
-    int id_col   = mmcif_section_find_col_idx(&sec, STR_LIT("_entity.id"));
-    int type_col = mmcif_section_find_col_idx(&sec, STR_LIT("_entity.type"));
-    int desc_col = mmcif_section_find_col_idx(&sec, STR_LIT("_entity.pdbx_description"));
+    int id_col   = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_entity.id"));
+    int type_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_entity.type"));
+    int desc_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_entity.pdbx_description"));
 
     if (id_col == -1) {
         MD_LOG_ERROR("Missing entity field 'id'");
@@ -625,12 +625,12 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
     }
 
     for (size_t i = 0; i < sec.num_rows; ++i) {
-        str_t id = mmcif_section_value(&sec, i, id_col);
-        if (!str_empty(id)) {
+        md_str_t id = mmcif_section_value(&sec, i, id_col);
+        if (!md_str_empty(id)) {
             mmcif_entity_t* ent = mmcif_entity_find_or_create(entities, id, alloc);
             MD_ASSERT(ent);
             ent->type = mmcif_entity_type_from_str(mmcif_section_value(&sec, i, type_col));
-            ent->description = str_copy(mmcif_section_value(&sec, i, desc_col), alloc);
+            ent->description = md_str_copy(mmcif_section_value(&sec, i, desc_col), alloc);
         }
     }
 
@@ -657,8 +657,8 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
         goto done;
     }
 
-    int id_col   = mmcif_section_find_col_idx(&sec, STR_LIT("_entity_poly.entity_id"));
-    int type_col = mmcif_section_find_col_idx(&sec, STR_LIT("_entity_poly.type"));
+    int id_col   = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_entity_poly.entity_id"));
+    int type_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_entity_poly.type"));
 
     if (id_col == -1) {
         MD_LOG_ERROR("Missing entity field 'entity_id'");
@@ -670,8 +670,8 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
     }
 
     for (size_t i = 0; i < sec.num_rows; ++i) {
-        str_t id = mmcif_section_value(&sec, i, id_col);
-        if (!str_empty(id)) {
+        md_str_t id = mmcif_section_value(&sec, i, id_col);
+        if (!md_str_empty(id)) {
             mmcif_entity_t* ent = mmcif_entity_find_or_create(entities, id, alloc);
             MD_ASSERT(ent);
             ent->poly_type = mmcif_entity_poly_type_from_str(mmcif_section_value(&sec, i, type_col));
@@ -686,14 +686,14 @@ done:
 
 // ASSEMBLIES. A row of _pdbx_struct_assembly_gen: the asyms (label_asym_id) its operators copy
 typedef struct {
-    str_t assembly_id;
-    str_t oper_expression;
-    str_t asym_id_list;
+    md_str_t assembly_id;
+    md_str_t oper_expression;
+    md_str_t asym_id_list;
 } mmcif_assembly_gen_t;
 
 // An operator of _pdbx_struct_oper_list
 typedef struct {
-    str_t  id;
+    md_str_t  id;
     mat4_t transform;
 } mmcif_oper_t;
 
@@ -706,18 +706,18 @@ static bool mmcif_parse_assembly_gen(md_array(mmcif_assembly_gen_t)* rows, mmcif
     if (!mmcif_parse_section(&sec, state, temp_alloc)) {
         goto done;
     }
-    const int id_col   = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_assembly_gen.assembly_id"));
-    const int expr_col = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_assembly_gen.oper_expression"));
-    const int asym_col = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_assembly_gen.asym_id_list"));
+    const int id_col   = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_pdbx_struct_assembly_gen.assembly_id"));
+    const int expr_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_pdbx_struct_assembly_gen.oper_expression"));
+    const int asym_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_pdbx_struct_assembly_gen.asym_id_list"));
     if (id_col == -1 || expr_col == -1 || asym_col == -1) {
         MD_LOG_ERROR("_pdbx_struct_assembly_gen lacks assembly_id, oper_expression or asym_id_list");
         goto done;
     }
     for (size_t i = 0; i < sec.num_rows; ++i) {
         const mmcif_assembly_gen_t row = {
-            .assembly_id     = str_copy(mmcif_section_value(&sec, i, id_col), alloc),
-            .oper_expression = str_copy(mmcif_section_value(&sec, i, expr_col), alloc),
-            .asym_id_list    = str_copy(mmcif_section_value(&sec, i, asym_col), alloc),
+            .assembly_id     = md_str_copy(mmcif_section_value(&sec, i, id_col), alloc),
+            .oper_expression = md_str_copy(mmcif_section_value(&sec, i, expr_col), alloc),
+            .asym_id_list    = md_str_copy(mmcif_section_value(&sec, i, asym_col), alloc),
         };
         md_array_push(*rows, row, alloc);
     }
@@ -736,17 +736,17 @@ static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_sta
     if (!mmcif_parse_section(&sec, state, temp_alloc)) {
         goto done;
     }
-    const int id_col = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_oper_list.id"));
+    const int id_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_pdbx_struct_oper_list.id"));
     int m_col[3][3];
     int v_col[3];
     for (int r = 0; r < 3; ++r) {
         char name[64];
         for (int c = 0; c < 3; ++c) {
             const int len = snprintf(name, sizeof(name), "_pdbx_struct_oper_list.matrix[%d][%d]", r + 1, c + 1);
-            m_col[r][c] = mmcif_section_find_col_idx(&sec, (str_t){name, (size_t)len});
+            m_col[r][c] = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
         }
         const int len = snprintf(name, sizeof(name), "_pdbx_struct_oper_list.vector[%d]", r + 1);
-        v_col[r] = mmcif_section_find_col_idx(&sec, (str_t){name, (size_t)len});
+        v_col[r] = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
     }
     if (id_col == -1) {
         MD_LOG_ERROR("_pdbx_struct_oper_list lacks id");
@@ -760,7 +760,7 @@ static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_sta
     }
     for (size_t i = 0; i < sec.num_rows; ++i) {
         // Row r column c of the matrix, column major as mat4_t: elem[c][r]
-        mmcif_oper_t op = {.id = str_copy(mmcif_section_value(&sec, i, id_col), alloc), .transform = mat4_ident()};
+        mmcif_oper_t op = {.id = md_str_copy(mmcif_section_value(&sec, i, id_col), alloc), .transform = mat4_ident()};
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
                 op.transform.elem[c][r] = (float)parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
@@ -779,23 +779,23 @@ done:
 // "(X0)(1-60)", "(1-60)(61-88)": an operator for each combination of one of each group, the transform of the product
 // in the order written (that of the last group applied first, as Mol* reads it), appended to opers. ids are numbers
 // in a range ("1-4"), any name otherwise. False for an expression which names an operator not in opers.
-static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(mmcif_oper_t)* opers, md_allocator_i* alloc) {
+static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_array(mmcif_oper_t)* opers, md_allocator_i* alloc) {
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* ta = md_temp_allocator(temp);
     bool result = false;
 
     // The groups: the parenthesized parts, or the whole expression
-    md_array(str_t) groups = 0;
-    expr = str_trim(expr);
-    if (str_find_char(NULL, expr, '(')) {
-        while (!str_empty(expr)) {
+    md_array(md_str_t) groups = 0;
+    expr = md_str_trim(expr);
+    if (md_str_find_char(NULL, expr, '(')) {
+        while (!md_str_empty(expr)) {
             size_t beg, end;
-            if (!str_find_char(&beg, expr, '(') || !str_find_char(&end, expr, ')') || end < beg) {
-                MD_LOG_ERROR("Unbalanced operator expression: '" STR_FMT "'", STR_ARG(expr));
+            if (!md_str_find_char(&beg, expr, '(') || !md_str_find_char(&end, expr, ')') || end < beg) {
+                MD_LOG_ERROR("Unbalanced operator expression: '" MD_STR_FMT "'", MD_STR_ARG(expr));
                 goto done;
             }
-            md_array_push(groups, str_substr(expr, beg + 1, end - beg - 1), ta);
-            expr = str_trim(str_substr(expr, end + 1, SIZE_MAX));
+            md_array_push(groups, md_str_substr(expr, beg + 1, end - beg - 1), ta);
+            expr = md_str_trim(md_str_substr(expr, end + 1, SIZE_MAX));
         }
     } else {
         md_array_push(groups, expr, ta);
@@ -806,23 +806,23 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(
     md_array(uint32_t)* group_ops = md_temp_alloc_zero(temp, MD_MAX(group_count, 1) * sizeof(md_array(uint32_t)));
     const size_t base_count = md_array_size(*opers);
     for (size_t g = 0; g < group_count; ++g) {
-        str_t list = groups[g];
-        str_t item;
+        md_str_t list = groups[g];
+        md_str_t item;
         while (extract_token_delim(&item, &list, ',')) {
-            item = str_trim(item);
-            if (str_empty(item)) continue;
+            item = md_str_trim(item);
+            if (md_str_empty(item)) continue;
             size_t dash;
             int64_t lo = 0, hi = -1;
-            if (str_find_char(&dash, item, '-') && dash > 0) {
-                lo = parse_int(str_trim(str_substr(item, 0, dash)));
-                hi = parse_int(str_trim(str_substr(item, dash + 1, SIZE_MAX)));
+            if (md_str_find_char(&dash, item, '-') && dash > 0) {
+                lo = parse_int(md_str_trim(md_str_substr(item, 0, dash)));
+                hi = parse_int(md_str_trim(md_str_substr(item, dash + 1, SIZE_MAX)));
             }
             if (hi >= lo) {
                 for (int64_t v = lo; v <= hi; ++v) {
                     size_t k = 0;
                     for (; k < base_count; ++k) {
-                        const str_t id = (*opers)[k].id;
-                        if (!str_empty(id) && is_digit(id.ptr[0]) && parse_int(id) == v) break;
+                        const md_str_t id = (*opers)[k].id;
+                        if (!md_str_empty(id) && is_digit(id.ptr[0]) && parse_int(id) == v) break;
                     }
                     if (k == base_count) {
                         MD_LOG_ERROR("Operator %" PRId64 " of the expression is not in _pdbx_struct_oper_list", v);
@@ -833,10 +833,10 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(
             } else {
                 size_t k = 0;
                 for (; k < base_count; ++k) {
-                    if (str_eq((*opers)[k].id, item)) break;
+                    if (md_str_eq((*opers)[k].id, item)) break;
                 }
                 if (k == base_count) {
-                    MD_LOG_ERROR("Operator '" STR_FMT "' of the expression is not in _pdbx_struct_oper_list", STR_ARG(item));
+                    MD_LOG_ERROR("Operator '" MD_STR_FMT "' of the expression is not in _pdbx_struct_oper_list", MD_STR_ARG(item));
                     goto done;
                 }
                 md_array_push(group_ops[g], (uint32_t)k, ta);
@@ -868,10 +868,10 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(
             for (size_t g = 0; g < group_count; ++g) {
                 const mmcif_oper_t* f = *opers + group_ops[g][idx[g]];
                 op.transform = mat4_mul(op.transform, f->transform);
-                len += snprintf(name + len, sizeof(name) - len, "%s" STR_FMT, g ? "x" : "", STR_ARG(f->id));
+                len += snprintf(name + len, sizeof(name) - len, "%s" MD_STR_FMT, g ? "x" : "", MD_STR_ARG(f->id));
                 len = MD_MIN(len, (int)sizeof(name) - 1);
             }
-            op.id = str_copy((str_t){name, (size_t)len}, alloc);
+            op.id = md_str_copy((md_str_t){name, (size_t)len}, alloc);
             md_array_push(*out, (uint32_t)md_array_size(*opers), alloc);
             md_array_push(*opers, op, alloc);
             for (size_t g = group_count; g-- > 0; ) {
@@ -894,40 +894,40 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
 
     md_array(md_assembly_gen_t) gen = 0;
     // The operators of rows with the same expression, which the products of one keep the same
-    md_array(str_t) expr_seen = 0;
+    md_array(md_str_t) expr_seen = 0;
     md_array(md_array(uint32_t)) expr_ops = 0;
 
     for (size_t r = 0; r < row_count; ++r) {
         md_array(md_instance_idx_t) inst = 0;
-        str_t list = rows[r].asym_id_list;
-        str_t asym;
+        md_str_t list = rows[r].asym_id_list;
+        md_str_t asym;
         while (extract_token_delim(&asym, &list, ',')) {
-            asym = str_trim(asym);
-            if (str_empty(asym)) continue;
+            asym = md_str_trim(asym);
+            if (md_str_empty(asym)) continue;
             bool found = false;
             for (size_t i = 0; i < sys->instance.count; ++i) {
-                if (str_eq(md_system_instance_id(sys, i), asym)) {
+                if (md_str_eq(md_system_instance_id(sys, i), asym)) {
                     md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
                     found = true;
                 }
             }
             if (!found) {
                 // An asym of no atoms the file kept (one of alternate locations only), or of those left out
-                MD_LOG_DEBUG("Assembly '" STR_FMT "' names asym '" STR_FMT "', which has no atoms", STR_ARG(rows[r].assembly_id), STR_ARG(asym));
+                MD_LOG_DEBUG("Assembly '" MD_STR_FMT "' names asym '" MD_STR_FMT "', which has no atoms", MD_STR_ARG(rows[r].assembly_id), MD_STR_ARG(asym));
             }
         }
 
-        const str_t expr = str_trim(rows[r].oper_expression);
+        const md_str_t expr = md_str_trim(rows[r].oper_expression);
         md_array(uint32_t) ops = 0;
         for (size_t e = 0; e < md_array_size(expr_seen); ++e) {
-            if (str_eq(expr_seen[e], expr)) {
+            if (md_str_eq(expr_seen[e], expr)) {
                 ops = expr_ops[e];
                 break;
             }
         }
         if (!ops) {
             if (!mmcif_oper_expression(&ops, expr, &opers, temp_alloc)) {
-                MD_LOG_ERROR("Assembly '" STR_FMT "': could not read the operator expression '" STR_FMT "'", STR_ARG(rows[r].assembly_id), STR_ARG(expr));
+                MD_LOG_ERROR("Assembly '" MD_STR_FMT "': could not read the operator expression '" MD_STR_FMT "'", MD_STR_ARG(rows[r].assembly_id), MD_STR_ARG(expr));
                 continue;
             }
             md_array_push(expr_seen, expr, temp_alloc);
@@ -975,7 +975,7 @@ static const uint8_t mmcif_first_char[256] = { ['#'] = 1, [';'] = 1, ['\''] = 2,
 // tok has room for MMCIF_SPLIT_SLACK tokens past num, which the loops below write ahead of the count
 #define MMCIF_SPLIT_SLACK 4
 
-MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const char* beg, const char* end) {
+MD_TEXT_NO_SANITIZE static bool mmcif_split_row(md_str_t* tok, size_t num, const char* beg, const char* end) {
     size_t n = 0;
     uint32_t first = 0;         // Of the tokens' first characters, what mmcif_first_char says of them
     size_t n_end = 0;
@@ -1040,21 +1040,21 @@ typedef struct mmcif_atom_site_cols_t {
 } mmcif_atom_site_cols_t;
 
 // The entry of a row of _atom_site, from its tokens
-static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const str_t tok[], const mmcif_atom_site_cols_t* c) {
+static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const md_str_t tok[], const mmcif_atom_site_cols_t* c) {
     const int* table = c->table;
-    //str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
-    str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
-    str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
-    str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];
-    str_t label_asym_id   = tok[table[ATOM_SITE_LABEL_ASYM_ID]];
-    str_t label_comp_id   = tok[table[ATOM_SITE_LABEL_COMP_ID]];
-    str_t label_entity_id = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
-    str_t label_seq_id    = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
-    str_t auth_seq_id     = c->have_auth_seq_id ? tok[table[ATOM_SITE_AUTH_SEQ_ID]] : (str_t){0};
-    str_t auth_asym_id    = c->have_auth_asym_id ? tok[table[ATOM_SITE_AUTH_ASYM_ID]] : (str_t){0};
-    str_t cartn_x         = tok[table[ATOM_SITE_CARTN_X]];
-    str_t cartn_y         = tok[table[ATOM_SITE_CARTN_Y]];
-    str_t cartn_z         = tok[table[ATOM_SITE_CARTN_Z]];
+    //md_str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
+    md_str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
+    md_str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
+    md_str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];
+    md_str_t label_asym_id   = tok[table[ATOM_SITE_LABEL_ASYM_ID]];
+    md_str_t label_comp_id   = tok[table[ATOM_SITE_LABEL_COMP_ID]];
+    md_str_t label_entity_id = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
+    md_str_t label_seq_id    = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
+    md_str_t auth_seq_id     = c->have_auth_seq_id ? tok[table[ATOM_SITE_AUTH_SEQ_ID]] : (md_str_t){0};
+    md_str_t auth_asym_id    = c->have_auth_asym_id ? tok[table[ATOM_SITE_AUTH_ASYM_ID]] : (md_str_t){0};
+    md_str_t cartn_x         = tok[table[ATOM_SITE_CARTN_X]];
+    md_str_t cartn_y         = tok[table[ATOM_SITE_CARTN_Y]];
+    md_str_t cartn_z         = tok[table[ATOM_SITE_CARTN_Z]];
 
     const int default_value = INT32_MIN;
 
@@ -1070,19 +1070,19 @@ static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const str
         .formal_charge  = mmcif_optional_float(tok, table, ATOM_SITE_PDBX_FORMAL_CHARGE),
     };
 
-    str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
-    str_copy_to_char_buf(entry.label_asym_id,   sizeof(entry.label_asym_id),    label_asym_id);
-    str_copy_to_char_buf(entry.label_comp_id,   sizeof(entry.label_comp_id),    label_comp_id);
-    str_copy_to_char_buf(entry.label_entity_id, sizeof(entry.label_entity_id),  label_entity_id);
-    str_copy_to_char_buf(entry.type_symbol,     sizeof(entry.type_symbol),      type_symbol);
-    str_copy_to_char_buf(entry.auth_asym_id,    sizeof(entry.auth_asym_id),     auth_asym_id);
+    md_str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
+    md_str_copy_to_char_buf(entry.label_asym_id,   sizeof(entry.label_asym_id),    label_asym_id);
+    md_str_copy_to_char_buf(entry.label_comp_id,   sizeof(entry.label_comp_id),    label_comp_id);
+    md_str_copy_to_char_buf(entry.label_entity_id, sizeof(entry.label_entity_id),  label_entity_id);
+    md_str_copy_to_char_buf(entry.type_symbol,     sizeof(entry.type_symbol),      type_symbol);
+    md_str_copy_to_char_buf(entry.auth_asym_id,    sizeof(entry.auth_asym_id),     auth_asym_id);
 
     *out = entry;
 }
 
 // A line which is a row of its own, as the rows loop reads one: its tokens (mmcif_split_row), where it is neither
 // quoted at its first token nor an item or a control word (what comes after the rows)
-static inline bool mmcif_plain_row(str_t* tok, size_t num_cols, str_t line) {
+static inline bool mmcif_plain_row(md_str_t* tok, size_t num_cols, md_str_t line) {
     const char* b = line.ptr;
     const char* e = line.ptr + line.len;
     while (b < e && is_whitespace(*b)) ++b;
@@ -1137,14 +1137,14 @@ static void mmcif_rows_count(void* arg, uint32_t beg, uint32_t end, uint32_t thr
 static void mmcif_rows_parse(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
     (void)thread_idx;
     const mmcif_rows_t* R = (const mmcif_rows_t*)arg;
-    str_t tok[MMCIF_BLOCK_MAX_COLS + MMCIF_SPLIT_SLACK];
+    md_str_t tok[MMCIF_BLOCK_MAX_COLS + MMCIF_SPLIT_SLACK];
     for (uint32_t p = beg; p < end; ++p) {
         mmcif_rows_piece_t* piece = &R->pieces[p];
         mmcif_atom_site_entry_t* out = R->entries + piece->first;
         size_t n = 0;
         piece->stop = piece->range.end;
         md_text_lines_t lines = md_text_lines(R->text + piece->range.beg, R->text + piece->range.end);
-        str_t line;
+        md_str_t line;
         while (md_text_lines_next(&lines, &line)) {
             if (!mmcif_plain_row(tok, R->cols->num_cols, line)) {
                 piece->stop = (size_t)(line.ptr - R->text);
@@ -1174,7 +1174,7 @@ static mmcif_rows_result_t mmcif_rows_from_blocks(md_array(mmcif_atom_site_entry
     const size_t min_row = 2 * MD_MAX(cols->num_cols, 1);
 
     for (;;) {
-        const str_t block = md_reader_block_parallel(reader, ex);
+        const md_str_t block = md_reader_block_parallel(reader, ex);
         if (block.len == 0) return MMCIF_ROWS_END;
         size_t taken = 0;
         while (taken < block.len) {
@@ -1233,18 +1233,18 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     size_t num_cols = 0;
 
     // Read category headers
-    str_t item;
-    while (mmcif_peek_token(&item, state) && mmcif_is_item(item) && str_eq_cstr_n(item, "_atom_site.", 11)) {
+    md_str_t item;
+    while (mmcif_peek_token(&item, state) && mmcif_is_item(item) && md_str_eq_cstr_n(item, "_atom_site.", 11)) {
         if (!mmcif_next_token(&item, state)) {
             MD_LOG_ERROR("Unexpected tokenizer failure while reading _atom_site headers");
             return false;
         }
-        str_t field = str_substr(item, 11, SIZE_MAX);
+        md_str_t field = md_str_substr(item, 11, SIZE_MAX);
         for (size_t i = 0; i < MD_COUNTOF(atom_site_labels); ++i) {
             if (table[i] != -1) {
                 continue;
             }
-            if (str_eq(field, atom_site_labels[i])) {
+            if (md_str_eq(field, atom_site_labels[i])) {
                 table[i] = (int)num_cols;
                 break;
             }
@@ -1254,7 +1254,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
     for (size_t i = 0; i < MD_COUNTOF(required_atom_site_fields); ++i) {
         if (table[required_atom_site_fields[i]] == -1) {
-            MD_LOG_ERROR("Missing required column in _atom_site: "STR_FMT, STR_ARG(atom_site_labels[required_atom_site_fields[i]]));
+            MD_LOG_ERROR("Missing required column in _atom_site: "MD_STR_FMT, MD_STR_ARG(atom_site_labels[required_atom_site_fields[i]]));
             return false;
         }
     }
@@ -1265,8 +1265,8 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
     // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
     // the row is sized by them rather than by a fixed bound.
-    str_t* tok = md_alloc(alloc, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
-    MD_MEMSET(tok, 0, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
+    md_str_t* tok = md_alloc(alloc, sizeof(md_str_t) * (num_cols + MMCIF_SPLIT_SLACK));
+    MD_MEMSET(tok, 0, sizeof(md_str_t) * (num_cols + MMCIF_SPLIT_SLACK));
 
     // Where the tokenizer has nothing of a line left, the rows which follow are read in blocks (mmcif_rows_from_blocks),
     // up to a line which is not a row of its own: that line is the tokenizer's, given back to it whole, which reads it
@@ -1276,7 +1276,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     bool give_back = false;
     for (;;) {
         bool split = false;
-        if (!state->has_peek && str_empty(state->line)) {
+        if (!state->has_peek && md_str_empty(state->line)) {
             if (blocks && !give_back) {
                 const mmcif_rows_result_t res = mmcif_rows_from_blocks(atom_entries, &cols, state->reader, alloc, ex);
                 if (res == MMCIF_ROWS_CANCELLED) return false;
@@ -1285,7 +1285,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
                 continue;
             }
             give_back = false;
-            str_t line;
+            md_str_t line;
             if (!md_reader_extract_line(state->reader, &line)) break;      // The end of the file
             split = mmcif_plain_row(tok, num_cols, line);
             if (!split) {
@@ -1296,11 +1296,11 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
         if (!split) {
             if (!mmcif_advance_to_next_line(state)) break;
-            str_t peek;
+            md_str_t peek;
             if (!mmcif_peek_token(&peek, state)) {
                 MD_LOG_ERROR("Unexpected EOF while reading _atom_site entries");
             }
-            if (str_empty(peek) || mmcif_is_item(peek) || mmcif_is_control(peek)) {
+            if (md_str_empty(peek) || mmcif_is_item(peek) || mmcif_is_control(peek)) {
                 // End of _atom_site section
                 break;
             }
@@ -1309,7 +1309,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
                 split = mmcif_split_row(tok, num_cols, peek.ptr, state->line.ptr + state->line.len);
                 if (split) {
                     state->has_peek = false;
-                    state->line = (str_t){0};
+                    state->line = (md_str_t){0};
                 }
             }
         }
@@ -1345,19 +1345,19 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
     uint32_t field_flags = 0;
 
     while (mmcif_advance_to_next_control_token(state)) {
-        str_t tok;
+        md_str_t tok;
         if (!mmcif_peek_token(&tok, state)) {
             MD_LOG_ERROR("Unexpected EOF");
             return false;
         }
 
-        if (str_eq_cstr_n(tok, "_cell.", 6)) {
+        if (md_str_eq_cstr_n(tok, "_cell.", 6)) {
             if (!mmcif_next_token(&tok, state)) {
                 MD_LOG_ERROR("Unexpected tokenizer failure consuming _cell token");
                 return false;
             }
 
-            str_t val_tok;
+            md_str_t val_tok;
             if (!mmcif_next_token(&val_tok, state)) {
                 MD_LOG_ERROR("Unexpected EOF consuming _cell value");
                 return false;
@@ -1365,22 +1365,22 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
 
             double val = parse_float(val_tok);
 
-            if (str_eq_cstr(tok, "_cell.angle_alpha")) {
+            if (md_str_eq_cstr(tok, "_cell.angle_alpha")) {
                 cell->alpha = val;
                 field_flags |= CELL_FIELD_ALPHA;
-            } else if (str_eq_cstr(tok, "_cell.angle_beta")) {
+            } else if (md_str_eq_cstr(tok, "_cell.angle_beta")) {
                 cell->beta = val;
                 field_flags |= CELL_FIELD_BETA;
-            } else if (str_eq_cstr(tok, "_cell.angle_gamma")) {
+            } else if (md_str_eq_cstr(tok, "_cell.angle_gamma")) {
                 cell->gamma = val;
                 field_flags |= CELL_FIELD_GAMMA;
-            } else if (str_eq_cstr(tok, "_cell.length_a")) {
+            } else if (md_str_eq_cstr(tok, "_cell.length_a")) {
                 cell->a = val;
                 field_flags |= CELL_FIELD_A;
-            } else if (str_eq_cstr(tok, "_cell.length_b")) {
+            } else if (md_str_eq_cstr(tok, "_cell.length_b")) {
                 cell->b = val;
                 field_flags |= CELL_FIELD_B;
-            } else if (str_eq_cstr(tok, "_cell.length_c")) {
+            } else if (md_str_eq_cstr(tok, "_cell.length_c")) {
                 cell->c = val;
                 field_flags |= CELL_FIELD_C;
             }
@@ -1419,49 +1419,49 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
     };
 
     while (mmcif_advance_to_next_control_token(&state)) {
-        str_t tok;
+        md_str_t tok;
         if (!mmcif_peek_token(&tok, &state)) {
             MD_LOG_ERROR("Unexpected EOF");
             goto done;
         }
 
-        if (str_eq(tok, STR_LIT("loop_"))) {
+        if (md_str_eq(tok, MD_STR_LIT("loop_"))) {
             state.in_loop = true;
             mmcif_next_token(&tok, &state);
             continue;
         }
 
-        if (str_eq_cstr_n(tok, "_atom_site.", 11)) {
+        if (md_str_eq_cstr_n(tok, "_atom_site.", 11)) {
             if (!mmcif_parse_atom_site(&atom_entries, &state, temp_arena, ex)) {
                 MD_LOG_ERROR("Failed to parse _atom_site section");
                 goto done;
             }
             atom_site_parsed = true;
-        } else if (str_eq_cstr_n(tok, "_cell.", 6)) {
+        } else if (md_str_eq_cstr_n(tok, "_cell.", 6)) {
             if (!mmcif_parse_cell(&cell, &state)) {
                 MD_LOG_ERROR("Failed to parse _cell section");
                 goto done;
             }
             cell_parsed = true;
-        } else if (str_eq_cstr_n(tok, "_entity.", 8)) {
+        } else if (md_str_eq_cstr_n(tok, "_entity.", 8)) {
             if (!mmcif_parse_entity(&entities, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _entity section");
                 goto done;
             }
             entity_parsed = true;
-        } else if (str_eq_cstr_n(tok, "_entity_poly.", 13)) {
+        } else if (md_str_eq_cstr_n(tok, "_entity_poly.", 13)) {
             if (!mmcif_parse_entity_poly(&entities, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _entity_poly section");
                 goto done;
             }
             entity_poly_parsed = true;
-        } else if (str_eq_cstr_n(tok, "_pdbx_struct_assembly_gen.", 26)) {
+        } else if (md_str_eq_cstr_n(tok, "_pdbx_struct_assembly_gen.", 26)) {
             // The assemblies are read as far as they can be: without them the structure is still the structure
             if (!mmcif_parse_assembly_gen(&assembly_gen, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _pdbx_struct_assembly_gen section");
             }
             assembly_gen_parsed = true;
-        } else if (str_eq_cstr_n(tok, "_pdbx_struct_oper_list.", 23)) {
+        } else if (md_str_eq_cstr_n(tok, "_pdbx_struct_oper_list.", 23)) {
             if (!mmcif_parse_oper_list(&opers, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _pdbx_struct_oper_list section");
             }
@@ -1494,7 +1494,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
-        md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc); // Ensure that index 0 is always unknown
+        md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc); // Ensure that index 0 is always unknown
         md_hashmap32_t type_map = { .allocator = temp_arena };
 
         // Gathered alongside the coordinates rather than from atom_entries afterwards, because the
@@ -1542,7 +1542,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             const int seq_id = entry->label_seq_id != INT32_MIN ? entry->label_seq_id : entry->auth_seq_id;
 
             if (!have_prev || entity != prev_entity) {
-                entity_idx = md_system_part_type_find_by_id(sys, str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id)));
+                entity_idx = md_system_part_type_find_by_id(sys, md_str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id)));
             }
 
             md_particle_type_idx_t particle_type_idx = 0;
@@ -1552,8 +1552,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 if (s_idx && seen[*s_idx].name == name && seen[*s_idx].symbol == symbol_word) {
                     particle_type_idx = seen[*s_idx].type;
                 } else {
-                    str_t symbol = str_from_cstrn(entry->type_symbol, sizeof(entry->type_symbol));
-                    str_t atom_id = str_from_cstrn(entry->label_atom_id, sizeof(entry->label_atom_id));
+                    md_str_t symbol = md_str_from_cstrn(entry->type_symbol, sizeof(entry->type_symbol));
+                    md_str_t atom_id = md_str_from_cstrn(entry->label_atom_id, sizeof(entry->label_atom_id));
                     md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
                     particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
                     if (!s_idx) {
@@ -1565,12 +1565,12 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
 
             const bool new_inst = !have_prev || asym != prev_asym;
             if (new_inst || comp != prev_comp || seq_id != prev_seq) {
-                str_t comp_id = str_from_cstrn(entry->label_comp_id, MD_COUNTOF(entry->label_comp_id));
-                str_t label_asym_id = str_from_cstrn(entry->label_asym_id, sizeof(entry->label_asym_id));
-                str_t auth_asym_id = str_from_cstrn(entry->auth_asym_id, sizeof(entry->auth_asym_id));
+                md_str_t comp_id = md_str_from_cstrn(entry->label_comp_id, MD_COUNTOF(entry->label_comp_id));
+                md_str_t label_asym_id = md_str_from_cstrn(entry->label_asym_id, sizeof(entry->label_asym_id));
+                md_str_t auth_asym_id = md_str_from_cstrn(entry->auth_asym_id, sizeof(entry->auth_asym_id));
                 // The chain id is the author's (md_chain_data_t). A file which does not give it calls its chains by their
                 // labels only, and those are then its chain ids.
-                if (str_empty(auth_asym_id) || str_eq(auth_asym_id, STR_LIT("?")) || str_eq(auth_asym_id, STR_LIT("."))) {
+                if (md_str_empty(auth_asym_id) || md_str_eq(auth_asym_id, MD_STR_LIT("?")) || md_str_eq(auth_asym_id, MD_STR_LIT("."))) {
                     auth_asym_id = label_asym_id;
                 }
 
@@ -1621,9 +1621,9 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         // of the same file family and a consumer must not have to ask which reader produced a
         // structure. A column the file omits is all NAN, which is uniform, so it publishes nothing.
         if (occupancy && b_iso && formal_charge) {
-            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"),     md_unit_none(),                     1, occupancy,     sys->atom.count);
-            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"),      md_unit_pow(md_unit_angstrom(), 2), 1, b_iso,         sys->atom.count);
-            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/formal_charge"), md_unit_none(),                     1, formal_charge, sys->atom.count);
+            md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/occupancy"),     md_unit_none(),                     1, occupancy,     sys->atom.count);
+            md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/b_factor"),      md_unit_pow(md_unit_angstrom(), 2), 1, b_iso,         sys->atom.count);
+            md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/formal_charge"), md_unit_none(),                     1, formal_charge, sys->atom.count);
 
             // The formal charges given by the file are the system's (md_atom_data_t) until perception replaces them,
             // which keeps them by reading the column above. Built with fast math, so NAN (no value) is told by its
@@ -1665,11 +1665,11 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
 
-    if (str_empty(str)) {
+    if (md_str_empty(str)) {
         MD_LOG_ERROR("Input string is empty");
         return false;
     }
@@ -1693,13 +1693,13 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, s
     return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 

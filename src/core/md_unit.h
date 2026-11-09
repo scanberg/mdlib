@@ -97,7 +97,7 @@ size_t md_unit_print(char* buf, size_t cap, md_unit_t unit);
 
 // Parse a unit from a string, the unit is set to 'none' if it could not be parsed.
 // An empty string is a successfully parsed 'none'.
-bool md_unit_parse(md_unit_t* unit, str_t str);
+bool md_unit_parse(md_unit_t* unit, md_str_t str);
 
 // Some defined helpers
 

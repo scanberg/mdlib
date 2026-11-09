@@ -94,7 +94,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         } else {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", i + 1);
-            id = make_label((str_t){buf, (size_t)MD_MAX(len, 0)});
+            id = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)});
         }
         md_array_push(A->oper_id, id, alloc);
 
@@ -107,7 +107,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             }
         }
         if (dev > 1.0e-3f || M.elem[0][3] != 0.0f || M.elem[1][3] != 0.0f || M.elem[2][3] != 0.0f || M.elem[3][3] != 1.0f) {
-            MD_LOG_INFO("Assemblies: operator '" STR_FMT "' is not rigid (off by %g)", STR_ARG(LBL_TO_STR(id)), dev);
+            MD_LOG_INFO("Assemblies: operator '" MD_STR_FMT "' is not rigid (off by %g)", MD_STR_ARG(LBL_TO_STR(id)), dev);
         }
     }
     A->oper_count = oper_count;
@@ -136,7 +136,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             for (size_t k = 0; k < gen[g].oper_count; ++k) {
                 const uint32_t o = gen[g].oper[k];
                 if (o >= oper_count) {
-                    MD_LOG_ERROR("Assemblies: assembly '" STR_FMT "' names operator %u of %zu", STR_ARG(LBL_TO_STR(asm_id)), o, oper_count);
+                    MD_LOG_ERROR("Assemblies: assembly '" MD_STR_FMT "' names operator %u of %zu", MD_STR_ARG(LBL_TO_STR(asm_id)), o, oper_count);
                     continue;
                 }
                 md_array_push(pairs, ((uint64_t)o << 32) | (uint64_t)g, ta);
@@ -238,7 +238,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             A->group_count += 1;
         }
         if (A->group_count == first_group) {
-            MD_LOG_INFO("Assemblies: assembly '" STR_FMT "' holds none of the instances of the system and was left out", STR_ARG(LBL_TO_STR(asm_id)));
+            MD_LOG_INFO("Assemblies: assembly '" MD_STR_FMT "' holds none of the instances of the system and was left out", MD_STR_ARG(LBL_TO_STR(asm_id)));
             continue;
         }
         md_array_push(A->id, asm_id, alloc);
@@ -274,7 +274,7 @@ const char* md_residue_kind_name(md_residue_kind_t kind) {
 void md_part_type_data_free(md_part_type_data_t* type, md_allocator_i* alloc) {
     MD_ASSERT(type);
     for (size_t i = 0; i < md_array_size(type->description); ++i) {
-        if (!str_empty(type->description[i])) str_free(type->description[i], alloc);
+        if (!md_str_empty(type->description[i])) md_str_free(type->description[i], alloc);
     }
     md_array_free(type->id, alloc);
     md_array_free(type->flags, alloc);
@@ -286,7 +286,7 @@ void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_alloca
     MD_ASSERT(type);
     if (count >= type->count) return;
     for (size_t i = count; i < md_array_size(type->description); ++i) {
-        if (!str_empty(type->description[i])) str_free(type->description[i], alloc);
+        if (!md_str_empty(type->description[i])) md_str_free(type->description[i], alloc);
     }
     md_array_shrink(type->id, count);
     md_array_shrink(type->flags, count);
@@ -294,15 +294,15 @@ void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_alloca
     type->count = count;
 }
 
-md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, md_part_type_flags_t flags, str_t description, md_allocator_i* alloc) {
+md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, md_str_t id, md_part_type_flags_t flags, md_str_t description, md_allocator_i* alloc) {
     MD_ASSERT(type);
     md_label_t lbl = make_label(id);
-    if (str_empty(id)) {
+    if (md_str_empty(id)) {
         // Its position, or the first number after it which no type has for an id (the ids of a file need not be 1..n)
         for (size_t n = type->count + 1;; ++n) {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", n);
-            lbl = make_label((str_t){buf, (size_t)MD_MAX(len, 0)});
+            lbl = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)});
             bool taken = false;
             for (size_t i = 0; i < md_array_size(type->id) && !taken; ++i) taken = md_label_eq(type->id[i], lbl);
             if (!taken) break;
@@ -310,14 +310,14 @@ md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, m
     }
     md_array_push(type->id, lbl, alloc);
     md_array_push(type->flags, flags, alloc);
-    md_array_push(type->description, str_copy(description, alloc), alloc);
+    md_array_push(type->description, md_str_copy(description, alloc), alloc);
     return (md_part_type_idx_t)(type->count++);
 }
 
 void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc) {
     MD_ASSERT(type);
     for (size_t i = 0; i < md_array_size(type->name); ++i) {
-        if (!str_empty(type->name[i])) str_free(type->name[i], alloc);
+        if (!md_str_empty(type->name[i])) md_str_free(type->name[i], alloc);
     }
     md_array_free(type->name, alloc);
     md_array_free(type->flags, alloc);
@@ -328,16 +328,16 @@ void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, m
     MD_ASSERT(type);
     if (count >= type->count) return;
     for (size_t i = count; i < md_array_size(type->name); ++i) {
-        if (!str_empty(type->name[i])) str_free(type->name[i], alloc);
+        if (!md_str_empty(type->name[i])) md_str_free(type->name[i], alloc);
     }
     md_array_shrink(type->name, count);
     md_array_shrink(type->flags, count);
     type->count = count;
 }
 
-md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc) {
+md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, md_str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc) {
     MD_ASSERT(type);
-    md_array_push(type->name, str_copy(name, alloc), alloc);
+    md_array_push(type->name, md_str_copy(name, alloc), alloc);
     md_array_push(type->flags, flags, alloc);
     return (md_molecule_type_idx_t)(type->count++);
 }
@@ -498,8 +498,8 @@ void md_system_free(md_system_t* sys) {
     // ASSEMBLY
     md_system_assemblies_free(sys);
 
-    if (!str_empty(sys->description)) {
-        str_free(sys->description, alloc);
+    if (!md_str_empty(sys->description)) {
+        md_str_free(sys->description, alloc);
     }
 
     // REFERENCE STATE
@@ -612,12 +612,12 @@ void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
 
 #define COPY_ARRAY(dst, src, alloc) do { (dst) = NULL; if (md_array_size(src)) md_array_push_array((dst), (src), md_array_size(src), (alloc)); } while (0)
 
-static void copy_strings(str_t** dst, const str_t* src, md_allocator_i* alloc) {
+static void copy_strings(md_str_t** dst, const md_str_t* src, md_allocator_i* alloc) {
     *dst = NULL;
     const size_t n = md_array_size(src);
     if (!n) return;
     md_array_resize(*dst, n, alloc);
-    for (size_t i = 0; i < n; ++i) (*dst)[i] = str_empty(src[i]) ? (str_t){0} : str_copy(src[i], alloc);
+    for (size_t i = 0; i < n; ++i) (*dst)[i] = md_str_empty(src[i]) ? (md_str_t){0} : md_str_copy(src[i], alloc);
 }
 
 bool md_system_copy(md_system_t* dst, const md_system_t* src) {
@@ -637,7 +637,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     dst->nonbonded = NULL;
     MD_MEMSET(&dst->attributes, 0, sizeof(dst->attributes));
     dst->attributes.alloc = alloc;
-    dst->description = str_empty(src->description) ? (str_t){0} : str_copy(src->description, alloc);
+    dst->description = md_str_empty(src->description) ? (md_str_t){0} : md_str_copy(src->description, alloc);
 
     // Every array, CORE and DERIVED (md_system_fields.h)
 #define COPY_FIELD(f) COPY_ARRAY(dst->f, src->f, alloc);
@@ -774,7 +774,7 @@ typedef enum extract_kind_t {
 } extract_kind_t;
 
 typedef struct extract_entry_t {
-    str_t             path;      // relative to the run, owned
+    md_str_t             path;      // relative to the run, owned
     extract_kind_t    kind;
     md_attribute_id_t id;
     md_attribute_id_t axis_id;
@@ -793,12 +793,12 @@ struct md_system_extract_t {
     md_thread_id_t         owner;       // the thread that extracts; 0 until the first frame
 };
 
-static str_t extract_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
-    const int len = md_snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(run), STR_ARG(leaf));
-    return (len > 0 && (size_t)len < cap) ? (str_t){buf, (size_t)len} : (str_t){0};
+static md_str_t extract_run_path(char* buf, size_t cap, md_str_t run, md_str_t leaf) {
+    const int len = md_snprintf(buf, cap, MD_STR_FMT "/" MD_STR_FMT, MD_STR_ARG(run), MD_STR_ARG(leaf));
+    return (len > 0 && (size_t)len < cap) ? (md_str_t){buf, (size_t)len} : (md_str_t){0};
 }
 
-md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, const str_t paths[], size_t num_paths, md_allocator_i* alloc) {
+md_system_extract_t* md_system_extract_begin(const md_system_t* sys, md_str_t run, const md_str_t paths[], size_t num_paths, md_allocator_i* alloc) {
     MD_ASSERT(sys);
     MD_ASSERT(alloc);
     MD_ASSERT(paths || num_paths == 0);
@@ -814,9 +814,9 @@ md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, 
     const md_attributes_t* attributes = &sys->attributes;
 
     {
-        const md_attribute_t* axis = str_empty(run) ? NULL : md_attributes_find_in(attributes, run, STR_LIT("time"));
+        const md_attribute_t* axis = md_str_empty(run) ? NULL : md_attributes_find_in(attributes, run, MD_STR_LIT("time"));
         if (!axis || md_attributes_axis(attributes, axis) != axis) {
-            MD_LOG_ERROR("No run '" STR_FMT "' to extract from", STR_ARG(run));
+            MD_LOG_ERROR("No run '" MD_STR_FMT "' to extract from", MD_STR_ARG(run));
             goto fail;
         }
         ex->run_axis_id = axis->id;
@@ -826,35 +826,35 @@ md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, 
     for (size_t i = 0; i < num_paths; ++i) {
         extract_entry_t* e = &ex->entries[ex->num_entries];
         MD_MEMSET(e, 0, sizeof(*e));
-        e->path = str_copy(paths[i], arena);
-        e->kind = str_eq(paths[i], STR_LIT("atom/position")) ? EXTRACT_POSITION :
-                  str_eq(paths[i], STR_LIT("unitcell"))      ? EXTRACT_CELL : EXTRACT_OTHER;
+        e->path = md_str_copy(paths[i], arena);
+        e->kind = md_str_eq(paths[i], MD_STR_LIT("atom/position")) ? EXTRACT_POSITION :
+                  md_str_eq(paths[i], MD_STR_LIT("unitcell"))      ? EXTRACT_CELL : EXTRACT_OTHER;
 
         const md_attribute_t* attr = md_attributes_find_in(attributes, run, paths[i]);
         if (!attr) {
-            MD_LOG_ERROR("Nothing at '" STR_FMT "' in '" STR_FMT "' to extract", STR_ARG(paths[i]), STR_ARG(run));
+            MD_LOG_ERROR("Nothing at '" MD_STR_FMT "' in '" MD_STR_FMT "' to extract", MD_STR_ARG(paths[i]), MD_STR_ARG(run));
             goto fail;
         }
 
         if (!(attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
-            MD_LOG_ERROR("'" STR_FMT "' does not vary over the run; read it from the system directly", STR_ARG(attr->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "' does not vary over the run; read it from the system directly", MD_STR_ARG(attr->path));
             goto fail;
         }
         if (attr->format.type == MD_ATTRIBUTE_TYPE_STR) {
-            MD_LOG_ERROR("'" STR_FMT "' is text and cannot be carried by a state", STR_ARG(attr->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "' is text and cannot be carried by a state", MD_STR_ARG(attr->path));
             goto fail;
         }
         if (e->kind == EXTRACT_POSITION && !(attr->format.rank == 2 && attr->format.components == 3)) {
-            MD_LOG_ERROR("'" STR_FMT "' is not {F,N} with three components", STR_ARG(attr->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "' is not {F,N} with three components", MD_STR_ARG(attr->path));
             goto fail;
         }
         if (e->kind == EXTRACT_CELL && !(attr->format.rank == 3 && attr->format.shape[1] == 3 && attr->format.shape[2] == 3 && attr->format.components == 1)) {
-            MD_LOG_ERROR("'" STR_FMT "' is not {F,3,3}", STR_ARG(attr->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "' is not {F,3,3}", MD_STR_ARG(attr->path));
             goto fail;
         }
         const md_attribute_t* axis = md_attributes_axis(attributes, attr);
         if (!axis) {
-            MD_LOG_ERROR("'" STR_FMT "' has no frame axis", STR_ARG(attr->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "' has no frame axis", MD_STR_ARG(attr->path));
             goto fail;
         }
         e->id      = attr->id;
@@ -909,7 +909,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
         const md_attribute_t* attr = md_attributes_get(attributes, e->id);
         const md_attribute_t* axis = md_attributes_get(attributes, e->axis_id);
         if (!attr || !axis) {
-            MD_LOG_ERROR("'" STR_FMT "' is gone from the run being extracted from", STR_ARG(e->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "' is gone from the run being extracted from", MD_STR_ARG(e->path));
             result = false;
             break;
         }
@@ -917,7 +917,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
         size_t row = (size_t)frame;
         if (e->axis_id != ex->run_axis_id && !md_attribute_axis_map(&row, run_axis, (size_t)frame, axis)) {
             if (e->kind != EXTRACT_OTHER) {
-                MD_LOG_ERROR("'" STR_FMT "' has no value at frame %" PRId64, STR_ARG(e->path), frame);
+                MD_LOG_ERROR("'" MD_STR_FMT "' has no value at frame %" PRId64, MD_STR_ARG(e->path), frame);
                 result = false;
                 break;
             }
@@ -937,7 +937,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
             if (!want_coords) break;
             const size_t N = attr->format.shape[1];
             if (out->num_atoms != 0 && out->num_atoms != N) {
-                MD_LOG_ERROR("The state holds %zu atoms, '" STR_FMT "' %zu", out->num_atoms, STR_ARG(attr->path), N);
+                MD_LOG_ERROR("The state holds %zu atoms, '" MD_STR_FMT "' %zu", out->num_atoms, MD_STR_ARG(attr->path), N);
                 result = false;
                 break;
             }
@@ -960,7 +960,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
         }
         case EXTRACT_OTHER: {
             if (!out->attributes.alloc) {
-                MD_LOG_ERROR("'" STR_FMT "' goes into the state's attributes, and the state has none (no allocator)", STR_ARG(e->path));
+                MD_LOG_ERROR("'" MD_STR_FMT "' goes into the state's attributes, and the state has none (no allocator)", MD_STR_ARG(e->path));
                 result = false;
                 break;
             }
@@ -997,12 +997,12 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
 
 // ### RUNS ###
 
-static str_t run_cache_path(char* buf, size_t cap, str_t source_path) {
-    const int len = md_snprintf(buf, cap, STR_FMT ".cache", STR_ARG(source_path));
-    return (len > 0 && (size_t)len < cap) ? (str_t){buf, (size_t)len} : (str_t){0};
+static md_str_t run_cache_path(char* buf, size_t cap, md_str_t source_path) {
+    const int len = md_snprintf(buf, cap, MD_STR_FMT ".cache", MD_STR_ARG(source_path));
+    return (len > 0 && (size_t)len < cap) ? (md_str_t){buf, (size_t)len} : (md_str_t){0};
 }
 
-bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, str_t source_path, uint64_t magic, uint64_t version) {
+bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, md_str_t source_path, uint64_t magic, uint64_t version) {
     MD_ASSERT(out_file);
     MD_ASSERT(out_header);
     MD_MEMSET(out_file, 0, sizeof(*out_file));
@@ -1012,9 +1012,9 @@ bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, s
         return false;
     }
     char buf[4096];
-    const str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
+    const md_str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
     md_file_t file = {0};
-    if (str_empty(cache_path) || !md_file_open(&file, cache_path, MD_FILE_READ)) {
+    if (md_str_empty(cache_path) || !md_file_open(&file, cache_path, MD_FILE_READ)) {
         return false;
     }
 
@@ -1033,7 +1033,7 @@ bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, s
         stale = "empty";
     }
     if (stale) {
-        MD_LOG_INFO("'" STR_FMT "' is %s; it will be made again", STR_ARG(cache_path), stale);
+        MD_LOG_INFO("'" MD_STR_FMT "' is %s; it will be made again", MD_STR_ARG(cache_path), stale);
         md_file_close(&file);
         return false;
     }
@@ -1041,16 +1041,16 @@ bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, s
     return true;
 }
 
-bool md_run_cache_create(md_file_t* out_file, str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames) {
+bool md_run_cache_create(md_file_t* out_file, md_str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames) {
     MD_ASSERT(out_file);
     MD_ASSERT(scanned);
     MD_MEMSET(out_file, 0, sizeof(*out_file));
     const md_file_info_t info = *scanned;
     char buf[4096];
-    const str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
+    const md_str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
     md_file_t file = {0};
-    if (str_empty(cache_path) || !md_file_open(&file, cache_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        MD_LOG_INFO("Could not create '" STR_FMT "'", STR_ARG(cache_path));
+    if (md_str_empty(cache_path) || !md_file_open(&file, cache_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+        MD_LOG_INFO("Could not create '" MD_STR_FMT "'", MD_STR_ARG(cache_path));
         return false;
     }
     const md_run_cache_header_t header = {
@@ -1069,25 +1069,25 @@ bool md_run_cache_create(md_file_t* out_file, str_t source_path, const md_file_i
     return true;
 }
 
-str_t md_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
+md_str_t md_run_path(char* buf, size_t cap, md_str_t run, md_str_t leaf) {
     return extract_run_path(buf, cap, run, leaf);
 }
 
-bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
+bool md_run_publish(md_system_t* sys, md_str_t run, const md_run_desc_t* d) {
     MD_ASSERT(sys);
     MD_ASSERT(d);
-    if (str_empty(run) || !d->time || !d->source_offset || !d->source_size || !d->position_virt || str_empty(d->source_path)) {
-        MD_LOG_ERROR("An incomplete description of the run '" STR_FMT "'", STR_ARG(run));
+    if (md_str_empty(run) || !d->time || !d->source_offset || !d->source_size || !d->position_virt || md_str_empty(d->source_path)) {
+        MD_LOG_ERROR("An incomplete description of the run '" MD_STR_FMT "'", MD_STR_ARG(run));
         return false;
     }
     const size_t F = d->num_frames;
     const size_t N = d->num_atoms;
     if (F == 0 || N == 0 || F > UINT32_MAX || N > UINT32_MAX) {
-        MD_LOG_ERROR("The run '" STR_FMT "' has %zu frames of %zu atoms, which cannot be published", STR_ARG(run), F, N);
+        MD_LOG_ERROR("The run '" MD_STR_FMT "' has %zu frames of %zu atoms, which cannot be published", MD_STR_ARG(run), F, N);
         return false;
     }
     if (sys->atom.count != 0 && sys->atom.count != N) {
-        MD_LOG_ERROR("The run '" STR_FMT "' holds %zu atoms, the system %zu", STR_ARG(run), N, sys->atom.count);
+        MD_LOG_ERROR("The run '" MD_STR_FMT "' holds %zu atoms, the system %zu", MD_STR_ARG(run), N, sys->atom.count);
         return false;
     }
 
@@ -1103,72 +1103,72 @@ bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
 
     // The axis first: everything temporal below is checked against it.
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = d->time_unit, .label = STR_INIT("Time"),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = d->time_unit, .label = MD_STR_INIT("Time"),
         .data = d->time, .byte_size = F * sizeof(double)});
 
     if (ok && d->step) {
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-            .unit = md_unit_none(), .label = STR_INIT("Step"),
-            .description = STR_INIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
+            .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = md_unit_none(), .label = MD_STR_INIT("Step"),
+            .description = MD_STR_INIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
             .data = d->step, .byte_size = F * sizeof(int64_t)});
     }
 
     if (ok && (d->unitcell || d->unitcell_virt)) {
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("unitcell")), .format = cell_format,
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_INIT("Unit Cell"),
+            .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("unitcell")), .format = cell_format,
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = MD_STR_INIT("Unit Cell"),
             .data = d->unitcell_virt ? NULL : d->unitcell, .byte_size = d->unitcell_virt ? 0 : F * 9 * sizeof(float),
             .virt = d->unitcell_virt});
     }
 
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/path")),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/path")),
         .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
-        .unit = md_unit_none(), .data = &d->source_path, .byte_size = sizeof(str_t)});
+        .unit = md_unit_none(), .data = &d->source_path, .byte_size = sizeof(md_str_t)});
 
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/offset")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/offset")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = d->source_offset, .byte_size = F * sizeof(int64_t)});
 
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/size")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/size")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = d->source_size, .byte_size = F * sizeof(int64_t)});
 
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("atom/position")),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("atom/position")),
         .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = { (uint32_t)F, (uint32_t)N } },
-        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = STR_INIT("Position"),
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_angstrom(), .label = MD_STR_INIT("Position"),
         .virt = d->position_virt});
 
     if (!ok) {
-        MD_LOG_ERROR("Failed to publish the run '" STR_FMT "' from '" STR_FMT "'", STR_ARG(run), STR_ARG(d->source_path));
+        MD_LOG_ERROR("Failed to publish the run '" MD_STR_FMT "' from '" MD_STR_FMT "'", MD_STR_ARG(run), MD_STR_ARG(d->source_path));
         md_attributes_remove_prefix(attributes, run);
     }
     return ok;
 }
 
-bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf) {
+bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, md_str_t leaf) {
     MD_ASSERT(out);
     MD_ASSERT(attributes);
     MD_ASSERT(attr);
     MD_MEMSET(out, 0, sizeof(*out));
 
-    const str_t p = attr->path;
-    if (p.len <= leaf.len + 1 || !str_ends_with(p, leaf) || p.ptr[p.len - leaf.len - 1] != '/') {
+    const md_str_t p = attr->path;
+    if (p.len <= leaf.len + 1 || !md_str_ends_with(p, leaf) || p.ptr[p.len - leaf.len - 1] != '/') {
         return false;
     }
-    out->run = str_substr(p, 0, p.len - leaf.len - 1);
+    out->run = md_str_substr(p, 0, p.len - leaf.len - 1);
 
-    const md_attribute_t* path   = md_attributes_find_in(attributes, out->run, STR_LIT("source/path"));
-    const md_attribute_t* offset = md_attributes_find_in(attributes, out->run, STR_LIT("source/offset"));
-    const md_attribute_t* size   = md_attributes_find_in(attributes, out->run, STR_LIT("source/size"));
+    const md_attribute_t* path   = md_attributes_find_in(attributes, out->run, MD_STR_LIT("source/path"));
+    const md_attribute_t* offset = md_attributes_find_in(attributes, out->run, MD_STR_LIT("source/offset"));
+    const md_attribute_t* size   = md_attributes_find_in(attributes, out->run, MD_STR_LIT("source/size"));
     const int64_t* offsets = (const int64_t*)md_attribute_view(offset, MD_ATTRIBUTE_TYPE_I64, 1, 1);
     const int64_t* sizes   = (const int64_t*)md_attribute_view(size,   MD_ATTRIBUTE_TYPE_I64, 1, 1);
     if (!path || path->format.type != MD_ATTRIBUTE_TYPE_STR || !offsets || !sizes ||
         offset->format.shape[0] != size->format.shape[0]) {
-        MD_LOG_ERROR("The run '" STR_FMT "' has lost its source attributes", STR_ARG(out->run));
+        MD_LOG_ERROR("The run '" MD_STR_FMT "' has lost its source attributes", MD_STR_ARG(out->run));
         return false;
     }
     out->path       = md_attribute_str(attributes, path, 0);
@@ -1179,7 +1179,7 @@ bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, cons
 }
 
 // Lower case letters and digits, anything else one '_' between them
-static size_t run_series_slug(char* buf, size_t cap, str_t name) {
+static size_t run_series_slug(char* buf, size_t cap, md_str_t name) {
     size_t len = 0;
     bool pending_sep = false;
     for (size_t i = 0; i < name.len && len + 2 < cap; ++i) {
@@ -1200,7 +1200,7 @@ static size_t run_series_slug(char* buf, size_t cap, str_t name) {
     return len;
 }
 
-bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc_t* d) {
+bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_desc_t* d) {
     MD_ASSERT(sys);
     MD_ASSERT(d);
     md_attributes_t* attributes = &sys->attributes;
@@ -1209,21 +1209,21 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
     }
 
     char buf[512];
-    const md_attribute_t* run_axis = str_empty(run) ? NULL : md_attributes_find_in(attributes, run, STR_LIT("time"));
+    const md_attribute_t* run_axis = md_str_empty(run) ? NULL : md_attributes_find_in(attributes, run, MD_STR_LIT("time"));
     if (!run_axis || md_attributes_axis(attributes, run_axis) != run_axis) {
-        MD_LOG_ERROR("No run '" STR_FMT "' to publish '" STR_FMT "' along", STR_ARG(run), STR_ARG(d->group));
+        MD_LOG_ERROR("No run '" MD_STR_FMT "' to publish '" MD_STR_FMT "' along", MD_STR_ARG(run), MD_STR_ARG(d->group));
         return false;
     }
     const size_t F = run_axis->format.shape[0];
     const size_t R = d->num_rows;
     if (R == 0 || d->num_columns == 0 || R > UINT32_MAX || !d->names || !d->columns) {
-        MD_LOG_ERROR("'" STR_FMT "' holds no values", STR_ARG(d->group));
+        MD_LOG_ERROR("'" MD_STR_FMT "' holds no values", MD_STR_ARG(d->group));
         return false;
     }
 
     char group_buf[512];
-    const str_t group = md_run_path(group_buf, sizeof(group_buf), run, d->group);
-    if (str_empty(group) || str_empty(d->group)) {
+    const md_str_t group = md_run_path(group_buf, sizeof(group_buf), run, d->group);
+    if (md_str_empty(group) || md_str_empty(d->group)) {
         MD_LOG_ERROR("No group to publish the series under");
         return false;
     }
@@ -1239,7 +1239,7 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
         }
         for (size_t i = 1; i < R; ++i) {
             if (d->time[i] < d->time[i - 1]) {
-                MD_LOG_ERROR("'" STR_FMT "': time decreases at row %zu", STR_ARG(d->group), i);
+                MD_LOG_ERROR("'" MD_STR_FMT "': time decreases at row %zu", MD_STR_ARG(d->group), i);
                 goto done;
             }
         }
@@ -1247,19 +1247,19 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
         // table before the real one is touched.
         md_attributes_t probe = { .alloc = temp_alloc };
         const md_attribute_id_t probe_id = md_attributes_create(&probe, &(md_attribute_desc_t){
-            .path = STR_INIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
+            .path = MD_STR_INIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .data = d->time, .byte_size = R * sizeof(double)});
         const md_attribute_t* axis = probe_id ? md_attributes_get(&probe, probe_id) : NULL;
         if (!axis) goto done;
         for (size_t f = 0; f < F; ++f) {
             size_t row;
             if (!md_attribute_axis_map(&row, run_axis, f, axis)) {
-                MD_LOG_ERROR("'" STR_FMT "' has no row at the time of frame %zu of '" STR_FMT "'; it belongs to another run", STR_ARG(d->group), f, STR_ARG(run));
+                MD_LOG_ERROR("'" MD_STR_FMT "' has no row at the time of frame %zu of '" MD_STR_FMT "'; it belongs to another run", MD_STR_ARG(d->group), f, MD_STR_ARG(run));
                 goto done;
             }
         }
     } else if (R != F) {
-        MD_LOG_ERROR("'" STR_FMT "' has %zu rows and no time, and '" STR_FMT "' %zu frames: the rows cannot be the frames", STR_ARG(d->group), R, STR_ARG(run), F);
+        MD_LOG_ERROR("'" MD_STR_FMT "' has %zu rows and no time, and '" MD_STR_FMT "' %zu frames: the rows cannot be the frames", MD_STR_ARG(d->group), R, MD_STR_ARG(run), F);
         goto done;
     }
 
@@ -1269,15 +1269,15 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
     bool ok = true;
     if (d->time) {
         ok = md_attributes_create(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("time")),
+            .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("time")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .label = STR_INIT("Time"),
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .label = MD_STR_INIT("Time"),
             .data = d->time, .byte_size = R * sizeof(double)}) != MD_ATTRIBUTE_INVALID;
     }
 
-    md_array(str_t) taken = 0;
-    md_array_push(taken, STR_LIT("time"),   temp_alloc);
-    md_array_push(taken, STR_LIT("source"), temp_alloc);
+    md_array(md_str_t) taken = 0;
+    md_array_push(taken, MD_STR_LIT("time"),   temp_alloc);
+    md_array_push(taken, MD_STR_LIT("source"), temp_alloc);
     for (size_t k = 0; ok && k < d->num_columns; ++k) {
         char slug[128];
         size_t len = run_series_slug(slug, sizeof(slug) - 8, d->names[k]);
@@ -1288,27 +1288,27 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
         for (int n = 2;; ++n) {
             bool clash = false;
             for (size_t t = 0; t < md_array_size(taken); ++t) {
-                if (str_eq(taken[t], (str_t){slug, len})) { clash = true; break; }
+                if (md_str_eq(taken[t], (md_str_t){slug, len})) { clash = true; break; }
             }
             if (!clash) break;
             len = base + (size_t)md_snprintf(slug + base, sizeof(slug) - base, "_%d", n);
         }
-        md_array_push(taken, str_copy((str_t){slug, len}, temp_alloc), temp_alloc);
+        md_array_push(taken, md_str_copy((md_str_t){slug, len}, temp_alloc), temp_alloc);
 
         ok = md_attributes_create(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, (str_t){slug, len}),
+            .path = md_run_path(buf, sizeof(buf), group, (md_str_t){slug, len}),
             .format = series, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
             .unit = d->units ? d->units[k] : md_unit_none(), .label = d->names[k],
             .data = d->columns[k], .byte_size = R * sizeof(float)}) != MD_ATTRIBUTE_INVALID;
     }
-    if (ok && !str_empty(d->source_path)) {
+    if (ok && !md_str_empty(d->source_path)) {
         ok = md_attributes_create(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source")),
+            .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("source")),
             .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
-            .unit = md_unit_none(), .data = &d->source_path, .byte_size = sizeof(str_t)}) != MD_ATTRIBUTE_INVALID;
+            .unit = md_unit_none(), .data = &d->source_path, .byte_size = sizeof(md_str_t)}) != MD_ATTRIBUTE_INVALID;
     }
     if (!ok) {
-        MD_LOG_ERROR("Failed to publish '" STR_FMT "'", STR_ARG(group));
+        MD_LOG_ERROR("Failed to publish '" MD_STR_FMT "'", MD_STR_ARG(group));
         md_attributes_remove_prefix(attributes, group);
         goto done;
     }

@@ -11,7 +11,7 @@
 
 UBENCH_EX(gro, load) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
-    str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    md_str_t path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
@@ -36,7 +36,7 @@ UBENCH_EX(gro, postprocess) {
     size_t capacity = MD_MEGABYTES(16);
     void* buffer = md_alloc(md_get_heap_allocator(), capacity);
     md_allocator_i* alloc = md_linear_allocator_create(buffer, capacity);
-    str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    md_str_t path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };

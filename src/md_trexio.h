@@ -78,12 +78,12 @@ extern "C" {
 
 // Parse a TREXIO file into a system, replacing its atoms, its state and its attribute table with
 // what the file carried.
-bool md_trexio_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, str_t filename);
+bool md_trexio_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename);
 
 // Whether the file is an HDF5 file holding a TREXIO nucleus group. Cheap, and meant for a caller
 // deciding which reader to hand a file to: .h5 is shared with several other formats, so the
 // extension does not settle it.
-bool md_trexio_file_is_trexio(str_t filename);
+bool md_trexio_file_is_trexio(md_str_t filename);
 
 #ifdef __cplusplus
 }

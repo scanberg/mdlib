@@ -1298,7 +1298,7 @@ static GLuint get_gto_program(void) {
     static GLuint program = 0;
     if (!program) {
         GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-        if (md_gl_shader_compile(shader, (str_t){(const char*)eval_gto_comp, eval_gto_comp_size}, 0, 0)) {
+        if (md_gl_shader_compile(shader, (md_str_t){(const char*)eval_gto_comp, eval_gto_comp_size}, 0, 0)) {
             GLuint prog = glCreateProgram();
             if (md_gl_program_attach_and_link(prog, &shader, 1)) {
                 program = prog;
@@ -1313,7 +1313,7 @@ static GLuint get_gto_density_program(void) {
     static GLuint program = 0;
     if (!program) {
         GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-        if (md_gl_shader_compile(shader, (str_t){(const char*)eval_gto_density_comp, eval_gto_density_comp_size}, 0, 0)) {
+        if (md_gl_shader_compile(shader, (md_str_t){(const char*)eval_gto_density_comp, eval_gto_density_comp_size}, 0, 0)) {
             GLuint prog = glCreateProgram();
             if (md_gl_program_attach_and_link(prog, &shader, 1)) {
                 program = prog;
@@ -1328,7 +1328,7 @@ static GLuint get_gto_density_grad_program(void) {
     static GLuint program = 0;
     if (!program) {
         GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-        if (md_gl_shader_compile(shader, (str_t) { (const char*)eval_gto_density_grad_comp, eval_gto_density_grad_comp_size }, 0, 0)) {
+        if (md_gl_shader_compile(shader, (md_str_t) { (const char*)eval_gto_density_grad_comp, eval_gto_density_grad_comp_size }, 0, 0)) {
             GLuint prog = glCreateProgram();
             if (md_gl_program_attach_and_link(prog, &shader, 1)) {
                 program = prog;
@@ -4541,11 +4541,11 @@ size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float
 // Finds one of our own columns and hands back its storage. Every check is explicit because the
 // table is open - anyone may publish under any path - so a basis/ path with the wrong type or rank
 // is a mistake to refuse rather than to reinterpret.
-static const void* gto_attr_column(size_t* out_count, const md_attributes_t* attributes, str_t path, md_attribute_type_t type) {
+static const void* gto_attr_column(size_t* out_count, const md_attributes_t* attributes, md_str_t path, md_attribute_type_t type) {
     const md_attribute_t* attr = md_attributes_find(attributes, path);
     const void* data = md_attribute_view(attr, type, 1, 1);
     if (attr && !data) {
-        MD_LOG_ERROR("Attribute '" STR_FMT "' is not the plain column a basis expects", STR_ARG(path));
+        MD_LOG_ERROR("Attribute '" MD_STR_FMT "' is not the plain column a basis expects", MD_STR_ARG(path));
     }
     if (data && out_count) *out_count = attr->format.shape[0];
     return data;
@@ -4562,14 +4562,14 @@ bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const md_attributes_t*
     MD_MEMSET(out, 0, sizeof(*out));
 
     size_t num_atom_idx = 0, num_offset = 0, num_count = 0, num_angl = 0;
-    const uint32_t* atom_idx = (const uint32_t*)gto_attr_column(&num_atom_idx, attributes, STR_LIT("basis/shell/atom_index"),        MD_ATTRIBUTE_TYPE_U32);
-    const uint32_t* offset   = (const uint32_t*)gto_attr_column(&num_offset,   attributes, STR_LIT("basis/shell/primitive_offset"),  MD_ATTRIBUTE_TYPE_U32);
-    const uint32_t* count    = (const uint32_t*)gto_attr_column(&num_count,    attributes, STR_LIT("basis/shell/primitive_count"),   MD_ATTRIBUTE_TYPE_U32);
-    const uint32_t* angl     = (const uint32_t*)gto_attr_column(&num_angl,     attributes, STR_LIT("basis/shell/angular_momentum"),  MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* atom_idx = (const uint32_t*)gto_attr_column(&num_atom_idx, attributes, MD_STR_LIT("basis/shell/atom_index"),        MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* offset   = (const uint32_t*)gto_attr_column(&num_offset,   attributes, MD_STR_LIT("basis/shell/primitive_offset"),  MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* count    = (const uint32_t*)gto_attr_column(&num_count,    attributes, MD_STR_LIT("basis/shell/primitive_count"),   MD_ATTRIBUTE_TYPE_U32);
+    const uint32_t* angl     = (const uint32_t*)gto_attr_column(&num_angl,     attributes, MD_STR_LIT("basis/shell/angular_momentum"),  MD_ATTRIBUTE_TYPE_U32);
 
     size_t num_alpha = 0, num_coeff = 0;
-    const float* alpha = (const float*)gto_attr_column(&num_alpha, attributes, STR_LIT("basis/primitive/exponent"),    MD_ATTRIBUTE_TYPE_F32);
-    const float* coeff = (const float*)gto_attr_column(&num_coeff, attributes, STR_LIT("basis/primitive/coefficient"), MD_ATTRIBUTE_TYPE_F32);
+    const float* alpha = (const float*)gto_attr_column(&num_alpha, attributes, MD_STR_LIT("basis/primitive/exponent"),    MD_ATTRIBUTE_TYPE_F32);
+    const float* coeff = (const float*)gto_attr_column(&num_coeff, attributes, MD_STR_LIT("basis/primitive/coefficient"), MD_ATTRIBUTE_TYPE_F32);
 
     if (!atom_idx || !offset || !count || !angl || !alpha || !coeff) {
         return false;

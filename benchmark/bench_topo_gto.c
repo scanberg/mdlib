@@ -137,7 +137,7 @@ static bool input_load(input_t* in, const char* path) {
     in->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     in->sys = (md_system_t){ .alloc = in->alloc };
     in->state = (md_system_state_t){ .alloc = in->alloc };
-    const str_t file = str_from_cstr(path);
+    const md_str_t file = md_str_from_cstr(path);
     bool ok = false;
     if (ends_with(path, ".molden")) {
         ok = md_molden_system_init_from_file(&in->sys, &in->state, file);
@@ -161,9 +161,9 @@ static bool input_load(input_t* in, const char* path) {
     in->num_atoms = md_gto_basis_num_atoms(&in->basis);
 
     // QTAIM is defined on the total density; a file with one spin channel publishes only alpha, which is then the total.
-    str_t dpath = STR_LIT("orbital/total/density");
+    md_str_t dpath = MD_STR_LIT("orbital/total/density");
     const md_attribute_t* d = md_attributes_find(&in->sys.attributes, dpath);
-    if (!d) { dpath = STR_LIT("orbital/alpha/density"); d = md_attributes_find(&in->sys.attributes, dpath); }
+    if (!d) { dpath = MD_STR_LIT("orbital/alpha/density"); d = md_attributes_find(&in->sys.attributes, dpath); }
     if (!d || d->format.rank != 2 || d->format.shape[0] != in->num_ao || d->format.shape[1] != in->num_ao) {
         fprintf(stderr, "%s: no density matrix matching the basis (%zu AOs)\n", path, in->num_ao);
         return false;
@@ -174,7 +174,7 @@ static bool input_load(input_t* in, const char* path) {
         return false;
     }
 
-    const md_attribute_t* c = md_attributes_find(&in->sys.attributes, STR_LIT("qm/atom/coordinate"));   // Angstrom
+    const md_attribute_t* c = md_attributes_find(&in->sys.attributes, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom
     double* xyz = (double*)md_alloc(in->alloc, sizeof(double) * 3 * MD_MAX(in->num_atoms, 1));
     if (!c || md_attribute_extract_f64(xyz, 3 * in->num_atoms, c, md_attribute_slice_all(), md_unit_none()) < 3 * in->num_atoms) {
         fprintf(stderr, "%s: no coordinates for the %zu basis atoms\n", path, in->num_atoms);

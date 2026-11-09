@@ -39,7 +39,7 @@ struct md_vial_eval_t {
     const md_vial_program_t*    prog;
     const vial_ir_t*            ir;
     const md_system_t*          sys;
-    str_t                       run;
+    md_str_t                       run;
     vial_sys_t                  vs;
     vial_interp_t               in;
     md_system_extract_t*        ex;
@@ -61,11 +61,11 @@ struct md_vial_eval_t {
 };
 
 // The run's time axis, <run>/time, in ps where it has a unit, and its number of frames; NULL and 0 when it has none
-static double* run_times(const md_system_t* sys, str_t run, md_allocator_i* alloc, int64_t* num_frames) {
+static double* run_times(const md_system_t* sys, md_str_t run, md_allocator_i* alloc, int64_t* num_frames) {
     *num_frames = 0;
     char path[256];
     snprintf(path, sizeof(path), "%.*s/time", (int)run.len, run.ptr);
-    const md_attribute_t* time = md_attributes_find(&sys->attributes, str_from_cstr(path));
+    const md_attribute_t* time = md_attributes_find(&sys->attributes, md_str_from_cstr(path));
     if (!time || time->format.rank < 1) return NULL;
     const int64_t n = time->format.shape[0];
     double* times = md_alloc(alloc, (n ? n : 1) * sizeof(double));
@@ -80,12 +80,12 @@ static double* run_times(const md_system_t* sys, str_t run, md_allocator_i* allo
 
 static void publish_ranges(md_vial_eval_t* e);
 static void publish_held(md_vial_eval_t* e);
-static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_type_t* t, uint32_t inner);
+static vial_summary_t* summary_attrs(md_vial_eval_t* e, md_str_t name, const vial_type_t* t, uint32_t inner);
 
 static bool read_frame(md_vial_eval_t* e, md_system_extract_t** ex, md_system_state_t* state, md_allocator_i* alloc, int64_t index, vial_frame_t* out) {
     if (index < 0 || index >= e->num_frames) return false;
     if (!*ex) {
-        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+        const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
         *ex = md_system_extract_begin(e->sys, e->run, paths, 2, alloc);
         if (!*ex) return false;
     }
@@ -125,7 +125,7 @@ static const md_vial_output_t* held_from(const md_vial_eval_t* prev, const md_vi
     const md_vial_output_t* any = NULL;
     for (size_t i = 0; i < np; ++i) {
         if (po[i].fingerprint != out->fingerprint || po[i].selection) continue;
-        if (str_eq(po[i].name, out->name)) return &po[i];
+        if (md_str_eq(po[i].name, out->name)) return &po[i];
         if (!any) any = &po[i];
     }
     return any;
@@ -146,7 +146,7 @@ bool md_vial_eval_plan(md_vial_plan_t* out, size_t cap, const md_vial_eval_t* pr
             p.from = h->name;
             p.num_frames = (uint32_t)num_frames;
         } else {
-            for (size_t k = 0; k < np; ++k) if (str_eq(po[k].name, o[i].name)) p.status = MD_VIAL_PLAN_CHANGED;
+            for (size_t k = 0; k < np; ++k) if (md_str_eq(po[k].name, o[i].name)) p.status = MD_VIAL_PLAN_CHANGED;
             p.num_pending = o[i].stage == MD_VIAL_STAGE_STATIC ? 0 : (uint32_t)num_frames;
         }
         out[i] = p;
@@ -173,7 +173,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     e->prog = prog;
     e->ir = ir;
     e->sys = desc->sys;
-    e->run = str_copy(desc->run, arena);
+    e->run = md_str_copy(desc->run, arena);
     e->attributes.alloc = arena;
     // The run's frames, and their times
     e->times = run_times(desc->sys, e->run, arena, &e->num_frames);
@@ -183,7 +183,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     if (!vial_interp_init(&e->in, ir, &e->vs, desc->sys, alloc)) { md_arena_allocator_destroy(arena); return NULL; }
     // What an earlier evaluation of the same run holds: those outputs are published as it published them, and only
     // the others are computed
-    if (prev && prev->num_frames == e->num_frames && str_eq(prev->run, e->run)) {
+    if (prev && prev->num_frames == e->num_frames && md_str_eq(prev->run, e->run)) {
         const md_vial_output_t* o;
         const size_t n = md_vial_outputs(prog, &o);
         vial_ssa_t* roots = NULL;
@@ -193,7 +193,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
             char from[160] = "";
             if (h) {
                 snprintf(from, sizeof(from), "script/%.*s", (int)h->name.len, h->name.ptr);
-                at = md_attributes_find(&prev->attributes, str_from_cstr(from));
+                at = md_attributes_find(&prev->attributes, md_str_from_cstr(from));
             }
             if (at && at->data) {
                 eval_held_t hd = {0};
@@ -202,14 +202,14 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
                 void* data = md_alloc(arena, bytes ? bytes : 1);
                 memcpy(data, at->data, bytes);
                 hd.desc = (md_attribute_desc_t){.format = at->format, .flags = at->flags, .unit = at->unit,
-                                                .label = str_copy(o[i].name, arena), .data = data, .byte_size = bytes};
+                                                .label = md_str_copy(o[i].name, arena), .data = data, .byte_size = bytes};
                 md_array_push(e->held, hd, arena);
                 // And its summary, as it was
                 static const char* leaf[3] = {"/mean", "/variance", "/extent"};
                 for (int s = 0; s < 3; ++s) {
                     char sfrom[192];
                     snprintf(sfrom, sizeof(sfrom), "%s%s", from, leaf[s]);
-                    const md_attribute_t* sa = md_attributes_find(&prev->attributes, str_from_cstr(sfrom));
+                    const md_attribute_t* sa = md_attributes_find(&prev->attributes, md_str_from_cstr(sfrom));
                     if (!sa || !sa->data) continue;
                     eval_held_t sh = {0};
                     snprintf(sh.path, sizeof(sh.path), "%s%s", hd.path, leaf[s]);
@@ -225,10 +225,10 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         }
         // What is live: every output but the hidden ones and those taken over
         for (size_t k = 0; md_array_size(e->held) && k < md_array_size(ir->outputs); ++k) {
-            const str_t nm = ir->outputs[k].name;
+            const md_str_t nm = ir->outputs[k].name;
             if (ir->outputs[k].hidden) continue;
             bool held = false;
-            for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = str_eq(e->held[h].desc.label, nm);
+            for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = md_str_eq(e->held[h].desc.label, nm);
             if (!held) md_array_push(roots, ir->outputs[k].value, arena);
         }
         if (md_array_size(e->held)) vial_interp_only(&e->in, roots, md_array_size(roots));
@@ -330,10 +330,10 @@ static md_attribute_type_t attr_type(uint8_t dtype) {
 static void publish_held(md_vial_eval_t* e) {
     md_attributes_t* attrs = &e->attributes;
     const int64_t nf = e->num_frames;
-    if (nf > 0 && !md_attributes_find(attrs, STR_LIT("time"))) {
+    if (nf > 0 && !md_attributes_find(attrs, MD_STR_LIT("time"))) {
         const md_attribute_desc_t axis = {
-            .path = STR_LIT("time"), .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {(uint32_t)nf}},
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .label = STR_LIT("Frame"),
+            .path = MD_STR_LIT("time"), .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {(uint32_t)nf}},
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .label = MD_STR_LIT("Frame"),
         };
         const md_attribute_id_t id = md_attributes_create(attrs, &axis);
         double* ord = id ? md_attributes_data(attrs, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
@@ -341,7 +341,7 @@ static void publish_held(md_vial_eval_t* e) {
     }
     for (size_t i = 0; i < md_array_size(e->held); ++i) {
         md_attribute_desc_t d = e->held[i].desc;
-        d.path = str_from_cstr(e->held[i].path);
+        d.path = md_str_from_cstr(e->held[i].path);
         if (!md_attributes_find(attrs, d.path)) md_attributes_create(attrs, &d);
     }
 }
@@ -381,7 +381,7 @@ static void prepare(md_vial_eval_t* e) {
         if (!known) continue;
         char path[160];
         snprintf(path, sizeof(path), "script/%.*s", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t desc = {.path = str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
+        md_attribute_desc_t desc = {.path = md_str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
                                     .label = o->name, .format = {.type = at, .components = 1}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL};
         desc.format.shape[desc.format.rank++] = (uint32_t)nf;
         for (uint8_t d = 0; d < t->ndim; ++d) desc.format.shape[desc.format.rank++] = t->dims[d].n;
@@ -401,7 +401,7 @@ static void prepare(md_vial_eval_t* e) {
 
 // A per-frame population, float[n] with n > 1 at each frame (the caller tells), gets its summary over the members published beside it, as
 // v1's do: <path>/mean, /variance and /extent, made here with every frame NaN until written. NULL for any other.
-static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_type_t* t, uint32_t inner) {
+static vial_summary_t* summary_attrs(md_vial_eval_t* e, md_str_t name, const vial_type_t* t, uint32_t inner) {
     const int64_t nf = e->num_frames;
     if (nf <= 0 || t->dtype != VIAL_DT_FLOAT || inner < 2) return NULL;
     const md_unit_t unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none();
@@ -410,7 +410,7 @@ static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_t
     for (int i = 0; i < 3; ++i) {
         char path[192];
         snprintf(path, sizeof(path), "script/%.*s/%s", (int)name.len, name.ptr, leaf[i]);
-        md_attribute_desc_t d = {.path = str_from_cstr(path), .unit = i == 1 ? md_unit_mul(unit, unit) : unit, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        md_attribute_desc_t d = {.path = md_str_from_cstr(path), .unit = i == 1 ? md_unit_mul(unit, unit) : unit, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
                                  .format = {.type = attr_type(VIAL_DT_FLOAT), .components = i == 2 ? 2 : 1, .rank = 1, .shape = {(uint32_t)nf}}};
         const md_attribute_id_t id = md_attributes_replace(&e->attributes, &d);
         data[i] = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT)) : NULL;
@@ -425,16 +425,16 @@ static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_t
 
 // What places a volume and reads it: <path>/origin and /basis, Å, in the volume's frame; /bulk, in the volume's unit;
 // /samples
-static void publish_volume(md_vial_eval_t* e, str_t name, const vial_volume_t* vol, md_unit_t unit) {
+static void publish_volume(md_vial_eval_t* e, md_str_t name, const vial_volume_t* vol, md_unit_t unit) {
     md_unit_t length;
-    vial_unit_name(STR_LIT("angstrom"), &length);
+    vial_unit_name(MD_STR_LIT("angstrom"), &length);
     const struct { const char* leaf; uint32_t rank, shape0, shape1; md_unit_t unit; } a[4] = {
         {"origin", 1, 3, 0, length}, {"basis", 2, 3, 3, length}, {"bulk", 1, 1, 0, unit}, {"samples", 1, 1, 0, md_unit_none()},
     };
     for (int i = 0; i < 4; ++i) {
         char path[192];
         snprintf(path, sizeof(path), "script/%.*s/%s", (int)name.len, name.ptr, a[i].leaf);
-        md_attribute_desc_t d = {.path = str_from_cstr(path), .unit = a[i].unit,
+        md_attribute_desc_t d = {.path = md_str_from_cstr(path), .unit = a[i].unit,
                                  .format = {.type = attr_type(VIAL_DT_FLOAT64), .components = 1, .rank = a[i].rank, .shape = {a[i].shape0, a[i].shape1}}};
         const md_attribute_id_t id = md_attributes_replace(&e->attributes, &d);
         double* dst = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT64)) : NULL;
@@ -472,9 +472,9 @@ static void publish(md_vial_eval_t* e) {
         snprintf(path, sizeof(path), "script/%.*s", (int)o->name.len, o->name.ptr);
         if (e->in.stream && e->in.stream[o->value]) continue;            // written as frames finished
         bool held = false;
-        for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = str_eq(str_from_cstr(e->held[h].path), str_from_cstr(path));
+        for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = md_str_eq(md_str_from_cstr(e->held[h].path), md_str_from_cstr(path));
         if (held) continue;
-        md_attribute_desc_t desc = {.path = str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
+        md_attribute_desc_t desc = {.path = md_str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
                                     .label = o->name, .format = {.type = at, .components = 1}};
         const bool temporal = (per_frame || series_whole) && nf > 0;
         if (temporal) { desc.flags = MD_ATTRIBUTE_FLAG_TEMPORAL; desc.format.shape[desc.format.rank++] = (uint32_t)nf; }
@@ -519,12 +519,12 @@ static void publish_periods(md_vial_eval_t* e) {
         const md_unit_t unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none();
         char path[192];
         snprintf(path, sizeof(path), "script/%.*s/period", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t pd = {.path = str_from_cstr(path), .unit = unit, .format = {.type = attr_type(VIAL_DT_FLOAT), .components = 1, .rank = 1, .shape = {2}}};
+        md_attribute_desc_t pd = {.path = md_str_from_cstr(path), .unit = unit, .format = {.type = attr_type(VIAL_DT_FLOAT), .components = 1, .rank = 1, .shape = {2}}};
         md_attribute_id_t id = md_attributes_replace(&e->attributes, &pd);
         float* p = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT)) : NULL;
         if (p) { p[0] = t->period_beg; p[1] = t->period_end; }
         snprintf(path, sizeof(path), "script/%.*s/seam", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t sd = {.path = str_from_cstr(path), .unit = unit, .format = {.type = attr_type(VIAL_DT_FLOAT), .components = 1, .rank = 1, .shape = {1}}};
+        md_attribute_desc_t sd = {.path = md_str_from_cstr(path), .unit = unit, .format = {.type = attr_type(VIAL_DT_FLOAT), .components = 1, .rank = 1, .shape = {1}}};
         id = md_attributes_replace(&e->attributes, &sd);
         float* sm = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT)) : NULL;
         // In [beg, end[, as v1 keeps it: a seam at the end is the seam at the beginning
@@ -553,17 +553,17 @@ static void publish_labels(md_vial_eval_t* e) {
         const vial_sets_t* ss = d->sets;
         if (!ss || n == 0) continue;
         if (ss->single ? vial_sets_size(ss, 0) != n : (d->level == VIAL_LEVEL_NONE || !ss->unit || ss->count != n)) continue;
-        str_t* labels = md_alloc(e->arena, n * sizeof(str_t));
+        md_str_t* labels = md_alloc(e->arena, n * sizeof(md_str_t));
         for (uint32_t i = 0; i < n; ++i) {
             char buf[128];
             const size_t len = ss->single ? vial_unit_label(buf, sizeof(buf), &e->vs, VIAL_LEVEL_PARTICLE, vial_sets_items(ss, 0)[i])
                                           : vial_unit_label(buf, sizeof(buf), &e->vs, d->level, ss->unit[i]);
-            labels[i] = str_copy((str_t){buf, len}, e->arena);
+            labels[i] = md_str_copy((md_str_t){buf, len}, e->arena);
         }
         char path[192];
         snprintf(path, sizeof(path), "script/%.*s/labels", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t ld = {.path = str_from_cstr(path), .format = {.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = {n}},
-                                  .data = labels, .byte_size = n * sizeof(str_t)};
+        md_attribute_desc_t ld = {.path = md_str_from_cstr(path), .format = {.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = {n}},
+                                  .data = labels, .byte_size = n * sizeof(md_str_t)};
         md_attributes_replace(&e->attributes, &ld);
     }
 }
@@ -583,9 +583,9 @@ static void publish_ranges(md_vial_eval_t* e) {
         const vial_ir_op_t* h = &ir->ops[op];
         vial_ssa_t rs = 0, xs = 0;
         for (uint32_t a = 0; a < h->num_args; ++a) {
-            const str_t nm = ir->names ? ir->names[h->arg_beg + a] : (str_t){0};
-            if (str_eq(nm, STR_LIT("range"))) rs = ir->args[h->arg_beg + a];
-            else if (str_eq(nm, STR_LIT("x")) || (!nm.len && a == 0)) xs = ir->args[h->arg_beg + a];
+            const md_str_t nm = ir->names ? ir->names[h->arg_beg + a] : (md_str_t){0};
+            if (md_str_eq(nm, MD_STR_LIT("range"))) rs = ir->args[h->arg_beg + a];
+            else if (md_str_eq(nm, MD_STR_LIT("x")) || (!nm.len && a == 0)) xs = ir->args[h->arg_beg + a];
         }
         // A constant, read from the IR, so it is known before anything is evaluated; else what the run computed
         double lohi[2];
@@ -622,7 +622,7 @@ static void publish_ranges(md_vial_eval_t* e) {
         const vial_type_t* xt = xs ? &ir->values[xs].type : NULL;
         char path[192];
         snprintf(path, sizeof(path), "script/%.*s/range", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t desc = {.path = str_from_cstr(path), .unit = xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none(),
+        md_attribute_desc_t desc = {.path = md_str_from_cstr(path), .unit = xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none(),
                                     .format = {.type = attr_type(VIAL_DT_FLOAT64), .components = 1, .rank = 1, .shape = {2}}};
         const md_attribute_id_t id = md_attributes_replace(&e->attributes, &desc);
         double* dst = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT64)) : NULL;
@@ -638,7 +638,7 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
     md_array_shrink(e->diags, 0);
     for (size_t i = 0; i < md_array_size(e->in.errors); ++i) {
         const vial_rt_error_t* r = &e->in.errors[i];
-        md_vial_diagnostic_t d = {.severity = MD_VIAL_SEVERITY_RUNTIME, .span = r->span, .message = str_copy(str_from_cstr(r->message), e->arena)};
+        md_vial_diagnostic_t d = {.severity = MD_VIAL_SEVERITY_RUNTIME, .span = r->span, .message = md_str_copy(md_str_from_cstr(r->message), e->arena)};
         memcpy(d.code, r->code, 6);
         md_array_push(e->diags, d, e->arena);
     }
@@ -650,7 +650,7 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
     return ok && !e->in.interrupted;
 }
 
-size_t md_vial_eval_output_frames(const md_vial_eval_t* e, str_t name, uint8_t* out, size_t cap) {
+size_t md_vial_eval_output_frames(const md_vial_eval_t* e, md_str_t name, uint8_t* out, size_t cap) {
     if (!e) return 0;
     const size_t nf = e->num_frames > 0 ? (size_t)e->num_frames : 0;
     if (!out || cap < nf) return nf;
@@ -658,11 +658,11 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* e, str_t name, uint8_t* 
     char path[160];
     snprintf(path, sizeof(path), "script/%.*s", (int)name.len, name.ptr);
     for (size_t h = 0; h < md_array_size(e->held); ++h) {
-        if (str_eq(str_from_cstr(e->held[h].path), str_from_cstr(path))) { memset(out, 1, nf); return nf; }
+        if (md_str_eq(md_str_from_cstr(e->held[h].path), md_str_from_cstr(path))) { memset(out, 1, nf); return nf; }
     }
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
-        if (!str_eq(ir->outputs[k].name, name)) continue;
+        if (!md_str_eq(ir->outputs[k].name, name)) continue;
         const uint32_t op = ir->values[ir->outputs[k].value].op;
         const vial_interp_t* in = &e->in;
         if (md_atomic_load64(&e->done)) { memset(out, 1, nf); return nf; }
@@ -677,7 +677,7 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* e, str_t name, uint8_t* 
 // A reader of the run of its own, as hover and the volumes over chosen frames read it
 typedef struct hover_frames_t {
     const md_system_t*      sys;
-    str_t                   run;
+    md_str_t                   run;
     const double*           times;
     int64_t                 num_frames;
     md_system_extract_t*    ex;
@@ -689,7 +689,7 @@ static bool hover_load(void* user, int64_t index, vial_frame_t* out) {
     hover_frames_t* h = user;
     if (index < 0 || index >= h->num_frames) return false;
     if (!h->ex) {
-        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+        const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
         h->ex = md_system_extract_begin(h->sys, h->run, paths, 2, h->alloc);
         if (!h->ex) return false;
     }
@@ -699,11 +699,11 @@ static bool hover_load(void* user, int64_t index, vial_frame_t* out) {
     return true;
 }
 
-size_t md_vial_eval_aggregate(const md_vial_eval_t* e, str_t name, const uint8_t* frames, float* out, size_t cap) {
+size_t md_vial_eval_aggregate(const md_vial_eval_t* e, md_str_t name, const uint8_t* frames, float* out, size_t cap) {
     if (!e || !frames || !md_atomic_load64(&e->done)) return 0;
     const vial_ir_t* ir = e->ir;
     vial_ssa_t v = 0;
-    for (size_t k = 0; k < md_array_size(ir->outputs) && !v; ++k) if (str_eq(ir->outputs[k].name, name)) v = ir->outputs[k].value;
+    for (size_t k = 0; k < md_array_size(ir->outputs) && !v; ++k) if (md_str_eq(ir->outputs[k].name, name)) v = ir->outputs[k].value;
     if (!v) return 0;
     const vial_volume_t* vol = vial_interp_volume(&e->in, v);
     if (vol) {
@@ -760,7 +760,7 @@ static void point_free(point_t* pt) {
 
 // v at frame of the run, or at the coordinates of state when given, which are then that frame's; at most 16 million
 // entries. While drawing, what it draws is attached (vial_val_t.drawn).
-static const vial_val_t* point_eval(point_t* pt, const md_vial_program_t* prog, const md_system_t* sys, str_t run, const double* times,
+static const vial_val_t* point_eval(point_t* pt, const md_vial_program_t* prog, const md_system_t* sys, md_str_t run, const double* times,
                                     int64_t num_frames, int64_t frame, const md_system_state_t* state, vial_ssa_t v, bool draw) {
     memset(pt, 0, sizeof(*pt));
     const vial_ir_t* ir = md_vial__ir(prog);
@@ -883,7 +883,7 @@ static void draw_spheres(draw_out_t* o) {
 
 static void draw_label(draw_out_t* o, const float pos[3], uint32_t element, const vial_prim_t* p) {
     if (!draw_room(o)) return;
-    md_vial_label_t l = {.pos = {pos[0], pos[1], pos[2]}, .element = element, .text = str_copy(p->text, o->alloc), .value = p->value, .unit = p->unit};
+    md_vial_label_t l = {.pos = {pos[0], pos[1], pos[2]}, .element = element, .text = md_str_copy(p->text, o->alloc), .value = p->value, .unit = p->unit};
     md_array_push(o->d->labels, l, o->alloc);
 }
 
@@ -939,7 +939,7 @@ static void draw_by_type(draw_out_t* o, const vial_val_t* v, const vial_type_t* 
         return;
     }
     md_unit_t length;
-    vial_unit_name(STR_LIT("angstrom"), &length);
+    vial_unit_name(MD_STR_LIT("angstrom"), &length);
     const bool pts = (v->dtype == VIAL_DT_FLOAT || v->dtype == VIAL_DT_FLOAT64) && v->ndim >= 1 && v->dims[v->ndim - 1] == 3 && v->data &&
                      t->unit_kind == VIAL_UNIT_KNOWN && md_unit_base_equal(t->unit, length);
     o->d->num_elements = pts ? n / 3 : n;
@@ -1130,7 +1130,7 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
 #define FILTER_HEAD "_filter = (\n"
 
 // Whether expr reads name: as a word of its own
-static bool expr_reads(str_t expr, str_t name) {
+static bool expr_reads(md_str_t expr, md_str_t name) {
     for (size_t i = 0; name.len && i + name.len <= expr.len; ++i) {
         if (strncmp(expr.ptr + i, name.ptr, name.len)) continue;
         const char a = i ? expr.ptr[i - 1] : ' ', z = i + name.len < expr.len ? expr.ptr[i + name.len] : ' ';
@@ -1143,7 +1143,7 @@ static bool expr_reads(str_t expr, str_t name) {
 
 // A selection of the program as a filter reads it by name: one set, or an array of them of one or two dimensions. copy:
 // the value does not outlive the call (a recipe's), so its particles are copied.
-static bool named_set_of(md_vial_named_set_t* ns, str_t name, const vial_val_t* v, md_allocator_i* arena, bool copy) {
+static bool named_set_of(md_vial_named_set_t* ns, md_str_t name, const vial_val_t* v, md_allocator_i* arena, bool copy) {
     if (v->dtype != VIAL_DT_SET || !v->sets || v->ndim > 2) return false;
     const vial_sets_t* s = v->sets;
     uint32_t count = 1;
@@ -1172,7 +1172,7 @@ static bool named_set_of(md_vial_named_set_t* ns, str_t name, const vial_val_t* 
 
 // The expression as a statement of its own, with the stored selections and the program's selections as names: its
 // static ones, and the recipes it reads, evaluated at the coordinates given, which make it dynamic
-static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* arena, bool* reads_recipe) {
+static md_vial_program_t* filter_compile(md_str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* arena, bool* reads_recipe) {
     if (reads_recipe) *reads_recipe = false;
     md_vial_named_set_t* sets = NULL;
     for (size_t i = 0; i < desc->num_sets && desc->sets; ++i) md_array_push(sets, desc->sets[i], arena);
@@ -1183,7 +1183,7 @@ static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t
         for (size_t i = 0; ir && i < n; ++i) {
             if (!o[i].selection || (o[i].stage != MD_VIAL_STAGE_STATIC && o[i].stage != MD_VIAL_STAGE_FRAME)) continue;
             bool taken = false;
-            for (size_t k = 0; k < md_array_size(sets); ++k) taken |= str_eq(sets[k].name, o[i].name);
+            for (size_t k = 0; k < md_array_size(sets); ++k) taken |= md_str_eq(sets[k].name, o[i].name);
             if (taken) continue;
             const vial_ssa_t v = md_vial__hover_value(desc->prog, o[i].span.beg, NULL);
             if (!v || v >= md_array_size(ir->values) || ir->values[v].op == VIAL_IR_NO_OP) continue;
@@ -1212,10 +1212,10 @@ static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t
     if (expr.len) memcpy(src + head, expr.ptr, expr.len);
     memcpy(src + head + expr.len, "\n)\n", 3);
     const md_vial_compile_desc_t cd = {.sys = desc->sys, .run = desc->run, .sets = sets, .num_sets = md_array_size(sets)};
-    return md_vial_compile((str_t){src, head + expr.len + 3}, &cd, arena);
+    return md_vial_compile((md_str_t){src, head + expr.len + 3}, &cd, arena);
 }
 
-static bool filter_fail(md_vial_filter_t* out, md_allocator_i* alloc, str_t expr, const char code[6], md_vial_span_t span, uint32_t base, const char* fmt, ...) {
+static bool filter_fail(md_vial_filter_t* out, md_allocator_i* alloc, md_str_t expr, const char code[6], md_vial_span_t span, uint32_t base, const char* fmt, ...) {
     out->ok = false;
     memcpy(out->error.code, code, 5);
     out->error.severity = code[0] == 'R' ? MD_VIAL_SEVERITY_RUNTIME : MD_VIAL_SEVERITY_ERROR;
@@ -1226,17 +1226,17 @@ static bool filter_fail(md_vial_filter_t* out, md_allocator_i* alloc, str_t expr
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    out->error.message = str_copy(str_from_cstr(buf), alloc);
+    out->error.message = md_str_copy(md_str_from_cstr(buf), alloc);
     return false;
 }
 
-bool md_vial_filter(md_vial_filter_t* out, str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
+bool md_vial_filter(md_vial_filter_t* out, md_str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     const uint32_t base = (uint32_t)(sizeof(FILTER_HEAD) - 1);
     const md_vial_span_t whole = {0, 0};
     if (!desc || !desc->sys || !alloc) return filter_fail(out, alloc ? alloc : md_get_heap_allocator(), expr, "E0101", whole, base, "no system");
-    if (str_empty(str_trim(expr))) return filter_fail(out, alloc, expr, "E0101", whole, base, "the filter is empty");
+    if (md_str_empty(md_str_trim(expr))) return filter_fail(out, alloc, expr, "E0101", whole, base, "the filter is empty");
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool reads_recipe = false;
     md_vial_program_t* fp = filter_compile(expr, desc, arena, &reads_recipe);
@@ -1329,7 +1329,7 @@ done:
     return ok;
 }
 
-bool md_vial_filter_complete(md_vial_completions_t* out, str_t expr, uint32_t cursor, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
+bool md_vial_filter_complete(md_vial_completions_t* out, md_str_t expr, uint32_t cursor, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     if (!desc || !desc->sys || !alloc || cursor > expr.len) return false;
@@ -1342,7 +1342,7 @@ bool md_vial_filter_complete(md_vial_completions_t* out, str_t expr, uint32_t cu
         out->span.end = out->span.end >= base ? MD_MIN(out->span.end - base, (uint32_t)expr.len) : 0;
         // The statement's own name is no name to write
         size_t k = 0;
-        for (size_t i = 0; i < out->count; ++i) if (!str_eq(out->items[i].label, STR_LIT("_filter"))) out->items[k++] = out->items[i];
+        for (size_t i = 0; i < out->count; ++i) if (!md_str_eq(out->items[i].label, MD_STR_LIT("_filter"))) out->items[k++] = out->items[i];
         out->count = k;
     }
     if (fp) md_vial_program_free(fp);

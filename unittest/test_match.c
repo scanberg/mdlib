@@ -46,15 +46,15 @@ static md_system_t* get_sys(sys_id_t id) {
         s->alloc  = alloc;
         st->alloc = alloc;
         switch (id) {
-        case SYS_ALA:      md_pdb_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
-        case SYS_PFTAA:    md_gro_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL); break;
-        case SYS_CENTERED: md_gro_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL); break;
-        case SYS_DNA:      md_gro_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL); break;
-        case SYS_1K4R:     md_pdb_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
-        case SYS_1FEZ:     md_mmcif_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL); break;
-        case SYS_2OR2:     md_mmcif_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL); break;
-        case SYS_TUBULIN:  md_pdb_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
-        case SYS_TIP4P:    md_gro_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
+        case SYS_ALA:      md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
+        case SYS_PFTAA:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL); break;
+        case SYS_CENTERED: md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL); break;
+        case SYS_DNA:      md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL); break;
+        case SYS_1K4R:     md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
+        case SYS_1FEZ:     md_mmcif_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL); break;
+        case SYS_2OR2:     md_mmcif_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL); break;
+        case SYS_TUBULIN:  md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
+        case SYS_TIP4P:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
         default: break;
         }
         md_util_system_infer(s, st, MD_UTIL_INFER_ALL, NULL);
@@ -81,7 +81,7 @@ static size_t count_smiles_ex(const char* smiles, const md_match_desc_t* base, c
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t query = {0};
     md_smiles_error_t err = {0};
-    if (!md_match_query_init_smiles(&query, str_from_cstr(smiles), alloc, &err)) {
+    if (!md_match_query_init_smiles(&query, md_str_from_cstr(smiles), alloc, &err)) {
         printf("SMILES error in '%s' at %zu: %s\n", smiles, err.offset, err.message);
         return SIZE_MAX;
     }
@@ -120,7 +120,7 @@ UTEST(match, smiles_parse) {
     md_smiles_t g = {0};
     md_smiles_error_t err = {0};
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("C1=CC=CC=C1"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("C1=CC=CC=C1"), alloc, &err));
     EXPECT_EQ(6, (int)g.num_atoms);
     EXPECT_EQ(6, (int)g.num_bonds);
     EXPECT_EQ(1, (int)g.num_components);
@@ -135,7 +135,7 @@ UTEST(match, smiles_parse) {
     // The bond of a ring closure, on either side, belongs to the ring bond and not to the next atom
     const char* ring_double[] = {"C=1CCCCC1", "C1CCCCC=1", "C=1CCCCC=1"};
     for (size_t i = 0; i < MD_COUNTOF(ring_double); ++i) {
-        ASSERT_TRUE(md_smiles_parse(&g, str_from_cstr(ring_double[i]), alloc, &err));
+        ASSERT_TRUE(md_smiles_parse(&g, md_str_from_cstr(ring_double[i]), alloc, &err));
         ASSERT_EQ(6, (int)g.num_bonds);
         int num_double = 0;
         for (size_t b = 0; b < g.num_bonds; ++b) num_double += g.bonds[b].order == MD_SMILES_BOND_DOUBLE;
@@ -144,7 +144,7 @@ UTEST(match, smiles_parse) {
         md_smiles_free(&g);
     }
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("[13CH3:2][NH3+]"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("[13CH3:2][NH3+]"), alloc, &err));
     EXPECT_EQ(6,  g.atoms[0].z);
     EXPECT_EQ(13, g.atoms[0].isotope);
     EXPECT_EQ(3,  g.atoms[0].h_count);
@@ -155,7 +155,7 @@ UTEST(match, smiles_parse) {
     EXPECT_EQ(1,  g.atoms[1].charge);
     md_smiles_free(&g);
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("[Fe++].[O--].[Cu+2].[Cl-]"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("[Fe++].[O--].[Cu+2].[Cl-]"), alloc, &err));
     EXPECT_EQ(4, (int)g.num_components);
     EXPECT_EQ(0, (int)g.num_bonds);
     EXPECT_EQ(2,  g.atoms[0].charge);
@@ -166,24 +166,24 @@ UTEST(match, smiles_parse) {
     md_smiles_free(&g);
 
     // A ring bond joins the parts on either side of a '.'
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("C1.C1"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("C1.C1"), alloc, &err));
     EXPECT_EQ(1, (int)g.num_bonds);
     EXPECT_EQ(1, (int)g.num_components);
     md_smiles_free(&g);
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("c1cc[nH]c1"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("c1cc[nH]c1"), alloc, &err));
     EXPECT_TRUE(g.atoms[0].flags & MD_SMILES_ATOM_AROMATIC);
     EXPECT_EQ(7, g.atoms[3].z);
     EXPECT_EQ(1, g.atoms[3].h_count);
     EXPECT_TRUE(g.atoms[3].flags & MD_SMILES_ATOM_AROMATIC);
     md_smiles_free(&g);
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("[se]1cccc1"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("[se]1cccc1"), alloc, &err));
     EXPECT_EQ(34, g.atoms[0].z);
     EXPECT_TRUE(g.atoms[0].flags & MD_SMILES_ATOM_AROMATIC);
     md_smiles_free(&g);
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("ClCBr.[Sc].[Cs].[C@@H](F)(Cl)Br.*C"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("ClCBr.[Sc].[Cs].[C@@H](F)(Cl)Br.*C"), alloc, &err));
     EXPECT_EQ(17, g.atoms[0].z);
     EXPECT_EQ(6,  g.atoms[1].z);
     EXPECT_EQ(35, g.atoms[2].z);
@@ -193,12 +193,12 @@ UTEST(match, smiles_parse) {
     EXPECT_EQ(0,  g.atoms[9].z);
     md_smiles_free(&g);
 
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("C%10CCCCC%10"), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("C%10CCCCC%10"), alloc, &err));
     EXPECT_EQ(6, (int)g.num_bonds);
     md_smiles_free(&g);
 
     // Branches, and offsets which count from the string as given, surrounding whitespace included
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("  CC(=O)O  "), alloc, &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("  CC(=O)O  "), alloc, &err));
     ASSERT_EQ(4, (int)g.num_atoms);
     ASSERT_EQ(3, (int)g.num_bonds);
     EXPECT_EQ(2, (int)g.atoms[0].offset);
@@ -239,7 +239,7 @@ UTEST(match, smiles_errors) {
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_smiles_t g = {0};
         md_smiles_error_t err = {0};
-        const bool ok = md_smiles_parse(&g, str_from_cstr(cases[i].str), alloc, &err);
+        const bool ok = md_smiles_parse(&g, md_str_from_cstr(cases[i].str), alloc, &err);
         EXPECT_FALSE_MSG(ok, cases[i].str);
         EXPECT_EQ_MSG(cases[i].offset, err.offset, cases[i].str);
         EXPECT_NE_MSG('\0', err.message[0], cases[i].str);
@@ -252,7 +252,7 @@ UTEST(match, smiles_errors) {
 UTEST(match, query_from_smiles) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("c1ccccc1C(=O)[O-]"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("c1ccccc1C(=O)[O-]"), alloc, NULL));
     ASSERT_EQ(9, (int)q.num_atoms);
     ASSERT_EQ(9, (int)q.num_bonds);
     // Organic subset atoms leave hydrogens and charge open, bracket atoms fix them
@@ -269,30 +269,30 @@ UTEST(match, query_from_smiles) {
     md_match_query_free(&q);
 
     // Hydrogens written as atoms count towards the bracket atom they are bonded to
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("N[C@@]([H])(C)C=O"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("N[C@@]([H])(C)C=O"), alloc, NULL));
     EXPECT_EQ(1, q.atoms[1].h_min);
     EXPECT_EQ(1, q.atoms[1].h_max);
     md_match_query_free(&q);
 
     // In a SMILES which writes aromatic atoms lowercase, the uppercase atoms outside of rings are aliphatic. Those in
     // rings are not held to it, and neither is anything in a SMILES without lowercase atoms.
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("Cc1ccccc1C1CC1"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("Cc1ccccc1C1CC1"), alloc, NULL));
     EXPECT_TRUE (q.atoms[0].flags & MD_MATCH_ATOM_ALIPHATIC);
     EXPECT_TRUE (q.atoms[1].flags & MD_MATCH_ATOM_AROMATIC);
     EXPECT_FALSE(q.atoms[1].flags & MD_MATCH_ATOM_ALIPHATIC);
     for (int i = 7; i < 10; ++i) EXPECT_FALSE(q.atoms[i].flags & (MD_MATCH_ATOM_ALIPHATIC | MD_MATCH_ATOM_AROMATIC));
     md_match_query_free(&q);
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("CC1=CC=CC=C1"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("CC1=CC=CC=C1"), alloc, NULL));
     for (size_t i = 0; i < q.num_atoms; ++i) EXPECT_FALSE(q.atoms[i].flags & MD_MATCH_ATOM_ALIPHATIC);
     md_match_query_free(&q);
     // A ring bond across a '.' closes no ring
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("C1.C1c1ccccc1"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("C1.C1c1ccccc1"), alloc, NULL));
     EXPECT_TRUE(q.atoms[0].flags & MD_MATCH_ATOM_ALIPHATIC);
     EXPECT_TRUE(q.atoms[1].flags & MD_MATCH_ATOM_ALIPHATIC);
     md_match_query_free(&q);
 
     // Atom classes are tags
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("OC(=O)[CH:1](C)[NH2:2]"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("OC(=O)[CH:1](C)[NH2:2]"), alloc, NULL));
     EXPECT_EQ(0, q.atoms[0].tag);
     EXPECT_EQ(1, q.atoms[3].tag);
     EXPECT_EQ(2, q.atoms[5].tag);
@@ -300,7 +300,7 @@ UTEST(match, query_from_smiles) {
 
     // A bracket that only adds a class to an organic subset atom leaves hydrogens and charge open, as tagging must not
     // change what an atom matches; one that writes H, a charge or an isotope, or an element outside the subset, states them
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("[C:1](=O)[N:2][CH1:3][O-:4][Fe:5][13C:6][c:7][*:8]"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("[C:1](=O)[N:2][CH1:3][O-:4][Fe:5][13C:6][c:7][*:8]"), alloc, NULL));
     EXPECT_FALSE(q.atoms[0].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
     EXPECT_FALSE(q.atoms[2].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
     EXPECT_TRUE (q.atoms[3].flags & MD_MATCH_ATOM_HCOUNT);
@@ -317,7 +317,7 @@ UTEST(match, query_from_smiles) {
 
     // A syntax error reaches the caller
     md_smiles_error_t err = {0};
-    EXPECT_FALSE(md_match_query_init_smiles(&q, STR_LIT("CC(C"), alloc, &err));
+    EXPECT_FALSE(md_match_query_init_smiles(&q, MD_STR_LIT("CC(C"), alloc, &err));
     EXPECT_EQ(2, (int)err.offset);
     EXPECT_EQ(0, (int)q.num_atoms);
 }
@@ -406,7 +406,7 @@ UTEST(match, modes) {
     // Each mapping of ALL is reported once
     md_match_query_t q = {0};
     md_allocator_i* alloc = md_get_heap_allocator();
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("c1cccs1"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("c1cccs1"), alloc, NULL));
     md_match_desc_t all = {.query = &q, .mode = MD_MATCH_MODE_ALL};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &all, sys, alloc));
@@ -466,7 +466,7 @@ static bool stop_after_two(const int32_t* atom_idx, size_t width, uint32_t unit,
 UTEST(match, callback_stops) {
     const md_system_t* sys = get_sys(SYS_PFTAA);
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("C"), md_get_heap_allocator(), NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("C"), md_get_heap_allocator(), NULL));
     md_match_desc_t desc = {.query = &q};
     int n = 0;
     EXPECT_EQ(2, (int)count_matches(&desc, sys, stop_after_two, &n));
@@ -479,7 +479,7 @@ UTEST(match, callback_stops) {
 UTEST(match, max_steps) {
     const md_system_t* sys = get_sys(SYS_ALA);
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("C.C"), md_get_heap_allocator(), NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("C.C"), md_get_heap_allocator(), NULL));
     md_match_desc_t desc = {.query = &q};
 
     size_t count = 0;
@@ -560,7 +560,7 @@ UTEST(match, hydrogens) {
     // Query hydrogens are mapped, not searched: one match per methyl and its own hydrogens in the row
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("[H]C([H])([H])C"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("[H]C([H])([H])C"), alloc, NULL));
     md_match_desc_t desc = {.query = &q, .mode = MD_MATCH_MODE_ALL};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, ala, alloc));
@@ -589,7 +589,7 @@ UTEST(match, hydrogens) {
     md_match_query_free(&q);
 
     // Selection with the hydrogens of the matched atoms
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("[CH3]"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("[CH3]"), alloc, NULL));
     desc.mode = MD_MATCH_MODE_UNIQUE;
     ASSERT_TRUE(md_match_find(&res, &desc, ala, alloc));
     md_bitset_t bf[2] = {0};
@@ -622,7 +622,7 @@ UTEST(match, bracket_hydrogens) {
 UTEST(match, aliphatic) {
     const md_system_t* sys = get_sys(SYS_DNA);
     size_t num_his = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) num_his += str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "HIS");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_his += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "HIS");
     ASSERT_LT(0, (int)num_his);
 
     // The imidazole of a histidine with the carbon it hangs from. A purine has an imidazole too, but the carbon next
@@ -639,8 +639,8 @@ UTEST(match, protonation) {
     const md_system_t* sys = get_sys(SYS_TUBULIN);
     size_t num_acid = 0;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const str_t name = LBL_TO_STR(sys->residue.name[i]);
-        num_acid += str_eq_cstr(name, "ASP") || str_eq_cstr(name, "GLU");
+        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+        num_acid += md_str_eq_cstr(name, "ASP") || md_str_eq_cstr(name, "GLU");
     }
     ASSERT_LT(0, (int)num_acid);
 
@@ -674,13 +674,13 @@ UTEST(match, resonance) {
     const md_system_t* sys = get_sys(SYS_TUBULIN);
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("NC(=[NH2+])N"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("NC(=[NH2+])N"), alloc, NULL));
     md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     size_t num_arg = 0, num_found = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) num_arg += str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "ARG");
-    for (size_t i = 0; i < res.count; ++i) num_found += str_eq_cstr(LBL_TO_STR(sys->residue.name[res.unit[i]]), "ARG");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_arg += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "ARG");
+    for (size_t i = 0; i < res.count; ++i) num_found += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[res.unit[i]]), "ARG");
     EXPECT_LT(0, (int)num_arg);
     EXPECT_EQ(num_arg, num_found);
     md_match_result_free(&res);
@@ -696,7 +696,7 @@ UTEST(match, coordination) {
     const char* gtp = "NC1=NC2=C(N=CN2C2OC(COP(=O)(O)OP(=O)(O)OP(=O)(O)O)C(O)C2O)C(=O)N1";
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, str_from_cstr(gtp), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, md_str_from_cstr(gtp), alloc, NULL));
     md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_MOLECULE, .flags = MD_MATCH_FLAG_WHOLE};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
@@ -719,7 +719,7 @@ UTEST(match, molecules) {
     const md_system_t* sys = get_sys(SYS_ALA);
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("O"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("O"), alloc, NULL));
     md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_MOLECULE};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
@@ -736,7 +736,7 @@ UTEST(match, molecules) {
     // molecule over the residues missing from it
     const md_system_t* tub = get_sys(SYS_TUBULIN);
     md_match_query_t aa = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&aa, STR_LIT("NCC=O"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&aa, MD_STR_LIT("NCC=O"), alloc, NULL));
     md_match_desc_t aa_desc = {.query = &aa, .level = MD_MATCH_LEVEL_MOLECULE};
     md_match_result_t aa_res = {0};
     ASSERT_TRUE(md_match_find(&aa_res, &aa_desc, tub, alloc));
@@ -762,7 +762,7 @@ UTEST(match, virtual_sites) {
     // residues
     const md_system_t* sys = get_sys(SYS_TIP4P);
     size_t num_sol = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) num_sol += str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "SOL");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_sol += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "SOL");
     ASSERT_LT(0, (int)num_sol);
     md_match_desc_t desc = {.flags = MD_MATCH_FLAG_WHOLE};
     desc.level = MD_MATCH_LEVEL_MOLECULE;
@@ -784,9 +784,9 @@ UTEST(match, whole) {
     // Glycine is part of every amino acid
     size_t num_aa = 0, num_gly = 0;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const str_t name = LBL_TO_STR(sys->residue.name[i]);
+        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
         if (md_util_resname_amino_acid(name)) num_aa++;
-        if (str_eq_cstr(name, "GLY")) {
+        if (md_str_eq_cstr(name, "GLY")) {
             // Without its C terminal oxygen
             size_t heavy = 0;
             const md_urange_t range = md_system_residue_atom_range(sys, i);
@@ -813,15 +813,15 @@ UTEST(match, mask) {
     size_t num_rings = 0, num_rings_chain0 = 0;
     const md_urange_t chain0 = md_system_instance_atom_range(sys, 0);
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const str_t name = LBL_TO_STR(sys->residue.name[i]);
-        if (str_eq_cstr(name, "PHE") || str_eq_cstr(name, "TYR")) {
+        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+        if (md_str_eq_cstr(name, "PHE") || md_str_eq_cstr(name, "TYR")) {
             num_rings++;
             num_rings_chain0 += md_system_residue_atom_range(sys, i).beg >= chain0.beg && md_system_residue_atom_range(sys, i).end <= chain0.end;
         }
     }
 
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("c1ccccc1"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("c1ccccc1"), alloc, NULL));
     md_match_desc_t desc = {.query = &q};
     EXPECT_EQ(num_rings, count_matches(&desc, sys, NULL, NULL));
 
@@ -910,7 +910,7 @@ UTEST(match, reference_identity) {
     for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         const md_system_t* sys = get_sys(cases[c].id);
         for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-            if (!str_eq_cstr(LBL_TO_STR(sys->residue.name[ci]), cases[c].name)) continue;
+            if (!md_str_eq_cstr(LBL_TO_STR(sys->residue.name[ci]), cases[c].name)) continue;
             const md_urange_t range = md_system_residue_atom_range(sys, ci);
             md_array(int32_t) ref = 0;
             for (uint32_t i = range.beg; i < range.end; ++i) md_array_push(ref, (int32_t)i, alloc);
@@ -991,7 +991,7 @@ UTEST(match, reference_names) {
     int32_t cb = -1;
     const md_urange_t range = md_system_residue_atom_range(sys, 4);
     for (uint32_t i = range.beg; i < range.end; ++i) {
-        if (str_eq_cstr(md_atom_name(&sys->atom, i), "CB")) cb = (int32_t)i;
+        if (md_str_eq_cstr(md_atom_name(&sys->atom, i), "CB")) cb = (int32_t)i;
     }
     ASSERT_LE(0, cb);
 
@@ -1009,7 +1009,7 @@ UTEST(match, reference_names) {
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     EXPECT_EQ(15, (int)res.count);
     for (size_t i = 0; i < res.count; ++i) {
-        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys->atom, res.atom_idx[i]), "CB"));
+        EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys->atom, res.atom_idx[i]), "CB"));
     }
     md_match_result_free(&res);
     md_match_query_free(&q);
@@ -1058,9 +1058,9 @@ static const residue_pattern_t residue_patterns[] = {
 
 #undef AA
 
-static bool residue_kind(str_t name, const char* kind) {
-    if (str_eq_cstr(name, "SOL") || str_eq_cstr(name, "WAT")) name = STR_LIT("HOH");
-    return str_eq_cstr(name, kind);
+static bool residue_kind(md_str_t name, const char* kind) {
+    if (md_str_eq_cstr(name, "SOL") || md_str_eq_cstr(name, "WAT")) name = MD_STR_LIT("HOH");
+    return md_str_eq_cstr(name, kind);
 }
 
 static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
@@ -1077,7 +1077,7 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
         for (size_t v = 0; v < MD_COUNTOF(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
             md_match_query_t q = {0};
             md_smiles_error_t err = {0};
-            if (!md_match_query_init_smiles(&q, str_from_cstr(residue_patterns[p].smiles[v]), alloc, &err)) {
+            if (!md_match_query_init_smiles(&q, md_str_from_cstr(residue_patterns[p].smiles[v]), alloc, &err)) {
                 printf("%s: %s at %zu\n", residue_patterns[p].smiles[v], err.message, err.offset);
                 *utest_result = UTEST_TEST_FAILURE;
                 continue;
@@ -1102,19 +1102,19 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
 
     size_t num_missed = 0, num_wrong = 0, num_known = 0;
     for (size_t i = 0; i < num_res; ++i) {
-        const str_t name = LBL_TO_STR(sys->residue.name[i]);
+        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
         int expected = -1;
         for (size_t p = 0; p < num_pat; ++p) {
             if (residue_kind(name, residue_patterns[p].name)) expected = (int)p;
         }
         num_known += expected >= 0;
         if (matched[i] >= 0 && matched[i] != expected) {
-            if (num_wrong < 8) printf("Residue %zu '" STR_FMT "' matched as %s\n", i + 1, STR_ARG(name), matched[i] >= 0 ? residue_patterns[matched[i]].name : "several");
+            if (num_wrong < 8) printf("Residue %zu '" MD_STR_FMT "' matched as %s\n", i + 1, MD_STR_ARG(name), matched[i] >= 0 ? residue_patterns[matched[i]].name : "several");
             num_wrong++;
         } else if (matched[i] == -2) {
             num_wrong++;
         } else if (expected >= 0 && matched[i] != expected) {
-            if (complete && num_missed < 8) printf("Residue %zu '" STR_FMT "' not matched\n", i + 1, STR_ARG(name));
+            if (complete && num_missed < 8) printf("Residue %zu '" MD_STR_FMT "' not matched\n", i + 1, MD_STR_ARG(name));
             num_missed++;
         }
     }
@@ -1144,7 +1144,7 @@ static md_match_library_t* residue_library(md_allocator_i* alloc) {
     md_match_library_t* lib = md_match_library_create(alloc);
     for (size_t p = 0; p < MD_COUNTOF(residue_patterns); ++p) {
         for (size_t v = 0; v < MD_COUNTOF(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
-            md_match_library_add_smiles(lib, str_from_cstr(residue_patterns[p].smiles[v]), str_from_cstr(residue_patterns[p].name), NULL);
+            md_match_library_add_smiles(lib, md_str_from_cstr(residue_patterns[p].smiles[v]), md_str_from_cstr(residue_patterns[p].name), NULL);
         }
     }
     return lib;
@@ -1201,7 +1201,7 @@ static void check_identify(int* utest_result, sys_id_t id, const md_match_identi
         if (i > 0) EXPECT_LT(res.unit[i - 1], u);
         EXPECT_EQ(first[u], (int32_t)e);
         char kind[16];
-        const str_t entry_name = md_match_library_name(desc->library, e);
+        const md_str_t entry_name = md_match_library_name(desc->library, e);
         snprintf(kind, sizeof(kind), "%.*s", (int)entry_name.len, entry_name.ptr);
         if (names) EXPECT_TRUE(residue_kind(LBL_TO_STR(sys->residue.name[u]), kind));
 
@@ -1257,12 +1257,12 @@ UTEST(match, identify_order) {
 
     // Without WHOLE an entry is found within a unit: the first which is, in the order added
     md_match_library_t* lib = md_match_library_create(alloc);
-    EXPECT_EQ(0, md_match_library_add_smiles(lib, STR_LIT("NCC=O"), STR_LIT("backbone"), NULL));
-    EXPECT_EQ(1, md_match_library_add_smiles(lib, STR_LIT("CC(N)C=O"), STR_LIT("ala"), NULL));
+    EXPECT_EQ(0, md_match_library_add_smiles(lib, MD_STR_LIT("NCC=O"), MD_STR_LIT("backbone"), NULL));
+    EXPECT_EQ(1, md_match_library_add_smiles(lib, MD_STR_LIT("CC(N)C=O"), MD_STR_LIT("ala"), NULL));
     md_smiles_error_t err = {0};
-    EXPECT_EQ(-1, md_match_library_add_smiles(lib, STR_LIT("C1CC"), STR_LIT("broken"), &err));
+    EXPECT_EQ(-1, md_match_library_add_smiles(lib, MD_STR_LIT("C1CC"), MD_STR_LIT("broken"), &err));
     EXPECT_EQ(2, (int)md_match_library_count(lib));
-    EXPECT_TRUE(str_eq_cstr(md_match_library_name(lib, 1), "ala"));
+    EXPECT_TRUE(md_str_eq_cstr(md_match_library_name(lib, 1), "ala"));
 
     md_match_identify_desc_t desc = {.library = lib, .level = MD_MATCH_LEVEL_RESIDUE};
     ASSERT_TRUE(md_match_identify(&res, &desc, sys, alloc));
@@ -1281,9 +1281,9 @@ UTEST(match, identify_order) {
 
     // An entry with a wildcard comes in its turn as well
     lib = md_match_library_create(alloc);
-    md_match_library_add_smiles(lib, STR_LIT("CC(N)C=O"), STR_LIT("ala"), NULL);
-    md_match_library_add_smiles(lib, STR_LIT("*C(N)C(=O)O"), STR_LIT("any C terminal"), NULL);
-    md_match_library_add_smiles(lib, STR_LIT("CC(N)C(=O)O"), STR_LIT("C terminal ala"), NULL);
+    md_match_library_add_smiles(lib, MD_STR_LIT("CC(N)C=O"), MD_STR_LIT("ala"), NULL);
+    md_match_library_add_smiles(lib, MD_STR_LIT("*C(N)C(=O)O"), MD_STR_LIT("any C terminal"), NULL);
+    md_match_library_add_smiles(lib, MD_STR_LIT("CC(N)C(=O)O"), MD_STR_LIT("C terminal ala"), NULL);
     desc.library = lib;
     ASSERT_TRUE(md_match_identify(&res, &desc, sys, alloc));
     EXPECT_EQ(15, (int)res.count);
@@ -1297,7 +1297,7 @@ UTEST(match, identify_order) {
 static size_t filter_count(md_array(md_bitset_t)* arr, const char* expr, sys_id_t id, md_allocator_i* alloc) {
     md_array_shrink(*arr, 0);
     const md_filter_context_t ctx = {get_sys(id), get_state(id), NULL};
-    const md_filter_result_t res = md_filter_sets(arr, str_from_cstr(expr), &ctx, alloc);
+    const md_filter_result_t res = md_filter_sets(arr, md_str_from_cstr(expr), &ctx, alloc);
     if (!res.success) {
         printf("'%s': %s\n", expr, res.error);
         return SIZE_MAX;
@@ -1308,7 +1308,7 @@ static size_t filter_count(md_array(md_bitset_t)* arr, const char* expr, sys_id_
 static bool filter_fails_with(const char* expr, const char* expected, sys_id_t id) {
     md_bitset_t bf = {0};
     const md_filter_context_t ctx = {get_sys(id), get_state(id), NULL};
-    const md_filter_result_t res = md_filter(&bf, str_from_cstr(expr), &ctx, md_get_heap_allocator());
+    const md_filter_result_t res = md_filter(&bf, md_str_from_cstr(expr), &ctx, md_get_heap_allocator());
     md_bitset_free(&bf, md_get_heap_allocator());
     if (res.success) {
         printf("'%s' was expected to fail\n", expr);
@@ -1342,7 +1342,7 @@ UTEST(match, script_smiles) {
     // As one selection: the 15 carbonyl carbons and 16 oxygens, without hydrogens of their own
     md_bitset_t bf = {0};
     const md_filter_context_t ctx = {get_sys(SYS_ALA), get_state(SYS_ALA), NULL};
-    const md_filter_result_t res = md_filter(&bf, STR_LIT("smiles('C=O')"), &ctx, alloc);
+    const md_filter_result_t res = md_filter(&bf, MD_STR_LIT("smiles('C=O')"), &ctx, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_FALSE(res.is_dynamic);
     EXPECT_EQ(31, (int)md_bitset_count(bf));

@@ -14,8 +14,8 @@ extern "C" {
 #endif
 
 typedef struct md_edr_energy_t {
-	str_t name;
-	str_t unit_str;
+	md_str_t name;
+	md_str_t unit_str;
     md_unit_t unit;
     // Has length num_frames. Double because the file may be: a total energy of -6e5 kJ/mol kept in
     // float moves in steps of 0.06, which is the size of the drift anyone plotting it is looking for.
@@ -32,7 +32,7 @@ typedef struct md_edr_energies_t {
 	struct md_allocator_i* alloc;
 } md_edr_energies_t;
 
-bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, struct md_allocator_i* alloc);
+bool md_edr_energies_parse_file(md_edr_energies_t* energies, md_str_t filename, struct md_allocator_i* alloc);
 void md_edr_energies_free(md_edr_energies_t* energies);
 
 // Publishes the energies into the system's attribute table under "<run>/edr", replacing whatever
@@ -53,23 +53,23 @@ void md_edr_energies_free(md_edr_energies_t* energies);
 // When "<run>/time" exists every one of its frames has to find a row in the file, and nothing is
 // published otherwise: an energy file that does not cover the trajectory belongs to some other
 // run. Without it the energies simply form the run. Frame times must not decrease.
-bool md_edr_system_supplement(struct md_system_t* sys, const md_edr_energies_t* energies, str_t run);
+bool md_edr_system_supplement(struct md_system_t* sys, const md_edr_energies_t* energies, md_str_t run);
 
 // The same from a file, which additionally publishes "<run>/edr/source": the path it was loaded
 // from, so that whoever saves the session can find what to load again. It lives and dies with the
 // energies it describes, so it can never name a file whose data is gone.
-bool md_edr_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run);
+bool md_edr_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run);
 
 #if 0
 // Represents the string block inside the edr file which gives us the names and units (encoded as text)
 // of all energy fields present in the file.
 typedef struct md_edr_str_block_t {
 	int64_t count;
-	str_t* names;
-	str_t* units;
+	md_str_t* names;
+	md_str_t* units;
 } md_edr_str_block_t;
 
-bool md_edr_str_block_read_file(md_edr_str_block_t* str_block, str_t filename, struct md_allocator_i* alloc);
+bool md_edr_str_block_read_file(md_edr_str_block_t* str_block, md_str_t filename, struct md_allocator_i* alloc);
 void md_edr_str_block_free(md_edr_str_block_t* str_block, struct md_allocator_i* alloc);
 #endif
 

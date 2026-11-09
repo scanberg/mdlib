@@ -243,7 +243,7 @@ static bool iso_load(iso_field_t* f, const char* file, int which, const char* na
     vlx_test_t t = {0};
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(64))) return false;
+    if (!vlx_test_load(&t, md_str_from_cstr(path), MD_MEGABYTES(64))) return false;
 
     bool ok = false;
     const size_t num_atoms = t.sys.atom.count;
@@ -255,9 +255,9 @@ static bool iso_load(iso_field_t* f, const char* file, int which, const char* na
 
     const size_t num_ao = md_gto_basis_num_ao(&basis);
     c = (double*)calloc(num_ao, sizeof(double));
-    const size_t lumo = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
     size_t idx = (which >= 0) ? (size_t)which : (which == ISO_MO_LUMO ? lumo : lumo - 1);
-    if (qm_test_row(c, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), idx) != num_ao) goto done;
+    if (qm_test_row(c, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), idx) != num_ao) goto done;
 
     if (which == ISO_MO_RANDOM) {
         double n0 = 0.0, n1 = 0.0;
@@ -311,7 +311,7 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         vlx_test_t t = {0};
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", tc->file);
-        ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(64)));
+        ASSERT_TRUE(vlx_test_load(&t, md_str_from_cstr(path), MD_MEGABYTES(64)));
         const size_t num_atoms = t.sys.atom.count;
         float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
         ASSERT_EQ(vlx_test_atom_xyz_bohr(xyz, 3 * num_atoms, &t), num_atoms);
@@ -319,8 +319,8 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         ASSERT_TRUE(qm_test_basis(&basis, &t));
         const size_t num_ao = md_gto_basis_num_ao(&basis);
         double* c = (double*)calloc(num_ao, sizeof(double));
-        const size_t lumo = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
-        ASSERT_EQ(qm_test_row(c, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), tc->which == ISO_MO_LUMO ? lumo : lumo - 1), num_ao);
+        const size_t lumo = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
+        ASSERT_EQ(qm_test_row(c, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), tc->which == ISO_MO_LUMO ? lumo : lumo - 1), num_ao);
 
         iso_field_t f;
         ASSERT_TRUE(iso_field_init(&f, &basis, xyz, num_atoms, c, tc->name));
@@ -1144,15 +1144,15 @@ static bool iso_api_load(iso_api_case_t* c, const iso_case_t* tc) {
     memset(c, 0, sizeof(*c));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", tc->file);
-    if (!vlx_test_load(&c->t, str_from_cstr(path), MD_MEGABYTES(64))) return false;
+    if (!vlx_test_load(&c->t, md_str_from_cstr(path), MD_MEGABYTES(64))) return false;
     const size_t num_atoms = c->t.sys.atom.count;
     c->xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
     if (vlx_test_atom_xyz_bohr(c->xyz, 3 * num_atoms, &c->t) != num_atoms || !qm_test_basis(&c->basis, &c->t)) return false;
     const size_t num_ao = md_gto_basis_num_ao(&c->basis);
     c->coeff = (double*)calloc(num_ao, sizeof(double));
-    const size_t lumo = vlx_test_lumo_idx(&c->t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo = vlx_test_lumo_idx(&c->t, MD_STR_LIT("orbital/alpha/occupation"));
     const size_t idx = tc->which >= 0 ? (size_t)tc->which : (tc->which == ISO_MO_LUMO ? lumo : lumo - 1);
-    if (qm_test_row(c->coeff, num_ao, &c->t, STR_LIT("orbital/alpha/coefficient"), idx) != num_ao) return false;
+    if (qm_test_row(c->coeff, num_ao, &c->t, MD_STR_LIT("orbital/alpha/coefficient"), idx) != num_ao) return false;
     if (tc->which == ISO_MO_RANDOM) {
         double n0 = 0.0, n1 = 0.0;
         iso_rng_t rng = {12345};
@@ -1344,29 +1344,29 @@ static bool iso_dens_src_load_ex(iso_dens_src_t* s, const char* file, bool need_
     memset(s, 0, sizeof(*s));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&s->t, str_from_cstr(path), MD_MEGABYTES(512))) return false;
+    if (!vlx_test_load(&s->t, md_str_from_cstr(path), MD_MEGABYTES(512))) return false;
     s->num_atoms = s->t.sys.atom.count;
     s->xyz = (float*)malloc(sizeof(float) * 3 * s->num_atoms);
     if (vlx_test_atom_xyz_bohr(s->xyz, 3 * s->num_atoms, &s->t) != s->num_atoms || !qm_test_basis(&s->basis, &s->t)) return false;
     s->num_ao = md_gto_basis_num_ao(&s->basis);
-    const md_attribute_t* ca = qm_test_attr(&s->t, STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* ca = qm_test_attr(&s->t, MD_STR_LIT("orbital/alpha/coefficient"));
     if (!ca) return false;
     s->num_mo = ca->format.shape[0];
     s->C = (double*)malloc(sizeof(double) * s->num_mo * s->num_ao);
     for (size_t m = 0; m < s->num_mo; ++m) {
-        if (qm_test_row(s->C + m * s->num_ao, s->num_ao, &s->t, STR_LIT("orbital/alpha/coefficient"), m) != s->num_ao) return false;
+        if (qm_test_row(s->C + m * s->num_ao, s->num_ao, &s->t, MD_STR_LIT("orbital/alpha/coefficient"), m) != s->num_ao) return false;
     }
     s->occ = (double*)calloc(s->num_mo, sizeof(double));
     double* ob = (double*)calloc(s->num_mo, sizeof(double));
-    qm_test_series(s->occ, s->num_mo, &s->t, STR_LIT("orbital/alpha/occupation"));
-    qm_test_series(ob, s->num_mo, &s->t, STR_LIT("orbital/beta/occupation"));
+    qm_test_series(s->occ, s->num_mo, &s->t, MD_STR_LIT("orbital/alpha/occupation"));
+    qm_test_series(ob, s->num_mo, &s->t, MD_STR_LIT("orbital/beta/occupation"));
     for (size_t m = 0; m < s->num_mo; ++m) s->occ[m] += ob[m];
     free(ob);
 
     // NTOs of the first excited state, the pairs with a weight above 1e-6
-    const md_attribute_t* la = qm_test_attr(&s->t, STR_LIT("vlx/rsp/nto/lambda"));
-    const md_attribute_t* pa = qm_test_attr(&s->t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
-    const md_attribute_t* ha = qm_test_attr(&s->t, STR_LIT("vlx/rsp/nto/hole/coefficient"));
+    const md_attribute_t* la = qm_test_attr(&s->t, MD_STR_LIT("vlx/rsp/nto/lambda"));
+    const md_attribute_t* pa = qm_test_attr(&s->t, MD_STR_LIT("vlx/rsp/nto/particle/coefficient"));
+    const md_attribute_t* ha = qm_test_attr(&s->t, MD_STR_LIT("vlx/rsp/nto/hole/coefficient"));
     if (!la || !pa || !ha) return !need_nto;
     const size_t lmax = la->format.shape[1];
     double* lam = (double*)calloc(lmax, sizeof(double));
@@ -1504,7 +1504,7 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
             iso_dens_products(&p, &s, ISO_D_SCF);
             double* D = iso_dens_matrix(&p, nao);
             size_t dim = 0;
-            const double* ref = qm_test_matrix(&s.t, STR_LIT("orbital/total/density"), &dim);
+            const double* ref = qm_test_matrix(&s.t, MD_STR_LIT("orbital/total/density"), &dim);
             ASSERT_TRUE(ref != NULL);
             ASSERT_EQ(dim, nao);
             const double e = iso_rel_diff(ref, D, nao * nao);
@@ -1519,7 +1519,7 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
             iso_dens_prod_t p;
             iso_dens_products(&p, &s, ISO_D_ATTACH + k);
             double* D = iso_dens_matrix(&p, nao);
-            const md_attribute_t* a = qm_test_attr(&s.t, str_from_cstr(vlx_path[k]));
+            const md_attribute_t* a = qm_test_attr(&s.t, md_str_from_cstr(vlx_path[k]));
             ASSERT_TRUE(a != NULL);
             double* ref = (double*)malloc(sizeof(double) * nao * nao);
             ASSERT_EQ(md_attribute_extract_f64(ref, nao * nao, a, md_attribute_slice_1(0), md_unit_none()), nao * nao);
@@ -2058,13 +2058,13 @@ UTEST(qm_alie, orbitals_and_limits) {
         // the same orbitals and weights as the total density's
         double *drows = NULL, *dw = NULL;
         size_t dna = 0;
-        const size_t dcount = md_qm_density_orbitals(&drows, &dw, &dna, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        const size_t dcount = md_qm_density_orbitals(&drows, &dw, &dna, &s.t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
         ASSERT_EQ(count, dcount);
         EXPECT_EQ(0, memcmp(rows, drows, sizeof(double) * count * na));
         EXPECT_EQ(0, memcmp(w, dw, sizeof(double) * count));
         // closed shell: n = 2 and the energy weights 2 |e| of the occupied orbitals in order
         double* e = (double*)calloc(s.num_mo, sizeof(double));
-        ASSERT_EQ(qm_test_series(e, s.num_mo, &s.t, STR_LIT("orbital/alpha/energy")), s.num_mo);
+        ASSERT_EQ(qm_test_series(e, s.num_mo, &s.t, MD_STR_LIT("orbital/alpha/energy")), s.num_mo);
         size_t k = 0;
         for (size_t m = 0; m < s.num_mo && k < count; ++m) {
             if (s.occ[m] == 0.0) continue;
@@ -2146,7 +2146,7 @@ UTEST(qm_leae, orbitals_and_sign) {
         iso_dens_src_t s;
         ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
         double* e = (double*)calloc(s.num_mo, sizeof(double));
-        ASSERT_EQ(qm_test_series(e, s.num_mo, &s.t, STR_LIT("orbital/alpha/energy")), s.num_mo);
+        ASSERT_EQ(qm_test_series(e, s.num_mo, &s.t, MD_STR_LIT("orbital/alpha/energy")), s.num_mo);
         size_t bound = 0;
         for (size_t m = 0; m < s.num_mo; ++m) bound += s.occ[m] == 0.0 && e[m] < 0.0;
         EXPECT_EQ(md_qm_attachment_available(&s.t.sys), bound > 0);
@@ -2168,7 +2168,7 @@ UTEST(qm_leae, orbitals_and_sign) {
             // E(r) <= 0 at random points
             double *dr = NULL, *dw = NULL;
             size_t dna = 0;
-            const size_t dn = md_qm_density_orbitals(&dr, &dw, &dna, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+            const size_t dn = md_qm_density_orbitals(&dr, &dw, &dna, &s.t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
             md_gto_iso_field_t* rho = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, dr, NULL, dw, dn, md_get_heap_allocator());
             md_gto_iso_field_t* num = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, rows, NULL, w, count, md_get_heap_allocator());
             enum { N = 1000 };
@@ -2208,7 +2208,7 @@ static bool elf_molden_load(vlx_test_t* t, float** xyz, size_t* num_atoms, const
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/molden/%s", file);
     qm_test_init(t, MD_MEGABYTES(64));
-    if (!md_molden_system_init_from_file(&t->sys, &t->state, str_from_cstr(path))) return false;
+    if (!md_molden_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path))) return false;
     *num_atoms = t->sys.atom.count;
     *xyz = (float*)malloc(sizeof(float) * 3 * *num_atoms);
     return vlx_test_atom_xyz_bohr(*xyz, 3 * *num_atoms, t) == *num_atoms;
@@ -2335,8 +2335,8 @@ UTEST(qm_elf, limits_and_reference) {
         double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
         size_t rna = 0, kna = 0;
         md_gto_basis_t db = {0};
-        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &s.t.sys, STR_LIT("orbital/alpha/density"), md_get_heap_allocator());
-        const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &db, &s.t.sys, STR_LIT("orbital/alpha/density"), md_get_heap_allocator());
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &s.t.sys, MD_STR_LIT("orbital/alpha/density"), md_get_heap_allocator());
+        const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &db, &s.t.sys, MD_STR_LIT("orbital/alpha/density"), md_get_heap_allocator());
         ASSERT_GT(rn, 0u);
         ASSERT_EQ(kn, 3 * rn);
         EXPECT_EQ(kna, md_gto_basis_num_ao(&db));
@@ -2985,7 +2985,7 @@ UTEST(gto_iso_gpu, benchmark) {
         vlx_test_t t = {0};
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", bc->file);
-        if (!vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(256))) { printf("  %-11s (no %s, skipped)\n", bc->name, bc->file); continue; }
+        if (!vlx_test_load(&t, md_str_from_cstr(path), MD_MEGABYTES(256))) { printf("  %-11s (no %s, skipped)\n", bc->name, bc->file); continue; }
         const size_t num_atoms = t.sys.atom.count;
         float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
         md_gto_basis_t basis = {0};
@@ -2995,8 +2995,8 @@ UTEST(gto_iso_gpu, benchmark) {
         }
         const size_t num_ao = md_gto_basis_num_ao(&basis);
         double* c = (double*)calloc(num_ao, sizeof(double));
-        const size_t lumo = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
-        qm_test_row(c, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), bc->which == ISO_MO_LUMO ? lumo : lumo - 1);
+        const size_t lumo = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
+        qm_test_row(c, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), bc->which == ISO_MO_LUMO ? lumo : lumo - 1);
         iso_field_t f;
         if (!iso_field_init(&f, &basis, xyz, num_atoms, c, bc->name)) { free(xyz); free(c); qm_test_free(&t); continue; }
         printf("  %-11s %zu atoms, %u shells, %zu AOs, %d (atom,l) groups\n", bc->name, num_atoms, basis.num_shells, num_ao, f.num_shells);
@@ -3103,7 +3103,7 @@ typedef struct iso_gl_case_t { int kind; const char* name; double iso; } iso_gl_
 static md_gto_iso_field_t* iso_gl_field(const iso_dens_src_t* s, int kind, iso_dens_prod_t* p) {
     memset(p, 0, sizeof(*p));
     if (kind < 0) {
-        const size_t lumo = vlx_test_lumo_idx((vlx_test_t*)&s->t, STR_LIT("orbital/alpha/occupation"));
+        const size_t lumo = vlx_test_lumo_idx((vlx_test_t*)&s->t, MD_STR_LIT("orbital/alpha/occupation"));
         const size_t mo = kind == -1 ? lumo - 1 : lumo;
         return md_gto_iso_field_create(&s->basis, s->xyz, 0, s->C + mo * s->num_ao, md_get_heap_allocator());
     }
@@ -3257,7 +3257,7 @@ UTEST(gto_iso_gpu_lib, fields_batch_like_alone) {
     md_gto_iso_gpu_initialize(g.dev);
     iso_dens_src_t s;
     ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
-    const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo = vlx_test_lumo_idx(&s.t, MD_STR_LIT("orbital/alpha/occupation"));
     enum { NF = 5 };
     md_gto_iso_field_t* fields[NF];
     double iso[NF];
@@ -3711,7 +3711,7 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         if (ci == 0 || strcmp(cases[ci - 1].file, bc->file) != 0 || (only && !strstr(cases[ci - 1].name, only))) {
             printf("  -- %s: %zu atoms, %u shells, %zu AOs, %zu MOs, %zu NTO pairs\n", bc->file, s.num_atoms, s.basis.num_shells, s.num_ao, s.num_mo, s.num_nto);
         }
-        const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
+        const size_t lumo = vlx_test_lumo_idx(&s.t, MD_STR_LIT("orbital/alpha/occupation"));
         md_gto_iso_field_t* fields[16] = {0};
         const double* rows[16] = {0};
         double iso[16];
@@ -4094,7 +4094,7 @@ UTEST(gto_iso_gpu_lib, taylor_brick_mo_experiment) {
             iso_dens_prod_t p;
             md_gto_iso_field_t* field = iso_gl_field(&s, which, &p);
             ASSERT_TRUE(field != NULL);
-            const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
+            const size_t lumo = vlx_test_lumo_idx(&s.t, MD_STR_LIT("orbital/alpha/occupation"));
             const double* cmo = s.C + (which == -1 ? lumo - 1 : lumo) * s.num_ao;
             // the orbital as a one-term product field: its AO shells and coefficients in the density's
             // convention (the Taylor coefficients below carry the normalizations)
@@ -4434,7 +4434,7 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
             md_gto_iso_field_t* field = NULL;
             if (fc->kind == -2) {
                 memset(&p, 0, sizeof(p));
-                const size_t lumo = vlx_test_lumo_idx((vlx_test_t*)&s.t, STR_LIT("orbital/alpha/occupation"));
+                const size_t lumo = vlx_test_lumo_idx((vlx_test_t*)&s.t, MD_STR_LIT("orbital/alpha/occupation"));
                 field = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + lumo * s.num_ao, md_get_heap_allocator());
             } else {
                 field = iso_gl_field(&s, fc->kind, &p);
@@ -4514,7 +4514,7 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
     for (int fi = 0; fi < 2; ++fi) {
         iso_dens_src_t s;
         ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], fi == 0));
-        const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
+        const size_t lumo = vlx_test_lumo_idx(&s.t, MD_STR_LIT("orbital/alpha/occupation"));
         // 0, 1: HOMO, LUMO; 2: SCF density (products); 3: attachment - detachment of state 1 (signed; with NTOs)
         enum { NF = 4 };
         md_gto_iso_field_t* fields[NF];
@@ -4739,8 +4739,8 @@ UTEST(gto_iso_gpu_lib, elf_at_points) {
         double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
         size_t rna = 0, kna = 0;
         md_gto_basis_t db = {0};
-        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
-        const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &db, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &s.t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &db, &s.t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
         ASSERT_TRUE(rn > 0 && kn == 3 * rn);
         md_gto_iso_field_t* fr = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, rr, NULL, rw, rn, md_get_heap_allocator());
         md_gto_iso_field_t* fk = md_gto_iso_field_create_products(&db, s.xyz, 0, kr, NULL, kw, kn, md_get_heap_allocator());
@@ -4814,7 +4814,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
     md_tick_t t0 = md_tick_now();
     vlx_test_t t;
-    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(1024)));
+    ASSERT_TRUE(vlx_test_load(&t, md_str_from_cstr(path), MD_MEGABYTES(1024)));
     const size_t num_atoms = t.sys.atom.count;
     float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
     md_gto_basis_t basis;
@@ -4827,7 +4827,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     // GTO_ISO_LARGE_MATRIX=1 from the matrix (factorized again)
     const bool from_matrix = getenv("GTO_ISO_LARGE_MATRIX") && atoi(getenv("GTO_ISO_LARGE_MATRIX")) != 0;
     t0 = md_tick_now();
-    const md_attribute_t* da = qm_test_attr(&t, STR_LIT("orbital/total/density"));
+    const md_attribute_t* da = qm_test_attr(&t, MD_STR_LIT("orbital/total/density"));
     ASSERT_TRUE(da != NULL);
     double* D = (double*)malloc(sizeof(double) * nao * nao);
     ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, da, md_attribute_slice_all(), NULL), nao);
@@ -4842,7 +4842,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     } else {
         double *rows = NULL, *w = NULL;
         size_t na = 0;
-        const size_t count = md_qm_density_orbitals(&rows, &w, &na, &t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        const size_t count = md_qm_density_orbitals(&rows, &w, &na, &t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
         ASSERT_TRUE(count > 0);
         ASSERT_EQ(na, nao);
         printf("  orbitals: %zu, %.2f s\n", count, md_tick_to_seconds(md_tick_now() - t0));

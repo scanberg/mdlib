@@ -26,7 +26,7 @@ struct md_allocator_i;
 // and reading a number or a string out of it fails. A chain of lookups therefore needs one check, at
 // the end:
 //
-//   md_json_val_t q = md_json_at(md_json_get(md_json_get(atom, STR_LIT("multipoles")), STR_LIT("elements")), 0);
+//   md_json_val_t q = md_json_at(md_json_get(md_json_get(atom, MD_STR_LIT("multipoles")), MD_STR_LIT("elements")), 0);
 //   double charge = 0.0;
 //   if (!md_json_f64(&charge, q)) { ... the file did not have it ... }
 //
@@ -87,7 +87,7 @@ typedef struct md_json_error_t {
 // Parses text into a document allocated from alloc. NULL when the text is not JSON or the allocation
 // fails: the reason goes to err when one is given, and to the log otherwise. The allocation is
 // bounded by 16 bytes per ',', ':', '[' and '{' in the text, plus a small constant.
-md_json_t* md_json_parse(str_t text, struct md_allocator_i* alloc, md_json_error_t* err);
+md_json_t* md_json_parse(md_str_t text, struct md_allocator_i* alloc, md_json_error_t* err);
 
 // Returns the document to the allocator it was parsed from. Not needed for an arena that is rewound.
 void md_json_free(md_json_t* doc, struct md_allocator_i* alloc);
@@ -103,7 +103,7 @@ static inline bool md_json_valid(md_json_val_t v) { return md_json_type(v) != MD
 size_t md_json_count(md_json_val_t v);
 
 // The value of the member with this key (compared after decoding escapes); NONE when absent
-md_json_val_t md_json_get(md_json_val_t obj, str_t key);
+md_json_val_t md_json_get(md_json_val_t obj, md_str_t key);
 
 // The i:th element of an array or member value of an object; NONE past the end. O(i).
 md_json_val_t md_json_at(md_json_val_t container, size_t i);
@@ -133,15 +133,15 @@ size_t md_json_extract_f32(float*  out, size_t cap, md_json_val_t arr);
 //          whenever it has no backslash in it, which is the common case for keys and names. Empty
 //          for anything that is not a string.
 //   _eq    whether the decoded string equals str; false for anything that is not a string
-//   _copy  decodes into buf as str_copy_to_char_buf copies: at most cap - 1 bytes, zero terminated
+//   _copy  decodes into buf as md_str_copy_to_char_buf copies: at most cap - 1 bytes, zero terminated
 //          when cap > 0, and returns how many bytes it wrote. A string that does not fit is cut at a
 //          character boundary, never through a UTF-8 sequence
 //   (none) decodes into a zero terminated copy from alloc; empty for anything that is not a string
 // Decoding turns \uXXXX escapes into UTF-8; an unpaired surrogate becomes U+FFFD.
-str_t  md_json_string_raw (md_json_val_t v);
-bool   md_json_string_eq  (md_json_val_t v, str_t str);
+md_str_t  md_json_string_raw (md_json_val_t v);
+bool   md_json_string_eq  (md_json_val_t v, md_str_t str);
 size_t md_json_string_copy(char* buf, size_t cap, md_json_val_t v);
-str_t  md_json_string     (md_json_val_t v, struct md_allocator_i* alloc);
+md_str_t  md_json_string     (md_json_val_t v, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

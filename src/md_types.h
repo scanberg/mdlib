@@ -654,7 +654,7 @@ typedef struct md_nucleic_acid_atoms_t {
 typedef struct md_label_t {
     char buf[8];
 #ifdef __cplusplus
-    inline operator str_t() const;
+    inline operator md_str_t() const;
 #endif
 } md_label_t;
 
@@ -662,7 +662,7 @@ typedef struct md_label_t {
 typedef struct md_label16_t {
     char buf[16];
 #ifdef __cplusplus
-    inline operator str_t() const;
+    inline operator md_str_t() const;
 #endif
 } md_label16_t;
 
@@ -718,8 +718,8 @@ typedef struct md_bond_kind_name_t {
 const md_bond_kind_name_t* md_bond_kind_names(size_t* count);
 
 // Element property functions
-str_t md_atomic_number_name(md_atomic_number_t z);
-str_t md_atomic_number_symbol(md_atomic_number_t z);
+md_str_t md_atomic_number_name(md_atomic_number_t z);
+md_str_t md_atomic_number_symbol(md_atomic_number_t z);
 float md_atomic_number_mass(md_atomic_number_t z);
 float md_atomic_number_vdw_radius(md_atomic_number_t z);
 float md_atomic_number_covalent_radius(md_atomic_number_t z);
@@ -727,13 +727,13 @@ int   md_atomic_number_max_valence(md_atomic_number_t z);
 uint32_t md_atomic_number_cpk_color(md_atomic_number_t z);
 
 // Element symbol and name lookup functions
-md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case);
+md_atomic_number_t md_atomic_number_from_symbol(md_str_t sym, bool ignore_case);
 
 // Infer atomic number from other properties, this is a heuristic and may fail. 0 is returned on failure
 // Per-atom inference from labels (atom name + residue)
 // res_name is the name of the residue of the atom [optional]
 // res_size is the size of the residue of the atom [optional]
-md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name, size_t res_size);
+md_atomic_number_t md_atomic_number_infer_from_label(md_str_t atom_name, md_str_t res_name, size_t res_size);
 md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 
 // Batch form wired to molecule structure
@@ -742,21 +742,21 @@ md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
 
 // Standard monomers (md_monomer_t), "" / 0 for MD_MONOMER_NONE or a value out of range
-str_t    md_monomer_id(md_monomer_t monomer);          // Id in the Chemical Component Dictionary: "ALA", "DA", "A"
-str_t    md_monomer_name(md_monomer_t monomer);        // "Alanine", "Deoxyadenosine", "Adenosine"
+md_str_t    md_monomer_id(md_monomer_t monomer);          // Id in the Chemical Component Dictionary: "ALA", "DA", "A"
+md_str_t    md_monomer_name(md_monomer_t monomer);        // "Alanine", "Deoxyadenosine", "Adenosine"
 char     md_monomer_letter(md_monomer_t monomer);      // One letter code: 'A' for ALA, DA and A
 md_residue_kind_t md_monomer_kind(md_monomer_t monomer);    // MD_RESIDUE_KIND_AMINO_ACID or _NUCLEOTIDE
 uint32_t md_monomer_color(md_monomer_t monomer);       // Default color (RGBA, R in the lowest byte, as the CPK colors)
 
 // The monomer of the given id ("HIS"), exactly and ignoring case. MD_MONOMER_NONE if there is none.
-md_monomer_t md_monomer_from_id(str_t id);
+md_monomer_t md_monomer_from_id(md_str_t id);
 
 // The standard monomer a residue of the given name and kind is a form of. Only amino acids and nucleotides are forms
 // of one: the variants of the force fields (HID, HIE, HSP, HISH, CYX, ASH, LYN, the Martini ARG0, ...), the termini of
 // Amber (NALA, CALA, DA5, RA3), the names of CHARMM (ADE, CYT, ...) and the common modified residues (MSE, SEP, PSU,
 // 5MC, ...). An amino acid or nucleotide which is not known is MD_MONOMER_UNK or MD_MONOMER_N, any other kind
 // MD_MONOMER_NONE, except the caps of a peptide chain (ACE, NME, ...) which are MD_MONOMER_UNK.
-md_monomer_t md_monomer_from_residue_name(str_t res_name, md_residue_kind_t kind);
+md_monomer_t md_monomer_from_residue_name(md_str_t res_name, md_residue_kind_t kind);
 
 #ifdef __cplusplus
 }
@@ -790,13 +790,13 @@ static inline size_t md_label16_len(const md_label16_t* lbl) {
 }
 
 // A view of the label: valid while the label is where it is
-static inline str_t md_label_str(const md_label_t* lbl) {
-    str_t s = {lbl->buf, md_label_len(lbl)};
+static inline md_str_t md_label_str(const md_label_t* lbl) {
+    md_str_t s = {lbl->buf, md_label_len(lbl)};
     return s;
 }
 
-static inline str_t md_label16_str(const md_label16_t* lbl) {
-    str_t s = {lbl->buf, md_label16_len(lbl)};
+static inline md_str_t md_label16_str(const md_label16_t* lbl) {
+    md_str_t s = {lbl->buf, md_label16_len(lbl)};
     return s;
 }
 
@@ -811,7 +811,7 @@ static inline bool label_empty(md_label_t lbl) {
 }
 
 // The first 8 characters of str
-static inline md_label_t make_label(str_t str) {
+static inline md_label_t make_label(md_str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
         MD_MEMCPY(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
@@ -820,7 +820,7 @@ static inline md_label_t make_label(str_t str) {
 }
 
 // The first 16 characters of str
-static inline md_label16_t make_label16(str_t str) {
+static inline md_label16_t make_label16(md_str_t str) {
     md_label16_t lbl = {0};
     if (str.ptr) {
         MD_MEMCPY(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
@@ -829,8 +829,8 @@ static inline md_label16_t make_label16(str_t str) {
 }
 
 #ifdef __cplusplus
-inline md_label_t::operator str_t() const { return md_label_str(this); }
-inline md_label16_t::operator str_t() const { return md_label16_str(this); }
+inline md_label_t::operator md_str_t() const { return md_label_str(this); }
+inline md_label16_t::operator md_str_t() const { return md_label16_str(this); }
 inline bool operator==(const md_label_t& a, const md_label_t& b) { return md_label_eq(a, b); }
 inline bool operator!=(const md_label_t& a, const md_label_t& b) { return !md_label_eq(a, b); }
 #endif

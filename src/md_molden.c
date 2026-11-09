@@ -43,7 +43,7 @@ typedef struct molden_shell_t {
 typedef struct molden_orbital_t {
     double  energy;      // hartree
     double  occupation;
-    str_t   symmetry;    // interned into the parse arena
+    md_str_t   symmetry;    // interned into the parse arena
     bool    beta;
     double* coefficient; // [num_ao_file], in the FILE's AO order and convention
 } molden_orbital_t;
@@ -51,8 +51,8 @@ typedef struct molden_orbital_t {
 typedef struct molden_t {
     md_allocator_i* alloc;
 
-    str_t title;
-    str_t program;
+    md_str_t title;
+    md_str_t program;
 
     // Angular convention per angular momentum: true when the file stores the pure/spherical
     // (2l+1) set. Cartesian is the format's default and is what an unmarked file means.
@@ -60,7 +60,7 @@ typedef struct molden_t {
 
     md_array(uint8_t)          atomic_number;
     md_array(dvec3_t)          coord;       // Angstrom
-    md_array(str_t)            atom_label;
+    md_array(md_str_t)            atom_label;
 
     md_array(molden_shell_t)   shell;
     md_array(double)           alpha;
@@ -72,7 +72,7 @@ typedef struct molden_t {
     // vibrations alone (CP2K, Psi4, Q-Chem) has: it has no [Atoms]
     md_array(uint8_t)          fr_atomic_number;
     md_array(dvec3_t)          fr_coord;      // Angstrom, converted on read
-    md_array(str_t)            fr_label;
+    md_array(md_str_t)            fr_label;
 
     md_array(double)           frequency;     // cm^-1
     md_array(double)           ir_intensity;  // km/mol
@@ -166,32 +166,32 @@ static size_t molden_num_file_ao(const molden_t* molden) {
 
 // A Molden number may carry a Fortran 'D' exponent (1.0D-03). parse_float does not know about it,
 // and the alternative - rewriting the buffer - would mutate the caller's string.
-static double molden_parse_float(str_t tok) {
+static double molden_parse_float(md_str_t tok) {
     char buf[64];
-    size_t n = str_copy_to_char_buf(buf, sizeof(buf), tok);
+    size_t n = md_str_copy_to_char_buf(buf, sizeof(buf), tok);
     for (size_t i = 0; i < n; ++i) {
         if (buf[i] == 'D' || buf[i] == 'd') buf[i] = 'e';
     }
-    return parse_float(str_from_cstrn(buf, n));
+    return parse_float(md_str_from_cstrn(buf, n));
 }
 
 // "[Atoms] (Angs)" -> section "atoms", argument "(Angs)". Returns false for anything that is not a
 // section header, which is every other line in the file.
-static bool molden_section_header(str_t* out_name, str_t* out_arg, str_t line) {
-    line = str_trim(line);
+static bool molden_section_header(md_str_t* out_name, md_str_t* out_arg, md_str_t line) {
+    line = md_str_trim(line);
     if (line.len < 2 || line.ptr[0] != '[') {
         return false;
     }
     size_t close;
-    if (!str_find_char(&close, line, ']')) {
+    if (!md_str_find_char(&close, line, ']')) {
         return false;
     }
-    *out_name = str_trim(str_substr(line, 1, close - 1));
-    *out_arg  = str_trim(str_substr(line, close + 1, SIZE_MAX));
+    *out_name = md_str_trim(md_str_substr(line, 1, close - 1));
+    *out_arg  = md_str_trim(md_str_substr(line, close + 1, SIZE_MAX));
     return true;
 }
 
-static int molden_shell_type_to_l(str_t tok) {
+static int molden_shell_type_to_l(md_str_t tok) {
     if (tok.len != 1) {
         return -1;
     }
@@ -219,25 +219,25 @@ static void molden_push_shell(molden_t* molden, uint32_t atom_idx, uint32_t l, c
     md_array_push(molden->shell, shell, molden->alloc);
 }
 
-static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, str_t arg) {
+static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, md_str_t arg) {
     // "[Atoms] Angs", "[Atoms] (AU)", "[ATOMS] AU" - the parentheses are decoration. Angstrom is
     // the default, which is what an argument-less header means.
-    str_t a = arg;
+    md_str_t a = arg;
     if (a.len >= 2 && a.ptr[0] == '(' && a.ptr[a.len - 1] == ')') {
-        a = str_trim(str_substr(a, 1, a.len - 2));
+        a = md_str_trim(md_str_substr(a, 1, a.len - 2));
     }
-    const bool bohr = str_eq_cstr_ignore_case(a, "au") || str_eq_cstr_ignore_case(a, "bohr");
+    const bool bohr = md_str_eq_cstr_ignore_case(a, "au") || md_str_eq_cstr_ignore_case(a, "bohr");
 
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, sec_arg;
+        md_str_t name, sec_arg;
         if (molden_section_header(&name, &sec_arg, line)) {
             break;
         }
         md_reader_skip_line(reader);
 
-        str_t tok[8];
-        str_t rest = line;
+        md_str_t tok[8];
+        md_str_t rest = line;
         const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
         if (num_tok < 6) {
             continue;
@@ -257,7 +257,7 @@ static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, str_t arg)
         }
         md_array_push(molden->atomic_number, (uint8_t)z, molden->alloc);
         md_array_push(molden->coord, xyz, molden->alloc);
-        md_array_push(molden->atom_label, str_copy(tok[0], molden->alloc), molden->alloc);
+        md_array_push(molden->atom_label, md_str_copy(tok[0], molden->alloc), molden->alloc);
     }
     return md_array_size(molden->atomic_number) > 0;
 }
@@ -281,36 +281,36 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
     uint32_t atom_idx = 0;
     bool have_atom = false;
 
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
         md_reader_skip_line(reader);
 
-        str_t rest = str_trim(line);
-        if (str_empty(rest)) {
+        md_str_t rest = md_str_trim(line);
+        if (md_str_empty(rest)) {
             have_atom = false;
             continue;
         }
 
-        str_t tok[4];
-        str_t scan = rest;
+        md_str_t tok[4];
+        md_str_t scan = rest;
         const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &scan);
         if (num_tok == 0) {
             continue;
         }
 
         const int  l     = molden_shell_type_to_l(tok[0]);
-        const bool is_sp = str_eq_cstr_ignore_case(tok[0], "sp");
+        const bool is_sp = md_str_eq_cstr_ignore_case(tok[0], "sp");
 
         // A line is either a shell - which starts with its type letter - or the "<atom index> 0"
         // header of the next atom's block. Nothing else is legal here, and an unknown letter is a
         // shell type this library cannot evaluate rather than something to skip past quietly.
         if (l < 0 && !is_sp) {
             if (!is_int(tok[0])) {
-                MD_LOG_ERROR("MOLDEN: [GTO] shell type '" STR_FMT "' is not one this library evaluates (s, p, d, f, g and sp)", STR_ARG(tok[0]));
+                MD_LOG_ERROR("MOLDEN: [GTO] shell type '" MD_STR_FMT "' is not one this library evaluates (s, p, d, f, g and sp)", MD_STR_ARG(tok[0]));
                 return false;
             }
             const int64_t idx = parse_int(tok[0]) - 1;
@@ -329,7 +329,7 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
         }
 
         if (num_tok < 2) {
-            MD_LOG_ERROR("MOLDEN: malformed shell line '" STR_FMT "'", STR_ARG(rest));
+            MD_LOG_ERROR("MOLDEN: malformed shell line '" MD_STR_FMT "'", MD_STR_ARG(rest));
             return false;
         }
         const size_t num_prim = (size_t)parse_int(tok[1]);
@@ -339,16 +339,16 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
         }
 
         for (size_t p = 0; p < num_prim; ++p) {
-            str_t prim_line;
+            md_str_t prim_line;
             if (!md_reader_extract_line(reader, &prim_line)) {
                 MD_LOG_ERROR("MOLDEN: [GTO] ends inside a contraction");
                 return false;
             }
-            str_t ptok[4];
-            str_t pscan = prim_line;
+            md_str_t ptok[4];
+            md_str_t pscan = prim_line;
             const size_t n = extract_tokens(ptok, MD_COUNTOF(ptok), &pscan);
             if (n < 2) {
-                MD_LOG_ERROR("MOLDEN: malformed primitive line '" STR_FMT "'", STR_ARG(str_trim(prim_line)));
+                MD_LOG_ERROR("MOLDEN: malformed primitive line '" MD_STR_FMT "'", MD_STR_ARG(md_str_trim(prim_line)));
                 return false;
             }
             alpha[p]  = molden_parse_float(ptok[0]);
@@ -381,21 +381,21 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
     bool have_orb = false;
     size_t num_coeff = 0;
 
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
         md_reader_skip_line(reader);
 
-        str_t s = str_trim(line);
-        if (str_empty(s)) {
+        md_str_t s = md_str_trim(line);
+        if (md_str_empty(s)) {
             continue;
         }
 
         size_t eq;
-        const bool is_key = str_find_char(&eq, s, '=') && eq <= 8;
+        const bool is_key = md_str_find_char(&eq, s, '=') && eq <= 8;
         if (is_key) {
             if (have_orb && num_coeff > 0) {
                 md_array_push(molden->orbital, orb, molden->alloc);
@@ -410,16 +410,16 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
                 have_orb = true;
             }
 
-            str_t key = str_trim(str_substr(s, 0, eq));
-            str_t val = str_trim(str_substr(s, eq + 1, SIZE_MAX));
-            if (str_eq_cstr_ignore_case(key, "ene")) {
+            md_str_t key = md_str_trim(md_str_substr(s, 0, eq));
+            md_str_t val = md_str_trim(md_str_substr(s, eq + 1, SIZE_MAX));
+            if (md_str_eq_cstr_ignore_case(key, "ene")) {
                 orb.energy = molden_parse_float(val);
-            } else if (str_eq_cstr_ignore_case(key, "spin")) {
-                orb.beta = str_eq_cstr_ignore_case(val, "beta");
-            } else if (str_eq_cstr_ignore_case(key, "occup")) {
+            } else if (md_str_eq_cstr_ignore_case(key, "spin")) {
+                orb.beta = md_str_eq_cstr_ignore_case(val, "beta");
+            } else if (md_str_eq_cstr_ignore_case(key, "occup")) {
                 orb.occupation = molden_parse_float(val);
-            } else if (str_eq_cstr_ignore_case(key, "sym")) {
-                orb.symmetry = str_copy(val, molden->alloc);
+            } else if (md_str_eq_cstr_ignore_case(key, "sym")) {
+                orb.symmetry = md_str_copy(val, molden->alloc);
             }
             continue;
         }
@@ -428,8 +428,8 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
             continue;
         }
 
-        str_t tok[2];
-        str_t scan = s;
+        md_str_t tok[2];
+        md_str_t scan = s;
         if (extract_tokens(tok, MD_COUNTOF(tok), &scan) < 2) {
             continue;
         }
@@ -450,16 +450,16 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
 
 // [FR-COORD] is "<symbol> x y z" per atom, in bohr.
 static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
         md_reader_skip_line(reader);
 
-        str_t tok[5];
-        str_t scan = line;
+        md_str_t tok[5];
+        md_str_t scan = line;
         if (extract_tokens(tok, MD_COUNTOF(tok), &scan) < 4) {
             continue;
         }
@@ -471,35 +471,35 @@ static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
         };
         md_array_push(molden->fr_atomic_number, (uint8_t)z, molden->alloc);
         md_array_push(molden->fr_coord, xyz, molden->alloc);
-        md_array_push(molden->fr_label, str_copy(tok[0], molden->alloc), molden->alloc);
+        md_array_push(molden->fr_label, md_str_copy(tok[0], molden->alloc), molden->alloc);
     }
 }
 
 // [FR-NORM-COORD] is "vibration <n>" followed by one displacement per atom, in bohr.
 static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
     const size_t num_atoms = md_array_size(molden->atomic_number);
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
         md_reader_skip_line(reader);
 
-        str_t s = str_trim(line);
-        if (str_empty(s)) {
+        md_str_t s = md_str_trim(line);
+        if (md_str_empty(s)) {
             continue;
         }
-        if (!str_eq_cstr_n_ignore_case(s, "vibration", 9)) {
+        if (!md_str_eq_cstr_n_ignore_case(s, "vibration", 9)) {
             continue;
         }
         for (size_t a = 0; a < num_atoms; ++a) {
-            str_t disp_line;
+            md_str_t disp_line;
             if (!md_reader_extract_line(reader, &disp_line)) {
                 return;
             }
-            str_t tok[4];
-            str_t scan = disp_line;
+            md_str_t tok[4];
+            md_str_t scan = disp_line;
             dvec3_t d = {0};
             if (extract_tokens(tok, MD_COUNTOF(tok), &scan) >= 3) {
                 d.x = molden_parse_float(tok[0]);
@@ -513,19 +513,19 @@ static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
 }
 
 static void molden_parse_number_series(md_array(double)* out, md_reader_i* reader, md_allocator_i* alloc) {
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
         md_reader_skip_line(reader);
-        str_t s = str_trim(line);
-        if (str_empty(s)) {
+        md_str_t s = md_str_trim(line);
+        if (md_str_empty(s)) {
             continue;
         }
-        str_t tok[2];
-        str_t scan = s;
+        md_str_t tok[2];
+        md_str_t scan = s;
         if (extract_tokens(tok, MD_COUNTOF(tok), &scan) >= 1) {
             md_array_push(*out, molden_parse_float(tok[0]), alloc);
         }
@@ -533,9 +533,9 @@ static void molden_parse_number_series(md_array(double)* out, md_reader_i* reade
 }
 
 static void molden_skip_section(md_reader_i* reader) {
-    str_t line;
+    md_str_t line;
     while (md_reader_peek_line(reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             return;
         }
@@ -543,74 +543,74 @@ static void molden_skip_section(md_reader_i* reader) {
     }
 }
 
-static bool molden_parse(molden_t* molden, str_t str) {
+static bool molden_parse(molden_t* molden, md_str_t str) {
     md_reader_i reader = md_reader_from_str(str);
 
     // [MO] can only be read once the basis is known, and the format does not promise an order, so
     // the section positions are noted on the first pass and [MO] is read on a second.
-    str_t mo_section = {0};
-    str_t fr_norm_section = {0};
+    md_str_t mo_section = {0};
+    md_str_t fr_norm_section = {0};
 
     bool seen_header = false;
-    str_t line;
+    md_str_t line;
     while (md_reader_extract_line(&reader, &line)) {
-        str_t name, arg;
+        md_str_t name, arg;
         if (!molden_section_header(&name, &arg, line)) {
             continue;
         }
 
-        if (str_eq_cstr_ignore_case(name, "molden format")) {
+        if (md_str_eq_cstr_ignore_case(name, "molden format")) {
             seen_header = true;
-        } else if (str_eq_cstr_ignore_case(name, "title")) {
-            str_t title_line;
+        } else if (md_str_eq_cstr_ignore_case(name, "title")) {
+            md_str_t title_line;
             if (md_reader_peek_line(&reader, &title_line)) {
-                str_t n, a;
+                md_str_t n, a;
                 if (!molden_section_header(&n, &a, title_line)) {
-                    molden->title = str_copy(str_trim(title_line), molden->alloc);
+                    molden->title = md_str_copy(md_str_trim(title_line), molden->alloc);
                 }
             }
             molden_skip_section(&reader);
-        } else if (str_eq_cstr_ignore_case(name, "program")) {
-            molden->program = str_copy(arg, molden->alloc);
+        } else if (md_str_eq_cstr_ignore_case(name, "program")) {
+            molden->program = md_str_copy(arg, molden->alloc);
             molden_skip_section(&reader);
-        } else if (str_eq_cstr_ignore_case(name, "atoms")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "atoms")) {
             if (!molden_parse_atoms(molden, &reader, arg)) {
                 MD_LOG_ERROR("MOLDEN: [Atoms] holds no atoms");
                 return false;
             }
-        } else if (str_eq_cstr_ignore_case(name, "gto")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "gto")) {
             if (!molden_parse_gto(molden, &reader)) {
                 return false;
             }
-        } else if (str_eq_cstr_ignore_case(name, "5d") || str_eq_cstr_ignore_case(name, "5d7f")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "5d") || md_str_eq_cstr_ignore_case(name, "5d7f")) {
             molden->pure[2] = true;
             molden->pure[3] = true;
-        } else if (str_eq_cstr_ignore_case(name, "5d10f")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "5d10f")) {
             molden->pure[2] = true;
             molden->pure[3] = false;
-        } else if (str_eq_cstr_ignore_case(name, "7f")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "7f")) {
             molden->pure[3] = true;
-        } else if (str_eq_cstr_ignore_case(name, "9g")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "9g")) {
             molden->pure[4] = true;
-        } else if (str_eq_cstr_ignore_case(name, "6d")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "6d")) {
             molden->pure[2] = false;
-        } else if (str_eq_cstr_ignore_case(name, "10f")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "10f")) {
             molden->pure[3] = false;
-        } else if (str_eq_cstr_ignore_case(name, "15g")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "15g")) {
             molden->pure[4] = false;
-        } else if (str_eq_cstr_ignore_case(name, "freq")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "freq")) {
             molden_parse_number_series(&molden->frequency, &reader, molden->alloc);
-        } else if (str_eq_cstr_ignore_case(name, "int")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "int")) {
             molden_parse_number_series(&molden->ir_intensity, &reader, molden->alloc);
-        } else if (str_eq_cstr_ignore_case(name, "fr-coord")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "fr-coord")) {
             molden_parse_fr_coord(molden, &reader);
-        } else if (str_eq_cstr_ignore_case(name, "fr-norm-coord")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "fr-norm-coord")) {
             // Read once the atom count is known, which [Atoms] or [FR-COORD] may only state further down
-            fr_norm_section = (str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
+            fr_norm_section = (md_str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
             molden_skip_section(&reader);
-        } else if (str_eq_cstr_ignore_case(name, "mo")) {
+        } else if (md_str_eq_cstr_ignore_case(name, "mo")) {
             // Remember where it starts; the basis may not have been read yet.
-            mo_section = (str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
+            mo_section = (md_str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
             molden_skip_section(&reader);
         } else {
             molden_skip_section(&reader);
@@ -631,12 +631,12 @@ static bool molden_parse(molden_t* molden, str_t str) {
         return false;
     }
 
-    if (!str_empty(fr_norm_section)) {
+    if (!md_str_empty(fr_norm_section)) {
         md_reader_i fr_reader = md_reader_from_str(fr_norm_section);
         molden_parse_normal_modes(molden, &fr_reader);
     }
 
-    if (!str_empty(mo_section)) {
+    if (!md_str_empty(mo_section)) {
         if (!molden->has_gto) {
             MD_LOG_ERROR("MOLDEN: file has [MO] but no [GTO]");
             return false;
@@ -782,15 +782,15 @@ static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const 
 // "6D10F15G", "5D7F9G" and the six other spellings the markers can produce. Published because a
 // consumer cannot recover it afterwards: the basis in the table is Cartesian whichever way the file
 // stated it, which is the point of converting at load time.
-static str_t molden_ao_convention(const molden_t* molden, char* buf, size_t cap) {
+static md_str_t molden_ao_convention(const molden_t* molden, char* buf, size_t cap) {
     int len = md_snprintf(buf, cap, "%s%s%s",
                        molden->pure[2] ? "5D"  : "6D",
                        molden->pure[3] ? "7F"  : "10F",
                        molden->pure[4] ? "9G"  : "15G");
     if (len <= 0 || (size_t)len >= cap) {
-        return (str_t){0};
+        return (md_str_t){0};
     }
-    return str_from_cstrn(buf, (size_t)len);
+    return md_str_from_cstrn(buf, (size_t)len);
 }
 
 static bool molden_has_cartesian_beyond_p(const molden_t* molden) {
@@ -960,11 +960,11 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
         const bool beta = (spin == 1);
 
         if (beta && restricted) {
-            md_qm_alias(sys, alpha_ids[0], STR_LIT("orbital/beta/energy"));
-            md_qm_alias(sys, alpha_ids[2], STR_LIT("orbital/beta/symmetry"));
-            md_qm_alias(sys, alpha_ids[3], STR_LIT("orbital/beta/coefficient"));
+            md_qm_alias(sys, alpha_ids[0], MD_STR_LIT("orbital/beta/energy"));
+            md_qm_alias(sys, alpha_ids[2], MD_STR_LIT("orbital/beta/symmetry"));
+            md_qm_alias(sys, alpha_ids[3], MD_STR_LIT("orbital/beta/coefficient"));
             if (!open_shell) {
-                md_qm_alias(sys, alpha_ids[1], STR_LIT("orbital/beta/occupation"));
+                md_qm_alias(sys, alpha_ids[1], MD_STR_LIT("orbital/beta/occupation"));
             } else {
                 // the same orbitals, with what the alpha channel does not hold
                 double* occ = md_alloc(temp, sizeof(double) * num_orb);
@@ -974,7 +974,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
                 for (size_t i = 0; i < num_orb; ++i) {
                     occ[i] = molden->orbital[i].occupation - MD_MIN(molden->orbital[i].occupation, 1.0);
                 }
-                md_qm_publish_series(sys, STR_LIT("orbital/beta/occupation"), STR_LIT("Occupation"), md_unit_none(), occ, num_orb);
+                md_qm_publish_series(sys, MD_STR_LIT("orbital/beta/occupation"), MD_STR_LIT("Occupation"), md_unit_none(), occ, num_orb);
             }
             break;
         }
@@ -989,7 +989,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
 
         double* energy = md_alloc(temp, sizeof(double) * count);
         double* occ    = md_alloc(temp, sizeof(double) * count);
-        str_t*  sym    = md_alloc(temp, sizeof(str_t)  * count);
+        md_str_t*  sym    = md_alloc(temp, sizeof(md_str_t)  * count);
         double* coeff  = md_alloc(temp, sizeof(double) * count * num_cart_ao);
         if (!energy || !occ || !sym || !coeff) {
             MD_LOG_ERROR("MOLDEN: failed to allocate scratch for %zu orbitals over %zu atomic orbitals", count, num_cart_ao);
@@ -1006,7 +1006,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
             energy[m] = o->energy;
             occ[m]    = !restricted ? o->occupation : open_shell ? MD_MIN(o->occupation, 1.0) : 0.5 * o->occupation;
             sym[m]    = o->symmetry;
-            have_symmetry = have_symmetry || !str_empty(o->symmetry);
+            have_symmetry = have_symmetry || !md_str_empty(o->symmetry);
             if (!molden_coefficients_to_cartesian(coeff + m * num_cart_ao, num_cart_ao, molden, o->coefficient, num_file_ao)) {
                 MD_LOG_ERROR("MOLDEN: orbital %zu does not span the basis", i);
                 return false;
@@ -1014,23 +1014,23 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
             m += 1;
         }
 
-        const str_t energy_path = beta ? STR_LIT("orbital/beta/energy")      : STR_LIT("orbital/alpha/energy");
-        const str_t occ_path    = beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation");
-        const str_t sym_path    = beta ? STR_LIT("orbital/beta/symmetry")    : STR_LIT("orbital/alpha/symmetry");
-        const str_t coeff_path  = beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient");
+        const md_str_t energy_path = beta ? MD_STR_LIT("orbital/beta/energy")      : MD_STR_LIT("orbital/alpha/energy");
+        const md_str_t occ_path    = beta ? MD_STR_LIT("orbital/beta/occupation")  : MD_STR_LIT("orbital/alpha/occupation");
+        const md_str_t sym_path    = beta ? MD_STR_LIT("orbital/beta/symmetry")    : MD_STR_LIT("orbital/alpha/symmetry");
+        const md_str_t coeff_path  = beta ? MD_STR_LIT("orbital/beta/coefficient") : MD_STR_LIT("orbital/alpha/coefficient");
 
-        const md_attribute_id_t ener_id = md_qm_publish_series(sys, energy_path, STR_LIT("Energy"),     md_unit_hartree(), energy, count);
-        const md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
+        const md_attribute_id_t ener_id = md_qm_publish_series(sys, energy_path, MD_STR_LIT("Energy"),     md_unit_hartree(), energy, count);
+        const md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    MD_STR_LIT("Occupation"), md_unit_none(),    occ,    count);
         md_attribute_id_t sym_id = MD_ATTRIBUTE_INVALID;
 
         if (have_symmetry) {
-            sym_id = md_qm_publish_strings(sys, sym_path, STR_LIT("Symmetry"), sym, count);
+            sym_id = md_qm_publish_strings(sys, sym_path, MD_STR_LIT("Symmetry"), sym, count);
         }
 
         // f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's precision at
         // the boundary, and there is no point publishing them already narrowed.
         const md_attribute_id_t coeff_id = md_qm_publish_matrix(sys, coeff_path,
-            beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
+            beta ? MD_STR_LIT("Beta Coefficient") : MD_STR_LIT("Alpha Coefficient"),
             md_unit_none(), coeff, count, num_cart_ao);
 
         if (!beta) {
@@ -1048,8 +1048,8 @@ static void molden_publish_vibrations(md_system_t* sys, const molden_t* molden) 
     const size_t num_atoms = md_array_size(molden->atomic_number);
     const size_t num_freq  = md_array_size(molden->frequency);
 
-    md_qm_publish_series(sys, STR_LIT("molden/vib/frequency"), STR_LIT("Frequency"), md_qm_unit_wavenumber(), molden->frequency, num_freq);
-    md_qm_publish_series(sys, STR_LIT("molden/vib/ir_intensity"), STR_LIT("IR Intensity"), md_qm_unit_km_per_mol(),
+    md_qm_publish_series(sys, MD_STR_LIT("molden/vib/frequency"), MD_STR_LIT("Frequency"), md_qm_unit_wavenumber(), molden->frequency, num_freq);
+    md_qm_publish_series(sys, MD_STR_LIT("molden/vib/ir_intensity"), MD_STR_LIT("IR Intensity"), md_qm_unit_km_per_mol(),
                           molden->ir_intensity, md_array_size(molden->ir_intensity));
 
     if (molden->num_modes == 0 || num_atoms == 0) {
@@ -1065,7 +1065,7 @@ static void molden_publish_vibrations(md_system_t* sys, const molden_t* molden) 
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 2,
         .shape = { (uint32_t)molden->num_modes, (uint32_t)num_atoms },
     };
-    md_qm_publish(sys, STR_LIT("qm/atom/normal_mode"), STR_LIT("Normal Mode"), md_unit_none(),
+    md_qm_publish(sys, MD_STR_LIT("qm/atom/normal_mode"), MD_STR_LIT("Normal Mode"), md_unit_none(),
                   format, molden->normal_mode, molden->num_modes * num_atoms * 3 * sizeof(double));
 }
 
@@ -1093,7 +1093,7 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
     MD_MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
     MD_MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
         state->xyz[i] = vec3_set((float)molden->coord[i].x, (float)molden->coord[i].y, (float)molden->coord[i].z);
@@ -1117,8 +1117,8 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
         return false;
     }
 
-    md_qm_publish_str(sys, STR_LIT("molden/title"),   STR_LIT("Title"),   molden->title);
-    md_qm_publish_str(sys, STR_LIT("molden/program"), STR_LIT("Program"), molden->program);
+    md_qm_publish_str(sys, MD_STR_LIT("molden/title"),   MD_STR_LIT("Title"),   molden->title);
+    md_qm_publish_str(sys, MD_STR_LIT("molden/program"), MD_STR_LIT("Program"), molden->program);
 
     // Molden states no effective core charges ([Atoms] has one number per atom, read as the
     // element), so the nuclear charges are the atomic numbers
@@ -1126,16 +1126,16 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
 
     if (molden->has_gto) {
         char buf[32];
-        md_qm_publish_str(sys, STR_LIT("molden/ao_convention"), STR_LIT("AO Convention"), molden_ao_convention(molden, buf, sizeof(buf)));
+        md_qm_publish_str(sys, MD_STR_LIT("molden/ao_convention"), MD_STR_LIT("AO Convention"), molden_ao_convention(molden, buf, sizeof(buf)));
 
         md_gto_basis_t basis = {0};
         if (molden_gto_basis_extract(&basis, molden, temp)) {
             md_qm_publish_basis(sys, &basis);
             molden_cartesian_convention(molden, &basis, temp);
             if (molden->cart_shared) {
-                md_qm_publish_str(sys, STR_LIT("molden/cartesian_normalisation"), STR_LIT("Cartesian Normalisation"), STR_LIT("shell"));
+                md_qm_publish_str(sys, MD_STR_LIT("molden/cartesian_normalisation"), MD_STR_LIT("Cartesian Normalisation"), MD_STR_LIT("shell"));
             } else if (molden_has_cartesian_beyond_p(molden)) {
-                md_qm_publish_str(sys, STR_LIT("molden/cartesian_normalisation"), STR_LIT("Cartesian Normalisation"), STR_LIT("function"));
+                md_qm_publish_str(sys, MD_STR_LIT("molden/cartesian_normalisation"), MD_STR_LIT("Cartesian Normalisation"), MD_STR_LIT("function"));
             }
         }
         if (!molden_publish_orbitals(sys, molden, temp)) {
@@ -1153,7 +1153,7 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
+bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str) {
     MD_ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
@@ -1169,12 +1169,12 @@ bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
     return result;
 }
 
-bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
+bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
     MD_ASSERT(sys);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("MOLDEN: could not open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("MOLDEN: could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 
@@ -1183,12 +1183,12 @@ bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state,
     char* buf = (char*)md_alloc(alloc, size + 1);
     bool result = false;
     if (!buf) {
-        MD_LOG_ERROR("MOLDEN: failed to allocate %zu bytes for '" STR_FMT "'", size, STR_ARG(filename));
+        MD_LOG_ERROR("MOLDEN: failed to allocate %zu bytes for '" MD_STR_FMT "'", size, MD_STR_ARG(filename));
     } else if (md_file_read(file, buf, size) != size) {
-        MD_LOG_ERROR("MOLDEN: failed to read '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("MOLDEN: failed to read '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         buf[size] = '\0';
-        result = md_molden_system_init_from_str(sys, state, (str_t){ buf, size });
+        result = md_molden_system_init_from_str(sys, state, (md_str_t){ buf, size });
     }
 
     if (buf) {
@@ -1198,7 +1198,7 @@ bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state,
     return result;
 }
 
-bool md_molden_file_is_molden(str_t filename) {
+bool md_molden_file_is_molden(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
         return false;
@@ -1208,15 +1208,15 @@ bool md_molden_file_is_molden(str_t filename) {
     const size_t n = md_file_read(file, buf, sizeof(buf));
     md_file_close(&file);
 
-    str_t str = { buf, n };
-    str_t line;
-    while (str_extract_line(&line, &str)) {
-        line = str_trim(line);
-        if (str_empty(line)) {
+    md_str_t str = { buf, n };
+    md_str_t line;
+    while (md_str_extract_line(&line, &str)) {
+        line = md_str_trim(line);
+        if (md_str_empty(line)) {
             continue;
         }
-        str_t name, arg;
-        return molden_section_header(&name, &arg, line) && str_eq_cstr_ignore_case(name, "molden format");
+        md_str_t name, arg;
+        return molden_section_header(&name, &arg, line) && md_str_eq_cstr_ignore_case(name, "molden format");
     }
     return false;
 }

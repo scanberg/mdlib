@@ -2433,7 +2433,7 @@ static void smiles_ring_atoms(bool* in_ring, const md_smiles_t* g, md_allocator_
     }
 }
 
-bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md_allocator_i* alloc, struct md_smiles_error_t* err) {
+bool md_match_query_init_smiles(md_match_query_t* query, md_str_t smiles, struct md_allocator_i* alloc, struct md_smiles_error_t* err) {
     MD_ASSERT(query);
     MD_ASSERT(alloc);
     MD_MEMSET(query, 0, sizeof(md_match_query_t));
@@ -2797,7 +2797,7 @@ md_bitset_t md_match_result_select_all(const md_match_result_t* result, const st
 
 typedef struct lib_entry_t {
     md_match_query_t query;
-    str_t    name;
+    md_str_t    name;
     // What the prefilter of md_match_identify compares: the heavy atoms of the query, their elements and bonds
     uint64_t key;               // Sum of the element hashes of its heavy atoms, and of its bonds
     uint32_t num_heavy;
@@ -2836,7 +2836,7 @@ void md_match_library_destroy(md_match_library_t* lib) {
     md_allocator_i* alloc = lib->alloc;
     for (size_t i = 0; i < md_array_size(lib->entries); ++i) {
         md_match_query_free(&lib->entries[i].query);
-        if (lib->entries[i].name.ptr) str_free(lib->entries[i].name, alloc);
+        if (lib->entries[i].name.ptr) md_str_free(lib->entries[i].name, alloc);
     }
     md_array_free(lib->entries, alloc);
     md_array_free(lib->comp, alloc);
@@ -2844,10 +2844,10 @@ void md_match_library_destroy(md_match_library_t* lib) {
 }
 
 // Takes the query over
-static int32_t library_push(md_match_library_t* lib, md_match_query_t query, str_t name) {
+static int32_t library_push(md_match_library_t* lib, md_match_query_t query, md_str_t name) {
     lib_entry_t e = {0};
     e.query = query;
-    e.name  = str_empty(name) ? (str_t){0} : str_copy(name, lib->alloc);
+    e.name  = md_str_empty(name) ? (md_str_t){0} : md_str_copy(name, lib->alloc);
 
     const size_t n = query.num_atoms;
     md_temp_scope_t temp = md_temp_begin_avoid(lib->alloc);
@@ -2890,7 +2890,7 @@ static int32_t library_push(md_match_library_t* lib, md_match_query_t query, str
     return (int32_t)md_array_size(lib->entries) - 1;
 }
 
-int32_t md_match_library_add(md_match_library_t* lib, const md_match_query_t* query, str_t name) {
+int32_t md_match_library_add(md_match_library_t* lib, const md_match_query_t* query, md_str_t name) {
     MD_ASSERT(lib);
     if (!query_validate(query)) return -1;
     md_match_query_t copy = {0};
@@ -2906,7 +2906,7 @@ int32_t md_match_library_add(md_match_library_t* lib, const md_match_query_t* qu
     return library_push(lib, copy, name);
 }
 
-int32_t md_match_library_add_smiles(md_match_library_t* lib, str_t smiles, str_t name, struct md_smiles_error_t* err) {
+int32_t md_match_library_add_smiles(md_match_library_t* lib, md_str_t smiles, md_str_t name, struct md_smiles_error_t* err) {
     MD_ASSERT(lib);
     md_match_query_t query = {0};
     if (!md_match_query_init_smiles(&query, smiles, lib->alloc, err)) return -1;
@@ -2922,8 +2922,8 @@ const md_match_query_t* md_match_library_query(const md_match_library_t* lib, si
     return &lib->entries[entry].query;
 }
 
-str_t md_match_library_name(const md_match_library_t* lib, size_t entry) {
-    if (!lib || entry >= md_array_size(lib->entries)) return (str_t){0};
+md_str_t md_match_library_name(const md_match_library_t* lib, size_t entry) {
+    if (!lib || entry >= md_array_size(lib->entries)) return (md_str_t){0};
     return lib->entries[entry].name;
 }
 

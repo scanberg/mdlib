@@ -31,7 +31,7 @@ static mcs_fixture_t* mcs_tubulin(void) {
         f.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         f.sys = (md_system_t){.alloc = f.alloc};
         f.state = (md_system_state_t){.alloc = f.alloc};
-        f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
+        f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
                md_util_system_infer(&f.sys, &f.state, MD_UTIL_INFER_ALL, NULL);
     }
     return f.ok ? &f : NULL;
@@ -40,7 +40,7 @@ static mcs_fixture_t* mcs_tubulin(void) {
 // The atoms of the nth residue of that name, into atoms; how many
 static size_t mcs_residue(int32_t* atoms, const md_system_t* sys, const char* name, int nth) {
     for (size_t r = 0; r < sys->residue.count; ++r) {
-        if (!str_eq(md_system_residue_name(sys, r), str_from_cstr(name)) || nth-- > 0) continue;
+        if (!md_str_eq(md_system_residue_name(sys, r), md_str_from_cstr(name)) || nth-- > 0) continue;
         size_t n = 0;
         for (uint32_t a = sys->residue.atom_offset[r]; a < sys->residue.atom_offset[r + 1]; ++a) atoms[n++] = (int32_t)a;
         return n;
@@ -154,18 +154,18 @@ UTEST(mcs, nucleotides) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     // A purine and a pyrimidine share the sugar and what the base's ring holds in common with it: the first DA has no
     // phosphate, 18 heavy atoms
     int32_t a[64], b[64];
     size_t na = 0, nb = 0;
     for (size_t r = 0; r < sys.residue.count && (!na || !nb); ++r) {
-        const str_t n = md_system_residue_name(&sys, r);
+        const md_str_t n = md_system_residue_name(&sys, r);
         int32_t* dst = NULL;
         size_t* cnt = NULL;
-        if (!na && str_begins_with(n, STR_LIT("DA"))) { dst = a; cnt = &na; }
-        else if (!nb && str_begins_with(n, STR_LIT("DT"))) { dst = b; cnt = &nb; }
+        if (!na && md_str_begins_with(n, MD_STR_LIT("DA"))) { dst = a; cnt = &na; }
+        else if (!nb && md_str_begins_with(n, MD_STR_LIT("DT"))) { dst = b; cnt = &nb; }
         if (!dst) continue;
         for (uint32_t x = sys.residue.atom_offset[r]; x < sys.residue.atom_offset[r + 1] && *cnt < 64; ++x) dst[(*cnt)++] = (int32_t)x;
     }

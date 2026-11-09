@@ -17,7 +17,7 @@ struct md_system_t;
 // The diagnostics of a script as "CODE line: message | fix", one per line; compiled against sys, which may be NULL
 static const char* diags_on(const char* src, const struct md_system_t* sys, md_allocator_i* alloc) {
     const md_vial_compile_desc_t desc = {.sys = sys};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &desc, alloc);
     const md_vial_diagnostic_t* d = NULL;
     const size_t n = md_vial_diagnostics(prog, &d);
     char* out = NULL;
@@ -130,7 +130,7 @@ UTEST_F(vial_check, recursion) {
 // The type the checker gives the statement on a line, as "type, stage = value"; compiled against sys, which may be NULL
 static const char* type_on(const char* src, uint32_t line, const struct md_system_t* sys, md_allocator_i* alloc) {
     const md_vial_compile_desc_t desc = {.sys = sys};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &desc, alloc);
     md_vial__result_t r;
     static char out[512];
     if (!md_vial__line_result(prog, line, &r)) { snprintf(out, sizeof(out), "(none)"); }
@@ -816,7 +816,7 @@ UTEST_F(vial_check, w0607) {
 
 static const char* diags_frames(const char* src, const md_system_t* sys, uint64_t frames, md_allocator_i* alloc) {
     const md_vial_compile_desc_t desc = {.sys = sys, .num_frames = frames};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &desc, alloc);
     const md_vial_diagnostic_t* d = NULL;
     const size_t n = md_vial_diagnostics(prog, &d);
     char* out = NULL;
@@ -900,8 +900,8 @@ UTEST_F(vial_check, bonds_spread_and_set_indices) {
 #include <md_attributes.h>
 
 static const char* type_run(const char* src, uint32_t line, const md_system_t* sys, md_allocator_i* alloc, const char** diags) {
-    const md_vial_compile_desc_t desc = {.sys = sys, .run = STR_LIT("run/md")};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    const md_vial_compile_desc_t desc = {.sys = sys, .run = MD_STR_LIT("run/md")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &desc, alloc);
     static char out[256];
     md_vial__result_t r;
     if (!md_vial__line_result(prog, line, &r)) snprintf(out, sizeof(out), "(none)");
@@ -922,13 +922,13 @@ UTEST_F(vial_check, attributes) {
     md_system_t sys = *T;
     sys.attributes = (md_attributes_t){.alloc = utest_fixture->alloc};
     md_unit_t kj_mol;
-    vial_unit_string(STR_LIT("kJ/mol"), &kj_mol);
-    const md_attribute_desc_t time = {.path = STR_LIT("run/md/time"), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+    vial_unit_string(MD_STR_LIT("kJ/mol"), &kj_mol);
+    const md_attribute_desc_t time = {.path = MD_STR_LIT("run/md/time"), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {38}}};
     ASSERT_TRUE(md_attributes_create(&sys.attributes, &time) != MD_ATTRIBUTE_INVALID);
     const char* terms[] = {"run/md/edr/Potential", "run/md/edr/coul_sr_a", "run/md/edr/coul_sr_b"};
     for (int i = 0; i < 3; ++i) {
-        const md_attribute_desc_t d = {.path = str_from_cstr(terms[i]), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = kj_mol,
+        const md_attribute_desc_t d = {.path = md_str_from_cstr(terms[i]), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = kj_mol,
             .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {38}}};
         ASSERT_TRUE(md_attributes_create(&sys.attributes, &d) != MD_ATTRIBUTE_INVALID);
     }
@@ -975,16 +975,16 @@ UTEST_F(vial_check, outputs_and_hover) {
         "dev   = ends - mean(ends, axis='frame')\n"
         "big   = zeros((2, 2, 2))\n";
     const md_vial_compile_desc_t desc = {.sys = P};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, utest_fixture->alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &desc, utest_fixture->alloc);
     const md_vial_output_t* o = NULL;
     const size_t n = md_vial_outputs(prog, &o);
     ASSERT_EQ(6, (int)n);
-    EXPECT_TRUE(str_eq(o[0].name, STR_LIT("ca")));   EXPECT_TRUE(o[0].selection);  EXPECT_EQ(MD_VIAL_STAGE_STATIC, o[0].stage);
-    EXPECT_TRUE(str_eq(o[1].name, STR_LIT("rmsf"))); EXPECT_STREQ(u8"float[153] Å", o[1].type); EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, o[1].stage);
-    EXPECT_TRUE(str_eq(o[2].name, STR_LIT("ends"))); EXPECT_EQ(MD_VIAL_STAGE_FRAME, o[2].stage); EXPECT_EQ(1, (int)o[2].pass);
-    EXPECT_TRUE(str_eq(o[3].name, STR_LIT("h")));    EXPECT_STREQ("float[32]", o[3].type);
-    EXPECT_TRUE(str_eq(o[4].name, STR_LIT("near"))); EXPECT_TRUE(o[4].selection); EXPECT_EQ(MD_VIAL_STAGE_FRAME, o[4].stage);
-    EXPECT_TRUE(str_eq(o[5].name, STR_LIT("dev")));  EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY_PER_FRAME, o[5].stage); EXPECT_EQ(2, (int)o[5].pass);
+    EXPECT_TRUE(md_str_eq(o[0].name, MD_STR_LIT("ca")));   EXPECT_TRUE(o[0].selection);  EXPECT_EQ(MD_VIAL_STAGE_STATIC, o[0].stage);
+    EXPECT_TRUE(md_str_eq(o[1].name, MD_STR_LIT("rmsf"))); EXPECT_STREQ(u8"float[153] Å", o[1].type); EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, o[1].stage);
+    EXPECT_TRUE(md_str_eq(o[2].name, MD_STR_LIT("ends"))); EXPECT_EQ(MD_VIAL_STAGE_FRAME, o[2].stage); EXPECT_EQ(1, (int)o[2].pass);
+    EXPECT_TRUE(md_str_eq(o[3].name, MD_STR_LIT("h")));    EXPECT_STREQ("float[32]", o[3].type);
+    EXPECT_TRUE(md_str_eq(o[4].name, MD_STR_LIT("near"))); EXPECT_TRUE(o[4].selection); EXPECT_EQ(MD_VIAL_STAGE_FRAME, o[4].stage);
+    EXPECT_TRUE(md_str_eq(o[5].name, MD_STR_LIT("dev")));  EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY_PER_FRAME, o[5].stage); EXPECT_EQ(2, (int)o[5].pass);
 
     // Hover: the innermost expression at an offset
     md_vial_hover_t hv;
@@ -1015,7 +1015,7 @@ UTEST_F(vial_check, outputs_and_hover) {
 
     // A quantity known when compiling: its unit, where the type prints it, and its value as a number
     const char* q = "v = 10 nm/ps\nm = [1.0 nm, 2.0 nm]\n";
-    prog = md_vial_compile(str_from_cstr(q), &desc, utest_fixture->alloc);
+    prog = md_vial_compile(md_str_from_cstr(q), &desc, utest_fixture->alloc);
     ASSERT_TRUE(md_vial_hover(prog, 7, &hv));     // on the unit, which is the quantity's
     EXPECT_STREQ("int km/s", hv.type);
     EXPECT_EQ(4u, hv.unit_at);

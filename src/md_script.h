@@ -56,13 +56,13 @@ typedef struct md_script_range_marker_t {
 typedef struct md_script_vis_token_t {
     md_script_range_marker_t range;
     int depth;
-    str_t text;
+    md_str_t text;
     md_script_vis_ref_t ref;
 } md_script_vis_token_t;
 
 typedef struct md_log_token_t {
     md_script_range_marker_t range;
-    str_t text;
+    md_str_t text;
     const md_bitset_t* context;
 } md_log_token_t;
 
@@ -94,7 +94,7 @@ typedef struct md_script_vis_sphere_t {
 // spelling in 'str'. A label which is not a quantity leaves 'unit' as none.
 typedef struct md_script_vis_text_t {
     vec3_t pos;
-    str_t  str;
+    md_str_t  str;
     double value;
     md_unit_t unit;
 } md_script_vis_text_t;
@@ -159,12 +159,12 @@ void md_script_ir_free(md_script_ir_t* ir);
 void md_script_ir_clear(md_script_ir_t* ir);
 
 // Adds a constant identifier holding a set of atoms. The IR keeps its own copy.
-bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, str_t ident, md_bitset_t set);
+bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, md_str_t ident, md_bitset_t set);
 
 // Returns true if any expression in the script contains a reference to to an identifier by supplied name
-bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, str_t name);
+bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, md_str_t name);
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_system_t* sys, const md_script_ir_t* ctx_ir);
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, md_str_t src, const struct md_system_t* sys, const md_script_ir_t* ctx_ir);
 
 size_t md_script_ir_num_errors(const md_script_ir_t* ir);
 const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir);
@@ -194,14 +194,14 @@ uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir);
 
 // Get identifiers within a script
 size_t md_script_ir_num_identifiers(const md_script_ir_t* ir);
-const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
+const md_str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 
 // ### PROPERTIES ###
 size_t       md_script_ir_property_count(const md_script_ir_t* ir);
-const str_t* md_script_ir_property_names(const md_script_ir_t* ir);
+const md_str_t* md_script_ir_property_names(const md_script_ir_t* ir);
 
 // If the name does not exist, it will return 0
-md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, str_t name);
+md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, md_str_t name);
 
 // What a property is computed from: its expression, with every variable it uses standing for what that variable
 // is computed from in turn, the constants and selections it reads by their contents, the attributes by their
@@ -209,16 +209,16 @@ md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir,
 // Two compilations agree on it exactly when the property's values agree, which is what lets an evaluation keep the
 // values of a property across an edit of the script that does not touch it (see md_script_eval_create_from).
 // Compared within one process only. 0 if there is no such property.
-uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, str_t name);
+uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, md_str_t name);
 
 // Where the property is named in the source it was compiled from: the bytes of its name where it is assigned. Empty
 // if there is no such property.
-md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, str_t name);
+md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, md_str_t name);
 
 // ### VISUALIZATION REFERENCES ###
 // A property is found by name, which is what carries over from one compilation to the next: the reference
 // made from it belongs to this compilation of ir. It refers to nothing if ir has no such property.
-md_script_vis_ref_t md_script_ir_property_vis_ref(const md_script_ir_t* ir, str_t name);
+md_script_vis_ref_t md_script_ir_property_vis_ref(const md_script_ir_t* ir, md_str_t name);
 
 // Whether ref was made by this compilation of ir, and so resolves in it
 bool md_script_vis_ref_valid(const md_script_ir_t* ir, md_script_vis_ref_t ref);
@@ -233,7 +233,7 @@ static inline bool md_script_vis_ref_equal(md_script_vis_ref_t a, md_script_vis_
 
 // The identifier of what ref refers to in ir
 // An empty string if it has none, or ref does not resolve in ir
-str_t md_script_vis_ref_ident(const md_script_ir_t* ir, md_script_vis_ref_t ref);
+md_str_t md_script_vis_ref_ident(const md_script_ir_t* ir, md_script_vis_ref_t ref);
 
 // The major dimension (dim[0]) of what ref refers to in ir
 // This can be -1 if the dimension is not determined (i.e. dynamic length)
@@ -280,14 +280,14 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
 // published aggregate holds. Each property its own: one taken over by md_script_eval_create_from holds its frames
 // while a new one holds none yet. A copy taken under the evaluation's lock, allocated with alloc, so it can be read
 // while the evaluation runs.
-md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, str_t ident, struct md_allocator_i* alloc);
+md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, md_str_t ident, struct md_allocator_i* alloc);
 
 // The frames which remain to be evaluated, for the properties and for the slots, allocated with alloc
 md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, struct md_allocator_i* alloc);
 
 // What the property was computed from, as it was compiled when the evaluation was made (see
 // md_script_ir_property_fingerprint). 0 if there is no such property.
-uint64_t md_script_eval_property_fingerprint(const md_script_eval_t* eval, str_t ident);
+uint64_t md_script_eval_property_fingerprint(const md_script_eval_t* eval, md_str_t ident);
 
 // ### WHAT AN EDIT CHANGES ###
 // How the properties of a compilation stand against an evaluation made from an earlier one: what
@@ -301,7 +301,7 @@ typedef enum md_script_eval_status_t {
 
 typedef struct md_script_eval_plan_t {
     md_script_eval_status_t status;
-    str_t    from;          // HELD: the property it is taken over from, which is named otherwise when it was renamed
+    md_str_t    from;          // HELD: the property it is taken over from, which is named otherwise when it was renamed
     uint32_t num_frames;    // the frames it would hold
     uint32_t num_pending;   // the frames it would have evaluated, for itself and its slots
 } md_script_eval_plan_t;
@@ -340,14 +340,14 @@ typedef struct md_script_eval_slot_info_t {
 
 // Asks for the property ident over frames (those below the evaluation's frame count) under key. Asked again for the
 // same frames, nothing changes. False if ident is not a distribution or a volume, or there is no room for another slot.
-bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, str_t ident, const md_bitset_t* frames);
+bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, md_str_t ident, const md_bitset_t* frames);
 
 // The slot is no longer needed: what it holds is let go
-void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, str_t ident);
+void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, md_str_t ident);
 
 // What the slot holds, without its values: cheap, to find out whether it holds anything new. False if there is no
 // such slot.
-bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, str_t ident);
+bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, md_str_t ident);
 
 // Copies what the slot holds: the mean of the values over its frames, and for a distribution the mean of the weights,
 // num_values each (see md_script_eval_slot_info_t), as the published aggregate holds them. out_weights may be NULL,
@@ -355,7 +355,7 @@ bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_scr
 // holds back adding a frame to it until the copy is done, nothing else. False if there is no such slot, or
 // num_values is too small, in which case only out_info is written.
 bool md_script_eval_slot_extract(md_script_eval_slot_info_t* out_info, float* out_values, float* out_weights, size_t num_values,
-                                 const md_script_eval_t* eval, uint64_t key, str_t ident);
+                                 const md_script_eval_t* eval, uint64_t key, md_str_t ident);
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 
@@ -372,10 +372,10 @@ void md_script_eval_clear_data(md_script_eval_t* eval);
 // frames           : the frames to evaluate. Those with nothing left to do (md_script_eval_pending_frames) are skipped.
 // Safe to call from several threads at once, also with overlapping frames (a frame is added to an aggregate once):
 // each call keeps its own extraction context, and with it its own open files.
-bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames);
+bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, md_str_t run, const uint32_t* frames, size_t num_frames);
 
 // The same, for the frames [beg,end[
-bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, uint32_t frame_beg, uint32_t frame_end);
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, md_str_t run, uint32_t frame_beg, uint32_t frame_end);
 
 // Number of properties held by the evaluation
 size_t md_script_eval_property_count(const md_script_eval_t* eval);
@@ -440,7 +440,7 @@ bool md_script_vis_clear(md_script_vis_t* vis);
 // subidx selects one element of an array (-1 for all of them)
 bool md_script_vis_eval_ref(md_script_vis_t* vis, md_script_vis_ref_t ref, int subidx, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
 
-bool md_script_vis_eval_string(md_script_vis_t* vis, str_t str, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
+bool md_script_vis_eval_string(md_script_vis_t* vis, md_str_t str, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
 
 // What the value of a visualized node is, in a few lines (a selection's atoms, a contact set's pairs, a plane's centroid
 // and normal, the first values of a long array), at ctx->state for a value which depends on the frame. What hovering it
@@ -450,17 +450,17 @@ size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, 
 
 // ### MISC ###
 
-bool md_script_identifier_name_valid(str_t ident);
+bool md_script_identifier_name_valid(md_str_t ident);
 
 // Reserved words of the language (and, or, xor, not, in, of, out)
 size_t       md_script_num_keywords(void);
-const str_t* md_script_keywords(void);
+const md_str_t* md_script_keywords(void);
 
 // Names the language defines: every built-in procedure (once, however many overloads it has) and the predefined
 // constants. Meant for syntax highlighting and completion.
 // Writes up to cap names to out and returns how many there are, so md_script_builtin_identifiers(NULL, 0) gives the
 // size of the buffer to pass.
-size_t md_script_builtin_identifiers(str_t* out, size_t cap);
+size_t md_script_builtin_identifiers(md_str_t* out, size_t cap);
 
 // ### ATTRIBUTES ###
 
@@ -469,7 +469,7 @@ size_t md_script_builtin_identifiers(str_t* out, size_t cap);
 // ("run/a/edr/potential") where it does not. A view into attr->path. Empty if attr() cannot read the attribute: it
 // does not vary over the frames of a run, does not hold numbers, or has more dimensions per frame than a script value
 // holds (attr() given its path says which).
-str_t md_script_attr_path(const struct md_attributes_t* attributes, const struct md_attribute_t* attr);
+md_str_t md_script_attr_path(const struct md_attributes_t* attributes, const struct md_attribute_t* attr);
 
 // ### COMPLETION ###
 
@@ -484,8 +484,8 @@ typedef enum md_script_completion_kind_t {
 } md_script_completion_kind_t;
 
 typedef struct md_script_completion_t {
-    str_t label;                        // What to show and to match what has been typed against: ALA, cutoff
-    str_t text;                         // What replaces the range: "ALA" (quoted if the cursor is not in a string),
+    md_str_t label;                        // What to show and to match what has been typed against: ALA, cutoff
+    md_str_t text;                         // What replaces the range: "ALA" (quoted if the cursor is not in a string),
                                         // cutoff=
     md_script_completion_kind_t kind;
     bool fits;                          // It has the type that is expected at the cursor: that of the parameter the
@@ -498,7 +498,7 @@ typedef struct md_script_completion_t {
 typedef struct md_script_completions_t {
     md_script_range_marker_t range;     // The bytes of the source that a completion replaces: the identifier, or the
                                         // contents of the string, that the cursor is in. Empty at the cursor if none.
-    str_t prefix;                       // The part of the range before the cursor: what has been typed so far
+    md_str_t prefix;                       // The part of the range before the cursor: what has been typed so far
     size_t count;
     md_script_completion_t* items;
 } md_script_completions_t;
@@ -509,7 +509,7 @@ typedef struct md_script_completions_t {
 // ranked, which is left to the editor (with fits to go by). Nothing is offered in comments and numbers, and inside a
 // string only when the argument it is given to takes known values. Values from the system are only offered if sys is
 // not NULL. Everything returned (items and strings) is allocated from alloc, which is meant to be a temporary arena.
-md_script_completions_t md_script_complete(str_t src, int cursor, const struct md_system_t* sys, struct md_allocator_i* alloc);
+md_script_completions_t md_script_complete(md_str_t src, int cursor, const struct md_system_t* sys, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

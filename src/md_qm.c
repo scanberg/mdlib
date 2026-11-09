@@ -27,7 +27,7 @@ md_unit_t md_qm_unit_amu(void)        { return md_unit_scl(md_unit_kilogram(), 1
 // Publishing vocabulary
 // ---------------------------------------------------------------------------
 
-md_attribute_id_t md_qm_publish(md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+md_attribute_id_t md_qm_publish(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit,
                                 md_attribute_format_t format, const void* data, size_t byte_size) {
     MD_ASSERT(sys);
     return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
@@ -40,7 +40,7 @@ md_attribute_id_t md_qm_publish(md_system_t* sys, str_t path, str_t label, md_un
     });
 }
 
-md_attribute_id_t md_qm_publish_virtual(md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+md_attribute_id_t md_qm_publish_virtual(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit,
                                         md_attribute_format_t format, const md_attribute_virtual_t* virt) {
     MD_ASSERT(sys);
     return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
@@ -66,7 +66,7 @@ static size_t qm_symmetric_dim(bool* out_packed, const md_attribute_t* attr, md_
         n = format.shape[0];
     }
     if (n == 0) {
-        MD_LOG_ERROR("'" STR_FMT "' does not slice down to one symmetric matrix", STR_ARG(attr->path));
+        MD_LOG_ERROR("'" MD_STR_FMT "' does not slice down to one symmetric matrix", MD_STR_ARG(attr->path));
         return 0;
     }
     if (out_packed) *out_packed = packed;
@@ -81,7 +81,7 @@ size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attri
     }
     const size_t len = n * (n + 1) / 2;
     if (cap < len) {
-        MD_LOG_ERROR("'" STR_FMT "': room for %zu values, the packed matrix has %zu", STR_ARG(attr->path), cap, len);
+        MD_LOG_ERROR("'" MD_STR_FMT "': room for %zu values, the packed matrix has %zu", MD_STR_ARG(attr->path), cap, len);
         return 0;
     }
 
@@ -112,7 +112,7 @@ size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attribute_t
         return n;
     }
     if (cap < n * n) {
-        MD_LOG_ERROR("'" STR_FMT "': room for %zu values, the matrix has %zu", STR_ARG(attr->path), cap, n * n);
+        MD_LOG_ERROR("'" MD_STR_FMT "': room for %zu values, the matrix has %zu", MD_STR_ARG(attr->path), cap, n * n);
         return 0;
     }
 
@@ -137,13 +137,13 @@ size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attribute_t
     return result;
 }
 
-md_attribute_id_t md_qm_publish_scalar(md_system_t* sys, str_t path, str_t label, md_unit_t unit, double value) {
+md_attribute_id_t md_qm_publish_scalar(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, double value) {
     // The value is copied, so a local is fine.
     md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 0 };
     return md_qm_publish(sys, path, label, unit, format, &value, sizeof(double));
 }
 
-md_attribute_id_t md_qm_publish_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count) {
+md_attribute_id_t md_qm_publish_series(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count) {
     if (!values || count == 0) {
         return MD_ATTRIBUTE_INVALID;
     }
@@ -153,7 +153,7 @@ md_attribute_id_t md_qm_publish_series(md_system_t* sys, str_t path, str_t label
     return md_qm_publish(sys, path, label, unit, format, values, count * sizeof(double));
 }
 
-md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const dvec3_t* values, size_t count) {
+md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const dvec3_t* values, size_t count) {
     if (!values || count == 0) {
         return MD_ATTRIBUTE_INVALID;
     }
@@ -165,7 +165,7 @@ md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, str_t path, str_t 
     return md_qm_publish(sys, path, label, unit, format, values, count * 3 * sizeof(double));
 }
 
-md_attribute_id_t md_qm_publish_matrix(md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols) {
+md_attribute_id_t md_qm_publish_matrix(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols) {
     if (!values || rows == 0 || cols == 0) {
         return MD_ATTRIBUTE_INVALID;
     }
@@ -176,8 +176,8 @@ md_attribute_id_t md_qm_publish_matrix(md_system_t* sys, str_t path, str_t label
     return md_qm_publish(sys, path, label, unit, format, values, rows * cols * sizeof(double));
 }
 
-md_attribute_id_t md_qm_publish_str(md_system_t* sys, str_t path, str_t label, str_t value) {
-    if (str_empty(value)) {
+md_attribute_id_t md_qm_publish_str(md_system_t* sys, md_str_t path, md_str_t label, md_str_t value) {
+    if (md_str_empty(value)) {
         return MD_ATTRIBUTE_INVALID;
     }
     // A single string is rank 1 {1}, by the same rule that makes a single 3-vector rank 1 {1} of 3
@@ -186,20 +186,20 @@ md_attribute_id_t md_qm_publish_str(md_system_t* sys, str_t path, str_t label, s
     md_attribute_format_t format = {
         .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 },
     };
-    return md_qm_publish(sys, path, label, md_unit_none(), format, &value, sizeof(str_t));
+    return md_qm_publish(sys, path, label, md_unit_none(), format, &value, sizeof(md_str_t));
 }
 
-md_attribute_id_t md_qm_publish_strings(md_system_t* sys, str_t path, str_t label, const str_t* values, size_t count) {
+md_attribute_id_t md_qm_publish_strings(md_system_t* sys, md_str_t path, md_str_t label, const md_str_t* values, size_t count) {
     if (!values || count == 0) {
         return MD_ATTRIBUTE_INVALID;
     }
     md_attribute_format_t format = {
         .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { (uint32_t)count },
     };
-    return md_qm_publish(sys, path, label, md_unit_none(), format, values, count * sizeof(str_t));
+    return md_qm_publish(sys, path, label, md_unit_none(), format, values, count * sizeof(md_str_t));
 }
 
-md_attribute_id_t md_qm_publish_column(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_type_t type,
+md_attribute_id_t md_qm_publish_column(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, md_attribute_type_t type,
                                        const void* base, size_t stride, size_t count) {
     MD_ASSERT(sys);
     if (!base || count == 0) {
@@ -227,12 +227,12 @@ md_attribute_id_t md_qm_publish_column(md_system_t* sys, str_t path, str_t label
     return id;
 }
 
-md_attribute_id_t md_qm_publish_origin(md_system_t* sys, str_t path, dvec3_t origin) {
+md_attribute_id_t md_qm_publish_origin(md_system_t* sys, md_str_t path, dvec3_t origin) {
     md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 0 };
-    return md_qm_publish(sys, path, (str_t){0}, md_unit_angstrom(), format, &origin, 3 * sizeof(double));
+    return md_qm_publish(sys, path, (md_str_t){0}, md_unit_angstrom(), format, &origin, 3 * sizeof(double));
 }
 
-md_attribute_id_t md_qm_alias(md_system_t* sys, md_attribute_id_t target, str_t path) {
+md_attribute_id_t md_qm_alias(md_system_t* sys, md_attribute_id_t target, md_str_t path) {
     MD_ASSERT(sys);
     if (target == MD_ATTRIBUTE_INVALID) {
         return MD_ATTRIBUTE_INVALID;
@@ -241,10 +241,10 @@ md_attribute_id_t md_qm_alias(md_system_t* sys, md_attribute_id_t target, str_t 
     if (existing) {
         md_attributes_remove(&sys->attributes, existing->id);
     }
-    return md_attributes_alias(&sys->attributes, target, path, (str_t){0}, (str_t){0});
+    return md_attributes_alias(&sys->attributes, target, path, (md_str_t){0}, (md_str_t){0});
 }
 
-md_attribute_id_t md_qm_publish_or_alias(md_system_t* sys, md_attribute_id_t alpha_id, str_t path, str_t label,
+md_attribute_id_t md_qm_publish_or_alias(md_system_t* sys, md_attribute_id_t alpha_id, md_str_t path, md_str_t label,
                                          md_unit_t unit, const double* alpha_values, const double* beta_values, size_t count) {
     if (beta_values && beta_values == alpha_values) {
         return md_qm_alias(sys, alpha_id, path);
@@ -252,16 +252,16 @@ md_attribute_id_t md_qm_publish_or_alias(md_system_t* sys, md_attribute_id_t alp
     return md_qm_publish_series(sys, path, label, unit, beta_values, count);
 }
 
-str_t md_qm_attribute_path(char* buf, size_t cap, str_t group, str_t name) {
-    int len = md_snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(group), STR_ARG(name));
+md_str_t md_qm_attribute_path(char* buf, size_t cap, md_str_t group, md_str_t name) {
+    int len = md_snprintf(buf, cap, MD_STR_FMT "/" MD_STR_FMT, MD_STR_ARG(group), MD_STR_ARG(name));
     if (len <= 0 || (size_t)len >= cap) {
-        MD_LOG_ERROR("Attribute path '" STR_FMT "/" STR_FMT "' does not fit in %zu characters", STR_ARG(group), STR_ARG(name), cap - 1);
-        return (str_t){0};
+        MD_LOG_ERROR("Attribute path '" MD_STR_FMT "/" MD_STR_FMT "' does not fit in %zu characters", MD_STR_ARG(group), MD_STR_ARG(name), cap - 1);
+        return (md_str_t){0};
     }
     for (int c = (int)group.len + 1; c < len; ++c) {
         if (buf[c] == '/') buf[c] = '_';
     }
-    return str_from_cstrn(buf, (size_t)len);
+    return md_str_from_cstrn(buf, (size_t)len);
 }
 
 size_t md_qm_sph_to_cart_coefficients(double* dst, const double* src, size_t num_mo, const md_gto_basis_t* basis) {
@@ -434,17 +434,17 @@ bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
     const size_t shell_stride   = sizeof(md_gto_shell_t);
 
     bool ok = true;
-    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/atom_index"),       STR_LIT("Atom Index"),       md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->atom_idx,         shell_stride, num_shells) && ok;
-    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/primitive_offset"), STR_LIT("Primitive Offset"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->primitive_offset, shell_stride, num_shells) && ok;
-    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/primitive_count"),  STR_LIT("Primitive Count"),  md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->num_primitives,   shell_stride, num_shells) && ok;
-    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/shell/angular_momentum"), STR_LIT("Angular Momentum"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->l,                shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, MD_STR_LIT("basis/shell/atom_index"),       MD_STR_LIT("Atom Index"),       md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->atom_idx,         shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, MD_STR_LIT("basis/shell/primitive_offset"), MD_STR_LIT("Primitive Offset"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->primitive_offset, shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, MD_STR_LIT("basis/shell/primitive_count"),  MD_STR_LIT("Primitive Count"),  md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->num_primitives,   shell_stride, num_shells) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, MD_STR_LIT("basis/shell/angular_momentum"), MD_STR_LIT("Angular Momentum"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, &basis->shells->l,                shell_stride, num_shells) && ok;
 
     // Exponents are bohr^-2 and the contraction coefficients carry the shell's radial normalisation;
     // the per monomial factor is applied at evaluation. See the AO CONVENTION block in md_gto.h -
     // these values only mean anything against it.
     const md_unit_t inv_bohr_sq = md_unit_pow(md_unit_bohr_radius(), -2);
-    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/primitive/exponent"),    STR_LIT("Exponent"),    inv_bohr_sq,    MD_ATTRIBUTE_TYPE_F32, basis->alpha, sizeof(float), num_primitives) && ok;
-    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, STR_LIT("basis/primitive/coefficient"), STR_LIT("Coefficient"), md_unit_none(), MD_ATTRIBUTE_TYPE_F32, basis->coeff, sizeof(float), num_primitives) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, MD_STR_LIT("basis/primitive/exponent"),    MD_STR_LIT("Exponent"),    inv_bohr_sq,    MD_ATTRIBUTE_TYPE_F32, basis->alpha, sizeof(float), num_primitives) && ok;
+    ok = MD_ATTRIBUTE_INVALID != md_qm_publish_column(sys, MD_STR_LIT("basis/primitive/coefficient"), MD_STR_LIT("Coefficient"), md_unit_none(), MD_ATTRIBUTE_TYPE_F32, basis->coeff, sizeof(float), num_primitives) && ok;
 
     return ok;
 }
@@ -463,7 +463,7 @@ bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const 
     md_attribute_format_t z_format = {
         .type = MD_ATTRIBUTE_TYPE_U8, .components = 1, .rank = 1, .shape = { (uint32_t)count },
     };
-    md_attribute_id_t z_id = md_qm_publish(sys, STR_LIT("qm/atom/atomic_number"), STR_LIT("Atomic Number"),
+    md_attribute_id_t z_id = md_qm_publish(sys, MD_STR_LIT("qm/atom/atomic_number"), MD_STR_LIT("Atomic Number"),
                                            md_unit_none(), z_format, atomic_number, count * sizeof(uint8_t));
 
     // The charge the electrons see: the atomic number unless the reader knows better (an effective
@@ -476,7 +476,7 @@ bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const 
             for (size_t i = 0; i < count; ++i) {
                 charge[i] = nuclear_charge ? nuclear_charge[i] : (double)atomic_number[i];
             }
-            q_id = md_qm_publish_series(sys, STR_LIT("qm/atom/nuclear_charge"), STR_LIT("Nuclear Charge"),
+            q_id = md_qm_publish_series(sys, MD_STR_LIT("qm/atom/nuclear_charge"), MD_STR_LIT("Nuclear Charge"),
                                         md_unit_elementary_charge(), charge, count);
         }
         md_temp_end(temp);
@@ -485,7 +485,7 @@ bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const 
     // Angstrom, matching the system's own coordinates rather than the bohr the evaluator works in.
     // This is the geometry the CALCULATION was run at, which need not be where the system's atoms
     // are now - a trajectory frame or an optimisation step moves them.
-    md_attribute_id_t xyz_id = md_qm_publish_vec3_series(sys, STR_LIT("qm/atom/coordinate"), STR_LIT("Coordinate"),
+    md_attribute_id_t xyz_id = md_qm_publish_vec3_series(sys, MD_STR_LIT("qm/atom/coordinate"), MD_STR_LIT("Coordinate"),
                                                          md_unit_angstrom(), coord_angstrom, count);
 
     return z_id != MD_ATTRIBUTE_INVALID && q_id != MD_ATTRIBUTE_INVALID && xyz_id != MD_ATTRIBUTE_INVALID;
@@ -634,9 +634,9 @@ static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* a
     (void)slice;  // one whole {A,A} matrix, not indexed by anything a slice could fix
     md_system_t* sys = (md_system_t*)user_data;
 
-    const md_attribute_t* coord = md_attributes_find(&sys->attributes, STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* coord = md_attributes_find(&sys->attributes, MD_STR_LIT("qm/atom/coordinate"));
     if (!coord) {
-        MD_LOG_ERROR("'" STR_FMT "' has no qm/atom/coordinate to integrate over", STR_ARG(attr->path));
+        MD_LOG_ERROR("'" MD_STR_FMT "' has no qm/atom/coordinate to integrate over", MD_STR_ARG(attr->path));
         return 0;
     }
 
@@ -658,7 +658,7 @@ static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* a
         }
         const size_t num_ao = md_gto_basis_num_ao(&basis);
         if (num_ao * num_ao != cap) {
-            MD_LOG_ERROR("'" STR_FMT "' was asked for %zu values and its basis spans %zu atomic orbitals", STR_ARG(attr->path), cap, num_ao);
+            MD_LOG_ERROR("'" MD_STR_FMT "' was asked for %zu values and its basis spans %zu atomic orbitals", MD_STR_ARG(attr->path), cap, num_ao);
         } else if (md_qm_compute_overlap((double*)dst, &basis, bohr, num_atoms) == num_ao) {
             written = cap;
         }
@@ -684,7 +684,7 @@ bool md_qm_publish_overlap(md_system_t* sys) {
     }
     md_temp_end(temp);
 
-    if (num_ao == 0 || !md_attributes_find(&sys->attributes, STR_LIT("qm/atom/coordinate"))) {
+    if (num_ao == 0 || !md_attributes_find(&sys->attributes, MD_STR_LIT("qm/atom/coordinate"))) {
         return false;
     }
 
@@ -692,7 +692,7 @@ bool md_qm_publish_overlap(md_system_t* sys) {
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { (uint32_t)num_ao, (uint32_t)num_ao },
     };
     md_attribute_virtual_t virt = { .provider = qm_overlap_provider, .user_data = sys };
-    return md_qm_publish_virtual(sys, STR_LIT("basis/overlap"), STR_LIT("AO Overlap"), md_unit_none(), format, &virt) != MD_ATTRIBUTE_INVALID;
+    return md_qm_publish_virtual(sys, MD_STR_LIT("basis/overlap"), MD_STR_LIT("AO Overlap"), md_unit_none(), format, &virt) != MD_ATTRIBUTE_INVALID;
 }
 
 // D_ij = sum_mo occ[mo] * C[mo][i] * C[mo][j]. Exact, not an approximation: an SCF density IS that
@@ -702,26 +702,26 @@ bool md_qm_publish_overlap(md_system_t* sys) {
 static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, bool beta, md_attribute_io_t* io) {
     md_system_t* sys = (md_system_t*)user_data;
 
-    const str_t coeff_path = beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient");
-    const str_t occ_path   = beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation");
+    const md_str_t coeff_path = beta ? MD_STR_LIT("orbital/beta/coefficient") : MD_STR_LIT("orbital/alpha/coefficient");
+    const md_str_t occ_path   = beta ? MD_STR_LIT("orbital/beta/occupation")  : MD_STR_LIT("orbital/alpha/occupation");
 
     const md_attribute_t* coeff = md_attributes_find(&sys->attributes, coeff_path);
     const md_attribute_t* occ   = md_attributes_find(&sys->attributes, occ_path);
     if (!coeff || !occ) {
-        MD_LOG_ERROR("'" STR_FMT "' is missing the orbital data it reconstructs from", STR_ARG(attr->path));
+        MD_LOG_ERROR("'" MD_STR_FMT "' is missing the orbital data it reconstructs from", MD_STR_ARG(attr->path));
         return 0;
     }
 
     const size_t num_mo = coeff->format.shape[0];
     const size_t num_ao = coeff->format.shape[1];
     if (md_attribute_element_count(&occ->format) != num_mo) {
-        MD_LOG_ERROR("'" STR_FMT "': occupation holds %zu values, coefficients hold %zu orbitals",
-                     STR_ARG(attr->path), md_attribute_element_count(&occ->format), num_mo);
+        MD_LOG_ERROR("'" MD_STR_FMT "': occupation holds %zu values, coefficients hold %zu orbitals",
+                     MD_STR_ARG(attr->path), md_attribute_element_count(&occ->format), num_mo);
         return 0;
     }
     if (num_ao * num_ao != cap) {
-        MD_LOG_ERROR("'" STR_FMT "' was asked for %zu values and its coefficients span %zu atomic orbitals",
-                     STR_ARG(attr->path), cap, num_ao);
+        MD_LOG_ERROR("'" MD_STR_FMT "' was asked for %zu values and its coefficients span %zu atomic orbitals",
+                     MD_STR_ARG(attr->path), cap, num_ao);
         return 0;
     }
 
@@ -731,7 +731,7 @@ static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* at
 
     bool ok = coeff_data && occ_data;
     if (!ok) {
-        MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), num_mo * num_ao + num_mo);
+        MD_LOG_ERROR("'" MD_STR_FMT "': failed to allocate %zu doubles of scratch", MD_STR_ARG(attr->path), num_mo * num_ao + num_mo);
     }
     if (ok) {
         ok = md_attribute_extract_io_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none(), io) == num_mo * num_ao
@@ -762,10 +762,10 @@ static size_t qm_beta_density_provider(void* dst, size_t cap, const md_attribute
 static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, double beta_scale, md_attribute_io_t* io) {
     md_system_t* sys = (md_system_t*)user_data;
 
-    const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
-    const md_attribute_t* beta  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/density"));
+    const md_attribute_t* alpha = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/density"));
+    const md_attribute_t* beta  = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/beta/density"));
     if (!alpha || !beta) {
-        MD_LOG_ERROR("'" STR_FMT "' is missing a spin density it combines", STR_ARG(attr->path));
+        MD_LOG_ERROR("'" MD_STR_FMT "' is missing a spin density it combines", MD_STR_ARG(attr->path));
         return 0;
     }
 
@@ -777,7 +777,7 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
             return cap;
         }
         if (md_attribute_extract_io_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none(), io) != cap) {
-            MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
+            MD_LOG_ERROR("'" MD_STR_FMT "': could not read '" MD_STR_FMT "'", MD_STR_ARG(attr->path), MD_STR_ARG(alpha->path));
             return 0;
         }
         if (scale != 1.0) {
@@ -791,14 +791,14 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
 
     bool ok = beta_data != NULL;
     if (!ok) {
-        MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), cap);
+        MD_LOG_ERROR("'" MD_STR_FMT "': failed to allocate %zu doubles of scratch", MD_STR_ARG(attr->path), cap);
     }
     if (ok && md_attribute_extract_io_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none(), io) != cap) {
-        MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
+        MD_LOG_ERROR("'" MD_STR_FMT "': could not read '" MD_STR_FMT "'", MD_STR_ARG(attr->path), MD_STR_ARG(alpha->path));
         ok = false;
     }
     if (ok && md_attribute_extract_io_f64(beta_data, cap, beta, md_attribute_slice_all(), md_unit_none(), io) != cap) {
-        MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(beta->path));
+        MD_LOG_ERROR("'" MD_STR_FMT "': could not read '" MD_STR_FMT "'", MD_STR_ARG(attr->path), MD_STR_ARG(beta->path));
         ok = false;
     }
     if (ok) {
@@ -834,13 +834,13 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
     // pointer fetched before the first publish is taken from freed memory. It reads as a plausible
     // answer, which is how this came to be written that way in the first place: the restricted
     // case quietly stopped aliasing beta and reconstructed it a second time instead.
-    const md_attribute_t* alpha_coeff = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* alpha_coeff = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/coefficient"));
     if (!alpha_coeff || alpha_coeff->format.rank != 2) {
         return false;
     }
-    const md_attribute_t* beta_coeff = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/coefficient"));
-    const md_attribute_t* alpha_occ  = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/occupation"));
-    const md_attribute_t* beta_occ   = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/occupation"));
+    const md_attribute_t* beta_coeff = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/beta/coefficient"));
+    const md_attribute_t* alpha_occ  = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/occupation"));
+    const md_attribute_t* beta_occ   = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/beta/occupation"));
 
     const uint32_t num_ao   = alpha_coeff->format.shape[1];
     const bool     has_beta = beta_coeff != NULL;
@@ -857,7 +857,7 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
     };
 
     md_attribute_virtual_t alpha_virt = { .provider = qm_alpha_density_provider, .user_data = sys };
-    md_attribute_id_t alpha_id = md_qm_publish_virtual(sys, STR_LIT("orbital/alpha/density"), STR_LIT("Alpha Density"),
+    md_attribute_id_t alpha_id = md_qm_publish_virtual(sys, MD_STR_LIT("orbital/alpha/density"), MD_STR_LIT("Alpha Density"),
                                                        md_unit_none(), format, &alpha_virt);
     if (alpha_id == MD_ATTRIBUTE_INVALID) {
         return false;
@@ -868,10 +868,10 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
     }
 
     if (same_density) {
-        md_qm_alias(sys, alpha_id, STR_LIT("orbital/beta/density"));
+        md_qm_alias(sys, alpha_id, MD_STR_LIT("orbital/beta/density"));
     } else {
         md_attribute_virtual_t beta_virt = { .provider = qm_beta_density_provider, .user_data = sys };
-        md_qm_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), format, &beta_virt);
+        md_qm_publish_virtual(sys, MD_STR_LIT("orbital/beta/density"), MD_STR_LIT("Beta Density"), md_unit_none(), format, &beta_virt);
     }
 
     return md_qm_publish_orbital_density_combinations(sys);
@@ -883,8 +883,8 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
 // 9636 in DEF2-SV(P)), and reading them all would be the whole matrix, 742 MB there, to keep 165.
 static bool qm_spin_orbital_attrs(const md_attribute_t** coeff_attr, const md_attribute_t** occ_attr, size_t* num_mo, size_t* num_ao,
                                   const md_system_t* sys, bool beta) {
-    const md_attribute_t* ca = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient"));
-    const md_attribute_t* oa = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation"));
+    const md_attribute_t* ca = md_attributes_find(&sys->attributes, beta ? MD_STR_LIT("orbital/beta/coefficient") : MD_STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* oa = md_attributes_find(&sys->attributes, beta ? MD_STR_LIT("orbital/beta/occupation")  : MD_STR_LIT("orbital/alpha/occupation"));
     if (!ca || !oa || ca->format.rank != 2) return false;
     const size_t nm = ca->format.shape[0], na = ca->format.shape[1];
     if (md_attribute_element_count(&oa->format) != nm || nm == 0 || na == 0) return false;
@@ -897,7 +897,7 @@ static bool qm_spin_orbital_attrs(const md_attribute_t** coeff_attr, const md_at
 
 // One spin's orbital energies, hartree, into dst (num_mo of them). False when absent, inconsistent or not finite.
 static bool qm_spin_orbital_energies(double* dst, size_t num_mo, const md_system_t* sys, bool beta) {
-    const md_attribute_t* ea = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/energy") : STR_LIT("orbital/alpha/energy"));
+    const md_attribute_t* ea = md_attributes_find(&sys->attributes, beta ? MD_STR_LIT("orbital/beta/energy") : MD_STR_LIT("orbital/alpha/energy"));
     if (!ea || md_attribute_element_count(&ea->format) != num_mo) return false;
     if (md_attribute_extract_f64(dst, num_mo, ea, md_attribute_slice_all(), md_unit_hartree()) != num_mo) return false;
     for (size_t k = 0; k < num_mo; ++k) if (!isfinite(dst[k])) return false;
@@ -984,17 +984,17 @@ static size_t qm_orbital_products(double** out_rows, double** out_weights, doubl
 }
 
 size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const md_system_t* sys,
-                              str_t density_path, md_allocator_i* alloc) {
+                              md_str_t density_path, md_allocator_i* alloc) {
     if (!out_rows || !out_weights || !out_num_ao || !sys || !alloc) return 0;
     *out_rows = NULL;
     *out_weights = NULL;
     *out_num_ao = 0;
     // the weights of alpha's and beta's occupations in the density asked for
     double sa = 0.0, sb = 0.0;
-    if      (str_eq(density_path, STR_LIT("orbital/alpha/density")))      { sa = 1.0; }
-    else if (str_eq(density_path, STR_LIT("orbital/beta/density")))       { sb = 1.0; }
-    else if (str_eq(density_path, STR_LIT("orbital/total/density")))      { sa = 1.0; sb = 1.0; }
-    else if (str_eq(density_path, STR_LIT("orbital/difference/density"))) { sa = 1.0; sb = -1.0; }
+    if      (md_str_eq(density_path, MD_STR_LIT("orbital/alpha/density")))      { sa = 1.0; }
+    else if (md_str_eq(density_path, MD_STR_LIT("orbital/beta/density")))       { sb = 1.0; }
+    else if (md_str_eq(density_path, MD_STR_LIT("orbital/total/density")))      { sa = 1.0; sb = 1.0; }
+    else if (md_str_eq(density_path, MD_STR_LIT("orbital/difference/density"))) { sa = 1.0; sb = -1.0; }
     else return 0;
     return qm_orbital_products(out_rows, out_weights, NULL, out_num_ao, sys, sa, sb, false, alloc);
 }
@@ -1014,7 +1014,7 @@ bool md_qm_alie_available(const md_system_t* sys) {
     const md_attribute_t *ca = NULL, *oa = NULL;
     size_t nm = 0, na = 0;
     if (!qm_spin_orbital_attrs(&ca, &oa, &nm, &na, sys, false)) return false;
-    const md_attribute_t* ea = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/energy"));
+    const md_attribute_t* ea = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/energy"));
     if (!ea || md_attribute_element_count(&ea->format) != nm) return false;
     // the occupations of canonical orbitals: natural orbitals carry fractional ones, and no energies to weight by
     md_temp_scope_t temp = md_temp_begin();
@@ -1122,8 +1122,8 @@ bool md_qm_attachment_available(const md_system_t* sys) {
 
 bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
     MD_ASSERT(sys);
-    const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
-    const md_attribute_t* beta  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/density"));
+    const md_attribute_t* alpha = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/density"));
+    const md_attribute_t* beta  = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/beta/density"));
     if (!alpha || !beta || alpha->format.rank != 2 || alpha->format.shape[0] != alpha->format.shape[1]) {
         return false;
     }
@@ -1134,8 +1134,8 @@ bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
     };
     md_attribute_virtual_t total_virt = { .provider = qm_total_density_provider,      .user_data = sys };
     md_attribute_virtual_t diff_virt  = { .provider = qm_difference_density_provider, .user_data = sys };
-    md_qm_publish_virtual(sys, STR_LIT("orbital/total/density"),      STR_LIT("Total Density"),           md_unit_none(), format, &total_virt);
-    md_qm_publish_virtual(sys, STR_LIT("orbital/difference/density"), STR_LIT("Spin Difference Density"), md_unit_none(), format, &diff_virt);
+    md_qm_publish_virtual(sys, MD_STR_LIT("orbital/total/density"),      MD_STR_LIT("Total Density"),           md_unit_none(), format, &total_virt);
+    md_qm_publish_virtual(sys, MD_STR_LIT("orbital/difference/density"), MD_STR_LIT("Spin Difference Density"), md_unit_none(), format, &diff_virt);
     return true;
 }
 
@@ -1144,14 +1144,14 @@ bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
 // ---------------------------------------------------------------------------
 
 size_t md_qm_kinetic_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, md_gto_basis_t* out_basis,
-                              const md_system_t* sys, str_t density_path, md_allocator_i* alloc) {
+                              const md_system_t* sys, md_str_t density_path, md_allocator_i* alloc) {
     if (!out_rows || !out_weights || !out_num_ao || !out_basis || !sys || !alloc) return 0;
     *out_rows = NULL;
     *out_weights = NULL;
     *out_num_ao = 0;
     MD_MEMSET(out_basis, 0, sizeof(*out_basis));
-    if (!str_eq(density_path, STR_LIT("orbital/alpha/density")) && !str_eq(density_path, STR_LIT("orbital/beta/density")) &&
-        !str_eq(density_path, STR_LIT("orbital/total/density"))) {
+    if (!md_str_eq(density_path, MD_STR_LIT("orbital/alpha/density")) && !md_str_eq(density_path, MD_STR_LIT("orbital/beta/density")) &&
+        !md_str_eq(density_path, MD_STR_LIT("orbital/total/density"))) {
         return 0;
     }
 
@@ -1193,7 +1193,7 @@ bool md_qm_kinetic_available(const md_system_t* sys) {
     const md_attribute_t *ca = NULL, *oa = NULL;
     size_t nm = 0, na = 0;
     if (!qm_spin_orbital_attrs(&ca, &oa, &nm, &na, sys, false)) return false;
-    const md_attribute_t* angl = md_attributes_find(&sys->attributes, STR_LIT("basis/shell/angular_momentum"));
+    const md_attribute_t* angl = md_attributes_find(&sys->attributes, MD_STR_LIT("basis/shell/angular_momentum"));
     if (!angl || angl->format.type != MD_ATTRIBUTE_TYPE_U32) return false;
     const size_t n = md_attribute_element_count(&angl->format);
     const uint32_t* l = (const uint32_t*)md_attribute_view(angl, MD_ATTRIBUTE_TYPE_U32, 1, 1);
@@ -1249,7 +1249,7 @@ double md_qm_lol_closed_shell(double rho, double tau, double rho_min) {
 
 // One spin's (or a closed shell's total) density and kinetic energy density at the points: rho, |grad rho|^2, tau
 static bool qm_elf_terms(double* rho, double* g2, double* tau, const float* xyz, size_t count, size_t stride, const md_system_t* sys,
-                         str_t density_path, const float* atom_xyz, size_t atom_xyz_stride, md_allocator_i* alloc) {
+                         md_str_t density_path, const float* atom_xyz, size_t atom_xyz_stride, md_allocator_i* alloc) {
     double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
     size_t rna = 0, kna = 0;
     md_gto_basis_t basis = {0}, dbasis = {0};
@@ -1282,8 +1282,8 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
     // A closed shell: the same orbitals and occupations in both spins, which are then one density
     double *ar = NULL, *aw = NULL, *br = NULL, *bw = NULL;
     size_t ana = 0, bna = 0;
-    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, sys, STR_LIT("orbital/alpha/density"), alloc);
-    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, sys, STR_LIT("orbital/beta/density"), alloc);
+    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, sys, MD_STR_LIT("orbital/alpha/density"), alloc);
+    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, sys, MD_STR_LIT("orbital/beta/density"), alloc);
     const bool closed = an == bn && ana == bna && (an == 0 || (memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0));
 
     bool ok = an > 0 || bn > 0;
@@ -1291,7 +1291,7 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
     ok = ok && t;
     double *rho_a = t, *g2_a = t + count, *tau_a = t + 2 * count, *rho_b = t + 3 * count, *g2_b = t + 4 * count, *tau_b = t + 5 * count;
     if (ok && closed) {
-        ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/total/density"), atom_xyz, atom_xyz_stride, alloc);
+        ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, MD_STR_LIT("orbital/total/density"), atom_xyz, atom_xyz_stride, alloc);
         for (size_t i = 0; ok && i < count; ++i) {
             if (out_elf) out_elf[i] = md_qm_elf_closed_shell(rho_a[i], g2_a[i], tau_a[i], rho_min, d_min);
             if (out_lol) out_lol[i] = md_qm_lol_closed_shell(rho_a[i], tau_a[i], rho_min);
@@ -1299,8 +1299,8 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
     } else if (ok) {
         // a spin without occupied orbitals has no density: zero, not a failure
         MD_MEMSET(t, 0, sizeof(double) * count * 6);
-        if (an) ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/alpha/density"), atom_xyz, atom_xyz_stride, alloc);
-        if (ok && bn) ok = qm_elf_terms(rho_b, g2_b, tau_b, xyz, count, stride, sys, STR_LIT("orbital/beta/density"), atom_xyz, atom_xyz_stride, alloc);
+        if (an) ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, MD_STR_LIT("orbital/alpha/density"), atom_xyz, atom_xyz_stride, alloc);
+        if (ok && bn) ok = qm_elf_terms(rho_b, g2_b, tau_b, xyz, count, stride, sys, MD_STR_LIT("orbital/beta/density"), atom_xyz, atom_xyz_stride, alloc);
         for (size_t i = 0; ok && i < count; ++i) {
             if (out_elf) out_elf[i] = md_qm_elf(rho_a[i], g2_a[i], tau_a[i], rho_b[i], g2_b[i], tau_b[i], rho_min, d_min);
             if (out_lol) out_lol[i] = md_qm_lol(rho_a[i], tau_a[i], rho_b[i], tau_b[i], rho_min);

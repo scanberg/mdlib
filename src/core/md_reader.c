@@ -67,21 +67,21 @@ static size_t refill(md_reader_i* r) {
     return n;
 }
 
-bool md_reader_line_slow(md_reader_i* r, str_t* line, const char** next) {
+bool md_reader_line_slow(md_reader_i* r, md_str_t* line, const char** next) {
     // [cur, cur + searched[ has no newline: what was there before reading more
     size_t searched = (size_t)(r->end - r->cur);
     for (;;) {
         if (!refill(r)) {
             // The last line, without a newline; or one longer than the buffer, cut at it
             if (r->cur == r->end) return false;
-            *line = md_reader_strip_cr((str_t){ r->cur, (size_t)(r->end - r->cur) });
+            *line = md_reader_strip_cr((md_str_t){ r->cur, (size_t)(r->end - r->cur) });
             *next = r->end;
             return true;
         }
         const char* from = r->cur + searched;
         const char* nl = md_text_find_newline(from, r->end);
         if (nl < r->end) {
-            *line = md_reader_strip_cr((str_t){ r->cur, (size_t)(nl - r->cur) });
+            *line = md_reader_strip_cr((md_str_t){ r->cur, (size_t)(nl - r->cur) });
             *next = nl + 1;
             return true;
         }
@@ -90,7 +90,7 @@ bool md_reader_line_slow(md_reader_i* r, str_t* line, const char** next) {
 }
 
 // The whole lines of what the buffer holds: up to the last newline (the rest is read again with the next block)
-static str_t whole_lines(const md_reader_i* r) {
+static md_str_t whole_lines(const md_reader_i* r) {
     const char* text = r->cur;
     size_t len = (size_t)(r->end - r->cur);
     if (!(r->flags & MD_READER_FLAG_END)) {
@@ -98,10 +98,10 @@ static str_t whole_lines(const md_reader_i* r) {
         while (c > text && c[-1] != '\n') --c;
         if (c > text) len = (size_t)(c - text);     // else a line longer than the buffer: cut at it
     }
-    return (str_t){ text, len };
+    return (md_str_t){ text, len };
 }
 
-str_t md_reader_block(md_reader_i* r) {
+md_str_t md_reader_block(md_reader_i* r) {
     MD_ASSERT(r);
     refill(r);
     return whole_lines(r);
@@ -128,7 +128,7 @@ static void parallel_read_piece(void* arg, uint32_t beg, uint32_t end, uint32_t 
     }
 }
 
-str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex) {
+md_str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex) {
     MD_ASSERT(r);
     if (md_executor_num_threads(ex) <= 1 || !r->vt || !r->vt->read_at || !r->vt->seek) {
         return md_reader_block(r);
@@ -239,7 +239,7 @@ bool md_file_reader_init(md_file_reader_t* fr, md_file_t file, size_t cap, struc
     return true;
 }
 
-bool md_file_reader_open(md_file_reader_t* fr, str_t path, size_t cap, struct md_allocator_i* alloc) {
+bool md_file_reader_open(md_file_reader_t* fr, md_str_t path, size_t cap, struct md_allocator_i* alloc) {
     MD_ASSERT(fr);
     // Read front to back, and at offsets from several threads (md_reader_block_parallel): a handle every thread reads
     // at once, which on Windows a synchronous one would serialize

@@ -20,8 +20,8 @@ extern "C" {
 
 // The rows of _atom_site are read over the threads of ex (md_executor.h), NULL for the calling thread alone. The system is
 // the same however many there are.
-bool md_mmcif_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, const struct md_executor_t* ex);
-bool md_mmcif_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str, const struct md_executor_t* ex);
+bool md_mmcif_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_executor_t* ex);
+bool md_mmcif_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_executor_t* ex);
 
 #ifdef __cplusplus
 }

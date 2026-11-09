@@ -80,7 +80,7 @@ typedef struct open_t {
 } open_t;
 
 typedef struct lexer_t {
-    str_t           src;
+    md_str_t           src;
     size_t          pos;
     vial_token_t*   tokens;
     open_t*         open;       // brackets that are open
@@ -126,9 +126,9 @@ static void emit_newline(lexer_t* l, size_t beg, size_t end) {
     l->line_has_token = false;
 }
 
-static vial_kw_t keyword_of(str_t s) {
+static vial_kw_t keyword_of(md_str_t s) {
     for (int k = 1; k < VIAL_KW_COUNT; ++k) {
-        if (str_eq_cstr(s, kw_names[k])) return (vial_kw_t)k;
+        if (md_str_eq_cstr(s, kw_names[k])) return (vial_kw_t)k;
     }
     return VIAL_KW_NONE;
 }
@@ -193,7 +193,7 @@ static bool next_line_is_statement_(const lexer_t* l, size_t p, uint32_t open_li
         if (!is_ident_start((unsigned char)c)) return false;
         size_t e = q;
         while (e < l->src.len && is_ident_char((unsigned char)l->src.ptr[e])) ++e;
-        const str_t word = {l->src.ptr + q, e - q};
+        const md_str_t word = {l->src.ptr + q, e - q};
         switch (keyword_of(word)) {
         case VIAL_KW_DEF: case VIAL_KW_CLASS: case VIAL_KW_IF: case VIAL_KW_ELIF: case VIAL_KW_ELSE:
         case VIAL_KW_FOR: case VIAL_KW_WHILE: case VIAL_KW_RETURN: case VIAL_KW_IMPORT: case VIAL_KW_FROM:
@@ -358,7 +358,7 @@ static void lex_number(lexer_t* l) {
         // A unit written against the number, 10ns, is lexed as the number and then the unit
         size_t e = l->pos;
         while (e < l->src.len && is_ident_char((unsigned char)l->src.ptr[e])) ++e;
-        if (!bad && vial_unit_name((str_t){l->src.ptr + l->pos, e - l->pos}, NULL)) {
+        if (!bad && vial_unit_name((md_str_t){l->src.ptr + l->pos, e - l->pos}, NULL)) {
             emit(l, is_float ? MD_VIAL_TOKEN_FLOAT : MD_VIAL_TOKEN_INT, beg, l->pos, 0, 0);
             return;
         }
@@ -367,7 +367,7 @@ static void lex_number(lexer_t* l) {
     }
     if (bad) {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){l->src.ptr + beg, l->pos - beg});
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), (md_str_t){l->src.ptr + beg, l->pos - beg});
         vial_diag(l->diags, "E0101", span(beg, l->pos), "`%.*s` is not a number", (int)e.len, e.ptr);
         emit(l, MD_VIAL_TOKEN_ERROR, beg, l->pos, 0, 0);
         return;
@@ -454,7 +454,7 @@ static void lex_op(lexer_t* l) {
 }
 
 // A string prefix: r, b, u, f and the pairs rb, br, rf, fr, in either case
-static bool string_prefix(str_t s, uint16_t* flags) {
+static bool string_prefix(md_str_t s, uint16_t* flags) {
     if (s.len == 0 || s.len > 2) return false;
     uint16_t f = 0;
     for (size_t i = 0; i < s.len; ++i) {
@@ -469,7 +469,7 @@ static bool string_prefix(str_t s, uint16_t* flags) {
     return true;
 }
 
-vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
+vial_token_t* vial_lex(md_str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
     lexer_t l = {.src = src, .diags = diags, .alloc = alloc};
     md_array_push(l.indents, ((indent_t){0, 0}), alloc);
 
@@ -537,7 +537,7 @@ vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
         if (is_ident_start(c)) {
             const size_t beg = l.pos;
             while (!at_end(&l) && is_ident_char(peek(&l, 0))) l.pos += 1;
-            const str_t word = {src.ptr + beg, l.pos - beg};
+            const md_str_t word = {src.ptr + beg, l.pos - beg};
             uint16_t flags;
             if (!at_end(&l) && (peek(&l, 0) == '\'' || peek(&l, 0) == '"') && string_prefix(word, &flags)) {
                 lex_string(&l, beg, flags);
@@ -555,7 +555,7 @@ vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
                     if (s0 + 1 >= src.len || src.ptr[s0] != '/' || !is_ident_start((unsigned char)src.ptr[s0 + 1])) break;
                     size_t e = s0 + 1;
                     while (e < src.len && is_ident_char((unsigned char)src.ptr[e])) ++e;
-                    const str_t d = {src.ptr + s0 + 1, e - s0 - 1};
+                    const md_str_t d = {src.ptr + s0 + 1, e - s0 - 1};
                     if (keyword_of(d) || !vial_unit_divisor(d, NULL)) break;
                     if (e < src.len && (src.ptr[e] == '(' || src.ptr[e] == '[' || (src.ptr[e] == '.' && !(e + 1 < src.len && src.ptr[e + 1] == '.')) || src.ptr[e] == '\'' || src.ptr[e] == '"')) break;
                     l.pos = e;
@@ -605,7 +605,7 @@ static void buf_fmt(char** buf, md_allocator_i* alloc, const char* fmt, ...) {
     md_array_push_array(*buf, tmp, (size_t)len, alloc);
 }
 
-str_t vial_tokens_dump(const vial_token_t* tokens, str_t src, md_allocator_i* alloc) {
+md_str_t vial_tokens_dump(const vial_token_t* tokens, md_str_t src, md_allocator_i* alloc) {
     char* buf = NULL;
     for (size_t i = 0; i < md_array_size(tokens); ++i) {
         const vial_token_t* t = &tokens[i];
@@ -619,5 +619,5 @@ str_t vial_tokens_dump(const vial_token_t* tokens, str_t src, md_allocator_i* al
         }
         buf_fmt(&buf, alloc, "\n");
     }
-    return (str_t){buf, md_array_size(buf)};
+    return (md_str_t){buf, md_array_size(buf)};
 }

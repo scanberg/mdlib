@@ -1476,7 +1476,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     // The formal charges a file gives: the atom/formal_charge column its loader publishes, NAN where it gives none.
     // The charges in md_atom_data_t are this function's output and are not read back, so running it again starts
     // from the same place.
-    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
     const float* q_given = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
     if (q_given && md_attribute_slice_count(q_attr, md_attribute_slice_all()) != N) q_given = NULL;
 
@@ -1893,7 +1893,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     uint8_t* ext_h         = md_alloc(temp, NL);
     uint8_t* lone          = md_alloc(temp, NL);   // No bond at all in the state
     float*   q_given       = NULL;
-    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
     const float* q_sys = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
     if (q_sys && md_attribute_slice_count(q_attr, md_attribute_slice_all()) == N) q_given = md_alloc(temp, sizeof(float) * NL);
 

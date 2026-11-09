@@ -30,7 +30,7 @@ typedef struct mcs_graph_t {
 static uint32_t atom_label(const md_system_t* sys, int32_t a, bool by_name) {
     const uint32_t z = md_atom_atomic_number(&sys->atom, a);
     if (!by_name) return z;
-    const str_t name = md_atom_name(&sys->atom, a);
+    const md_str_t name = md_atom_name(&sys->atom, a);
     return (z << 20) | ((uint32_t)md_hash64(name.ptr, name.len, 0) & 0xFFFFF);
 }
 
@@ -344,7 +344,7 @@ typedef struct name_pair_t {
     uint32_t    beg, end;   // into the cache's pairs of atom names
 } name_pair_t;
 
-static uint64_t name_key(str_t a, str_t b) {
+static uint64_t name_key(md_str_t a, md_str_t b) {
     return md_hash64(b.ptr, b.len, md_hash64(a.ptr, a.len, 0x9e3779b9));
 }
 
@@ -362,9 +362,9 @@ static bool by_residue(md_mcs_result_t* out, const md_mcs_desc_t* desc, const re
     for (uint32_t i = 0; i <= na; ++i) { SC(i, 0) = (int32_t)i * gap; TB(i, 0) = 1; }
     for (uint32_t j = 0; j <= nb; ++j) { SC(0, j) = (int32_t)j * gap; TB(0, j) = 2; }
     for (uint32_t i = 1; i <= na; ++i) {
-        const str_t ni = md_system_residue_name(sa, ra->res[i - 1]);
+        const md_str_t ni = md_system_residue_name(sa, ra->res[i - 1]);
         for (uint32_t j = 1; j <= nb; ++j) {
-            const bool same = str_eq(ni, md_system_residue_name(sb, rb->res[j - 1]));
+            const bool same = md_str_eq(ni, md_system_residue_name(sb, rb->res[j - 1]));
             int32_t best = SC(i - 1, j - 1) + (same ? 4 : -1);
             uint8_t t = 0;
             if (SC(i - 1, j) + gap > best) { best = SC(i - 1, j) + gap; t = 1; }
@@ -395,13 +395,13 @@ static bool by_residue(md_mcs_result_t* out, const md_mcs_desc_t* desc, const re
         const uint32_t xn = ra->beg[x + 1] - ra->beg[x];
         const int32_t* yb = rb->atoms + rb->beg[y];
         const uint32_t yn = rb->beg[y + 1] - rb->beg[y];
-        const str_t rna = md_system_residue_name(sa, ra->res[x]), rnb = md_system_residue_name(sb, rb->res[y]);
-        if (str_eq(rna, rnb)) {
+        const md_str_t rna = md_system_residue_name(sa, ra->res[x]), rnb = md_system_residue_name(sb, rb->res[y]);
+        if (md_str_eq(rna, rnb)) {
             for (uint32_t p = 0; p < xn; ++p) {
                 if (!heavy(sa, xa[p])) continue;
-                const str_t an = md_atom_name(&sa->atom, xa[p]);
+                const md_str_t an = md_atom_name(&sa->atom, xa[p]);
                 for (uint32_t q = 0; q < yn; ++q) {
-                    if (!heavy(sb, yb[q]) || !str_eq(an, md_atom_name(&sb->atom, yb[q]))) continue;
+                    if (!heavy(sb, yb[q]) || !md_str_eq(an, md_atom_name(&sb->atom, yb[q]))) continue;
                     md_array_push(*pa, xa[p], temp);
                     md_array_push(*pb, yb[q], temp);
                     break;
@@ -432,8 +432,8 @@ static bool by_residue(md_mcs_result_t* out, const md_mcs_desc_t* desc, const re
         }
         for (uint32_t c = hit->beg; c < hit->end; ++c) {
             int32_t pa_atom = -1, pb_atom = -1;
-            for (uint32_t p = 0; p < xn && pa_atom < 0; ++p) if (str_eq(md_atom_name(&sa->atom, xa[p]), LBL_TO_STR(cache_a[c]))) pa_atom = xa[p];
-            for (uint32_t q = 0; q < yn && pb_atom < 0; ++q) if (str_eq(md_atom_name(&sb->atom, yb[q]), LBL_TO_STR(cache_b[c]))) pb_atom = yb[q];
+            for (uint32_t p = 0; p < xn && pa_atom < 0; ++p) if (md_str_eq(md_atom_name(&sa->atom, xa[p]), LBL_TO_STR(cache_a[c]))) pa_atom = xa[p];
+            for (uint32_t q = 0; q < yn && pb_atom < 0; ++q) if (md_str_eq(md_atom_name(&sb->atom, yb[q]), LBL_TO_STR(cache_b[c]))) pb_atom = yb[q];
             if (pa_atom < 0 || pb_atom < 0) continue;
             md_array_push(*pa, pa_atom, temp);
             md_array_push(*pb, pb_atom, temp);

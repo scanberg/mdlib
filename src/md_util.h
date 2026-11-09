@@ -35,30 +35,30 @@ typedef enum {
 MD_ENUM_FLAGS(md_infer_flags_t)
 
 // Access to the static arrays (preserved for direct access)
-const str_t* md_util_element_symbols(void);
-const str_t* md_util_element_names(void);
+const md_str_t* md_util_element_symbols(void);
+const md_str_t* md_util_element_names(void);
 const float* md_util_element_vdw_radii(void);
 
 // Element functions (now calling new atomic number API internally)
-md_element_t md_util_element_lookup(str_t element_str, bool ignore_case);
-str_t md_util_element_symbol(md_element_t element);
-str_t md_util_element_name(md_element_t element);
+md_element_t md_util_element_lookup(md_str_t element_str, bool ignore_case);
+md_str_t md_util_element_symbol(md_element_t element);
+md_str_t md_util_element_name(md_element_t element);
 float md_util_element_vdw_radius(md_element_t element);
 float md_util_element_covalent_radius(md_element_t element);
 float md_util_element_atomic_mass(md_element_t element);
 int   md_util_element_max_valence(md_element_t element);
 uint32_t md_util_element_cpk_color(md_element_t element);
 
-bool md_util_resname_dna(str_t str);
-bool md_util_resname_rna(str_t str);
-bool md_util_resname_acidic(str_t str);
-bool md_util_resname_basic(str_t str);
-bool md_util_resname_neutral(str_t str);
-bool md_util_resname_water(str_t str);
-bool md_util_resname_lipid(str_t str);      // The lipids of the Martini lipidomes (their names are mostly the atomistic ones)
-bool md_util_resname_hydrophobic(str_t str);
-bool md_util_resname_amino_acid(str_t str);
-bool md_util_resname_nucleotide(str_t str);
+bool md_util_resname_dna(md_str_t str);
+bool md_util_resname_rna(md_str_t str);
+bool md_util_resname_acidic(md_str_t str);
+bool md_util_resname_basic(md_str_t str);
+bool md_util_resname_neutral(md_str_t str);
+bool md_util_resname_water(md_str_t str);
+bool md_util_resname_lipid(md_str_t str);      // The lipids of the Martini lipidomes (their names are mostly the atomistic ones)
+bool md_util_resname_hydrophobic(md_str_t str);
+bool md_util_resname_amino_acid(md_str_t str);
+bool md_util_resname_nucleotide(md_str_t str);
 
 void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
@@ -90,7 +90,7 @@ bool md_util_system_infer_lipids(md_system_t* sys);
 // chains of one id in a row are two (NULL: by the ids alone). A run without an id is an instance of no id (the
 // instances are back to back). Replaces the instances of the system. The instances are what the data gives
 // (md_instance_data_t): where it gives no chain ids at all the system has none.
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]);
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]);
 
 // The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
 // without ids has no chains. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT) and by the loaders which give the
@@ -304,14 +304,14 @@ bool md_util_system_infer_molecules(md_system_t* sys);
 // The type of an atom of the name and element, added when the system has none, with the mass, size and color of the
 // element. map, which the caller keeps for a load (zeroed, with an allocator), finds a type it has given before in one
 // lookup rather than a search of the types.
-md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, str_t name, md_atomic_number_t z);
+md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, md_str_t name, md_atomic_number_t z);
 
 // Identify particle types within the system from the atom labels and the names of their residues. Coarse grained beads
 // come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
 // residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
 // the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
 // one label with a different element, mass, size or particle kind are of different types.
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[], const struct md_executor_t* ex);
+void md_util_system_infer_particle_types(md_system_t* sys, const md_str_t atom_labels[], const struct md_executor_t* ex);
 // The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
 void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
 

@@ -27,13 +27,13 @@ typedef struct topo_gto_input_t {
 static bool topo_gto_load_water(topo_gto_input_t* in) {
     memset(in, 0, sizeof(*in));
     qm_test_init(&in->t, MD_MEGABYTES(16));
-    if (!md_molden_system_init_from_file(&in->t.sys, &in->t.state, str_from_cstr(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"))) return false;
+    if (!md_molden_system_init_from_file(&in->t.sys, &in->t.state, md_str_from_cstr(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"))) return false;
     if (!qm_test_basis(&in->basis, &in->t)) return false;
     size_t dim = 0;
-    in->density = qm_test_matrix(&in->t, STR_LIT("orbital/total/density"), &dim);
+    in->density = qm_test_matrix(&in->t, MD_STR_LIT("orbital/total/density"), &dim);
     if (!in->density || dim != md_gto_basis_num_ao(&in->basis)) return false;
     double xyz[9] = {0};
-    const md_attribute_t* coord = qm_test_attr(&in->t, STR_LIT("qm/atom/coordinate"));   // Angstrom
+    const md_attribute_t* coord = qm_test_attr(&in->t, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom
     if (!coord || md_attribute_extract_f64(xyz, 9, coord, md_attribute_slice_all(), md_unit_none()) != 9) return false;
     for (int i = 0; i < 9; ++i) in->xyz[i] = (float)(xyz[i] * QM_TEST_ANGSTROM_TO_BOHR);
     return true;

@@ -5,7 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 
-void vial_diags_init(vial_diags_t* d, str_t src, md_allocator_i* alloc) {
+void vial_diags_init(vial_diags_t* d, md_str_t src, md_allocator_i* alloc) {
     memset(d, 0, sizeof(*d));
     d->src = src;
     d->alloc = alloc;
@@ -18,9 +18,9 @@ void vial_diags_init(vial_diags_t* d, str_t src, md_allocator_i* alloc) {
     }
 }
 
-str_t vial_excerpt(char* buf, size_t cap, str_t text) {
+md_str_t vial_excerpt(char* buf, size_t cap, md_str_t text) {
     // At most VIAL_EXCERPT_MAX bytes of the first line, cut on a character; "…" marks a cut
-    if (cap < VIAL_EXCERPT_MAX + 4) return (str_t){buf, 0};
+    if (cap < VIAL_EXCERPT_MAX + 4) return (md_str_t){buf, 0};
     size_t n = 0;
     while (n < text.len && n < VIAL_EXCERPT_MAX && text.ptr[n] != '\n' && text.ptr[n] != '\r') ++n;
     const bool cut = n < text.len;
@@ -28,7 +28,7 @@ str_t vial_excerpt(char* buf, size_t cap, str_t text) {
     if (n) memcpy(buf, text.ptr, n);     // an empty string's text may have no pointer at all
     if (cut) { memcpy(buf + n, "\xE2\x80\xA6", 3); n += 3; }
     buf[n] = '\0';
-    return (str_t){buf, n};
+    return (md_str_t){buf, n};
 }
 
 uint32_t vial_line_of(const vial_diags_t* d, uint32_t offset) {
@@ -60,7 +60,7 @@ void vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, const c
                     code[0] == 'R' ? MD_VIAL_SEVERITY_RUNTIME : MD_VIAL_SEVERITY_ERROR;
     diag.span = span;
     if (span.beg <= d->src.len) d->at[span.beg / 64] |= 1ull << (span.beg % 64);
-    diag.message = str_copy_cstrn(buf, (size_t)len, d->alloc);
+    diag.message = md_str_copy_cstrn(buf, (size_t)len, d->alloc);
     md_array_push(d->items, diag, d->alloc);
 }
 
@@ -72,8 +72,8 @@ size_t vial_diag_count(const vial_diags_t* d, const char code[6]) {
     return n;
 }
 
-void vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix) {
-    if (index < md_array_size(d->items)) d->items[index].fix = str_copy(fix, d->alloc);
+void vial_diag_set_fix(vial_diags_t* d, size_t index, md_str_t fix) {
+    if (index < md_array_size(d->items)) d->items[index].fix = md_str_copy(fix, d->alloc);
 }
 
 bool vial_diag_at(const vial_diags_t* d, uint32_t offset) {

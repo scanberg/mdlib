@@ -39,7 +39,7 @@ static bool h5md_test_load(h5md_test_t* t, const char* path) {
     t->arena = md_vm_arena_create(MD_GIGABYTES(1));
     t->sys.alloc = t->arena;
     t->state.alloc = t->arena;
-    return md_h5md_system_init_from_file(&t->sys, &t->state, str_from_cstr(path));
+    return md_h5md_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
 }
 
 static void h5md_test_free(h5md_test_t* t) {
@@ -47,7 +47,7 @@ static void h5md_test_free(h5md_test_t* t) {
 }
 
 static const md_attribute_t* attr(const md_system_t* sys, const char* path) {
-    return md_attributes_find(&sys->attributes, str_from_cstr(path));
+    return md_attributes_find(&sys->attributes, md_str_from_cstr(path));
 }
 
 // The values of a resident or virtual attribute's slice as doubles, in its own unit
@@ -85,13 +85,13 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     md_system_t tpr = { .alloc = h.arena };
     md_system_state_t tpr_state = { .alloc = h.arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&tpr, &tpr_state, str_from_cstr(tpr_path)));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&tpr, &tpr_state, md_str_from_cstr(tpr_path)));
 
     ASSERT_EQ(tpr.atom.count, h.sys.atom.count);
-    EXPECT_TRUE(str_eq(tpr.description, h.sys.description));
+    EXPECT_TRUE(md_str_eq(tpr.description, h.sys.description));
     size_t num_sites = 0;
     for (size_t i = 0; i < tpr.atom.count; ++i) {
-        EXPECT_TRUE(str_eq(md_atom_name(&tpr.atom, i), md_atom_name(&h.sys.atom, i)));
+        EXPECT_TRUE(md_str_eq(md_atom_name(&tpr.atom, i), md_atom_name(&h.sys.atom, i)));
         EXPECT_EQ(md_atom_atomic_number(&tpr.atom, i), md_atom_atomic_number(&h.sys.atom, i));
         EXPECT_EQ(md_atom_mass(&tpr.atom, i), md_atom_mass(&h.sys.atom, i));
         EXPECT_EQ(md_atom_particle_kind(&tpr.atom, i), md_atom_particle_kind(&h.sys.atom, i));
@@ -101,7 +101,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     // The molecules are the topology's, the same as the tpr's
     ASSERT_EQ(md_system_molecule_type_count(&tpr), md_system_molecule_type_count(&h.sys));
     for (size_t t = 0; t < md_system_molecule_type_count(&tpr); ++t) {
-        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&tpr, t), md_system_molecule_type_name(&h.sys, t)));
+        EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&tpr, t), md_system_molecule_type_name(&h.sys, t)));
     }
     ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
     for (size_t k = 0; k < tpr.instance.count; ++k) {
@@ -116,7 +116,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     ASSERT_EQ(tpr.residue.count, h.sys.residue.count);
     for (size_t c = 0; c < tpr.residue.count; ++c) {
-        EXPECT_TRUE(str_eq(md_system_residue_name(&tpr, c), md_system_residue_name(&h.sys, c)));
+        EXPECT_TRUE(md_str_eq(md_system_residue_name(&tpr, c), md_system_residue_name(&h.sys, c)));
         EXPECT_EQ(md_system_residue_seq_id(&tpr, c), md_system_residue_seq_id(&h.sys, c));
         EXPECT_EQ(md_system_residue_atom_range(&tpr, c).beg, md_system_residue_atom_range(&h.sys, c).beg);
     }
@@ -163,7 +163,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     const md_attribute_t* creator = attr(&h.sys, "h5md/creator/name");
     ASSERT_TRUE(creator != NULL);
-    EXPECT_TRUE(str_eq(md_attribute_str(&h.sys.attributes, creator, 0), STR_LIT("GROMACS")));
+    EXPECT_TRUE(md_str_eq(md_attribute_str(&h.sys.attributes, creator, 0), MD_STR_LIT("GROMACS")));
 
     h5md_test_free(&h);
 }
@@ -182,8 +182,8 @@ UTEST(h5md, gromacs_tip4p_system_matches_tpr) {
 static void check_gromacs_run(int* utest_result, const char* path, const run_ref_t* refs, size_t num_refs, size_t num_atoms, const double vel_sum[3][3]) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
-    const str_t run = STR_LIT("run/gmx");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/gmx");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_NONE));
     run_check_refs(utest_result, &t.sys, run, 5, num_atoms, refs, num_refs);
 
     const md_attribute_t* time = attr(&t.sys, "run/gmx/time");
@@ -212,12 +212,12 @@ static void check_gromacs_run(int* utest_result, const char* path, const run_ref
     // Through extraction: velocities at frames 0 and 2 (steps 0 and 10), none at frame 1 (step 5)
     md_system_state_t st = { .alloc = t.arena };
     md_system_state_init(&st, num_atoms);
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("h5md/particles/velocity/atom/velocity") };
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("h5md/particles/velocity/atom/velocity") };
     md_system_extract_t* ex = md_system_extract_begin(&t.sys, run, paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (int64_t f = 0; f < 5; ++f) {
         ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
-        const md_attribute_t* v = md_attributes_find(&st.attributes, STR_LIT("h5md/particles/velocity/atom/velocity"));
+        const md_attribute_t* v = md_attributes_find(&st.attributes, MD_STR_LIT("h5md/particles/velocity/atom/velocity"));
         if (f % 2) {
             EXPECT_TRUE(v == NULL);
             continue;
@@ -269,7 +269,7 @@ UTEST(h5md, spec_system) {
     const md_atomic_number_t z[] = { 6, 8, 1, 1 };
     const float mass[] = { 12.011f, 15.999f, 1.008f, 1.008f };
     for (size_t i = 0; i < 4; ++i) {
-        EXPECT_TRUE(str_eq_cstr(md_atom_name(&t.sys.atom, i), names[i]));
+        EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&t.sys.atom, i), names[i]));
         EXPECT_EQ(z[i], md_atom_atomic_number(&t.sys.atom, i));
         EXPECT_NEAR(mass[i], md_atom_mass(&t.sys.atom, i), 1.0e-5);
     }
@@ -301,15 +301,15 @@ UTEST(h5md, spec_system) {
     const md_attribute_t* version = attr(&t.sys, "h5md/version");
     ASSERT_TRUE(version != NULL);
     EXPECT_EQ(1, ((const int32_t*)version->data)[0]);
-    EXPECT_TRUE(str_eq(md_attribute_str(&t.sys.attributes, attr(&t.sys, "h5md/author/name"), 0), STR_LIT("mdlib unittest")));
+    EXPECT_TRUE(md_str_eq(md_attribute_str(&t.sys.attributes, attr(&t.sys, "h5md/author/name"), 0), MD_STR_LIT("mdlib unittest")));
     h5md_test_free(&t);
 }
 
 UTEST(h5md, spec_run) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, H5MD_DIR "spec_fixed.h5md"));
-    const str_t run = STR_LIT("run/spec");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, STR_LIT(H5MD_DIR "spec_fixed.h5md"), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/spec");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, MD_STR_LIT(H5MD_DIR "spec_fixed.h5md"), run, MD_RUN_FLAG_NONE));
 
     // A fixed step and time: an increment and an offset
     const md_attribute_t* time = attr(&t.sys, "run/spec/time");
@@ -397,7 +397,7 @@ UTEST(h5md, spec_bare) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, H5MD_DIR "spec_bare.h5md"));
     ASSERT_EQ(4u, t.sys.atom.count);
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&t.sys.atom, 2), "8"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&t.sys.atom, 2), "8"));
     EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, 2));    // from its mass
     EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, 3));
     EXPECT_EQ(0u, t.sys.bond.count);
@@ -406,8 +406,8 @@ UTEST(h5md, spec_bare) {
     EXPECT_TRUE(md_unitcell_is_triclinic(&t.state.unitcell));
     EXPECT_NEAR(5.0, t.state.unitcell.xy, 1.0e-6);
 
-    const str_t run = STR_LIT("run/bare");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, STR_LIT(H5MD_DIR "spec_bare.h5md"), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/bare");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, MD_STR_LIT(H5MD_DIR "spec_bare.h5md"), run, MD_RUN_FLAG_NONE));
     const md_attribute_t* time = attr(&t.sys, "run/bare/time");
     ASSERT_TRUE(time != NULL);
     EXPECT_TRUE(md_unit_is_none(time->unit));
@@ -451,8 +451,8 @@ UTEST(h5md, declines) {
 
     // A run for another system leaves nothing behind
     ASSERT_TRUE(h5md_test_load(&t, H5MD_DIR "spec_fixed.h5md"));
-    EXPECT_FALSE(md_h5md_system_publish_run(&t.sys, STR_LIT(H5MD_DIR "peptide_tip3p.h5md"), STR_LIT("run/x"), MD_RUN_FLAG_NONE));
-    EXPECT_EQ(0u, md_attributes_query(NULL, 0, &t.sys.attributes, STR_LIT("run/x")));
+    EXPECT_FALSE(md_h5md_system_publish_run(&t.sys, MD_STR_LIT(H5MD_DIR "peptide_tip3p.h5md"), MD_STR_LIT("run/x"), MD_RUN_FLAG_NONE));
+    EXPECT_EQ(0u, md_attributes_query(NULL, 0, &t.sys.attributes, MD_STR_LIT("run/x")));
     h5md_test_free(&t);
 }
 
@@ -461,7 +461,7 @@ UTEST(h5md, declines) {
 // under the reader's lock (the compressed positions of spec_bare).
 typedef struct h5md_thread_job_t {
     const md_system_t* sys;
-    str_t   run;
+    md_str_t   run;
     size_t  num_atoms;
     size_t  num_frames;
     size_t  rounds;
@@ -475,7 +475,7 @@ static void h5md_thread_extract(void* data) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_state_t st = { .alloc = arena };
     md_system_state_init(&st, job->num_atoms);
-    const str_t paths[] = { STR_INIT("atom/position") };
+    const md_str_t paths[] = { MD_STR_INIT("atom/position") };
     md_system_extract_t* ex = md_system_extract_begin(job->sys, job->run, paths, 1, arena);
     job->ok = ex != NULL;
     for (size_t r = 0; job->ok && r < job->rounds; ++r) {
@@ -494,8 +494,8 @@ static void h5md_thread_extract(void* data) {
 static void check_threads(int* utest_result, const char* path) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
-    const str_t run = STR_LIT("run/threads");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/threads");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_NONE));
 
     h5md_thread_job_t one = { .sys = &t.sys, .run = run, .num_atoms = t.sys.atom.count, .num_frames = run_num_frames(&t.sys, run), .rounds = 1 };
     h5md_thread_extract(&one);
@@ -631,8 +631,8 @@ UTEST(h5md, box_per_frame_with_steps_all_zero) {
 
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
-    const str_t run = STR_LIT("run/zero");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    const md_str_t run = MD_STR_LIT("run/zero");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_state_t st = {.alloc = t.arena};
     md_system_state_init(&st, N);
     for (int f = 0; f < F; ++f) {
@@ -677,8 +677,8 @@ UTEST(h5md, box_in_any_orientation) {
 
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
-    const str_t run = STR_LIT("run/turned");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    const md_str_t run = MD_STR_LIT("run/turned");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_state_t st = {.alloc = t.arena};
     md_system_state_init(&st, N);
     for (int f = 0; f < F; ++f) {

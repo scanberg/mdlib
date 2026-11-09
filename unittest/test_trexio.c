@@ -20,7 +20,7 @@
 
 static bool trexio_load(qm_test_t* t, const char* path, size_t arena_bytes) {
     qm_test_init(t, arena_bytes);
-    return md_trexio_system_init_from_file(&t->sys, &t->state, str_from_cstr(path));
+    return md_trexio_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
 }
 
 UTEST(trexio, parse) {
@@ -31,7 +31,7 @@ UTEST(trexio, parse) {
     EXPECT_EQ(3u, t.state.num_atoms);
 
     // TREXIO stores coordinates in bohr; a system's are in Angstrom, and so is what is published.
-    const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* coord = qm_test_attr(&t, MD_STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
     ASSERT_EQ(coord->format.components, 3u);
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
@@ -50,7 +50,7 @@ UTEST(trexio, parse) {
     // nucleus_label is authoritative for the element; nucleus_charge is what the electrons see and
     // is not the atomic number for an effective core potential.
     double z[3] = {0};
-    const md_attribute_t* za = qm_test_attr(&t, STR_LIT("qm/atom/atomic_number"));
+    const md_attribute_t* za = qm_test_attr(&t, MD_STR_LIT("qm/atom/atomic_number"));
     ASSERT_TRUE(za != NULL);
     ASSERT_EQ(md_attribute_extract_f64(z, 3, za, md_attribute_slice_all(), md_unit_none()), 3u);
     EXPECT_EQ(8.0, z[0]);
@@ -59,26 +59,26 @@ UTEST(trexio, parse) {
 
     // ...and nucleus_charge is published beside it as the nuclear charge. All electron here, so the two agree.
     double q[3] = {0};
-    const md_attribute_t* qa = qm_test_attr(&t, STR_LIT("qm/atom/nuclear_charge"));
+    const md_attribute_t* qa = qm_test_attr(&t, MD_STR_LIT("qm/atom/nuclear_charge"));
     ASSERT_TRUE(qa != NULL);
     ASSERT_EQ(md_attribute_extract_f64(q, 3, qa, md_attribute_slice_all(), md_unit_elementary_charge()), 3u);
     EXPECT_EQ(8.0, q[0]);
     EXPECT_EQ(1.0, q[1]);
     EXPECT_EQ(1.0, q[2]);
 
-    EXPECT_EQ(10.0, qm_test_scalar(&t, STR_LIT("trexio/electron_count/total"), -1.0));
-    EXPECT_EQ( 5.0, qm_test_scalar(&t, STR_LIT("trexio/electron_count/up"),    -1.0));
-    EXPECT_EQ( 5.0, qm_test_scalar(&t, STR_LIT("trexio/electron_count/down"),  -1.0));
+    EXPECT_EQ(10.0, qm_test_scalar(&t, MD_STR_LIT("trexio/electron_count/total"), -1.0));
+    EXPECT_EQ( 5.0, qm_test_scalar(&t, MD_STR_LIT("trexio/electron_count/up"),    -1.0));
+    EXPECT_EQ( 5.0, qm_test_scalar(&t, MD_STR_LIT("trexio/electron_count/down"),  -1.0));
 
-    EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("trexio/basis_type")),      STR_LIT("Gaussian")));
-    EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("trexio/mo_type")),         STR_LIT("MO")));
-    EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("trexio/ao_convention")),   STR_LIT("spherical")));
-    EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("trexio/metadata/package_version")), STR_LIT("2.6.1")));
+    EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("trexio/basis_type")),      MD_STR_LIT("Gaussian")));
+    EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("trexio/mo_type")),         MD_STR_LIT("MO")));
+    EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("trexio/ao_convention")),   MD_STR_LIT("spherical")));
+    EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("trexio/metadata/package_version")), MD_STR_LIT("2.6.1")));
 
     // This file carries no mo_energy and no nucleus_repulsion. An absent path is how a consumer
     // learns a block is missing; a column of zeros would read as a legitimate set of energies.
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("orbital/alpha/energy")));
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("trexio/nuclear_repulsion_energy")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("orbital/alpha/energy")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("trexio/nuclear_repulsion_energy")));
 
     md_gto_basis_t basis = {0};
     ASSERT_TRUE(qm_test_basis(&basis, &t));
@@ -99,21 +99,21 @@ UTEST(trexio, restricted_occupations_are_split_per_spin) {
     ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(16)));
 
     double file_occ[24] = {0};
-    ASSERT_EQ(qm_test_series(file_occ, MD_COUNTOF(file_occ), &t, STR_LIT("trexio/mo/occupation")), MD_COUNTOF(file_occ));
+    ASSERT_EQ(qm_test_series(file_occ, MD_COUNTOF(file_occ), &t, MD_STR_LIT("trexio/mo/occupation")), MD_COUNTOF(file_occ));
     EXPECT_NEAR(2.0, file_occ[0], 1.0e-12);
     EXPECT_NEAR(2.0, file_occ[4], 1.0e-12);
     EXPECT_NEAR(0.0, file_occ[5], 1.0e-12);
 
     double occ[24] = {0};
-    ASSERT_EQ(qm_test_series(occ, MD_COUNTOF(occ), &t, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ));
+    ASSERT_EQ(qm_test_series(occ, MD_COUNTOF(occ), &t, MD_STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ));
     for (size_t i = 0; i < 5; ++i) {
         EXPECT_NEAR(1.0, occ[i], 1.0e-12);
     }
     EXPECT_NEAR(0.0, occ[5], 1.0e-12);
 
     // Beta is a second NAME for alpha here, not a second copy.
-    const md_attribute_t* a = qm_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
-    const md_attribute_t* b = qm_test_attr(&t, STR_LIT("orbital/beta/coefficient"));
+    const md_attribute_t* a = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* b = qm_test_attr(&t, MD_STR_LIT("orbital/beta/coefficient"));
     ASSERT_TRUE(a != NULL);
     ASSERT_TRUE(b != NULL);
     EXPECT_TRUE(md_attribute_same_data(a, b));
@@ -127,16 +127,16 @@ UTEST(trexio, restricted_occupations_are_split_per_spin) {
 UTEST(trexio, orbitals_are_orthonormal) {
     qm_test_t t = {0};
     ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
-    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    EXPECT_LT(qm_test_orthonormality(&t, MD_STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
     qm_test_free(&t);
 }
 
 UTEST(trexio, total_density_holds_ten_electrons) {
     qm_test_t t = {0};
     ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
-    EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
-    EXPECT_NEAR( 5.0, qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-5);
-    EXPECT_NEAR( 0.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-9);
+    EXPECT_NEAR(10.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/total/density")), 1.0e-5);
+    EXPECT_NEAR( 5.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/alpha/density")), 1.0e-5);
+    EXPECT_NEAR( 0.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/difference/density")), 1.0e-9);
     qm_test_free(&t);
 }
 
@@ -152,7 +152,7 @@ UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
     qm_test_t md = {0};
     ASSERT_TRUE(trexio_load(&tx, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
     qm_test_init(&md, MD_MEGABYTES(32));
-    ASSERT_TRUE(md_molden_system_init_from_file(&md.sys, &md.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&md.sys, &md.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
 
     ASSERT_EQ(tx.sys.atom.count, md.sys.atom.count);
 
@@ -177,8 +177,8 @@ UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
 
     // ...and so must the molecular orbitals, in the Cartesian order both publish them in.
     size_t na = 0, nb = 0;
-    double* ca = qm_test_matrix(&tx, STR_LIT("orbital/alpha/coefficient"), &na);
-    double* cb = qm_test_matrix(&md, STR_LIT("orbital/alpha/coefficient"), &nb);
+    double* ca = qm_test_matrix(&tx, MD_STR_LIT("orbital/alpha/coefficient"), &na);
+    double* cb = qm_test_matrix(&md, MD_STR_LIT("orbital/alpha/coefficient"), &nb);
     ASSERT_TRUE(ca != NULL);
     ASSERT_TRUE(cb != NULL);
     ASSERT_EQ(na, nb);
@@ -195,8 +195,8 @@ UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
     // both land on the same per channel numbers.
     double occ_a[24] = {0};
     double occ_b[24] = {0};
-    ASSERT_EQ(qm_test_series(occ_a, MD_COUNTOF(occ_a), &tx, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ_a));
-    ASSERT_EQ(qm_test_series(occ_b, MD_COUNTOF(occ_b), &md, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ_b));
+    ASSERT_EQ(qm_test_series(occ_a, MD_COUNTOF(occ_a), &tx, MD_STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ_a));
+    ASSERT_EQ(qm_test_series(occ_b, MD_COUNTOF(occ_b), &md, MD_STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ_b));
     for (size_t i = 0; i < MD_COUNTOF(occ_a); ++i) {
         EXPECT_NEAR(occ_a[i], occ_b[i], 1.0e-12);
     }
@@ -208,15 +208,15 @@ UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
 // What the sniffer is for: .h5 is shared with several other formats, so the extension does not
 // settle it and a caller has to look inside.
 UTEST(trexio, file_recognition) {
-    EXPECT_TRUE(md_trexio_file_is_trexio(STR_LIT(MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio")));
-    EXPECT_FALSE(md_trexio_file_is_trexio(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb")));
-    EXPECT_FALSE(md_trexio_file_is_trexio(STR_LIT(MD_UNITTEST_DATA_DIR "/trexio/no-such-file.trexio")));
+    EXPECT_TRUE(md_trexio_file_is_trexio(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio")));
+    EXPECT_FALSE(md_trexio_file_is_trexio(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb")));
+    EXPECT_FALSE(md_trexio_file_is_trexio(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/trexio/no-such-file.trexio")));
 }
 
 UTEST(trexio, a_file_that_is_not_hdf5_is_declined) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(1));
-    EXPECT_FALSE(md_trexio_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    EXPECT_FALSE(md_trexio_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     qm_test_free(&t);
 }
 
@@ -261,8 +261,8 @@ UTEST(trexio, pyscf_cartesian_functions_as_stated) {
     ASSERT_TRUE(tx_write(path, h2o_631gs_cart, MD_COUNTOF(h2o_631gs_cart)));
     qm_test_t t = {0};
     ASSERT_TRUE(trexio_load(&t, path, MD_MEGABYTES(32)));
-    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
-    EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
+    EXPECT_LT(qm_test_orthonormality(&t, MD_STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    EXPECT_NEAR(10.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/total/density")), 1.0e-5);
     qm_test_free(&t);
     remove(path);
 }
@@ -274,16 +274,16 @@ UTEST(trexio, restricted_open_shell) {
     ASSERT_TRUE(tx_write(path, oh_sto3g_rohf, MD_COUNTOF(oh_sto3g_rohf)));
     qm_test_t t = {0};
     ASSERT_TRUE(trexio_load(&t, path, MD_MEGABYTES(32)));
-    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    EXPECT_LT(qm_test_orthonormality(&t, MD_STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
     double occ_a[6] = {0}, occ_b[6] = {0};
-    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, STR_LIT("orbital/alpha/occupation")));
-    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, STR_LIT("orbital/beta/occupation")));
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, MD_STR_LIT("orbital/alpha/occupation")));
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, MD_STR_LIT("orbital/beta/occupation")));
     EXPECT_EQ(1.0, occ_a[4]);
     EXPECT_EQ(0.0, occ_b[4]);
     EXPECT_EQ(1.0, occ_b[3]);
-    EXPECT_NEAR(9.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
-    EXPECT_NEAR(5.0, qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-5);
-    EXPECT_NEAR(1.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-5);
+    EXPECT_NEAR(9.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/total/density")), 1.0e-5);
+    EXPECT_NEAR(5.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/alpha/density")), 1.0e-5);
+    EXPECT_NEAR(1.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/difference/density")), 1.0e-5);
     qm_test_free(&t);
     remove(path);
 }

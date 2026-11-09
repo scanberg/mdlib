@@ -20,15 +20,15 @@ static inline float nm(float x) {
 
 // The velocities of a loaded system, in nm/ps as the file has them: NULL where the file has none
 static const float* gro_test_velocities(const md_system_t* sys) {
-    return (const float*)md_attribute_view(md_attributes_find(&sys->attributes, STR_LIT("atom/velocity")), MD_ATTRIBUTE_TYPE_F32, 3, 1);
+    return (const float*)md_attribute_view(md_attributes_find(&sys->attributes, MD_STR_LIT("atom/velocity")), MD_ATTRIBUTE_TYPE_F32, 3, 1);
 }
 
 // The reference files, every coordinate (and velocity) of the system against parse_float on its token, defined later
-static size_t gro_test_compare_with_tokens(str_t path, const md_executor_t* ex);
+static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* ex);
 
 UTEST(gro, parse_small) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/catalyst.gro");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/catalyst.gro");
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
@@ -38,7 +38,7 @@ UTEST(gro, parse_small) {
     // A format without force field types still keeps the column aligned, with empty entries
     EXPECT_EQ(sys.atom.type.count, md_array_size(sys.atom.type.ff_type));
     for (size_t t = 0; t < sys.atom.type.count; ++t) {
-        EXPECT_TRUE(str_empty(md_particle_type_ff_type(&sys.atom.type, t)));
+        EXPECT_TRUE(md_str_empty(md_particle_type_ff_type(&sys.atom.type, t)));
     }
     EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(path, NULL));
 
@@ -47,7 +47,7 @@ UTEST(gro, parse_small) {
 }
 
 UTEST(gro, parse_big) {
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/centered.gro");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/centered.gro");
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
@@ -60,7 +60,7 @@ UTEST(gro, parse_big) {
 
 UTEST(gro, parse_small_water) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/water.gro");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/water.gro");
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path, NULL));
@@ -84,7 +84,7 @@ UTEST(gro, nonexistent_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    EXPECT_FALSE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro"), NULL));
+    EXPECT_FALSE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro"), NULL));
     EXPECT_EQ((size_t)0, sys.atom.count);
     md_system_free(&sys);
     md_system_state_free(&sys_state);
@@ -103,7 +103,7 @@ UTEST(gro, malformed) {
     for (size_t i = 0; i < MD_COUNTOF(texts); ++i) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        EXPECT_FALSE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(texts[i]), NULL));
+        EXPECT_FALSE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(texts[i]), NULL));
         EXPECT_EQ((size_t)0, sys.atom.count);
         EXPECT_EQ((size_t)0, st.num_atoms);
     }
@@ -113,7 +113,7 @@ UTEST(gro, malformed) {
 // A file of several frames: the first is the system
 UTEST(gro, frames) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "frame 1\n"
         "    2\n"
         "    1SOL     OW    1   0.100   0.200   0.300\n"
@@ -160,7 +160,7 @@ static bool gro_test_absent(float v) {
 
 UTEST(gro, coordinate_columns) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "columns, and lines that do not keep to them\n"
         "    7\n"
         "    1SOL     OW    1   0.126   1.624   1.679  0.1427 -0.4840  0.0544\n"
@@ -216,7 +216,7 @@ UTEST(gro, coordinate_columns) {
 // gmx editconf -ndec: wider columns with more decimals, the velocities one more again
 UTEST(gro, coordinate_columns_with_more_decimals) {
     md_allocator_i* alloc = md_get_heap_allocator();
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "five decimals\n"
         "    2\n"
         "    1SOL     OW    1   0.12600   1.62400  -1.67900  0.142700 -0.484000  0.054400\n"
@@ -244,7 +244,7 @@ UTEST(gro, coordinate_columns_with_more_decimals) {
 
 // The reference files, every coordinate against parse_float on its token (in Angstrom, as the loader makes it), every
 // velocity against its own
-static size_t gro_test_compare_with_tokens(str_t path, const md_executor_t* ex) {
+static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* ex) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
@@ -252,13 +252,13 @@ static size_t gro_test_compare_with_tokens(str_t path, const md_executor_t* ex) 
     if (md_gro_system_init_from_file(&sys, &st, path, ex)) {
         mismatches = 0;
         const float* vel = gro_test_velocities(&sys);
-        str_t text = load_textfile(path, alloc);
-        str_t rest = text, line;
-        str_extract_line(&line, &rest);
-        str_extract_line(&line, &rest);
-        for (size_t i = 0; i < sys.atom.count && str_extract_line(&line, &rest); ++i) {
-            str_t coords = str_substr(line, 20, SIZE_MAX);
-            str_t tok[6];
+        md_str_t text = md_load_textfile(path, alloc);
+        md_str_t rest = text, line;
+        md_str_extract_line(&line, &rest);
+        md_str_extract_line(&line, &rest);
+        for (size_t i = 0; i < sys.atom.count && md_str_extract_line(&line, &rest); ++i) {
+            md_str_t coords = md_str_substr(line, 20, SIZE_MAX);
+            md_str_t tok[6];
             const size_t n = extract_tokens(tok, 6, &coords);
             const float xyz[3] = { st.xyz[i].x, st.xyz[i].y, st.xyz[i].z };
             for (size_t k = 0; k < n && k < 3; ++k) {
@@ -277,8 +277,8 @@ UTEST(gro, coordinate_columns_match_the_tokens) {
     test_executor_t threads = test_executor_threads(3);
     const char* files[] = { MD_UNITTEST_DATA_DIR "/catalyst.gro", MD_UNITTEST_DATA_DIR "/water.gro", MD_UNITTEST_DATA_DIR "/centered.gro", MD_UNITTEST_DATA_DIR "/npt.gro" };
     for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
-        EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(str_from_cstr(files[f]), NULL));
-        EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(str_from_cstr(files[f]), test_executor(&threads)));
+        EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(md_str_from_cstr(files[f]), NULL));
+        EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(md_str_from_cstr(files[f]), test_executor(&threads)));
     }
 }
 
@@ -317,7 +317,7 @@ UTEST(gro, blocks_and_pieces) {
     }
     n = snprintf(line, sizeof(line), "   9.97000   9.91000   9.83000\n");
     md_array_push_array(text, line, (size_t)n, alloc);
-    const str_t str = { text, md_array_size(text) };
+    const md_str_t str = { text, md_array_size(text) };
     ASSERT_GT(str.len, (size_t)MD_MEGABYTES(33));
 
     const char* path = "md_unittest_blocks.gro";
@@ -335,7 +335,7 @@ UTEST(gro, blocks_and_pieces) {
     for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), executors[e]));
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), executors[e]));
         EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys, &st));
         md_system_t sys2 = { .alloc = alloc };
         md_system_state_t st2 = { .alloc = alloc };
@@ -346,8 +346,8 @@ UTEST(gro, blocks_and_pieces) {
     // The velocities: of every line which has them, absent where a line has none
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), test_executor(&threads)));
-    const md_attribute_t* vel = md_attributes_find(&sys.attributes, STR_LIT("atom/velocity"));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), test_executor(&threads)));
+    const md_attribute_t* vel = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/velocity"));
     ASSERT_TRUE(vel != NULL);
     const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
     float v[3] = {0};

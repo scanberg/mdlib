@@ -29,7 +29,7 @@ static uint32_t add(md_flow_graph_t* g, uint32_t column, uint32_t parent, uint32
         .level  = level,
         .weight = weight,
         .color  = {1,1,1,1},
-        .label  = STR_INIT("n"),
+        .label  = MD_STR_INIT("n"),
         .key    = key,
     };
     return md_flow_graph_add_node(g, &node);

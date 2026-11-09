@@ -110,11 +110,11 @@ static void print_windows_error(void) {
 #endif
 
 #if MD_PLATFORM_WINDOWS
-// The Win32 path API comes in an ANSI and a wide flavour. mdlib treats str_t as UTF-8
+// The Win32 path API comes in an ANSI and a wide flavour. mdlib treats md_str_t as UTF-8
 // everywhere, and the ANSI flavour would reinterpret every non-ASCII byte in the process
 // code page (and cap paths at MAX_PATH), so the path layer speaks UTF-16 exclusively,
 // just like the file layer further down.
-static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
+static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, md_str_t src) {
     MD_ASSERT(dst);
     MD_ASSERT(cap > 0);
 
@@ -156,7 +156,7 @@ static size_t utf16_to_utf8_path(char* dst, size_t cap, const wchar_t* src, int 
 
 // Length of the leading part of an absolute path which cannot be expressed relative to
 // anything else: '/' on unix, 'X:/' or '//server/share/' on windows.
-static size_t path_root_len(str_t path) {
+static size_t path_root_len(md_str_t path) {
 #if MD_PLATFORM_WINDOWS
     if (path.len >= 2 && path.ptr[0] == '/' && path.ptr[1] == '/') {
         // UNC path: //server/share/
@@ -192,7 +192,7 @@ static bool path_char_equal(char a, char b) {
 // Length of the longest common prefix of a and b which ends on a folder boundary.
 // Whole components are compared: '/data/foo/' and '/data/foobar/' share '/data/', not
 // '/data/foo'.
-static size_t common_folder_len(str_t a, str_t b) {
+static size_t common_folder_len(md_str_t a, md_str_t b) {
     const size_t len = MD_MIN(a.len, b.len);
     size_t common = 0;
     for (size_t i = 0; i < len; ++i) {
@@ -214,7 +214,7 @@ static size_t normalize_path(char* buf, size_t cap, size_t len) {
     MD_ASSERT(len < cap);
     (void)cap;
 
-    const size_t root = path_root_len((str_t){buf, len});
+    const size_t root = path_root_len((md_str_t){buf, len});
     const bool trailing_sep = (len > 0 && buf[len - 1] == '/');
 
     size_t w = root;
@@ -312,14 +312,14 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
 
 // Resolves path into its canonical form (see above). Returns the number of characters
 // written, or 0 on failure. The path does not need to exist.
-static size_t fullpath(char* buf, size_t cap, str_t path) {
+static size_t fullpath(char* buf, size_t cap, md_str_t path) {
     MD_ASSERT(buf);
     if (cap == 0) {
         return 0;
     }
     buf[0] = '\0';
 
-    if (str_empty(path)) {
+    if (md_str_empty(path)) {
         return 0;
     }
 
@@ -330,7 +330,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
     wchar_t w_full[MD_MAX_PATH];
 
     if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
-        MD_LOG_ERROR("Failed to convert path to UTF-16: '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("Failed to convert path to UTF-16: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
 
@@ -340,20 +340,20 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
         return 0;
     }
     if (w_len >= (DWORD)MD_COUNTOF(w_full)) {
-        MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
 
     len = utf16_to_utf8_path(buf, cap, w_full, (int)w_len);
     if (len == 0) {
-        MD_LOG_ERROR("Failed to convert path to UTF-8: '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("Failed to convert path to UTF-8: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
 
 #elif MD_PLATFORM_UNIX
     char zbuf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(zbuf, sizeof(zbuf), path) == 0) {
+    if (md_str_copy_to_char_buf(zbuf, sizeof(zbuf), path) == 0) {
         return 0;
     }
 
@@ -361,7 +361,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
     if (res) {
         len = strlen(res);
         if (len + 1 > cap) {
-            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
             free(res);
             return 0;
         }
@@ -384,7 +384,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
             written = md_snprintf(buf, cap, "%s", zbuf);
         }
         if (written < 0 || (size_t)written >= cap) {
-            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
             buf[0] = '\0';
             return 0;
         }
@@ -409,9 +409,9 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
 
     // Directories are given an explicit trailing separator so that they can be told apart
     // from files further down without hitting the filesystem again.
-    if (len > 0 && buf[len - 1] != '/' && md_path_is_directory((str_t){buf, len})) {
+    if (len > 0 && buf[len - 1] != '/' && md_path_is_directory((md_str_t){buf, len})) {
         if (len + 2 > cap) {
-            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
             buf[0] = '\0';
             return 0;
         }
@@ -442,7 +442,7 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
         MD_LOG_ERROR("Failed to get current working directory");
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
 #elif MD_PLATFORM_UNIX
     if (getcwd(buf, cap) == NULL) {
         MD_LOG_ERROR("Failed to get current working directory");
@@ -474,7 +474,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to get path to executable");
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
     return len;
 #elif MD_PLATFORM_LINUX
     const ssize_t res = readlink("/proc/self/exe", buf, buf_cap - 1);
@@ -539,7 +539,7 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to convert home directory to UTF8");
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
     return len;
 #elif MD_PLATFORM_UNIX
     const char *homedir = NULL;
@@ -566,15 +566,15 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
 #endif
 }
 
-bool md_path_set_cwd(str_t path) {
-    if (str_empty(path)) {
+bool md_path_set_cwd(md_str_t path) {
+    if (md_str_empty(path)) {
         MD_LOG_ERROR("CWD: The supplied path is empty");
         return false;
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
     if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
-        MD_LOG_ERROR("CWD: Failed to convert path to UTF-16 '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("CWD: Failed to convert path to UTF-16 '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
     if (SetCurrentDirectoryW(w_path)) {
@@ -584,7 +584,7 @@ bool md_path_set_cwd(str_t path) {
 #elif MD_PLATFORM_UNIX
     // Ensure zero termination of path
     char buf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+    if (md_str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
         return false;
     }
     if (chdir(buf) == 0) {
@@ -607,26 +607,26 @@ bool md_path_set_cwd(str_t path) {
     return false;
 }
 
-size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
+size_t md_path_write_canonical(char* buf, size_t cap, md_str_t path) {
     return fullpath(buf, cap, path);
 }
 
-str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
+md_str_t md_path_make_canonical(md_str_t path, struct md_allocator_i* alloc) {
     MD_ASSERT(alloc);
     char buf[MD_MAX_PATH];
     const size_t len = fullpath(buf, sizeof(buf), path);
 
     if (len == 0) {
-        if (!str_empty(path)) {
-            MD_LOG_ERROR("Failed to create canonical path from '" STR_FMT "'", STR_ARG(path));
+        if (!md_str_empty(path)) {
+            MD_LOG_ERROR("Failed to create canonical path from '" MD_STR_FMT "'", MD_STR_ARG(path));
         }
-        return (str_t){0};
+        return (md_str_t){0};
     }
 
-    return str_copy_cstrn(buf, len, alloc);
+    return md_str_copy_cstrn(buf, len, alloc);
 }
 
-size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t to) {
+size_t md_path_write_relative(char* out_buf, size_t out_cap, md_str_t from, md_str_t to) {
     MD_ASSERT(out_buf);
     if (out_cap == 0) {
         return 0;
@@ -635,7 +635,7 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     // length of whatever happened to be on the caller's stack.
     out_buf[0] = '\0';
 
-    if (str_empty(from) || str_empty(to)) {
+    if (md_str_empty(from) || md_str_empty(to)) {
         MD_LOG_ERROR("Failed to extract relative path: one of the supplied paths is empty.");
         return 0;
     }
@@ -648,30 +648,30 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     const size_t   to_len = fullpath(to_buf,   sizeof(to_buf),   to);
 
     if (from_len == 0 || to_len == 0) {
-        MD_LOG_ERROR("Failed to extract relative path: could not resolve '" STR_FMT "' or '" STR_FMT "'", STR_ARG(from), STR_ARG(to));
+        MD_LOG_ERROR("Failed to extract relative path: could not resolve '" MD_STR_FMT "' or '" MD_STR_FMT "'", MD_STR_ARG(from), MD_STR_ARG(to));
         return 0;
     }
 
     // 'from' anchors the result: if it identifies a file, the folder holding it is the base
-    str_t base = {from_buf, from_len};
-    if (from_buf[from_len - 1] != '/' && !extract_folder_path(&base, base)) {
-        MD_LOG_ERROR("Failed to extract folder path from '" STR_FMT "'", STR_ARG(from));
+    md_str_t base = {from_buf, from_len};
+    if (from_buf[from_len - 1] != '/' && !md_extract_folder_path(&base, base)) {
+        MD_LOG_ERROR("Failed to extract folder path from '" MD_STR_FMT "'", MD_STR_ARG(from));
         return 0;
     }
-    const str_t target = {to_buf, to_len};
+    const md_str_t target = {to_buf, to_len};
 
     const size_t common = common_folder_len(base, target);
     if (common == 0 || common < path_root_len(base) || common < path_root_len(target)) {
         // Separate windows drives or UNC shares: no relative path between them exists
-        MD_LOG_ERROR("Failed to extract relative path: '" STR_FMT "' and '" STR_FMT "' share no common root.", STR_ARG(base), STR_ARG(target));
+        MD_LOG_ERROR("Failed to extract relative path: '" MD_STR_FMT "' and '" MD_STR_FMT "' share no common root.", MD_STR_ARG(base), MD_STR_ARG(target));
         return 0;
     }
 
-    const str_t rel_from = str_substr(base,   common, SIZE_MAX);
-    const str_t rel_to   = str_substr(target, common, SIZE_MAX);
+    const md_str_t rel_from = md_str_substr(base,   common, SIZE_MAX);
+    const md_str_t rel_to   = md_str_substr(target, common, SIZE_MAX);
 
     // One step up for each folder left in from, or './' if it is already the common base
-    const size_t up_count   = str_count_occur_char(rel_from, '/');
+    const size_t up_count   = md_str_count_occur_char(rel_from, '/');
     const size_t prefix_len = up_count ? up_count * 3 : 2;
     const size_t len        = prefix_len + rel_to.len;
 
@@ -699,18 +699,18 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     return len;
 }
 
-str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
+md_str_t md_path_make_relative(md_str_t from, md_str_t to, struct md_allocator_i* alloc) {
     MD_ASSERT(alloc);
     char  rel_buf[MD_MAX_PATH];
     const size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
     if (len == 0) {
-        return (str_t){0};
+        return (md_str_t){0};
     }
-    return str_copy_cstrn(rel_buf, len, alloc);
+    return md_str_copy_cstrn(rel_buf, len, alloc);
 }
 
-bool md_path_is_absolute(str_t path) {
-    if (str_empty(path)) {
+bool md_path_is_absolute(md_str_t path) {
+    if (md_str_empty(path)) {
         return false;
     }
     const bool sep0 = (path.ptr[0] == '/' || path.ptr[0] == '\\');
@@ -725,8 +725,8 @@ bool md_path_is_absolute(str_t path) {
     return sep0;
 }
 
-bool md_path_is_valid(str_t path) {
-    if (str_empty(path)) {
+bool md_path_is_valid(md_str_t path) {
+    if (md_str_empty(path)) {
         return false;
     }
 #if MD_PLATFORM_WINDOWS
@@ -736,9 +736,9 @@ bool md_path_is_valid(str_t path) {
     }
     return GetFileAttributesW(w_path) != INVALID_FILE_ATTRIBUTES;
 #elif MD_PLATFORM_UNIX
-    // str_t is not guaranteed to be zero terminated
+    // md_str_t is not guaranteed to be zero terminated
     char buf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+    if (md_str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
         return false;
     }
     return access(buf, F_OK) == 0;
@@ -748,8 +748,8 @@ bool md_path_is_valid(str_t path) {
 #endif
 }
 
-bool md_path_is_directory(str_t path) {
-    if (str_empty(path)) {
+bool md_path_is_directory(md_str_t path) {
+    if (md_str_empty(path)) {
         return false;
     }
 #if MD_PLATFORM_WINDOWS
@@ -760,9 +760,9 @@ bool md_path_is_directory(str_t path) {
     const DWORD attr = GetFileAttributesW(w_path);
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #elif MD_PLATFORM_UNIX
-    // str_t is not guaranteed to be zero terminated
+    // md_str_t is not guaranteed to be zero terminated
     char buf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+    if (md_str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
         return false;
     }
     struct stat s;
@@ -971,7 +971,7 @@ bool md_file_info_extract(md_file_t file, md_file_info_t* out_info) {
 #endif
 }
 
-bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
+bool md_file_info_extract_from_path(md_str_t filename, md_file_info_t* out_info) {
     if (!out_info) {
         MD_LOG_ERROR("md_file_info_extract_from_path: output info was NULL");
         return false;
@@ -1004,7 +1004,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 
 #elif MD_PLATFORM_UNIX
     md_temp_scope_t temp_scope = md_temp_begin();
-    str_t path = str_copy(filename, md_temp_allocator(temp_scope));
+    md_str_t path = md_str_copy(filename, md_temp_allocator(temp_scope));
     struct stat st = {0};
     if (stat(path.ptr, &st) != 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
@@ -1021,7 +1021,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 #endif
 }
 
-bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
+bool md_file_open(md_file_t* out_file, md_str_t filename, md_file_flags_t flags) {
     if (!out_file) {
         MD_LOG_ERROR("md_file_open: output file was NULL");
         return false;
@@ -1147,7 +1147,7 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     open_flags |= O_CLOEXEC;
 #endif
 
-    str_t path = str_copy(filename, md_temp_allocator(temp_scope));
+    md_str_t path = md_str_copy(filename, md_temp_allocator(temp_scope));
     const mode_t create_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
     int fd = -1;

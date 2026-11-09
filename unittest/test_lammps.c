@@ -18,7 +18,7 @@
 UTEST(lammps, water_ethane_cubic) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
     md_lammps_data_t data = {0};
 
     const char** atom_formats = md_lammps_atom_format_strings();
@@ -141,7 +141,7 @@ UTEST(lammps, water_ethane_cubic) {
 
     // Skip first particle type == Unknown
     for (size_t i = 1; i < sys.atom.type.count; ++i) {
-        str_t type_id = md_particle_type_name(&sys.atom.type, i);
+        md_str_t type_id = md_particle_type_name(&sys.atom.type, i);
         float mass    = md_particle_type_mass(&sys.atom.type, i);
         float radius  = md_particle_type_radius(&sys.atom.type, i);
         md_atomic_number_t z = md_particle_type_atomic_number(&sys.atom.type, i);
@@ -150,8 +150,8 @@ UTEST(lammps, water_ethane_cubic) {
         for (size_t j = 0; j < data.num_particle_types; ++j) {
             char buf[8];
             int len = snprintf(buf, sizeof(buf), "type_%i", data.particle_types[j].id);
-            str_t ref_type_id = {buf, len};
-            if (str_eq(type_id, ref_type_id)) {
+            md_str_t ref_type_id = {buf, len};
+            if (md_str_eq(type_id, ref_type_id)) {
                 float ref_mass = data.particle_types[j].mass;
                 float ref_radius = data.particle_types[j].radius;
                 md_atomic_number_t ref_z = md_atomic_number_infer_from_mass(ref_mass);
@@ -175,7 +175,7 @@ UTEST(lammps, water_ethane_cubic) {
 UTEST(lammps, water_ethane_triclinic) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
     md_lammps_data_t data = {0};
 
     const char** atom_formats = md_lammps_atom_format_strings();
@@ -290,7 +290,7 @@ UTEST(lammps, water_ethane_triclinic) {
     md_lammps_data_free(&data, alloc);
 }
 
-#define LAMMPS_RUN STR_LIT("run/dump")
+#define LAMMPS_RUN MD_STR_LIT("run/dump")
 
 // Recorded from the trajectory reader this replaced
 static const run_ref_t lammps_refs_cubic[] = {
@@ -307,7 +307,7 @@ static const run_ref_t lammps_refs_triclinic[] = {
 UTEST(lammps, run_cubic) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7800, lammps_refs_cubic, MD_COUNTOF(lammps_refs_cubic));
 
     // Scaled coordinates in the file: the first atom sits at these fractions of the cell
@@ -328,9 +328,9 @@ UTEST(lammps, run_cubic) {
 UTEST(lammps, frame_steps_and_time_fallback) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/dump/time"));
-    const md_attribute_t* step = md_attributes_find(&sys.attributes, STR_LIT("run/dump/step"));
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/dump/time"));
+    const md_attribute_t* step = md_attributes_find(&sys.attributes, MD_STR_LIT("run/dump/step"));
     ASSERT_TRUE(time && step);
 
     // No unit: the times are ordinals standing in for time, not picoseconds or femtoseconds
@@ -351,14 +351,14 @@ UTEST(lammps, frame_steps_and_time_fallback) {
 UTEST(lammps, run_triclinic) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/triclinic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/triclinic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7722, lammps_refs_triclinic, MD_COUNTOF(lammps_refs_triclinic));
 
     // One atom: the whole frame is parsed, the atom lines being in no order, and one kept.
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, 7722);
     ASSERT_TRUE(run_extract_one(&st, &sys, LAMMPS_RUN, 9));
-    const md_attribute_t* pos = md_attributes_find(&sys.attributes, STR_LIT("run/dump/atom/position"));
+    const md_attribute_t* pos = md_attributes_find(&sys.attributes, MD_STR_LIT("run/dump/atom/position"));
     float xyz[3];
     md_attribute_slice_t one = md_attribute_slice_2(9, 17);
     ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
@@ -373,9 +373,9 @@ UTEST(lammps, comprehensive_data_validation) {
     md_allocator_i* alloc = md_get_heap_allocator();
     
     // Test both cubic and triclinic data files comprehensively
-    str_t paths[] = {
-        STR_INIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"),
-        STR_INIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data")
+    md_str_t paths[] = {
+        MD_STR_INIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"),
+        MD_STR_INIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data")
     };
     
     const char** atom_formats = md_lammps_atom_format_strings();
@@ -406,7 +406,7 @@ UTEST(lammps, comprehensive_data_validation) {
 // ### DATA FILES ###
 
 static bool lammps_load_str(md_system_t* sys, md_system_state_t* state, const char* text) {
-    return md_lammps_system_init_from_str(sys, state, str_from_cstr(text), NULL);
+    return md_lammps_system_init_from_str(sys, state, md_str_from_cstr(text), NULL);
 }
 
 // Comments after the counts and the keywords, as LAMMPS allows them anywhere after a blank
@@ -475,8 +475,8 @@ UTEST(lammps, data_type_labels) {
         "Masses\n\nOW 15.9994\nHW 1.008\n\n"
         "Atoms # full\n\n1 1 OW -0.8 1.0 1.0 1.0\n2 1 HW 0.4 1.9 1.0 1.0\n3 1 2 0.4 0.8 1.9 1.0\n"));
     ASSERT_EQ(3u, sys.atom.count);
-    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 0), STR_LIT("OW")));
-    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 1), STR_LIT("HW")));
+    EXPECT_TRUE(md_str_eq(md_atom_name(&sys.atom, 0), MD_STR_LIT("OW")));
+    EXPECT_TRUE(md_str_eq(md_atom_name(&sys.atom, 1), MD_STR_LIT("HW")));
     EXPECT_EQ(sys.atom.type_idx[1], sys.atom.type_idx[2]);
     EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
     EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 2));
@@ -517,7 +517,7 @@ UTEST(lammps, data_detect_style) {
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         char buf[1024];
         const int len = snprintf(buf, sizeof(buf), "%s%s", head, cases[i].atoms);
-        EXPECT_EQ((int)cases[i].format, (int)md_lammps_atom_format_from_str((str_t){buf, (size_t)len}));
+        EXPECT_EQ((int)cases[i].format, (int)md_lammps_atom_format_from_str((md_str_t){buf, (size_t)len}));
         md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         md_system_t sys = {.alloc = arena};
         md_system_state_t st = {.alloc = arena};
@@ -527,7 +527,7 @@ UTEST(lammps, data_detect_style) {
         md_arena_allocator_destroy(arena);
     }
     // Named styles of the newer releases
-    EXPECT_EQ((int)MD_LAMMPS_ATOM_FORMAT_HYBRID, (int)md_lammps_atom_format_from_str(STR_LIT("t\n\n1 atoms\n1 atom types\n\nAtoms # hybrid sphere dipole\n\n1 1 1.0 2.0 3.0 1.0 1.0 0 0 0 0\n")));
+    EXPECT_EQ((int)MD_LAMMPS_ATOM_FORMAT_HYBRID, (int)md_lammps_atom_format_from_str(MD_STR_LIT("t\n\n1 atoms\n1 atom types\n\nAtoms # hybrid sphere dipole\n\n1 1 1.0 2.0 3.0 1.0 1.0 0 0 0 0\n")));
 }
 
 // Argon and potassium told apart by their masses (Ar is the heavier, out of the order of the elements)
@@ -562,7 +562,7 @@ UTEST(lammps, data_general_triclinic) {
 
 // ### DUMPS ###
 
-static bool write_text(str_t path, const char* text) {
+static bool write_text(md_str_t path, const char* text) {
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
     const size_t len = strlen(text);
@@ -575,7 +575,7 @@ static const char* lammps_two_atoms = "two\n\n2 atoms\n1 atom types\n\n0.0 10.0 
 
 // The cell of the bounds of a dump's triclinic box: those of the box with its tilts, xy + xz among them
 UTEST(lammps, dump_triclinic_bounds) {
-    const str_t path = STR_LIT("md_unittest_dump_tri.lammpstrj");
+    const md_str_t path = MD_STR_LIT("md_unittest_dump_tri.lammpstrj");
     ASSERT_TRUE(write_text(path,
         "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS xy xz yz pp pp pp\n0.0 13.5 2.0\n0.0 10.0 1.5\n0.0 10.0 0.0\n"
         "ITEM: ATOMS id type x y z\n2 1 5.0 5.0 5.0\n1 1 1.0 1.0 1.0\n"));
@@ -599,7 +599,7 @@ UTEST(lammps, dump_triclinic_bounds) {
 
 // UNITS and TIME before the TIMESTEP, boundaries other than periodic, scaled coordinates unwrapped by their image flags
 UTEST(lammps, dump_time_boundaries_images) {
-    const str_t path = STR_LIT("md_unittest_dump_fixed.lammpstrj");
+    const md_str_t path = MD_STR_LIT("md_unittest_dump_fixed.lammpstrj");
     ASSERT_TRUE(write_text(path,
         "ITEM: UNITS\nreal\nITEM: TIME\n0.0\nITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS ff pp fm\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
         "ITEM: ATOMS id type xs ys zs ix iy iz\n1 1 0.1 0.1 0.1 1 0 0\n2 1 0.5 0.5 0.5 0 0 0\n"
@@ -623,7 +623,7 @@ UTEST(lammps, dump_time_boundaries_images) {
 
 // Unwrapped coordinates are not unwrapped again by the image flags beside them
 UTEST(lammps, dump_unwrapped_with_images) {
-    const str_t path = STR_LIT("md_unittest_dump_unwrapped.lammpstrj");
+    const md_str_t path = MD_STR_LIT("md_unittest_dump_unwrapped.lammpstrj");
     ASSERT_TRUE(write_text(path,
         "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
         "ITEM: ATOMS id type xu yu zu ix iy iz\n1 1 11.0 1.0 1.0 1 0 0\n2 1 5.0 5.0 5.0 0 0 0\n"));

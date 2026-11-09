@@ -19,21 +19,21 @@ typedef struct run_ref_t {
     double cell[6];     // x, y, z, xy, xz, yz
 } run_ref_t;
 
-static inline size_t run_num_frames(const md_system_t* sys, str_t run) {
+static inline size_t run_num_frames(const md_system_t* sys, md_str_t run) {
     char buf[512];
-    const md_attribute_t* time = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("time")));
+    const md_attribute_t* time = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, MD_STR_LIT("time")));
     return time ? time->format.shape[0] : 0;
 }
 
-static inline size_t run_num_atoms(const md_system_t* sys, str_t run) {
+static inline size_t run_num_atoms(const md_system_t* sys, md_str_t run) {
     char buf[512];
-    const md_attribute_t* pos = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, STR_LIT("atom/position")));
+    const md_attribute_t* pos = md_attributes_find(&sys->attributes, md_run_path(buf, sizeof(buf), run, MD_STR_LIT("atom/position")));
     return pos ? pos->format.shape[1] : 0;
 }
 
 // One frame of positions and cell into state, which has room for the run's atoms.
-static inline bool run_extract_one(md_system_state_t* state, const md_system_t* sys, str_t run, int64_t frame) {
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+static inline bool run_extract_one(md_system_state_t* state, const md_system_t* sys, md_str_t run, int64_t frame) {
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
     md_system_extract_t* ex = md_system_extract_begin(sys, run, paths, 2, md_get_heap_allocator());
     if (!ex) return false;
     const bool ok = md_system_extract_frame(ex, frame, state);
@@ -45,7 +45,7 @@ static inline bool run_near(double ref, double got, double rel, double abs_tol) 
     return fabs(ref - got) <= rel * fabs(ref) + abs_tol;
 }
 
-static inline void run_check_refs(int* utest_result, const md_system_t* sys, str_t run, size_t expected_frames, size_t expected_atoms, const run_ref_t* refs, size_t num_refs) {
+static inline void run_check_refs(int* utest_result, const md_system_t* sys, md_str_t run, size_t expected_frames, size_t expected_atoms, const run_ref_t* refs, size_t num_refs) {
     ASSERT_EQ(expected_frames, run_num_frames(sys, run));
     const size_t N = run_num_atoms(sys, run);
     ASSERT_EQ(expected_atoms, N);
@@ -54,7 +54,7 @@ static inline void run_check_refs(int* utest_result, const md_system_t* sys, str
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, N);
 
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
     md_system_extract_t* ex = md_system_extract_begin(sys, run, paths, 2, md_get_heap_allocator());
     EXPECT_TRUE(ex != NULL);
     for (size_t r = 0; ex && r < num_refs; ++r) {

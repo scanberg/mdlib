@@ -19,7 +19,7 @@
 // Mesoscale cellulose (Mehandzhiyski et al.) in the layout of cellulose_msc_50.itp: every slice is a
 // CC hub bonded to two OC and four IC beads, and the CC hubs are chained. The whole molecule is one
 // residue. Written with the file's own clutter: parameters, angles and POSRES behind an #ifdef.
-static str_t make_msc_itp(md_allocator_i* alloc, const char* molname, int slices) {
+static md_str_t make_msc_itp(md_allocator_i* alloc, const char* molname, int slices) {
     md_str_writer_t sb = md_str_writer_create(alloc);
     md_str_writer_fmt(&sb, "\n[ defaults ]\n; nbfunc comb-rule\n    1  3  no\n");
     md_str_writer_fmt(&sb, "[ atomtypes ]\n; name mass charge ptype sigma epsilon\n    IC 3237.780 0.000 A 0.0 0.0\n    OC 3237.780 0.000 A 0.0 0.0\n    CC 3885.336 0.000 A 0.0 0.0\n");
@@ -49,7 +49,7 @@ static str_t make_msc_itp(md_allocator_i* alloc, const char* molname, int slices
 
 // One gro residue per molecule. Slices advance 2.19 nm along x from each molecule's origin, the six
 // satellites sit around the hub, and everything is wrapped into the box.
-static str_t make_msc_gro(md_allocator_i* alloc, int num_mol, int slices, const float origin[][3], float box[3], int trailing_water) {
+static md_str_t make_msc_gro(md_allocator_i* alloc, int num_mol, int slices, const float origin[][3], float box[3], int trailing_water) {
     md_str_writer_t sb = md_str_writer_create(alloc);
     const int n = num_mol * slices * 7 + trailing_water;
     md_str_writer_fmt(&sb, "Mesoscale cellulose\n%d\n", n);
@@ -83,7 +83,7 @@ static size_t count_origin(const md_system_t* sys, md_bond_origin_t origin) {
 UTEST(itp, parse_sections_and_preprocessor) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
-    str_t src = STR_INIT(
+    md_str_t src = MD_STR_INIT(
         "; comment line\n"
         "#define FLEXIBLE\n"
         "[ atomtypes ]\n"
@@ -135,7 +135,7 @@ UTEST(itp, parse_sections_and_preprocessor) {
         "VS   1\n");
 
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, src, STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, src, MD_STR_LIT(""), alloc));
 
     ASSERT_EQ(md_array_size(data.atomtypes), 3u);
     EXPECT_EQ(data.atomtypes[0].atomic_number, 8);
@@ -148,9 +148,9 @@ UTEST(itp, parse_sections_and_preprocessor) {
 
     ASSERT_EQ(md_array_size(data.moleculetypes), 2u);
     const md_itp_moleculetype_t* sol = &data.moleculetypes[0];
-    EXPECT_TRUE(str_eq_cstr(sol->name, "SOL"));
+    EXPECT_TRUE(md_str_eq_cstr(sol->name, "SOL"));
     ASSERT_EQ(md_array_size(sol->atoms), 3u);
-    EXPECT_TRUE(str_eq_cstr(sol->atoms[1].name, "HW1"));
+    EXPECT_TRUE(md_str_eq_cstr(sol->atoms[1].name, "HW1"));
     EXPECT_TRUE(sol->atoms[0].has_charge);
     EXPECT_FALSE(sol->atoms[0].has_mass);
     EXPECT_NEAR(sol->atoms[1].charge, 0.417f, 1e-5f);
@@ -168,24 +168,24 @@ UTEST(itp, parse_sections_and_preprocessor) {
     EXPECT_EQ(vs->bonds[1].idx[0], 0); EXPECT_EQ(vs->bonds[1].idx[1], 2);
     EXPECT_EQ(vs->bonds[2].idx[0], 0); EXPECT_EQ(vs->bonds[2].idx[1], 3);
 
-    EXPECT_TRUE(str_eq_cstr(data.system_name, "Water and sites"));
+    EXPECT_TRUE(md_str_eq_cstr(data.system_name, "Water and sites"));
     ASSERT_EQ(md_array_size(data.molecules), 2u);
     EXPECT_EQ(data.molecules[0].count, 2);
 
     {
         // settles when FLEXIBLE is not defined
-        str_t rigid = STR_INIT("[ moleculetype ]\nSOL 2\n[ atoms ]\n1 OW 1 SOL OW 1\n2 HW 1 SOL HW1 1\n3 HW 1 SOL HW2 1\n"
+        md_str_t rigid = MD_STR_INIT("[ moleculetype ]\nSOL 2\n[ atoms ]\n1 OW 1 SOL OW 1\n2 HW 1 SOL HW1 1\n3 HW 1 SOL HW2 1\n"
                               "#ifndef FLEXIBLE\n[ settles ]\n1 1 0.1 0.16\n#else\n[ bonds ]\n2 3 1\n#endif\n");
         md_itp_data_t d = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&d, rigid, STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&d, rigid, MD_STR_LIT(""), alloc));
         ASSERT_EQ(md_array_size(d.moleculetypes[0].bonds), 2u);
         EXPECT_EQ(d.moleculetypes[0].bonds[1].idx[1], 2);
     }
 
     {
-        str_t broken = STR_INIT("#ifdef A\n[ moleculetype ]\nX 1\n");
+        md_str_t broken = MD_STR_INIT("#ifdef A\n[ moleculetype ]\nX 1\n");
         md_itp_data_t d = {0};
-        EXPECT_FALSE(md_itp_data_parse_str(&d, broken, STR_LIT(""), alloc));
+        EXPECT_FALSE(md_itp_data_parse_str(&d, broken, MD_STR_LIT(""), alloc));
     }
 
     md_vm_arena_destroy(alloc);
@@ -199,14 +199,14 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     float box[3] = {30.0f, 30.0f, 20.0f};
     const float origin[MOLS][3] = {{5, 5, 5}, {12, 15, 10}, {20, 25, 15}};  // 20 slices = 41.6 nm, longer than the box
 
-    str_t gro = make_msc_gro(alloc, MOLS, SLICES, origin, box, 2);
+    md_str_t gro = make_msc_gro(alloc, MOLS, SLICES, origin, box, 2);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
 
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", SLICES), STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", SLICES), MD_STR_LIT(""), alloc));
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
 
     const size_t bonds_per_mol = SLICES * 7 - 1;
@@ -218,7 +218,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     // water beads are a unit of no type after them, and molecules of a type inferred.
     ASSERT_EQ(md_system_instance_count(&sys), (size_t)(MOLS + 1));
     ASSERT_GE(md_system_molecule_type_count(&sys), 2u);
-    EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("MSC")));
+    EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 0), MD_STR_LIT("MSC")));
     EXPECT_EQ(md_system_molecule_type_flags(&sys, 0), MD_MOLECULE_TYPE_FLAG_NONE);
     for (int m = 0; m < MOLS; ++m) {
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, (size_t)m), 0);
@@ -230,7 +230,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     EXPECT_TRUE(md_system_molecule_type_flags(&sys, (size_t)md_system_molecule_type_idx(&sys, (size_t)water)) & MD_MOLECULE_TYPE_FLAG_INFERRED);
 
     // Per atom mass is published, and it varies (first slice heavier)
-    const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, STR_LIT("atom/mass"));
+    const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/mass"));
     ASSERT_TRUE(mass_attr != NULL);
     float masses[SLICES * 7 * MOLS + 2];
     ASSERT_EQ(md_attribute_extract_f32(masses, MD_COUNTOF(masses), mass_attr, md_attribute_slice_all(), md_unit_dalton()), MD_COUNTOF(masses));
@@ -262,14 +262,14 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
 
     float box[3] = {100.0f, 100.0f, 100.0f};
     const float origin[2][3] = {{10, 10, 10}, {10, 60, 10}};
-    str_t gro = make_msc_gro(alloc, 2, 5, origin, box, 0);
+    md_str_t gro = make_msc_gro(alloc, 2, 5, origin, box, 0);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
 
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC10", 10), STR_LIT(""), alloc));
-    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC5", 5), STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC10", 10), MD_STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC5", 5), MD_STR_LIT(""), alloc));
     ASSERT_EQ(md_array_size(data.moleculetypes), 2u);
 
     md_itp_instance_t* inst = 0;
@@ -283,7 +283,7 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
     EXPECT_EQ(md_system_molecule_count(&sys), 2u);
     // Two molecules of the one molecule type matched, the only molecule type of the system
     ASSERT_EQ(md_system_molecule_type_count(&sys), 1u);
-    EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("MSC5")));
+    EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 0), MD_STR_LIT("MSC5")));
     EXPECT_EQ(md_system_molecule_type_idx(&sys, 0), 0);
     EXPECT_EQ(md_system_molecule_type_idx(&sys, 1), 0);
 
@@ -296,19 +296,19 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
 
     float box[3] = {100.0f, 100.0f, 100.0f};
     const float origin[2][3] = {{10, 10, 10}, {10, 60, 10}};
-    str_t gro = make_msc_gro(alloc, 2, 3, origin, box, 1);
+    md_str_t gro = make_msc_gro(alloc, 2, 3, origin, box, 1);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
 
-    str_t water = STR_INIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
+    md_str_t water = MD_STR_INIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
     {
         md_str_writer_t top = md_str_writer_create(alloc);
         md_str_writer_push_str(&top, make_msc_itp(alloc, "MSC", 3));
         md_str_writer_push_str(&top, water);
         md_str_writer_push_cstr(&top, "[ system ]\ntest\n[ molecules ]\nMSC 2\nW 1\n");
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), MD_STR_LIT(""), alloc));
         md_itp_instance_t* inst = 0;
         ASSERT_EQ(md_itp_match_system(&inst, &data, &sys, alloc), 3u);
         EXPECT_EQ(inst[2].type, 1u);
@@ -321,14 +321,14 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
         md_str_writer_push_str(&top, water);
         md_str_writer_push_cstr(&top, "[ molecules ]\nW 1\nMSC 2\n");
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), MD_STR_LIT(""), alloc));
         md_itp_instance_t* inst = 0;
         EXPECT_EQ(md_itp_match_system(&inst, &data, &sys, alloc), 3u);
     }
     {
         // Nothing matches
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, STR_LIT("[ moleculetype ]\nFOO 1\n[ atoms ]\n1 X 1 FOO X 1\n"), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, MD_STR_LIT("[ moleculetype ]\nFOO 1\n[ atoms ]\n1 X 1 FOO X 1\n"), MD_STR_LIT(""), alloc));
         EXPECT_FALSE(md_itp_system_supplement(&sys, &data));
     }
 
@@ -341,7 +341,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
 
     float box[3] = {100.0f, 100.0f, 100.0f};
     const float origin[1][3] = {{10, 10, 10}};
-    str_t gro = make_msc_gro(alloc, 1, 2, origin, box, 2);  // 14 beads, then W at 14 and 15
+    md_str_t gro = make_msc_gro(alloc, 1, 2, origin, box, 2);  // 14 beads, then W at 14 and 15
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
@@ -353,7 +353,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
 
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", 2), STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", 2), MD_STR_LIT(""), alloc));
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
 
     EXPECT_EQ(sys.bond.count, 1u + 13u + 1u);
@@ -400,7 +400,7 @@ UTEST(itp, elastic_bonds) {
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
 
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&itp), STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&itp), MD_STR_LIT(""), alloc));
     ASSERT_EQ(1u, md_array_size(data.moleculetypes));
     const md_itp_moleculetype_t* mol = &data.moleculetypes[0];
     // 5 backbone, 6 side chain, the plain rubber band and the constraint of type 1; 3-11 and 5-9 apart, 1-3 doubles a bond
@@ -458,10 +458,10 @@ UTEST(itp, supplement_beads_by_mass) {
 
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (str_t){gro, (size_t)len}, NULL));
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (md_str_t){gro, (size_t)len}, NULL));
         md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL);
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, (str_t){itp, (size_t)il}, STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, (md_str_t){itp, (size_t)il}, MD_STR_LIT(""), alloc));
         ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
         for (size_t i = 0; i < 4; ++i) {
             EXPECT_EQ(cases[c].kind, md_atom_particle_kind(&sys.atom, i));
@@ -479,7 +479,7 @@ UTEST(itp, supplement_beads_by_mass) {
 // A topology applied again, here with other charges: its columns replace those of the first
 UTEST(itp, supplement_again_replaces_charge_and_mass) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
-    const str_t gro = STR_LIT(
+    const md_str_t gro = MD_STR_LIT(
         "water\n"
         "    3\n"
         "    1SOL     OW    1   0.100   0.100   0.100\n"
@@ -503,9 +503,9 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
         char itp[512];
         snprintf(itp, sizeof(itp), itp_fmt, charges[k][0], charges[k][1], charges[k][1]);
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, str_from_cstr(itp), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_from_cstr(itp), MD_STR_LIT(""), alloc));
         ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
-        const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+        const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         ASSERT_TRUE(charge != NULL);
         float q[3];
         ASSERT_EQ(3u, md_attribute_extract_f32(q, 3, charge, md_attribute_slice_all(), md_unit_elementary_charge()));
@@ -518,7 +518,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
 // them): the atom takes the macro's value, and an #undef takes it back.
 UTEST(itp, macros_for_charge_and_mass) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "#define QN  -0.47\n"
         "#define MC  12.011\n"
         "[ moleculetype ]\n"
@@ -529,7 +529,7 @@ UTEST(itp, macros_for_charge_and_mass) {
         "#undef QN\n"
         "  3 C   1 ALA C  3 QN    MC\n");
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, text, (str_t){0}, alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, text, (md_str_t){0}, alloc));
     ASSERT_EQ(1u, (uint32_t)md_array_size(data.moleculetypes));
     const md_itp_moleculetype_t* mol = &data.moleculetypes[0];
     ASSERT_EQ(3u, (uint32_t)md_array_size(mol->atoms));

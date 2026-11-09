@@ -343,8 +343,8 @@ static int eval_map_pairs(vial_interp_t* in, const vial_ir_op_t* op, const vial_
     for (uint32_t a = 0; a < b->num_args; ++a) {
         const vial_ssa_t v = ir->args[b->arg_beg + a];
         if (!v) continue;
-        const str_t nm = ir->names[b->arg_beg + a];
-        const int which = str_eq(nm, STR_LIT("p")) ? 0 : str_eq(nm, STR_LIT("q")) ? 1 : -1;
+        const md_str_t nm = ir->names[b->arg_beg + a];
+        const int which = md_str_eq(nm, MD_STR_LIT("p")) ? 0 : md_str_eq(nm, MD_STR_LIT("q")) ? 1 : -1;
         if (which < 0) return -1;
         const uint32_t ko = ir->values[v].op;
         if (ko == VIAL_IR_NO_OP || ir->ops[ko].kind != VIAL_IR_KIND || (ko != kinds[0] && (nk < 2 || ko != kinds[1]))) return -1;

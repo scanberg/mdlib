@@ -44,11 +44,11 @@ static uint64_t fuzz_env(const char* name, uint64_t def) {
 }
 
 // The quoted entries of a libFuzzer dictionary, with \\, \" and \xNN unescaped
-static str_t* fuzz_read_dict(str_t text, md_allocator_i* alloc) {
-    str_t* words = NULL;
-    str_t line;
-    while (str_extract_line(&line, &text)) {
-        line = str_trim(line);
+static md_str_t* fuzz_read_dict(md_str_t text, md_allocator_i* alloc) {
+    md_str_t* words = NULL;
+    md_str_t line;
+    while (md_str_extract_line(&line, &text)) {
+        line = md_str_trim(line);
         if (line.len < 2 || line.ptr[0] != '"' || line.ptr[line.len - 1] != '"') continue;
         char* w = md_alloc(alloc, line.len);
         size_t n = 0;
@@ -66,7 +66,7 @@ static str_t* fuzz_read_dict(str_t text, md_allocator_i* alloc) {
             }
             w[n++] = c;
         }
-        md_array_push(words, ((str_t){w, n}), alloc);
+        md_array_push(words, ((md_str_t){w, n}), alloc);
     }
     return words;
 }
@@ -82,14 +82,14 @@ static void fuzz_insert(fuzz_buf_t* b, size_t at, const char* src, size_t n, md_
     b->len += n;
 }
 
-static void fuzz_mutate(fuzz_buf_t* b, const str_t* seeds, const str_t* dict, fuzz_rng_t* r, md_allocator_i* alloc) {
+static void fuzz_mutate(fuzz_buf_t* b, const md_str_t* seeds, const md_str_t* dict, fuzz_rng_t* r, md_allocator_i* alloc) {
     const size_t num_ops = 1 + fuzz_below(r, 6);
     for (size_t k = 0; k < num_ops; ++k) {
         const size_t at = fuzz_below(r, b->len + 1);
         switch (fuzz_below(r, 8)) {
         case 0:   // a word of the dictionary
         case 1: {
-            const str_t w = dict[fuzz_below(r, md_array_size(dict))];
+            const md_str_t w = dict[fuzz_below(r, md_array_size(dict))];
             fuzz_insert(b, at, w.ptr, w.len, alloc);
             break;
         }
@@ -116,7 +116,7 @@ static void fuzz_mutate(fuzz_buf_t* b, const str_t* seeds, const str_t* dict, fu
             break;
         }
         case 6: { // a piece of another seed
-            const str_t s = seeds[fuzz_below(r, md_array_size(seeds))];
+            const md_str_t s = seeds[fuzz_below(r, md_array_size(seeds))];
             if (s.len == 0) break;
             const size_t beg = fuzz_below(r, s.len);
             const size_t n = fuzz_below(r, s.len - beg < 128 ? s.len - beg : 128) + 1;
@@ -150,15 +150,15 @@ static void fuzz_print_input(const char* ptr, size_t len) {
 static const char* fuzz_check_copy(const char* ptr, size_t len, md_allocator_i* scratch) {
     char* copy = malloc(len ? len : 1);
     if (len) memcpy(copy, ptr, len);
-    const char* err = vial_fuzz_check((str_t){copy, len}, vial_test_system('T'), vial_test_state('T'), scratch);
+    const char* err = vial_fuzz_check((md_str_t){copy, len}, vial_test_system('T'), vial_test_state('T'), scratch);
     free(copy);
     return err;
 }
 
 struct vial_fuzz {
     md_allocator_i* alloc;
-    str_t* seeds;
-    str_t* dict;
+    md_str_t* seeds;
+    md_str_t* dict;
 };
 
 UTEST_F_SETUP(vial_fuzz) {
@@ -167,19 +167,19 @@ UTEST_F_SETUP(vial_fuzz) {
     utest_fixture->seeds = NULL;
 
     vial_spec_t spec = {0};
-    str_t ref = load_textfile(STR_LIT(VIAL_FUZZ_REFERENCE), alloc);
-    ASSERT_FALSE(str_empty(ref));
+    md_str_t ref = md_load_textfile(MD_STR_LIT(VIAL_FUZZ_REFERENCE), alloc);
+    ASSERT_FALSE(md_str_empty(ref));
     vial_spec_read(&spec, ref, alloc);
     for (size_t i = 0; i < md_array_size(spec.blocks); ++i) md_array_push(utest_fixture->seeds, spec.blocks[i].src, alloc);
 
     const char* files[] = {VIAL_FUZZ_PRELUDE, VIAL_FUZZ_GOLDEN "expressions.vial", VIAL_FUZZ_GOLDEN "statements.vial",
                            VIAL_FUZZ_GOLDEN "refused.vial", VIAL_FUZZ_GOLDEN "errors.vial"};
     for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
-        str_t s = load_textfile(str_from_cstr(files[i]), alloc);
-        ASSERT_FALSE(str_empty(s));
+        md_str_t s = md_load_textfile(md_str_from_cstr(files[i]), alloc);
+        ASSERT_FALSE(md_str_empty(s));
         md_array_push(utest_fixture->seeds, s, alloc);
     }
-    str_t dict = load_textfile(STR_LIT(VIAL_FUZZ_DICT), alloc);
+    md_str_t dict = md_load_textfile(MD_STR_LIT(VIAL_FUZZ_DICT), alloc);
     utest_fixture->dict = fuzz_read_dict(dict, alloc);
     ASSERT_GT(md_array_size(utest_fixture->dict), 50);
 }
@@ -191,7 +191,7 @@ UTEST_F_TEARDOWN(vial_fuzz) {
 // Every seed as it is, then every prefix of the golden error input: text cut off anywhere
 UTEST_F(vial_fuzz, seeds_and_prefixes) {
     md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
-    const str_t* seeds = utest_fixture->seeds;
+    const md_str_t* seeds = utest_fixture->seeds;
     for (size_t i = 0; i < md_array_size(seeds); ++i) {
         const char* err = fuzz_check_copy(seeds[i].ptr, seeds[i].len, scratch);
         if (err) { printf("seed %zu: %s\n", i, err); fuzz_print_input(seeds[i].ptr, seeds[i].len); }
@@ -264,7 +264,7 @@ static void* extremes_run(void* arg) {
         const char* err = fuzz_check_copy(src, len, scratch);
         snprintf(out->err[c], sizeof(out->err[c]), "%s", err ? err : "");
 
-        md_vial_program_t* prog = md_vial_compile((str_t){src, len}, NULL, scratch);
+        md_vial_program_t* prog = md_vial_compile((md_str_t){src, len}, NULL, scratch);
         const md_vial_diagnostic_t* d = NULL;
         const size_t n = md_vial_diagnostics(prog, &d);
         out->deep[c] = 0;
@@ -316,12 +316,12 @@ UTEST_F(vial_fuzz, mutations) {
     const size_t iterations = (size_t)fuzz_env("VIAL_FUZZ_ITERATIONS", 3000);
     fuzz_rng_t rng = {fuzz_env("VIAL_FUZZ_SEED", 0x5eed5eedull) | 1};
     md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
-    const str_t* seeds = utest_fixture->seeds;
+    const md_str_t* seeds = utest_fixture->seeds;
     const size_t num_seeds = md_array_size(seeds);
 
     size_t num_bytes = 0, num_failed = 0;
     for (size_t it = 0; it < iterations && num_failed < 3; ++it) {
-        const str_t s = seeds[fuzz_below(&rng, num_seeds)];
+        const md_str_t s = seeds[fuzz_below(&rng, num_seeds)];
         fuzz_buf_t b = {md_alloc(scratch, s.len + 1), s.len};
         memcpy(b.ptr, s.ptr, s.len);
         fuzz_mutate(&b, seeds, utest_fixture->dict, &rng, scratch);

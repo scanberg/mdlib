@@ -10,10 +10,10 @@
 
 #define FULL_TEST 1
 
-static const str_t cat_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
-static const str_t amy_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
-static const str_t asp_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
-static const str_t ion_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/ef.xtc");
+static const md_str_t cat_path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
+static const md_str_t amy_path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
+static const md_str_t asp_path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
+static const md_str_t ion_path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/ef.xtc");
 
 UBENCH_EX(xtc, xdr_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));

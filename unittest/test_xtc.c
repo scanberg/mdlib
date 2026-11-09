@@ -271,15 +271,15 @@ UTEST(xtc, decode_bits) {
 UTEST(xtc, run_every_frame) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/c"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    EXPECT_EQ(501u, run_num_frames(&sys, STR_LIT("run/c")));
-    EXPECT_EQ(1336u, run_num_atoms(&sys, STR_LIT("run/c")));
+    const md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, MD_STR_LIT("run/c"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    EXPECT_EQ(501u, run_num_frames(&sys, MD_STR_LIT("run/c")));
+    EXPECT_EQ(1336u, run_num_atoms(&sys, MD_STR_LIT("run/c")));
 
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, 1336);
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-    md_system_extract_t* ex = md_system_extract_begin(&sys, STR_LIT("run/c"), paths, 2, md_get_heap_allocator());
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
+    md_system_extract_t* ex = md_system_extract_begin(&sys, MD_STR_LIT("run/c"), paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (int64_t i = 0; i < 501; ++i) {
         EXPECT_TRUE(md_system_extract_frame(ex, i, &st));
@@ -292,7 +292,7 @@ UTEST(xtc, catalyst) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp);
 
-    const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -355,7 +355,7 @@ UTEST(xtc, big) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
 
-    const str_t path = STR_INIT("E:/data/md/big/PROD_r2.part0001.xtc");
+    const md_str_t path = MD_STR_INIT("E:/data/md/big/PROD_r2.part0001.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -417,7 +417,7 @@ UTEST(xtc, amyloid) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp_scope);
 
-    const str_t path = STR_INIT("E:/data/md/amyloid-6T/prod-centered.xtc");
+    const md_str_t path = MD_STR_INIT("E:/data/md/amyloid-6T/prod-centered.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -475,7 +475,7 @@ UTEST(xtc, H1N1) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* arena = md_temp_allocator(temp);
 
-    const str_t path = STR_INIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
+    const md_str_t path = MD_STR_INIT("E:/data/md/H1N1/H1N1-Mich2015-TRAJECTORY-not_water_not_ions-sk100.xtc");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
@@ -532,9 +532,9 @@ done:
 
 // ### RUN ###
 
-#define XTC_RUN STR_LIT("run/catalyst")
+#define XTC_RUN MD_STR_LIT("run/catalyst")
 
-static const str_t xtc_coord_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+static const md_str_t xtc_coord_paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
 
 // Recorded from the trajectory reader this replaced
 static const run_ref_t xtc_refs[] = {
@@ -544,10 +544,10 @@ static const run_ref_t xtc_refs[] = {
 };
 
 static bool xtc_load_catalyst(md_system_t* sys, md_allocator_i* arena) {
-    const str_t xtc = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const md_str_t xtc = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     sys->alloc = arena;
     md_system_state_t sys_state = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) &&
+    return md_gro_system_init_from_file(sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) &&
         md_xtc_system_publish_run(sys, xtc, XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE);
 }
 
@@ -563,10 +563,10 @@ UTEST(xtc, run_matches_reference) {
     const size_t F = 501;
     const size_t N = sys.atom.count;
 
-    const md_attribute_t* time = md_attributes_find(t, STR_LIT("run/catalyst/time"));
-    const md_attribute_t* step = md_attributes_find(t, STR_LIT("run/catalyst/step"));
-    const md_attribute_t* cell = md_attributes_find(t, STR_LIT("run/catalyst/unitcell"));
-    const md_attribute_t* pos  = md_attributes_find(t, STR_LIT("run/catalyst/atom/position"));
+    const md_attribute_t* time = md_attributes_find(t, MD_STR_LIT("run/catalyst/time"));
+    const md_attribute_t* step = md_attributes_find(t, MD_STR_LIT("run/catalyst/step"));
+    const md_attribute_t* cell = md_attributes_find(t, MD_STR_LIT("run/catalyst/unitcell"));
+    const md_attribute_t* pos  = md_attributes_find(t, MD_STR_LIT("run/catalyst/atom/position"));
     ASSERT_TRUE(time && step && cell && pos);
     EXPECT_EQ(F, step->format.shape[0]);
     EXPECT_EQ(3u, pos->format.components);
@@ -607,7 +607,7 @@ UTEST(xtc, run_matches_reference) {
     EXPECT_EQ(md_attribute_extract_f32(all, F * N * 3, pos, md_attribute_slice_all(), md_unit_none()), 0u);
 
     // The cell and the frame alone: only the cell asked for, into a state without coordinates.
-    const str_t cell_only[] = { STR_INIT("unitcell") };
+    const md_str_t cell_only[] = { MD_STR_INIT("unitcell") };
     ex = md_system_extract_begin(&sys, XTC_RUN, cell_only, 1, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     md_system_state_t meta = {0};
@@ -625,7 +625,7 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
     md_system_t sys = {0};
     ASSERT_TRUE(xtc_load_catalyst(&sys, arena));
     const size_t F = run_num_frames(&sys, XTC_RUN);
-    const double* frame_times = (const double*)md_attributes_find(&sys.attributes, STR_LIT("run/catalyst/time"))->data;
+    const double* frame_times = (const double*)md_attributes_find(&sys.attributes, MD_STR_LIT("run/catalyst/time"))->data;
 
     // Twice the rate of the trajectory, as an energy file often is.
     const uint32_t R = (uint32_t)(2 * F - 1);
@@ -639,17 +639,17 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
     for (size_t i = 0; i < F * 3; ++i) obs_label[i] = (int32_t)i;
 
     md_attributes_t* t = &sys.attributes;
-    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_INIT("run/catalyst/obs/time"),
+    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = MD_STR_INIT("run/catalyst/obs/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {R}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_picosecond(), .data = obs_time, .byte_size = R * sizeof(double)}), MD_ATTRIBUTE_INVALID);
-    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_INIT("run/catalyst/obs/value"),
+    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = MD_STR_INIT("run/catalyst/obs/value"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {R}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_kelvin(), .data = obs_value, .byte_size = R * sizeof(double)}), MD_ATTRIBUTE_INVALID);
-    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = STR_INIT("run/catalyst/label"),
+    ASSERT_NE(md_attributes_create(t, &(md_attribute_desc_t){ .path = MD_STR_INIT("run/catalyst/label"),
         .format = {.type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 2, .shape = {(uint32_t)F, 3}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = obs_label, .byte_size = F * 3 * sizeof(int32_t)}), MD_ATTRIBUTE_INVALID);
 
-    const str_t paths[] = { STR_INIT("obs/value"), STR_INIT("label") };
+    const md_str_t paths[] = { MD_STR_INIT("obs/value"), MD_STR_INIT("label") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, XTC_RUN, paths, MD_COUNTOF(paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
 
@@ -657,8 +657,8 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
     md_system_state_init(&st, 0);
     for (int64_t f = 0; f < (int64_t)F; f += 11) {
         ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
-        const md_attribute_t* v = md_attributes_find(&st.attributes, STR_LIT("obs/value"));
-        const md_attribute_t* l = md_attributes_find(&st.attributes, STR_LIT("label"));
+        const md_attribute_t* v = md_attributes_find(&st.attributes, MD_STR_LIT("obs/value"));
+        const md_attribute_t* l = md_attributes_find(&st.attributes, MD_STR_LIT("label"));
         ASSERT_TRUE(v && l);
         // The value at the frame's own time, not at row f of the finer axis.
         EXPECT_EQ(0u, v->format.rank);
@@ -673,7 +673,7 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
     }
 
     // Removing what the context reads fails the next extract rather than reading freed storage.
-    md_attributes_remove(t, md_attributes_find(t, STR_LIT("run/catalyst/label"))->id);
+    md_attributes_remove(t, md_attributes_find(t, MD_STR_LIT("run/catalyst/label"))->id);
     EXPECT_FALSE(md_system_extract_frame(ex, 0, &st));
     md_system_extract_end(ex);
 
@@ -691,7 +691,7 @@ UTEST(xtc, script_evaluates_along_the_run) {
     const uint32_t F = (uint32_t)run_num_frames(&sys, XTC_RUN);
 
     md_script_ir_t* ir = md_script_ir_create(arena);
-    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("d = distance(1, 200);"), &sys, NULL));
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, MD_STR_LIT("d = distance(1, 200);"), &sys, NULL));
 
     md_script_eval_t* a = md_script_eval_create(F, ir, arena);
     md_script_eval_t* b = md_script_eval_create(F, ir, arena);
@@ -699,8 +699,8 @@ UTEST(xtc, script_evaluates_along_the_run) {
     ASSERT_TRUE(md_script_eval_frame_range(b, ir, &sys, XTC_RUN, 0, F / 3));
     ASSERT_TRUE(md_script_eval_frame_range(b, ir, &sys, XTC_RUN, F / 3, F));
 
-    const md_attribute_t* da = md_attributes_find(md_script_eval_attributes(a), STR_LIT("script/d"));
-    const md_attribute_t* db = md_attributes_find(md_script_eval_attributes(b), STR_LIT("script/d"));
+    const md_attribute_t* da = md_attributes_find(md_script_eval_attributes(a), MD_STR_LIT("script/d"));
+    const md_attribute_t* db = md_attributes_find(md_script_eval_attributes(b), MD_STR_LIT("script/d"));
     ASSERT_TRUE(da && db);
     EXPECT_EQ(0, MD_MEMCMP(da->data, db->data, md_attribute_byte_size(&da->format)));
 
@@ -716,8 +716,8 @@ UTEST(xtc, run_refuses_a_different_system) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
-    EXPECT_FALSE(md_xtc_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
+    EXPECT_FALSE(md_xtc_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
 }
@@ -729,14 +729,14 @@ UTEST(xtc, run_needs_positions) {
     sys.attributes.alloc = arena;
     const double times[3] = { 0.0, 1.0, 2.0 };
     ASSERT_NE(md_attributes_create(&sys.attributes, &(md_attribute_desc_t){
-        .path = STR_INIT("run/bare/time"),
+        .path = MD_STR_INIT("run/bare/time"),
         .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {3}},
         .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_picosecond(),
         .data = times, .byte_size = sizeof(times)}), MD_ATTRIBUTE_INVALID);
 
-    EXPECT_TRUE(md_system_extract_begin(&sys, STR_LIT("run/bare"), xtc_coord_paths, 2, md_get_heap_allocator()) == NULL);
-    EXPECT_TRUE(md_system_extract_begin(&sys, (str_t){0}, xtc_coord_paths, 2, md_get_heap_allocator()) == NULL);
-    EXPECT_TRUE(md_system_extract_begin(&sys, STR_LIT("run/none"), xtc_coord_paths, 2, md_get_heap_allocator()) == NULL);
+    EXPECT_TRUE(md_system_extract_begin(&sys, MD_STR_LIT("run/bare"), xtc_coord_paths, 2, md_get_heap_allocator()) == NULL);
+    EXPECT_TRUE(md_system_extract_begin(&sys, (md_str_t){0}, xtc_coord_paths, 2, md_get_heap_allocator()) == NULL);
+    EXPECT_TRUE(md_system_extract_begin(&sys, MD_STR_LIT("run/none"), xtc_coord_paths, 2, md_get_heap_allocator()) == NULL);
 
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
@@ -748,8 +748,8 @@ UTEST(xtc, run_needs_positions) {
 // it could not if the file were opened again per frame, as it is without a context.
 UTEST(xtc, run_context_keeps_the_file_open) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
-    const str_t src = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    const str_t tmp = STR_INIT("/tmp/md_unittest_run_context.xtc");
+    const md_str_t src = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const md_str_t tmp = MD_STR_INIT("/tmp/md_unittest_run_context.xtc");
 
     // A private copy to remove.
     md_file_t in = {0}, out = {0};
@@ -764,7 +764,7 @@ UTEST(xtc, run_context_keeps_the_file_open) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL));
     ASSERT_TRUE(md_xtc_system_publish_run(&sys, tmp, XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
 
     md_system_state_t st = {.alloc = arena};
@@ -779,7 +779,7 @@ UTEST(xtc, run_context_keeps_the_file_open) {
     md_system_extract_end(ex);
 
     // Without the context each frame opens the file, which is gone.
-    const md_attribute_t* pos = md_attributes_find(&sys.attributes, STR_LIT("run/catalyst/atom/position"));
+    const md_attribute_t* pos = md_attributes_find(&sys.attributes, MD_STR_LIT("run/catalyst/atom/position"));
     float* xyz = md_alloc(arena, sys.atom.count * 3 * sizeof(float));
     md_attribute_slice_t s1 = md_attribute_slice_1(1);
     EXPECT_EQ(0u, md_attribute_extract_f32(xyz, sys.atom.count * 3, pos, s1, md_unit_none()));
@@ -790,8 +790,8 @@ UTEST(xtc, run_context_keeps_the_file_open) {
 #endif
 
 UTEST(xtc, atom_count_from_the_first_frame) {
-    EXPECT_EQ(1336u, md_xtc_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc")));
-    EXPECT_EQ(0u, md_xtc_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
+    EXPECT_EQ(1336u, md_xtc_file_atom_count(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc")));
+    EXPECT_EQ(0u, md_xtc_file_atom_count(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
 }
 
 // The two ends of the coordinate compression which ordinary files do not reach, as files written here from the bytes
@@ -838,7 +838,7 @@ static const uint8_t xtc_wide_range[192] = {
     0x0f, 0x42, 0x41, 0xe8, 0x48, 0x1a, 0x39, 0xde, 0x08, 0x64, 0x71, 0x0c, 0x8e, 0x00, 0x00, 0x00,
 };
 
-static bool xtc_write_bytes(str_t path, const uint8_t* bytes, size_t size) {
+static bool xtc_write_bytes(md_str_t path, const uint8_t* bytes, size_t size) {
     md_file_t f = {0};
     if (!md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
     const bool ok = md_file_write(f, bytes, size) == size;
@@ -849,14 +849,14 @@ static bool xtc_write_bytes(str_t path, const uint8_t* bytes, size_t size) {
 UTEST(xtc, planar_frames) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    const str_t path = STR_LIT("md_unittest_planar.xtc");
+    const md_str_t path = MD_STR_LIT("md_unittest_planar.xtc");
     ASSERT_TRUE(xtc_write_bytes(path, xtc_planar, sizeof(xtc_planar)));
-    ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/p"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    ASSERT_EQ(2u, run_num_frames(&sys, STR_LIT("run/p")));
+    ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, MD_STR_LIT("run/p"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    ASSERT_EQ(2u, run_num_frames(&sys, MD_STR_LIT("run/p")));
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, 12);
     for (int f = 0; f < 2; ++f) {
-        ASSERT_TRUE(run_extract_one(&st, &sys, STR_LIT("run/p"), f));
+        ASSERT_TRUE(run_extract_one(&st, &sys, MD_STR_LIT("run/p"), f));
         for (int i = 0; i < 12; ++i) {
             EXPECT_NEAR(i + 0.5f * f, st.xyz[i].x, 1.0e-3f);
             EXPECT_NEAR(20.0f, st.xyz[i].y, 1.0e-3f);
@@ -870,12 +870,12 @@ UTEST(xtc, planar_frames) {
 UTEST(xtc, ranges_beyond_24_bits) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    const str_t path = STR_LIT("md_unittest_wide_range.xtc");
+    const md_str_t path = MD_STR_LIT("md_unittest_wide_range.xtc");
     ASSERT_TRUE(xtc_write_bytes(path, xtc_wide_range, sizeof(xtc_wide_range)));
-    ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/w"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, MD_STR_LIT("run/w"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, 12);
-    ASSERT_TRUE(run_extract_one(&st, &sys, STR_LIT("run/w"), 0));
+    ASSERT_TRUE(run_extract_one(&st, &sys, MD_STR_LIT("run/w"), 0));
     for (int i = 0; i < 12; ++i) {
         // nm: (-150 + 25 i, 0.25 i, 1 + 0.5 i)
         EXPECT_NEAR(-1500.0f + 250.0f * i, st.xyz[i].x, 1.0e-3f);
@@ -907,7 +907,7 @@ static size_t xtc_to_magic_2023(uint8_t* dst, const uint8_t* src, size_t size) {
 
 UTEST(xtc, magic_2023) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
-    const str_t path = STR_LIT("md_unittest_magic_2023.xtc");
+    const md_str_t path = MD_STR_LIT("md_unittest_magic_2023.xtc");
     uint8_t bytes[512];
     struct { const uint8_t* src; size_t size; int frames; } files[2] = {
         { xtc_planar,     sizeof(xtc_planar),     2 },
@@ -919,12 +919,12 @@ UTEST(xtc, magic_2023) {
         ASSERT_TRUE(xtc_write_bytes(path, bytes, size));
         EXPECT_EQ(12u, md_xtc_file_atom_count(path));
         md_system_t sys = {.alloc = arena};
-        ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/n"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-        ASSERT_EQ((size_t)files[k].frames, run_num_frames(&sys, STR_LIT("run/n")));
+        ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, MD_STR_LIT("run/n"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+        ASSERT_EQ((size_t)files[k].frames, run_num_frames(&sys, MD_STR_LIT("run/n")));
         md_system_state_t st = {.alloc = arena};
         md_system_state_init(&st, 12);
         for (int f = 0; f < files[k].frames; ++f) {
-            ASSERT_TRUE(run_extract_one(&st, &sys, STR_LIT("run/n"), f));
+            ASSERT_TRUE(run_extract_one(&st, &sys, MD_STR_LIT("run/n"), f));
             for (int i = 0; i < 12; ++i) {
                 if (k == 0) {
                     EXPECT_NEAR(i + 0.5f * f, st.xyz[i].x, 1.0e-3f);

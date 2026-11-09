@@ -144,7 +144,7 @@ struct chem {
 
 UTEST_F_SETUP(chem) {
     utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(1));
-    utest_fixture->comps = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), utest_fixture->alloc);
+    utest_fixture->comps = read_components(MD_STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), utest_fixture->alloc);
     ASSERT_GT((int)md_array_size(utest_fixture->comps), 100);
 }
 
@@ -235,7 +235,7 @@ UTEST(chem, ions) {
         "HETATM   16 CL    CL A   5      40.000   0.000   0.000  1.00  0.00          CL\n"
         "HETATM   17 MG    MG A   6      50.000   0.000   0.000  1.00  0.00          MG\n"
         "HETATM   18  O   HOH A   7      60.000   0.000   0.000  1.00  0.00           O\n";
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     int q[8] = { 0 };
@@ -317,7 +317,7 @@ UTEST_F(chem, given_charges) {
     for (size_t i = 0; i < sys.atom.count; ++i) q[i] = 0.0f;
     q[nd1] = 1.0f;
     sys.attributes.alloc = alloc;
-    ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_publish_atom_column(&sys.attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, q, sys.atom.count));
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_publish_atom_column(&sys.attributes, MD_STR_LIT("atom/formal_charge"), md_unit_none(), 1, q, sys.atom.count));
 
     for (int pass = 0; pass < 2; ++pass) {
         ASSERT_TRUE(md_chem_perceive(&sys, &st, MD_CHEM_FLAG_NONE));
@@ -339,19 +339,19 @@ UTEST(chem, deposited_structure) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_TRUE(sys.atom.formal_charge != NULL);
     ASSERT_TRUE(sys.atom.hydrogen_count != NULL);
 
     int thiolate = 0, thiol = 0, lys = 0, lys_charged = 0, arg = 0, arg_charged = 0;
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
-        const str_t name = md_system_residue_name(&sys, ci);
+        const md_str_t name = md_system_residue_name(&sys, ci);
         const md_urange_t r = md_system_residue_atom_range(&sys, ci);
         int q = 0;
         for (uint32_t i = r.beg; i < r.end; ++i) {
             q += md_atom_formal_charge(&sys.atom, i);
-            if (str_eq(name, STR_LIT("CYS")) && str_eq(md_atom_name(&sys.atom, i), STR_LIT("SG"))) {
+            if (md_str_eq(name, MD_STR_LIT("CYS")) && md_str_eq(md_atom_name(&sys.atom, i), MD_STR_LIT("SG"))) {
                 bool to_zinc = false;
                 md_bond_iter_t it = md_bond_iter(&sys.bond, i);
                 while (md_bond_iter_has_next(&it)) {
@@ -370,8 +370,8 @@ UTEST(chem, deposited_structure) {
             }
         }
         // Side chains complete in the model; the termini add their own charge
-        if (str_eq(name, STR_LIT("LYS")) && r.end - r.beg >= 9) { lys += 1; lys_charged += q >= 1; }
-        if (str_eq(name, STR_LIT("ARG")) && r.end - r.beg >= 11) { arg += 1; arg_charged += q >= 1; }
+        if (md_str_eq(name, MD_STR_LIT("LYS")) && r.end - r.beg >= 9) { lys += 1; lys_charged += q >= 1; }
+        if (md_str_eq(name, MD_STR_LIT("ARG")) && r.end - r.beg >= 11) { arg += 1; arg_charged += q >= 1; }
     }
     EXPECT_GE(thiolate, 5);
     EXPECT_GT(thiol, 0);
@@ -387,26 +387,26 @@ UTEST(chem, simulation_with_hydrogens) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     int n_res = 0, unexpected = 0;
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
-        const str_t name = md_system_residue_name(&sys, ci);
+        const md_str_t name = md_system_residue_name(&sys, ci);
         const md_urange_t r = md_system_residue_atom_range(&sys, ci);
         int q = 0;
         bool n_term = false, c_term = false;
         for (uint32_t i = r.beg; i < r.end; ++i) {
             q += md_atom_formal_charge(&sys.atom, i);
-            const str_t an = md_atom_name(&sys.atom, i);
-            n_term |= str_eq(an, STR_LIT("HT1")) || str_eq(an, STR_LIT("H1"));
-            c_term |= str_eq(an, STR_LIT("OT1")) || str_eq(an, STR_LIT("OXT"));
+            const md_str_t an = md_atom_name(&sys.atom, i);
+            n_term |= md_str_eq(an, MD_STR_LIT("HT1")) || md_str_eq(an, MD_STR_LIT("H1"));
+            c_term |= md_str_eq(an, MD_STR_LIT("OT1")) || md_str_eq(an, MD_STR_LIT("OXT"));
         }
         // Amyloid beta with neutral histidines (17 atoms: HSD), and the ligand
         int expected = n_term - c_term;
-        if (str_eq(name, STR_LIT("LYS")) || str_eq(name, STR_LIT("ARG"))) expected += 1;
-        else if (str_eq(name, STR_LIT("ASP")) || str_eq(name, STR_LIT("GLU"))) expected -= 1;
-        else if (str_eq(name, STR_LIT("PFT"))) expected = -4;
+        if (md_str_eq(name, MD_STR_LIT("LYS")) || md_str_eq(name, MD_STR_LIT("ARG"))) expected += 1;
+        else if (md_str_eq(name, MD_STR_LIT("ASP")) || md_str_eq(name, MD_STR_LIT("GLU"))) expected -= 1;
+        else if (md_str_eq(name, MD_STR_LIT("PFT"))) expected = -4;
         n_res += 1;
         if (q != expected && unexpected++ < 4) printf("  %.*s %d: charge %d, expected %d\n", (int)name.len, name.ptr, (int)ci, q, expected);
     }
@@ -461,7 +461,7 @@ UTEST_F(chem, ring_flags) {
         { "BIPHENY", 3, { { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC } } },
     };
 
-    md_array(ref_comp_t) mols = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ring_chem.txt"), utest_fixture->alloc);
+    md_array(ref_comp_t) mols = read_components(MD_STR_LIT(MD_UNITTEST_SOURCE_DIR "/ring_chem.txt"), utest_fixture->alloc);
     const struct { const ref_comp_t* comps; const ring_expect_t* expect; size_t count; bool strip_h; } sets[] = {
         { utest_fixture->comps, expect_ccd, MD_COUNTOF(expect_ccd), false },
         { mols,                 expect_mol, MD_COUNTOF(expect_mol), true  },
@@ -530,7 +530,7 @@ UTEST_F(chem, sugar_ring_order) {
                 int len = 0;
                 const int32_t* ring = md_ring_atoms(&sys.ring, r);
                 for (size_t k = 0; k < md_ring_size(&sys.ring, r); ++k) {
-                    const str_t name = md_atom_name(&sys.atom, ring[k]);
+                    const md_str_t name = md_atom_name(&sys.atom, ring[k]);
                     len += snprintf(buf + len, sizeof(buf) - len, "%s%.*s", k ? " " : "", (int)name.len, name.ptr);
                 }
                 found = !strcmp(buf, expect[e].atoms);
@@ -921,8 +921,8 @@ static void delta_load(delta_fixture_chem_t* f, const char* before, const char* 
     f->before_state = (md_system_state_t){ .alloc = f->alloc };
     f->after_state  = (md_system_state_t){ .alloc = f->alloc };
     f->frame        = (md_system_state_t){ .alloc = f->alloc };
-    if (!md_xyz_system_init_from_str(&f->before, &f->before_state, str_from_cstr(before), MD_XYZ_OPTION_NONE)) return;
-    if (!md_xyz_system_init_from_str(&f->after, &f->after_state, str_from_cstr(after), MD_XYZ_OPTION_NONE)) return;
+    if (!md_xyz_system_init_from_str(&f->before, &f->before_state, md_str_from_cstr(before), MD_XYZ_OPTION_NONE)) return;
+    if (!md_xyz_system_init_from_str(&f->after, &f->after_state, md_str_from_cstr(after), MD_XYZ_OPTION_NONE)) return;
     if (!md_util_system_infer(&f->before, &f->before_state, MD_UTIL_INFER_ALL, NULL)) return;
     if (!md_util_system_infer(&f->after, &f->after_state, MD_UTIL_INFER_ALL, NULL)) return;
     const size_t n = f->before.atom.count;
@@ -1166,7 +1166,7 @@ UTEST(chem, delta_empty) {
 // carbon with a metal changes no order, aromaticity nor hybridization, all hydrogens being there. The trajectory is
 // not of the test data repository: the test runs where it has been put there.
 UTEST(chem, delta_metal_contact) {
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+    const md_str_t path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     if (!md_path_is_valid(path)) UTEST_SKIP("40-40-2-ddba-dyna.xmol not in the test data");
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_xyz_data_t data = {0};

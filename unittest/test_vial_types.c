@@ -14,7 +14,7 @@
 
 static md_unit_t unit_of(const char* s) {
     md_unit_t u;
-    md_unit_parse(&u, str_from_cstr(s));
+    md_unit_parse(&u, md_str_from_cstr(s));
     return u;
 }
 
@@ -96,19 +96,19 @@ UTEST(vial_types, print) {
 }
 
 UTEST(vial_types, matches) {
-    EXPECT_TRUE(vial_spec_type_matches(STR_LIT(u8"float[433][3] Å"), STR_LIT(u8"float[433][3] Å")));
-    EXPECT_TRUE(vial_spec_type_matches(STR_LIT(u8"float[n][3] Å"), STR_LIT(u8"float[6784][3] Å")));
-    EXPECT_TRUE(vial_spec_type_matches(STR_LIT(u8"float[45] Å²"), STR_LIT(u8"float[45] Å^2")));
-    EXPECT_FALSE(vial_spec_type_matches(STR_LIT(u8"float[433] Å"), STR_LIT(u8"float[432] Å")));
-    EXPECT_FALSE(vial_spec_type_matches(STR_LIT("set[?]"), STR_LIT("set[433]")));
-    EXPECT_FALSE(vial_spec_type_matches(STR_LIT(u8"float Å"), STR_LIT(u8"float Å | missing")));
+    EXPECT_TRUE(vial_spec_type_matches(MD_STR_LIT(u8"float[433][3] Å"), MD_STR_LIT(u8"float[433][3] Å")));
+    EXPECT_TRUE(vial_spec_type_matches(MD_STR_LIT(u8"float[n][3] Å"), MD_STR_LIT(u8"float[6784][3] Å")));
+    EXPECT_TRUE(vial_spec_type_matches(MD_STR_LIT(u8"float[45] Å²"), MD_STR_LIT(u8"float[45] Å^2")));
+    EXPECT_FALSE(vial_spec_type_matches(MD_STR_LIT(u8"float[433] Å"), MD_STR_LIT(u8"float[432] Å")));
+    EXPECT_FALSE(vial_spec_type_matches(MD_STR_LIT("set[?]"), MD_STR_LIT("set[433]")));
+    EXPECT_FALSE(vial_spec_type_matches(MD_STR_LIT(u8"float Å"), MD_STR_LIT(u8"float Å | missing")));
 }
 
 // Every result in the reference reads as types or a value, with its stage and pass where written
 UTEST(vial_types, results_read) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    str_t text = load_textfile(STR_LIT(VIAL_TYPES_REFERENCE), alloc);
-    ASSERT_FALSE(str_empty(text));
+    md_str_t text = md_load_textfile(MD_STR_LIT(VIAL_TYPES_REFERENCE), alloc);
+    ASSERT_FALSE(md_str_empty(text));
     vial_spec_t spec;
     vial_spec_read(&spec, text, alloc);
     int num_types = 0, num_values = 0, num_stages = 0, num_passes = 0;
@@ -116,7 +116,7 @@ UTEST(vial_types, results_read) {
         const vial_block_t* b = &spec.blocks[i];
         for (size_t j = 0; j < md_array_size(b->expects); ++j) {
             const vial_expect_t* e = &b->expects[j];
-            if (str_empty(e->result)) continue;
+            if (md_str_empty(e->result)) continue;
             vial_result_t r;
             const bool ok = vial_spec_read_result(&r, e);
             if (!ok) printf("reference line %d: cannot read the result '%.*s'\n", e->line, (int)e->result.len, e->result.ptr);

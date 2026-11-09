@@ -74,23 +74,23 @@ enum {
 typedef struct md_pot_site_t {
     char   element[4];      // Element symbol as written, NUL-terminated
     double coord[3];        // In md_pot_t::unit, exactly as written
-    str_t  fragment_name;   // e.g. "HOH_pe". Empty if the column was absent
+    md_str_t  fragment_name;   // e.g. "HOH_pe". Empty if the column was absent
     int    fragment_id;     // Fragment number as written. -1 if the column was absent
-    str_t  atom_name;       // e.g. "OW". Empty if the column was absent
+    md_str_t  atom_name;       // e.g. "OW". Empty if the column was absent
 } md_pot_site_t;
 
 // One row of the '@charges' block.
 typedef struct md_pot_charge_t {
     char   element[4];
     double charge;
-    str_t  fragment_name;   // Empty if the column was absent
+    md_str_t  fragment_name;   // Empty if the column was absent
 } md_pot_charge_t;
 
 // One row of the '@polarizabilities' block.
 typedef struct md_pot_polarizability_t {
     char   element[4];
     double alpha[6];        // Indexed by MD_POT_ALPHA_*
-    str_t  fragment_name;   // Empty if the column was absent
+    md_str_t  fragment_name;   // Empty if the column was absent
 } md_pot_polarizability_t;
 
 typedef struct md_pot_t {
@@ -105,16 +105,16 @@ typedef struct md_pot_t {
     size_t num_polarizabilities;
     md_pot_polarizability_t* polarizabilities;
 
-    // Interned strings backing every str_t above. Unique strings only, so identical
+    // Interned strings backing every md_str_t above. Unique strings only, so identical
     // fragment names compare equal by pointer. Owned by this object; do not modify.
     size_t num_strings;
-    str_t* strings;
+    md_str_t* strings;
 } md_pot_t;
 
 // Parse a .pot text blob. The returned object owns its memory and does not reference
 // 'str', so 'str' may be freed immediately after.
-bool md_pot_parse_str (md_pot_t* pot, str_t str, struct md_allocator_i* alloc);
-bool md_pot_parse_file(md_pot_t* pot, str_t filename, struct md_allocator_i* alloc);
+bool md_pot_parse_str (md_pot_t* pot, md_str_t str, struct md_allocator_i* alloc);
+bool md_pot_parse_file(md_pot_t* pot, md_str_t filename, struct md_allocator_i* alloc);
 
 // Only free objects that were filled in by one of the parse functions.
 void md_pot_free(md_pot_t* pot, struct md_allocator_i* alloc);

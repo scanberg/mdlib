@@ -23,7 +23,7 @@
 #define TEST_MAGIC   0x7e57ca4eull
 #define TEST_VERSION 3
 
-static bool copy_file(str_t dst, str_t src, md_allocator_i* alloc) {
+static bool copy_file(md_str_t dst, md_str_t src, md_allocator_i* alloc) {
     md_file_t in = {0}, out = {0};
     if (!md_file_open(&in, src, MD_FILE_READ)) return false;
     if (!md_file_open(&out, dst, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -39,7 +39,7 @@ static bool copy_file(str_t dst, str_t src, md_allocator_i* alloc) {
     return ok;
 }
 
-static bool write_text(str_t path, const char* text) {
+static bool write_text(md_str_t path, const char* text) {
     md_file_t f = {0};
     if (!md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
     const size_t len = strlen(text);
@@ -48,7 +48,7 @@ static bool write_text(str_t path, const char* text) {
     return ok;
 }
 
-static bool read_header(md_run_cache_header_t* out, str_t cache_path) {
+static bool read_header(md_run_cache_header_t* out, md_str_t cache_path) {
     md_file_t f = {0};
     if (!md_file_open(&f, cache_path, MD_FILE_READ)) return false;
     const bool ok = md_file_read(f, out, sizeof(*out)) == sizeof(*out);
@@ -57,7 +57,7 @@ static bool read_header(md_run_cache_header_t* out, str_t cache_path) {
 }
 
 // Moves the stamp the cache was made with, as if the file had been changed since
-static bool shift_stamp(str_t cache_path) {
+static bool shift_stamp(md_str_t cache_path) {
     md_file_t f = {0};
     if (!md_file_open(&f, cache_path, MD_FILE_READ | MD_FILE_WRITE)) return false;
     md_run_cache_header_t h;
@@ -69,7 +69,7 @@ static bool shift_stamp(str_t cache_path) {
 }
 
 // A cache made with a stamp: the header, then one payload word
-static bool make_cache(str_t src, const md_file_info_t* stamp, uint64_t magic, uint64_t version) {
+static bool make_cache(md_str_t src, const md_file_info_t* stamp, uint64_t magic, uint64_t version) {
     md_file_t f = {0};
     if (!md_run_cache_create(&f, src, stamp, magic, version, 7, 2)) return false;
     const uint64_t payload = 0x1234;
@@ -78,7 +78,7 @@ static bool make_cache(str_t src, const md_file_info_t* stamp, uint64_t magic, u
     return ok;
 }
 
-static bool cache_opens(str_t src, uint64_t magic, uint64_t version) {
+static bool cache_opens(md_str_t src, uint64_t magic, uint64_t version) {
     md_file_t f = {0};
     md_run_cache_header_t h = {0};
     if (!md_run_cache_open(&f, &h, src, magic, version)) return false;
@@ -87,8 +87,8 @@ static bool cache_opens(str_t src, uint64_t magic, uint64_t version) {
 }
 
 UTEST(run_cache, accepts_the_file_it_was_made_from) {
-    const str_t src   = STR_INIT("md_unittest_run_cache.dat");
-    const str_t cache = STR_INIT("md_unittest_run_cache.dat.cache");
+    const md_str_t src   = MD_STR_INIT("md_unittest_run_cache.dat");
+    const md_str_t cache = MD_STR_INIT("md_unittest_run_cache.dat.cache");
     ASSERT_TRUE(write_text(src, "some frames"));
     md_file_info_t info = {0};
     ASSERT_TRUE(md_file_info_extract_from_path(src, &info));
@@ -120,8 +120,8 @@ UTEST(run_cache, accepts_the_file_it_was_made_from) {
 // The stamp is what the file was when the scan began, so a file written during the scan leaves a
 // cache that is already stale.
 UTEST(run_cache, rejects_another_size_or_time) {
-    const str_t src   = STR_INIT("md_unittest_run_cache_stale.dat");
-    const str_t cache = STR_INIT("md_unittest_run_cache_stale.dat.cache");
+    const md_str_t src   = MD_STR_INIT("md_unittest_run_cache_stale.dat");
+    const md_str_t cache = MD_STR_INIT("md_unittest_run_cache_stale.dat.cache");
     ASSERT_TRUE(write_text(src, "some frames"));
     md_file_info_t info = {0};
     ASSERT_TRUE(md_file_info_extract_from_path(src, &info));
@@ -148,25 +148,25 @@ UTEST(run_cache, rejects_another_size_or_time) {
     remove(cache.ptr);
 }
 
-typedef bool (*publish_fn)(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena);
+typedef bool (*publish_fn)(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena);
 
-static bool publish_xtc(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
+static bool publish_xtc(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) && md_xtc_system_publish_run(sys, path, run, 0);
+    return md_gro_system_init_from_file(sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) && md_xtc_system_publish_run(sys, path, run, 0);
 }
-static bool publish_trr(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
+static bool publish_trr(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) && md_trr_system_publish_run(sys, path, run, 0);
+    return md_gro_system_init_from_file(sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) && md_trr_system_publish_run(sys, path, run, 0);
 }
-static bool publish_pdb(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
+static bool publish_pdb(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
     return md_pdb_system_init_from_file(sys, &st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) && md_pdb_system_publish_run(sys, path, run, 0);
 }
-static bool publish_xyz(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
+static bool publish_xyz(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
     return md_xyz_system_init_from_file(sys, &st, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE) && md_xyz_system_publish_run(sys, path, run, 0);
 }
-static bool publish_lammps(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
+static bool publish_lammps(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     (void)arena;
     return md_lammps_system_publish_run(sys, path, run, 0);
 }
@@ -174,10 +174,10 @@ static bool publish_lammps(md_system_t* sys, str_t path, str_t run, md_allocator
 // Each format end to end: the first publish writes the cache stamped with the file, the second
 // reads it and leaves it be, and once the stamp no longer matches the file the next publish scans
 // again and writes a cache that does.
-static void check_format(int* utest_result, str_t data, str_t copy, publish_fn publish, size_t expected_frames) {
-    const str_t run = STR_INIT("run/c");
+static void check_format(int* utest_result, md_str_t data, md_str_t copy, publish_fn publish, size_t expected_frames) {
+    const md_str_t run = MD_STR_INIT("run/c");
     char cache_buf[512];
-    const str_t cache = {cache_buf, (size_t)snprintf(cache_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(copy))};
+    const md_str_t cache = {cache_buf, (size_t)snprintf(cache_buf, sizeof(cache_buf), MD_STR_FMT ".cache", MD_STR_ARG(copy))};
 
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     ASSERT_TRUE(copy_file(copy, data, arena));
@@ -216,17 +216,17 @@ static void check_format(int* utest_result, str_t data, str_t copy, publish_fn p
 }
 
 UTEST(run_cache, xtc) {
-    check_format(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), STR_LIT("md_unittest_run_cache.xtc"), publish_xtc, 501);
+    check_format(utest_result, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), MD_STR_LIT("md_unittest_run_cache.xtc"), publish_xtc, 501);
 }
 UTEST(run_cache, trr) {
-    check_format(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("md_unittest_run_cache.trr"), publish_trr, 101);
+    check_format(utest_result, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("md_unittest_run_cache.trr"), publish_trr, 101);
 }
 UTEST(run_cache, pdb) {
-    check_format(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), STR_LIT("md_unittest_run_cache.pdb"), publish_pdb, 38);
+    check_format(utest_result, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_STR_LIT("md_unittest_run_cache.pdb"), publish_pdb, 38);
 }
 UTEST(run_cache, xyz) {
-    check_format(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz"), STR_LIT("md_unittest_run_cache.xyz"), publish_xyz, 10);
+    check_format(utest_result, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz"), MD_STR_LIT("md_unittest_run_cache.xyz"), publish_xyz, 10);
 }
 UTEST(run_cache, lammps) {
-    check_format(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), STR_LIT("md_unittest_run_cache.lammpstrj"), publish_lammps, 10);
+    check_format(utest_result, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), MD_STR_LIT("md_unittest_run_cache.lammpstrj"), publish_lammps, 10);
 }

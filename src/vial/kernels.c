@@ -436,8 +436,8 @@ bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const via
         default: return vial_rt_fail(k, "R0103", "a comparison not evaluated yet");
         }
     } else if (a->dtype == VIAL_DT_STR && b->dtype == VIAL_DT_STR && (cmp == VIAL_CMP_EQ || cmp == VIAL_CMP_NE)) {
-        const str_t *A = a->data, *B = b->data;
-        BC_FOR(bc, O[io] = str_eq(A[ia], B[ib]) == (cmp == VIAL_CMP_EQ));
+        const md_str_t *A = a->data, *B = b->data;
+        BC_FOR(bc, O[io] = md_str_eq(A[ia], B[ib]) == (cmp == VIAL_CMP_EQ));
     } else if (a->dtype == VIAL_DT_SET && b->dtype == VIAL_DT_SET && (cmp == VIAL_CMP_EQ || cmp == VIAL_CMP_NE)) {
         BC_FOR(bc, O[io] = sets_equal(a->sets, (uint32_t)ia, b->sets, (uint32_t)ib) == (cmp == VIAL_CMP_EQ));
     } else {

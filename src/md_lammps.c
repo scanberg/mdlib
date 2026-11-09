@@ -194,8 +194,8 @@ static const char* coord_field_name[] = {
 static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_format, char* err_buf, size_t err_cap) {
 	MD_MEMSET(mappings, -1, sizeof(int) * ATOM_FIELD_COUNT);
 
-	str_t str = str_trim(str_from_cstr(atom_format));
-	if (str_empty(str)) {
+	md_str_t str = md_str_trim(md_str_from_cstr(atom_format));
+	if (md_str_empty(str)) {
 		if (err_buf) {
 			md_snprintf(err_buf, err_cap, "Lammps atom format: Empty format string");
 		} else {
@@ -204,17 +204,17 @@ static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_
 		return 0;
 	}
 
-	str_t tokens[16];
+	md_str_t tokens[16];
 	const size_t num_tokens = extract_tokens(tokens, MD_COUNTOF(tokens), &str);
 	for (size_t i = 0; i < num_tokens; ++i) {
-		const str_t token = tokens[i];
+		const md_str_t token = tokens[i];
 		for (size_t j = 1; j < ATOM_FIELD_COUNT; ++j) {
-			if (str_eq(token, str_from_cstr(atom_field_name[j]))) {
+			if (md_str_eq(token, md_str_from_cstr(atom_field_name[j]))) {
 				if (mappings[j] != -1) {
 					if (err_buf) {
-						md_snprintf(err_buf, err_cap, "Lammps atom format: Contains duplicate field name '"STR_FMT"'", STR_ARG(token));
+						md_snprintf(err_buf, err_cap, "Lammps atom format: Contains duplicate field name '"MD_STR_FMT"'", MD_STR_ARG(token));
 					} else {
-						MD_LOG_ERROR("Lammps atom format: Contains duplicate field name '"STR_FMT"'", STR_ARG(token));
+						MD_LOG_ERROR("Lammps atom format: Contains duplicate field name '"MD_STR_FMT"'", MD_STR_ARG(token));
 					}
 					return 0;
 				}
@@ -300,7 +300,7 @@ static const struct {
 
 // The content of a line of a data file: up to its comment ('#' at the start or after a blank), trimmed. Its comment,
 // after the '#' and trimmed, in *comment where given.
-static str_t lammps_content(str_t line, str_t* comment) {
+static md_str_t lammps_content(md_str_t line, md_str_t* comment) {
 	const char* beg = line.ptr;
 	const char* end = line.ptr + line.len;
 	const char* c = beg;
@@ -311,13 +311,13 @@ static str_t lammps_content(str_t line, str_t* comment) {
 		++c;
 	}
 	if (comment) {
-		*comment = c < end ? str_trim((str_t){ c + 1, (size_t)(end - c - 1) }) : (str_t){0};
+		*comment = c < end ? md_str_trim((md_str_t){ c + 1, (size_t)(end - c - 1) }) : (md_str_t){0};
 	}
-	return str_trim((str_t){ beg, (size_t)(c - beg) });
+	return md_str_trim((md_str_t){ beg, (size_t)(c - beg) });
 }
 
 // The section a keyword line begins (its content, the words of the keyword a blank apart), SEC_NONE for any other line
-static int lammps_section_kind(str_t content) {
+static int lammps_section_kind(md_str_t content) {
 	if (content.len == 0 || !is_alpha(content.ptr[0])) return SEC_NONE;
 	for (size_t i = 0; i < MD_COUNTOF(lammps_sections); ++i) {
 		const char* k = lammps_sections[i].keyword;
@@ -342,11 +342,11 @@ static int lammps_section_kind(str_t content) {
 
 // The next entry of a section: the content of its next line which has any, false at the end of the file or at the
 // keyword line of the next section (which is left to be read).
-static bool lammps_section_line(md_reader_i* reader, str_t* content) {
-	str_t line;
+static bool lammps_section_line(md_reader_i* reader, md_str_t* content) {
+	md_str_t line;
 	const char* next;
 	while (md_reader_find_line(reader, &line, &next)) {
-		const str_t c = lammps_content(line, NULL);
+		const md_str_t c = lammps_content(line, NULL);
 		if (c.len == 0) {
 			reader->cur = next;
 			continue;
@@ -363,7 +363,7 @@ static bool lammps_section_line(md_reader_i* reader, str_t* content) {
 
 // The atom type of a token: its number, or the type its label is (of labels, a map of the hash of the label to the
 // type), 0 when it is neither
-static int32_t lammps_atom_type(str_t tok, const md_hashmap32_t* labels) {
+static int32_t lammps_atom_type(md_str_t tok, const md_hashmap32_t* labels) {
 	int64_t v = 0;
 	if (md_parse_i64(&v, tok) == tok.len) return (int32_t)v;
 	if (labels && labels->num_buckets) {
@@ -383,8 +383,8 @@ static size_t lammps_atom_columns(const int mappings[ATOM_FIELD_COUNT]) {
 // Whether an atom line (its content) is of the atom format of mappings: the number columns are numbers, the type a
 // number within [1, num_types] (when num_types is known) or a label. Of exactly the columns of the format, or of
 // three image flags more, when exact; at least as many otherwise.
-static bool lammps_atom_line_fits(str_t content, const int mappings[ATOM_FIELD_COUNT], size_t num_fields, size_t num_types, bool exact) {
-	str_t tok[24];
+static bool lammps_atom_line_fits(md_str_t content, const int mappings[ATOM_FIELD_COUNT], size_t num_fields, size_t num_types, bool exact) {
+	md_str_t tok[24];
 	const size_t n = extract_tokens(tok, MD_COUNTOF(tok), &content);
 	if (n < num_fields) return false;
 	if (exact) {
@@ -393,7 +393,7 @@ static bool lammps_atom_line_fits(str_t content, const int mappings[ATOM_FIELD_C
 	}
 	for (size_t j = 1; j < ATOM_FIELD_COUNT; ++j) {
 		if (mappings[j] < 0) continue;
-		const str_t t = tok[mappings[j]];
+		const md_str_t t = tok[mappings[j]];
 		if (j == ATOM_FIELD_TYPE) {
 			if (is_int(t)) {
 				const int64_t type = parse_int(t);
@@ -414,38 +414,38 @@ static bool lammps_atom_line_fits(str_t content, const int mappings[ATOM_FIELD_C
 // dipole"), else the first of full, molecular, charge and atomic which the first lines of the section fit exactly
 // (with or without image flags).
 static md_lammps_atom_format_t detect_atom_format(md_reader_i* reader) {
-	str_t line;
-	str_t atom_lines[8];
+	md_str_t line;
+	md_str_t atom_lines[8];
 	char atom_line_buf[8][512];
 	size_t atom_line_count = 0;
 	char hint_buf[64] = {0};
-	str_t hint = {0};
+	md_str_t hint = {0};
 	size_t num_types = 0;
 	bool header = true;
 
 	while (md_reader_extract_line(reader, &line)) {
-		str_t comment;
-		const str_t content = lammps_content(line, &comment);
+		md_str_t comment;
+		const md_str_t content = lammps_content(line, &comment);
 		const int sec = lammps_section_kind(content);
 		if (sec == SEC_NONE) {
 			if (header) {
-				str_t tok[4];
-				str_t c = content;
-				if (extract_tokens(tok, MD_COUNTOF(tok), &c) == 3 && str_eq(tok[1], STR_LIT("atom")) && str_eq(tok[2], STR_LIT("types"))) {
+				md_str_t tok[4];
+				md_str_t c = content;
+				if (extract_tokens(tok, MD_COUNTOF(tok), &c) == 3 && md_str_eq(tok[1], MD_STR_LIT("atom")) && md_str_eq(tok[2], MD_STR_LIT("types"))) {
 					num_types = (size_t)MD_MAX(0, parse_int(tok[0]));
 				}
 			}
 		} else if (sec == SEC_ATOMS) {
-			str_t word;
+			md_str_t word;
 			if (extract_token(&word, &comment)) {
-				const size_t len = str_copy_to_char_buf(hint_buf, sizeof(hint_buf), word);
-				hint = (str_t){ hint_buf, len };
+				const size_t len = md_str_copy_to_char_buf(hint_buf, sizeof(hint_buf), word);
+				hint = (md_str_t){ hint_buf, len };
 			}
 			// Copies: a file reader may move what it has read as it reads more
-			str_t atom_line;
+			md_str_t atom_line;
 			while (atom_line_count < MD_COUNTOF(atom_lines) && lammps_section_line(reader, &atom_line)) {
-				const size_t len = str_copy_to_char_buf(atom_line_buf[atom_line_count], sizeof(atom_line_buf[0]), atom_line);
-				atom_lines[atom_line_count] = (str_t){ atom_line_buf[atom_line_count], len };
+				const size_t len = md_str_copy_to_char_buf(atom_line_buf[atom_line_count], sizeof(atom_line_buf[0]), atom_line);
+				atom_lines[atom_line_count] = (md_str_t){ atom_line_buf[atom_line_count], len };
 				atom_line_count += 1;
 			}
 			break;
@@ -467,16 +467,16 @@ static md_lammps_atom_format_t detect_atom_format(md_reader_i* reader) {
 	md_lammps_atom_format_t candidates[4] = { MD_LAMMPS_ATOM_FORMAT_FULL, MD_LAMMPS_ATOM_FORMAT_MOLECULAR, MD_LAMMPS_ATOM_FORMAT_CHARGE, MD_LAMMPS_ATOM_FORMAT_ATOMIC };
 	size_t num_candidates = MD_COUNTOF(candidates);
 	bool exact = true;
-	if (!str_empty(hint)) {
+	if (!md_str_empty(hint)) {
 		md_lammps_atom_format_t named = MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 		for (size_t i = 1; i < MD_LAMMPS_ATOM_FORMAT_COUNT; ++i) {
-			if (str_eq_cstr(hint, atom_format_name[i])) {
+			if (md_str_eq_cstr(hint, atom_format_name[i])) {
 				named = (md_lammps_atom_format_t)i;
 				break;
 			}
 		}
 		if (named == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
-			MD_LOG_ERROR("LAMMPS: Unknown atom style '" STR_FMT "' in the Atoms section", STR_ARG(hint));
+			MD_LOG_ERROR("LAMMPS: Unknown atom style '" MD_STR_FMT "' in the Atoms section", MD_STR_ARG(hint));
 			return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 		}
 		candidates[0] = named;
@@ -496,8 +496,8 @@ static md_lammps_atom_format_t detect_atom_format(md_reader_i* reader) {
 		}
 	}
 
-	if (!str_empty(hint)) {
-		MD_LOG_ERROR("LAMMPS: The lines of the Atoms section are not of the atom style '" STR_FMT "' it names", STR_ARG(hint));
+	if (!md_str_empty(hint)) {
+		MD_LOG_ERROR("LAMMPS: The lines of the Atoms section are not of the atom style '" MD_STR_FMT "' it names", MD_STR_ARG(hint));
 	} else {
 		MD_LOG_ERROR("LAMMPS: Could not tell the atom style of the Atoms section (name it as 'Atoms # <style>')");
 	}
@@ -535,16 +535,16 @@ static double buckingham_radius(double A, double rho, double C) {
 	return 0.5 * rmin;
 }
 
-static double estimate_radius(str_t style, const double* params, int nparams) {
-	if (str_eq_cstr_n(style, "lj", 2) && nparams >= 2) {
+static double estimate_radius(md_str_t style, const double* params, int nparams) {
+	if (md_str_eq_cstr_n(style, "lj", 2) && nparams >= 2) {
 		double sigma = params[1];
 		return lj_radius(sigma);
 	}
-	if (str_eq_cstr_n(style, "morse", 5) && nparams >= 3) {
+	if (md_str_eq_cstr_n(style, "morse", 5) && nparams >= 3) {
 		double r0 = params[2];
 		return morse_radius(r0);
 	}
-	if (str_eq_cstr_n(style, "buck", 4) && nparams >= 3) {
+	if (md_str_eq_cstr_n(style, "buck", 4) && nparams >= 3) {
 		double A   = params[0];
 		double rho = params[1];
 		double C   = params[2];
@@ -555,25 +555,25 @@ static double estimate_radius(str_t style, const double* params, int nparams) {
 
 // The radii of the types of the Pair Coeffs section, from the pair style its keyword line names ("Pair Coeffs # lj/cut",
 // "Pair Coeffs # hybrid lj/cut morse", which names it on each line): where the type has none from its mass
-static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_types, md_reader_i* reader, str_t hint, const md_hashmap32_t* labels) {
-	str_t tok[8];
+static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_types, md_reader_i* reader, md_str_t hint, const md_hashmap32_t* labels) {
+	md_str_t tok[8];
 	double params[8];
 
-	str_t style = hint;
-	const bool hybrid = str_eq_cstr_n(hint, "hybrid", 6) && (hint.len == 6 || is_whitespace(hint.ptr[6]));
+	md_str_t style = hint;
+	const bool hybrid = md_str_eq_cstr_n(hint, "hybrid", 6) && (hint.len == 6 || is_whitespace(hint.ptr[6]));
 
-	str_t line;
+	md_str_t line;
 	for (size_t i = 0; i < num_types; ++i) {
 		if (!lammps_section_line(reader, &line)) {
 			MD_LOG_ERROR("LAMMPS: The Pair Coeffs section ends after %zu of %zu atom types", i, num_types);
 			return false;
 		}
-		if (str_empty(hint)) continue;
+		if (md_str_empty(hint)) continue;
 
 		const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
 		const int32_t type = lammps_atom_type(tok[0], labels);
 		if (type < 1 || (size_t)type > num_types) {
-			MD_LOG_ERROR("LAMMPS: Invalid atom type '" STR_FMT "' in Pair Coeffs", STR_ARG(tok[0]));
+			MD_LOG_ERROR("LAMMPS: Invalid atom type '" MD_STR_FMT "' in Pair Coeffs", MD_STR_ARG(tok[0]));
 			return false;
 		}
 		size_t tok_idx = 1;
@@ -609,12 +609,12 @@ const char** md_lammps_atom_format_strings(void) {
 	return atom_format_string;
 }
 
-md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str) {
+md_lammps_atom_format_t md_lammps_atom_format_from_str(md_str_t str) {
 	md_reader_i reader = md_reader_from_str(str);
 	return detect_atom_format(&reader);
 }
 
-md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
+md_lammps_atom_format_t md_lammps_atom_format_from_file(md_str_t str) {
 	md_file_t file = {0};
 	if (!md_file_open(&file, str, MD_FILE_READ)) {
 		MD_LOG_ERROR("Could not open file '%.*s'", str.len, str.ptr);
@@ -642,26 +642,26 @@ static int compare_atom(const void* a, const void* b) {
 }
 
 // A header line (its content), into data. False for a malformed one of the box.
-static bool lammps_header_line(md_lammps_data_t* data, str_t content) {
-	str_t tok[8];
+static bool lammps_header_line(md_lammps_data_t* data, md_str_t content) {
+	md_str_t tok[8];
 	const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &content);
 	if (num_tok == 2 && is_int(tok[0])) {
 		const size_t n = (size_t)MD_MAX(0, parse_int(tok[0]));
-		if      (str_eq(tok[1], STR_LIT("atoms")))		data->num_atoms = n;
-		else if (str_eq(tok[1], STR_LIT("bonds")))		data->num_bonds = n;
-		else if (str_eq(tok[1], STR_LIT("angles")))		data->num_angles = n;
-		else if (str_eq(tok[1], STR_LIT("dihedrals")))	data->num_dihedrals = n;
-		else if (str_eq(tok[1], STR_LIT("impropers")))	data->num_impropers = n;
-	} else if (num_tok == 3 && str_eq(tok[2], STR_LIT("types")) && is_int(tok[0])) {
+		if      (md_str_eq(tok[1], MD_STR_LIT("atoms")))		data->num_atoms = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("bonds")))		data->num_bonds = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("angles")))		data->num_angles = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("dihedrals")))	data->num_dihedrals = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("impropers")))	data->num_impropers = n;
+	} else if (num_tok == 3 && md_str_eq(tok[2], MD_STR_LIT("types")) && is_int(tok[0])) {
 		const size_t n = (size_t)MD_MAX(0, parse_int(tok[0]));
-		if      (str_eq(tok[1], STR_LIT("atom")))		data->num_particle_types = n;
-		else if (str_eq(tok[1], STR_LIT("bond")))		data->num_bond_types = n;
-		else if (str_eq(tok[1], STR_LIT("angle")))		data->num_angle_types = n;
-		else if (str_eq(tok[1], STR_LIT("dihedral")))	data->num_dihedral_types = n;
-		else if (str_eq(tok[1], STR_LIT("improper")))	data->num_improper_types = n;
-	} else if (num_tok == 4 && (str_eq(tok[2], STR_LIT("xlo")) || str_eq(tok[2], STR_LIT("ylo")) || str_eq(tok[2], STR_LIT("zlo")))) {
+		if      (md_str_eq(tok[1], MD_STR_LIT("atom")))		data->num_particle_types = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("bond")))		data->num_bond_types = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("angle")))		data->num_angle_types = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("dihedral")))	data->num_dihedral_types = n;
+		else if (md_str_eq(tok[1], MD_STR_LIT("improper")))	data->num_improper_types = n;
+	} else if (num_tok == 4 && (md_str_eq(tok[2], MD_STR_LIT("xlo")) || md_str_eq(tok[2], MD_STR_LIT("ylo")) || md_str_eq(tok[2], MD_STR_LIT("zlo")))) {
 		const char axis = tok[2].ptr[0];
-		if (tok[3].len != 3 || tok[3].ptr[0] != axis || !str_eq_cstr_n(str_substr(tok[3], 1, 2), "hi", 2)) return true;
+		if (tok[3].len != 3 || tok[3].ptr[0] != axis || !md_str_eq_cstr_n(md_str_substr(tok[3], 1, 2), "hi", 2)) return true;
 		if (!is_float(tok[0]) || !is_float(tok[1])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
@@ -671,7 +671,7 @@ static bool lammps_header_line(md_lammps_data_t* data, str_t content) {
 		if (axis == 'x') { data->cell.xlo = lo; data->cell.xhi = hi; }
 		if (axis == 'y') { data->cell.ylo = lo; data->cell.yhi = hi; }
 		if (axis == 'z') { data->cell.zlo = lo; data->cell.zhi = hi; }
-	} else if (num_tok == 6 && str_eq(tok[3], STR_LIT("xy")) && str_eq(tok[4], STR_LIT("xz")) && str_eq(tok[5], STR_LIT("yz"))) {
+	} else if (num_tok == 6 && md_str_eq(tok[3], MD_STR_LIT("xy")) && md_str_eq(tok[4], MD_STR_LIT("xz")) && md_str_eq(tok[5], MD_STR_LIT("yz"))) {
 		if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
@@ -679,14 +679,14 @@ static bool lammps_header_line(md_lammps_data_t* data, str_t content) {
 		data->cell.xy = (float)parse_float(tok[0]);
 		data->cell.xz = (float)parse_float(tok[1]);
 		data->cell.yz = (float)parse_float(tok[2]);
-	} else if ((num_tok == 4 && (str_eq(tok[3], STR_LIT("avec")) || str_eq(tok[3], STR_LIT("bvec")) || str_eq(tok[3], STR_LIT("cvec")))) ||
-			   (num_tok == 5 && str_eq(tok[3], STR_LIT("abc")) && str_eq(tok[4], STR_LIT("origin")))) {
+	} else if ((num_tok == 4 && (md_str_eq(tok[3], MD_STR_LIT("avec")) || md_str_eq(tok[3], MD_STR_LIT("bvec")) || md_str_eq(tok[3], MD_STR_LIT("cvec")))) ||
+			   (num_tok == 5 && md_str_eq(tok[3], MD_STR_LIT("abc")) && md_str_eq(tok[4], MD_STR_LIT("origin")))) {
 		// A general triclinic box
 		if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
 		}
-		float* v = str_eq(tok[3], STR_LIT("avec")) ? data->cell.avec : str_eq(tok[3], STR_LIT("bvec")) ? data->cell.bvec : str_eq(tok[3], STR_LIT("cvec")) ? data->cell.cvec : data->cell.origin;
+		float* v = md_str_eq(tok[3], MD_STR_LIT("avec")) ? data->cell.avec : md_str_eq(tok[3], MD_STR_LIT("bvec")) ? data->cell.bvec : md_str_eq(tok[3], MD_STR_LIT("cvec")) ? data->cell.cvec : data->cell.origin;
 		v[0] = (float)parse_float(tok[0]);
 		v[1] = (float)parse_float(tok[1]);
 		v[2] = (float)parse_float(tok[2]);
@@ -707,8 +707,8 @@ static void lammps_types_init(md_lammps_data_t* data, md_allocator_i* alloc) {
 
 // The ids of the atoms of the lines of a section of n lines, and its type: tokens 0 and 1, then the atoms
 static bool lammps_parse_topology(int32_t* out, size_t stride, size_t num_atom_ids, size_t n, md_reader_i* reader, const char* section) {
-	str_t tok[8];
-	str_t line;
+	md_str_t tok[8];
+	md_str_t line;
 	for (size_t i = 0; i < n; ++i) {
 		if (!lammps_section_line(reader, &line)) {
 			MD_LOG_ERROR("LAMMPS: The %s section ends after %zu of its %zu entries", section, i, n);
@@ -731,7 +731,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 	MD_ASSERT(data);
 	MD_ASSERT(reader);
 	MD_ASSERT(alloc);
-	str_t line;
+	md_str_t line;
 
 	int mappings[ATOM_FIELD_COUNT];
 	const size_t num_fields = interpret_format(mappings, format, 0, 0);
@@ -748,7 +748,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 
 	MD_MEMSET(data, 0, sizeof(md_lammps_data_t));
 
-	str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
+	md_str_copy_to_char_buf(data->title, sizeof(data->title), md_str_trim(line));
 
 	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
 	md_hashmap32_t labels = { .allocator = md_temp_allocator(temp) };
@@ -759,8 +759,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 	const char* next;
 	while (md_reader_find_line(reader, &line, &next)) {
 		reader->cur = next;
-		str_t comment;
-		const str_t content = lammps_content(line, &comment);
+		md_str_t comment;
+		const md_str_t content = lammps_content(line, &comment);
 		if (content.len == 0) continue;
 
 		const int sec = lammps_section_kind(content);
@@ -775,17 +775,17 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 		switch (sec) {
 		case SEC_ATOM_TYPE_LABELS:
 			for (size_t i = 0; i < data->num_particle_types; ++i) {
-				str_t tok[2];
+				md_str_t tok[2];
 				if (!lammps_section_line(reader, &line) || extract_tokens(tok, 2, &line) != 2) {
 					MD_LOG_ERROR("LAMMPS: The Atom Type Labels section ends after %zu of %zu atom types", i, data->num_particle_types);
 					goto done;
 				}
 				const int64_t type = parse_int(tok[0]);
 				if (!is_int(tok[0]) || type < 1 || (size_t)type > data->num_particle_types) {
-					MD_LOG_ERROR("LAMMPS: Invalid atom type '" STR_FMT "' in Atom Type Labels", STR_ARG(tok[0]));
+					MD_LOG_ERROR("LAMMPS: Invalid atom type '" MD_STR_FMT "' in Atom Type Labels", MD_STR_ARG(tok[0]));
 					goto done;
 				}
-				str_copy_to_char_buf(data->particle_types[type - 1].label, sizeof(data->particle_types[type - 1].label), tok[1]);
+				md_str_copy_to_char_buf(data->particle_types[type - 1].label, sizeof(data->particle_types[type - 1].label), tok[1]);
 				md_hashmap_add(&labels, md_hash64(tok[1].ptr, tok[1].len, 0), (uint32_t)type);
 			}
 			break;
@@ -795,14 +795,14 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 				goto done;
 			}
 			for (size_t i = 0; i < data->num_particle_types; ++i) {
-				str_t tok[2];
+				md_str_t tok[2];
 				if (!lammps_section_line(reader, &line) || extract_tokens(tok, 2, &line) != 2) {
 					MD_LOG_ERROR("Number of entries in Masses section did not match the number of atom types");
 					goto done;
 				}
 				const int32_t type = lammps_atom_type(tok[0], &labels);
 				if (type < 1 || (size_t)type > data->num_particle_types) {
-					MD_LOG_ERROR("Invalid atom type index in Masses: '" STR_FMT "'", STR_ARG(tok[0]));
+					MD_LOG_ERROR("Invalid atom type index in Masses: '" MD_STR_FMT "'", MD_STR_ARG(tok[0]));
 					goto done;
 				}
 				md_lammps_atom_type_t* t = &data->particle_types[type - 1];
@@ -830,14 +830,14 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 			md_array_resize(data->atoms, data->num_atoms, alloc);
 			bool sorted = true;
 			for (size_t i = 0; i < data->num_atoms; ++i) {
-				str_t tok[24];
+				md_str_t tok[24];
 				if (!lammps_section_line(reader, &line)) {
 					MD_LOG_ERROR("LAMMPS: The Atoms section ends after %zu of %zu atoms", i, data->num_atoms);
 					goto done;
 				}
-				const str_t atom_line = line;
+				const md_str_t atom_line = line;
 				if (extract_tokens(tok, num_columns, &line) < num_columns) {
-					MD_LOG_ERROR("LAMMPS: Failed to parse atom line '" STR_FMT "', expected at least %zu columns (%s)", STR_ARG(atom_line), num_columns, format);
+					MD_LOG_ERROR("LAMMPS: Failed to parse atom line '" MD_STR_FMT "', expected at least %zu columns (%s)", MD_STR_ARG(atom_line), num_columns, format);
 					goto done;
 				}
 				md_lammps_atom_t* atom = &data->atoms[i];
@@ -849,7 +849,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 				atom->y      = (float)parse_float(tok[mappings[ATOM_FIELD_Y]]);
 				atom->z      = (float)parse_float(tok[mappings[ATOM_FIELD_Z]]);
 				if (atom->type < 1 || (data->num_particle_types && (size_t)atom->type > data->num_particle_types)) {
-					MD_LOG_ERROR("LAMMPS: Invalid atom type '" STR_FMT "' of atom %d", STR_ARG(tok[mappings[ATOM_FIELD_TYPE]]), atom->id);
+					MD_LOG_ERROR("LAMMPS: Invalid atom type '" MD_STR_FMT "' of atom %d", MD_STR_ARG(tok[mappings[ATOM_FIELD_TYPE]]), atom->id);
 					goto done;
 				}
 				sorted &= i == 0 || data->atoms[i - 1].id < atom->id;
@@ -902,7 +902,7 @@ bool md_lammps_validate_atom_format(char* err_buf, size_t err_cap, const char* f
 	return interpret_format(mappings, format, err_buf, err_cap) > 0;
 }
 
-bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* format, struct md_allocator_i* alloc) {
+bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* format, struct md_allocator_i* alloc) {
 	MD_ASSERT(data);
 	MD_ASSERT(alloc);
 
@@ -910,7 +910,7 @@ bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* for
 	return md_lammps_data_parse(data, &line_reader, format, alloc);
 }
 
-bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* format, struct md_allocator_i* alloc) {
+bool md_lammps_data_parse_file(md_lammps_data_t* data, md_str_t filename, const char* format, struct md_allocator_i* alloc) {
 	bool result = false;
 	md_file_t file = {0};
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
@@ -944,11 +944,11 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 
 
 // Chemical formula in Hill order (C, H, then the other elements alphabetically), empty when an atom has no element
-static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_urange_t range) {
+static md_str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_urange_t range) {
 	uint32_t count[256] = {0};
 	for (uint32_t i = range.beg; i < range.end; ++i) {
 		const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
-		if (z == 0) return (str_t){0};
+		if (z == 0) return (md_str_t){0};
 		count[z] += 1;
 	}
 	int len = 0;
@@ -956,10 +956,10 @@ static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_ur
 	for (int k = 0; k < 2 && count[MD_Z_C] > 0; ++k) {
 		const md_atomic_number_t z = first[k];
 		if (count[z] == 0) continue;
-		const str_t sym = md_atomic_number_symbol(z);
-		len += md_snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+		const md_str_t sym = md_atomic_number_symbol(z);
+		len += md_snprintf(buf + len, cap - len, MD_STR_FMT, MD_STR_ARG(sym));
 		if (count[z] > 1 && len < (int)cap) len += md_snprintf(buf + len, cap - len, "%u", count[z]);
-		if (len >= (int)cap) return (str_t){0};
+		if (len >= (int)cap) return (md_str_t){0};
 		count[z] = 0;
 	}
 	for (;;) {
@@ -967,16 +967,16 @@ static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_ur
 		int best = -1;
 		for (int z = 1; z < 256; ++z) {
 			if (count[z] == 0) continue;
-			if (best == -1 || str_cmp_lex(md_atomic_number_symbol((md_atomic_number_t)z), md_atomic_number_symbol((md_atomic_number_t)best)) < 0) best = z;
+			if (best == -1 || md_str_cmp_lex(md_atomic_number_symbol((md_atomic_number_t)z), md_atomic_number_symbol((md_atomic_number_t)best)) < 0) best = z;
 		}
 		if (best == -1) break;
-		const str_t sym = md_atomic_number_symbol((md_atomic_number_t)best);
-		len += md_snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+		const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)best);
+		len += md_snprintf(buf + len, cap - len, MD_STR_FMT, MD_STR_ARG(sym));
 		if (count[best] > 1 && len < (int)cap) len += md_snprintf(buf + len, cap - len, "%u", count[best]);
-		if (len >= (int)cap) return (str_t){0};
+		if (len >= (int)cap) return (md_str_t){0};
 		count[best] = 0;
 	}
-	return (str_t){ buf, (size_t)len };
+	return (md_str_t){ buf, (size_t)len };
 }
 
 // The molecules of a LAMMPS data file are its residues. Each is an instance, of a molecule type per distinct sequence of
@@ -996,10 +996,10 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 			type_idx = (md_molecule_type_idx_t)*found;
 		} else {
 			char buf[64];
-			str_t name = lammps_formula(buf, sizeof(buf), sys, range);
-			if (str_empty(name)) {
+			md_str_t name = lammps_formula(buf, sizeof(buf), sys, range);
+			if (md_str_empty(name)) {
 				const int len = md_snprintf(buf, sizeof(buf), "molecule type %zu", sys->molecule.type.count + 1);
-				name = (str_t){ buf, (size_t)len };
+				name = (md_str_t){ buf, (size_t)len };
 			}
 			type_idx = md_molecule_type_data_push(&sys->molecule.type, name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
 			md_hashmap_add(&type_map, key, (uint32_t)type_idx);
@@ -1048,7 +1048,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	// Reset atom data and initialize to default value
 	sys->atom.type.count = 0;
-	md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
+	md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
 
 	// The types: type i + 1 at i, or none where the file has no Masses section (nor labels) to make them of
 	const size_t num_types = data->particle_types ? data->num_particle_types : 0;
@@ -1062,18 +1062,18 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	// The element of a type is told by its mass, else (no mass given) by its label
 	md_util_element_from_mass(type_z, type_masses, num_types);
 	for (size_t i = 0; i < num_types; ++i) {
-		const str_t label = str_from_cstr(data->particle_types[i].label);
-		if (type_z[i] == MD_Z_X && type_masses[i] == 0.0f && !str_empty(label)) {
-			type_z[i] = md_atomic_number_infer_from_label(label, (str_t){0}, 0);
+		const md_str_t label = md_str_from_cstr(data->particle_types[i].label);
+		if (type_z[i] == MD_Z_X && type_masses[i] == 0.0f && !md_str_empty(label)) {
+			type_z[i] = md_atomic_number_infer_from_label(label, (md_str_t){0}, 0);
 		}
 	}
 
 	for (size_t i = 0; i < num_types; ++i) {
 		// Named by its label, else by its number; each its own type, though two names may read alike as cut
 		char buf[32];
-		const str_t label = str_from_cstr(data->particle_types[i].label);
-		const int len = str_empty(label) ? md_snprintf(buf, sizeof(buf), "type_%i", data->particle_types[i].id) : md_snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(label));
-		str_t type_id = {buf, (size_t)len};
+		const md_str_t label = md_str_from_cstr(data->particle_types[i].label);
+		const int len = md_str_empty(label) ? md_snprintf(buf, sizeof(buf), "type_%i", data->particle_types[i].id) : md_snprintf(buf, sizeof(buf), MD_STR_FMT, MD_STR_ARG(label));
+		md_str_t type_id = {buf, (size_t)len};
 		float mass   = data->particle_types[i].mass > 0 ? data->particle_types[i].mass : md_atomic_number_mass(type_z[i]);
 		float radius = data->particle_types[i].radius > 0 ? data->particle_types[i].radius : md_atomic_number_vdw_radius(type_z[i]);
 		uint32_t color = type_z[i] != MD_Z_X ? md_atomic_number_cpk_color(type_z[i]) : 0xFF808080; // Gray for unknown elements
@@ -1117,7 +1117,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				md_array_push(sys->residue.seq_id, resid, sys->alloc);
 				// No name in the file: the generic one (a number would not fit a residue name past 99, and a formula
 				// may read as a residue of its own, "C" a cytidine)
-				md_array_push(sys->residue.name, make_label(STR_LIT("MOL")), sys->alloc);
+				md_array_push(sys->residue.name, make_label(MD_STR_LIT("MOL")), sys->alloc);
 				md_array_push(sys->residue.flags, 0, sys->alloc);
 				sys->residue.count += 1;
 			}
@@ -1155,7 +1155,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 			for (size_t i = 0; i < data->num_atoms; ++i) {
 				charge[i] = data->atoms[i].charge;
 			}
-			md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_none(), 1, charge, data->num_atoms);
+			md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/charge"), md_unit_none(), 1, charge, data->num_atoms);
 		}
 		md_temp_end(temp);
 	}
@@ -1211,7 +1211,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	return true;
 }
 
-bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const char* atom_format) {
+bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const char* atom_format) {
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_str(str);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -1232,11 +1232,11 @@ bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
 	return success;
 }
 
-bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const char* atom_format) {
+bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const char* atom_format) {
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_file(filename);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
-			MD_LOG_ERROR("Could not detect atom format from file '" STR_FMT "'", STR_ARG(filename));
+			MD_LOG_ERROR("Could not detect atom format from file '" MD_STR_FMT "'", MD_STR_ARG(filename));
 			return false;
         }
         atom_format = atom_format_string[format];
@@ -1276,7 +1276,7 @@ typedef struct {
 } header_t;
 
 // Each of the three boundary flags of a dimension: p, f, s or m, twice ("pp", "fm", ...)
-static bool is_boundary(str_t tok) {
+static bool is_boundary(md_str_t tok) {
 	if (tok.len != 2) return false;
 	for (int i = 0; i < 2; ++i) {
 		const char c = tok.ptr[i];
@@ -1287,33 +1287,33 @@ static bool is_boundary(str_t tok) {
 
 static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 	MD_ASSERT(reader);
-	str_t line;
+	md_str_t line;
 
 	if (!md_reader_extract_line(reader, &line)) {
 		MD_LOG_ERROR("Could not extract box bounds");
 		return false;
 	}
 
-	if (!str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16)) {
-		MD_LOG_ERROR("Unexpected beginning of line: '" STR_FMT "' expected ITEM: BOX BOUNDS", STR_ARG(line));
+	if (!md_str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16)) {
+		MD_LOG_ERROR("Unexpected beginning of line: '" MD_STR_FMT "' expected ITEM: BOX BOUNDS", MD_STR_ARG(line));
 		return false;
 	}
 
 	// "pp pp pp", "xy xz yz pp pp pp" or "abc origin pp pp pp", of any boundaries
-	str_t rest = str_substr(line, 16, SIZE_MAX);
-	str_t tok[8];
+	md_str_t rest = md_str_substr(line, 16, SIZE_MAX);
+	md_str_t tok[8];
 	const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
 	size_t skip = 0;
 	bool tilt = false, general = false;
-	if (num_tok >= 3 && str_eq(tok[0], STR_LIT("xy")) && str_eq(tok[1], STR_LIT("xz")) && str_eq(tok[2], STR_LIT("yz"))) {
+	if (num_tok >= 3 && md_str_eq(tok[0], MD_STR_LIT("xy")) && md_str_eq(tok[1], MD_STR_LIT("xz")) && md_str_eq(tok[2], MD_STR_LIT("yz"))) {
 		tilt = true;
 		skip = 3;
-	} else if (num_tok >= 2 && str_eq(tok[0], STR_LIT("abc")) && str_eq(tok[1], STR_LIT("origin"))) {
+	} else if (num_tok >= 2 && md_str_eq(tok[0], MD_STR_LIT("abc")) && md_str_eq(tok[1], MD_STR_LIT("origin"))) {
 		general = true;
 		skip = 2;
 	}
 	if (num_tok != skip + 3 || !is_boundary(tok[skip]) || !is_boundary(tok[skip + 1]) || !is_boundary(tok[skip + 2])) {
-		MD_LOG_ERROR("Unrecognized format in ITEM: BOX BOUNDS: '" STR_FMT "'", STR_ARG(line));
+		MD_LOG_ERROR("Unrecognized format in ITEM: BOX BOUNDS: '" MD_STR_FMT "'", MD_STR_ARG(line));
 		return false;
 	}
 
@@ -1357,11 +1357,11 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 // The header of a frame, from its first line on. UNITS and TIME before the TIMESTEP are skipped.
 static bool parse_header(header_t* header, md_reader_i* reader) {
 	MD_ASSERT(reader);
-	str_t line;
+	md_str_t line;
 
 	for (;;) {
 		if (!md_reader_peek_line(reader, &line)) return false;
-		if (str_eq_cstr_n(line, "ITEM: UNITS", 11) || (str_eq_cstr_n(line, "ITEM: TIME", 10) && !str_eq_cstr_n(line, "ITEM: TIMESTEP", 14))) {
+		if (md_str_eq_cstr_n(line, "ITEM: UNITS", 11) || (md_str_eq_cstr_n(line, "ITEM: TIME", 10) && !md_str_eq_cstr_n(line, "ITEM: TIMESTEP", 14))) {
 			md_reader_skip_line(reader);
 			md_reader_skip_line(reader);
 			continue;
@@ -1369,7 +1369,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 		break;
 	}
 
-	if (!str_eq_cstr_n(line, "ITEM: TIMESTEP", 14)) {
+	if (!md_str_eq_cstr_n(line, "ITEM: TIMESTEP", 14)) {
 		return false;
 	}
 
@@ -1387,7 +1387,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 	}
 
 	if (md_reader_peek_line(reader, &line) &&
-		str_eq_cstr_n(line, "ITEM: NUMBER OF ATOMS", 21) &&
+		md_str_eq_cstr_n(line, "ITEM: NUMBER OF ATOMS", 21) &&
 		md_reader_skip_line(reader) &&
 		md_reader_extract_line(reader, &line))
 	{
@@ -1403,7 +1403,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 	}
 
 	if (md_reader_peek_line(reader, &line) &&
-		str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16))
+		md_str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16))
 	{
 		if (!parse_box_bounds(header ? &header->box_bounds : NULL, reader)) {
 			return false;
@@ -1418,16 +1418,16 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 
 // The columns of the ITEM: ATOMS line str: of the id, of the coordinates (x y z, xs ys zs, xu yu zu or xsu ysu zsu, the
 // first kind the line has) and of the image flags, which unwrap wrapped coordinates
-static bool parse_coord_mappings(coord_mappings_t* mappings, str_t str) {
+static bool parse_coord_mappings(coord_mappings_t* mappings, md_str_t str) {
 	MD_ASSERT(mappings);
 
-	str_t tokens[130];
+	md_str_t tokens[130];
 	const size_t num_tokens = extract_tokens(tokens, MD_COUNTOF(tokens), &str);
-	if (num_tokens < 2 || !str_eq(tokens[0], STR_LIT("ITEM:")) || !str_eq(tokens[1], STR_LIT("ATOMS"))) {
+	if (num_tokens < 2 || !md_str_eq(tokens[0], MD_STR_LIT("ITEM:")) || !md_str_eq(tokens[1], MD_STR_LIT("ATOMS"))) {
 		return false;
 	}
 
-	const str_t* labels = tokens + 2;
+	const md_str_t* labels = tokens + 2;
 	const size_t num_labels = num_tokens - 2;
 	if (num_labels > 127) {
 		MD_LOG_ERROR("LAMMPS: More columns than 127 in ITEM: ATOMS");
@@ -1450,7 +1450,7 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, str_t str) {
 		int col[3] = { -1, -1, -1 };
 		for (size_t i = 0; i < num_labels; ++i) {
 			for (int d = 0; d < 3; ++d) {
-				if (col[d] == -1 && str_eq_cstr(labels[i], kinds[k].name[d])) col[d] = (int)i;
+				if (col[d] == -1 && md_str_eq_cstr(labels[i], kinds[k].name[d])) col[d] = (int)i;
 			}
 		}
 		if (col[0] >= 0 && col[1] >= 0 && col[2] >= 0 && col[0] < first_col) {
@@ -1463,10 +1463,10 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, str_t str) {
 		}
 	}
 	for (size_t i = 0; i < num_labels; ++i) {
-		if (str_eq(labels[i], STR_LIT("id")) && mappings->id_idx == -1) mappings->id_idx = (int8_t)i;
-		if (str_eq(labels[i], STR_LIT("ix")) && image[0] == -1) image[0] = (int)i;
-		if (str_eq(labels[i], STR_LIT("iy")) && image[1] == -1) image[1] = (int)i;
-		if (str_eq(labels[i], STR_LIT("iz")) && image[2] == -1) image[2] = (int)i;
+		if (md_str_eq(labels[i], MD_STR_LIT("id")) && mappings->id_idx == -1) mappings->id_idx = (int8_t)i;
+		if (md_str_eq(labels[i], MD_STR_LIT("ix")) && image[0] == -1) image[0] = (int)i;
+		if (md_str_eq(labels[i], MD_STR_LIT("iy")) && image[1] == -1) image[1] = (int)i;
+		if (md_str_eq(labels[i], MD_STR_LIT("iz")) && image[2] == -1) image[2] = (int)i;
 	}
 	if (wrapped && image[0] >= 0 && image[1] >= 0 && image[2] >= 0) {
 		mappings->image_idx[0] = (int8_t)image[0];
@@ -1539,13 +1539,13 @@ static md_unitcell_t lammps_cell_from_bounds(const box_bounds_t* bb, double lo[3
 // so on - planar with stride 1, packed with the three pointers one apart and stride 3. Relative to the corner of the box
 // (as those of the data file are), turned as its cell is (a general triclinic box), and unwrapped by the image flags
 // where the coordinates are wrapped and the frame has them.
-static bool lammps_decode_frame_text(const coord_mappings_t* mappings, str_t str, size_t* out_num_atoms, md_unitcell_t* out_cell, float* out_x, float* out_y, float* out_z, size_t stride) {
+static bool lammps_decode_frame_text(const coord_mappings_t* mappings, md_str_t str, size_t* out_num_atoms, md_unitcell_t* out_cell, float* out_x, float* out_y, float* out_z, size_t stride) {
 	bool result = false;
-	str_t tokens[128];
+	md_str_t tokens[128];
 	const bool output_coords = out_x != NULL && out_y != NULL && out_z != NULL;
 
 	md_reader_i reader = md_reader_from_str(str);
-	str_t line;
+	md_str_t line;
 
 	header_t header;
 	if (!parse_header(&header, &reader)) {
@@ -1560,7 +1560,7 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, str_t str
 	md_unitcell_A_extract_double(A, &cell);
 
 	if (output_coords) {
-		if (!md_reader_extract_line(&reader, &line) || !str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
+		if (!md_reader_extract_line(&reader, &line) || !md_str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			goto done;
 		}
@@ -1648,7 +1648,7 @@ done:
 static bool lammps_trajectory_parse(lammps_cache_t* cache, md_reader_i* reader, struct md_allocator_i* alloc) {
 	MD_ASSERT(reader);
 	MD_ASSERT(alloc);
-	str_t line;
+	md_str_t line;
 	size_t num_atoms = 0;
 	size_t num_frames = 0;
 	coord_mappings_t mappings = {0};
@@ -1669,7 +1669,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_reader_i* reader, 
 		}
 
 		if (!md_reader_peek_line(reader, &line) ||
-			!str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
+			!md_str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			return false;
 		}
@@ -1713,7 +1713,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_reader_i* reader, 
 	return true;
 }
 
-static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, struct md_allocator_i* alloc, struct md_allocator_i* avoid) {
+static bool lammps_trajectory_parse_file(lammps_cache_t* cache, md_str_t filename, struct md_allocator_i* alloc, struct md_allocator_i* avoid) {
 	bool result = false;
 	md_file_t file = {0};
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
@@ -1739,7 +1739,7 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 
 // The cache beside path when it was made from the file as it is now: header, num_frames + 1 offsets,
 // num_frames steps, the coord mappings, 9 cell floats per frame.
-static bool try_read_cache(lammps_cache_t* cache, str_t path, md_allocator_i* alloc) {
+static bool try_read_cache(lammps_cache_t* cache, md_str_t path, md_allocator_i* alloc) {
 	MD_ASSERT(cache);
 	MD_ASSERT(alloc);
 	md_file_t file = {0};
@@ -1758,7 +1758,7 @@ static bool try_read_cache(lammps_cache_t* cache, str_t path, md_allocator_i* al
 		md_file_read(file, cache->frame_cells, n * 9 * sizeof(float)) == n * 9 * sizeof(float) &&
 		md_file_tell(file) == (int64_t)md_file_size(file);
 	if (!ok) {
-		MD_LOG_ERROR("The LAMMPS cache beside '" STR_FMT "' is incomplete", STR_ARG(path));
+		MD_LOG_ERROR("The LAMMPS cache beside '" MD_STR_FMT "' is incomplete", MD_STR_ARG(path));
 		md_array_free(cache->frame_offsets, alloc);
 		md_array_free(cache->frame_steps,   alloc);
 		md_array_free(cache->frame_cells,   alloc);
@@ -1770,10 +1770,10 @@ static bool try_read_cache(lammps_cache_t* cache, str_t path, md_allocator_i* al
 	return ok;
 }
 
-static bool write_cache(const lammps_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+static bool write_cache(const lammps_cache_t* cache, md_str_t path, const md_file_info_t* scanned) {
 	const size_t n = cache->header.num_frames;
 	if (md_array_size(cache->frame_offsets) != n + 1 || md_array_size(cache->frame_steps) != n || md_array_size(cache->frame_cells) != n * 9) {
-		MD_LOG_ERROR("The LAMMPS index of '" STR_FMT "' is inconsistent; no cache is written", STR_ARG(path));
+		MD_LOG_ERROR("The LAMMPS index of '" MD_STR_FMT "' is inconsistent; no cache is written", MD_STR_ARG(path));
 		return false;
 	}
 	md_file_t file = {0};
@@ -1786,7 +1786,7 @@ static bool write_cache(const lammps_cache_t* cache, str_t path, const md_file_i
 		md_file_write(file, &cache->coord_mappings, sizeof(cache->coord_mappings)) == sizeof(cache->coord_mappings) &&
 		md_file_write(file, cache->frame_cells, n * 9 * sizeof(float)) == n * 9 * sizeof(float);
 	if (!ok) {
-		MD_LOG_ERROR("Failed to write the LAMMPS cache beside '" STR_FMT "'", STR_ARG(path));
+		MD_LOG_ERROR("Failed to write the LAMMPS cache beside '" MD_STR_FMT "'", MD_STR_ARG(path));
 	}
 	md_file_close(&file);
 	return ok;
@@ -1795,7 +1795,7 @@ static bool write_cache(const lammps_cache_t* cache, str_t path, const md_file_i
 // Where each frame is, its step and its box, and how atom lines are laid out: from the cache beside
 // the file when that is current, from a scan of the file otherwise (writing the cache unless told
 // not to). From alloc; the scan's scratch keeps clear of avoid, which is what alloc was made from.
-static bool lammps_index_load(lammps_cache_t* cache, str_t filename, md_run_flags_t flags, md_allocator_i* alloc, md_allocator_i* avoid) {
+static bool lammps_index_load(lammps_cache_t* cache, md_str_t filename, md_run_flags_t flags, md_allocator_i* alloc, md_allocator_i* avoid) {
 	MD_MEMSET(cache, 0, sizeof(*cache));
 
 	if (try_read_cache(cache, filename, alloc)) {
@@ -1837,12 +1837,12 @@ static size_t lammps_position_provider(void* dst, size_t cap, const md_attribute
 	if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
 	md_run_source_t src;
-	if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
+	if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
 
-	const md_attribute_t* layout_attr = md_attributes_find_in(&sys->attributes, src.run, STR_LIT("source/layout"));
+	const md_attribute_t* layout_attr = md_attributes_find_in(&sys->attributes, src.run, MD_STR_LIT("source/layout"));
 	const int32_t* layout = (const int32_t*)md_attribute_view(layout_attr, MD_ATTRIBUTE_TYPE_I32, 1, 1);
 	if (!layout || layout_attr->format.shape[0] != LAMMPS_LAYOUT_COUNT) {
-		MD_LOG_ERROR("LAMMPS: the run '" STR_FMT "' has lost its layout", STR_ARG(src.run));
+		MD_LOG_ERROR("LAMMPS: the run '" MD_STR_FMT "' has lost its layout", MD_STR_ARG(src.run));
 		return 0;
 	}
 	coord_mappings_t mappings = {0};
@@ -1873,24 +1873,24 @@ static size_t lammps_position_provider(void* dst, size_t cap, const md_attribute
 	float* xyz  = (count == N) ? (float*)dst : md_temp_alloc(temp, N * 3 * sizeof(float));
 	if (text && xyz && md_attribute_io_read_at(io, src.path, src.offset[frame], text, frame_size) == frame_size) {
 		size_t num_atoms = 0;
-		if (lammps_decode_frame_text(&mappings, (str_t){ text, frame_size }, &num_atoms, NULL, xyz + 0, xyz + 1, xyz + 2, 3) && num_atoms == N) {
+		if (lammps_decode_frame_text(&mappings, (md_str_t){ text, frame_size }, &num_atoms, NULL, xyz + 0, xyz + 1, xyz + 2, 3) && num_atoms == N) {
 			if (count != N) {
 				MD_MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
 			}
 			written = cap;
 		}
 	} else {
-		MD_LOG_ERROR("LAMMPS: Failed to read frame %u from '" STR_FMT "'", frame, STR_ARG(src.path));
+		MD_LOG_ERROR("LAMMPS: Failed to read frame %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(src.path));
 	}
 	md_temp_end(temp);
 	return written;
 }
 
-bool md_lammps_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_lammps_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
 	MD_ASSERT(sys);
 	char path_buf[4096];
 	const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-	const str_t path = { path_buf, path_len };
+	const md_str_t path = { path_buf, path_len };
 
 	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 	bool result = false;
@@ -1935,10 +1935,10 @@ bool md_lammps_system_publish_run(md_system_t* sys, str_t filename, str_t run, u
 	};
 	char buf[512];
 	if (!md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-		.path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
+		.path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/layout")),
 		.format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { LAMMPS_LAYOUT_COUNT } },
 		.unit = md_unit_none(),
-		.description = STR_INIT("Columns of an atom line: id, x, y, z, ix, iy, iz; token count; cartesian, scaled, unwrapped"),
+		.description = MD_STR_INIT("Columns of an atom line: id, x, y, z, ix, iy, iz; token count; cartesian, scaled, unwrapped"),
 		.data = layout, .byte_size = sizeof(layout)})) {
 		md_attributes_remove_prefix(&sys->attributes, run);
 		goto done;

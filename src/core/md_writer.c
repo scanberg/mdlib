@@ -308,15 +308,15 @@ void md_str_writer_reset(md_str_writer_t* sw) {
     sw->w.flags = 0;
 }
 
-str_t md_str_writer_release(md_str_writer_t* sw) {
+md_str_t md_str_writer_release(md_str_writer_t* sw) {
     MD_ASSERT(sw);
-    str_t str = {0};
+    md_str_t str = {0};
     md_allocator_i* alloc = sw->w.alloc;
     if (has_buffer(&sw->w)) {
         const size_t len  = md_str_writer_len(sw);
         const size_t size = str_alloc_size(&sw->w);
         if (len > 0) {
-            // Down to what str_free frees: the string and its terminator
+            // Down to what md_str_free frees: the string and its terminator
             char* ptr = (char*)md_realloc(alloc, sw->w.buf, size, len + 1);
             ptr[len] = '\0';
             str.ptr = ptr;
@@ -359,10 +359,10 @@ void md_buf_writer_init(md_buf_writer_t* bw, char* buf, size_t cap) {
     *buf = '\0';
 }
 
-str_t md_buf_writer_to_str(const md_buf_writer_t* bw) {
+md_str_t md_buf_writer_to_str(const md_buf_writer_t* bw) {
     MD_ASSERT(bw);
     *bw->w.cur = '\0';
-    str_t str = { bw->w.buf, (size_t)(bw->w.cur - bw->w.buf) };
+    md_str_t str = { bw->w.buf, (size_t)(bw->w.cur - bw->w.buf) };
     return str;
 }
 

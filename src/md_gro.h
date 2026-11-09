@@ -22,8 +22,8 @@ struct md_executor_t;
 // types, the residues and the cell. No bonds, nor what the residues are by them (amino acids, nucleotides, waters by
 // their atoms): md_util_system_infer derives those, when the caller wants them. The executor (NULL: the calling thread)
 // reads a file and its atom lines in parallel.
-bool md_gro_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, const struct md_executor_t* executor);
-bool md_gro_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str, const struct md_executor_t* executor);
+bool md_gro_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_executor_t* executor);
+bool md_gro_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_executor_t* executor);
 
 #ifdef __cplusplus
 }

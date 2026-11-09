@@ -13,34 +13,34 @@
 #include <core/md_reader.h>
 
 // A field without the blanks and the quotes around it
-static str_t csv_field(str_t tok) {
-    tok = str_trim(tok);
+static md_str_t csv_field(md_str_t tok) {
+    tok = md_str_trim(tok);
     if (tok.len >= 2 && ((tok.ptr[0] == '"' && tok.ptr[tok.len - 1] == '"') || (tok.ptr[0] == '\'' && tok.ptr[tok.len - 1] == '\''))) {
-        tok = str_trim(str_substr(tok, 1, tok.len - 2));
+        tok = md_str_trim(md_str_substr(tok, 1, tok.len - 2));
     }
     return tok;
 }
 
 // The next field of a row, up to the delimiter or the end, which may be empty ("1,,3"; "1," ends in an empty one):
 // false past the last one. *more is true at the start of a row.
-static bool csv_next_field(str_t* out, str_t* row, char delim, bool* more) {
+static bool csv_next_field(md_str_t* out, md_str_t* row, char delim, bool* more) {
     if (!*more) return false;
     size_t i = 0;
     while (i < row->len && row->ptr[i] != delim) ++i;
-    *out = (str_t){ row->ptr, i };
+    *out = (md_str_t){ row->ptr, i };
     if (i < row->len) {
-        *row = str_substr(*row, i + 1, SIZE_MAX);
+        *row = md_str_substr(*row, i + 1, SIZE_MAX);
     } else {
-        *row = (str_t){ row->ptr + row->len, 0 };
+        *row = (md_str_t){ row->ptr + row->len, 0 };
         *more = false;
     }
     return true;
 }
 
 // The next line which holds anything: blank lines and comments ('#') are passed over
-static bool csv_next_line(md_reader_i* reader, str_t* line) {
+static bool csv_next_line(md_reader_i* reader, md_str_t* line) {
     while (md_reader_extract_line(reader, line)) {
-        const str_t t = str_trim(*line);
+        const md_str_t t = md_str_trim(*line);
         if (t.len && t.ptr[0] != '#') return true;
     }
     return false;
@@ -55,7 +55,7 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     MD_ASSERT(reader);
     MD_ASSERT(alloc);
     
-    str_t line;
+    md_str_t line;
     if (!csv_next_line(reader, &line)) {
         MD_LOG_ERROR("CSV: Failed to read any line");
         return false;
@@ -68,12 +68,12 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     MD_MEMSET(csv, 0, sizeof(md_csv_t));
 
     size_t pos = 0;
-    const char delim = str_find_char(&pos, line, ',') ? ',' : str_find_char(&pos, line, ';') ? ';' : str_find_char(&pos, line, '\t') ? '\t' : ',';
+    const char delim = md_str_find_char(&pos, line, ',') ? ',' : md_str_find_char(&pos, line, ';') ? ';' : md_str_find_char(&pos, line, '\t') ? '\t' : ',';
 
     // Read first row explicitly to determine the expected number of columns
     // Also potentially extract field names from first row
-    str_t tok;
-    str_t first_line = str_trim(line);
+    md_str_t tok;
+    md_str_t first_line = md_str_trim(line);
     bool has_field_names = false;
     size_t num_fields = 0;
     bool more = true;
@@ -98,17 +98,17 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     do {
         if (first && has_field_names) {
             MD_LOG_INFO("CSV: First row contains non-numeric values, assuming field names");
-            str_t row = str_trim(line);
+            md_str_t row = md_str_trim(line);
             more = true;
             for (size_t i = 0; i < num_fields; ++i) {
                 csv_next_field(&tok, &row, delim, &more);
-                md_array_push(csv->field_names, str_copy(csv_field(tok), alloc), alloc);
+                md_array_push(csv->field_names, md_str_copy(csv_field(tok), alloc), alloc);
             }
             first = false;
             continue;
         }
         first = false;
-        str_t row = str_trim(line);
+        md_str_t row = md_str_trim(line);
         more = true;
         size_t i;
         for (i = 0; i < num_fields; ++i) {
@@ -116,12 +116,12 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
                 break;
             }
             tok = csv_field(tok);
-            if (str_empty(tok)) {
+            if (md_str_empty(tok)) {
                 md_array_push(csv->field_values[i], NAN, alloc);
             } else if (is_float(tok)) {
                 md_array_push(csv->field_values[i], (float)parse_float(tok), alloc);
             } else {
-                MD_LOG_ERROR("CSV: Unable to parse float from token: '"STR_FMT"'", STR_ARG(tok));
+                MD_LOG_ERROR("CSV: Unable to parse float from token: '"MD_STR_FMT"'", MD_STR_ARG(tok));
                 return false;
             }
         }
@@ -137,12 +137,12 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     return true;
 }
 
-bool md_csv_parse_str (md_csv_t* csv, str_t in_str, struct md_allocator_i* alloc) {
+bool md_csv_parse_str (md_csv_t* csv, md_str_t in_str, struct md_allocator_i* alloc) {
 	md_reader_i reader = md_reader_from_str(in_str);
     return parse(csv, &reader, alloc);
 }
 
-bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* alloc) {
+bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc) {
     md_file_t file = {0};
     if (md_file_open(&file, in_path, MD_FILE_READ)) {
         size_t cap = MD_MEGABYTES(1);
@@ -155,12 +155,12 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
         md_file_close(&file);
         return result;
     } else {
-        MD_LOG_ERROR("CSV: Failed to open file '"STR_FMT"'", STR_ARG(in_path));
+        MD_LOG_ERROR("CSV: Failed to open file '"MD_STR_FMT"'", MD_STR_ARG(in_path));
     }
     return false;
 }
 
-void md_csv_write(md_writer_i* w, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
+void md_csv_write(md_writer_i* w, const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values) {
     MD_ASSERT(w);
     if (!field_values || num_fields == 0) {
         return;
@@ -179,8 +179,8 @@ void md_csv_write(md_writer_i* w, const float* const field_values[], const str_t
     }
 }
 
-str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
-    str_t result = {0};
+md_str_t md_csv_write_to_str (const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
+    md_str_t result = {0};
     if (field_values && num_fields > 0 && num_values > 0) {
         md_str_writer_t sw = md_str_writer_create(alloc);
         md_csv_write(&sw.w, field_values, field_names, num_fields, num_values);
@@ -189,7 +189,7 @@ str_t md_csv_write_to_str (const float* const field_values[], const str_t field_
     return result;
 }
 
-bool md_csv_write_to_file(const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path) {
+bool md_csv_write_to_file(const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values, md_str_t path) {
     if (field_values && num_fields > 0 && num_values > 0) {
         md_file_t file = {0};
         if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -217,7 +217,7 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
 
     if (csv->field_names) {
         for (size_t i = 0; i < md_array_size(csv->field_names); ++i) {
-            str_free(csv->field_names[i], alloc);
+            md_str_free(csv->field_names[i], alloc);
         }
     }
     
@@ -230,12 +230,12 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
 // ### RUN ###
 
 // The unit in parentheses in a label - "Time (ps)", "Energy (kJ/mol)" - or none
-static md_unit_t csv_label_unit(str_t label) {
+static md_unit_t csv_label_unit(md_str_t label) {
     size_t beg, end;
     md_unit_t unit = md_unit_none();
-    if (str_find_char(&beg, label, '(') && str_find_char(&end, label, ')') && end > beg) {
+    if (md_str_find_char(&beg, label, '(') && md_str_find_char(&end, label, ')') && end > beg) {
         md_unit_t parsed;
-        if (md_unit_parse(&parsed, str_substr(label, beg + 1, end - beg - 1))) {
+        if (md_unit_parse(&parsed, md_str_substr(label, beg + 1, end - beg - 1))) {
             unit = parsed;
         }
     }
@@ -243,12 +243,12 @@ static md_unit_t csv_label_unit(str_t label) {
 }
 
 // "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
-static str_t csv_group(char* buf, size_t cap, const char* kind, str_t filename) {
-    str_t file = filename;
-    extract_file(&file, filename);
+static md_str_t csv_group(char* buf, size_t cap, const char* kind, md_str_t filename) {
+    md_str_t file = filename;
+    md_extract_file(&file, filename);
     size_t dot;
-    if (str_rfind_char(&dot, file, '.') && dot > 0) {
-        file = str_substr(file, 0, dot);
+    if (md_str_rfind_char(&dot, file, '.') && dot > 0) {
+        file = md_str_substr(file, 0, dot);
     }
     size_t len = (size_t)md_snprintf(buf, cap, "%s/", kind);
     const size_t base = len;
@@ -262,10 +262,10 @@ static str_t csv_group(char* buf, size_t cap, const char* kind, str_t filename) 
     }
     if (len == base) len += (size_t)md_snprintf(buf + len, cap - len, "data");
     buf[len] = '\0';
-    return (str_t){ buf, len };
+    return (md_str_t){ buf, len };
 }
 
-bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run) {
+bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run) {
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
@@ -273,24 +273,24 @@ bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename,
 
     md_csv_t csv = {0};
     if (!md_csv_parse_file(&csv, filename, alloc) || csv.num_fields == 0 || csv.num_values == 0) {
-        MD_LOG_ERROR("CSV: failed to read '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("CSV: failed to read '" MD_STR_FMT "'", MD_STR_ARG(filename));
         goto done;
     }
 
     {
         // The first column is time when its name says so; each column's unit is in its name.
-        const bool has_time = csv.field_names && str_eq_cstr_n_ignore_case(str_trim(csv.field_names[0]), "time", 4);
+        const bool has_time = csv.field_names && md_str_eq_cstr_n_ignore_case(md_str_trim(csv.field_names[0]), "time", 4);
         const size_t first = has_time ? 1 : 0;
         const size_t C = csv.num_fields - first;
         if (C == 0) {
-            MD_LOG_ERROR("CSV: '" STR_FMT "' holds a time column and nothing else", STR_ARG(filename));
+            MD_LOG_ERROR("CSV: '" MD_STR_FMT "' holds a time column and nothing else", MD_STR_ARG(filename));
             goto done;
         }
-        str_t*        names   = md_temp_alloc(temp, C * sizeof(str_t));
+        md_str_t*        names   = md_temp_alloc(temp, C * sizeof(md_str_t));
         md_unit_t*    units   = md_temp_alloc(temp, C * sizeof(md_unit_t));
         const float** columns = md_temp_alloc(temp, C * sizeof(float*));
         for (size_t k = 0; k < C; ++k) {
-            names[k]   = csv.field_names ? csv.field_names[first + k] : (str_t){0};
+            names[k]   = csv.field_names ? csv.field_names[first + k] : (md_str_t){0};
             units[k]   = csv.field_names ? csv_label_unit(csv.field_names[first + k]) : md_unit_none();
             columns[k] = csv.field_values[first + k];
         }
@@ -312,7 +312,7 @@ bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename,
             .names       = names,
             .units       = units,
             .columns     = columns,
-            .source_path = (str_t){ path_buf, path_len },
+            .source_path = (md_str_t){ path_buf, path_len },
         };
         result = md_run_publish_series(sys, run, &desc);
     }

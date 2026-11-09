@@ -20,7 +20,7 @@
 #define BOHR_TO_ANGSTROM 0.529177210903
 #define VALUE_CUTOFF 1.0E-5
 
-static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, str_t filename, md_allocator_i* arena) {
+static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, md_str_t filename, md_allocator_i* arena) {
     md_temp_scope_t temp = md_temp_begin_avoid(arena);
 
     vlx_test_t t = {0};
@@ -62,7 +62,7 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
 
     const size_t num_ao = md_gto_basis_num_ao(&basis);
     double* mo_coeffs = md_temp_alloc_array(temp, double, num_ao);
-    qm_test_row(mo_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), 120);
+    qm_test_row(mo_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), 120);
 
     *num_gtos = md_gto_pgto_count(&basis);
     *gtos = md_alloc(arena, sizeof(md_gto_t) * (*num_gtos));
@@ -402,7 +402,7 @@ UTEST(gto, evaluate_grid) {
     size_t num_gtos;
 
     int vol_dim = 64;
-    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), temp_arena);
+    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), temp_arena);
     size_t num_points = md_grid_num_points(&grid);
 
     md_grid_t ref_grid = grid;
@@ -519,12 +519,12 @@ UTEST(gto, h2o_lumo_cpu) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     md_cube_t cube_lumo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
+    ASSERT_TRUE(md_cube_file_load(&cube_lumo, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
 
     // Loaded as a SYSTEM: the geometry, the basis and the coefficients all come out of the
     // attribute table, which is the only way anything reaches a consumer now.
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
 
     size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
@@ -535,10 +535,10 @@ UTEST(gto, h2o_lumo_cpu) {
 
     // The LUMO, derived from the published occupations by the rule the reader used: the first
     // orbital with zero occupancy.
-    const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo_idx = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
     const size_t num_ao   = md_gto_basis_num_ao(&basis);
     double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
-    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
+    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_cpu(atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);  
@@ -699,12 +699,12 @@ UTEST(gto, h2o_lumo_gpu) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     md_cube_t cube_lumo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
+    ASSERT_TRUE(md_cube_file_load(&cube_lumo, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
 
     // Loaded as a SYSTEM: the geometry, the basis and the coefficients all come out of the
     // attribute table, which is the only way anything reaches a consumer now.
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
 
     size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
@@ -715,10 +715,10 @@ UTEST(gto, h2o_lumo_gpu) {
 
     // The LUMO, derived from the published occupations by the rule the reader used: the first
     // orbital with zero occupancy.
-    const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo_idx = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
     const size_t num_ao   = md_gto_basis_num_ao(&basis);
     double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
-    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
+    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_gpu(device, atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);
@@ -766,7 +766,7 @@ UTEST(gto, density_gpu_algorithms_agree) {
     md_temp_scope_t temp = md_temp_begin();
 
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
     const size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
     ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
@@ -775,8 +775,8 @@ UTEST(gto, density_gpu_algorithms_agree) {
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
     size_t dim = 0;
-    double* D = qm_test_matrix(&t, STR_LIT("orbital/total/density"), &dim);
-    if (!D) D = qm_test_matrix(&t, STR_LIT("orbital/alpha/density"), &dim);
+    double* D = qm_test_matrix(&t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!D) D = qm_test_matrix(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
     ASSERT_TRUE(D != NULL);
     ASSERT_EQ(dim, num_ao);
 
@@ -883,7 +883,7 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     md_temp_scope_t temp = md_temp_begin();
 
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
     const size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
     ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
@@ -891,14 +891,14 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
-    const md_attribute_t* c_attr = md_attributes_find(&t.sys.attributes, STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* c_attr = md_attributes_find(&t.sys.attributes, MD_STR_LIT("orbital/alpha/coefficient"));
     ASSERT_TRUE(c_attr != NULL);
     const size_t num_mo = md_attribute_element_count(&c_attr->format) / num_ao;
     ASSERT_GE(num_mo, (size_t)12);
     double** mo = (double**)md_temp_alloc_array(temp, double*, num_mo);
     for (size_t m = 0; m < num_mo; ++m) {
         mo[m] = (double*)md_temp_alloc_array(temp, double, num_ao);
-        ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, STR_LIT("orbital/alpha/coefficient"), m), num_ao);
+        ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), m), num_ao);
     }
 
     md_gto_gpu_initialize(device);

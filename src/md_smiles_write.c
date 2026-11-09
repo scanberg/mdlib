@@ -186,7 +186,7 @@ static void put_atom(sw_t* w, const sw_atom_t* a) {
     char sym[8];
     if (a->z == 0) snprintf(sym, sizeof(sym), "*");
     else {
-        const str_t s = md_util_element_symbol((md_element_t)a->z);
+        const md_str_t s = md_util_element_symbol((md_element_t)a->z);
         snprintf(sym, sizeof(sym), "%.*s", (int)MD_MIN(s.len, 3), s.ptr);
         if (a->aromatic && sym[0]) {
             sym[0] = (char)(sym[0] - 'A' + 'a');

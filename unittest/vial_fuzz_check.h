@@ -96,7 +96,7 @@ static inline const char* vial_fuzz__check_diags(const md_vial_diagnostic_t* d, 
         if (d[i].span.beg > d[i].span.end || d[i].span.end > len) return "a diagnostic's span is out of bounds";
         if (i > 0 && d[i - 1].span.beg > d[i].span.beg) return "diagnostics are out of source order";
         if (d[i].code[5] != '\0' || !(vial_fuzz__front_end_code(d[i].code) || (checked && vial_fuzz__checker_code(d[i].code)))) return "a diagnostic with a code the compiler does not give";
-        if (str_empty(d[i].message)) return "a diagnostic without a message";
+        if (md_str_empty(d[i].message)) return "a diagnostic without a message";
         if (memchr(d[i].message.ptr, '\n', d[i].message.len) || memchr(d[i].message.ptr, '\r', d[i].message.len)) return "a message is more than one line";
     }
     if (n > len + 1) return "more diagnostics than bytes";
@@ -179,7 +179,7 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
 }
 
 // Completion, drawing and filtering at a few places of the text: none fails to return, and what they give is in bounds
-static inline const char* vial_fuzz__editor(const md_vial_program_t* prog, str_t src, const struct md_system_t* sys,
+static inline const char* vial_fuzz__editor(const md_vial_program_t* prog, md_str_t src, const struct md_system_t* sys,
                                             const md_system_state_t* state, const vial_token_t* tokens, size_t num_tokens,
                                             md_allocator_i* alloc) {
     const uint32_t len = (uint32_t)src.len;
@@ -221,7 +221,7 @@ static inline const char* vial_fuzz__editor(const md_vial_program_t* prog, str_t
     return NULL;
 }
 
-static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+static inline const char* vial_fuzz_check(md_str_t src, const struct md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     if (src.len > UINT32_MAX / 2) return NULL;
     const uint32_t len = (uint32_t)src.len;
 
@@ -257,8 +257,8 @@ static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* s
     err = vial_fuzz__check_diags(diags.items, num_diags, len, false);
     if (err) return err;
 
-    str_t dump = vial_tree_dump(&tree, src, alloc);
-    if (str_empty(dump)) return "the tree dump is empty";
+    md_str_t dump = vial_tree_dump(&tree, src, alloc);
+    if (md_str_empty(dump)) return "the tree dump is empty";
 
     // The public API, twice without a system and, given one, twice with it: the same tokens and diagnostics each time,
     // so compiling is deterministic
@@ -285,8 +285,8 @@ static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* s
         size_t k = 0;
         for (size_t i = 0; !why && i < npd && k < num_diags; ++i) {
             if (memcmp(pd[i].code, diags.items[k].code, 6) == 0 && pd[i].span.beg == diags.items[k].span.beg &&
-                pd[i].span.end == diags.items[k].span.end && str_eq(pd[i].message, diags.items[k].message) &&
-                str_eq(pd[i].fix, diags.items[k].fix)) {
+                pd[i].span.end == diags.items[k].span.end && md_str_eq(pd[i].message, diags.items[k].message) &&
+                md_str_eq(pd[i].fix, diags.items[k].fix)) {
                 k += 1;
             }
         }

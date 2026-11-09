@@ -21,7 +21,7 @@ typedef struct region_t {
 
 typedef struct resolver_t {
     const vial_tree_t*  t;
-    str_t               src;
+    md_str_t               src;
     vial_diags_t*       diags;
     vial_names_t*       n;
     md_allocator_i*     alloc;
@@ -44,30 +44,30 @@ static inline vial_node_kind_t kind_of(const resolver_t* r, vial_node_id id) { r
 static inline vial_node_id child(const resolver_t* r, vial_node_id id, uint32_t i) { return vial_child(r->t, id, i); }
 static inline uint32_t num_children(const resolver_t* r, vial_node_id id) { return r->t->nodes[id].child_count; }
 
-static inline str_t text(const resolver_t* r, vial_node_id id) {
+static inline md_str_t text(const resolver_t* r, vial_node_id id) {
     const md_vial_span_t s = r->t->nodes[id].span;
-    return (str_t){r->src.ptr + s.beg, s.end - s.beg};
+    return (md_str_t){r->src.ptr + s.beg, s.end - s.beg};
 }
 
 static inline uint32_t line_of(const resolver_t* r, vial_node_id id) {
     return vial_line_of(r->diags, r->t->nodes[id].span.beg);
 }
 
-static uint64_t name_key(str_t name) {
+static uint64_t name_key(md_str_t name) {
     uint64_t k = md_hash64_str(name, 0x5eed);
     return k >= MD_HASH_TOMBSTONE ? k - 2 : k;
 }
 
-static uint32_t scope_find(const resolver_t* r, uint32_t scope, str_t name) {
+static uint32_t scope_find(const resolver_t* r, uint32_t scope, md_str_t name) {
     const vial_scope_t* s = &r->n->scopes[scope];
     const uint32_t* v = md_hashmap_get(&s->names, name_key(name));
-    if (v && str_eq(r->n->symbols[*v].name, name)) return *v;
+    if (v && md_str_eq(r->n->symbols[*v].name, name)) return *v;
     return 0;
 }
 
 // A name bound in a loop body rebinds what an enclosing scope already binds, up to and including the def or the
 // module the loop is in: `t = t + x` in a loop accumulates into the t before it, as Python's does
-static uint32_t scope_find_enclosing(const resolver_t* r, uint32_t scope, str_t name) {
+static uint32_t scope_find_enclosing(const resolver_t* r, uint32_t scope, md_str_t name) {
     for (;;) {
         const uint32_t v = scope_find(r, scope, name);
         if (v) return v;
@@ -76,7 +76,7 @@ static uint32_t scope_find_enclosing(const resolver_t* r, uint32_t scope, str_t 
     }
 }
 
-static uint32_t new_symbol(resolver_t* r, uint32_t scope, str_t name, vial_sym_kind_t kind, vial_node_id at) {
+static uint32_t new_symbol(resolver_t* r, uint32_t scope, md_str_t name, vial_sym_kind_t kind, vial_node_id at) {
     vial_symbol_t sym = {.name = name, .kind = (uint8_t)kind, .in_prelude = r->is_prelude, .scope = scope, .node = at,
                          .stmt = r->stmt};
     const uint32_t idx = (uint32_t)md_array_size(r->n->symbols);
@@ -84,7 +84,7 @@ static uint32_t new_symbol(resolver_t* r, uint32_t scope, str_t name, vial_sym_k
     return idx;
 }
 
-static uint32_t bind(resolver_t* r, uint32_t scope, str_t name, vial_sym_kind_t kind, vial_node_id at) {
+static uint32_t bind(resolver_t* r, uint32_t scope, md_str_t name, vial_sym_kind_t kind, vial_node_id at) {
     const uint32_t idx = new_symbol(r, scope, name, kind, at);
     md_hashmap_add(&r->n->scopes[scope].names, name_key(name), idx);
     if (at) r->n->ref[at] = idx;
@@ -116,17 +116,17 @@ static void diag_fix(resolver_t* r, const char code[6], vial_node_id at, const c
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     vial_diag(r->diags, code, r->t->nodes[at].span, "%s", buf);
-    if (fix) vial_diag_set_fix(r->diags, md_array_size(r->diags->items) - 1, str_from_cstr(fix));
+    if (fix) vial_diag_set_fix(r->diags, md_array_size(r->diags->items) - 1, md_str_from_cstr(fix));
 }
 
-static bool is_kind_name(str_t s) {
+static bool is_kind_name(md_str_t s) {
     static const char* kinds[] = {"set", "group", "point", "points", "float", "int", "bool"};
-    for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) if (str_eq(s, str_from_cstr(kinds[i]))) return true;
+    for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) if (md_str_eq(s, md_str_from_cstr(kinds[i]))) return true;
     return false;
 }
 
 // A name the script cannot rebind without hiding something it may still mean
-static bool is_predefined(const resolver_t* r, str_t name) {
+static bool is_predefined(const resolver_t* r, md_str_t name) {
     const vial_builtin_t* b = vial_builtin_find(name);
     if (b && (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_VALUE))) return true;
     if (r->prelude && scope_find(&(resolver_t){.n = (vial_names_t*)r->prelude}, 0, name)) return true;
@@ -148,7 +148,7 @@ static bool rebinds(const resolver_t* r, uint32_t existing) {
 }
 
 static void bind_top(resolver_t* r, vial_node_id name_node, vial_sym_kind_t kind) {
-    const str_t name = text(r, name_node);
+    const md_str_t name = text(r, name_node);
     const uint32_t existing = scope_find(r, 0, name);
     if (existing && (r->n->symbols[existing].kind == VIAL_SYM_GLOBAL || r->n->symbols[existing].kind == VIAL_SYM_DEF)) {
         if (rebinds(r, existing)) {
@@ -175,7 +175,7 @@ static void bind_target(resolver_t* r, vial_node_id target, uint32_t scope, vial
         if (top) {
             bind_top(r, target, kind);
         } else {
-            const str_t name = text(r, target);
+            const md_str_t name = text(r, target);
             const bool in_loop = r->n->scopes[scope].kind == VIAL_SCOPE_LOOP;
             const uint32_t existing = in_loop ? scope_find_enclosing(r, scope, name) : scope_find(r, scope, name);
             if (existing) r->n->ref[target] = existing;     // a local bound again: one local; in a loop, an accumulator
@@ -204,7 +204,7 @@ static void declare_stmt(resolver_t* r, vial_node_id s, uint32_t scope) {
     case VIAL_N_AUG_ASSIGN: {
         const vial_node_id target = child(r, s, 0);
         if (top && kind_of(r, target) == VIAL_N_NAME) {
-            const str_t name = text(r, target);
+            const md_str_t name = text(r, target);
             const uint32_t existing = scope_find(r, 0, name);
             if (existing) {
                 diag(r, "E0305", s, "`%.*s` is already bound on line %u; at top level a name is bound once", (int)name.len,
@@ -278,10 +278,10 @@ static void declare_def(resolver_t* r, vial_node_id def, uint32_t parent) {
         if (name && kind_of(r, name) == VIAL_N_NAME) bind(r, scope, text(r, name), VIAL_SYM_PARAM, name);
         const vial_node_id ann = child(r, p, 1);
         if (ann) {
-            const str_t a = text(r, ann);
+            const md_str_t a = text(r, ann);
             if (kind_of(r, ann) != VIAL_N_NAME || !is_kind_name(a)) {
                 char ex[VIAL_EXCERPT_MAX + 4];
-                const str_t e = vial_excerpt(ex, sizeof(ex), a);
+                const md_str_t e = vial_excerpt(ex, sizeof(ex), a);
                 diag_fix(r, "E0312", ann, "", "`%.*s` is not a parameter kind; the kinds are set, group, point, points, float, int and bool",
                     (int)e.len, e.ptr);
             }
@@ -297,18 +297,18 @@ static void declare_def(resolver_t* r, vial_node_id def, uint32_t parent) {
 static uint32_t builtin_symbol(resolver_t* r, const vial_builtin_t* b) {
     const size_t i = (size_t)(b - vial_builtin_at(0));
     if (!r->builtin_sym[i]) {
-        r->builtin_sym[i] = new_symbol(r, 0, str_from_cstr(b->name), VIAL_SYM_BUILTIN, 0);
+        r->builtin_sym[i] = new_symbol(r, 0, md_str_from_cstr(b->name), VIAL_SYM_BUILTIN, 0);
         r->n->symbols[r->builtin_sym[i]].builtin = b;
     }
     return r->builtin_sym[i];
 }
 
 // A prelude def by name, as a symbol of this tree's table that points at it
-static uint32_t prelude_symbol(resolver_t* r, str_t name) {
+static uint32_t prelude_symbol(resolver_t* r, md_str_t name) {
     if (!r->prelude) return 0;
     const vial_scope_t* s = &r->prelude->scopes[0];
     const uint32_t* v = md_hashmap_get(&s->names, name_key(name));
-    if (!v || !str_eq(r->prelude->symbols[*v].name, name) || r->prelude->symbols[*v].kind != VIAL_SYM_DEF) return 0;
+    if (!v || !md_str_eq(r->prelude->symbols[*v].name, name) || r->prelude->symbols[*v].kind != VIAL_SYM_DEF) return 0;
     const uint32_t idx = new_symbol(r, 0, name, VIAL_SYM_PRELUDE, r->prelude->symbols[*v].node);
     r->n->symbols[idx].in_prelude = true;
     return idx;
@@ -320,7 +320,7 @@ static bool in_def(const resolver_t* r, uint32_t scope) {
 }
 
 // Looks a name up from a scope; *late is set when a top-level binding exists but comes later
-static uint32_t lookup(resolver_t* r, uint32_t scope, str_t name, uint32_t* late) {
+static uint32_t lookup(resolver_t* r, uint32_t scope, md_str_t name, uint32_t* late) {
     *late = 0;
     const bool deferred = in_def(r, scope);
     for (uint32_t s = scope;; s = r->n->scopes[s].parent) {
@@ -339,7 +339,7 @@ static uint32_t lookup(resolver_t* r, uint32_t scope, str_t name, uint32_t* late
     if (b && (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_VALUE))) return builtin_symbol(r, b);
     // A stored selection, last: what the script binds hides it
     for (size_t i = 0; i < r->num_stored; ++i) {
-        if (!str_eq(r->stored[i].name, name)) continue;
+        if (!md_str_eq(r->stored[i].name, name)) continue;
         if (md_array_size(r->stored_sym) < r->num_stored) {
             const size_t had = md_array_size(r->stored_sym);
             md_array_resize(r->stored_sym, r->num_stored, r->alloc);
@@ -355,7 +355,7 @@ static uint32_t lookup(resolver_t* r, uint32_t scope, str_t name, uint32_t* late
 }
 
 // Edit distance with transpositions, for suggestions, computed only near the diagonal: more than limit is limit + 1
-static size_t edit_distance(str_t a, str_t b, size_t limit) {
+static size_t edit_distance(md_str_t a, md_str_t b, size_t limit) {
     const size_t big = limit + 1;
     if (a.len > 32 || b.len > 32) return big;
     if (a.len > b.len + limit || b.len > a.len + limit) return big;
@@ -383,10 +383,10 @@ static size_t edit_distance(str_t a, str_t b, size_t limit) {
     return d[a.len][b.len];
 }
 
-typedef struct best_t { str_t name; size_t dist; } best_t;
+typedef struct best_t { md_str_t name; size_t dist; } best_t;
 
-static void consider(best_t* best, str_t word, str_t candidate) {
-    if (str_empty(candidate) || str_eq(word, candidate)) return;
+static void consider(best_t* best, md_str_t word, md_str_t candidate) {
+    if (md_str_empty(candidate) || md_str_eq(word, candidate)) return;
     if (word.len < 3) return;
     if (candidate.len + 2 < word.len || word.len + 2 < candidate.len) return;   // every short name is one edit from many others: a guess there is noise
     const size_t limit = word.len <= 5 ? 1 : 2;
@@ -394,12 +394,12 @@ static void consider(best_t* best, str_t word, str_t candidate) {
     if (d <= limit && d < best->dist) { best->dist = d; best->name = candidate; }
 }
 
-static str_t suggest(resolver_t* r, uint32_t scope, str_t word, bool functions_only) {
+static md_str_t suggest(resolver_t* r, uint32_t scope, md_str_t word, bool functions_only) {
     const char* syn = vial_builtin_synonym(word);
-    if (syn) return str_from_cstr(syn);
+    if (syn) return md_str_from_cstr(syn);
     // Each suggestion looks at every visible name; past the first twenty unknown names a script is mostly
     // mistakes, and more guesses would only make compiling slow
-    if (++r->num_suggested > 20) return (str_t){0};
+    if (++r->num_suggested > 20) return (md_str_t){0};
     best_t best = {.dist = SIZE_MAX};
     for (uint32_t s = scope;; s = r->n->scopes[s].parent) {
         const vial_scope_t* sc = &r->n->scopes[s];
@@ -423,7 +423,7 @@ static str_t suggest(resolver_t* r, uint32_t scope, str_t word, bool functions_o
         const vial_builtin_t* b = vial_builtin_at(i);
         if (b->flags == VIAL_BUILTIN_KIND) continue;
         if (functions_only && !(b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_PROPERTY))) continue;
-        consider(&best, word, str_from_cstr(b->name));
+        consider(&best, word, md_str_from_cstr(b->name));
     }
     return best.name;
 }
@@ -432,17 +432,17 @@ static str_t suggest(resolver_t* r, uint32_t scope, str_t word, bool functions_o
 // taken without saying. The fix keeps the division; a string keeps the unit.
 static void check_divisors(resolver_t* r, vial_node_id unit, uint32_t scope) {
     if (node(r, unit)->sub != 0) return;
-    const str_t u = text(r, unit);
+    const md_str_t u = text(r, unit);
     size_t i = 0;
     while (i < u.len && u.ptr[i] != '/') ++i;
     while (i < u.len) {
         size_t e = i + 1;
         while (e < u.len && u.ptr[e] != '/') ++e;
-        const str_t name = {u.ptr + i + 1, e - i - 1};
+        const md_str_t name = {u.ptr + i + 1, e - i - 1};
         uint32_t late;
         if (lookup(r, scope, name, &late)) {
             const vial_node_id q = r->n->parent[unit];
-            const str_t num = text(r, child(r, q, 0));
+            const md_str_t num = text(r, child(r, q, 0));
             char fix[160];
             snprintf(fix, sizeof(fix), "(%.*s %.*s)/%.*s", (int)num.len, num.ptr, (int)i, u.ptr, (int)(u.len - i - 1), u.ptr + i + 1);
             diag_fix(r, "E0503", q, fix, "`%.*s` is a unit in `%.*s`, and a name here: %s divides by the name, %.*s '%.*s' "
@@ -454,15 +454,15 @@ static void check_divisors(resolver_t* r, vial_node_id unit, uint32_t scope) {
 }
 
 static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint32_t late) {
-    const str_t name = text(r, at);
+    const md_str_t name = text(r, at);
     if (vial_diag_at(r->diags, r->t->nodes[at].span.beg)) return;   // the parser said more, as E0701 for residue(1:4)
     // positions(s), coords(s): the positions of a set are s.xyz
-    if (str_eq(name, STR_LIT("positions")) || str_eq(name, STR_LIT("coords")) || str_eq(name, STR_LIT("coordinates")) ||
-        str_eq(name, STR_LIT("pos")) || str_eq(name, STR_LIT("coord"))) {
+    if (md_str_eq(name, MD_STR_LIT("positions")) || md_str_eq(name, MD_STR_LIT("coords")) || md_str_eq(name, MD_STR_LIT("coordinates")) ||
+        md_str_eq(name, MD_STR_LIT("pos")) || md_str_eq(name, MD_STR_LIT("coord"))) {
         const vial_node_id call = r->n->parent[at];
         if (call && kind_of(r, call) == VIAL_N_CALL && child(r, call, 0) == at && r->t->nodes[call].child_count == 2) {
-            const str_t a = text(r, child(r, call, 1));
-            const char* code = str_eq(name, STR_LIT("coord")) ? "E0701" : "E0201";
+            const md_str_t a = text(r, child(r, call, 1));
+            const char* code = md_str_eq(name, MD_STR_LIT("coord")) ? "E0701" : "E0201";
             if (a.len >= 100 || memchr(a.ptr, '\n', a.len) || memchr(a.ptr, '\r', a.len)) {
                 diag(r, code, call, "the positions of a set s are s.xyz");
                 return;
@@ -480,7 +480,7 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
         diag_fix(r, "E0701", at, v1_fix, "%s", v1_msg);
         return;
     }
-    if (str_eq(name, STR_LIT("print"))) {
+    if (md_str_eq(name, MD_STR_LIT("print"))) {
         diag(r, "E0803", at, "`print` is not part of VIAL; hover shows any value");
         return;
     }
@@ -495,7 +495,7 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
         const vial_node_id q = child(r, p, 0);
         const uint32_t op = node(r, p)->sub;
         if (kind_of(r, q) == VIAL_N_QUANTITY && node(r, child(r, q, 1))->sub == 0 && (op == VIAL_OP_SLASH || op == VIAL_OP_STAR)) {
-            const str_t qs = text(r, q);
+            const md_str_t qs = text(r, q);
             char fix[160];
             if (op == VIAL_OP_SLASH) {
                 snprintf(fix, sizeof(fix), "%.*s/%.*s", (int)qs.len, qs.ptr, (int)name.len, name.ptr);
@@ -503,12 +503,12 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
                     (int)name.len, name.ptr, fix);
                 return;
             }
-            const str_t ut = text(r, child(r, q, 1));
+            const md_str_t ut = text(r, child(r, q, 1));
             if (memchr(ut.ptr, '/', ut.len)) {
                 // kJ/mol*K would read as kJ*K/mol; what is meant is a divisor
                 snprintf(fix, sizeof(fix), "%.*s/%.*s", (int)qs.len, qs.ptr, (int)name.len, name.ptr);
             } else {
-                const str_t ns = text(r, child(r, q, 0));
+                const md_str_t ns = text(r, child(r, q, 0));
                 snprintf(fix, sizeof(fix), "%.*s '%.*s*%.*s'", (int)ns.len, ns.ptr, (int)ut.len, ut.ptr, (int)name.len, name.ptr);
             }
             diag_fix(r, "E0201", p, fix, "`%.*s` is a unit: a unit after a number divides by others with /, and "
@@ -523,7 +523,7 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
         if (p && kind_of(r, p) == VIAL_N_BINARY && node(r, p)->sub == VIAL_OP_STAR && child(r, p, 1) == at) {
             const vial_node_id num = child(r, p, 0);
             if (kind_of(r, num) == VIAL_N_INT || kind_of(r, num) == VIAL_N_FLOAT) {
-                const str_t ns = text(r, num);
+                const md_str_t ns = text(r, num);
                 snprintf(fix, sizeof(fix), "%.*s %.*s", (int)ns.len, ns.ptr, (int)name.len, name.ptr);
                 fix_at = p;
             }
@@ -532,9 +532,9 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
             (int)name.len, name.ptr, (int)name.len, name.ptr);
         return;
     }
-    const str_t s = suggest(r, scope, name, false);
+    const md_str_t s = suggest(r, scope, name, false);
     char fix[64] = "";
-    if (!str_empty(s)) snprintf(fix, sizeof(fix), "%.*s", (int)s.len, s.ptr);
+    if (!md_str_empty(s)) snprintf(fix, sizeof(fix), "%.*s", (int)s.len, s.ptr);
     diag_fix(r, "E0201", at, fix[0] ? fix : NULL, "`%.*s` is not defined", (int)name.len, name.ptr);
 }
 
@@ -553,7 +553,7 @@ static void resolve_attr(resolver_t* r, vial_node_id id, uint32_t scope) {
     const vial_node_id name_node = child(r, id, 1);
     if (obj) resolve(r, obj, scope);
     if (!name_node || kind_of(r, name_node) != VIAL_N_NAME) return;
-    const str_t name = text(r, name_node);
+    const md_str_t name = text(r, name_node);
     const vial_builtin_t* b = vial_builtin_find(name);
     if (b && (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_PROPERTY))) { r->n->ref[name_node] = builtin_symbol(r, b); return; }
     uint32_t late;
@@ -567,7 +567,7 @@ static void resolve_attr(resolver_t* r, vial_node_id id, uint32_t scope) {
     bool swizzle = name.len >= 2 && name.len <= 4;
     for (size_t i = 0; i < name.len && swizzle; ++i) swizzle = name.ptr[i] == 'x' || name.ptr[i] == 'y' || name.ptr[i] == 'z';
     if (swizzle) {
-        const str_t o = text(r, obj);
+        const md_str_t o = text(r, obj);
         char fix[160];
         const int a = name.ptr[0] - 'x', b2 = name.ptr[1] - 'x';
         if (name.len == 2 && b2 == a + 1) snprintf(fix, sizeof(fix), "%.*s[..., %d:%d]", (int)o.len, o.ptr, a, a + 2);
@@ -579,9 +579,9 @@ static void resolve_attr(resolver_t* r, vial_node_id id, uint32_t scope) {
         diag_fix(r, "E0201", name_node, fix, "`.%.*s` is not defined: VIAL has no swizzles; write %s", (int)name.len, name.ptr, fix);
         return;
     }
-    const str_t s = suggest(r, scope, name, true);
+    const md_str_t s = suggest(r, scope, name, true);
     char fix[64] = "";
-    if (!str_empty(s)) snprintf(fix, sizeof(fix), "%.*s", (int)s.len, s.ptr);
+    if (!md_str_empty(s)) snprintf(fix, sizeof(fix), "%.*s", (int)s.len, s.ptr);
     diag_fix(r, "E0201", name_node, fix[0] ? fix : NULL, "`.%.*s` is not a function or property", (int)name.len, name.ptr);
 }
 
@@ -691,8 +691,8 @@ static uint32_t callee_def(resolver_t* r, const callgraph_t* g, vial_node_id cal
 }
 
 static void report_cycle(resolver_t* r, const callgraph_t* g, uint32_t d, uint32_t e, vial_node_id call) {
-    const str_t a = text(r, child(r, g->defs[d], 0));
-    const str_t b = text(r, child(r, g->defs[e], 0));
+    const md_str_t a = text(r, child(r, g->defs[d], 0));
+    const md_str_t b = text(r, child(r, g->defs[e], 0));
     if (e == d) diag(r, "E0802", call, "`%.*s` calls itself; VIAL has no recursion", (int)a.len, a.ptr);
     else diag(r, "E0802", call, "`%.*s` calls `%.*s`, which calls `%.*s` again; VIAL has no recursion",
         (int)a.len, a.ptr, (int)b.len, b.ptr, (int)a.len, a.ptr);
@@ -783,7 +783,7 @@ static void run(resolver_t* r) {
     check_recursion(r);
 }
 
-void vial_check_prelude(const vial_tree_t* prelude, str_t src, vial_diags_t* diags, vial_names_t* out, md_allocator_i* alloc) {
+void vial_check_prelude(const vial_tree_t* prelude, md_str_t src, vial_diags_t* diags, vial_names_t* out, md_allocator_i* alloc) {
     names_init(out, prelude, alloc);
     resolver_t pr = {.t = prelude, .src = src, .diags = diags, .n = out, .alloc = alloc, .is_prelude = true};
     run(&pr);
@@ -810,9 +810,9 @@ const vial_symbol_t* vial_names_symbol(const vial_names_t* n, vial_node_id id) {
     return &n->symbols[n->ref[id]];
 }
 
-uint32_t vial_names_lookup_top(const vial_names_t* n, str_t name) {
+uint32_t vial_names_lookup_top(const vial_names_t* n, md_str_t name) {
     if (!md_array_size(n->scopes)) return 0;
     const vial_scope_t* s = &n->scopes[0];
     const uint32_t* v = s->names.num_buckets ? md_hashmap_get((md_hashmap32_t*)&s->names, name_key(name)) : NULL;
-    return v && str_eq(n->symbols[*v].name, name) ? *v : 0;
+    return v && md_str_eq(n->symbols[*v].name, name) ? *v : 0;
 }

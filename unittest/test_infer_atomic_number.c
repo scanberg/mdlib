@@ -33,26 +33,26 @@ UTEST(element_guess_compat, all_pdb_validation) {
     
     for (size_t file_idx = 0; file_idx < num_files; ++file_idx) {
 
-        str_t path = {pdb_files[file_idx], strlen(pdb_files[file_idx])};
+        md_str_t path = {pdb_files[file_idx], strlen(pdb_files[file_idx])};
         // The columns of the atom lines themselves: the element (77 to 78), the atom name (13 to 16), the residue name
         // (18 to 20). Not through a loader: one which reads the element column names its types by it.
-        str_t text = load_textfile(path, arena);
-        if (str_empty(text)) {
+        md_str_t text = md_load_textfile(path, arena);
+        if (md_str_empty(text)) {
             // Some files might not exist, skip gracefully
             continue;
         }
         files_processed++;
-        str_t rest = text, line;
-        while (str_extract_line(&line, &rest)) {
-            if (!(str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) || line.len < 78) continue;
-            str_t explicit_symbol = str_trim(str_substr(line, 76, 2));
-            if (str_empty(explicit_symbol)) {
+        md_str_t rest = text, line;
+        while (md_str_extract_line(&line, &rest)) {
+            if (!(md_str_eq_cstr_n(line, "ATOM", 4) || md_str_eq_cstr_n(line, "HETATM", 6)) || line.len < 78) continue;
+            md_str_t explicit_symbol = md_str_trim(md_str_substr(line, 76, 2));
+            if (md_str_empty(explicit_symbol)) {
                 continue;
             }
             total_explicit_elements++;
 
-            str_t atom_name    = str_trim(str_substr(line, 12, 4));
-            str_t atom_resname = str_trim(str_substr(line, 17, 3));
+            md_str_t atom_name    = md_str_trim(md_str_substr(line, 12, 4));
+            md_str_t atom_resname = md_str_trim(md_str_substr(line, 17, 3));
 
             md_element_t expected_element = md_atomic_number_from_symbol(explicit_symbol, true);
             md_element_t inferred_element = md_atomic_number_infer_from_label(atom_name, atom_resname, 0);

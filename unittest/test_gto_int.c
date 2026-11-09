@@ -51,7 +51,7 @@ static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
     out->atom_xyz = (float*)md_alloc(t->alloc, sizeof(float) * cap);
     {
         double* xyz = (double*)md_alloc(t->alloc, sizeof(double) * cap);
-        const size_t nv = qm_test_series(xyz, cap, t, STR_LIT("qm/atom/coordinate"));   // Angstrom, 3 per atom
+        const size_t nv = qm_test_series(xyz, cap, t, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom, 3 per atom
         for (size_t i = 0; i < nv; ++i) out->atom_xyz[i] = (float)(xyz[i] * QM_TEST_ANGSTROM_TO_BOHR);
         out->num_atoms = nv / 3;
     }
@@ -59,11 +59,11 @@ static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
 
     // The charge the electrons were solved against, which is not the atomic number under an ECP
     out->atom_z = (double*)md_alloc(t->alloc, sizeof(double) * out->num_atoms);
-    if (qm_test_series(out->atom_z, out->num_atoms, t, STR_LIT("qm/atom/nuclear_charge")) != out->num_atoms) return false;
+    if (qm_test_series(out->atom_z, out->num_atoms, t, MD_STR_LIT("qm/atom/nuclear_charge")) != out->num_atoms) return false;
 
     size_t dim = 0;
-    out->D = qm_test_matrix(t, STR_LIT("orbital/total/density"), &dim);
-    if (!out->D) out->D = qm_test_matrix(t, STR_LIT("orbital/alpha/density"), &dim);
+    out->D = qm_test_matrix(t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!out->D) out->D = qm_test_matrix(t, MD_STR_LIT("orbital/alpha/density"), &dim);
     return out->D && dim == out->num_ao;
 }
 
@@ -292,7 +292,7 @@ static const double h2o_ccpvdz_dipole_ref[3] = { -0.39479203722594036, -0.325035
 UTEST(gto_int, h2o_molden_matches_pyscf) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
 
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -333,7 +333,7 @@ UTEST(gto_int, h2o_molden_matches_pyscf) {
 UTEST(gto_int, screening_error_is_bounded) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
 
@@ -365,7 +365,7 @@ UTEST(gto_int, screening_error_is_bounded) {
 UTEST(gto_int, antisymmetric_part_is_ignored) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
 
@@ -395,7 +395,7 @@ UTEST(gto_int, antisymmetric_part_is_ignored) {
 UTEST(gto_int, field_is_minus_gradient) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -487,7 +487,7 @@ static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int 
 UTEST(gto_int, far_field_matches_exact) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(256));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     int_test_cluster_t c;
@@ -558,7 +558,7 @@ UTEST(gto_int, far_field_matches_exact) {
 UTEST(gto_int, grid_matches_points) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -670,7 +670,7 @@ UTEST(gto_int, tabulated_boys_matches_series) {
 // covers the spherical to Cartesian conversion of the density (T^T D T) end to end.
 UTEST(gto_int, vlx_h2o_dipole_matches_published) {
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
 
@@ -679,7 +679,7 @@ UTEST(gto_int, vlx_h2o_dipole_matches_published) {
     const md_gto_int_moments_t mom = md_gto_int_charges_moments(&q, NULL);
     EXPECT_NEAR(0.0, mom.charge, 1e-5);
 
-    const md_attribute_t* a = md_attributes_find(&t.sys.attributes, STR_LIT("dipole/ground_state/vector"));
+    const md_attribute_t* a = md_attributes_find(&t.sys.attributes, MD_STR_LIT("dipole/ground_state/vector"));
     if (!a) {
         UTEST_SKIP("h2o.h5 carries no ground state dipole");
     }
@@ -756,7 +756,7 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(32));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -870,7 +870,7 @@ UTEST(gto_int, vlx_amide_gpu_xyz_matches_cpu) {
     md_gto_int_gpu_initialize(device);
 
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.h5"), MD_MEGABYTES(64)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.h5"), MD_MEGABYTES(64)));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -1024,7 +1024,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(128));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     int_test_cluster_t c;
@@ -1232,16 +1232,16 @@ UTEST(gto_int, benchmark) {
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
     vlx_test_t t = {0};
     md_tick_t t0 = md_tick_now();
-    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(1024)));
+    ASSERT_TRUE(vlx_test_load(&t, md_str_from_cstr(path), MD_MEGABYTES(1024)));
     md_gto_basis_t basis = {0};
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t na = t.sys.atom.count;
     float* xyz = (float*)malloc(sizeof(float) * 3 * na);
     double* Z = (double*)malloc(sizeof(double) * na);
     ASSERT_EQ(na, vlx_test_atom_xyz_bohr(xyz, 3 * na, &t));
-    ASSERT_EQ(na, qm_test_series(Z, na, &t, STR_LIT("qm/atom/nuclear_charge")));
+    ASSERT_EQ(na, qm_test_series(Z, na, &t, MD_STR_LIT("qm/atom/nuclear_charge")));
     double* rows = NULL; double* w = NULL; size_t num_ao = 0;
-    const size_t num_mo = md_qm_density_orbitals(&rows, &w, &num_ao, &t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+    const size_t num_mo = md_qm_density_orbitals(&rows, &w, &num_ao, &t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
     ASSERT_TRUE(num_mo > 0 && num_ao == md_gto_basis_num_ao(&basis));
     double* D = (double*)malloc(sizeof(double) * num_ao * num_ao);
     ASSERT_TRUE(md_gto_density_from_orbitals(D, rows, num_ao, 1, w, num_mo, num_ao, NULL));

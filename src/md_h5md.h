@@ -100,12 +100,12 @@ extern "C" {
 
 // Read the system: its atoms, its bonds, the first frame's coordinates and cell, and what is
 // published above, replacing what the system held.
-bool md_h5md_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, str_t filename);
+bool md_h5md_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename);
 
 // Publish the trajectory as the run 'run'. The particle group read must hold as many particles as
 // the system has atoms. flags are md_run_flag_t; none applies, as HDF5 keeps its own index and
 // there is no '<file>.cache' to write.
-bool md_h5md_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_h5md_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

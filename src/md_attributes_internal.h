@@ -15,7 +15,7 @@
 struct md_attribute_io_t {
     struct {
         uint64_t  hash;       // of the path; 0 marks an empty slot
-        str_t     path;       // owned by alloc
+        md_str_t     path;       // owned by alloc
         md_file_t file;
         uint64_t  last_use;
     } slot[MD_ATTRIBUTE_IO_MAX_FILES];

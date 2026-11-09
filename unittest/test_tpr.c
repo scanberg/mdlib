@@ -28,7 +28,7 @@ UTEST(xdr, cursor) {
     md_xdr_t xdr = md_xdr_init(buf, sizeof(buf));
     int32_t i;
     uint32_t u;
-    str_t str;
+    md_str_t str;
     float f;
     int64_t h;
     EXPECT_TRUE(md_xdr_read_i32(&xdr, &i));
@@ -36,7 +36,7 @@ UTEST(xdr, cursor) {
     EXPECT_TRUE(md_xdr_read_i32(&xdr, &i));
     EXPECT_EQ(-2, i);
     EXPECT_TRUE(md_xdr_read_string(&xdr, &str, 64));
-    EXPECT_TRUE(str_eq(str, STR_LIT("abcde")));
+    EXPECT_TRUE(md_str_eq(str, MD_STR_LIT("abcde")));
     EXPECT_EQ(20u, xdr.pos);   // Padded to a multiple of 4
     EXPECT_TRUE(md_xdr_read_f32(&xdr, &f));
     EXPECT_EQ(1.5f, f);
@@ -56,7 +56,7 @@ UTEST(xdr, cursor) {
 }
 
 // Checks the system built from a tpr against the .gro gmx writes from the same file
-static void compare_with_gro(int* utest_result, const md_system_t* sys, const md_system_state_t* state, str_t gro_path) {
+static void compare_with_gro(int* utest_result, const md_system_t* sys, const md_system_state_t* state, md_str_t gro_path) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t gro = { .alloc = alloc };
     md_system_state_t gro_st = { .alloc = alloc };
@@ -68,7 +68,7 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
     for (size_t i = 0; i < sys->atom.count; ++i) {
         while (res + 1 < sys->residue.count && sys->residue.atom_offset[res + 1] <= i) res++;
         while (gro_res + 1 < gro.residue.count && gro.residue.atom_offset[gro_res + 1] <= i) gro_res++;
-        if (!str_eq(md_system_residue_name(sys, res), md_system_residue_name(&gro, gro_res)) || sys->residue.seq_id[res] != gro.residue.seq_id[gro_res]) {
+        if (!md_str_eq(md_system_residue_name(sys, res), md_system_residue_name(&gro, gro_res)) || sys->residue.seq_id[res] != gro.residue.seq_id[gro_res]) {
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
@@ -89,10 +89,10 @@ UTEST(tpr, parse_tip3p) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_tpr_data_t data = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
     EXPECT_EQ(129, data.file_version);
     EXPECT_FALSE(data.double_precision);
-    EXPECT_TRUE(str_eq(data.name, STR_LIT("Protein in water")));
+    EXPECT_TRUE(md_str_eq(data.name, MD_STR_LIT("Protein in water")));
     EXPECT_EQ(1577u, data.num_atoms);
     EXPECT_EQ(MD_TPR_PBC_XYZ, data.pbc);
     EXPECT_TRUE(data.has_box);
@@ -103,19 +103,19 @@ UTEST(tpr, parse_tip3p) {
     ASSERT_EQ(4u, data.num_molblocks);
     const md_tpr_moltype_t* prot = &data.moltypes[0];
     const md_tpr_moltype_t* sol  = &data.moltypes[1];
-    EXPECT_TRUE(str_eq(prot->name, STR_LIT("Protein_chain_U")));
+    EXPECT_TRUE(md_str_eq(prot->name, MD_STR_LIT("Protein_chain_U")));
     EXPECT_EQ(PEPTIDE_ATOMS, (int)prot->num_atoms);
     EXPECT_EQ(2u, prot->num_residues);
     EXPECT_EQ(PEPTIDE_BONDS, (int)prot->num_bonds);
-    EXPECT_TRUE(str_eq(prot->residues[0].name, STR_LIT("TRP")));
+    EXPECT_TRUE(md_str_eq(prot->residues[0].name, MD_STR_LIT("TRP")));
     EXPECT_EQ(221, prot->residues[0].nr);
-    EXPECT_TRUE(str_eq(prot->atoms[0].name, STR_LIT("N")));
-    EXPECT_TRUE(str_eq(prot->atoms[0].type, STR_LIT("N3")));
+    EXPECT_TRUE(md_str_eq(prot->atoms[0].name, MD_STR_LIT("N")));
+    EXPECT_TRUE(md_str_eq(prot->atoms[0].type, MD_STR_LIT("N3")));
     EXPECT_EQ(7, prot->atoms[0].atomic_number);
     EXPECT_NEAR(14.01f, prot->atoms[0].mass, 1e-4f);
 
     // SETTLE water: two O-H bonds and no H-H
-    EXPECT_TRUE(str_eq(sol->name, STR_LIT("SOL")));
+    EXPECT_TRUE(md_str_eq(sol->name, MD_STR_LIT("SOL")));
     ASSERT_EQ(3u, sol->num_atoms);
     ASSERT_EQ(2u, sol->num_bonds);
     EXPECT_EQ(0, sol->bonds[0].idx[0]);
@@ -139,7 +139,7 @@ UTEST(tpr, system_tip3p) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "peptide_tip3p.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr")));
     EXPECT_EQ(1577u, sys.atom.count);
     EXPECT_EQ(1577u, state.num_atoms);
     EXPECT_EQ(2u + 509u + 4u, sys.residue.count);
@@ -155,22 +155,22 @@ UTEST(tpr, system_tip3p) {
     }
     EXPECT_EQ(0u, unknown);
 
-    const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+    const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
     EXPECT_TRUE(charge != NULL);
     // Mass lives on the type, and is exact there: no per atom copy
-    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/mass")) == NULL);
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("atom/mass")) == NULL);
     EXPECT_NEAR(14.01f, md_atom_mass(&sys.atom, 0), 1e-4f);         // N
     EXPECT_NEAR(16.0f, md_atom_mass(&sys.atom, PEPTIDE_ATOMS), 1e-4f);     // OW
     // The force field type travels with the type; the sentinel type has none
     EXPECT_EQ(sys.atom.type.count, md_array_size(sys.atom.type.ff_type));
-    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, sys.atom.type_idx[0]), STR_LIT("N3")));
-    EXPECT_TRUE(str_empty(md_particle_type_ff_type(&sys.atom.type, 0)));
+    EXPECT_TRUE(md_str_eq(md_particle_type_ff_type(&sys.atom.type, sys.atom.type_idx[0]), MD_STR_LIT("N3")));
+    EXPECT_TRUE(md_str_empty(md_particle_type_ff_type(&sys.atom.type, 0)));
 
     // No coarse grained types in an all-atom system
     EXPECT_FALSE(md_system_is_coarse_grained(&sys));
 
     // Residue names, numbers (the waters and ions renumbered the way gmx does) and coordinates
-    compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip3p.gro"));
+    compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.gro"));
 
     // What a caller does next: everything but the bonds is derived. One structure per molecule.
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
@@ -184,8 +184,8 @@ UTEST(tpr, double_precision) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t s = {0};
     md_tpr_data_t d = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&s, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
-    ASSERT_TRUE(md_tpr_data_parse_file(&d, STR_LIT(TPR_DIR "peptide_tip3p_double.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&s, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&d, MD_STR_LIT(TPR_DIR "peptide_tip3p_double.tpr"), arena));
     EXPECT_TRUE(d.double_precision);
     ASSERT_EQ(s.num_atoms, d.num_atoms);
     ASSERT_EQ(s.num_moltypes, d.num_moltypes);
@@ -206,7 +206,7 @@ UTEST(tpr, virtual_sites) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr")));
     EXPECT_EQ(2074u, sys.atom.count);
     // TIP4P: the two O-H bonds of the SETTLE. The charge site is not bonded, as when read from coordinates.
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, sys.bond.count);
@@ -226,7 +226,7 @@ UTEST(tpr, virtual_sites) {
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
     EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
-    compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.gro"));
+    compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.gro"));
     md_arena_allocator_destroy(arena);
 }
 
@@ -251,7 +251,7 @@ static void expect_elements_as(int* utest_result, const md_system_t* ref, const 
 UTEST(tpr, missing_atomic_numbers) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
 
     md_system_t ref = { .alloc = arena };
     md_system_state_t ref_state = { .alloc = arena };
@@ -279,7 +279,7 @@ UTEST(tpr, corrupt) {
     md_allocator_i* heap = md_get_heap_allocator();
 
     md_file_t file = {0};
-    ASSERT_TRUE(md_file_open(&file, STR_LIT(TPR_DIR "peptide_tip4p.tpr"), MD_FILE_READ));
+    ASSERT_TRUE(md_file_open(&file, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr"), MD_FILE_READ));
     const size_t size = (size_t)md_file_size(file);
     uint8_t* buf = md_alloc(heap, size);
     ASSERT_EQ(size, md_file_read(file, buf, size));
@@ -307,7 +307,7 @@ UTEST(tpr, corrupt) {
 
     // Not a tpr at all
     EXPECT_FALSE(md_tpr_data_parse_buffer(&data, "This is not a run input file", 28, arena));
-    EXPECT_FALSE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "does_not_exist.tpr"), arena));
+    EXPECT_FALSE(md_tpr_data_parse_file(&data, MD_STR_LIT(TPR_DIR "does_not_exist.tpr"), arena));
 
     md_free(heap, buf, size);
     md_arena_allocator_destroy(arena);
@@ -319,11 +319,11 @@ UTEST(tpr, martini) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_tpr_data_t data = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "martini3.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(TPR_DIR "martini3.tpr"), arena));
     EXPECT_EQ(12u, data.num_nb_types);
     // W: sigma 0.47 nm, epsilon 4.65 kJ/mol
     const md_tpr_moltype_t* w = &data.moltypes[4];
-    ASSERT_TRUE(str_eq(w->name, STR_LIT("W")));
+    ASSERT_TRUE(md_str_eq(w->name, MD_STR_LIT("W")));
     const md_tpr_lj_t lj = md_tpr_lj_pair(&data, w->atoms[0].type_idx, w->atoms[0].type_idx);
     EXPECT_NEAR(0.47f, powf(lj.c12 / lj.c6, 1.0f / 6.0f), 1e-4f);
     EXPECT_NEAR(0.5f * powf(2.0f, 1.0f / 6.0f) * 4.7f, md_tpr_lj_vdw_radius(lj), 1e-3f);
@@ -371,9 +371,9 @@ UTEST(tpr, martini) {
     const md_particle_type_idx_t ile_bb = sys.atom.type_idx[6], ile_sc1 = sys.atom.type_idx[7];
     EXPECT_EQ(trp_bb, ile_bb);
     EXPECT_NE(trp_sc1, ile_sc1);
-    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, trp_sc1), STR_LIT("TC4")));
-    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, ile_sc1), STR_LIT("SC2")));
-    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, trp_bb), STR_LIT("Q5")));
+    EXPECT_TRUE(md_str_eq(md_particle_type_ff_type(&sys.atom.type, trp_sc1), MD_STR_LIT("TC4")));
+    EXPECT_TRUE(md_str_eq(md_particle_type_ff_type(&sys.atom.type, ile_sc1), MD_STR_LIT("SC2")));
+    EXPECT_TRUE(md_str_eq(md_particle_type_ff_type(&sys.atom.type, trp_bb), MD_STR_LIT("Q5")));
     EXPECT_NEAR(36.0f, sys.atom.type.mass[trp_sc1], 1e-4f);
     EXPECT_NEAR(54.0f, sys.atom.type.mass[ile_sc1], 1e-4f);
     EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, 618), 1e-4f);    // The last water
@@ -392,7 +392,7 @@ UTEST(tpr, martini) {
         size_t num_backbone = 0;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
-            const bool bb = str_eq(md_atom_name(&sys.atom, i), STR_LIT("BB"));
+            const bool bb = md_str_eq(md_atom_name(&sys.atom, i), MD_STR_LIT("BB"));
             EXPECT_EQ((int)bb,  (int)((flags & MD_ATOM_FLAG_BACKBONE)   != 0));
             EXPECT_EQ((int)!bb, (int)((flags & MD_ATOM_FLAG_SIDE_CHAIN) != 0));
             num_backbone += (flags & MD_ATOM_FLAG_BACKBONE) != 0;
@@ -400,14 +400,14 @@ UTEST(tpr, martini) {
         EXPECT_EQ((size_t)1, num_backbone);
     }
 
-    compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "martini3.gro"));
+    compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "martini3.gro"));
 
     // Read from the coordinates alone, the beads of the peptide get what the topology gives them: the masses and sizes
     // of Martini 3 (Trp's tiny beads, its massless SC3, Ile's small SC1), and the same roles
     {
         md_system_t gro = { .alloc = arena };
         md_system_state_t gro_state = { .alloc = arena };
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(TPR_DIR "martini3.gro"), NULL));
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, MD_STR_LIT(TPR_DIR "martini3.gro"), NULL));
         for (size_t i = 0; i < 8; ++i) {
             EXPECT_EQ(md_atom_mass(&sys.atom, i), md_atom_mass(&gro.atom, i));
             EXPECT_NEAR(md_atom_radius(&sys.atom, i), md_atom_radius(&gro.atom, i), 0.01f);
@@ -469,7 +469,7 @@ UTEST(tpr, nonbonded_settings) {
         char path[512];
         snprintf(path, sizeof(path), "%s%s", TPR_DIR, e->file);
         md_tpr_data_t data = {0};
-        ASSERT_TRUE(md_tpr_data_parse_file(&data, str_from_cstr(path), arena));
+        ASSERT_TRUE(md_tpr_data_parse_file(&data, md_str_from_cstr(path), arena));
         const md_tpr_nonbonded_t* nb = &data.nonbonded;
         EXPECT_TRUE(nb->valid);
         EXPECT_EQ(e->scheme, nb->cutoff_scheme);
@@ -503,7 +503,7 @@ UTEST(tpr, nonbonded_settings) {
 UTEST(tpr, nonbonded_parameters_and_exclusions) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), arena));
 
     // c6 = 4 epsilon sigma^6, c12 = 4 epsilon sigma^12
     ASSERT_EQ(2u, data.num_nb_types);
@@ -524,8 +524,8 @@ UTEST(tpr, nonbonded_parameters_and_exclusions) {
     ASSERT_EQ(3u, data.num_moltypes);
     const md_tpr_moltype_t* chain = &data.moltypes[0];
     const md_tpr_moltype_t* solo  = &data.moltypes[1];
-    ASSERT_TRUE(str_eq(solo->name, STR_LIT("SOLP")));
-    ASSERT_TRUE(str_eq(chain->name, STR_LIT("CHAIN")));
+    ASSERT_TRUE(md_str_eq(solo->name, MD_STR_LIT("SOLP")));
+    ASSERT_TRUE(md_str_eq(chain->name, MD_STR_LIT("CHAIN")));
     ASSERT_EQ(5u, chain->num_atoms);
     ASSERT_TRUE(chain->excl_offset && chain->excl);
     // Within two bonds, and 1-4 given explicitly. The atom itself is not listed.
@@ -553,9 +553,9 @@ UTEST(tpr, nonbonded_parameters_and_exclusions) {
 
     // SETTLE water excludes its three atoms from each other
     md_tpr_data_t pep = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&pep, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&pep, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
     const md_tpr_moltype_t* sol = &pep.moltypes[1];
-    ASSERT_TRUE(str_eq(sol->name, STR_LIT("SOL")));
+    ASSERT_TRUE(md_str_eq(sol->name, MD_STR_LIT("SOL")));
     ASSERT_TRUE(sol->excl_offset != NULL);
     for (uint32_t i = 0; i < 3; ++i) {
         EXPECT_EQ(2u, sol->excl_offset[i + 1] - sol->excl_offset[i]);
@@ -586,14 +586,14 @@ static size_t count_elastic(const md_system_t* sys) {
 // The bead of name in residue res (zero based) of a molecule type, -1 when there is none
 static int32_t moltype_bead(const md_tpr_moltype_t* mt, int32_t res, const char* name) {
     for (size_t i = 0; i < mt->num_atoms; ++i) {
-        if (mt->atoms[i].residue == res && str_eq_cstr(mt->atoms[i].name, name)) return (int32_t)i;
+        if (mt->atoms[i].residue == res && md_str_eq_cstr(mt->atoms[i].name, name)) return (int32_t)i;
     }
     return -1;
 }
 
 static const md_tpr_moltype_t* find_moltype(const md_tpr_data_t* data, const char* name) {
     for (size_t t = 0; t < data->num_moltypes; ++t) {
-        if (str_eq_cstr(data->moltypes[t].name, name)) return &data->moltypes[t];
+        if (md_str_eq_cstr(data->moltypes[t].name, name)) return &data->moltypes[t];
     }
     return NULL;
 }
@@ -612,7 +612,7 @@ UTEST(tpr, martini_no_elastic_bonds) {
         md_system_state_t state = { .alloc = arena };
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", files[f]);
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, str_from_cstr(path)));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path)));
         EXPECT_EQ(0u, count_elastic(&sys));
         if (count_elastic(&sys)) printf("%s: %zu bonds taken for elastic ones\n", files[f], count_elastic(&sys));
         md_arena_allocator_destroy(arena);
@@ -625,7 +625,7 @@ UTEST(tpr, martini_no_elastic_bonds) {
 UTEST(tpr, elastic_bonds) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_peptides.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_peptides.tpr"), arena));
 
     md_system_t base = { .alloc = arena };
     md_system_state_t base_state = { .alloc = arena };
@@ -679,7 +679,7 @@ UTEST(tpr, elastic_bonds) {
     for (size_t i = 0; i < sys.bond.count; ++i) {
         if (md_bond_kind(sys.bond.flags[i]) != MD_BOND_KIND_ELASTIC) continue;
         const md_atom_pair_t p = sys.bond.pairs[i];
-        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, p.idx[0]), "BB") && str_eq_cstr(md_atom_name(&sys.atom, p.idx[1]), "BB"));
+        EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, p.idx[0]), "BB") && md_str_eq_cstr(md_atom_name(&sys.atom, p.idx[1]), "BB"));
     }
 
     // Structures, rings and chemistry go by the molecules alone

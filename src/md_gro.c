@@ -22,7 +22,7 @@
 
 // This is a specialized version of tokenization that only extracts float tokens.
 // It is designed to avoid the issue where floats are not separated by whitespace.
-static size_t extract_float_tokens(str_t* tok_arr, size_t tok_cap, str_t str) {
+static size_t extract_float_tokens(md_str_t* tok_arr, size_t tok_cap, md_str_t str) {
     size_t n = 0;
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
@@ -42,7 +42,7 @@ static size_t extract_float_tokens(str_t* tok_arr, size_t tok_cap, str_t str) {
         while (c < end && (is_digit(*c) || *c == '.'))
             ++c;
         if (beg != c) {
-            tok_arr[n++] = (str_t) {beg, c-beg};
+            tok_arr[n++] = (md_str_t) {beg, c-beg};
         }
     }
     
@@ -55,13 +55,13 @@ static size_t extract_float_tokens(str_t* tok_arr, size_t tok_cap, str_t str) {
 // the width is the distance between the first two decimal points of an atom line, and the decimals
 // five fewer: the point is always the fifth character of a field. False when the line does not show
 // such columns.
-static bool gro_coordinate_columns(size_t* width, size_t* decimals, str_t line) {
-    const str_t coords = str_substr(line, 20, SIZE_MAX);
+static bool gro_coordinate_columns(size_t* width, size_t* decimals, md_str_t line) {
+    const md_str_t coords = md_str_substr(line, 20, SIZE_MAX);
     size_t dot[3];
     size_t from = 0;
     for (int i = 0; i < 3; ++i) {
         size_t loc;
-        if (!str_find_char(&loc, str_substr(coords, from, SIZE_MAX), '.')) return false;
+        if (!md_str_find_char(&loc, md_str_substr(coords, from, SIZE_MAX), '.')) return false;
         dot[i] = from + loc;
         from = dot[i] + 1;
     }
@@ -75,19 +75,19 @@ static bool gro_coordinate_columns(size_t* width, size_t* decimals, str_t line) 
 // The coordinates of an atom line, in nm, and its velocities in nm/ps (NAN when the line has none). A line that keeps
 // to the columns (when there are, as the first atom line shows) is read field by field without a scan; one that does
 // not is read by its tokens. False when it was read by position, as it had too few tokens.
-static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool columns, size_t width, size_t decimals) {
+static bool gro_parse_coordinates(float xyz[3], float vel[3], md_str_t line, bool columns, size_t width, size_t decimals) {
     vel[0] = vel[1] = vel[2] = NAN;
     if (columns && line.len >= 20 + 3 * width) {
         const char* f = line.ptr + 20;
-        bool read = md_parse_fixed_f32(&xyz[0], (str_t){ f,             width }, decimals) &&
-                    md_parse_fixed_f32(&xyz[1], (str_t){ f + width,     width }, decimals) &&
-                    md_parse_fixed_f32(&xyz[2], (str_t){ f + 2 * width, width }, decimals);
+        bool read = md_parse_fixed_f32(&xyz[0], (md_str_t){ f,             width }, decimals) &&
+                    md_parse_fixed_f32(&xyz[1], (md_str_t){ f + width,     width }, decimals) &&
+                    md_parse_fixed_f32(&xyz[2], (md_str_t){ f + 2 * width, width }, decimals);
         // Then nothing, or the three velocities
-        if (read && !str_empty(str_trim(str_substr(line, 20 + 3 * width, SIZE_MAX)))) {
+        if (read && !md_str_empty(md_str_trim(md_str_substr(line, 20 + 3 * width, SIZE_MAX)))) {
             read = line.len >= 20 + 6 * width &&
-                   md_parse_fixed_f32(&vel[0], (str_t){ f + 3 * width, width }, decimals + 1) &&
-                   md_parse_fixed_f32(&vel[1], (str_t){ f + 4 * width, width }, decimals + 1) &&
-                   md_parse_fixed_f32(&vel[2], (str_t){ f + 5 * width, width }, decimals + 1);
+                   md_parse_fixed_f32(&vel[0], (md_str_t){ f + 3 * width, width }, decimals + 1) &&
+                   md_parse_fixed_f32(&vel[1], (md_str_t){ f + 4 * width, width }, decimals + 1) &&
+                   md_parse_fixed_f32(&vel[2], (md_str_t){ f + 5 * width, width }, decimals + 1);
             if (!read) {
                 vel[0] = vel[1] = vel[2] = NAN;
             }
@@ -95,13 +95,13 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool c
         if (read) return true;
     }
 
-    str_t tokens[16];
-    const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), str_substr(line, 20, SIZE_MAX));
+    md_str_t tokens[16];
+    const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), md_str_substr(line, 20, SIZE_MAX));
     if (num_tokens < 3) {
         // Fallback to fixed width format
-        xyz[0] = (float)parse_float(str_substr(line, 20, 8));
-        xyz[1] = (float)parse_float(str_substr(line, 28, 8));
-        xyz[2] = (float)parse_float(str_substr(line, 36, 8));
+        xyz[0] = (float)parse_float(md_str_substr(line, 20, 8));
+        xyz[1] = (float)parse_float(md_str_substr(line, 28, 8));
+        xyz[2] = (float)parse_float(md_str_substr(line, 36, 8));
         return false;
     }
     xyz[0] = (float)parse_float(tokens[0]);
@@ -121,7 +121,7 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool c
 // The coordinates and velocities of an atom line in the columns GROMACS writes by default, "%8.3f" and "%8.4f": three
 // fields at a time (md_parse_fixed_f32x3_w8), what gro_parse_coordinates reads by those columns. False where it would
 // read the line otherwise, or would find something there that is not three velocities: the caller reads the line with it.
-static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], str_t line) {
+static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], md_str_t line) {
     if (line.len < 20 + 24 || !md_parse_fixed_f32x3_w8(xyz, line.ptr + 20, 3)) return false;
     if (line.len == 20 + 24) {
         vel[0] = vel[1] = vel[2] = NAN;
@@ -166,7 +166,7 @@ typedef struct gro_res_fields_t {
     uint16_t len;
 } gro_res_fields_t;
 
-static MD_FORCE_INLINE gro_res_fields_t gro_res_fields(str_t line) {
+static MD_FORCE_INLINE gro_res_fields_t gro_res_fields(md_str_t line) {
     gro_res_fields_t f = { 0, 0, (uint16_t)MD_MIN(line.len, GRO_RES_FIELDS) };
     if (line.len >= GRO_RES_FIELDS) {
         MD_MEMCPY(&f.lo, line.ptr, 8);
@@ -184,10 +184,10 @@ static MD_FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields
     return a.lo == b.lo && a.hi == b.hi && a.len == b.len;
 }
 
-// The field of 5 characters at offset as a label, without the whitespace around it: make_label(str_trim()) of it. As one
+// The field of 5 characters at offset as a label, without the whitespace around it: make_label(md_str_trim()) of it. As one
 // word where the line goes on for 8 characters from there and the field has no control character (whose blanks are
-// spaces alone, which a byte above ' ' bounds: no scan); else as make_label(str_trim()).
-static MD_FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
+// spaces alone, which a byte above ' ' bounds: no scan); else as make_label(md_str_trim()).
+static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
     if (line.len >= offset + 8) {
         uint64_t w;
         MD_MEMCPY(&w, line.ptr + offset, 8);
@@ -207,12 +207,12 @@ static MD_FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
             return lbl;
         }
     }
-    return make_label(str_trim(str_substr(line, offset, 5)));
+    return make_label(md_str_trim(md_str_substr(line, offset, 5)));
 }
 
-// The residue number of a line (columns 0 to 4): parse_int(str_trim()) of it. Blanks and then digits up to its end
-// without a scan of what is around; else as parse_int(str_trim()).
-static MD_FORCE_INLINE int64_t gro_res_number(str_t line) {
+// The residue number of a line (columns 0 to 4): parse_int(md_str_trim()) of it. Blanks and then digits up to its end
+// without a scan of what is around; else as parse_int(md_str_trim()).
+static MD_FORCE_INLINE int64_t gro_res_number(md_str_t line) {
     if (line.len >= 5) {
         const char* c = line.ptr;
         uint32_t i = 0;
@@ -222,7 +222,7 @@ static MD_FORCE_INLINE int64_t gro_res_number(str_t line) {
         while (j < 5 && is_digit(c[j])) value = value * 10 + (c[j++] - '0');
         if (j == 5) return value;
     }
-    return parse_int(str_trim(str_substr(line, 0, 5)));
+    return parse_int(md_str_trim(md_str_substr(line, 0, 5)));
 }
 
 // The velocities, in the file's own nm/ps rather than converted the way the coordinates are, because a velocity has a
@@ -232,8 +232,8 @@ static inline md_unit_t gro_velocity_unit(void) {
     return md_unit_div(md_unit_nanometer(), md_unit_picosecond());
 }
 
-static bool gro_parse_box(md_unitcell_t* cell, str_t line) {
-    str_t tokens[16];
+static bool gro_parse_box(md_unitcell_t* cell, md_str_t line) {
+    md_str_t tokens[16];
     const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), line);
     if (num_tokens != 3 && num_tokens != 9) {
         MD_LOG_ERROR("Failed to parse box, expected 3 or 9 tokens");
@@ -285,7 +285,7 @@ typedef struct gro_load_t {
     gro_piece_t*          pieces;
     size_t                atom_beg;         // the atom of the pass's first line
     size_t                num_atoms;        // of the file: the lines after them are not atoms
-    str_t                 prev;             // the residue fields of the atom line before the pass, empty if none
+    md_str_t                 prev;             // the residue fields of the atom line before the pass, empty if none
     bool                  columns_w8;       // the columns GROMACS writes by default: three fields of 8 at a time
     gro_residue_start_t*  pass_res;         // [lines of the pass]
     gro_residue_start_t*  res;              // of the load
@@ -326,7 +326,7 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
         size_t atom = L->atom_beg + piece->first_line;
         const size_t atom_end = atom + piece->num_atoms;
-        str_t line;
+        md_str_t line;
         while (atom < atom_end && md_text_lines_next(&lines, &line)) {
             const gro_res_fields_t fields = gro_res_fields(line);
             if (atom == 0 || !gro_res_fields_eq(prev, fields)) {
@@ -469,10 +469,10 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     md_array(gro_residue_start_t) res = 0;
     char prev_res[GRO_RES_FIELDS];
     md_attribute_id_t velocity_id = MD_ATTRIBUTE_INVALID;
-    str_t line;
+    md_str_t line;
 
     // The title and the number of atoms, of the first block
-    str_t block = md_reader_block_parallel(src, ex);
+    md_str_t block = md_reader_block_parallel(src, ex);
     const char* c = block.ptr;
     const char* e = block.ptr + block.len;
     if (c == e) {
@@ -484,7 +484,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
     }
-    const int64_t num_atoms_in_file = parse_int(str_trim(md_text_next_line(&c, e)));
+    const int64_t num_atoms_in_file = parse_int(md_str_trim(md_text_next_line(&c, e)));
     if (num_atoms_in_file <= 0 || num_atoms_in_file >= UINT32_MAX) {
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
@@ -501,7 +501,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         MD_MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
         MD_MEMSET(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
         sys->atom.count = num_atoms;
-        md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+        md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
     }
     // Room for the residues of the load (no more than the atoms) and of a pass (no more than its lines, of 20 characters
     // at least), so that nothing grows (and copies) in the arena
@@ -518,14 +518,14 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     L.atom_flags = sys->atom.flags;
     {
         const char* fc = c;
-        const str_t first = md_text_next_line(&fc, e);
+        const md_str_t first = md_text_next_line(&fc, e);
         L.columns = gro_coordinate_columns(&L.width, &L.decimals, first);
         L.columns_w8 = L.columns && L.width == 8;
         float xyz[3], vel[3];
         gro_parse_coordinates(xyz, vel, first, L.columns, L.width, L.decimals);
         if (!gro_absent(vel[0])) {
             // Read into the attribute itself, committed once all are read
-            L.velocity = md_attributes_reserve_atom_column(&sys->attributes, STR_LIT("atom/velocity"), gro_velocity_unit(), 3, num_atoms, &velocity_id);
+            L.velocity = md_attributes_reserve_atom_column(&sys->attributes, MD_STR_LIT("atom/velocity"), gro_velocity_unit(), 3, num_atoms, &velocity_id);
         }
     }
 
@@ -539,10 +539,10 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
             taken += consumed;
             // The residue fields of the last atom line, for the next pass
             if (L.atom_beg < num_atoms) {
-                const str_t last = md_text_line_before(block.ptr, taken);
+                const md_str_t last = md_text_line_before(block.ptr, taken);
                 const size_t n = MD_MIN(last.len, sizeof(prev_res));
                 MD_MEMCPY(prev_res, last.ptr, n);
-                L.prev = (str_t){ prev_res, n };
+                L.prev = (md_str_t){ prev_res, n };
             }
         }
         md_reader_advance(src, taken);
@@ -595,7 +595,7 @@ done:
 
 #undef GRO_ROOM
 
-bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
+bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
     // The reader's buffer in a temp scope, below the one of the load (gro_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
@@ -611,7 +611,7 @@ bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     return result;
 }
 
-bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const md_executor_t* ex) {
+bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
     md_reader_i src = md_reader_from_str(str);
     return gro_load(sys, state, &src, ex);
 }

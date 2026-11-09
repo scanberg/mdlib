@@ -55,9 +55,9 @@ bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_x
 // Its user_data is sys, borrowed: the run has to be removed before the system goes, as it is when
 // the prefix is removed with the trajectory. The file's atom count must match the system's.
 // The atom count of the first frame, 0 when the file is not XTC
-size_t md_xtc_file_atom_count(str_t filename);
+size_t md_xtc_file_atom_count(md_str_t filename);
 
-bool md_xtc_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_xtc_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

@@ -136,7 +136,7 @@ static const float bond_dash_styles[DASH_STYLE_COUNT][3] = {
 #define SHADER_BUF_SIZE MD_KILOBYTES(14)
 
 
-static const str_t default_shader_output = STR_INIT(
+static const md_str_t default_shader_output = MD_STR_INIT(
 "layout(location = 0) out vec4 out_color;\n"
 "void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {\n"
 "    out_color = color;\n"
@@ -152,7 +152,7 @@ static const str_t default_shader_output = STR_INIT(
 // the list there in u_buf_list, or (u_prim_list >= 0) the u_prim_count primitives in the list there, in blocks of
 // QUAD_BLOCK entries of it (a subset, SUBSETS), each u_prim_offset + its entry. quad_primitive returns the primitive of
 // the vertex, QUAD_NONE past the count.
-static const str_t instance_shader_src = STR_INIT(
+static const md_str_t instance_shader_src = MD_STR_INIT(
 "#define QUAD_BLOCK " MD_STRINGIFY_VAL(QUAD_BLOCK) "u\n"
 "#define QUAD_NONE 0xFFFFFFFFu\n"
 "uniform samplerBuffer  u_buf_instance;  // RGBA32F, " MD_STRINGIFY_VAL(INSTANCE_TEXELS) " per instance\n"
@@ -1369,28 +1369,28 @@ void md_gl_mol_zero_velocity(md_gl_mol_t handle) {
 // A vertex and a fragment shader: no geometry shaders, which cost more than they save, the more so where they are
 // emulated (Apple's GL over Metal). Primitives are made in the vertex shader instead (QUADS). defines is injected after
 // the version line of both stages.
-static bool create_permuted_program(str_t identifier, gl_program_t* program_permutations, str_t vert_src, str_t frag_src, str_t frag_output_src, str_t defines) {
+static bool create_permuted_program(md_str_t identifier, gl_program_t* program_permutations, md_str_t vert_src, md_str_t frag_src, md_str_t frag_output_src, md_str_t defines) {
     GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
-    const str_t perm_str[] = {
-        STR_INIT("#define ORTHO 0"),
-        STR_INIT("#define ORTHO 1"),
+    const md_str_t perm_str[] = {
+        MD_STR_INIT("#define ORTHO 0"),
+        MD_STR_INIT("#define ORTHO 1"),
     };
     
     MD_ASSERT(MD_COUNTOF(perm_str) <= MAX_SHADER_PERMUTATIONS);
 
     for (uint32_t perm = 0; perm < MAX_SHADER_PERMUTATIONS; ++perm) {
         // The vertex shader takes the instances (INSTANCES), the fragment shader the output snippet
-        md_gl_shader_src_injection_t injections[] = { {perm_str[perm], {0}}, {defines, {0}}, {instance_shader_src, STR_INIT("INSTANCES")}, {frag_output_src, STR_INIT("EXTRA_SRC")} };
+        md_gl_shader_src_injection_t injections[] = { {perm_str[perm], {0}}, {defines, {0}}, {instance_shader_src, MD_STR_INIT("INSTANCES")}, {frag_output_src, MD_STR_INIT("EXTRA_SRC")} };
 
-        if (!str_empty(vert_src) && !md_gl_shader_compile(vert_shader, vert_src, injections, 3)) {
-            MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_ARG(identifier));
+        if (!md_str_empty(vert_src) && !md_gl_shader_compile(vert_shader, vert_src, injections, 3)) {
+            MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", MD_STR_ARG(identifier));
             return false;
         }
 
-        if (!str_empty(frag_src) && !md_gl_shader_compile(frag_shader, frag_src, injections, 4)) {
-            MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_ARG(identifier));
+        if (!md_str_empty(frag_src) && !md_gl_shader_compile(frag_shader, frag_src, injections, 4)) {
+            MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", MD_STR_ARG(identifier));
             return false;
         }
 
@@ -1576,7 +1576,7 @@ void md_gl_initialize(void) {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_velocity_vert, compute_velocity_vert_size}, 0, 0)) {
+        if (!md_gl_shader_compile(vert_shader, (md_str_t){(const char*)compute_velocity_vert, compute_velocity_vert_size}, 0, 0)) {
             return;
         }
         ctx.program[GL_PROGRAM_COMPUTE_VELOCITY].id = glCreateProgram();
@@ -1592,7 +1592,7 @@ void md_gl_initialize(void) {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_derived_vert, compute_derived_vert_size}, 0, 0)) {
+        if (!md_gl_shader_compile(vert_shader, (md_str_t){(const char*)compute_derived_vert, compute_derived_vert_size}, 0, 0)) {
             return;
         }
         ctx.program[GL_PROGRAM_COMPUTE_DERIVED].id = glCreateProgram();
@@ -1609,7 +1609,7 @@ void md_gl_initialize(void) {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_spline_extract_vert, compute_spline_extract_vert_size}, 0, 0)) {
+        if (!md_gl_shader_compile(vert_shader, (md_str_t){(const char*)compute_spline_extract_vert, compute_spline_extract_vert_size}, 0, 0)) {
             return;
         }
 
@@ -1626,7 +1626,7 @@ void md_gl_initialize(void) {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_spline_orient_vert, compute_spline_orient_vert_size}, 0, 0)) {
+        if (!md_gl_shader_compile(vert_shader, (md_str_t){(const char*)compute_spline_orient_vert, compute_spline_orient_vert_size}, 0, 0)) {
             return;
         }
 
@@ -1643,7 +1643,7 @@ void md_gl_initialize(void) {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_spline_subdivide_vert, compute_spline_subdivide_vert_size}, 0, 0)) {
+        if (!md_gl_shader_compile(vert_shader, (md_str_t){(const char*)compute_spline_subdivide_vert, compute_spline_subdivide_vert_size}, 0, 0)) {
             return;
         }
 
@@ -1738,7 +1738,7 @@ void md_gl_shutdown(void) {
     md_arena_allocator_destroy(ctx.arena);
 }
 
-md_gl_shaders_t md_gl_shaders_create(str_t str) {
+md_gl_shaders_t md_gl_shaders_create(md_str_t str) {
     md_gl_shaders_t handle = {0};
 
     uint32_t id = {md_handle_pool_alloc_slot(&ctx.shader_pool)};
@@ -1751,25 +1751,25 @@ md_gl_shaders_t md_gl_shaders_create(str_t str) {
     ctx.shaders[idx].id = id;
     shaders_t* shaders = ctx.shaders + idx;
 
-    if (str_empty(str)) {
+    if (md_str_empty(str)) {
         str = default_shader_output;
     }
-    const str_t backbone_vert_src = {(const char*)backbone_vert, backbone_vert_size};
-    const str_t backbone_frag_src = {(const char*)backbone_frag, backbone_frag_size};
-    const str_t bond_vert_src = {(const char*)bond_vert, bond_vert_size};
-    const str_t bond_frag_src = {(const char*)bond_frag, bond_frag_size};
-    const str_t ring_vert_src = {(const char*)ring_vert, ring_vert_size};
-    const str_t ring_frag_src = {(const char*)ring_frag, ring_frag_size};
-    if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_frag, spacefill_frag_size}, str, (str_t){0})) return handle;
-    if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 0"))) return handle;
-    if (!create_permuted_program(STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("BondPartners"), shaders->bond_partners, bond_vert_src, bond_frag_src, str, STR_LIT("#define BOND_PARTNERS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("ChainGaps"), shaders->chain_gaps, bond_vert_src, bond_frag_src, str, STR_LIT("#define CHAIN_GAPS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("AromaticRings"), shaders->aromatic_rings, ring_vert_src, ring_frag_src, str, (str_t){0})) return handle;
-    if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
-    if (!create_permuted_program(STR_LIT("Tubes"),     shaders->tubes,      backbone_vert_src, backbone_frag_src, str, STR_LIT("#define REP_TUBES 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("Slabs"),     shaders->slabs,      (str_t){(const char*)slab_vert, slab_vert_size}, (str_t){(const char*)slab_frag, slab_frag_size}, str, (str_t){0})) return handle;
+    const md_str_t backbone_vert_src = {(const char*)backbone_vert, backbone_vert_size};
+    const md_str_t backbone_frag_src = {(const char*)backbone_frag, backbone_frag_size};
+    const md_str_t bond_vert_src = {(const char*)bond_vert, bond_vert_size};
+    const md_str_t bond_frag_src = {(const char*)bond_frag, bond_frag_size};
+    const md_str_t ring_vert_src = {(const char*)ring_vert, ring_vert_size};
+    const md_str_t ring_frag_src = {(const char*)ring_frag, ring_frag_size};
+    if (!create_permuted_program(MD_STR_LIT("SpaceFill"), shaders->spacefill,  (md_str_t){(const char*)spacefill_vert, spacefill_vert_size}, (md_str_t){(const char*)spacefill_frag, spacefill_frag_size}, str, (md_str_t){0})) return handle;
+    if (!create_permuted_program(MD_STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, bond_frag_src, str, MD_STR_LIT("#define WEAK_BONDS 0"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, bond_frag_src, str, MD_STR_LIT("#define WEAK_BONDS 1"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("BondPartners"), shaders->bond_partners, bond_vert_src, bond_frag_src, str, MD_STR_LIT("#define BOND_PARTNERS 1"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("ChainGaps"), shaders->chain_gaps, bond_vert_src, bond_frag_src, str, MD_STR_LIT("#define CHAIN_GAPS 1"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("AromaticRings"), shaders->aromatic_rings, ring_vert_src, ring_frag_src, str, (md_str_t){0})) return handle;
+    if (!create_permuted_program(MD_STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, backbone_frag_src, str, MD_STR_LIT("#define REP_RIBBONS 1"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, backbone_frag_src, str, MD_STR_LIT("#define REP_RIBBONS 0"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("Tubes"),     shaders->tubes,      backbone_vert_src, backbone_frag_src, str, MD_STR_LIT("#define REP_TUBES 1"))) return handle;
+    if (!create_permuted_program(MD_STR_LIT("Slabs"),     shaders->slabs,      (md_str_t){(const char*)slab_vert, slab_vert_size}, (md_str_t){(const char*)slab_frag, slab_frag_size}, str, (md_str_t){0})) return handle;
 
     handle.id = id;
     return handle;

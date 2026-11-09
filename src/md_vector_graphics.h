@@ -144,7 +144,7 @@ typedef struct md_vg_cmd_t {
 typedef struct md_vg_scene_t {
     struct md_allocator_i* alloc;
     vec2_t size;
-    str_t default_font_family;
+    md_str_t default_font_family;
     md_array(md_vg_cmd_t) commands;
     md_array(vec2_t) points;
     md_array(md_vg_path_verb_t) verbs;
@@ -224,12 +224,12 @@ void md_vg_scene_init(md_vg_scene_t* scene, vec2_t size, struct md_allocator_i* 
 void md_vg_scene_free(md_vg_scene_t* scene);
 void md_vg_scene_clear(md_vg_scene_t* scene);
 void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size);
-void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, str_t font_family);
+void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, md_str_t font_family);
 
-// The scene as an SVG document: written to w, as a string allocated with alloc (freed with str_free), or to a file
+// The scene as an SVG document: written to w, as a string allocated with alloc (freed with md_str_free), or to a file
 void  md_vg_scene_write_svg(struct md_writer_i* w, const md_vg_scene_t* scene);
-str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, struct md_allocator_i* alloc);
-bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, str_t path);
+md_str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, struct md_allocator_i* alloc);
+bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, md_str_t path);
 
 void md_vg_add_line(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, md_vg_color_t color, float thickness);
 void md_vg_add_line_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, const md_vg_style_t* style);
@@ -261,8 +261,8 @@ void md_vg_add_bezier_quadratic_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p
 void md_vg_add_bezier_cubic(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, vec2_t p3, md_vg_color_t color, float thickness);
 void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, vec2_t p3, const md_vg_style_t* style);
 
-void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, str_t text);
-void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, str_t text);
+void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_str_t text);
+void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, md_str_t text);
 
 void md_vg_path_clear(md_vg_scene_t* scene);
 void md_vg_path_move_to(md_vg_scene_t* scene, vec2_t pos);

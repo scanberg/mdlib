@@ -109,10 +109,10 @@ static inline vial_node_id vial_child(const vial_tree_t* t, vial_node_id id, uin
 
 // Parses tokens (from vial_lex, comments included) into a tree. Reports E0101 and E0103 for text that does not parse,
 // E0701 for v1 spellings, E0801 for what is not supported yet and E0803 for what VIAL never has.
-vial_tree_t vial_parse(const vial_token_t* tokens, str_t src, vial_diags_t* diags, md_allocator_i* alloc);
+vial_tree_t vial_parse(const vial_token_t* tokens, md_str_t src, vial_diags_t* diags, md_allocator_i* alloc);
 
 const char* vial_node_kind_str(vial_node_kind_t kind);
 const char* vial_cmp_str(vial_cmp_t cmp);
 
 // The tree as indented text, one node per line: "kind beg..end [sub] [text]". For golden tests.
-str_t vial_tree_dump(const vial_tree_t* tree, str_t src, md_allocator_i* alloc);
+md_str_t vial_tree_dump(const vial_tree_t* tree, md_str_t src, md_allocator_i* alloc);

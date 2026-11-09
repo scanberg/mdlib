@@ -33,12 +33,12 @@ typedef struct ref_comp_t {
     md_array(ref_bond_t) bond;
 } ref_comp_t;
 
-static inline md_array(ref_comp_t) read_components(str_t path, md_allocator_i* alloc) {
+static inline md_array(ref_comp_t) read_components(md_str_t path, md_allocator_i* alloc) {
     md_array(ref_comp_t) comps = 0;
-    str_t text = load_textfile(path, alloc);
-    str_t line;
+    md_str_t text = md_load_textfile(path, alloc);
+    md_str_t line;
     char buf[256];
-    while (str_extract_line(&line, &text)) {
+    while (md_str_extract_line(&line, &text)) {
         if (line.len == 0 || line.ptr[0] == '#' || line.len >= sizeof(buf)) continue;
         MD_MEMCPY(buf, line.ptr, line.len);
         buf[line.len] = '\0';
@@ -50,7 +50,7 @@ static inline md_array(ref_comp_t) read_components(str_t path, md_allocator_i* a
             ref_atom_t a = { 0 };
             char el[8];
             sscanf(buf + 2, "%7s %7s %d %f %f %f", a.name, el, &a.q, &a.x.x, &a.x.y, &a.x.z);
-            a.z = md_util_element_lookup((str_t){ el, strlen(el) }, true);
+            a.z = md_util_element_lookup((md_str_t){ el, strlen(el) }, true);
             md_array_push(md_array_last(comps)->atom, a, alloc);
         } else if (buf[0] == 'B' && buf[1] == ' ' && md_array_size(comps)) {
             ref_bond_t b = { 0 };
@@ -75,7 +75,7 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     for (int i = 0; i < na; ++i) map[i] = (strip_h && c->atom[i].z == 1) ? -1 : n++;
 
     sys->atom.count = n;
-    md_particle_type_add(&sys->atom.type, STR_LIT(""), (str_t){0}, 0, 0, 0, 0, 0, alloc);
+    md_particle_type_add(&sys->atom.type, MD_STR_LIT(""), (md_str_t){0}, 0, 0, 0, 0, 0, alloc);
     md_array_resize(sys->atom.type_idx, (size_t)n, alloc);
     md_array_resize(sys->atom.flags, (size_t)n, alloc);
     MD_MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
@@ -83,12 +83,12 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     for (int i = 0; i < na; ++i) {
         if (map[i] < 0) continue;
         const ref_atom_t* a = &c->atom[i];
-        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, str_from_cstr(a->name), (md_atomic_number_t)a->z, md_util_element_atomic_mass(a->z), md_util_element_vdw_radius(a->z), 0, 0, alloc);
+        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(a->name), (md_atomic_number_t)a->z, md_util_element_atomic_mass(a->z), md_util_element_vdw_radius(a->z), 0, 0, alloc);
         st->xyz[map[i]] = a->x;
     }
     st->num_atoms = n;
     sys->residue.count = 1;
-    md_array_push(sys->residue.name, make_label(str_from_cstr(c->id)), alloc);
+    md_array_push(sys->residue.name, make_label(md_str_from_cstr(c->id)), alloc);
     md_array_push(sys->residue.seq_id, 1, alloc);
     md_array_push(sys->residue.flags, 0, alloc);
     md_array_push(sys->residue.atom_offset, 0, alloc);

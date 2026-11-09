@@ -55,7 +55,7 @@ UTEST(bonds, topology_tpr) {
         md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, str_from_cstr(files[f])));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, md_str_from_cstr(files[f])));
         expect_inference_matches_topology(utest_result, &sys, &st, alloc);
         md_vm_arena_destroy(alloc);
     }
@@ -67,7 +67,7 @@ UTEST(bonds, clashing_molecules) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), NULL));
+    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), NULL));
     EXPECT_TRUE(sys.bond.count > 0 && md_bond_origin(sys.bond.flags[0]) == MD_BOND_ORIGIN_TOPOLOGY);
     expect_inference_matches_topology(utest_result, &sys, &st, alloc);
     md_vm_arena_destroy(alloc);
@@ -100,7 +100,7 @@ UTEST(bonds, metal_coordination) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     md_bond_flags_t f = 0;
 
@@ -142,7 +142,7 @@ UTEST(bonds, metal_sites_deposited) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     int num_zn = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {
@@ -160,7 +160,7 @@ UTEST(bonds, metal_sites_deposited) {
 
     md_system_t tub = { .alloc = alloc };
     md_system_state_t tub_st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&tub, &tub_st, MD_UTIL_INFER_ALL, NULL));
     for (size_t i = 0; i < tub.atom.count; ++i) {
         if (md_atom_atomic_number(&tub.atom, i) == 12) {
@@ -175,7 +175,7 @@ UTEST(bonds, reinference_keeps_user_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     const size_t inferred = sys.bond.count;
     const int a = 0, b = (int)sys.atom.count - 1;
@@ -195,7 +195,7 @@ UTEST(bonds, noncovalent_range) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     const size_t graph = sys.bond.count;
     const int n = (int)sys.atom.count;
@@ -276,7 +276,7 @@ UTEST(bonds, kind_given_stays) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     const md_bond_idx_t b = md_system_bond_find(&sys, 2, 4);
     ASSERT_GE(b, 0);
@@ -359,7 +359,7 @@ static bool delta_fixture_init(delta_fixture_t* f) {
     f->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     f->sys = (md_system_t){ .alloc = f->alloc };
     f->ref = (md_system_state_t){ .alloc = f->alloc };
-    if (!md_pdb_system_init_from_str(&f->sys, &f->ref, str_from_cstr(water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) return false;
+    if (!md_pdb_system_init_from_str(&f->sys, &f->ref, md_str_from_cstr(water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) return false;
     if (!md_util_system_infer(&f->sys, &f->ref, MD_UTIL_INFER_ALL, NULL)) return false;
     f->st = f->ref;
     f->st.xyz = md_alloc(f->alloc, sizeof(vec3_t) * f->ref.num_atoms);
@@ -388,7 +388,7 @@ UTEST(bonds, delta_reference_is_empty) {
 
     md_system_t tub = { .alloc = f.alloc };
     md_system_state_t tub_st = { .alloc = f.alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&tub, &tub_st, MD_UTIL_INFER_ALL, NULL));
     md_bond_delta_t td = {0};
     ASSERT_TRUE(md_util_bond_delta(&td, &tub, &tub_st, &delta_default, f.alloc));
@@ -508,7 +508,7 @@ typedef struct crystal_site_t {
     float x, y, z;
 } crystal_site_t;
 
-static str_t crystal_xyz(const crystal_site_t* sites, int num_sites, int n, float a, bool periodic, md_allocator_i* alloc) {
+static md_str_t crystal_xyz(const crystal_site_t* sites, int num_sites, int n, float a, bool periodic, md_allocator_i* alloc) {
     const int num = num_sites * n * n * n;
     char* buf = md_alloc(alloc, 160 + 64 * (size_t)num);
     int len = 0;
@@ -522,7 +522,7 @@ static str_t crystal_xyz(const crystal_site_t* sites, int num_sites, int n, floa
             len += sprintf(buf + len, "%s %.4f %.4f %.4f\n", sites[s].element, (i + sites[s].x) * a, (j + sites[s].y) * a, (k + sites[s].z) * a);
         }
     }
-    return (str_t){ buf, (size_t)len };
+    return (md_str_t){ buf, (size_t)len };
 }
 
 static const crystal_site_t fcc_cu[] = { {"Cu", 0, 0, 0}, {"Cu", 0.5f, 0.5f, 0}, {"Cu", 0.5f, 0, 0.5f}, {"Cu", 0, 0.5f, 0.5f} };
@@ -661,7 +661,7 @@ UTEST(bonds, metallic_slab) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (str_t){ buf, (size_t)len }, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (md_str_t){ buf, (size_t)len }, MD_XYZ_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(num, (int)sys.atom.count);
 
@@ -712,7 +712,7 @@ UTEST(bonds, metallic_slab) {
 // Their bromine stays on its carbon throughout, so it coordinates no gold. The trajectory is not of the test data
 // repository: the test runs where it has been put there.
 UTEST(bonds, metallic_slab_trajectory) {
-    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+    const md_str_t path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     if (!md_path_is_valid(path)) UTEST_SKIP("40-40-2-ddba-dyna.xmol not in the test data");
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_xyz_data_t data = {0};
@@ -838,14 +838,14 @@ UTEST(bonds, threads) {
         const bool pdb = strstr(path, ".pdb") != NULL;
         md_system_t ref = { .alloc = alloc };
         md_system_state_t ref_st = { .alloc = alloc };
-        ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&ref, &ref_st, str_from_cstr(path), MD_PDB_OPTION_NONE, NULL) : md_gro_system_init_from_file(&ref, &ref_st, str_from_cstr(path), NULL));
+        ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), MD_PDB_OPTION_NONE, NULL) : md_gro_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), NULL));
         ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL, NULL));
         EXPECT_GT(ref.bond.count, (size_t)0);
         const md_executor_t* executors[] = { test_executor(&threads), test_executor(&shuffled) };
         for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
             md_system_t sys = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc };
-            ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]) : md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), executors[e]));
+            ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]) : md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), executors[e]));
             ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, executors[e]));
             EXPECT_TRUE_MSG(bonds_threads_same(&ref, &sys), path);
         }

@@ -599,12 +599,12 @@ done:
 // Everything known about the file short of its coordinates: the header, where the frames are and when
 // they were taken, the first frame in full (which the fixed atoms of every later frame take their
 // positions from). Allocated from alloc.
-static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
+static bool dcd_index_load(dcd_t* dcd, md_str_t path, md_allocator_i* alloc) {
     MD_MEMSET(dcd, 0, sizeof(*dcd));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("DCD: Failed to open '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("DCD: Failed to open '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
     bool result = false;
@@ -615,7 +615,7 @@ static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
     // Always parse the raw DCD header so we have ground-truth metadata.
     dcd_file_header_t fhdr;
     if (!dcd_parse_file_header(file, &fhdr, alloc)) {
-        MD_LOG_ERROR("DCD: Failed to parse header of '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("DCD: Failed to parse header of '" MD_STR_FMT "'", MD_STR_ARG(path));
         goto done;
     }
     if (fhdr.natoms <= 0) {
@@ -640,7 +640,7 @@ static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
         num_frames = (size_t)fhdr.nset + 1;
     }
     if (num_frames == 0) {
-        MD_LOG_ERROR("DCD: No complete frames found in '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("DCD: No complete frames found in '" MD_STR_FMT "'", MD_STR_ARG(path));
         goto done;
     }
 
@@ -710,8 +710,8 @@ done:
 
 // ==================== Run ====================
 
-static const void* dcd_resident(const md_attributes_t* attributes, str_t run, const char* leaf, md_attribute_type_t type, size_t* out_count) {
-    const md_attribute_t* a = md_attributes_find_in(attributes, run, str_from_cstr(leaf));
+static const void* dcd_resident(const md_attributes_t* attributes, md_str_t run, const char* leaf, md_attribute_type_t type, size_t* out_count) {
+    const md_attribute_t* a = md_attributes_find_in(attributes, run, md_str_from_cstr(leaf));
     if (!a || a->format.type != type || !a->data) return NULL;
     if (out_count) *out_count = md_attribute_value_count(&a->format);
     return a->data;
@@ -749,14 +749,14 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, attributes, attr, STR_LIT("atom/position"))) return 0;
-    const str_t run = src.run;
+    if (!md_run_source(&src, attributes, attr, MD_STR_LIT("atom/position"))) return 0;
+    const md_str_t run = src.run;
     const int64_t* offsets = src.offset;
     const int64_t* sizes   = src.size;
     size_t layout_count = 0;
     const int32_t* layout      = dcd_resident(attributes, run, "source/layout",      MD_ATTRIBUTE_TYPE_I32, &layout_count);
     if (!layout || layout_count != DCD_LAYOUT_COUNT) {
-        MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its source attributes", STR_ARG(run));
+        MD_LOG_ERROR("DCD: the run '" MD_STR_FMT "' has lost its source attributes", MD_STR_ARG(run));
         return 0;
     }
 
@@ -774,7 +774,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
         free_atoms  = dcd_resident(attributes, run, "source/free_atoms",  MD_ATTRIBUTE_TYPE_I32, &free_count);
         first_frame = dcd_resident(attributes, run, "source/first_frame", MD_ATTRIBUTE_TYPE_F32, &first_count);
         if (!free_atoms || !first_frame || free_count != n || first_count != N) {
-            MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its fixed atoms", STR_ARG(run));
+            MD_LOG_ERROR("DCD: the run '" MD_STR_FMT "' has lost its fixed atoms", MD_STR_ARG(run));
             return 0;
         }
     }
@@ -795,7 +795,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
 
     md_temp_scope_t temp = md_temp_begin();
     size_t written = 0;
-    const str_t file_path = src.path;
+    const md_str_t file_path = src.path;
     // The cell block, if any, is read along: one read of the frame rather than one per plane.
     uint8_t* raw = md_temp_alloc(temp, skip + 3 * record);
     float* xyz = (count == N) ? (float*)dst : md_temp_alloc(temp, N * 3 * sizeof(float));
@@ -808,7 +808,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
         for (size_t d = 0; d < 3 && ok; ++d) {
             const uint8_t* rec = raw + skip + d * record;
             if (dcd_load_marker(rec, marker, rev) != (int64_t)(n * 4)) {
-                MD_LOG_ERROR("DCD: frame %u of '" STR_FMT "' is not laid out as its header says", frame, STR_ARG(file_path));
+                MD_LOG_ERROR("DCD: frame %u of '" MD_STR_FMT "' is not laid out as its header says", frame, MD_STR_ARG(file_path));
                 ok = false;
                 break;
             }
@@ -851,7 +851,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
             written = cap;
         }
     } else {
-        MD_LOG_ERROR("DCD: Failed to read frame %u from '" STR_FMT "'", frame, STR_ARG(file_path));
+        MD_LOG_ERROR("DCD: Failed to read frame %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(file_path));
     }
     md_temp_end(temp);
     return written;
@@ -865,24 +865,24 @@ static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* att
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, attributes, attr, STR_LIT("unitcell"))) return 0;
-    const str_t run = src.run;
+    if (!md_run_source(&src, attributes, attr, MD_STR_LIT("unitcell"))) return 0;
+    const md_str_t run = src.run;
     const int64_t* offsets = src.offset;
     size_t layout_count = 0;
     const int32_t* layout  = dcd_resident(attributes, run, "source/layout", MD_ATTRIBUTE_TYPE_I32, &layout_count);
     if (!layout || layout_count != DCD_LAYOUT_COUNT) {
-        MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its source attributes", STR_ARG(run));
+        MD_LOG_ERROR("DCD: the run '" MD_STR_FMT "' has lost its source attributes", MD_STR_ARG(run));
         return 0;
     }
     if (slice->num_idx == 1 ? cap != 9 : (cap != 3 || slice->idx[1] >= 3)) return 0;
 
     const bool rev = layout[DCD_LAYOUT_REVERSE_ENDIAN] != 0;
     const int  marker = layout[DCD_LAYOUT_MARKER];
-    const str_t file_path = src.path;
+    const md_str_t file_path = src.path;
     uint8_t raw[8 + 48];
     const size_t raw_size = (size_t)marker + 48;
     if (md_attribute_io_read_at(io, file_path, offsets[slice->idx[0]], raw, raw_size) != raw_size) {
-        MD_LOG_ERROR("DCD: Failed to read the cell of frame %u from '" STR_FMT "'", slice->idx[0], STR_ARG(file_path));
+        MD_LOG_ERROR("DCD: Failed to read the cell of frame %u from '" MD_STR_FMT "'", slice->idx[0], MD_STR_ARG(file_path));
         return 0;
     }
 
@@ -907,12 +907,12 @@ static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* att
     return cap;
 }
 
-bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_dcd_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
     MD_ASSERT(sys);
     (void)flags;
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = {path_buf, path_len};
+    const md_str_t path = {path_buf, path_len};
 
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
@@ -976,10 +976,10 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
     char buf[512];
 
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
+        .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/layout")),
         .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { DCD_LAYOUT_COUNT } },
         .unit = md_unit_none(),
-        .description = STR_INIT("CHARMM flags, byte order reversed, number of fixed atoms"),
+        .description = MD_STR_INIT("CHARMM flags, byte order reversed, number of fixed atoms"),
         .data = layout, .byte_size = sizeof(layout)});
 
 
@@ -998,19 +998,19 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
             first_frame[i * 3 + 2] = dcd.first_frame_z[i];
         }
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/free_atoms")),
+            .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/free_atoms")),
             .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { (uint32_t)nfree } },
-            .unit = md_unit_none(), .description = STR_INIT("The atoms each frame after the first carries, zero based"),
+            .unit = md_unit_none(), .description = MD_STR_INIT("The atoms each frame after the first carries, zero based"),
             .data = free_atoms, .byte_size = nfree * sizeof(int32_t)});
         ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/first_frame")),
+            .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/first_frame")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 1, .shape = { (uint32_t)N } },
-            .unit = md_unit_angstrom(), .description = STR_INIT("The first frame as stored"),
+            .unit = md_unit_angstrom(), .description = MD_STR_INIT("The first frame as stored"),
             .data = first_frame, .byte_size = N * 3 * sizeof(float)});
     }
 
     if (!ok) {
-        MD_LOG_ERROR("DCD: failed to publish '" STR_FMT "' as '" STR_FMT "'", STR_ARG(path), STR_ARG(run));
+        MD_LOG_ERROR("DCD: failed to publish '" MD_STR_FMT "' as '" MD_STR_FMT "'", MD_STR_ARG(path), MD_STR_ARG(run));
         md_attributes_remove_prefix(attributes, run);
         goto done;
     }
@@ -1021,7 +1021,7 @@ done:
     return result;
 }
 
-size_t md_dcd_file_atom_count(str_t filename) {
+size_t md_dcd_file_atom_count(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));

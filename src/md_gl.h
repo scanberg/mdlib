@@ -66,7 +66,7 @@ typedef struct {
     uint32_t id;
 } md_gl_shaders_t;
 
-md_gl_shaders_t md_gl_shaders_create(str_t str);
+md_gl_shaders_t md_gl_shaders_create(md_str_t str);
 void md_gl_shaders_destroy(md_gl_shaders_t handle);
 
 

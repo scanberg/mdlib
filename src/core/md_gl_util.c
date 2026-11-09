@@ -15,37 +15,37 @@ void md_gl_debug_pop(void) {
     if (glPopDebugGroup) glPopDebugGroup();
 }
 
-bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_injection_t injections[], size_t num_injections) {
+bool md_gl_shader_compile(uint32_t shader, md_str_t src, const md_gl_shader_src_injection_t injections[], size_t num_injections) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
     bool result = false;
 
-    if (!str_eq_cstr_n(src, "#version ", 9)) {
+    if (!md_str_eq_cstr_n(src, "#version ", 9)) {
         MD_LOG_ERROR("Missing version string as first line in shader!");
         goto done;
     }
 
     if (injections && num_injections > 0) {
         // Insert potential empty markers, they go after #version line
-        str_t version_line;
-        str_extract_line(&version_line, &src);
+        md_str_t version_line;
+        md_str_extract_line(&version_line, &src);
         md_str_writer_push_str(&sb, version_line);
         md_str_writer_push_char(&sb, '\n');
         for (size_t i = 0; i < num_injections; ++i) {
-            if (str_empty(injections[i].marker)) {
+            if (md_str_empty(injections[i].marker)) {
                 md_str_writer_push_str(&sb, injections[i].src);
                 md_str_writer_push_char(&sb, '\n');
             }
         }
 
-        str_t line;
-        while (str_extract_line(&line, &src)) {
-            if (str_begins_with(line, STR_LIT("#pragma"))) {
-                str_t marker = str_trim(str_substr(line, sizeof("#pragma"), SIZE_MAX));
+        md_str_t line;
+        while (md_str_extract_line(&line, &src)) {
+            if (md_str_begins_with(line, MD_STR_LIT("#pragma"))) {
+                md_str_t marker = md_str_trim(md_str_substr(line, sizeof("#pragma"), SIZE_MAX));
                 for (size_t i = 0; i < num_injections; ++i) {
-                    if (str_eq(injections[i].marker, marker)) {
+                    if (md_str_eq(injections[i].marker, marker)) {
                         md_str_writer_push_str(&sb, injections[i].src);
                         md_str_writer_push_char(&sb, '\n');
                     }

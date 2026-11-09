@@ -10,10 +10,10 @@
 #include <core/md_arena_allocator.h>
 #include <string.h>
 
-typedef bool (*sys_load_fn)(md_system_t*, md_system_state_t*, str_t);
+typedef bool (*sys_load_fn)(md_system_t*, md_system_state_t*, md_str_t);
 
 // Load a file, run full inference, and assert the structural invariants hold.
-static void check_file(int* utest_result, sys_load_fn load, str_t path) {
+static void check_file(int* utest_result, sys_load_fn load, md_str_t path) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
@@ -21,7 +21,7 @@ static void check_file(int* utest_result, sys_load_fn load, str_t path) {
     md_system_state_t state = { .alloc = alloc };
 
     if (!load(&sys, &state, path)) {
-        printf("failed to load '" STR_FMT "'\n", STR_ARG(path));
+        printf("failed to load '" MD_STR_FMT "'\n", MD_STR_ARG(path));
         *utest_result = UTEST_TEST_FAILURE;
         md_temp_end(temp);
         return;
@@ -34,42 +34,42 @@ static void check_file(int* utest_result, sys_load_fn load, str_t path) {
     md_temp_end(temp);
 }
 
-static bool load_pdb(md_system_t* sys, md_system_state_t* state, str_t path) {
+static bool load_pdb(md_system_t* sys, md_system_state_t* state, md_str_t path) {
     return md_pdb_system_init_from_file(sys, state, path, MD_PDB_OPTION_NONE, NULL);
 }
 
-static bool load_mmcif(md_system_t* sys, md_system_state_t* state, str_t path) {
+static bool load_mmcif(md_system_t* sys, md_system_state_t* state, md_str_t path) {
     return md_mmcif_system_init_from_file(sys, state, path, NULL);
 }
 
-static bool load_gro(md_system_t* sys, md_system_state_t* state, str_t path) {
+static bool load_gro(md_system_t* sys, md_system_state_t* state, md_str_t path) {
     return md_gro_system_init_from_file(sys, state, path, NULL);
 }
 
-static bool load_lammps(md_system_t* sys, md_system_state_t* state, str_t path) {
+static bool load_lammps(md_system_t* sys, md_system_state_t* state, md_str_t path) {
     return md_lammps_system_init_from_file(sys, state, path, NULL);
 }
 
 UTEST(system_invariants, pdb) {
-    check_file(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"));
-    check_file(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
-    check_file(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"));
+    check_file(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"));
+    check_file(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    check_file(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"));
 }
 
 UTEST(system_invariants, mmcif) {
-    check_file(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
-    check_file(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
-    check_file(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    check_file(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
+    check_file(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    check_file(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
 }
 
 UTEST(system_invariants, gro) {
-    check_file(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"));
-    check_file(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
-    check_file(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"));
+    check_file(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"));
+    check_file(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    check_file(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"));
 }
 
 UTEST(system_invariants, lammps) {
-    check_file(utest_result, load_lammps, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+    check_file(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
 }
 
 // A copy is the same system in another allocator: valid, and inferred on it gives what inferred on the original gave
@@ -78,7 +78,7 @@ UTEST(system_invariants, copy) {
     md_allocator_i* a2 = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = a1 };
     md_system_state_t state = { .alloc = a1 };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     // The core, copied and inferred on, as viamd does in the background
     md_system_t core = { .alloc = a2 };
@@ -107,7 +107,7 @@ UTEST(system_invariants, copy) {
     EXPECT_EQ(sys.reference.num_atoms, full.reference.num_atoms);
     EXPECT_NE((void*)sys.reference.xyz, (void*)full.reference.xyz);
     for (size_t t = 0; t < sys.part.type.count; ++t) {
-        EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, t), md_system_part_type_description(&full, t)));
+        EXPECT_TRUE(md_str_eq(md_system_part_type_description(&sys, t), md_system_part_type_description(&full, t)));
     }
 
     md_vm_arena_destroy(a1);
@@ -127,10 +127,10 @@ static bool same_array(const void* a, size_t a_bytes, const void* b, size_t b_by
     return a_bytes == 0 || memcmp(a, b, a_bytes) == 0;
 }
 
-static bool same_strings(const str_t* a, const str_t* b) {
+static bool same_strings(const md_str_t* a, const md_str_t* b) {
     if (md_array_size(a) != md_array_size(b)) return false;
     for (size_t i = 0; i < md_array_size(a); ++i) {
-        if (!str_eq(a[i], b[i])) return false;
+        if (!md_str_eq(a[i], b[i])) return false;
     }
     return true;
 }
@@ -170,7 +170,7 @@ static void expect_same_derived(int* utest_result, const char* file, int line, c
 #undef SAME_FIELD
 #undef SAME_STRINGS
 
-static void check_infer_write_set(int* utest_result, sys_load_fn load, str_t path) {
+static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t path) {
     md_allocator_i* a_sys  = md_vm_arena_create(MD_GIGABYTES(4));
     md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
     md_allocator_i* a_snap = md_vm_arena_create(MD_GIGABYTES(4));
@@ -179,7 +179,7 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, str_t pat
     md_system_t sys = { .alloc = a_sys };
     md_system_state_t state = { .alloc = a_sys };
     if (!load(&sys, &state, path)) {
-        printf("failed to load '" STR_FMT "'\n", STR_ARG(path));
+        printf("failed to load '" MD_STR_FMT "'\n", MD_STR_ARG(path));
         *utest_result = UTEST_TEST_FAILURE;
     } else {
         const char* name = (const char*)path.ptr;
@@ -230,15 +230,15 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, str_t pat
 }
 
 UTEST(system_invariants, infer_write_set) {
-    check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
-    check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"));
-    check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"));
-    check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));
-    check_infer_write_set(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
-    check_infer_write_set(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
-    check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
-    check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"));
-    check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"));
-    check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
-    check_infer_write_set(utest_result, load_lammps, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+    check_infer_write_set(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    check_infer_write_set(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"));
+    check_infer_write_set(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"));
+    check_infer_write_set(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));
+    check_infer_write_set(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    check_infer_write_set(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    check_infer_write_set(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    check_infer_write_set(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"));
+    check_infer_write_set(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"));
+    check_infer_write_set(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
+    check_infer_write_set(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
 }

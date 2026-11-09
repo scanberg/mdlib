@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""The md_common.h namespacing rename, re-runnable on any checkout of mdlib or VIAMD.
+"""The md_common.h and md_str.h namespacing rename, re-runnable on any checkout of mdlib or VIAMD.
 
-    tools/rename_md_common.py [--dry-run] [--cpp-headers] <dir or file> ...
+    tools/rename_md_prefix.py [--dry-run] [--cpp-headers] <dir or file> ...
 
-mdlib:  tools/rename_md_common.py src unittest benchmark examples
-VIAMD:  ext/mdlib/tools/rename_md_common.py --cpp-headers src test
+mdlib:  tools/rename_md_prefix.py src unittest benchmark examples
+VIAMD:  ext/mdlib/tools/rename_md_prefix.py --cpp-headers src test
 
-Renames the macros and functions of md_common.h to their MD_ / md_ names in C, C++ and Objective-C
+Renames the macros, types and functions of md_common.h and md_str.h to their MD_ / md_ names in C, C++ and Objective-C
 sources (.c .h .inl .cpp .hpp .m .mm). It tokenizes enough of the language to never touch a string,
 character or raw string literal, and to tell code from comments:
 
-  code      function names and object-like macros: every token. Function-like macros: where the name
-            is followed by '(' (so 'static constexpr int MAX' and 'PanelMeshes::MAX' stay), and every
+  code      md_common.h's functions, object-like macros and str_t: every token. Function-like macros and
+            md_str.h's functions: where the name is followed by '(' (so 'static constexpr int MAX',
+            'PanelMeshes::MAX', an allocator parameter named str_alloc or a local str_len stay), and every
             occurrence on a preprocessor directive line (#ifdef MIN, #define MY_MAX MAX).
   comments  only names that cannot be prose: the function names, and the macro names that are
-            unmistakably identifiers (ARRAY_SIZE, MEMCPY, ...). MIN, MAX, PI, DEBUG, RELEASE, CLAMP,
-            CONCAT, STRINGIFY only where followed by '('. 'defer' never (it is English).
+            unmistakably identifiers (ARRAY_SIZE, MEMCPY, str_t, ...). MIN, MAX, PI, DEBUG, RELEASE, CLAMP,
+            CONCAT, STRINGIFY, and the str_ functions that double as variable names (str_len, str_beg,
+            str_end, str_ptr, str_alloc) only where followed by '('. 'defer' never (it is English).
   'defer'   C++ only (.cpp .hpp .mm, and .h under a C++ tree passed with --cpp-headers); in C it is an
             ordinary identifier.
 
@@ -35,12 +37,29 @@ FN_MACROS = ['ALIGNAS', 'TYPEOF', 'ARRAY_SIZE', 'TYPE_COMPATIBLE', 'IS_POW2', 'A
              'STRINGIFY_VAL', 'ASSERT', 'DEBUG_BREAK', 'ENUM_FLAGS']
 SPECIAL = {'ARRAY_SIZE': 'MD_COUNTOF'}      # MD_ARRAY_SIZE is md_array.h's, for its dynamic arrays
 CPP_ONLY = {'defer': 'MD_DEFER', 'ExitScopeHelp': 'md_defer_helper', 'array_size_impl': 'md_array_size_impl'}
-PROSE = {'MIN', 'MAX', 'PI', 'TWO_PI', 'DEBUG', 'RELEASE', 'CLAMP', 'CONCAT', 'STRINGIFY', 'RESTRICT'}
+
+# md_str.h: the type, the macros, and every function it declares, str_ or not
+STR_TYPES = ['str_t']
+STR_OBJ_MACROS = ['STR_FMT']
+STR_FN_MACROS = ['STR_INIT', 'STR_LIT', 'STR_ARG', 'DEF_VAL']
+STR_FUNCS = ['str_empty', 'str_beg', 'str_end', 'str_len', 'str_ptr', 'str_swap', 'str_trim_beg', 'str_trim_end',
+             'str_trim', 'str_eq', 'str_eq_ignore_case', 'str_eq_n', 'str_eq_n_ignore_case', 'str_eq_cstr',
+             'str_eq_cstr_ignore_case', 'str_eq_cstr_n', 'str_eq_cstr_n_ignore_case', 'str_cmp_lex', 'str_begins_with',
+             'str_ends_with', 'str_count_equal_chars', 'str_count_occur_char', 'str_substr', 'str_from_cstr',
+             'str_from_cstrn', 'str_join', 'str_extract_line', 'str_peek_line', 'str_skip_line', 'str_extract_i32',
+             'str_extract_i64', 'str_extract_f32', 'str_extract_f64', 'str_find_char', 'str_rfind_char', 'str_find_str',
+             'str_alloc', 'str_free', 'str_copy', 'str_copy_cstr', 'str_copy_cstrn', 'str_printf',
+             'str_copy_to_char_buf', 'str_edit_distance', 'load_textfile', 'extract_ext', 'extract_file',
+             'extract_file_path_without_ext', 'extract_folder_path', 'replace_char', 'convert_to_lower',
+             'convert_to_upper']
+
+PROSE = {'MIN', 'MAX', 'PI', 'TWO_PI', 'DEBUG', 'RELEASE', 'CLAMP', 'CONCAT', 'STRINGIFY', 'RESTRICT',
+         'str_len', 'str_beg', 'str_end', 'str_ptr', 'str_alloc'}
 
 NEW = {}
-for n in FUNCS: NEW[n] = 'md_' + n
-for n in OBJ_MACROS + FN_MACROS: NEW[n] = SPECIAL.get(n, 'MD_' + n)
-FN = set(FN_MACROS)
+for n in FUNCS + STR_TYPES + STR_FUNCS: NEW[n] = 'md_' + n
+for n in OBJ_MACROS + FN_MACROS + STR_OBJ_MACROS + STR_FN_MACROS: NEW[n] = SPECIAL.get(n, 'MD_' + n)
+FN = set(FN_MACROS) | set(STR_FN_MACROS) | set(STR_FUNCS)     # renamed where called or on a directive line
 
 EXT = ('.c', '.h', '.inl', '.cpp', '.hpp', '.m', '.mm')
 # Vendored, self-contained sources that do not include md_common.h: their names are their own

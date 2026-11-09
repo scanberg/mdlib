@@ -97,7 +97,7 @@ static bool parse_uint(uint32_t* out, parser_t* p, int max_digits) {
 }
 
 static md_atomic_number_t element_from_symbol(const char* sym, size_t len) {
-    str_t s = {sym, len};
+    md_str_t s = {sym, len};
     return md_atomic_number_from_symbol(s, false);
 }
 
@@ -441,7 +441,7 @@ static size_t count_components(size_t num_atoms, const md_smiles_bond_t* bonds, 
     return count;
 }
 
-bool md_smiles_parse(md_smiles_t* out, str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err) {
+bool md_smiles_parse(md_smiles_t* out, md_str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err) {
     MD_ASSERT(out);
     MD_ASSERT(alloc);
     MD_MEMSET(out, 0, sizeof(md_smiles_t));

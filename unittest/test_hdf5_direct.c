@@ -186,11 +186,11 @@ UTEST(hdf5_direct, storage_of_every_kind) {
             md_attribute_io_t* pio = pass ? &io : NULL;
             for (size_t f = F; f-- > 0;) {
                 // The whole row, then pieces of it of every length from every start
-                if (!md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", f, 0, row, 2.0, pio)) { wrong += 1000; continue; }
+                if (!md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", f, 0, row, 2.0, pio)) { wrong += 1000; continue; }
                 for (size_t i = 0; i < row; ++i) wrong += out[i] != (float)(2.0 * ref[f * row + i]);
                 for (size_t first = 0; first < row; first += 3) {
                     for (size_t count = 1; first + count <= row; count += 4) {
-                        if (!md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", f, first, count, 1.0, pio)) { wrong += 1000; continue; }
+                        if (!md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", f, first, count, 1.0, pio)) { wrong += 1000; continue; }
                         for (size_t i = 0; i < count; ++i) wrong += out[i] != (float)ref[f * row + first + i];
                     }
                 }
@@ -200,8 +200,8 @@ UTEST(hdf5_direct, storage_of_every_kind) {
         EXPECT_EQ(0, wrong);
         if (wrong) printf("%s: %d wrong\n", c->name, wrong);
         // Out of range
-        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", F, 0, 1, 1.0, NULL));
-        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 0, row, 1, 1.0, NULL));
+        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", F, 0, 1, 1.0, NULL));
+        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", 0, row, 1, 1.0, NULL));
 
         // Frame spans: contiguous and whole frame chunks have them
         int64_t offsets[16], sizes[16];
@@ -220,10 +220,10 @@ UTEST(hdf5_direct, storage_of_every_kind) {
 UTEST(hdf5_direct, block_cache) {
     md_attribute_io_t io = { .alloc = md_get_heap_allocator() };
     bool hit = true;
-    const uint64_t a = md_attribute_io_block_key(STR_LIT("a.h5"), 100);
-    const uint64_t b = md_attribute_io_block_key(STR_LIT("a.h5"), 200);
+    const uint64_t a = md_attribute_io_block_key(MD_STR_LIT("a.h5"), 100);
+    const uint64_t b = md_attribute_io_block_key(MD_STR_LIT("a.h5"), 200);
     EXPECT_NE(a, b);
-    EXPECT_NE(a, md_attribute_io_block_key(STR_LIT("b.h5"), 100));
+    EXPECT_NE(a, md_attribute_io_block_key(MD_STR_LIT("b.h5"), 100));
     uint8_t* p = md_attribute_io_block(&io, a, 64, &hit);
     ASSERT_TRUE(p != NULL);
     EXPECT_FALSE(hit);
@@ -234,7 +234,7 @@ UTEST(hdf5_direct, block_cache) {
     md_attribute_io_block(&io, a, 32, &hit);
     EXPECT_FALSE(hit);
     // Kept while fewer than the slots are in use, the least recently used given up after
-    for (int i = 0; i < 2 * MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) md_attribute_io_block(&io, md_attribute_io_block_key(STR_LIT("c.h5"), i), 16, &hit);
+    for (int i = 0; i < 2 * MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) md_attribute_io_block(&io, md_attribute_io_block_key(MD_STR_LIT("c.h5"), i), 16, &hit);
     md_attribute_io_block(&io, b, 16, &hit);
     EXPECT_FALSE(hit);
     EXPECT_TRUE(md_attribute_io_block(&io, b, 16, &hit) != NULL);
@@ -325,13 +325,13 @@ UTEST(hdf5_direct, fletcher32_damage) {
 
         const size_t row = 600 * 3;
         float* out = malloc(row * sizeof(float));
-        ASSERT_TRUE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
+        ASSERT_TRUE(md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
 
         // The stored checksum of frame 2, and a byte of its chunk
         const md_hdf5_direct_chunk_t e = d->table[2];
         uint8_t* chunk = malloc(e.size);
         md_file_t f = {0};
-        ASSERT_TRUE(md_file_open(&f, STR_LIT(HD_PATH), MD_FILE_READ | MD_FILE_WRITE));
+        ASSERT_TRUE(md_file_open(&f, MD_STR_LIT(HD_PATH), MD_FILE_READ | MD_FILE_WRITE));
         ASSERT_EQ((size_t)e.size, md_file_read_at(f, e.offset, chunk, e.size));
 
         // The pre 1.6.3 checksum, each half's bytes swapped: where the checksum is the last four bytes stored
@@ -341,16 +341,16 @@ UTEST(hdf5_direct, fletcher32_damage) {
             md_file_write_at(f, e.offset + e.size - 4, swapped, 4);
         }
         md_file_close(&f);
-        EXPECT_TRUE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
+        EXPECT_TRUE(md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
 
         // One byte in the middle of the chunk flipped: refused, by HDF5 as well
-        ASSERT_TRUE(md_file_open(&f, STR_LIT(HD_PATH), MD_FILE_READ | MD_FILE_WRITE));
+        ASSERT_TRUE(md_file_open(&f, MD_STR_LIT(HD_PATH), MD_FILE_READ | MD_FILE_WRITE));
         uint8_t b = chunk[e.size / 2] ^ 0x10;
         md_file_write_at(f, e.offset + e.size / 2, &b, 1);
         md_file_close(&f);
-        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
+        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
         // The frames of other chunks are unharmed
-        EXPECT_TRUE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 1, 0, row, 1.0, NULL));
+        EXPECT_TRUE(md_hdf5_direct_read_f32(out, d, MD_STR_LIT(HD_PATH), "data", 1, 0, row, 1.0, NULL));
 
         lock = md_hdf5_lock();
         file = H5Fopen(HD_PATH, H5F_ACC_RDONLY, H5P_DEFAULT);

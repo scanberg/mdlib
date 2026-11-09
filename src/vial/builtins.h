@@ -17,13 +17,13 @@ typedef struct vial_builtin_t {
     uint32_t    flags;
 } vial_builtin_t;
 
-const vial_builtin_t* vial_builtin_find(str_t name);
+const vial_builtin_t* vial_builtin_find(md_str_t name);
 size_t                vial_builtin_count(void);
 const vial_builtin_t* vial_builtin_at(size_t i);
 uint32_t              vial_builtin_index(const vial_builtin_t* b);   // its place in the table, for the IR
 
 // A name v1 had: the message E0701 gives, and the name to write instead
-bool        vial_builtin_v1(str_t name, const char** message, const char** fix);
+bool        vial_builtin_v1(md_str_t name, const char** message, const char** fix);
 
 // A word that VIAL spells differently, such as centre for com; NULL when there is none
-const char* vial_builtin_synonym(str_t word);
+const char* vial_builtin_synonym(md_str_t word);

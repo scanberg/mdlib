@@ -385,7 +385,7 @@ typedef struct include_file_t {
 #define APPEND_STR(a, str, alloc)   md_array_push_array(a, str.ptr, str.len, alloc)
 #define APPEND_CSTR(a, cstr, alloc) md_array_push_array(a, cstr, (int64_t)strlen(cstr), alloc)
 #define APPEND_CHAR(a, ch, alloc) md_array_push(a, ch, alloc);
-#define APPEND_LINE(a, line, alloc) APPEND_STR(a, str_printf(alloc, "#line %u\n", line), alloc)
+#define APPEND_LINE(a, line, alloc) APPEND_STR(a, md_str_printf(alloc, "#line %u\n", line), alloc)
 
 static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     if (!source) {
@@ -397,10 +397,10 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     bool result = false;
 
-    str_t str = str_from_cstr(source);
+    md_str_t str = md_str_from_cstr(source);
 
-    str_t version_str;
-    if (!str_extract_line(&version_str, &str) || !str_eq_cstr_n(version_str, "#version", 8)) {
+    md_str_t version_str;
+    if (!md_str_extract_line(&version_str, &str) || !md_str_eq_cstr_n(version_str, "#version", 8)) {
         MD_LOG_ERROR("Missing version as first line in shader!");
         goto done;
     }
@@ -412,24 +412,24 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     APPEND_STR(buf, version_str, alloc);
     line_count += 1;
 
-    str_t glsl_define = STR_INIT("#ifndef GLSL\n#define GLSL\n#endif");
+    md_str_t glsl_define = MD_STR_INIT("#ifndef GLSL\n#define GLSL\n#endif");
     APPEND_STR(buf, glsl_define, alloc);
     line_count += 3;
 
     if (defines) {
-        str_t def = str_from_cstr(defines);
-        line_count += (uint32_t)str_count_occur_char(def, '\n');        
+        md_str_t def = md_str_from_cstr(defines);
+        line_count += (uint32_t)md_str_count_occur_char(def, '\n');        
         APPEND_LINE(buf, line_count, alloc);
     }
 
-    str_t line;
-    while (str_extract_line(&line, &str)) {
-        if (str_eq_cstr_n(line, "#include", 8)) {
+    md_str_t line;
+    while (md_str_extract_line(&line, &str)) {
+        if (md_str_eq_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
                 MD_LOG_ERROR("Failed to parse include in shader file: no include files have been supplied");
                 goto done;
             }
-            str_t file = str_trim(str_substr(line, 8, SIZE_MAX));
+            md_str_t file = md_str_trim(md_str_substr(line, 8, SIZE_MAX));
             if (!file.len) {
                 MD_LOG_ERROR("Failed to parse include in shader file: file is missing");
                 goto done;
@@ -443,15 +443,15 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
                 MD_LOG_ERROR("Failed to parse include in shader file: missing or mismatched delimiters");
                 goto done;
             }
-            file = str_substr(file, 1, file.len-2);
-            str_t src = {0};
+            file = md_str_substr(file, 1, file.len-2);
+            md_str_t src = {0};
             for (uint32_t i = 0; i < include_file_count; ++i) {
-                if (str_eq_cstr(file, include_files[i].filename)) {
-                    src = str_from_cstr(include_files[i].source);
+                if (md_str_eq_cstr(file, include_files[i].filename)) {
+                    src = md_str_from_cstr(include_files[i].source);
                     break;
                 }
             }
-            if (str_empty(src)) {
+            if (md_str_empty(src)) {
                 MD_LOG_ERROR("Failed to parse include in shader file: could not find include file '%.*s'", (int)file.len, file.ptr);
                 goto done;
             }
@@ -487,8 +487,8 @@ done:
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    str_t src = load_textfile(str_from_cstr(filename), temp_alloc);
-    if (!str_empty(src)) {
+    md_str_t src = md_load_textfile(md_str_from_cstr(filename), temp_alloc);
+    if (!md_str_empty(src)) {
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
@@ -711,17 +711,17 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* temp_arena = md_temp_allocator(temp);
 
-#define CONCAT_STR(STR_A, STR_B) (str_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (md_str_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
-        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), temp_arena);
-        if (str_empty(common_src)) {
+        md_str_t common_src = md_load_textfile(md_str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), temp_arena);
+        if (md_str_empty(common_src)) {
             MD_LOG_ERROR("Failed to read common.h required for shaders");
             return false;
         }
 
-        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), temp_arena);
-        if (str_empty(culling_src)) {
+        md_str_t culling_src = md_load_textfile(md_str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), temp_arena);
+        if (md_str_empty(culling_src)) {
             MD_LOG_ERROR("Failed to read culling.glsl required for shaders");
             return false;
         }

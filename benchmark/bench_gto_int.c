@@ -37,14 +37,14 @@ static bool bench_esp_load(bench_esp_t* b) {
     b->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = b->arena };
     md_system_state_t state = { .alloc = b->arena };
-    if (!md_vlx_system_init_from_file(&sys, &state, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"), NULL)) {
+    if (!md_vlx_system_init_from_file(&sys, &state, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"), NULL)) {
         MD_LOG_ERROR("Could not load benchmark vlx file");
         return false;
     }
-    const md_attribute_t* c = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"));
-    const md_attribute_t* z = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/nuclear_charge"));
-    const md_attribute_t* d = md_attributes_find(&sys.attributes, STR_LIT("orbital/total/density"));
-    if (!d) d = md_attributes_find(&sys.attributes, STR_LIT("orbital/alpha/density"));
+    const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* z = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/nuclear_charge"));
+    const md_attribute_t* d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
+    if (!d) d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/density"));
     if (!c || !z || !d || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
         MD_LOG_ERROR("Benchmark file lacks a basis, a geometry or a density");
         return false;

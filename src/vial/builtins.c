@@ -60,9 +60,9 @@ static const vial_builtin_t builtins[] = {
 #undef P
 #undef K
 
-const vial_builtin_t* vial_builtin_find(str_t name) {
+const vial_builtin_t* vial_builtin_find(md_str_t name) {
     for (size_t i = 0; i < MD_COUNTOF(builtins); ++i) {
-        if (str_eq(name, str_from_cstr(builtins[i].name))) return &builtins[i];
+        if (md_str_eq(name, md_str_from_cstr(builtins[i].name))) return &builtins[i];
     }
     return NULL;
 }
@@ -81,9 +81,9 @@ static const struct { const char* v1; const char* message; const char* fix; } v1
     {"resid",         "`resid` is v1; it is a keyword, particle(resid=...)", "particle"},
 };
 
-bool vial_builtin_v1(str_t name, const char** message, const char** fix) {
+bool vial_builtin_v1(md_str_t name, const char** message, const char** fix) {
     for (size_t i = 0; i < MD_COUNTOF(v1_names); ++i) {
-        if (str_eq(name, str_from_cstr(v1_names[i].v1))) {
+        if (md_str_eq(name, md_str_from_cstr(v1_names[i].v1))) {
             if (message) *message = v1_names[i].message;
             if (fix) *fix = v1_names[i].fix;
             return true;
@@ -103,9 +103,9 @@ static const struct { const char* word; const char* name; } synonyms[] = {
     {"rings", "ring"}, {"bonds", "bond"}, {"labels", "label"},
 };
 
-const char* vial_builtin_synonym(str_t word) {
+const char* vial_builtin_synonym(md_str_t word) {
     for (size_t i = 0; i < MD_COUNTOF(synonyms); ++i) {
-        if (str_eq(word, str_from_cstr(synonyms[i].word))) return synonyms[i].name;
+        if (md_str_eq(word, md_str_from_cstr(synonyms[i].word))) return synonyms[i].name;
     }
     return NULL;
 }

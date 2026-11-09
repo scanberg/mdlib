@@ -59,12 +59,12 @@ static bool dm_load(dm_src_t* s, const char* file) {
     memset(s, 0, sizeof(*s));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&s->t, str_from_cstr(path), MD_MEGABYTES(1024))) return false;
+    if (!vlx_test_load(&s->t, md_str_from_cstr(path), MD_MEGABYTES(1024))) return false;
     if (!qm_test_basis(&s->basis, &s->t)) return false;
     s->num_atoms = s->t.sys.atom.count;
     s->xyz = (float*)malloc(sizeof(float) * 3 * s->num_atoms);
     if (vlx_test_atom_xyz_bohr(s->xyz, 3 * s->num_atoms, &s->t) != s->num_atoms) return false;
-    s->num_mo = md_qm_density_orbitals(&s->rows, &s->w, &s->num_ao, &s->t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+    s->num_mo = md_qm_density_orbitals(&s->rows, &s->w, &s->num_ao, &s->t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
     if (s->num_mo == 0 || s->num_ao != md_gto_basis_num_ao(&s->basis)) return false;
     s->D = (double*)malloc(sizeof(double) * s->num_ao * s->num_ao);
     return s->D && md_gto_density_from_orbitals(s->D, s->rows, s->num_ao, 1, s->w, s->num_mo, s->num_ao, NULL);
@@ -470,8 +470,8 @@ static bool loc_load(loc_src_t* s, const char* file) {
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/%s/%s", molden ? "molden" : "vlx", file);
     if (molden) {
         qm_test_init(&s->t, MD_MEGABYTES(256));
-        if (!md_molden_system_init_from_file(&s->t.sys, &s->t.state, str_from_cstr(path))) return false;
-    } else if (!vlx_test_load(&s->t, str_from_cstr(path), MD_MEGABYTES(1024))) {
+        if (!md_molden_system_init_from_file(&s->t.sys, &s->t.state, md_str_from_cstr(path))) return false;
+    } else if (!vlx_test_load(&s->t, md_str_from_cstr(path), MD_MEGABYTES(1024))) {
         return false;
     }
     if (!qm_test_basis(&s->basis, &s->t)) return false;
@@ -483,8 +483,8 @@ static bool loc_load(loc_src_t* s, const char* file) {
     md_allocator_i* heap = md_get_heap_allocator();
     double *ar = NULL, *aw = NULL, *br = NULL, *bw = NULL;
     size_t ana = 0, bna = 0;
-    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &s->t.sys, STR_LIT("orbital/alpha/density"), heap);
-    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &s->t.sys, STR_LIT("orbital/beta/density"), heap);
+    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &s->t.sys, MD_STR_LIT("orbital/alpha/density"), heap);
+    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &s->t.sys, MD_STR_LIT("orbital/beta/density"), heap);
     const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
     bool ok = an > 0 && bn > 0 && ana == s->num_ao;
     s->num_spins = closed ? 1 : 2;

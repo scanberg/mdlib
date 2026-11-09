@@ -38,8 +38,8 @@ typedef uint32_t md_pdb_options_t;
 // nor what the residues are by them: md_util_system_infer derives those, when the caller wants them. The executor
 // (NULL: the calling thread) reads a file and its lines in parallel; of a file of several models, the first model and
 // the CONECT records after the last are read, not the models between.
-bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const struct md_executor_t* executor);
-bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,      md_pdb_options_t options, const struct md_executor_t* executor);
+bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, md_pdb_options_t options, const struct md_executor_t* executor);
+bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,      md_pdb_options_t options, const struct md_executor_t* executor);
 
 // EXPORT
 bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num);
@@ -51,7 +51,7 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 // alternate locations). The index of where each model starts is found by a scan of the record names, and kept beside
 // the file ('<file>.cache', written unless flags carries MD_RUN_FLAG_DISABLE_CACHE_WRITE). False for a file of one
 // model.
-bool md_pdb_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_pdb_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

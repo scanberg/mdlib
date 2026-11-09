@@ -58,7 +58,7 @@ typedef enum md_attribute_type_t {
     MD_ATTRIBUTE_TYPE_U64,
 
     // UTF-8 text. The stored element is a 4 byte handle into the table's interning string pool, so
-    // every layout rule holds exactly as for a number. Published as str_t[], read back through
+    // every layout rule holds exactly as for a number. Published as md_str_t[], read back through
     // md_attribute_str / md_attribute_extract_str. Never virtual, never extracted as a number.
     MD_ATTRIBUTE_TYPE_STR,
 
@@ -162,9 +162,9 @@ struct md_attribute_t {
     md_attribute_id_t       id;
     uint64_t                version;        // see md_attributes_version
     md_attribute_flags_t    flags;
-    str_t                   path;           // full path, owned by the table
-    str_t                   label;          // presentation only, may be empty and need not be unique
-    str_t                   description;    // presentation only, may be empty
+    md_str_t                   path;           // full path, owned by the table
+    md_str_t                   label;          // presentation only, may be empty and need not be unique
+    md_str_t                   description;    // presentation only, may be empty
     md_attribute_format_t   format;
     md_unit_t               unit;           // (md_unit_t){0} is dimensionless, a valid value
     void*                   data;           // resident storage, md_attribute_byte_size() bytes; NULL when virtual
@@ -180,17 +180,17 @@ struct md_attribute_t {
 //
 // At most one of {data, virt}:
 //   data      copied in; byte_size must equal md_attribute_byte_size(&format) (for STR, the count
-//             times sizeof(str_t)). It is the guard against a buffer whose type or count disagrees
+//             times sizeof(md_str_t)). It is the guard against a buffer whose type or count disagrees
 //             with the format, so compute it from the SOURCE buffer, not from the format.
 //   neither   reserve zeroed storage, filled later through md_attributes_data; byte_size 0.
 //   virt      a virtual attribute; byte_size 0. *virt is copied.
 typedef struct md_attribute_desc_t {
-    str_t                         path;         // "atom/charge/mulliken"
+    md_str_t                         path;         // "atom/charge/mulliken"
     md_attribute_format_t         format;
     md_attribute_flags_t          flags;
     md_unit_t                     unit;         // md_unit_none() when there is nothing to say
-    str_t                         label;        // optional
-    str_t                         description;  // optional
+    md_str_t                         label;        // optional
+    md_str_t                         description;  // optional
     const void*                   data;
     size_t                        byte_size;
     const md_attribute_virtual_t* virt;
@@ -216,11 +216,11 @@ typedef struct md_attributes_t {
 // Walks the attributes at or below a prefix in path order. See md_attributes_iter.
 typedef struct md_attribute_iter_t {
     const md_attribute_t*  attr;    // the current attribute
-    str_t                  child;       // its first path segment below the prefix; empty for the prefix itself
-    str_t                  child_path;  // prefix/child, the full path of that segment
+    md_str_t                  child;       // its first path segment below the prefix; empty for the prefix itself
+    md_str_t                  child_path;  // prefix/child, the full path of that segment
 
     const md_attributes_t* _table;
-    str_t                  _prefix;
+    md_str_t                  _prefix;
     size_t                 _next;
     bool                   _children;
 } md_attribute_iter_t;
@@ -241,8 +241,8 @@ size_t md_attribute_byte_size(const md_attribute_format_t* format);      // elem
 // ATTRIBUTE
 
 // "atom/charge/mulliken" -> "atom/charge" and "mulliken". Views into attr->path.
-str_t md_attribute_group(const md_attribute_t* attr);
-str_t md_attribute_leaf(const md_attribute_t* attr);
+md_str_t md_attribute_group(const md_attribute_t* attr);
+md_str_t md_attribute_leaf(const md_attribute_t* attr);
 
 // A second name for another attribute's datum.
 static inline bool md_attribute_is_alias(const md_attribute_t* attr) {
@@ -308,8 +308,8 @@ double* md_attribute_extract_alloc_f64(size_t* out_count, const md_attribute_t* 
 
 // Text. The table is needed because the pool lives there. The returned strings are NUL terminated
 // views into the pool, and follow the invalidation rule of md_attributes_get.
-str_t  md_attribute_str(const md_attributes_t* attributes, const md_attribute_t* attr, size_t index);
-size_t md_attribute_extract_str(str_t dst[], size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr);
+md_str_t  md_attribute_str(const md_attributes_t* attributes, const md_attribute_t* attr, size_t index);
+size_t md_attribute_extract_str(md_str_t dst[], size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr);
 
 // TABLE
 
@@ -317,7 +317,7 @@ void   md_attributes_free (md_attributes_t* attributes);
 size_t md_attributes_count(const md_attributes_t* attributes);
 
 // The id a path has, whether or not anything is published there.
-md_attribute_id_t md_attributes_id_from_path(str_t path);
+md_attribute_id_t md_attributes_id_from_path(md_str_t path);
 
 // Private state for a provider (md_attribute_virtual_t.user_data) that the table frees by size with
 // the owning attribute. NULL for size 0 or an unset allocator.
@@ -338,21 +338,21 @@ md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_at
 // version; path, label and description are its own. Aliasing an alias points at the owner. An alias
 // cannot outlive its target: removing the target removes its aliases. MD_ATTRIBUTE_INVALID when the
 // target is unknown or the path is bad or taken.
-md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_id_t target, str_t path, str_t label, str_t description);
+md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_id_t target, md_str_t path, md_str_t label, md_str_t description);
 
 // Removes one attribute and its aliases.
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
 
 // Removes everything at or below prefix, and aliases of it elsewhere. An empty prefix is refused.
 // Returns the number removed, aliases included.
-size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix);
+size_t md_attributes_remove_prefix(md_attributes_t* attributes, md_str_t prefix);
 
 // Publishes a per atom float column, rank 1 {count} with 'components' floats per atom, interleaved.
 // SKIPPED (returns MD_ATTRIBUTE_INVALID) when every value is identical or every value is NAN, so a
 // loader may call it for every column its format defines. NAN marks "no value for this atom" and is
 // carried through extraction bit for bit. mdlib builds with fast math, so a consumer compiled the
 // same way cannot test for NAN with v != v or isnan().
-md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count);
+md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, md_str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count);
 
 // RESERVING: an attribute made before its values are known, for a producer to write them where they are kept (a loader
 // parsing a column of millions of atoms in parallel), with no buffer of its own to copy from.
@@ -368,39 +368,39 @@ md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_at
 // its storage, NULL on failure, and its id in out_id. md_attributes_commit_atom_column ends the writing: the column is
 // kept (its id) where it says anything, and removed (MD_ATTRIBUTE_INVALID) where publish would have skipped it, every
 // value the same or every value NAN.
-float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id);
+float* md_attributes_reserve_atom_column(md_attributes_t* attributes, md_str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id);
 md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, md_attribute_id_t id);
 
 // LOOKUP
 // Pointers are INVALIDATED by the next create, replace, alias or remove. Hold the id, not the pointer.
 
 const md_attribute_t* md_attributes_get (const md_attributes_t* attributes, md_attribute_id_t id);
-const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_t path);
+const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, md_str_t path);
 
 // find("<group>/<leaf>"); an empty group is find(leaf). For run relative paths and siblings.
-const md_attribute_t* md_attributes_find_in(const md_attributes_t* attributes, str_t group, str_t leaf);
+const md_attribute_t* md_attributes_find_in(const md_attributes_t* attributes, md_str_t group, md_str_t leaf);
 
 // The attribute named leaf in attr's own group: the origin beside a vector, the bin beside a series.
-const md_attribute_t* md_attributes_sibling(const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf);
+const md_attribute_t* md_attributes_sibling(const md_attributes_t* attributes, const md_attribute_t* attr, md_str_t leaf);
 
 // Every attribute at or below prefix, in path order. An optional trailing '/' is ignored and an
 // empty prefix matches everything. Attributes must not be added or removed while iterating.
 //
-//     for (md_attribute_iter_t it = md_attributes_iter(t, STR_LIT("atom")); md_attributes_next(&it);) {
+//     for (md_attribute_iter_t it = md_attributes_iter(t, MD_STR_LIT("atom")); md_attributes_next(&it);) {
 //         use(it.attr);
 //     }
-md_attribute_iter_t md_attributes_iter(const md_attributes_t* attributes, str_t prefix);
+md_attribute_iter_t md_attributes_iter(const md_attributes_t* attributes, md_str_t prefix);
 
 // The immediate children of prefix, once each: "dipole" yields "ground_state", "transition", ...
 // it.child is the child's name, it.child_path its full path ("dipole/ground_state"), and it.attr
 // the first attribute below it.
-md_attribute_iter_t md_attributes_iter_children(const md_attributes_t* attributes, str_t prefix);
+md_attribute_iter_t md_attributes_iter_children(const md_attributes_t* attributes, md_str_t prefix);
 
 bool md_attributes_next(md_attribute_iter_t* it);
 
 // Ids of every attribute at or below prefix, in path order: a snapshot, for when the table is about
 // to change. Returns the total number of matches and writes at most cap of them.
-size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, str_t prefix);
+size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_attributes_t* attributes, md_str_t prefix);
 
 // WRITING AND INVALIDATION
 //
@@ -444,7 +444,7 @@ const struct md_executor_t* md_attribute_io_executor(const md_attribute_io_t* io
 
 // For a provider: read bytes at offset from the file at path, through io's cache of open files when
 // io is non NULL. Returns the number of bytes read.
-size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes);
+size_t md_attribute_io_read_at(md_attribute_io_t* io, md_str_t path, int64_t offset, void* dst, size_t bytes);
 
 // For a provider: a buffer of bytes kept by io across calls under key (nonzero), for what a provider decodes once and
 // reads from for several frames - a compressed block of a file holding more than one. *hit is true when the buffer still
@@ -457,7 +457,7 @@ void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, b
 void md_attribute_io_block_forget(md_attribute_io_t* io, uint64_t key);
 
 // What a block key is made from: the file and where the block is in it
-uint64_t md_attribute_io_block_key(str_t path, int64_t offset);
+uint64_t md_attribute_io_block_key(md_str_t path, int64_t offset);
 
 #ifdef __cplusplus
 }

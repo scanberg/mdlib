@@ -36,7 +36,7 @@ static uint32_t push_verbs(md_vg_scene_t* scene, const md_vg_path_verb_t* verbs,
     return offset;
 }
 
-static uint32_t push_string(md_vg_scene_t* scene, str_t str) {
+static uint32_t push_string(md_vg_scene_t* scene, md_str_t str) {
     MD_ASSERT(scene);
     MD_ASSERT(scene->alloc);
     const uint32_t offset = (uint32_t)md_array_size(scene->strings);
@@ -51,7 +51,7 @@ static void push_cmd(md_vg_scene_t* scene, const md_vg_cmd_t* cmd) {
     md_array_push(scene->commands, *cmd, scene->alloc);
 }
 
-static void emit_xml_escaped(md_writer_i* w, str_t text) {
+static void emit_xml_escaped(md_writer_i* w, md_str_t text) {
     for (size_t i = 0; i < text.len; ++i) {
         switch (text.ptr[i]) {
         case '&':
@@ -334,7 +334,7 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
             md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_TEXT: {
-            const str_t text = {
+            const md_str_t text = {
                 .ptr = scene->strings + cmd->data.text.text_offset,
                 .len = cmd->data.text.text_len,
             };
@@ -383,7 +383,7 @@ void md_vg_scene_init(md_vg_scene_t* scene, vec2_t size, md_allocator_i* alloc) 
     *scene = (md_vg_scene_t){0};
     scene->size = size;
     scene->alloc = alloc;
-    scene->default_font_family = str_copy(STR_LIT("sans-serif"), alloc);
+    scene->default_font_family = md_str_copy(MD_STR_LIT("sans-serif"), alloc);
 }
 
 void md_vg_scene_free(md_vg_scene_t* scene) {
@@ -394,7 +394,7 @@ void md_vg_scene_free(md_vg_scene_t* scene) {
     md_array_free(scene->strings, scene->alloc);
     md_array_free(scene->path_points, scene->alloc);
     md_array_free(scene->path_verbs, scene->alloc);
-    str_free(scene->default_font_family, scene->alloc);
+    md_str_free(scene->default_font_family, scene->alloc);
     *scene = (md_vg_scene_t){0};
 }
 
@@ -413,11 +413,11 @@ void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size) {
     scene->size = size;
 }
 
-void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, str_t font_family) {
+void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, md_str_t font_family) {
     MD_ASSERT(scene);
     MD_ASSERT(scene->alloc);
-    str_free(scene->default_font_family, scene->alloc);
-    scene->default_font_family = str_copy(font_family, scene->alloc);
+    md_str_free(scene->default_font_family, scene->alloc);
+    scene->default_font_family = md_str_copy(font_family, scene->alloc);
 }
 
 void md_vg_scene_write_svg(md_writer_i* w, const md_vg_scene_t* scene) {
@@ -426,7 +426,7 @@ void md_vg_scene_write_svg(md_writer_i* w, const md_vg_scene_t* scene) {
     emit_svg_scene(w, scene);
 }
 
-str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
+md_str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
     MD_ASSERT(scene);
     MD_ASSERT(alloc);
     md_str_writer_t sw = md_str_writer_create(alloc);
@@ -434,7 +434,7 @@ str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
     return md_str_writer_release(&sw);
 }
 
-bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, str_t path) {
+bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, md_str_t path) {
     MD_ASSERT(scene);
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -708,7 +708,7 @@ void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, v
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, str_t text) {
+void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_str_t text) {
     md_vg_add_text_styled(scene, pos, font_size, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_COLOR, .data.color = color },
         .stroke = { .type = MD_VG_PAINT_NONE },
@@ -720,7 +720,7 @@ void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_col
     }, text);
 }
 
-void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, str_t text) {
+void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, md_str_t text) {
     if (!text.ptr || text.len == 0) return;
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_TEXT,

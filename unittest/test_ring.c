@@ -51,7 +51,7 @@ static void ring_sys_init(ring_sys_t* r, const ref_comp_t* comps, const char* id
 
 UTEST_F_SETUP(ring) {
     utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(1));
-    utest_fixture->comps = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), utest_fixture->alloc);
+    utest_fixture->comps = read_components(MD_STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), utest_fixture->alloc);
     ASSERT_GT((int)md_array_size(utest_fixture->comps), 100);
     ring_sys_init(&utest_fixture->trp, utest_fixture->comps, "TRP");
     ring_sys_init(&utest_fixture->ala, utest_fixture->comps, "ALA");
@@ -73,7 +73,7 @@ static size_t ring_count_matches(const char* smiles, md_match_level_t level, md_
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t query = {0};
     md_smiles_error_t err = {0};
-    if (!md_match_query_init_smiles(&query, str_from_cstr(smiles), alloc, &err)) {
+    if (!md_match_query_init_smiles(&query, md_str_from_cstr(smiles), alloc, &err)) {
         printf("SMILES error in '%s' at %zu: %s\n", smiles, err.offset, err.message);
         return SIZE_MAX;
     }
@@ -94,7 +94,7 @@ static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, cons
     }
     md_match_query_t query = {0};
     size_t count = SIZE_MAX;
-    if (md_match_query_init_smiles(&query, str_from_cstr(smiles), alloc, NULL)) {
+    if (md_match_query_init_smiles(&query, md_str_from_cstr(smiles), alloc, NULL)) {
         const md_match_desc_t desc = { .query = &query, .mode = mode, .units = units, .num_units = num_rings };
         if (!md_match_for_each(&count, NULL, &desc, sys, NULL, NULL)) count = SIZE_MAX;
         md_match_query_free(&query);
@@ -109,7 +109,7 @@ static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* o
     md_array(md_bitset_t) arr = 0;
     size_t result = SIZE_MAX;
     const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
-    const md_filter_result_t res = md_filter_sets(&arr, str_from_cstr(expr), &ctx, alloc);
+    const md_filter_result_t res = md_filter_sets(&arr, md_str_from_cstr(expr), &ctx, alloc);
     if (res.success) {
         result = md_array_size(arr);
         if (out_atoms) {
@@ -127,7 +127,7 @@ static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* o
 static bool ring_filter_fails_with(const char* expr, const char* expected, const ring_sys_t* r) {
     md_bitset_t bf = {0};
     const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
-    const md_filter_result_t res = md_filter(&bf, str_from_cstr(expr), &ctx, md_get_heap_allocator());
+    const md_filter_result_t res = md_filter(&bf, md_str_from_cstr(expr), &ctx, md_get_heap_allocator());
     md_bitset_free(&bf, md_get_heap_allocator());
     if (res.success) {
         printf("'%s' was expected to fail\n", expr);
@@ -145,10 +145,10 @@ static bool ring_filter_fails_with(const char* expr, const char* expected, const
 UTEST_F(ring, any_bond) {
     md_smiles_t g = {0};
     md_smiles_error_t err = {0};
-    ASSERT_TRUE(md_smiles_parse(&g, STR_LIT("C~N"), md_get_heap_allocator(), &err));
+    ASSERT_TRUE(md_smiles_parse(&g, MD_STR_LIT("C~N"), md_get_heap_allocator(), &err));
     EXPECT_EQ(MD_SMILES_BOND_ANY, g.bonds[0].order);
     md_smiles_free(&g);
-    EXPECT_FALSE(md_smiles_parse(&g, STR_LIT("C~=N"), md_get_heap_allocator(), &err));
+    EXPECT_FALSE(md_smiles_parse(&g, MD_STR_LIT("C~=N"), md_get_heap_allocator(), &err));
 
     // Alanine with all of its hydrogens: a carboxylic acid, its C=O and its C-OH
     const md_system_t* ala = &utest_fixture->ala.sys;
@@ -195,7 +195,7 @@ UTEST_F(ring, match_level) {
         units[r] = md_bitset_from_indices((const uint32_t*)md_ring_atoms(&trp->ring, r), md_ring_size(&trp->ring, r), alloc);
     }
     md_match_query_t query = {0};
-    ASSERT_TRUE(md_match_query_init_smiles(&query, STR_LIT("[nH]"), alloc, NULL));
+    ASSERT_TRUE(md_match_query_init_smiles(&query, MD_STR_LIT("[nH]"), alloc, NULL));
     md_match_desc_t desc = { .query = &query, .units = units, .num_units = 2 };
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, trp, md_get_heap_allocator()));
@@ -287,7 +287,7 @@ static int ring_filter_indices(int* out, int cap, const char* expr, const ring_s
     md_array(md_bitset_t) arr = 0;
     int result = -1;
     const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
-    const md_filter_result_t res = md_filter_sets(&arr, str_from_cstr(expr), &ctx, alloc);
+    const md_filter_result_t res = md_filter_sets(&arr, md_str_from_cstr(expr), &ctx, alloc);
     if (res.success) {
         result = (int)md_array_size(arr);
         for (int i = 0; i < result && i < cap; ++i) {

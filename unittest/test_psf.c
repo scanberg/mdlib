@@ -11,7 +11,7 @@
 #include <core/md_os.h>
 #include <core/md_str.h>
 
-static bool psf_write_text(str_t path, const char* text) {
+static bool psf_write_text(md_str_t path, const char* text) {
     md_file_t f = {0};
     if (!md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
     md_file_write(f, text, strlen(text));
@@ -40,7 +40,7 @@ static const char* psf_text =
 
 UTEST(psf, builds_a_system_without_coordinates) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest.psf");
+    const md_str_t path = MD_STR_LIT("md_unittest.psf");
     ASSERT_TRUE(psf_write_text(path, psf_text));
     EXPECT_TRUE(md_psf_file_is_psf(path));
     EXPECT_EQ(4u, md_psf_file_atom_count(path));
@@ -56,8 +56,8 @@ UTEST(psf, builds_a_system_without_coordinates) {
     EXPECT_EQ(1,  sys.atom.type.z[sys.atom.type_idx[1]]);
     EXPECT_EQ(19, sys.atom.type.z[sys.atom.type_idx[3]]);
     EXPECT_EQ(1, sys.residue.seq_id[1]);
-    EXPECT_TRUE(str_eq_cstr(md_system_residue_name(&sys, 1), "POT"));
-    const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+    EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 1), "POT"));
+    const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
     ASSERT_TRUE(charge != NULL);
     EXPECT_NEAR(-0.834f, ((const float*)charge->data)[0], 1e-5f);
 
@@ -76,7 +76,7 @@ UTEST(psf, builds_a_system_without_coordinates) {
 
 UTEST(namdbin, coordinates_in_either_byte_order) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest.coor");
+    const md_str_t path = MD_STR_LIT("md_unittest.coor");
     for (int swap = 0; swap < 2; ++swap) {
         md_file_t f = {0};
         ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
@@ -111,7 +111,7 @@ UTEST(namdbin, coordinates_in_either_byte_order) {
 // after it - the residue number read as the segment, the residue name as the number.
 UTEST(psf, blank_segment_ids) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_blank_segid.psf");
+    const md_str_t path = MD_STR_LIT("md_unittest_blank_segid.psf");
     static const char* texts[2] = {
         "PSF\n"
         "\n"
@@ -143,10 +143,10 @@ UTEST(psf, blank_segment_ids) {
         ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path));
         ASSERT_EQ(2u, sys.atom.count);
         ASSERT_EQ(1u, sys.residue.count);
-        EXPECT_TRUE(str_eq_cstr(md_system_residue_name(&sys, 0), "ALA"));
+        EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 0), "ALA"));
         EXPECT_EQ(7, sys.residue.seq_id[0]);
-        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, 1), "CA"));
-        const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+        EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, 1), "CA"));
+        const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         ASSERT_TRUE(charge != NULL);
         EXPECT_NEAR(0.21f, ((const float*)charge->data)[1], 1e-5f);
         EXPECT_EQ(1u, sys.bond.count);

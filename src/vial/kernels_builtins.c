@@ -33,7 +33,7 @@ bool vial_k_index_set(vial_kctx_t* k, const vial_val_t* a, const vial_index_item
 
 typedef struct bargs_t {
     const vial_val_t* const* v;
-    const str_t*      names;
+    const md_str_t*      names;
     uint32_t          n;
 } bargs_t;
 
@@ -42,7 +42,7 @@ static const vial_val_t* arg(const bargs_t* a, const char* name, uint32_t pos) {
     bool bound = false;
     for (uint32_t i = 0; i < a->n; ++i) {
         if (!a->names[i].len) continue;
-        if (a->names[i].ptr[0] == name[0] && str_eq(a->names[i], str_from_cstr(name))) return a->v[i];
+        if (a->names[i].ptr[0] == name[0] && md_str_eq(a->names[i], md_str_from_cstr(name))) return a->v[i];
         if (i == 0) bound = true;   // a bound call names its first parameter
     }
     if (bound) return NULL;
@@ -76,7 +76,7 @@ static bool is_num(uint8_t dt) { return dt == VIAL_DT_BOOL || dt == VIAL_DT_INT 
 
 
 static bool str_is(const vial_val_t* v, const char* s) {
-    return v && v->dtype == VIAL_DT_STR && v->ndim == 0 && str_eq(*(const str_t*)v->data, str_from_cstr(s));
+    return v && v->dtype == VIAL_DT_STR && v->ndim == 0 && md_str_eq(*(const md_str_t*)v->data, md_str_from_cstr(s));
 }
 
 // ### POSITIONS ###
@@ -673,7 +673,7 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
     const uint32_t* idx = vial_sets_items(s->sets, 0);
     const bool str = !strcmp(name, "name") || !strcmp(name, "element");
     vial_val_t o; if (!vial_k_make(k, str ? VIAL_DT_STR : VIAL_DT_FLOAT, 1, &n, &o)) return false;
-    const md_attribute_t* charges = !strcmp(name, "charge") ? md_attributes_find(&sys->attributes, STR_LIT("atom/charge")) : NULL;
+    const md_attribute_t* charges = !strcmp(name, "charge") ? md_attributes_find(&sys->attributes, MD_STR_LIT("atom/charge")) : NULL;
     const float* cq = charges ? md_attribute_view(charges, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
     const int which = !strcmp(name, "mass") ? 0 : !strcmp(name, "charge") ? 1 : !strcmp(name, "name") ? 2 : !strcmp(name, "element") ? 3 : -1;
     if (which < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
@@ -683,8 +683,8 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
         switch (which) {
         case 0:  ((float*)o.data)[i] = k_mass(ms, sys, a); break;
         case 1:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
-        case 2:  ((str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
-        default: ((str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a)); break;
+        case 2:  ((md_str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
+        default: ((md_str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a)); break;
         }
     }
     o.origin = s->sets;
@@ -2224,7 +2224,7 @@ static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, con
         p->labelled = true;
         p->value = NAN;
         p->unit = md_unit_none();
-        p->text = lab->data ? *(const str_t*)lab->data : (str_t){0};
+        p->text = lab->data ? *(const md_str_t*)lab->data : (md_str_t){0};
         return;
     }
     double x;
@@ -2238,7 +2238,7 @@ static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, con
         buf[len++] = ' ';
         len += (int)md_unit_print(buf + len, sizeof(buf) - (size_t)len, p->unit);
     }
-    p->text = str_copy((str_t){buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
+    p->text = md_str_copy((md_str_t){buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
 }
 
 static bool core_prim(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
@@ -2410,7 +2410,7 @@ static bool core_dihedral_draw(vial_kctx_t* k, const vial_val_t* const* a, vial_
     return true;
 }
 
-bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n,
                          const vial_val_t* result, vial_val_t* out) {
     bargs_t ba = {.v = args, .names = names, .n = n};
     const bool is_angle = !strcmp(name, "angle"), is_dihedral = !strcmp(name, "dihedral");
@@ -2868,7 +2868,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
     const uint8_t level = level_of(name, &pkind);
     if (level == VIAL_LEVEL_NONE) {
         // A predefined set
-        vial_sets_t* s = vial_select_predefined(k->in->sys, str_from_cstr(name), k->alloc);
+        vial_sets_t* s = vial_select_predefined(k->in->sys, md_str_from_cstr(name), k->alloc);
         if (!s) return vial_rt_fail(k, "R0103", "%s is not a set", name);
         *out = vial_val_sets(s);
         return true;
@@ -2892,7 +2892,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
         const size_t cnt = vial_val_count(v);
         for (size_t e = 0; e < cnt; ++e) {
             vial_match_t m = {0};
-            if (v->dtype == VIAL_DT_STR) { m.kind = 0; m.s = ((const str_t*)v->data)[e]; }
+            if (v->dtype == VIAL_DT_STR) { m.kind = 0; m.s = ((const md_str_t*)v->data)[e]; }
             else if (v->dtype == VIAL_DT_RANGE) { m.kind = 2; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
             else if (v->dtype == VIAL_DT_INT) { m.kind = 1; m.lo = ((const int32_t*)v->data)[e]; }
             else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int or a range");
@@ -3043,7 +3043,7 @@ static bool k_autocorrelation(vial_kctx_t* k, const vial_val_t* x, const vial_va
 
 // ### DISPATCH ###
 
-bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out) {
+bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out) {
     bargs_t ba = {.v = args, .names = names, .n = n};
     // The first letter first: most names differ there, and a mapped call dispatches once per element
     #define IS(s) (name[0] == (s)[0] && strcmp(name, s) == 0)

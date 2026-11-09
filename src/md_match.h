@@ -405,7 +405,7 @@ extern "C" {
 #endif
 
 // Query from SMILES. Returns false on a syntax error, described in err (optional).
-bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md_allocator_i* alloc, struct md_smiles_error_t* err);
+bool md_match_query_init_smiles(md_match_query_t* query, md_str_t smiles, struct md_allocator_i* alloc, struct md_smiles_error_t* err);
 
 // Query from atoms of a system, in the order given: the order of the columns of the result.
 // The atoms need not be connected; a disconnected set is a query of several parts.
@@ -439,14 +439,14 @@ void md_match_library_destroy(md_match_library_t* library);
 
 // Adds a copy of the query under a name (optional, copied). Returns the index of the entry, or -1 if the query is
 // invalid (logged).
-int32_t md_match_library_add(md_match_library_t* library, const md_match_query_t* query, str_t name);
+int32_t md_match_library_add(md_match_library_t* library, const md_match_query_t* query, md_str_t name);
 
 // Adds the query of a SMILES. Returns the index of the entry, or -1 on a syntax error, described in err (optional).
-int32_t md_match_library_add_smiles(md_match_library_t* library, str_t smiles, str_t name, struct md_smiles_error_t* err);
+int32_t md_match_library_add_smiles(md_match_library_t* library, md_str_t smiles, md_str_t name, struct md_smiles_error_t* err);
 
 size_t md_match_library_count(const md_match_library_t* library);
 const md_match_query_t* md_match_library_query(const md_match_library_t* library, size_t entry);
-str_t md_match_library_name(const md_match_library_t* library, size_t entry);
+md_str_t md_match_library_name(const md_match_library_t* library, size_t entry);
 
 // For every unit, the first entry of the library which matches it (see IDENTIFICATION). Returns false if the
 // description is invalid (logged), true otherwise, also when nothing is identified.

@@ -192,7 +192,7 @@ static size_t h5_attr_i32s(int32_t* dst, size_t cap, hid_t loc, const char* name
 // Every string of an attribute (is_attr) or a dataset, copied into alloc, at most cap of them.
 // Fixed and variable length alike; fixed length strings lose their padding. Returns how many
 // there are, 0 for anything that is not text.
-static size_t h5_read_strs(str_t* dst, size_t cap, hid_t obj, bool is_attr, md_allocator_i* alloc) {
+static size_t h5_read_strs(md_str_t* dst, size_t cap, hid_t obj, bool is_attr, md_allocator_i* alloc) {
     hid_t type  = is_attr ? H5Aget_type(obj)  : H5Dget_type(obj);
     hid_t space = is_attr ? H5Aget_space(obj) : H5Dget_space(obj);
     size_t count = 0;
@@ -211,7 +211,7 @@ static size_t h5_read_strs(str_t* dst, size_t cap, hid_t obj, bool is_attr, md_a
                 if (err >= 0) {
                     count = (size_t)n;
                     for (size_t i = 0; i < (size_t)n; ++i) {
-                        if (i < cap) dst[i] = buf[i] ? str_copy(str_from_cstr(buf[i]), alloc) : (str_t){0};
+                        if (i < cap) dst[i] = buf[i] ? md_str_copy(md_str_from_cstr(buf[i]), alloc) : (md_str_t){0};
                         if (buf[i]) H5free_memory(buf[i]);
                     }
                 }
@@ -227,7 +227,7 @@ static size_t h5_read_strs(str_t* dst, size_t cap, hid_t obj, bool is_attr, md_a
                         size_t len = 0;
                         while (len < size && s[len] != '\0') ++len;
                         while (len > 0 && s[len - 1] == ' ') --len;
-                        dst[i] = str_copy((str_t){s, len}, alloc);
+                        dst[i] = md_str_copy((md_str_t){s, len}, alloc);
                     }
                 }
             }
@@ -239,7 +239,7 @@ static size_t h5_read_strs(str_t* dst, size_t cap, hid_t obj, bool is_attr, md_a
     return count;
 }
 
-static size_t h5_attr_strs(str_t* dst, size_t cap, hid_t loc, const char* name, md_allocator_i* alloc) {
+static size_t h5_attr_strs(md_str_t* dst, size_t cap, hid_t loc, const char* name, md_allocator_i* alloc) {
     if (H5Aexists(loc, name) <= 0) {
         return 0;
     }
@@ -252,14 +252,14 @@ static size_t h5_attr_strs(str_t* dst, size_t cap, hid_t loc, const char* name, 
     return count;
 }
 
-static str_t h5_attr_str(hid_t loc, const char* name, md_allocator_i* alloc) {
-    str_t s = {0};
+static md_str_t h5_attr_str(hid_t loc, const char* name, md_allocator_i* alloc) {
+    md_str_t s = {0};
     h5_attr_strs(&s, 1, loc, name, alloc);
     return s;
 }
 
 // The names of the links in a group, in name order, copied into alloc
-static size_t h5_children(md_array(str_t)* out, hid_t loc, const char* path, md_allocator_i* alloc) {
+static size_t h5_children(md_array(md_str_t)* out, hid_t loc, const char* path, md_allocator_i* alloc) {
     hid_t group = H5Gopen(loc, path, H5P_DEFAULT);
     if (group < 0) {
         return 0;
@@ -270,7 +270,7 @@ static size_t h5_children(md_array(str_t)* out, hid_t loc, const char* path, md_
             char name[H5MD_PATH_MAX];
             const ssize_t len = H5Lget_name_by_idx(group, ".", H5_INDEX_NAME, H5_ITER_INC, i, name, sizeof(name), H5P_DEFAULT);
             if (len > 0 && (size_t)len < sizeof(name)) {
-                md_array_push(*out, str_copy((str_t){name, (size_t)len}, alloc), alloc);
+                md_array_push(*out, md_str_copy((md_str_t){name, (size_t)len}, alloc), alloc);
             }
         }
     }
@@ -278,8 +278,8 @@ static size_t h5_children(md_array(str_t)* out, hid_t loc, const char* path, md_
     return md_array_size(*out);
 }
 
-static bool h5_path(char* buf, size_t cap, const char* parent, str_t child) {
-    const int len = md_snprintf(buf, cap, "%s/" STR_FMT, parent, STR_ARG(child));
+static bool h5_path(char* buf, size_t cap, const char* parent, md_str_t child) {
+    const int len = md_snprintf(buf, cap, "%s/" MD_STR_FMT, parent, MD_STR_ARG(child));
     return len > 0 && (size_t)len < cap;
 }
 
@@ -288,14 +288,14 @@ static bool h5_path(char* buf, size_t cap, const char* parent, str_t child) {
 // A unit as the H5MD units module writes it: factors separated by spaces, each a number or a
 // symbol, raised to a power written as a signed integer straight after it - "nm+3", "kJ mol-1
 // nm-1", "10+3 m". The symbols are SI and parsed by md_unit_parse, so "A" is an ampere.
-static bool h5md_unit_parse(md_unit_t* out, str_t str) {
+static bool h5md_unit_parse(md_unit_t* out, md_str_t str) {
     md_unit_t unit = md_unit_none();
-    str = str_trim(str);
-    while (!str_empty(str)) {
+    str = md_str_trim(str);
+    while (!md_str_empty(str)) {
         size_t end = 0;
         while (end < str.len && str.ptr[end] != ' ') ++end;
-        str_t tok = str_substr(str, 0, end);
-        str = str_trim(str_substr(str, end, SIZE_MAX));
+        md_str_t tok = md_str_substr(str, 0, end);
+        str = md_str_trim(md_str_substr(str, end, SIZE_MAX));
 
         int power = 1;
         size_t k = tok.len;
@@ -304,7 +304,7 @@ static bool h5md_unit_parse(md_unit_t* out, str_t str) {
             power = 0;
             for (size_t i = k; i < tok.len; ++i) power = power * 10 + (tok.ptr[i] - '0');
             if (tok.ptr[k - 1] == '-') power = -power;
-            tok = str_substr(tok, 0, k - 1);
+            tok = md_str_substr(tok, 0, k - 1);
         }
 
         md_unit_t factor;
@@ -334,13 +334,13 @@ static bool h5md_unit_of(md_unit_t* out, hid_t loc, const char* path, md_allocat
     if (obj < 0) {
         return false;
     }
-    const str_t text = h5_attr_str(obj, "unit", alloc);
+    const md_str_t text = h5_attr_str(obj, "unit", alloc);
     H5Oclose(obj);
-    if (str_empty(text)) {
+    if (md_str_empty(text)) {
         return false;
     }
     if (!h5md_unit_parse(out, text)) {
-        MD_LOG_INFO("H5MD: the unit '" STR_FMT "' of '%s' is not one this reader knows; it is read without a unit", STR_ARG(text), path);
+        MD_LOG_INFO("H5MD: the unit '" MD_STR_FMT "' of '%s' is not one this reader knows; it is read without a unit", MD_STR_ARG(text), path);
         *out = md_unit_none();
         return false;
     }
@@ -527,7 +527,7 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
         return false;
     }
 
-    md_array(str_t) groups = 0;
+    md_array(md_str_t) groups = 0;
     h5_children(&groups, file, "particles", alloc);
     for (size_t i = 0; i < md_array_size(groups); ++i) {
         char path[H5MD_PATH_MAX];
@@ -574,7 +574,7 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
     if (box >= 0) {
         int32_t dimension = 3;
         h5_attr_read(&dimension, box, "dimension", H5T_NATIVE_INT32);
-        str_t boundary[3] = {0};
+        md_str_t boundary[3] = {0};
         const size_t num_boundary = h5_attr_strs(boundary, 3, box, "boundary", alloc);
         H5Gclose(box);
         if (dimension != 3 || num_boundary != 3) {
@@ -582,7 +582,7 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
             return false;
         }
         for (int k = 0; k < 3; ++k) {
-            p->periodic[k] = str_eq_cstr(boundary[k], "periodic");
+            p->periodic[k] = md_str_eq_cstr(boundary[k], "periodic");
         }
         md_snprintf(path, sizeof(path), "%s/box/edges", p->path);
         p->has_edges = h5md_element_open(&p->edges, file, path, alloc);
@@ -769,7 +769,7 @@ static void h5md_read_bonds(md_array(md_atom_pair_t)* out, hid_t file, const h5m
         }
     }
 
-    md_array(str_t) names = 0;
+    md_array(md_str_t) names = 0;
     h5_children(&names, file, "connectivity", scratch);
     for (size_t n = 0; n < md_array_size(names); ++n) {
         char path[H5MD_PATH_MAX];
@@ -862,7 +862,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
     int32_t version[2] = {0};
     const size_t num_version = h5_attr_i32s(version, 2, top, "version");
     const size_t num_blocks  = h5_attr_strs(NULL, 0, top, "molecule_block_names", alloc);
-    str_t*   block_names  = md_alloc(alloc, MD_MAX(num_blocks, 1) * sizeof(str_t));
+    md_str_t*   block_names  = md_alloc(alloc, MD_MAX(num_blocks, 1) * sizeof(md_str_t));
     int32_t* block_counts = md_alloc(alloc, MD_MAX(num_blocks, 1) * sizeof(int32_t));
     h5_attr_strs(block_names, num_blocks, top, "molecule_block_names", alloc);
     const size_t num_counts  = h5_attr_i32s(block_counts, num_blocks, top, "molecule_block_counts");
@@ -889,7 +889,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
     for (size_t b = 0; b < num_blocks; ++b) {
         // A molecule type is its name; blocks of the same type share it
         size_t t = 0;
-        while (t < data->num_moltypes && !str_eq(data->moltypes[t].name, block_names[b])) ++t;
+        while (t < data->num_moltypes && !md_str_eq(data->moltypes[t].name, block_names[b])) ++t;
         if (t == data->num_moltypes) {
             md_tpr_moltype_t* mt = &data->moltypes[t];
             MD_MEMSET(mt, 0, sizeof(*mt));
@@ -897,12 +897,12 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
 
             char group_path[H5MD_PATH_MAX];
             hid_t group = -1;
-            if (str_copy_to_char_buf(group_path, sizeof(group_path), block_names[b]) == block_names[b].len) {
+            if (md_str_copy_to_char_buf(group_path, sizeof(group_path), block_names[b]) == block_names[b].len) {
                 group = H5Gopen(top, group_path, H5P_DEFAULT);
             }
             int64_t count = 0;
             if (group < 0 || !h5_attr_read(&count, group, "particle_count", H5T_NATIVE_INT64) || count <= 0) {
-                MD_LOG_INFO("H5MD: the GROMACS topology module has no molecule type '" STR_FMT "'", STR_ARG(block_names[b]));
+                MD_LOG_INFO("H5MD: the GROMACS topology module has no molecule type '" MD_STR_FMT "'", MD_STR_ARG(block_names[b]));
                 if (group >= 0) H5Gclose(group);
                 goto done;
             }
@@ -914,8 +914,8 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
             int32_t* name_idx  = md_alloc(alloc, n * sizeof(int32_t));
             int32_t* res_id    = md_alloc(alloc, n * sizeof(int32_t));
             int32_t* res_idx   = md_alloc(alloc, n * sizeof(int32_t));
-            md_array(str_t) names = 0;
-            md_array(str_t) res_names = 0;
+            md_array(md_str_t) names = 0;
+            md_array(md_str_t) res_names = 0;
 
             bool ok = h5_read_rows_at(species,  group, "species",       H5T_NATIVE_INT32, -1, n)
                    && h5_read_rows_at(mass,     group, "mass",          H5T_NATIVE_FLOAT, -1, n)
@@ -924,7 +924,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
                    && h5_read_rows_at(res_id,   group, "residue_id",    H5T_NATIVE_INT32, -1, n)
                    && h5_read_rows_at(res_idx,  group, "residue_name",  H5T_NATIVE_INT32, -1, n);
             for (int k = 0; ok && k < 2; ++k) {
-                md_array(str_t)* table = k == 0 ? &names : &res_names;
+                md_array(md_str_t)* table = k == 0 ? &names : &res_names;
                 hid_t dset = H5Dopen(group, k == 0 ? "particle_name_table" : "residue_name_table", H5P_DEFAULT);
                 const size_t num = dset >= 0 ? h5_read_strs(NULL, 0, dset, false, alloc) : 0;
                 if (num > 0) {
@@ -936,7 +936,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
             }
             H5Gclose(group);
             if (!ok) {
-                MD_LOG_INFO("H5MD: the molecule type '" STR_FMT "' of the GROMACS topology module is incomplete", STR_ARG(block_names[b]));
+                MD_LOG_INFO("H5MD: the molecule type '" MD_STR_FMT "' of the GROMACS topology module is incomplete", MD_STR_ARG(block_names[b]));
                 goto done;
             }
 
@@ -945,7 +945,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
             mt->residues  = md_alloc(alloc, n * sizeof(md_tpr_residue_t));
             for (size_t i = 0; i < n; ++i) {
                 if (name_idx[i] < 0 || (size_t)name_idx[i] >= md_array_size(names) || res_idx[i] < 0 || (size_t)res_idx[i] >= md_array_size(res_names)) {
-                    MD_LOG_INFO("H5MD: the molecule type '" STR_FMT "' of the GROMACS topology module names a particle or residue it has no name for", STR_ARG(block_names[b]));
+                    MD_LOG_INFO("H5MD: the molecule type '" MD_STR_FMT "' of the GROMACS topology module names a particle or residue it has no name for", MD_STR_ARG(block_names[b]));
                     goto done;
                 }
                 // A residue is a run of particles with one residue id and name
@@ -960,7 +960,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
                 md_tpr_atom_t* atom = &mt->atoms[i];
                 MD_MEMSET(atom, 0, sizeof(*atom));
                 atom->name          = names[name_idx[i]];
-                atom->type          = STR_LIT("");
+                atom->type          = MD_STR_LIT("");
                 atom->mass          = mass[i];
                 atom->charge        = charge[i];
                 atom->residue       = (int32_t)(mt->num_residues - 1);
@@ -1000,9 +1000,9 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     const bool has_mass = h5md_read_particle_values(mass, &e, file, p, "mass", 1, scratch);
 
     // Species: the name of an enumeration member, or the number of an integer species
-    str_t* names = md_alloc(scratch, N * sizeof(str_t));
+    md_str_t* names = md_alloc(scratch, N * sizeof(md_str_t));
     bool from_label = false;
-    for (size_t i = 0; i < N; ++i) names[i] = STR_LIT("X");
+    for (size_t i = 0; i < N; ++i) names[i] = MD_STR_LIT("X");
     char path[H5MD_PATH_MAX];
     md_snprintf(path, sizeof(path), "%s/species", p->path);
     if (h5md_element_open(&e, file, path, scratch)) {
@@ -1025,7 +1025,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
                     }
                     char name[64] = "";
                     if (H5Tenum_nameof(mem, raw + i * size, name, sizeof(name)) < 0) name[0] = '\0';
-                    names[i] = str_copy(str_from_cstr(name), scratch);
+                    names[i] = md_str_copy(md_str_from_cstr(name), scratch);
                 }
             }
             H5Tclose(mem);
@@ -1033,7 +1033,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
             int64_t* species = md_alloc(scratch, N * sizeof(int64_t));
             if (h5_read_rows(species, dset, H5T_NATIVE_INT64, e.temporal ? 0 : -1, N)) {
                 for (size_t i = 0; i < N; ++i) {
-                    names[i] = (i > 0 && species[i] == species[i - 1]) ? names[i - 1] : str_printf(scratch, "%" PRId64, species[i]);
+                    names[i] = (i > 0 && species[i] == species[i - 1]) ? names[i - 1] : md_str_printf(scratch, "%" PRId64, species[i]);
                 }
             }
         }
@@ -1046,7 +1046,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     md_array_resize(sys->atom.flags, capacity, alloc);
     MD_MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
     MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // Particles of one species are identical (the specification says so), so a type is a species
     // and the element is decided once per species
@@ -1059,12 +1059,12 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
         if (cached) {
             type = (md_particle_type_idx_t)*cached;
         } else {
-            md_atomic_number_t z = from_label ? md_atomic_number_infer_from_label(names[i], STR_LIT(""), 0) : 0;
+            md_atomic_number_t z = from_label ? md_atomic_number_infer_from_label(names[i], MD_STR_LIT(""), 0) : 0;
             if (!z && m > 0.0f) {
                 z = md_atomic_number_infer_from_mass(m);
             }
             const float type_mass = has_mass ? m : md_atomic_number_mass(z);
-            type = md_particle_type_add(&sys->atom.type, names[i], STR_LIT(""), z, type_mass, md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, alloc);
+            type = md_particle_type_add(&sys->atom.type, names[i], MD_STR_LIT(""), z, type_mass, md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, alloc);
             md_hashmap_add(&type_map, key, (uint32_t)type);
         }
         sys->atom.type_idx[i] = type;
@@ -1084,19 +1084,19 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
 
     float* charge = md_alloc(scratch, N * sizeof(float));
     if (h5md_read_particle_values(charge, &e, file, p, "charge", 1, scratch)) {
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), e.has_unit ? e.unit : md_unit_elementary_charge(), 1, charge, N);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/charge"), e.has_unit ? e.unit : md_unit_elementary_charge(), 1, charge, N);
     }
     return true;
 }
 
-static void h5md_publish_str(md_attributes_t* attributes, const char* path, str_t value) {
-    if (str_empty(value)) return;
+static void h5md_publish_str(md_attributes_t* attributes, const char* path, md_str_t value) {
+    if (md_str_empty(value)) return;
     md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = str_from_cstr(path), .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 } },
-        .unit = md_unit_none(), .data = &value, .byte_size = sizeof(str_t)});
+        .path = md_str_from_cstr(path), .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { 1 } },
+        .unit = md_unit_none(), .data = &value, .byte_size = sizeof(md_str_t)});
 }
 
-bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
+bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
     if (!sys->alloc) {
@@ -1109,12 +1109,12 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
     }
 
     char path[4096];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
 
     h5md_lock_t lock = h5md_lock();
     hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file < 0) {
-        MD_LOG_ERROR("H5MD: could not open '" STR_FMT "' as an HDF5 file", STR_ARG(filename));
+        MD_LOG_ERROR("H5MD: could not open '" MD_STR_FMT "' as an HDF5 file", MD_STR_ARG(filename));
         h5md_unlock(lock);
         return false;
     }
@@ -1195,7 +1195,7 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
         if (h5md_read_particle_values(values, &e, file, &p, columns[k], 3, scratch)) {
             char attr_path[64];
             md_snprintf(attr_path, sizeof(attr_path), "atom/%s", columns[k]);
-            md_attributes_publish_atom_column(&sys->attributes, str_from_cstr(attr_path), e.unit, 3, values, N);
+            md_attributes_publish_atom_column(&sys->attributes, md_str_from_cstr(attr_path), e.unit, 3, values, N);
         }
     }
 
@@ -1206,7 +1206,7 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
         hid_t meta = H5Gopen(file, "h5md", H5P_DEFAULT);
         h5_attr_i32s(version, 2, meta, "version");
         md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = STR_LIT("h5md/version"), .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { 2 } },
+            .path = MD_STR_LIT("h5md/version"), .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { 2 } },
             .unit = md_unit_none(), .data = version, .byte_size = sizeof(version)});
         hid_t author  = H5Gopen(meta, "author", H5P_DEFAULT);
         hid_t creator = H5Gopen(meta, "creator", H5P_DEFAULT);
@@ -1280,14 +1280,14 @@ static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, c
         return 0;
     }
 
-    const str_t path = md_attribute_str(attributes, file, 0);
+    const md_str_t path = md_attribute_str(attributes, file, 0);
     if (!md_hdf5_direct_read_f32((float*)dst, direct, path, src->dataset, frame, first * K, count * K, src->scale, io)) {
-        MD_LOG_ERROR("H5MD: failed to read frame %u of '%s' from '" STR_FMT "'", frame, src->dataset, STR_ARG(path));
+        MD_LOG_ERROR("H5MD: failed to read frame %u of '%s' from '" MD_STR_FMT "'", frame, src->dataset, MD_STR_ARG(path));
         return 0;
     }
     if (src->rotate && K == 3) {
         // A box in another orientation than md_unitcell_t's: its frame's vectors turn with it
-        const md_attribute_t* rot = md_attributes_sibling(attributes, file, STR_LIT("rotation"));
+        const md_attribute_t* rot = md_attributes_sibling(attributes, file, MD_STR_LIT("rotation"));
         if (rot && rot->data && rot->format.type == MD_ATTRIBUTE_TYPE_F32 && rot->format.shape[0] > frame) {
             h5md_rotate((float*)dst, count, (const float*)rot->data + (size_t)frame * 9);
         }
@@ -1349,7 +1349,7 @@ static bool h5md_time_from_step(double* out, const int64_t* step, size_t n, cons
 // The frame axis of an element with frames of its own: '<group>/time' and '<group>/step'. Its time
 // when it has one, derived from its step through the run's otherwise; and the step itself, without
 // a unit, when neither can be had - which only ever lines up with a run that has no time either.
-static bool h5md_publish_axis(md_attributes_t* attributes, str_t group, const h5md_element_t* e, const int64_t* run_step, const double* run_time, md_unit_t run_time_unit, size_t num_frames, md_allocator_i* scratch) {
+static bool h5md_publish_axis(md_attributes_t* attributes, md_str_t group, const h5md_element_t* e, const int64_t* run_step, const double* run_time, md_unit_t run_time_unit, size_t num_frames, md_allocator_i* scratch) {
     const size_t n = e->num_frames;
     double* time = e->time;
     md_unit_t unit = e->time_unit;
@@ -1365,26 +1365,26 @@ static bool h5md_publish_axis(md_attributes_t* attributes, str_t group, const h5
     const md_attribute_format_t series_f64 = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)n } };
     const md_attribute_format_t series_i64 = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)n } };
     return md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-            .unit = unit, .label = STR_INIT("Time"), .data = time, .byte_size = n * sizeof(double)}) != MD_ATTRIBUTE_INVALID
+            .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = unit, .label = MD_STR_INIT("Time"), .data = time, .byte_size = n * sizeof(double)}) != MD_ATTRIBUTE_INVALID
         && md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-            .unit = md_unit_none(), .label = STR_INIT("Step"), .data = e->step, .byte_size = n * sizeof(int64_t)}) != MD_ATTRIBUTE_INVALID;
+            .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = md_unit_none(), .label = MD_STR_INIT("Step"), .data = e->step, .byte_size = n * sizeof(int64_t)}) != MD_ATTRIBUTE_INVALID;
 }
 
 // Every time dependent per particle element but the position (velocity, force, image, ...): beside
 // the positions when sampled at their steps, in '<run>/h5md/particles/<name>' with its own frame
 // axis otherwise. Elements that are not a value per particle, or not numbers, are passed over.
-static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h5md_particles_t* p, str_t run, const h5md_source_t* position, const double* run_time, md_unit_t run_time_unit, md_allocator_i* scratch) {
+static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h5md_particles_t* p, md_str_t run, const h5md_source_t* position, const double* run_time, md_unit_t run_time_unit, md_allocator_i* scratch) {
     md_attributes_t* attributes = &sys->attributes;
     const size_t F = p->position.num_frames;
     const size_t N = p->num_particles;
 
-    md_array(str_t) names = 0;
+    md_array(md_str_t) names = 0;
     h5_children(&names, file, p->path, scratch);
     for (size_t n = 0; n < md_array_size(names); ++n) {
-        const str_t name = names[n];
-        if (str_eq_cstr(name, "position") || str_eq_cstr(name, "box") || str_eq_cstr(name, "id")) continue;
+        const md_str_t name = names[n];
+        if (md_str_eq_cstr(name, "position") || md_str_eq_cstr(name, "box") || md_str_eq_cstr(name, "id")) continue;
 
         char path[H5MD_PATH_MAX];
         h5md_element_t e;
@@ -1406,8 +1406,8 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
         src.components = (uint32_t)K;
         src.scale      = 1.0;
         // Velocities and forces turn with the positions; at frames of their own there is no box to turn them by
-        src.rotate     = position->rotate && K == 3 && aligned_steps && (str_eq_cstr(name, "velocity") || str_eq_cstr(name, "force"));
-        if (position->rotate && K == 3 && !aligned_steps && (str_eq_cstr(name, "velocity") || str_eq_cstr(name, "force"))) {
+        src.rotate     = position->rotate && K == 3 && aligned_steps && (md_str_eq_cstr(name, "velocity") || md_str_eq_cstr(name, "force"));
+        if (position->rotate && K == 3 && !aligned_steps && (md_str_eq_cstr(name, "velocity") || md_str_eq_cstr(name, "force"))) {
             MD_LOG_INFO("H5MD: '%s' is written at other steps than the positions, and is not turned with the box", path);
         }
         md_snprintf(src.dataset, sizeof(src.dataset), "%s", e.value);
@@ -1420,20 +1420,20 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
 
         const bool aligned = e.num_frames == F && MD_MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
         char group_buf[512];
-        const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md/particles/" STR_FMT, STR_ARG(run), STR_ARG(name));
+        const int group_len = md_snprintf(group_buf, sizeof(group_buf), MD_STR_FMT "/h5md/particles/" MD_STR_FMT, MD_STR_ARG(run), MD_STR_ARG(name));
         char leaf_buf[256];
-        const int leaf_len = md_snprintf(leaf_buf, sizeof(leaf_buf), "atom/" STR_FMT, STR_ARG(name));
+        const int leaf_len = md_snprintf(leaf_buf, sizeof(leaf_buf), "atom/" MD_STR_FMT, MD_STR_ARG(name));
         if (group_len <= 0 || group_len >= (int)sizeof(group_buf) || leaf_len <= 0 || leaf_len >= (int)sizeof(leaf_buf)) {
             md_free(attributes->alloc, state, state_size);
             continue;
         }
-        const str_t group = { group_buf, (size_t)group_len };
-        const str_t leaf  = { leaf_buf, (size_t)leaf_len };
+        const md_str_t group = { group_buf, (size_t)group_len };
+        const md_str_t leaf  = { leaf_buf, (size_t)leaf_len };
 
         char buf[512];
         bool ok = aligned || h5md_publish_axis(attributes, group, &e, p->position.step, run_time, run_time_unit, F, scratch);
         ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/offset")), .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)e.num_frames } },
+            .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("source/offset")), .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)e.num_frames } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = offsets, .byte_size = e.num_frames * sizeof(int64_t)}) != MD_ATTRIBUTE_INVALID;
         if (ok) {
             ok = h5md_publish_virtual(attributes, (md_attribute_desc_t){
@@ -1454,9 +1454,9 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
 // The observables below 'dir' in the file, each to '<run>/h5md/observables/<path>/value' as the file
 // has it, with its own frame axis beside it when it is time dependent. Anything that is not numbers
 // is passed over.
-static bool h5md_publish_observables(md_system_t* sys, hid_t file, const char* dir, str_t run, const int64_t* run_step, const double* run_time, md_unit_t run_time_unit, size_t num_frames, md_allocator_i* scratch) {
+static bool h5md_publish_observables(md_system_t* sys, hid_t file, const char* dir, md_str_t run, const int64_t* run_step, const double* run_time, md_unit_t run_time_unit, size_t num_frames, md_allocator_i* scratch) {
     md_attributes_t* attributes = &sys->attributes;
-    md_array(str_t) names = 0;
+    md_array(md_str_t) names = 0;
     h5_children(&names, file, dir, scratch);
     for (size_t n = 0; n < md_array_size(names); ++n) {
         char path[H5MD_PATH_MAX];
@@ -1496,14 +1496,14 @@ static bool h5md_publish_observables(md_system_t* sys, hid_t file, const char* d
 
         // "/observables/a/b" -> "<run>/h5md/observables/a/b"
         char group_buf[512];
-        const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md%s", STR_ARG(run), path);
+        const int group_len = md_snprintf(group_buf, sizeof(group_buf), MD_STR_FMT "/h5md%s", MD_STR_ARG(run), path);
         if (group_len <= 0 || group_len >= (int)sizeof(group_buf)) continue;
-        const str_t group = { group_buf, (size_t)group_len };
+        const md_str_t group = { group_buf, (size_t)group_len };
 
         char buf[512];
         bool ok = !e.temporal || h5md_publish_axis(attributes, group, &e, run_step, run_time, run_time_unit, num_frames, scratch);
         ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("value")), .format = format,
+            .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("value")), .format = format,
             .flags = e.temporal ? MD_ATTRIBUTE_FLAG_TEMPORAL : MD_ATTRIBUTE_FLAG_NONE, .unit = e.unit,
             .data = values, .byte_size = count * sizeof(double)}) != MD_ATTRIBUTE_INVALID;
         if (!ok) {
@@ -1514,20 +1514,20 @@ static bool h5md_publish_observables(md_system_t* sys, hid_t file, const char* d
     return true;
 }
 
-bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
+bool md_h5md_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
     MD_ASSERT(sys);
     (void)flags;
-    if (str_empty(run)) {
+    if (md_str_empty(run)) {
         MD_LOG_ERROR("H5MD: no run to publish into");
         return false;
     }
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
     if (path_len == 0) {
-        MD_LOG_ERROR("H5MD: could not resolve '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("H5MD: could not resolve '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
-    const str_t path = { path_buf, path_len };
+    const md_str_t path = { path_buf, path_len };
     md_attributes_t* attributes = &sys->attributes;
     if (!attributes->alloc) {
         attributes->alloc = sys->alloc;
@@ -1536,7 +1536,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
     h5md_lock_t lock = h5md_lock();
     hid_t file = H5Fopen(path_buf, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file < 0) {
-        MD_LOG_ERROR("H5MD: could not open '" STR_FMT "' as an HDF5 file", STR_ARG(path));
+        MD_LOG_ERROR("H5MD: could not open '" MD_STR_FMT "' as an HDF5 file", MD_STR_ARG(path));
         h5md_unlock(lock);
         return false;
     }
@@ -1580,7 +1580,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
     char buf[512];
     h5md_source_t src = {
         .sys        = sys,
-        .file_id    = md_attributes_id_from_path(md_run_path(buf, sizeof(buf), run, STR_LIT("source/path"))),
+        .file_id    = md_attributes_id_from_path(md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/path"))),
         .num_atoms  = (uint32_t)N,
         .components = 3,
         .scale      = scale,
@@ -1598,7 +1598,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
     int64_t* sizes   = md_alloc(scratch, F * sizeof(int64_t));
     md_hdf5_direct_frame_spans(offsets, sizes, h5md_source_direct(state), F);
     if (!md_hdf5_direct_is_direct(h5md_source_direct(state))) {
-        MD_LOG_INFO("H5MD: the positions of '" STR_FMT "' are stored in a way read through HDF5, one frame at a time", STR_ARG(path));
+        MD_LOG_INFO("H5MD: the positions of '" MD_STR_FMT "' are stored in a way read through HDF5, one frame at a time", MD_STR_ARG(path));
     }
     const md_attribute_virtual_t virt = { .provider = h5md_provider, .user_data = state, .user_data_size = state_size };
     const md_run_desc_t desc = {
@@ -1621,10 +1621,10 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
     published = true;
 
     if (rotated && md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/rotation")),
+            .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/rotation")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = { (uint32_t)F, 9 } },
             .unit = md_unit_none(),
-            .description = STR_INIT("The rotation (row major) of each frame's positions into the orientation of its cell"),
+            .description = MD_STR_INIT("The rotation (row major) of each frame's positions into the orientation of its cell"),
             .data = rot, .byte_size = F * 9 * sizeof(float)}) == MD_ATTRIBUTE_INVALID) {
         goto done;
     }

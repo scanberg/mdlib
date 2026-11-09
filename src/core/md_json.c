@@ -272,7 +272,7 @@ static void report_error(md_json_error_t* err, const char* msg, const char* beg,
     }
 }
 
-md_json_t* md_json_parse(str_t text, md_allocator_i* alloc, md_json_error_t* err) {
+md_json_t* md_json_parse(md_str_t text, md_allocator_i* alloc, md_json_error_t* err) {
     MD_ASSERT(alloc);
 
     const char* beg = text.ptr ? text.ptr : "";
@@ -545,8 +545,8 @@ md_json_val_t md_json_key(md_json_val_t v) {
 // Strings
 // ---------------------------------------------------------------------------
 
-static inline str_t tok_text(const md_json_t* doc, const tok_t* t) {
-    str_t s = { doc->text + t->offset, t->len };
+static inline md_str_t tok_text(const md_json_t* doc, const tok_t* t) {
+    md_str_t s = { doc->text + t->offset, t->len };
     return s;
 }
 
@@ -629,8 +629,8 @@ static inline size_t decode_char(char out[4], const char** p, const char* end) {
     return utf8_encode(out, cp);
 }
 
-static bool string_eq(const md_json_t* doc, const tok_t* t, str_t str) {
-    const str_t raw = tok_text(doc, t);
+static bool string_eq(const md_json_t* doc, const tok_t* t, md_str_t str) {
+    const md_str_t raw = tok_text(doc, t);
     if (!(t->flags & TOK_ESCAPED)) {
         return raw.len == str.len && (raw.len == 0 || memcmp(raw.ptr, str.ptr, raw.len) == 0);
     }
@@ -646,7 +646,7 @@ static bool string_eq(const md_json_t* doc, const tok_t* t, str_t str) {
     return pos == str.len;
 }
 
-md_json_val_t md_json_get(md_json_val_t v, str_t key) {
+md_json_val_t md_json_get(md_json_val_t v, md_str_t key) {
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_OBJECT) return none_val();
     const tok_t* tok = doc_tok(v.doc);
@@ -659,16 +659,16 @@ md_json_val_t md_json_get(md_json_val_t v, str_t key) {
     return found ? make_val(v.doc, found) : none_val();
 }
 
-str_t md_json_string_raw(md_json_val_t v) {
+md_str_t md_json_string_raw(md_json_val_t v) {
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_STRING) {
-        str_t empty = { 0, 0 };
+        md_str_t empty = { 0, 0 };
         return empty;
     }
     return tok_text(v.doc, t);
 }
 
-bool md_json_string_eq(md_json_val_t v, str_t str) {
+bool md_json_string_eq(md_json_val_t v, md_str_t str) {
     const tok_t* t = val_tok(v);
     return t->type == MD_JSON_TYPE_STRING && string_eq(v.doc, t, str);
 }
@@ -679,7 +679,7 @@ size_t md_json_string_copy(char* buf, size_t cap, md_json_val_t v) {
     const tok_t* t = val_tok(v);
     size_t len = 0;
     if (t->type == MD_JSON_TYPE_STRING) {
-        const str_t raw = tok_text(v.doc, t);
+        const md_str_t raw = tok_text(v.doc, t);
         const char* p   = raw.ptr;
         const char* end = raw.ptr + raw.len;
         while (p < end) {
@@ -694,13 +694,13 @@ size_t md_json_string_copy(char* buf, size_t cap, md_json_val_t v) {
     return len;
 }
 
-str_t md_json_string(md_json_val_t v, md_allocator_i* alloc) {
+md_str_t md_json_string(md_json_val_t v, md_allocator_i* alloc) {
     MD_ASSERT(alloc);
-    str_t result = { 0, 0 };
+    md_str_t result = { 0, 0 };
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_STRING) return result;
-    const str_t raw = tok_text(v.doc, t);
-    if (!(t->flags & TOK_ESCAPED)) return str_copy(raw, alloc);
+    const md_str_t raw = tok_text(v.doc, t);
+    if (!(t->flags & TOK_ESCAPED)) return md_str_copy(raw, alloc);
 
     // Escapes only ever shrink, so the raw length is enough
     char* buf = md_alloc(alloc, raw.len + 1);
@@ -737,14 +737,14 @@ bool md_json_i64(int64_t* out, md_json_val_t v) {
     MD_ASSERT(out);
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_NUMBER) return false;
-    const str_t text = tok_text(v.doc, t);
+    const md_str_t text = tok_text(v.doc, t);
 
     if (t->flags & TOK_INT) {
         int64_t value = 0;
         md_parse_i64(&value, text);
         // md_parse_i64 saturates; the two limits themselves are the only literals that may give them
-        if (value == INT64_MAX && !str_eq(text, STR_LIT("9223372036854775807")))  return false;
-        if (value == INT64_MIN && !str_eq(text, STR_LIT("-9223372036854775808"))) return false;
+        if (value == INT64_MAX && !md_str_eq(text, MD_STR_LIT("9223372036854775807")))  return false;
+        if (value == INT64_MIN && !md_str_eq(text, MD_STR_LIT("-9223372036854775808"))) return false;
         *out = value;
         return true;
     }

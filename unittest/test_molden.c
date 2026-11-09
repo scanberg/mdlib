@@ -22,7 +22,7 @@
 
 static bool molden_load(qm_test_t* t, const char* path, size_t arena_bytes) {
     qm_test_init(t, arena_bytes);
-    return md_molden_system_init_from_file(&t->sys, &t->state, str_from_cstr(path));
+    return md_molden_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ UTEST(molden, parse) {
     }
 
     // [Atoms] was written in Angstrom and the state is in Angstrom, so this is a straight read.
-    const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* coord = qm_test_attr(&t, MD_STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
     ASSERT_EQ(coord->format.components, 3u);
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
@@ -58,7 +58,7 @@ UTEST(molden, parse) {
     EXPECT_NEAR(xyz[1], (double)t.state.xyz[0].y, 1.0e-4);
     EXPECT_NEAR(xyz[2], (double)t.state.xyz[0].z, 1.0e-4);
 
-    const md_attribute_t* z = qm_test_attr(&t, STR_LIT("qm/atom/atomic_number"));
+    const md_attribute_t* z = qm_test_attr(&t, MD_STR_LIT("qm/atom/atomic_number"));
     ASSERT_TRUE(z != NULL);
     double zz[3] = {0};
     ASSERT_EQ(md_attribute_extract_f64(zz, 3, z, md_attribute_slice_all(), md_unit_none()), 3u);
@@ -68,7 +68,7 @@ UTEST(molden, parse) {
 
     // Molden states no effective core charges, so the nuclear charges are the atomic numbers - and
     // they are published all the same, so that a consumer never has to choose between the two
-    const md_attribute_t* nq = qm_test_attr(&t, STR_LIT("qm/atom/nuclear_charge"));
+    const md_attribute_t* nq = qm_test_attr(&t, MD_STR_LIT("qm/atom/nuclear_charge"));
     ASSERT_TRUE(nq != NULL);
     double qq[3] = {0};
     ASSERT_EQ(md_attribute_extract_f64(qq, 3, nq, md_attribute_slice_all(), md_unit_elementary_charge()), 3u);
@@ -96,14 +96,14 @@ UTEST(molden, run_description_is_published) {
     qm_test_t t = {0};
     ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_MEGABYTES(16)));
 
-    EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("molden/ao_convention")), STR_LIT("5D7F15G")));
-    EXPECT_TRUE(str_begins_with(qm_test_string(&t, STR_LIT("molden/title")), STR_LIT("H2O cc-pVDZ")));
+    EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("molden/ao_convention")), MD_STR_LIT("5D7F15G")));
+    EXPECT_TRUE(md_str_begins_with(qm_test_string(&t, MD_STR_LIT("molden/title")), MD_STR_LIT("H2O cc-pVDZ")));
 
     // No vibrational block in this file, and no [Program] line. An absent path is how a consumer
     // learns a block is missing - not a zero it would have to interpret.
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("molden/vib/frequency")));
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("qm/atom/normal_mode")));
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("molden/program")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("molden/vib/frequency")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("qm/atom/normal_mode")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("molden/program")));
 
     qm_test_free(&t);
 }
@@ -112,10 +112,10 @@ UTEST(molden, orbital_energies_and_occupations) {
     qm_test_t t = {0};
     ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_MEGABYTES(16)));
 
-    ASSERT_EQ(24u, (uint32_t)qm_test_count(&t, STR_LIT("orbital/alpha/energy")));
+    ASSERT_EQ(24u, (uint32_t)qm_test_count(&t, MD_STR_LIT("orbital/alpha/energy")));
 
     double energy[24] = {0};
-    ASSERT_EQ(qm_test_series(energy, MD_COUNTOF(energy), &t, STR_LIT("orbital/alpha/energy")), MD_COUNTOF(energy));
+    ASSERT_EQ(qm_test_series(energy, MD_COUNTOF(energy), &t, MD_STR_LIT("orbital/alpha/energy")), MD_COUNTOF(energy));
     EXPECT_NEAR(-20.546019802060, energy[0], 1.0e-9);
     EXPECT_NEAR( -1.318586,       energy[1], 1.0e-6);
     EXPECT_NEAR( -0.498086,       energy[4], 1.0e-6);
@@ -124,23 +124,23 @@ UTEST(molden, orbital_energies_and_occupations) {
     // The file states Occup= 2 and has no beta orbitals, so it is restricted and each spin channel
     // gets half - which is the per channel convention the orbital/ tree uses throughout.
     double occ[24] = {0};
-    ASSERT_EQ(qm_test_series(occ, MD_COUNTOF(occ), &t, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ));
+    ASSERT_EQ(qm_test_series(occ, MD_COUNTOF(occ), &t, MD_STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ));
     for (size_t i = 0; i < 5; ++i) {
         EXPECT_NEAR(1.0, occ[i], 1.0e-12);
     }
     EXPECT_NEAR(0.0, occ[5], 1.0e-12);
 
     // ...and beta is a second NAME for alpha, not a second copy.
-    const md_attribute_t* a = qm_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
-    const md_attribute_t* b = qm_test_attr(&t, STR_LIT("orbital/beta/coefficient"));
+    const md_attribute_t* a = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* b = qm_test_attr(&t, MD_STR_LIT("orbital/beta/coefficient"));
     ASSERT_TRUE(a != NULL);
     ASSERT_TRUE(b != NULL);
     EXPECT_TRUE(md_attribute_same_data(a, b));
 
     // Sym= is text and is published as one string per orbital, not as an index into anything.
-    ASSERT_EQ(24u, (uint32_t)qm_test_count(&t, STR_LIT("orbital/alpha/symmetry")));
-    EXPECT_TRUE(str_eq(qm_test_string_at(&t, STR_LIT("orbital/alpha/symmetry"), 0),  STR_LIT("A")));
-    EXPECT_TRUE(str_eq(qm_test_string_at(&t, STR_LIT("orbital/alpha/symmetry"), 23), STR_LIT("A")));
+    ASSERT_EQ(24u, (uint32_t)qm_test_count(&t, MD_STR_LIT("orbital/alpha/symmetry")));
+    EXPECT_TRUE(md_str_eq(qm_test_string_at(&t, MD_STR_LIT("orbital/alpha/symmetry"), 0),  MD_STR_LIT("A")));
+    EXPECT_TRUE(md_str_eq(qm_test_string_at(&t, MD_STR_LIT("orbital/alpha/symmetry"), 23), MD_STR_LIT("A")));
 
     qm_test_free(&t);
 }
@@ -168,7 +168,7 @@ UTEST(molden, orbitals_are_orthonormal) {
     for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
         qm_test_t t = {0};
         ASSERT_TRUE(molden_load(&t, files[i], MD_MEGABYTES(32)));
-        EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+        EXPECT_LT(qm_test_orthonormality(&t, MD_STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
         qm_test_free(&t);
     }
 }
@@ -187,10 +187,10 @@ UTEST(molden, total_density_holds_ten_electrons) {
     for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
         qm_test_t t = {0};
         ASSERT_TRUE(molden_load(&t, files[i], MD_MEGABYTES(32)));
-        EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
+        EXPECT_NEAR(10.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/total/density")), 1.0e-5);
         // Restricted, so the two spins hold five each and their difference is nothing.
-        EXPECT_NEAR( 5.0, qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-5);
-        EXPECT_NEAR( 0.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-9);
+        EXPECT_NEAR( 5.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/alpha/density")), 1.0e-5);
+        EXPECT_NEAR( 0.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/difference/density")), 1.0e-9);
         qm_test_free(&t);
     }
 }
@@ -202,7 +202,7 @@ static bool molden_density_at(double* rho, const float* p, size_t n, qm_test_t* 
     if (!qm_test_basis(&basis, t)) return false;
     double *rows = NULL, *w = NULL;
     size_t na = 0;
-    const size_t k = md_qm_density_orbitals(&rows, &w, &na, &t->sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+    const size_t k = md_qm_density_orbitals(&rows, &w, &na, &t->sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
     md_gto_iso_field_t* f = k ? md_gto_iso_field_create_products(&basis, atom, 0, rows, NULL, w, k, md_get_heap_allocator()) : NULL;
     if (f) {
         md_gto_iso_field_evaluate(f, p, n, 0, rho, NULL);
@@ -218,7 +218,7 @@ static double molden_density_difference(const char* file_a, const char* file_b) 
     qm_test_t a = {0}, b = {0};
     double worst = INFINITY;
     if (molden_load(&a, file_a, MD_MEGABYTES(32)) && molden_load(&b, file_b, MD_MEGABYTES(32))) {
-        const md_attribute_t* ca = qm_test_attr(&a, STR_LIT("qm/atom/coordinate"));
+        const md_attribute_t* ca = qm_test_attr(&a, MD_STR_LIT("qm/atom/coordinate"));
         double xyz[9] = {0};
         if (ca && md_attribute_extract_f64(xyz, 9, ca, md_attribute_slice_all(), md_unit_none()) == 9) {
             float atom[9];
@@ -292,10 +292,10 @@ UTEST(molden, cartesian_normalisation_is_read_from_the_orbitals) {
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         qm_test_t t = {0};
         ASSERT_TRUE(molden_load(&t, cases[i].file, MD_MEGABYTES(32)));
-        const bool has = qm_test_has(&t, STR_LIT("molden/cartesian_normalisation"));
+        const bool has = qm_test_has(&t, MD_STR_LIT("molden/cartesian_normalisation"));
         if (cases[i].expect) {
             EXPECT_TRUE(has);
-            EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("molden/cartesian_normalisation")), str_from_cstr(cases[i].expect)));
+            EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("molden/cartesian_normalisation")), md_str_from_cstr(cases[i].expect)));
         } else {
             EXPECT_FALSE(has);
         }
@@ -347,8 +347,8 @@ UTEST(molden, sp_shells_expand_to_s_and_p) {
     // must match is the function the contraction adds up to, and the overlap is exactly that,
     // element for element, with no ordering in it.
     size_t da = 0, db = 0;
-    double* sa = qm_test_matrix(&split, STR_LIT("basis/overlap"), &da);
-    double* sb = qm_test_matrix(&fused, STR_LIT("basis/overlap"), &db);
+    double* sa = qm_test_matrix(&split, MD_STR_LIT("basis/overlap"), &da);
+    double* sb = qm_test_matrix(&fused, MD_STR_LIT("basis/overlap"), &db);
     ASSERT_TRUE(sa != NULL);
     ASSERT_TRUE(sb != NULL);
     ASSERT_EQ(8u, (uint32_t)da);
@@ -359,8 +359,8 @@ UTEST(molden, sp_shells_expand_to_s_and_p) {
 
     // ...and the orbitals written against them are the same numbers.
     size_t na = 0, nb = 0;
-    double* ca = qm_test_matrix(&split, STR_LIT("orbital/alpha/coefficient"), &na);
-    double* cb = qm_test_matrix(&fused, STR_LIT("orbital/alpha/coefficient"), &nb);
+    double* ca = qm_test_matrix(&split, MD_STR_LIT("orbital/alpha/coefficient"), &na);
+    double* cb = qm_test_matrix(&fused, MD_STR_LIT("orbital/alpha/coefficient"), &nb);
     ASSERT_TRUE(ca != NULL);
     ASSERT_TRUE(cb != NULL);
     ASSERT_EQ(na, nb);
@@ -383,7 +383,7 @@ UTEST(molden, third_party_file_parses) {
     EXPECT_EQ(4u, t.sys.atom.count);
 
     // No marker in the file, so the format's own default stands and is published as such.
-    EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("molden/ao_convention")), STR_LIT("6D10F15G")));
+    EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("molden/ao_convention")), MD_STR_LIT("6D10F15G")));
 
     md_gto_basis_t basis = {0};
     ASSERT_TRUE(qm_test_basis(&basis, &t));
@@ -391,9 +391,9 @@ UTEST(molden, third_party_file_parses) {
     EXPECT_EQ(18u, basis.num_primitives);  // STO-3G, three per shell
     EXPECT_EQ(8u, (uint32_t)md_gto_basis_num_ao(&basis));
 
-    ASSERT_EQ(8u, (uint32_t)qm_test_count(&t, STR_LIT("orbital/alpha/energy")));
+    ASSERT_EQ(8u, (uint32_t)qm_test_count(&t, MD_STR_LIT("orbital/alpha/energy")));
     double energy[8] = {0};
-    ASSERT_EQ(qm_test_series(energy, MD_COUNTOF(energy), &t, STR_LIT("orbital/alpha/energy")), MD_COUNTOF(energy));
+    ASSERT_EQ(qm_test_series(energy, MD_COUNTOF(energy), &t, MD_STR_LIT("orbital/alpha/energy")), MD_COUNTOF(energy));
     EXPECT_NEAR(-15.3128, energy[0], 1.0e-4);
 
     qm_test_free(&t);
@@ -439,29 +439,29 @@ UTEST(molden, vibrational_blocks) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(4));
-    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file)));
 
     EXPECT_EQ(3u, t.sys.atom.count);
 
     // [Atoms] AU, so the geometry was in bohr and the system is in Angstrom.
     double xyz[9] = {0};
-    const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* coord = qm_test_attr(&t, MD_STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
     ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
     EXPECT_NEAR(1.43 * 0.529177210903, xyz[4], 1.0e-9);
 
     double freq[3] = {0};
-    ASSERT_EQ(qm_test_series(freq, MD_COUNTOF(freq), &t, STR_LIT("molden/vib/frequency")), MD_COUNTOF(freq));
+    ASSERT_EQ(qm_test_series(freq, MD_COUNTOF(freq), &t, MD_STR_LIT("molden/vib/frequency")), MD_COUNTOF(freq));
     EXPECT_NEAR(1600.0, freq[0], 1.0e-9);
     EXPECT_NEAR(3800.0, freq[2], 1.0e-9);
 
     double intensity[3] = {0};
-    ASSERT_EQ(qm_test_series(intensity, MD_COUNTOF(intensity), &t, STR_LIT("molden/vib/ir_intensity")), MD_COUNTOF(intensity));
+    ASSERT_EQ(qm_test_series(intensity, MD_COUNTOF(intensity), &t, MD_STR_LIT("molden/vib/ir_intensity")), MD_COUNTOF(intensity));
     EXPECT_NEAR(70.0, intensity[0], 1.0e-9);
 
     // {D,N} of 3 component values: mode first, atom last, which is the convention an "atom axis is
     // the last index axis" consumer relies on.
-    const md_attribute_t* mode = qm_test_attr(&t, STR_LIT("qm/atom/normal_mode"));
+    const md_attribute_t* mode = qm_test_attr(&t, MD_STR_LIT("qm/atom/normal_mode"));
     ASSERT_TRUE(mode != NULL);
     ASSERT_EQ(2u, mode->format.rank);
     ASSERT_EQ(3u, mode->format.shape[0]);
@@ -469,14 +469,14 @@ UTEST(molden, vibrational_blocks) {
     ASSERT_EQ(3u, mode->format.components);
 
     double row[9] = {0};
-    ASSERT_EQ(qm_test_row(row, MD_COUNTOF(row), &t, STR_LIT("qm/atom/normal_mode"), 1), MD_COUNTOF(row));
+    ASSERT_EQ(qm_test_row(row, MD_COUNTOF(row), &t, MD_STR_LIT("qm/atom/normal_mode"), 1), MD_COUNTOF(row));
     EXPECT_NEAR(1.01, row[0], 1.0e-9);
     EXPECT_NEAR(1.13, row[5], 1.0e-9);
     EXPECT_NEAR(1.23, row[8], 1.0e-9);
 
     // No [GTO], so nothing that depends on a basis is published - and the file is still read.
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("basis/shell/angular_momentum")));
-    EXPECT_FALSE(qm_test_has(&t, STR_LIT("orbital/alpha/coefficient")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("basis/shell/angular_momentum")));
+    EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("orbital/alpha/coefficient")));
 
     qm_test_free(&t);
 }
@@ -484,10 +484,10 @@ UTEST(molden, vibrational_blocks) {
 // What the sniffer is for: an extension is not evidence, since .molden, .molden.input and .mold are
 // all in use and none of them is exclusive.
 UTEST(molden, file_recognition) {
-    EXPECT_TRUE(md_molden_file_is_molden(STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
-    EXPECT_TRUE(md_molden_file_is_molden(STR_LIT(MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden")));
-    EXPECT_FALSE(md_molden_file_is_molden(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb")));
-    EXPECT_FALSE(md_molden_file_is_molden(STR_LIT(MD_UNITTEST_DATA_DIR "/molden/no-such-file.molden")));
+    EXPECT_TRUE(md_molden_file_is_molden(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    EXPECT_TRUE(md_molden_file_is_molden(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden")));
+    EXPECT_FALSE(md_molden_file_is_molden(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb")));
+    EXPECT_FALSE(md_molden_file_is_molden(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/no-such-file.molden")));
 }
 
 // Refusals. Each of these is a file the reader must decline rather than half read, because a system
@@ -514,7 +514,7 @@ UTEST(molden, malformed_files_are_declined) {
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         qm_test_t t = {0};
         qm_test_init(&t, MD_MEGABYTES(1));
-        EXPECT_FALSE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(cases[i].text)));
+        EXPECT_FALSE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(cases[i].text)));
         qm_test_free(&t);
     }
 }
@@ -545,17 +545,17 @@ UTEST(molden, vibrations_without_atoms) {
         "  5.0\n";
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(4));
-    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file)));
     ASSERT_EQ(3u, t.sys.atom.count);
     EXPECT_EQ(8, t.sys.atom.type.z[t.sys.atom.type_idx[0]]);
     EXPECT_EQ(1, t.sys.atom.type.z[t.sys.atom.type_idx[2]]);
     EXPECT_NEAR(1.43 * 0.529177210903, t.state.xyz[1].y, 1.0e-5);
-    const md_attribute_t* mode = qm_test_attr(&t, STR_LIT("qm/atom/normal_mode"));
+    const md_attribute_t* mode = qm_test_attr(&t, MD_STR_LIT("qm/atom/normal_mode"));
     ASSERT_TRUE(mode != NULL);
     EXPECT_EQ(2u, mode->format.shape[0]);
     EXPECT_EQ(3u, mode->format.shape[1]);
     double row[9] = {0};
-    ASSERT_EQ(qm_test_row(row, MD_COUNTOF(row), &t, STR_LIT("qm/atom/normal_mode"), 1), MD_COUNTOF(row));
+    ASSERT_EQ(qm_test_row(row, MD_COUNTOF(row), &t, MD_STR_LIT("qm/atom/normal_mode"), 1), MD_COUNTOF(row));
     EXPECT_NEAR(1.13, row[5], 1.0e-9);
     qm_test_free(&t);
 }
@@ -658,16 +658,16 @@ UTEST(molden, restricted_open_shell) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file)));
     double occ_a[6] = {0}, occ_b[6] = {0};
-    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, STR_LIT("orbital/alpha/occupation")));
-    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, STR_LIT("orbital/beta/occupation")));
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, MD_STR_LIT("orbital/alpha/occupation")));
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, MD_STR_LIT("orbital/beta/occupation")));
     EXPECT_EQ(1.0, occ_a[3]);
     EXPECT_EQ(1.0, occ_b[3]);
     EXPECT_EQ(1.0, occ_a[4]);
     EXPECT_EQ(0.0, occ_b[4]);
-    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
-    EXPECT_NEAR(9.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
-    EXPECT_NEAR(1.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-5);
+    EXPECT_LT(qm_test_orthonormality(&t, MD_STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    EXPECT_NEAR(9.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/total/density")), 1.0e-5);
+    EXPECT_NEAR(1.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/difference/density")), 1.0e-5);
     qm_test_free(&t);
 }

@@ -111,7 +111,7 @@ extern "C" {
 #endif
 
 // Returns false on a syntax error, described in err (optional). The graph is allocated from alloc.
-bool md_smiles_parse(md_smiles_t* out, str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err);
+bool md_smiles_parse(md_smiles_t* out, md_str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err);
 
 // ### WRITING ###
 // A SMILES of atoms of a system (md_smiles_write.c), canonical: the same graph is written the same way whatever the

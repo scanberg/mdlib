@@ -72,7 +72,7 @@ typedef struct vial_sys_t {
     uint32_t*   ring_atoms;
 } vial_sys_t;
 
-str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
+md_str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
 int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t res);   // -1 for none
 
 // Builds the view of a system; false without one
@@ -150,7 +150,7 @@ typedef enum vial_key_t {
 // One value a keyword matches: a string (a glob where the keyword takes one), an int, or an inclusive range
 typedef struct vial_match_t {
     uint8_t     kind;           // 0 string, 1 int, 2 range
-    str_t       s;
+    md_str_t       s;
     int64_t     lo, hi;
 } vial_match_t;
 
@@ -171,21 +171,21 @@ typedef struct vial_select_t {
 // The keywords of a selector, in the order the reference lists them; false for a keyword it does not take
 bool        vial_select_takes(uint8_t level, uint8_t key);
 const char* vial_select_keywords(uint8_t level);    // "id" for chains, for E0202's message
-uint8_t     vial_select_key(str_t keyword);         // VIAL_KEY_NONE when it is none of them
+uint8_t     vial_select_key(md_str_t keyword);         // VIAL_KEY_NONE when it is none of them
 const char* vial_select_name(uint8_t level);        // "residues"
 
 // Whether a kind= value is known for the level; the known values for E0206's message
-bool        vial_select_kind_known(uint8_t level, str_t kind);
+bool        vial_select_kind_known(uint8_t level, md_str_t kind);
 const char* vial_select_kinds(uint8_t level);
 
 // Evaluates a selector: one set for particles, one set per unit otherwise, in the system's order
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc);
 
 // The predefined sets: protein, nucleic, water, ion, lipid, backbone, sidechain, system; NULL for another name
-vial_sets_t* vial_select_predefined(vial_sys_t* s, str_t name, md_allocator_i* alloc);
+vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc);
 
 // For W0602: the chains among the residues a resid filter matches within the scope, up to two
 uint32_t vial_select_resid_chains(const vial_sys_t* s, const vial_filter_t* f, const vial_sets_t* scope, int32_t out[2]);
 
 // Glob matching with * and ?, as the name keywords take it
-bool vial_glob(str_t pattern, str_t text);
+bool vial_glob(md_str_t pattern, md_str_t text);

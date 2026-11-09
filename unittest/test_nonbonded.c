@@ -105,7 +105,7 @@ UTEST(nonbonded, systems_against_gromacs) {
         char path[512];
         snprintf(path, sizeof(path), "%s%s", TPR_DIR, cases[c].file);
         md_tpr_data_t tpr = {0};
-        ASSERT_TRUE(md_tpr_data_parse_file(&tpr, str_from_cstr(path), arena));
+        ASSERT_TRUE(md_tpr_data_parse_file(&tpr, md_str_from_cstr(path), arena));
         md_nb_potential_t pot;
         ASSERT_TRUE(md_nb_potential_init_from_tpr(&pot, &tpr));
         ASSERT_EQ(19u, tpr.num_atoms);
@@ -162,13 +162,13 @@ UTEST(nonbonded, from_tpr) {
 
     // LJ-PME has a grid part which is not a sum over pairs
     md_tpr_data_t tpr = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&tpr, STR_LIT(TPR_DIR "nb_ljpme.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&tpr, MD_STR_LIT(TPR_DIR "nb_ljpme.tpr"), arena));
     md_nb_potential_t pot;
     EXPECT_FALSE(md_nb_potential_init_from_tpr(&pot, &tpr));
     md_tpr_data_free(&tpr, arena);
 
     // Martini: reaction field with eps_r 15 and an infinite eps_rf, cut off at 1.1 nm, LJ potential shift at 1.1 nm
-    ASSERT_TRUE(md_tpr_data_parse_file(&tpr, STR_LIT(TPR_DIR "martini3.tpr"), arena));
+    ASSERT_TRUE(md_tpr_data_parse_file(&tpr, MD_STR_LIT(TPR_DIR "martini3.tpr"), arena));
     ASSERT_TRUE(md_nb_potential_init_from_tpr(&pot, &tpr));
     EXPECT_EQ((int)MD_NB_COULOMB_REACTION_FIELD, pot.coulomb);
     EXPECT_EQ((int)MD_NB_MODIFIER_POT_SHIFT, pot.lj_modifier);
@@ -191,7 +191,7 @@ UTEST(nonbonded, system_forcefield) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "nb_fswitch_rf.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr")));
     ASSERT_TRUE(sys.nonbonded != NULL);
     const md_nb_forcefield_t* ff = sys.nonbonded;
     ASSERT_EQ((size_t)19, ff->num_atoms);
@@ -223,7 +223,7 @@ UTEST(nonbonded, system_forcefield) {
     // LJ-PME cannot be evaluated pair by pair: no force field, so no energies
     md_system_t sys2 = { .alloc = arena };
     md_system_state_t state2 = { .alloc = arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys2, &state2, STR_LIT(TPR_DIR "nb_ljpme.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys2, &state2, MD_STR_LIT(TPR_DIR "nb_ljpme.tpr")));
     EXPECT_TRUE(sys2.nonbonded == NULL);
 
     md_arena_allocator_destroy(arena);

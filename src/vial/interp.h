@@ -232,10 +232,10 @@ bool vial_k_kind(vial_kctx_t* k, uint16_t kind, const vial_val_t* a, vial_val_t*
 bool vial_k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
 
 // A built-in, its arguments by parameter (NULL when not given) and the parameters' names
-bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out);
+bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out);
 // What built-in name draws of its own with these arguments and its value: a drawing into out, false when it draws
 // nothing of its own and is drawn by its type
-bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n,
                          const vial_val_t* result, vial_val_t* out);
 
 // A value as dtype, converted elementwise; the same value when it already is

@@ -187,7 +187,7 @@ uint32_t vial_ir_contract(vial_ir_t* ir, md_allocator_i* alloc) {
             const vial_ssa_t abc[3] = {a, b, c};
             for (int k = 0; k < 3; ++k) {
                 md_array_push(ir->args, abc[k], ir->alloc);
-                md_array_push(ir->names, (str_t){0}, ir->alloc);
+                md_array_push(ir->names, (md_str_t){0}, ir->alloc);
             }
             uses[p] = 0;
             fused += 1;
@@ -210,8 +210,8 @@ static const char* builtin_name(const vial_ir_t* ir, const vial_ir_op_t* op) {
 // The op's argument for a parameter, by name, or 0
 static vial_ssa_t arg_named(const vial_ir_t* ir, const vial_ir_op_t* op, const char* name) {
     for (uint32_t k = 0; k < op->num_args; ++k) {
-        const str_t nm = ir->names[op->arg_beg + k];
-        if (nm.len && str_eq(nm, str_from_cstr(name))) return ir->args[op->arg_beg + k];
+        const md_str_t nm = ir->names[op->arg_beg + k];
+        if (nm.len && md_str_eq(nm, md_str_from_cstr(name))) return ir->args[op->arg_beg + k];
     }
     return 0;
 }
@@ -298,7 +298,7 @@ uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc) {
         op->num_args = 3;
         for (int k = 0; k < 3; ++k) {
             md_array_push(ir->args, args[k], ir->alloc);
-            md_array_push(ir->names, (str_t){0}, ir->alloc);
+            md_array_push(ir->names, (md_str_t){0}, ir->alloc);
         }
         op->attr = (uint32_t)md_array_size(ir->ints);
         md_array_push(ir->ints, axis, ir->alloc);
@@ -318,7 +318,7 @@ uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc) {
 typedef struct fp_t {
     const vial_ir_t*    ir;
     const md_system_t*  sys;
-    str_t               run;
+    md_str_t               run;
     uint64_t*           memo;       // by ssa, 0 when not hashed yet
     uint32_t            regions[64];// the regions being hashed, innermost last: a parameter is hashed by its depth
     uint32_t            depth;
@@ -359,7 +359,7 @@ static uint64_t fp_val(uint64_t h, const vial_val_t* v) {
         h = fp_bytes(h, s->offset, ((size_t)s->count + 1) * sizeof(uint32_t));
         h = fp_bytes(h, s->idx, (size_t)s->offset[s->count] * sizeof(uint32_t));
     } else if (v->dtype == VIAL_DT_STR && v->data) {
-        for (size_t i = 0; i < n; ++i) { const str_t* s = (const str_t*)v->data + i; h = fp_bytes(h, s->ptr, s->len); }
+        for (size_t i = 0; i < n; ++i) { const md_str_t* s = (const md_str_t*)v->data + i; h = fp_bytes(h, s->ptr, s->len); }
     } else if (v->dtype == VIAL_DT_TUPLE) {
         for (uint32_t e = 0; e < v->num_elems; ++e) h = fp_val(h, &v->elems[e]);
     } else if (v->data) {
@@ -396,10 +396,10 @@ static uint64_t fp_attr(fp_t* f, uint64_t h, const vial_ir_op_t* op) {
     if (ao == VIAL_IR_NO_OP || ir->ops[ao].kind != VIAL_IR_CONST) return h;
     const vial_val_t* c = &ir->consts[ir->ops[ao].aux];
     if (c->dtype != VIAL_DT_STR || !c->data) return h;
-    const str_t path = *(const str_t*)c->data;
+    const md_str_t path = *(const md_str_t*)c->data;
     char full[512];
     snprintf(full, sizeof(full), "%.*s/%.*s", (int)f->run.len, f->run.ptr, (int)path.len, path.ptr);
-    const md_attribute_t* at = md_attributes_find(&f->sys->attributes, str_from_cstr(full));
+    const md_attribute_t* at = md_attributes_find(&f->sys->attributes, md_str_from_cstr(full));
     if (!at) at = md_attributes_find(&f->sys->attributes, path);
     return at ? fp_mix(fp_bytes(h, at->path.ptr, at->path.len), at->version) : h;
 }
@@ -461,7 +461,7 @@ static uint64_t fp_value(fp_t* f, vial_ssa_t v) {
     return h;
 }
 
-uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const md_system_t* sys, str_t run, uint64_t* memo) {
+uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const md_system_t* sys, md_str_t run, uint64_t* memo) {
     fp_t f = {.ir = ir, .sys = sys, .run = run, .memo = memo};
     uint64_t h = fp_value(&f, v);
     if (sys) h = fp_mix(h, sys->topology_version);

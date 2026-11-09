@@ -165,7 +165,7 @@ static uint64_t system_hash(const md_system_t* sys, const md_system_state_t* st)
     h = fnv(h, st->xyz, na * sizeof(vec3_t));
     h = fnv(h, sys->atom.type_idx, na * sizeof(md_particle_type_idx_t));
     for (size_t t = 0; t < sys->atom.type.count; ++t) {
-        const str_t name = md_particle_type_name(&sys->atom.type, t);
+        const md_str_t name = md_particle_type_name(&sys->atom.type, t);
         h = fnv(h, name.ptr, name.len);
         h = fnv(h, &sys->atom.type.z[t], sizeof(sys->atom.type.z[t]));
     }
@@ -178,7 +178,7 @@ static uint64_t system_hash(const md_system_t* sys, const md_system_state_t* st)
 
 // A file mapped read only, as a string
 typedef struct mapped_file_t {
-    str_t text;
+    md_str_t text;
 #if MD_PLATFORM_WINDOWS
     HANDLE file, mapping;
 #else
@@ -204,7 +204,7 @@ static bool map_file(mapped_file_t* m, const char* path, bool prefetch) {
     if (!m->mapping) { CloseHandle(m->file); return false; }
     void* view = MapViewOfFile(m->mapping, FILE_MAP_READ, 0, 0, 0);
     if (!view) { CloseHandle(m->mapping); CloseHandle(m->file); return false; }
-    m->text = (str_t){ (const char*)view, (size_t)size.QuadPart };
+    m->text = (md_str_t){ (const char*)view, (size_t)size.QuadPart };
     if (prefetch) {
         // Windows 8 and later; looked up so that the benchmark builds against any SDK
         static prefetch_fn fn = NULL;
@@ -227,7 +227,7 @@ static bool map_file(mapped_file_t* m, const char* path, bool prefetch) {
 #   ifndef MAP_POPULATE
     if (prefetch) madvise(view, (size_t)st.st_size, MADV_WILLNEED);
 #   endif
-    m->text = (str_t){ (const char*)view, (size_t)st.st_size };
+    m->text = (md_str_t){ (const char*)view, (size_t)st.st_size };
     return true;
 #endif
 }
@@ -244,7 +244,7 @@ static void unmap_file(mapped_file_t* m) {
     MD_MEMSET(m, 0, sizeof(*m));
 }
 
-static bool load(md_system_t* sys, md_system_state_t* st, str_t path, str_t text, bool gro, const md_executor_t* ex) {
+static bool load(md_system_t* sys, md_system_state_t* st, md_str_t path, md_str_t text, bool gro, const md_executor_t* ex) {
     if (text.len) {
         return gro ? md_gro_system_init_from_str(sys, st, text, ex) : md_pdb_system_init_from_str(sys, st, text, MD_PDB_OPTION_NONE, ex);
     }
@@ -334,15 +334,15 @@ int main(int argc, char** argv) {
            reuse ? "into the same memory (faulted in once)" : "into fresh memory each load");
 
     for (int f = 0; f < num_files; ++f) {
-        const str_t path = str_from_cstr(files[f]);
-        const bool gro = str_ends_with(path, STR_LIT(".gro"));
+        const md_str_t path = md_str_from_cstr(files[f]);
+        const bool gro = md_str_ends_with(path, MD_STR_LIT(".gro"));
         md_file_info_t info = {0};
         if (!md_file_info_extract_from_path(path, &info)) {
             fprintf(stderr, "%s: cannot be read\n", files[f]);
             continue;
         }
-        str_t text = {0};
-        if (from_str) text = load_textfile(path, md_get_heap_allocator());
+        md_str_t text = {0};
+        if (from_str) text = md_load_textfile(path, md_get_heap_allocator());
         const double mb = (double)info.size / (1024.0 * 1024.0);
 
         printf("%s (%.1f MB)\n", files[f], mb);
@@ -421,7 +421,7 @@ int main(int argc, char** argv) {
             }
         }
         printf("\n");
-        if (text.ptr) str_free(text, md_get_heap_allocator());
+        if (text.ptr) md_str_free(text, md_get_heap_allocator());
     }
     return 0;
 }

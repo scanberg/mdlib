@@ -136,8 +136,8 @@ const char** md_lammps_atom_format_names(void);
 const char** md_lammps_atom_format_strings(void);
 
 // Try to find a predefined atom format from input
-md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str);
-md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t filename);
+md_lammps_atom_format_t md_lammps_atom_format_from_str(md_str_t str);
+md_lammps_atom_format_t md_lammps_atom_format_from_file(md_str_t filename);
 
 // validate a arbitrary atom format encoded in a string (atom_format)
 // Writes a human readable error message to out_buf if the format is invalid.
@@ -146,14 +146,14 @@ bool md_lammps_validate_atom_format(char* out_buf, size_t buf_cap, const char* a
 
 // DATA PARSING
 // atom_format is optional and will be used if supplied
-bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* atom_format, struct md_allocator_i* alloc);
-bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* atom_format, struct md_allocator_i* alloc);
+bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* atom_format, struct md_allocator_i* alloc);
+bool md_lammps_data_parse_file(md_lammps_data_t* data, md_str_t filename, const char* atom_format, struct md_allocator_i* alloc);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
 bool md_lammps_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* lammps_data);
-bool md_lammps_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, const char* atom_format);
-bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,	  const char* atom_format);
+bool md_lammps_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const char* atom_format);
+bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,	  const char* atom_format);
 
 // RUN
 // A dump file (.lammpstrj) published as a run (see md_run_publish in md_system.h): time as frame
@@ -161,7 +161,7 @@ bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t*
 // frame's own box and atom/position read from the frame's text in id order when asked for. The index
 // is kept beside the file ('<file>.cache', written unless flags carries
 // MD_RUN_FLAG_DISABLE_CACHE_WRITE).
-bool md_lammps_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_lammps_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

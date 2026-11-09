@@ -95,7 +95,7 @@ UTEST(lipid, dppc_united_atom_pdb) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     EXPECT_EQ(64, (int)sys.lipid.count);
@@ -117,12 +117,12 @@ UTEST(lipid, dppc_united_atom_pdb) {
     }
     // The first lipid: tails C17 .. C31 off C15 and C36 .. C50 off C34
     const int32_t* spine0 = md_lipid_tail_spine(&sys.lipid, 0);
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine0[0]), "C17"));
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine0[14]), "C31"));
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, sys.lipid.tail.anchor_beg[0]), "C15"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, spine0[0]), "C17"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, spine0[14]), "C31"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, sys.lipid.tail.anchor_beg[0]), "C15"));
     const int32_t* spine1 = md_lipid_tail_spine(&sys.lipid, 1);
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine1[0]), "C36"));
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine1[14]), "C50"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, spine1[0]), "C36"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, spine1[14]), "C50"));
 
     // The water is no lipid
     size_t num_lipid_residues = 0;
@@ -152,30 +152,30 @@ static bool martini_membrane_ok(const md_system_t* sys, int num_two_tailed, int 
     }
     int two_tailed = 0, sterols = 0;
     for (size_t l = 0; l < sys->lipid.count; ++l) {
-        const str_t name = md_system_residue_name(sys, (size_t)lipid_res(sys, l, 0));
+        const md_str_t name = md_system_residue_name(sys, (size_t)lipid_res(sys, l, 0));
         if (lipid_num_heads(sys, l) != 1) {
-            printf("lipid %zu (" STR_FMT "): %zu heads\n", l, STR_ARG(name), lipid_num_heads(sys, l));
+            printf("lipid %zu (" MD_STR_FMT "): %zu heads\n", l, MD_STR_ARG(name), lipid_num_heads(sys, l));
             return false;
         }
-        if (str_eq_cstr(name, "CHOL")) {
+        if (md_str_eq_cstr(name, "CHOL")) {
             const uint32_t t = sys->lipid.tail_offset[l];
             const int32_t* head = md_lipid_head_atoms(&sys->lipid, sys->lipid.head_offset[l]);
             if (lipid_num_tails(sys, l) != 1 || sys->lipid.tail.kind[t] != MD_LIPID_TAIL_SKELETON ||
-                md_lipid_head_atom_count(&sys->lipid, sys->lipid.head_offset[l]) != 1 || !str_eq_cstr(md_atom_name(&sys->atom, head[0]), "ROH")) {
+                md_lipid_head_atom_count(&sys->lipid, sys->lipid.head_offset[l]) != 1 || !md_str_eq_cstr(md_atom_name(&sys->atom, head[0]), "ROH")) {
                 printf("lipid %zu (CHOL): %zu tails, kind %d, head of %zu beads\n", l, lipid_num_tails(sys, l), (int)sys->lipid.tail.kind[t], md_lipid_head_atom_count(&sys->lipid, sys->lipid.head_offset[l]));
                 return false;
             }
             sterols += 1;
         } else {
             if (lipid_num_tails(sys, l) != 2) {
-                printf("lipid %zu (" STR_FMT "): %zu tails\n", l, STR_ARG(name), lipid_num_tails(sys, l));
+                printf("lipid %zu (" MD_STR_FMT "): %zu tails\n", l, MD_STR_ARG(name), lipid_num_tails(sys, l));
                 return false;
             }
             for (uint32_t t = sys->lipid.tail_offset[l]; t < sys->lipid.tail_offset[l + 1]; ++t) {
                 const size_t len = tail_spine_len(sys, t);
-                const str_t anchor = md_atom_name(&sys->atom, sys->lipid.tail.anchor_beg[t]);
-                if (sys->lipid.tail.kind[t] != MD_LIPID_TAIL_CHAIN || (len != 4 && len != 5) || !(str_eq_cstr(anchor, "GL1") || str_eq_cstr(anchor, "GL2"))) {
-                    printf("lipid %zu (" STR_FMT "): tail of kind %d, %zu beads, off " STR_FMT "\n", l, STR_ARG(name), (int)sys->lipid.tail.kind[t], len, STR_ARG(anchor));
+                const md_str_t anchor = md_atom_name(&sys->atom, sys->lipid.tail.anchor_beg[t]);
+                if (sys->lipid.tail.kind[t] != MD_LIPID_TAIL_CHAIN || (len != 4 && len != 5) || !(md_str_eq_cstr(anchor, "GL1") || md_str_eq_cstr(anchor, "GL2"))) {
+                    printf("lipid %zu (" MD_STR_FMT "): tail of kind %d, %zu beads, off " MD_STR_FMT "\n", l, MD_STR_ARG(name), (int)sys->lipid.tail.kind[t], len, MD_STR_ARG(anchor));
                     return false;
                 }
             }
@@ -189,7 +189,7 @@ UTEST(lipid, martini3_membrane) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     // POPC 32, POPE 16, POPS 8; CHOL 16
     EXPECT_TRUE(martini_membrane_ok(&sys, 32 + 16 + 8, 16));
@@ -200,7 +200,7 @@ UTEST(lipid, martini3_membrane_tpr) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr")));
     // The bonds are the topology's
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
     EXPECT_TRUE(martini_membrane_ok(&sys, 32 + 16 + 8, 16));
@@ -211,7 +211,7 @@ UTEST(lipid, martini2_membrane_protein) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     // DPPC 50, DOPC 50; CHOL 24. The protein has no lipids.
     EXPECT_TRUE(martini_membrane_ok(&sys, 50 + 50, 24));
@@ -230,29 +230,29 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
     md_allocator_i* alloc = sys->alloc;
     md_smiles_t g = {0};
     md_smiles_error_t err = {0};
-    if (!md_smiles_parse(&g, str_from_cstr(smiles), alloc, &err)) {
+    if (!md_smiles_parse(&g, md_str_from_cstr(smiles), alloc, &err)) {
         printf("SMILES error in '%s' at %zu: %s\n", smiles, err.offset, err.message);
         return false;
     }
     const size_t n = g.num_atoms;
     sys->atom.count = n;
-    md_particle_type_add(&sys->atom.type, STR_LIT(""), (str_t){0}, 0, 0, 0, 0, 0, alloc);
+    md_particle_type_add(&sys->atom.type, MD_STR_LIT(""), (md_str_t){0}, 0, 0, 0, 0, 0, alloc);
     md_array_resize(sys->atom.type_idx, n, alloc);
     md_array_resize(sys->atom.flags, n, alloc);
     MD_MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     for (size_t i = 0; i < n; ++i) {
         const md_atomic_number_t z = g.atoms[i].z;
         char name[8];
-        const str_t sym = md_util_element_symbol(z);
+        const md_str_t sym = md_util_element_symbol(z);
         snprintf(name, sizeof(name), "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
-        sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, str_from_cstr(name), z, md_util_element_atomic_mass(z), md_util_element_vdw_radius(z), 0, 0, alloc);
+        sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_util_element_atomic_mass(z), md_util_element_vdw_radius(z), 0, 0, alloc);
         // Aromatic as written (lowercase), as md_chem_perceive would flag it
         if (g.atoms[i].flags & MD_SMILES_ATOM_AROMATIC) sys->atom.flags[i] |= MD_ATOM_FLAG_AROMATIC;
     }
     md_array_push(sys->residue.atom_offset, 0, alloc);
     if (num_residues == 0) {
         sys->residue.count = 1;
-        md_array_push(sys->residue.name, make_label(str_from_cstr(res_names[0])), alloc);
+        md_array_push(sys->residue.name, make_label(md_str_from_cstr(res_names[0])), alloc);
         md_array_push(sys->residue.seq_id, 1, alloc);
         md_array_push(sys->residue.flags, 0, alloc);
         md_array_push(sys->residue.atom_offset, (uint32_t)n, alloc);
@@ -260,7 +260,7 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
         uint32_t end = 0;
         for (int c = 0; c < num_residues; ++c) {
             end += (uint32_t)res_sizes[c];
-            md_array_push(sys->residue.name, make_label(str_from_cstr(res_names[c])), alloc);
+            md_array_push(sys->residue.name, make_label(md_str_from_cstr(res_names[c])), alloc);
             md_array_push(sys->residue.seq_id, c + 1, alloc);
             md_array_push(sys->residue.flags, 0, alloc);
             md_array_push(sys->residue.atom_offset, end, alloc);
@@ -421,45 +421,45 @@ UTEST(lipid, script) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     const md_filter_context_t fctx = { &sys, &st, NULL };
     md_bitset_t bf = {0};
 
     // 64 lipids of 50 united atoms: 2 x 15 in the tails, 20 in the head
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("lipid()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("lipid()"), &fctx, alloc).success);
     EXPECT_EQ(64 * 50, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("tail()"), &fctx, alloc).success);
     EXPECT_EQ(64 * 30, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("head()"), &fctx, alloc).success);
     EXPECT_EQ(64 * 20, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail() and head()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("tail() and head()"), &fctx, alloc).success);
     EXPECT_EQ(0, (int)md_bitset_count(bf));
     // The phosphorus of the heads
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head() and element('P')"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("head() and element('P')"), &fctx, alloc).success);
     EXPECT_EQ(64, (int)md_bitset_count(bf));
     // One selection per lipid molecule, of all of its atoms
     md_array(md_bitset_t) lipids = 0;
-    ASSERT_TRUE(md_filter_sets(&lipids, STR_LIT("lipid()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter_sets(&lipids, MD_STR_LIT("lipid()"), &fctx, alloc).success);
     ASSERT_EQ(64, (int)md_array_size(lipids));
     for (size_t i = 0; i < md_array_size(lipids); ++i) EXPECT_EQ(50, (int)md_bitset_count(lipids[i]));
     // Within a context, the lipids with an atom in it, whole
     md_array(md_bitset_t) near = 0;
-    ASSERT_TRUE(md_filter_sets(&near, STR_LIT("lipid() in atom(1:3)"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter_sets(&near, MD_STR_LIT("lipid() in atom(1:3)"), &fctx, alloc).success);
     ASSERT_EQ(1, (int)md_array_size(near));
     EXPECT_EQ(50, (int)md_bitset_count(near[0]));
 
     // One selection per tail, 15 carbons each
     md_array(md_bitset_t) sets = 0;
-    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("tail()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter_sets(&sets, MD_STR_LIT("tail()"), &fctx, alloc).success);
     ASSERT_EQ(128, (int)md_array_size(sets));
     for (size_t i = 0; i < md_array_size(sets); ++i) EXPECT_EQ(15, (int)md_bitset_count(sets[i]));
     // Written without parentheses, as the default representations write them
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head or tail"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("head or tail"), &fctx, alloc).success);
     EXPECT_EQ(64 * 50, (int)md_bitset_count(bf));
     // Within a context, the tails fully within it: those of the first lipid
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail() in residue(1)"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("tail() in residue(1)"), &fctx, alloc).success);
     EXPECT_EQ(30, (int)md_bitset_count(bf));
 
     md_arena_allocator_destroy(alloc);
@@ -485,7 +485,7 @@ UTEST(lipid, molecule_of_several_residues) {
     md_system_state_init(&st, sys.atom.count);
     const md_filter_context_t fctx = { &sys, &st, NULL };
     md_array(md_bitset_t) sets = 0;
-    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("lipid()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter_sets(&sets, MD_STR_LIT("lipid()"), &fctx, alloc).success);
     ASSERT_EQ(1, (int)md_array_size(sets));
     EXPECT_EQ((int)sys.atom.count, (int)md_bitset_count(sets[0]));
     md_arena_allocator_destroy(alloc);
@@ -506,9 +506,9 @@ UTEST(lipid, by_name_without_bonds) {
     md_system_state_init(&st, sys.atom.count);
     const md_filter_context_t fctx = { &sys, &st, NULL };
     md_bitset_t bf = {0};
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("lipid()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("lipid()"), &fctx, alloc).success);
     EXPECT_EQ((int)sys.atom.count, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head() or tail()"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&bf, MD_STR_LIT("head() or tail()"), &fctx, alloc).success);
     EXPECT_EQ(0, (int)md_bitset_count(bf));
     md_arena_allocator_destroy(alloc);
 }
@@ -533,7 +533,7 @@ static bool martini_system_from_beads(md_system_t* sys, md_system_state_t* st, c
         }
     }
     const int n = snprintf(gro, sizeof(gro), "beads\n%5d\n%s%10.5f%10.5f%10.5f\n", num_atoms, body, 60.0, 60.0, 60.0);
-    return md_gro_system_init_from_str(sys, st, (str_t){gro, (size_t)n}, NULL) && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
+    return md_gro_system_init_from_str(sys, st, (md_str_t){gro, (size_t)n}, NULL) && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
 }
 
 // The lipid whose first residue is res, -1 when none
@@ -551,8 +551,8 @@ static void lipid_head_names(char* buf, size_t cap, const md_system_t* sys, int 
     for (uint32_t h = sys->lipid.head_offset[l]; h < sys->lipid.head_offset[l + 1]; ++h) {
         const int32_t* atoms = md_lipid_head_atoms(&sys->lipid, h);
         for (size_t k = 0; k < md_lipid_head_atom_count(&sys->lipid, h); ++k) {
-            const str_t s = md_atom_name(&sys->atom, atoms[k]);
-            len += snprintf(buf + len, cap - len, "%s" STR_FMT, len ? " " : "", STR_ARG(s));
+            const md_str_t s = md_atom_name(&sys->atom, atoms[k]);
+            len += snprintf(buf + len, cap - len, "%s" MD_STR_FMT, len ? " " : "", MD_STR_ARG(s));
         }
     }
 }
@@ -607,12 +607,12 @@ UTEST(lipid, martini_renamed_by_beads) {
 UTEST(lipid, martini_renamed_tpr) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
-    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"), alloc));
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"), alloc));
     size_t renamed = 0;
     for (size_t t = 0; t < data.num_moltypes; ++t) {
         for (size_t r = 0; r < data.moltypes[t].num_residues; ++r) {
-            if (str_eq_cstr(data.moltypes[t].residues[r].name, "CHOL")) {
-                data.moltypes[t].residues[r].name = STR_LIT("CHL");
+            if (md_str_eq_cstr(data.moltypes[t].residues[r].name, "CHOL")) {
+                data.moltypes[t].residues[r].name = MD_STR_LIT("CHL");
                 renamed += 1;
             }
         }
@@ -624,7 +624,7 @@ UTEST(lipid, martini_renamed_tpr) {
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
     size_t sterols = 0;
     for (size_t l = 0; l < sys.lipid.count; ++l) {
-        if (!str_eq_cstr(md_system_residue_name(&sys, (size_t)lipid_res(&sys, l, 0)), "CHL")) continue;
+        if (!md_str_eq_cstr(md_system_residue_name(&sys, (size_t)lipid_res(&sys, l, 0)), "CHL")) continue;
         const uint32_t t = sys.lipid.tail_offset[l];
         EXPECT_EQ(1u, lipid_num_tails(&sys, l));
         EXPECT_EQ(MD_LIPID_TAIL_SKELETON, sys.lipid.tail.kind[t]);
@@ -692,7 +692,7 @@ UTEST(lipid, martini2_cholesterol_optlincs) {
         EXPECT_STREQ("ROH", head);
         EXPECT_EQ(c == 1 ? 11u : 7u, md_lipid_tail_atom_count(&sys.lipid, t));
         const int32_t* spine = md_lipid_tail_spine(&sys.lipid, t);
-        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine[tail_spine_len(&sys, t) - 1]), "C2"));
+        EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&sys.atom, spine[tail_spine_len(&sys, t) - 1]), "C2"));
     }
     md_vm_arena_destroy(alloc);
 }
@@ -824,7 +824,7 @@ static size_t lipid_selection_atoms(md_system_t* sys, md_allocator_i* alloc, int
     md_system_state_init(&st, sys->atom.count);
     const md_filter_context_t fctx = { sys, &st, NULL };
     md_array(md_bitset_t) sets = 0;
-    if (!md_filter_sets(&sets, STR_LIT("lipid()"), &fctx, alloc).success) return 0;
+    if (!md_filter_sets(&sets, MD_STR_LIT("lipid()"), &fctx, alloc).success) return 0;
     *num_sets = (int)md_array_size(sets);
     size_t n = 0;
     for (size_t i = 0; i < md_array_size(sets); ++i) n += md_bitset_count(sets[i]);
@@ -896,7 +896,7 @@ UTEST(lipid, molecule_of_residues_apart) {
 static int atom_in_res(const md_system_t* sys, size_t res, const char* name) {
     const md_urange_t r = md_system_residue_atom_range(sys, res);
     for (uint32_t i = r.beg; i < r.end; ++i) {
-        if (str_eq_cstr(md_atom_name(&sys->atom, i), name)) return (int)i;
+        if (md_str_eq_cstr(md_atom_name(&sys->atom, i), name)) return (int)i;
     }
     return -1;
 }
@@ -1073,7 +1073,7 @@ UTEST(lipid, amber_tail_kept_on_its_head_over_a_clash) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(gro), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(4, (int)md_system_residue_count(&sys));
     EXPECT_TRUE(lipid_invariants_hold(&sys));
@@ -1122,7 +1122,7 @@ UTEST(lipid, martini_unknown_by_tail_beads) {
         "[ bonds ]\n1 2 1 0.3 1e4\n1 3 1 0.3 1e4\n2 3 1 0.3 1e4\n1 4 1 0.4 1e4\n4 5 1 0.4 1e4\n4 6 1 0.47 1250\n6 7 1 0.47 1250\n"
         "7 8 1 0.47 1250\n8 9 1 0.47 1250\n5 10 1 0.47 1250\n10 11 1 0.47 1250\n11 12 1 0.47 1250\n12 13 1 0.47 1250\n";
     md_itp_data_t data = {0};
-    ASSERT_TRUE(md_itp_data_parse_str(&data, str_from_cstr(itp), STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_from_cstr(itp), MD_STR_LIT(""), alloc));
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
 
     for (size_t i = 0; i < sys.atom.count; ++i) {

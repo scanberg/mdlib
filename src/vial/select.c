@@ -48,8 +48,8 @@ int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t r) {
     return c >= 0 && (uint32_t)c < s->num_chains ? c : -1;
 }
 
-str_t vial_sys_chain_id(const vial_sys_t* s, int32_t chain) {
-    return chain >= 0 && (uint32_t)chain < s->num_chains ? md_system_chain_id(s->sys, (size_t)chain) : STR_LIT("");
+md_str_t vial_sys_chain_id(const vial_sys_t* s, int32_t chain) {
+    return chain >= 0 && (uint32_t)chain < s->num_chains ? md_system_chain_id(s->sys, (size_t)chain) : MD_STR_LIT("");
 }
 
 static uint32_t atom_res(const vial_sys_t* s, uint32_t a) {
@@ -444,10 +444,10 @@ vial_sets_t* vial_sets_pick_particles(const vial_sets_t* a, uint32_t i, const ui
 // ### LABELS ###
 
 static size_t residue_label(char* buf, size_t cap, const vial_sys_t* s, uint32_t r) {
-    const str_t name = md_system_residue_name(s->sys, r);
+    const md_str_t name = md_system_residue_name(s->sys, r);
     const int32_t c = vial_sys_res_chain(s, r);
     if (c >= 0) {
-        const str_t ch = md_system_chain_id(s->sys, (size_t)c);
+        const md_str_t ch = md_system_chain_id(s->sys, (size_t)c);
         return (size_t)snprintf(buf, cap, "%.*s%d/%.*s", (int)name.len, name.ptr, (int)md_system_residue_seq_id(s->sys, r), (int)ch.len, ch.ptr);
     }
     return (size_t)snprintf(buf, cap, "%.*s%d", (int)name.len, name.ptr, (int)md_system_residue_seq_id(s->sys, r));
@@ -465,7 +465,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
     switch (level) {
     case VIAL_LEVEL_PARTICLE: {
         const bool has = sys->atom.type_idx && sys->atom.type_idx[unit] < sys->atom.type.count;
-        const str_t name = has ? LBL_TO_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : STR_LIT("");
+        const md_str_t name = has ? LBL_TO_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : MD_STR_LIT("");
         n = snprintf(buf, cap, "%.*s/", (int)name.len, name.ptr);
         const uint32_t r = atom_res(s, unit);
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
@@ -519,7 +519,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         break;
     }
     case VIAL_LEVEL_CHAIN: {
-        const str_t id = md_system_chain_id(sys, unit);
+        const md_str_t id = md_system_chain_id(sys, unit);
         n = snprintf(buf, cap, "%.*s", (int)id.len, id.ptr);
         break;
     }
@@ -528,12 +528,12 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         // One residue: that residue; else what it is, and its chain
         uint32_t r0 = NONE32, nres = 0;
         int32_t chain = -1;
-        str_t what = STR_LIT("");
+        md_str_t what = MD_STR_LIT("");
         if (level == VIAL_LEVEL_PART) {
             const md_urange_t res = md_system_part_residue_range(sys, unit);
             r0 = res.beg; nres = res.end - res.beg;
             chain = s->part_chain[unit];
-            what = str_from_cstr(part_kind_name(s->part_kind[unit]));
+            what = md_str_from_cstr(part_kind_name(s->part_kind[unit]));
         } else {
             need_mols(s);
             const uint32_t b = s->mol_offset[unit], e = s->mol_offset[unit + 1];
@@ -547,7 +547,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         }
         if (nres == 1 && r0 != NONE32) return residue_label(buf, cap, s, r0);
         if (chain >= 0) {
-            const str_t ch = md_system_chain_id(sys, (size_t)chain);
+            const md_str_t ch = md_system_chain_id(sys, (size_t)chain);
             n = snprintf(buf, cap, "%.*s/%.*s", (int)what.len, what.ptr, (int)ch.len, ch.ptr);
         } else {
             n = snprintf(buf, cap, "%.*s%u", (int)what.len, what.ptr, unit + 1);
@@ -567,8 +567,8 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE},
 };
 
-uint8_t vial_select_key(str_t keyword) {
-    for (size_t i = 0; i < MD_COUNTOF(keywords); ++i) if (str_eq(keyword, str_from_cstr(keywords[i].word))) return keywords[i].key;
+uint8_t vial_select_key(md_str_t keyword) {
+    for (size_t i = 0; i < MD_COUNTOF(keywords); ++i) if (md_str_eq(keyword, md_str_from_cstr(keywords[i].word))) return keywords[i].key;
     return VIAL_KEY_NONE;
 }
 
@@ -624,12 +624,12 @@ static const char* particle_kinds[] = {"atom", "bead", "virtual"};              
 static const char* ring_kinds[] = {"aromatic", "aliphatic", "hetero", "heteroaromatic", "sugar"};
 static const char* part_kinds[] = {"polymer", "peptide", "nucleic", "dna", "rna", "glycan", "ligand", "lipid", "ion", "water"};
 
-static bool in_list(const char** list, size_t n, str_t s) {
-    for (size_t i = 0; i < n; ++i) if (str_eq(s, str_from_cstr(list[i]))) return true;
+static bool in_list(const char** list, size_t n, md_str_t s) {
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(s, md_str_from_cstr(list[i]))) return true;
     return false;
 }
 
-bool vial_select_kind_known(uint8_t level, str_t kind) {
+bool vial_select_kind_known(uint8_t level, md_str_t kind) {
     switch (level) {
     case VIAL_LEVEL_PARTICLE: return in_list(particle_kinds, MD_COUNTOF(particle_kinds), kind);
     case VIAL_LEVEL_RESIDUE:  return in_list(residue_kinds, MD_COUNTOF(residue_kinds), kind);
@@ -649,7 +649,7 @@ const char* vial_select_kinds(uint8_t level) {
     }
 }
 
-bool vial_glob(str_t p, str_t t) {
+bool vial_glob(md_str_t p, md_str_t t) {
     // Iterative, with one backtrack point for the last *: linear in practice
     size_t i = 0, j = 0, star = SIZE_MAX, mark = 0;
     while (j < t.len) {
@@ -662,20 +662,20 @@ bool vial_glob(str_t p, str_t t) {
     return i == p.len;
 }
 
-static bool match_str(const vial_filter_t* f, str_t s, bool glob) {
+static bool match_str(const vial_filter_t* f, md_str_t s, bool glob) {
     for (size_t k = 0; k < md_array_size(f->any); ++k) {
         const vial_match_t* m = &f->any[k];
         if (m->kind != 0) continue;
-        if (glob ? vial_glob(m->s, s) : str_eq(m->s, s)) return true;
+        if (glob ? vial_glob(m->s, s) : md_str_eq(m->s, s)) return true;
     }
     return false;
 }
 
 // Element symbols ignore case: MG, Mg and mg are magnesium, and no two symbols differ only in case
-static bool match_element(const vial_filter_t* f, str_t s) {
+static bool match_element(const vial_filter_t* f, md_str_t s) {
     for (size_t k = 0; k < md_array_size(f->any); ++k) {
         const vial_match_t* m = &f->any[k];
-        if (m->kind == 0 && str_eq_ignore_case(m->s, s)) return true;
+        if (m->kind == 0 && md_str_eq_ignore_case(m->s, s)) return true;
     }
     return false;
 }
@@ -693,10 +693,10 @@ static bool match_part_kind(const vial_filter_t* f, uint8_t k) {
     for (size_t q = 0; q < md_array_size(f->any); ++q) {
         const vial_match_t* m = &f->any[q];
         if (m->kind != 0) continue;
-        const str_t w = m->s;
-        if (str_eq(w, STR_LIT("polymer")) && k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER) return true;
-        if (str_eq(w, STR_LIT("nucleic")) && (k == VIAL_PART_DNA || k == VIAL_PART_RNA || k == VIAL_PART_NUCLEIC)) return true;
-        if (str_eq(w, str_from_cstr(part_kind_name(k))) && !str_eq(w, STR_LIT("nucleic"))) return true;
+        const md_str_t w = m->s;
+        if (md_str_eq(w, MD_STR_LIT("polymer")) && k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER) return true;
+        if (md_str_eq(w, MD_STR_LIT("nucleic")) && (k == VIAL_PART_DNA || k == VIAL_PART_RNA || k == VIAL_PART_NUCLEIC)) return true;
+        if (md_str_eq(w, md_str_from_cstr(part_kind_name(k))) && !md_str_eq(w, MD_STR_LIT("nucleic"))) return true;
     }
     return false;
 }
@@ -739,11 +739,11 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
             switch (f->key) {
             case VIAL_KEY_NAME: pass = match_str(f, LBL_TO_STR(sys->atom.type.name[t]), true); break;
             case VIAL_KEY_ELEMENT: {
-                const str_t sym = sys->atom.type.z ? md_util_element_symbol(sys->atom.type.z[t]) : STR_LIT("");
+                const md_str_t sym = sys->atom.type.z ? md_util_element_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
                 pass = match_element(f, sym);
                 break;
             }
-            case VIAL_KEY_KIND: pass = kind < MD_COUNTOF(particle_kinds) && match_str(f, str_from_cstr(particle_kinds[kind]), false); break;
+            case VIAL_KEY_KIND: pass = kind < MD_COUNTOF(particle_kinds) && match_str(f, md_str_from_cstr(particle_kinds[kind]), false); break;
             default: break;
             }
         }
@@ -761,7 +761,7 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
         case VIAL_KEY_NAME:  if (!match_str(f, md_system_residue_name(sys, r), true)) return false; break;
         case VIAL_KEY_KIND: {
             const uint32_t k = (uint32_t)md_system_residue_kind(sys, r);
-            if (k >= MD_COUNTOF(residue_kinds) || !match_str(f, str_from_cstr(residue_kinds[k]), false)) return false;
+            if (k >= MD_COUNTOF(residue_kinds) || !match_str(f, md_str_from_cstr(residue_kinds[k]), false)) return false;
             break;
         }
         case VIAL_KEY_CHAIN: if (!chain_matches(s, f, vial_sys_res_chain(s, r))) return false; break;
@@ -795,13 +795,13 @@ static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r)
         } else if (f->key == VIAL_KEY_KIND) {
             bool any = false;
             for (size_t k = 0; k < md_array_size(f->any) && !any; ++k) {
-                const str_t w = f->any[k].s;
+                const md_str_t w = f->any[k].s;
                 const bool aro = flags & MD_RING_FLAG_AROMATIC, het = flags & MD_RING_FLAG_HETERO;
-                if (str_eq(w, STR_LIT("aromatic"))) any = aro;
-                else if (str_eq(w, STR_LIT("aliphatic"))) any = !aro;
-                else if (str_eq(w, STR_LIT("hetero"))) any = het;
-                else if (str_eq(w, STR_LIT("heteroaromatic"))) any = het && aro;
-                else if (str_eq(w, STR_LIT("sugar"))) any = flags & MD_RING_FLAG_SUGAR;
+                if (md_str_eq(w, MD_STR_LIT("aromatic"))) any = aro;
+                else if (md_str_eq(w, MD_STR_LIT("aliphatic"))) any = !aro;
+                else if (md_str_eq(w, MD_STR_LIT("hetero"))) any = het;
+                else if (md_str_eq(w, MD_STR_LIT("heteroaromatic"))) any = het && aro;
+                else if (md_str_eq(w, MD_STR_LIT("sugar"))) any = flags & MD_RING_FLAG_SUGAR;
             }
             if (!any) return false;
         }
@@ -987,21 +987,21 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     return out;
 }
 
-vial_sets_t* vial_select_predefined(vial_sys_t* s, str_t name, md_allocator_i* alloc) {
-    if (str_eq(name, STR_LIT("system"))) return vial_sets_all(s->num_atoms, alloc);
+vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc) {
+    if (md_str_eq(name, MD_STR_LIT("system"))) return vial_sets_all(s->num_atoms, alloc);
     const md_system_t* sys = s->sys;
     // By the flags of the particles: what the structure's perception marked
     md_atom_flags_t flag = 0;
-    if (str_eq(name, STR_LIT("backbone")))        flag = MD_ATOM_FLAG_BACKBONE;
-    else if (str_eq(name, STR_LIT("sidechain")))  flag = MD_ATOM_FLAG_SIDE_CHAIN;
-    else if (str_eq(name, STR_LIT("nucleobase"))) flag = MD_ATOM_FLAG_NUCLEOBASE;
-    else if (str_eq(name, STR_LIT("nucleoside"))) flag = MD_ATOM_FLAG_NUCLEOSIDE;
+    if (md_str_eq(name, MD_STR_LIT("backbone")))        flag = MD_ATOM_FLAG_BACKBONE;
+    else if (md_str_eq(name, MD_STR_LIT("sidechain")))  flag = MD_ATOM_FLAG_SIDE_CHAIN;
+    else if (md_str_eq(name, MD_STR_LIT("nucleobase"))) flag = MD_ATOM_FLAG_NUCLEOBASE;
+    else if (md_str_eq(name, MD_STR_LIT("nucleoside"))) flag = MD_ATOM_FLAG_NUCLEOSIDE;
     int part = -1;
-    if (str_eq(name, STR_LIT("protein"))) part = 0;
-    else if (str_eq(name, STR_LIT("nucleic"))) part = 1;
-    else if (str_eq(name, STR_LIT("water"))) part = 2;
-    else if (str_eq(name, STR_LIT("ion"))) part = 3;
-    else if (str_eq(name, STR_LIT("lipid"))) part = 4;
+    if (md_str_eq(name, MD_STR_LIT("protein"))) part = 0;
+    else if (md_str_eq(name, MD_STR_LIT("nucleic"))) part = 1;
+    else if (md_str_eq(name, MD_STR_LIT("water"))) part = 2;
+    else if (md_str_eq(name, MD_STR_LIT("ion"))) part = 3;
+    else if (md_str_eq(name, MD_STR_LIT("lipid"))) part = 4;
     if (!flag && part < 0) return NULL;
     vial_sets_t* out = sets_new(1, s->num_atoms, alloc);
     out->single = true;

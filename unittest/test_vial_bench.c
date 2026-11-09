@@ -61,21 +61,21 @@ static const vial_bench_pair_t vial_bench_pairs[] = {
     {"p = distance_max(atom(1:50), atom(51:100));",           "p = max(distance(particle[0:50].xyz[:, None], particle[50:100].xyz))"},
 };
 
-static bool str_ends(str_t s, const char* e) {
+static bool str_ends(md_str_t s, const char* e) {
     const size_t n = strlen(e);
     return s.len >= n && strncmp(s.ptr + s.len - n, e, n) == 0;
 }
 
-static bool vial_bench_load(md_system_t* sys, md_system_state_t* state, str_t top, str_t traj) {
+static bool vial_bench_load(md_system_t* sys, md_system_state_t* state, md_str_t top, md_str_t traj) {
     bool ok = str_ends(top, ".gro") ? md_gro_system_init_from_file(sys, state, top, NULL) :
               str_ends(top, ".pdb") ? md_pdb_system_init_from_file(sys, state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) : false;
     if (!ok) return false;
     md_util_system_infer(sys, state, MD_UTIL_INFER_ALL, NULL);
     const uint32_t flags = MD_RUN_FLAG_DISABLE_CACHE_WRITE;
-    return str_ends(traj, ".xtc") ? md_xtc_system_publish_run(sys, traj, STR_LIT("run"), flags) :
-           str_ends(traj, ".trr") ? md_trr_system_publish_run(sys, traj, STR_LIT("run"), flags) :
-           str_ends(traj, ".dcd") ? md_dcd_system_publish_run(sys, traj, STR_LIT("run"), flags) :
-           str_ends(traj, ".pdb") ? md_pdb_system_publish_run(sys, traj, STR_LIT("run"), flags) : false;
+    return str_ends(traj, ".xtc") ? md_xtc_system_publish_run(sys, traj, MD_STR_LIT("run"), flags) :
+           str_ends(traj, ".trr") ? md_trr_system_publish_run(sys, traj, MD_STR_LIT("run"), flags) :
+           str_ends(traj, ".dcd") ? md_dcd_system_publish_run(sys, traj, MD_STR_LIT("run"), flags) :
+           str_ends(traj, ".pdb") ? md_pdb_system_publish_run(sys, traj, MD_STR_LIT("run"), flags) : false;
 }
 
 static double ms_since(md_tick_t t0) { return md_tick_to_milliseconds(md_tick_now() - t0); }
@@ -83,11 +83,11 @@ static double ms_since(md_tick_t t0) { return md_tick_to_milliseconds(md_tick_no
 static bool bench_v1(const char* src, const md_system_t* sys, uint32_t nf, md_allocator_i* alloc, double* compile_ms, double* eval_ms) {
     md_tick_t t0 = md_tick_now();
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    if (!md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL)) return false;
+    if (!md_script_ir_compile_from_source(ir, md_str_from_cstr(src), sys, NULL)) return false;
     *compile_ms = ms_since(t0);
     t0 = md_tick_now();
     md_script_eval_t* eval = md_script_eval_create(nf, ir, alloc);
-    const bool ok = eval && md_script_eval_frame_range(eval, ir, sys, STR_LIT("run"), 0, nf);
+    const bool ok = eval && md_script_eval_frame_range(eval, ir, sys, MD_STR_LIT("run"), 0, nf);
     *eval_ms = ms_since(t0);
     if (eval) md_script_eval_free(eval);
     md_script_ir_free(ir);
@@ -96,13 +96,13 @@ static bool bench_v1(const char* src, const md_system_t* sys, uint32_t nf, md_al
 
 static bool bench_v2(const char* src, const md_system_t* sys, md_allocator_i* alloc, double* compile_ms, double* eval_ms) {
     md_tick_t t0 = md_tick_now();
-    const md_vial_compile_desc_t desc = {.sys = sys, .run = STR_LIT("run")};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    const md_vial_compile_desc_t desc = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &desc, alloc);
     *compile_ms = ms_since(t0);
     t0 = md_tick_now();
     // VIAL_BENCH_THREADS=n: v2's frames on n threads; v1 runs on one either way
     const size_t threads = getenv("VIAL_BENCH_THREADS") ? (size_t)atoi(getenv("VIAL_BENCH_THREADS")) : 0;
-    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
     const bool ok = eval && md_vial_eval_run(eval);
     *eval_ms = ms_since(t0);
     if (eval) md_vial_eval_free(eval);
@@ -114,15 +114,15 @@ UTEST(vial_bench, against_v1) {
     if (!getenv("VIAL_BENCH")) return;
     const char* top_env = getenv("VIAL_BENCH_TOP");
     const char* traj_env = getenv("VIAL_BENCH_TRAJ");
-    const str_t top = top_env ? str_from_cstr(top_env) : STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro");
-    const str_t traj = traj_env ? str_from_cstr(traj_env) : STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const md_str_t top = top_env ? md_str_from_cstr(top_env) : MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro");
+    const md_str_t traj = traj_env ? md_str_from_cstr(traj_env) : MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     const int reps = getenv("VIAL_BENCH_REPS") ? atoi(getenv("VIAL_BENCH_REPS")) : 3;
 
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(vial_bench_load(&sys, &state, top, traj));
-    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/time"));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/time"));
     ASSERT_TRUE(time != NULL);
     const uint32_t nf = time->format.shape[0];
     printf("%s: %.*s, %zu particles, %zu residues; %.*s, %u frames; fastest of %d; v2 on %d threads\n", VIAL_BENCH_VERSION, (int)top.len, top.ptr,
@@ -188,12 +188,12 @@ UTEST(vial_bench, against_v1) {
         for (int r = 0; r < reps; ++r) {
             double c, e;
             md_tick_t t0 = md_tick_now();
-            md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = &sys}, a);
+            md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = &sys}, a);
             c = ms_since(t0);
             md_vial_program_free(prog);
             if (c < best) best = c;
             t0 = md_tick_now();
-            prog = md_vial_compile(STR_LIT(""), &(md_vial_compile_desc_t){.sys = &sys}, a);
+            prog = md_vial_compile(MD_STR_LIT(""), &(md_vial_compile_desc_t){.sys = &sys}, a);
             e = ms_since(t0);
             md_vial_program_free(prog);
             if (e < empty) empty = e;

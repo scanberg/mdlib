@@ -25,17 +25,17 @@ static const vial_unit_name_t vial_unit_names[] = {
     {"K", "K"}, {"e", "e"}, {"u", "u"}, {"kJ", "kJ"}, {"kcal", "kcal"},
 };
 
-bool vial_unit_name(str_t name, md_unit_t* unit) {
+bool vial_unit_name(md_str_t name, md_unit_t* unit) {
     for (size_t i = 0; i < MD_COUNTOF(vial_unit_names); ++i) {
-        if (str_eq(name, str_from_cstr(vial_unit_names[i].name))) {
-            if (unit) md_unit_parse(unit, str_from_cstr(vial_unit_names[i].unit));
+        if (md_str_eq(name, md_str_from_cstr(vial_unit_names[i].name))) {
+            if (unit) md_unit_parse(unit, md_str_from_cstr(vial_unit_names[i].unit));
             return true;
         }
     }
     return false;
 }
 
-bool vial_unit_string(str_t text, md_unit_t* unit) {
+bool vial_unit_string(md_str_t text, md_unit_t* unit) {
     // md_unit spells micro with the Greek mu; accept the micro sign, which keyboards type, as well
     char buf[128];
     size_t n = 0;
@@ -47,16 +47,16 @@ bool vial_unit_string(str_t text, md_unit_t* unit) {
             buf[n++] = text.ptr[i];
         }
     }
-    const str_t s = str_trim((str_t){buf, n});
-    if (str_empty(s)) return false;
+    const md_str_t s = md_str_trim((md_str_t){buf, n});
+    if (md_str_empty(s)) return false;
     md_unit_t u;
     if (!md_unit_parse(&u, s)) return false;
     if (unit) *unit = u;
     return true;
 }
 
-bool vial_unit_divisor(str_t name, md_unit_t* unit) {
-    if (str_empty(name)) return false;
+bool vial_unit_divisor(md_str_t name, md_unit_t* unit) {
+    if (md_str_empty(name)) return false;
     for (size_t i = 0; i < name.len; ++i) {
         const unsigned char c = (unsigned char)name.ptr[i];
         if (!(c >= 0x80 || c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9'))) return false;
@@ -64,17 +64,17 @@ bool vial_unit_divisor(str_t name, md_unit_t* unit) {
     return vial_unit_name(name, unit) || vial_unit_string(name, unit);
 }
 
-bool vial_unit_written(str_t text, md_unit_t* unit) {
+bool vial_unit_written(md_str_t text, md_unit_t* unit) {
     size_t e = 0;
     while (e < text.len && text.ptr[e] != '/') ++e;
     md_unit_t u;
-    if (!vial_unit_name((str_t){text.ptr, e}, &u)) return false;
+    if (!vial_unit_name((md_str_t){text.ptr, e}, &u)) return false;
     while (e < text.len) {
         const size_t b = e + 1;
         e = b;
         while (e < text.len && text.ptr[e] != '/') ++e;
         md_unit_t d;
-        if (!vial_unit_divisor((str_t){text.ptr + b, e - b}, &d)) return false;
+        if (!vial_unit_divisor((md_str_t){text.ptr + b, e - b}, &d)) return false;
         u = md_unit_div(u, d);
     }
     if (unit) *unit = u;

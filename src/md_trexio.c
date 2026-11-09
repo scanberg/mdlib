@@ -76,8 +76,8 @@ static bool trexio_read_f64_attr(double* out, hid_t loc, const char* name) {
 }
 
 // A string attribute, fixed or variable length. Returns a copy in 'alloc', empty when absent.
-static str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* alloc) {
-    str_t result = {0};
+static md_str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* alloc) {
+    md_str_t result = {0};
     if (H5Aexists(loc, name) <= 0) {
         return result;
     }
@@ -95,7 +95,7 @@ static str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* a
     if (H5Tis_variable_str(type)) {
         char* var = NULL;
         if (H5Aread(attr, type, &var) >= 0 && var) {
-            result = str_copy_cstr(var, alloc);
+            result = md_str_copy_cstr(var, alloc);
             H5free_memory(var);
         }
     } else {
@@ -105,7 +105,7 @@ static str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* a
             if (buf) {
                 MD_MEMSET(buf, 0, size + 1);
                 if (H5Aread(attr, type, buf) >= 0) {
-                    result = str_copy_cstrn(buf, strnlen(buf, size), alloc);
+                    result = md_str_copy_cstrn(buf, strnlen(buf, size), alloc);
                 }
             }
         }
@@ -167,7 +167,7 @@ static bool trexio_read_dataset(void* dst, hid_t loc, const char* name, hid_t me
 }
 
 // A dataset of strings, one per element. Returns the count written, 0 on absence or failure.
-static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const char* name, md_allocator_i* alloc) {
+static size_t trexio_read_str_dataset(md_str_t dst[], size_t cap, hid_t loc, const char* name, md_allocator_i* alloc) {
     if (!trexio_has(loc, name)) {
         return 0;
     }
@@ -189,7 +189,7 @@ static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const 
                 MD_MEMSET(raw, 0, sizeof(char*) * cap);
                 if (H5Dread(dset, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
-                        dst[i] = raw[i] ? str_copy_cstr(raw[i], alloc) : (str_t){0};
+                        dst[i] = raw[i] ? md_str_copy_cstr(raw[i], alloc) : (md_str_t){0};
                     }
                     written = cap;
                     H5Dvlen_reclaim(mem_type, H5Dget_space(dset), H5P_DEFAULT, raw);
@@ -202,7 +202,7 @@ static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const 
                 MD_MEMSET(raw, 0, size * cap + 1);
                 if (H5Dread(dset, file_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
-                        dst[i] = str_copy_cstrn(raw + i * size, strnlen(raw + i * size, size), alloc);
+                        dst[i] = md_str_copy_cstrn(raw + i * size, strnlen(raw + i * size, size), alloc);
                     }
                     written = cap;
                 }
@@ -223,10 +223,10 @@ static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const 
 typedef struct trexio_t {
     md_allocator_i* alloc;
 
-    str_t code;
-    str_t package_version;
-    str_t basis_type;
-    str_t mo_type;
+    md_str_t code;
+    md_str_t package_version;
+    md_str_t basis_type;
+    md_str_t mo_type;
 
     int64_t electron_num;
     int64_t electron_up_num;
@@ -259,7 +259,7 @@ typedef struct trexio_t {
     md_array(double)   mo_energy;
     md_array(double)   mo_occupation;
     md_array(int64_t)  mo_spin;
-    md_array(str_t)    mo_symmetry;
+    md_array(md_str_t)    mo_symmetry;
     md_array(double)   mo_coefficient;  // [num_mo][num_ao], in the FILE's AO order
 
 } trexio_t;
@@ -293,19 +293,19 @@ static bool trexio_read_nucleus(trexio_t* trexio, hid_t file) {
 
     double* charge = (double*)md_alloc(trexio->alloc, sizeof(double) * trexio->num_atoms);
     double* coord  = (double*)md_alloc(trexio->alloc, sizeof(double) * trexio->num_atoms * 3);
-    str_t*  label  = (str_t*) md_alloc(trexio->alloc, sizeof(str_t)  * trexio->num_atoms);
+    md_str_t*  label  = (md_str_t*) md_alloc(trexio->alloc, sizeof(md_str_t)  * trexio->num_atoms);
 
     if (charge && coord && label
         && trexio_read_dataset(charge, group, "nucleus_charge", H5T_NATIVE_DOUBLE, trexio->num_atoms)
         && trexio_read_dataset(coord,  group, "nucleus_coord",  H5T_NATIVE_DOUBLE, trexio->num_atoms * 3)) {
 
-        MD_MEMSET(label, 0, sizeof(str_t) * trexio->num_atoms);
+        MD_MEMSET(label, 0, sizeof(md_str_t) * trexio->num_atoms);
         trexio_read_str_dataset(label, trexio->num_atoms, group, "nucleus_label", trexio->alloc);
 
         for (size_t i = 0; i < trexio->num_atoms; ++i) {
             // The label is authoritative where there is one: an ECP calculation states the charge
             // the electrons see, which is not the atomic number.
-            md_atomic_number_t z = str_empty(label[i]) ? 0 : md_atomic_number_from_symbol(label[i], true);
+            md_atomic_number_t z = md_str_empty(label[i]) ? 0 : md_atomic_number_from_symbol(label[i], true);
             if (z == 0) {
                 const double rounded = round(charge[i]);
                 z = (md_atomic_number_t)MD_CLAMP((int)rounded, 0, 118);
@@ -370,8 +370,8 @@ static bool trexio_read_basis(trexio_t* trexio, hid_t file) {
     int64_t prim_num  = 0;
 
     trexio->basis_type = trexio_read_str_attr(group, "basis_type", trexio->alloc);
-    if (!str_empty(trexio->basis_type) && !str_eq_cstr_ignore_case(trexio->basis_type, "gaussian")) {
-        MD_LOG_ERROR("TREXIO: basis_type is '" STR_FMT "'; this library evaluates Gaussian basis sets only", STR_ARG(trexio->basis_type));
+    if (!md_str_empty(trexio->basis_type) && !md_str_eq_cstr_ignore_case(trexio->basis_type, "gaussian")) {
+        MD_LOG_ERROR("TREXIO: basis_type is '" MD_STR_FMT "'; this library evaluates Gaussian basis sets only", MD_STR_ARG(trexio->basis_type));
         result = false;
         goto done;
     }
@@ -570,7 +570,7 @@ static void trexio_read_mo(trexio_t* trexio, hid_t file) {
 
     if (trexio_has(group, "mo_symmetry")) {
         md_array_resize(trexio->mo_symmetry, trexio->num_mo, trexio->alloc);
-        MD_MEMSET(trexio->mo_symmetry, 0, sizeof(str_t) * trexio->num_mo);
+        MD_MEMSET(trexio->mo_symmetry, 0, sizeof(md_str_t) * trexio->num_mo);
         if (trexio_read_str_dataset(trexio->mo_symmetry, trexio->num_mo, group, "mo_symmetry", trexio->alloc) != trexio->num_mo) {
             md_array_free(trexio->mo_symmetry, trexio->alloc);
             trexio->mo_symmetry = NULL;
@@ -790,9 +790,9 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
     }
 
     // The file's own numbers, unaltered, beside the per channel split below.
-    md_qm_publish_series(sys, STR_LIT("trexio/mo/occupation"), STR_LIT("Occupation"), md_unit_none(), trexio->mo_occupation, trexio->mo_occupation ? trexio->num_mo : 0);
+    md_qm_publish_series(sys, MD_STR_LIT("trexio/mo/occupation"), MD_STR_LIT("Occupation"), md_unit_none(), trexio->mo_occupation, trexio->mo_occupation ? trexio->num_mo : 0);
     if (trexio->mo_spin) {
-        md_qm_publish_column(sys, STR_LIT("trexio/mo/spin"), STR_LIT("Spin"), md_unit_none(),
+        md_qm_publish_column(sys, MD_STR_LIT("trexio/mo/spin"), MD_STR_LIT("Spin"), md_unit_none(),
                              MD_ATTRIBUTE_TYPE_I64, trexio->mo_spin, sizeof(int64_t), trexio->num_mo);
     }
 
@@ -811,11 +811,11 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
         if (beta && !unrestricted) {
             // One set of orbitals under two names: no copy, and the densities then come out as
             // twice alpha and zero without a special case anywhere.
-            md_qm_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
-            md_qm_alias(sys, alpha_ener_id,  STR_LIT("orbital/beta/energy"));
-            md_qm_alias(sys, alpha_sym_id,   STR_LIT("orbital/beta/symmetry"));
+            md_qm_alias(sys, alpha_coeff_id, MD_STR_LIT("orbital/beta/coefficient"));
+            md_qm_alias(sys, alpha_ener_id,  MD_STR_LIT("orbital/beta/energy"));
+            md_qm_alias(sys, alpha_sym_id,   MD_STR_LIT("orbital/beta/symmetry"));
             if (!open_shell) {
-                md_qm_alias(sys, alpha_occ_id, STR_LIT("orbital/beta/occupation"));
+                md_qm_alias(sys, alpha_occ_id, MD_STR_LIT("orbital/beta/occupation"));
             } else {
                 // the same orbitals, with what the alpha channel does not hold
                 double* occ = md_alloc(temp, sizeof(double) * trexio->num_mo);
@@ -825,7 +825,7 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
                 for (size_t i = 0; i < trexio->num_mo; ++i) {
                     occ[i] = trexio->mo_occupation[i] - MD_MIN(trexio->mo_occupation[i], 1.0);
                 }
-                md_qm_publish_series(sys, STR_LIT("orbital/beta/occupation"), STR_LIT("Occupation"), md_unit_none(), occ, trexio->num_mo);
+                md_qm_publish_series(sys, MD_STR_LIT("orbital/beta/occupation"), MD_STR_LIT("Occupation"), md_unit_none(), occ, trexio->num_mo);
             }
             break;
         }
@@ -841,7 +841,7 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
 
         double* energy = md_alloc(temp, sizeof(double) * count);
         double* occ    = md_alloc(temp, sizeof(double) * count);
-        str_t*  sym    = md_alloc(temp, sizeof(str_t)  * count);
+        md_str_t*  sym    = md_alloc(temp, sizeof(md_str_t)  * count);
         double* coeff  = md_alloc(temp, sizeof(double) * count * num_cart);
         double* mdlib_ao = md_alloc(temp, sizeof(double) * num_ao);
         if (!energy || !occ || !sym || !coeff || !mdlib_ao) {
@@ -860,8 +860,8 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
             // Restricted: the occupation covers both spins, so a channel gets half of it.
             const double o = trexio->mo_occupation ? trexio->mo_occupation[i] : 0.0;
             occ[m] = !restricted ? o : open_shell ? MD_MIN(o, 1.0) : 0.5 * o;
-            sym[m] = trexio->mo_symmetry ? trexio->mo_symmetry[i] : (str_t){0};
-            have_symmetry = have_symmetry || !str_empty(sym[m]);
+            sym[m] = trexio->mo_symmetry ? trexio->mo_symmetry[i] : (md_str_t){0};
+            have_symmetry = have_symmetry || !md_str_empty(sym[m]);
 
             if (!trexio_orbital_to_cartesian(coeff + m * num_cart, trexio, i, factor, perm, &cart_basis, mdlib_ao)) {
                 MD_LOG_ERROR("TREXIO: could not expand orbital %zu into the Cartesian basis", i);
@@ -870,19 +870,19 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
             m += 1;
         }
 
-        const str_t energy_path = beta ? STR_LIT("orbital/beta/energy")      : STR_LIT("orbital/alpha/energy");
-        const str_t occ_path    = beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation");
-        const str_t sym_path    = beta ? STR_LIT("orbital/beta/symmetry")    : STR_LIT("orbital/alpha/symmetry");
-        const str_t coeff_path  = beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient");
+        const md_str_t energy_path = beta ? MD_STR_LIT("orbital/beta/energy")      : MD_STR_LIT("orbital/alpha/energy");
+        const md_str_t occ_path    = beta ? MD_STR_LIT("orbital/beta/occupation")  : MD_STR_LIT("orbital/alpha/occupation");
+        const md_str_t sym_path    = beta ? MD_STR_LIT("orbital/beta/symmetry")    : MD_STR_LIT("orbital/alpha/symmetry");
+        const md_str_t coeff_path  = beta ? MD_STR_LIT("orbital/beta/coefficient") : MD_STR_LIT("orbital/alpha/coefficient");
 
         // Only when the file actually stated them: an absent path is how a consumer learns a block
         // is missing, and a column of zeros would read as a legitimate set of orbital energies.
-        md_attribute_id_t ener_id = trexio->mo_energy ? md_qm_publish_series(sys, energy_path, STR_LIT("Energy"), md_unit_hartree(), energy, count) : MD_ATTRIBUTE_INVALID;
-        md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
-        md_attribute_id_t sym_id  = have_symmetry ? md_qm_publish_strings(sys, sym_path, STR_LIT("Symmetry"), sym, count) : MD_ATTRIBUTE_INVALID;
+        md_attribute_id_t ener_id = trexio->mo_energy ? md_qm_publish_series(sys, energy_path, MD_STR_LIT("Energy"), md_unit_hartree(), energy, count) : MD_ATTRIBUTE_INVALID;
+        md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    MD_STR_LIT("Occupation"), md_unit_none(),    occ,    count);
+        md_attribute_id_t sym_id  = have_symmetry ? md_qm_publish_strings(sys, sym_path, MD_STR_LIT("Symmetry"), sym, count) : MD_ATTRIBUTE_INVALID;
 
         md_attribute_id_t coeff_id = md_qm_publish_matrix(sys, coeff_path,
-            beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
+            beta ? MD_STR_LIT("Beta Coefficient") : MD_STR_LIT("Alpha Coefficient"),
             md_unit_none(), coeff, count, num_cart);
 
         if (!beta) {
@@ -921,7 +921,7 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
     MD_MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
     MD_MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
         state->xyz[i] = vec3_set((float)trexio->coord[i].x, (float)trexio->coord[i].y, (float)trexio->coord[i].z);
@@ -945,26 +945,26 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
         return false;
     }
 
-    md_qm_publish_str(sys, STR_LIT("trexio/metadata/code"),            STR_LIT("Code"),            trexio->code);
-    md_qm_publish_str(sys, STR_LIT("trexio/metadata/package_version"), STR_LIT("Package Version"), trexio->package_version);
-    md_qm_publish_str(sys, STR_LIT("trexio/basis_type"),               STR_LIT("Basis Type"),      trexio->basis_type);
-    md_qm_publish_str(sys, STR_LIT("trexio/mo_type"),                  STR_LIT("MO Type"),         trexio->mo_type);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/metadata/code"),            MD_STR_LIT("Code"),            trexio->code);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/metadata/package_version"), MD_STR_LIT("Package Version"), trexio->package_version);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/basis_type"),               MD_STR_LIT("Basis Type"),      trexio->basis_type);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/mo_type"),                  MD_STR_LIT("MO Type"),         trexio->mo_type);
 
     if (trexio->has_electron_count) {
-        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/total"), STR_LIT("Electrons"),       md_unit_none(), (double)trexio->electron_num);
-        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/up"),    STR_LIT("Alpha Electrons"), md_unit_none(), (double)trexio->electron_up_num);
-        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/down"),  STR_LIT("Beta Electrons"),  md_unit_none(), (double)trexio->electron_dn_num);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/electron_count/total"), MD_STR_LIT("Electrons"),       md_unit_none(), (double)trexio->electron_num);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/electron_count/up"),    MD_STR_LIT("Alpha Electrons"), md_unit_none(), (double)trexio->electron_up_num);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/electron_count/down"),  MD_STR_LIT("Beta Electrons"),  md_unit_none(), (double)trexio->electron_dn_num);
     }
     if (trexio->has_nuclear_repulsion) {
-        md_qm_publish_scalar(sys, STR_LIT("trexio/nuclear_repulsion_energy"), STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/nuclear_repulsion_energy"), MD_STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
     }
 
     // nucleus_charge is the charge the electrons were solved against, kept apart from the element
     md_qm_publish_atoms(sys, trexio->atomic_number, trexio->nuclear_charge, trexio->coord, trexio->num_atoms);
 
     if (trexio->num_shells > 0) {
-        md_qm_publish_str(sys, STR_LIT("trexio/ao_convention"), STR_LIT("AO Convention"),
-                           trexio->cartesian ? STR_LIT("cartesian") : STR_LIT("spherical"));
+        md_qm_publish_str(sys, MD_STR_LIT("trexio/ao_convention"), MD_STR_LIT("AO Convention"),
+                           trexio->cartesian ? MD_STR_LIT("cartesian") : MD_STR_LIT("spherical"));
 
         md_gto_basis_t basis = {0};
         if (trexio_gto_basis_extract(&basis, trexio, temp)) {
@@ -984,16 +984,16 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
+bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
     MD_ASSERT(sys);
 
     char path[2048];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
 
     h5_error_scope_t err = h5_error_scope_begin();
     hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file == H5I_INVALID_HID) {
-        MD_LOG_ERROR("TREXIO: could not open '" STR_FMT "' as an HDF5 file", STR_ARG(filename));
+        MD_LOG_ERROR("TREXIO: could not open '" MD_STR_FMT "' as an HDF5 file", MD_STR_ARG(filename));
         h5_error_scope_end(err);
         return false;
     }
@@ -1027,9 +1027,9 @@ bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state,
     return result;
 }
 
-bool md_trexio_file_is_trexio(str_t filename) {
+bool md_trexio_file_is_trexio(md_str_t filename) {
     char path[2048];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
 
     h5_error_scope_t err = h5_error_scope_begin();
     bool result = false;

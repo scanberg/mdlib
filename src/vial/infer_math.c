@@ -31,7 +31,7 @@ static void no_unit(T* t) { set_unit(t, md_unit_none()); }
 
 static md_unit_t unit_named(const char* name) {
     md_unit_t u = md_unit_none();
-    vial_unit_name(str_from_cstr(name), &u);
+    vial_unit_name(md_str_from_cstr(name), &u);
     return u;
 }
 
@@ -84,7 +84,7 @@ static bool read_axes(infer_t* x, vial_node_id node, const T* a, axes_t* out) {
     }
     for (uint32_t i = 0; i < n; ++i) {
         const vial_value_t v = value(x, items[i]);
-        if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("frame"))) { out->frame = true; continue; }
+        if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("frame"))) { out->frame = true; continue; }
         if (v.kind == VIAL_VAL_INT) {
             int64_t k = v.i < 0 ? v.i + a->ndim : v.i;
             if (k >= 0 && k < a->ndim) { out->mask |= (uint8_t)(1u << k); continue; }
@@ -114,9 +114,9 @@ static void remove_axes(T* t, const T* a, const axes_t* ax) {
 typedef enum red_t { RED_SUM, RED_MEAN, RED_MIN, RED_MAX, RED_STD, RED_VAR, RED_ANY, RED_ALL, RED_ARGMIN, RED_ARGMAX, RED_PROD, RED_MEDIAN,
                      RED_PERCENTILE } red_t;
 
-static int reduction_of(str_t name) {
+static int reduction_of(md_str_t name) {
     static const char* names[] = {"sum", "mean", "min", "max", "std", "var", "any", "all", "argmin", "argmax", "prod", "median", "percentile"};
-    for (int i = 0; i < (int)MD_COUNTOF(names); ++i) if (str_eq(name, str_from_cstr(names[i]))) return i;
+    for (int i = 0; i < (int)MD_COUNTOF(names); ++i) if (md_str_eq(name, md_str_from_cstr(names[i]))) return i;
     return -1;
 }
 
@@ -183,7 +183,7 @@ static T reduce_by(infer_t* x, vial_node_id call, int red, vial_node_id an, cons
         }
         if (empty) {
             char ex[VIAL_EXCERPT_MAX + 4];
-            const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, an));
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, an));
             vx_diag_fix(x, "W0603", gn, NULL, "%u of %u groups have no values in `%.*s`", empty, gv.sets->count, (int)e.len, e.ptr);
             vx_diag_fix(x, "W0405", call, NULL, "the groups with no values are missing");
             t.flags |= VIAL_TYPE_MISSING;
@@ -242,7 +242,7 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
     if (vial_type_is_error(&a)) return err();
     if (red == RED_PROD && has_unit(&a)) {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, args[0]));
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, args[0]));
         vx_diag_fix(x, "E0313", args[0], NULL, "`prod` takes unitless numbers, since the unit of a product depends on how many there are; "
             "this is %s, and unitless(%.*s) drops the unit", tstr(&a), (int)e.len, e.ptr);
         return err();
@@ -338,7 +338,7 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
 
 // ### MATH ###
 
-static T call_unary(infer_t* x, vial_node_id call, str_t name, const char* fname) {
+static T call_unary(infer_t* x, vial_node_id call, md_str_t name, const char* fname) {
     static const param_t params[] = {{"x", VX_KIND_WHOLE, true}};
     vial_node_id arg;
     if (!vx_bind(x, call, fname, params, 1, &arg)) return err();
@@ -350,13 +350,13 @@ static T call_unary(infer_t* x, vial_node_id call, str_t name, const char* fname
     }
     T t = a;
     t.flags &= ~VIAL_TYPE_PERIODIC;
-    if (str_eq(name, STR_LIT("abs"))) {
+    if (md_str_eq(name, MD_STR_LIT("abs"))) {
         if (t.dtype == VIAL_DT_BOOL) t.dtype = VIAL_DT_INT;
         return t;
     }
-    if (str_eq(name, STR_LIT("floor")) || str_eq(name, STR_LIT("ceil")) || str_eq(name, STR_LIT("round"))) return t;
+    if (md_str_eq(name, MD_STR_LIT("floor")) || md_str_eq(name, MD_STR_LIT("ceil")) || md_str_eq(name, MD_STR_LIT("round"))) return t;
     if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT;
-    if (str_eq(name, STR_LIT("sqrt"))) {
+    if (md_str_eq(name, MD_STR_LIT("sqrt"))) {
         if (has_unit(&a)) {
             md_unit_t u;
             if (unit_sqrt(a.unit, &u)) set_unit(&t, u);
@@ -368,7 +368,7 @@ static T call_unary(infer_t* x, vial_node_id call, str_t name, const char* fname
         }
         return t;
     }
-    const bool trig = str_eq(name, STR_LIT("sin")) || str_eq(name, STR_LIT("cos")) || str_eq(name, STR_LIT("tan"));
+    const bool trig = md_str_eq(name, MD_STR_LIT("sin")) || md_str_eq(name, MD_STR_LIT("cos")) || md_str_eq(name, MD_STR_LIT("tan"));
     if (trig) {
         if (a.unit_kind == VIAL_UNIT_KNOWN && !is_angle_unit(&a)) {
             vx_diag_fix(x, "W0501", call, "unitless(...)", "`%s` takes an angle; this is %s", fname, tstr(&a));
@@ -378,7 +378,7 @@ static T call_unary(infer_t* x, vial_node_id call, str_t name, const char* fname
         no_unit(&t);
         return t;
     }
-    const bool inverse = str_eq(name, STR_LIT("asin")) || str_eq(name, STR_LIT("acos")) || str_eq(name, STR_LIT("atan"));
+    const bool inverse = md_str_eq(name, MD_STR_LIT("asin")) || md_str_eq(name, MD_STR_LIT("acos")) || md_str_eq(name, MD_STR_LIT("atan"));
     if (has_unit(&a)) {
         vx_diag_fix(x, "W0501", call, "unitless(...)", "`%s` takes a value without a unit; this is %s", fname, tstr(&a));
         t.unit_kind = VIAL_UNIT_UNKNOWN;
@@ -431,8 +431,8 @@ static bool last_is(const T* t, uint32_t n) {
     return t->ndim >= 1 && t->dims[t->ndim - 1].kind == VIAL_EXT_STATIC && t->dims[t->ndim - 1].n == n;
 }
 
-static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname) {
-    if (str_eq(name, STR_LIT("clip"))) {
+static T call_math(infer_t* x, vial_node_id call, md_str_t name, const char* fname) {
+    if (md_str_eq(name, MD_STR_LIT("clip"))) {
         static const param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"lo", VX_KIND_WHOLE, true}, {"hi", VX_KIND_WHOLE, true}};
         vial_node_id a[3];
         if (!vx_bind(x, call, fname, p, 3, a) || !all_typed(x, a, 3) || !all_numbers(x, fname, a, 3)) return err();
@@ -445,7 +445,7 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         t.unit_kind = u.unit_kind; t.unit = u.unit;
         return t;
     }
-    if (str_eq(name, STR_LIT("atan2"))) {
+    if (md_str_eq(name, MD_STR_LIT("atan2"))) {
         static const param_t p[] = {{"y", VX_KIND_WHOLE, true}, {"x", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 2)) return err();
@@ -458,8 +458,8 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         set_unit(&t, unit_named("deg"));
         return t;
     }
-    if (str_eq(name, STR_LIT("dot")) || str_eq(name, STR_LIT("cross"))) {
-        const bool cross = str_eq(name, STR_LIT("cross"));
+    if (md_str_eq(name, MD_STR_LIT("dot")) || md_str_eq(name, MD_STR_LIT("cross"))) {
+        const bool cross = md_str_eq(name, MD_STR_LIT("cross"));
         static const param_t p[] = {{"u", VX_KIND_WHOLE, true}, {"v", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 2)) return err();
@@ -479,8 +479,8 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         t.flags &= ~VIAL_TYPE_PERIODIC;
         return t;
     }
-    if (str_eq(name, STR_LIT("norm")) || str_eq(name, STR_LIT("normalize"))) {
-        const bool normalize = str_eq(name, STR_LIT("normalize"));
+    if (md_str_eq(name, MD_STR_LIT("norm")) || md_str_eq(name, MD_STR_LIT("normalize"))) {
+        const bool normalize = md_str_eq(name, MD_STR_LIT("normalize"));
         static const param_t p[] = {{"v", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, normalize ? 1 : 2, a) || !all_typed(x, a, normalize ? 1 : 2) || !all_numbers(x, fname, a, 1)) return err();
@@ -511,7 +511,7 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         for (uint8_t q = 0; q < v.ndim; ++q) if (q != k) vial_type_push_dim(&t, v.dims[q]);
         return t;
     }
-    if (str_eq(name, STR_LIT("where"))) {
+    if (md_str_eq(name, MD_STR_LIT("where"))) {
         static const param_t p[] = {{"c", VX_KIND_WHOLE, true}, {"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}};
         vial_node_id a[3];
         if (!vx_bind(x, call, fname, p, 3, a) || !all_typed(x, a, 3)) return err();
@@ -530,22 +530,22 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         t.flags &= ~VIAL_TYPE_PERIODIC;
         return t;
     }
-    if (str_eq(name, STR_LIT("unitless")) || str_eq(name, STR_LIT("float")) || str_eq(name, STR_LIT("int"))) {
+    if (md_str_eq(name, MD_STR_LIT("unitless")) || md_str_eq(name, MD_STR_LIT("float")) || md_str_eq(name, MD_STR_LIT("int"))) {
         static const param_t p[] = {{"x", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1) || !all_numbers(x, fname, &a, 1)) return err();
         T t = type_of(x, a);
         const uint8_t adt = t.dtype;
-        if (str_eq(name, STR_LIT("unitless"))) { no_unit(&t); t.flags &= ~VIAL_TYPE_PERIODIC; }
-        else if (str_eq(name, STR_LIT("float"))) { if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT; }
+        if (md_str_eq(name, MD_STR_LIT("unitless"))) { no_unit(&t); t.flags &= ~VIAL_TYPE_PERIODIC; }
+        else if (md_str_eq(name, MD_STR_LIT("float"))) { if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT; }
         else t.dtype = VIAL_DT_INT;
         vial_value_t v = value(x, a);
         // Folded as evaluation converts: a float's value is the float's, and an int becomes the float nearest it
         if (v.kind == VIAL_VAL_FLOAT && adt == VIAL_DT_FLOAT) v.f = (double)(float)v.f;
-        if (str_eq(name, STR_LIT("int")) && v.kind == VIAL_VAL_FLOAT) {
+        if (md_str_eq(name, MD_STR_LIT("int")) && v.kind == VIAL_VAL_FLOAT) {
             if (v.f >= -2147483648.0 && v.f < 2147483648.0) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_INT, .i = (int64_t)v.f});
         }
-        else if (str_eq(name, STR_LIT("float")) && v.kind == VIAL_VAL_INT)
+        else if (md_str_eq(name, MD_STR_LIT("float")) && v.kind == VIAL_VAL_INT)
             vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = t.dtype == VIAL_DT_FLOAT64 ? (double)v.i : (double)(float)v.i});
         else vx_set_value(x, call, v);
         return t;
@@ -601,8 +601,8 @@ static bool elements(const T* t, uint64_t* n) {
     return true;
 }
 
-static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname) {
-    if (str_eq(name, STR_LIT("shape"))) {
+static T call_build(infer_t* x, vial_node_id call, md_str_t name, const char* fname) {
+    if (md_str_eq(name, MD_STR_LIT("shape"))) {
         static const param_t p[] = {{"a", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1)) return err();
@@ -620,8 +620,8 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_SHAPE, .type = keep});
         return t;
     }
-    if (str_eq(name, STR_LIT("zeros")) || str_eq(name, STR_LIT("ones")) || str_eq(name, STR_LIT("full"))) {
-        const bool full = str_eq(name, STR_LIT("full"));
+    if (md_str_eq(name, MD_STR_LIT("zeros")) || md_str_eq(name, MD_STR_LIT("ones")) || md_str_eq(name, MD_STR_LIT("full"))) {
+        const bool full = md_str_eq(name, MD_STR_LIT("full"));
         static const param_t pz[] = {{"shape", VX_KIND_WHOLE, true}, {"unit", VX_KIND_WHOLE, false}};
         static const param_t pf[] = {{"shape", VX_KIND_WHOLE, true}, {"value", VX_KIND_WHOLE, true}, {"unit", VX_KIND_WHOLE, false}};
         vial_node_id a[3] = {0};
@@ -651,7 +651,7 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         }
         return t;
     }
-    if (str_eq(name, STR_LIT("zeros_like")) || str_eq(name, STR_LIT("ones_like"))) {
+    if (md_str_eq(name, MD_STR_LIT("zeros_like")) || md_str_eq(name, MD_STR_LIT("ones_like"))) {
         static const param_t p[] = {{"x", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1) || !all_numbers(x, fname, &a, 1)) return err();
@@ -659,8 +659,8 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         t.flags &= ~(VIAL_TYPE_MISSING | VIAL_TYPE_PERIODIC);
         return t;
     }
-    if (str_eq(name, STR_LIT("linspace")) || str_eq(name, STR_LIT("arange"))) {
-        const bool lin = str_eq(name, STR_LIT("linspace"));
+    if (md_str_eq(name, MD_STR_LIT("linspace")) || md_str_eq(name, MD_STR_LIT("arange"))) {
+        const bool lin = md_str_eq(name, MD_STR_LIT("linspace"));
         static const param_t pl[] = {{"lo", VX_KIND_WHOLE, true}, {"hi", VX_KIND_WHOLE, true}, {"n", VX_KIND_WHOLE, true}};
         static const param_t pa[] = {{"lo", VX_KIND_WHOLE, true}, {"hi", VX_KIND_WHOLE, true}, {"step", VX_KIND_WHOLE, false}};
         vial_node_id a[3];
@@ -691,7 +691,7 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         vial_type_push_dim(&t, vial_extent_static(n));
         return t;
     }
-    if (str_eq(name, STR_LIT("eye"))) {
+    if (md_str_eq(name, MD_STR_LIT("eye"))) {
         static const param_t p[] = {{"n", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1)) return err();
@@ -705,7 +705,7 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         vial_type_push_dim(&t, vial_extent_static((uint32_t)v.i));
         return t;
     }
-    if (str_eq(name, STR_LIT("reshape"))) {
+    if (md_str_eq(name, MD_STR_LIT("reshape"))) {
         static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"shape", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2)) return err();
@@ -739,7 +739,7 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         memcpy(t.dims, want.dims, sizeof(want.dims));
         return t;
     }
-    if (str_eq(name, STR_LIT("flatten"))) {
+    if (md_str_eq(name, MD_STR_LIT("flatten"))) {
         static const param_t p[] = {{"a", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1)) return err();
@@ -751,20 +751,20 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
             (vial_extent_t){.kind = src.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
         return t;
     }
-    if (str_eq(name, STR_LIT("cumsum")) || str_eq(name, STR_LIT("sort")) || str_eq(name, STR_LIT("argsort"))) {
+    if (md_str_eq(name, MD_STR_LIT("cumsum")) || md_str_eq(name, MD_STR_LIT("sort")) || md_str_eq(name, MD_STR_LIT("argsort"))) {
         // Along one axis, keeping the shape: cumsum's default is the first, as diff's; sort's the last, as NumPy's
         static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 1)) return err();
         const T src = type_of(x, a[0]);
-        const bool sorts = !str_eq(name, STR_LIT("cumsum"));
+        const bool sorts = !md_str_eq(name, MD_STR_LIT("cumsum"));
         int64_t axis = sorts ? -1 : 0;
         if (a[1]) {
             const vial_value_t v = value(x, a[1]);
-            if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("frame"))) {
+            if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("frame"))) {
                 // Over frames: a running sum is the prelude's cumulative(); a sort over frames has no place to go
                 char ex[VIAL_EXCERPT_MAX + 4], fix[VIAL_EXCERPT_MAX + 32] = "";
-                const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, a[0]));
+                const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, a[0]));
                 if (!sorts && e.len == vx_text(x, a[0]).len) snprintf(fix, sizeof(fix), "cumulative(%.*s)", (int)e.len, e.ptr);
                 if (!sorts) vx_diag_fix(x, "E0316", call, fix[0] ? fix : NULL, "`cumsum` runs along an axis of an array; over frames it is cumulative(%.*s)", (int)e.len, e.ptr);
                 else vx_diag_fix(x, "E0316", a[1], NULL, "`%s` runs along an axis of an array, not over frames", fname);
@@ -781,12 +781,12 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
         }
         T t = src;
         t.flags &= ~VIAL_TYPE_PERIODIC;
-        if (str_eq(name, STR_LIT("argsort"))) { t.dtype = VIAL_DT_INT; no_unit(&t); }
+        if (md_str_eq(name, MD_STR_LIT("argsort"))) { t.dtype = VIAL_DT_INT; no_unit(&t); }
         else if (t.dtype == VIAL_DT_BOOL) t.dtype = VIAL_DT_INT;
         if (sorts) t.dims[k].desc = 0;      // sorted, the positions no longer name what they ran over
         return t;
     }
-    if (str_eq(name, STR_LIT("diff"))) {
+    if (md_str_eq(name, MD_STR_LIT("diff"))) {
         static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 1)) return err();
@@ -830,8 +830,8 @@ static T call_concatenate(infer_t* x, vial_node_id call) {
         if (vx_kind(x, c) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, c, 0), vn = vx_child(x, c, 1);
             if (vn) vx_infer(x, vn);
-            if (kn && str_eq(vx_text(x, kn), STR_LIT("axis")) && !a[1]) { a[1] = vn; continue; }
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+            if (kn && md_str_eq(vx_text(x, kn), MD_STR_LIT("axis")) && !a[1]) { a[1] = vn; continue; }
+            const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
             vx_diag_fix(x, "E0202", c, NULL, "`concatenate` takes no keyword `%.*s`; it takes arrays and axis", (int)kw.len, kw.ptr);
             ok = false;
             continue;
@@ -952,15 +952,15 @@ static bool square(infer_t* x, vial_node_id at, const char* fname, const T* m) {
     return sq;
 }
 
-static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fname) {
-    if (str_eq(name, STR_LIT("covariance"))) {
+static T call_linalg(infer_t* x, vial_node_id call, md_str_t name, const char* fname) {
+    if (md_str_eq(name, MD_STR_LIT("covariance"))) {
         static const param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 1)) return err();
         const T v = type_of(x, a[0]);
         if (a[1]) {
             const vial_value_t av = value(x, a[1]);
-            if (av.kind != VIAL_VAL_STR || !str_eq(av.s, STR_LIT("frame"))) {
+            if (av.kind != VIAL_VAL_STR || !md_str_eq(av.s, MD_STR_LIT("frame"))) {
                 vx_diag_fix(x, "E0316", a[1], NULL, "`covariance` is over frames, axis='frame'");
                 return err();
             }
@@ -982,7 +982,7 @@ static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fnam
         t.flags &= ~(VIAL_TYPE_PERIODIC | VIAL_TYPE_PER_FRAME);
         return t;
     }
-    if (str_eq(name, STR_LIT("eigh")) || str_eq(name, STR_LIT("trace")) || str_eq(name, STR_LIT("det")) || str_eq(name, STR_LIT("inv"))) {
+    if (md_str_eq(name, MD_STR_LIT("eigh")) || md_str_eq(name, MD_STR_LIT("trace")) || md_str_eq(name, MD_STR_LIT("det")) || md_str_eq(name, MD_STR_LIT("inv"))) {
         static const param_t p[] = {{"m", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1) || !all_numbers(x, fname, &a, 1)) return err();
@@ -991,8 +991,8 @@ static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fnam
         T t = m;
         if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT;
         t.flags &= ~VIAL_TYPE_PERIODIC;
-        if (str_eq(name, STR_LIT("trace"))) { t.ndim -= 2; return t; }
-        if (str_eq(name, STR_LIT("det"))) {
+        if (md_str_eq(name, MD_STR_LIT("trace"))) { t.ndim -= 2; return t; }
+        if (md_str_eq(name, MD_STR_LIT("det"))) {
             t.ndim -= 2;
             if (has_unit(&m)) {
                 if (m.dims[m.ndim - 1].kind == VIAL_EXT_STATIC) set_unit(&t, md_unit_pow(m.unit, (int)m.dims[m.ndim - 1].n));
@@ -1000,7 +1000,7 @@ static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fnam
             }
             return t;
         }
-        if (str_eq(name, STR_LIT("inv"))) { if (has_unit(&m)) set_unit(&t, md_unit_pow(m.unit, -1)); return t; }
+        if (md_str_eq(name, MD_STR_LIT("inv"))) { if (has_unit(&m)) set_unit(&t, md_unit_pow(m.unit, -1)); return t; }
         // eigh: the eigenvalues in m's unit, the eigenvectors without one
         T w = t;
         w.ndim -= 1;
@@ -1015,7 +1015,7 @@ static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fnam
         join_stage(&r, &m);
         return r;
     }
-    if (str_eq(name, STR_LIT("solve"))) {
+    if (md_str_eq(name, MD_STR_LIT("solve"))) {
         static const param_t p[] = {{"m", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 2)) return err();
@@ -1034,8 +1034,8 @@ static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fnam
 
 // ### MISSING VALUES ###
 
-static T call_missing(infer_t* x, vial_node_id call, str_t name, const char* fname) {
-    if (str_eq(name, STR_LIT("missing_where"))) {
+static T call_missing(infer_t* x, vial_node_id call, md_str_t name, const char* fname) {
+    if (md_str_eq(name, MD_STR_LIT("missing_where"))) {
         static const param_t p[] = {{"c", VX_KIND_WHOLE, true}, {"x", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2)) return err();
@@ -1048,7 +1048,7 @@ static T call_missing(infer_t* x, vial_node_id call, str_t name, const char* fna
         t.flags |= VIAL_TYPE_MISSING;
         return t;
     }
-    if (str_eq(name, STR_LIT("valid"))) {
+    if (md_str_eq(name, MD_STR_LIT("valid"))) {
         static const param_t p[] = {{"x", VX_KIND_WHOLE, true}};
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1)) return err();
@@ -1058,7 +1058,7 @@ static T call_missing(infer_t* x, vial_node_id call, str_t name, const char* fna
         t.flags &= ~(VIAL_TYPE_MISSING | VIAL_TYPE_PERIODIC);
         return t;
     }
-    if (str_eq(name, STR_LIT("filled"))) {
+    if (md_str_eq(name, MD_STR_LIT("filled"))) {
         static const param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"v", VX_KIND_WHOLE, true}};
         vial_node_id a[2];
         if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2)) return err();
@@ -1080,7 +1080,7 @@ static bool matches_by(const vial_sys_t* s, uint8_t level, uint32_t ua, uint32_t
     (void)sys;
     if (level != VIAL_LEVEL_RESIDUE) return false;
     if (md_system_residue_seq_id(s->sys, ua) != md_system_residue_seq_id(s->sys, ub)) return false;
-    return !label || str_eq(md_system_residue_name(s->sys, ua), md_system_residue_name(s->sys, ub));
+    return !label || md_str_eq(md_system_residue_name(s->sys, ua), md_system_residue_name(s->sys, ub));
 }
 
 static T call_common(infer_t* x, vial_node_id call) {
@@ -1091,11 +1091,11 @@ static T call_common(infer_t* x, vial_node_id call) {
     bool label = false;
     if (a[2]) {
         const vial_value_t v = value(x, a[2]);
-        if (v.kind != VIAL_VAL_STR || !(str_eq(v.s, STR_LIT("id")) || str_eq(v.s, STR_LIT("label")))) {
+        if (v.kind != VIAL_VAL_STR || !(md_str_eq(v.s, MD_STR_LIT("id")) || md_str_eq(v.s, MD_STR_LIT("label")))) {
             vx_diag_fix(x, "E0313", a[2], NULL, "match= takes 'id' or 'label'");
             return err();
         }
-        label = str_eq(v.s, STR_LIT("label"));
+        label = md_str_eq(v.s, MD_STR_LIT("label"));
     }
     if (ta.dtype != VIAL_DT_SET || tb.dtype != VIAL_DT_SET || ta.ndim != 1 || tb.ndim != 1) {
         vx_diag_fix(x, "E0311", call, NULL, "`common` pairs arrays of units, such as residues; this is %s and %s", tstr(&ta), tstr(&tb));
@@ -1144,21 +1144,21 @@ static T call_common(infer_t* x, vial_node_id call) {
 // ### DISPATCH ###
 
 bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
-    const str_t name = str_from_cstr(b->name);
+    const md_str_t name = md_str_from_cstr(b->name);
     const char* fname = b->name;
     const int red = reduction_of(name);
     if (red >= 0) { *out = call_reduce(x, call, red, fname); return true; }
     static const char* math[] = {"abs", "floor", "ceil", "round", "clip", "sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos",
                                  "atan", "atan2", "dot", "cross", "norm", "normalize", "where", "unitless", "float", "int"};
-    for (size_t i = 0; i < MD_COUNTOF(math); ++i) if (str_eq(name, str_from_cstr(math[i]))) { *out = call_math(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(math); ++i) if (md_str_eq(name, md_str_from_cstr(math[i]))) { *out = call_math(x, call, name, fname); return true; }
     static const char* build[] = {"shape", "zeros", "ones", "full", "zeros_like", "ones_like", "linspace", "arange", "eye", "reshape", "flatten", "diff",
                                   "cumsum", "sort", "argsort"};
-    for (size_t i = 0; i < MD_COUNTOF(build); ++i) if (str_eq(name, str_from_cstr(build[i]))) { *out = call_build(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(build); ++i) if (md_str_eq(name, md_str_from_cstr(build[i]))) { *out = call_build(x, call, name, fname); return true; }
     static const char* linalg[] = {"covariance", "eigh", "trace", "det", "inv", "solve"};
-    for (size_t i = 0; i < MD_COUNTOF(linalg); ++i) if (str_eq(name, str_from_cstr(linalg[i]))) { *out = call_linalg(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(linalg); ++i) if (md_str_eq(name, md_str_from_cstr(linalg[i]))) { *out = call_linalg(x, call, name, fname); return true; }
     static const char* missing[] = {"missing_where", "valid", "filled"};
-    for (size_t i = 0; i < MD_COUNTOF(missing); ++i) if (str_eq(name, str_from_cstr(missing[i]))) { *out = call_missing(x, call, name, fname); return true; }
-    if (str_eq(name, STR_LIT("concatenate"))) { *out = call_concatenate(x, call); return true; }
-    if (str_eq(name, STR_LIT("common")))      { *out = call_common(x, call); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(missing); ++i) if (md_str_eq(name, md_str_from_cstr(missing[i]))) { *out = call_missing(x, call, name, fname); return true; }
+    if (md_str_eq(name, MD_STR_LIT("concatenate"))) { *out = call_concatenate(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("common")))      { *out = call_common(x, call); return true; }
     return false;
 }

@@ -54,10 +54,10 @@ bool md_cube_valid(const md_cube_t* cube) {
 	return true;
 }
 
-static bool open_file(md_file_t* file, str_t path) {
+static bool open_file(md_file_t* file, md_str_t path) {
 	MD_ASSERT(file);
 
-	if (str_empty(path)) {
+	if (md_str_empty(path)) {
 		MD_LOG_ERROR("CUBE: Path was empty");
 		return false;
 	}
@@ -70,9 +70,9 @@ static bool open_file(md_file_t* file, str_t path) {
 	return true;
 }
 
-str_t tidy_comment(str_t comment) {
+md_str_t tidy_comment(md_str_t comment) {
     size_t loc;
-	if (str_find_char(&loc, comment, '\n')) {
+	if (md_str_find_char(&loc, comment, '\n')) {
 		comment.len = loc;
 	}
     return comment;
@@ -121,68 +121,68 @@ bool md_cube_write(md_writer_i* w, const md_cube_t* cube) {
 	return true;
 }
 
-str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
+md_str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
     MD_ASSERT(alloc);
 	md_str_writer_t sw = md_str_writer_create(alloc);
 	if (!md_cube_write(&sw.w, cube)) {
 		md_str_writer_free(&sw);
-		return (str_t){0};
+		return (md_str_t){0};
 	}
 	return md_str_writer_release(&sw);
 }
 
-static inline bool str_extract_v3(md_cube_v3 v, str_t* str) {
-	return str_extract_f32(&v[0], str) && str_extract_f32(&v[1], str) && str_extract_f32(&v[2], str);
+static inline bool str_extract_v3(md_cube_v3 v, md_str_t* str) {
+	return md_str_extract_f32(&v[0], str) && md_str_extract_f32(&v[1], str) && md_str_extract_f32(&v[2], str);
 }
 
-bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* alloc) {
+bool md_cube_deserialize(md_cube_t* cube, md_str_t str, struct md_allocator_i* alloc) {
 	MD_ASSERT(cube);
 	MD_ASSERT(alloc);
 
-	str_t title, comment;
-    if (!(str_extract_line(&title,	 &str) &&
-		  str_extract_line(&comment, &str)))
+	md_str_t title, comment;
+    if (!(md_str_extract_line(&title,	 &str) &&
+		  md_str_extract_line(&comment, &str)))
 	{
 		MD_LOG_ERROR("CUBE: Could not extract comment section");
 		return false;
 	}
-    cube->title   = str_copy(title, alloc);
-    cube->comment = str_copy(comment, alloc);
+    cube->title   = md_str_copy(title, alloc);
+    cube->comment = md_str_copy(comment, alloc);
 
-	str_t line;
+	md_str_t line;
 	
 	// natoms, origin, [nval]
-	if (!str_extract_line(&line, &str)) {
+	if (!md_str_extract_line(&line, &str)) {
 		goto line_error;
 	}
-    if (!(str_extract_i32(&cube->atom.count, &line) && str_extract_v3(cube->origin, &line))) {
+    if (!(md_str_extract_i32(&cube->atom.count, &line) && str_extract_v3(cube->origin, &line))) {
 		goto parse_error;
 	}
-	if (!str_extract_i32(&cube->data.num_m, &line)) {
+	if (!md_str_extract_i32(&cube->data.num_m, &line)) {
 		cube->data.num_m = 1;
 	}
 
 	// num_x, xaxis
-	if (!str_extract_line(&line, &str)) {
+	if (!md_str_extract_line(&line, &str)) {
 		goto line_error;
 	}
-    if (!(str_extract_i32(&cube->data.num_x, &line) && str_extract_v3(cube->xaxis, &line))) {
+    if (!(md_str_extract_i32(&cube->data.num_x, &line) && str_extract_v3(cube->xaxis, &line))) {
 		goto parse_error;
 	}
 	
 	// num_y, yaxis
-	if (!str_extract_line(&line, &str)) {
+	if (!md_str_extract_line(&line, &str)) {
 		goto line_error;
 	}
-	if (!(str_extract_i32(&cube->data.num_y, &line) && str_extract_v3(cube->yaxis, &line))) {
+	if (!(md_str_extract_i32(&cube->data.num_y, &line) && str_extract_v3(cube->yaxis, &line))) {
 		goto parse_error;
 	}
 
 	// num_z, zaxis
-	if (!str_extract_line(&line, &str)) {
+	if (!md_str_extract_line(&line, &str)) {
 		goto line_error;
 	}
-	if (!(str_extract_i32(&cube->data.num_z, &line) && str_extract_v3(cube->zaxis, &line))) {
+	if (!(md_str_extract_i32(&cube->data.num_z, &line) && str_extract_v3(cube->zaxis, &line))) {
 		goto parse_error;
 	}
 
@@ -207,10 +207,10 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
 		float charge;
         md_cube_v3 coord;
 		
-        if (!str_extract_line(&line, &str)) {
+        if (!md_str_extract_line(&line, &str)) {
 			goto line_error;
 		}
-        if (!(str_extract_i32(&number, &line) && str_extract_f32(&charge, &line) && str_extract_v3(coord, &line))) {
+        if (!(md_str_extract_i32(&number, &line) && md_str_extract_f32(&charge, &line) && str_extract_v3(coord, &line))) {
 			goto parse_error;
 		}
 		coord[0] *= length_scale;
@@ -225,12 +225,12 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
 	if (cube->atom.count < 0) {
         cube->atom.count = -cube->atom.count;
         // data id
-		if (!str_extract_i32(&cube->data.num_m, &str)) {
+		if (!md_str_extract_i32(&cube->data.num_m, &str)) {
 			goto parse_error;
 		}
 		for (int i = 0; i < cube->data.num_m; ++i) {
 			int id;
-			if (!str_extract_i32(&id, &str)) {
+			if (!md_str_extract_i32(&id, &str)) {
 				goto parse_error;
 			}
 			md_array_push(cube->data.id, id, alloc);
@@ -253,7 +253,7 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
     for (int64_t i = 0; i < num_data; ++i) {
         float val;
 
-        if (!str_extract_f32(&val, &str)) {
+        if (!md_str_extract_f32(&val, &str)) {
 			goto parse_error;
 		}
         md_array_push(cube->data.val, val, alloc);
@@ -269,7 +269,7 @@ parse_error:
 	return false;
 }
 
-bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
+bool md_cube_file_load(md_cube_t* cube, md_str_t path, md_allocator_i* alloc) {
 	if (!cube) {
 		MD_LOG_ERROR("CUBE: cube-object was NULL");
 		return false;
@@ -278,8 +278,8 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	bool success = false;
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    str_t str = load_textfile(path, temp_alloc);
-	if (!str_empty(str)) {
+    md_str_t str = md_load_textfile(path, temp_alloc);
+	if (!md_str_empty(str)) {
         success = md_cube_deserialize(cube, str, alloc);
 	}
 	md_temp_end(temp_scope);
@@ -287,7 +287,7 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	return success;
 }
 
-bool md_cube_file_store(const md_cube_t* cube, str_t path) {
+bool md_cube_file_store(const md_cube_t* cube, md_str_t path) {
 	if (!md_cube_valid(cube)) {
 		MD_LOG_ERROR("CUBE: cube-object was invalid");
 		return false;
@@ -314,6 +314,6 @@ void md_cube_free(md_cube_t* cube, md_allocator_i* alloc) {
 	if (cube->atom.coord)	md_array_free(cube->atom.coord,	 alloc); 
 	if (cube->atom.number)	md_array_free(cube->atom.number, alloc); 
 	if (cube->atom.charge)	md_array_free(cube->atom.charge, alloc); 
-	if (!str_empty(cube->title)) str_free(cube->title, alloc);
-	if (!str_empty(cube->comment)) str_free(cube->comment, alloc);
+	if (!md_str_empty(cube->title)) md_str_free(cube->title, alloc);
+	if (!md_str_empty(cube->comment)) md_str_free(cube->comment, alloc);
 }

@@ -22,7 +22,7 @@
 
 static md_vial_program_t* vial_ir__compile(const char* src, char sys, md_allocator_i* alloc) {
     const md_vial_compile_desc_t desc = {.sys = vial_test_system(sys)};
-    return md_vial_compile(str_from_cstr(src), &desc, alloc);
+    return md_vial_compile(md_str_from_cstr(src), &desc, alloc);
 }
 
 // VIAL_IR_SCRIPT=file [VIAL_IR_SYS=T|P]: prints the IR of a script and what was not lowered. A tool, not a test.
@@ -30,12 +30,12 @@ UTEST(vial_ir, dump_script) {
     const char* path = getenv("VIAL_IR_SCRIPT");
     if (!path) return;
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    const str_t text = load_textfile(str_from_cstr(path), alloc);
+    const md_str_t text = md_load_textfile(md_str_from_cstr(path), alloc);
     const char* sys = getenv("VIAL_IR_SYS");
     const md_vial_compile_desc_t desc = {.sys = vial_test_system(sys ? sys[0] : 0)};
     md_vial_program_t* prog = md_vial_compile(text, &desc, alloc);
     const vial_ir_t* ir = md_vial__ir(prog);
-    const str_t d = vial_ir_dump(ir, text, alloc);
+    const md_str_t d = vial_ir_dump(ir, text, alloc);
     printf("%.*s", (int)d.len, d.ptr);
     char err[256];
     if (!vial_ir_verify(ir, err, sizeof(err))) printf("does not verify: %s\n", err);
@@ -102,7 +102,7 @@ static bool vial_ir__start(vial_ir__run_t* r, const char* src, const md_system_t
     memset(r, 0, sizeof(*r));
     r->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const md_vial_compile_desc_t desc = {.sys = sys};
-    r->prog = md_vial_compile(str_from_cstr(src), &desc, r->alloc);
+    r->prog = md_vial_compile(md_str_from_cstr(src), &desc, r->alloc);
     const vial_ir_t* ir = md_vial__run_ir(r->prog);
     if (!ir) {
         const md_vial_diagnostic_t* dg;
@@ -127,7 +127,7 @@ static void vial_ir__end(vial_ir__run_t* r) {
 static const char* vial_ir__out(vial_ir__run_t* r, const char* name, char* buf, size_t cap) {
     const vial_ir_t* ir = md_vial__run_ir(r->prog);
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
-        if (!str_eq(ir->outputs[i].name, str_from_cstr(name))) continue;
+        if (!md_str_eq(ir->outputs[i].name, md_str_from_cstr(name))) continue;
         const vial_val_t* v = vial_interp_value(&r->in, ir->outputs[i].value);
         if (!v) { snprintf(buf, cap, "(not computed: %s)", r->in.failed ? r->in.error.message : "-"); return buf; }
         vial_val_print(buf, cap, v, 6);
@@ -192,11 +192,11 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
         md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+        const md_str_t path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
         if (md_pdb_system_init_from_file(&sys, &state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) {
             md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
-            if (md_pdb_system_publish_run(&sys, path, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
-                const md_attribute_t* t = md_attributes_find(&sys.attributes, STR_LIT("run/time"));
+            if (md_pdb_system_publish_run(&sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
+                const md_attribute_t* t = md_attributes_find(&sys.attributes, MD_STR_LIT("run/time"));
                 frames = t ? (int64_t)t->format.shape[0] : 0;
             }
         }
@@ -209,12 +209,12 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
 static bool vial_ir__frames(vial_ir__run_t* r, const md_system_t* sys, int64_t num_frames, const char* name, double* out) {
     md_system_state_t state = {.alloc = r->alloc};
     if (!md_system_state_init(&state, sys->atom.count)) return false;
-    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-    md_system_extract_t* ex = md_system_extract_begin(sys, STR_LIT("run"), paths, 2, r->alloc);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r->alloc);
     if (!ex) return false;
     const vial_ir_t* ir = md_vial__run_ir(r->prog);
     vial_ssa_t v = 0;
-    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, str_from_cstr(name))) v = ir->outputs[i].value;
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (md_str_eq(ir->outputs[i].name, md_str_from_cstr(name))) v = ir->outputs[i].value;
     bool ok = v != 0;
     for (int64_t f = 0; ok && f < num_frames; ++f) {
         ok = md_system_extract_frame(ex, f, &state);
@@ -251,10 +251,10 @@ UTEST(vial_ir, evaluates_frames) {
     // By hand, from the frames' positions
     md_system_state_t state = {.alloc = r.alloc};
     md_system_state_init(&state, sys->atom.count);
-    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-    md_system_extract_t* ex = md_system_extract_begin(sys, STR_LIT("run"), paths, 2, r.alloc);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r.alloc);
     uint32_t ca[4], k = 0;
-    for (uint32_t i = 0; i < sys->atom.count && k < 4; ++i) if (str_eq(md_atom_name(&sys->atom, i), STR_LIT("CA"))) ca[k++] = i;
+    for (uint32_t i = 0; i < sys->atom.count && k < 4; ++i) if (md_str_eq(md_atom_name(&sys->atom, i), MD_STR_LIT("CA"))) ca[k++] = i;
     ASSERT_EQ(4u, k);
     for (int64_t f = 0; f < nf; ++f) {
         md_system_extract_frame(ex, f, &state);
@@ -289,8 +289,8 @@ typedef struct vial_ir__loader_t {
 
 static bool vial_ir__load(void* user, int64_t index, vial_frame_t* out) {
     vial_ir__loader_t* l = user;
-    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-    md_system_extract_t* ex = md_system_extract_begin(l->sys, STR_LIT("run"), paths, 2, md_get_heap_allocator());
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(l->sys, MD_STR_LIT("run"), paths, 2, md_get_heap_allocator());
     const bool ok = ex && md_system_extract_frame(ex, index, &l->state);
     if (ex) md_system_extract_end(ex);
     *out = (vial_frame_t){.xyz = (const float*)l->state.xyz, .num_atoms = l->state.num_atoms, .cell = l->state.unitcell, .index = index, .time = (double)index};
@@ -303,7 +303,7 @@ static double vial_ir__num(const vial_val_t* v) {
 }
 
 static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
-    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, str_from_cstr(name))) return ir->outputs[i].value;
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (md_str_eq(ir->outputs[i].name, md_str_from_cstr(name))) return ir->outputs[i].value;
     return 0;
 }
 
@@ -313,17 +313,17 @@ UTEST(vial_ir, all_publishes) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     const char* src = "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\n_h = d * 2\nshown_too = _h + 1\n__all__ = ['d', '_h']\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
     const md_vial_output_t* o;
     const size_t n = md_vial_outputs(prog, &o);
     bool d = false, h = false, s = false, ca = false, all = false;
     for (size_t i = 0; i < n; ++i) {
-        d = d || str_eq(o[i].name, STR_LIT("d"));
-        h = h || str_eq(o[i].name, STR_LIT("_h"));
-        s = s || str_eq(o[i].name, STR_LIT("shown_too"));
-        ca = ca || str_eq(o[i].name, STR_LIT("ca"));
-        all = all || str_eq(o[i].name, STR_LIT("__all__"));
+        d = d || md_str_eq(o[i].name, MD_STR_LIT("d"));
+        h = h || md_str_eq(o[i].name, MD_STR_LIT("_h"));
+        s = s || md_str_eq(o[i].name, MD_STR_LIT("shown_too"));
+        ca = ca || md_str_eq(o[i].name, MD_STR_LIT("ca"));
+        all = all || md_str_eq(o[i].name, MD_STR_LIT("__all__"));
     }
     EXPECT_TRUE(d);
     EXPECT_TRUE(h);         // listed, so published despite its _
@@ -333,7 +333,7 @@ UTEST(vial_ir, all_publishes) {
     const vial_ir_t* ir = md_vial__run_ir(prog);
     ASSERT_TRUE(ir != NULL);
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
-        const bool listed = str_eq(ir->outputs[i].name, STR_LIT("d")) || str_eq(ir->outputs[i].name, STR_LIT("_h"));
+        const bool listed = md_str_eq(ir->outputs[i].name, MD_STR_LIT("d")) || md_str_eq(ir->outputs[i].name, MD_STR_LIT("_h"));
         EXPECT_EQ(!listed, ir->outputs[i].hidden);
     }
     md_vial_program_free(prog);
@@ -410,12 +410,12 @@ UTEST(vial_ir, weights_uniform) {
         "f2  = fit(s.xyz, ref, weights=mass(s))[0, 0]\n"
         "w1  = weight(s)[0]\n"
         "w2  = mass(s)[0]\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
     ASSERT_EQ(0u, (unsigned)ndg);
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(2)}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(2)}, alloc);
     ASSERT_TRUE(e != NULL);
     const bool ran = md_vial_eval_run(e);
     const md_vial_diagnostic_t* ed;
@@ -428,8 +428,8 @@ UTEST(vial_ir, weights_uniform) {
         char pa[32], pb[32];
         snprintf(pa, sizeof(pa), "script/%s", pairs[q][0]);
         snprintf(pb, sizeof(pb), "script/%s", pairs[q][1]);
-        const md_attribute_t* a = md_attributes_find(at, str_from_cstr(pa));
-        const md_attribute_t* b = md_attributes_find(at, str_from_cstr(pb));
+        const md_attribute_t* a = md_attributes_find(at, md_str_from_cstr(pa));
+        const md_attribute_t* b = md_attributes_find(at, md_str_from_cstr(pb));
         ASSERT_TRUE(a && b && a->data && b->data);
         const size_t n = a->format.rank ? a->format.shape[0] : 1;
         ASSERT_EQ(n, b->format.rank ? b->format.shape[0] : 1);
@@ -440,8 +440,8 @@ UTEST(vial_ir, weights_uniform) {
         }
     }
     // Different weights give a different number
-    const md_attribute_t* g1 = md_attributes_find(at, STR_LIT("script/g1"));
-    const md_attribute_t* g3 = md_attributes_find(at, STR_LIT("script/g3"));
+    const md_attribute_t* g1 = md_attributes_find(at, MD_STR_LIT("script/g1"));
+    const md_attribute_t* g3 = md_attributes_find(at, MD_STR_LIT("script/g3"));
     ASSERT_TRUE(g1 && g3);
     EXPECT_GT(fabsf(((const float*)g1->data)[0] - ((const float*)g3->data)[0]), 1e-4f);
     md_vial_eval_free(e);
@@ -520,7 +520,7 @@ UTEST(vial_ir, evaluates_trajectory) {
     ASSERT_TRUE(ok);
     const vial_ir_t* ir = md_vial__run_ir(r.prog);
     if (getenv("VIAL_IR_DUMP")) {
-        const str_t d = vial_ir_dump(ir, str_from_cstr(src), r.alloc);
+        const md_str_t d = vial_ir_dump(ir, md_str_from_cstr(src), r.alloc);
         printf("%.*s", (int)d.len, d.ptr);
         for (size_t v = 1; v < md_array_size(ir->values); ++v) {
             const uint32_t op = ir->values[v].op;
@@ -567,9 +567,9 @@ UTEST(vial_ir, eval_api) {
         "dd   = distance(ca.xyz, ca[0])\n"
         "_hid = ends * 2.0\n"
         "big  = zeros(100) + ends\n";
-    const md_vial_compile_desc_t cdesc = {.sys = sys, .run = STR_LIT("run")};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &cdesc, alloc);
-    const md_vial_eval_desc_t edesc = {.sys = sys, .run = STR_LIT("run"), .max_elements = 50};
+    const md_vial_compile_desc_t cdesc = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cdesc, alloc);
+    const md_vial_eval_desc_t edesc = {.sys = sys, .run = MD_STR_LIT("run"), .max_elements = 50};
     md_vial_eval_t* eval = md_vial_eval_create(prog, &edesc, alloc);
     ASSERT_TRUE(eval != NULL);
     {
@@ -585,17 +585,17 @@ UTEST(vial_ir, eval_api) {
     EXPECT_EQ(0, strncmp(d[0].code, "R0105", 5));
     EXPECT_EQ(MD_VIAL_SEVERITY_RUNTIME, d[0].severity);
     const md_attributes_t* attrs = md_vial_eval_attributes(eval);
-    const md_attribute_t* ends = md_attributes_find(attrs, STR_LIT("script/ends"));
-    const md_attribute_t* m = md_attributes_find(attrs, STR_LIT("script/m"));
-    const md_attribute_t* dd = md_attributes_find(attrs, STR_LIT("script/dd"));
+    const md_attribute_t* ends = md_attributes_find(attrs, MD_STR_LIT("script/ends"));
+    const md_attribute_t* m = md_attributes_find(attrs, MD_STR_LIT("script/m"));
+    const md_attribute_t* dd = md_attributes_find(attrs, MD_STR_LIT("script/dd"));
     ASSERT_TRUE(ends && m && dd);
     EXPECT_TRUE(ends->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
     EXPECT_FALSE(m->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
     EXPECT_EQ(2u, dd->format.rank);
     EXPECT_EQ((uint32_t)nf, dd->format.shape[0]);
     EXPECT_EQ(15u, dd->format.shape[1]);
-    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/_hid")) == NULL);
-    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/ca")) == NULL);      // a selection is a recipe
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/_hid")) == NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/ca")) == NULL);      // a selection is a recipe
     double sum = 0.0, mean = 0.0;
     for (int64_t f = 0; f < nf; ++f) {
         double v;
@@ -636,16 +636,16 @@ UTEST(vial_ir, eval_api) {
     md_vial_eval_free(eval);
 
     // Interrupted before it starts: a value per frame is there, as written so far, which is nothing; the rest is not
-    eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     md_vial_eval_interrupt(eval);
     EXPECT_FALSE(md_vial_eval_run(eval));
     {
-        const md_attribute_t* e2 = md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/ends"));
+        const md_attribute_t* e2 = md_attributes_find(md_vial_eval_attributes(eval), MD_STR_LIT("script/ends"));
         ASSERT_TRUE(e2 != NULL);
         for (int64_t f = 0; f < nf; ++f) EXPECT_TRUE(isnan(((const float*)e2->data)[f]));
-        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/m")) == NULL);
+        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), MD_STR_LIT("script/m")) == NULL);
         uint8_t held[256];
-        ASSERT_EQ((size_t)nf, md_vial_eval_output_frames(eval, STR_LIT("ends"), held, sizeof(held)));
+        ASSERT_EQ((size_t)nf, md_vial_eval_output_frames(eval, MD_STR_LIT("ends"), held, sizeof(held)));
         for (int64_t f = 0; f < nf; ++f) EXPECT_EQ(0, held[f]);
     }
     md_vial_eval_free(eval);
@@ -654,7 +654,7 @@ UTEST(vial_ir, eval_api) {
 }
 
 static uint64_t vial_ir__fp(const md_vial_output_t* o, size_t n, const char* name) {
-    for (size_t i = 0; i < n; ++i) if (str_eq(o[i].name, str_from_cstr(name))) return o[i].fingerprint;
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(o[i].name, md_str_from_cstr(name))) return o[i].fingerprint;
     return 0;
 }
 
@@ -674,14 +674,14 @@ UTEST(vial_ir, eval_threads) {
         "cp   = distance(ca[0:5], ca[8:15], between='closest')\n"
         "big  = zeros(100) + ends\n"
         "acc  = cumulative(ends, op='sum')\n";
-    const md_vial_compile_desc_t cdesc = {.sys = sys, .run = STR_LIT("run")};
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &cdesc, alloc);
+    const md_vial_compile_desc_t cdesc = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cdesc, alloc);
     ASSERT_TRUE(prog != NULL);
     md_vial_eval_t* ev[3];
     test_executor_t shuffled = test_executor_shuffled(3);   // out of order, thread_idx in turn
-    ev[0] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50}, alloc);
-    ev[1] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50, .executor = test_executor_of_threads(4)}, alloc);
-    ev[2] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50,
+    ev[0] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .max_elements = 50}, alloc);
+    ev[1] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .max_elements = 50, .executor = test_executor_of_threads(4)}, alloc);
+    ev[2] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .max_elements = 50,
                                                              .executor = test_executor(&shuffled)}, alloc);
     for (int i = 0; i < 3; ++i) {
         ASSERT_TRUE(ev[i] != NULL);
@@ -702,7 +702,7 @@ UTEST(vial_ir, eval_threads) {
         const md_attributes_t* ai = md_vial_eval_attributes(ev[i]);
         EXPECT_EQ(md_attributes_count(a0), md_attributes_count(ai));
         int compared = 0;
-        for (md_attribute_iter_t it = md_attributes_iter(a0, STR_LIT("script")); md_attributes_next(&it);) {
+        for (md_attribute_iter_t it = md_attributes_iter(a0, MD_STR_LIT("script")); md_attributes_next(&it);) {
             const md_attribute_t* x = it.attr;
             const md_attribute_t* y = md_attributes_find(ai, x->path);
             ASSERT_TRUE(y != NULL);
@@ -740,9 +740,9 @@ UTEST(vial_ir, output_fingerprints) {
         "e  = dist * 3.0\n"
         "f  = distance(ca[0], ca[3])\n"
         "h  = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\n";
-    const md_vial_compile_desc_t desc = {.sys = sys, .run = STR_LIT("run")};
-    md_vial_program_t* pa = md_vial_compile(str_from_cstr(a), &desc, alloc);
-    md_vial_program_t* pb = md_vial_compile(str_from_cstr(b), &desc, alloc);
+    const md_vial_compile_desc_t desc = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* pa = md_vial_compile(md_str_from_cstr(a), &desc, alloc);
+    md_vial_program_t* pb = md_vial_compile(md_str_from_cstr(b), &desc, alloc);
     const md_vial_output_t* oa;
     const md_vial_output_t* ob;
     const size_t na = md_vial_outputs(pa, &oa), nb = md_vial_outputs(pb, &ob);
@@ -755,16 +755,16 @@ UTEST(vial_ir, output_fingerprints) {
     EXPECT_TRUE(FP(oa, na, "f") != FP(ob, nb, "f"));        // another particle
     EXPECT_TRUE(FP(oa, na, "d") != FP(oa, na, "f"));
     for (size_t i = 0; i < na; ++i) {
-        if (str_eq(oa[i].name, STR_LIT("d"))) EXPECT_TRUE(oa[i].flags & MD_VIAL_OUTPUT_TEMPORAL);
-        if (str_eq(oa[i].name, STR_LIT("h"))) { EXPECT_TRUE(oa[i].flags & MD_VIAL_OUTPUT_DISTRIBUTION); EXPECT_FALSE(oa[i].flags & MD_VIAL_OUTPUT_TEMPORAL); }
-        if (str_eq(oa[i].name, STR_LIT("m"))) EXPECT_EQ(0u, oa[i].flags);
+        if (md_str_eq(oa[i].name, MD_STR_LIT("d"))) EXPECT_TRUE(oa[i].flags & MD_VIAL_OUTPUT_TEMPORAL);
+        if (md_str_eq(oa[i].name, MD_STR_LIT("h"))) { EXPECT_TRUE(oa[i].flags & MD_VIAL_OUTPUT_DISTRIBUTION); EXPECT_FALSE(oa[i].flags & MD_VIAL_OUTPUT_TEMPORAL); }
+        if (md_str_eq(oa[i].name, MD_STR_LIT("m"))) EXPECT_EQ(0u, oa[i].flags);
     }
     #undef FP
 
     // Taken over: an evaluation of b made from one of a publishes what a computed alike as a published it, and
     // computes the rest
     {
-        md_vial_eval_t* ea = md_vial_eval_create(pa, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        md_vial_eval_t* ea = md_vial_eval_create(pa, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
         ASSERT_TRUE(ea != NULL);
         md_vial_plan_t plan[16];
         // Before a has run every frame, nothing is held
@@ -773,24 +773,24 @@ UTEST(vial_ir, output_fingerprints) {
         EXPECT_TRUE(md_vial_eval_run(ea));
         ASSERT_TRUE(md_vial_eval_plan(plan, 16, ea, pb, (size_t)nf));
         for (size_t i = 0; i < nb; ++i) {
-            const char* want = str_eq(ob[i].name, STR_LIT("e")) || str_eq(ob[i].name, STR_LIT("f")) ? "changed" : ob[i].selection ? "new" : "held";
+            const char* want = md_str_eq(ob[i].name, MD_STR_LIT("e")) || md_str_eq(ob[i].name, MD_STR_LIT("f")) ? "changed" : ob[i].selection ? "new" : "held";
             const char* got = plan[i].status == MD_VIAL_PLAN_HELD ? "held" : plan[i].status == MD_VIAL_PLAN_CHANGED ? "changed" : "new";
-            if (str_eq(ob[i].name, STR_LIT("ca"))) continue;   // a selection: never taken over, evaluated as it is
+            if (md_str_eq(ob[i].name, MD_STR_LIT("ca"))) continue;   // a selection: never taken over, evaluated as it is
             EXPECT_STREQ(want, got);
-            if (str_eq(ob[i].name, STR_LIT("dist"))) EXPECT_TRUE(str_eq(plan[i].from, STR_LIT("d")));
+            if (md_str_eq(ob[i].name, MD_STR_LIT("dist"))) EXPECT_TRUE(md_str_eq(plan[i].from, MD_STR_LIT("d")));
         }
-        md_vial_eval_t* eb = md_vial_eval_create_from(ea, pb, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        md_vial_eval_t* eb = md_vial_eval_create_from(ea, pb, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
         ASSERT_TRUE(eb != NULL);
         // Taken over: published from when it is made, before any run, with the histogram's range
-        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), STR_LIT("script/dist")) != NULL);
-        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), STR_LIT("script/h/range")) != NULL);
+        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), MD_STR_LIT("script/dist")) != NULL);
+        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), MD_STR_LIT("script/h/range")) != NULL);
         EXPECT_TRUE(md_vial_eval_run(eb));
         const md_attributes_t* ta = md_vial_eval_attributes(ea);
         const md_attributes_t* tb = md_vial_eval_attributes(eb);
         const char* pairs[][2] = {{"script/d", "script/dist"}, {"script/m", "script/m"}, {"script/h", "script/h"}};
         for (int k = 0; k < 3; ++k) {
-            const md_attribute_t* x = md_attributes_find(ta, str_from_cstr(pairs[k][0]));
-            const md_attribute_t* y = md_attributes_find(tb, str_from_cstr(pairs[k][1]));
+            const md_attribute_t* x = md_attributes_find(ta, md_str_from_cstr(pairs[k][0]));
+            const md_attribute_t* y = md_attributes_find(tb, md_str_from_cstr(pairs[k][1]));
             ASSERT_TRUE(x && y);
             const size_t bytes = md_attribute_byte_size(&x->format);
             ASSERT_EQ(bytes, md_attribute_byte_size(&y->format));
@@ -798,8 +798,8 @@ UTEST(vial_ir, output_fingerprints) {
             EXPECT_EQ(x->flags, y->flags);
         }
         // Changed: computed again, e = dist * 3 where a had d * 2
-        const md_attribute_t* ae = md_attributes_find(ta, STR_LIT("script/e"));
-        const md_attribute_t* be = md_attributes_find(tb, STR_LIT("script/e"));
+        const md_attribute_t* ae = md_attributes_find(ta, MD_STR_LIT("script/e"));
+        const md_attribute_t* be = md_attributes_find(tb, MD_STR_LIT("script/e"));
         ASSERT_TRUE(ae && be);
         EXPECT_NEAR(((const float*)ae->data)[3] * 1.5f, ((const float*)be->data)[3], 1e-4f);
         md_vial_eval_free(eb);
@@ -823,16 +823,16 @@ UTEST(vial_ir, eval_aggregate) {
         "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
         "m  = mean(d, axis='frame')\n"
         "x  = max(d * 2.0, axis='frame')\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
     for (int threads = 1; threads <= 3; threads += 2) {
-        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
         ASSERT_TRUE(e != NULL);
         uint8_t* all = md_alloc(alloc, (size_t)nf);
         uint8_t* odd = md_alloc(alloc, (size_t)nf);
         for (int64_t f = 0; f < nf; ++f) { all[f] = 1; odd[f] = (uint8_t)(f & 1); }
         float h[10];
-        EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("h"), all, h, 10));   // not run yet
+        EXPECT_EQ(0u, md_vial_eval_aggregate(e, MD_STR_LIT("h"), all, h, 10));   // not run yet
         // Stopped before it starts, it stays stopped until reset
         md_vial_eval_interrupt(e);
         EXPECT_FALSE(md_vial_eval_run(e));
@@ -840,13 +840,13 @@ UTEST(vial_ir, eval_aggregate) {
         md_vial_eval_reset_interrupt(e);
         EXPECT_TRUE(md_vial_eval_run(e));
         const md_attributes_t* attr = md_vial_eval_attributes(e);
-        const md_attribute_t* ad = md_attributes_find(attr, STR_LIT("script/d"));
-        const md_attribute_t* ah = md_attributes_find(attr, STR_LIT("script/h"));
-        const md_attribute_t* am = md_attributes_find(attr, STR_LIT("script/m"));
+        const md_attribute_t* ad = md_attributes_find(attr, MD_STR_LIT("script/d"));
+        const md_attribute_t* ah = md_attributes_find(attr, MD_STR_LIT("script/h"));
+        const md_attribute_t* am = md_attributes_find(attr, MD_STR_LIT("script/m"));
         ASSERT_TRUE(ad && ah && am);
         const float* d = (const float*)ad->data;
         // Beside the histogram, its range: the bin edges, in the unit of what it counts
-        const md_attribute_t* ar = md_attributes_find(attr, STR_LIT("script/h/range"));
+        const md_attribute_t* ar = md_attributes_find(attr, MD_STR_LIT("script/h/range"));
         ASSERT_TRUE(ar != NULL);
         double rr[2];
         ASSERT_EQ(2u, md_attribute_extract_f64(rr, 2, ar, md_attribute_slice_all(), ar->unit));
@@ -855,10 +855,10 @@ UTEST(vial_ir, eval_aggregate) {
         EXPECT_TRUE(md_unit_base_equal(ar->unit, ad->unit));
 
         // Over every frame: what was published
-        ASSERT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), all, h, 10));
+        ASSERT_EQ(10u, md_vial_eval_aggregate(e, MD_STR_LIT("h"), all, h, 10));
         for (int i = 0; i < 10; ++i) EXPECT_EQ(((const float*)ah->data)[i], h[i]);
         float m = 0;
-        ASSERT_EQ(1u, md_vial_eval_aggregate(e, STR_LIT("m"), all, &m, 1));
+        ASSERT_EQ(1u, md_vial_eval_aggregate(e, MD_STR_LIT("m"), all, &m, 1));
         EXPECT_EQ(((const float*)am->data)[0], m);
 
         // Over the odd frames: counted by hand from the per-frame distances
@@ -870,20 +870,20 @@ UTEST(vial_ir, eval_aggregate) {
             if (bin >= 0 && bin < 10) want[bin] += 1.0f;
             sum += d[f]; mx = MD_MAX(mx, 2.0 * d[f]); ++n;
         }
-        ASSERT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), odd, h, 10));
+        ASSERT_EQ(10u, md_vial_eval_aggregate(e, MD_STR_LIT("h"), odd, h, 10));
         for (int i = 0; i < 10; ++i) EXPECT_EQ(want[i], h[i]);
-        ASSERT_EQ(1u, md_vial_eval_aggregate(e, STR_LIT("m"), odd, &m, 1));
+        ASSERT_EQ(1u, md_vial_eval_aggregate(e, MD_STR_LIT("m"), odd, &m, 1));
         EXPECT_NEAR((float)(sum / n), m, 1e-4f);
         float x = 0;
-        ASSERT_EQ(1u, md_vial_eval_aggregate(e, STR_LIT("x"), odd, &x, 1));
+        ASSERT_EQ(1u, md_vial_eval_aggregate(e, MD_STR_LIT("x"), odd, &x, 1));
         EXPECT_NEAR((float)mx, x, 1e-4f);
 
         // Too small an out: the count, nothing written; not over the frames, or unknown: 0
         h[0] = -1.0f;
-        EXPECT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), odd, h, 4));
+        EXPECT_EQ(10u, md_vial_eval_aggregate(e, MD_STR_LIT("h"), odd, h, 4));
         EXPECT_EQ(-1.0f, h[0]);
-        EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("d"), odd, h, 10));
-        EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("nope"), odd, h, 10));
+        EXPECT_EQ(0u, md_vial_eval_aggregate(e, MD_STR_LIT("d"), odd, h, 10));
+        EXPECT_EQ(0u, md_vial_eval_aggregate(e, MD_STR_LIT("nope"), odd, h, 10));
         md_vial_eval_free(e);
     }
     md_vial_program_free(prog);
@@ -892,7 +892,7 @@ UTEST(vial_ir, eval_aggregate) {
 
 static uint32_t vial_test_count_ca(const md_system_t* sys) {
     uint32_t n = 0;
-    for (size_t i = 0; i < sys->atom.count; ++i) n += str_eq(md_atom_name(&sys->atom, i), STR_LIT("CA"));
+    for (size_t i = 0; i < sys->atom.count; ++i) n += md_str_eq(md_atom_name(&sys->atom, i), MD_STR_LIT("CA"));
     return n;
 }
 
@@ -906,7 +906,7 @@ UTEST(vial_ir, draw_spheres_capped) {
     const md_system_state_t* st = vial_test_state('T');
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     const char* src = "w = within(2.0, of=particle[0:3000])\nv = within(2.0, of=particle[0:10])\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     ASSERT_TRUE(prog != NULL);
     md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
     const uint32_t at = md_vial_expr_at(prog, (uint32_t)(strstr(src, "within(") - src) + 1);
@@ -978,7 +978,7 @@ UTEST(vial_ir, draw) {
         "    return shown(q, marker(u) + marker(v))\n"
         "e = ends(ca)\n"
         "f = e * 2.0\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
     {
         const md_vial_diagnostic_t* dg;
@@ -986,7 +986,7 @@ UTEST(vial_ir, draw) {
         for (size_t i = 0; i < nd; ++i) if (dg[i].severity == MD_VIAL_SEVERITY_ERROR) printf("%s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
     }
     #define AT(text, plus) ((uint32_t)(strstr(src, text) - src) + (plus))
-    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 0, .state = st, .element = -1};
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 0, .state = st, .element = -1};
     md_vial_drawing_t dr;
 
     // A set: its particles, and they are the CA atoms
@@ -1111,7 +1111,7 @@ UTEST(vial_ir, draw) {
     EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[0].kind);
     EXPECT_EQ((int)MD_VIAL_PRIM_SPHERE, (int)dr.prims[1].kind);
     ASSERT_EQ(1u, dr.num_labels);
-    EXPECT_TRUE(str_eq(dr.labels[0].text, STR_LIT("x")));
+    EXPECT_TRUE(md_str_eq(dr.labels[0].text, MD_STR_LIT("x")));
     EXPECT_TRUE(isnan(dr.labels[0].value));
 
     // A def mapped over groups: one line per element, and one element alone
@@ -1145,12 +1145,12 @@ UTEST(vial_ir, draw) {
 
     // A frame of the run, read: the line is as long as the distance published for that frame
     {
-        md_vial_eval_t* ev = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        md_vial_eval_t* ev = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
         ASSERT_TRUE(ev != NULL);
         EXPECT_TRUE(md_vial_eval_run(ev));
-        const md_attribute_t* ad = md_attributes_find(md_vial_eval_attributes(ev), STR_LIT("script/d"));
+        const md_attribute_t* ad = md_attributes_find(md_vial_eval_attributes(ev), MD_STR_LIT("script/d"));
         ASSERT_TRUE(ad != NULL);
-        md_vial_draw_desc_t d3 = {.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .eval = ev, .element = -1};
+        md_vial_draw_desc_t d3 = {.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 3, .eval = ev, .element = -1};
         ASSERT_TRUE(md_vial_draw(&dr, &d3, md_vial_expr_at(prog, AT("distance(ca[0]", 8)), alloc));
         ASSERT_EQ(1u, dr.num_labels);
         EXPECT_NEAR(((const float*)ad->data)[3], dr.labels[0].value, 1e-5);
@@ -1169,7 +1169,7 @@ static md_vial_completions_t vial_ir__complete(const char* marked, md_allocator_
     const size_t at = (size_t)(bar - marked);
     memcpy(src, marked, at);
     strcpy(src + at, bar + 1);
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = vial_test_system('P'), .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = vial_test_system('P'), .run = MD_STR_LIT("run")}, alloc);
     md_vial_completions_t c;
     md_vial_complete(&c, prog, (uint32_t)at, alloc);
     // Strings are alloc's: the program may go
@@ -1178,7 +1178,7 @@ static md_vial_completions_t vial_ir__complete(const char* marked, md_allocator_
 }
 
 static const md_vial_completion_t* vial_ir__find(const md_vial_completions_t* c, const char* label) {
-    for (size_t i = 0; i < c->count; ++i) if (str_eq(c->items[i].label, str_from_cstr(label))) return &c->items[i];
+    for (size_t i = 0; i < c->count; ++i) if (md_str_eq(c->items[i].label, md_str_from_cstr(label))) return &c->items[i];
     return NULL;
 }
 
@@ -1189,31 +1189,31 @@ UTEST(vial_ir, editor) {
 
     // Lists for highlighting, and names
     EXPECT_EQ(35u, md_vial_keywords(NULL, 0));
-    str_t names[512];
+    md_str_t names[512];
     const size_t nb = md_vial_builtin_names(names, 512);
     ASSERT_LT(nb, 512u);
     bool has_particles = false, has_distance = false, has_hidden = false;
     for (size_t i = 0; i < nb; ++i) {
-        has_particles |= str_eq(names[i], STR_LIT("particle"));
-        has_distance |= str_eq(names[i], STR_LIT("distance"));
+        has_particles |= md_str_eq(names[i], MD_STR_LIT("particle"));
+        has_distance |= md_str_eq(names[i], MD_STR_LIT("distance"));
         has_hidden |= names[i].len && names[i].ptr[0] == '_';
     }
     EXPECT_TRUE(has_particles && has_distance && !has_hidden);
-    EXPECT_TRUE(md_vial_name_valid(STR_LIT("my_sel2")));
-    EXPECT_TRUE(md_vial_name_valid(STR_LIT("_x")));
-    EXPECT_FALSE(md_vial_name_valid(STR_LIT("def")));
-    EXPECT_FALSE(md_vial_name_valid(STR_LIT("particle")));
-    EXPECT_FALSE(md_vial_name_valid(STR_LIT("distance")));
-    EXPECT_FALSE(md_vial_name_valid(STR_LIT("2a")));
-    EXPECT_FALSE(md_vial_name_valid(STR_LIT("a-b")));
-    EXPECT_TRUE(str_eq(STR_LIT("energy/total"), md_vial_attr_path(STR_LIT("run"), STR_LIT("run/energy/total"))));
-    EXPECT_EQ(0u, md_vial_attr_path(STR_LIT("run"), STR_LIT("runs/x")).len);
+    EXPECT_TRUE(md_vial_name_valid(MD_STR_LIT("my_sel2")));
+    EXPECT_TRUE(md_vial_name_valid(MD_STR_LIT("_x")));
+    EXPECT_FALSE(md_vial_name_valid(MD_STR_LIT("def")));
+    EXPECT_FALSE(md_vial_name_valid(MD_STR_LIT("particle")));
+    EXPECT_FALSE(md_vial_name_valid(MD_STR_LIT("distance")));
+    EXPECT_FALSE(md_vial_name_valid(MD_STR_LIT("2a")));
+    EXPECT_FALSE(md_vial_name_valid(MD_STR_LIT("a-b")));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("energy/total"), md_vial_attr_path(MD_STR_LIT("run"), MD_STR_LIT("run/energy/total"))));
+    EXPECT_EQ(0u, md_vial_attr_path(MD_STR_LIT("run"), MD_STR_LIT("runs/x")).len);
 
     md_vial_completions_t c;
     const md_vial_completion_t* it;
     // A name being typed: what starts so, names before keywords
     c = vial_ir__complete("ca = particle(name='CA')\nu = ce|", alloc);
-    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("ce")));
+    EXPECT_TRUE(md_str_eq(c.prefix, MD_STR_LIT("ce")));
     EXPECT_TRUE(vial_ir__find(&c, "centroid") != NULL);
     for (size_t i = 0; i < c.count; ++i) EXPECT_TRUE(c.items[i].label.len >= 2 && !strncmp(c.items[i].label.ptr, "ce", 2));
     c = vial_ir__complete("a1 = 1\nb = a|\na2 = 2\n", alloc);
@@ -1236,7 +1236,7 @@ UTEST(vial_ir, editor) {
     // The parameters of the call around the cursor: a prelude def's, a script def's, a built-in's; not one given
     c = vial_ir__complete("ca = particle(name='CA')\nd = distance(ca[0], ca[1], |)\n", alloc);
     ASSERT_TRUE((it = vial_ir__find(&c, "between")) != NULL);
-    EXPECT_TRUE(str_eq(it->text, STR_LIT("between=")));
+    EXPECT_TRUE(md_str_eq(it->text, MD_STR_LIT("between=")));
     EXPECT_EQ((int)MD_VIAL_COMPLETION_PARAMETER, (int)c.items[0].kind);
     c = vial_ir__complete("def f(s: set, scale=1.0):\n    return count(s) * scale\nx = f(particle(), sc|)\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "scale") != NULL && vial_ir__find(&c, "scale")->kind == MD_VIAL_COMPLETION_PARAMETER);
@@ -1274,7 +1274,7 @@ UTEST(vial_ir, editor) {
     c = vial_ir__complete("x = particle(name='C|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL && vial_ir__find(&c, "CB") != NULL);
     EXPECT_TRUE(vial_ir__find(&c, "N") == NULL);
-    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("C")));
+    EXPECT_TRUE(md_str_eq(c.prefix, MD_STR_LIT("C")));
     c = vial_ir__complete("x = particle('C|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL);
     c = vial_ir__complete("x = residue(kind='a|')\n", alloc);
@@ -1291,94 +1291,94 @@ UTEST(vial_ir, filters) {
     const md_system_state_t* st = vial_test_state('P');
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const uint32_t mine[] = {2, 0, 1, 1};     // out of order, once twice: the set is 0, 1, 2
-    const md_vial_named_set_t stored[] = {{STR_LIT("mysel"), mine, 4}, {STR_LIT("bad name"), mine, 1}};
+    const md_vial_named_set_t stored[] = {{MD_STR_LIT("mysel"), mine, 4}, {MD_STR_LIT("bad name"), mine, 1}};
 
     // In a script: a static set, counted when compiling; its atoms are in its fingerprint
     {
         const char* src = "n = count(mysel)\nm = mysel.com\n";
-        md_vial_program_t* p = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 2}, alloc);
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 2}, alloc);
         md_vial_hover_t h;
         ASSERT_TRUE(md_vial_hover(p, 0, &h));
         EXPECT_STREQ("3", h.value);
         const uint32_t other[] = {0, 1, 3};
-        const md_vial_named_set_t moved[] = {{STR_LIT("mysel"), other, 3}};
-        md_vial_program_t* q = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .sets = moved, .num_sets = 1}, alloc);
+        const md_vial_named_set_t moved[] = {{MD_STR_LIT("mysel"), other, 3}};
+        md_vial_program_t* q = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .sets = moved, .num_sets = 1}, alloc);
         const md_vial_output_t* op;
         const md_vial_output_t* oq;
         md_vial_outputs(p, &op);
         md_vial_outputs(q, &oq);
         EXPECT_TRUE(op[1].fingerprint != oq[1].fingerprint);
         // A name the script binds hides it
-        md_vial_program_t* r = md_vial_compile(STR_LIT("mysel = particle(name='CA')\nn = count(mysel)\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 1}, alloc);
+        md_vial_program_t* r = md_vial_compile(MD_STR_LIT("mysel = particle(name='CA')\nn = count(mysel)\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 1}, alloc);
         ASSERT_TRUE(md_vial_hover(r, (uint32_t)strlen("mysel = particle(name='CA')\n"), &h));
         EXPECT_STRNE("3", h.value);
         md_vial_program_free(p); md_vial_program_free(q); md_vial_program_free(r);
     }
 
-    md_vial_program_t* prog = md_vial_compile(STR_LIT("ca_s = particle(name='CA')\nnear = within(3.0, of=ca_s)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* prog = md_vial_compile(MD_STR_LIT("ca_s = particle(name='CA')\nnear = within(3.0, of=ca_s)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     md_vial_filter_desc_t d = {.sys = sys, .state = st, .sets = stored, .num_sets = 1, .prog = prog};
     md_vial_filter_t f;
     // A predefined set, a selector's array, a stored selection, the program's static selection
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("protein"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("protein"), &d, alloc));
     EXPECT_FALSE(f.dynamic);
     EXPECT_EQ(0, f.ndim);
     EXPECT_EQ(1u, f.num_sets);
     EXPECT_GT(f.offsets[1], 0u);
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residue()"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("residue()"), &d, alloc));
     EXPECT_EQ(1, f.ndim);
     EXPECT_EQ(md_system_residue_count(sys), (size_t)f.dims[0]);
     EXPECT_EQ((size_t)f.dims[0], f.num_sets);
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mysel"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("mysel"), &d, alloc));
     ASSERT_EQ(3u, f.offsets[1]);
     EXPECT_EQ(0u, f.atoms[0]); EXPECT_EQ(1u, f.atoms[1]); EXPECT_EQ(2u, f.atoms[2]);
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("ca_s and not mysel"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("ca_s and not mysel"), &d, alloc));
     const uint32_t nca = f.offsets[1];
     EXPECT_GT(nca, 0u);
     // Bonds: pairs of one-particle sets
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("bond(residue()[0])"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(residue()[0])"), &d, alloc));
     EXPECT_EQ(2, f.ndim);
     EXPECT_EQ(2u, f.dims[1]);
     EXPECT_GT(f.dims[0], 0u);
     for (size_t i = 0; i < f.num_sets; ++i) EXPECT_EQ(1u, f.offsets[i + 1] - f.offsets[i]);
     // Dynamic: from the coordinates, and none without them
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("within(3.0, of=mysel)"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("within(3.0, of=mysel)"), &d, alloc));
     EXPECT_TRUE(f.dynamic);
     EXPECT_GE(f.offsets[1], 3u);
     md_vial_filter_desc_t nd = d;
     nd.state = NULL;
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("within(3.0, of=mysel)"), &nd, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("within(3.0, of=mysel)"), &nd, alloc));
     // A recipe of the program's: evaluated at the coordinates, so dynamic; without them it is not there
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("near and not ca_s"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("near and not ca_s"), &d, alloc));
     EXPECT_TRUE(f.dynamic);
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("near"), &nd, alloc));
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("nearby"), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("near"), &nd, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("nearby"), &d, alloc));
     // Arrays of sets the program publishes: the name gives the array, and a subscript one of it
     {
-        md_vial_program_t* pa = md_vial_compile(STR_LIT("res = residue()\nca_r = residue() and particle(name='CA')\nbb = bond(residue()[0])\n"),
+        md_vial_program_t* pa = md_vial_compile(MD_STR_LIT("res = residue()\nca_r = residue() and particle(name='CA')\nbb = bond(residue()[0])\n"),
             &(md_vial_compile_desc_t){.sys = sys}, alloc);
         md_vial_filter_desc_t ad = {.sys = sys, .state = st, .prog = pa};
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("res"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("res"), &ad, alloc));
         EXPECT_EQ(1, f.ndim);
         EXPECT_EQ(md_system_residue_count(sys), (size_t)f.dims[0]);
         md_vial_filter_t r3;
-        ASSERT_TRUE(md_vial_filter(&r3, STR_LIT("residue()[3]"), &ad, alloc));
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("res[3]"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&r3, MD_STR_LIT("residue()[3]"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("res[3]"), &ad, alloc));
         EXPECT_EQ(0, f.ndim);
         ASSERT_EQ(r3.offsets[1], f.offsets[1]);
         for (uint32_t i = 0; i < f.offsets[1]; ++i) EXPECT_EQ(r3.atoms[i], f.atoms[i]);
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("ca_r[2]"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("ca_r[2]"), &ad, alloc));
         EXPECT_EQ(1u, f.offsets[1]);
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("bb"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bb"), &ad, alloc));
         EXPECT_EQ(2, f.ndim);
         EXPECT_EQ(2u, f.dims[1]);
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("any(res[0:2])"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("any(res[0:2])"), &ad, alloc));
         EXPECT_EQ(0, f.ndim);
 
         // As a stored selection given to a script: an array, known when compiling
         const uint32_t at[] = {0, 1, 2, 5, 4};
         const uint32_t off[] = {0, 3, 5};
-        const md_vial_named_set_t arr[] = {{.name = STR_LIT("pair"), .atoms = at, .num_atoms = 5, .ndim = 1, .dims = {2}, .offsets = off}};
-        md_vial_program_t* q = md_vial_compile(STR_LIT("n = len(pair)\nm = count(pair[1])\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = arr, .num_sets = 1}, alloc);
+        const md_vial_named_set_t arr[] = {{.name = MD_STR_LIT("pair"), .atoms = at, .num_atoms = 5, .ndim = 1, .dims = {2}, .offsets = off}};
+        md_vial_program_t* q = md_vial_compile(MD_STR_LIT("n = len(pair)\nm = count(pair[1])\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = arr, .num_sets = 1}, alloc);
         md_vial_hover_t h;
         ASSERT_TRUE(md_vial_hover(q, 0, &h));
         EXPECT_STREQ("2", h.value);
@@ -1390,39 +1390,39 @@ UTEST(vial_ir, filters) {
     // Within a scope: cut to it, emptied sets dropped
     {
         md_vial_filter_t r0;
-        ASSERT_TRUE(md_vial_filter(&r0, STR_LIT("residue()[0]"), &d, alloc));
+        ASSERT_TRUE(md_vial_filter(&r0, MD_STR_LIT("residue()[0]"), &d, alloc));
         md_vial_filter_desc_t sd = d;
         sd.scope = r0.atoms;
         sd.num_scope = r0.offsets[1];
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residue()"), &sd, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("residue()"), &sd, alloc));
         EXPECT_EQ(1u, f.dims[0]);
         EXPECT_EQ(r0.offsets[1], f.offsets[1]);
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("protein"), &sd, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("protein"), &sd, alloc));
         EXPECT_EQ(r0.offsets[1], f.offsets[1]);
     }
     // Errors, with spans in the expression
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("1 + 2"), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("1 + 2"), &d, alloc));
     EXPECT_STREQ("E0313", f.error.code);
     EXPECT_EQ(0u, f.error.span.beg);
     EXPECT_EQ(5u, f.error.span.end);
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("particle(nme='CA')"), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("particle(nme='CA')"), &d, alloc));
     EXPECT_GE(f.error.span.beg, 0u);
     EXPECT_LE(f.error.span.end, 19u);
     EXPECT_GT(f.error.message.len, 0u);
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("   "), &d, alloc));
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("protein)"), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("   "), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("protein)"), &d, alloc));
 
     // Completion, in the expression's own offsets
     md_vial_completions_t c;
-    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("particle(resn"), 13, &d, alloc));
+    ASSERT_TRUE(md_vial_filter_complete(&c, MD_STR_LIT("particle(resn"), 13, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "resname") != NULL);
     EXPECT_EQ(9u, c.span.beg);
     EXPECT_EQ(13u, c.span.end);
-    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("mys"), 3, &d, alloc));
+    ASSERT_TRUE(md_vial_filter_complete(&c, MD_STR_LIT("mys"), 3, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "mysel") != NULL);
-    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("ca"), 2, &d, alloc));
+    ASSERT_TRUE(md_vial_filter_complete(&c, MD_STR_LIT("ca"), 2, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "ca_s") != NULL);
-    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("_"), 1, &d, alloc));
+    ASSERT_TRUE(md_vial_filter_complete(&c, MD_STR_LIT("_"), 1, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "_filter") == NULL);
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
@@ -1435,21 +1435,21 @@ static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const ch
     snprintf(path, sizeof(path), "%s/%s", MD_UNITTEST_DATA_DIR, file);
     *sys = (md_system_t){.alloc = alloc};
     *st = (md_system_state_t){.alloc = alloc};
-    const str_t p = str_from_cstr(path);
+    const md_str_t p = md_str_from_cstr(path);
     const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
     return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
 }
 
 static uint32_t vial_ir__count(const char* expr, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc) {
     md_vial_filter_t f;
-    if (!md_vial_filter(&f, str_from_cstr(expr), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc) || f.num_sets != 1) return UINT32_MAX;
+    if (!md_vial_filter(&f, md_str_from_cstr(expr), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc) || f.num_sets != 1) return UINT32_MAX;
     return f.offsets[1];
 }
 
 static bool vial_ir__same_sets(const char* a, const char* b, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc, uint32_t* n) {
     md_vial_filter_t fa, fb;
-    if (!md_vial_filter(&fa, str_from_cstr(a), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc)) return false;
-    if (!md_vial_filter(&fb, str_from_cstr(b), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc)) return false;
+    if (!md_vial_filter(&fa, md_str_from_cstr(a), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc)) return false;
+    if (!md_vial_filter(&fb, md_str_from_cstr(b), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc)) return false;
     if (fa.num_sets != fb.num_sets || fa.offsets[fa.num_sets] != fb.offsets[fb.num_sets]) return false;
     for (uint32_t i = 0; i <= fa.num_sets; ++i) if (fa.offsets[i] != fb.offsets[i]) return false;
     for (uint32_t i = 0; i < fa.offsets[fa.num_sets]; ++i) if (fa.atoms[i] != fb.atoms[i]) return false;
@@ -1518,7 +1518,7 @@ UTEST(vial_ir, anatomy_sets) {
     // One head per DPPC, with its hydrogens
     {
         md_vial_filter_t h;
-        ASSERT_TRUE(md_vial_filter(&h, STR_LIT("head"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+        ASSERT_TRUE(md_vial_filter(&h, MD_STR_LIT("head"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
         EXPECT_EQ(1, h.ndim);
         EXPECT_EQ(sys.lipid.head.count, (size_t)h.num_sets);
         EXPECT_EQ(sys.lipid.count, (size_t)h.num_sets);
@@ -1526,15 +1526,15 @@ UTEST(vial_ir, anatomy_sets) {
     }
     // One set per tail; all of them are the tail particles
     md_vial_filter_t f;
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tail"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("tail"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
     EXPECT_EQ(1, f.ndim);
     EXPECT_EQ(sys.lipid.tail.count, (size_t)f.num_sets);
     EXPECT_EQ(tail, f.offsets[f.num_sets]);
     EXPECT_EQ(tail, vial_ir__count("particle(tail)", &sys, &st, alloc));
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tail(residue[0])"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("tail(residue[0])"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
     EXPECT_EQ(2u, (unsigned)f.num_sets);     // DPPC: two acyl chains
     {
-        md_vial_program_t* p = md_vial_compile(STR_LIT("l = label(tail)[1]\n"), &(md_vial_compile_desc_t){.sys = &sys}, alloc);
+        md_vial_program_t* p = md_vial_compile(MD_STR_LIT("l = label(tail)[1]\n"), &(md_vial_compile_desc_t){.sys = &sys}, alloc);
         md_vial_hover_t h;
         ASSERT_TRUE(md_vial_hover(p, 0, &h));
         EXPECT_TRUE(strstr(h.value, "tail2/") != NULL);
@@ -1561,15 +1561,15 @@ UTEST(vial_ir, set_mask) {
         "m = sum(particle.z > particle[0].z)\n"
         "k = count(protein[(protein.x in -5.0..5.0) and (protein.y > 0.0)])\n"
         "j = sum((protein.x in -5.0..5.0) and (protein.y > 0.0))\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(e && md_vial_eval_run(e));
     const md_attributes_t* at = md_vial_eval_attributes(e);
-    const md_attribute_t* n = md_attributes_find(at, STR_LIT("script/n"));
-    const md_attribute_t* m = md_attributes_find(at, STR_LIT("script/m"));
-    const md_attribute_t* k = md_attributes_find(at, STR_LIT("script/k"));
-    const md_attribute_t* j = md_attributes_find(at, STR_LIT("script/j"));
+    const md_attribute_t* n = md_attributes_find(at, MD_STR_LIT("script/n"));
+    const md_attribute_t* m = md_attributes_find(at, MD_STR_LIT("script/m"));
+    const md_attribute_t* k = md_attributes_find(at, MD_STR_LIT("script/k"));
+    const md_attribute_t* j = md_attributes_find(at, MD_STR_LIT("script/j"));
     ASSERT_TRUE(n && m && k && j);
     const size_t nf = n->format.shape[0];
     int varies = 0;
@@ -1581,7 +1581,7 @@ UTEST(vial_ir, set_mask) {
     EXPECT_TRUE(varies);
     // As a filter: dynamic
     md_vial_filter_t fl;
-    ASSERT_TRUE(md_vial_filter(&fl, STR_LIT("particle[particle.z > 0.0]"), &(md_vial_filter_desc_t){.sys = sys, .state = vial_test_state('P')}, alloc));
+    ASSERT_TRUE(md_vial_filter(&fl, MD_STR_LIT("particle[particle.z > 0.0]"), &(md_vial_filter_desc_t){.sys = sys, .state = vial_test_state('P')}, alloc));
     EXPECT_TRUE(fl.dynamic);
     md_vial_eval_free(e);
     md_vial_program_free(prog);
@@ -1600,18 +1600,18 @@ UTEST(vial_ir, population_summaries) {
         "d   = distance(ca[0], ca.xyz)\n"
         "psi = dihedral(residue() and particle(name='N'), residue() and particle(name='CA'), residue() and particle(name='C'), residue() and particle(name='O'))\n"
         "one = distance(ca[0], ca[1])\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(e != NULL);
     ASSERT_TRUE(md_vial_eval_run(e));
     const md_attributes_t* at = md_vial_eval_attributes(e);
-    const md_attribute_t* d = md_attributes_find(at, STR_LIT("script/d"));
-    const md_attribute_t* dm = md_attributes_find(at, STR_LIT("script/d/mean"));
-    const md_attribute_t* dv = md_attributes_find(at, STR_LIT("script/d/variance"));
-    const md_attribute_t* dx = md_attributes_find(at, STR_LIT("script/d/extent"));
+    const md_attribute_t* d = md_attributes_find(at, MD_STR_LIT("script/d"));
+    const md_attribute_t* dm = md_attributes_find(at, MD_STR_LIT("script/d/mean"));
+    const md_attribute_t* dv = md_attributes_find(at, MD_STR_LIT("script/d/variance"));
+    const md_attribute_t* dx = md_attributes_find(at, MD_STR_LIT("script/d/extent"));
     ASSERT_TRUE(d && dm && dv && dx);
-    EXPECT_TRUE(md_attributes_find(at, STR_LIT("script/one/mean")) == NULL);    // one value has no population
+    EXPECT_TRUE(md_attributes_find(at, MD_STR_LIT("script/one/mean")) == NULL);    // one value has no population
     const size_t nf = d->format.shape[0], n = d->format.shape[1];
     ASSERT_EQ(15u, (unsigned)n);
     EXPECT_EQ(nf, (size_t)dm->format.shape[0]);
@@ -1629,9 +1629,9 @@ UTEST(vial_ir, population_summaries) {
         EXPECT_NEAR(hi, ((const float*)dx->data)[2 * f + 1], 1e-5);
     }
     // Periodic: the mean lies in the period, the arc starts in it
-    const md_attribute_t* pm = md_attributes_find(at, STR_LIT("script/psi/mean"));
-    const md_attribute_t* pp = md_attributes_find(at, STR_LIT("script/psi/period"));
-    const md_attribute_t* px = md_attributes_find(at, STR_LIT("script/psi/extent"));
+    const md_attribute_t* pm = md_attributes_find(at, MD_STR_LIT("script/psi/mean"));
+    const md_attribute_t* pp = md_attributes_find(at, MD_STR_LIT("script/psi/period"));
+    const md_attribute_t* px = md_attributes_find(at, MD_STR_LIT("script/psi/extent"));
     ASSERT_TRUE(pm && pp && px);
     const float beg = ((const float*)pp->data)[0], end = ((const float*)pp->data)[1];
     for (size_t f = 0; f < nf; ++f) {
@@ -1641,18 +1641,18 @@ UTEST(vial_ir, population_summaries) {
         EXPECT_TRUE(hi >= lo && hi - lo <= end - beg);
     }
     // The labels of the CAs, as the data names them
-    const md_attribute_t* dl = md_attributes_find(at, STR_LIT("script/d/labels"));
+    const md_attribute_t* dl = md_attributes_find(at, MD_STR_LIT("script/d/labels"));
     ASSERT_TRUE(dl != NULL);
     ASSERT_EQ(15u, dl->format.shape[0]);
-    EXPECT_TRUE(str_eq(md_attribute_str(at, dl, 0), STR_LIT("CA/ALA1")));
+    EXPECT_TRUE(md_str_eq(md_attribute_str(at, dl, 0), MD_STR_LIT("CA/ALA1")));
 
     // An evaluation that takes d over keeps its summary
-    md_vial_program_t* p2 = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
-    md_vial_eval_t* e2 = md_vial_eval_create_from(e, p2, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* p2 = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    md_vial_eval_t* e2 = md_vial_eval_create_from(e, p2, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(e2 != NULL);
-    const md_attribute_t* dm2 = md_attributes_find(md_vial_eval_attributes(e2), STR_LIT("script/d/mean"));
+    const md_attribute_t* dm2 = md_attributes_find(md_vial_eval_attributes(e2), MD_STR_LIT("script/d/mean"));
     ASSERT_TRUE(dm2 != NULL);
-    dm = md_attributes_find(at, STR_LIT("script/d/mean"));
+    dm = md_attributes_find(at, MD_STR_LIT("script/d/mean"));
     EXPECT_EQ(0, memcmp(dm->data, dm2->data, nf * sizeof(float)));
     md_vial_eval_free(e2);
     md_vial_eval_free(e);
@@ -1671,10 +1671,10 @@ UTEST(vial_ir, taken_over_whole) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* a = "_ca = particle(name='CA')\nd = distance(_ca[0], _ca[1])\nt = dihedral(_ca[0], _ca[1], _ca[2], _ca[3])\n";
     const char* b = "# moved down\n\n_ca = particle(name='CA')\nt = dihedral(_ca[0], _ca[1], _ca[2], _ca[3])\n\nd2 = distance(_ca[0], _ca[1])\n";
-    const md_vial_compile_desc_t cd = {.sys = sys, .run = STR_LIT("run")};
-    const md_vial_eval_desc_t ed = {.sys = sys, .run = STR_LIT("run")};
-    md_vial_program_t* pa = md_vial_compile(str_from_cstr(a), &cd, alloc);
-    md_vial_program_t* pb = md_vial_compile(str_from_cstr(b), &cd, alloc);
+    const md_vial_compile_desc_t cd = {.sys = sys, .run = MD_STR_LIT("run")};
+    const md_vial_eval_desc_t ed = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* pa = md_vial_compile(md_str_from_cstr(a), &cd, alloc);
+    md_vial_program_t* pb = md_vial_compile(md_str_from_cstr(b), &cd, alloc);
     md_vial_eval_t* ea = md_vial_eval_create(pa, &ed, alloc);
     ASSERT_TRUE(ea && pb);
     ASSERT_TRUE(md_vial_eval_run(ea));
@@ -1693,15 +1693,15 @@ UTEST(vial_ir, taken_over_whole) {
         EXPECT_EQ(nf, md_vial_eval_output_frames(eb, o[i].name, held, sizeof(held)));
         for (size_t f = 0; f < nf; ++f) EXPECT_EQ(1, held[f]);
     }
-    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), STR_LIT("script/d2")) != NULL);
+    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), MD_STR_LIT("script/d2")) != NULL);
     // And partly: what is new is computed by a run, and the plan says how much
     const char* c = "_ca = particle(name='CA')\nd = distance(_ca[0], _ca[1])\nnew = distance(_ca[0], _ca[2])\n";
-    md_vial_program_t* pc = md_vial_compile(str_from_cstr(c), &cd, alloc);
+    md_vial_program_t* pc = md_vial_compile(md_str_from_cstr(c), &cd, alloc);
     md_vial_eval_t* ec = md_vial_eval_create_from(ea, pc, &ed, alloc);
     ASSERT_TRUE(ec != NULL);
     ASSERT_TRUE(md_vial_eval_plan(plan, 8, ec, pc, nf));
     const size_t nc = md_vial_outputs(pc, &o);
-    for (size_t i = 0; i < nc; ++i) if (str_eq(o[i].name, STR_LIT("new"))) EXPECT_EQ((uint32_t)nf, plan[i].num_pending);
+    for (size_t i = 0; i < nc; ++i) if (md_str_eq(o[i].name, MD_STR_LIT("new"))) EXPECT_EQ((uint32_t)nf, plan[i].num_pending);
     md_vial_eval_free(ec);
     md_vial_eval_free(eb);
     md_vial_eval_free(ea);
@@ -1723,11 +1723,11 @@ UTEST(vial_ir, for_over_dynamic_residues) {
         "n = len(residue(within(5.0, of=residue[14])))\n"
         "_one = [distance(r[1], r[2]) for r in residue(within(5.0, of=residue[14]))[0:1]]\n"
         "n1 = len(_one)\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t nd = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < nd; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(e != NULL);
     EXPECT_TRUE(md_vial_eval_run(e));
     const size_t ne = md_vial_eval_diagnostics(e, &dg);
@@ -1735,8 +1735,8 @@ UTEST(vial_ir, for_over_dynamic_residues) {
     EXPECT_EQ(0u, ne);
     // As many values as residues near residue 14 in each frame, and one where one is taken
     const md_attributes_t* at = md_vial_eval_attributes(e);
-    const md_attribute_t* an = md_attributes_find(at, STR_LIT("script/n"));
-    const md_attribute_t* a1 = md_attributes_find(at, STR_LIT("script/n1"));
+    const md_attribute_t* an = md_attributes_find(at, MD_STR_LIT("script/n"));
+    const md_attribute_t* a1 = md_attributes_find(at, MD_STR_LIT("script/n1"));
     ASSERT_TRUE(an && a1);
     for (uint32_t f = 0; f < an->format.shape[0]; ++f) {
         const int32_t k = ((const int32_t*)an->data)[f];
@@ -1757,20 +1757,20 @@ UTEST(vial_ir, periodic_outputs) {
         "ca = particle(name='CA')\n"
         "t  = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
         "d  = distance(ca[0], ca[1])\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     const md_vial_output_t* o;
     const size_t no = md_vial_outputs(prog, &o);
     for (size_t i = 0; i < no; ++i) {
-        if (str_eq(o[i].name, STR_LIT("t"))) EXPECT_TRUE(o[i].flags & MD_VIAL_OUTPUT_PERIODIC);
-        if (str_eq(o[i].name, STR_LIT("d"))) EXPECT_FALSE(o[i].flags & MD_VIAL_OUTPUT_PERIODIC);
+        if (md_str_eq(o[i].name, MD_STR_LIT("t"))) EXPECT_TRUE(o[i].flags & MD_VIAL_OUTPUT_PERIODIC);
+        if (md_str_eq(o[i].name, MD_STR_LIT("d"))) EXPECT_FALSE(o[i].flags & MD_VIAL_OUTPUT_PERIODIC);
     }
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(e != NULL);
     const md_attributes_t* at = md_vial_eval_attributes(e);
-    const md_attribute_t* per = md_attributes_find(at, STR_LIT("script/t/period"));
-    const md_attribute_t* seam = md_attributes_find(at, STR_LIT("script/t/seam"));
+    const md_attribute_t* per = md_attributes_find(at, MD_STR_LIT("script/t/period"));
+    const md_attribute_t* seam = md_attributes_find(at, MD_STR_LIT("script/t/seam"));
     ASSERT_TRUE(per && seam);
-    EXPECT_TRUE(md_attributes_find(at, STR_LIT("script/d/period")) == NULL);
+    EXPECT_TRUE(md_attributes_find(at, MD_STR_LIT("script/d/period")) == NULL);
     double p[2], sm;
     ASSERT_EQ(2u, md_attribute_extract_f64(p, 2, per, md_attribute_slice_all(), per->unit));
     ASSERT_EQ(1u, md_attribute_extract_f64(&sm, 1, seam, md_attribute_slice_all(), seam->unit));
@@ -1779,9 +1779,9 @@ UTEST(vial_ir, periodic_outputs) {
     EXPECT_LT(sm, p[1]);
     // In the unit the values are published in, and the values lie in the period
     EXPECT_TRUE(md_vial_eval_run(e));
-    const md_attribute_t* vt = md_attributes_find(at, STR_LIT("script/t"));
+    const md_attribute_t* vt = md_attributes_find(at, MD_STR_LIT("script/t"));
     ASSERT_TRUE(vt != NULL);
-    per = md_attributes_find(at, STR_LIT("script/t/period"));     // the table has grown: pointers into it move
+    per = md_attributes_find(at, MD_STR_LIT("script/t/period"));     // the table has grown: pointers into it move
     ASSERT_TRUE(per != NULL);
     EXPECT_TRUE(md_unit_equal(per->unit, vt->unit));
     const size_t nf = (size_t)vt->format.shape[0];
@@ -1806,16 +1806,16 @@ UTEST(vial_ir, missing_is_said) {
         "ca = particle(name='CA')\n"
         "x = distance(ca[0], ca[frame()])\n"
         "d = distance(ca[0], ca[1])\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     for (int threads = 1; threads <= 4; threads += 3) {
-        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
         ASSERT_TRUE(e != NULL);
         EXPECT_TRUE(md_vial_eval_run(e));
         const md_vial_diagnostic_t* dg;
         ASSERT_EQ(1u, md_vial_eval_diagnostics(e, &dg));
         EXPECT_STREQ("R0101", dg[0].code);
         EXPECT_EQ(MD_VIAL_SEVERITY_RUNTIME, dg[0].severity);
-        const md_attribute_t* ax = md_attributes_find(md_vial_eval_attributes(e), STR_LIT("script/x"));
+        const md_attribute_t* ax = md_attributes_find(md_vial_eval_attributes(e), MD_STR_LIT("script/x"));
         ASSERT_TRUE(ax != NULL);
         // The first frame past the CA particles names it, and from there the value is missing
         char want[32];
@@ -2391,15 +2391,15 @@ UTEST(vial_ir, at_in_a_def) {
         "x  = residue[1].xyz[0, 0]\n"
         "per_res = drift(residue)\n"
         "r1 = rmsd(residue[1], at(residue[1].xyz, frame=0))\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
     ASSERT_TRUE(e && md_vial_eval_run(e));
     const md_attributes_t* at = md_vial_eval_attributes(e);
-    const md_attribute_t* x0 = md_attributes_find(at, STR_LIT("script/x0"));
-    const md_attribute_t* x = md_attributes_find(at, STR_LIT("script/x"));
-    const md_attribute_t* pr = md_attributes_find(at, STR_LIT("script/per_res"));
-    const md_attribute_t* r1 = md_attributes_find(at, STR_LIT("script/r1"));
+    const md_attribute_t* x0 = md_attributes_find(at, MD_STR_LIT("script/x0"));
+    const md_attribute_t* x = md_attributes_find(at, MD_STR_LIT("script/x"));
+    const md_attribute_t* pr = md_attributes_find(at, MD_STR_LIT("script/per_res"));
+    const md_attribute_t* r1 = md_attributes_find(at, MD_STR_LIT("script/r1"));
     ASSERT_TRUE(x0 && x && pr && r1);
     EXPECT_EQ(1, x0->format.rank);                  // static: one value per residue
     EXPECT_NEAR(((const float*)x->data)[0], ((const float*)x0->data)[1], 1e-5);
@@ -2416,12 +2416,12 @@ UTEST(vial_ir, at_in_a_def) {
 static const md_vial_output_t* vial_ir__pub(const md_vial_program_t* prog, const char* name) {
     const md_vial_output_t* o;
     const size_t n = md_vial_outputs(prog, &o);
-    for (size_t i = 0; i < n; ++i) if (str_eq(o[i].name, str_from_cstr(name))) return &o[i];
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(o[i].name, md_str_from_cstr(name))) return &o[i];
     return NULL;
 }
 
 static double vial_ir__attr1(const md_attributes_t* at, const char* path, size_t i) {
-    const md_attribute_t* a = md_attributes_find(at, str_from_cstr(path));
+    const md_attribute_t* a = md_attributes_find(at, md_str_from_cstr(path));
     if (!a || !a->data) return NAN;
     return ((const double*)a->data)[i];
 }
@@ -2442,7 +2442,7 @@ UTEST(vial_ir, volumes) {
         "dc = density(particle(name='CA'), samples=1)\n"
         "dm = density(particle(name='CA'), samples=1, weights='mass')\n"
         "n  = max(s)\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
@@ -2466,14 +2466,14 @@ UTEST(vial_ir, volumes) {
     EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_VOLUME, oc->flags);
 
     for (int threads = 1; threads <= 4; threads += 3) {
-        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
         ASSERT_TRUE(e != NULL);
         ASSERT_TRUE(md_vial_eval_run(e));
         const md_attributes_t* at = md_vial_eval_attributes(e);
         // The box holds every particle, so a density over it, by voxel volume, holds them all: cloud in cell keeps
         // what it spreads, and so does smoothing away from the edges
-        const md_attribute_t* ad = md_attributes_find(at, STR_LIT("script/d"));
-        const md_attribute_t* as = md_attributes_find(at, STR_LIT("script/ds"));
+        const md_attribute_t* ad = md_attributes_find(at, MD_STR_LIT("script/d"));
+        const md_attribute_t* as = md_attributes_find(at, MD_STR_LIT("script/ds"));
         ASSERT_TRUE(ad && as);
         ASSERT_EQ(3u, ad->format.rank);
         EXPECT_EQ(56u, ad->format.shape[0]);
@@ -2490,7 +2490,7 @@ UTEST(vial_ir, volumes) {
         const double cellv = 46.645 * 96.666 * 48.362;
         EXPECT_NEAR(sys->atom.count / cellv, vial_ir__attr1(at, "script/d/bulk", 0), 1e-6);
         // Over the cell: every CA in it, wrapped
-        const md_attribute_t* ac = md_attributes_find(at, STR_LIT("script/dc"));
+        const md_attribute_t* ac = md_attributes_find(at, MD_STR_LIT("script/dc"));
         ASSERT_TRUE(ac != NULL);
         const size_t nc = (size_t)ac->format.shape[0] * ac->format.shape[1] * ac->format.shape[2];
         EXPECT_EQ(48u, ac->format.shape[0]);
@@ -2502,7 +2502,7 @@ UTEST(vial_ir, volumes) {
         EXPECT_NEAR(46.645 / 48, vial_ir__attr1(at, "script/dc/basis", 0), 1e-4);
         EXPECT_NEAR(96.666 / 104, vial_ir__attr1(at, "script/dc/basis", 4), 1e-4);
         // An sdf: four structures each frame, in their own frame, centred
-        const md_attribute_t* asd = md_attributes_find(at, STR_LIT("script/s"));
+        const md_attribute_t* asd = md_attributes_find(at, MD_STR_LIT("script/s"));
         ASSERT_TRUE(asd != NULL);
         EXPECT_EQ(-6.0, vial_ir__attr1(at, "script/s/origin", 2));
         EXPECT_EQ(0.25, vial_ir__attr1(at, "script/s/basis", 8));
@@ -2510,11 +2510,11 @@ UTEST(vial_ir, volumes) {
         double smax = 0, stot = 0;
         for (size_t i = 0; i < 48 * 48 * 48; ++i) { smax = MD_MAX(smax, ((const float*)asd->data)[i]); stot += ((const float*)asd->data)[i]; }
         EXPECT_GT(stot, 0.0);
-        const md_attribute_t* an = md_attributes_find(at, STR_LIT("script/n"));
+        const md_attribute_t* an = md_attributes_find(at, MD_STR_LIT("script/n"));
         ASSERT_TRUE(an != NULL);
         EXPECT_EQ((float)smax, ((const float*)an->data)[0]);
         // Weighted by mass: an O weighs 16, so the volume is 16 times the count, where the grids are alike
-        const md_attribute_t* aw = md_attributes_find(at, STR_LIT("script/sw"));
+        const md_attribute_t* aw = md_attributes_find(at, MD_STR_LIT("script/sw"));
         ASSERT_TRUE(aw != NULL);
         double wtot = 0;
         for (size_t i = 0; i < 24 * 16 * 16; ++i) wtot += ((const float*)aw->data)[i];
@@ -2524,9 +2524,9 @@ UTEST(vial_ir, volumes) {
         uint8_t* all = md_alloc(alloc, (size_t)nf);
         memset(all, 1, (size_t)nf);
         const size_t nv = 48 * 48 * 48;
-        EXPECT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), all, NULL, 0));
+        EXPECT_EQ(nv, md_vial_eval_aggregate(e, MD_STR_LIT("s"), all, NULL, 0));
         float* over = md_alloc(alloc, nv * sizeof(float));
-        ASSERT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), all, over, nv));
+        ASSERT_EQ(nv, md_vial_eval_aggregate(e, MD_STR_LIT("s"), all, over, nv));
         double maxdiff = 0;
         for (size_t i = 0; i < nv; ++i) maxdiff = MD_MAX(maxdiff, fabs((double)over[i] - ((const float*)asd->data)[i]));
         EXPECT_LT(maxdiff, 1e-5 * (smax + 1));
@@ -2534,7 +2534,7 @@ UTEST(vial_ir, volumes) {
         uint8_t* one = md_alloc(alloc, (size_t)nf);
         memset(one, 0, (size_t)nf);
         one[0] = 1;
-        ASSERT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), one, over, nv));
+        ASSERT_EQ(nv, md_vial_eval_aggregate(e, MD_STR_LIT("s"), one, over, nv));
         double osum = 0;
         for (size_t i = 0; i < nv; ++i) osum += over[i];
         EXPECT_GT(osum, 0.0);
@@ -2545,7 +2545,7 @@ UTEST(vial_ir, volumes) {
     // Drawing an sdf: its four structures where the frame has them, each with the pose that places the volume
     const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(") - src));
     md_vial_drawing_t dr;
-    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 2, .element = -1}, expr, alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 2, .element = -1}, expr, alloc));
     ASSERT_EQ(4u, (unsigned)dr.num_poses);
     for (size_t i = 0; i < dr.num_poses; ++i) {
         EXPECT_EQ(10u, dr.poses[i].end - dr.poses[i].beg);
@@ -2572,7 +2572,7 @@ UTEST(vial_ir, volume_diagnostics) {
         {"x = 4.0\nv = sdf(residue[1:5], particle(name='O'), 6.0, ref=particle(name='O').xyz)\n", "E0313"},
     };
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
-        md_vial_program_t* prog = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
         const md_vial_diagnostic_t* d;
         const size_t n = md_vial_diagnostics(prog, &d);
         bool found = false;
@@ -2603,7 +2603,7 @@ UTEST(vial_ir, mcs) {
         "aro = mcs(phe[0:4], tyr[0:4], residue('TRP')[0:2])\n"
         "one = mcs(phe)\n"
         "res = mcs(residue(chain='A')[0:3])\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
     for (size_t i = 0; i < nd; ++i) printf("%.5s %.*s\n", d[i].code, (int)d[i].message.len, d[i].message.ptr);
@@ -2623,9 +2623,9 @@ UTEST(vial_ir, mcs) {
     EXPECT_STREQ("set[3][6]", r.types[0]);        // MET, ARG, GLU: backbone and CB, CG
     // Of the particles, as filters read them: GDP's in the order of GTP's they play
     md_vial_filter_t f;
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
     EXPECT_EQ(28u, (unsigned)f.num_sets);
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
     EXPECT_EQ(56u, (unsigned)f.num_sets);     // both rows, flat
     // Too little in common: E0321, unless least= asks for less
     struct { const char* src; const char* code; } bad[] = {
@@ -2635,14 +2635,14 @@ UTEST(vial_ir, mcs) {
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='element')\n", "E0202"},
     };
     for (size_t i = 0; i < MD_COUNTOF(bad); ++i) {
-        md_vial_program_t* p = md_vial_compile(str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
         const size_t n = md_vial_diagnostics(p, &d);
         bool found = false;
         for (size_t k = 0; k < n; ++k) found = found || !strncmp(d[k].code, bad[i].code, 5);
         EXPECT_TRUE(found);
         md_vial_program_free(p);
     }
-    md_vial_program_t* ok = md_vial_compile(STR_LIT("m = mcs(particle(resname='GTP'), particle(resname='VLB'), least=0.2)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* ok = md_vial_compile(MD_STR_LIT("m = mcs(particle(resname='GTP'), particle(resname='VLB'), least=0.2)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     EXPECT_EQ(0u, (unsigned)md_vial_diagnostics(ok, NULL));
     md_vial_program_free(ok);
     md_vial_program_free(prog);
@@ -2650,8 +2650,8 @@ UTEST(vial_ir, mcs) {
 }
 
 static double vial_ir__max_diff(const md_attributes_t* at, const char* p, const char* q, size_t* n_out) {
-    const md_attribute_t* a = md_attributes_find(at, str_from_cstr(p));
-    const md_attribute_t* b = md_attributes_find(at, str_from_cstr(q));
+    const md_attribute_t* a = md_attributes_find(at, md_str_from_cstr(p));
+    const md_attribute_t* b = md_attributes_find(at, md_str_from_cstr(q));
     if (!a || !b || !a->data || !b->data) return INFINITY;
     const size_t n = md_attribute_element_count(&a->format);
     if (n != md_attribute_element_count(&b->format)) return INFINITY;
@@ -2679,7 +2679,7 @@ UTEST(vial_ir, sdf_columns) {
         "s2  = sdf(m2, cb, 5.0)\n"
         "ct  = sdf(mcs(residue[1:5], residue[14:15]), cb, 5.0)\n"
         "c1  = sdf(mcs(residue[1:5]), cb, 5.0)\n";
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
@@ -2690,7 +2690,7 @@ UTEST(vial_ir, sdf_columns) {
     EXPECT_STREQ("set[2][5]", r.types[0]);
     ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
     EXPECT_STREQ("set[4][5]", r.types[0]);
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
     ASSERT_TRUE(e != NULL);
     const bool ran = md_vial_eval_run(e);
     const md_vial_diagnostic_t* rd;
@@ -2711,7 +2711,7 @@ UTEST(vial_ir, sdf_columns) {
     // Four alike residues through one mcs: the same as the four fitted as they are, on their heavy atoms
     EXPECT_LT(vial_ir__max_diff(at, "script/c1", "script/ct", NULL), 1e10);     // both exist; c1 has four rows, ct five
     // A structure not alike, the last residue with its OXT, joins by the five heavy atoms it has in common
-    const md_attribute_t* act = md_attributes_find(at, STR_LIT("script/ct"));
+    const md_attribute_t* act = md_attributes_find(at, MD_STR_LIT("script/ct"));
     ASSERT_TRUE(act != NULL);
     double tot = 0;
     for (size_t i = 0; i < 40 * 40 * 40; ++i) tot += ((const float*)act->data)[i];
@@ -2719,7 +2719,7 @@ UTEST(vial_ir, sdf_columns) {
     // Drawn: every structure with its pose
     const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(mcs(residue[1:5], residue[14:15])") - src));
     md_vial_drawing_t dr;
-    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
     EXPECT_EQ(5u, (unsigned)dr.num_poses);
     md_vial_eval_free(e);
     md_vial_program_free(prog);
@@ -2736,7 +2736,7 @@ UTEST(vial_ir, sdf_columns) {
         {T, "v = sdf(residue('PHE'), particle(name='O'), 8.0, poses=None)\n", "E0202"},
     };
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
-        md_vial_program_t* p = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);
         const size_t nd = md_vial_diagnostics(p, &dg);
         bool found = cases[i].code == NULL ? nd == 0 : false;
         for (size_t k = 0; cases[i].code && k < nd; ++k) found = found || !strncmp(dg[k].code, cases[i].code, 5);

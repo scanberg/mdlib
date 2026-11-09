@@ -60,46 +60,46 @@ md_unit_t md_qm_unit_amu(void);          // u (Da) as a scaled kilogram, for a r
 // would read as a block that was there and held nothing.
 
 // The general form. 'format' says what the layout is; see the ATTRIBUTES section of md_system.h.
-md_attribute_id_t md_qm_publish(struct md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+md_attribute_id_t md_qm_publish(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit,
                                 md_attribute_format_t format, const void* data, size_t byte_size);
 
 // The same, for an attribute computed through a provider instead of one copied in.
-md_attribute_id_t md_qm_publish_virtual(struct md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+md_attribute_id_t md_qm_publish_virtual(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit,
                                         md_attribute_format_t format, const md_attribute_virtual_t* virt);
 
-md_attribute_id_t md_qm_publish_scalar     (struct md_system_t* sys, str_t path, str_t label, md_unit_t unit, double value);                                  // rank 0
-md_attribute_id_t md_qm_publish_series     (struct md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t count);            // rank 1 {N}
-md_attribute_id_t md_qm_publish_vec3_series(struct md_system_t* sys, str_t path, str_t label, md_unit_t unit, const dvec3_t* values, size_t count);           // rank 1 {N} x 3
-md_attribute_id_t md_qm_publish_matrix     (struct md_system_t* sys, str_t path, str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols); // rank 2 {R,C}
-md_attribute_id_t md_qm_publish_str        (struct md_system_t* sys, str_t path, str_t label, str_t value);                                                   // rank 1 {1} string
-md_attribute_id_t md_qm_publish_strings    (struct md_system_t* sys, str_t path, str_t label, const str_t* values, size_t count);                             // rank 1 {N} strings
+md_attribute_id_t md_qm_publish_scalar     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, double value);                                  // rank 0
+md_attribute_id_t md_qm_publish_series     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count);            // rank 1 {N}
+md_attribute_id_t md_qm_publish_vec3_series(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const dvec3_t* values, size_t count);           // rank 1 {N} x 3
+md_attribute_id_t md_qm_publish_matrix     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols); // rank 2 {R,C}
+md_attribute_id_t md_qm_publish_str        (struct md_system_t* sys, md_str_t path, md_str_t label, md_str_t value);                                                   // rank 1 {1} string
+md_attribute_id_t md_qm_publish_strings    (struct md_system_t* sys, md_str_t path, md_str_t label, const md_str_t* values, size_t count);                             // rank 1 {N} strings
 
 // One COLUMN of an array of structs, gathered into the table's own storage. A record of six fields
 // is six sibling paths over one index space, because a value has ONE type - so the transposition
 // from a file's row layout happens once, here, rather than in every consumer.
-md_attribute_id_t md_qm_publish_column(struct md_system_t* sys, str_t path, str_t label, md_unit_t unit,
+md_attribute_id_t md_qm_publish_column(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit,
                                        md_attribute_type_t type, const void* base, size_t stride, size_t count);
 
 // The anchor of a vector group: rank 0, one 3 component value, constant over whatever index space
 // the group's vector has. Angstrom, because it is a point in system space. NOT replicated to match
 // the vector's shape - group members share an index space, not a shape.
-md_attribute_id_t md_qm_publish_origin(struct md_system_t* sys, str_t path, dvec3_t origin);
+md_attribute_id_t md_qm_publish_origin(struct md_system_t* sys, md_str_t path, dvec3_t origin);
 
 // A second name for an attribute already published. Both names then read one datum - no copy, and a
 // consumer of either is unaffected when the other appears or goes.
-md_attribute_id_t md_qm_alias(struct md_system_t* sys, md_attribute_id_t target, str_t path);
+md_attribute_id_t md_qm_alias(struct md_system_t* sys, md_attribute_id_t target, md_str_t path);
 
 // Publishes beta's copy of a per orbital series, or a SECOND NAME for alpha's when the two share
 // storage. Comparing the POINTERS is what tells the cases apart, and it is the only test that gets
 // restricted open shell right, where the orbitals are shared and the occupations are not.
-md_attribute_id_t md_qm_publish_or_alias(struct md_system_t* sys, md_attribute_id_t alpha_id, str_t path, str_t label,
+md_attribute_id_t md_qm_publish_or_alias(struct md_system_t* sys, md_attribute_id_t alpha_id, md_str_t path, md_str_t label,
                                          md_unit_t unit, const double* alpha_values, const double* beta_values, size_t count);
 
 // Builds an attribute path from a fixed group prefix and a name taken from a file. A '/' inside the
 // name would silently introduce a group level in a namespace where the separator is the only
-// structure there is, so it is folded to '_'. Returns an empty str_t when the name does not fit,
+// structure there is, so it is folded to '_'. Returns an empty md_str_t when the name does not fit,
 // which a caller treats as "skip this one" rather than as a reason to stop publishing.
-str_t md_qm_attribute_path(char* buf, size_t cap, str_t group, str_t name);
+md_str_t md_qm_attribute_path(char* buf, size_t cap, md_str_t group, md_str_t name);
 
 // ---------------------------------------------------------------------------
 // NORMALISATION
@@ -234,7 +234,7 @@ bool md_qm_publish_orbital_densities(struct md_system_t* sys);
 // (free with sizeof(double) * count * num_ao and sizeof(double) * count). Returns count; 0 for another
 // path, missing orbitals, or a density that is zero.
 size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
-                              str_t density_path, struct md_allocator_i* alloc);
+                              md_str_t density_path, struct md_allocator_i* alloc);
 
 // The orbitals of the AVERAGE LOCAL IONIZATION ENERGY (Sjoberg, Murray, Brinck and Politzer, Can. J. Chem. 68,
 // 1440 (1990)),
@@ -320,7 +320,7 @@ bool md_qm_attachment_available(const struct md_system_t* sys);
 // per orbital; 0 for another path, missing orbitals or basis, or a basis with g functions, whose derivatives need
 // h functions, more than is evaluated (MD_GTO_MAX_ANGULAR_MOMENTUM).
 size_t md_qm_kinetic_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, struct md_gto_basis_t* out_basis,
-                              const struct md_system_t* sys, str_t density_path, struct md_allocator_i* alloc);
+                              const struct md_system_t* sys, md_str_t density_path, struct md_allocator_i* alloc);
 
 // Whether md_qm_kinetic_orbitals can make them: the alpha orbitals and the basis are there, and the basis has
 // no shell of the highest angular momentum evaluated.

@@ -141,8 +141,8 @@ typedef struct md_tpr_nonbonded_t {
 } md_tpr_nonbonded_t;
 
 typedef struct md_tpr_atom_t {
-    str_t    name;
-    str_t    type;           // Force field particle type (e.g. 'opls_135')
+    md_str_t    name;
+    md_str_t    type;           // Force field particle type (e.g. 'opls_135')
     float    mass;
     float    charge;
     int32_t  residue;        // Index into the molecule type's residues
@@ -152,13 +152,13 @@ typedef struct md_tpr_atom_t {
 } md_tpr_atom_t;
 
 typedef struct md_tpr_residue_t {
-    str_t   name;
+    md_str_t   name;
     int32_t nr;              // Residue number as given in the topology
     char    ic;              // Insertion code, ' ' when there is none
 } md_tpr_residue_t;
 
 typedef struct md_tpr_moltype_t {
-    str_t name;
+    md_str_t name;
     size_t num_atoms;
     md_tpr_atom_t* atoms;
     size_t num_residues;
@@ -199,8 +199,8 @@ typedef struct md_tpr_data_t {
     int32_t file_version;     // tpx version
     int32_t file_generation;  // tpx topology generation
     bool    double_precision;
-    str_t   version_string;   // e.g. 'VERSION 2023.3'
-    str_t   name;             // The [ system ] name
+    md_str_t   version_string;   // e.g. 'VERSION 2023.3'
+    md_str_t   name;             // The [ system ] name
 
     // Lennard-Jones parameters of every pair of non-bonded types (md_tpr_atom_t::type_idx): a symmetric,
     // row major num_nb_types x num_nb_types table, lj[a * num_nb_types + b]. grompp resolves combination
@@ -241,7 +241,7 @@ typedef struct md_tpr_data_t {
 } md_tpr_data_t;
 
 bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t size, struct md_allocator_i* alloc);
-bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, struct md_allocator_i* alloc);
+bool md_tpr_data_parse_file(md_tpr_data_t* data, md_str_t filename, struct md_allocator_i* alloc);
 void md_tpr_data_free(md_tpr_data_t* data, struct md_allocator_i* alloc);
 
 // The van der Waals radius, in Ångström, implied by Lennard-Jones parameters: half the distance
@@ -288,7 +288,7 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // The bonds are the topology's and are complete, so a caller should not infer covalent bonds on
 // top of them.
 bool md_tpr_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data);
-bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename);
+bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename);
 
 #ifdef __cplusplus
 }

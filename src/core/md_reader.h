@@ -24,7 +24,7 @@ interface (md_reader_i), and its caller decides where the text comes from by whi
 
     md_file_reader_t fr;
     if (md_file_reader_open(&fr, filename, MD_MEGABYTES(1), alloc)) {
-        str_t line;
+        md_str_t line;
         while (md_reader_extract_line(&fr.r, &line)) { ... }
         md_file_reader_close(&fr);
     }
@@ -72,9 +72,9 @@ A reader is used by one thread at a time.
 #define MD_READER_PADDING 64
 
 // [beg, end[ without a carriage return at its end
-static inline str_t md_reader_strip_cr_raw(const char* beg, const char* end) {
+static inline md_str_t md_reader_strip_cr_raw(const char* beg, const char* end) {
     if (end > beg && end[-1] == '\r') --end;
-    return (str_t){ beg, (size_t)(end - beg) };
+    return (md_str_t){ beg, (size_t)(end - beg) };
 }
 
 // ### FINDING THE ENDS OF LINES ###
@@ -178,7 +178,7 @@ MD_TEXT_NO_SANITIZE static inline md_text_lines_t md_text_lines(const char* c, c
 
 // The next line, without its newline (nor a carriage return before it): false after the last. The last line of the
 // range need not end in a newline.
-MD_TEXT_NO_SANITIZE static inline bool md_text_lines_next(md_text_lines_t* it, str_t* line) {
+MD_TEXT_NO_SANITIZE static inline bool md_text_lines_next(md_text_lines_t* it, md_str_t* line) {
     const char* nl = it->end;
 #if defined(MD_TEXT_SCAN_WIDTH)
     for (;;) {
@@ -345,7 +345,7 @@ extern "C" {
 // ### THE INTERFACE ###
 
 // A reader of a string: all of it, at once. Nothing to free.
-static inline md_reader_i md_reader_from_str(str_t str) {
+static inline md_reader_i md_reader_from_str(md_str_t str) {
     md_reader_i r = {0};
     r.buf = r.cur = str.ptr;
     r.end = str.ptr + str.len;
@@ -362,18 +362,18 @@ bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, in
 void md_reader_free(md_reader_i* r);
 
 // The parts of the line functions which run off the end of what is read. Not to be called directly.
-bool md_reader_line_slow(md_reader_i* r, str_t* line, const char** next);
+bool md_reader_line_slow(md_reader_i* r, md_str_t* line, const char** next);
 
-static inline str_t md_reader_strip_cr(str_t line) {
+static inline md_str_t md_reader_strip_cr(md_str_t line) {
     if (line.len && line.ptr[line.len - 1] == '\r') line.len -= 1;
     return line;
 }
 
 // The next line, in line, and where the one after it begins: false at the end
-static inline bool md_reader_find_line(md_reader_i* r, str_t* line, const char** next) {
+static inline bool md_reader_find_line(md_reader_i* r, md_str_t* line, const char** next) {
     const char* nl = md_text_find_newline(r->cur, r->end);
     if (nl < r->end) {
-        *line = md_reader_strip_cr((str_t){ r->cur, (size_t)(nl - r->cur) });
+        *line = md_reader_strip_cr((md_str_t){ r->cur, (size_t)(nl - r->cur) });
         *next = nl + 1;
         return true;
     }
@@ -381,7 +381,7 @@ static inline bool md_reader_find_line(md_reader_i* r, str_t* line, const char**
 }
 
 // The next line, taken. False at the end of the source.
-static inline bool md_reader_extract_line(md_reader_i* r, str_t* line) {
+static inline bool md_reader_extract_line(md_reader_i* r, md_str_t* line) {
     MD_ASSERT(r && line);
     const char* next;
     if (!md_reader_find_line(r, line, &next)) return false;
@@ -390,7 +390,7 @@ static inline bool md_reader_extract_line(md_reader_i* r, str_t* line) {
 }
 
 // The next line, not taken
-static inline bool md_reader_peek_line(md_reader_i* r, str_t* line) {
+static inline bool md_reader_peek_line(md_reader_i* r, md_str_t* line) {
     MD_ASSERT(r && line);
     const char* next;
     return md_reader_find_line(r, line, &next);
@@ -398,7 +398,7 @@ static inline bool md_reader_peek_line(md_reader_i* r, str_t* line) {
 
 static inline bool md_reader_skip_line(md_reader_i* r) {
     MD_ASSERT(r);
-    str_t line;
+    md_str_t line;
     const char* next;
     if (!md_reader_find_line(r, &line, &next)) return false;
     r->cur = next;
@@ -407,10 +407,10 @@ static inline bool md_reader_skip_line(md_reader_i* r) {
 
 // The whole lines which the buffer holds, as far as it reads, after reading more: empty at the end. A line longer than
 // the buffer is cut at it. Taken with md_reader_advance, up to its length.
-str_t md_reader_block(md_reader_i* r);
+md_str_t md_reader_block(md_reader_i* r);
 
 // md_reader_block, reading what more there is over the threads of ex where the source reads at offsets (a file)
-str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex);
+md_str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex);
 
 static inline void md_reader_advance(md_reader_i* r, size_t bytes) {
     MD_ASSERT(r && bytes <= (size_t)(r->end - r->cur));
@@ -423,7 +423,7 @@ static inline size_t md_reader_skip_lines(md_reader_i* r, size_t n) {
     MD_ASSERT(r);
     size_t left = n;
     while (left) {
-        const str_t block = md_reader_block(r);
+        const md_str_t block = md_reader_block(r);
         if (!block.len) break;
         const char* e = block.ptr + block.len;
         const char* c = md_text_skip_newlines(block.ptr, e, &left);
@@ -467,7 +467,7 @@ static inline bool md_reader_failed(const md_reader_i* r) {
 
 // Of the file at path, opened for reading, through a buffer of cap bytes (0: MD_READER_DEFAULT_CAPACITY) allocated with
 // alloc. False if the file cannot be opened.
-bool md_file_reader_open(md_file_reader_t* fr, str_t path, size_t cap, struct md_allocator_i* alloc);
+bool md_file_reader_open(md_file_reader_t* fr, md_str_t path, size_t cap, struct md_allocator_i* alloc);
 
 // Of a file opened by the caller, from where it is positioned (from its start, if opened with MD_FILE_CONCURRENT, which
 // has no position), which the caller closes after md_file_reader_close
@@ -532,20 +532,20 @@ static inline void md_text_split(md_text_piece_t* pieces, size_t num_pieces, con
 }
 
 // The line which ends right before offset at (a line start), without its newline; at must be > 0
-static inline str_t md_text_line_before(const char* text, size_t at) {
+static inline md_str_t md_text_line_before(const char* text, size_t at) {
     const char* end = text + at - 1;    // its newline
     const char* c = end;
     while (c > text && c[-1] != '\n') --c;
-    return md_reader_strip_cr((str_t){ c, (size_t)(end - c) });
+    return md_reader_strip_cr((md_str_t){ c, (size_t)(end - c) });
 }
 
 // The line at c, up to e, and where the next begins
-static inline str_t md_text_next_line(const char** c, const char* e) {
+static inline md_str_t md_text_next_line(const char** c, const char* e) {
     const char* beg = *c;
     const char* nl = md_text_find_newline(beg, e);
     const char* le = nl;
     *c = nl < e ? nl + 1 : e;
-    return md_reader_strip_cr((str_t){ beg, (size_t)(le - beg) });
+    return md_reader_strip_cr((md_str_t){ beg, (size_t)(le - beg) });
 }
 
 #ifdef __cplusplus

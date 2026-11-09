@@ -37,9 +37,9 @@
 extern "C" {
 #endif
 
-size_t md_parse_f64(double* out_value, str_t str);
+size_t md_parse_f64(double* out_value, md_str_t str);
 
-bool md_parse_is_float(str_t str);
+bool md_parse_is_float(md_str_t str);
 
 #ifdef __cplusplus
 }
@@ -47,7 +47,7 @@ bool md_parse_is_float(str_t str);
 
 // Saturates to INT64_MIN / INT64_MAX, reading every digit either way. Inline, as it has no floating
 // point to keep away from fast math.
-static inline size_t md_parse_i64(int64_t* out_value, str_t str) {
+static inline size_t md_parse_i64(int64_t* out_value, md_str_t str) {
     MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
@@ -95,23 +95,23 @@ static inline size_t md_parse_i64(int64_t* out_value, str_t str) {
     return (size_t)(c - str.ptr);
 }
 
-static inline double parse_float(str_t str) {
+static inline double parse_float(md_str_t str) {
     double value = 0.0;
-    md_parse_f64(&value, str_trim_beg(str));
+    md_parse_f64(&value, md_str_trim_beg(str));
     return value;
 }
 
-static inline int64_t parse_int(str_t str) {
+static inline int64_t parse_int(md_str_t str) {
     int64_t value = 0;
-    md_parse_i64(&value, str_trim_beg(str));
+    md_parse_i64(&value, md_str_trim_beg(str));
     return value;
 }
 
-static inline bool is_float(str_t str) {
+static inline bool is_float(md_str_t str) {
     return md_parse_is_float(str);
 }
 
-static inline bool is_int(str_t str) {
+static inline bool is_int(md_str_t str) {
     const char* c   = str.ptr;
     const char* end = str.ptr + str.len;
     if (c < end && (*c == '-' || *c == '+')) ++c;
@@ -143,7 +143,7 @@ static inline bool is_int(str_t str) {
 extern "C" {
 #endif
 
-bool md_parse_fixed_f32_wide(float* out, str_t field, size_t decimals);
+bool md_parse_fixed_f32_wide(float* out, md_str_t field, size_t decimals);
 
 #ifdef __cplusplus
 }
@@ -162,7 +162,7 @@ static inline uint32_t md_parse_eight_digits(uint64_t val) {
 }
 
 // Inline always: a parser calls it for each column of each line, with constant widths and decimals which fold
-static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
+static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, md_str_t field, size_t decimals) {
     MD_ASSERT(out);
     const size_t width = field.len;
     // A digit, the dot and the decimals at least
@@ -220,10 +220,10 @@ static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t d
 
 // Extracts the next token delimited by whitespace, skipping any whitespace in front of it, and
 // consumes the one delimiter character after it. False when only whitespace is left.
-static inline bool extract_token(str_t* tok, str_t* str) {
+static inline bool extract_token(md_str_t* tok, md_str_t* str) {
     MD_ASSERT(tok);
     MD_ASSERT(str);
-    if (str_empty(*str)) return false;
+    if (md_str_empty(*str)) return false;
 
     const char* end = str->ptr + str->len;
     const char* c = str->ptr;
@@ -243,7 +243,7 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 }
 
 // Up to tok_cap whitespace delimited tokens
-static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str) {
+static inline size_t extract_tokens(md_str_t tok_arr[], size_t tok_cap, md_str_t* str) {
     MD_ASSERT(tok_arr);
     MD_ASSERT(str);
 
@@ -257,7 +257,7 @@ static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str)
 // Extracts the field up to the next 'delim' (or the end) and consumes the delimiter. No whitespace is
 // skipped and empty fields are returned as such: "a,,b" is "a", "" and "b". A delimiter at the very
 // end does NOT give a trailing empty field - "a," is the one field "a" - as the input is used up.
-static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
+static inline bool extract_token_delim(md_str_t* tok, md_str_t* str, char delim) {
     MD_ASSERT(tok);
     MD_ASSERT(str);
     if (!str->ptr || str->len == 0) return false;
@@ -278,7 +278,7 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 }
 
 // Up to tok_cap fields, see extract_token_delim
-static inline size_t extract_tokens_delim(str_t tok_arr[], size_t tok_cap, str_t* str, char delim) {
+static inline size_t extract_tokens_delim(md_str_t tok_arr[], size_t tok_cap, md_str_t* str, char delim) {
     MD_ASSERT(tok_arr);
     MD_ASSERT(str);
 

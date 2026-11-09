@@ -130,7 +130,7 @@ typedef struct md_part_type_data_t {
     size_t count;
     md_label_t* id;                     // [count] The data's id (an mmCIF entity id), else its position
     md_part_type_flags_t* flags;        // [count] Kind (peptide, DNA, water, ...) and whether it was inferred, see md_types.h
-    str_t* description;                 // [count]
+    md_str_t* description;                 // [count]
 } md_part_type_data_t;
 
 // Part: one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water: the parts the molecules are
@@ -388,7 +388,7 @@ typedef struct md_molecule_t {
 // types come first, the inferred after them, and are inferred anew with the molecules.
 typedef struct md_molecule_type_data_t {
     size_t count;
-    str_t* name;                        // [count] The topology's name of it, else what its parts are
+    md_str_t* name;                        // [count] The topology's name of it, else what its parts are
     md_molecule_type_flags_t* flags;    // [count]
 } md_molecule_type_data_t;
 
@@ -531,7 +531,7 @@ typedef struct md_system_t {
     // charges, pair parameters, exclusions and how the simulation cut the interactions off. NULL otherwise.
     struct md_nb_forcefield_t*  nonbonded;
 
-    str_t                       description;
+    md_str_t                       description;
 } md_system_t;
 
 #ifdef __cplusplus
@@ -588,9 +588,9 @@ static inline md_urange_t md_assembly_group_oper_range(const md_assembly_data_t*
     return r;
 }
 
-static inline str_t md_assembly_id(const md_assembly_data_t* a, size_t asm_idx) {
+static inline md_str_t md_assembly_id(const md_assembly_data_t* a, size_t asm_idx) {
     MD_ASSERT(a);
-    str_t id = STR_INIT("");
+    md_str_t id = MD_STR_INIT("");
     if (a->id && asm_idx < a->count) {
         id = LBL_TO_STR(a->id[asm_idx]);
     }
@@ -615,7 +615,7 @@ static inline size_t md_particle_type_count(const md_particle_type_data_t* parti
     return particle_type->count;
 }
 
-static inline md_particle_type_idx_t md_particle_type_find(const md_particle_type_data_t* particle_type, str_t name, md_atomic_number_t z) {
+static inline md_particle_type_idx_t md_particle_type_find(const md_particle_type_data_t* particle_type, md_str_t name, md_atomic_number_t z) {
     MD_ASSERT(particle_type);
     // The name as a type keeps it, its first 8 characters, compared as one word
     const uint64_t key = md_label_key(make_label(name));
@@ -629,7 +629,7 @@ static inline md_particle_type_idx_t md_particle_type_find(const md_particle_typ
 
 // Adds a type unconditionally, for a loader that decides itself which particles share a type.
 // ff_type may be empty.
-static inline md_particle_type_idx_t md_particle_type_add(md_particle_type_data_t* particle_type, str_t name, str_t ff_type, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, struct md_allocator_i* alloc) {
+static inline md_particle_type_idx_t md_particle_type_add(md_particle_type_data_t* particle_type, md_str_t name, md_str_t ff_type, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, struct md_allocator_i* alloc) {
     MD_ASSERT(particle_type);
     MD_ASSERT(alloc);
 
@@ -645,7 +645,7 @@ static inline md_particle_type_idx_t md_particle_type_add(md_particle_type_data_
     return (md_particle_type_idx_t)(particle_type->count - 1);
 }
 
-static inline md_particle_type_idx_t md_particle_type_find_or_add(md_particle_type_data_t* particle_type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, struct md_allocator_i* alloc) {
+static inline md_particle_type_idx_t md_particle_type_find_or_add(md_particle_type_data_t* particle_type, md_str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, struct md_allocator_i* alloc) {
     MD_ASSERT(particle_type);
     MD_ASSERT(alloc);
     
@@ -655,7 +655,7 @@ static inline md_particle_type_idx_t md_particle_type_find_or_add(md_particle_ty
         return type_idx;
     }
     
-    const str_t no_ff_type = {0};
+    const md_str_t no_ff_type = {0};
     return md_particle_type_add(particle_type, name, no_ff_type, z, mass, radius, color, flags, alloc);
 }
 
@@ -703,21 +703,21 @@ static inline uint32_t md_particle_type_color(const md_particle_type_data_t* typ
     return 0;
 }
 
-static inline str_t md_particle_type_name(const md_particle_type_data_t* type_data, size_t type_idx) {
+static inline md_str_t md_particle_type_name(const md_particle_type_data_t* type_data, size_t type_idx) {
     MD_ASSERT(type_data);
     if (type_idx < type_data->count) {
         return LBL_TO_STR(type_data->name[type_idx]);
     }
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 // Empty when the source had no force field type for it
-static inline str_t md_particle_type_ff_type(const md_particle_type_data_t* type_data, size_t type_idx) {
+static inline md_str_t md_particle_type_ff_type(const md_particle_type_data_t* type_data, size_t type_idx) {
     MD_ASSERT(type_data);
     if (type_data->ff_type && type_idx < type_data->count) {
         return md_label16_str(&type_data->ff_type[type_idx]);
     }
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 // State helpers
@@ -813,12 +813,12 @@ static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) 
     return 0.0f;
 }
 
-static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
+static inline md_str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
     MD_ASSERT(atom);
     if (atom_idx < atom->count) {
         return md_particle_type_name(&atom->type, atom->type_idx[atom_idx]);
     }
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 // Formal charge of the atom, 0 when unknown
@@ -874,10 +874,10 @@ static inline size_t md_system_residue_count(const md_system_t* sys) {
     return sys->residue.count;
 }
 
-static inline str_t md_system_residue_name(const md_system_t* sys, size_t res_idx) {
+static inline md_str_t md_system_residue_name(const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(sys);
     if (sys->residue.name && res_idx < sys->residue.count) return LBL_TO_STR(sys->residue.name[res_idx]);
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 static inline md_sequence_id_t md_system_residue_seq_id(const md_system_t* sys, size_t res_idx) {
@@ -930,17 +930,17 @@ static inline size_t md_residue_type_count(const md_residue_type_data_t* type) {
 }
 
 // The type of the given name and kind, -1 when there is none
-static inline md_residue_type_idx_t md_residue_type_find(const md_residue_type_data_t* type, str_t name, md_residue_kind_t kind) {
+static inline md_residue_type_idx_t md_residue_type_find(const md_residue_type_data_t* type, md_str_t name, md_residue_kind_t kind) {
     MD_ASSERT(type);
     for (size_t i = 0; i < type->count; ++i) {
-        if (type->kind[i] == kind && str_eq(LBL_TO_STR(type->name[i]), name)) {
+        if (type->kind[i] == kind && md_str_eq(LBL_TO_STR(type->name[i]), name)) {
             return (md_residue_type_idx_t)i;
         }
     }
     return -1;
 }
 
-static inline md_residue_type_idx_t md_residue_type_add(md_residue_type_data_t* type, str_t name, md_residue_kind_t kind, md_monomer_t monomer, uint32_t color, struct md_allocator_i* alloc) {
+static inline md_residue_type_idx_t md_residue_type_add(md_residue_type_data_t* type, md_str_t name, md_residue_kind_t kind, md_monomer_t monomer, uint32_t color, struct md_allocator_i* alloc) {
     MD_ASSERT(type);
     MD_ASSERT(alloc);
     md_array_push(type->name, make_label(name), alloc);
@@ -951,10 +951,10 @@ static inline md_residue_type_idx_t md_residue_type_add(md_residue_type_data_t* 
     return (md_residue_type_idx_t)(type->count - 1);
 }
 
-static inline str_t md_residue_type_name(const md_residue_type_data_t* type, size_t type_idx) {
+static inline md_str_t md_residue_type_name(const md_residue_type_data_t* type, size_t type_idx) {
     MD_ASSERT(type);
     if (type_idx < type->count) return LBL_TO_STR(type->name[type_idx]);
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 static inline md_residue_kind_t md_residue_type_kind(const md_residue_type_data_t* type, size_t type_idx) {
@@ -980,26 +980,26 @@ static inline size_t md_system_part_type_count(const md_system_t* sys) {
 }
 
 // The part type of the id, -1 for none
-static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_t* sys, str_t id) {
+static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_t* sys, md_str_t id) {
     MD_ASSERT(sys);
     if (sys->part.type.id) {
         for (size_t i = 0; i < sys->part.type.count; ++i) {
-            if (str_eq(LBL_TO_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
+            if (md_str_eq(LBL_TO_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
         }
     }
     return -1;
 }
 
-static inline str_t md_system_part_type_id(const md_system_t* sys, size_t type_idx) {
+static inline md_str_t md_system_part_type_id(const md_system_t* sys, size_t type_idx) {
     MD_ASSERT(sys);
     if (sys->part.type.id && type_idx < sys->part.type.count) return LBL_TO_STR(sys->part.type.id[type_idx]);
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
-static inline str_t md_system_part_type_description(const md_system_t* sys, size_t type_idx) {
+static inline md_str_t md_system_part_type_description(const md_system_t* sys, size_t type_idx) {
     MD_ASSERT(sys);
     if (sys->part.type.description && type_idx < sys->part.type.count) return sys->part.type.description[type_idx];
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 static inline md_part_type_flags_t md_system_part_type_flags(const md_system_t* sys, size_t type_idx) {
@@ -1049,16 +1049,16 @@ static inline size_t md_system_instance_atom_count(const md_system_t* sys, size_
     return range.end - range.beg;
 }
 
-static inline str_t md_system_instance_id(const md_system_t* sys, size_t inst_idx) {
+static inline md_str_t md_system_instance_id(const md_system_t* sys, size_t inst_idx) {
     MD_ASSERT(sys);
     if (sys->instance.id && inst_idx < sys->instance.count) return LBL_TO_STR(sys->instance.id[inst_idx]);
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
-static inline str_t md_system_instance_auth_id(const md_system_t* sys, size_t inst_idx) {
+static inline md_str_t md_system_instance_auth_id(const md_system_t* sys, size_t inst_idx) {
     MD_ASSERT(sys);
     if (sys->instance.auth_id && inst_idx < sys->instance.count) return LBL_TO_STR(sys->instance.auth_id[inst_idx]);
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 // The part type the data gives the instance (an mmCIF entity), -1 for none
@@ -1149,9 +1149,9 @@ static inline size_t md_system_chain_count(const md_system_t* sys) {
 }
 
 // The author's identifier of the chain
-static inline str_t md_system_chain_id(const md_system_t* sys, size_t chain_idx) {
+static inline md_str_t md_system_chain_id(const md_system_t* sys, size_t chain_idx) {
     MD_ASSERT(sys);
-    str_t id = STR_INIT("");
+    md_str_t id = MD_STR_INIT("");
     if (sys->chain.id && chain_idx < sys->chain.count) {
         id = LBL_TO_STR(sys->chain.id[chain_idx]);
     }
@@ -1290,10 +1290,10 @@ static inline size_t md_system_molecule_type_count(const md_system_t* sys) {
     return sys->molecule.type.count;
 }
 
-static inline str_t md_system_molecule_type_name(const md_system_t* sys, size_t type_idx) {
+static inline md_str_t md_system_molecule_type_name(const md_system_t* sys, size_t type_idx) {
     MD_ASSERT(sys);
     if (sys->molecule.type.name && type_idx < sys->molecule.type.count) return sys->molecule.type.name[type_idx];
-    return STR_LIT("");
+    return MD_STR_LIT("");
 }
 
 static inline md_molecule_type_flags_t md_system_molecule_type_flags(const md_system_t* sys, size_t type_idx) {
@@ -1625,11 +1625,11 @@ void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
 // is about to infer anew (they come after the given ones).
 void md_part_type_data_free(md_part_type_data_t* type, md_allocator_i* alloc);
 void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_allocator_i* alloc);
-md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, md_part_type_flags_t flags, str_t description, md_allocator_i* alloc);
+md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, md_str_t id, md_part_type_flags_t flags, md_str_t description, md_allocator_i* alloc);
 
 void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc);
 void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, md_allocator_i* alloc);
-md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc);
+md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, md_str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc);
 
 // The ranges of a lipid: NULL and 0 when the index is out of range
 static inline const int32_t* md_lipid_residues(const md_lipid_data_t* lipid, size_t lipid_idx) {
@@ -1712,7 +1712,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src);
 // A state IS a snapshot of a run's temporal attributes at one frame, and these take it. What to take
 // is said once, up front, and the context that comes back is then asked for frames:
 //
-//     const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+//     const md_str_t paths[] = { MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell") };
 //     md_system_extract_t* ex = md_system_extract_begin(sys, run, paths, 2, alloc);
 //     for (f = beg; f < end; ++f) md_system_extract_frame(ex, f, &state);
 //     md_system_extract_end(ex);
@@ -1745,7 +1745,7 @@ typedef struct md_system_extract_t md_system_extract_t;
 
 // NULL when the run, or any of the paths in it, does not exist. alloc is what the context lives in;
 // the thread that begins it need not be the one that uses it, but only one may use it at a time.
-md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, const str_t paths[], size_t num_paths, struct md_allocator_i* alloc);
+md_system_extract_t* md_system_extract_begin(const md_system_t* sys, md_str_t run, const md_str_t paths[], size_t num_paths, struct md_allocator_i* alloc);
 bool                 md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_state_t* out);
 void                 md_system_extract_end(md_system_extract_t* ex);
 
@@ -1791,13 +1791,13 @@ typedef struct md_run_cache_header_t {
 
 // Opens '<source_path>.cache' and reads its header. True, with the file left open just past the
 // header for the format's own blocks, when the cache matches the source file as it is now.
-bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, str_t source_path, uint64_t magic, uint64_t version);
+bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, md_str_t source_path, uint64_t magic, uint64_t version);
 
 // Creates '<source_path>.cache' and writes the header, stamped with the source file's size and
 // modification time as they were when it was scanned: take scanned with md_file_info_extract before
 // the scan, so a file that grows during it leaves a cache that does not match it. True, with the
 // file left open for the format's own blocks.
-bool md_run_cache_create(md_file_t* out_file, str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames);
+bool md_run_cache_create(md_file_t* out_file, md_str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames);
 
 typedef struct md_run_desc_t {
     size_t          num_frames;
@@ -1812,30 +1812,30 @@ typedef struct md_run_desc_t {
     const float*                  unitcell;
     const md_attribute_virtual_t* unitcell_virt;
 
-    str_t           source_path;        // copied
+    md_str_t           source_path;        // copied
     const int64_t*  source_offset;      // num_frames values
     const int64_t*  source_size;        // num_frames values
 
     const md_attribute_virtual_t* position_virt;   // required
 } md_run_desc_t;
 
-bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* desc);
+bool md_run_publish(md_system_t* sys, md_str_t run, const md_run_desc_t* desc);
 
 // "<run>/<leaf>" into buf. Empty when it does not fit.
-str_t md_run_path(char* buf, size_t cap, str_t run, str_t leaf);
+md_str_t md_run_path(char* buf, size_t cap, md_str_t run, md_str_t leaf);
 
 // For a provider of a run's attribute: the run it belongs to - its path minus "/<leaf>" - and the
 // file and frame table the run reads from. False, and logged, when the attribute is not at <leaf>
 // or the run has lost its source attributes.
 typedef struct md_run_source_t {
-    str_t          run;
-    str_t          path;
+    md_str_t          run;
+    md_str_t          path;
     const int64_t* offset;
     const int64_t* size;
     size_t         num_frames;
 } md_run_source_t;
 
-bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf);
+bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, md_str_t leaf);
 
 // SERIES ALONG A RUN
 //
@@ -1852,18 +1852,18 @@ bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, cons
 // The group replaces one of the same name, all or nothing. source_path, when given, is published as
 // "<run>/<group>/source" so a session can load it again.
 typedef struct md_run_series_desc_t {
-    str_t               group;          // below the run, e.g. "xvg/energy"
+    md_str_t               group;          // below the run, e.g. "xvg/energy"
     size_t              num_rows;
     size_t              num_columns;
     const double*       time;           // num_rows values, or NULL: the rows are the run's frames
     md_unit_t           time_unit;
-    const str_t*        names;          // num_columns
+    const md_str_t*        names;          // num_columns
     const md_unit_t*    units;          // num_columns, or NULL for none
     const float* const* columns;        // num_columns arrays of num_rows values
-    str_t               source_path;    // optional
+    md_str_t               source_path;    // optional
 } md_run_series_desc_t;
 
-bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc_t* desc);
+bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_desc_t* desc);
 
 #ifdef __cplusplus
 }
