@@ -1000,8 +1000,12 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
             const float src_x = ((num_columns > 1) ? (float)src_col * span : (1.0f - thickness) * 0.5f) + thickness;
             const float dst_x = (num_columns > 1) ? (float)dst_col * span : (1.0f - thickness) * 0.5f;
 
+            const md_flow_node_t* src = md_flow_cut_node(cut, graph, s);
+            const bool self = src && dst && src->entity != 0 && src->entity == dst->entity;
+
             const md_flow_layout_ribbon_t ribbon = {
                 .link_idx = l,
+                .flags = self ? MD_FLOW_RIBBON_FLAG_SELF : MD_FLOW_RIBBON_FLAG_NONE,
                 .p0 = { src_x, out_span_min[l] },
                 .p1 = { src_x, out_span_max[l] },
                 .q0 = { dst_x, in_cur[d] },

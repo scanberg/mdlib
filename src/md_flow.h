@@ -49,6 +49,13 @@ typedef struct md_flow_node_t {
     md_str_t    sublabel;  // optional second line, same ownership rule; {0} for none
     uint64_t key;       // stable identity across rebuilds; interaction state keys off this
     uint32_t flags;     // md_flow_node_flag_t
+
+    // What the node stands for REGARDLESS of its column; 0 for nothing in particular. Two nodes in
+    // adjacent columns with the same non-zero entity are one thing seen from two sides - a fragment
+    // as the donor and as the acceptor - and a link between them is a SELF flow: it does not go
+    // anywhere. The layout marks those ribbons (MD_FLOW_RIBBON_FLAG_SELF) so that a drawing backend
+    // can show them as part of the nodes rather than as a band crossing the diagram.
+    uint64_t entity;
 } md_flow_node_t;
 
 typedef struct md_flow_link_t {
@@ -176,6 +183,10 @@ typedef enum md_flow_order_t {
     // Barycentre sweeps: order by the mean position of the neighbours a node connects to. Fewer
     // crossings, but the rows are in no order the reader can name.
     MD_FLOW_ORDER_BARYCENTRE,
+    // The order the nodes were added to the graph in. A caller that adds the same entities to two
+    // columns in the same order gets two MIRRORED columns, where a flow from a row to itself runs
+    // straight across and every slanted band is a genuine transfer. "Others" go last.
+    MD_FLOW_ORDER_GRAPH,
 } md_flow_order_t;
 
 typedef struct md_flow_layout_params_t {
@@ -208,8 +219,16 @@ typedef struct md_flow_layout_node_t {
 // A ribbon is a quad with two curved edges. p0/p1 are the near and far edge of the band where it
 // leaves the source; q0/q1 where it arrives at the destination. The curve between them is the
 // drawing backend's business.
+typedef enum md_flow_ribbon_flag_t {
+    MD_FLOW_RIBBON_FLAG_NONE = 0,
+    // Source and destination are the same entity (md_flow_node_t.entity): the stubs say how much of
+    // each node stays where it is, and there is nothing to connect.
+    MD_FLOW_RIBBON_FLAG_SELF = 1,
+} md_flow_ribbon_flag_t;
+
 typedef struct md_flow_layout_ribbon_t {
     uint32_t link_idx;          // index into cut->links
+    uint32_t flags;             // md_flow_ribbon_flag_t
     vec2_t   p0, p1;
     vec2_t   q0, q1;
 } md_flow_layout_ribbon_t;

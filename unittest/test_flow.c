@@ -701,3 +701,86 @@ UTEST(flow, threshold_is_honest_and_others_opens) {
     md_flow_cut_free(&cut);
     md_arena_allocator_destroy(alloc);
 }
+
+// Two mirrored columns of the same three fragments, added in the same order: GRAPH order keeps that
+// order on both sides, and a flow from a fragment to itself is reported as a self flow - including
+// after a collapse merges two leaves of one group, whose flow between them becomes the group's own.
+UTEST(flow, graph_order_mirrors_and_marks_self_flow) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_flow_graph_t g = {0};
+    md_flow_graph_init(&g, 2, alloc);
+
+    // hole: X{x0 .3, x1 .2} Y .3 Z .2 ; particle: X{x0 .1, x1 .1} Y .1 Z .7
+    uint32_t n[2][5];
+    const float w[2][5] = { { 0.5f, 0.3f, 0.2f, 0.3f, 0.2f }, { 0.2f, 0.1f, 0.1f, 0.1f, 0.7f } };
+    for (uint32_t c = 0; c < 2; ++c) {
+        md_flow_node_t X  = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = w[c][0], .key = 10 + c, .entity = 1 };
+        n[c][0] = md_flow_graph_add_node(&g, &X);
+        md_flow_node_t x0 = { .column = c, .parent = n[c][0], .level = 1, .weight = w[c][1], .key = 20 + c, .entity = 11 };
+        n[c][1] = md_flow_graph_add_node(&g, &x0);
+        md_flow_node_t x1 = { .column = c, .parent = n[c][0], .level = 1, .weight = w[c][2], .key = 30 + c, .entity = 12 };
+        n[c][2] = md_flow_graph_add_node(&g, &x1);
+        md_flow_node_t Y  = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = w[c][3], .key = 40 + c, .entity = 2 };
+        n[c][3] = md_flow_graph_add_node(&g, &Y);
+        md_flow_node_t Z  = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = w[c][4], .key = 50 + c, .entity = 3 };
+        n[c][4] = md_flow_graph_add_node(&g, &Z);
+    }
+    md_flow_graph_add_link(&g, n[0][1], n[1][2], 0.1f);   // x0 -> x1: inside X
+    md_flow_graph_add_link(&g, n[0][1], n[1][4], 0.2f);   // x0 -> Z
+    md_flow_graph_add_link(&g, n[0][2], n[1][1], 0.1f);   // x1 -> x0: inside X
+    md_flow_graph_add_link(&g, n[0][2], n[1][4], 0.1f);   // x1 -> Z
+    md_flow_graph_add_link(&g, n[0][3], n[1][3], 0.1f);   // Y -> Y
+    md_flow_graph_add_link(&g, n[0][3], n[1][4], 0.2f);   // Y -> Z
+    md_flow_graph_add_link(&g, n[0][4], n[1][4], 0.2f);   // Z -> Z
+    ASSERT_EQ(md_flow_graph_validate(&g, 1.0e-5f), MD_FLOW_OK);
+
+    md_flow_cut_t cut = {0};
+    md_flow_cut_init(&cut, alloc);
+    md_flow_cut_resolve(&cut, &g);   // X collapsed
+
+    md_flow_layout_params_t params = md_flow_layout_params_default();
+    params.order = MD_FLOW_ORDER_GRAPH;
+    md_flow_layout_t layout = {0};
+    md_flow_layout_init(&layout, alloc);
+    md_flow_layout_compute(&layout, &g, &cut, &params);
+
+    // X, Y, Z top to bottom in both columns, despite Z being the heaviest on the right
+    for (uint32_t c = 0; c < 2; ++c) {
+        float y[3] = {0};
+        const uint32_t want[3] = { n[c][0], n[c][3], n[c][4] };
+        for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
+            for (int k = 0; k < 3; ++k) if (layout.nodes[i].cut_idx == want[k]) y[k] = layout.nodes[i].min.y;
+        }
+        EXPECT_LT(y[0], y[1]);
+        EXPECT_LT(y[1], y[2]);
+    }
+
+    // self flows: X -> X (0.2, the two cross links merged), Y -> Y, Z -> Z; the rest is transfer
+    double self = 0.0, transfer = 0.0;
+    for (size_t i = 0; i < md_array_size(layout.ribbons); ++i) {
+        const md_flow_link_t* l = cut.links + layout.ribbons[i].link_idx;
+        if (layout.ribbons[i].flags & MD_FLOW_RIBBON_FLAG_SELF) {
+            self += l->weight;
+            EXPECT_EQ(md_flow_cut_node(&cut, &g, l->src)->entity, md_flow_cut_node(&cut, &g, l->dst)->entity);
+        } else {
+            transfer += l->weight;
+        }
+    }
+    EXPECT_NEAR(self, 0.5, 1.0e-6);
+    EXPECT_NEAR(transfer, 0.5, 1.0e-6);
+
+    // expanded, x0 -> x1 is a transfer between atoms, not a self flow
+    md_flow_cut_set_expanded(&cut, n[0][0], true);
+    md_flow_cut_set_expanded(&cut, n[1][0], true);
+    md_flow_cut_resolve(&cut, &g);
+    md_flow_layout_compute(&layout, &g, &cut, &params);
+    self = 0.0;
+    for (size_t i = 0; i < md_array_size(layout.ribbons); ++i) {
+        if (layout.ribbons[i].flags & MD_FLOW_RIBBON_FLAG_SELF) self += cut.links[layout.ribbons[i].link_idx].weight;
+    }
+    EXPECT_NEAR(self, 0.3, 1.0e-6);
+
+    md_flow_layout_free(&layout);
+    md_flow_cut_free(&cut);
+    md_arena_allocator_destroy(alloc);
+}
