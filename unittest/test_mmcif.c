@@ -14,7 +14,7 @@ UTEST(mmcif, 1fez) {
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
 
     if (result) {
@@ -40,7 +40,7 @@ UTEST(mmcif, 2or2) {
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
     //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_INFER_ALL);
 
@@ -66,7 +66,7 @@ UTEST(mmcif, 8g7u) {
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
 
@@ -176,7 +176,7 @@ static bool part_is(const md_assembly_data_t* a, uint32_t part, const md_instanc
 UTEST(mmcif, assemblies) {
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t state = { .alloc = md_get_heap_allocator() };
-    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (str_t){assembly_cif, sizeof(assembly_cif) - 1}));
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (str_t){assembly_cif, sizeof(assembly_cif) - 1}, NULL));
     ASSERT_EQ(14, sys.atom.count);
     // A, B, and the waters of C each an instance of their own
     ASSERT_EQ(4, sys.instance.count);
@@ -242,7 +242,7 @@ UTEST(mmcif, assemblies) {
 UTEST(mmcif, assembly_key_value) {
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t state = { .alloc = md_get_heap_allocator() };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
     const md_assembly_data_t* a = &sys.assembly;
     ASSERT_EQ(1, a->count);
     ASSERT_EQ(1, a->group_count);
@@ -511,7 +511,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
@@ -545,7 +545,7 @@ UTEST(mmcif, nonexistent_file) {
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, &sys_state, path));
+    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL));
     
     // Should be safe to free even when init failed
     md_system_free(&sys);
@@ -635,7 +635,7 @@ UTEST(mmcif, atom_site_many_columns) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &sys_state, md_str_writer_to_str(&sb)));
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &sys_state, md_str_writer_to_str(&sb), NULL));
     ASSERT_EQ(3, sys.atom.count);
     EXPECT_STREQ("CA", str_ptr(md_atom_name(&sys.atom, 1)));
     EXPECT_NEAR(7.0f, sys_state.xyz[2].x, 1.0e-5f);
@@ -652,7 +652,7 @@ UTEST(mmcif, chain_breaks) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif")));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
 
     const struct {

@@ -661,6 +661,28 @@ MD_SIMD_INLINE md_128i md_mm_maddubs_epi16(md_128i a, md_128i b) {
 #define md_mm_mul_epu32 simde_mm_mul_epu32
 #define md_mm256_mul_epu32 simde_mm256_mul_epu32
 
+// The high bits of the bytes of four registers as one mask, a register after another (a's in bits 0 to 15, b's in 16 to
+// 31, ...): what a scan of 64 bytes at a time takes the matches of its comparisons from. On NEON each byte its bit of its
+// place (1 to 128, twice a register), summed in pairs three times: one mask of the four, where simde narrows each.
+#if defined(MD_SIMD_NEON)
+MD_SIMD_INLINE uint64_t md_mm_movemask4_epi8(md_128i a, md_128i b, md_128i c, md_128i d) {
+    static const uint8_t place[16] = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+    const uint8x16_t bit = vld1q_u8(place);
+    // The high bit of each byte as all of its bits (an arithmetic shift), then its bit of its place
+    const uint8x16_t ma = vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8(MD_NEON_I8(a), 7)), bit);
+    const uint8x16_t mb = vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8(MD_NEON_I8(b), 7)), bit);
+    const uint8x16_t mc = vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8(MD_NEON_I8(c), 7)), bit);
+    const uint8x16_t md = vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8(MD_NEON_I8(d), 7)), bit);
+    const uint8x16_t s = vpaddq_u8(vpaddq_u8(ma, mb), vpaddq_u8(mc, md));
+    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0);
+}
+#else
+MD_SIMD_INLINE uint64_t md_mm_movemask4_epi8(md_128i a, md_128i b, md_128i c, md_128i d) {
+    return (uint64_t)(uint16_t)simde_mm_movemask_epi8(a)         | ((uint64_t)(uint16_t)simde_mm_movemask_epi8(b) << 16) |
+          ((uint64_t)(uint16_t)simde_mm_movemask_epi8(c) << 32) | ((uint64_t)(uint16_t)simde_mm_movemask_epi8(d) << 48);
+}
+#endif
+
 // 1 where a & b has no bit set
 #if defined(MD_SIMD_NEON)
 MD_SIMD_INLINE int md_mm_testz_si128(md_128i a, md_128i b) {

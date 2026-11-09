@@ -142,7 +142,7 @@ UTEST(bonds, metal_sites_deposited) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     int num_zn = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {

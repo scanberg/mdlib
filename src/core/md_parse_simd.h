@@ -16,6 +16,32 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// WHITESPACE, 64 BYTES AT ONCE
+//
+// md_parse_whitespace_mask64 gives the whitespace of 64 bytes ('\t', '\n', '\r' and ' ', what is_whitespace and
+// extract_token split by), one bit per byte: what a tokenizer takes the tokens of a line from, 64 bytes at a time
+// (md_mmcif.c, the rows of _atom_site). p is aligned to 64, so that no load crosses a page: the bytes around a range may
+// be read where a page holds bytes of it, which address sanitizers are told not to look at.
+
+#if defined(__clang__) || defined(__GNUC__)
+#   define MD_PARSE_SIMD_NO_SANITIZE __attribute__((no_sanitize_address))
+#elif defined(_MSC_VER)
+#   define MD_PARSE_SIMD_NO_SANITIZE __declspec(no_sanitize_address)
+#else
+#   define MD_PARSE_SIMD_NO_SANITIZE
+#endif
+
+MD_PARSE_SIMD_NO_SANITIZE static FORCE_INLINE uint64_t md_parse_whitespace_mask64(const char* p) {
+    ASSERT(((uintptr_t)p & 63) == 0);
+    md_128i m[4];
+    for (int k = 0; k < 4; ++k) {
+        const md_128i v = md_mm_load_si128((const md_128i*)(p + 16 * k));
+        m[k] = md_mm_or_si128(md_mm_or_si128(md_mm_cmpeq_epi8(v, md_mm_set1_epi8(' ')),  md_mm_cmpeq_epi8(v, md_mm_set1_epi8('\t'))),
+                              md_mm_or_si128(md_mm_cmpeq_epi8(v, md_mm_set1_epi8('\n')), md_mm_cmpeq_epi8(v, md_mm_set1_epi8('\r'))));
+    }
+    return md_mm_movemask4_epi8(m[0], m[1], m[2], m[3]);
+}
+
 // Two fields of 8 characters with 'decimals' decimals (3 or 4), one in each 64 bit lane of v, byte i its i:th
 // character: not zero in the lane of one laid out otherwise than md_parse_fixed_f32 takes it (blanks, then an
 // optional '-', then digits up to the '.', then the decimals). Of each, its two halves (*parts): the digits of its

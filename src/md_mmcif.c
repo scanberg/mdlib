@@ -2,11 +2,13 @@
 
 #include <core/md_str.h>
 #include <core/md_parse.h>
+#include <core/md_parse_simd.h>
 #include <core/md_reader.h>
 #include <core/md_log.h>
 #include <core/md_hash.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
+#include <core/md_executor.h>
 #include <md_util.h>
 #include <md_system.h>
 
@@ -956,18 +958,16 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
 // whitespace delimited, a quoted one without its quotes. False where the line is not num tokens, or one of them is not
 // read that way (a comment, a text field, a quoted string with whitespace in it): the tokenizer reads the row instead.
 //
-// The whitespace of the line a chunk of 64 bytes at a time (md_text_whitespace_chunk; no chunk from end on), and of each
+// The whitespace of the line a chunk of 64 bytes at a time (md_parse_whitespace_mask64; no chunk from end on), and of each
 // chunk where the tokens begin (a byte which is not whitespace after one which is) and where they end (whitespace after
 // a byte which is not), all of them at once: the n:th token is from the n:th beginning to the n:th end. Not one token
 // after another, each from where the last ended, which is a chain of as many steps as the row has tokens.
-#if defined(MD_TEXT_SCAN_WIDTH)
 // The whitespace of the chunk at c, the bytes from end on counted as such
 MD_TEXT_NO_SANITIZE static inline uint64_t mmcif_ws_chunk(const char* c, const char* end) {
-    uint64_t ws = md_text_whitespace_chunk(c);
+    uint64_t ws = md_parse_whitespace_mask64(c);
     if (end - c < 64) ws |= ~UINT64_C(0) << (end - c);
     return ws;
 }
-#endif
 
 // What mmcif_fetch_token reads otherwise when a token begins with it: 1 a comment or a text field, 2 a quoted string
 static const uint8_t mmcif_first_char[256] = { ['#'] = 1, [';'] = 1, ['\''] = 2, ['"'] = 2 };
@@ -978,7 +978,6 @@ static const uint8_t mmcif_first_char[256] = { ['#'] = 1, [';'] = 1, ['\''] = 2,
 MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const char* beg, const char* end) {
     size_t n = 0;
     uint32_t first = 0;         // Of the tokens' first characters, what mmcif_first_char says of them
-#if defined(MD_TEXT_SCAN_WIDTH)
     size_t n_end = 0;
     const char* chunk = (const char*)((uintptr_t)beg & ~(uintptr_t)63);
     uint64_t before = (UINT64_C(1) << (beg - chunk)) - 1;      // The bytes before beg count as whitespace
@@ -1018,17 +1017,6 @@ MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const ch
     if (n_end < n) {
         tok[n_end].len = (size_t)(end - tok[n_end].ptr);
     }
-#else
-    for (const char* c = beg;;) {
-        while (c < end && is_whitespace(*c)) ++c;
-        if (c >= end) break;
-        if (n == num) return false;
-        const char* t = c;
-        while (c < end && !is_whitespace(*c)) ++c;
-        tok[n++] = (str_t){ t, (size_t)(c - t) };
-        first |= mmcif_first_char[(uint8_t)*t];
-    }
-#endif
     if (n != num) return false;
     if (first & 1) return false;
     // As mmcif_fetch_token: a quoted token without its quotes, where it ends in its quote
@@ -1043,14 +1031,205 @@ MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const ch
     return true;
 }
 
-static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc) {
+// The columns of _atom_site: where each field is among the tokens of a row (-1 for none), and how many there are
+typedef struct mmcif_atom_site_cols_t {
+    int    table[ATOM_SITE_COUNT];
+    size_t num_cols;
+    bool   have_auth_seq_id;
+    bool   have_auth_asym_id;
+} mmcif_atom_site_cols_t;
+
+// The entry of a row of _atom_site, from its tokens
+static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const str_t tok[], const mmcif_atom_site_cols_t* c) {
+    const int* table = c->table;
+    //str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
+    str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
+    str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
+    str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];
+    str_t label_asym_id   = tok[table[ATOM_SITE_LABEL_ASYM_ID]];
+    str_t label_comp_id   = tok[table[ATOM_SITE_LABEL_COMP_ID]];
+    str_t label_entity_id = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
+    str_t label_seq_id    = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
+    str_t auth_seq_id     = c->have_auth_seq_id ? tok[table[ATOM_SITE_AUTH_SEQ_ID]] : (str_t){0};
+    str_t auth_asym_id    = c->have_auth_asym_id ? tok[table[ATOM_SITE_AUTH_ASYM_ID]] : (str_t){0};
+    str_t cartn_x         = tok[table[ATOM_SITE_CARTN_X]];
+    str_t cartn_y         = tok[table[ATOM_SITE_CARTN_Y]];
+    str_t cartn_z         = tok[table[ATOM_SITE_CARTN_Z]];
+
+    const int default_value = INT32_MIN;
+
+    mmcif_atom_site_entry_t entry = {
+        .x = (float)parse_float(cartn_x),
+        .y = (float)parse_float(cartn_y),
+        .z = (float)parse_float(cartn_z),
+        .label_seq_id = parse_int_with_default(label_seq_id, default_value),
+        .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
+        .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
+        .occupancy      = mmcif_optional_float(tok, table, ATOM_SITE_OCCUPANCY),
+        .b_iso_or_equiv = mmcif_optional_float(tok, table, ATOM_SITE_B_ISO_OR_EQUIV),
+        .formal_charge  = mmcif_optional_float(tok, table, ATOM_SITE_PDBX_FORMAL_CHARGE),
+    };
+
+    str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
+    str_copy_to_char_buf(entry.label_asym_id,   sizeof(entry.label_asym_id),    label_asym_id);
+    str_copy_to_char_buf(entry.label_comp_id,   sizeof(entry.label_comp_id),    label_comp_id);
+    str_copy_to_char_buf(entry.label_entity_id, sizeof(entry.label_entity_id),  label_entity_id);
+    str_copy_to_char_buf(entry.type_symbol,     sizeof(entry.type_symbol),      type_symbol);
+    str_copy_to_char_buf(entry.auth_asym_id,    sizeof(entry.auth_asym_id),     auth_asym_id);
+
+    *out = entry;
+}
+
+// A line which is a row of its own, as the rows loop reads one: its tokens (mmcif_split_row), where it is neither
+// quoted at its first token nor an item or a control word (what comes after the rows)
+static inline bool mmcif_plain_row(str_t* tok, size_t num_cols, str_t line) {
+    const char* b = line.ptr;
+    const char* e = line.ptr + line.len;
+    while (b < e && is_whitespace(*b)) ++b;
+    return b < e && *b != '\'' && *b != '"' && mmcif_split_row(tok, num_cols, b, e) && !mmcif_is_item(tok[0]) && !mmcif_is_control(tok[0]);
+}
+
+// ### THE ROWS OVER THE THREADS ###
+//
+// The rows of _atom_site are most of a large file, and independent of one another: they are read a block of whole lines
+// at a time from the reader (md_reader_block_parallel), each block in passes, each pass in pieces at line boundaries (a
+// few for each thread, md_text_split). Two loops over the pieces of a pass (md_parallel_for), each a fork and a join:
+//
+//   count  the lines of each piece; their sum before a piece is where its rows go among the entries
+//   parse  the rows of each piece into their places, up to its first line which is not a row of its own (a comment, a
+//          row over lines, a quoted first token, what comes after the rows): where the piece stops
+//
+// Then, in the order of the pieces, the rows up to the first stop are the entries the pass adds; the reader is taken to
+// that line, which the tokenizer reads (as it reads any), and the blocks go on after it. The entries are placed by their
+// lines, so they are the same whichever thread read which piece. A pass of one piece is not counted: its rows go after
+// those before it.
+
+#define MMCIF_BLOCK_MAX_COLS 128     // A row of more columns is read by the tokenizer
+
+typedef struct mmcif_rows_piece_t {
+    md_text_piece_t range;      // of the pass
+    size_t num_lines;           // the count
+    size_t first;               // where its rows go, among the entries of the pass
+    size_t num_rows;            // its lines which are rows, up to the first which is not
+    size_t stop;                // that line (of the pass), range.end where all are rows
+} mmcif_rows_piece_t;
+
+typedef struct mmcif_rows_t {
+    const char* text;           // the pass
+    size_t len;
+    mmcif_rows_piece_t* pieces;
+    mmcif_atom_site_entry_t* entries;   // of the pass
+    const mmcif_atom_site_cols_t* cols;
+} mmcif_rows_t;
+
+static void mmcif_rows_count(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const mmcif_rows_t* R = (const mmcif_rows_t*)arg;
+    for (uint32_t p = beg; p < end; ++p) {
+        mmcif_rows_piece_t* piece = &R->pieces[p];
+        size_t n = md_text_count_newlines(R->text + piece->range.beg, R->text + piece->range.end);
+        // The last line of the text may not end in one
+        if (piece->range.end == R->len && piece->range.end > piece->range.beg && R->text[R->len - 1] != '\n') ++n;
+        piece->num_lines = n;
+    }
+}
+
+static void mmcif_rows_parse(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const mmcif_rows_t* R = (const mmcif_rows_t*)arg;
+    str_t tok[MMCIF_BLOCK_MAX_COLS + MMCIF_SPLIT_SLACK];
+    for (uint32_t p = beg; p < end; ++p) {
+        mmcif_rows_piece_t* piece = &R->pieces[p];
+        mmcif_atom_site_entry_t* out = R->entries + piece->first;
+        size_t n = 0;
+        piece->stop = piece->range.end;
+        md_text_lines_t lines = md_text_lines(R->text + piece->range.beg, R->text + piece->range.end);
+        str_t line;
+        while (md_text_lines_next(&lines, &line)) {
+            if (!mmcif_plain_row(tok, R->cols->num_cols, line)) {
+                piece->stop = (size_t)(line.ptr - R->text);
+                break;
+            }
+            mmcif_atom_site_entry(&out[n++], tok, R->cols);
+        }
+        piece->num_rows = n;
+    }
+}
+
+typedef enum {
+    MMCIF_ROWS_END,         // the source ended
+    MMCIF_ROWS_STOPPED,     // at a line which is not a row of its own: the reader is at it
+    MMCIF_ROWS_CANCELLED,
+} mmcif_rows_result_t;
+
+// The rows which follow in the reader, as many as are rows of their own, added to the entries
+static mmcif_rows_result_t mmcif_rows_from_blocks(md_array(mmcif_atom_site_entry_t)* entries, const mmcif_atom_site_cols_t* cols, md_reader_i* reader,
+                                                  md_allocator_i* alloc, const md_executor_t* ex) {
+    const uint32_t num_threads = md_executor_num_threads(ex);
+    const size_t pass_size = md_text_pass_size(num_threads);
+    const size_t max_pieces = md_text_num_pieces(pass_size, num_threads);
+    md_text_piece_t*    ranges = md_alloc(alloc, max_pieces * sizeof(md_text_piece_t));
+    mmcif_rows_piece_t* pieces = md_alloc(alloc, max_pieces * sizeof(mmcif_rows_piece_t));
+    // Rows of fewer bytes than a character and a blank for each column there are not
+    const size_t min_row = 2 * MAX(cols->num_cols, 1);
+
+    for (;;) {
+        const str_t block = md_reader_block_parallel(reader, ex);
+        if (block.len == 0) return MMCIF_ROWS_END;
+        size_t taken = 0;
+        while (taken < block.len) {
+            const char* text = block.ptr + taken;
+            const size_t len = md_text_pass_len_of(text, block.len - taken, pass_size);
+            const size_t num_pieces = MIN(md_text_num_pieces(len, num_threads), max_pieces);
+            md_text_split(ranges, num_pieces, text, len);
+            mmcif_rows_t R = { .text = text, .len = len, .pieces = pieces, .cols = cols };
+            for (size_t p = 0; p < num_pieces; ++p) pieces[p] = (mmcif_rows_piece_t){ .range = ranges[p] };
+
+            const size_t base = md_array_size(*entries);
+            if (num_pieces == 1) {
+                md_array_ensure(*entries, base + len / min_row + 1, alloc);
+            } else {
+                if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, mmcif_rows_count, &R)) return MMCIF_ROWS_CANCELLED;
+                size_t num_lines = 0;
+                for (size_t p = 0; p < num_pieces; ++p) {
+                    pieces[p].first = num_lines;
+                    num_lines += pieces[p].num_lines;
+                }
+                md_array_ensure(*entries, base + num_lines, alloc);
+            }
+            R.entries = *entries + base;
+            if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, mmcif_rows_parse, &R)) return MMCIF_ROWS_CANCELLED;
+
+            // The rows up to the first line which is not one
+            size_t num_rows = 0;
+            size_t stop = len;
+            for (size_t p = 0; p < num_pieces; ++p) {
+                num_rows += pieces[p].num_rows;
+                if (pieces[p].stop < pieces[p].range.end) {
+                    stop = pieces[p].stop;
+                    break;
+                }
+            }
+            md_array_resize(*entries, base + num_rows, alloc);
+            taken += stop;
+            if (stop < len) {
+                md_reader_advance(reader, taken);
+                return MMCIF_ROWS_STOPPED;
+            }
+        }
+        md_reader_advance(reader, taken);
+    }
+}
+
+static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc, const md_executor_t* ex) {
     ASSERT(atom_entries);
     ASSERT(state);
     ASSERT(alloc);
     ASSERT(state->in_loop == true);
 
-    int table[ATOM_SITE_COUNT];
-    MEMSET(table, -1, sizeof(table));
+    mmcif_atom_site_cols_t cols = {0};
+    int* table = cols.table;
+    MEMSET(table, -1, sizeof(cols.table));
     size_t num_cols = 0;
 
     // Read category headers
@@ -1080,29 +1259,35 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
         }
     }
 
-    bool have_auth_seq_id  = table[ATOM_SITE_AUTH_SEQ_ID]  != -1;
-    bool have_auth_asym_id = table[ATOM_SITE_AUTH_ASYM_ID] != -1;
+    cols.num_cols = num_cols;
+    cols.have_auth_seq_id  = table[ATOM_SITE_AUTH_SEQ_ID]  != -1;
+    cols.have_auth_asym_id = table[ATOM_SITE_AUTH_ASYM_ID] != -1;
 
     // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
     // the row is sized by them rather than by a fixed bound.
     str_t* tok = md_alloc(alloc, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
     MEMSET(tok, 0, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
 
+    // Where the tokenizer has nothing of a line left, the rows which follow are read in blocks (mmcif_rows_from_blocks),
+    // up to a line which is not a row of its own: that line is the tokenizer's, given back to it whole, which reads it
+    // as it reads any (a comment, a row over lines, what comes after the rows). Rows of more columns than the blocks
+    // read are read a line at a time.
+    const bool blocks = num_cols <= MMCIF_BLOCK_MAX_COLS;
+    bool give_back = false;
     for (;;) {
-        // A row which is a line of its own, as files write them: its tokens at once (mmcif_split_row). Taken from the
-        // reader where the tokenizer has nothing of a line left, else from the tokenizer's line. A line which is not
-        // such a row (a comment, a row over lines, what comes after the rows) is given back to the tokenizer whole,
-        // which reads it as it reads any.
         bool split = false;
         if (!state->has_peek && str_empty(state->line)) {
+            if (blocks && !give_back) {
+                const mmcif_rows_result_t res = mmcif_rows_from_blocks(atom_entries, &cols, state->reader, alloc, ex);
+                if (res == MMCIF_ROWS_CANCELLED) return false;
+                if (res == MMCIF_ROWS_END) break;
+                give_back = true;
+                continue;
+            }
+            give_back = false;
             str_t line;
             if (!md_reader_extract_line(state->reader, &line)) break;      // The end of the file
-            const char* b = line.ptr;
-            const char* e = line.ptr + line.len;
-            while (b < e && is_whitespace(*b)) ++b;
-            if (b < e && *b != '\'' && *b != '"') {
-                split = mmcif_split_row(tok, num_cols, b, e) && !mmcif_is_item(tok[0]) && !mmcif_is_control(tok[0]);
-            }
+            split = mmcif_plain_row(tok, num_cols, line);
             if (!split) {
                 state->line = line;
                 state->pending_start = true;
@@ -1135,41 +1320,8 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
             }
         }
          
-        //str_t group_PDB       = tok[table[ATOM_SITE_GROUP_PDB]];
-        str_t type_symbol     = tok[table[ATOM_SITE_TYPE_SYMBOL]];
-        str_t label_atom_id   = tok[table[ATOM_SITE_LABEL_ATOM_ID]];
-        str_t label_alt_id    = tok[table[ATOM_SITE_LABEL_ALT_ID]];
-        str_t label_asym_id   = tok[table[ATOM_SITE_LABEL_ASYM_ID]];
-        str_t label_comp_id   = tok[table[ATOM_SITE_LABEL_COMP_ID]];
-        str_t label_entity_id = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
-        str_t label_seq_id    = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
-        str_t auth_seq_id     = have_auth_seq_id ? tok[table[ATOM_SITE_AUTH_SEQ_ID]] : (str_t){0};
-        str_t auth_asym_id    = have_auth_asym_id ? tok[table[ATOM_SITE_AUTH_ASYM_ID]] : (str_t){0};
-        str_t cartn_x         = tok[table[ATOM_SITE_CARTN_X]];
-        str_t cartn_y         = tok[table[ATOM_SITE_CARTN_Y]];
-        str_t cartn_z         = tok[table[ATOM_SITE_CARTN_Z]];
-
-        const int default_value = INT32_MIN;
-
-        mmcif_atom_site_entry_t entry = {
-            .x = (float)parse_float(cartn_x),
-            .y = (float)parse_float(cartn_y),
-            .z = (float)parse_float(cartn_z),
-            .label_seq_id = parse_int_with_default(label_seq_id, default_value),
-            .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
-            .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
-            .occupancy      = mmcif_optional_float(tok, table, ATOM_SITE_OCCUPANCY),
-            .b_iso_or_equiv = mmcif_optional_float(tok, table, ATOM_SITE_B_ISO_OR_EQUIV),
-            .formal_charge  = mmcif_optional_float(tok, table, ATOM_SITE_PDBX_FORMAL_CHARGE),
-        };
-
-        str_copy_to_char_buf(entry.label_atom_id,   sizeof(entry.label_atom_id),    label_atom_id);
-        str_copy_to_char_buf(entry.label_asym_id,   sizeof(entry.label_asym_id),    label_asym_id);
-        str_copy_to_char_buf(entry.label_comp_id,   sizeof(entry.label_comp_id),    label_comp_id);
-        str_copy_to_char_buf(entry.label_entity_id, sizeof(entry.label_entity_id),  label_entity_id);
-        str_copy_to_char_buf(entry.type_symbol,     sizeof(entry.type_symbol),      type_symbol);
-        str_copy_to_char_buf(entry.auth_asym_id,    sizeof(entry.auth_asym_id),     auth_asym_id);
-
+        mmcif_atom_site_entry_t entry;
+        mmcif_atom_site_entry(&entry, tok, &cols);
         md_array_push(*atom_entries, entry, alloc);
     }
 
@@ -1240,7 +1392,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
     return (field_flags == (CELL_FIELD_A | CELL_FIELD_B | CELL_FIELD_C | CELL_FIELD_ALPHA | CELL_FIELD_BETA | CELL_FIELD_GAMMA));
 }
 
-static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reader_i* reader, md_allocator_i* alloc) {
+static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reader_i* reader, md_allocator_i* alloc, const md_executor_t* ex) {
     bool result = false;
     bool atom_site_parsed = false;
     bool cell_parsed = false;
@@ -1280,7 +1432,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         }
 
         if (str_eq_cstr_n(tok, "_atom_site.", 11)) {
-            if (!mmcif_parse_atom_site(&atom_entries, &state, temp_arena)) {
+            if (!mmcif_parse_atom_site(&atom_entries, &state, temp_arena, ex)) {
                 MD_LOG_ERROR("Failed to parse _atom_site section");
                 goto done;
             }
@@ -1513,7 +1665,7 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
+bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const md_executor_t* ex) {
     ASSERT(sys);
     ASSERT(state);
 
@@ -1536,12 +1688,12 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, s
     md_system_state_init(state, 0);
 
     md_reader_i reader = md_reader_from_str(str);
-    bool result = mmcif_parse(sys, state, &reader, sys->alloc);
+    bool result = mmcif_parse(sys, state, &reader, sys->alloc, ex);
     state->num_atoms = sys->atom.count;
     return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
+bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
     ASSERT(sys);
     ASSERT(state);
 
@@ -1564,12 +1716,14 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, 
     md_system_reset(sys);
     md_system_state_init(state, 0);
 
+    // The reader's buffer in a temp scope below the one of the load (mmcif_parse): blocks of the rows of _atom_site, a
+    // few passes of them (mmcif_rows_from_blocks)
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    const size_t cap = MEGABYTES(1);
+    const size_t cap = MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(ex)));
 
     md_file_reader_t reader;
     md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));
-    bool result = mmcif_parse(sys, state, &reader.r, sys->alloc);
+    bool result = mmcif_parse(sys, state, &reader.r, sys->alloc, ex);
     state->num_atoms = sys->atom.count;
 
     md_file_reader_close(&reader);
