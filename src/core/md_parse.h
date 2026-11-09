@@ -38,13 +38,103 @@
 extern "C" {
 #endif
 
-size_t md_parse_f64(double* out_value, md_str_t str);
+// Every input md_parse_f64 takes, out of line: md_parse_f64 itself is the inline part below, which
+// hands over whatever it does not finish.
+size_t md_parse_f64_general(double* out_value, md_str_t str);
+
+// mantissa * 10^exp10 correctly rounded, for a mantissa of at most 19 digits: what the inline part does
+// not finish once it has scanned a number.
+double md_parse_f64_finish(uint64_t mantissa, int64_t exp10);
 
 bool md_parse_is_float(md_str_t str);
+
+// 10^0 .. 10^22, every power of ten a double holds exactly
+extern const double md_parse_pow10_exact[23];
 
 #ifdef __cplusplus
 }
 #endif
+
+// The common case of md_parse_f64 inline, so that a reader's loop pays no call for it: a mantissa of
+// at most 19 digits which a double holds exactly (up to 2^53), with a power of ten - the fraction
+// digits less the written exponent - of 10^0 to 10^-22. That is every fixed width decimal, and every
+// %E whose exponent is at most its number of fraction digits: "-12.345", "1.23456789E+02" (which is
+// 123456789 / 10^6), but not "1.5E+03".
+// The value is then one exact IEEE division (Clinger, 1990), which no FMA contraction can touch - a
+// division does not fuse. A positive power would be a multiplication, which -ffp-contract=fast could
+// fuse with an addition of the caller's into one FMA, so the parsed value would not be rounded on its
+// own and the same text could read differently at different call sites. So a scanned number of at
+// most 19 digits that is not of that shape - a mantissa past 2^53, a positive power - is finished out
+// of line by md_parse_f64_finish from what the scan found; only what the scan cannot take (more than
+// 19 digits, an exponent of more than 3 digits, inf and nan, no number at all) goes to
+// md_parse_f64_general, which reads it again from the start. Like md_parse_fixed_f32 this assumes IEEE division, which a TU built
+// with -ffast-math or /fp:fast does not give (mdlib and VIAMD are not).
+static MD_FORCE_INLINE size_t md_parse_f64(double* out_value, md_str_t str) {
+    MD_ASSERT(out_value);
+    const char* s   = str.ptr;
+    const char* end = str.ptr + str.len;
+    const char* c   = s;
+    if (!s) return 0;
+
+    bool negative = false;
+    if (c < end && (*c == '-' || *c == '+')) {
+        negative = (*c == '-');
+        ++c;
+    }
+    const char* mant = c;
+    uint64_t m = 0;
+    while (c < end && (unsigned)(*c - '0') < 10u) {
+        m = m * 10 + (unsigned)(*c - '0');
+        ++c;
+    }
+    size_t num_digits = (size_t)(c - mant);
+    int64_t exp10 = 0;
+    if (c < end && *c == '.') {
+        const char* frac = ++c;
+        while (c < end && (unsigned)(*c - '0') < 10u) {
+            m = m * 10 + (unsigned)(*c - '0');
+            ++c;
+        }
+        exp10 = -(int64_t)(c - frac);
+        num_digits += (size_t)(c - frac);
+    }
+    if (c < end && (*c | 0x20) == 'e') {
+        // Up to 3 exponent digits; more, and the general path decides. An 'e' without digits is not
+        // part of the number.
+        const char* x = c + 1;
+        bool exp_negative = false;
+        if (x < end && (*x == '-' || *x == '+')) {
+            exp_negative = (*x == '-');
+            ++x;
+        }
+        const char* xd = x;
+        int64_t w = 0;
+        while (x < end && x - xd < 3 && (unsigned)(*x - '0') < 10u) {
+            w = w * 10 + (*x - '0');
+            ++x;
+        }
+        if (x < end && (unsigned)(*x - '0') < 10u) {
+            return md_parse_f64_general(out_value, str);
+        }
+        if (x > xd) {
+            exp10 += exp_negative ? -w : w;
+            c = x;
+        }
+    }
+    // num_digits - 1 < 19: at least one digit, and at most 19, so that m did not overflow. The signed
+    // conversion is one instruction where an unsigned one is a branchy sequence, and m < 2^63 here.
+    if (num_digits - 1 < 19) {
+        double v;
+        if (m <= (UINT64_C(1) << 53) && -22 <= exp10 && exp10 <= 0) {
+            v = (double)(int64_t)m / md_parse_pow10_exact[-exp10];
+        } else {
+            v = md_parse_f64_finish(m, exp10);
+        }
+        *out_value = negative ? -v : v;
+        return (size_t)(c - s);
+    }
+    return md_parse_f64_general(out_value, str);
+}
 
 // Saturates to INT64_MIN / INT64_MAX, reading every digit either way. Inline, as it has no floating
 // point to keep away from fast math.

@@ -242,6 +242,37 @@ UTEST(parse, f64_matches_strtod) {
     EXPECT_EQ(0u, mismatches);
 }
 
+// The seams between the inline part of md_parse_f64 (md_parse.h), md_parse_f64_finish and md_parse_f64_general: each
+// input on both sides of a limit one of them checks, read to the same value and length as strtod reads it
+UTEST(parse, f64_inline_boundaries) {
+    static const char* inputs[] = {
+        // 19 digits (the most the scan accumulates) and 20
+        "1234567890123456789", "12345678901234567890", "0.1234567890123456789", "1.234567890123456789",
+        // The mantissa at 2^53, one past it and far past it
+        "9007199254740992", "9007199254740993", "-9007199254740993e-3", "18446744073709551615",
+        // Powers of ten at the ends of the exact range, and past them
+        "1e-22", "1e-23", "1.5e-22", "123456789e-22", "1e22", "1e23", "1.5E+03", "1.23456789E+02",
+        // Exponents of 1 to 4 digits, with and without a sign, and markers without digits
+        "1e5", "1e05", "1e+005", "1e-0005", "1e999", "-1e-999", "1e0400", "1e", "1e+", "1E-", "1ex", "1.e5",
+        // Zeros of both signs, with exponents the exact path takes and ones it does not
+        "0", "-0", "-0.000", "0e0", "-0e-5", "-0e30", "0e9999", "-.0",
+        // %E as prmtop and cube files print it
+        " 1.23456789E+00", "-1.23456789E-05", "6.02214076E+23", "-4.21000E-12",
+    };
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
+        const char* in = inputs[i];
+        char* ref_end = NULL;
+        const double ref = strtod(in, &ref_end);
+        const size_t ref_len = in[0] == ' ' ? 0 : (size_t)(ref_end - in);   // md_parse_f64 does not skip whitespace
+        double v = 42.0;
+        const size_t n = md_parse_f64(&v, str_of(in));
+        EXPECT_EQ_MSG(ref_len, n, in);
+        if (ref_len) {
+            EXPECT_EQ_MSG(bits_of(ref), bits_of(v), in);
+        }
+    }
+}
+
 // The value of "1.5" does not depend on the locale, which a GTK file dialog (among others) may switch
 // to one with a decimal comma
 UTEST(parse, f64_ignores_the_locale) {

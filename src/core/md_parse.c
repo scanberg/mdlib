@@ -11,8 +11,8 @@
 
 #define DIGIT(c) ((unsigned)((c) - '0') < 10u)
 
-// The powers of ten a double holds exactly
-static const double pow10_exact[23] = {
+// The powers of ten a double holds exactly. Shared with the inline part of md_parse_f64 in md_parse.h.
+const double md_parse_pow10_exact[23] = {
     1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
     1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
 };
@@ -636,6 +636,17 @@ static MD_NOINLINE double float_value_general(const float_parts_t* p) {
     return p->negative ? -value : value;
 }
 
+// m * 10^exp10, for a mantissa of at most 19 digits that the inline part of md_parse_f64 did not finish: one past 2^53,
+// or a power of ten outside 10^-22 .. 10^0. Never inlined, link time optimization included: a product with a positive
+// power is rounded here, as a value of its own, and cannot be fused with the caller's arithmetic into an FMA.
+MD_NOINLINE double md_parse_f64_finish(uint64_t m, int64_t exp10) {
+    if (m == 0) return 0.0;
+    if (m <= (UINT64_C(1) << 53) && 0 <= exp10 && exp10 <= 22) {
+        return (double)(int64_t)m * md_parse_pow10_exact[exp10];
+    }
+    return double_from_bits(eisel_lemire(m, exp10));
+}
+
 static MD_FORCE_INLINE double float_value(const float_parts_t* p) {
     // Exact when the mantissa is an integer a double holds and the power of ten is one too: the
     // single multiplication or division is then the only rounding (Clinger, 1990). One test, first:
@@ -644,20 +655,20 @@ static MD_FORCE_INLINE double float_value(const float_parts_t* p) {
     // unsigned one is a branchy sequence, and the mantissa is below 2^63 here.
     if (p->kind == NUMBER_FINITE && !p->truncated && p->mantissa <= (UINT64_C(1) << 53) && (uint64_t)(p->exp10 + 22) <= 44) {
         double value = (double)(int64_t)p->mantissa;
-        value = p->exp10 < 0 ? value / pow10_exact[-p->exp10] : value * pow10_exact[p->exp10];
+        value = p->exp10 < 0 ? value / md_parse_pow10_exact[-p->exp10] : value * md_parse_pow10_exact[p->exp10];
         return p->negative ? -value : value;
     }
     return float_value_general(p);
 }
 
-size_t md_parse_f64(double* out_value, md_str_t str) {
+size_t md_parse_f64_general(double* out_value, md_str_t str) {
     MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
-    // One pass over the characters, then the value from the parts. The common shapes - a plain
-    // decimal, or a mantissa of up to 15 or so digits with an exponent, as %E prints it - leave the
-    // scan with a mantissa a double holds and a power of ten of at most 22, which float_value turns
-    // into the exact value with one multiplication or division.
+    // One pass over the characters, then the value from the parts. A mantissa a double holds with a
+    // power of ten of at most 22 either way is one multiplication or division in float_value; the
+    // inline part in md_parse.h has taken those with a negative power already, so what comes here is
+    // mostly a positive power, a long mantissa, a special value or no number at all.
     float_parts_t parts;
     const size_t n = scan_float(&parts, str.ptr, str.len);
     if (n) {
