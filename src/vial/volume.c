@@ -19,10 +19,6 @@
 #include <math.h>
 #include <string.h>
 
-#if defined(_MSC_VER) && !defined(__clang__)
-#include <intrin.h>
-#endif
-
 bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out);
 
 // ### CORRESPONDENCE ###

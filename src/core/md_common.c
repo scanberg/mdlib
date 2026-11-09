@@ -2,10 +2,7 @@
 
 #include <stdio.h>
 
-#if MD_COMPILER_MSVC
-#include <intrin.h>
-#elif MC_COMPILER_GCC || MD_COMPILER_CLANG
-#else
+#if !(MD_COMPILER_MSVC || MD_COMPILER_GCC || MD_COMPILER_CLANG)
 #include <stdlib.h>
 #endif
 

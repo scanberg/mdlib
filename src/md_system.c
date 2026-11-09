@@ -15,10 +15,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
-#if MD_COMPILER_MSVC
-#include <intrin.h>
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -57,9 +57,9 @@ UTEST(intrinsics, test) {
 
         EXPECT_EQ(bsr32(mask[0]), 0);
         EXPECT_EQ(bsr32(mask[1]), 9);
-        EXPECT_EQ(bsf32(mask[2]), 17);
-        EXPECT_EQ(bsf32(mask[3]), 25);
-        EXPECT_EQ(bsf32(mask[4]), 32);
+        EXPECT_EQ(bsr32(mask[2]), 17);
+        EXPECT_EQ(bsr32(mask[3]), 25);
+        EXPECT_EQ(bsr32(mask[4]), 32);
     }
 
     EXPECT_EQ(next_power_of_two32(3), 4);
@@ -82,4 +82,76 @@ UTEST(intrinsics, test) {
     EXPECT_EQ(find_first_zero_byte32(255),        1); // 0000000011111111
     EXPECT_EQ(find_first_zero_byte32(65535),      2); // 000000001111111111111111
 
+}
+
+// The bit functions against a loop over the bits, for 0, single bits, all ones and random values: every compiler and
+// every CPU gives the same result for every input, 0 included (clz and ctz of 0 are the width)
+static uint64_t ref_rng(uint64_t* s) { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; return *s; }
+
+static unsigned ref_clz(uint64_t x, unsigned w) { unsigned n = 0; for (int i = (int)w - 1; i >= 0 && !((x >> i) & 1); --i) ++n; return n; }
+static unsigned ref_ctz(uint64_t x, unsigned w) { unsigned n = 0; for (unsigned i = 0; i < w && !((x >> i) & 1); ++i) ++n; return n; }
+static unsigned ref_pop(uint64_t x) { unsigned n = 0; for (; x; x &= x - 1) ++n; return n; }
+
+static void ref_umul128(uint64_t a, uint64_t b, uint64_t* lo, uint64_t* hi) {
+    // Schoolbook on 16 bit digits, sharing nothing with md_umul128: a column holds at most four products below 2^32
+    uint64_t r[8] = {0};
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            r[i + j] += ((a >> (16 * i)) & 0xFFFF) * ((b >> (16 * j)) & 0xFFFF);
+        }
+    }
+    uint64_t carry = 0;
+    for (int k = 0; k < 8; ++k) {
+        r[k] += carry;
+        carry = r[k] >> 16;
+        r[k] &= 0xFFFF;
+    }
+    *lo = r[0] | r[1] << 16 | r[2] << 32 | r[3] << 48;
+    *hi = r[4] | r[5] << 16 | r[6] << 32 | r[7] << 48;
+}
+
+UTEST(intrinsics, bits_defined_everywhere) {
+    uint64_t vals[200];
+    size_t n = 0;
+    vals[n++] = 0;
+    vals[n++] = UINT64_MAX;
+    for (unsigned i = 0; i < 64; ++i) vals[n++] = (uint64_t)1 << i;
+    uint64_t s = 0x9E3779B97F4A7C15ull;
+    while (n < ARRAY_SIZE(vals)) {
+        const uint64_t r = ref_rng(&s);
+        vals[n++] = r >> (r & 63);      // all magnitudes
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        const uint64_t x = vals[i];
+        const uint32_t y = (uint32_t)x;
+        EXPECT_EQ(ref_clz(x, 64), clz64(x));
+        EXPECT_EQ(ref_ctz(x, 64), ctz64(x));
+        EXPECT_EQ(ref_clz(y, 32), clz32(y));
+        EXPECT_EQ(ref_ctz(y, 32), ctz32(y));
+        EXPECT_EQ(ref_pop(x), popcnt64(x));
+        EXPECT_EQ(ref_pop(y), popcnt32(y));
+        EXPECT_EQ(x ? ref_ctz(x, 64) + 1 : 0, bsf64(x));
+        EXPECT_EQ(x ? 64 - ref_clz(x, 64) : 0, bsr64(x));
+        EXPECT_EQ(y ? ref_ctz(y, 32) + 1 : 0, bsf32(y));
+        EXPECT_EQ(y ? 32 - ref_clz(y, 32) : 0, bsr32(y));
+
+        unsigned zb = 0; while (zb < 8 && ((x >> (8 * zb)) & 0xFF)) ++zb;
+        EXPECT_EQ(zb, find_first_zero_byte64(x));
+        unsigned zn = 0; while (zn < 4 && ((y >> (4 * zn)) & 0xF)) ++zn;
+        EXPECT_EQ(zn, find_first_zero_nibble16((uint16_t)y));
+
+        uint64_t lo, hi, rlo, rhi;
+        const uint64_t b = vals[(i * 7 + 3) % n];
+        lo = md_umul128(x, b, &hi);
+        ref_umul128(x, b, &rlo, &rhi);
+        EXPECT_EQ(rlo, lo);
+        EXPECT_EQ(rhi, hi);
+    }
+
+    volatile uint64_t c = 40;
+    EXPECT_EQ(40u, md_atomic_fetch_add64(&c, 2));
+    EXPECT_EQ(42u, md_atomic_load64(&c));
+    EXPECT_EQ(42u, md_atomic_fetch_add64(&c, UINT64_MAX));     // minus one
+    EXPECT_EQ(41u, md_atomic_load64(&c));
 }

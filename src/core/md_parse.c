@@ -5,10 +5,6 @@
 #include <math.h>
 #include <stdio.h>
 
-#if defined(_MSC_VER) && !defined(__clang__)
-#include <intrin.h>
-#endif
-
 // THIS FILE IS COMPILED WITHOUT FAST MATH (see CMakeLists.txt). The exact path below is exact
 // because a single IEEE division or multiplication rounds correctly; a compiler licensed to divide
 // by multiplying with the reciprocal, or to drop the sign of a zero, takes that away.
@@ -546,27 +542,6 @@ static const uint64_t pow5_128[2 * (POW5_MAX_Q - POW5_MIN_Q + 1)] = {
     0x8e679c2f5e44ff8f, 0x570f09eaa7ea7648,
 };
 
-static inline uint64_t mul_64x64(uint64_t a, uint64_t b, uint64_t* hi) {
-#if defined(__SIZEOF_INT128__)
-    __extension__ typedef unsigned __int128 u128;   // __extension__: a GCC / Clang type, said so for -Wpedantic
-    const u128 r = (u128)a * b;
-    *hi = (uint64_t)(r >> 64);
-    return (uint64_t)r;
-#elif defined(_MSC_VER) && defined(_M_X64)
-    return _umul128(a, b, hi);
-#elif defined(_MSC_VER) && defined(_M_ARM64)
-    *hi = __umulh(a, b);
-    return a * b;
-#else
-    const uint64_t a_lo = (uint32_t)a, a_hi = a >> 32;
-    const uint64_t b_lo = (uint32_t)b, b_hi = b >> 32;
-    const uint64_t p0 = a_lo * b_lo, p1 = a_lo * b_hi, p2 = a_hi * b_lo, p3 = a_hi * b_hi;
-    const uint64_t mid = (p0 >> 32) + (uint32_t)p1 + (uint32_t)p2;
-    *hi = p3 + (p1 >> 32) + (p2 >> 32) + (mid >> 32);
-    return (mid << 32) | (uint32_t)p0;
-#endif
-}
-
 // The bits of the double w * 10^q, sign excluded. w is not 0 and has at most 19 digits.
 static uint64_t eisel_lemire(uint64_t w, int64_t q) {
     enum {
@@ -585,10 +560,10 @@ static uint64_t eisel_lemire(uint64_t w, int64_t q) {
     const size_t index = 2 * (size_t)(q - POW5_MIN_Q);
     const uint64_t precision_mask = UINT64_MAX >> (MANTISSA_BITS + 3);
     uint64_t hi;
-    uint64_t lo = mul_64x64(w, pow5_128[index], &hi);
+    uint64_t lo = md_umul128(w, pow5_128[index], &hi);
     if ((hi & precision_mask) == precision_mask) {
         uint64_t hi2;
-        mul_64x64(w, pow5_128[index + 1], &hi2);
+        md_umul128(w, pow5_128[index + 1], &hi2);
         lo += hi2;
         if (hi2 > lo) ++hi;
     }

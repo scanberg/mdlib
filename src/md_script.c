@@ -66,17 +66,12 @@
 #include <inttypes.h>
 
 #if MD_COMPILER_MSVC
-#include <intrin.h>
 #pragma warning(disable:4063) // Single character tokens not being valid tokens
 #endif
 
 // The one atomic operation the IR needs: its id (see next_ir_id)
 static inline int64_t atomic_add_i64(volatile int64_t* x, int64_t v) {
-#if MD_COMPILER_MSVC
-    return _InterlockedExchangeAdd64(x, v) + v;
-#else
-    return __atomic_add_fetch(x, v, __ATOMIC_ACQ_REL);
-#endif
+    return (int64_t)md_atomic_fetch_add64((volatile uint64_t*)x, (uint64_t)v) + v;
 }
 
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
