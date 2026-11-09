@@ -80,6 +80,8 @@ uint4 unpack_ijkl(uint packed) {
 #define MAX_PGTOS_PER_CGTO 16
 #define MAX_TILE_PGTOS (TILE_SIZE * MAX_PGTOS_PER_CGTO)
 
+#include "gto_screen.slang"
+
 // 3/10 (6 pi^2)^(2/3): the uniform electron gas' kinetic energy density of one spin, over rho_s^(5/3)
 #define ELF_CF_SPIN 4.557799872345596
 
@@ -232,15 +234,15 @@ void main(uint3 lgid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_
     uint3 gid = uint3(l % args.group_dim.x, (l / args.group_dim.x) % args.group_dim.y, l / (args.group_dim.x * args.group_dim.y));
     uint3 dtid = gid * uint3(WG_X, WG_Y, WG_Z) + gtid;
 
-    if (tid == 0) num_screened_cgtos = 0;
-    GroupMemoryBarrierWithGroupSync();
-
     bool active = all(dtid < args.grid_dim.xyz);
     float3 model_aabb_min = float3( gid * uint3(WG_X, WG_Y, WG_Z))                 * args.step.xyz;
     float3 model_aabb_max = float3((gid + uint3(1,1,1)) * uint3(WG_X, WG_Y, WG_Z)) * args.step.xyz;
 
-    // The AOs that reach the group's box (their radius: the basis's cutoff)
-    for (uint i = tid; i < args.num_cgtos; i += WG_SIZE) {
+    // The AOs that reach the group's box (their radius: the basis's cutoff), listed in the order of their index
+    // (gto_screen.slang): the order of the sums below, the same every run
+    uint total = 0u;
+    for (uint base = 0u; base < args.num_cgtos; base += WG_SIZE) {
+        uint i = base + tid;
         bool passed = false;
         if (i < args.num_cgtos) {
             float r = args.cgto_r[min(i, args.num_cgtos - 1u)];
@@ -251,16 +253,11 @@ void main(uint3 lgid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_
                 passed = dot(d, d) < r * r;
             }
         }
-        uint wave_count  = WaveActiveCountBits(passed);
-        uint wave_offset = WavePrefixSum(passed ? 1u : 0u);
-        uint wave_base   = 0u;
-        if (WaveIsFirstLane() && wave_count > 0u) InterlockedAdd(num_screened_cgtos, wave_count, wave_base);
-        wave_base = WaveReadLaneFirst(wave_base);
-        if (passed) {
-            uint idx = wave_base + wave_offset;
-            if (idx < MAX_SCREENED_CGTOS) screened_cgtos[idx] = i;
-        }
+        uint2 rc = gto_screen_round(passed, tid);
+        if (passed && total + rc.x < MAX_SCREENED_CGTOS) screened_cgtos[total + rc.x] = i;
+        total += rc.y;
     }
+    if (tid == 0) num_screened_cgtos = total;
     GroupMemoryBarrierWithGroupSync();
     if (args.count_only != 0u) {
         if (tid == 0) args.group_aos[l] = num_screened_cgtos;

@@ -240,19 +240,15 @@ UTEST(gto_dmat, density_job_matches_launch) {
             md_gpu_copy_from_texture(g.s, g.rb.gpu, g.tex, NULL);
             md_gpu_stream_sync(g.s);
             memcpy(out, g.rb.cpu, sizeof(float) * g.num_vox);
-            // Bitwise but for the reference algorithm, whose sums are in the order its workgroups' waves win an
-            // atomic (the screened CGTO list): run to run that differs in the last bits (Metal), launch or job
+            // Bitwise, every algorithm: the reference kernel lists a workgroup's screened CGTOs in the order of their
+            // index (gto_screen.slang), no longer in the order its waves win an atomic (Metal: the last bits run to run)
             size_t differ = 0;
             for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
             double ref_max = 0.0;
             const double rel = dm_rel_diff(out, ref, g.num_vox, &ref_max);
             printf("  algorithm %d, %s: issued after %d polls, %zu of %zu voxels differ from the launch, max |diff| / max |rho| = %.2e\n",
                    algo, with_dmat ? "dmat  " : "packed", polls, differ, g.num_vox, rel);
-            if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
-                EXPECT_LT(rel, 1.0e-6);
-            } else {
-                EXPECT_EQ(differ, (size_t)0);
-            }
+            EXPECT_EQ(differ, (size_t)0);
         }
     }
     // ended before it is issued: the volume keeps what it held (the last evaluation above)
@@ -618,8 +614,8 @@ UTEST(gto_localization, pieces_match_one_launch) {
             ASSERT_TRUE(loc_eval_gpu(out, &s, &grid, k, true, 0.0, NULL));
             size_t differ = 0;
             for (size_t i = 0; i < n; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
-            printf("  %s %s: %zu of %zu voxels differ from one launch%s\n", kind ? "LOL" : "ELF", as_job ? "job   " : "launch", differ, n,
-                   as_job ? "" : "");
+            printf("  %s %s: %zu of %zu voxels differ from one launch (" MD_GTO_GPU_LOCALIZATION_REVISION ")\n", kind ? "LOL" : "ELF",
+                   as_job ? "job   " : "launch", differ, n);
             if (as_job) printf("    %d polls, progress %.3f\n", loc_job_polls, loc_job_progress);
             EXPECT_EQ(differ, (size_t)0);
             if (as_job) {

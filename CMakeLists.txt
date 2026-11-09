@@ -646,7 +646,7 @@ endif()
 
 set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
-    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
+    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
@@ -707,6 +707,7 @@ if (MD_ENABLE_GPU)
   set(GTO_SLANG_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_screen.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang

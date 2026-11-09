@@ -611,7 +611,7 @@ typedef struct md_gto_gpu_localization_desc_t {
 } md_gto_gpu_localization_desc_t;
 
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
-#define MD_GTO_GPU_LOCALIZATION_REVISION "r4 (counted, then in pieces of 2^30 voxel-pairs, each its own submission)"
+#define MD_GTO_GPU_LOCALIZATION_REVISION "r5 (counted, then in pieces of 2^30 voxel-pairs, each its own submission; the screened AOs in index order, bitwise run to run)"
 
 // The revision of the grid kernels' 2D variants (a grid of one layer: blocks of 32x16x1 voxels, 16x16x1 for ELF and
 // LOL), for measurements.
