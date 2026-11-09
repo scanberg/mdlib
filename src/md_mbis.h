@@ -29,6 +29,12 @@
 // stored masses (quadrature weight x density) and the pro-atoms. Points of negligible density are
 // dropped before the iterations: what they hold is below 1e-10 e an atom.
 //
+// COST
+// Linear in the atoms for a large system: per atom ~1e4 points of significant density (12 bytes each), the density
+// evaluated once at each (the AOs within reach, phi^T D phi over them), then ~20-30 accelerated iterations, each a
+// sum over the pro-atoms within reach of every point. Measured, double precision, two threads: water 0.04 s,
+// glycine/def2-SVP 0.8 s, (H2O)40/6-31G* (120 atoms, 760 AOs) 23 s, two thirds of it in the iterations.
+//
 // THE RESULT IS THE PARTITION, NOT JUST THE CHARGES
 // The fitted shells define w_A(r) anywhere, analytically: whatever else is to be partitioned the
 // same way (an orbital density, a hole or particle density) is integrated against those weights.

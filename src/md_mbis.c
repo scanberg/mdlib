@@ -17,13 +17,13 @@
 #define MBIS_DEFAULT_MAX_ITER   1000
 
 // Bound of |phi| beyond which a shell is not evaluated at a point.
-#define MBIS_AO_EPS             1.0e-12
+#define MBIS_AO_EPS             1.0e-10
 // A point whose density is below this is dropped: an atom's grid reaches ~14 bohr (48 radial points), a sphere
 // of ~1e4 bohr^3, so at most ~1e-10 e an atom goes.
 #define MBIS_RHO_FLOOR          1.0e-14
 // A pro-atom shell is left out at a point where it is below this fraction of the pro-molecule density
 // there: every weight then moves by at most that, relative.
-#define MBIS_TERM_EPS           1.0e-12
+#define MBIS_TERM_EPS           1.0e-10
 // Stratmann, Scuseria and Frisch, Chem. Phys. Lett. 257, 213 (1996): the cell function is exactly 1 or
 // 0 outside |mu| < a, which is what makes the screening below exact.
 #define MBIS_SSF_A              0.64
@@ -196,7 +196,7 @@ static int mbis_neighbor_cmp(const void* a, const void* b) {
 // only atoms within k^2 r_min of p enter - all of them within r + k^2 r_min of B, which bounds the walk down
 // the list as r_min shrinks - and B's own cell is 0 as soon as one atom is k times closer than B.
 static double mbis_becke_weight(const double* p, double r, const mbis_neighbor_t* nb, size_t num_nb, const dvec3_t* xyz,
-                                uint32_t* cand, double* cand_r) {
+                                const double* inv_dist, uint32_t* cand, double* cand_r) {
     const double k = (1.0 + MBIS_SSF_A) / (1.0 - MBIS_SSF_A);
     double rmin = r;
     double reach = r + k * k * rmin;
@@ -214,17 +214,22 @@ static double mbis_becke_weight(const double* p, double r, const mbis_neighbor_t
     }
     if (n <= 1) return 1.0;
 
+    // B's own cell first (candidate 0): over most of an atom's outer grid it is exactly 0, and the others are
+    // then not needed
     double cell_b = 0.0, sum = 0.0;
     for (size_t di = 0; di < n; ++di) {
         const double rd = cand_r[di];
         if (rd >= k * rmin) continue;
+        const double* inv_row = inv_dist + (size_t)cand[di] * num_nb;
         double cell = 1.0;
         for (size_t ci = 0; ci < n && cell > 0.0; ++ci) {
             if (ci == di || cand_r[ci] >= k * rd) continue;
-            const double R = mbis_dist(xyz[cand[di]].elem, xyz[cand[ci]].elem);
-            cell *= mbis_ssf_s((rd - cand_r[ci]) / R);
+            cell *= mbis_ssf_s((rd - cand_r[ci]) * inv_row[cand[ci]]);
         }
-        if (di == 0) cell_b = cell;
+        if (di == 0) {
+            if (!(cell > 0.0)) return 0.0;
+            cell_b = cell;
+        }
         sum += cell;
     }
     return sum > 0.0 ? cell_b / sum : 0.0;
@@ -253,12 +258,15 @@ typedef struct mbis_thread_t {
     uint32_t* run_beg;      // [num_shells]
     uint32_t* run_col;      // [num_shells]
     uint32_t* run_len;      // [num_shells]
+    uint32_t* surv_j;       // [band size]: a band's points inside the cell
+    double*   surv_w;       // [band size]: and their cell weights
     uint32_t* cand;         // [num_atoms]
     double*   cand_r;       // [num_atoms]
-    uint32_t* sub;          // [num_atoms]
-    uint32_t* term_k;       // [num_shells]
-    double*   term_v;       // [num_shells]
-    double*   term_r;       // [num_shells]
+    uint32_t* sub;          // [num_atoms]: the atoms whose pro-atoms reach a radial sphere
+    double*   sub_rc2;      // [num_atoms]: and the squared distance beyond which they do not count
+    uint32_t* term_k;       // [num_shells]: a point's pro-atom terms: their shell,
+    double*   term_v;       // [num_shells]: value,
+    double*   term_r;       // [num_shells]: and distance to their atom
     size_t    cap_ao;
 } mbis_thread_t;
 
@@ -281,6 +289,7 @@ typedef struct mbis_ctx_t {
     double*               inner_r;        // [num_atoms]: radial points closer than this use sphere[1]
 
     mbis_neighbor_t*      nb;             // [num_atoms][num_atoms], sorted by distance from the row's atom
+    double*               inv_dist;       // [num_atoms][num_atoms], 1 / |R_a - R_b| (0 on the diagonal)
     mbis_atom_points_t*   pts;            // [num_atoms]
     mbis_thread_t*        thr;            // [num_threads]
     bool                  oom;
@@ -292,6 +301,7 @@ typedef struct mbis_ctx_t {
     double*               N;              // [num_pro]
     double*               S;              // [num_pro], 1 / sigma
     double*               pre;            // [num_pro], N S^3 / (8 pi)
+    double*               logpre;         // [num_pro], its logarithm (-HUGE_VAL for an empty shell)
     double*               atom_logpre;    // [num_atoms], max ln(pre) of the atom's shells
     double*               atom_smin;      // [num_atoms], min S of the atom's shells
     uint32_t              num_chunks;
@@ -348,17 +358,33 @@ static void mbis_grid_task(void* arg, uint32_t beg, uint32_t end, uint32_t threa
 
             for (uint32_t band = 0; band < sph->num_bands; ++band) {
                 const uint32_t j0 = band * sph->band_size;
-                // The band's circle: centre and radius
-                const double ct = sph->u[3 * j0 + 2];
-                const double cc[3] = {cb[0], cb[1], cb[2] + r * ct};
-                const double rcirc = r * sqrt(MD_MAX(0.0, 1.0 - ct * ct));
 
-                // Shells that reach it, and their offsets in the gathered block
+                // The band's points inside b's cell. The cell weight is exactly 0 over most of an atom's outer grid
+                // in a dense system and costs a fraction of the density, so it goes first; what is left lies in
+                // b's own cell, a small region whatever the radius.
+                uint32_t nsurv = 0;
+                double lo[3] = {HUGE_VAL, HUGE_VAL, HUGE_VAL}, hi[3] = {-HUGE_VAL, -HUGE_VAL, -HUGE_VAL};
+                for (uint32_t j = j0; j < j0 + sph->band_size; ++j) {
+                    const double* u = sph->u + 3 * j;
+                    const double p[3] = {cb[0] + r * u[0], cb[1] + r * u[1], cb[2] + r * u[2]};
+                    const double wb = mbis_becke_weight(p, r, ctx->nb + (size_t)b * ctx->num_atoms, ctx->num_atoms, ctx->xyz, ctx->inv_dist, t->cand, t->cand_r);
+                    if (!(wb > 0.0)) continue;
+                    t->surv_j[nsurv] = j;
+                    t->surv_w[nsurv] = wb;
+                    ++nsurv;
+                    for (int ax = 0; ax < 3; ++ax) { lo[ax] = MD_MIN(lo[ax], p[ax]); hi[ax] = MD_MAX(hi[ax], p[ax]); }
+                }
+                if (nsurv == 0) continue;
+                const double cc[3] = {0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])};
+                const double ext[3] = {0.5 * (hi[0] - lo[0]), 0.5 * (hi[1] - lo[1]), 0.5 * (hi[2] - lo[2])};
+                const double rsurv = sqrt(ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]);
+
+                // Shells that reach those points, and their offsets in the gathered block
                 uint32_t ns = 0;
                 size_t nl = 0;
                 for (uint32_t s = 0; s < ctx->num_shells; ++s) {
                     const mbis_shell_t* sh = &ctx->shells[s];
-                    const double rc = sqrt(sh->r2_cut) + rcirc;
+                    const double rc = sqrt(sh->r2_cut) + rsurv;
                     const double d[3] = {sh->c[0] - cc[0], sh->c[1] - cc[1], sh->c[2] - cc[2]};
                     if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > rc * rc) continue;
                     t->shells[ns] = s;
@@ -382,7 +408,9 @@ static void mbis_grid_task(void* arg, uint32_t beg, uint32_t end, uint32_t threa
                     }
                 }
 
-                for (uint32_t j = j0; j < j0 + sph->band_size; ++j) {
+                for (uint32_t si = 0; si < nsurv; ++si) {
+                    const uint32_t j = t->surv_j[si];
+                    const double wb = t->surv_w[si];
                     const double* u = sph->u + 3 * j;
                     const double p[3] = {cb[0] + r * u[0], cb[1] + r * u[1], cb[2] + r * u[2]};
 
@@ -445,7 +473,6 @@ static void mbis_grid_task(void* arg, uint32_t beg, uint32_t end, uint32_t threa
                     for (size_t k = 0; k < nnz; ++k) rho += t->phi[k] * tmp[k];
                     if (!(rho > MBIS_RHO_FLOOR)) continue;
 
-                    const double wb = mbis_becke_weight(p, r, ctx->nb + (size_t)b * ctx->num_atoms, ctx->num_atoms, ctx->xyz, t->cand, t->cand_r);
                     const double mass = rw[ir] * sph->w[j] * wb * rho;
                     if (!(mass > 0.0)) continue;
                     out->rad[out->count]  = (uint16_t)ir;
@@ -455,6 +482,15 @@ static void mbis_grid_task(void* arg, uint32_t beg, uint32_t end, uint32_t threa
                     out->electrons += mass;
                 }
             }
+        }
+        // Allocated for every point of the grid, holding those kept: give the rest back
+        if (out->count > 0) {
+            uint16_t* rad = (uint16_t*)realloc(out->rad, sizeof(uint16_t) * out->count);
+            uint16_t* ang = (uint16_t*)realloc(out->ang, sizeof(uint16_t) * out->count);
+            double* mass = (double*)realloc(out->mass, sizeof(double) * out->count);
+            if (rad) out->rad = rad;
+            if (ang) out->ang = ang;
+            if (mass) out->mass = mass;
         }
         const MD_U64 done = md_atomic_fetch_add64(&ctx->atoms_done, 1) + 1;
         if (ctx->desc->progress && thread_idx == 0) *ctx->desc->progress = 0.5f * (float)done / (float)ctx->num_atoms;
@@ -497,24 +533,36 @@ static void mbis_iter_task(void* arg, uint32_t beg, uint32_t end, uint32_t threa
                     for (uint32_t k = ctx->shell_off[b]; k < ctx->shell_off[b + 1]; ++k) rho_b += ctx->pre[k] * exp(-ctx->S[k] * r);
                     floor_b = MBIS_TERM_EPS * rho_b;
                     const double lf = floor_b > 0.0 ? log(floor_b) : -HUGE_VAL;
+                    // Every shell of atom a stays below exp(logpre_a - smin_a d) at distance d: beyond
+                    // rc_a = (logpre_a - ln floor) / smin_a none of them counts
                     nsub = 0;
                     for (size_t i = 0; i < na; ++i) {
                         const uint32_t a = nb[i].atom;
-                        const double lo = fabs(nb[i].d - r);   // the closest a gets to the sphere
-                        if (ctx->atom_logpre[a] - ctx->atom_smin[a] * lo < lf) continue;
-                        t->sub[nsub++] = a;
+                        const double rc = (ctx->atom_logpre[a] - lf) / ctx->atom_smin[a];
+                        if (!(rc >= fabs(nb[i].d - r))) continue;   // |d - r|: the closest a gets to the sphere
+                        t->sub[nsub] = a;
+                        t->sub_rc2[nsub] = rc * rc;
+                        ++nsub;
                     }
                 }
 
                 const double* u = sph->u + 3 * (size_t)pts->ang[ip];
                 const double p[3] = {cb[0] + r * u[0], cb[1] + r * u[1], cb[2] + r * u[2]};
+
                 size_t nt = 0;
                 double rho0 = 0.0;
                 for (size_t i = 0; i < nsub; ++i) {
                     const uint32_t a = t->sub[i];
-                    const double ra = (a == b) ? r : mbis_dist(p, ctx->xyz[a].elem);
+                    double ra = r;
+                    if (a != b) {
+                        const double* ca = ctx->xyz[a].elem;
+                        const double d[3] = {p[0] - ca[0], p[1] - ca[1], p[2] - ca[2]};
+                        const double d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                        if (d2 > t->sub_rc2[i]) continue;
+                        ra = sqrt(d2);
+                    }
                     for (uint32_t k = ctx->shell_off[a]; k < ctx->shell_off[a + 1]; ++k) {
-                        const double v = ctx->pre[k] * exp(-ctx->S[k] * ra);
+                        const double v = exp(ctx->logpre[k] - ctx->S[k] * ra);
                         if (v < floor_b) continue;
                         t->term_k[nt] = k;
                         t->term_v[nt] = v;
@@ -546,7 +594,7 @@ static void mbis_ctx_free(mbis_ctx_t* ctx, uint32_t num_threads) {
     free(ctx->shells); free(ctx->alpha); free(ctx->coeff);
     free(ctx->rad_r); free(ctx->rad_w); free(ctx->inner_r);
     for (int i = 0; i < 2; ++i) { free(ctx->sphere[i].u); free(ctx->sphere[i].w); }
-    free(ctx->nb);
+    free(ctx->nb); free(ctx->inv_dist);
     if (ctx->pts) {
         for (size_t i = 0; i < ctx->num_atoms; ++i) { free(ctx->pts[i].rad); free(ctx->pts[i].ang); free(ctx->pts[i].mass); }
         free(ctx->pts);
@@ -555,11 +603,11 @@ static void mbis_ctx_free(mbis_ctx_t* ctx, uint32_t num_threads) {
         for (uint32_t i = 0; i < num_threads; ++i) {
             mbis_thread_t* t = &ctx->thr[i];
             free(t->phi); free(t->dloc); free(t->tmp); free(t->shells); free(t->loc); free(t->run_beg); free(t->run_col); free(t->run_len); free(t->cand); free(t->cand_r);
-            free(t->sub); free(t->term_k); free(t->term_v); free(t->term_r);
+            free(t->sub); free(t->sub_rc2); free(t->surv_j); free(t->surv_w); free(t->term_k); free(t->term_v); free(t->term_r);
         }
         free(ctx->thr);
     }
-    free(ctx->shell_off); free(ctx->N); free(ctx->S); free(ctx->pre);
+    free(ctx->shell_off); free(ctx->N); free(ctx->S); free(ctx->pre); free(ctx->logpre);
     free(ctx->atom_logpre); free(ctx->atom_smin); free(ctx->acc);
 }
 
@@ -638,7 +686,14 @@ bool md_mbis_compute(md_mbis_result_t* out, const md_mbis_desc_t* desc, struct m
 
     // Every atom's neighbours, nearest first (itself first)
     ctx.nb = (mbis_neighbor_t*)malloc(sizeof(mbis_neighbor_t) * na * na);
-    if (!ctx.nb) goto oom;
+    ctx.inv_dist = (double*)malloc(sizeof(double) * na * na);
+    if (!ctx.nb || !ctx.inv_dist) goto oom;
+    for (size_t a = 0; a < na; ++a) {
+        for (size_t b = 0; b < na; ++b) {
+            const double d = mbis_dist(ctx.xyz[a].elem, ctx.xyz[b].elem);
+            ctx.inv_dist[a * na + b] = (a != b && d > 0.0) ? 1.0 / d : 0.0;
+        }
+    }
     for (size_t b = 0; b < na; ++b) {
         mbis_neighbor_t* row = ctx.nb + b * na;
         for (size_t a = 0; a < na; ++a) row[a] = (mbis_neighbor_t){ (uint32_t)a, a == b ? -1.0 : mbis_dist(ctx.xyz[a].elem, ctx.xyz[b].elem) };
@@ -660,11 +715,12 @@ bool md_mbis_compute(md_mbis_result_t* out, const md_mbis_desc_t* desc, struct m
     ctx.N = (double*)malloc(sizeof(double) * ctx.num_pro);
     ctx.S = (double*)malloc(sizeof(double) * ctx.num_pro);
     ctx.pre = (double*)malloc(sizeof(double) * ctx.num_pro);
+    ctx.logpre = (double*)malloc(sizeof(double) * ctx.num_pro);
     ctx.atom_logpre = (double*)malloc(sizeof(double) * na);
     ctx.atom_smin = (double*)malloc(sizeof(double) * na);
     ctx.num_chunks = (uint32_t)MD_MIN(na, (size_t)MBIS_MAX_CHUNKS);
     ctx.acc = (double*)malloc(sizeof(double) * 2 * ctx.num_pro * ctx.num_chunks);
-    if (!ctx.N || !ctx.S || !ctx.pre || !ctx.atom_logpre || !ctx.atom_smin || !ctx.acc) goto oom;
+    if (!ctx.N || !ctx.S || !ctx.pre || !ctx.logpre || !ctx.atom_logpre || !ctx.atom_smin || !ctx.acc) goto oom;
     for (size_t a = 0; a < na; ++a) {
         const double q = desc->nuclear_charge ? desc->nuclear_charge[a] : desc->atomic_number[a];
         const double el = MD_MAX(q, 0.0);
@@ -691,10 +747,13 @@ bool md_mbis_compute(md_mbis_result_t* out, const md_mbis_desc_t* desc, struct m
         t->cand   = (uint32_t*)malloc(sizeof(uint32_t) * na);
         t->cand_r = (double*)malloc(sizeof(double) * na);
         t->sub    = (uint32_t*)malloc(sizeof(uint32_t) * na);
+        t->surv_j = (uint32_t*)malloc(sizeof(uint32_t) * ctx.sphere[0].band_size);
+        t->surv_w = (double*)malloc(sizeof(double) * ctx.sphere[0].band_size);
+        t->sub_rc2 = (double*)malloc(sizeof(double) * na);
         t->term_k = (uint32_t*)malloc(sizeof(uint32_t) * ctx.num_pro);
         t->term_v = (double*)malloc(sizeof(double) * ctx.num_pro);
         t->term_r = (double*)malloc(sizeof(double) * ctx.num_pro);
-        if (!t->shells || !t->loc || !t->run_beg || !t->run_col || !t->run_len || !t->cand || !t->cand_r || !t->sub || !t->term_k || !t->term_v || !t->term_r) goto oom;
+        if (!t->shells || !t->loc || !t->run_beg || !t->run_col || !t->run_len || !t->cand || !t->cand_r || !t->sub || !t->sub_rc2 || !t->surv_j || !t->surv_w || !t->term_k || !t->term_v || !t->term_r) goto oom;
     }
 
     // The density on the grid
@@ -732,7 +791,8 @@ bool md_mbis_compute(md_mbis_result_t* out, const md_mbis_desc_t* desc, struct m
             double lp = -HUGE_VAL, smin = HUGE_VAL;
             for (uint32_t k = ctx.shell_off[a]; k < ctx.shell_off[a + 1]; ++k) {
                 ctx.pre[k] = ctx.N[k] * ctx.S[k] * ctx.S[k] * ctx.S[k] / (8.0 * 3.14159265358979323846);
-                if (ctx.pre[k] > 0.0) lp = MD_MAX(lp, log(ctx.pre[k]));
+                ctx.logpre[k] = ctx.pre[k] > 0.0 ? log(ctx.pre[k]) : -HUGE_VAL;
+                lp = MD_MAX(lp, ctx.logpre[k]);
                 smin = MD_MIN(smin, ctx.S[k]);
             }
             ctx.atom_logpre[a] = lp;
