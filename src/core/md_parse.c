@@ -85,8 +85,9 @@ static void scan_long_mantissa(float_parts_t* p) {
     p->truncated = truncated;
 }
 
-// The grammar in md_parse.h. Returns the characters consumed, 0 when there is no number.
-static size_t scan_float(float_parts_t* p, const char* s, size_t len) {
+// The grammar in md_parse.h. Returns the characters consumed, 0 when there is no number. Inlined into
+// its callers, so that the parts stay in registers rather than going through memory.
+static MD_FORCE_INLINE size_t scan_float(float_parts_t* p, const char* s, size_t len) {
     const char* c   = s;
     const char* end = s + len;
 
@@ -612,18 +613,15 @@ static inline double double_from_bits(uint64_t bits) {
     return d;
 }
 
-static double float_value(const float_parts_t* p) {
+// Everything but the exact case: special values, a power of ten past 22, a mantissa past 2^53 or past
+// 19 digits. Out of line, so that the exact case is all that is inlined where the value is wanted.
+static MD_NOINLINE double float_value_general(const float_parts_t* p) {
     if (p->kind == NUMBER_INF) return p->negative ? -HUGE_VAL : HUGE_VAL;
     if (p->kind == NUMBER_NAN) return NAN;
 
     double value = 0.0;
     if (p->mantissa != 0) {
-        if (!p->truncated && p->mantissa <= (UINT64_C(1) << 53) && -22 <= p->exp10 && p->exp10 <= 22) {
-            // Exact when the mantissa is an integer a double holds and the power of ten is one too:
-            // the single multiplication or division is then the only rounding (Clinger, 1990).
-            value = (double)(int64_t)p->mantissa;
-            value = p->exp10 < 0 ? value / pow10_exact[-p->exp10] : value * pow10_exact[p->exp10];
-        } else if (!p->truncated) {
+        if (!p->truncated) {
             value = double_from_bits(eisel_lemire(p->mantissa, p->exp10));
         } else {
             // More than 19 significant digits, of which the mantissa holds the first 19: the value
@@ -638,46 +636,28 @@ static double float_value(const float_parts_t* p) {
     return p->negative ? -value : value;
 }
 
+static MD_FORCE_INLINE double float_value(const float_parts_t* p) {
+    // Exact when the mantissa is an integer a double holds and the power of ten is one too: the
+    // single multiplication or division is then the only rounding (Clinger, 1990). One test, first:
+    // a special value has kind != NUMBER_FINITE, a long mantissa is 'truncated', and a zero mantissa
+    // passes and gives a zero of the right sign. The signed conversion is one instruction where an
+    // unsigned one is a branchy sequence, and the mantissa is below 2^63 here.
+    if (p->kind == NUMBER_FINITE && !p->truncated && p->mantissa <= (UINT64_C(1) << 53) && (uint64_t)(p->exp10 + 22) <= 44) {
+        double value = (double)(int64_t)p->mantissa;
+        value = p->exp10 < 0 ? value / pow10_exact[-p->exp10] : value * pow10_exact[p->exp10];
+        return p->negative ? -value : value;
+    }
+    return float_value_general(p);
+}
+
 size_t md_parse_f64(double* out_value, md_str_t str) {
     MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
-    // The shape nearly every number in a structure or trajectory file has - a plain decimal of at
-    // most 15 or so digits - is read and converted right here, exactly; anything else (an exponent,
-    // a long mantissa, a special value, no number at all) is read again by the general scanner.
-    const char* s   = str.ptr;
-    const char* end = str.ptr + str.len;
-    const char* c   = s;
-    bool negative = false;
-    if (c < end && (*c == '-' || *c == '+')) {
-        negative = (*c == '-');
-        ++c;
-    }
-    const char* mant = c;
-    uint64_t m = 0;
-    while (c < end && DIGIT(*c)) {
-        m = m * 10 + (unsigned)(*c - '0');
-        ++c;
-    }
-    size_t num_digits = (size_t)(c - mant);
-    size_t num_frac = 0;
-    if (c < end && *c == '.') {
-        const char* frac = ++c;
-        while (c < end && DIGIT(*c)) {
-            m = m * 10 + (unsigned)(*c - '0');
-            ++c;
-        }
-        num_frac = (size_t)(c - frac);
-        num_digits += num_frac;
-    }
-    if (num_digits != 0 && num_digits <= 19 && num_frac <= 22 && m <= (UINT64_C(1) << 53) && (c == end || (*c != 'e' && *c != 'E'))) {
-        // A signed conversion is one instruction where an unsigned one is a branchy sequence, and
-        // m < 2^63 here
-        const double v = (double)(int64_t)m / pow10_exact[num_frac];
-        *out_value = negative ? -v : v;
-        return (size_t)(c - s);
-    }
-
+    // One pass over the characters, then the value from the parts. The common shapes - a plain
+    // decimal, or a mantissa of up to 15 or so digits with an exponent, as %E prints it - leave the
+    // scan with a mantissa a double holds and a power of ten of at most 22, which float_value turns
+    // into the exact value with one multiplication or division.
     float_parts_t parts;
     const size_t n = scan_float(&parts, str.ptr, str.len);
     if (n) {

@@ -21,8 +21,9 @@
 //
 // The float value is CORRECTLY ROUNDED - the same double strtod gives - and does not depend on the
 // process locale: a decimal comma locale, which a GTK file dialog can switch the process into, does
-// not change what "1.5" means. A plain decimal of up to ~15 digits (every fixed width MD format) is
-// one exact division; up to 19 significant digits with any exponent goes through Eisel-Lemire, as
+// not change what "1.5" means. A mantissa of up to ~15 digits with a power of ten of at most 22, the
+// exponent included (every fixed width MD format, and %E as prmtop and cube files print it), is one
+// exact multiplication or division; up to 19 significant digits with any exponent goes through Eisel-Lemire, as
 // fast_float does it; only a longer mantissa whose 19 digit truncation straddles a rounding boundary
 // is handed to strtod, in a form without a decimal point. This takes IEEE arithmetic in the default
 // round to nearest mode, which is why md_parse.c is compiled without fast math.
