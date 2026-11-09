@@ -138,6 +138,8 @@ set(SRC_FILES
   src/md_edr.h
   src/md_filter.h
   src/md_flow.c
+  src/md_fragment.c
+  src/md_fragment.h
   src/md_flow.h
   src/md_gisaxs.c
   src/md_gisaxs.h
