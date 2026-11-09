@@ -177,6 +177,8 @@ set(SRC_FILES
   src/md_lammps.h
   src/md_match.c
   src/md_match.h
+  src/md_mbis.c
+  src/md_mbis.h
   src/md_mcs.c
   src/md_mcs.h
   src/md_pucker.c
