@@ -33,6 +33,7 @@
 #include <md_gto.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
+#include <core/md_linalg.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
 
@@ -1166,127 +1167,6 @@ static int iso_factor_ldl(const double* S, int n, double* F, double* lam) {
     return grew ? -1 : r;
 }
 
-// Symmetric eigendecomposition: Householder tridiagonalization and the implicit QL algorithm
-// (tred2 / tql2 as in EISPACK and JAMA). In: V = S (row major). Out: V's columns the eigenvectors,
-// val the eigenvalues.
-static void iso_eigen_sym(double* V, double* val, int n) {
-#define ISO_V(i, j) V[(size_t)(i) * n + (j)]
-    double* d = val;
-    double* e = (double*)calloc(n, sizeof(double));
-    for (int j = 0; j < n; ++j) d[j] = ISO_V(n - 1, j);
-    for (int i = n - 1; i > 0; --i) {
-        double scale = 0.0, h = 0.0;
-        for (int k = 0; k < i; ++k) scale += fabs(d[k]);
-        if (scale == 0.0) {
-            e[i] = d[i - 1];
-            for (int j = 0; j < i; ++j) { d[j] = ISO_V(i - 1, j); ISO_V(i, j) = 0.0; ISO_V(j, i) = 0.0; }
-        } else {
-            for (int k = 0; k < i; ++k) { d[k] /= scale; h += d[k] * d[k]; }
-            double f = d[i - 1];
-            double g = sqrt(h);
-            if (f > 0) g = -g;
-            e[i] = scale * g;
-            h -= f * g;
-            d[i - 1] = f - g;
-            for (int j = 0; j < i; ++j) e[j] = 0.0;
-            for (int j = 0; j < i; ++j) {
-                f = d[j];
-                ISO_V(j, i) = f;
-                g = e[j] + ISO_V(j, j) * f;
-                for (int k = j + 1; k <= i - 1; ++k) { g += ISO_V(k, j) * d[k]; e[k] += ISO_V(k, j) * f; }
-                e[j] = g;
-            }
-            f = 0.0;
-            for (int j = 0; j < i; ++j) { e[j] /= h; f += e[j] * d[j]; }
-            const double hh = f / (h + h);
-            for (int j = 0; j < i; ++j) e[j] -= hh * d[j];
-            for (int j = 0; j < i; ++j) {
-                f = d[j];
-                g = e[j];
-                for (int k = j; k <= i - 1; ++k) ISO_V(k, j) -= (f * e[k] + g * d[k]);
-                d[j] = ISO_V(i - 1, j);
-                ISO_V(i, j) = 0.0;
-            }
-        }
-        d[i] = h;
-    }
-    for (int i = 0; i < n - 1; ++i) {
-        ISO_V(n - 1, i) = ISO_V(i, i);
-        ISO_V(i, i) = 1.0;
-        const double h = d[i + 1];
-        if (h != 0.0) {
-            for (int k = 0; k <= i; ++k) d[k] = ISO_V(k, i + 1) / h;
-            for (int j = 0; j <= i; ++j) {
-                double g = 0.0;
-                for (int k = 0; k <= i; ++k) g += ISO_V(k, i + 1) * ISO_V(k, j);
-                for (int k = 0; k <= i; ++k) ISO_V(k, j) -= g * d[k];
-            }
-        }
-        for (int k = 0; k <= i; ++k) ISO_V(k, i + 1) = 0.0;
-    }
-    for (int j = 0; j < n; ++j) { d[j] = ISO_V(n - 1, j); ISO_V(n - 1, j) = 0.0; }
-    ISO_V(n - 1, n - 1) = 1.0;
-    e[0] = 0.0;
-
-    for (int i = 1; i < n; ++i) e[i - 1] = e[i];
-    e[n - 1] = 0.0;
-    double f = 0.0, tst1 = 0.0;
-    const double eps = DBL_EPSILON;
-    for (int l = 0; l < n; ++l) {
-        tst1 = fmax(tst1, fabs(d[l]) + fabs(e[l]));
-        int m = l;
-        while (m < n) {
-            if (fabs(e[m]) <= eps * tst1) break;
-            m++;
-        }
-        if (m > l) {
-            int iter = 0;
-            do {
-                if (++iter > 60) break;
-                double g = d[l];
-                double p = (d[l + 1] - g) / (2.0 * e[l]);
-                double r = hypot(p, 1.0);
-                if (p < 0) r = -r;
-                d[l] = e[l] / (p + r);
-                d[l + 1] = e[l] * (p + r);
-                const double dl1 = d[l + 1];
-                double h = g - d[l];
-                for (int i = l + 2; i < n; ++i) d[i] -= h;
-                f += h;
-                p = d[m];
-                double c = 1.0, c2 = c, c3 = c;
-                const double el1 = e[l + 1];
-                double s = 0.0, s2 = 0.0;
-                for (int i = m - 1; i >= l; --i) {
-                    c3 = c2;
-                    c2 = c;
-                    s2 = s;
-                    g = c * e[i];
-                    h = c * p;
-                    r = hypot(p, e[i]);
-                    e[i + 1] = s * r;
-                    s = e[i] / r;
-                    c = p / r;
-                    p = c * d[i] - s * g;
-                    d[i + 1] = h + s * (c * g + s * d[i]);
-                    for (int k = 0; k < n; ++k) {
-                        h = ISO_V(k, i + 1);
-                        ISO_V(k, i + 1) = s * ISO_V(k, i) + c * h;
-                        ISO_V(k, i) = c * ISO_V(k, i) - s * h;
-                    }
-                }
-                p = -s * s2 * c3 * el1 * e[l] / dl1;
-                e[l] = s * p;
-                d[l] = c * p;
-            } while (fabs(e[l]) > eps * tst1);
-        }
-        d[l] += f;
-        e[l] = 0.0;
-    }
-    free(e);
-#undef ISO_V
-}
-
 // max |R_ij| and sum_ij |R_ij| max|phi_i| max|phi_j| of R = S - sum_k l_k c_k c_k^T.
 static double iso_factor_residual(const double* S, int n, const double* F, const double* lam, int r, const double* ao_max, double* out_rmax) {
     double slack = 0.0, rmax = 0.0;
@@ -1331,7 +1211,15 @@ static int iso_factor_density(const double* D, int n, const double* ao_max, doub
         factor = ISO_FACTOR_EIGEN;
         memcpy(F, S, sizeof(double) * (size_t)n * n);
         double* ev = (double*)malloc(sizeof(double) * n);
-        iso_eigen_sym(F, ev, n);
+        if (!md_linalg_sym_eigen(F, ev, (size_t)n)) {
+            memset(ev, 0, sizeof(double) * n);  // no factor rather than a wrong one: r ends up 0
+        }
+        // eigenvector k comes back contiguous, F[k * n + i]; the convention here is F[i * n + k]
+        for (int i = 0; i < n; ++i) for (int k = i + 1; k < n; ++k) {
+            const double t = F[(size_t)i * n + k];
+            F[(size_t)i * n + k] = F[(size_t)k * n + i];
+            F[(size_t)k * n + i] = t;
+        }
         double emax = 0.0;
         for (int k = 0; k < n; ++k) emax = fmax(emax, fabs(ev[k]));
         const double etol = 64.0 * n * 0.5 * DBL_EPSILON * emax;

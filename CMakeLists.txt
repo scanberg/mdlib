@@ -87,6 +87,8 @@ set(CORE_FILES
   src/core/md_hash.h
   src/core/md_json.c
   src/core/md_json.h
+  src/core/md_linalg.c
+  src/core/md_linalg.h
   src/core/md_linear_allocator.c
   src/core/md_linear_allocator.h
   src/core/md_log.c

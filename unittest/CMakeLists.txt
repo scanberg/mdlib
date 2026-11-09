@@ -72,6 +72,7 @@ set (SRC_FILES
     test_json.c
     test_vector_graphics.c
     test_flow.c
+    test_linalg.c
     test_gisaxs.c
     test_xvg.c
     rmsd.c
