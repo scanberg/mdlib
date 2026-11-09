@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 // THIS FILE IS COMPILED WITHOUT FAST MATH (see CMakeLists.txt). The exact path below is exact
 // because a single IEEE division or multiplication rounds correctly; a compiler licensed to divide
@@ -17,49 +18,11 @@ const double md_parse_pow10_exact[23] = {
     1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
 };
 
-typedef enum {
-    NUMBER_FINITE = 0,
-    NUMBER_INF,
-    NUMBER_NAN,
-} number_kind_t;
-
-typedef struct {
-    const char*   mant_beg;     // The mantissa as written: digits and at most one '.'
-    const char*   mant_end;
-    uint64_t      mantissa;     // Its first 19 significant digits
-    int64_t       exp10;        // The value is mantissa * 10^exp10, unless 'truncated'
-    int64_t       exp_written;  // The exponent after the 'e', 0 without one
-    bool          truncated;    // There were more than 19 significant digits
-    bool          negative;
-    number_kind_t kind;
-} float_parts_t;
-
-// "inf", "infinity" or "nan" in any case. Returns the length matched, 0 for none.
-static size_t match_special(number_kind_t* kind, const char* c, const char* end) {
-    static const struct { const char* word; size_t len; number_kind_t kind; } words[] = {
-        { "infinity", 8, NUMBER_INF },
-        { "inf",      3, NUMBER_INF },
-        { "nan",      3, NUMBER_NAN },
-    };
-    for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); ++w) {
-        if ((size_t)(end - c) < words[w].len) continue;
-        size_t i = 0;
-        while (i < words[w].len && (c[i] | 0x20) == words[w].word[i]) ++i;
-        if (i == words[w].len) {
-            *kind = words[w].kind;
-            return words[w].len;
-        }
-    }
-    return 0;
-}
-
-// Rare: more than 19 digits in the mantissa, which overflows the plain accumulation. Leading zeros
-// are not significant; digits past the 19th significant one only move the exponent (in the integer
-// part) or are dropped (in the fraction). The value is then approximate, which only matters for the
-// approximation - the caller takes such a number down the exact path.
-static void scan_long_mantissa(float_parts_t* p) {
-    const char* c   = p->mant_beg;
-    const char* end = p->mant_end;
+// The first 19 significant digits of a mantissa as written (digits and at most one '.') which has more
+// than 19, and the power of ten they are to be scaled by for the value as written: leading zeros are not
+// significant, digits past the 19th only move the exponent (in the integer part) or are dropped (in the
+// fraction). Returns whether a dropped digit was not 0, so that the result is only an approximation.
+static bool scan_long_mantissa(uint64_t* out_m, int64_t* out_e, const char* c, const char* end) {
     uint64_t m = 0;
     int64_t  e = 0;
     int nd = 0;
@@ -80,89 +43,16 @@ static void scan_long_mantissa(float_parts_t* p) {
             else         { truncated |= *c != '0'; }
         }
     }
-    p->mantissa  = m;
-    p->exp10     = e;
-    p->truncated = truncated;
-}
-
-// The grammar in md_parse.h. Returns the characters consumed, 0 when there is no number. Inlined into
-// its callers, so that the parts stay in registers rather than going through memory.
-static MD_FORCE_INLINE size_t scan_float(float_parts_t* p, const char* s, size_t len) {
-    const char* c   = s;
-    const char* end = s + len;
-
-    p->mantissa    = 0;
-    p->exp10       = 0;
-    p->exp_written = 0;
-    p->truncated   = false;
-    p->negative    = false;
-    p->kind        = NUMBER_FINITE;
-
-    if (c < end && (*c == '-' || *c == '+')) {
-        p->negative = (*c == '-');
-        ++c;
-    }
-
-    // The common case in one tight pass: every digit into the mantissa, counting them
-    const char* mant = c;
-    uint64_t m = 0;
-    while (c < end && DIGIT(*c)) {
-        m = m * 10 + (unsigned)(*c - '0');
-        ++c;
-    }
-    size_t num_digits = (size_t)(c - mant);
-    int64_t e = 0;
-    if (c < end && *c == '.') {
-        const char* frac = ++c;
-        while (c < end && DIGIT(*c)) {
-            m = m * 10 + (unsigned)(*c - '0');
-            ++c;
-        }
-        e = -(int64_t)(c - frac);
-        num_digits += (size_t)(c - frac);
-    }
-
-    if (num_digits == 0) {
-        // Not a digit in sight: a lone sign or '.', or one of the special values
-        const size_t n = match_special(&p->kind, mant, end);
-        return n ? (size_t)(mant + n - s) : 0;
-    }
-
-    p->mant_beg = mant;
-    p->mant_end = c;
-    p->mantissa = m;
-    p->exp10    = e;
-    if (num_digits > 19) {
-        scan_long_mantissa(p);
-    }
-
-    if (c < end && (*c == 'e' || *c == 'E')) {
-        const char* x = c + 1;
-        bool exp_negative = false;
-        if (x < end && (*x == '-' || *x == '+')) {
-            exp_negative = (*x == '-');
-            ++x;
-        }
-        if (x < end && DIGIT(*x)) {
-            int64_t exp = 0;
-            for (; x < end && DIGIT(*x); ++x) {
-                // Past this it is an overflow or an underflow whatever the mantissa is
-                if (exp < 100000) exp = exp * 10 + (*x - '0');
-            }
-            p->exp_written = exp_negative ? -exp : exp;
-            p->exp10      += p->exp_written;
-            c = x;
-        }
-    }
-
-    return (size_t)(c - s);
+    *out_m = m;
+    *out_e = e;
+    return truncated;
 }
 
 // The value of what the exact path cannot do, through the C library. strtod is given the number in a
 // canonical form: its significant digits with the decimal point taken out and folded into the
 // exponent. With no decimal point in it there is nothing for the locale to change, so the result is
 // the correctly rounded value whatever LC_NUMERIC says.
-static double slow_value(const float_parts_t* p) {
+static double slow_value(const char* mant_beg, const char* mant_end, int64_t exp_written) {
     // Correct rounding of a double needs at most 768 significant digits. Past this many, dropping the
     // rest changes the result only for inputs constructed to provoke it.
     enum { MAX_DIGITS = 800 };
@@ -171,7 +61,7 @@ static double slow_value(const float_parts_t* p) {
     int64_t shift = 0;      // Of the digits in buf relative to the mantissa as written
     bool after_dot = false;
 
-    for (const char* c = p->mant_beg; c < p->mant_end; ++c) {
+    for (const char* c = mant_beg; c < mant_end; ++c) {
         if (*c == '.') {
             after_dot = true;
         } else if (n == 0 && *c == '0') {
@@ -187,7 +77,7 @@ static double slow_value(const float_parts_t* p) {
         return 0.0;
     }
 
-    int64_t exp10 = p->exp_written + shift;
+    int64_t exp10 = exp_written + shift;
     // Clamped so it prints in a few characters; anything this far out is 0 or infinity either way
     if (exp10 >  100000) exp10 =  100000;
     if (exp10 < -100000) exp10 = -100000;
@@ -613,74 +503,62 @@ static inline double double_from_bits(uint64_t bits) {
     return d;
 }
 
-// Everything but the exact case: special values, a power of ten past 22, a mantissa past 2^53 or past
-// 19 digits. Out of line, so that the exact case is all that is inlined where the value is wanted.
-static MD_NOINLINE double float_value_general(const float_parts_t* p) {
-    if (p->kind == NUMBER_INF) return p->negative ? -HUGE_VAL : HUGE_VAL;
-    if (p->kind == NUMBER_NAN) return NAN;
+double md_parse_f64_slow(uint64_t m, int64_t exp10, size_t num_digits, const char* mant_beg, const char* mant_end) {
+    if (num_digits <= 19) {
+        if (m == 0) return 0.0;
+        // Exact when the power of ten is too (Clinger, 1990), here a multiplication: rounded in this
+        // function, never inlined, so that no FMA contraction with the caller's arithmetic can take it
+        if (m <= (UINT64_C(1) << 53) && 0 <= exp10 && exp10 <= 22) {
+            return (double)(int64_t)m * md_parse_pow10_exact[exp10];
+        }
+        return double_from_bits(eisel_lemire(m, exp10));
+    }
 
-    double value = 0.0;
-    if (p->mantissa != 0) {
-        if (!p->truncated) {
-            value = double_from_bits(eisel_lemire(p->mantissa, p->exp10));
-        } else {
-            // More than 19 significant digits, of which the mantissa holds the first 19: the value
-            // lies between w and w + 1 in the last place. When both round to the same double that is
-            // the answer, which it nearly always is; when they straddle a rounding boundary only the
-            // full digit string decides.
-            const uint64_t a = eisel_lemire(p->mantissa, p->exp10);
-            const uint64_t b = eisel_lemire(p->mantissa + 1, p->exp10);
-            value = a == b ? double_from_bits(a) : slow_value(p);
+    // More than 19 significant digits: 'm' overflowed, and the value lies between the first 19 digits w and
+    // w + 1 in their last place. When both round to the same double that is the answer, which it nearly always
+    // is; when they straddle a rounding boundary only the full digit string decides.
+    const char* dot = (const char*)memchr(mant_beg, '.', (size_t)(mant_end - mant_beg));
+    const int64_t exp_written = exp10 + (dot ? (int64_t)(mant_end - dot - 1) : 0);
+    uint64_t w;
+    int64_t  e;
+    const bool truncated = scan_long_mantissa(&w, &e, mant_beg, mant_end);
+    if (w == 0) return 0.0;
+    e += exp_written;
+    const uint64_t a = eisel_lemire(w, e);
+    if (!truncated) return double_from_bits(a);
+    const uint64_t b = eisel_lemire(w + 1, e);
+    return a == b ? double_from_bits(a) : slow_value(mant_beg, mant_end, exp_written);
+}
+
+size_t md_parse_f64_special(double* out_value, md_str_t str) {
+    MD_ASSERT(out_value);
+    const char* c   = str.ptr;
+    const char* end = str.ptr + str.len;
+    bool negative = false;
+    if (c < end && (*c == '-' || *c == '+')) {
+        negative = (*c == '-');
+        ++c;
+    }
+    // "inf", "infinity" or "nan" in any case; the longer spelling first
+    static const struct { const char* word; size_t len; } words[] = { { "infinity", 8 }, { "inf", 3 }, { "nan", 3 } };
+    for (size_t w = 0; w < MD_COUNTOF(words); ++w) {
+        if ((size_t)(end - c) < words[w].len) continue;
+        size_t i = 0;
+        while (i < words[w].len && (c[i] | 0x20) == words[w].word[i]) ++i;
+        if (i == words[w].len) {
+            *out_value = words[w].word[0] == 'n' ? NAN : (negative ? -HUGE_VAL : HUGE_VAL);
+            return (size_t)(c + i - str.ptr);
         }
     }
-    return p->negative ? -value : value;
-}
-
-// m * 10^exp10, for a mantissa of at most 19 digits that the inline part of md_parse_f64 did not finish: one past 2^53,
-// or a power of ten outside 10^-22 .. 10^0. Never inlined, link time optimization included: a product with a positive
-// power is rounded here, as a value of its own, and cannot be fused with the caller's arithmetic into an FMA.
-MD_NOINLINE double md_parse_f64_finish(uint64_t m, int64_t exp10) {
-    if (m == 0) return 0.0;
-    if (m <= (UINT64_C(1) << 53) && 0 <= exp10 && exp10 <= 22) {
-        return (double)(int64_t)m * md_parse_pow10_exact[exp10];
-    }
-    return double_from_bits(eisel_lemire(m, exp10));
-}
-
-static MD_FORCE_INLINE double float_value(const float_parts_t* p) {
-    // Exact when the mantissa is an integer a double holds and the power of ten is one too: the
-    // single multiplication or division is then the only rounding (Clinger, 1990). One test, first:
-    // a special value has kind != NUMBER_FINITE, a long mantissa is 'truncated', and a zero mantissa
-    // passes and gives a zero of the right sign. The signed conversion is one instruction where an
-    // unsigned one is a branchy sequence, and the mantissa is below 2^63 here.
-    if (p->kind == NUMBER_FINITE && !p->truncated && p->mantissa <= (UINT64_C(1) << 53) && (uint64_t)(p->exp10 + 22) <= 44) {
-        double value = (double)(int64_t)p->mantissa;
-        value = p->exp10 < 0 ? value / md_parse_pow10_exact[-p->exp10] : value * md_parse_pow10_exact[p->exp10];
-        return p->negative ? -value : value;
-    }
-    return float_value_general(p);
-}
-
-size_t md_parse_f64_general(double* out_value, md_str_t str) {
-    MD_ASSERT(out_value);
-    if (!str.ptr) return 0;
-
-    // One pass over the characters, then the value from the parts. A mantissa a double holds with a
-    // power of ten of at most 22 either way is one multiplication or division in float_value; the
-    // inline part in md_parse.h has taken those with a negative power already, so what comes here is
-    // mostly a positive power, a long mantissa, a special value or no number at all.
-    float_parts_t parts;
-    const size_t n = scan_float(&parts, str.ptr, str.len);
-    if (n) {
-        *out_value = float_value(&parts);
-    }
-    return n;
+    return 0;
 }
 
 bool md_parse_is_float(md_str_t str) {
-    if (!str.ptr || str.len == 0) return false;
-    float_parts_t parts;
-    return scan_float(&parts, str.ptr, str.len) == str.len && parts.kind == NUMBER_FINITE;
+    // The finite forms are the ones that start with a digit or '.' after the sign; the special ones with a letter
+    double v;
+    if (!str.ptr || str.len == 0 || md_parse_f64(&v, str) != str.len) return false;
+    const char c = str.ptr[(str.ptr[0] == '-' || str.ptr[0] == '+') ? 1 : 0];
+    return c == '.' || DIGIT(c);
 }
 
 

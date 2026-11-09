@@ -37,13 +37,15 @@
 extern "C" {
 #endif
 
-// Every input md_parse_f64 takes, out of line: md_parse_f64 itself is the inline part below, which
-// hands over whatever it does not finish.
-size_t md_parse_f64_general(double* out_value, md_str_t str);
-
-// mantissa * 10^exp10 correctly rounded, for a mantissa of at most 19 digits: what the inline part does
-// not finish once it has scanned a number.
-double md_parse_f64_finish(uint64_t mantissa, int64_t exp10);
+// The out of line parts of md_parse_f64, below, which is inline: the scan, and the value when it is one
+// exact division, are all a reader's loop runs for nearly every number.
+//   md_parse_f64_slow     the value of a scanned number that is not one exact division: a positive power of
+//                         ten, a mantissa past 2^53, more than 19 digits. From what the scan found - the
+//                         mantissa (its first 19 digits), the power of ten, and the digits as written for
+//                         the rare number with more - so nothing is read twice.
+//   md_parse_f64_special  a number without a digit: "inf", "infinity" or "nan" in any case, or none at all
+double md_parse_f64_slow(uint64_t mantissa, int64_t exp10, size_t num_digits, const char* mant_beg, const char* mant_end);
+size_t md_parse_f64_special(double* out_value, md_str_t str);
 
 bool md_parse_is_float(md_str_t str);
 
@@ -54,20 +56,13 @@ extern const double md_parse_pow10_exact[23];
 }
 #endif
 
-// The common case of md_parse_f64 inline, so that a reader's loop pays no call for it: a mantissa of
-// at most 19 digits which a double holds exactly (up to 2^53), with a power of ten - the fraction
-// digits less the written exponent - of 10^0 to 10^-22. That is every fixed width decimal, and every
-// %E whose exponent is at most its number of fraction digits: "-12.345", "1.23456789E+02" (which is
-// 123456789 / 10^6), but not "1.5E+03".
-// The value is then one exact IEEE division (Clinger, 1990), which no FMA contraction can touch - a
-// division does not fuse. A positive power would be a multiplication, which -ffp-contract=fast could
-// fuse with an addition of the caller's into one FMA, so the parsed value would not be rounded on its
-// own and the same text could read differently at different call sites. So a scanned number of at
-// most 19 digits that is not of that shape - a mantissa past 2^53, a positive power - is finished out
-// of line by md_parse_f64_finish from what the scan found; only what the scan cannot take (more than
-// 19 digits, an exponent of more than 3 digits, inf and nan, no number at all) goes to
-// md_parse_f64_general, which reads it again from the start. Like md_parse_fixed_f32 this assumes IEEE division, which a TU built
-// with -ffast-math or /fp:fast does not give (mdlib and VIAMD are not).
+// When the mantissa is an integer a double holds (up to 2^53) and the power of ten - the written exponent less
+// the fraction digits - is 10^0 to 10^-22, the value is one exact IEEE division (Clinger, 1990). That is every
+// fixed width decimal, and every %E whose exponent is at most its number of fraction digits: "-12.345",
+// "1.23456789E+02" (123456789 / 10^6). Only a division is done here: a multiplication by a positive power,
+// inlined, could be fused by -ffp-contract=fast with an addition of the caller's into one FMA, so that the
+// same text could read differently at different call sites. md_parse_f64_slow does those, out of line. Like
+// md_parse_fixed_f32 this assumes IEEE division, which a TU built with -ffast-math or /fp:fast does not give.
 static MD_FORCE_INLINE size_t md_parse_f64(double* out_value, md_str_t str) {
     MD_ASSERT(out_value);
     const char* s   = str.ptr;
@@ -80,6 +75,7 @@ static MD_FORCE_INLINE size_t md_parse_f64(double* out_value, md_str_t str) {
         negative = (*c == '-');
         ++c;
     }
+    // The mantissa: digits, at most one '.', more digits. 'm' holds them all while there are at most 19.
     const char* mant = c;
     uint64_t m = 0;
     while (c < end && (unsigned)(*c - '0') < 10u) {
@@ -97,42 +93,40 @@ static MD_FORCE_INLINE size_t md_parse_f64(double* out_value, md_str_t str) {
         exp10 = -(int64_t)(c - frac);
         num_digits += (size_t)(c - frac);
     }
+    const char* mant_end = c;
+
+    // The exponent; an 'e' without digits after it is not part of the number. Past 100000 it is 0 or
+    // infinity whatever the mantissa, so it stops growing there, but every digit is read. (Without a digit
+    // in the mantissa this reads nothing that is used: the number goes to md_parse_f64_special below.)
     if (c < end && (*c | 0x20) == 'e') {
-        // Up to 3 exponent digits; more, and the general path decides. An 'e' without digits is not
-        // part of the number.
         const char* x = c + 1;
         bool exp_negative = false;
         if (x < end && (*x == '-' || *x == '+')) {
             exp_negative = (*x == '-');
             ++x;
         }
-        const char* xd = x;
-        int64_t w = 0;
-        while (x < end && x - xd < 3 && (unsigned)(*x - '0') < 10u) {
-            w = w * 10 + (*x - '0');
-            ++x;
-        }
         if (x < end && (unsigned)(*x - '0') < 10u) {
-            return md_parse_f64_general(out_value, str);
-        }
-        if (x > xd) {
+            int64_t w = 0;
+            for (; x < end && (unsigned)(*x - '0') < 10u; ++x) {
+                if (w < 100000) w = w * 10 + (*x - '0');
+            }
             exp10 += exp_negative ? -w : w;
             c = x;
         }
     }
-    // num_digits - 1 < 19: at least one digit, and at most 19, so that m did not overflow. The signed
-    // conversion is one instruction where an unsigned one is a branchy sequence, and m < 2^63 here.
-    if (num_digits - 1 < 19) {
-        double v;
-        if (m <= (UINT64_C(1) << 53) && -22 <= exp10 && exp10 <= 0) {
-            v = (double)(int64_t)m / md_parse_pow10_exact[-exp10];
-        } else {
-            v = md_parse_f64_finish(m, exp10);
-        }
-        *out_value = negative ? -v : v;
-        return (size_t)(c - s);
+
+    // num_digits - 1 < 19: 1 to 19 digits, so m holds them all. The signed conversion is one instruction
+    // where an unsigned one is a branchy sequence; m < 2^63 here.
+    double v;
+    if (num_digits - 1 < 19 && m <= (UINT64_C(1) << 53) && -22 <= exp10 && exp10 <= 0) {
+        v = (double)(int64_t)m / md_parse_pow10_exact[-exp10];
+    } else if (num_digits == 0) {
+        return md_parse_f64_special(out_value, str);
+    } else {
+        v = md_parse_f64_slow(m, exp10, num_digits, mant, mant_end);
     }
-    return md_parse_f64_general(out_value, str);
+    *out_value = negative ? -v : v;
+    return (size_t)(c - s);
 }
 
 // Saturates to INT64_MIN / INT64_MAX, reading every digit either way. Inline, as it has no floating

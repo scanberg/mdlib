@@ -242,7 +242,7 @@ UTEST(parse, f64_matches_strtod) {
     EXPECT_EQ(0u, mismatches);
 }
 
-// The seams between the inline part of md_parse_f64 (md_parse.h), md_parse_f64_finish and md_parse_f64_general: each
+// The seams between the inline part of md_parse_f64 (md_parse.h), md_parse_f64_slow and md_parse_f64_special: each
 // input on both sides of a limit one of them checks, read to the same value and length as strtod reads it
 UTEST(parse, f64_inline_boundaries) {
     static const char* inputs[] = {
