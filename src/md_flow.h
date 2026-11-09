@@ -120,7 +120,19 @@ md_flow_result_t md_flow_graph_validate(const md_flow_graph_t* graph, float eps)
 // than indexing either array directly.
 
 typedef struct md_flow_cut_t {
-    md_bitmask_t expanded;                  // graph node index -> is expanded
+    // What the USER opened and closed, by graph node index. A pinned node stays as pinned whatever the
+    // budget below decides. md_flow_cut_set_expanded sets the first directly; md_flow_cut_pin both.
+    md_bitmask_t expanded;                  // pinned open
+    md_bitmask_t collapsed;                 // pinned closed
+
+    // Row budget per column, 0 for none. Resolving then opens nodes on its own, the heaviest first, as long
+    // as no column would show more rows than this (before "Others" folding, which only removes rows): the
+    // detail goes where the weight is, and the diagram stays readable however large the graph. Pins win.
+    uint32_t max_rows;
+
+    // Treat nodes of the same entity (md_flow_node_t.entity) in different columns as one: they open, close
+    // and fold together, so mirrored columns stay mirrored.
+    bool mirror;
     float threshold;                        // fold nodes below this share of their COLUMN, [0,1)
 
     // An "Others" never grows past this share of its column: folding proceeds from the smallest
@@ -137,6 +149,14 @@ typedef struct md_flow_cut_t {
     // the threshold be honest - hide everything below it, and let the reader look anyway.
     uint32_t other_expanded;
 
+    // Folding is per PARENT: the small children of a node fold into an "Others" inside it, which sits in
+    // its parent's slot and band, and the small roots into one of their own. This opens the "Others" of
+    // the children of one node (graph index), leaving the rest folded. See md_flow_cut_open_other.
+    md_bitmask_t other_open;
+
+    // Output of md_flow_cut_resolve, graph node index: open as resolved, by a pin or by the budget.
+    md_bitmask_t open;
+
     // Outputs of md_flow_cut_resolve()
     md_array(uint32_t)       visible;       // cut index space, grouped by column
     md_array(md_flow_link_t) links;         // aggregated, endpoints in cut index space
@@ -150,6 +170,21 @@ void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc);
 void md_flow_cut_free(md_flow_cut_t* cut);
 
 void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expanded);
+
+// What a user's open or close of a node means: pin it (and, with 'mirror', the nodes of its entity) open
+// or closed.
+void md_flow_cut_pin(md_flow_cut_t* cut, const md_flow_graph_t* graph, uint32_t node_idx, bool open);
+void md_flow_cut_clear_pins(md_flow_cut_t* cut);
+
+// Open after md_flow_cut_resolve, whichever way it came to be
+bool md_flow_cut_is_open(const md_flow_cut_t* cut, uint32_t node_idx);
+
+// Open or close an "Others" (a node of cut->other): its siblings are then drawn individually. With
+// 'mirror' the "Others" of the same parent entity in the other columns go with it.
+void md_flow_cut_open_other(md_flow_cut_t* cut, const md_flow_graph_t* graph, const md_flow_node_t* other, bool open);
+// Whether a node's siblings are shown individually because their "Others" was opened (a column's, or its
+// parent's)
+bool md_flow_cut_is_other_open_for(const md_flow_cut_t* cut, const md_flow_node_t* node);
 
 // Open or close a column's "Others". An open one folds nothing, so its members are drawn
 // individually however small they are.

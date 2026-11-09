@@ -233,6 +233,9 @@ void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc) {
     MD_ASSERT(alloc);
     md_memset(cut, 0, sizeof(md_flow_cut_t));
     md_bitmask_init(&cut->expanded, 0, MD_BITSET_MAX_INDEX, alloc);  // words are allocated as nodes are expanded
+    md_bitmask_init(&cut->collapsed, 0, MD_BITSET_MAX_INDEX, alloc);
+    md_bitmask_init(&cut->other_open, 0, MD_BITSET_MAX_INDEX, alloc);
+    md_bitmask_init(&cut->open, 0, MD_BITSET_MAX_INDEX, alloc);
     cut->other_max = 1.0f;      // uncapped unless the caller says otherwise
     cut->alloc = alloc;
 }
@@ -241,6 +244,9 @@ void md_flow_cut_free(md_flow_cut_t* cut) {
     MD_ASSERT(cut);
     if (cut->alloc) {
         md_bitmask_free(&cut->expanded);
+        md_bitmask_free(&cut->collapsed);
+        md_bitmask_free(&cut->other_open);
+        md_bitmask_free(&cut->open);
         md_array_free(cut->visible, cut->alloc);
         md_array_free(cut->links,   cut->alloc);
         md_array_free(cut->other,   cut->alloc);
@@ -256,6 +262,63 @@ void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expand
     } else {
         md_bitmask_clear_bit(&cut->expanded, node_idx);
     }
+}
+
+void md_flow_cut_pin(md_flow_cut_t* cut, const md_flow_graph_t* graph, uint32_t node_idx, bool open) {
+    MD_ASSERT(cut);
+    MD_ASSERT(graph);
+    const size_t count = md_array_size(graph->nodes);
+    if (node_idx >= count) return;
+    const uint64_t entity = graph->nodes[node_idx].entity;
+    for (size_t i = 0; i < count; ++i) {
+        if (i != node_idx && !(cut->mirror && entity != 0 && graph->nodes[i].entity == entity)) continue;
+        if (open) {
+            md_bitmask_set_bit(&cut->expanded, (uint32_t)i);
+            md_bitmask_clear_bit(&cut->collapsed, (uint32_t)i);
+        } else {
+            md_bitmask_clear_bit(&cut->expanded, (uint32_t)i);
+            md_bitmask_set_bit(&cut->collapsed, (uint32_t)i);
+        }
+    }
+}
+
+void md_flow_cut_clear_pins(md_flow_cut_t* cut) {
+    MD_ASSERT(cut);
+    md_bitmask_clear(&cut->expanded);
+    md_bitmask_clear(&cut->collapsed);
+}
+
+bool md_flow_cut_is_open(const md_flow_cut_t* cut, uint32_t node_idx) {
+    MD_ASSERT(cut);
+    return md_bitmask_test_bit(&cut->open, node_idx);
+}
+
+void md_flow_cut_open_other(md_flow_cut_t* cut, const md_flow_graph_t* graph, const md_flow_node_t* other, bool open) {
+    MD_ASSERT(cut);
+    MD_ASSERT(graph);
+    if (!other) return;
+    if (other->parent == MD_FLOW_INVALID_INDEX) {
+        // the roots' "Others": the column's, and with 'mirror' every column's
+        for (uint32_t c = 0; c < graph->num_columns; ++c) {
+            if (c == other->column || cut->mirror) md_flow_cut_set_other_expanded(cut, c, open);
+        }
+        return;
+    }
+    const size_t count = md_array_size(graph->nodes);
+    if (other->parent >= count) return;
+    const uint64_t entity = graph->nodes[other->parent].entity;
+    for (size_t i = 0; i < count; ++i) {
+        if (i != other->parent && !(cut->mirror && entity != 0 && graph->nodes[i].entity == entity)) continue;
+        if (open) md_bitmask_set_bit(&cut->other_open, (uint32_t)i);
+        else      md_bitmask_clear_bit(&cut->other_open, (uint32_t)i);
+    }
+}
+
+bool md_flow_cut_is_other_open_for(const md_flow_cut_t* cut, const md_flow_node_t* node) {
+    MD_ASSERT(cut);
+    if (!node) return false;
+    if (md_flow_cut_is_other_expanded(cut, node->column)) return true;
+    return node->parent != MD_FLOW_INVALID_INDEX && md_bitmask_test_bit(&cut->other_open, node->parent);
 }
 
 void md_flow_cut_set_other_expanded(md_flow_cut_t* cut, uint32_t column, bool expanded) {
@@ -278,6 +341,7 @@ bool md_flow_cut_is_expanded(const md_flow_cut_t* cut, uint32_t node_idx) {
 void md_flow_cut_collapse_all(md_flow_cut_t* cut) {
     MD_ASSERT(cut);
     md_bitmask_clear(&cut->expanded);
+    md_bitmask_clear(&cut->collapsed);
 }
 
 void md_flow_cut_expand_all(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
@@ -309,6 +373,16 @@ static int flow_link_cmp(const void* a, const void* b) {
     return 0;
 }
 
+// The weight a node is ranked and thresholded by: its own, or with 'mirror' the largest of its entity's
+static float flow_entity_weight(const md_flow_cut_t* cut, const md_flow_graph_t* graph, const uint32_t* peer_beg,
+                                const uint32_t* peer_list, const uint32_t* peer_group, uint32_t i) {
+    if (!cut->mirror || peer_group[i] == MD_FLOW_INVALID_INDEX) return graph->nodes[i].weight;
+    float w = 0.0f;
+    const uint32_t g = peer_group[i];
+    for (uint32_t k = peer_beg[g]; k < peer_beg[g + 1]; ++k) w = MD_MAX(w, graph->nodes[peer_list[k]].weight);
+    return w;
+}
+
 void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
     MD_ASSERT(cut);
     MD_ASSERT(graph);
@@ -317,6 +391,7 @@ void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
     md_array_shrink(cut->links,   0);
     md_array_shrink(cut->other,   0);
     md_array_shrink(cut->other_count, 0);
+    md_bitmask_clear(&cut->open);
 
     const size_t num_nodes = md_array_size(graph->nodes);
     if (num_nodes == 0) {
@@ -328,127 +403,257 @@ void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
     bool* has_children = md_temp_alloc_array(temp, bool, num_nodes);
     flow_mark_internal(has_children, graph);
 
-    // Pass 1: the antichain, before thresholding. A node is in it when it is either collapsed or
-    // a leaf, and every one of its ancestors is expanded.
-    bool* in_cut = md_temp_alloc_zero_array(temp, bool, num_nodes);
+    uint32_t* num_children = md_temp_alloc_zero_array(temp, uint32_t, num_nodes);
     for (size_t i = 0; i < num_nodes; ++i) {
-        const md_flow_node_t* node = graph->nodes + i;
-
-        bool ancestors_expanded = true;
-        for (uint32_t p = node->parent; p != MD_FLOW_INVALID_INDEX; p = graph->nodes[p].parent) {
-            if (!md_bitmask_test_bit(&cut->expanded, p)) {
-                ancestors_expanded = false;
-                break;
-            }
-        }
-        if (!ancestors_expanded) continue;
-
-        const bool expanded = has_children[i] && md_bitmask_test_bit(&cut->expanded, (uint32_t)i);
-        if (!expanded) {
-            in_cut[i] = true;
-        }
+        if (graph->nodes[i].parent != MD_FLOW_INVALID_INDEX) num_children[graph->nodes[i].parent]++;
     }
 
-    // Pass 2: threshold. Weights are already a share of their column, so the test is direct.
-    // Everything folded in a column lands in that column's single synthesized "Others".
-    const uint32_t num_graph_nodes = (uint32_t)num_nodes;
-    uint32_t* other_of_column = md_temp_alloc_array(temp, uint32_t, graph->num_columns);
-    double*   other_weight    = md_temp_alloc_zero_array(temp, double, graph->num_columns);
-    for (uint32_t c = 0; c < graph->num_columns; ++c) {
-        other_of_column[c] = MD_FLOW_INVALID_INDEX;
-    }
-
-    // rep[i] is the cut index that node i's flow is attributed to, for nodes in the antichain.
-    uint32_t* rep = md_temp_alloc_array(temp, uint32_t, num_nodes);
-    for (size_t i = 0; i < num_nodes; ++i) {
-        rep[i] = MD_FLOW_INVALID_INDEX;
-    }
-
-    // Fold smallest-first and stop at the cap, so what ends up hidden is the genuinely negligible
-    // tail rather than "whatever happened to be under the threshold" - which in a delocalized
-    // column can be most of it.
-    bool* folded = md_temp_alloc_zero_array(temp, bool, num_nodes);
-    uint32_t* other_count = md_temp_alloc_zero_array(temp, uint32_t, graph->num_columns);
-
-    if (cut->threshold > 0.0f) {
-        uint32_t* candidate = md_temp_alloc_array(temp, uint32_t, num_nodes);
-        const float cap = (cut->other_max > 0.0f) ? cut->other_max : 1.0f;
-
-        for (uint32_t c = 0; c < graph->num_columns; ++c) {
-            if (md_flow_cut_is_other_expanded(cut, c)) continue;   // opened: fold nothing here
-
-            uint32_t count = 0;
-            for (size_t i = 0; i < num_nodes; ++i) {
-                if (!in_cut[i] || graph->nodes[i].column != c) continue;
-                if (graph->nodes[i].weight < cut->threshold) candidate[count++] = (uint32_t)i;
-            }
-            if (count == 0) continue;
-
-            // Ascending by weight. Insertion sort: these lists are short and already near-sorted
-            // whenever the caller built the column in any sensible order.
-            for (uint32_t a = 1; a < count; ++a) {
-                const uint32_t v = candidate[a];
-                uint32_t b = a;
-                while (b > 0 && graph->nodes[candidate[b - 1]].weight > graph->nodes[v].weight) {
-                    candidate[b] = candidate[b - 1];
-                    b--;
+    // Peers: the nodes of each non-zero entity, grouped. peer_group[i] is the group of node i, INVALID for
+    // a node without an entity (or when not mirroring).
+    uint32_t* peer_group = md_temp_alloc_array(temp, uint32_t, num_nodes);
+    uint32_t* peer_beg   = md_temp_alloc_zero_array(temp, uint32_t, num_nodes + 1);
+    uint32_t* peer_list  = md_temp_alloc_array(temp, uint32_t, num_nodes);
+    {
+        for (size_t i = 0; i < num_nodes; ++i) peer_group[i] = MD_FLOW_INVALID_INDEX;
+        uint32_t num_groups = 0;
+        if (cut->mirror) {
+            // order by entity; a group is a run of equal entities
+            uint32_t* order = md_temp_alloc_array(temp, uint32_t, num_nodes);
+            uint32_t num = 0;
+            for (size_t i = 0; i < num_nodes; ++i) if (graph->nodes[i].entity != 0) order[num++] = (uint32_t)i;
+            // insertion sort is quadratic; nodes can be thousands of atoms, so a shell sort
+            for (uint32_t gap = num / 2; gap > 0; gap /= 2) {
+                for (uint32_t a = gap; a < num; ++a) {
+                    const uint32_t v = order[a];
+                    uint32_t b = a;
+                    while (b >= gap && graph->nodes[order[b - gap]].entity > graph->nodes[v].entity) {
+                        order[b] = order[b - gap];
+                        b -= gap;
+                    }
+                    order[b] = v;
                 }
-                candidate[b] = v;
+            }
+            for (uint32_t a = 0; a < num;) {
+                uint32_t b = a + 1;
+                while (b < num && graph->nodes[order[b]].entity == graph->nodes[order[a]].entity) b++;
+                for (uint32_t k = a; k < b; ++k) {
+                    peer_group[order[k]] = num_groups;
+                    peer_list[k] = order[k];
+                }
+                peer_beg[num_groups + 1] = b;
+                num_groups++;
+                a = b;
+            }
+        }
+        (void)num_groups;
+    }
+
+    // Pass 1: which nodes are open. Pins first: open where pinned open and not pinned closed.
+    bool* open = md_temp_alloc_zero_array(temp, bool, num_nodes);
+    for (size_t i = 0; i < num_nodes; ++i) {
+        open[i] = has_children[i] && md_bitmask_test_bit(&cut->expanded, (uint32_t)i) &&
+                  !md_bitmask_test_bit(&cut->collapsed, (uint32_t)i);
+    }
+
+    // The antichain for an open set: a node is in it when every ancestor is open and it is not
+    bool* in_cut = md_temp_alloc_zero_array(temp, bool, num_nodes);
+    uint32_t* rows = md_temp_alloc_zero_array(temp, uint32_t, graph->num_columns ? graph->num_columns : 1);
+    // Reachability needs every ancestor, not only the parent: computed in pre-order
+    bool* reach = md_temp_alloc_zero_array(temp, bool, num_nodes);
+    for (size_t i = 0; i < num_nodes; ++i) {
+        const uint32_t p = graph->nodes[i].parent;
+        reach[i] = (p == MD_FLOW_INVALID_INDEX) || (reach[p] && open[p]);
+        if (reach[i] && !open[i]) {
+            in_cut[i] = true;
+            rows[graph->nodes[i].column]++;
+        }
+    }
+
+    // The budget: open the heaviest node (with its peers) whose opening keeps every column within it
+    if (cut->max_rows > 0) {
+        bool* tried = md_temp_alloc_zero_array(temp, bool, num_nodes);
+        uint32_t* group = md_temp_alloc_array(temp, uint32_t, num_nodes);
+        uint32_t* delta = md_temp_alloc_zero_array(temp, uint32_t, graph->num_columns ? graph->num_columns : 1);
+        for (;;) {
+            uint32_t best = MD_FLOW_INVALID_INDEX;
+            float best_w = -1.0f;
+            for (size_t i = 0; i < num_nodes; ++i) {
+                if (!in_cut[i] || !has_children[i] || tried[i]) continue;
+                if (md_bitmask_test_bit(&cut->collapsed, (uint32_t)i)) continue;
+                const float w = flow_entity_weight(cut, graph, peer_beg, peer_list, peer_group, (uint32_t)i);
+                if (w > best_w) { best_w = w; best = (uint32_t)i; }
+            }
+            if (best == MD_FLOW_INVALID_INDEX) break;
+
+            uint32_t num_group = 0;
+            if (cut->mirror && peer_group[best] != MD_FLOW_INVALID_INDEX) {
+                const uint32_t g = peer_group[best];
+                for (uint32_t k = peer_beg[g]; k < peer_beg[g + 1]; ++k) {
+                    const uint32_t j = peer_list[k];
+                    if (in_cut[j] && has_children[j] && !md_bitmask_test_bit(&cut->collapsed, j)) group[num_group++] = j;
+                }
+            } else {
+                group[num_group++] = best;
             }
 
+            for (uint32_t c = 0; c < graph->num_columns; ++c) delta[c] = 0;
+            for (uint32_t k = 0; k < num_group; ++k) delta[graph->nodes[group[k]].column] += num_children[group[k]] - 1;
+            bool fits = true;
+            for (uint32_t c = 0; c < graph->num_columns; ++c) fits &= rows[c] + delta[c] <= cut->max_rows;
+
+            for (uint32_t k = 0; k < num_group; ++k) tried[group[k]] = true;
+            if (!fits) continue;
+
+            for (uint32_t k = 0; k < num_group; ++k) {
+                const uint32_t j = group[k];
+                open[j] = true;
+                in_cut[j] = false;
+                rows[graph->nodes[j].column] += num_children[j] - 1;
+            }
+            // the children of what was opened join the antichain (children follow their parent)
+            for (uint32_t k = 0; k < num_group; ++k) {
+                const uint32_t j = group[k];
+                for (size_t i = j + 1; i < num_nodes; ++i) {
+                    if (graph->nodes[i].parent == j) in_cut[i] = true;
+                }
+            }
+        }
+    }
+
+    // The final antichain, from the final open set
+    for (size_t i = 0; i < num_nodes; ++i) {
+        const uint32_t p = graph->nodes[i].parent;
+        reach[i] = (p == MD_FLOW_INVALID_INDEX) || (reach[p] && open[p]);
+        in_cut[i] = reach[i] && !open[i];
+        if (reach[i] && open[i]) md_bitmask_set_bit(&cut->open, (uint32_t)i);
+    }
+
+    // Pass 2: threshold, per column and parent. The small children of a node fold into an "Others" of
+    // their own, inside the parent's slot; the small roots into one per column. Smallest first, up to the
+    // cap, and never a single node.
+    const uint32_t num_graph_nodes = (uint32_t)num_nodes;
+
+    uint32_t* rep = md_temp_alloc_array(temp, uint32_t, num_nodes);
+    for (size_t i = 0; i < num_nodes; ++i) rep[i] = MD_FLOW_INVALID_INDEX;
+    bool* folded = md_temp_alloc_zero_array(temp, bool, num_nodes);
+
+    typedef struct fold_cand_t { uint32_t column, parent, node; float w; } fold_cand_t;
+    fold_cand_t* cand = md_temp_alloc_array(temp, fold_cand_t, num_nodes);
+    uint32_t num_cand = 0;
+    if (cut->threshold > 0.0f) {
+        for (size_t i = 0; i < num_nodes; ++i) {
+            if (!in_cut[i]) continue;
+            const md_flow_node_t* node = graph->nodes + i;
+            if (md_flow_cut_is_other_open_for(cut, node)) continue;     // opened: fold nothing here
+            const float w = flow_entity_weight(cut, graph, peer_beg, peer_list, peer_group, (uint32_t)i);
+            if (w < cut->threshold) {
+                cand[num_cand++] = (fold_cand_t){ node->column, node->parent, (uint32_t)i, node->weight };
+            }
+        }
+        // by (column, parent, weight): a shell sort, as above
+        for (uint32_t gap = num_cand / 2; gap > 0; gap /= 2) {
+            for (uint32_t a = gap; a < num_cand; ++a) {
+                const fold_cand_t v = cand[a];
+                uint32_t b = a;
+                while (b >= gap) {
+                    const fold_cand_t* u = cand + b - gap;
+                    const bool greater = u->column != v.column ? u->column > v.column
+                                       : u->parent != v.parent ? u->parent > v.parent
+                                       : u->w > v.w;
+                    if (!greater) break;
+                    cand[b] = *u;
+                    b -= gap;
+                }
+                cand[b] = v;
+            }
+        }
+    }
+
+    typedef struct fold_group_t { uint32_t column, parent, count; double weight; } fold_group_t;
+    md_array(fold_group_t) groups = 0;
+    {
+        const float cap = (cut->other_max > 0.0f) ? cut->other_max : 1.0f;
+        for (uint32_t a = 0; a < num_cand;) {
+            uint32_t b = a;
+            while (b < num_cand && cand[b].column == cand[a].column && cand[b].parent == cand[a].parent) b++;
             double sum = 0.0;
-            for (uint32_t a = 0; a < count; ++a) {
-                const double w = (double)graph->nodes[candidate[a]].weight;
+            uint32_t count = 0;
+            for (uint32_t k = a; k < b; ++k) {
+                const double w = (double)graph->nodes[cand[k].node].weight;
                 if (sum + w > (double)cap) break;
                 sum += w;
-                folded[candidate[a]] = true;
-                other_count[c] += 1;
+                folded[cand[k].node] = true;
+                count++;
             }
-
             // One survivor in an Others is just that node wearing a worse label.
-            if (other_count[c] == 1) {
-                for (size_t i = 0; i < num_nodes; ++i) {
-                    if (folded[i] && graph->nodes[i].column == c) { folded[i] = false; break; }
-                }
-                other_count[c] = 0;
-                sum = 0.0;
+            if (count == 1) {
+                folded[cand[a].node] = false;
+            } else if (count > 1) {
+                const fold_group_t g = { cand[a].column, cand[a].parent, count, sum };
+                md_array_push(groups, g, md_temp_allocator(temp));
             }
-
-            other_weight[c] = sum;
-            if (other_count[c] > 0) other_of_column[c] = 0;  // marker: this column needs an Others
+            a = b;
         }
     }
 
+    // The Others nodes, after the graph's in cut index space
+    uint32_t* other_of = md_temp_alloc_array(temp, uint32_t, md_array_size(groups) ? md_array_size(groups) : 1);
+    for (size_t g = 0; g < md_array_size(groups); ++g) {
+        const fold_group_t* fg = groups + g;
+        const md_flow_node_t other = {
+            .column = fg->column,
+            .parent = fg->parent,
+            .level  = fg->parent == MD_FLOW_INVALID_INDEX ? 0 : graph->nodes[fg->parent].level + 1,
+            .weight = (float)fg->weight,
+            .color  = {0.6f, 0.6f, 0.6f, 1.0f},
+            .label  = MD_STR_INIT("Others"),
+            .key    = (MD_FLOW_OTHER_KEY_TAG << 32) | ((uint64_t)((fg->parent + 1) & 0xFFFFFFu) << 8) | (uint64_t)(fg->column & 0xFFu),
+            .flags  = MD_FLOW_NODE_FLAG_OTHER,
+        };
+        other_of[g] = num_graph_nodes + (uint32_t)md_array_size(cut->other);
+        md_array_push(cut->other, other, cut->alloc);
+        md_array_push(cut->other_count, fg->count, cut->alloc);
+    }
+
+    // Visible: the graph's in order, each Others right after the last of its siblings
     for (size_t i = 0; i < num_nodes; ++i) {
-        if (!in_cut[i] || folded[i]) continue;
+        if (!in_cut[i]) continue;
+        if (folded[i]) {
+            for (size_t g = 0; g < md_array_size(groups); ++g) {
+                if (groups[g].column == graph->nodes[i].column && groups[g].parent == graph->nodes[i].parent) {
+                    rep[i] = other_of[g];
+                    break;
+                }
+            }
+            continue;
+        }
         rep[i] = (uint32_t)i;
         md_array_push(cut->visible, (uint32_t)i, cut->alloc);
     }
-
-    // Materialize the Others nodes now that their weights are known, then point the folded nodes
-    // at them. They are appended after the graph's nodes in cut index space.
-    for (uint32_t c = 0; c < graph->num_columns; ++c) {
-        if (other_of_column[c] == MD_FLOW_INVALID_INDEX) continue;
-        const md_flow_node_t other = {
-            .column = c,
-            .parent = MD_FLOW_INVALID_INDEX,
-            .level  = 0,
-            .weight = (float)other_weight[c],
-            .color  = {0.6f, 0.6f, 0.6f, 1.0f},
-            .label  = MD_STR_INIT("Others"),
-            .key    = (MD_FLOW_OTHER_KEY_TAG << 32) | (uint64_t)c,
-            .flags  = MD_FLOW_NODE_FLAG_OTHER,
-        };
-        other_of_column[c] = num_graph_nodes + (uint32_t)md_array_size(cut->other);
-        md_array_push(cut->other, other, cut->alloc);
-        md_array_push(cut->other_count, other_count[c], cut->alloc);
-        md_array_push(cut->visible, other_of_column[c], cut->alloc);
-    }
-
-    for (size_t i = 0; i < num_nodes; ++i) {
-        if (in_cut[i] && folded[i]) {
-            rep[i] = other_of_column[graph->nodes[i].column];
+    for (size_t g = 0; g < md_array_size(groups); ++g) {
+        // after the last visible node of the same column and parent, else after the last of the column's
+        // nodes under that parent's ancestors, else at the end
+        size_t pos = md_array_size(cut->visible);
+        bool found = false;
+        for (size_t v = md_array_size(cut->visible); v-- > 0;) {
+            const uint32_t idx = cut->visible[v];
+            const md_flow_node_t* n = md_flow_cut_node(cut, graph, idx);
+            if (n && n->column == groups[g].column && n->parent == groups[g].parent) { pos = v + 1; found = true; break; }
         }
+        if (!found) {
+            // every sibling folded: where the first of them was, before the next visible node of the column
+            uint32_t first = MD_FLOW_INVALID_INDEX;
+            for (size_t i = 0; i < num_nodes && first == MD_FLOW_INVALID_INDEX; ++i) {
+                if (folded[i] && rep[i] == other_of[g]) first = (uint32_t)i;
+            }
+            for (size_t v = 0; v < md_array_size(cut->visible); ++v) {
+                const uint32_t idx = cut->visible[v];
+                if (idx < num_graph_nodes && idx > first) { pos = v; break; }
+            }
+        }
+        md_array_push(cut->visible, 0, cut->alloc);
+        for (size_t v = md_array_size(cut->visible) - 1; v > pos; --v) cut->visible[v] = cut->visible[v - 1];
+        cut->visible[pos] = other_of[g];
     }
 
     // Pass 3: every leaf attributes to its visible ancestor-or-self, so the links can be
@@ -705,6 +910,11 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
             }
             root_of[i] = r;
         }
+        // An "Others" belongs to the family of its parent, so it sits in the parent's slot
+        for (size_t k = 0; k < md_array_size(cut->other); ++k) {
+            const uint32_t p = cut->other[k].parent;
+            if (p != MD_FLOW_INVALID_INDEX && p < num_graph_nodes) root_of[num_graph_nodes + k] = root_of[p];
+        }
     }
 
     // Bucket the visible nodes by column, preserving insertion order as the initial row order.
@@ -913,10 +1123,11 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
 
         for (size_t i = 0; i < num_visible; ++i) {
             const uint32_t n = cut->visible[i];
-            if (n >= num_graph_nodes) continue;     // an "Others" node has no ancestry
             if (col_of[n] == MD_FLOW_INVALID_INDEX) continue;
+            const md_flow_node_t* vn = md_flow_cut_node(cut, graph, n);   // an "Others" has its parent's ancestry
+            if (!vn) continue;
 
-            for (uint32_t p = graph->nodes[n].parent; p != MD_FLOW_INVALID_INDEX; p = graph->nodes[p].parent) {
+            for (uint32_t p = vn->parent; p != MD_FLOW_INVALID_INDEX; p = graph->nodes[p].parent) {
                 band_any[p] = true;
                 band_min[p] = MD_MIN(band_min[p], y_min[n]);
                 band_max[p] = MD_MAX(band_max[p], y_max[n]);
