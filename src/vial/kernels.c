@@ -930,7 +930,7 @@ bool vial_k_kind(vial_kctx_t* k, uint16_t kind, const vial_val_t* a, vial_val_t*
     if (a->dtype != VIAL_DT_SET) {
         // A point as a group of one: [3] as [1][3]
         vial_val_t o = *a;
-        if (a->ndim == 1 && (kind == VX_KIND_POINTS || kind == VX_KIND_GROUP)) { o.ndim = 2; o.dims[0] = 1; o.dims[1] = a->dims[0]; }
+        if (a->ndim == 1 && (kind == VX_KIND_POINTS || kind == VX_KIND_BODY)) { o.ndim = 2; o.dims[0] = 1; o.dims[1] = a->dims[0]; }
         *out = o;
         return true;
     }

@@ -348,7 +348,7 @@ static int eval_map_pairs(vial_interp_t* in, const vial_ir_op_t* op, const vial_
         if (which < 0) return -1;
         const uint32_t ko = ir->values[v].op;
         if (ko == VIAL_IR_NO_OP || ir->ops[ko].kind != VIAL_IR_KIND || (ko != kinds[0] && (nk < 2 || ko != kinds[1]))) return -1;
-        if (ir->ops[ko].sub != VX_KIND_GROUP && ir->ops[ko].sub != VX_KIND_POINTS) return -1;
+        if (ir->ops[ko].sub != VX_KIND_BODY && ir->ops[ko].sub != VX_KIND_POINTS) return -1;
         par[which] = param_of(ir, ri, ir->args[ir->ops[ko].arg_beg]);
     }
     for (int w = 0; w < 2; ++w) {

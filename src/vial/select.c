@@ -181,6 +181,22 @@ static void need_rings(vial_sys_t* s) {
     }
 }
 
+static void need_groups(vial_sys_t* s) {
+    if (s->have_groups) return;
+    s->have_groups = true;
+    const md_group_data_t* g = &s->sys->group;
+    s->num_groups = (uint32_t)g->count;
+    s->group_offset = md_alloc(s->alloc, (s->num_groups + 1) * sizeof(uint32_t));
+    uint32_t total = 0;
+    s->group_offset[0] = 0;
+    for (uint32_t i = 0; i < s->num_groups; ++i) s->group_offset[i + 1] = total += (uint32_t)md_bitset_count_range(g->atoms[i], 0, s->num_atoms);
+    s->group_atoms = md_alloc(s->alloc, (total + 1) * sizeof(uint32_t));
+    for (uint32_t i = 0; i < s->num_groups; ++i) {
+        md_bitset_iter_t it = md_bitset_iter_range(g->atoms[i], 0, s->num_atoms);
+        md_bitset_iter_extract_indices((int32_t*)(s->group_atoms + s->group_offset[i]), s->group_offset[i + 1] - s->group_offset[i], it);
+    }
+}
+
 static void need_chains(vial_sys_t* s) {
     if (s->have_chains) return;
     s->have_chains = true;
@@ -488,6 +504,20 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
         break;
     }
+    case VIAL_LEVEL_GROUP: {
+        // Its name; a group that shares its name with another, its roles too: rest/tc
+        const md_group_data_t* g = &sys->group;
+        if (unit >= g->count) break;
+        const md_str_t name = g->name[unit];
+        n = snprintf(buf, cap, "%.*s", (int)name.len, name.ptr);
+        bool shared = false;
+        for (size_t i = 0; i < g->count && !shared; ++i) shared = i != unit && md_str_eq(g->name[i], name);
+        for (int r = 0; shared && r < MD_GROUP_ROLE_COUNT; ++r) {
+            if (!(g->roles[unit] & (1u << r))) continue;
+            if (n > 0 && (size_t)n < cap) n += snprintf(buf + n, cap - n, "/%s", md_group_role_name((md_group_role_t)r));
+        }
+        break;
+    }
     case VIAL_LEVEL_HEAD: {
         // Its number within its lipid and the residue it starts in: head1/DPPC1
         need_heads(s);
@@ -564,7 +594,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
 static const struct { const char* word; uint8_t key; } keywords[] = {
     {"name", VIAL_KEY_NAME}, {"serial", VIAL_KEY_SERIAL}, {"element", VIAL_KEY_ELEMENT}, {"kind", VIAL_KEY_KIND},
     {"resid", VIAL_KEY_RESID}, {"resname", VIAL_KEY_RESNAME}, {"chain", VIAL_KEY_CHAIN}, {"id", VIAL_KEY_ID},
-    {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE},
+    {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
 };
 
 uint8_t vial_select_key(md_str_t keyword) {
@@ -584,6 +614,7 @@ static uint32_t takes(uint8_t level) {
     case VIAL_LEVEL_TAIL:     return K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_HEAD:     return K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_RING:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_SIZE) | K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_GROUP:    return K(VIAL_KEY_NAME) | K(VIAL_KEY_ROLE) | K(VIAL_KEY_SCOPE);
     default: return 0;
     }
 }
@@ -601,6 +632,7 @@ const char* vial_select_keywords(uint8_t level) {
     case VIAL_LEVEL_TAIL:     return "scope";
     case VIAL_LEVEL_HEAD:     return "scope";
     case VIAL_LEVEL_RING:     return "kind, size and scope";
+    case VIAL_LEVEL_GROUP:    return "name, role and scope";
     default: return "";
     }
 }
@@ -615,6 +647,7 @@ const char* vial_select_name(uint8_t level) {
     case VIAL_LEVEL_TAIL:     return "tail";
     case VIAL_LEVEL_HEAD:     return "head";
     case VIAL_LEVEL_RING:     return "ring";
+    case VIAL_LEVEL_GROUP:    return "group";
     default: return "sets";
     }
 }
@@ -809,6 +842,54 @@ static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r)
     return true;
 }
 
+// name= its name, a glob; role= any of the roles it has (md_group_role_name)
+static bool group_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t u) {
+    const md_group_data_t* g = &s->sys->group;
+    for (size_t i = 0; i < md_array_size(q->filters); ++i) {
+        const vial_filter_t* f = &q->filters[i];
+        if (f->key == VIAL_KEY_NAME) {
+            if (!match_str(f, g->name[u], true)) return false;
+        } else if (f->key == VIAL_KEY_ROLE) {
+            bool any = false;
+            for (size_t k = 0; k < md_array_size(f->any) && !any; ++k) {
+                for (int r = 0; r < MD_GROUP_ROLE_COUNT && !any; ++r) {
+                    any = (g->roles[u] & (1u << r)) && md_str_eq(f->any[k].s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)));
+                }
+            }
+            if (!any) return false;
+        }
+    }
+    return true;
+}
+
+bool vial_select_role_known(md_str_t role) {
+    for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) if (md_str_eq(role, md_str_from_cstr(md_group_role_name((md_group_role_t)r)))) return true;
+    return false;
+}
+
+// The order the groups are taken in: the system's, or a role's when role= names one, as GROMACS orders them (the order of
+// energygrps is the order its energy file names the pairs in). n receives the number of units.
+static uint32_t* group_order(vial_sys_t* s, const vial_select_t* q, uint32_t* n, md_allocator_i* alloc) {
+    need_groups(s);
+    const md_group_data_t* g = &s->sys->group;
+    uint32_t* order = md_alloc(alloc, (s->num_groups + 1) * sizeof(uint32_t));
+    for (size_t i = 0; i < md_array_size(q->filters); ++i) {
+        const vial_filter_t* f = &q->filters[i];
+        if (f->key != VIAL_KEY_ROLE || md_array_size(f->any) != 1) continue;
+        for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
+            if (!md_str_eq(f->any[0].s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)))) continue;
+            const md_urange_t range = md_system_group_role_range(g, (md_group_role_t)r);
+            uint32_t k = 0;
+            for (uint32_t j = range.beg; j < range.end && k < s->num_groups; ++j) order[k++] = g->role_group[j];
+            *n = k;
+            return order;
+        }
+    }
+    for (uint32_t i = 0; i < s->num_groups; ++i) order[i] = i;
+    *n = s->num_groups;
+    return order;
+}
+
 static bool molecule_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t m) {
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const vial_filter_t* f = &q->filters[i];
@@ -927,12 +1008,15 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     case VIAL_LEVEL_TAIL:     need_tails(s); num_units = s->num_tails; break;
     case VIAL_LEVEL_HEAD:     need_heads(s); num_units = s->num_heads; break;
     case VIAL_LEVEL_RING:     need_rings(s); num_units = s->num_rings; break;
+    case VIAL_LEVEL_GROUP:    break;
     default: break;
     }
+    const uint32_t* order = q->level == VIAL_LEVEL_GROUP ? group_order(s, q, &num_units, alloc) : NULL;
     // The units that pass, and room for their particles: the units of a level never share a particle
     uint32_t* passing = md_alloc(alloc, (num_units + 1) * sizeof(uint32_t));
     uint32_t num_pass = 0, room = 0;
-    for (uint32_t u = 0; u < num_units; ++u) {
+    for (uint32_t ui = 0; ui < num_units; ++ui) {
+        const uint32_t u = order ? order[ui] : ui;
         bool pass = false;
         uint32_t size = 0;
         switch (q->level) {
@@ -943,6 +1027,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_TAIL:     pass = true;                     size = s->tail_offset[u + 1] - s->tail_offset[u]; break;
         case VIAL_LEVEL_HEAD:     pass = true;                     size = s->head_offset[u + 1] - s->head_offset[u]; break;
         case VIAL_LEVEL_RING:     pass = ring_passes(s, q, u);     size = s->ring_offset[u + 1] - s->ring_offset[u]; break;
+        case VIAL_LEVEL_GROUP:    pass = group_passes(s, q, u);    size = s->group_offset[u + 1] - s->group_offset[u]; break;
         default: break;
         }
         if (!pass) continue;
@@ -968,6 +1053,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_TAIL:     list = s->tail_atoms; beg = s->tail_offset[u]; end = s->tail_offset[u + 1]; break;
         case VIAL_LEVEL_HEAD:     list = s->head_atoms; beg = s->head_offset[u]; end = s->head_offset[u + 1]; break;
         case VIAL_LEVEL_RING:     list = s->ring_atoms; beg = s->ring_offset[u]; end = s->ring_offset[u + 1]; break;
+        case VIAL_LEVEL_GROUP:    list = s->group_atoms; beg = s->group_offset[u]; end = s->group_offset[u + 1]; break;
         default: break;
         }
         const uint32_t mark = w;

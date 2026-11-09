@@ -120,7 +120,7 @@ static void diag_fix(resolver_t* r, const char code[6], vial_node_id at, const c
 }
 
 static bool is_kind_name(md_str_t s) {
-    static const char* kinds[] = {"set", "group", "point", "points", "float", "int", "bool"};
+    static const char* kinds[] = {"set", "body", "point", "points", "float", "int", "bool"};
     for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) if (md_str_eq(s, md_str_from_cstr(kinds[i]))) return true;
     return false;
 }
@@ -282,7 +282,7 @@ static void declare_def(resolver_t* r, vial_node_id def, uint32_t parent) {
             if (kind_of(r, ann) != VIAL_N_NAME || !is_kind_name(a)) {
                 char ex[VIAL_EXCERPT_MAX + 4];
                 const md_str_t e = vial_excerpt(ex, sizeof(ex), a);
-                diag_fix(r, "E0312", ann, "", "`%.*s` is not a parameter kind; the kinds are set, group, point, points, float, int and bool",
+                diag_fix(r, "E0312", ann, "", "`%.*s` is not a parameter kind; the kinds are set, body, point, points, float, int and bool",
                     (int)e.len, e.ptr);
             }
         }

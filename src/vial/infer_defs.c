@@ -112,7 +112,7 @@ static uint64_t hash_value(uint64_t h, const vial_value_t* v) {
 
 static uint8_t kind_of_annotation(md_str_t a) {
     if (md_str_eq(a, MD_STR_LIT("set")))    return VX_KIND_SET;
-    if (md_str_eq(a, MD_STR_LIT("group")))  return VX_KIND_GROUP;
+    if (md_str_eq(a, MD_STR_LIT("body")))   return VX_KIND_BODY;
     if (md_str_eq(a, MD_STR_LIT("point")))  return VX_KIND_POINT;
     if (md_str_eq(a, MD_STR_LIT("points"))) return VX_KIND_POINTS;
     if (md_str_eq(a, MD_STR_LIT("float")))  return VX_KIND_FLOAT;

@@ -126,8 +126,8 @@ UTEST_F(vial_lex, operators) {
     md_allocator_i* alloc = utest_fixture->alloc;
     EXPECT_KINDS("a @ b ** c // d", "NAME:a @ NAME:b ** NAME:c // NAME:d NEWLINE EOF");
     EXPECT_KINDS("x += 1", "NAME:x += INT:1 NEWLINE EOF");
-    EXPECT_KINDS("def f(a: group) -> float: pass",
-        "def NAME:f ( NAME:a : NAME:group ) -> NAME:float : pass NEWLINE EOF");
+    EXPECT_KINDS("def f(a: body) -> float: pass",
+        "def NAME:f ( NAME:a : NAME:body ) -> NAME:float : pass NEWLINE EOF");
     EXPECT_KINDS("2 < n <= 500 != m", "INT:2 < NAME:n <= INT:500 != NAME:m NEWLINE EOF");
 }
 
@@ -200,7 +200,7 @@ UTEST_F(vial_lex, recovery) {
 // Every byte of the text is covered by a token or is whitespace, and spans never go backwards
 UTEST_F(vial_lex, spans) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    const char* src = "def f(a: group, b=None):\n    \"\"\"Doc.\"\"\"\n    return a.com - b  # c\n";
+    const char* src = "def f(a: body, b=None):\n    \"\"\"Doc.\"\"\"\n    return a.com - b  # c\n";
     lexed_t r = lex(src, alloc);
     EXPECT_EQ(0, md_array_size(r.diags.items));
     uint32_t prev = 0;
@@ -352,8 +352,8 @@ UTEST_F(vial_parse, statements) {
     EXPECT_TREE("a = b = 1", "(assign (name a) (name b) (int 1))");
     EXPECT_TREE("x += 1", "(augassign += (name x) (int 1))");
     EXPECT_TREE("a = 1; b = 2", "(assign (name a) (int 1)) (assign (name b) (int 2))");
-    EXPECT_TREE("def f(a: group, b, op='x') -> float:\n    return a\n",
-        "(def (name f) (params (param (name a) (name group) -) (param (name b) - -) (param (name op) - (string 'x'))) "
+    EXPECT_TREE("def f(a: body, b, op='x') -> float:\n    return a\n",
+        "(def (name f) (params (param (name a) (name body) -) (param (name b) - -) (param (name op) - (string 'x'))) "
         "(name float) (block (return (name a))))");
     EXPECT_TREE("if a:\n    pass\nelif b:\n    pass\nelse:\n    x = 1\n",
         "(if (name a) (block (pass)) (if (name b) (block (pass)) (block (assign (name x) (int 1)))))");
@@ -430,7 +430,7 @@ UTEST_F(vial_parse, errors_and_recovery) {
 // The tree's spans nest: every child lies within its parent
 UTEST_F(vial_parse, spans_nest) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    const char* src = "def f(a: group, b=None):\n    d = norm(displacement(positions(a)[:, None], positions(b)))\n"
+    const char* src = "def f(a: body, b=None):\n    d = norm(displacement(positions(a)[:, None], positions(b)))\n"
                       "    return min(d) if b is None else max(d)\nx = [r.com for r in residue(id=1..4) if r]\n";
     parsed_t r = parse(src, alloc);
     EXPECT_EQ(0, md_array_size(r.diags.items));

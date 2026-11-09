@@ -106,7 +106,7 @@ typedef struct vx_param_t {
     bool        required;
 } vx_param_t;
 
-enum { VX_KIND_WHOLE = 0, VX_KIND_SET, VX_KIND_GROUP, VX_KIND_POINT, VX_KIND_POINTS, VX_KIND_FLOAT, VX_KIND_INT, VX_KIND_BOOL };
+enum { VX_KIND_WHOLE = 0, VX_KIND_SET, VX_KIND_BODY, VX_KIND_POINT, VX_KIND_POINTS, VX_KIND_FLOAT, VX_KIND_INT, VX_KIND_BOOL };
 
 // What one call takes of an argument under a kind (core) and what it maps over (loop's dims); reports E0302, E0313
 bool vx_split(infer_t* x, vial_node_id node, const vial_type_t* a, uint8_t kind, const char* fname, const char* pname,

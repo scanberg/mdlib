@@ -2385,8 +2385,8 @@ UTEST(vial_ir, at_in_a_def) {
     ASSERT_GT(vial_test_run('P'), 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     const char* src =
-        "def first_x(r: group):\n    return at(r.xyz, frame=0)[0, 0]\n"
-        "def drift(r: group):\n    return rmsd(r, at(r.xyz, frame=0))\n"
+        "def first_x(r: body):\n    return at(r.xyz, frame=0)[0, 0]\n"
+        "def drift(r: body):\n    return rmsd(r, at(r.xyz, frame=0))\n"
         "x0 = first_x(residue)\n"
         "x  = residue[1].xyz[0, 0]\n"
         "per_res = drift(residue)\n"

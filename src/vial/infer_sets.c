@@ -63,6 +63,7 @@ static uint8_t selector_level(md_str_t name, uint8_t* particle_kind) {
     if (md_str_eq(name, MD_STR_LIT("tail"))) return VIAL_LEVEL_TAIL;
     if (md_str_eq(name, MD_STR_LIT("head"))) return VIAL_LEVEL_HEAD;
     if (md_str_eq(name, MD_STR_LIT("ring"))) return VIAL_LEVEL_RING;
+    if (md_str_eq(name, MD_STR_LIT("group"))) return VIAL_LEVEL_GROUP;
     return VIAL_LEVEL_NONE;
 }
 
@@ -93,14 +94,14 @@ static void report_no_serials(infer_t* x, vial_node_id at) {
 // Whether a keyword takes strings or ints
 static bool key_takes_str(uint8_t level, uint8_t key) {
     switch (key) {
-    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: return true;
+    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: case VIAL_KEY_ROLE: return true;
     case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN;
     default: return false;
     }
 }
 
 static const char* key_word(uint8_t key) {
-    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size"};
+    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size", "role"};
     return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
@@ -180,6 +181,16 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
             const md_str_t e = vial_excerpt(ex, sizeof(ex), w);
             vx_diag_fix(x, "E0206", node, fix[0] ? fix : NULL, "'%.*s' is not a %s kind; the kinds are %s", (int)e.len, e.ptr,
                 level == VIAL_LEVEL_PARTICLE ? "particle" : level == VIAL_LEVEL_RESIDUE ? "residue" : level == VIAL_LEVEL_RING ? "ring" : "part", kinds);
+            return -1;
+        }
+    }
+    if (key == VIAL_KEY_ROLE && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->any); ++i) {
+            if (vial_select_role_known(f->any[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->any[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, "
+                "compressed-x, orire-fit and qmmm", (int)e.len, e.ptr);
             return -1;
         }
     }

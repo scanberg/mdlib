@@ -21,6 +21,7 @@ typedef enum vial_level_t {
     VIAL_LEVEL_TAIL,            // a tail of a lipid (md_lipid_data_t), with its branches and hydrogens
     VIAL_LEVEL_HEAD,            // a head of a lipid: a connected part of what is not a tail, with its hydrogens
     VIAL_LEVEL_RING,            // a ring of the bonds (md_ring_data_t): 3 to 7 atoms, the smallest rings
+    VIAL_LEVEL_GROUP,           // a group the data gives (md_group_data_t): any particles, overlapping other groups
 } vial_level_t;
 
 // The kinds of a part, as the reference names them. mdlib's non-polymer parts are told apart here: a lipid when its
@@ -70,6 +71,11 @@ typedef struct vial_sys_t {
     uint32_t    num_rings;
     uint32_t*   ring_offset;    // [ring + 1]
     uint32_t*   ring_atoms;
+    // Groups, once needed: the particles of each, ascending
+    bool        have_groups;
+    uint32_t    num_groups;
+    uint32_t*   group_offset;   // [group + 1]
+    uint32_t*   group_atoms;
 } vial_sys_t;
 
 md_str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
@@ -144,6 +150,7 @@ typedef enum vial_key_t {
     VIAL_KEY_ID,
     VIAL_KEY_SCOPE,
     VIAL_KEY_SIZE,              // rings: the number of atoms
+    VIAL_KEY_ROLE,              // groups: what the simulation used them for (md_group_role_name)
     VIAL_KEY_COUNT
 } vial_key_t;
 
@@ -177,6 +184,9 @@ const char* vial_select_name(uint8_t level);        // "residues"
 // Whether a kind= value is known for the level; the known values for E0206's message
 bool        vial_select_kind_known(uint8_t level, md_str_t kind);
 const char* vial_select_kinds(uint8_t level);
+
+// Whether a role= value is the name of a role of groups (md_group_role_name)
+bool        vial_select_role_known(md_str_t role);
 
 // Evaluates a selector: one set for particles, one set per unit otherwise, in the system's order
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc);

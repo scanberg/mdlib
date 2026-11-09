@@ -572,11 +572,11 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
     // A selector: the keywords of its level
     if (f && t->nodes[f].kind == VIAL_N_NAME) {
         const md_str_t fname = {prog->src.ptr + t->nodes[f].span.beg, t->nodes[f].span.end - t->nodes[f].span.beg};
-        for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_RING; ++lv) {
+        for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_GROUP; ++lv) {
             const bool alias = (lv == VIAL_LEVEL_PARTICLE && (md_str_eq(fname, MD_STR_LIT("atom")) || md_str_eq(fname, MD_STR_LIT("bead")))) ||
                                (lv == VIAL_LEVEL_PART && md_str_eq(fname, MD_STR_LIT("polymer")));
             if (!alias && !md_str_eq(fname, md_str_from_cstr(vial_select_name(lv)))) continue;
-            static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "scope"};  // not serial, until it is supported
+            static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "role", "scope"};  // not serial, until it is supported
             for (size_t w = 0; w < MD_COUNTOF(words); ++w) {
                 if (alias && lv == VIAL_LEVEL_PARTICLE && md_str_eq(md_str_from_cstr(words[w]), MD_STR_LIT("kind"))) continue;    // atom() and bead() are a kind
                 if (vial_select_takes(lv, vial_select_key(md_str_from_cstr(words[w])))) param_add(c, md_str_from_cstr(words[w]), given, ng);
@@ -636,7 +636,18 @@ static void system_values(cmpl_t* c, const md_system_t* sys, md_str_t callee, md
         for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, md_str_from_cstr(k[i]), md_str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
+    if (IS(callee, "group") && IS(kw, "role")) {
+        for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
+            const md_str_t n = md_str_from_cstr(md_group_role_name((md_group_role_t)r));
+            cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
+        }
+        return;
+    }
     if (!sys) return;
+    if (IS(callee, "group") && (IS(kw, "name") || !kw.len)) {
+        for (size_t i = 0; i < sys->group.count; ++i) cmpl_add(c, sys->group.name[i], sys->group.name[i], MD_VIAL_COMPLETION_VALUE);
+        return;
+    }
     if (particles && (IS(kw, "name") || !kw.len)) {
         for (size_t t = 0; t < sys->atom.type.count; ++t) {
             const md_str_t n = md_particle_type_name(&sys->atom.type, t);
@@ -775,7 +786,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, md_str_from_cstr(b->name), md_str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
         // The selectors within each set, for .residue[i] and .particle(...)
-        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail"};
+        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail", "group"};
         for (size_t i = 0; i < MD_COUNTOF(views); ++i) cmpl_add(&c, md_str_from_cstr(views[i]), md_str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first

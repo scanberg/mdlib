@@ -105,7 +105,7 @@ UTEST_F(vial_check, unknown_names) {
 UTEST_F(vial_check, annotations) {
     EXPECT_DIAGS("def f(a: set, b: points, c: float = 1.0):\n    return a\n", "");
     EXPECT_DIAGS("def f(a: str):\n    return a\n",
-        "E0312 1: `str` is not a parameter kind; the kinds are set, group, point, points, float, int and bool\n");
+        "E0312 1: `str` is not a parameter kind; the kinds are set, body, point, points, float, int and bool\n");
     EXPECT_DIAGS("def f(a) -> float:\n    return a\n", "E0312 1: a def's result is not annotated; it is inferred at each call\n");
 }
 
@@ -115,7 +115,7 @@ UTEST_F(vial_check, quoted_source) {
     EXPECT_DIAGS("x = 2 'abcdefghijklmnopqrstuvwxyz\xC3\xA5\xC3\xA4\xC3\xB6" "abc'\n",
         "E0502 1: `'abcdefghijklmnopqrstuvwxyz\xC3\xA5\xC3\xA4…` is not a unit\n");
     EXPECT_DIAGS("def f(a: [1,\n         2]):\n    return a\n",
-        "E0312 1: `[1,…` is not a parameter kind; the kinds are set, group, point, points, float, int and bool\n");
+        "E0312 1: `[1,…` is not a parameter kind; the kinds are set, body, point, points, float, int and bool\n");
 }
 
 UTEST_F(vial_check, recursion) {
@@ -788,10 +788,10 @@ UTEST_F(vial_check, fold_int_shape) {
 UTEST_F(vial_check, mapped_tuple) {
     const md_system_t* P = vial_test_system('P');
     ASSERT_TRUE(P != NULL);
-    EXPECT_DIAGS_ON(P, "def two(r: group):\n    return (r.com, gyration(r))\nt = two(residue)\n",
+    EXPECT_DIAGS_ON(P, "def two(r: body):\n    return (r.com, gyration(r))\nt = two(residue)\n",
         "E0801 3: `two` returns a tuple, and a def that does is not mapped over arrays yet: call it on one group, or return one value and call it "
         "once per value\n");
-    EXPECT_DIAGS_ON(P, "def two(r: group):\n    return (r.com, gyration(r))\nc, n = two(residue[0])\n", "");
+    EXPECT_DIAGS_ON(P, "def two(r: body):\n    return (r.com, gyration(r))\nc, n = two(residue[0])\n", "");
 }
 
 UTEST_F(vial_check, w0607) {
@@ -1026,4 +1026,40 @@ UTEST_F(vial_check, outputs_and_hover) {
     EXPECT_TRUE(md_unit_conversion_factor(&f, hv.unit, md_unit_div(md_unit_meter(), md_unit_second())));
     EXPECT_NEAR(1000.0, f, 1e-9);
     md_vial_program_free(prog);
+}
+
+// ### GROUPS ###
+
+#include <md_tpr.h>
+#include <md_ndx.h>
+
+// The nb tpr, energygrps = CHN SOL (atoms 1-15 and 16-19), and from an index file a group across both and two named
+// alike: what group() selects, in which order, and what it refuses
+UTEST_F(vial_check, groups) {
+    md_allocator_i* alloc = utest_fixture->alloc;
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr")));
+    md_ndx_data_t ndx = {0};
+    ASSERT_TRUE(md_ndx_data_parse_str(&ndx, MD_STR_LIT("[ SOL ]\n16 17 18 19\n[ Ends ]\n1 19\n[ Odd ]\n1 3 5\n[ Odd ]\n2 4\n[ Z_first ]\n16\n"), alloc));
+    ASSERT_TRUE(md_ndx_system_supplement(&sys, &ndx));
+    // CHN, SOL (merged with the index file's), Ends, Odd, Odd, Z_first
+    ASSERT_EQ(6u, sys.group.count);
+    // energygrps in reverse, so a role's order and the system's differ
+    const uint32_t rev[] = { 1, 0 };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, rev, 2);
+
+    EXPECT_TYPE_ON(&sys, "g = group\n", 1, "set[6], static");
+    EXPECT_TYPE_ON(&sys, "n = len(group(role='energy'))\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(&sys, "n = count(group(role='energy')[0])\n", 1, "int, static = 4");     // SOL first: the role's order
+    EXPECT_TYPE_ON(&sys, "n = count(group('CHN')[0])\n", 1, "int, static = 15");
+    EXPECT_TYPE_ON(&sys, "n = len(group('Odd'))\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(&sys, "n = len(group('*d*'))\n", 1, "int, static = 3");                   // Ends and both Odd
+    EXPECT_TYPE_ON(&sys, "n = len(group(particle(name='S1')))\n", 1, "int, static = 3");      // SOL, Ends, Z_first hold the last atom's
+    EXPECT_TYPE_ON(&sys, "n = len(group('Ends')[0].residue)\n", 1, "int, static = 2");             // CHN1 and SON7, each cut to its one atom
+    EXPECT_TYPE_ON(&sys, "n = count(group('CHN')[0].group('Ends')[0])\n", 1, "int, static = 1");
+    EXPECT_DIAGS_ON(&sys, "g = group(role='tcoupl')\n",
+        "E0206 1: 'tcoupl' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, compressed-x, orire-fit and qmmm\n");
+    EXPECT_DIAGS_ON(&sys, "g = group(kind='x')\n", "E0202 1: `group` takes no keyword `kind`; it takes name, role and scope\n");
+    md_system_free(&sys);
 }

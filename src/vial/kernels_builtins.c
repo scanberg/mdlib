@@ -2049,7 +2049,7 @@ static uint8_t core_rank(uint8_t kind, const vial_val_t* v) {
     switch (kind) {
     case VX_KIND_POINT:  return v->dtype == VIAL_DT_SET ? 0 : 1;
     case VX_KIND_POINTS: return v->dtype == VIAL_DT_SET ? 0 : (v->ndim >= 2 ? 2 : 1);
-    case VX_KIND_GROUP:  return v->dtype == VIAL_DT_SET ? 0 : 1;
+    case VX_KIND_BODY:  return v->dtype == VIAL_DT_SET ? 0 : 1;
     case VX_KIND_SET: case VX_KIND_FLOAT: case VX_KIND_INT: case VX_KIND_BOOL: return 0;
     default:             return v->ndim;
     }
@@ -2859,6 +2859,7 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     if (!strcmp(name, "tail")) return VIAL_LEVEL_TAIL;
     if (!strcmp(name, "head")) return VIAL_LEVEL_HEAD;
     if (!strcmp(name, "ring")) return VIAL_LEVEL_RING;
+    if (!strcmp(name, "group")) return VIAL_LEVEL_GROUP;
     return VIAL_LEVEL_NONE;
 }
 

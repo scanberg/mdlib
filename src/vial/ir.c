@@ -335,7 +335,7 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
         sb_fmt(d, ".%u", op->aux);
         break;
     case VIAL_IR_KIND: {
-        static const char* kinds[] = {"whole", "set", "group", "point", "points", "float", "int", "bool"};
+        static const char* kinds[] = {"whole", "set", "body", "point", "points", "float", "int", "bool"};
         sb_fmt(d, "as %s ", op->sub == VIAL_KIND_EACH ? "each" : op->sub < 8 ? kinds[op->sub] : "?");
         dump_ssa(d, args[0]);
         break;

@@ -794,8 +794,8 @@ void vx_emit_return(infer_t* x, vial_node_id value, vial_node_id at) {
 // An argument as the parameter's kind takes it: a set's positions, a set of one particle's position, a point as a
 // group of one. Identity otherwise.
 static vial_ssa_t to_kind(infer_t* x, vial_node_id at, vial_ssa_t v, const T* vt, uint8_t kind, const T* core) {
-    const bool from_set = vt->dtype == VIAL_DT_SET && (kind == VX_KIND_POINT || kind == VX_KIND_POINTS || kind == VX_KIND_GROUP);
-    const bool one_point = vt->dtype != VIAL_DT_SET && (kind == VX_KIND_POINTS || kind == VX_KIND_GROUP) && vt->ndim == 1;
+    const bool from_set = vt->dtype == VIAL_DT_SET && (kind == VX_KIND_POINT || kind == VX_KIND_POINTS || kind == VX_KIND_BODY);
+    const bool one_point = vt->dtype != VIAL_DT_SET && (kind == VX_KIND_POINTS || kind == VX_KIND_BODY) && vt->ndim == 1;
     if (!from_set && !one_point) return v;
     return op1(x, at, VIAL_IR_KIND, kind, 0, &v, 1, core);
 }

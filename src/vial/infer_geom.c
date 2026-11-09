@@ -123,7 +123,7 @@ static bool positions_of(infer_t* x, vial_node_id node, const T* s, vial_node_id
 enum {
     VK_WHOLE = VX_KIND_WHOLE,   // unannotated: taken whole
     VK_SET = VX_KIND_SET,
-    VK_GROUP = VX_KIND_GROUP,
+    VK_BODY = VX_KIND_BODY,
     VK_POINT = VX_KIND_POINT,
     VK_POINTS = VX_KIND_POINTS,
     VK_FLOAT = VX_KIND_FLOAT,
@@ -160,7 +160,7 @@ static T ragged_positions(infer_t* x, vial_node_id node, const T* a) {
 }
 
 static const char* kind_name(uint8_t k) {
-    static const char* names[] = {"anything", "set", "group", "point", "points", "float", "int", "bool"};
+    static const char* names[] = {"anything", "set", "body", "point", "points", "float", "int", "bool"};
     return k < MD_COUNTOF(names) ? names[k] : "?";
 }
 
@@ -213,9 +213,9 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
             pname, vx_tstr(a));
         return false;
     case VK_POINTS:
-    case VK_GROUP:
+    case VK_BODY:
         if (is_float(a) && last_is(a, 3)) {
-            if (a->ndim == 1 || kind == VK_GROUP) {
+            if (a->ndim == 1 || kind == VK_BODY) {
                 // One point: a group of one location. Under group, every point is a group of its own.
                 out->core = *a;
                 out->core.ndim = 2;

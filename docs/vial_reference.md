@@ -280,6 +280,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `ring(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
 | `molecule(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chain(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
+| `group(...)` | `set[n]`, one per group | a named set of particles the data gives: the index groups of a GROMACS tpr or .ndx file. Groups are no level of the structure: one holds any particles, and groups overlap. See Groups |
 
 ### Keywords
 
@@ -305,6 +306,8 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `molecule` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
 | `chain` | `id` | the author chain id | string or list |
+| `group` | `name` | the group's name | string with `*` and `?`, or a list |
+|  | `role` | what the simulation used it for, by its mdp option: tc (tc-grps), energy (energygrps), acc, freeze, user1, user2, comm (comm-grps), compressed-x, orire-fit, qmmm | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
 
 A particle's serial is the number its file gives it. Where the file gives none, the count continues implicitly, one up from the particle before: a file without serials counts 1, 2, 3, and a file that wraps or stops counting past 99,999, as GRO and plain PDB do, goes on 100000, 100001. So serials are unique, and in a file that skips records, such as T, which keeps only the first alternate location, they are still the numbers on its lines. mdlib stores them only where they cannot be derived from the position plus a constant. Selecting by serial is not supported yet, as mdlib keeps no serials: it is E0801, and a particle is selected by its position, `particle[i]`, until it does.
@@ -321,6 +324,23 @@ The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna
 4. A number, a range or a list of numbers is E0205: it says neither which count it is in nor where that starts. The file's numbers are keywords, `residue(id=5)`, and positions are subscripts, `residue[4]`.
 5. A positional value the selector does not take, such as a string for `part` or an int for `chain`, is E0205.
 
+### Groups
+
+A group is a named set of particles that the data gives rather than the structure: a GROMACS index group, from the tpr of a run (the groups the mdp named) or from an .ndx file. A group may hold whole molecules, parts of residues or particles scattered over the system, and groups overlap; `group` keeps them as they are, so it is the selector to reach for when a set was defined for the simulation and is to be analyzed as such.
+
+- `group('SOL')` is the groups of that name, `set[1]`, or more where several share it: each role of a tpr leaves the particles it did not name in a group `rest` of its own, so `group('rest')` may be two different sets. `group` alone is every group, in the order they were read.
+- `role=` keeps the groups the simulation used for that: `group(role='energy')` is the energy groups in the order of `energygrps`, which is the order an energy file names their pairs in (`Coul-SR:Protein-SOL`). Where `role=` names one role, the groups come in its order.
+- `group(s)` is the groups that hold any particle of `s`, whole; `s.group` is each group cut to `s`, as for any selector.
+- An index file says what groups are, not what they were used for: its groups have no role. One read both from a tpr and from its index file is one group.
+
+```python
+# on a run of a tpr with energygrps = Protein SOL and tc-grps = Protein Non-Protein
+eg   = group(role='energy')                            # -> set[n]: Protein, then SOL
+prot = group('Protein')                                # -> set[n]: one group, with both roles
+d    = distance(eg[0], eg[1], between='closest')       # -> float Å, frame: the closest approach of the two
+lys  = group('Protein').residue(name='LYS')            # -> set[n]: the lysines, each within the group
+```
+
 ### Predefined names
 
 `protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone`, `sidechain`, `nucleobase` and `nucleoside` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `backbone` is N, CA and C of the amino acids and the sugar-phosphate chain of the nucleotides, `sidechain` an amino acid's atoms from CB outwards, `nucleobase` the base of a nucleotide and `nucleoside` its sugar and base. A lipid's anatomy is units, not kinds, since a lipid has two tails or, a bolalipid, two heads: `head` and `tail` are selectors, and `particle(head)` and `particle(tail)` all of them as one set. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
@@ -330,7 +350,7 @@ The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna
 - In a script the scope is the system. In a filter it is the set viamd evaluates it within: a representation group, or one reference structure of a density volume.
 - Positions count from the scope's start; ids are kept. The scope is all there is, so a unit partly inside it appears with only its particles inside.
 - A selector is narrowed to a set in two ways. `residue(s)`, with the set as its positional argument, is every residue that holds a particle of `s`, whole within the scope: `residue(within(5.0, of=lig))` is the whole residues near the ligand. `s.residue`, the selector after a dot, is every residue within `s`, each with only the particles it shares with `s`: `protein.residue` is the protein's residues, and `s.residue[0]` the first of them. A view takes the selector's arguments too, `s.residue('HIS')`, and `s['CA']` is `s.particle['CA']`; see Indexing. `particle(s)` and `s.particle` are both `s`.
-- `scope=` is the dotted form as a keyword: `residue(scope=s, name='HIS')` is `s.residue('HIS')`. It is there for a filter, whose scope is its group, to reach outside it with `scope=system`, and for a def that is handed its scope as an argument. Spatial selectors search the scope, but their points may lie outside it.
+- `scope=` is the dotted form as a keyword: `residue(scope=s, name='HIS')` is `s.residue('HIS')`. It is there for a filter, whose scope is its representation group, to reach outside it with `scope=system`, and for a def that is handed its scope as an argument. Spatial selectors search the scope, but their points may lie outside it.
 - Scopes nest. A scope that changes per frame makes everything evaluated within it frame stage.
 
 ```python
@@ -500,15 +520,15 @@ A parameter can be annotated with a kind. The kind says how much of an argument 
 | Kind | One call takes | Given `set[433]` | Given `float[32][3]` |
 | --- | --- | --- | --- |
 | `set` | one set | maps over the 433 | E0313 |
-| `group` | one set, or one point as a group of one location, which the body sees as `float[1][3]` | maps over the 433 | maps over the 32 points |
+| `body` | one set, or one point as a body of one location, which the def sees as `float[1][3]` | maps over the 433 | maps over the 32 points |
 | `point` | `float[3]`, or a set known to hold one particle | E0302 | maps over the 32 points |
 | `points` | `float[n][3]`, or one set as its particles' positions | maps over the 433 | one call |
 | `float`, `int`, `bool` | one element | E0313 | maps over every dimension |
 
 - An unannotated parameter takes its argument whole, as in Python. When an unannotated argument has a dimension that describes the same units as a mapped one, W0607 suggests the annotation that pairs them.
 - Inside the body the mapped dimensions are not visible, so a reduction there reduces only what one call took. An extent that changes from call to call, such as the number of particles in each residue, behaves like `?`: it broadcasts only with itself or 1, and hover shows its range, `float[4..14][3]`.
-- A group that is empty in some frame gives a missing entry, which reductions skip.
-- Any other annotation, and a return annotation, is E0312. An int where a point or group is expected is E0302, with the particles[i] fix; any other argument that does not fit its kind, such as a float for int, is E0313. particles(p), per-particle properties and shape() keep the identity of p's extents, so the weights in gyration pair with its positions.
+- A set taken as a body that is empty in some frame gives a missing entry, which reductions skip.
+- Any other annotation, and a return annotation, is E0312. An int where a point or body is expected is E0302, with the particles[i] fix; any other argument that does not fit its kind, such as a float for int, is E0313. particles(p), per-particle properties and shape() keep the identity of p's extents, so the weights in gyration pair with its positions.
 
 ```python
 # on T
@@ -545,7 +565,7 @@ taus = tau(residue[1:-1])                            # -> float[13] °, frame
 
 ```python
 # on P
-def drift(r: group):
+def drift(r: body):
     return rmsd(r, at(r.xyz, frame=0))
 
 per_res = drift(residue)                             # -> float[15] Å, frame: each residue fitted on its own first frame
@@ -568,9 +588,9 @@ def distance(a, b=None, between=None):
         return shown(r, line(a, b, text=r))
     return _between(a, b, between)
 
-def _between(a: group, b: group, op):
+def _between(a: body, b: body, op):
     assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
-    pa = a.xyz                                   # one group each; maps over arrays of groups
+    pa = a.xyz                                   # one body each; maps over arrays of them
     pb = b.xyz
     d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
     return shown(d, line(pa[i], pb[j], text=d))
@@ -620,7 +640,7 @@ def ema(x, alpha):
     return fold(step, x, init=x)
 ```
 
-The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a search that skips pairs is not an equation over arrays. `_between`, `gyration`, `normal` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one group per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration` and `normal` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atom()` and `bead()` are built-in shorthands for `particle(kind=...)`, since forwarding keywords would need `**kwargs`.
+The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a search that skips pairs is not an equation over arrays. `_between`, `gyration`, `normal` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one body per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration` and `normal` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atom()` and `bead()` are built-in shorthands for `particle(kind=...)`, since forwarding keywords would need `**kwargs`.
 
 ## Built-in functions: geometry and structure
 
@@ -649,7 +669,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `weight(p, weights='mass')` | `float[n]` | one weight per point of p, as `weights=` means it everywhere: the particles' masses (u) for `'mass'`, ones for None, or the array given. What the prelude's defs weigh with, and a def of your own can |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Also takes one argument of two points stacked along its last dimension, `float[2][3]` or `set[2]` of single particles, as `distance(r[['N', 'CA']])`, mapping over the dimensions before them. Drawn as a line labelled with the value |
-| `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a search that skips most pairs, so no n×m matrix is computed or stored. Drawn as a line between the pair |
+| `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: body, b: body)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one body each and maps over arrays of them; `max` for `'farthest'`. A body is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a search that skips most pairs, so no n×m matrix is computed or stored. Drawn as a line between the pair |
 | `displacement(a: point, b: point)` | `float[3]` Å | b minus a, minimum image |
 | `closest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with mdlib's distance kernel, which takes p eight points at a time and skips every point of q whose distance from their bounding sphere rules it out, so most pairs are never computed. The distance is the matrix's entry for the pair, the same bits `distance()` gives, and on equal entries the first pair in row order wins, as `argmin` has it: the kernel rounds in another order, so it also collects the pairs within rounding of its own extreme, and those are compared by their entries. `distinct=True` leaves out the pairs of a particle, or a unit such as a residue, with itself, by the dimensions' descriptions; for the nearest other point. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
 | `farthest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the longest distance, and its two indices |
@@ -663,7 +683,7 @@ A matrix of distances needs no special function; broadcasting gives it: `distanc
 
 ### Every form of distance
 
-`distance` is a prelude function with two forms. `distance(a, b)` is `norm(displacement(a, b))` between points. `distance(a, b, between='closest')` calls `_between`, whose parameters are `group`s: one call takes one set, or one point on its own, and computes what `min(distance(a.xyz[:, None], b.xyz))` would, through `closest_pair`; `'farthest'` is `max`, through `farthest_pair`. An array of groups maps, adding its dimensions, so residues of different sizes never meet in one array, and no matrix of every pair is ever made. Everything else follows from the point rule, the kinds and broadcasting: each argument's kind decides what it becomes and which dimension it adds, and the dimensions broadcast as for any function. Every form gives Å under the minimum image and is frame stage because positions are.
+`distance` is a prelude function with two forms. `distance(a, b)` is `norm(displacement(a, b))` between points. `distance(a, b, between='closest')` calls `_between`, whose parameters are `body`s: one call takes one set, or one point on its own, and computes what `min(distance(a.xyz[:, None], b.xyz))` would, through `closest_pair`; `'farthest'` is `max`, through `farthest_pair`. An array of bodies maps, adding its dimensions, so residues of different sizes never meet in one array, and no matrix of every pair is ever made. Everything else follows from the point rule, the kinds and broadcasting: each argument's kind decides what it becomes and which dimension it adds, and the dimensions broadcast as for any function. Every form gives Å under the minimum image and is frame stage because positions are.
 
 The examples use these names:
 
@@ -695,7 +715,7 @@ near_n = within(0.5 nm, of=vlb)                     # -> set, frame: the same as
 | an int | `12` | E0302 | E0302 | — |
 | a set known to be empty | `particle(resname='ATP')` | missing, with W0601 | missing, with W0601 | — |
 
-Under `between=` a set is a group of its particles and a position is a location on its own, so `ps` against `vlb` is 32 closest approaches, `float[32]`, never one.
+Under `between=` a set is a body of its particles and a position is a location on its own, so `ps` against `vlb` is 32 closest approaches, `float[32]`, never one.
 
 So a point against a point is `float`, a point against `cas` or `res_a.com` is `float[433]`, two arrays of the same extent pair element by element, and two different `?` or two different extents are E0301. A dimension of unknown length, `[?]`, broadcasts only with 1 or with the same `?`. A result with `[?]` cannot be published (E0401) until it is reduced. The forms beyond one dimension, and the edge cases:
 
@@ -1248,7 +1268,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0309 | `concatenate` of arrays whose other extents differ | `[4][3]` and `[4][2]` differ in dimension 1 |  |
 | E0310 | A matrix function on a matrix that is not square | `eigh` needs a square matrix; this is `float[433][3]` |  |
 | E0311 | A set index, by=, spread, fit(on=), common or particles(x) on an array with no particle description | zeros((10,)) has no dimension over particles | zeros(shape(res\_a)) |
-| E0312 | An annotation that is not a kind, or a return annotation | str is not a parameter kind; the kinds are set, group, point, points, float, int and bool | remove it |
+| E0312 | An annotation that is not a kind, or a return annotation | str is not a parameter kind; the kinds are set, body, point, points, float, int and bool | remove it |
 | E0313 | An argument that does not fit its parameter's kind | r: set got float\[433\]\[3\], which is not a set |  |
 | E0314 | A static assert that fails | cumulative: op= takes 'sum', 'min' or 'max'; got 'avg' | the assert's message |
 | E0315 | A fold step whose result differs from init in dtype, shape or unit | step returns float\[3\] Å; init is float Å |  |
