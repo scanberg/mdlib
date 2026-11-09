@@ -1,5 +1,5 @@
 #include <core/md_parse.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <stdlib.h>
 #include <math.h>

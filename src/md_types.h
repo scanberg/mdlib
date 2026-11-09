@@ -2,7 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_array.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <stdint.h>
 

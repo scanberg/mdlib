@@ -4,7 +4,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <md_util.h>
 #include <md_types.h>
 

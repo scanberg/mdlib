@@ -9,7 +9,6 @@
 #include <core/md_bitset.h>
 #include <core/md_common.h>
 #include <core/md_hash.h>
-#include <core/md_intrinsics.h>
 #include <core/md_log.h>
 
 #include <stdlib.h>

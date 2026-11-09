@@ -236,7 +236,7 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 // is not (the SIMD types and their operations, md_simd.h). GCC and Clang - clang-cl too, which is MD_COMPILER_CLANG -
 // have builtins for all of it. MSVC gets each intrinsic from a declaration of our own, made an intrinsic with #pragma
 // intrinsic, exactly as <intrin.h> and winnt.h declare it, so that a translation unit which includes those as well
-// sees the same declarations. md_intrinsics.h is what remains of the old split, kept for its includers.
+// sees the same declarations.
 
 // The types <stdint.h> calls uint32_t and uint64_t, without it. The same types, not merely the same sizes, so that a
 // uint64_t* passes where an MD_U64* is asked for: GCC and Clang predefine them as stdint.h's own, and MSVC's

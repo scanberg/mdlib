@@ -10,7 +10,6 @@
 #include "../src/vial/ir.h"
 #include "../src/vial/interp.h"
 #include <core/md_os.h>
-#include <core/md_intrinsics.h>
 
 #include <math.h>
 #include <stdio.h>

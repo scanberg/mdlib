@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <stdint.h>
 
 // 8-way fully associative cache using Least Recently Used (LRU) eviction policy

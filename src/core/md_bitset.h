@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <stdint.h>
 #include <stddef.h>

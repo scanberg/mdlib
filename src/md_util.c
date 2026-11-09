@@ -14,7 +14,6 @@
 #include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
-#include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_executor.h>

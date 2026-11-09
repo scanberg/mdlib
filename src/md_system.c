@@ -10,7 +10,7 @@
 #include <core/md_simd.h>
 #include <core/md_array.h>
 #include <core/md_hash.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>

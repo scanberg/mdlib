@@ -1093,7 +1093,7 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 
 #include <md_gto.h>
 #include <core/md_os.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>

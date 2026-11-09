@@ -462,7 +462,6 @@ UTEST_F(vial_spec, lowers) {
 // counted, not failed, until the interpreter is complete.
 #include "../src/vial/interp.h"
 #include <core/md_os.h>
-#include <core/md_intrinsics.h>
 
 // Frames for at(): the run's, or the structure's own coordinates for T
 typedef struct vial_spec__frames_t {

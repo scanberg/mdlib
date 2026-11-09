@@ -29,7 +29,7 @@
 #include <core/md_str.h>
 
 #include <core/md_executor.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include "bench_rev.h"                    // MD_BENCH_SOURCE_REV, generated at build time by bench_version.cmake
 
 #include <stdio.h>

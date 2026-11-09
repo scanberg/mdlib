@@ -11,7 +11,6 @@
 #include <core/md_array.h>
 #include <core/md_handle.h>
 #include <core/md_gl_util.h>
-#include <core/md_intrinsics.h>
 #include <core/md_bitset.h>
 
 #include <md_system.h>

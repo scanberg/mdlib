@@ -11,7 +11,6 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_intrinsics.h>
 #include <core/md_os.h>
 #include <core/md_common.h>
 

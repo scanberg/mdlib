@@ -5,7 +5,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_str.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
 #include <md_pdb.h>
@@ -912,11 +912,10 @@ UTEST_F(spatial_hash, test_correctness_centered) {
         double radius = rnd() * 20;
 
         int ref_count = 0;
-        // NOT 'rad2': something in the ARM64-only include chain (md_intrinsics.h pulls in
-        // <intrin.h>, which on ARM64 drags in the NEON/intrinsic headers) defines rad2 as an
+        // NOT 'rad2': on Windows ARM64, <intrin.h> drags in headers which define rad2 as an
         // object-like macro expanding to an integer constant, so the declaration becomes
-        // 'const double <literal> = ...'. x64 never sees that header, which is why this only
-        // breaks on the arm64 build.
+        // 'const double <literal> = ...'. md_common.h no longer includes <intrin.h>, but a
+        // translation unit that includes the Windows headers itself still gets the macro.
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };

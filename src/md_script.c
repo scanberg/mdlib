@@ -52,7 +52,6 @@
 #include <core/md_writer.h>
 #include <core/md_writer.h>
 #include <core/md_hash.h>
-#include <core/md_intrinsics.h>
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS

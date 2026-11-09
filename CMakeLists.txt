@@ -85,7 +85,6 @@ set(CORE_FILES
   src/core/md_handle.c
   src/core/md_handle.h
   src/core/md_hash.h
-  src/core/md_intrinsics.h
   src/core/md_json.c
   src/core/md_json.h
   src/core/md_linear_allocator.c

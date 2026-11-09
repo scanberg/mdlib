@@ -11,7 +11,6 @@
 
 #include <md_util.h>
 #include <core/md_array.h>
-#include <core/md_intrinsics.h>
 #include <core/md_os.h>
 #include <stdlib.h>
 

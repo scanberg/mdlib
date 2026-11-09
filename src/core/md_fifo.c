@@ -1,7 +1,6 @@
 #include <core/md_fifo.h>
 
 #include <core/md_common.h>
-#include <core/md_intrinsics.h>
 
 bool md_fifo_empty(const md_fifo_t* fifo) {
     ASSERT(fifo);

@@ -2,7 +2,6 @@
 
 #include <core/md_allocator.h>
 #include <core/md_common.h>
-#include <core/md_intrinsics.h>
 #include <core/md_log.h>
 #include <core/md_parse.h>
 

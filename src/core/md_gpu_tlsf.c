@@ -1,7 +1,7 @@
 #include "md_gpu_tlsf.h"
 
 #include <core/md_allocator.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <string.h>
 
