@@ -106,6 +106,9 @@ static bool vial_ir__start(vial_ir__run_t* r, const char* src, const md_system_t
     r->prog = md_vial_compile(str_from_cstr(src), &desc, r->alloc);
     const vial_ir_t* ir = md_vial__run_ir(r->prog);
     if (!ir) {
+        const md_vial_diagnostic_t* dg;
+        const size_t ndg = md_vial_diagnostics(r->prog, &dg);
+        for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
         const vial_ir_t* lowered = md_vial__ir(r->prog);
         printf("not lowered: %s\n", md_array_size(lowered->failures) ? lowered->failures[0].what : "does not inline");
         return false;
@@ -303,6 +306,193 @@ static double vial_ir__num(const vial_val_t* v) {
 static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, str_from_cstr(name))) return ir->outputs[i].value;
     return 0;
+}
+
+// __all__: exactly the names it lists are published; the others stay for hover, as _names do
+UTEST(vial_ir, all_publishes) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const char* src = "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\n_h = d * 2\nshown_too = _h + 1\n__all__ = ['d', '_h']\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
+    const md_vial_output_t* o;
+    const size_t n = md_vial_outputs(prog, &o);
+    bool d = false, h = false, s = false, ca = false, all = false;
+    for (size_t i = 0; i < n; ++i) {
+        d = d || str_eq(o[i].name, STR_LIT("d"));
+        h = h || str_eq(o[i].name, STR_LIT("_h"));
+        s = s || str_eq(o[i].name, STR_LIT("shown_too"));
+        ca = ca || str_eq(o[i].name, STR_LIT("ca"));
+        all = all || str_eq(o[i].name, STR_LIT("__all__"));
+    }
+    EXPECT_TRUE(d);
+    EXPECT_TRUE(h);         // listed, so published despite its _
+    EXPECT_FALSE(s);
+    EXPECT_FALSE(ca);
+    EXPECT_FALSE(all);
+    const vial_ir_t* ir = md_vial__run_ir(prog);
+    ASSERT_TRUE(ir != NULL);
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
+        const bool listed = str_eq(ir->outputs[i].name, STR_LIT("d")) || str_eq(ir->outputs[i].name, STR_LIT("_h"));
+        EXPECT_EQ(!listed, ir->outputs[i].hidden);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// pi, prod, median, percentile, cumsum, sort and argsort: NumPy's answers on small arrays
+UTEST(vial_ir, more_builtins) {
+    vial_ir__run_t r;
+    const char* src =
+        "a   = [3.0, 1.0, 2.0]\n"
+        "s   = sort(a)\n"
+        "i   = argsort(a)\n"
+        "c   = cumsum([1, 2, 3])\n"
+        "cb  = cumsum([True, False, True])\n"
+        "m   = median(a)\n"
+        "m2  = median([4.0, 1.0, 3.0, 2.0])\n"
+        "p   = percentile(a, 50)\n"
+        "p0  = percentile([1.0, 2.0, 3.0, 4.0], 25)\n"
+        "p1  = percentile([1.0, 2.0, 3.0, 4.0], 100)\n"
+        "pr  = prod([2, 3, 4])\n"
+        "tp  = 2 * pi\n"
+        "sm  = sort([[3, 1], [2, 0]])\n"
+        "sa  = sort([[3, 1], [2, 0]], axis=0)\n"
+        "ia  = argsort([[3, 1], [2, 0]], axis=0)\n"
+        "c2  = cumsum([[1, 2], [3, 4]], axis=1)\n"
+        "mr  = median([[1.0, 5.0], [3.0, 2.0]], axis=1)\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, NULL));
+    const bool ok = vial_interp_static(&r.in);
+    if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+    EXPECT_TRUE(ok);
+    char buf[256];
+    EXPECT_STREQ("[1.0, 2.0, 3.0]", vial_ir__out(&r, "s", buf, sizeof(buf)));
+    EXPECT_STREQ("[1, 2, 0]", vial_ir__out(&r, "i", buf, sizeof(buf)));
+    EXPECT_STREQ("[1, 3, 6]", vial_ir__out(&r, "c", buf, sizeof(buf)));
+    EXPECT_STREQ("[1, 1, 2]", vial_ir__out(&r, "cb", buf, sizeof(buf)));
+    EXPECT_STREQ("2.0", vial_ir__out(&r, "m", buf, sizeof(buf)));
+    EXPECT_STREQ("2.5", vial_ir__out(&r, "m2", buf, sizeof(buf)));
+    EXPECT_STREQ("2.0", vial_ir__out(&r, "p", buf, sizeof(buf)));
+    EXPECT_STREQ("1.75", vial_ir__out(&r, "p0", buf, sizeof(buf)));
+    EXPECT_STREQ("4.0", vial_ir__out(&r, "p1", buf, sizeof(buf)));
+    EXPECT_STREQ("24", vial_ir__out(&r, "pr", buf, sizeof(buf)));
+    EXPECT_STREQ("6.2831855", vial_ir__out(&r, "tp", buf, sizeof(buf)));
+    EXPECT_STREQ("[[1, 3], [0, 2]]", vial_ir__out(&r, "sm", buf, sizeof(buf)));
+    EXPECT_STREQ("[[2, 0], [3, 1]]", vial_ir__out(&r, "sa", buf, sizeof(buf)));
+    EXPECT_STREQ("[[1, 1], [0, 0]]", vial_ir__out(&r, "ia", buf, sizeof(buf)));
+    EXPECT_STREQ("[[1, 3], [3, 7]]", vial_ir__out(&r, "c2", buf, sizeof(buf)));
+    EXPECT_STREQ("[3.0, 2.5]", vial_ir__out(&r, "mr", buf, sizeof(buf)));
+    vial_ir__end(&r);
+}
+
+// weights= means the same everywhere: 'mass', None, or one number per point, so the array forms give what the words give
+UTEST(vial_ir, weights_uniform) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 2);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    const char* src =
+        "s   = residue[3]\n"
+        "ref = at(s.xyz, frame=0)\n"
+        "c1  = com(s)[0]\n"
+        "c2  = com(s, weights=mass(s))[0]\n"
+        "c3  = com(s, weights=None)[0]\n"
+        "c4  = com(s, weights=ones(count(s)))[0]\n"
+        "g1  = gyration(s)\n"
+        "g2  = gyration(s, weights=mass(s))\n"
+        "g3  = gyration(s, weights=None)\n"
+        "g4  = gyration(s, weights=ones(count(s)))\n"
+        "r1  = rmsd(s, ref)\n"
+        "r2  = rmsd(s, ref, weights=ones(count(s)))\n"
+        "r3  = rmsd(s, ref, weights='mass')\n"
+        "r4  = rmsd(s, ref, weights=mass(s))\n"
+        "f1  = fit(s.xyz, ref, weights='mass')[0, 0]\n"
+        "f2  = fit(s.xyz, ref, weights=mass(s))[0, 0]\n"
+        "w1  = weight(s)[0]\n"
+        "w2  = mass(s)[0]\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(2)}, alloc);
+    ASSERT_TRUE(e != NULL);
+    const bool ran = md_vial_eval_run(e);
+    const md_vial_diagnostic_t* ed;
+    const size_t ned = md_vial_eval_diagnostics(e, &ed);
+    for (size_t i = 0; i < ned; ++i) printf("%.5s %.*s\n", ed[i].code, (int)ed[i].message.len, ed[i].message.ptr);
+    ASSERT_TRUE(ran);
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    static const char* pairs[][2] = {{"c1", "c2"}, {"c3", "c4"}, {"g1", "g2"}, {"g3", "g4"}, {"r1", "r2"}, {"r3", "r4"}, {"f1", "f2"}, {"w1", "w2"}};
+    for (size_t q = 0; q < ARRAY_SIZE(pairs); ++q) {
+        char pa[32], pb[32];
+        snprintf(pa, sizeof(pa), "script/%s", pairs[q][0]);
+        snprintf(pb, sizeof(pb), "script/%s", pairs[q][1]);
+        const md_attribute_t* a = md_attributes_find(at, str_from_cstr(pa));
+        const md_attribute_t* b = md_attributes_find(at, str_from_cstr(pb));
+        ASSERT_TRUE(a && b && a->data && b->data);
+        const size_t n = a->format.rank ? a->format.shape[0] : 1;
+        ASSERT_EQ(n, b->format.rank ? b->format.shape[0] : 1);
+        for (size_t f = 0; f < n; ++f) {
+            const float va = ((const float*)a->data)[f], vb = ((const float*)b->data)[f];
+            if (fabsf(va - vb) > 1e-4f) printf("%s and %s differ at %zu: %g and %g\n", pairs[q][0], pairs[q][1], f, va, vb);
+            EXPECT_NEAR(va, vb, 1e-4);
+        }
+    }
+    // Different weights give a different number
+    const md_attribute_t* g1 = md_attributes_find(at, STR_LIT("script/g1"));
+    const md_attribute_t* g3 = md_attributes_find(at, STR_LIT("script/g3"));
+    ASSERT_TRUE(g1 && g3);
+    EXPECT_GT(fabsf(((const float*)g1->data)[0] - ((const float*)g3->data)[0]), 1e-4f);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A for is unrolled: its body runs once per element, what it binds carries from turn to turn and out of the loop,
+// and break and continue on static conditions cut it short
+UTEST(vial_ir, loops_unrolled) {
+    vial_ir__run_t r;
+    const char* src =
+        "def f(n):\n    t = 0\n    for i in range(n):\n        t = t + i\n    return t\n"
+        "x = f(4)\n"
+        "t = 0\nfor q in range(4):\n    t = t + q\n"
+        "u = t\n"
+        "s = 0\nfor q in range(10):\n    if q == 3:\n        break\n    s += q\n"
+        "c = 0\nfor q in range(6):\n    if q % 2 == 0:\n        continue\n    c += q\n"
+        "n = 0\nfor res in residue[0:3]:\n    n += count(res)\n"
+        "m = 0.0\nfor p in residue[0]:\n    m += mass(p)[0]\n"
+        "z = 0\nfor a, b in zip([1, 2, 3], [10, 20, 30]):\n    z += a * b\n"
+        "w = 0\nfor v in [5, 6, 7]:\n    w = w * 10 + v\n"
+        "e = 0\nfor q in range(0):\n    e = 99\n"
+        "n2 = 0\nfor p in residue[0]:\n    n2 += 1\n"
+        "n3 = 0\nfor p in residue[0]:\n    n3 = n3 + count(p)\n"
+        "mr = sum(mass(residue[0]))\n"
+        "g = 0\nfor i in range(3):\n    for j in range(3):\n        if j > i:\n            break\n        g += 1\n"
+        "def h(k):\n    acc = 0\n    for i in range(k):\n        acc += i * i\n    return acc\n"
+        "hh = h(4)\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, vial_test_system('T')));
+    const bool ok = vial_interp_static(&r.in);
+    if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+    EXPECT_TRUE(ok);
+    char buf[256];
+    EXPECT_STREQ("6", vial_ir__out(&r, "x", buf, sizeof(buf)));
+    EXPECT_STREQ("6", vial_ir__out(&r, "u", buf, sizeof(buf)));
+    EXPECT_STREQ("6", vial_ir__out(&r, "t", buf, sizeof(buf)));
+    EXPECT_STREQ("3", vial_ir__out(&r, "s", buf, sizeof(buf)));
+    EXPECT_STREQ("9", vial_ir__out(&r, "c", buf, sizeof(buf)));
+    EXPECT_STREQ("28", vial_ir__out(&r, "n", buf, sizeof(buf)));       // MET, ARG, GLU of chain A: 8 + 11 + 9 heavy atoms
+    EXPECT_STREQ("8", vial_ir__out(&r, "n2", buf, sizeof(buf)));
+    EXPECT_STREQ("8", vial_ir__out(&r, "n3", buf, sizeof(buf)));
+    EXPECT_STREQ("140", vial_ir__out(&r, "z", buf, sizeof(buf)));
+    EXPECT_STREQ("567", vial_ir__out(&r, "w", buf, sizeof(buf)));
+    EXPECT_STREQ("0", vial_ir__out(&r, "e", buf, sizeof(buf)));
+    char ref[256];
+    EXPECT_STREQ(vial_ir__out(&r, "mr", ref, sizeof(ref)), vial_ir__out(&r, "m", buf, sizeof(buf)));
+    EXPECT_STREQ("6", vial_ir__out(&r, "g", buf, sizeof(buf)));         // (i, j) with j <= i: 1 + 2 + 3
+    EXPECT_STREQ("14", vial_ir__out(&r, "hh", buf, sizeof(buf)));
+    vial_ir__end(&r);
 }
 
 UTEST(vial_ir, evaluates_trajectory) {
@@ -778,7 +968,7 @@ UTEST(vial_ir, draw) {
         "w  = within(4.0, of=ca[0])\n"
         "p  = ca.xyz\n"
         "n  = count(ca)\n"
-        "both = line(ca[0], ca[1], label='x') + sphere(ca[2], 2.0)\n"
+        "both = line(ca[0], ca[1], text='x') + sphere(ca[2], 2.0)\n"
         "rs = residue()\n"
         "dc = distance(rs[0:3], ca[4], between='closest')\n"
         "dm = distance(rs[:, None], rs, between='closest')\n"
@@ -1288,6 +1478,20 @@ UTEST(vial_ir, selector_views) {
     EXPECT_TRUE(vial_ir__same_sets("chain.atom[3]", b, sys, st, alloc, &n));
     EXPECT_TRUE(vial_ir__same_sets("residue('PHE').ring[0]", "(residue('PHE') and within(1000.0, of=particle(resname='GTP'))).ring[0]", sys, st, alloc, &n));
     EXPECT_EQ(42u, n);
+    // A view alone on one set is the selector within it, when compiling and per frame
+    EXPECT_TRUE(vial_ir__same_sets("residue(scope=chain[0])", "chain[0].residue", sys, st, alloc, &n));
+    EXPECT_EQ(442u, n);
+    snprintf(b, sizeof(b), "(chain[0] and within(1000.0, of=particle(resname='GTP'))).residue");
+    EXPECT_TRUE(vial_ir__same_sets("residue(scope=(chain[0] and within(1000.0, of=particle(resname='GTP'))))", b, sys, st, alloc, &n));
+    EXPECT_EQ(442u, n);
+    EXPECT_TRUE(vial_ir__same_sets("residue(scope=chain[0])[0:2]", "chain[0].residue[0:2]", sys, st, alloc, &n));
+    EXPECT_EQ(2u, n);
+    // s.particle['CA'] is s['CA'] written in full, when compiling and per frame
+    EXPECT_TRUE(vial_ir__same_sets("residue('PHE')['CZ']", "residue('PHE').particle['CZ']", sys, st, alloc, &n));
+    EXPECT_EQ(42u, n);
+    EXPECT_TRUE(vial_ir__same_sets("(residue('PHE') and within(1000.0, of=particle(resname='GTP')))[['CG', 'CZ']]",
+                                   "(residue('PHE') and within(1000.0, of=particle(resname='GTP'))).atom[['CG', 'CZ']]", sys, st, alloc, &n));
+    EXPECT_EQ(84u, n);
     // Positions along the first dimension of a stacked array take its rows whole (found by the fuzzer)
     const md_system_t* P = vial_test_system('P');
     const md_system_state_t* Ps = vial_test_state('P');
@@ -2237,6 +2441,7 @@ UTEST(vial_ir, volumes) {
         "d  = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n"
         "ds = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25, sigma=6.0)\n"
         "dc = density(particle(name='CA'), samples=1)\n"
+        "dm = density(particle(name='CA'), samples=1, weights='mass')\n"
         "n  = max(s)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
@@ -2253,6 +2458,9 @@ UTEST(vial_ir, volumes) {
     EXPECT_STREQ("float[48][48][48] count/Å³", os->type);
     EXPECT_STREQ("float[24][16][16] u/Å³", ow->type);
     EXPECT_STREQ("float[56][56][56] count/Å³", od->type);
+    const md_vial_output_t* om = vial_ir__pub(prog, "dm");
+    ASSERT_TRUE(om != NULL);
+    EXPECT_STREQ(u8"float[n][n][n] u/Å³", om->type);     // weights='mass' as everywhere: the masses' unit per Å³
     EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, os->stage);
     EXPECT_EQ((uint32_t)(MD_VIAL_OUTPUT_VOLUME | MD_VIAL_OUTPUT_SDF), os->flags);
     EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_VOLUME, od->flags);
@@ -2380,7 +2588,7 @@ UTEST(vial_ir, volume_diagnostics) {
     md_arena_allocator_destroy(alloc);
 }
 
-// mcs(a, b): which particles of b play the part of which of a, typed when compiling
+// mcs(*structures): which particles of each play the parts of which of the first, set[k][w], typed when compiling
 UTEST(vial_ir, mcs) {
     const md_system_t* sys = vial_test_system('T');
     ASSERT_TRUE(sys != NULL);
@@ -2388,11 +2596,14 @@ UTEST(vial_ir, mcs) {
     const char* src =
         "gtp = particle(resname='GTP')\n"
         "gdp = particle(resname='GDP')\n"
-        "a, b = mcs(gtp, gdp)\n"
-        "r = rmsd(b.xyz, a.xyz)\n"
+        "m = mcs(gtp, gdp)\n"
+        "r = rmsd(m[1].xyz, m[0].xyz)\n"
         "phe = residue('PHE')\n"
         "tyr = residue('TYR')\n"
-        "c = mcs(phe[0], tyr[0], by='element')\n";
+        "c = mcs(phe[0], tyr[0], match='element')\n"
+        "aro = mcs(phe[0:4], tyr[0:4], residue('TRP')[0:2])\n"
+        "one = mcs(phe)\n"
+        "res = mcs(residue(chain='A')[0:3])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
@@ -2400,19 +2611,29 @@ UTEST(vial_ir, mcs) {
     EXPECT_EQ(0u, (unsigned)nd);
     md_vial__result_t r;
     ASSERT_TRUE(md_vial__line_result(prog, 3, &r));
-    EXPECT_STREQ("set[28]", r.types[0]);
-    EXPECT_STREQ("set[28]", r.types[1]);
+    EXPECT_STREQ("set[2][28]", r.types[0]);
     ASSERT_TRUE(md_vial__line_result(prog, 4, &r));
     EXPECT_STREQ("float Å", r.types[0]);
+    ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
+    EXPECT_STREQ("set[2][11]", r.types[0]);       // PHE and TYR: the ring, CB and CA... eleven heavy atoms alike
+    ASSERT_TRUE(md_vial__line_result(prog, 8, &r));
+    EXPECT_STREQ("set[10][10]", r.types[0]);      // with TRP: what all three share
+    ASSERT_TRUE(md_vial__line_result(prog, 9, &r));
+    EXPECT_STREQ("set[42][11]", r.types[0]);      // one array of alike structures: every heavy atom, one mapping shared
+    ASSERT_TRUE(md_vial__line_result(prog, 10, &r));
+    EXPECT_STREQ("set[3][6]", r.types[0]);        // MET, ARG, GLU: backbone and CB, CG
     // Of the particles, as filters read them: GDP's in the order of GTP's they play
     md_vial_filter_t f;
     ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
     EXPECT_EQ(28u, (unsigned)f.num_sets);
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
+    EXPECT_EQ(56u, (unsigned)f.num_sets);     // both rows, flat
     // Too little in common: E0321, unless least= asks for less
     struct { const char* src; const char* code; } bad[] = {
         {"m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
-        {"m = mcs(residue('PHE'), residue('TYR'))\n", "E0313"},
-        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='colour')\n", "E0313"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='SO4'))\n", "E0321"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), match='colour')\n", "E0313"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='element')\n", "E0202"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(bad); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
@@ -2441,9 +2662,9 @@ static double vial_ir__max_diff(const md_attributes_t* at, const char* p, const 
     return d;
 }
 
-// An sdf over structures paired column by column, and over kinds of structure placed on the first kind's reference:
-// what is alike gives what one kind gives
-UTEST(vial_ir, sdf_kinds) {
+// An sdf over structures paired column by column: what mcs gives for one pair, and for arrays of alike structures,
+// which it maps column for column, so structures of different kinds join through concatenate
+UTEST(vial_ir, sdf_columns) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
@@ -2452,23 +2673,31 @@ UTEST(vial_ir, sdf_kinds) {
         "ala = residue[1:3] and not particle(element='H')\n"
         "cb  = particle(name='CB')\n"
         "s   = sdf(ala, cb, 5.0)\n"
-        "a, b = mcs(residue[1], residue[2])\n"
-        "so  = sdf([a, b], cb, 5.0)\n"
-        "rv  = sdf([a[::-1], b[::-1]], cb, 5.0)\n"
-        "s2  = sdf((ala, ala), cb, 5.0)\n"
-        "sp  = sdf((ala, ala), cb, 5.0, poses=(None, (eye(3), zeros(3, unit='Å'))))\n"
-        "ct  = sdf((residue[1:5], residue[14:15]), cb, 5.0)\n";
+        "m   = mcs(residue[1], residue[2])\n"
+        "so  = sdf(m, cb, 5.0)\n"
+        "rv  = sdf(m[:, ::-1], cb, 5.0)\n"
+        "m2  = mcs(residue[1:3], residue[1:3])\n"
+        "s2  = sdf(m2, cb, 5.0)\n"
+        "ct  = sdf(mcs(residue[1:5], residue[14:15]), cb, 5.0)\n"
+        "c1  = sdf(mcs(residue[1:5]), cb, 5.0)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
     ASSERT_EQ(0u, (unsigned)ndg);
+    // mcs over arrays: set[k][w], a row per structure
+    md_vial__result_t r;
+    ASSERT_TRUE(md_vial__line_result(prog, 4, &r));
+    EXPECT_STREQ("set[2][5]", r.types[0]);
+    ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
+    EXPECT_STREQ("set[4][5]", r.types[0]);
     md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
     ASSERT_TRUE(e != NULL);
-    ASSERT_TRUE(md_vial_eval_run(e));
+    const bool ran = md_vial_eval_run(e);
     const md_vial_diagnostic_t* rd;
     const size_t nr = md_vial_eval_diagnostics(e, &rd);
     for (size_t i = 0; i < nr; ++i) printf("%.5s %.*s\n", rd[i].code, (int)rd[i].message.len, rd[i].message.ptr);
+    ASSERT_TRUE(ran);
     EXPECT_EQ(0u, (unsigned)nr);
     const md_attributes_t* at = md_vial_eval_attributes(e);
     size_t n = 0;
@@ -2477,18 +2706,19 @@ UTEST(vial_ir, sdf_kinds) {
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/so", &n), 1e-6);
     EXPECT_EQ(40u * 40u * 40u, (unsigned)n);
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/rv", NULL), 2e-4);    // the fits sum in another order
-    // The same kind twice: placed on itself, the same density per structure, twice as much added
+    // The same structures twice through mcs over arrays: the same density per structure, twice as much added
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/s2", NULL), 1e-4);
-    EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/sp", NULL), 1e-4);
     EXPECT_EQ(2 * vial_ir__attr1(at, "script/s/samples", 0), vial_ir__attr1(at, "script/s2/samples", 0));
-    // A kind not alike, the last residue with its OXT, placed by the five heavy atoms it has in common
+    // Four alike residues through one mcs: the same as the four fitted as they are, on their heavy atoms
+    EXPECT_LT(vial_ir__max_diff(at, "script/c1", "script/ct", NULL), 1e10);     // both exist; c1 has four rows, ct five
+    // A structure not alike, the last residue with its OXT, joins by the five heavy atoms it has in common
     const md_attribute_t* act = md_attributes_find(at, STR_LIT("script/ct"));
     ASSERT_TRUE(act != NULL);
     double tot = 0;
     for (size_t i = 0; i < 40 * 40 * 40; ++i) tot += ((const float*)act->data)[i];
     EXPECT_GT(tot, 0.0);
-    // Drawn: every structure of every kind with its pose
-    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf((residue") - src));
+    // Drawn: every structure with its pose
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(mcs(residue[1:5], residue[14:15])") - src));
     md_vial_drawing_t dr;
     ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
     EXPECT_EQ(5u, (unsigned)dr.num_poses);
@@ -2499,11 +2729,12 @@ UTEST(vial_ir, sdf_kinds) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
     struct { const md_system_t* sys; const char* src; const char* code; } cases[] = {
-        {T, "v = sdf((particle(resname='GTP'), particle(resname='VLB')), particle(name='O'), 8.0)\n", "E0321"},
-        {T, "v = sdf((residue('PHE')[0:2], residue('TYR')[0:2]), particle(name='O'), 8.0)\n", NULL},
-        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, poses=(None, eye(3)))\n", "E0313"},
-        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, poses=((eye(3), zeros(3)), None))\n", "E0313"},
-        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, ref=(None,))\n", "E0313"},
+        {T, "m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
+        {T, "v = sdf(mcs(residue('PHE')[0:2], residue('TYR')[0:2]), particle(name='O'), 8.0)\n", NULL},
+        {T, "a = mcs(residue('PHE')[0:2])\nb = mcs(residue('TYR')[0:2])\nv = sdf(concatenate((a, b)), particle(name='O'), 8.0)\n", "E0309"},
+        {T, "a = mcs(residue('PHE')[0:2])\nb = mcs(residue('TYR')[0:2])\nv = concatenate((a, b), axis=1)\n", "E0316"},
+        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0)\n", "E0313"},
+        {T, "v = sdf(residue('PHE'), particle(name='O'), 8.0, poses=None)\n", "E0202"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);

@@ -117,7 +117,7 @@ static void collect_outputs(md_vial_program_t* prog) {
             const vial_node_id nn = names[k];
             const md_vial_span_t sp = t->nodes[nn].span;
             const str_t name = {prog->src.ptr + sp.beg, sp.end - sp.beg};
-            if (!name.len || name.ptr[0] == '_') continue;
+            if (!vial_types_published(&prog->types, name)) continue;
             const vial_type_t* ty = &prog->types.types[nn];
             const bool number = ty->dtype == VIAL_DT_BOOL || ty->dtype == VIAL_DT_INT || ty->dtype == VIAL_DT_FLOAT || ty->dtype == VIAL_DT_FLOAT64;
             const bool set = ty->dtype == VIAL_DT_SET;

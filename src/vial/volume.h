@@ -123,20 +123,24 @@ double vial_volume_bulk(const vial_volume_t* vol);
 void vial_volume_free(vial_volume_t* vol);
 
 // ### CORRESPONDENCE ###
-// mcs(a, b): which particles of b play the part of which of a (md_mcs.h), as two arrays of one particle each, a's in
-// ascending order and b's paired with them by position, b's pairing with a's without W0605. With xyz, the positions of
+// mcs(*structures): which particles of each structure play the parts of which of the first (md_mcs.h). Every
+// structure is matched onto the first; the columns are the first's particles that every structure has a part for, in
+// ascending order, and the result is set[k][w], a row per structure, one particle each. Structures alike (as many
+// particles, of the same elements, or names, in order) share one mapping, found once. With xyz, the positions of
 // every particle, of the mappings the bonds allow the one of least RMSD; without, the first. The check makes it
-// without positions, evaluation with frame 0's, so the two differ at most by symmetric particles of b.
+// without positions, evaluation with frame 0's, so the two differ at most by symmetric particles.
 typedef struct vial_mcs_t {
-    vial_sets_t*    a;
-    vial_sets_t*    b;
-    size_t          a_heavy, b_heavy;
+    vial_sets_t*    rows;           // set[k][w], flat
+    uint32_t        k, width;
+    size_t          first_heavy;    // heavy atoms of the first structure
+    uint32_t        least_at;       // the structure with the fewest pairs with the first (1-based; 0 when k is 1)
+    size_t          least_common;   // its pairs, before the columns were cut to what all share
+    size_t          least_heavy;    // the smaller heavy count of that pair
     bool            incomplete;
-    double          rmsd;
 } vial_mcs_t;
 
-bool vial_mcs(vial_mcs_t* out, const struct md_system_t* sys, const vial_sets_t* a, const vial_sets_t* b, bool by_name, const float* xyz,
-              md_allocator_i* alloc);
+bool vial_mcs(vial_mcs_t* out, const struct md_system_t* sys, const vial_sets_t* structures, bool by_name, const float* xyz, md_allocator_i* alloc);
 
-// The built-in, from its arguments by parameter: a tuple of the two arrays. xyz as for vial_mcs, NULL for none.
+// The built-in, from its arguments: every positional one a set or an array of sets, match= and least= by name.
+// xyz as for vial_mcs, NULL for none.
 bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const str_t* names, uint32_t n, const float* xyz, vial_val_t* out);

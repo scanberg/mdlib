@@ -60,7 +60,14 @@ typedef struct infer_t {
     vx_memo_t*          memo;       // a def's result by its arguments' types, shared by every frame
     struct vial_ir_t*   ir;         // lowering: the IR emitted into, or NULL when nothing is emitted
     md_allocator_i*     alloc;
+    // Loops are unrolled: a break or continue reached on a static condition stops the body's statements, and the
+    // loop's unrolling for a break
+    uint8_t             loop_ctl;   // 0, VX_LOOP_BREAK or VX_LOOP_CONTINUE: set by the statement, read by the loop
+    uint8_t             loop_depth; // the loops the statement being checked is in
+    uint8_t             dyn_if;     // the ifs chosen per frame it is in: a break or continue there cannot be unrolled
 } infer_t;
+
+enum { VX_LOOP_BREAK = 1, VX_LOOP_CONTINUE = 2 };
 
 vial_type_t     vx_infer(infer_t* x, vial_node_id id);
 void            vx_diag_fix(infer_t* x, const char code[6], vial_node_id at, const char* fix, const char* fmt, ...);
@@ -183,6 +190,9 @@ bool               vx_is_particles_view(const infer_t* x, vial_node_id n);     /
 uint8_t            vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, str_t* name);  // NONE if no view
 const vial_sets_t* vx_view_units(infer_t* x, str_t name);  // every unit of the selector, or every particle of its kind
 vial_type_t        vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const vial_type_t* a);
+vial_type_t        vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const vial_type_t* a);   // s.residue alone, on one set
+bool               vx_view_bare(const infer_t* x, vial_node_id id);
+bool               vx_weights_ok(infer_t* x, vial_node_id n, const char* fname, const vial_type_t* points);   // weights=: 'mass', None or float[n]   // a view as a value, not the start of a subscript or call
 // Positions within each set of what obj gives: one, s.particle[1], or a list, s.particle[[1, 0, 2]] and s[[1, 0, 2]] on
 // one set, stacked along a new last dimension in the order listed
 vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const vial_type_t* a);

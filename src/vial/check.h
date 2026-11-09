@@ -87,3 +87,4 @@ void vial_check_prelude(const vial_tree_t* prelude, str_t src, vial_diags_t* dia
 
 // The symbol a NAME node reads or binds, or NULL
 const vial_symbol_t* vial_names_symbol(const vial_names_t* n, vial_node_id id);
+uint32_t             vial_names_lookup_top(const vial_names_t* n, str_t name);   // the top-level symbol of a name, or 0

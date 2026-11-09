@@ -310,7 +310,20 @@ static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t
                 char names[160] = "";
                 size_t n = 0;
                 for (uint32_t q = 0; q < np && n < sizeof(names); ++q) n += snprintf(names + n, sizeof(names) - n, "%s%s", q ? ", " : "", params[q].name);
-                vx_diag_fix(x, "E0202", a, NULL, "`%s` takes no keyword `%.*s`; it takes %s", fname, (int)kw.len, kw.ptr, names);
+                // A keyword VIAL once spelt otherwise, or that another tool spells so: the fix writes this one
+                static const char* const renamed[][2] = {{"by", "match"}, {"label", "text"}, {"weight", "weights"}, {"mass_weighted", "weights"}};
+                const char* instead = NULL;
+                for (size_t q = 0; q < ARRAY_SIZE(renamed) && !instead; ++q) {
+                    if (!str_eq(kw, str_from_cstr(renamed[q][0]))) continue;
+                    for (uint32_t r = 0; r < np && !instead; ++r) if (!strcmp(params[r].name, renamed[q][1])) instead = renamed[q][1];
+                }
+                char fix[200] = "";
+                if (instead && vn) {
+                    const str_t vt = vx_text(x, vn);
+                    if (vt.len < 150 && !memchr(vt.ptr, '\n', vt.len) && !memchr(vt.ptr, '\r', vt.len)) snprintf(fix, sizeof(fix), "%s=%.*s", instead, (int)vt.len, vt.ptr);
+                }
+                if (instead) vx_diag_fix(x, "E0202", a, fix[0] ? fix : NULL, "`%s` takes no keyword `%.*s`; it is %s=", fname, (int)kw.len, kw.ptr, instead);
+                else vx_diag_fix(x, "E0202", a, NULL, "`%s` takes no keyword `%.*s`; it takes %s", fname, (int)kw.len, kw.ptr, names);
                 ok = false;
                 continue;
             }
@@ -390,19 +403,32 @@ static vial_value_t value(infer_t* x, vial_node_id n) { return n ? vx_value_of(x
 
 // ### THE BUILT-INS ###
 
+// weights=, the same everywhere: 'mass', None, or one number per point, float[n]. An array pairs with the points of
+// one set or one group, so it does not go with an array of sets, whose sizes may differ.
+bool vx_weights_ok(infer_t* x, vial_node_id n, const char* fname, const T* points) {
+    if (!n) return true;
+    const vial_value_t w = value(x, n);
+    const T wt = x->out->types[(n) - x->out->base];
+    if (vial_type_is_error(&wt)) return false;
+    if ((w.kind == VIAL_VAL_STR && str_eq(w.s, STR_LIT("mass"))) || wt.dtype == VIAL_DT_NONE) return true;
+    const bool num = wt.dtype == VIAL_DT_FLOAT || wt.dtype == VIAL_DT_FLOAT64 || wt.dtype == VIAL_DT_INT || wt.dtype == VIAL_DT_BOOL;
+    if (!num || wt.ndim != 1) {
+        vx_diag_fix(x, "E0313", n, NULL, "weights= takes 'mass', None, or one number per point, float[n]; this is %s", vx_tstr(&wt));
+        return false;
+    }
+    if (points && points->dtype == VIAL_DT_SET && points->ndim) {
+        vx_diag_fix(x, "E0313", n, NULL, "an array of weights pairs with the points of one set, and `%s` is given %s; weights='mass' weighs "
+            "each set's particles", fname, vx_tstr(points));
+        return false;
+    }
+    return true;
+}
+
 static T call_com(infer_t* x, vial_node_id call, const char* fname, vial_node_id s_node, vial_node_id weights_node) {
     static const param_t params[] = {{"s", VK_POINTS, true}, {"weights", VK_WHOLE, false}};
     vial_node_id args[2] = {s_node, weights_node};
     if (!s_node && !bind(x, call, fname, params, 2, args)) return err();
-    if (args[1]) {
-        const vial_value_t w = value(x, args[1]);
-        const T wt = x->out->types[(args[1]) - x->out->base];
-        const bool ok = (w.kind == VIAL_VAL_STR && str_eq(w.s, STR_LIT("mass"))) || w.kind == VIAL_VAL_NULL || vial_type_is_error(&wt);
-        if (!ok) {
-            vx_diag_fix(x, "E0313", args[1], NULL, "`weights` takes 'mass' or None");
-            return err();
-        }
-    }
+    if (!vx_weights_ok(x, args[1], fname, args[0] ? &x->out->types[(args[0]) - x->out->base] : NULL)) return err();
     split_t sp[2];
     T loop;
     if (!map_args(x, call, fname, params, 2, args, sp, &loop)) return err();
@@ -410,6 +436,34 @@ static T call_com(infer_t* x, vial_node_id call, const char* fname, vial_node_id
     vial_type_push_dim(&core, vial_extent_static(3));
     T t;
     return with_loop(x, call, &loop, core, &t) ? t : err();
+}
+
+// weight(p, weights='mass'): one weight per point of p, as weights= means it everywhere: the particles' masses for
+// 'mass', ones for None, or the array given, one number per point. What the prelude's defs weigh with.
+static T call_weight(infer_t* x, vial_node_id call) {
+    static const param_t params[] = {{"p", VK_WHOLE, true}, {"weights", VK_WHOLE, false}};
+    vial_node_id args[2];
+    if (!bind(x, call, "weight", params, 2, args)) return err();
+    const T p = x->out->types[(args[0]) - x->out->base];
+    if (vial_type_is_error(&p)) return err();
+    const bool coords = is_float(&p) && p.ndim == 2 && p.dims[1].kind == VIAL_EXT_STATIC && p.dims[1].n == 3;
+    if (!(p.dtype == VIAL_DT_SET && p.ndim == 0) && !coords) {
+        vx_diag_fix(x, "E0313", args[0], NULL, "`weight` takes one set, or one group of points, float[n][3]; this is %s", vx_tstr(&p));
+        return err();
+    }
+    if (!vx_weights_ok(x, args[1], "weight", &p)) return err();
+    const T wt = args[1] ? x->out->types[(args[1]) - x->out->base] : vial_type_scalar(VIAL_DT_STR);
+    if (wt.ndim == 1) {
+        // The array itself, evaluated when its points are: its count is checked against theirs
+        T t = wt;
+        join_stage(&t, &p);
+        return t;
+    }
+    T t = vial_type_scalar(VIAL_DT_FLOAT);
+    if (wt.dtype == VIAL_DT_STR) { t.unit_kind = VIAL_UNIT_KNOWN; t.unit = unit_named("u"); }
+    t.stage = p.stage;
+    vial_type_push_dim(&t, coords ? p.dims[0] : particle_extent(x, &p, args[0]));
+    return t;
 }
 
 // mass, charge, element, name, bfactor: one value per particle of a set
@@ -561,6 +615,7 @@ static T call_fit(infer_t* x, vial_node_id call) {
             return err();
         }
     }
+    if (!vx_weights_ok(x, args[3], "fit", &x->out->types[(args[0]) - x->out->base])) return err();
     T core = sp[0].core;
     core.stage = core.stage < VIAL_STAGE_FRAME ? VIAL_STAGE_FRAME : core.stage;
     T t;
@@ -572,6 +627,7 @@ static T call_fit(infer_t* x, vial_node_id call) {
 bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
     if (str_eq(name, STR_LIT("com")))          { *out = call_com(x, call, "com", 0, 0); return true; }
+    if (str_eq(name, STR_LIT("weight")))       { *out = call_weight(x, call); return true; }
     if (str_eq(name, STR_LIT("mass")) || str_eq(name, STR_LIT("charge")) || str_eq(name, STR_LIT("element")) ||
         str_eq(name, STR_LIT("name")) || str_eq(name, STR_LIT("bfactor"))) { *out = call_property(x, call, name); return true; }
     if (str_eq(name, STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }

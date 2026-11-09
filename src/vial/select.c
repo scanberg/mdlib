@@ -381,6 +381,23 @@ vial_sets_t* vial_sets_boolop_each(const vial_sets_t* arr, const vial_sets_t* on
     return s;
 }
 
+vial_sets_t* vial_sets_concat(const vial_sets_t* const* parts, uint32_t n, md_allocator_i* alloc) {
+    uint32_t count = 0, total = 0;
+    for (uint32_t i = 0; i < n; ++i) { count += parts[i]->count; total += parts[i]->offset[parts[i]->count]; }
+    vial_sets_t* s = sets_new(count, total, alloc);
+    uint32_t c = 0, at = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const vial_sets_t* p = parts[i];
+        for (uint32_t j = 0; j < p->count; ++j) {
+            const uint32_t sz = vial_sets_size(p, j);
+            memcpy(s->idx + at, vial_sets_items(p, j), sz * sizeof(uint32_t));
+            at += sz;
+            s->offset[++c] = at;
+        }
+    }
+    return s;
+}
+
 vial_sets_t* vial_sets_merge(const vial_sets_t* a, md_allocator_i* alloc) {
     const uint32_t total = a->offset[a->count];
     vial_sets_t* s = sets_new(1, total, alloc);

@@ -470,6 +470,12 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         vx_set_value(x, id, sets_value(s));
         return true;
     }
+    if (str_eq(name, STR_LIT("pi"))) {
+        // A float, as VIAL's numbers are: beside a float64 a bare float is read as one (in_operand_dtype)
+        *out = vial_type_scalar(VIAL_DT_FLOAT);
+        vx_set_value(x, id, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = 3.14159265358979323846f});
+        return true;
+    }
     if (b->flags & VIAL_BUILTIN_VALUE) {
         if (!x->sys) { *out = vial_type_scalar(VIAL_DT_SET); return true; }
         const vial_sets_t* s = NULL;
@@ -634,6 +640,43 @@ const vial_sets_t* vx_view_units(infer_t* x, str_t name) {
 
 static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, str_t what);
 
+// Whether a view stands alone, as a value: not the start of a subscript or a call that picks within each set. On one
+// set a slice slices that value, chain[0].residue[0:2], since within one set there is nothing else it could mean.
+bool vx_view_bare(const infer_t* x, vial_node_id id) {
+    const vial_node_id p = x->n->parent[id];
+    if (!p || vx_child(x, p, 0) != id) return true;
+    const vial_node_kind_t pk = vx_kind(x, p);
+    if (pk == VIAL_N_CALL) return false;
+    if (pk != VIAL_N_SUBSCRIPT) return true;
+    const vial_node_id on = vx_child(x, id, 0), in = vx_child(x, p, 1);
+    const T* a = on ? &x->out->types[on - x->out->base] : NULL;
+    return a && a->ndim == 0 && in && vx_kind(x, in) == VIAL_N_SLICE;
+}
+
+// s.residue alone, on one set: every residue within s, each with the particles it shares with s, which is
+// residue(scope=s). On an array of sets the result would be ragged, so that is refused by the caller.
+T vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const T* a) {
+    uint8_t pkind = 0;
+    str_t name = {0};
+    const uint8_t level = vx_view_level(x, id, &pkind, &name);
+    const vial_value_t av = vx_value_of(x, on);
+    T st = vial_type_scalar(VIAL_DT_SET);
+    join_stage(&st, a);
+    if (st.stage != VIAL_STAGE_STATIC || av.kind != VIAL_VAL_SETS || !x->sys) return selector_unknown(level, st.stage, id);
+    const vial_select_t q = {.level = level, .particle_kind = pkind, .scope = av.sets->single ? av.sets : vial_sets_merge(av.sets, x->alloc)};
+    const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
+    if (!s) return selector_unknown(level, VIAL_STAGE_STATIC, id);
+    const bool empty = s->single ? vial_sets_size(s, 0) == 0 : s->count == 0;
+    if (empty) {
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, on));
+        vx_diag_fix(x, "W0601", id, NULL, "`%.*s` holds no %.*s", (int)e.len, e.ptr, (int)name.len, name.ptr);
+    }
+    T t = vx_sets_type(x, s, id);
+    vx_set_value(x, id, sets_value(s));
+    return t;
+}
+
 T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const T* a) {
     return view_at(x, id, in, a, vx_value_of(x, obj), NULL, STR_LIT("particle"));
 }
@@ -649,6 +692,12 @@ T vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, co
             const vial_sets_t* kind = vx_view_units(x, name);
             av = kind ? sets_value(av.sets->single ? vial_sets_and(av.sets, 0, kind, 0, x->alloc) : vial_sets_boolop_each(av.sets, kind, true, x->alloc))
                       : (vial_value_t){0};
+        }
+        // s.particle['CA'] and s.particle[['N', 'CA']] are s['CA'] and s[['N', 'CA']] written in full
+        if (in && vx_kind(x, in) == VIAL_N_STRING) { vx_set_value(x, view, av); return vx_named(x, id, view, in, a); }
+        if (in && vx_kind(x, in) == VIAL_N_LIST && vx_num_children(x, in) && vx_kind(x, vx_child(x, in, 0)) == VIAL_N_STRING) {
+            vx_set_value(x, view, av);
+            return vx_named_list(x, id, view, in, a);
         }
         return view_at(x, id, in, a, av, NULL, name);
     }

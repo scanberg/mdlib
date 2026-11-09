@@ -249,7 +249,7 @@ void vx_check_pairing(infer_t* x, vial_node_id at, const T* a, const T* b) {
                 vial_unit_label(lb, sizeof(lb), x->sys, db->sets->single ? VIAL_LEVEL_PARTICLE : db->level, ub);
             }
             diag_fix(x, "W0605", at, NULL, "dimensions of %u that run over different units are paired by position: %u is %s against %s; "
-                "common(a, b, by='id') pairs them by id", ea.n, q, la[0] ? la : "one", lb[0] ? lb : "another");
+                "common(a, b, match='id') pairs them by id", ea.n, q, la[0] ? la : "one", lb[0] ? lb : "another");
             return;
         }
     }
@@ -580,7 +580,7 @@ static T infer_binary(infer_t* x, vial_node_id id) {
     const T a = infer(x, an);
     const T b = infer(x, bn);
     if (vial_type_is_error(&a) || vial_type_is_error(&b)) return err();
-    const uint16_t op = sub_of(x, id);
+    const uint16_t op = vial_op_of_aug((vial_op_t)sub_of(x, id));
 
     // + on drawings combines them
     if (op == VIAL_OP_PLUS && a.dtype == VIAL_DT_DRAWING && b.dtype == VIAL_DT_DRAWING) {
@@ -1073,7 +1073,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
-    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_view_at(x, id, on, in, &a);
+    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on) && !vx_view_bare(x, on)) return vx_view_at(x, id, on, in, &a);
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) == VIAL_N_LIST && num_children(x, in) && kind_of(x, child(x, in, 0)) == VIAL_N_STRING) {
         return vx_named_list(x, id, on, in, &a);
     }
@@ -1398,14 +1398,15 @@ static T infer_attr(infer_t* x, vial_node_id id) {
             diag_fix(x, "E0319", id, fix, "a %s holds no %.*s of its own; the %.*ss that hold them are %s", unit, nl, name.ptr, nl, name.ptr, fix);
             return err();
         }
-        const vial_node_id p = x->n->parent[id];
-        if (p && child(x, p, 0) == id && (kind_of(x, p) == VIAL_N_SUBSCRIPT || kind_of(x, p) == VIAL_N_CALL)) return a;
+        if (!vx_view_bare(x, id)) return a;
+        // Alone, on one set: every unit within it. On an array of sets that would be ragged
+        if (a.ndim == 0) return vx_view_all(x, id, on, &a);
         if (vlevel == VIAL_LEVEL_PARTICLE) {
-            diag_fix(x, "E0319", id, fix, "`.%.*s` picks within each set, as .%.*s[i] or .%.*s(name=...); all of them as one set is %s", nl, name.ptr,
-                nl, name.ptr, nl, name.ptr, fix);
-        } else {
-            diag_fix(x, "E0319", id, fix, "`.%.*s` picks within each set, as .%.*s[i] or .%.*s(name=...); the %.*ss of them all are %s", nl, name.ptr,
+            diag_fix(x, "E0319", id, fix, "`.%.*s` on an array of sets picks within each, as .%.*s[i] or .%.*s(name=...); all of them as one set is %s",
                 nl, name.ptr, nl, name.ptr, nl, name.ptr, fix);
+        } else {
+            diag_fix(x, "E0319", id, fix, "`.%.*s` on an array of sets picks within each, as .%.*s[i] or .%.*s(name=...); the %.*ss of them all are %s",
+                nl, name.ptr, nl, name.ptr, nl, name.ptr, nl, name.ptr, fix);
         }
         return err();
     }
@@ -1448,9 +1449,10 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
         default:            set_value(x, id, (vial_value_t){.kind = VIAL_VAL_NULL}); return scalar(VIAL_DT_NONE);
         }
     case VIAL_N_NAME:     return infer_name(x, id);
+    case VIAL_N_AUG_ASSIGN:                       // x += v: x + v, then bound to x by the statement
+    case VIAL_N_BINARY:   return infer_binary(x, id);
     case VIAL_N_UNARY:    return infer_unary(x, id);
     case VIAL_N_NOT:      return infer_not(x, id);
-    case VIAL_N_BINARY:   return infer_binary(x, id);
     case VIAL_N_BOOLOP:   return infer_boolop(x, id);
     case VIAL_N_COMPARE:  return infer_compare(x, id);
     case VIAL_N_RANGE:    return infer_range(x, id);
@@ -1557,15 +1559,19 @@ static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node
         x->out->typed[(target) - x->out->base] = 1;
         x->out->values[(target) - x->out->base] = v;
         const uint32_t s = x->n->ref[target];
-        if (s && x->frame) {
+        // A top-level name rebound in a top-level loop stays the script's: its tables are the top level's, not the
+        // loop frame's, so what follows the loop reads the last value
+        const bool global = s && x->t == x->c->tree && x->n->symbols[s].kind == VIAL_SYM_GLOBAL;
+        if (s && x->frame && !global) {
             vx_frame_set(x, s, t, &v, provenance(x, value));
         } else if (s) {
-            x->out->sym_types[s] = *t;
-            x->out->sym_values[s] = v;
+            x->top->sym_types[s] = *t;
+            x->top->sym_values[s] = v;
         }
         if (x->ir && s) {
             const vial_ssa_t sv = value ? vx_ssa(x, value) : 0;
-            vx_frame_set_ssa(x, s, sv);
+            if (global && x->top->sym_ssa && s < md_array_size(x->top->sym_ssa)) x->top->sym_ssa[s] = sv;
+            else vx_frame_set_ssa(x, s, sv);
             vx_set_ssa(x, target, sv);
         }
         return;
@@ -1611,6 +1617,7 @@ static bool check_block(infer_t* x, vial_node_id b) {
     if (kind_of(x, b) != VIAL_N_BLOCK) return check_stmt(x, b);
     for (uint32_t i = 0; i < num_children(x, b); ++i) {
         if (check_stmt(x, child(x, b, i))) return true;
+        if (x->loop_ctl) return false;    // a break or continue: the rest of the body is not run this time
     }
     return false;
 }
@@ -1753,7 +1760,12 @@ static bool check_if(infer_t* x, vial_node_id s) {
     }
     // Lowering: in a def, an if whose branch is chosen per frame is an if of the IR, its branches regions
     bool returned;
-    if (x->ir && x->frame && !vial_type_is_error(&ct) && ct.dtype == VIAL_DT_BOOL && !ct.ndim && lower_dynamic_if(x, s, &returned)) return returned;
+    if (x->ir && x->frame && !vial_type_is_error(&ct) && ct.dtype == VIAL_DT_BOOL && !ct.ndim) {
+        x->dyn_if += 1;
+        const bool lowered = lower_dynamic_if(x, s, &returned);
+        x->dyn_if -= 1;
+        if (lowered) return returned;
+    }
     // Otherwise its branches are checked without emitting, and the def it is in is not evaluated
     struct vial_ir_t* ir = x->ir;
     if (ir) {
@@ -1812,7 +1824,7 @@ void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
 static void check_published(infer_t* x, vial_node_id target, const T* t) {
     if (x->frame || kind_of(x, target) != VIAL_N_NAME || vial_type_is_error(t)) return;
     const str_t name = text(x, target);
-    if (name.len && name.ptr[0] == '_') return;
+    if (!vial_types_published(x->out, name)) return;
     const bool publishable = t->dtype == VIAL_DT_BOOL || t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_FLOAT ||
                              t->dtype == VIAL_DT_FLOAT64 || t->dtype == VIAL_DT_SET;
     if (!publishable || t->dtype == VIAL_DT_SET) return;
@@ -1887,6 +1899,31 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
             warn_missing(x, s, child(x, s, 0), &t);
         }
         return false;
+    case VIAL_N_AUG_ASSIGN: {
+        // x += v is x = x + v: the node is inferred as the binary, then bound to the target
+        const vial_node_id target = child(x, s, 0);
+        const T t = infer(x, s);
+        assign_target(x, target, &t, s);
+        check_published(x, target, &t);
+        warn_missing(x, s, s, &t);
+        return false;
+    }
+    case VIAL_N_BREAK:
+    case VIAL_N_CONTINUE: {
+        const char* word = kind_of(x, s) == VIAL_N_BREAK ? "break" : "continue";
+        if (!x->loop_depth) {
+            diag(x, "E0101", s, "`%s` outside a loop", word);
+            return false;
+        }
+        if (x->dyn_if) {
+            // The loop is unrolled when compiling, so which turn it leaves must be known then
+            diag(x, "E0403", s, "`%s` under a condition that changes per frame: a loop runs the same turns in every frame, so the "
+                "condition must be known when compiling; where() chooses a value per frame", word);
+            return false;
+        }
+        x->loop_ctl = kind_of(x, s) == VIAL_N_BREAK ? VX_LOOP_BREAK : VX_LOOP_CONTINUE;
+        return false;
+    }
     case VIAL_N_IF:
         return check_if(x, s);
     case VIAL_N_FOR:
@@ -1927,6 +1964,46 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
     }
 }
 
+// __all__ = ['a', 'b']: exactly the names it lists are published, as Python exports them. A list of strings, each a
+// name the script binds at top level. Read before the statements, so that what it leaves out is not held to what a
+// published value must be (E0401); that each name is bound is checked after them, since Python lets it come first.
+static void read_all(infer_t* x, bool before) {
+    const vial_node_id root = x->t->root;
+    for (uint32_t i = 0; i < num_children(x, root); ++i) {
+        const vial_node_id s = child(x, root, i);
+        if (kind_of(x, s) != VIAL_N_ASSIGN || num_children(x, s) != 2) continue;
+        const vial_node_id target = child(x, s, 0), value = child(x, s, 1);
+        if (kind_of(x, target) != VIAL_N_NAME || !str_eq(text(x, target), STR_LIT("__all__"))) continue;
+        const vial_node_kind_t vk = kind_of(x, value);
+        if (vk != VIAL_N_LIST && vk != VIAL_N_TUPLE) {
+            if (before) diag(x, "E0313", value, "`__all__` is a list of the published names, as strings: __all__ = ['d', 'rg']");
+            return;
+        }
+        bool ok = true;
+        str_t* all = NULL;
+        for (uint32_t k = 0; k < num_children(x, value); ++k) {
+            const vial_node_id item = child(x, value, k);
+            if (kind_of(x, item) != VIAL_N_STRING) {
+                if (before) diag(x, "E0313", item, "`__all__` lists names as strings: __all__ = ['d', 'rg']");
+                ok = false;
+                continue;
+            }
+            const str_t name = string_value(x, item);
+            if (!before) {
+                const uint32_t sym = vial_names_lookup_top(x->n, name);
+                if (!sym || x->n->symbols[sym].kind != VIAL_SYM_GLOBAL) {
+                    diag(x, "E0201", item, "`__all__` lists '%.*s', which the script does not bind at top level", (int)name.len, name.ptr);
+                    ok = false;
+                }
+                continue;
+            }
+            md_array_push(all, name, x->alloc);
+        }
+        if (before && ok) { x->out->has_all = true; x->out->all = all; }
+        return;
+    }
+}
+
 void vial_check_types(vial_check_t* c, vial_types_t* out) {
     const size_t num = md_array_size(c->tree->nodes);
     const size_t nsym = md_array_size(c->names.symbols);
@@ -1954,7 +2031,16 @@ void vial_check_types(vial_check_t* c, vial_types_t* out) {
         vx_sizes_ssa(&x, out, num, nsym);
     }
     const vial_node_id root = c->tree->root;
+    read_all(&x, true);
     for (uint32_t i = 0; i < num_children(&x, root); ++i) check_stmt(&x, child(&x, root, i));
+    read_all(&x, false);
     if (c->ir) vx_emit_finish(&x);
     vial_diags_sort(c->diags);
+}
+
+bool vial_types_published(const vial_types_t* t, str_t name) {
+    if (!name.len) return false;
+    if (!t->has_all) return name.ptr[0] != '_';
+    for (size_t i = 0; i < md_array_size(t->all); ++i) if (str_eq(t->all[i], name)) return true;
+    return false;
 }

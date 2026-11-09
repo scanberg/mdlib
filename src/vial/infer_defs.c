@@ -239,6 +239,7 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     memset(out.values, 0, count * sizeof(*out.values));
     memset(out.typed, 0, count);
     infer_t y = *x;
+    y.loop_ctl = 0; y.loop_depth = 0; y.dyn_if = 0;    // a def's body is its own: a break in it is in its loops
     y.t = t; y.n = n; y.src = src; y.out = &out; y.frame = &f;
     if (x->ir) vx_sizes_ssa(&y, &out, count, 0);
     vial_ssa_t argv[32] = {0};
@@ -364,6 +365,12 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     if (vial_type_is_error(&result)) return result;
     if (loop.ndim == 0 && call && x->t == x->c->tree && !x->frame) vx_set_value(x, call, rv);
     else if (loop.ndim == 0 && call) vx_set_value(x, call, rv);
+    if (loop.ndim && result.dtype == VIAL_DT_TUPLE) {
+        // The map stacks one value per call; a tuple would be a tuple of stacks, which is not lowered yet
+        vx_diag_fix(x, "E0801", call, NULL, "`%s` returns a tuple, and a def that does is not mapped over arrays yet: call it on one group, "
+            "or return one value and call it once per value", g->fname);
+        return err();
+    }
     T t2;
     if (!with_loop(x, call, &loop, &result, &t2)) return err();
     if (x->ir) {
@@ -476,10 +483,10 @@ typedef struct prim_t {
 
 static const prim_t prims[] = {
     {"marker",    {{"p", VX_KIND_POINT, true}}, 1},
-    {"line",      {{"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"label", VX_KIND_WHOLE, false}}, 3},
+    {"line",      {{"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"text", VX_KIND_WHOLE, false}}, 3},
     {"arrow",     {{"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, false}, {"direction", VX_KIND_POINT, false}, {"length", VX_KIND_FLOAT, false}}, 4},
     {"sphere",    {{"c", VX_KIND_POINT, true}, {"r", VX_KIND_FLOAT, true}}, 2},
-    {"arc",       {{"c", VX_KIND_POINT, true}, {"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"label", VX_KIND_WHOLE, false}}, 4},
+    {"arc",       {{"c", VX_KIND_POINT, true}, {"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"text", VX_KIND_WHOLE, false}}, 4},
     {"disk",      {{"c", VX_KIND_POINT, true}, {"n", VX_KIND_POINT, true}, {"r", VX_KIND_FLOAT, true}}, 3},
     {"text",      {{"p", VX_KIND_POINT, true}, {"x", VX_KIND_WHOLE, true}}, 2},
     {"highlight", {{"s", VX_KIND_SET, true}}, 1},
@@ -498,8 +505,8 @@ static T call_primitive(infer_t* x, vial_node_id call, const prim_t* pr) {
         const T a = x->out->types[(args[k]) - x->out->base];
         if (vial_type_is_error(&a)) { ok = false; continue; }
         uint8_t kind = pr->params[k].kind;
-        // A label: a number maps with the points, a string is one label
-        const bool is_label = str_eq(str_from_cstr(pr->params[k].name), STR_LIT("label")) || (strcmp(pr->name, "text") == 0 && k == 1);
+        // The text: a number maps with the points, a string is one label
+        const bool is_label = str_eq(str_from_cstr(pr->params[k].name), STR_LIT("text")) || (strcmp(pr->name, "text") == 0 && k == 1);
         if (is_label) {
             if (a.dtype == VIAL_DT_STR && a.ndim == 0) { T o = stage; vx_join_stage(&stage, &o, &a); continue; }
             if (a.dtype == VIAL_DT_STR || !(a.dtype == VIAL_DT_INT || a.dtype == VIAL_DT_FLOAT || a.dtype == VIAL_DT_FLOAT64 || a.dtype == VIAL_DT_BOOL)) {

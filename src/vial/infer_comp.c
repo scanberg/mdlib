@@ -33,6 +33,9 @@ typedef struct iter_t {
     int64_t         lo, step;
     uint32_t        count;      // when known
     bool            known;
+    // zip(): the parts, each iterated on its own, and the nodes they are written as
+    struct iter_t*  parts;      // md_array
+    vial_node_id*   part_nodes; // md_array
 } iter_t;
 
 static bool callee_is(infer_t* x, vial_node_id node, const char* name) {
@@ -114,6 +117,8 @@ static bool iterate_zip(infer_t* x, vial_node_id call, iter_t* out) {
         }
         if (one.stage > out->stage) out->stage = one.stage;
         md_array_push(elems, one.elem, x->alloc);
+        md_array_push(out->parts, one, x->alloc);
+        md_array_push(out->part_nodes, c, x->alloc);
         n += 1;
     }
     if (!ok) return false;
@@ -121,6 +126,14 @@ static bool iterate_zip(infer_t* x, vial_node_id call, iter_t* out) {
     out->elem = vial_type_scalar(VIAL_DT_TUPLE);
     out->elem.elems = elems;
     out->elem.num_elems = n;
+    // Known as a whole when every part is, and as many times as the shortest
+    out->known = true;
+    out->count = UINT32_MAX;
+    for (size_t i = 0; i < md_array_size(out->parts); ++i) {
+        if (!out->parts[i].known) out->known = false;
+        else if (out->parts[i].count < out->count) out->count = out->parts[i].count;
+    }
+    if (!out->known) out->count = 0;
     return true;
 }
 
@@ -157,6 +170,8 @@ static bool iterate(infer_t* x, vial_node_id it, iter_t* out) {
         out->extent = a.dims[0];
         if (a.dtype == VIAL_DT_SET && a.ndim == 1 && v.kind == VIAL_VAL_SETS && a.stage == VIAL_STAGE_STATIC && !v.sets->single) {
             out->sets = v.sets; out->count = v.sets->count; out->known = true;
+        } else if (a.dims[0].kind == VIAL_EXT_STATIC) {
+            out->count = a.dims[0].n; out->known = true;    // how many, though not which values: elements by position
         }
         return true;
     }
@@ -351,16 +366,129 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     return t;
 }
 
+#define VX_UNROLL_MAX 4096      // the turns a loop is unrolled into
+
+// Binds a loop's target to the k-th element of what it iterates: its type, its value when known, and its value in
+// the IR. A zip's tuple binds each name to its part's element.
+static bool bind_element(infer_t* y, vial_node_id target, vial_node_id it, const iter_t* r, uint32_t k) {
+    if (r->parts) {
+        const vial_node_kind_t tk = vx_kind(y, target);
+        if ((tk != VIAL_N_TUPLE && tk != VIAL_N_LIST) || vx_num_children(y, target) != md_array_size(r->parts)) {
+            vx_diag_fix(y, "E0319", target, NULL, "%u names, and %s does not unpack into %u", vx_num_children(y, target), vx_tstr(&r->elem),
+                vx_num_children(y, target));
+            return false;
+        }
+        for (size_t i = 0; i < md_array_size(r->parts); ++i) {
+            if (!bind_element(y, vx_child(y, target, (uint32_t)i), r->part_nodes[i], &r->parts[i], k)) return false;
+        }
+        return true;
+    }
+    T et = r->elem;
+    vial_value_t ev = {0};
+    vial_ssa_t ssa = 0;
+    if (r->ints) {
+        ev = (vial_value_t){.kind = VIAL_VAL_INT, .i = r->lo + (int64_t)k * r->step};
+        if (y->ir) {
+            vial_val_t iv = vial_val_int((int32_t)ev.i, y->ir->alloc);
+            ssa = vial_ir_const(y->ir, &iv, &et, (str_t){0}, vx_span(y, target));
+        }
+    } else if (r->sets) {
+        const vial_sets_t* one;
+        if (r->particles) one = vial_sets_one(vial_sets_items(r->sets, 0) + k, 1, y->alloc);
+        else one = vial_sets_pick(r->sets, &k, 1, y->alloc), ((vial_sets_t*)one)->single = true;
+        ev = (vial_value_t){.kind = VIAL_VAL_SETS, .sets = one};
+        et.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+        if (vial_sets_size(one, 0) == 1) et.flags |= VIAL_TYPE_ONE_PARTICLE;
+        if (y->ir) {
+            const vial_val_t sv = vial_val_sets(one);
+            ssa = vial_ir_const(y->ir, &sv, &et, (str_t){0}, vx_span(y, target));
+        }
+    } else if (y->ir) {
+        // An array whose values are not known when compiling, of a static extent: its k-th along the first dimension
+        const T a = vx_infer(y, it);
+        const vial_ssa_t av = vx_ssa(y, it);
+        if (!av) { vx_lower_fail(y, it, "what a loop runs over"); return false; }
+        ssa = vx_unpack(y, target, av, &a, k, &et);
+    }
+    if (!bind(y, target, &et, &ev)) return false;
+    if (y->ir && vx_kind(y, target) == VIAL_N_NAME) {
+        const uint32_t sym = y->n->ref[target];
+        if (sym) vx_frame_set_ssa(y, sym, ssa);
+        vx_set_ssa(y, target, ssa);
+    }
+    return true;
+}
+
+// Diagnostics a later turn of a loop repeats from an earlier one are dropped: the body is one piece of text
+static void drop_repeated(vial_diags_t* d, size_t base, size_t from) {
+    size_t w = from;
+    for (size_t i = from; i < md_array_size(d->items); ++i) {
+        bool seen = false;
+        for (size_t j = base; j < from && !seen; ++j) {
+            seen = memcmp(d->items[j].code, d->items[i].code, 5) == 0 && d->items[j].span.beg == d->items[i].span.beg &&
+                   d->items[j].span.end == d->items[i].span.end;
+        }
+        if (!seen) d->items[w++] = d->items[i];
+    }
+    md_array_shrink(d->items, w);
+}
+
+// A for is unrolled: its body is checked, and lowered, once per element, with the target bound to that element,
+// so what the body binds carries from turn to turn and out of the loop. How many turns is known when compiling,
+// since the IR has no loop of its own.
 bool vx_check_for(infer_t* x, vial_node_id s) {
     const vial_node_id target = vx_child(x, s, 0), it = vx_child(x, s, 1), body = vx_child(x, s, 2);
     vx_frame_t f = child_frame(x, s);
     infer_t y = *x;
     if (!x->frame) y.frame = &f;    // at top level a loop has its own names; in a def they are the def's
+    y.loop_depth = (uint8_t)(x->loop_depth + 1);
+    y.loop_ctl = 0;
     iter_t r;
     if (!it || !iterate(&y, it, &r)) return false;
-    bind(&y, target, &r.elem, NULL);
-    vx_check_block(&y, body);
-    return false;   // a loop may run no times
+    if (!r.known) {
+        const bool per_frame = r.extent.kind == VIAL_EXT_DYNAMIC || r.stage != VIAL_STAGE_STATIC;
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, it));
+        vx_diag_fix(x, "E0801", it, NULL, "a for over `%.*s` is not supported yet: how many times it runs is %s, and a loop is unrolled when "
+            "compiling; a comprehension, or a reduction, runs over any number", (int)e.len, e.ptr,
+            per_frame ? "known only per frame" : "not known when compiling");
+        bind(&y, target, &r.elem, NULL);
+        infer_t z = y;
+        z.ir = NULL;
+        vx_check_block(&z, body);   // its names and types, without emitting
+        return false;
+    }
+    if (r.count > VX_UNROLL_MAX) {
+        vx_diag_fix(x, "E0801", it, NULL, "a for of %u turns is not supported: a loop is unrolled when compiling, up to %u turns; a "
+            "comprehension, or a reduction, runs over any number", r.count, VX_UNROLL_MAX);
+        return false;
+    }
+    vial_node_id* nodes = NULL;
+    subtree(&y, body, &nodes);
+    subtree(&y, target, &nodes);
+    const size_t base = md_array_size(x->diags->items);
+    for (uint32_t k = 0; k < r.count; ++k) {
+        const size_t from = md_array_size(x->diags->items);
+        // Each turn types, and lowers, the body afresh: its nodes forget their type and their value in the IR
+        for (size_t q = 0; q < md_array_size(nodes); ++q) {
+            y.out->typed[nodes[q] - y.out->base] = 0;
+            if (y.out->ssa) y.out->ssa[nodes[q] - y.out->base] = 0;
+        }
+        y.loop_ctl = 0;
+        if (!bind_element(&y, target, it, &r, k)) return false;
+        const bool returned = vx_check_block(&y, body);
+        if (k) drop_repeated(x->diags, base, from);
+        if (returned) return true;    // a return on a static condition: the def is done
+        if (y.loop_ctl == VX_LOOP_BREAK) break;
+    }
+    if (r.count == 0) {
+        // Never runs: its names are checked, nothing else
+        bind(&y, target, &r.elem, NULL);
+        infer_t z = y;
+        z.ir = NULL;
+        vx_check_block(&z, body);
+    }
+    return false;
 }
 
 // ### FRAMES: fold, frame(), time() ###
@@ -416,14 +544,17 @@ static T call_fold(infer_t* x, vial_node_id call) {
         x->ir->insert = saved;
     }
     if (vial_type_is_error(&r)) return err();
-    bool same = r.dtype == init.dtype && r.ndim == init.ndim && r.unit_kind == init.unit_kind &&
-                (r.unit_kind != VIAL_UNIT_KNOWN || md_unit_base_equal(r.unit, init.unit) || (md_unit_is_none(r.unit) && md_unit_is_none(init.unit)));
+    // The same dtype and shape; the same unit too, except that an int state, a count, takes an int step's (found by
+    // the fuzzer: the int exception once waived the shape as well, so a step returning int[1] on init=0 ran as int)
+    bool same = r.dtype == init.dtype && r.ndim == init.ndim;
     for (uint8_t k = 0; same && k < r.ndim; ++k) {
         vial_extent_t e;
         same = vx_extent_join(r.dims[k], init.dims[k], &e) && !(r.dims[k].kind == VIAL_EXT_STATIC && init.dims[k].kind == VIAL_EXT_STATIC &&
                r.dims[k].n != init.dims[k].n);
     }
-    if (!same && !(r.dtype == VIAL_DT_INT && init.dtype == VIAL_DT_INT)) {
+    const bool same_unit = r.unit_kind == init.unit_kind &&
+                           (r.unit_kind != VIAL_UNIT_KNOWN || md_unit_base_equal(r.unit, init.unit) || (md_unit_is_none(r.unit) && md_unit_is_none(init.unit)));
+    if (!same || (!same_unit && !(r.dtype == VIAL_DT_INT && init.dtype == VIAL_DT_INT))) {
         T rr = r, ii = init;
         rr.flags = 0; ii.flags = 0;
         vx_diag_fix(x, "E0315", call, NULL, "the step returns %s; init is %s, and a fold's state keeps its type", vx_tstr(&rr), vx_tstr(&ii));
@@ -549,8 +680,8 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
         if (!static_int(x, a[2], "bins", 1, &bins)) return err();
         const T r = x->out->types[(a[3]) - x->out->base];
         if (vial_type_is_error(&r)) return err();
-        if (vx_kind(x, a[3]) != VIAL_N_TUPLE || vx_num_children(x, a[3]) != 2) {
-            vx_diag_fix(x, "E0313", a[3], NULL, "range= is a tuple of two numbers, (lo, hi)");
+        if (r.dtype != VIAL_DT_RANGE && (vx_kind(x, a[3]) != VIAL_N_TUPLE || vx_num_children(x, a[3]) != 2)) {
+            vx_diag_fix(x, "E0313", a[3], NULL, "range= is lo..hi, or a tuple of two numbers, (lo, hi)");
             return err();
         }
         T t = vial_type_scalar(VIAL_DT_FLOAT);

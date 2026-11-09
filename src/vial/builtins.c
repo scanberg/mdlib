@@ -22,19 +22,19 @@ static const vial_builtin_t builtins[] = {
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"system", SET | F},
     // Geometry and structure
-    {"mass", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
+    {"mass", F}, {"weight", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
     {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"within", F},
     {"fit", F},
     // Reductions
     {"sum", F}, {"mean", F}, {"min", F}, {"max", F}, {"std", F}, {"var", F}, {"any", F}, {"all", F}, {"argmin", F},
-    {"argmax", F}, {"len", F}, {"count", F},
+    {"argmax", F}, {"len", F}, {"count", F}, {"prod", F}, {"median", F}, {"percentile", F},
     // Math
     {"abs", F}, {"floor", F}, {"ceil", F}, {"round", F}, {"clip", F}, {"sqrt", F}, {"exp", F}, {"log", F},
     {"log10", F}, {"sin", F}, {"cos", F}, {"tan", F}, {"asin", F}, {"acos", F}, {"atan", F}, {"atan2", F},
     {"dot", F}, {"cross", F}, {"norm", F}, {"normalize", F}, {"where", F}, {"unitless", F}, {"float", F | K},
     {"int", F | K},
     // Arrays
-    {"diff", F}, {"zip", F}, {"range", F}, {"common", F}, {"label", F}, {"spread", F}, {"missing_where", F},
+    {"diff", F}, {"cumsum", F}, {"sort", F}, {"argsort", F}, {"zip", F}, {"range", F}, {"common", F}, {"label", F}, {"spread", F}, {"missing_where", F},
     {"valid", F}, {"filled", F}, {"zeros", F}, {"ones", F}, {"full", F}, {"zeros_like", F}, {"ones_like", F},
     {"shape", F}, {"linspace", F}, {"arange", F}, {"eye", F}, {"reshape", F}, {"flatten", F}, {"concatenate", F},
     {"covariance", F}, {"eigh", F}, {"trace", F}, {"det", F}, {"inv", F}, {"solve", F},
@@ -46,6 +46,8 @@ static const vial_builtin_t builtins[] = {
     // Drawing
     {"shown", F}, {"marker", F}, {"line", F}, {"arrow", F}, {"sphere", F}, {"arc", F}, {"disk", F}, {"text", F},
     {"highlight", F},
+    // Constants
+    {"pi", VIAL_BUILTIN_VALUE},
     // Properties that exist only after a dot
     {"T", P}, {"xyz", P}, {"x", P}, {"y", P}, {"z", P},
     // Kinds, for annotations only

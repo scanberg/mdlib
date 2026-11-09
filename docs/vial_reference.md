@@ -58,7 +58,7 @@ A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks,
 | Membership | `x in 10..20`, `x not in names` |  |
 | Logic | `and`, `or`, `not` | Scalars as in Python, stopping early. Elementwise on bool arrays; intersection, union and complement on sets |
 | Bits | `& \| ^ ~ << >>` | Integers only |
-| Other | `a if c else b`, `x[i]`, `f(x, k=v)`, `x.f(...)`, `x.p` | Methods and properties are another spelling of a call |
+| Other | `a if c else b`, `x[i]`, `f(x, k=v)`, `x.p` | A dot is a closed list, not a method call: `.xyz`, `.x`, `.y`, `.z`, `.com` and `.T` are the properties, and a selector after a dot, `s.residue[i]`, picks within each set (see Indexing). Any other `.f` is E0319, with the fix `f(x)` |
 
 - A number followed by `..` ends there, so `1..4` is a range, not `1.` and `.4`. Ranges of floats, such as `0.0..5.0`, are allowed in `in` tests.
 - `int` with `float` gives `float`. `/` always gives `float`; `//` keeps `int`.
@@ -71,11 +71,11 @@ A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks,
 | Assignment, tuple unpacking | Supported | A top-level name is bound once (E0305) |
 | `def`, `return`, defaults, keyword arguments, docstrings | Supported | Specialized per call. No recursion (E0802). A def may be nested in another and read its names; it cannot be returned or stored, but may be passed as an argument, to fold or to another def, and each def passed gives its own specialization. Parameters may be annotated with a kind, which maps a call over arrays; see Mapping a def over arrays |
 | `if`, `elif`, `else` | Supported | At top level the condition must be static (E0403); inside functions it may change per frame. Code that a static condition does not reach, the untaken branch of an if or a ternary and what follows a return taken on a static condition, is parsed and its names checked, but not type-checked. A condition on an array is E0303, which points to `where()`. A ternary `a if c else b` on a frame-stage scalar is allowed anywhere and lowers to `where()` |
-| `for`, `break`, `continue` | Supported | Over a range, an array or a set; over a set, each particle as a one-particle set. A top-level loop variable belongs to the loop: it is not published, and it does not count for E0305 |
+| `for`, `break`, `continue` | Supported | Over a range, an array or a set; over a set, each particle as a one-particle set. A loop is unrolled when compiling, so how many turns it runs must be known then: a range of constants, an array of static extent or a selection, up to 4096 turns; over a per-frame selection it is E0801, and a comprehension or a reduction runs over any number. A name bound before the loop that the body binds again accumulates, at top level too: `t = 0` and `t = t + q` in the body give the sum, and `t` after the loop is the last value. The loop variable, and a name first bound in the body, belong to the loop: at top level they are not published, and do not count for E0305. `break` and `continue` take a static condition (E0403), since every frame runs the same turns |
 | List comprehensions | Supported | They build an array whose first dimension is what they iterate over; a nested comprehension adds a dimension per level. An `if` clause gives a dynamic extent |
 | `pass` | Supported |  |
 | `assert c, 'message'` | Supported | c must be static; when it is false, compiling fails with E0314 and the message, at the user's call. A condition that changes per frame is E0403. The prelude uses it to refuse unknown options |
-| Augmented assignment `x += 1` | Supported inside functions | At top level it rebinds a name: E0305 |
+| Augmented assignment `x += 1` | Supported | `x = x + 1`, in a def or a loop body. At top level outside a loop it rebinds a name: E0305 |
 | `while` | Not yet | Parsed; E0801 |
 | Item assignment `a[i] = x` | Not yet | Parsed; E0801 |
 | Classes, `import`, `lambda`, exceptions, generators, `global`, decorators, `with`, `async`, dicts, set literals, `*args`, \*\*kwargs, `print` | Never | E0803 names the construct |
@@ -90,6 +90,10 @@ ok   = 2 < n <= 500                             # -> True
 big  = 1_000_000                                # -> 1000000
 ids  = [45, 48, 112]                            # -> int[3]
 n += 1                                          # error E0305
+t    = 0
+for r in residue(chain='A', kind='amino_acid')[0:3]:
+    t += count(r)                               # accumulates: the loop is unrolled
+heavy = t                                       # -> 28
 
 def centre_distance(a, b):
     """Distance between the centres of mass of a and b."""
@@ -208,7 +212,7 @@ e_mol = 1.5 kJ/mol                                       # -> float kJ/mol
 k_b   = 0.0083145 kJ/mol/K                               # -> float kJ/(mol*K)
 e_str = 1.5 'kJ/mol'                                     # -> float kJ/mol: the same unit, as a string
 gap   = 1.5 kJ / mol                                     # error E0201: mol is a unit; the fix is 1.5 kJ/mol
-prod  = 1.5 kJ/mol*K                                     # error E0201: K is a unit; the fix is 1.5 kJ/mol/K
+star  = 1.5 kJ/mol*K                                     # error E0201: K is a unit; the fix is 1.5 kJ/mol/K
 K     = 300.0                                            # -> float: K is a name from here on, and 300 K still the temperature
 per_k = 1.0 kJ/mol/K                                     # error E0503: K is a unit in kJ/mol/K, and a name here
 badu  = 1.5 'kJ/mool'                                    # error E0502: 'kJ/mool' is not a unit
@@ -260,7 +264,7 @@ _d     = distance(near.com, ca[0])                     # -> float[?] Å, frame
 
 A system is built of particles, residues, parts and molecules, each nested in the next. A part is one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water; a strand goes on over a gap and ends where the chemistry says it does. A molecule is what the bonds hold together, and with a topology it is the topology's molecule, so a glycoprotein is one molecule of several parts. A chain is not a level of it: it is the author's chain id, a label that the data files particles of any level under, and it is never inferred. Where the data gives no chain ids, as in a GRO file or a PDB file written by a simulation, the system has no chains, and a strand is found as a part.
 
-`particle()` returns one set; the grouping selectors return one set per unit. A selector written without parentheses means all its units, and every selector searches its scope.
+`particle()` returns one set; the grouping selectors return one set per unit. A selector written without parentheses means all its units, and every selector searches its scope. A selector is narrowed in two ways, which differ at the edges of a set: `residue(s)` is every residue that holds a particle of `s`, whole, and `s.residue` is every residue within `s`, each with only the particles it shares with `s`. See Scope.
 
 Names are singular, as every function's is, whatever the shape of what they give: the type says that, `particle()` one set and `residue()` one per residue. `atom` and `bead` are `particle` narrowed to a kind, not other names for it, so positions count within them: `atom[i]` is the i-th atom, which is `particle[i]` only where no bead or virtual site comes before it, and a number from another tool, which counts every particle, is a position in `particle`. Where a system holds both, `atom(name='C1')` and `bead(name='C1')` pick different particles. A bare number is not a selector argument (E0205), since it says neither which count it is in nor where that starts: `residue(id=5)` is the file's residue 5, in every chain that has one, and `residue[4]` the fifth residue, v1's `residue(5)`.
 
@@ -270,7 +274,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `atom(...)`, `bead(...)` | `set` | `particle(kind='atom')`, `particle(kind='bead')` |
 | `residue(...)` | `set[n]`, one per residue | a residue |
 | `part(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
-| `polymer(...)` | `set[n]`, one per strand | a polymer strand: the parts of a peptide, a nucleic acid or another polymer. Where a chain is a label of the data, a strand is the structure |
+| `polymer(...)` | `set[n]`, one per strand | `part(kind='polymer')`: a polymer strand, the part of a peptide, a nucleic acid or another polymer. Its own name as `atom` is `particle`'s, so positions count among strands: `polymer[1]` is the second strand where `part[1]` may be a ligand. Where a chain is a label of the data, a strand is the structure |
 | `tail(...)` | `set[n]`, one per tail | a tail of a lipid: an acyl, alkyl or sphingoid chain, or the ring skeleton of a sterol, with its branches and hydrogens; labelled by its number in its lipid, `tail2/DPPC1` |
 | `head(...)` | `set[n]`, one per head | a head of a lipid: a connected part of what is not a tail, with its hydrogens; a lipid has one, a bolalipid two. `particle(head) or particle(tail)` is every lipid whose anatomy is known, which a lipid by name in a system without bonds is not. Labelled `head1/DPPC1` |
 | `ring(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
@@ -325,7 +329,8 @@ The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna
 
 - In a script the scope is the system. In a filter it is the set viamd evaluates it within: a representation group, or one reference structure of a density volume.
 - Positions count from the scope's start; ids are kept. The scope is all there is, so a unit partly inside it appears with only its particles inside.
-- `scope=system` reaches outside. Spatial selectors search the scope, but their points may lie outside it.
+- A selector is narrowed to a set in two ways. `residue(s)`, with the set as its positional argument, is every residue that holds a particle of `s`, whole within the scope: `residue(within(5.0, of=lig))` is the whole residues near the ligand. `s.residue`, the selector after a dot, is every residue within `s`, each with only the particles it shares with `s`: `protein.residue` is the protein's residues, and `s.residue[0]` the first of them. A view takes the selector's arguments too, `s.residue('HIS')`, and `s['CA']` is `s.particle['CA']`; see Indexing. `particle(s)` and `s.particle` are both `s`.
+- `scope=` is the dotted form as a keyword: `residue(scope=s, name='HIS')` is `s.residue('HIS')`. It is there for a filter, whose scope is its group, to reach outside it with `scope=system`, and for a def that is handed its scope as an argument. Spatial selectors search the scope, but their points may lie outside it.
 - Scopes nest. A scope that changes per frame makes everything evaluated within it frame stage.
 
 ```python
@@ -341,18 +346,22 @@ wat    = residue(kind='water')                       # -> set[8]
 so4    = residue('SO4')                              # -> set[3]
 n_part = len(part)                                   # -> 17: two strands, six ligands, one ion, eight waters
 str_   = part(kind='polymer')                        # -> set[2]: chain B's strand goes on over its gap
-strand = polymer                                     # -> set[2]: the same strands
+strand = polymer                                     # -> set[2]: the same strands, part narrowed to them
 sb     = polymer(chain='B')                          # -> set[1]
+second = polymer[1]                                  # -> set: chain B's strand; part[1] is a ligand
 not_p  = polymer(kind='ligand')                      # error E0206: a ligand is not a polymer
 aro    = ring(kind='aromatic')                       # -> set[n]
-phe0   = ring(scope=residue('PHE')[0])               # -> set[1]: its benzene ring
+phe0   = residue('PHE')[0].ring                      # -> set[1]: its benzene ring
 trp    = ring(particle(resname='TRP'))               # -> set[16]: eight TRP, two fused rings each
+whole  = residue(particle(name='CA', chain='A'))     # -> set[433]: whole residues, one CA each
+cut    = particle(name='CA', chain='A').residue      # -> set[433]: the same residues, each clipped to its CA
 flat   = ring(kind='flat')                           # error E0206
 lig    = part(kind='ligand')                         # -> set[6]: GTP, three SO4, GDP and VLB
 mol    = molecule(part(kind='peptide'))              # -> set[2]: the molecules the strands are in
 n_mol  = len(molecule)                               # -> 17
 first5 = residue[0:5]                                # -> set[5]
-firstb = residue(scope=particle(chain='B'))[0]       # -> set: the first residue of chain B
+firstb = particle(chain='B').residue[0]              # -> set: the first residue of chain B
+scoped = residue(scope=particle(chain='B'))[0]       # -> set: the same, scope= as a keyword
 miss   = particle(name='CA', resid=39, chain='A')    # warning W0601: matches nothing
 bad    = chain(name='A')                             # error E0202: chains have no name
 two    = residue(protein, 'LYS')                     # error E0203
@@ -394,7 +403,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
 | `s[[1, 0, 2]]` on a set | its particles at those positions, one each, in the order listed, as NumPy gives a list's elements: `angle(particle(chain='A', resid=5)[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(5)` | `set[3]` of one particle each |
-| `s['CA']` on a set or an array of sets | within each set, its particle of that name: one per set, so a point wherever a point is taken. `angle(rs['N'], rs['CA'], rs['C'])` is the angle in each residue of `rs`, as v1's `angle(...) in residue(...)` by position | the same shape, a set of one particle per set |
+| `s['CA']` on a set or an array of sets | within each set, its particle of that name: one per set, so a point wherever a point is taken. `angle(rs['N'], rs['CA'], rs['C'])` is the angle in each residue of `rs`, as v1's `angle(...) in residue(...)` by position. `s['CA']` is `s.particle['CA']` written short, as `s[[1, 0, 2]]` is `s.particle[[1, 0, 2]]` | the same shape, a set of one particle per set |
 | `s['H*']`, a name with `*` or `?` | within each set, its particles that match | the same shape, a set per set |
 | `s[['N', 'CA', 'C']]` | within each set, the particle of each name, stacked along a new last dimension: `angle(rs[['N', 'CA', 'C']])` | the shape and `[3]`, one particle each |
 | `s.particle[i]` on a set or an array of sets | within each set, its particle at position i, counted from the end when negative: v1's positions within a structure | the same shape, a set of one particle per set |
@@ -403,6 +412,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.atom[i]`, `s.bead[i]` | within each set, its i-th atom or bead, counted among those alone | the same shape, a set of one particle per set |
 | `s.residue[i]`, and `.ring`, `.part`, `.polymer`, `.molecule`, `.head`, `.tail` | within each set, the i-th unit of the selector it holds, in the system's order, with the particles it shares with the set: `chain.residue[[0, -1]]` is the first and last residue of each chain, `residue('PHE').ring[0]` each PHE's ring | the same shape, a set per set; a list stacks |
 | `s.residue('HIS')` | within each set, the particles of the units the selector with those arguments gives | the same shape, a set per set |
+| `s.residue`, `s.ring`, `s.atom`... alone, on one set | every unit of the selector within the set, each with the particles it shares with the set: `protein.residue` is the residues of the protein, `chain[0].residue[0:2]` its first two, `residue('PHE')[0].ring` one PHE's ring. The same as `residue(scope=s)`; on an array of sets it would be ragged, and is E0319 | `set[n]` for a grouping selector, `set` for `.particle`, `.atom` and `.bead`; frame stage when the set is |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particle[particle.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
 | `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
@@ -416,7 +426,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 - What a `for` takes follows the type, never how many sets there are: `for r in residue(within(5.0, of=residue[14]))` takes residues in every frame, also one where a single residue is near, since a selector gives an array (`set[?]`). Only one set, with no dimension, gives particles.
 - A `for` over one set takes its particles one at a time, as over any set: `for r in residue[2]` gives the particles of that residue, so `r[2]` in it is E0304. Over one residue as an array of one, slice it, `residue[2:3]`; or take its particles at once, `angle(residue[2][[2, 8, 9]])`.
 - A list in a subscript stacks: `s[['N', 'CA', 'C']]` by names and `s.particle[[1, 0, 2]]` by positions give one particle per entry along a new last dimension, which `angle`, `dihedral` and `distance` take as their one argument. On one set, `s[[1, 0, 2]]` is the same as `s.particle[[1, 0, 2]]`; `particle(s[[1, 0, 2]])` merges them back into one set. A name in a list has no `*` or `?`.
-- A selector after a dot is that selector within each set, for the subscript or call it starts. `.particle`, `.atom` and `.bead` count particles, `.residue`, `.ring`, `.part`, `.polymer`, `.molecule`, `.head` and `.tail` the units each set holds, each with the particles it shares with the set. Positions count within each set in the system's order, so a particle's position depends on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). A view must be finer than the units it looks into: `residue.chain[0]` is E0319 with the fix `chain(residue)`, the chains that hold them, while one set may hold any, so `protein.residue[-1]` is the last residue of the protein. Alone, a view is E0319, with the fix `particle(s)` or `residue(s)` for all of them. `bond` is no view: a set's bonds are pairs whose number differs from set to set, so `bond(s)` takes one set. VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
+- A selector after a dot is that selector within each set, for the subscript or call it starts. `.particle`, `.atom` and `.bead` count particles, `.residue`, `.ring`, `.part`, `.polymer`, `.molecule`, `.head` and `.tail` the units each set holds, each with the particles it shares with the set. Positions count within each set in the system's order, so a particle's position depends on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). A view must be finer than the units it looks into: `residue.chain[0]` is E0319 with the fix `chain(residue)`, the chains that hold them, while one set may hold any, so `protein.residue[-1]` is the last residue of the protein. Alone, on one set, a view is every unit within it, `residue(scope=s)`: `protein.residue`. Alone on an array of sets it is E0319, since the result would be ragged, with the fix `residue(rs)` for the residues of them all. `bond` is no view: a set's bonds are pairs whose number differs from set to set, so `bond(s)` takes one set. VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
 - A unit's label is how the data names it: a residue `MET1/A`, or `ALA1` where the data gives no chain ids; a particle `CA/MET1/A`; a chain its id, `A`. A part or a molecule of one residue is labelled as that residue, `GTP501/A`, and a longer one by its kind or its molecule's name and its chain, `peptide/A`, or by its kind and number where there are no chains, `peptide1`.
@@ -452,6 +462,9 @@ ends  = chain.residue[[0, -1]]                         # -> set[3][2]: the first
 nterm = chain[0].residue[0]                            # -> set: MET1/A
 rings = residue('PHE').ring[0]                         # -> set[42]: the ring of each PHE
 his_a = chain.residue('HIS')                           # -> set[3]: the particles of each chain's HIS
+in_a  = chain[0].residue                               # -> set[442]: every residue within chain A, residue(scope=chain[0])
+two   = chain[0].residue[0:2]                          # -> set[2]: its first two
+all_r = chain.residue                                  # error E0319: ragged on an array of sets; residue(chain) is the residues of them all
 no    = residue.chain[0]                               # error E0319: a residue holds no chain
 each  = [angle(r[0], r[1], r[2]) for r in res_a[0:3]]  # -> float[3] °, frame: positions within each of three residues
 one_r = [angle(r[0], r[1], r[2]) for r in res_a[0]]    # error E0304: a for over one set takes its particles; res_a[0:1] is one residue
@@ -549,10 +562,10 @@ def distance(a, b=None, between=None):
         p = a.xyz
         assert shape(p)[-2] == 2, "distance takes two points, or one array of them, float[2][3] or set[2] of single particles"
         r = norm(displacement(p[..., 0, :], p[..., 1, :]))
-        return shown(r, line(p[..., 0, :], p[..., 1, :], label=r))
+        return shown(r, line(p[..., 0, :], p[..., 1, :], text=r))
     if between is None:
         r = norm(displacement(a, b))
-        return shown(r, line(a, b, label=r))
+        return shown(r, line(a, b, text=r))
     return _between(a, b, between)
 
 def _between(a: group, b: group, op):
@@ -560,14 +573,13 @@ def _between(a: group, b: group, op):
     pa = a.xyz                                   # one group each; maps over arrays of groups
     pb = b.xyz
     d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
-    return shown(d, line(pa[i], pb[j], label=d))
+    return shown(d, line(pa[i], pb[j], text=d))
 
 def centroid(s):
     return com(s, weights=None)
 
 def gyration(p: points, weights='mass'):
-    assert weights in ('mass', None), "weights= takes 'mass' or None"
-    w = mass(particle(p)) if weights == 'mass' else ones(shape(p)[0])
+    w = weight(p, weights)                       # 'mass', None or one number per point, as everywhere
     c = com(p, weights)
     r = norm(displacement(c, p))                 # minimum image from a periodic-aware centre
     rg = sqrt(sum(w * r**2) / sum(w))
@@ -581,11 +593,10 @@ def normal(p: points):
     return shown(n, arrow(c, direction=n, length=5.0))
 
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
-    assert weights in ('mass', None), "weights= takes 'mass' or None"
     q = fit(p, ref, on=on, weights=weights) if superpose else p
+    w = weight(q, weights)
     d2 = norm(q - ref)**2
-    # Equal weights are a mean, which needs no extent known when compiling: a group a def maps over has none
-    return sqrt(sum(mass(particle(q)) * d2) / sum(mass(particle(q)))) if weights == 'mass' else sqrt(mean(d2))
+    return sqrt(sum(w * d2) / sum(w))
 
 def previous(x, n=1):
     def step(s, v):
@@ -615,6 +626,8 @@ The prelude uses nothing a script cannot, drawing included: `shown` attaches wha
 
 Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are the only places where a selection turns into coordinates. A set of several particles never quietly becomes one point: write `s.com` or `centroid(s)` for its centre, or `between='closest'` for its closest particles. MDAnalysis, MDTraj and GROMACS also ask for centres explicitly.
 
+Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` or one number per point, `float[n]`, in `com`, `gyration`, `rmsd`, `fit`, `sdf` and `density` alike; an array pairs with the points of one set, so it does not go with an array of sets. `match=` says what makes two units the same, in `common` and `mcs`. `text=` labels a drawing, in `line` and `arc`. A keyword VIAL once spelt otherwise, `by=`, `label=` or `weight=`, is E0202 with the fix.
+
 | Parameter kind | Accepts | Becomes |
 | --- | --- | --- |
 | `point` | a float array whose last dimension is 3, such as `[5.0, 0.0, 2.3]` or `s.com` | itself; leading dimensions broadcast |
@@ -632,7 +645,8 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 | `s.xyz` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particle(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
 | `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, or `str[n]` | per-particle properties of a set; static, except `bfactor` where the file gives one per frame |
 | `particle(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particle(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
-| `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)` |
+| `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)`; `weights=` is as everywhere, below |
+| `weight(p, weights='mass')` | `float[n]` | one weight per point of p, as `weights=` means it everywhere: the particles' masses (u) for `'mass'`, ones for None, or the array given. What the prelude's defs weigh with, and a def of your own can |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Also takes one argument of two points stacked along its last dimension, `float[2][3]` or `set[2]` of single particles, as `distance(r[['N', 'CA']])`, mapping over the dimensions before them. Drawn as a line labelled with the value |
 | `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a search that skips most pairs, so no n×m matrix is computed or stored. Drawn as a line between the pair |
@@ -641,7 +655,7 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 | `farthest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the longest distance, and its two indices |
 | `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` or `rs[['N', 'CA', 'C']]` |
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` or `residue[['N', 'CA', 'CB', 'CG']]`, chi1 of every residue that has a CG |
-| `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`. Drawn as a sphere of that radius at the centre |
+| `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`, with `w = weight(p, weights)`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
 | `within(r, of: points)` | `set`, frame | the scope's particles within r of any particle or point of `of`: d <= r, with d the bits `distance()` gives for the pair, under the minimum image; `of=` is always written, so `within(5.0, of=protein)` reads as it means and the radius cannot be mistaken for the set. `within(5.0, protein)` is E0203, with the fix `of=protein` |
 
@@ -735,10 +749,10 @@ cnt   = sum(distance(c[:, None], vlb.xyz) < 8.0, axis=1)      # -> int[433], fra
 
 | Function | Result | Notes |
 | --- | --- | --- |
-| `fit(p, ref, on=None, weights=None)` | `float[n][3]` Å | superposes p onto ref using the particles in `on`, applied to all of p |
-| `rmsd(p, ref, on=None, weights=None, superpose=True)` | `float` Å | prelude: the weighted root mean square of `q - ref`, with `q = fit(p, ref)`, or `p` itself when `superpose=False`; weights are equal, or by mass with `weights='mass'`, in the fit and the mean alike |
+| `fit(p, ref, on=None, weights=None)` | `float[n][3]` Å | superposes p onto ref using the particles in `on`, applied to all of p; equal weights, by mass with `weights='mass'`, or one per point |
+| `rmsd(p, ref, on=None, weights=None, superpose=True)` | `float` Å | prelude: the weighted root mean square of `q - ref`, with `q = fit(p, ref)`, or `p` itself when `superpose=False`; weights are equal, by mass with `weights='mass'`, or one per point, in the fit and the mean alike |
 
-Positions from the same set pair by particle. Positions from different sets pair in order: different counts do not broadcast (E0301), and different particles paired by position give W0605, which names the first pair that differs; slices of one set do not warn. To pair by residue id and particle name, pair the sets first with `common(sa, sb, by='label')`; it keeps only the particles present in both.
+Positions from the same set pair by particle. Positions from different sets pair in order: different counts do not broadcast (E0301), and different particles paired by position give W0605, which names the first pair that differs; slices of one set do not warn. To pair by residue id and particle name, pair the sets first with `common(sa, sb, match='label')`; it keeps only the particles present in both.
 
 ```python
 # on T
@@ -781,14 +795,16 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 | --- | --- | --- |
 | `sum`, `mean`, `min`, `max` | the dimensions not reduced | the argument's |
 | `std`, `var` | the dimensions not reduced | the argument's; squared for `var` |
+| `median`, `percentile(a, q)` | the dimensions not reduced: the middle value, or the q-th percentile (0 to 100, known when compiling), interpolated between the two nearest as NumPy's default; a float | the argument's |
+| `prod` | the dimensions not reduced | none: it takes unitless numbers (E0313), since the unit of a product depends on how many there are |
 | `any`, `all` | `bool` | none |
 | `argmin`, `argmax` | `int`: a position along the reduced dimension | none |
 | `len(a)` | `int`: the extent of the first dimension | none |
 
 `count(s)` is for sets only: the number of particles in each set, mapping over an array of sets like `com`. How many values of a bool array are true is `sum(mask)`, an `int`.
 
-- `axis=` takes an int, negative from the end, a tuple, or `'frame'`. Without it every dimension is reduced, as in NumPy, but never the frame.
-- `by=` reduces in groups; see the indexing section. A reduction over an extent that is empty in some frame gives its identity where it has one, 0 for sum and len, false for any and true for all, and otherwise a missing value, for min, max, mean, std, var, argmin and argmax, with W0405.
+- `axis=` takes an int, negative from the end, a tuple, or `'frame'`. Without it every dimension is reduced, as in NumPy, but never the frame. Every reduction takes `axis='frame'`, `median` and `percentile` included: they gather the series, where `sum`, `mean`, `std` and `var` stream.
+- `by=` reduces in groups; see the indexing section. A reduction over an extent that is empty in some frame gives its identity where it has one, 0 for sum and len, 1 for prod, false for any and true for all, and otherwise a missing value, for min, max, mean, median, percentile, std, var, argmin and argmax, with W0405.
 - `len(a)` is the extent of the first dimension, so `len(residue)` is the number of residues. On a single set it is the number of particles, the same as `count(s)`.
 - `min(a, b)` and `max(a, b)` with two arguments work elementwise, as Python's do; with one argument they reduce.
 - Sums accumulate in 64 bits in one fixed order, the same in every backend. An integer sum that does not fit in 32 bits is R0102 rather than wrapping around.
@@ -803,22 +819,25 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 | `exp`, `log`, `log10` | no unit | no unit |
 | `sin`, `cos`, `tan` | an angle | no unit |
 | `asin`, `acos`, `atan`, `atan2(y, x)` | no unit | degrees |
-| `dot(u, v)` | arrays whose last dimensions match | the sum of products over the last dimension, row by row; NumPy calls it `vecdot` |
+| `dot(u, v)` | arrays whose last dimensions match | **not NumPy's `dot`**: the sum of products over the last dimension, row by row, so `dot(a, b)` on two `float[n][3]` is `float[n]`, one dot product per row. NumPy calls this `vecdot`; its `dot` of two matrices is `a @ b` here |
 | `a @ b` | matrices and vectors | the matrix product, as NumPy's `matmul` |
 | `cross(u, v)` | last dimension 3 | the cross product, row by row |
 | `norm(v, axis=-1)`, `normalize(v)` | any float array | the length over a dimension; v divided by it |
 | `where(c, a, b)` | a bool array and two values | elementwise choice |
 | `unitless(x)` | any unit | no unit, without a warning |
 | `float(x)`, `int(x)` | any | the same values as float or int, keeping the unit; int truncates toward zero |
+| `pi` | — | 3.1415927, a float: `2 * pi * r`. Angles are degrees, so `sin(90)` needs no pi |
 
 ### Arrays
 
 | Function | Does |
 | --- | --- |
 | `diff(a, axis=0)` | differences of neighbours along a dimension, as NumPy's |
+| `cumsum(a, axis=0)` | the running sum along a dimension, the same shape; a missing value and what follows it stay missing. Over frames it is `cumulative(x)` (E0316 points there) |
+| `sort(a, axis=-1)`, `argsort(a, axis=-1)` | the values along a dimension in ascending order, or the positions that would put them there, stable; missing values and NaN go last. Sorted, the dimension no longer describes what it ran over, so `sort(d)[r]` is a position, not a residue |
 | `zip(a, b)` | Python's: pairs elements in order, for comprehensions |
 | `range(n)` | Python's: positions 0 to n−1 |
-| `common(a, b, by='id')` | the elements of a and b that match, as two arrays in a's order. `by='id'` matches the residue id, and for particles also the particle name; `by='label'` adds the residue name. Neither looks at the chain, so chain A pairs with chain B |
+| `common(a, b, match='id')` | the elements of a and b that match, as two arrays in a's order. `match='id'` matches the residue id, and for particles also the particle name; `match='label'` adds the residue name. Neither looks at the chain, so chain A pairs with chain B |
 | `label(a, axis=0)` | the labels of a dimension |
 | `spread(values, groups, combine=None)` | gives each particle of a group that group's value, the reverse of `by=`; the result runs over `particle(groups)`. `combine='mean'`, `'max'` or `'first'` is required where groups overlap (E0306) |
 | `missing_where(c, x)` | x with the entries where c is true marked missing; the type becomes optional |
@@ -852,7 +871,7 @@ vlb   = particle(resname='VLB')
 d_res = distance(res_a, vlb, between='closest')     # -> float[433] Å: each residue's closest approach to VLB
 shade = spread(d_res, res_a)                        # -> float[n] Å: over the particles of res_a; the groups do not overlap
 rb    = residue(chain='B', kind='amino_acid')     # -> set[432]
-a, b  = common(res_a, rb, by='id')                  # -> set[424] and set[424]: the ids both chains have
+a, b  = common(res_a, rb, match='id')               # -> set[424] and set[424]: the ids both chains have
 dab   = distance(a.com, b.com)                      # -> float[424] Å, no warning: common paired them; labelled MET1/A–MET1/B, ARG2/A–ARG2/B, …, CYS4/A–ILE4/B, …
 ```
 
@@ -884,7 +903,7 @@ Values are never changed in place, so NumPy's distinction between views and copi
 
 | Function | Result |
 | --- | --- |
-| `concatenate(list, axis=0)` | the arrays of a tuple, or of a list literal written in the call, joined along an existing dimension rather than stacked; the other extents must match (E0309) |
+| `concatenate(list, axis=0)` | the arrays of a tuple, or of a list literal written in the call, joined along an existing dimension rather than stacked; the other extents must match (E0309). Arrays of sets join along their first dimension, `set[k][w]` included |
 | `[a, b, c]` | the list literal stacks: a new first dimension, one entry per item of the same shape. Items that are top-level names give their names as labels, so `[d_gtp, d_gdp]` is labelled `d_gtp`, `d_gdp`. There is no `stack()` |
 
 ### Linear algebra
@@ -941,7 +960,7 @@ bad   = reshape(res_a.com, (400, 3))                     # error E0307: 1,299 va
 | --- | --- |
 | `a and b`, `a or b`, `not a` | intersection, union, and complement within the scope; an array of sets with one set is taken set by set |
 | `any(arr, axis=)`, `all(arr, axis=)` | the union, or the intersection, of an array of sets along a dimension; the reductions of `or` and `and`. There is no `union()` |
-| `particle(x)` | the particles of a set or an array of sets, as one set |
+| `particle(x)` | the particles of a set or an array of sets, as one set: the plain union, `any(rs)` for an array, which never reaches outside what it is given. `residue(x)` and the other grouping selectors do reach out, to the whole units that touch x |
 | `count(s)` | `int`: the number of particles |
 
 ```python
@@ -963,9 +982,9 @@ bend   = angle(ala_n, ala_ca, ala_c)                   # -> float[60] °: each s
 | --- | --- |
 | `smiles(pattern, scope=None, level='molecule', mode='unique')` | `set[k]`: one set per match |
 | `smiles_atoms(pattern, ...)` | `set[k][w]`: one particle per pattern atom, in pattern order; only the atoms tagged with a class such as `[C:1]` when the pattern has classes, in class order |
-| `mcs(a, b, by='element', least=0.5)` | `set[m]` and `set[m]`: which particles of b play the part of which of a, structures that are not the same (a mutant, GTP and GDP, the rings of PHE and TYR), as two arrays of one particle each, a's ascending and b's paired with them by position |
+| `mcs(*structures, match='element', least=0.5)` | `set[k][w]`: which particles of each structure play the parts of which of the first, structures that are not the same (a mutant, GTP and GDP, the rings of PHE and TYR). Every positional argument is a set or an array of sets; every structure, in order, is matched onto the first, and the columns are the first's particles that all of them have a part for, ascending. `mcs(gtp, gdp)` is `set[2][28]`, `mcs(phe, tyr)` with four of each `set[8][w]`, `mcs(residue[0:5])` the five residues on what they share. Alike structures share one mapping, found once. What `sdf` takes as structures |
 
-`mcs` finds the largest set of heavy atoms the two have in common, connected, alike by element (or by element and name, `by='name'`), with the same bonds both ways round, whatever their orders; hydrogens are left out. Two polymers, two residues or more of amino acids or nucleotides each, are matched residue by residue: the residues aligned by name in order, a pair of one name by atom name and a pair of two names as a graph. Anything else is matched as one graph, exactly, which takes microseconds for residues and less than a millisecond for a ligand of 60 heavy atoms; more than 1024 heavy atoms is too many (E0321), and a search that gives up keeps the largest it found (W0408). The bonds alone do not tell symmetric atoms apart, the oxygens of a phosphate or the sides of a ring: of the mappings they allow, evaluation keeps the one that fits best at frame 0. Fewer than `least` of the smaller structure's heavy atoms in common is E0321: any two molecules have a few carbons in common. b's array pairs with a's without W0605, as `common()`'s do.
+`mcs` finds the largest set of heavy atoms a structure and the first have in common, connected, alike by element (or by element and name, `match='name'`), with the same bonds both ways round, whatever their orders; hydrogens are left out. Two polymers, two residues or more of amino acids or nucleotides each, are matched residue by residue: the residues aligned by name in order, a pair of one name by atom name and a pair of two names as a graph. Anything else is matched as one graph, exactly, which takes microseconds for residues and less than a millisecond for a ligand of 60 heavy atoms; more than 1024 heavy atoms is too many (E0321), and a search that gives up keeps the largest it found (W0408). The bonds alone do not tell symmetric atoms apart, the oxygens of a phosphate or the sides of a ring: of the mappings they allow, evaluation keeps the one that fits best at frame 0. Fewer than `least` of the smaller structure's heavy atoms in common with the first is E0321: any two molecules have a few carbons in common. Rows of one array pair without W0605, as slices of one array do, so `rmsd(m[1].xyz, m[0].xyz)` is the deviation of the second from the first.
 
 `level` is where a match may lie: within a `'molecule'`, a `'residue'` or a `'part'`. `mode` is `'unique'`, one match per distinct set of atoms, or of tagged atoms when the pattern has classes; `'all'`, every mapping; `'one_per_unit'`; or `'disjoint'`, which keeps the first of overlapping matches. Matches may overlap, and the compiler knows where. A hydrogen in a pattern is mapped onto one hydrogen of its atom, never searched.
 
@@ -1016,7 +1035,7 @@ inter = sum(coul) + sum(lj)                            # -> float kJ/mol, frame:
 | Function | Result | Stage |
 | --- | --- | --- |
 | `mean`, `var`, `std`, `min`, `max`, `sum` with `axis='frame'` | the frame removed | trajectory; streams while frames load |
-| `histogram(x, axis='frame', bins=, range=)` | `float[bins]`, with bin edges: counts, or a density with density=True; values outside range are counted apart, below and above | trajectory; streams |
+| `histogram(x, axis='frame', bins=, range=)` | `float[bins]`, with bin edges, over `range=lo..hi` or `(lo, hi)`: counts, or a density with density=True; values outside range are counted apart, below and above | trajectory; streams |
 | `smooth(x, n)` | keeps the frame | trajectory, per frame; a centred window of n frames, n odd, that shrinks at the ends |
 | `derivative(x)` | keeps the frame; unit per ps | trajectory, per frame; central differences over time(), one-sided at the ends |
 | `autocorrelation(x, max_lag=)` | `float[max_lag+1]` | trajectory; the mean removed and normalized to 1 at lag 0, so it has no unit; complete when its pass ends |
@@ -1047,13 +1066,13 @@ A volume is a density on a grid, added up over the frames: `sdf` in the frame of
 
 | Function | Result | Stage |
 | --- | --- | --- |
-| `sdf(structures, target, extent, samples=4, ref=None, weights=None, sigma=0, poses=None)` | `float[nx][ny][nz]` count/Å³: target's density about the structures, each fitted every frame onto the reference by mass, with periodic boundaries, in a box reaching `extent` from the reference's centre along its principal axes | trajectory |
+| `sdf(structures, target, extent, samples=4, ref=None, weights=None, sigma=0)` | `float[nx][ny][nz]` count/Å³: target's density about the structures, each fitted every frame onto the reference by mass, with periodic boundaries, in a box reaching `extent` from the reference's centre along its principal axes | trajectory |
 | `density(points, samples=4, box=None, weights=None, sigma=0)` | `float[nx][ny][nz]` count/Å³: the points' density in `box=((x0, y0, z0), (x1, y1, z1))`, each in the image nearest the box's centre; without box=, over the unit cell | trajectory |
 
 - **The grid** follows from what it covers: `samples` per Å along each axis, each axis rounded up to a multiple of 8, so a pocket and a whole box are sampled alike. A grid of more than 512³ voxels is sampled coarser to fit, with W0407 saying how. Extents, samples, box and sigma are known when compiling, so the type has the grid's extents. Over the unit cell, the grid is frame 0's cell, known when evaluating: its extents print as letters. A cell that changes keeps its voxels, in fractional coordinates.
-- **The value** is absolute: particles per Å³, or with `weights=` (one number per point, such as `mass(...)` or `charge(...)`) the weights' unit per Å³. Beside `script/<name>` go `/origin` and `/basis`, Å, the corner of voxel `[0][0][0]` and one step along each index, in the volume's frame; `/bulk`, the same particles' density over the unit cell, in the volume's unit, so ρ/ρ_bulk is one division; and `/samples`, what was added. `[i][j][k]` runs along x, y and z of the volume's frame, k fastest.
-- **sdf**: `structures` is static, and pairs particle by particle: a set or an array of sets alike, as many particles, of the same elements, or names where an element is not known, in the order of their particles (E0320); or `set[k][w]`, k structures whose column j plays one part in each, as `smiles_atoms` and `mcs` give them, columns alike. They are fitted onto `ref=`, static positions of one structure in that order, by default the first structure at frame 0. The volume's frame is the reference's centre of mass and principal axes; a structure that spreads over too much of the cell to place in a frame is left out of it. A structure's own particles are never its target. Drawing an sdf draws each structure with the pose that places the volume on it.
-- **Kinds**: structures of kinds that are not alike, PHE and TYR, a ligand and its analogue, are a tuple of kinds, `sdf((phe, tyr), ...)`. Each kind is fitted onto a reference of its own, every particle of it, and the volume is the first kind's frame: each other kind's reference is placed on the first's by what their first structures have in common (`mcs`, once, at frame 0), or by `poses=`, a tuple with a pose per kind, the first None, each other None or `(R, t)`: float\[3\]\[3\] and float\[3\] Å with x = R @ y + t taking the kind's reference positions y onto the first's. `ref=` is then a tuple of a reference per kind, each None or positions. A kind with less than half of the smaller's heavy atoms in common with the first, and no pose, is E0321. Beyond what is common, the volume holds what each kind has around it, a mixture.
+- **The value** is absolute: particles per Å³, or with `weights=` (`'mass'`, or one number per point, such as `charge(...)`) the weights' unit per Å³. Beside `script/<name>` go `/origin` and `/basis`, Å, the corner of voxel `[0][0][0]` and one step along each index, in the volume's frame; `/bulk`, the same particles' density over the unit cell, in the volume's unit, so ρ/ρ_bulk is one division; and `/samples`, what was added. `[i][j][k]` runs along x, y and z of the volume's frame, k fastest.
+- **sdf**: `structures` is static, and pairs particle by particle: a set or an array of sets alike, as many particles, of the same elements, or names where an element is not known, in the order of their particles (E0320); or `set[k][w]`, k structures whose column j plays one part in each, as `smiles_atoms` and `mcs` give them, columns alike. They are fitted onto `ref=`, static positions of one structure in that order, by default the first structure at frame 0. Everything else about an sdf is a keyword with a default: the call is `sdf(structures, target, extent)` until it needs more. The volume's frame is the reference's centre of mass and principal axes; a structure that spreads over too much of the cell to place in a frame is left out of it. A structure's own particles are never its target. Drawing an sdf draws each structure with the pose that places the volume on it.
+- **Structures of different kinds**, PHE and TYR, a ligand and its analogue, are joined by what they have in common: `sdf(mcs(phe, tyr), ...)` fits them all on the columns `mcs` gives. A structure's atoms beyond the common ones are not fitted, and count as target where the target set holds them.
 - `target` and `points` are one set or points, `float[n][3]` Å: `molecule(water).com` maps where the waters' centres are rather than every atom of them. `sigma=` smooths the volume at the end with a Gaussian of that width, Å.
 - A volume is added up at the top level of a script: one inside a comprehension or a def mapped over groups would be an array of volumes, which is not supported yet (E0406). Over a plot period it is made again from the period's frames, read again, since nothing is kept per frame.
 
@@ -1066,24 +1085,25 @@ sm   = sdf(ala, o, (6.0, 4.0, 3.0), samples=2, weights=mass(o))   # -> float[24]
 cv   = density(particle(name='CA'), samples=1)       # -> float[a][b][c] count/Å³, trajectory: over the cell
 box  = density(o, box=((0.0, 0.0, 0.0), (40.0, 40.0, 40.0)), sigma=0.5)   # -> float[160][160][160] count/Å³, trajectory
 odd  = sdf(residue[0:5], o, 6.0)                     # error E0320: the first residue is not like the others
-a, b = mcs(residue[1], residue[14])                  # -> set[5] and set[5]: the last residue has its OXT besides
-pair = sdf([a, b], o, 6.0)                             # -> float[48][48][48] count/Å³, trajectory: two structures, column by column
-kin  = sdf((ala, residue[14:15]), o, 6.0)            # -> float[48][48][48] count/Å³, trajectory: two kinds, the second placed by what it shares
+m    = mcs(residue[1], residue[14])                  # -> set[2][5]: the last residue has its OXT besides
+pair = sdf(m, o, 6.0)                                  # -> float[48][48][48] count/Å³, trajectory: two structures, column by column
+kin  = sdf(mcs(ala, residue[14:15]), o, 6.0)         # -> float[48][48][48] count/Å³, trajectory: five structures on the heavy atoms they share
 ```
 
 ```python
 # on T
 phe  = residue('PHE')[0:4]
 tyr  = residue('TYR')[0:4]
-r1, r2 = mcs(particle(resname='GTP'), particle(resname='GDP'))   # -> set[28] and set[28]: all of GDP
-dev  = rmsd(r2.xyz, r1.xyz)                            # -> float Å, frame
-pair = mcs(phe[0], tyr[0], by='element')               # -> (set[11], set[11])
+m    = mcs(particle(resname='GTP'), particle(resname='GDP'))   # -> set[2][28]: all of GDP, row 1, on GTP's atoms, row 0
+dev  = rmsd(m[1].xyz, m[0].xyz)                        # -> float Å, frame
+pair = mcs(phe[0], tyr[0], match='element')            # -> set[2][11]
+aro  = mcs(phe, tyr, residue('TRP')[0:2])              # -> set[10][10]: what all three kinds share, a row each
 far  = mcs(particle(resname='GTP'), particle(resname='VLB'))   # error E0321: 13 heavy atoms in common of 32 and 59
 ```
 
 ## Outputs: what is published and how
 
-Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. `__all__` is reserved, and binding it is an error: it is kept for an explicit list of what is published, as Python has it.
+Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. A script that binds `__all__` publishes exactly the names it lists, as Python exports them: `__all__ = ['d', 'rg']` is a list of strings, each a name the script binds at top level (E0201 otherwise), and it may come before them. Then `_` means nothing, and a name left out is held to nothing a published value must be, so a value whose length changes per frame may stay unlisted instead of being renamed. `__all__` itself is not published, and hover shows every name either way.
 
 | Value | Published as | Alongside |
 | --- | --- | --- |
@@ -1122,6 +1142,15 @@ _c    = ca.xyz
 dm    = distance(_c[:, None], _c[None, :])             # -> float[15][15] Å, frame: a matrix per frame
 ```
 
+```python
+# on P
+ca   = particle(name='CA')
+ends = distance(ca[0], ca[14])
+near = residue(within(5.0, of=ca[0]))
+rows = distance(near.com, ca[0])                       # -> float[?] Å, frame: unlisted below, so it need not be a series
+__all__ = ['ends', 'near']                             # published: ends and near; ca and rows stay for hover
+```
+
 ## Drawing: what hover shows
 
 Hovering an expression in the editor draws its value in the 3D view, at the frame being shown. A value is drawn by its type, unless a built-in or a `def` attached a drawing with `shown`. Hover evaluates a value of at most 16 million entries, 64 MB; a larger one, such as the matrix of every pair of protein and water particles, shows its type and size and is not computed.
@@ -1142,10 +1171,10 @@ Hovering an expression in the editor draws its value in the 3D view, at the fram
 | Primitive | Draws |
 | --- | --- |
 | `marker(p: point)` | a point, marked |
-| `line(a: point, b: point, label=None)` | a segment, labelled at its middle when `label=` is given |
+| `line(a: point, b: point, text=None)` | a segment, labelled at its middle when `text=` is given: a number that maps with the points, or one string |
 | `arrow(a: point, b: point)`, `arrow(a: point, direction=v, length=r)` | a segment with a head; the second form starts at a and runs r along v |
 | `sphere(c: point, r)` | a sphere of radius r |
-| `arc(c: point, a: point, b: point, label=None)` | the angle at c from a to b |
+| `arc(c: point, a: point, b: point, text=None)` | the angle at c from a to b, labelled when `text=` is given |
 | `disk(c: point, n, r)` | a disk of radius r through c, with normal n: a plane |
 | `text(p: point, x)` | text at p: a number with its unit, which viamd formats as it formats values, or a `str` |
 | `highlight(s: set)` | a set's particles |
@@ -1166,7 +1195,7 @@ mg    = particle(resname='MG')                                 # -> set
 res_a = residue(chain='A', kind='amino_acid')                  # -> set[433]
 d     = distance(gtp.com, vlb.com)                               # -> float Å, frame: drawn as a labelled line
 dc, i, j = closest_pair(gtp, vlb)                                # -> float Å and int and int: points parameters take sets
-l     = line(gtp.com, vlb.com, label=d)                          # -> drawing, frame
+l     = line(gtp.com, vlb.com, text=d)                           # -> drawing, frame
 both  = l + sphere(mg, 3.0)                                      # -> drawing, frame: 3.0 is read as Å
 dd    = shown(d, both)                                           # -> float Å, frame: hover draws the line and the sphere
 spokes = line(res_a.com, vlb.com)                                # -> drawing[433], frame: one line per residue
@@ -1184,7 +1213,7 @@ def end_to_end(s: set):
     a = s[0]
     b = s[-1]
     r = distance(a, b)
-    return shown(r, line(a, b, label=r) + marker(a) + marker(b))
+    return shown(r, line(a, b, text=r) + marker(a) + marker(b))
 
 ca = particle(name='CA')                                       # -> set
 e  = end_to_end(ca)                                              # -> float Å, frame: published as a series; hover draws it
@@ -1246,7 +1275,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0601 | A selector that matches nothing in its scope, or a particle name no particle has; set algebra such as a and b never warns | `residue(id=250)` is not among this group's 241 particles | `residue('GTP')` for `residue['GTP']` |
 | W0602 | `particle(resid=...)` with an id in several chains | `resid=501` matches chains A and B; the merge would hide it | `chain='A'` |
 | W0603 | Groups with no values in `by=` | 15 residues have no values in `_z` | a narrower group |
-| W0605 | Equal extents that describe different units, paired by position | pairs the 433 residues of chain A with the 433 of chain B by position | common(a, b, by='id') |
+| W0605 | Equal extents that describe different units, paired by position | pairs the 433 residues of chain A with the 433 of chain B by position | common(a, b, match='id') |
 | W0607 | An unannotated argument over the same units as a dimension the call maps over | cutoff is float\[433\] over the residues of chain A, and the call maps over them; it is passed whole, so the result is bool\[433\]\[433\] | cutoff: float |
 | W0608 | A minimum of distances that pairs every point with itself, so it is zero | each of the 433 centres is its own nearest | `closest_pair(c[:, None], c, distinct=True)` |
 | W0609 | A particle name, or a position in `.particle[i]`, that some sets lack, or a name they hold twice: their entries are missing | a particle named 'CB' is one per set in 403 of 433 sets; 30 have none, and their entries are missing |  |

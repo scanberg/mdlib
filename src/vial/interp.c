@@ -147,8 +147,7 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     // What the outputs need, but a hidden name's (_x): nothing reads it but hover, which evaluates for itself, so a
     // matrix bound to _dm and only reduced is never built
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
-        const str_t nm = ir->outputs[i].name;
-        if (nm.len && nm.ptr[0] == '_') continue;
+        if (ir->outputs[i].hidden) continue;
         md_array_push(roots, ir->outputs[i].value, in->alloc);
     }
     vial_interp_only(in, roots, md_array_size(roots));
@@ -196,14 +195,14 @@ static void free_volumes(vial_interp_t* in) {
     }
 }
 
-// mcs(a, b): its mapping, of the symmetric ones the bonds allow the one that fits best at frame 0, read in a step of its
-// own as at() reads its frame; from the bonds alone where there is no frame to read
+// mcs(*structures): its mappings, of the symmetric ones the bonds allow the one that fits best at frame 0, read in a step
+// of its own as at() reads its frame; from the bonds alone where there is no frame to read
 static bool eval_mcs(vial_interp_t* in, uint32_t opi) {
     const vial_ir_t* ir = in->ir;
     const vial_ir_op_t* op = &ir->ops[opi];
     vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = in->alloc, .map_index = -1};
-    const vial_val_t* av[8] = {0};
-    if (op->num_args > 8) return vial_rt_fail(&k, "R0103", "mcs with more than 8 arguments");
+    const vial_val_t* av[66] = {0};
+    if (op->num_args > 66) return vial_rt_fail(&k, "R0103", "mcs with more than 64 structures");
     for (uint32_t i = 0; i < op->num_args; ++i) {
         const vial_ssa_t a = ir->args[op->arg_beg + i];
         if (a && !in->state[a]) return false;
@@ -815,7 +814,16 @@ static bool eval_top(vial_interp_t* in, bool static_only) {
             const vial_ssa_t a = ir->args[op->arg_beg + k];
             if (a && !in->state[a]) ready = false;
         }
-        if (!ready) { ok = false; continue; }
+        if (!ready) {
+            // A static value's inputs are static and come before it, so one not ready, with nothing failed, is a
+            // value the check staged wrong: said, rather than a run that fails without a word
+            if (st && !in->failed) {
+                vial_kctx_t k = {.in = in, .op = op};
+                vial_rt_fail(&k, "R0103", "a value known when compiling reads one that is not: a mistake in the compiler; please report the script");
+            }
+            ok = false;
+            continue;
+        }
         if (!eval_op(in, opi, st ? in->alloc : in->temp)) { ok = false; continue; }
         for (uint32_t k = 0; k < op->num_results; ++k) in->state[op->result + k] = st ? 2 : 1;
     }
