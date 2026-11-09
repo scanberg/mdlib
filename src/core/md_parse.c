@@ -3,7 +3,6 @@
 
 #include <stdlib.h>
 #include <math.h>
-#include <stdio.h>
 #include <string.h>
 
 // THIS FILE IS COMPILED WITHOUT FAST MATH (see CMakeLists.txt). The exact path below is exact
@@ -499,7 +498,7 @@ static uint64_t eisel_lemire(uint64_t w, int64_t q) {
 
 static inline double double_from_bits(uint64_t bits) {
     double d;
-    memcpy(&d, &bits, sizeof(d));
+    md_memcpy(&d, &bits, sizeof(d));
     return d;
 }
 
