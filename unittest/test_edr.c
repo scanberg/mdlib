@@ -254,3 +254,97 @@ UTEST(edr, supplement_refuses_decreasing_times) {
 
     md_attributes_free(&sys.attributes);
 }
+
+// The pairs of energy groups of inside-md-pullout.edr, CA Protein AIN SOL rest, against a system which has those
+// groups in that order, as its tpr would give them
+UTEST(edr, term_groups) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 100;
+    const char* names[] = { "CA", "Protein", "AIN", "SOL", "rest" };
+    uint32_t idx[5];
+    for (uint32_t i = 0; i < 5; ++i) {
+        idx[i] = (uint32_t)md_system_group_add(&sys, md_str_from_cstr(names[i]), md_bitset_range(20 * i, 20 * i + 20), 0);
+    }
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, idx, 5);
+
+    md_edr_energies_t energies = {0};
+    ASSERT_TRUE(md_edr_energies_parse_file(&energies, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), alloc));
+    size_t num_pairs = 0;
+    for (size_t i = 0; i < energies.num_energies; ++i) {
+        const md_str_t name = energies.energy[i].name;
+        md_edr_term_groups_t tg;
+        size_t colon;
+        if (!md_str_find_char(&colon, name, ':')) {
+            EXPECT_FALSE(md_edr_term_groups(&tg, &sys, name));
+            continue;
+        }
+        ++num_pairs;
+        ASSERT_TRUE(md_edr_term_groups(&tg, &sys, name));
+        EXPECT_EQ((uint32_t)MD_GROUP_ROLE_ENERGY, tg.role);
+        EXPECT_EQ(2u, tg.count);
+        EXPECT_LE(tg.group[0], tg.group[1]);    // In the order of energygrps
+        // The names put back together are the term
+        char buf[256];
+        const md_str_t a = sys.group.name[tg.group[0]], b = sys.group.name[tg.group[1]];
+        const int n = snprintf(buf, sizeof(buf), MD_STR_FMT "-" MD_STR_FMT, MD_STR_ARG(a), MD_STR_ARG(b));
+        EXPECT_TRUE(md_str_eq(md_str_substr(name, colon + 1, SIZE_MAX), (md_str_t){buf, (size_t)n}));
+    }
+    // Coul-SR, LJ-SR, Coul-14 and LJ-14 of the 15 pairs of 5 groups
+    EXPECT_EQ(4u * 15u, num_pairs);
+    md_edr_energies_free(&energies);
+
+    md_edr_term_groups_t tg;
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("LJ-SR:SOL-SOL")));
+    EXPECT_EQ(idx[3], tg.group[0]);
+    EXPECT_EQ(idx[3], tg.group[1]);
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:SOL-NA")));
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:SOL")));
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("T-NA")));
+    md_system_free(&sys);
+}
+
+// Names with '-' in them, which only the groups tell apart
+UTEST(edr, term_groups_dashes) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 100;
+    const uint32_t protein_h = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein-H"), md_bitset_range(0, 10), 0);
+    const uint32_t sol       = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("SOL"),       md_bitset_range(10, 50), 0);
+    const uint32_t non_water = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("non-Water"), md_bitset_range(50, 60), 0);
+    // Decoys an index file could hold beside them: 'Protein' and 'H-SOL'
+    const uint32_t protein   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein"),   md_bitset_range(0, 12), 0);
+    const uint32_t h_sol     = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("H-SOL"),     md_bitset_range(5, 50), 0);
+    const uint32_t tc_rest   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("rest"),      md_bitset_range(10, 100), 0);
+
+    md_edr_term_groups_t tg;
+    // Without roles (an index file only): the first split of two groups, which here is the decoy pair
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:Protein-H-SOL")));
+    EXPECT_EQ(protein, tg.group[0]);
+    EXPECT_EQ(h_sol, tg.group[1]);
+
+    // With the energy groups of a tpr: the pair in their order
+    const uint32_t ener[] = { protein_h, sol, non_water };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, ener, 3);
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:Protein-H-SOL")));
+    EXPECT_EQ(protein_h, tg.group[0]);
+    EXPECT_EQ(sol, tg.group[1]);
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("LJ-14:non-Water-non-Water")));
+    EXPECT_EQ(non_water, tg.group[0]);
+    EXPECT_EQ(non_water, tg.group[1]);
+
+    // T-coupling groups
+    const uint32_t tc[] = { protein, tc_rest };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc, 2);
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("T-Protein")));
+    EXPECT_EQ((uint32_t)MD_GROUP_ROLE_TC, tg.role);
+    EXPECT_EQ(1u, tg.count);
+    EXPECT_EQ(protein, tg.group[0]);
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Lamb-rest")));
+    EXPECT_EQ(tc_rest, tg.group[0]);
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("T-non-Water")));   // By name, not a T-coupling group
+    EXPECT_EQ(non_water, tg.group[0]);
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Temperature")));
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Pres-DC")));
+    md_system_free(&sys);
+}

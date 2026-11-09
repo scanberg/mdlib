@@ -154,6 +154,8 @@ set(SRC_FILES
   src/md_gto_iso_gpu.inl
   src/md_itp.c
   src/md_itp.h
+  src/md_ndx.c
+  src/md_ndx.h
   src/md_dcd.c
   src/md_dcd.h
   src/md_topology_build.c

@@ -924,14 +924,60 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_strin
         skip_reals(r, num_grids * extent * extent * 4);
     }
 
-    // Atom groups: the atom index lists of each group type, the group names, and the per atom
-    // group numbers of each group type
-    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES; ++i) {
-        skip_ints(r, rd_count(r));
+    // ## Atom groups (GROMACS' do_groups): the groups of each type as indices into the group names, the group names as
+    // indices into the symbol table, and the group of each atom of each type (none: every atom is in the type's first)
+    MD_STATIC_ASSERT(TPR_NUM_ATOM_GROUP_TYPES == MD_TPR_GROUP_TYPE_COUNT, "The group types of the file");
+    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES && rd_ok(r); ++i) {
+        const size_t count = rd_count(r);
+        if (!rd_ok(r) || count > 256 || count > md_xdr_remaining(&r->xdr) / 4) {
+            rd_fail(r);
+            return;
+        }
+        md_tpr_groups_t* g = &data->groups[i];
+        g->count = count;
+        g->name_idx = count ? md_array_create(int32_t, count, alloc) : NULL;
+        for (size_t k = 0; k < count; ++k) g->name_idx[k] = rd_int(r);
     }
-    skip_ints(r, rd_count(r));
-    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES; ++i) {
-        skip_uchars(r, rd_count(r));
+    {
+        const size_t count = rd_count(r);
+        if (!rd_ok(r) || count > md_xdr_remaining(&r->xdr) / 4) {
+            rd_fail(r);
+            return;
+        }
+        data->num_group_names = count;
+        data->group_names = count ? md_array_create(md_str_t, count, alloc) : NULL;
+        for (size_t k = 0; k < count && rd_ok(r); ++k) data->group_names[k] = rd_symstr(r, &symtab);
+    }
+    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES && rd_ok(r); ++i) {
+        md_tpr_groups_t* g = &data->groups[i];
+        for (size_t k = 0; k < g->count; ++k) {
+            if (g->name_idx[k] < 0 || (size_t)g->name_idx[k] >= data->num_group_names) {
+                MD_LOG_ERROR("TPR: A group of type %d names group %d of %zu", i, g->name_idx[k], data->num_group_names);
+                rd_fail(r);
+                return;
+            }
+        }
+        const size_t count = rd_count(r);
+        if (!rd_ok(r) || (count && count != num_atoms)) {
+            MD_LOG_ERROR("TPR: The groups of type %d are given for %zu atoms of %zu", i, count, num_atoms);
+            rd_fail(r);
+            return;
+        }
+        if (!count) continue;
+        if (count > md_xdr_remaining(&r->xdr) / (r->in_memory ? 1 : 4)) {
+            rd_fail(r);
+            return;
+        }
+        g->atom_group = md_array_create(uint8_t, count, alloc);
+        for (size_t a = 0; a < count; ++a) {
+            const uint8_t v = rd_uchar(r);
+            if (v >= g->count) {
+                MD_LOG_ERROR("TPR: Atom %zu is in group %u of type %d, which has %zu", a, v, i, g->count);
+                rd_fail(r);
+                return;
+            }
+            g->atom_group[a] = v;
+        }
     }
 
     if (r->version >= tpxv_StoreNonBondedInteractionExclusionGroup) {
@@ -1339,6 +1385,11 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
     md_array_free(data->intermolecular_bonds, alloc);
     md_array_free(data->intermolecular_elastic_bonds, alloc);
     md_array_free(data->lj, alloc);
+    for (int i = 0; i < MD_TPR_GROUP_TYPE_COUNT; ++i) {
+        md_array_free(data->groups[i].name_idx, alloc);
+        md_array_free(data->groups[i].atom_group, alloc);
+    }
+    md_array_free(data->group_names, alloc);
     md_array_free(data->x, alloc);
     md_array_free(data->v, alloc);
     if (data->str_data) {
@@ -1425,6 +1476,62 @@ static md_atomic_number_t tpr_infer_atomic_number(md_str_t name, md_str_t res_na
         return z_label;
     }
     return md_atomic_number_infer_from_mass(mass);
+}
+
+// The groups of every type the simulation used, with their roles. A type which is one group of every atom named 'rest' is
+// one the mdp did not name groups for, and adds nothing.
+static void tpr_system_add_groups(md_system_t* sys, const md_tpr_data_t* data) {
+    MD_STATIC_ASSERT((int)MD_TPR_GROUP_TYPE_COUNT == (int)MD_GROUP_ROLE_COUNT, "A role for each group type, in the same order");
+    const size_t N = data->num_atoms;
+    if (!N || N > UINT32_MAX) return;
+    md_allocator_i* heap = md_get_heap_allocator();
+
+    for (int t = 0; t < MD_TPR_GROUP_TYPE_COUNT; ++t) {
+        const md_tpr_groups_t* g = &data->groups[t];
+        if (g->count == 0) continue;
+        if (g->count == 1 && md_str_eq(data->group_names[g->name_idx[0]], MD_STR_LIT("rest"))) continue;
+
+        // Where each group's atoms begin and end, so each is built over its own span only
+        uint32_t beg[256], end[256];
+        for (size_t k = 0; k < g->count; ++k) { beg[k] = UINT32_MAX; end[k] = 0; }
+        if (g->atom_group) {
+            for (uint32_t a = 0; a < (uint32_t)N; ++a) {
+                const uint8_t k = g->atom_group[a];
+                if (a < beg[k]) beg[k] = a;
+                end[k] = a + 1;
+            }
+        } else {
+            beg[0] = 0;
+            end[0] = (uint32_t)N;
+        }
+
+        uint32_t idx[256];
+        size_t num_idx = 0;
+        for (size_t k = 0; k < g->count; ++k) {
+            md_bitset_t atoms = md_bitset_empty_set();
+            uint64_t* words = NULL;
+            size_t num_words = 0;
+            if (beg[k] < end[k]) {
+                if (!g->atom_group) {
+                    atoms = md_bitset_range(beg[k], end[k]);
+                } else {
+                    const uint32_t base = beg[k] & ~63u;
+                    num_words = ((size_t)end[k] - base + 63) / 64;
+                    words = md_alloc(heap, num_words * sizeof(uint64_t));
+                    md_memset(words, 0, num_words * sizeof(uint64_t));
+                    for (uint32_t a = beg[k]; a < end[k]; ++a) {
+                        if (g->atom_group[a] == k) words[(a - base) >> 6] |= 1ull << ((a - base) & 63);
+                    }
+                    atoms = md_bitset_from_words(words, num_words, base, heap);
+                }
+            }
+            // An empty group is kept: its place in the order is what an energy file names the pairs by
+            idx[num_idx++] = (uint32_t)md_system_group_add(sys, data->group_names[g->name_idx[k]], atoms, 0);
+            md_bitset_free(&atoms, heap);
+            if (words) md_free(heap, words, num_words * sizeof(uint64_t));
+        }
+        md_system_group_set_role(sys, (md_group_role_t)t, idx, num_idx);
+    }
 }
 
 bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data) {
@@ -1789,6 +1896,9 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     if (!md_str_empty(data->name)) {
         sys->description = md_str_copy(data->name, alloc);
     }
+
+    // ## Groups
+    tpr_system_add_groups(sys, data);
 
     // ## Non-bonded force field, when its interactions can be evaluated pair by pair
     {

@@ -10,6 +10,7 @@
 #include <core/md_vec_math.h>
 
 #include <md_attributes.h>
+#include <core/md_bitset.h>
 
 typedef struct md_particle_type_data_t {
     size_t count;
@@ -287,6 +288,40 @@ typedef struct md_assembly_gen_t {
     size_t                      oper_count;
 } md_assembly_gen_t;
 
+// GROUPS. Named sets of atoms the data gives, the way GROMACS has them: the index groups grompp was given (a tpr keeps
+// those the simulation used) or an index file (.ndx). They are not of the hierarchy: a group holds any atoms, whole
+// molecules or parts of them, and groups may overlap. Inference neither reads nor writes them.
+//
+// A ROLE is what the simulation used groups for, an mdp option naming them: tc-grps, energygrps and so on. The groups of
+// a role are a partition of the atoms, in the order the option names them, the atoms named by none of them in a group of
+// their own named 'rest'. The order is load bearing: an energy file names the pairs of energy groups by it
+// (md_edr_term_groups). A group is stored once whatever roles it has; two groups may share a name ('rest' of two roles
+// is two sets of atoms, as two index files may give one name to two sets).
+typedef enum md_group_role_t {
+    MD_GROUP_ROLE_TC = 0,               // tc-grps: temperature coupling
+    MD_GROUP_ROLE_ENERGY,               // energygrps: energy output, the pairs of the non-bonded terms
+    MD_GROUP_ROLE_ACC,                  // acc-grps: acceleration
+    MD_GROUP_ROLE_FREEZE,               // freezegrps
+    MD_GROUP_ROLE_USER1,                // user1-grps
+    MD_GROUP_ROLE_USER2,                // user2-grps
+    MD_GROUP_ROLE_COMM,                 // comm-grps: removal of the center of mass motion
+    MD_GROUP_ROLE_COMPRESSED_X,         // compressed-x-grps: the atoms written to the .xtc
+    MD_GROUP_ROLE_ORIRE_FIT,            // orire-fitgrp: fit of the orientation restraints
+    MD_GROUP_ROLE_QMMM,                 // qmmm-grps: the QM atoms
+    MD_GROUP_ROLE_COUNT,
+} md_group_role_t;
+
+typedef struct md_group_data_t {
+    size_t count;
+    md_str_t*    name;                  // [count]
+    md_bitset_t* atoms;                 // [count] Each its own words, in the system's allocator
+    uint32_t*    roles;                 // [count] Bit r: the group is one of role r's (md_group_role_t)
+    // The groups of role r, in its order: role_group[role_offset[r] .. role_offset[r + 1]]. A role the data does not
+    // give, or gives as one group of every atom it never named ('rest' of all), has none.
+    uint32_t     role_offset[MD_GROUP_ROLE_COUNT + 1];
+    uint32_t*    role_group;
+} md_group_data_t;
+
 // Atom centric representation of bonds: the graph of the molecules, every bond but the elastic ones
 // (MD_BOND_KIND_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
 // (md_bond_iter, md_bond_find, the molecules, rings and chemistry) leaves them out.
@@ -514,6 +549,7 @@ typedef struct md_system_t {
     md_molecule_data_t          molecule;           // The molecules: connected by persistent bonds, within residues and along polymer chains (md_molecule_t)
 
     md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
+    md_group_data_t             group;              // Named sets of atoms the data gives (GROMACS index groups), see md_group_data_t
     
     // ONE table, holding everything this system carries that is not one of the fields above.
     //
@@ -549,6 +585,31 @@ uint64_t md_system_topology_changed(md_system_t* sys);
 // An operator which is not rigid is logged, and kept. Replaces the previous assemblies; false (and none) on bad input.
 bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
 void md_system_assemblies_free(md_system_t* sys);
+
+// GROUPS (md_group_data_t)
+
+// Adds a group of atoms, a copy of atoms, with the roles it has (bits of md_group_role_t, 0 for none) and returns its
+// index. A group of the same name and atoms is not added again: it gains the roles, and its index is returned.
+// Atoms past the system's are left out. Records a change of the topology (scripts select groups by name).
+size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, uint32_t roles);
+
+// Sets the groups of a role, in its order, replacing what it had: indices of groups, which gain the role
+void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint32_t* group_idx, size_t count);
+
+void md_system_groups_free(md_system_t* sys);
+
+static inline md_urange_t md_system_group_role_range(const md_group_data_t* g, md_group_role_t role) {
+    md_urange_t r = {0, 0};
+    if (g && (uint32_t)role < MD_GROUP_ROLE_COUNT) {
+        r.beg = g->role_offset[role];
+        r.end = g->role_offset[role + 1];
+    }
+    return r;
+}
+
+// The name of a role as GROMACS' mdp option has it ("energygrps"), and as a script names it ("energy"): NULL for none
+const char* md_group_role_mdp_option(md_group_role_t role);
+const char* md_group_role_name(md_group_role_t role);
 
 static inline size_t md_assembly_count(const md_assembly_data_t* a) {
     MD_ASSERT(a);

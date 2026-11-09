@@ -60,6 +60,27 @@ bool md_edr_system_supplement(struct md_system_t* sys, const md_edr_energies_t* 
 // energies it describes, so it can never name a file whose data is gone.
 bool md_edr_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run);
 
+// THE GROUPS OF A TERM. GROMACS names the terms it writes for groups by the groups' names:
+//
+//     Coul-SR:Protein-SOL     a non-bonded term between two energy groups (energygrps), Coul-SR, LJ-SR, Buck-SR,
+//                             Coul-14 and LJ-14, for every pair in the order of energygrps, a group with itself too
+//     T-Protein, Lamb-Protein the temperature and the scaling factor of a temperature coupling group (tc-grps)
+//
+// A group's name may hold '-' (Protein-H, non-Water), so the two of a pair are found among the groups of the system
+// (md_group_data_t): the energy groups of its role, in order, where it has them (a tpr), else any groups of those names
+// (an index file). Of a pair whose names could be split in more than one way, the split of two energy groups in their
+// order is taken. The groups of the T-coupling role likewise, else by name.
+//
+// term is the name as the file has it, which the published attribute keeps as its label. False when it is not a term of
+// groups, or a group it names is not in the system ('rest' of a role the system does not have, say).
+typedef struct md_edr_term_groups_t {
+    uint32_t role;          // md_group_role_t: MD_GROUP_ROLE_ENERGY for a pair, MD_GROUP_ROLE_TC for T- and Lamb-
+    uint32_t count;         // 2 for a pair, 1 for the term of one group
+    uint32_t group[2];      // Indices into sys->group, the pair in the term's order; a pair of a group with itself has it twice
+} md_edr_term_groups_t;
+
+bool md_edr_term_groups(md_edr_term_groups_t* out, const struct md_system_t* sys, md_str_t term);
+
 #if 0
 // Represents the string block inside the edr file which gives us the names and units (encoded as text)
 // of all energy fields present in the file.

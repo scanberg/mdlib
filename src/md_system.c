@@ -46,6 +46,109 @@ void md_system_assemblies_free(md_system_t* sys) {
     md_memset(a, 0, sizeof(md_assembly_data_t));
 }
 
+// ### GROUPS ###
+
+static const char* const group_role_mdp[MD_GROUP_ROLE_COUNT] = {
+    "tc-grps", "energygrps", "acc-grps", "freezegrps", "user1-grps", "user2-grps", "comm-grps", "compressed-x-grps", "orire-fitgrp", "qmmm-grps",
+};
+static const char* const group_role_names[MD_GROUP_ROLE_COUNT] = {
+    "tc", "energy", "acc", "freeze", "user1", "user2", "comm", "compressed-x", "orire-fit", "qmmm",
+};
+
+const char* md_group_role_mdp_option(md_group_role_t role) {
+    return (uint32_t)role < MD_GROUP_ROLE_COUNT ? group_role_mdp[role] : NULL;
+}
+
+const char* md_group_role_name(md_group_role_t role) {
+    return (uint32_t)role < MD_GROUP_ROLE_COUNT ? group_role_names[role] : NULL;
+}
+
+void md_system_groups_free(md_system_t* sys) {
+    MD_ASSERT(sys);
+    md_allocator_i* alloc = sys->alloc;
+    md_group_data_t* g = &sys->group;
+    for (size_t i = 0; i < g->count; ++i) {
+        if (!md_str_empty(g->name[i])) md_str_free(g->name[i], alloc);
+        md_bitset_free(&g->atoms[i], alloc);
+    }
+    md_array_free(g->name, alloc);
+    md_array_free(g->atoms, alloc);
+    md_array_free(g->roles, alloc);
+    md_array_free(g->role_group, alloc);
+    md_memset(g, 0, sizeof(md_group_data_t));
+}
+
+static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_allocator_i* alloc) {
+    md_memset(dst, 0, sizeof(md_group_data_t));
+    if (!src->count) return;
+    dst->count = src->count;
+    md_array_resize(dst->name, src->count, alloc);
+    md_array_resize(dst->atoms, src->count, alloc);
+    md_array_push_array(dst->roles, src->roles, src->count, alloc);
+    for (size_t i = 0; i < src->count; ++i) {
+        dst->name[i]  = md_str_empty(src->name[i]) ? (md_str_t){0} : md_str_copy(src->name[i], alloc);
+        dst->atoms[i] = md_bitset_copy(src->atoms[i], alloc);
+    }
+    md_memcpy(dst->role_offset, src->role_offset, sizeof(dst->role_offset));
+    if (md_array_size(src->role_group)) md_array_push_array(dst->role_group, src->role_group, md_array_size(src->role_group), alloc);
+}
+
+size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, uint32_t roles) {
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
+    md_group_data_t* g = &sys->group;
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    const uint32_t N = (uint32_t)sys->atom.count;
+    if (md_bitset_last_end(atoms) > N) {
+        atoms = md_bitset_and(atoms, md_bitset_range(0, N), md_temp_allocator(temp));
+    }
+    size_t idx = g->count;
+    for (size_t i = 0; i < g->count; ++i) {
+        if (md_str_eq(g->name[i], name) && md_bitset_equal(g->atoms[i], atoms)) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == g->count) {
+        md_array_push(g->name, md_str_empty(name) ? (md_str_t){0} : md_str_copy(name, sys->alloc), sys->alloc);
+        md_array_push(g->atoms, md_bitset_copy(atoms, sys->alloc), sys->alloc);
+        md_array_push(g->roles, 0, sys->alloc);
+        g->count += 1;
+    }
+    g->roles[idx] |= roles;
+    md_temp_end(temp);
+    md_system_topology_changed(sys);
+    return idx;
+}
+
+void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint32_t* group_idx, size_t count) {
+    MD_ASSERT(sys);
+    if ((uint32_t)role >= MD_GROUP_ROLE_COUNT) return;
+    md_group_data_t* g = &sys->group;
+    const uint32_t beg = g->role_offset[role];
+    const uint32_t end = g->role_offset[role + 1];
+    // The role's previous groups lose it, unless named again below
+    for (uint32_t i = beg; i < end; ++i) g->roles[g->role_group[i]] &= ~(1u << role);
+    uint32_t n = 0;
+    for (size_t i = 0; i < count; ++i) n += group_idx[i] < g->count;
+    // Make room for the new list in place of the old one, the roles after it moved along
+    const size_t total = md_array_size(g->role_group);
+    const size_t new_total = total - (end - beg) + n;
+    if (new_total > total) md_array_resize(g->role_group, new_total, sys->alloc);
+    md_memmove(g->role_group + beg + n, g->role_group + end, (total - end) * sizeof(uint32_t));
+    md_array_shrink(g->role_group, new_total);
+    uint32_t k = beg;
+    for (size_t i = 0; i < count; ++i) {
+        if (group_idx[i] >= g->count) continue;
+        g->role_group[k++] = group_idx[i];
+        g->roles[group_idx[i]] |= 1u << role;
+    }
+    for (uint32_t r = role + 1; r <= MD_GROUP_ROLE_COUNT; ++r) {
+        g->role_offset[r] = (uint32_t)(g->role_offset[r] - (end - beg) + n);
+    }
+    md_system_topology_changed(sys);
+}
+
 static int compare_u64(const void* a, const void* b) {
     const uint64_t x = *(const uint64_t*)a;
     const uint64_t y = *(const uint64_t*)b;
@@ -498,6 +601,9 @@ void md_system_free(md_system_t* sys) {
     // ASSEMBLY
     md_system_assemblies_free(sys);
 
+    // GROUPS
+    md_system_groups_free(sys);
+
     if (!md_str_empty(sys->description)) {
         md_str_free(sys->description, alloc);
     }
@@ -647,6 +753,9 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     MD_SYSTEM_DERIVED_STRINGS(COPY_STRINGS)
 #undef COPY_FIELD
 #undef COPY_STRINGS
+
+    // GROUPS, each set with words of its own
+    groups_copy(&dst->group, &src->group, alloc);
 
     // REFERENCE STATE
     md_memset(&dst->reference, 0, sizeof(dst->reference));

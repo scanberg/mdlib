@@ -26,6 +26,7 @@ typedef struct md_system_state_t md_system_state_t;
 //   - the Lennard-Jones parameters of every pair of non-bonded types
 //   - how mdrun computes the non-bonded interactions: potentials, modifiers and cut-offs
 //   - the box, the coordinates and (when present) the velocities
+//   - the atom groups the simulation used: temperature coupling, energy output, freeze, compressed output, ...
 // Other force field parameters (bonded ones, 1-4 pairs) and the rest of the simulation parameters
 // are skipped.
 //
@@ -189,6 +190,30 @@ typedef struct md_tpr_lj_t {
     float c12;
 } md_tpr_lj_t;
 
+// The kinds of atom groups a tpr keeps, GROMACS' SimulationAtomGroupType: what the simulation used them for, each named
+// by an mdp option. Stored in this order whatever the version of the file.
+typedef enum md_tpr_group_type_t {
+    MD_TPR_GROUP_TC = 0,            // tc-grps
+    MD_TPR_GROUP_ENERGY,            // energygrps
+    MD_TPR_GROUP_ACC,               // acc-grps
+    MD_TPR_GROUP_FREEZE,            // freezegrps
+    MD_TPR_GROUP_USER1,             // user1-grps
+    MD_TPR_GROUP_USER2,             // user2-grps
+    MD_TPR_GROUP_COMM,              // comm-grps
+    MD_TPR_GROUP_COMPRESSED_X,      // compressed-x-grps
+    MD_TPR_GROUP_ORIRE_FIT,         // orire-fitgrp
+    MD_TPR_GROUP_QMMM,              // qmmm-grps
+    MD_TPR_GROUP_TYPE_COUNT,
+} md_tpr_group_type_t;
+
+// The groups of one type: a partition of the atoms, in the order of the mdp option. grompp puts the atoms the option
+// leaves out in a group of their own, named 'rest', which is last; an option not given at all is that group alone.
+typedef struct md_tpr_groups_t {
+    size_t   count;
+    int32_t* name_idx;              // [count] Index into md_tpr_data_t::group_names
+    uint8_t* atom_group;            // [num_atoms] The group (0 .. count - 1) of each atom; NULL: every atom is in group 0
+} md_tpr_groups_t;
+
 // nmol consecutive molecules of type moltype
 typedef struct md_tpr_molblock_t {
     int32_t moltype;
@@ -226,6 +251,13 @@ typedef struct md_tpr_data_t {
     md_atom_pair_t* intermolecular_bonds;
     size_t num_intermolecular_elastic_bonds;
     md_atom_pair_t* intermolecular_elastic_bonds;
+
+    // The atom groups of the simulation: the index groups the mdp options named, by type. Their names are one list,
+    // which the types index: a name in two types is one index group of the index file grompp was given ('rest' aside,
+    // which is what each type left over).
+    size_t num_group_names;
+    md_str_t* group_names;
+    md_tpr_groups_t groups[MD_TPR_GROUP_TYPE_COUNT];
 
     size_t num_atoms;
     bool   has_box;
@@ -281,6 +313,10 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // instance of it (md_instance_data_t), one molecule whatever its bonds. The residues are classified
 // (md_util_system_infer_residue_flags); what the parts of the molecules are is inferred from them
 // (md_util_system_infer_parts). A topology names no chains: the instances have no ids.
+//
+// The atom groups the simulation used are groups of the system (md_group_data_t) with their roles: those of every type
+// the mdp named groups for, each type's 'rest' included. A type it named none for (one group 'rest' of every atom) adds
+// none.
 //
 // Published attributes: 'atom/charge' (e) and, when present, 'atom/velocity' (nm/ps).
 // The non-bonded force field is kept as sys->nonbonded (md_nonbonded.h) when its interactions can be evaluated pair

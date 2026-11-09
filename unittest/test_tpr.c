@@ -695,3 +695,109 @@ UTEST(tpr, elastic_bonds) {
 
     md_arena_allocator_destroy(arena);
 }
+
+// energygrps = CHN SOL (nb_*.mdp, nb_index.ndx): atoms 1-15 and 16-19, every atom in one of them, so no 'rest'
+UTEST(tpr, groups) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_tpr_data_t data = {0};
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), arena));
+
+    const md_tpr_groups_t* ener = &data.groups[MD_TPR_GROUP_ENERGY];
+    ASSERT_EQ(2u, ener->count);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("CHN"), data.group_names[ener->name_idx[0]]));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("SOL"), data.group_names[ener->name_idx[1]]));
+    ASSERT_TRUE(ener->atom_group != NULL);
+    for (size_t i = 0; i < 19; ++i) EXPECT_EQ(i < 15 ? 0 : 1, ener->atom_group[i]);
+    // No tc-grps: one group of every atom, the type's 'rest'
+    const md_tpr_groups_t* tc = &data.groups[MD_TPR_GROUP_TC];
+    ASSERT_EQ(1u, tc->count);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("rest"), data.group_names[tc->name_idx[0]]));
+
+    md_system_t sys = { .alloc = arena };
+    md_system_state_t state = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &state, &data));
+    const md_group_data_t* g = &sys.group;
+    // Only the energy groups: the types not named in the mdp add none
+    ASSERT_EQ(2u, g->count);
+    const md_urange_t r = md_system_group_role_range(g, MD_GROUP_ROLE_ENERGY);
+    ASSERT_EQ(2u, r.end - r.beg);
+    const uint32_t chn = g->role_group[r.beg], sol = g->role_group[r.beg + 1];
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("CHN"), g->name[chn]));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("SOL"), g->name[sol]));
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(0, 15),  g->atoms[chn]));
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(15, 19), g->atoms[sol]));
+    EXPECT_TRUE(md_bitset_is_run(g->atoms[chn]));      // Contiguous: no words
+    EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, g->roles[chn]);
+    for (int role = 0; role < MD_GROUP_ROLE_COUNT; ++role) {
+        if (role == MD_GROUP_ROLE_ENERGY) continue;
+        const md_urange_t rr = md_system_group_role_range(g, (md_group_role_t)role);
+        EXPECT_EQ(rr.beg, rr.end);
+    }
+
+    // A copy has groups of its own
+    md_system_t copy = { .alloc = md_get_heap_allocator() };
+    ASSERT_TRUE(md_system_copy(&copy, &sys));
+    ASSERT_EQ(2u, copy.group.count);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("SOL"), copy.group.name[sol]));
+    EXPECT_NE(copy.group.name[sol].ptr, g->name[sol].ptr);
+    EXPECT_TRUE(md_bitset_equal(g->atoms[sol], copy.group.atoms[sol]));
+    EXPECT_EQ(2u, md_system_group_role_range(&copy.group, MD_GROUP_ROLE_ENERGY).end - md_system_group_role_range(&copy.group, MD_GROUP_ROLE_ENERGY).beg);
+    md_system_free(&copy);
+
+    md_tpr_data_free(&data, arena);
+    md_arena_allocator_destroy(arena);
+}
+
+// Groups as GROMACS' roles have them: a partition per role in order, one group whatever its roles
+UTEST(system, groups_roles) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 200;
+
+    // Overlapping, and not contiguous
+    uint32_t odd[100];
+    for (uint32_t i = 0; i < 100; ++i) odd[i] = 2 * i + 1;
+    md_bitset_t odd_set = md_bitset_from_indices(odd, 100, alloc);
+
+    const size_t a = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), 0);
+    const size_t b = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200), 0);
+    const size_t c = md_system_group_add(&sys, MD_STR_LIT("Odd"), odd_set, 0);
+    const size_t a2 = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), 0);
+    const size_t d = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(0, 10), 0);     // Same name, other atoms
+    const size_t e = md_system_group_add(&sys, MD_STR_LIT("Far"), md_bitset_range(190, 400), 0);    // Cut to the atoms
+    EXPECT_EQ(a, a2);
+    EXPECT_NE(b, d);
+    EXPECT_EQ(5u, sys.group.count);
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(190, 200), sys.group.atoms[e]));
+    EXPECT_EQ(100u, md_bitset_count(sys.group.atoms[c]));
+
+    const uint32_t tc[] = { (uint32_t)a, (uint32_t)b };
+    const uint32_t en[] = { (uint32_t)c, (uint32_t)a, (uint32_t)d };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, en, 3);
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc, 2);
+    md_urange_t r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_TC);
+    ASSERT_EQ(2u, r.end - r.beg);
+    EXPECT_EQ(a, sys.group.role_group[r.beg]);
+    EXPECT_EQ(b, sys.group.role_group[r.beg + 1]);
+    r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
+    ASSERT_EQ(3u, r.end - r.beg);
+    EXPECT_EQ(c, sys.group.role_group[r.beg]);
+    EXPECT_EQ(d, sys.group.role_group[r.beg + 2]);
+    EXPECT_EQ((1u << MD_GROUP_ROLE_TC) | (1u << MD_GROUP_ROLE_ENERGY), sys.group.roles[a]);
+
+    // Replacing a role's groups: the others lose it, the roles after it keep theirs
+    const uint32_t tc2[] = { (uint32_t)e };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc2, 1);
+    EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, sys.group.roles[a]);
+    EXPECT_EQ(0u, sys.group.roles[b]);
+    r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
+    ASSERT_EQ(3u, r.end - r.beg);
+    EXPECT_EQ(c, sys.group.role_group[r.beg]);
+    EXPECT_EQ(a, sys.group.role_group[r.beg + 1]);
+    EXPECT_STREQ("energygrps", md_group_role_mdp_option(MD_GROUP_ROLE_ENERGY));
+    EXPECT_STREQ("energy", md_group_role_name(MD_GROUP_ROLE_ENERGY));
+
+    md_bitset_free(&odd_set, alloc);
+    sys.atom.count = 0;
+    md_system_free(&sys);
+}

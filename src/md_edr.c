@@ -1120,3 +1120,70 @@ bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, md_
 	}
 	return result;
 }
+
+// ### THE GROUPS OF A TERM ###
+
+#define EDR_NO_GROUP UINT32_MAX
+
+// The group named name: of the role's (*pos its place in the role's order), else any of the name (*pos EDR_NO_GROUP)
+static uint32_t edr_find_group(uint32_t* pos, const md_group_data_t* g, md_group_role_t role, md_str_t name) {
+    const md_urange_t r = md_system_group_role_range(g, role);
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        if (md_str_eq(g->name[g->role_group[i]], name)) {
+            *pos = i - r.beg;
+            return g->role_group[i];
+        }
+    }
+    *pos = EDR_NO_GROUP;
+    for (size_t i = 0; i < g->count; ++i) {
+        if (md_str_eq(g->name[i], name)) return (uint32_t)i;
+    }
+    return EDR_NO_GROUP;
+}
+
+bool md_edr_term_groups(md_edr_term_groups_t* out, const md_system_t* sys, md_str_t term) {
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
+    const md_group_data_t* g = &sys->group;
+    if (!g->count || md_str_empty(term)) return false;
+
+    size_t colon;
+    if (md_str_find_char(&colon, term, ':')) {
+        if (colon == 0) return false;
+        const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+        bool found = false;
+        md_edr_term_groups_t fallback = {0};
+        for (size_t p = 1; p + 1 < pair.len; ++p) {
+            if (pair.ptr[p] != '-') continue;
+            uint32_t pa, pb;
+            const uint32_t a = edr_find_group(&pa, g, MD_GROUP_ROLE_ENERGY, md_str_substr(pair, 0, p));
+            if (a == EDR_NO_GROUP) continue;
+            const uint32_t b = edr_find_group(&pb, g, MD_GROUP_ROLE_ENERGY, md_str_substr(pair, p + 1, SIZE_MAX));
+            if (b == EDR_NO_GROUP) continue;
+            const md_edr_term_groups_t res = { .role = MD_GROUP_ROLE_ENERGY, .count = 2, .group = { a, b } };
+            if (pa != EDR_NO_GROUP && pb != EDR_NO_GROUP && pa <= pb) {
+                *out = res;
+                return true;
+            }
+            if (!found) {
+                fallback = res;
+                found = true;
+            }
+        }
+        if (found) *out = fallback;
+        return found;
+    }
+
+    md_str_t name = {0};
+    if (md_str_begins_with(term, MD_STR_LIT("T-"))) {
+        name = md_str_substr(term, 2, SIZE_MAX);
+    } else if (md_str_begins_with(term, MD_STR_LIT("Lamb-"))) {
+        name = md_str_substr(term, 5, SIZE_MAX);
+    }
+    if (md_str_empty(name)) return false;
+    uint32_t pos;
+    const uint32_t idx = edr_find_group(&pos, g, MD_GROUP_ROLE_TC, name);
+    if (idx == EDR_NO_GROUP) return false;
+    *out = (md_edr_term_groups_t){ .role = MD_GROUP_ROLE_TC, .count = 1, .group = { idx, idx } };
+    return true;
+}
