@@ -43,7 +43,7 @@ bool md_ndx_data_parse_file(md_ndx_data_t* data, md_str_t filename, struct md_al
 void md_ndx_data_free(md_ndx_data_t* data, struct md_allocator_i* alloc);
 
 // Adds the groups of the index file to the system (md_system_group_add), without roles: an index file says what groups
-// are, not what a simulation used them for. Two groups of the same name and atoms are one; a group already in the
+// are, not what a simulation used them for. The energy file of the run tells that (md_edr_system_infer_group_roles). Two groups of the same name and atoms are one; a group already in the
 // system (from the tpr of the same run) gains nothing. False, and nothing added, when the file names an atom the system
 // does not have: it is of another system.
 bool md_ndx_system_supplement(struct md_system_t* sys, const md_ndx_data_t* data);

@@ -81,6 +81,23 @@ typedef struct md_edr_term_groups_t {
 
 bool md_edr_term_groups(md_edr_term_groups_t* out, const struct md_system_t* sys, md_str_t term);
 
+// THE ROLES OF THE GROUPS, FROM THE TERMS. A tpr says which groups were the energy groups and which the T-coupling groups
+// (md_group_data_t); an index file only what groups there are. Of a system without the role, an energy file tells it by
+// its terms: every pair of energy groups has its terms, each group with itself too (Coul-SR:SOL-SOL), in the order of
+// energygrps, so those of a group with itself give the names in order, whatever '-' they hold. The T-coupling groups
+// likewise, from T-<name>. Each name is found among the groups of the system (the first of the name, as grompp takes
+// it, else the first of the name in another case), and 'rest', the role's own, is the atoms in none of the others.
+//
+// A role is set only where every name is found and the groups found do not overlap: a role is a partition, which grompp
+// makes sure of, so overlapping groups are of another index file than the one grompp was given, and nothing is set
+// rather than something wrong. A role the system has (from a tpr) is left as it is. Returns the number of roles set.
+// term_names are the names of the terms as the file has them (md_edr_energy_t::name, or an attribute's label).
+size_t md_edr_system_infer_group_roles(struct md_system_t* sys, const md_str_t* term_names, size_t count);
+
+// The same from the terms published for a run ("<run>/edr", their labels): for a system an index file was added to
+// after its energy file. md_edr_system_supplement does it itself.
+size_t md_edr_system_infer_group_roles_of_run(struct md_system_t* sys, md_str_t run);
+
 #if 0
 // Represents the string block inside the edr file which gives us the names and units (encoded as text)
 // of all energy fields present in the file.

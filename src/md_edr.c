@@ -1080,6 +1080,13 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 	}
 
 	result = true;
+	{
+		// What the groups of an index file were used for, where no tpr said
+		md_array(md_str_t) names = 0;
+		for (size_t i = 0; i < energies->num_energies; ++i) md_array_push(names, energies->energy[i].name, md_get_heap_allocator());
+		md_edr_system_infer_group_roles(sys, names, md_array_size(names));
+		md_array_free(names, md_get_heap_allocator());
+	}
 	goto done;
 
 fail:
@@ -1186,4 +1193,115 @@ bool md_edr_term_groups(md_edr_term_groups_t* out, const md_system_t* sys, md_st
     if (idx == EDR_NO_GROUP) return false;
     *out = (md_edr_term_groups_t){ .role = MD_GROUP_ROLE_TC, .count = 1, .group = { idx, idx } };
     return true;
+}
+
+// ### THE ROLES OF THE GROUPS, FROM THE TERMS ###
+
+#define EDR_MAX_ROLE_GROUPS 256
+
+// The first group of the name; else the first of the name in another case
+static uint32_t edr_group_by_name(const md_group_data_t* g, md_str_t name) {
+    for (size_t i = 0; i < g->count; ++i) if (md_str_eq(g->name[i], name)) return (uint32_t)i;
+    for (size_t i = 0; i < g->count; ++i) if (md_str_eq_ignore_case(g->name[i], name)) return (uint32_t)i;
+    return EDR_NO_GROUP;
+}
+
+static bool edr_names_add(md_str_t* names, size_t* n, md_str_t name) {
+    for (size_t i = 0; i < *n; ++i) if (md_str_eq(names[i], name)) return true;
+    if (*n == EDR_MAX_ROLE_GROUPS) return false;
+    names[(*n)++] = name;
+    return true;
+}
+
+// Sets the role from its names in order: false, and nothing set, where a name is not found or the groups overlap
+static bool edr_infer_role(md_system_t* sys, md_group_role_t role, const md_str_t* names, size_t n) {
+    const md_group_data_t* g = &sys->group;
+    const uint32_t N = (uint32_t)sys->atom.count;
+    const char* what = role == MD_GROUP_ROLE_ENERGY ? "energy" : "T-coupling";
+    uint32_t idx[EDR_MAX_ROLE_GROUPS];
+    size_t rest = SIZE_MAX;
+    for (size_t i = 0; i < n; ++i) {
+        if (md_str_eq(names[i], MD_STR_LIT("rest"))) { rest = i; continue; }
+        idx[i] = edr_group_by_name(g, names[i]);
+        if (idx[i] == EDR_NO_GROUP) {
+            MD_LOG_INFO("EDR: the %s group '" MD_STR_FMT "' of the energy file is no group of the system; load the index file the run was made with", what, MD_STR_ARG(names[i]));
+            return false;
+        }
+    }
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_bitset_t all = md_bitset_empty_set();
+    uint64_t total = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (i == rest) continue;
+        md_bitset_t a = md_bitset_and(g->atoms[idx[i]], md_bitset_range(0, N), heap);
+        total += md_bitset_count(a);
+        md_bitset_t u = md_bitset_or(all, a, heap);
+        md_bitset_free(&all, heap);
+        md_bitset_free(&a, heap);
+        all = u;
+    }
+    bool ok = total == md_bitset_count(all);
+    if (!ok) {
+        MD_LOG_ERROR("EDR: the groups of the system named as the %s groups of the energy file overlap, which those of a run never do: the index file is not the one the run was made with, and they are left without the role", what);
+    }
+    if (ok && rest != SIZE_MAX) {
+        md_bitset_t r = md_bitset_not(all, 0, N, heap);
+        if (md_bitset_empty(r)) {
+            MD_LOG_ERROR("EDR: the energy file has %s terms of 'rest', and the other %s groups hold every atom: the index file is not the one the run was made with", what, what);
+            ok = false;
+        } else {
+            idx[rest] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), r, 0);
+        }
+        md_bitset_free(&r, heap);
+    }
+    md_bitset_free(&all, heap);
+    if (!ok) return false;
+    md_system_group_set_role(sys, role, idx, n);
+    MD_LOG_INFO("EDR: %zu %s groups of the system, as the energy file names them", n, what);
+    return true;
+}
+
+size_t md_edr_system_infer_group_roles(md_system_t* sys, const md_str_t* term_names, size_t count) {
+    MD_ASSERT(sys);
+    if (!sys->group.count || !term_names) return 0;
+    md_str_t energy[EDR_MAX_ROLE_GROUPS], tc[EDR_MAX_ROLE_GROUPS];
+    size_t num_energy = 0, num_tc = 0;
+    bool fits = true;
+    for (size_t i = 0; i < count && fits; ++i) {
+        const md_str_t term = term_names[i];
+        size_t colon;
+        if (md_str_find_char(&colon, term, ':')) {
+            // A group with itself: <a>-<a>, so the dash is in the middle
+            const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+            if (pair.len < 3 || pair.len % 2 == 0 || pair.ptr[pair.len / 2] != '-') continue;
+            const md_str_t a = md_str_substr(pair, 0, pair.len / 2), b = md_str_substr(pair, pair.len / 2 + 1, SIZE_MAX);
+            if (md_str_eq(a, b)) fits = edr_names_add(energy, &num_energy, a);
+        } else if (md_str_begins_with(term, MD_STR_LIT("T-")) && term.len > 2) {
+            fits = edr_names_add(tc, &num_tc, md_str_substr(term, 2, SIZE_MAX));
+        }
+    }
+    if (!fits) return 0;
+    size_t num_set = 0;
+    const md_urange_t er = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_ENERGY);
+    if (num_energy > 1 && er.beg == er.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_ENERGY, energy, num_energy);
+    const md_urange_t tr = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_TC);
+    if (num_tc > 1 && tr.beg == tr.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_TC, tc, num_tc);
+    return num_set;
+}
+
+size_t md_edr_system_infer_group_roles_of_run(md_system_t* sys, md_str_t run) {
+    MD_ASSERT(sys);
+    if (!sys->group.count || md_str_empty(run)) return 0;
+    char buf[512];
+    const md_str_t group = edr_join(buf, sizeof(buf), run, "edr", 3);
+    if (md_str_empty(group)) return 0;
+    md_array(md_str_t) names = 0;
+    md_allocator_i* heap = md_get_heap_allocator();
+    for (md_attribute_iter_t it = md_attributes_iter(&sys->attributes, group); md_attributes_next(&it);) {
+        if (!md_str_empty(it.attr->label)) md_array_push(names, it.attr->label, heap);
+    }
+    const size_t result = md_edr_system_infer_group_roles(sys, names, md_array_size(names));
+    md_array_free(names, heap);
+    return result;
 }
