@@ -136,6 +136,12 @@ md_gl_mol_t md_gl_mol_create(const struct md_system_t* mol);
 // (md_gl_mol_set_tubes, MD_GL_REP_TUBES). Positions and radii start at 0.
 md_gl_mol_t md_gl_mol_create_particles(uint32_t count);
 void md_gl_mol_destroy(md_gl_mol_t handle);
+// The molecule made again of the system (as md_gl_mol_create does), keeping its handle: for a system whose bonds,
+// backbone or chains changed (they were inferred after it was made) but whose atoms did not. The representations and
+// subsets made of it, and the molecules derived from it (md_gl_mol_set_derived), stay valid: what holds one need not
+// know. The positions, velocities, flags and secondary structure set before are not kept: set them again. Fails, and
+// leaves the molecule as it was, when the atom count changed.
+bool md_gl_mol_rebuild(md_gl_mol_t handle, const struct md_system_t* sys);
 
 // ### DERIVED PARTICLES ###
 // The particles of a molecule (md_gl_mol_create_particles) derived on the GPU from the atoms of another molecule, their
