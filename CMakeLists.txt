@@ -196,6 +196,8 @@ set(SRC_FILES
   src/md_pdb.c
   src/md_pdb.h
   src/md_qm.c
+  src/md_qm_ct.c
+  src/md_qm_ct.h
   src/md_qm.h
   src/md_pot.c
   src/md_pot.h
