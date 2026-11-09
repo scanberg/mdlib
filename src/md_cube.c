@@ -55,7 +55,7 @@ bool md_cube_valid(const md_cube_t* cube) {
 }
 
 static bool open_file(md_file_t* file, str_t path) {
-	ASSERT(file);
+	MD_ASSERT(file);
 
 	if (str_empty(path)) {
 		MD_LOG_ERROR("CUBE: Path was empty");
@@ -79,7 +79,7 @@ str_t tidy_comment(str_t comment) {
 }
 
 bool md_cube_write(md_writer_i* w, const md_cube_t* cube) {
-    ASSERT(w);
+    MD_ASSERT(w);
 	if (!md_cube_valid(cube)) {
 		MD_LOG_ERROR("CUBE: cube-object was invalid");
 		return false;
@@ -122,7 +122,7 @@ bool md_cube_write(md_writer_i* w, const md_cube_t* cube) {
 }
 
 str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
 	md_str_writer_t sw = md_str_writer_create(alloc);
 	if (!md_cube_write(&sw.w, cube)) {
 		md_str_writer_free(&sw);
@@ -136,8 +136,8 @@ static inline bool str_extract_v3(md_cube_v3 v, str_t* str) {
 }
 
 bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* alloc) {
-	ASSERT(cube);
-	ASSERT(alloc);
+	MD_ASSERT(cube);
+	MD_ASSERT(alloc);
 
 	str_t title, comment;
     if (!(str_extract_line(&title,	 &str) &&
@@ -307,8 +307,8 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 }
 
 void md_cube_free(md_cube_t* cube, md_allocator_i* alloc) {
-	ASSERT(cube);
-	ASSERT(alloc);
+	MD_ASSERT(cube);
+	MD_ASSERT(alloc);
 	if (cube->data.val)		md_array_free(cube->data.val,	 alloc);
 	if (cube->data.id)		md_array_free(cube->data.id,	 alloc);
 	if (cube->atom.coord)	md_array_free(cube->atom.coord,	 alloc); 

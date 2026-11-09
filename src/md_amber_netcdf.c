@@ -173,7 +173,7 @@ typedef enum cdf_parse_result_t {
 } cdf_parse_result_t;
 
 static cdf_parse_result_t cdf_parse_buffer(cdf_t* cdf, const uint8_t* data, size_t size, md_allocator_i* alloc) {
-    MEMSET(cdf, 0, sizeof(*cdf));
+    MD_MEMSET(cdf, 0, sizeof(*cdf));
     if (size >= 8 && memcmp(data, "\211HDF\r\n\032\n", 8) == 0) return CDF_PARSE_HDF5;
     if (size < 4 || data[0] != 'C' || data[1] != 'D' || data[2] != 'F') return CDF_PARSE_NOT_CDF;
     const uint32_t version = data[3];
@@ -221,7 +221,7 @@ static cdf_parse_result_t cdf_parse_buffer(cdf_t* cdf, const uint8_t* data, size
     const cdf_var_t* first_record_var = NULL;
     for (uint64_t i = 0; i < num_var; ++i) {
         cdf_var_t* v = &cdf->var[i];
-        MEMSET(v, 0, sizeof(*v));
+        MD_MEMSET(v, 0, sizeof(*v));
         v->name = cdf_read_name(&c);
         const uint64_t rank = cdf_read_count(&c);
         if (!md_xdr_ok(&c.xdr)) goto fail;
@@ -283,7 +283,7 @@ static cdf_parse_result_t cdf_open(cdf_t* cdf, md_file_t* out_file, str_t path, 
     size_t block = 64 * 1024;
     cdf_parse_result_t result = CDF_PARSE_INVALID;
     for (;;) {
-        const size_t want = (size_t)MIN((uint64_t)block, file_size);
+        const size_t want = (size_t)MD_MIN((uint64_t)block, file_size);
         uint8_t* buf = md_alloc(alloc, want + 1);
         const size_t got = md_file_read_at(file, 0, buf, want);
         result = cdf_parse_buffer(cdf, buf, got, alloc);
@@ -400,7 +400,7 @@ typedef struct amber_layout_t {
 // the section absent when the variable is not there; false and logged when it is there but not as the
 // convention has it.
 static bool amber_section(amber_section_t* out, const cdf_t* cdf, const char* name, bool restart, int frame_dim, const int inner[], size_t num_inner, str_t path) {
-    MEMSET(out, 0, sizeof(*out));
+    MD_MEMSET(out, 0, sizeof(*out));
     const cdf_var_t* v = cdf_find_var(cdf, name);
     if (!v) return true;
 
@@ -451,7 +451,7 @@ static uint64_t amber_section_frames(const amber_section_t* s, uint64_t file_siz
 }
 
 static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, str_t path) {
-    MEMSET(out, 0, sizeof(*out));
+    MD_MEMSET(out, 0, sizeof(*out));
     out->kind = amber_kind(cdf);
     if (out->kind == MD_AMBER_NETCDF_NONE) {
         MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is NetCDF but does not follow the Amber convention (no Conventions \"AMBER\" or \"AMBERRESTART\")", STR_ARG(path));
@@ -514,8 +514,8 @@ static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, str_t path) {
     }
     const amber_section_t* sections[] = { &out->coordinates, &out->velocities, &out->forces, &out->time, &out->cell_lengths, &out->cell_angles, &out->temp0, &out->repidx, &out->crdidx };
     uint64_t complete = UINT64_MAX;
-    for (size_t i = 0; i < ARRAY_SIZE(sections); ++i) {
-        complete = MIN(complete, amber_section_frames(sections[i], cdf->file_size));
+    for (size_t i = 0; i < MD_COUNTOF(sections); ++i) {
+        complete = MD_MIN(complete, amber_section_frames(sections[i], cdf->file_size));
     }
     if (complete < frames) {
         if (frames != UINT64_MAX) {
@@ -549,7 +549,7 @@ static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_
     }
     if (quiet) {
         // The kind alone, without validating the rest
-        MEMSET(layout, 0, sizeof(*layout));
+        MD_MEMSET(layout, 0, sizeof(*layout));
         layout->kind = amber_kind(&cdf);
         const int atom = cdf_find_dim(&cdf, "atom");
         layout->num_atoms = atom >= 0 ? (size_t)cdf.dim[atom].len : 0;
@@ -580,7 +580,7 @@ md_amber_netcdf_kind_t md_amber_netcdf_file_kind(str_t filename) {
         return kind == MD_AMBER_NETCDF_HDF5 ? MD_AMBER_NETCDF_NONE : kind;     // HDF5 of something else
     }
 #endif
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
     amber_layout_t layout;
     const md_amber_netcdf_kind_t kind = amber_open(&layout, NULL, filename, arena, true);
     md_arena_allocator_destroy(arena);
@@ -595,7 +595,7 @@ size_t md_amber_netcdf_file_atom_count(str_t filename) {
         return n;
     }
 #endif
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
     amber_layout_t layout;
     const md_amber_netcdf_kind_t kind = amber_open(&layout, NULL, filename, arena, true);
     md_arena_allocator_destroy(arena);
@@ -631,7 +631,7 @@ static void amber_convert_f32(float* out, const uint8_t* raw, uint32_t type, siz
     case CDF_DOUBLE: for (size_t i = 0; i < count; ++i) out[i] = (float)(md_xdr_load_f64(raw + i * 8) * scale); break;
     case CDF_INT:    for (size_t i = 0; i < count; ++i) out[i] = (float)((double)md_xdr_load_i32(raw + i * 4) * scale); break;
     case CDF_SHORT:  for (size_t i = 0; i < count; ++i) out[i] = (float)((double)(int16_t)((raw[i * 2] << 8) | raw[i * 2 + 1]) * scale); break;
-    default:         MEMSET(out, 0, count * sizeof(float)); break;
+    default:         MD_MEMSET(out, 0, count * sizeof(float)); break;
     }
 }
 
@@ -673,7 +673,7 @@ static md_unitcell_t amber_cell(const double lengths[3], const double* angles) {
 // ## INITIAL STATE
 
 bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, str_t filename, size_t num_atoms) {
-    ASSERT(state);
+    MD_ASSERT(state);
     if (!state->alloc) {
         MD_LOG_ERROR("Amber NetCDF: the state has no allocator");
         return false;
@@ -681,7 +681,7 @@ bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, str_t filena
 #if MD_HDF5
     if (amber_is_hdf5(filename)) return md_amber_nc4_state_init_from_file(state, filename, num_atoms);
 #endif
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
     md_file_t file = {0};
     amber_layout_t layout;
@@ -740,13 +740,13 @@ enum { AMBER_LAYOUT_STRIDE = 4 };
 // <run>/atom/{position,velocity,force}: frame f of the section is at begin + f * stride
 static size_t amber_section_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attributes_t* attributes = &sys->attributes;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     int kind = -1;
     md_run_source_t src = {0};
-    for (int i = 0; i < (int)ARRAY_SIZE(amber_run_sections); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(amber_run_sections); ++i) {
         if (md_run_source(&src, attributes, attr, str_from_cstr(amber_run_sections[i].leaf))) {
             kind = i;
             break;
@@ -757,8 +757,8 @@ static size_t amber_section_provider(void* dst, size_t cap, const md_attribute_t
     const md_attribute_t* layout_attr = md_attributes_find_in(attributes, src.run, STR_LIT("source/layout"));
     const md_attribute_t* scale_attr  = md_attributes_find_in(attributes, src.run, STR_LIT("source/scale"));
     if (!layout_attr || !scale_attr || layout_attr->format.type != MD_ATTRIBUTE_TYPE_I64 || scale_attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
-        md_attribute_value_count(&layout_attr->format) != ARRAY_SIZE(amber_run_sections) * AMBER_LAYOUT_STRIDE ||
-        md_attribute_value_count(&scale_attr->format) != ARRAY_SIZE(amber_run_sections) || !layout_attr->data || !scale_attr->data) {
+        md_attribute_value_count(&layout_attr->format) != MD_COUNTOF(amber_run_sections) * AMBER_LAYOUT_STRIDE ||
+        md_attribute_value_count(&scale_attr->format) != MD_COUNTOF(amber_run_sections) || !layout_attr->data || !scale_attr->data) {
         MD_LOG_ERROR("Amber NetCDF: the run '" STR_FMT "' has lost its source attributes", STR_ARG(src.run));
         return 0;
     }
@@ -812,7 +812,7 @@ static md_unit_t amber_time_unit(str_t units, bool* known) {
 }
 
 bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 #if MD_HDF5
     if (amber_is_hdf5(filename)) return md_amber_nc4_system_publish_run(sys, filename, run, flags);
 #endif
@@ -821,7 +821,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
     const str_t path = {path_buf, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
     md_file_t file = {0};
     amber_layout_t layout;
@@ -874,7 +874,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
 
     // ## Cells
     float* boxes = md_alloc(arena, F * 9 * sizeof(float));
-    MEMSET(boxes, 0, F * 9 * sizeof(float));
+    MD_MEMSET(boxes, 0, F * 9 * sizeof(float));
     if (layout.cell_lengths.present) {
         double* lengths = md_alloc(arena, F * 3 * sizeof(double));
         double* angles  = layout.cell_angles.present ? md_alloc(arena, F * 3 * sizeof(double)) : NULL;
@@ -913,10 +913,10 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
 
     md_attributes_t* attributes = &sys->attributes;
     char buf[512];
-    const amber_section_t* sections[ARRAY_SIZE(amber_run_sections)] = { &layout.coordinates, &layout.velocities, &layout.forces };
-    int64_t layout_values[ARRAY_SIZE(amber_run_sections) * AMBER_LAYOUT_STRIDE] = {0};
-    double scales[ARRAY_SIZE(amber_run_sections)] = {0};
-    for (size_t k = 0; k < ARRAY_SIZE(amber_run_sections); ++k) {
+    const amber_section_t* sections[MD_COUNTOF(amber_run_sections)] = { &layout.coordinates, &layout.velocities, &layout.forces };
+    int64_t layout_values[MD_COUNTOF(amber_run_sections) * AMBER_LAYOUT_STRIDE] = {0};
+    double scales[MD_COUNTOF(amber_run_sections)] = {0};
+    for (size_t k = 0; k < MD_COUNTOF(amber_run_sections); ++k) {
         const amber_section_t* s = sections[k];
         if (!s->present) continue;
         layout_values[k * AMBER_LAYOUT_STRIDE + 0] = (int64_t)s->begin;
@@ -927,13 +927,13 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
 
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/layout")),
-        .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)ARRAY_SIZE(layout_values) } },
+        .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)MD_COUNTOF(layout_values) } },
         .unit = md_unit_none(),
         .description = STR_INIT("Per section (position, velocity, force): byte offset of frame 0, bytes from frame to frame, NetCDF type, 0"),
         .data = layout_values, .byte_size = sizeof(layout_values)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/scale")),
-        .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)ARRAY_SIZE(scales) } },
+        .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)MD_COUNTOF(scales) } },
         .unit = md_unit_none(),
         .description = STR_INIT("Per section, the scale_factor its values are multiplied by"),
         .data = scales, .byte_size = sizeof(scales)});
@@ -944,7 +944,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         { 1, md_unit_div(md_unit_angstrom(), md_unit_picosecond()), STR_INIT("Velocity") },
         { 2, md_unit_div(kcal_per_mol, md_unit_angstrom()),         STR_INIT("Force") },
     };
-    for (size_t i = 0; ok && i < ARRAY_SIZE(per_atom); ++i) {
+    for (size_t i = 0; ok && i < MD_COUNTOF(per_atom); ++i) {
         const int k = per_atom[i].k;
         if (!sections[k]->present) continue;
         if (sections[k]->bytes != N * 3 * cdf_type_size(sections[k]->type)) continue;
@@ -970,7 +970,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         { &layout.repidx, "remd/repidx", STR_INIT("Replica index") },
         { &layout.crdidx, "remd/crdidx", STR_INIT("Coordinate index") },
     };
-    for (size_t i = 0; ok && i < ARRAY_SIZE(indices); ++i) {
+    for (size_t i = 0; ok && i < MD_COUNTOF(indices); ++i) {
         if (!indices[i].s->present) continue;
         double*  values = md_alloc(arena, F * sizeof(double));
         int32_t* ints   = md_alloc(arena, F * sizeof(int32_t));

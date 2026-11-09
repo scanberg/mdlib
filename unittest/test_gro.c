@@ -92,7 +92,7 @@ UTEST(gro, nonexistent_file) {
 
 // What is not a GRO file, or ends before it says it would: no system, and the state of none
 UTEST(gro, malformed) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* texts[] = {
         "",
         "title only\n",
@@ -100,7 +100,7 @@ UTEST(gro, malformed) {
         "title\n    3\n    1SOL     OW    1   0.126   1.624   1.679\n   1.0   1.0   1.0\n",
         "title\n    1\n    1SOL     OW    1   0.126   1.624   1.679\n",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(texts); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(texts); ++i) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         EXPECT_FALSE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(texts[i]), NULL));
@@ -112,7 +112,7 @@ UTEST(gro, malformed) {
 
 // A file of several frames: the first is the system
 UTEST(gro, frames) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "frame 1\n"
         "    2\n"
@@ -245,7 +245,7 @@ UTEST(gro, coordinate_columns_with_more_decimals) {
 // The reference files, every coordinate against parse_float on its token (in Angstrom, as the loader makes it), every
 // velocity against its own
 static size_t gro_test_compare_with_tokens(str_t path, const md_executor_t* ex) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     size_t mismatches = SIZE_MAX;
@@ -276,7 +276,7 @@ static size_t gro_test_compare_with_tokens(str_t path, const md_executor_t* ex) 
 UTEST(gro, coordinate_columns_match_the_tokens) {
     test_executor_t threads = test_executor_threads(3);
     const char* files[] = { MD_UNITTEST_DATA_DIR "/catalyst.gro", MD_UNITTEST_DATA_DIR "/water.gro", MD_UNITTEST_DATA_DIR "/centered.gro", MD_UNITTEST_DATA_DIR "/npt.gro" };
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(str_from_cstr(files[f]), NULL));
         EXPECT_EQ((size_t)0, gro_test_compare_with_tokens(str_from_cstr(files[f]), test_executor(&threads)));
     }
@@ -296,7 +296,7 @@ UTEST(gro, coordinate_columns_match_the_tokens) {
 
 UTEST(gro, blocks_and_pieces) {
     const size_t num_waters = 300000;   // 900000 lines of about 68 characters: two blocks
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_array(char) text = 0;
     char line[128];
     int n = snprintf(line, sizeof(line), "waters\n%5zu\n", num_waters * 3);
@@ -318,7 +318,7 @@ UTEST(gro, blocks_and_pieces) {
     n = snprintf(line, sizeof(line), "   9.97000   9.91000   9.83000\n");
     md_array_push_array(text, line, (size_t)n, alloc);
     const str_t str = { text, md_array_size(text) };
-    ASSERT_GT(str.len, (size_t)MEGABYTES(33));
+    ASSERT_GT(str.len, (size_t)MD_MEGABYTES(33));
 
     const char* path = "md_unittest_blocks.gro";
     ASSERT_TRUE(load_blocks_write(path, str));
@@ -332,7 +332,7 @@ UTEST(gro, blocks_and_pieces) {
     test_executor_t threads  = test_executor_threads(4);
     test_executor_t shuffled = test_executor_shuffled(3);
     const md_executor_t* executors[] = { NULL, test_executor(&threads), test_executor(&shuffled) };
-    for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+    for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), executors[e]));

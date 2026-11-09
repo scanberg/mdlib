@@ -22,7 +22,7 @@ mat3_svd_t mat3_svd(const mat3_t M) {
 mat3_eigen_t mat3_eigen(mat3_t M) {
     mat3_svd_t svd = mat3_svd(M);
 
-    const float max_val = MAX(svd.s.elem[0], MAX(svd.s.elem[1], svd.s.elem[2]));
+    const float max_val = MD_MAX(svd.s.elem[0], MD_MAX(svd.s.elem[1], svd.s.elem[2]));
     const float  e_val[] = {svd.s.elem[0] / max_val, svd.s.elem[1] / max_val, svd.s.elem[2] / max_val};
     const vec3_t e_vec[] = {svd.U.col[0], svd.U.col[1], svd.U.col[2]};
 
@@ -160,8 +160,8 @@ mat3_t mat3_cross_covariance_matrix(const vec3_t* const in_xyz[2], const float* 
     double w_sum = 0.0;
 
     if (in_idx) {
-        ASSERT(in_idx[0]);
-        ASSERT(in_idx[1]);
+        MD_ASSERT(in_idx[0]);
+        MD_ASSERT(in_idx[1]);
         for (size_t i = 0; i < count; i++) {
             const int32_t i0 = in_idx[0][i];
             const int32_t i1 = in_idx[1][i];
@@ -299,8 +299,8 @@ mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const i
     const vec4_t com1 = vec4_from_vec3(com[1], 0);
 
     if (in_idx) {
-        ASSERT(in_idx[0]);
-        ASSERT(in_idx[1]);
+        MD_ASSERT(in_idx[0]);
+        MD_ASSERT(in_idx[1]);
         for (size_t i = 0; i < count; ++i) {
             const int32_t i0 = in_idx[0][i];
             const int32_t i1 = in_idx[1][i];

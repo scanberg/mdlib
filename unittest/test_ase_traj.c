@@ -116,7 +116,7 @@ UTEST(ase_traj, rejects_unsupported_input) {
     const str_t invalid[] = {
         ASE_FILE("make_fixtures.py"),
     };
-    for (size_t i = 0; i < ARRAY_SIZE(invalid); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(invalid); ++i) {
         md_system_t sys = {.alloc = md_get_heap_allocator()};
         md_system_state_t state = {.alloc = md_get_heap_allocator()};
         EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, invalid[i]));

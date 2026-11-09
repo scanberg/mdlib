@@ -160,7 +160,7 @@ static bool xyz_extended_columns(uint32_t* flags, str_t comment) {
 static bool xyz_parse_fortran_f64(double* out, str_t tok) {
     char buf[64];
     if (tok.len >= sizeof(buf)) return false;
-    MEMCPY(buf, tok.ptr, tok.len);
+    MD_MEMCPY(buf, tok.ptr, tok.len);
     for (size_t i = 0; i < tok.len; ++i) {
         if (buf[i] == 'D' || buf[i] == 'd') buf[i] = 'e';
     }
@@ -174,7 +174,7 @@ static bool xyz_is_float(str_t tok) {
 }
 
 static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
-    ASSERT(flags);    
+    MD_ASSERT(flags);    
 
     // Extract first three lines
     str_t lines[3];
@@ -226,7 +226,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         // Second line should then contain exactly 6 floats
         str_t token[8];
         str_t line = lines[1];
-        const int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
+        const int64_t num_tokens = extract_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens == 6 &&
             is_float(token[0]) && is_float(token[1]) && is_float(token[2]) &&
@@ -242,7 +242,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         // Tinker holds additional fields (atom index, atom name, atom type and connectivity): at least 6 fields
         str_t token[8];
         str_t line = lines[2];
-        int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
+        int64_t num_tokens = extract_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens >= 6 &&
             is_unsigned_int(token[0]) &&
@@ -294,7 +294,7 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
     str_t inner = str_substr(value, 1, value.len - 2);
 
     if ((open == '"' && close == '"') || (open == '{' && close == '}')) {
-        num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &inner);
+        num_tok = extract_tokens(tok, MD_COUNTOF(tok), &inner);
         if (extract_token(&(str_t){0}, &inner)) {
             MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
             return false;
@@ -336,7 +336,7 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
         }
         val[i] = (float)parse_float(tok[i]);
     }
-    MEMSET(cell, 0, sizeof(float) * 9);
+    MD_MEMSET(cell, 0, sizeof(float) * 9);
     if (num_tok == 3) {
         // The diagonal
         for (size_t i = 0; i < 3; ++i) cell[i][i] = val[i];
@@ -376,14 +376,14 @@ static void xyz_set_element(md_xyz_coordinate_t* coord, str_t tok, uint32_t flag
 }
 
 static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_t flags) {
-    ASSERT(coord);
+    MD_ASSERT(coord);
 
     const str_t original = line;
 
     if (flags & XYZ_TINKER) {
         // Index, name, x, y, z, then the atom type and the bonded atoms
         str_t tok[6 + 9];
-        const size_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+        const size_t num_tokens = extract_tokens(tok, MD_COUNTOF(tok), &line);
         if (num_tokens < 5) {
             MD_LOG_ERROR("Invalid number of tokens in Tinker XYZ coordinate when parsing line: '" STR_FMT "', expected >= 5, got %i", STR_ARG(original), (int)num_tokens);
             return false;
@@ -415,7 +415,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     // The columns which are read, of those there are
     const size_t elem_col = (flags & XYZ_NO_ELEMENT) ? SIZE_MAX : XYZ_ELEM_COL(flags);
     const size_t pos_col  = XYZ_POS_COL(flags);
-    const size_t need = MAX(pos_col + 3, elem_col != SIZE_MAX ? elem_col + 1 : 0);
+    const size_t need = MD_MAX(pos_col + 3, elem_col != SIZE_MAX ? elem_col + 1 : 0);
     str_t elem = {0};
     str_t pos[3];
     str_t tok;
@@ -446,9 +446,9 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
 // The header of a model: the number of atoms, and the comment and cell. Its cell as the file gives it (row i vector i),
 // zero without one.
 static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* reader, uint32_t flags, size_t* coord_count, md_allocator_i* alloc) {
-    ASSERT(model);
-    ASSERT(reader);
-    ASSERT(coord_count);
+    MD_ASSERT(model);
+    MD_ASSERT(reader);
+    MD_ASSERT(coord_count);
 
     str_t line = {0};
     str_t tokens[8];
@@ -479,7 +479,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
     if ((flags & XYZ_TINKER) && (flags & XYZ_STORE_COMMENT)) {
         const str_t comment = str_trim(rest);
         if (!str_empty(comment)) {
-            ASSERT(alloc);
+            MD_ASSERT(alloc);
             model->comment = str_copy(comment, alloc);
         }
     }
@@ -492,13 +492,13 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
         }
 
         if (!(flags & XYZ_TINKER) && (flags & XYZ_STORE_COMMENT) && !str_empty(line)) {
-            ASSERT(alloc);
+            MD_ASSERT(alloc);
             model->comment = str_copy(line, alloc);
         }
     }
 
     if (flags & XYZ_ARC) {
-        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+        const size_t num_tokens = extract_tokens(tokens, MD_COUNTOF(tokens), &line);
         
         if (num_tokens != 6) {
             MD_LOG_ERROR("Unexpected number of tokens (%zu) when parsing XYZ Arc Cell data", num_tokens);
@@ -545,9 +545,9 @@ static inline vec3_t xyz_rotate(double R[3][3], float x, float y, float z) {
 }
 
 static bool xyz_parse(md_xyz_data_t* data, md_reader_i* reader, md_allocator_i* alloc, bool stop_after_first_model) {
-    ASSERT(data);
-    ASSERT(reader);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(reader);
+    MD_ASSERT(alloc);
     
     uint32_t flags = 0;
     if (!extract_flags(&flags, reader)) {
@@ -623,7 +623,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
         return false;
     }
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    size_t buf_cap = MEGABYTES(1);
+    size_t buf_cap = MD_MEGABYTES(1);
     
     md_file_reader_t reader;
     md_file_reader_init(&reader, file, buf_cap, md_temp_allocator(temp));
@@ -637,7 +637,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 }
 
 void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
-    ASSERT(data);
+    MD_ASSERT(data);
     if (data->coordinates) md_array_free(data->coordinates, alloc);
     if (data->models) {
         for (size_t i = 0; i < data->num_models; ++i) {
@@ -647,7 +647,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
         }
         md_array_free(data->models, alloc);
     }
-    MEMSET(data, 0, sizeof(md_xyz_data_t));
+    MD_MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
 // The bonds of Tinker's connectivity, of the atoms [beg, end) of data: each pair once (it is given by both its atoms),
@@ -678,7 +678,7 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
                 if (found) j = *found;
             }
             if (j == UINT32_MAX || j == i) continue;
-            md_array_push(keys, ((uint64_t)MIN(i, j) << 32) | MAX(i, j), temp);
+            md_array_push(keys, ((uint64_t)MD_MIN(i, j) << 32) | MD_MAX(i, j), temp);
         }
     }
     const size_t num_keys = md_array_size(keys);
@@ -713,7 +713,7 @@ typedef struct xyz_builder_t {
 } xyz_builder_t;
 
 static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_state_t* state, size_t num_atoms, const float cell[3][3], md_allocator_i* temp) {
-    MEMSET(b, 0, sizeof(*b));
+    MD_MEMSET(b, 0, sizeof(*b));
     b->sys = sys;
     b->state = state;
     b->type_map.allocator = temp;
@@ -721,7 +721,7 @@ static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_stat
     md_system_reset(sys);
     md_system_state_init(state, 0);
 
-    const size_t reserve_size = ALIGN_TO(num_atoms, 16);
+    const size_t reserve_size = MD_ALIGN_TO(num_atoms, 16);
     md_array_ensure(state->xyz, reserve_size, state->alloc);
     md_array_ensure(sys->atom.type_idx, reserve_size, sys->alloc);
     md_array_ensure(sys->atom.flags, reserve_size, sys->alloc);
@@ -736,7 +736,7 @@ static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_stat
 static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
     md_system_t* sys = b->sys;
     uint32_t sym_word;
-    MEMCPY(&sym_word, c->element_symbol, sizeof(sym_word));
+    MD_MEMCPY(&sym_word, c->element_symbol, sizeof(sym_word));
     const uint64_t key = ((uint64_t)sym_word << 32) | (uint32_t)c->atomic_number;
     const size_t slot = (size_t)((key * 0x9E3779B97F4A7C15ull) >> 60);
     md_particle_type_idx_t type;
@@ -759,14 +759,14 @@ static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
 }
 
 static void xyz_builder_end(xyz_builder_t* b) {
-    ASSERT(md_array_size(b->state->xyz) == b->sys->atom.count);
+    MD_ASSERT(md_array_size(b->state->xyz) == b->sys->atom.count);
     b->state->num_atoms = b->sys->atom.count;
 }
 
 bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data, md_xyz_options_t options) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(data);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    MD_ASSERT(data);
     (void)options;
 
     if (!sys->alloc) {
@@ -848,7 +848,7 @@ static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reade
     for (size_t i = 0; i < count; ++i) {
         str_t line;
         md_xyz_coordinate_t coord;
-        MEMSET(coord.element_symbol, 0, sizeof(coord.element_symbol));
+        MD_MEMSET(coord.element_symbol, 0, sizeof(coord.element_symbol));
         coord.atomic_number = 0;
         if (!md_reader_extract_line(reader, &line) || !extract_coord(&coord, line, flags)) {
             MD_LOG_ERROR("Parse XYZ, Failed to parse coordinate");
@@ -867,14 +867,14 @@ done:
 }
 
 bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_xyz_options_t options) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_reader_i reader = md_reader_from_str(str);
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
     return xyz_system_load(sys, state, &reader, options);
 }
 
 bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_xyz_options_t options) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -884,7 +884,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t reader;
-    md_file_reader_init(&reader, file, MEGABYTES(1), md_temp_allocator(temp_scope));
+    md_file_reader_init(&reader, file, MD_MEGABYTES(1), md_temp_allocator(temp_scope));
     
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
     const bool result = xyz_system_load(sys, state, &reader.r, options);
@@ -905,8 +905,8 @@ typedef struct xyz_cache_t {
 // The cache beside path when it was made from the file as it is now: header, num_frames + 1 offsets,
 // 9 cell floats per frame.
 static bool try_read_cache(xyz_cache_t* cache, str_t path, md_allocator_i* alloc) {
-    ASSERT(cache);
-    ASSERT(alloc);
+    MD_ASSERT(cache);
+    MD_ASSERT(alloc);
     md_file_t file = {0};
     if (!md_run_cache_open(&file, &cache->header, path, MD_XYZ_CACHE_MAGIC, MD_XYZ_CACHE_VERSION)) {
         return false;
@@ -952,7 +952,7 @@ static bool write_cache(const xyz_cache_t* cache, str_t path, const md_file_info
 // header of each model and skips its atom lines.
 // From alloc; the scan's scratch keeps clear of avoid, which is what alloc was made from.
 static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, str_t filename, md_run_flags_t run_flags, md_allocator_i* alloc, md_allocator_i* avoid) {
-    MEMSET(cache, 0, sizeof(*cache));
+    MD_MEMSET(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -965,7 +965,7 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, str_t fi
     bool result = false;
 
     md_file_reader_t reader;
-    md_file_reader_init(&reader, file, MEGABYTES(1), temp_alloc);
+    md_file_reader_init(&reader, file, MD_MEGABYTES(1), temp_alloc);
 
     uint32_t xyz_flags = 0;
     if (!extract_flags(&xyz_flags, &reader.r)) {
@@ -985,7 +985,7 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, str_t fi
         result = true;
         goto done;
     }
-    MEMSET(cache, 0, sizeof(*cache));
+    MD_MEMSET(cache, 0, sizeof(*cache));
 
     md_array(int64_t) offsets = 0;
     md_array(float)   cells   = 0;
@@ -1025,10 +1025,10 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, str_t fi
     cache->header.num_frames = num_frames;
     cache->offsets = md_alloc(alloc, sizeof(int64_t) * (num_frames + 1));
     cache->cells   = md_alloc(alloc, sizeof(float) * 9 * num_frames);
-    MEMCPY(cache->offsets, offsets, sizeof(int64_t) * num_frames);
-    MEMCPY(cache->cells, cells, sizeof(float) * 9 * num_frames);
+    MD_MEMCPY(cache->offsets, offsets, sizeof(int64_t) * num_frames);
+    MD_MEMCPY(cache->cells, cells, sizeof(float) * 9 * num_frames);
     // The last frame ends with its last atom line
-    cache->offsets[num_frames] = MIN(filesize, frames_end);
+    cache->offsets[num_frames] = MD_MIN(filesize, frames_end);
 
     if (!(run_flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         // A cache that cannot be written only costs the next load a parse
@@ -1082,7 +1082,7 @@ static size_t xyz_parse_frame_coords(float* xyz, str_t text, uint32_t flags, siz
 
 static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
@@ -1108,7 +1108,7 @@ static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t*
     const size_t frame_size = (size_t)src.size[frame];
     md_temp_scope_t temp = md_temp_begin();
     size_t written = 0;
-    char* text = md_temp_alloc(temp, MAX(frame_size, 1));
+    char* text = md_temp_alloc(temp, MD_MAX(frame_size, 1));
     if (text && md_attribute_io_read_at(io, src.path, src.offset[frame], text, frame_size) == frame_size) {
         if (xyz_parse_frame_coords((float*)dst, (str_t){ text, frame_size }, flags, first, count) == count) {
             written = cap;
@@ -1123,12 +1123,12 @@ static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t*
 }
 
 bool md_xyz_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
     const str_t path = { path_buf, path_len };
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     xyz_cache_t index;

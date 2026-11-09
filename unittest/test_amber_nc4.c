@@ -152,9 +152,9 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
         { "fletcher32",        .fletcher = true, .deflate = 4, .chunk_frames = 1, .chunk_atoms = NC4_ATOMS },
     };
     const str_t path = STR_LIT("md_unittest_amber4.nc");
-    for (size_t ci = 0; ci < ARRAY_SIZE(cases); ++ci) {
+    for (size_t ci = 0; ci < MD_COUNTOF(cases); ++ci) {
         const nc4_case_t* c = &cases[ci];
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
         ASSERT_TRUE(nc4_write(path, c, false));
         EXPECT_EQ(MD_AMBER_NETCDF_TRAJECTORY, md_amber_netcdf_file_kind(path));
         EXPECT_EQ((size_t)NC4_ATOMS, md_amber_netcdf_file_atom_count(path));
@@ -216,7 +216,7 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
 }
 
 UTEST(amber_netcdf4, restart_and_what_is_not_amber) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber4.ncrst");
     const nc4_case_t c = { "restart", .contiguous = true };
     ASSERT_TRUE(nc4_write(path, &c, true));

@@ -120,7 +120,7 @@ static inline md_atomic_number_t find_in_mappings(str_t key, const Mapping* mapp
 }
 
 static inline bool resname_in_fallback_list(str_t res_name) {
-    for (size_t i = 0; i < ARRAY_SIZE(resname_fallback_to_single_character); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(resname_fallback_to_single_character); ++i) {
         if (str_eq_ignore_case(res_name, resname_fallback_to_single_character[i])) {
             return true;
         }
@@ -161,7 +161,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
 
 		// Check predefined resname : atomlabel mappings first
         {
-        md_atomic_number_t z = find_in_mappings(combined_key, predefined_mappings, ARRAY_SIZE(predefined_mappings));
+        md_atomic_number_t z = find_in_mappings(combined_key, predefined_mappings, MD_COUNTOF(predefined_mappings));
             if (z != MD_Z_X) return z;
         }
 

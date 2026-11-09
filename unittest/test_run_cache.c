@@ -179,7 +179,7 @@ static void check_format(int* utest_result, str_t data, str_t copy, publish_fn p
     char cache_buf[512];
     const str_t cache = {cache_buf, (size_t)snprintf(cache_buf, sizeof(cache_buf), STR_FMT ".cache", STR_ARG(copy))};
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     ASSERT_TRUE(copy_file(copy, data, arena));
     remove(cache.ptr);
     md_file_info_t info = {0};

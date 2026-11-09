@@ -43,7 +43,7 @@ typedef struct {
 } int_test_qm_t;
 
 static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
-    MEMSET(out, 0, sizeof(*out));
+    MD_MEMSET(out, 0, sizeof(*out));
     if (!qm_test_basis(&out->basis, t)) return false;
     out->num_ao = md_gto_basis_num_ao(&out->basis);
 
@@ -228,7 +228,7 @@ UTEST(gto_int, point_multipoles_match_a_charge_cluster) {
         for (int k = 0; k < 3; ++k) {
             float st[4][3];
             const float off[4] = { -2 * step, -step, step, 2 * step };
-            for (int j = 0; j < 4; ++j) { MEMCPY(st[j], pts[i], sizeof(st[j])); st[j][k] += off[j]; }
+            for (int j = 0; j < 4; ++j) { MD_MEMCPY(st[j], pts[i], sizeof(st[j])); st[j][k] += off[j]; }
             double Vs[4];
             md_gto_int_potential_xyz(Vs, NULL, &st[0][0], 4, 0, &full);
             const double dVdx = (Vs[0] - 8.0 * Vs[1] + 8.0 * Vs[2] - Vs[3]) / (12.0 * (double)step);
@@ -291,7 +291,7 @@ static const double h2o_ccpvdz_dipole_ref[3] = { -0.39479203722594036, -0.325035
 
 UTEST(gto_int, h2o_molden_matches_pyscf) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(16));
+    qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
 
     int_test_qm_t m;
@@ -301,9 +301,9 @@ UTEST(gto_int, h2o_molden_matches_pyscf) {
     md_gto_int_charges_t q = {0};
     ASSERT_TRUE(int_test_charges(&q, &m, 0.0, true, t.alloc));
 
-    const size_t n = ARRAY_SIZE(h2o_ccpvdz_esp_ref);
-    float  pts[ARRAY_SIZE(h2o_ccpvdz_esp_ref)][3];
-    double V[ARRAY_SIZE(h2o_ccpvdz_esp_ref)];
+    const size_t n = MD_COUNTOF(h2o_ccpvdz_esp_ref);
+    float  pts[MD_COUNTOF(h2o_ccpvdz_esp_ref)][3];
+    double V[MD_COUNTOF(h2o_ccpvdz_esp_ref)];
     for (size_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) pts[i][k] = (float)h2o_ccpvdz_esp_ref[i][k];
     md_gto_int_potential_xyz(V, NULL, &pts[0][0], n, 0, &q);
 
@@ -315,7 +315,7 @@ UTEST(gto_int, h2o_molden_matches_pyscf) {
     for (size_t i = 0; i < n; ++i) {
         const double ref = h2o_ccpvdz_esp_ref[i][3];
         const double err = fabs(V[i] - ref);
-        worst = MAX(worst, err / MAX(1.0, fabs(ref)));
+        worst = MD_MAX(worst, err / MD_MAX(1.0, fabs(ref)));
         EXPECT_NEAR(ref, V[i], 2e-6 + 5e-6 * fabs(ref));
     }
     printf("h2o cc-pVDZ vs PySCF: max |dV| / max(1, |V|) = %.2e\n", worst);
@@ -332,7 +332,7 @@ UTEST(gto_int, h2o_molden_matches_pyscf) {
 // at most the threshold times the number dropped, and in practice far less.
 UTEST(gto_int, screening_error_is_bounded) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(16));
+    qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -347,9 +347,9 @@ UTEST(gto_int, screening_error_is_bounded) {
     size_t dropped = full.num_gaussians - screened.num_gaussians;
     printf("h2o cc-pVDZ: %u gaussians, %u above %.0e\n", full.num_gaussians, screened.num_gaussians, threshold);
 
-    const size_t n = ARRAY_SIZE(h2o_ccpvdz_esp_ref);
-    float  pts[ARRAY_SIZE(h2o_ccpvdz_esp_ref)][3];
-    double Va[ARRAY_SIZE(h2o_ccpvdz_esp_ref)], Vb[ARRAY_SIZE(h2o_ccpvdz_esp_ref)];
+    const size_t n = MD_COUNTOF(h2o_ccpvdz_esp_ref);
+    float  pts[MD_COUNTOF(h2o_ccpvdz_esp_ref)][3];
+    double Va[MD_COUNTOF(h2o_ccpvdz_esp_ref)], Vb[MD_COUNTOF(h2o_ccpvdz_esp_ref)];
     for (size_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) pts[i][k] = (float)h2o_ccpvdz_esp_ref[i][k];
     md_gto_int_potential_xyz(Va, NULL, &pts[0][0], n, 0, &full);
     md_gto_int_potential_xyz(Vb, NULL, &pts[0][0], n, 0, &screened);
@@ -364,7 +364,7 @@ UTEST(gto_int, screening_error_is_bounded) {
 // antisymmetric matrix changes nothing. (A transition density goes in as it is.)
 UTEST(gto_int, antisymmetric_part_is_ignored) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(16));
+    qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -384,7 +384,7 @@ UTEST(gto_int, antisymmetric_part_is_ignored) {
     double Va[3], Vb[3];
     md_gto_int_potential_xyz(Va, NULL, &pts[0][0], 3, 0, &a);
     md_gto_int_potential_xyz(Vb, NULL, &pts[0][0], 3, 0, &b);
-    for (int i = 0; i < 3; ++i) EXPECT_NEAR(Va[i], Vb[i], 1e-12 * MAX(1.0, fabs(Va[i])));
+    for (int i = 0; i < 3; ++i) EXPECT_NEAR(Va[i], Vb[i], 1e-12 * MD_MAX(1.0, fabs(Va[i])));
 
     md_gto_int_charges_free(&a, t.alloc);
     md_gto_int_charges_free(&b, t.alloc);
@@ -394,7 +394,7 @@ UTEST(gto_int, antisymmetric_part_is_ignored) {
 // The field against central differences of the potential.
 UTEST(gto_int, field_is_minus_gradient) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(16));
+    qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -403,21 +403,21 @@ UTEST(gto_int, field_is_minus_gradient) {
 
     const float h = 1.0f / 256.0f;   // exact in float, so the stencil points are exactly symmetric
     double worst = 0.0;
-    for (size_t i = 1; i < ARRAY_SIZE(h2o_ccpvdz_esp_ref); ++i) {
+    for (size_t i = 1; i < MD_COUNTOF(h2o_ccpvdz_esp_ref); ++i) {
         float c[3] = { (float)h2o_ccpvdz_esp_ref[i][0], (float)h2o_ccpvdz_esp_ref[i][1], (float)h2o_ccpvdz_esp_ref[i][2] };
         double V, E[3];
         md_gto_int_potential_xyz(&V, E, c, 1, 0, &q);
         for (int k = 0; k < 3; ++k) {
             float st[4][3];
             const float off[4] = { -2 * h, -h, h, 2 * h };
-            for (int s = 0; s < 4; ++s) { MEMCPY(st[s], c, sizeof(c)); st[s][k] += off[s]; }
+            for (int s = 0; s < 4; ++s) { MD_MEMCPY(st[s], c, sizeof(c)); st[s][k] += off[s]; }
             double Vs[4];
             md_gto_int_potential_xyz(Vs, NULL, &st[0][0], 4, 0, &q);
             // fourth order central difference
             const double dVdx = (Vs[0] - 8.0 * Vs[1] + 8.0 * Vs[2] - Vs[3]) / (12.0 * (double)h);
             const double err = fabs(-dVdx - E[k]);
-            worst = MAX(worst, err / MAX(1.0, fabs(E[k])));
-            EXPECT_NEAR(-dVdx, E[k], 1e-6 * MAX(1.0, fabs(E[k])));
+            worst = MD_MAX(worst, err / MD_MAX(1.0, fabs(E[k])));
+            EXPECT_NEAR(-dVdx, E[k], 1e-6 * MD_MAX(1.0, fabs(E[k])));
         }
     }
     printf("field vs -grad V (finite differences): max rel err %.2e\n", worst);
@@ -439,13 +439,13 @@ typedef struct {
 
 static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int n, float spacing, md_allocator_i* alloc) {
     const size_t copies = (size_t)n * n * n;
-    MEMSET(c, 0, sizeof(*c));
+    MD_MEMSET(c, 0, sizeof(*c));
     c->num_atoms = m->num_atoms * copies;
     c->num_ao    = m->num_ao * copies;
     c->atom_xyz  = (float*)md_alloc(alloc, sizeof(float) * 3 * c->num_atoms);
     c->atom_z    = (double*)md_alloc(alloc, sizeof(double) * c->num_atoms);
     c->D         = (double*)md_alloc(alloc, sizeof(double) * c->num_ao * c->num_ao);
-    MEMSET(c->D, 0, sizeof(double) * c->num_ao * c->num_ao);
+    MD_MEMSET(c->D, 0, sizeof(double) * c->num_ao * c->num_ao);
     c->basis.num_shells     = (uint32_t)(m->basis.num_shells * copies);
     c->basis.num_primitives = m->basis.num_primitives;
     c->basis.alpha          = m->basis.alpha;
@@ -476,7 +476,7 @@ static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int 
         // sum over the same distribution.
         const size_t a0 = ci * m->num_ao;
         for (size_t i = 0; i < m->num_ao; ++i) {
-            MEMCPY(c->D + (a0 + i) * c->num_ao + a0, m->D + i * m->num_ao, sizeof(double) * m->num_ao);
+            MD_MEMCPY(c->D + (a0 + i) * c->num_ao + a0, m->D + i * m->num_ao, sizeof(double) * m->num_ao);
         }
     }
 }
@@ -486,7 +486,7 @@ static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int 
 // the same distribution otherwise (moments, gaussians).
 UTEST(gto_int, far_field_matches_exact) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(256));
+    qm_test_init(&t, MD_MEGABYTES(256));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -510,7 +510,7 @@ UTEST(gto_int, far_field_matches_exact) {
     {
         const uint32_t n = far.num_gaussians + far.num_points;
         uint8_t* seen = (uint8_t*)md_alloc(t.alloc, n);
-        MEMSET(seen, 0, n);
+        MD_MEMSET(seen, 0, n);
         for (uint32_t i = 0; i < n; ++i) { ASSERT_LT(far.item[i], n); seen[far.item[i]]++; }
         for (uint32_t i = 0; i < n; ++i) EXPECT_EQ(1, seen[i]);
         EXPECT_EQ(0u, far.node[0].item_begin);
@@ -533,14 +533,14 @@ UTEST(gto_int, far_field_matches_exact) {
     md_gto_int_potential_xyz(Vf, Ef, &pts[0][0], NP, 0, &far);
     double ev = 0.0, ee = 0.0;
     for (int i = 0; i < NP; ++i) {
-        ev = MAX(ev, fabs(Ve[i] - Vf[i]));
-        for (int k = 0; k < 3; ++k) ee = MAX(ee, fabs(Ee[3 * i + k] - Ef[3 * i + k]));
+        ev = MD_MAX(ev, fabs(Ve[i] - Vf[i]));
+        for (int k = 0; k < 3; ++k) ee = MD_MAX(ee, fabs(Ee[3 * i + k] - Ef[3 * i + k]));
     }
     // and the potential alone, through the written out low orders
     double Vp[NP];
     md_gto_int_potential_xyz(Vp, NULL, &pts[0][0], NP, 0, &far);
     double ep = 0.0;
-    for (int i = 0; i < NP; ++i) ep = MAX(ep, fabs(Vp[i] - Vf[i]));
+    for (int i = 0; i < NP; ++i) ep = MD_MAX(ep, fabs(Vp[i] - Vf[i]));
     printf("64 waters, %u gaussians, %u nodes: far field max |dV| %.2e au, max |dE| %.2e au; work per point %llu of %llu\n",
            far.num_gaussians, far.num_nodes, ev, ee,
            (unsigned long long)md_gto_int_charges_work_per_point(&far), (unsigned long long)md_gto_int_charges_work_per_point(&exact));
@@ -557,7 +557,7 @@ UTEST(gto_int, far_field_matches_exact) {
 // The grid evaluator places its points exactly where the documentation says.
 UTEST(gto_int, grid_matches_points) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(16));
+    qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -584,7 +584,7 @@ UTEST(gto_int, grid_matches_points) {
         double V;
         md_gto_int_potential_xyz(&V, NULL, p, 1, 0, &q);
         const double v = vol[((size_t)k * grid.dim[1] + j) * grid.dim[0] + i];
-        worst = MAX(worst, fabs(v - V) / MAX(1.0, fabs(V)));
+        worst = MD_MAX(worst, fabs(v - V) / MD_MAX(1.0, fabs(V)));
     }
     EXPECT_LT(worst, 1e-5);   // float output, and float vs double point placement
 
@@ -597,7 +597,7 @@ UTEST(gto_int, grid_matches_points) {
 // recursion. The two must agree to rounding for every order, and over every regime of T = p r^2:
 // the Taylor expansion of the table, the asymptote with exp(-T), and the asymptote without it.
 UTEST(gto_int, tabulated_boys_matches_series) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
 
     // One normalised primitive per shell, l = 0..4 on each of three atoms: pairs up to g x g (L = 8)
     enum { NA = 3, NL = 5, NS = NA * NL };
@@ -653,9 +653,9 @@ UTEST(gto_int, tabulated_boys_matches_series) {
 
     double worst_V = 0.0, worst_E = 0.0;
     for (int i = 0; i < NP; ++i) {
-        worst_V = MAX(worst_V, fabs(V_tab[i] - V_ser[i]) / MAX(1.0, fabs(V_ser[i])));
-        worst_V = MAX(worst_V, fabs(V_tab_only[i] - V_ser[i]) / MAX(1.0, fabs(V_ser[i])));
-        for (int k = 0; k < 3; ++k) worst_E = MAX(worst_E, fabs(E_tab[3 * i + k] - E_ser[3 * i + k]) / MAX(1.0, fabs(E_ser[3 * i + k])));
+        worst_V = MD_MAX(worst_V, fabs(V_tab[i] - V_ser[i]) / MD_MAX(1.0, fabs(V_ser[i])));
+        worst_V = MD_MAX(worst_V, fabs(V_tab_only[i] - V_ser[i]) / MD_MAX(1.0, fabs(V_ser[i])));
+        for (int k = 0; k < 3; ++k) worst_E = MD_MAX(worst_E, fabs(E_tab[3 * i + k] - E_ser[3 * i + k]) / MD_MAX(1.0, fabs(E_ser[3 * i + k])));
     }
     printf("tabulated vs series Boys, s..g: max rel diff V %.2e, E %.2e\n", worst_V, worst_E);
     EXPECT_LT(worst_V, 1e-13);
@@ -670,7 +670,7 @@ UTEST(gto_int, tabulated_boys_matches_series) {
 // covers the spherical to Cartesian conversion of the density (T^T D T) end to end.
 UTEST(gto_int, vlx_h2o_dipole_matches_published) {
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
 
@@ -724,7 +724,7 @@ static bool int_test_gpu_grid(float* out, md_gpu_stream_t stream, const md_gto_i
     if (!md_gto_int_gpu_potential_launch(stream, &desc)) return false;
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
     md_gpu_stream_sync(stream);
-    MEMCPY(out, rb.cpu, sizeof(float) * nv);
+    MD_MEMCPY(out, rb.cpu, sizeof(float) * nv);
 
     md_gto_int_gpu_charges_destroy(stream, gq);
     md_gpu_free(stream, rb.gpu);
@@ -739,9 +739,9 @@ static double int_test_compare(const float* gpu, const float* cpu, size_t n) {
     double worst = 0.0;
     for (size_t i = 0; i < n; ++i) {
         uint32_t u;
-        MEMCPY(&u, &gpu[i], sizeof(u));
+        MD_MEMCPY(&u, &gpu[i], sizeof(u));
         if ((u & 0x7F800000u) == 0x7F800000u) return DBL_MAX;   // not finite (fast-math safe test)
-        worst = MAX(worst, fabs((double)gpu[i] - (double)cpu[i]) / MAX(1.0, fabs((double)cpu[i])));
+        worst = MD_MAX(worst, fabs((double)gpu[i] - (double)cpu[i]) / MD_MAX(1.0, fabs((double)cpu[i])));
     }
     return worst;
 }
@@ -755,7 +755,7 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
     md_gto_int_gpu_initialize(device);
 
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(32));
+    qm_test_init(&t, MD_MEGABYTES(32));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -786,11 +786,11 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
         double dmin = HUGE_VAL;
         for (size_t a = 0; a < m.num_atoms; ++a) {
             const double dx = c[0] - m.atom_xyz[a * 3 + 0], dy = c[1] - m.atom_xyz[a * 3 + 1], dz = c[2] - m.atom_xyz[a * 3 + 2];
-            dmin = MIN(dmin, sqrt(dx * dx + dy * dy + dz * dz));
+            dmin = MD_MIN(dmin, sqrt(dx * dx + dy * dy + dz * dz));
         }
         if (dmin < 1.0) continue;
         const size_t v = ((size_t)k * grid.dim[1] + j) * grid.dim[0] + i;
-        rel_far = MAX(rel_far, fabs((double)gpu[v] - (double)cpu[v]) / MAX(1.0, fabs((double)cpu[v])));
+        rel_far = MD_MAX(rel_far, fabs((double)gpu[v] - (double)cpu[v]) / MD_MAX(1.0, fabs((double)cpu[v])));
     }
     printf("h2o cc-pVDZ potential, GPU vs CPU: max |diff| / max(1,|V|) = %.3e, beyond 1 bohr of a nucleus %.3e\n", rel, rel_far);
     EXPECT_LT(rel, 5e-6);
@@ -812,7 +812,7 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
         double excess = 0.0;
         for (size_t v = 0; v < nv; ++v) {
             const double e = sqrt(E[v * 3] * E[v * 3] + E[v * 3 + 1] * E[v * 3 + 1] + E[v * 3 + 2] * E[v * 3 + 2]);
-            excess = MAX(excess, (fabs((double)gpu[v] - V[v]) - e * 1e-6) / MAX(1.0, fabs(V[v])));
+            excess = MD_MAX(excess, (fabs((double)gpu[v] - V[v]) - e * 1e-6) / MD_MAX(1.0, fabs(V[v])));
         }
         printf("  beyond what 1e-6 bohr of position explains: %.3e\n", excess);
         EXPECT_LT(excess, 1e-6);
@@ -838,7 +838,7 @@ static bool int_test_gpu_xyz(float* out, md_gpu_stream_t stream, const md_gto_in
     md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, q);
     if (!pts.gpu || !res.gpu || !rb.cpu || !gq) return false;
     void* dst = md_gpu_upload_begin(stream, pts.gpu, bytes);
-    MEMCPY(dst, xyz, bytes);
+    MD_MEMCPY(dst, xyz, bytes);
     md_gpu_upload_end(stream);
 
     md_gto_int_gpu_potential_xyz_desc_t desc = {
@@ -848,7 +848,7 @@ static bool int_test_gpu_xyz(float* out, md_gpu_stream_t stream, const md_gto_in
     if (!md_gto_int_gpu_potential_xyz_launch(stream, &desc)) return false;
     md_gpu_copy(stream, rb.gpu, res.gpu, sizeof(float) * n);
     md_gpu_stream_sync(stream);
-    MEMCPY(out, rb.cpu, sizeof(float) * n);
+    MD_MEMCPY(out, rb.cpu, sizeof(float) * n);
 
     md_gto_int_gpu_charges_destroy(stream, gq);
     md_gpu_free(stream, pts.gpu);
@@ -870,7 +870,7 @@ UTEST(gto_int, vlx_amide_gpu_xyz_matches_cpu) {
     md_gto_int_gpu_initialize(device);
 
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.h5"), MEGABYTES(64)));
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.h5"), MD_MEGABYTES(64)));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -928,8 +928,8 @@ UTEST(gto_int, vlx_amide_gpu_xyz_matches_cpu) {
             const double dx = p3[i * 3 + 0] - q.point_xyz[k * 3 + 0], dy = p3[i * 3 + 1] - q.point_xyz[k * 3 + 1], dz = p3[i * 3 + 2] - q.point_xyz[k * 3 + 2];
             vn += q.point_charge[k] / sqrt(dx * dx + dy * dy + dz * dz);
         }
-        rel    = MAX(rel, d / MAX(1.0, fabs(V[i])));
-        excess = MAX(excess, (d - e * 2e-6) / ((fabs(vn) + fabs(V[i] - vn)) * FLT_EPSILON));
+        rel    = MD_MAX(rel, d / MD_MAX(1.0, fabs(V[i])));
+        excess = MD_MAX(excess, (d - e * 2e-6) / ((fabs(vn) + fabs(V[i] - vn)) * FLT_EPSILON));
     }
     printf("amide def2-SVP potential at %zu points, GPU vs CPU: max |diff| / max(1,|V|) = %.3e, beyond 2e-6 bohr of position %.2f eps of |V_nuc| + |V_el|\n", n, rel, excess);
     EXPECT_LT(rel, 5e-6);
@@ -955,7 +955,7 @@ UTEST(gto_int, all_orders_gpu_match_cpu) {
     }
     md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
     md_gto_int_gpu_initialize(device);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
 
     // One normalised primitive per shell, l = 0..4 on each of three atoms.
     enum { NA = 3, NL = 5, NS = NA * NL };
@@ -1023,7 +1023,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     md_gto_int_gpu_initialize(device);
 
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(128));
+    qm_test_init(&t, MD_MEGABYTES(128));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -1064,7 +1064,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &desc));
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
     md_gpu_stream_sync(stream);
-    MEMCPY(gpu, rb.cpu, sizeof(float) * nv);
+    MD_MEMCPY(gpu, rb.cpu, sizeof(float) * nv);
     // relative to max(1, |V|), as the other GPU tests: next to a nucleus the potential is tens of au,
     // and float is what limits it there
     const double worst = int_test_compare(gpu, ref, nv);
@@ -1073,7 +1073,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
 
     // A mask of every other brick's one voxel: those bricks gain the potential once more, whole
     uint8_t* mask = (uint8_t*)md_alloc(t.alloc, nv);
-    MEMSET(mask, 0, nv);
+    MD_MEMSET(mask, 0, nv);
     for (int z = 0; z < grid.dim[2]; ++z) for (int y = 0; y < grid.dim[1]; ++y) for (int x = 0; x < grid.dim[0]; ++x) {
         if (((x / 4 + y / 4 + z / 4) & 1) == 0 && x % 4 == 1 && y % 4 == 2 && z % 4 == 3) mask[((size_t)z * grid.dim[1] + y) * grid.dim[0] + x] = 1;
     }
@@ -1089,8 +1089,8 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
         const int bx = x / 4, by = y / 4, bz = z / 4;
         const bool brick_masked = ((bx + by + bz) & 1) == 0 && bx * 4 + 1 < grid.dim[0] && by * 4 + 2 < grid.dim[1] && bz * 4 + 3 < grid.dim[2];
         const float v = ((const float*)rb.cpu)[i];
-        if (brick_masked) worst_in = MAX(worst_in, fabs((double)v - 2.0 * (double)gpu[i]));
-        else              worst_out = MAX(worst_out, fabs((double)v - (double)gpu[i]));
+        if (brick_masked) worst_in = MD_MAX(worst_in, fabs((double)v - 2.0 * (double)gpu[i]));
+        else              worst_out = MD_MAX(worst_out, fabs((double)v - (double)gpu[i]));
     }
     EXPECT_LT(worst_in, 1e-5);
     EXPECT_EQ(0.0, worst_out);
@@ -1108,7 +1108,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     md_gto_int_potential_xyz(Ve, NULL, &pts[0][0], NP, 0, &exact);
     ASSERT_TRUE(int_test_gpu_xyz(Vg, stream, &far, &pts[0][0], NP, 0, 0));
     double worst_p = 0.0;
-    for (int i = 0; i < NP; ++i) worst_p = MAX(worst_p, fabs((double)Vg[i] - Ve[i]) / MAX(1.0, fabs(Ve[i])));
+    for (int i = 0; i < NP; ++i) worst_p = MD_MAX(worst_p, fabs((double)Vg[i] - Ve[i]) / MD_MAX(1.0, fabs(Ve[i])));
     printf("27 waters, far field on the GPU vs exact: points max |dV| / max(1, |V|) %.2e\n", worst_p);
     EXPECT_LT(worst_p, 2e-4);
 
@@ -1172,7 +1172,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
         md_gpu_mem_t vbuf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * NP);
         md_gpu_mem_t vrb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * NP);
         ASSERT_TRUE(pbuf.gpu && vbuf.gpu && vrb.cpu);
-        MEMCPY(md_gpu_upload_begin(stream, pbuf.gpu, sizeof(pts)), pts, sizeof(pts));
+        MD_MEMCPY(md_gpu_upload_begin(stream, pbuf.gpu, sizeof(pts)), pts, sizeof(pts));
         md_gpu_upload_end(stream);
         md_gto_int_gpu_potential_xyz_desc_t xd = {
             .charges = gq, .xyz = pbuf.gpu, .num_xyz = NP, .out_potential = vbuf.gpu, .work_per_dispatch = 1u << 20,
@@ -1232,7 +1232,7 @@ UTEST(gto_int, benchmark) {
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
     vlx_test_t t = {0};
     md_tick_t t0 = md_tick_now();
-    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MEGABYTES(1024)));
+    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(1024)));
     md_gto_basis_t basis = {0};
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t na = t.sys.atom.count;
@@ -1267,7 +1267,7 @@ UTEST(gto_int, benchmark) {
 
     // the grid: the atoms' box and 6 bohr, 0.4 bohr voxels; the band: 2.5 - 4.5 bohr from the nearest atom
     float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
-    for (size_t i = 0; i < na; ++i) for (int k = 0; k < 3; ++k) { lo[k] = MIN(lo[k], xyz[3 * i + k]); hi[k] = MAX(hi[k], xyz[3 * i + k]); }
+    for (size_t i = 0; i < na; ++i) for (int k = 0; k < 3; ++k) { lo[k] = MD_MIN(lo[k], xyz[3 * i + k]); hi[k] = MD_MAX(hi[k], xyz[3 * i + k]); }
     const float h = 0.4f;
     md_grid_t grid = { .orientation = mat3_ident(), .origin = vec3_set(lo[0] - 6.0f, lo[1] - 6.0f, lo[2] - 6.0f), .spacing = vec3_set(h, h, h) };
     for (int k = 0; k < 3; ++k) grid.dim[k] = (int)ceilf((hi[k] - lo[k] + 12.0f) / h);
@@ -1279,13 +1279,13 @@ UTEST(gto_int, benchmark) {
     for (size_t a = 0; a < na; ++a) {
         int c[3];
         for (int k = 0; k < 3; ++k) c[k] = (int)((xyz[3 * a + k] - grid.origin.elem[k]) / h - 0.5f);
-        for (int z = MAX(0, c[2] - rr); z <= MIN(grid.dim[2] - 1, c[2] + rr); ++z)
-        for (int y = MAX(0, c[1] - rr); y <= MIN(grid.dim[1] - 1, c[1] + rr); ++y)
-        for (int x = MAX(0, c[0] - rr); x <= MIN(grid.dim[0] - 1, c[0] + rr); ++x) {
+        for (int z = MD_MAX(0, c[2] - rr); z <= MD_MIN(grid.dim[2] - 1, c[2] + rr); ++z)
+        for (int y = MD_MAX(0, c[1] - rr); y <= MD_MIN(grid.dim[1] - 1, c[1] + rr); ++y)
+        for (int x = MD_MAX(0, c[0] - rr); x <= MD_MIN(grid.dim[0] - 1, c[0] + rr); ++x) {
             const float p[3] = { grid.origin.x + (x + 0.5f) * h, grid.origin.y + (y + 0.5f) * h, grid.origin.z + (z + 0.5f) * h };
             const float d2 = (p[0] - xyz[3 * a]) * (p[0] - xyz[3 * a]) + (p[1] - xyz[3 * a + 1]) * (p[1] - xyz[3 * a + 1]) + (p[2] - xyz[3 * a + 2]) * (p[2] - xyz[3 * a + 2]);
             float* dm = dmin + ((size_t)z * grid.dim[1] + y) * grid.dim[0] + x;
-            *dm = MIN(*dm, d2);
+            *dm = MD_MIN(*dm, d2);
         }
     }
     size_t num_band = 0;
@@ -1322,7 +1322,7 @@ UTEST(gto_int, benchmark) {
         md_gpu_stream_sync(stream);
         const double ts = md_tick_to_seconds(md_tick_now() - t0);
         ASSERT_TRUE(int_test_gpu_alive());
-        printf("  a sixteenth of the band on the GPU (%zu voxels): %.2f s (%.1f us per voxel)%s\n", num_part, ts, ts * 1e6 / (double)MAX(num_part, 1),
+        printf("  a sixteenth of the band on the GPU (%zu voxels): %.2f s (%.1f us per voxel)%s\n", num_part, ts, ts * 1e6 / (double)MD_MAX(num_part, 1),
                r == 0 ? ", with the kernels made" : "");
         if (ts > 10.0) break;
     }
@@ -1334,13 +1334,13 @@ UTEST(gto_int, benchmark) {
         t0 = md_tick_now();
         ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &pd));
         md_gpu_stream_sync(stream);
-        best = MIN(best, md_tick_to_seconds(md_tick_now() - t0));
+        best = MD_MIN(best, md_tick_to_seconds(md_tick_now() - t0));
         ASSERT_TRUE(int_test_gpu_alive());
         if (best > 10.0) break;
     }
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
     md_gpu_stream_sync(stream);
-    printf("  band on the GPU: %.2f s (%.1f us per band voxel)\n", best, best * 1e6 / (double)MAX(num_band, 1));
+    printf("  band on the GPU: %.2f s (%.1f us per band voxel)\n", best, best * 1e6 / (double)MD_MAX(num_band, 1));
 
     // The band as a job, as viamd runs it: polled for 2 ms of every 16 ms frame
     if (best < 10.0) {
@@ -1354,7 +1354,7 @@ UTEST(gto_int, benchmark) {
             const md_tick_t f0 = md_tick_now();
             st = md_gto_int_gpu_job_poll(job, 2.0);
             const double ms = md_tick_to_milliseconds(md_tick_now() - f0);
-            longest_ms = MAX(longest_ms, ms);
+            longest_ms = MD_MAX(longest_ms, ms);
             frames++;
             if (st != MD_GTO_INT_GPU_JOB_RUNNING) break;
             if (ms < 16.0) md_thread_sleep((size_t)(16.0 - ms));
@@ -1411,10 +1411,10 @@ UTEST(gto_int, benchmark) {
     const double t_cf = md_tick_to_seconds(md_tick_now() - t0) / NS;
     double eg = 0.0, ep = 0.0, ec = 0.0, span_lo = 1e30, span_hi = -1e30;
     for (int i = 0; i < NS; ++i) {
-        eg = MAX(eg, fabs((double)((const float*)rb.cpu)[idx[pick[i]]] - Ve[i]));
-        ep = MAX(ep, fabs((double)Vp[pick[i]] - Ve[i]));
-        ec = MAX(ec, fabs(Vc[i] - Ve[i]));
-        span_lo = MIN(span_lo, Ve[i]); span_hi = MAX(span_hi, Ve[i]);
+        eg = MD_MAX(eg, fabs((double)((const float*)rb.cpu)[idx[pick[i]]] - Ve[i]));
+        ep = MD_MAX(ep, fabs((double)Vp[pick[i]] - Ve[i]));
+        ec = MD_MAX(ec, fabs(Vc[i] - Ve[i]));
+        span_lo = MD_MIN(span_lo, Ve[i]); span_hi = MD_MAX(span_hi, Ve[i]);
     }
     printf("  against the exact sum at %d band voxels (V from %.3f to %.3f au): grid %.2e, points %.2e, CPU far field %.2e au\n",
            NS, span_lo, span_hi, eg, ep, ec);

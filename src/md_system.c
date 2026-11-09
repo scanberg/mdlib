@@ -24,7 +24,7 @@ extern "C" {
 static volatile uint64_t topology_version_counter = 0;
 
 uint64_t md_system_topology_changed(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     sys->topology_version = md_atomic_fetch_add64(&topology_version_counter, 1) + 1;
     return sys->topology_version;
 }
@@ -32,7 +32,7 @@ uint64_t md_system_topology_changed(md_system_t* sys) {
 // ### ASSEMBLIES ###
 
 void md_system_assemblies_free(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
     md_assembly_data_t* a = &sys->assembly;
     md_array_free(a->id, alloc);
@@ -43,7 +43,7 @@ void md_system_assemblies_free(md_system_t* sys) {
     md_array_free(a->oper, alloc);
     md_array_free(a->oper_id, alloc);
     md_array_free(a->oper_transform, alloc);
-    MEMSET(a, 0, sizeof(md_assembly_data_t));
+    MD_MEMSET(a, 0, sizeof(md_assembly_data_t));
 }
 
 static int compare_u64(const void* a, const void* b) {
@@ -66,7 +66,7 @@ typedef struct {
 } assembly_group_t;
 
 bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_system_assemblies_free(sys);
     if (gen_count == 0 || oper_count == 0) {
         return true;
@@ -94,7 +94,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         } else {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", i + 1);
-            id = make_label((str_t){buf, (size_t)MAX(len, 0)});
+            id = make_label((str_t){buf, (size_t)MD_MAX(len, 0)});
         }
         md_array_push(A->oper_id, id, alloc);
 
@@ -103,7 +103,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
                 const float d = M.elem[r][0] * M.elem[c][0] + M.elem[r][1] * M.elem[c][1] + M.elem[r][2] * M.elem[c][2];
-                dev = MAX(dev, fabsf(d - (r == c ? 1.0f : 0.0f)));
+                dev = MD_MAX(dev, fabsf(d - (r == c ? 1.0f : 0.0f)));
             }
         }
         if (dev > 1.0e-3f || M.elem[0][3] != 0.0f || M.elem[1][3] != 0.0f || M.elem[2][3] != 0.0f || M.elem[3][3] != 1.0f) {
@@ -174,7 +174,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             }
             size_t g = 0;
             for (; g < md_array_size(groups); ++g) {
-                if (md_array_size(groups[g].rows) == md_array_size(rows) && MEMCMP(groups[g].rows, rows, md_array_bytes(rows)) == 0) break;
+                if (md_array_size(groups[g].rows) == md_array_size(rows) && MD_MEMCMP(groups[g].rows, rows, md_array_bytes(rows)) == 0) break;
             }
             if (g == md_array_size(groups)) {
                 const assembly_group_t grp = {.rows = rows};
@@ -212,7 +212,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             bool merged = false;
             for (size_t h = 0; h < g && !merged; ++h) {
                 const assembly_group_t* prev_grp = groups + h;
-                if (md_array_size(prev_grp->inst) == n && MEMCMP(prev_grp->inst, grp->inst, n * sizeof(md_instance_idx_t)) == 0) {
+                if (md_array_size(prev_grp->inst) == n && MD_MEMCMP(prev_grp->inst, grp->inst, n * sizeof(md_instance_idx_t)) == 0) {
                     md_array_push_array(groups[h].oper, grp->oper, md_array_size(grp->oper), ta);
                     merged = true;
                 }
@@ -272,18 +272,18 @@ const char* md_residue_kind_name(md_residue_kind_t kind) {
 }
 
 void md_part_type_data_free(md_part_type_data_t* type, md_allocator_i* alloc) {
-    ASSERT(type);
+    MD_ASSERT(type);
     for (size_t i = 0; i < md_array_size(type->description); ++i) {
         if (!str_empty(type->description[i])) str_free(type->description[i], alloc);
     }
     md_array_free(type->id, alloc);
     md_array_free(type->flags, alloc);
     md_array_free(type->description, alloc);
-    MEMSET(type, 0, sizeof(*type));
+    MD_MEMSET(type, 0, sizeof(*type));
 }
 
 void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_allocator_i* alloc) {
-    ASSERT(type);
+    MD_ASSERT(type);
     if (count >= type->count) return;
     for (size_t i = count; i < md_array_size(type->description); ++i) {
         if (!str_empty(type->description[i])) str_free(type->description[i], alloc);
@@ -295,14 +295,14 @@ void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_alloca
 }
 
 md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, md_part_type_flags_t flags, str_t description, md_allocator_i* alloc) {
-    ASSERT(type);
+    MD_ASSERT(type);
     md_label_t lbl = make_label(id);
     if (str_empty(id)) {
         // Its position, or the first number after it which no type has for an id (the ids of a file need not be 1..n)
         for (size_t n = type->count + 1;; ++n) {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", n);
-            lbl = make_label((str_t){buf, (size_t)MAX(len, 0)});
+            lbl = make_label((str_t){buf, (size_t)MD_MAX(len, 0)});
             bool taken = false;
             for (size_t i = 0; i < md_array_size(type->id) && !taken; ++i) taken = md_label_eq(type->id[i], lbl);
             if (!taken) break;
@@ -315,17 +315,17 @@ md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, m
 }
 
 void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc) {
-    ASSERT(type);
+    MD_ASSERT(type);
     for (size_t i = 0; i < md_array_size(type->name); ++i) {
         if (!str_empty(type->name[i])) str_free(type->name[i], alloc);
     }
     md_array_free(type->name, alloc);
     md_array_free(type->flags, alloc);
-    MEMSET(type, 0, sizeof(*type));
+    MD_MEMSET(type, 0, sizeof(*type));
 }
 
 void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, md_allocator_i* alloc) {
-    ASSERT(type);
+    MD_ASSERT(type);
     if (count >= type->count) return;
     for (size_t i = count; i < md_array_size(type->name); ++i) {
         if (!str_empty(type->name[i])) str_free(type->name[i], alloc);
@@ -336,7 +336,7 @@ void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, m
 }
 
 md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc) {
-    ASSERT(type);
+    MD_ASSERT(type);
     md_array_push(type->name, str_copy(name, alloc), alloc);
     md_array_push(type->flags, flags, alloc);
     return (md_molecule_type_idx_t)(type->count++);
@@ -403,13 +403,13 @@ static const md_bond_kind_name_t bond_kind_names[] = {
 };
 
 const md_bond_kind_name_t* md_bond_kind_names(size_t* count) {
-    if (count) *count = ARRAY_SIZE(bond_kind_names);
+    if (count) *count = MD_COUNTOF(bond_kind_names);
     return bond_kind_names;
 }
 
 void md_system_free(md_system_t* sys) {
-    ASSERT(sys);
-    ASSERT(sys->alloc);
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
     md_allocator_i* alloc = sys->alloc;
 
     if (sys->nonbonded) {
@@ -508,11 +508,11 @@ void md_system_free(md_system_t* sys) {
     // ATTRIBUTES
     md_attributes_free(&sys->attributes);
 
-    MEMSET(sys, 0, sizeof(md_system_t));
+    MD_MEMSET(sys, 0, sizeof(md_system_t));
 }
 
 bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
-    ASSERT(state);
+    MD_ASSERT(state);
 
     if (!state->alloc) {
         MD_LOG_ERROR("State allocator not set");
@@ -535,7 +535,7 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
         return true;
     }
 
-    const size_t capacity = ALIGN_TO(num_atoms, 16);
+    const size_t capacity = MD_ALIGN_TO(num_atoms, 16);
 
     md_array_resize(state->xyz, capacity, alloc);
 
@@ -543,7 +543,7 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
     // groups of atoms; an uninitialised tail puts garbage floats into those lanes.
     const size_t tail_bytes = (capacity - num_atoms) * sizeof(vec3_t);
     if (tail_bytes > 0) {
-        MEMSET(state->xyz + num_atoms, 0, tail_bytes);
+        MD_MEMSET(state->xyz + num_atoms, 0, tail_bytes);
     }
 
     state->num_atoms = num_atoms;
@@ -552,7 +552,7 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
 }
 
 void md_system_state_free(md_system_state_t* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
 
     // A view owns nothing; zeroing it is the whole job.
     if (state->alloc) {
@@ -560,13 +560,13 @@ void md_system_state_free(md_system_state_t* state) {
         md_attributes_free(&state->attributes);
     }
     md_allocator_i* alloc = state->alloc;
-    MEMSET(state, 0, sizeof(md_system_state_t));
+    MD_MEMSET(state, 0, sizeof(md_system_state_t));
     state->alloc = alloc;
 }
 
 bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) {
-    ASSERT(dst);
-    ASSERT(src);
+    MD_ASSERT(dst);
+    MD_ASSERT(src);
 
     if (dst == src) {
         return true;
@@ -575,7 +575,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
         return false;
     }
     if (src->num_atoms > 0 && src->xyz) {
-        MEMCPY(dst->xyz, src->xyz, src->num_atoms * sizeof(vec3_t));
+        MD_MEMCPY(dst->xyz, src->xyz, src->num_atoms * sizeof(vec3_t));
     }
     dst->unitcell = src->unitcell;
     dst->frame    = src->frame;
@@ -589,7 +589,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
 }
 
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
-    ASSERT(lipid);
+    MD_ASSERT(lipid);
     md_array_free(lipid->residue_offset, alloc);
     md_array_free(lipid->residue_idx, alloc);
     md_array_free(lipid->head_offset, alloc);
@@ -605,7 +605,7 @@ void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
     md_array_free(lipid->tail.head_beg, alloc);
     md_array_free(lipid->tail.head_end, alloc);
     md_array_free(lipid->tail.kind, alloc);
-    MEMSET(lipid, 0, sizeof(md_lipid_data_t));
+    MD_MEMSET(lipid, 0, sizeof(md_lipid_data_t));
 }
 
 // ### COPY ###
@@ -621,8 +621,8 @@ static void copy_strings(str_t** dst, const str_t* src, md_allocator_i* alloc) {
 }
 
 bool md_system_copy(md_system_t* dst, const md_system_t* src) {
-    ASSERT(dst);
-    ASSERT(src);
+    MD_ASSERT(dst);
+    MD_ASSERT(src);
     if (dst == src) return true;
     if (!dst->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -635,7 +635,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     *dst = *src;
     dst->alloc = alloc;
     dst->nonbonded = NULL;
-    MEMSET(&dst->attributes, 0, sizeof(dst->attributes));
+    MD_MEMSET(&dst->attributes, 0, sizeof(dst->attributes));
     dst->attributes.alloc = alloc;
     dst->description = str_empty(src->description) ? (str_t){0} : str_copy(src->description, alloc);
 
@@ -649,7 +649,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 #undef COPY_STRINGS
 
     // REFERENCE STATE
-    MEMSET(&dst->reference, 0, sizeof(dst->reference));
+    MD_MEMSET(&dst->reference, 0, sizeof(dst->reference));
     if (src->reference.xyz || src->reference.num_atoms) {
         dst->reference.alloc = alloc;
         md_system_state_copy(&dst->reference, &src->reference);
@@ -660,7 +660,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 #undef COPY_ARRAY
 
 void md_system_reset(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
     md_system_free(sys);
     sys->alloc = alloc;
@@ -678,8 +678,8 @@ static inline bool conn_has_bond(const md_bond_flags_t* bond_flags, size_t i) {
 }
 
 static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, const md_bond_flags_t* bond_flags, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
-    ASSERT(conn);
-    ASSERT(alloc);
+    MD_ASSERT(conn);
+    MD_ASSERT(alloc);
 
     if (bond_pairs == NULL) return;
     if (bond_pair_count == 0) return;
@@ -687,7 +687,7 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
 
     conn->offset_count = atom_count + 1;
     md_array_resize(conn->offset, conn->offset_count, alloc);
-    MEMSET(conn->offset, 0, md_array_bytes(conn->offset));
+    MD_MEMSET(conn->offset, 0, md_array_bytes(conn->offset));
 
     size_t graph_count = 0;
     for (size_t i = 0; i < bond_pair_count; ++i) graph_count += conn_has_bond(bond_flags, i);
@@ -704,14 +704,14 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
 
     offset_t* local_offset = md_temp_alloc_zero_array(temp, offset_t, bond_pair_count);
-    ASSERT(local_offset);
+    MD_ASSERT(local_offset);
 
     // Two packed 16-bit local offsets for each of the bond idx
     // Use offsets as accumulators for length
     for (size_t i = 0; i < bond_pair_count; ++i) {
         if (!conn_has_bond(bond_flags, i)) continue;
-		ASSERT(bond_pairs[i].idx[0] < (md_atom_idx_t)atom_count);
-		ASSERT(bond_pairs[i].idx[1] < (md_atom_idx_t)atom_count);
+		MD_ASSERT(bond_pairs[i].idx[0] < (md_atom_idx_t)atom_count);
+		MD_ASSERT(bond_pairs[i].idx[1] < (md_atom_idx_t)atom_count);
         local_offset[i].off[0] = (uint16_t)conn->offset[bond_pairs[i].idx[0]]++;
         local_offset[i].off[1] = (uint16_t)conn->offset[bond_pairs[i].idx[1]]++;
     }
@@ -738,8 +738,8 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
         const int idx_a = off_a + local_a;
         const int idx_b = off_b + local_b;
 
-        ASSERT(idx_a < (int)conn->count);
-        ASSERT(idx_b < (int)conn->count);
+        MD_ASSERT(idx_a < (int)conn->count);
+        MD_ASSERT(idx_b < (int)conn->count);
 
         // Store the cross references to the 'other' atom index signified by the bond in the correct location
         conn->atom_idx[idx_a] = atom_b;
@@ -753,13 +753,13 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
 }
 
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {
-    ASSERT(in_out_bond);
-    ASSERT(alloc);
+    MD_ASSERT(in_out_bond);
+    MD_ASSERT(alloc);
 	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->flags, in_out_bond->count, atom_count, alloc);
 }
 
 void md_system_bond_build_connectivity(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 	md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
 }
 
@@ -799,17 +799,17 @@ static str_t extract_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
 }
 
 md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, const str_t paths[], size_t num_paths, md_allocator_i* alloc) {
-    ASSERT(sys);
-    ASSERT(alloc);
-    ASSERT(paths || num_paths == 0);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
+    MD_ASSERT(paths || num_paths == 0);
 
-    md_allocator_i* arena = md_arena_allocator_create(alloc, KILOBYTES(16));
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MD_KILOBYTES(16));
     md_system_extract_t* ex = md_alloc(arena, sizeof(md_system_extract_t));
-    MEMSET(ex, 0, sizeof(md_system_extract_t));
+    MD_MEMSET(ex, 0, sizeof(md_system_extract_t));
     ex->sys      = sys;
     ex->arena    = arena;
     ex->io.alloc = arena;
-    ex->entries  = md_alloc(arena, MAX(num_paths, 1) * sizeof(extract_entry_t));
+    ex->entries  = md_alloc(arena, MD_MAX(num_paths, 1) * sizeof(extract_entry_t));
 
     const md_attributes_t* attributes = &sys->attributes;
 
@@ -825,7 +825,7 @@ md_system_extract_t* md_system_extract_begin(const md_system_t* sys, str_t run, 
 
     for (size_t i = 0; i < num_paths; ++i) {
         extract_entry_t* e = &ex->entries[ex->num_entries];
-        MEMSET(e, 0, sizeof(*e));
+        MD_MEMSET(e, 0, sizeof(*e));
         e->path = str_copy(paths[i], arena);
         e->kind = str_eq(paths[i], STR_LIT("atom/position")) ? EXTRACT_POSITION :
                   str_eq(paths[i], STR_LIT("unitcell"))      ? EXTRACT_CELL : EXTRACT_OTHER;
@@ -876,8 +876,8 @@ void md_system_extract_end(md_system_extract_t* ex) {
 }
 
 bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_state_t* out) {
-    ASSERT(ex);
-    ASSERT(out);
+    MD_ASSERT(ex);
+    MD_ASSERT(out);
 
     // One thread at a time. Recorded on first use rather than at begin, so a context may be made on
     // one thread and handed to the one that uses it.
@@ -885,7 +885,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
     if (ex->owner == 0) {
         ex->owner = tid;
     }
-    ASSERT(ex->owner == tid && "an extraction context is used by one thread at a time");
+    MD_ASSERT(ex->owner == tid && "an extraction context is used by one thread at a time");
 
     if (frame < 0 || (size_t)frame >= ex->num_frames) {
         MD_LOG_ERROR("Frame %" PRId64 " is outside the %zu frames being extracted from", frame, ex->num_frames);
@@ -967,7 +967,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
             md_attribute_format_t fmt;
             md_attribute_slice_format(&fmt, attr, slice);
             const size_t bytes = md_attribute_byte_size(&fmt);
-            void* data = md_temp_alloc(temp, MAX(bytes, 1));
+            void* data = md_temp_alloc(temp, MD_MAX(bytes, 1));
             if (!data || !md_attribute_read_stored(data, attr, slice, &ex->io)) {
                 result = false;
                 break;
@@ -1003,9 +1003,9 @@ static str_t run_cache_path(char* buf, size_t cap, str_t source_path) {
 }
 
 bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, str_t source_path, uint64_t magic, uint64_t version) {
-    ASSERT(out_file);
-    ASSERT(out_header);
-    MEMSET(out_file, 0, sizeof(*out_file));
+    MD_ASSERT(out_file);
+    MD_ASSERT(out_header);
+    MD_MEMSET(out_file, 0, sizeof(*out_file));
 
     md_file_info_t info = {0};
     if (!md_file_info_extract_from_path(source_path, &info)) {
@@ -1042,9 +1042,9 @@ bool md_run_cache_open(md_file_t* out_file, md_run_cache_header_t* out_header, s
 }
 
 bool md_run_cache_create(md_file_t* out_file, str_t source_path, const md_file_info_t* scanned, uint64_t magic, uint64_t version, size_t num_atoms, size_t num_frames) {
-    ASSERT(out_file);
-    ASSERT(scanned);
-    MEMSET(out_file, 0, sizeof(*out_file));
+    MD_ASSERT(out_file);
+    MD_ASSERT(scanned);
+    MD_MEMSET(out_file, 0, sizeof(*out_file));
     const md_file_info_t info = *scanned;
     char buf[4096];
     const str_t cache_path = run_cache_path(buf, sizeof(buf), source_path);
@@ -1074,8 +1074,8 @@ str_t md_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
 }
 
 bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
-    ASSERT(sys);
-    ASSERT(d);
+    MD_ASSERT(sys);
+    MD_ASSERT(d);
     if (str_empty(run) || !d->time || !d->source_offset || !d->source_size || !d->position_virt || str_empty(d->source_path)) {
         MD_LOG_ERROR("An incomplete description of the run '" STR_FMT "'", STR_ARG(run));
         return false;
@@ -1150,10 +1150,10 @@ bool md_run_publish(md_system_t* sys, str_t run, const md_run_desc_t* d) {
 }
 
 bool md_run_source(md_run_source_t* out, const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf) {
-    ASSERT(out);
-    ASSERT(attributes);
-    ASSERT(attr);
-    MEMSET(out, 0, sizeof(*out));
+    MD_ASSERT(out);
+    MD_ASSERT(attributes);
+    MD_ASSERT(attr);
+    MD_MEMSET(out, 0, sizeof(*out));
 
     const str_t p = attr->path;
     if (p.len <= leaf.len + 1 || !str_ends_with(p, leaf) || p.ptr[p.len - leaf.len - 1] != '/') {
@@ -1201,8 +1201,8 @@ static size_t run_series_slug(char* buf, size_t cap, str_t name) {
 }
 
 bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc_t* d) {
-    ASSERT(sys);
-    ASSERT(d);
+    MD_ASSERT(sys);
+    MD_ASSERT(d);
     md_attributes_t* attributes = &sys->attributes;
     if (!attributes->alloc) {
         attributes->alloc = sys->alloc;

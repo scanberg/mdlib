@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdarg.h>
 
-#include <core/md_common.h>  // ASSERT, MIN, MAX
+#include <core/md_common.h>  // MD_ASSERT, MIN, MAX
 
 #ifdef __cplusplus
 #define DEF_VAL(x) = x
@@ -116,7 +116,7 @@ static inline bool str_eq(str_t str_a, str_t str_b) {
     if (str_a.len != str_b.len) return false;
     if (str_a.len == 0) return true;
     if (str_a.ptr[0] != str_b.ptr[0]) return false;
-    return MEMCMP(str_a.ptr, str_b.ptr, str_a.len) == 0;
+    return MD_MEMCMP(str_a.ptr, str_b.ptr, str_a.len) == 0;
 }
 
 static inline bool str_eq_ignore_case(str_t str_a, str_t str_b) {
@@ -127,17 +127,17 @@ static inline bool str_eq_ignore_case(str_t str_a, str_t str_b) {
     return true;
 }
 
-// Equal in their first n characters: the prefixes of length MIN(len, n) are the same string.
+// Equal in their first n characters: the prefixes of length MD_MIN(len, n) are the same string.
 // With n = prefix.len this is str_begins_with(str, prefix).
 static inline bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
-    const size_t len = MIN(str_a.len, n);
-    if (len != MIN(str_b.len, n)) return false;
-    return len == 0 || MEMCMP(str_a.ptr, str_b.ptr, len) == 0;
+    const size_t len = MD_MIN(str_a.len, n);
+    if (len != MD_MIN(str_b.len, n)) return false;
+    return len == 0 || MD_MEMCMP(str_a.ptr, str_b.ptr, len) == 0;
 }
 
 static inline bool str_eq_n_ignore_case(str_t str_a, str_t str_b, size_t n) {
-    const size_t len = MIN(str_a.len, n);
-    if (len != MIN(str_b.len, n)) return false;
+    const size_t len = MD_MIN(str_a.len, n);
+    if (len != MD_MIN(str_b.len, n)) return false;
     for (size_t i = 0; i < len; ++i) {
         if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
     }
@@ -163,7 +163,7 @@ static inline bool str_eq_cstr_ignore_case(str_t str, const char* cstr) {
 // str_eq_n with cstr as a str. With n = strlen(cstr) it tells whether str begins with cstr: a str shorter than
 // cstr does not ("END" is not "ENDMDL").
 static inline bool str_eq_cstr_n(str_t str, const char* cstr, size_t n) {
-    const size_t len = MIN(str.len, n);
+    const size_t len = MD_MIN(str.len, n);
     if (!cstr) return len == 0;
     for (size_t i = 0; i < len; ++i) {
         if (cstr[i] == '\0' || cstr[i] != str.ptr[i]) return false;
@@ -172,7 +172,7 @@ static inline bool str_eq_cstr_n(str_t str, const char* cstr, size_t n) {
 }
 
 static inline bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n) {
-    const size_t len = MIN(str.len, n);
+    const size_t len = MD_MIN(str.len, n);
     if (!cstr) return len == 0;
     for (size_t i = 0; i < len; ++i) {
         if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
@@ -184,7 +184,7 @@ static inline bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t
 // with a prefix ordered before what it is a prefix of. Returns -1, 0 or 1.
 // A byte loop rather than memcmp: what is ordered is mostly short (names, labels), where the call costs more than it saves.
 static inline int str_cmp_lex(str_t a, str_t b) {
-    const size_t len = MIN(a.len, b.len);
+    const size_t len = MD_MIN(a.len, b.len);
     for (size_t i = 0; i < len; ++i) {
         const unsigned char ca = (unsigned char)a.ptr[i];
         const unsigned char cb = (unsigned char)b.ptr[i];
@@ -194,11 +194,11 @@ static inline int str_cmp_lex(str_t a, str_t b) {
 }
 
 static inline bool str_begins_with(str_t str, str_t prefix) {
-    return str.len >= prefix.len && (prefix.len == 0 || MEMCMP(str.ptr, prefix.ptr, prefix.len) == 0);
+    return str.len >= prefix.len && (prefix.len == 0 || MD_MEMCMP(str.ptr, prefix.ptr, prefix.len) == 0);
 }
 
 static inline bool str_ends_with(str_t str, str_t suffix) {
-    return str.len >= suffix.len && (suffix.len == 0 || MEMCMP(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0);
+    return str.len >= suffix.len && (suffix.len == 0 || MD_MEMCMP(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0);
 }
 
 size_t str_count_equal_chars(str_t a, str_t b);
@@ -211,7 +211,7 @@ static inline str_t str_substr(str_t str, size_t offset, size_t length DEF_VAL(S
     }
     const size_t max_len = str.len - offset;
     res.ptr = str.ptr + offset;
-    res.len = length = MIN(length, max_len);
+    res.len = length = MD_MIN(length, max_len);
     return res;
 }
 
@@ -238,7 +238,7 @@ static inline str_t str_from_cstrn(const char* cstr, size_t n) {
 // This does no allocation of any sort, it simply creates a new string view from the two inputs which correspond to the total span
 // Use at your own risk!
 static inline str_t str_join(str_t first, str_t last) {
-    ASSERT(first.ptr < last.ptr + last.len);
+    MD_ASSERT(first.ptr < last.ptr + last.len);
     str_t str = { first.ptr, (size_t)(last.ptr + last.len - first.ptr) };
     return str;
 }
@@ -246,8 +246,8 @@ static inline str_t str_join(str_t first, str_t last) {
 // Skip, peek and extract agree on what a line is: the text up to a '\n' or the end, without the '\r' of a CRLF,
 // and a last line counts whether or not a newline ends it. Inlined, as parsers call them for every line.
 static inline bool str_extract_line(str_t* out_line, str_t* in_out_str) {
-    ASSERT(out_line);
-    ASSERT(in_out_str);
+    MD_ASSERT(out_line);
+    MD_ASSERT(in_out_str);
     if (in_out_str->len == 0) return false;
 
     const char* beg = in_out_str->ptr;
@@ -265,13 +265,13 @@ static inline bool str_extract_line(str_t* out_line, str_t* in_out_str) {
 }
 
 static inline bool str_peek_line(str_t* out_line, const str_t* in_str) {
-    ASSERT(in_str);
+    MD_ASSERT(in_str);
     str_t rest = *in_str;
     return str_extract_line(out_line, &rest);
 }
 
 static inline bool str_skip_line(str_t* in_out_str) {
-    ASSERT(in_out_str);
+    MD_ASSERT(in_out_str);
     if (in_out_str->len == 0) return false;
     const char* nl   = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
     const char* next = nl ? nl + 1 : in_out_str->ptr + in_out_str->len;
@@ -361,10 +361,10 @@ void convert_to_upper(char* str, size_t len);
 // leaves an empty string). Truncates to fit in cap. Returns the number of characters written (excluding the zero
 // termination character)
 static inline size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (cap == 0) return 0;
-    const size_t len = MIN(str.len, cap - 1);
-    if (len) MEMCPY(buf, str.ptr, len);
+    const size_t len = MD_MIN(str.len, cap - 1);
+    if (len) MD_MEMCPY(buf, str.ptr, len);
     buf[len] = '\0';
     return len;
 }

@@ -39,7 +39,7 @@ static md_system_state_t sys_state[NUM_SYS];
 static md_system_t* get_sys(sys_id_t id) {
     static md_allocator_i* alloc = NULL;
     static bool loaded[NUM_SYS];
-    if (!alloc) alloc = md_vm_arena_create(GIGABYTES(4));
+    if (!alloc) alloc = md_vm_arena_create(MD_GIGABYTES(4));
     if (!loaded[id]) {
         md_system_t* s = &sys_data[id];
         md_system_state_t* st = &sys_state[id];
@@ -134,7 +134,7 @@ UTEST(match, smiles_parse) {
 
     // The bond of a ring closure, on either side, belongs to the ring bond and not to the next atom
     const char* ring_double[] = {"C=1CCCCC1", "C1CCCCC=1", "C=1CCCCC=1"};
-    for (size_t i = 0; i < ARRAY_SIZE(ring_double); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ring_double); ++i) {
         ASSERT_TRUE(md_smiles_parse(&g, str_from_cstr(ring_double[i]), alloc, &err));
         ASSERT_EQ(6, (int)g.num_bonds);
         int num_double = 0;
@@ -236,7 +236,7 @@ UTEST(match, smiles_errors) {
         {"C(C.)C",      3},     // Same, within a branch
         {"[CH3+",       0},     // Unclosed '['
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_smiles_t g = {0};
         md_smiles_error_t err = {0};
         const bool ok = md_smiles_parse(&g, str_from_cstr(cases[i].str), alloc, &err);
@@ -339,14 +339,14 @@ UTEST(match, query_validation) {
     md_match_result_t res = {0};
     md_allocator_i* alloc = md_get_heap_allocator();
 
-    q.bonds = out_of_range; q.num_bonds = ARRAY_SIZE(out_of_range);
+    q.bonds = out_of_range; q.num_bonds = MD_COUNTOF(out_of_range);
     EXPECT_FALSE(md_match_find(&res, &desc, sys, alloc));
-    q.bonds = self;         q.num_bonds = ARRAY_SIZE(self);
+    q.bonds = self;         q.num_bonds = MD_COUNTOF(self);
     EXPECT_FALSE(md_match_find(&res, &desc, sys, alloc));
-    q.bonds = twice;        q.num_bonds = ARRAY_SIZE(twice);
+    q.bonds = twice;        q.num_bonds = MD_COUNTOF(twice);
     EXPECT_FALSE(md_match_find(&res, &desc, sys, alloc));
 
-    q.bonds = fine;         q.num_bonds = ARRAY_SIZE(fine);
+    q.bonds = fine;         q.num_bonds = MD_COUNTOF(fine);
     EXPECT_TRUE(md_match_find(&res, &desc, sys, alloc));
     EXPECT_LT(0, (int)res.count);
     EXPECT_EQ(3, (int)res.width);
@@ -413,7 +413,7 @@ UTEST(match, modes) {
     ASSERT_EQ(10, (int)res.count);
     for (size_t i = 0; i < res.count; ++i) {
         for (size_t j = i + 1; j < res.count; ++j) {
-            EXPECT_NE(0, MEMCMP(res.atom_idx + i * res.width, res.atom_idx + j * res.width, sizeof(int32_t) * res.width));
+            EXPECT_NE(0, MD_MEMCMP(res.atom_idx + i * res.width, res.atom_idx + j * res.width, sizeof(int32_t) * res.width));
         }
     }
     md_match_result_free(&res);
@@ -741,7 +741,7 @@ UTEST(match, molecules) {
     md_match_result_t aa_res = {0};
     ASSERT_TRUE(md_match_find(&aa_res, &aa_desc, tub, alloc));
     ASSERT_LT(0, (int)aa_res.count);
-    int64_t* part_unit = md_alloc(alloc, sizeof(int64_t) * MAX(1, tub->part.count));
+    int64_t* part_unit = md_alloc(alloc, sizeof(int64_t) * MD_MAX(1, tub->part.count));
     for (size_t i = 0; i < tub->part.count; ++i) part_unit[i] = -1;
     size_t checked = 0;
     for (size_t i = 0; i < aa_res.count; ++i) {
@@ -752,7 +752,7 @@ UTEST(match, molecules) {
         checked += 1;
     }
     EXPECT_LT(0, (int)checked);
-    md_free(alloc, part_unit, sizeof(int64_t) * MAX(1, tub->part.count));
+    md_free(alloc, part_unit, sizeof(int64_t) * MD_MAX(1, tub->part.count));
     md_match_result_free(&aa_res);
     md_match_query_free(&aa);
 }
@@ -907,7 +907,7 @@ UTEST(match, reference_identity) {
     // of a TYR flipped over, the hydrogens of its CH2 and the oxygens of a carboxylate swapped are the same atoms
     md_allocator_i* alloc = md_get_heap_allocator();
     const struct { sys_id_t id; const char* name; } cases[] = {{SYS_CENTERED, "TYR"}, {SYS_CENTERED, "PHE"}, {SYS_CENTERED, "ASP"}, {SYS_CENTERED, "ARG"}, {SYS_PFTAA, "PFT"}};
-    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+    for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         const md_system_t* sys = get_sys(cases[c].id);
         for (size_t ci = 0; ci < sys->residue.count; ++ci) {
             if (!str_eq_cstr(LBL_TO_STR(sys->residue.name[ci]), cases[c].name)) continue;
@@ -940,7 +940,7 @@ UTEST(match, reference_ring) {
     {
         const int32_t ref[] = {19, 20, 21, 22, 24};
         md_match_query_t q = {0};
-        ASSERT_TRUE(md_match_query_init_atoms(&q, ref, ARRAY_SIZE(ref), MD_MATCH_LABEL_ELEMENT, sys, alloc));
+        ASSERT_TRUE(md_match_query_init_atoms(&q, ref, MD_COUNTOF(ref), MD_MATCH_LABEL_ELEMENT, sys, alloc));
         md_match_desc_t desc = {.query = &q};
         EXPECT_EQ(5, (int)count_matches(&desc, sys, NULL, NULL));
         md_match_query_free(&q);
@@ -949,7 +949,7 @@ UTEST(match, reference_ring) {
     {
         const int32_t ref[] = {0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 46, 47, 48};
         md_match_query_t q = {0};
-        ASSERT_TRUE(md_match_query_init_atoms(&q, ref, ARRAY_SIZE(ref), MD_MATCH_LABEL_ELEMENT, sys, alloc));
+        ASSERT_TRUE(md_match_query_init_atoms(&q, ref, MD_COUNTOF(ref), MD_MATCH_LABEL_ELEMENT, sys, alloc));
         md_match_desc_t desc = {.query = &q};
         EXPECT_EQ(2, (int)count_matches(&desc, sys, NULL, NULL));
         md_match_query_free(&q);
@@ -1067,14 +1067,14 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
     const md_system_t* sys = get_sys(id);
     md_allocator_i* alloc = md_get_heap_allocator();
     const size_t num_res = sys->residue.count;
-    const size_t num_pat  = ARRAY_SIZE(residue_patterns);
+    const size_t num_pat  = MD_COUNTOF(residue_patterns);
 
     // Which pattern matched each residue, -1 for none, -2 for several
     int* matched = md_alloc(alloc, sizeof(int) * num_res);
     for (size_t i = 0; i < num_res; ++i) matched[i] = -1;
 
     for (size_t p = 0; p < num_pat; ++p) {
-        for (size_t v = 0; v < ARRAY_SIZE(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
+        for (size_t v = 0; v < MD_COUNTOF(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
             md_match_query_t q = {0};
             md_smiles_error_t err = {0};
             if (!md_match_query_init_smiles(&q, str_from_cstr(residue_patterns[p].smiles[v]), alloc, &err)) {
@@ -1142,8 +1142,8 @@ UTEST(match, residues_crystal) {
 
 static md_match_library_t* residue_library(md_allocator_i* alloc) {
     md_match_library_t* lib = md_match_library_create(alloc);
-    for (size_t p = 0; p < ARRAY_SIZE(residue_patterns); ++p) {
-        for (size_t v = 0; v < ARRAY_SIZE(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
+    for (size_t p = 0; p < MD_COUNTOF(residue_patterns); ++p) {
+        for (size_t v = 0; v < MD_COUNTOF(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
             md_match_library_add_smiles(lib, str_from_cstr(residue_patterns[p].smiles[v]), str_from_cstr(residue_patterns[p].name), NULL);
         }
     }
@@ -1322,7 +1322,7 @@ static bool filter_fails_with(const char* expr, const char* expected, sys_id_t i
 }
 
 UTEST(match, script_smiles) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_array(md_bitset_t) arr = 0;
 
     // One selection per methyl, with its hydrogens
@@ -1359,7 +1359,7 @@ UTEST(match, script_smiles) {
 }
 
 UTEST(match, script_match) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_array(md_bitset_t) arr = 0;
 
     // The fifth residue with its hydrogens, see match.reference_hydrogens: each match has its every atom. Twice in the

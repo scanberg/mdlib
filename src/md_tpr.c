@@ -121,7 +121,7 @@ enum {
     F_DKDL, F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED, F_DVDL_RESTRAINT, F_DVDL_TEMPERATURE,
     F_NRE
 };
-STATIC_ASSERT(F_NRE == 95, "The interaction function list must match GROMACS'");
+MD_STATIC_ASSERT(F_NRE == 95, "The interaction function list must match GROMACS'");
 
 // Function types added after the oldest supported version: a file older than 'version' does not
 // have the type, so its interaction list is absent and every type number from 'ftype' up is one
@@ -258,7 +258,7 @@ static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / size) ? md_xdr_take(&r->xdr, count * size) : NULL;
     if (!p) {
         rd_fail(r);
-        MEMSET(dst, 0, count * sizeof(float));
+        MD_MEMSET(dst, 0, count * sizeof(float));
         return;
     }
     if (r->dbl) {
@@ -310,7 +310,7 @@ static str_t rd_symstr(tpr_reader_t* r, const tpr_symtab_t* symtab) {
 }
 
 static inline bool ftype_absent(int ftype, int version) {
-    for (size_t k = 0; k < ARRAY_SIZE(ftupd); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(ftupd); ++k) {
         if (version < ftupd[k].version && ftype == ftupd[k].ftype) {
             return true;
         }
@@ -531,7 +531,7 @@ static inline void push_pair(md_array(md_atom_pair_t)* pairs, int32_t a, int32_t
         return;
     }
     if (a == b) return;
-    md_atom_pair_t pair = {{ MIN(a, b), MAX(a, b) }};
+    md_atom_pair_t pair = {{ MD_MIN(a, b), MD_MAX(a, b) }};
     md_array_push(*pairs, pair, alloc);
 }
 
@@ -761,11 +761,11 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         data->str_data = md_alloc(alloc, total + 1);
         data->str_size = total + 1;
         char* dst = data->str_data;
-        MEMCPY(dst, version_string.ptr, version_string.len);
+        MD_MEMCPY(dst, version_string.ptr, version_string.len);
         data->version_string = (str_t){ dst, version_string.len };
         dst += version_string.len;
         for (size_t i = 0; i < count; ++i) {
-            MEMCPY(dst, views[i].ptr, views[i].len);
+            MD_MEMCPY(dst, views[i].ptr, views[i].len);
             views[i].ptr = dst;
             dst += views[i].len;
         }
@@ -806,13 +806,13 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         }
         data->lj = md_array_create(md_tpr_lj_t, num_pairs, alloc);
         data->num_nb_types = num_nb_types;
-        if (num_pairs) MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+        if (num_pairs) MD_MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         bool all_lj = num_pairs > 0;
 
         for (size_t i = 0; i < num_types && rd_ok(r); ++i) {
             // The type numbers in the file are those of the version that wrote it
             int ftype = functype[i];
-            for (size_t k = 0; k < ARRAY_SIZE(ftupd); ++k) {
+            for (size_t k = 0; k < MD_COUNTOF(ftupd); ++k) {
                 if (r->version < ftupd[k].version && ftype >= ftupd[k].ftype) {
                     ftype += 1;
                 }
@@ -831,7 +831,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         data->nb_is_lj = all_lj;
         if (!all_lj && num_pairs) {
             // A table of mixed or other forms is not Lennard-Jones: leave nothing half filled in
-            MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+            MD_MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         }
     }
 
@@ -843,7 +843,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
             return;
         }
         data->moltypes = md_array_create(md_tpr_moltype_t, count, alloc);
-        if (count) MEMSET(data->moltypes, 0, count * sizeof(md_tpr_moltype_t));
+        if (count) MD_MEMSET(data->moltypes, 0, count * sizeof(md_tpr_moltype_t));
         data->num_moltypes = count;
         for (size_t i = 0; i < count && rd_ok(r); ++i) {
             rd_moltype(r, &data->moltypes[i], &symtab, alloc);
@@ -1123,9 +1123,9 @@ static void rd_ir_nonbonded(tpr_reader_t* r, md_tpr_nonbonded_t* nb) {
 // ### FILE ###
 
 bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t size, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
-    MEMSET(data, 0, sizeof(md_tpr_data_t));
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
+    MD_MEMSET(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
 
     if (!buffer || size == 0) {
@@ -1226,7 +1226,7 @@ bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t si
     if (has_box) {
         float box[9];
         rd_reals(&body, box, 9);
-        MEMCPY(data->box, box, sizeof(box));
+        MD_MEMCPY(data->box, box, sizeof(box));
         data->has_box = true;
         if (version >= tpxv_Pre96Version51) skip_reals(&body, 9);  // Relative box
         skip_reals(&body, 9);                                       // Box velocity
@@ -1292,8 +1292,8 @@ done:
 }
 
 bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -1321,8 +1321,8 @@ bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i*
 }
 
 void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
     for (size_t i = 0; i < md_array_size(data->moltypes); ++i) {
         md_array_free(data->moltypes[i].atoms, alloc);
         md_array_free(data->moltypes[i].residues, alloc);
@@ -1330,7 +1330,7 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
         md_array_free(data->moltypes[i].elastic_bonds, alloc);
         const md_tpr_moltype_t* mt = &data->moltypes[i];
         if (mt->excl_offset) {
-            md_free(alloc, mt->excl, sizeof(uint32_t) * MAX(mt->excl_offset[mt->num_atoms], 1));
+            md_free(alloc, mt->excl, sizeof(uint32_t) * MD_MAX(mt->excl_offset[mt->num_atoms], 1));
             md_free(alloc, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
         }
     }
@@ -1344,7 +1344,7 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
     if (data->str_data) {
         md_free(alloc, data->str_data, data->str_size);
     }
-    MEMSET(data, 0, sizeof(md_tpr_data_t));
+    MD_MEMSET(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
 }
 
@@ -1428,9 +1428,9 @@ static md_atomic_number_t tpr_infer_atomic_number(str_t name, str_t res_name, si
 }
 
 bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(data);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    MD_ASSERT(data);
 
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -1461,7 +1461,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         const md_tpr_moltype_t* mt = &data->moltypes[t];
         if ((int64_t)mt->num_residues > max_renum) {
             for (size_t r = 0; r < mt->num_residues; ++r) {
-                next_renum = MAX(next_renum, mt->residues[r].nr);
+                next_renum = MD_MAX(next_renum, mt->residues[r].nr);
             }
         }
     }
@@ -1476,11 +1476,11 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     //   - Otherwise the particle is a coarse grained bead (or a massless virtual site): no element, and
     //     a radius from the Lennard-Jones parameters of its non-bonded type when it has any.
     // The predefined bead tables then add what they know about the beads (backbone, side chain...).
-    const size_t capacity = ROUND_UP(num_atoms, 16);
+    const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    MD_MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
@@ -1499,7 +1499,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         size_t num_inferred = 0;    // ... with one inferred here
         size_t num_types_inferred = 0;
         size_t* mt_counts = md_temp_alloc_array(temp, size_t, 3 * (data->num_moltypes + 1));
-        MEMSET(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
+        MD_MEMSET(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
 
         // What an inference gives, by what it is of: once per molecule type atom is once per atom where every molecule
         // is a type of its own (as many coarse grained systems are written), and the same few names and masses then make
@@ -1511,10 +1511,10 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_tpr_moltype_t* mt = &data->moltypes[t];
             moltype_z[t] = md_temp_alloc_array(temp, md_atomic_number_t, mt->num_atoms + 1);
             moltype_inferred[t] = md_temp_alloc_array(temp, bool, mt->num_atoms + 1);
-            MEMSET(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
+            MD_MEMSET(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
 
             uint32_t* res_size = md_temp_alloc_array(temp, uint32_t, mt->num_residues + 1);
-            MEMSET(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
+            MD_MEMSET(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
             for (size_t i = 0; i < mt->num_atoms; ++i) {
                 res_size[mt->atoms[i].residue] += 1;
             }
@@ -1679,7 +1679,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             next_renum += mb->nmol * (int32_t)mt->num_residues;
         }
     }
-    ASSERT(ai == num_atoms);
+    MD_ASSERT(ai == num_atoms);
     md_array_push(sys->residue.atom_offset, (uint32_t)num_atoms, alloc);    // Final sentinel
     if (sys->instance.count) {
         md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);     // Final sentinel
@@ -1746,7 +1746,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             sys->bond.pairs[bi] = data->intermolecular_elastic_bonds[k];
             sys->bond.flags[bi] = elastic_flags;
         }
-        ASSERT(bi == count);
+        MD_ASSERT(bi == count);
 
         // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
         // same as when the system is read from coordinates. md_util_system_infer_molecules keeps it with its
@@ -1805,7 +1805,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 }
 
 bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 

@@ -33,7 +33,7 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #pragma GCC diagnostic pop
 #endif
 
-#define MD_SIMD_INLINE static FORCE_INLINE
+#define MD_SIMD_INLINE static MD_FORCE_INLINE
 
 #define md_128  simde__m128
 #define md_128d simde__m128d

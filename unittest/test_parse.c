@@ -100,7 +100,7 @@ UTEST(parse, f64_grammar) {
         { "info",       3,  HUGE_VAL },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         const double sentinel = 12345.0;
         double v = sentinel;
         const size_t n = md_parse_f64(&v, str_of(cases[i].in));
@@ -194,7 +194,7 @@ UTEST(parse, f64_hard_cases) {
         "4503599627370497.5",
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(inputs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
         const double ref = strtod(inputs[i], NULL);
         double v = 0.0;
         const size_t n = md_parse_f64(&v, str_of(inputs[i]));
@@ -251,8 +251,8 @@ UTEST(parse, f64_ignores_the_locale) {
         "3.14159265358979323846264338327950288",    // Past 19 digits, down the slow path
         "123456789012345678901234567890.5e-10",
     };
-    double ref[ARRAY_SIZE(inputs)];
-    for (size_t i = 0; i < ARRAY_SIZE(inputs); ++i) {
+    double ref[MD_COUNTOF(inputs)];
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
         ref[i] = strtod(inputs[i], NULL);
     }
 
@@ -261,7 +261,7 @@ UTEST(parse, f64_ignores_the_locale) {
         return;
     }
 
-    for (size_t i = 0; i < ARRAY_SIZE(inputs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
         double v = 0.0;
         EXPECT_EQ(strlen(inputs[i]), md_parse_f64(&v, str_of(inputs[i])));
         EXPECT_EQ(bits_of(ref[i]), bits_of(v));
@@ -296,14 +296,14 @@ UTEST(parse, i64) {
         { "99999999999999999999999",    23, INT64_MAX },
         { "-99999999999999999999999",   24, INT64_MIN },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         int64_t v = 7;
         EXPECT_EQ(cases[i].consumed, md_parse_i64(&v, str_of(cases[i].in)));
         EXPECT_EQ(cases[i].value, v);
     }
 
     static const char* not_ints[] = { "", "-", "+", " 1", "x1", "--1", ".5" };
-    for (size_t i = 0; i < ARRAY_SIZE(not_ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(not_ints); ++i) {
         int64_t v = 7;
         EXPECT_EQ(0u, md_parse_i64(&v, str_of(not_ints[i])));
         EXPECT_EQ(7, v);
@@ -354,10 +354,10 @@ UTEST(parse, parse_float_and_parse_int) {
 UTEST(parse, is_float_and_is_int) {
     static const char* floats[] = { "1", "-1", "+1", "1.", ".5", "-.5", "1e5", "1.5E-3", "007", "0.0", "1e+05" };
     static const char* not_floats[] = { "", "-", "+", ".", "e5", "1e", "1e+", "1.5x", " 1", "1 ", "inf", "nan", "Infinity", "1,5", "--1", "1.2.3", "0x10", "1e5.5" };
-    for (size_t i = 0; i < ARRAY_SIZE(floats); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(floats); ++i) {
         EXPECT_TRUE(is_float(str_of(floats[i])));
     }
-    for (size_t i = 0; i < ARRAY_SIZE(not_floats); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(not_floats); ++i) {
         EXPECT_FALSE(is_float(str_of(not_floats[i])));
         if (is_float(str_of(not_floats[i]))) printf("  is_float('%s')\n", not_floats[i]);
     }
@@ -365,10 +365,10 @@ UTEST(parse, is_float_and_is_int) {
 
     static const char* ints[] = { "0", "-0", "+42", "123456789012345678901234567890" };
     static const char* not_ints[] = { "", "-", "+", "1.0", "1e5", " 1", "1 ", "1-" };
-    for (size_t i = 0; i < ARRAY_SIZE(ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ints); ++i) {
         EXPECT_TRUE(is_int(str_of(ints[i])));
     }
-    for (size_t i = 0; i < ARRAY_SIZE(not_ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(not_ints); ++i) {
         EXPECT_FALSE(is_int(str_of(not_ints[i])));
     }
     EXPECT_FALSE(is_int((str_t){0}));
@@ -391,7 +391,7 @@ UTEST(parse, extract_token) {
 
     str_t toks[2];
     str = STR_LIT("1 2 3");
-    EXPECT_EQ(2u, extract_tokens(toks, ARRAY_SIZE(toks), &str));
+    EXPECT_EQ(2u, extract_tokens(toks, MD_COUNTOF(toks), &str));
     EXPECT_TRUE(str_eq(toks[1], STR_LIT("2")));
     EXPECT_TRUE(str_eq(str, STR_LIT("3")));
 }
@@ -399,25 +399,25 @@ UTEST(parse, extract_token) {
 UTEST(parse, extract_token_delim) {
     str_t toks[8];
     str_t str = STR_LIT("a,,b");
-    EXPECT_EQ(3u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
+    EXPECT_EQ(3u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
     EXPECT_TRUE(str_eq(toks[0], STR_LIT("a")));
     EXPECT_TRUE(str_eq(toks[1], STR_LIT("")));
     EXPECT_TRUE(str_eq(toks[2], STR_LIT("b")));
 
     // Whitespace is part of a field
     str = STR_LIT(" a , b");
-    EXPECT_EQ(2u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
+    EXPECT_EQ(2u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
     EXPECT_TRUE(str_eq(toks[0], STR_LIT(" a ")));
     EXPECT_TRUE(str_eq(toks[1], STR_LIT(" b")));
 
     // A leading delimiter gives an empty first field; a trailing one no empty last field
     str = STR_LIT(",a,");
-    EXPECT_EQ(2u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
+    EXPECT_EQ(2u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
     EXPECT_TRUE(str_eq(toks[0], STR_LIT("")));
     EXPECT_TRUE(str_eq(toks[1], STR_LIT("a")));
 
     str = STR_LIT("");
-    EXPECT_EQ(0u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
+    EXPECT_EQ(0u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +743,7 @@ UTEST(parse, fixed_f32_other_layouts) {
         { "1.5",      0, false, 0 },
         { ".5",       1, false, 0 },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         const size_t len = strlen(cases[i].field);
         char* field = malloc(len ? len : 1);
         memcpy(field, cases[i].field, len);
@@ -768,17 +768,17 @@ UTEST(parse, perf) {
     int64_t iacc = 0;
 
     md_tick_t t0 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(floats); ++k) facc += strtod(floats[k], NULL);
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(floats); ++k) facc += strtod(floats[k], NULL);
     md_tick_t t1 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(floats); ++k) { double v; md_parse_f64(&v, str_of(floats[k])); facc += v; }
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(floats); ++k) { double v; md_parse_f64(&v, str_of(floats[k])); facc += v; }
     md_tick_t t2 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(ints); ++k) iacc += strtoll(ints[k], NULL, 10);
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(ints); ++k) iacc += strtoll(ints[k], NULL, 10);
     md_tick_t t3 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(ints); ++k) { int64_t v; md_parse_i64(&v, str_of(ints[k])); iacc += v; }
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(ints); ++k) { int64_t v; md_parse_i64(&v, str_of(ints[k])); iacc += v; }
     md_tick_t t4 = md_tick_now();
 
-    const double nf = (double)num_iter * ARRAY_SIZE(floats);
-    const double ni = (double)num_iter * ARRAY_SIZE(ints);
+    const double nf = (double)num_iter * MD_COUNTOF(floats);
+    const double ni = (double)num_iter * MD_COUNTOF(ints);
     printf("  per number: strtod %.1f ns, md_parse_f64 %.1f ns | strtoll %.1f ns, md_parse_i64 %.1f ns (%g %lld)\n",
         md_tick_to_milliseconds(t1 - t0) * 1e6 / nf, md_tick_to_milliseconds(t2 - t1) * 1e6 / nf,
         md_tick_to_milliseconds(t3 - t2) * 1e6 / ni, md_tick_to_milliseconds(t4 - t3) * 1e6 / ni, facc, (long long)iacc);
@@ -814,11 +814,11 @@ UTEST(parse, text_lines) {
     size_t mismatches = 0;
     for (size_t beg = 0; beg < 200; beg += 1) {
         for (size_t end = beg; end <= 512; end += 7) {
-            const size_t n = text_lines_reference(want, ARRAY_SIZE(want), text + beg, text + end);
+            const size_t n = text_lines_reference(want, MD_COUNTOF(want), text + beg, text + end);
             md_text_lines_t it = md_text_lines(text + beg, text + end);
             size_t m = 0;
             str_t line;
-            while (m < ARRAY_SIZE(got) && md_text_lines_next(&it, &line)) got[m++] = line;
+            while (m < MD_COUNTOF(got) && md_text_lines_next(&it, &line)) got[m++] = line;
             if (m != n) { mismatches += 1; continue; }
             for (size_t k = 0; k < n; ++k) {
                 if (got[k].ptr != want[k].ptr || got[k].len != want[k].len) { mismatches += 1; break; }
@@ -874,8 +874,8 @@ UTEST(parse, reader_skip_lines) {
         EXPECT_TRUE(same);
     }
 
-    const size_t caps[] = { 256, 4096, MEGABYTES(1) };
-    for (size_t c = 0; c < ARRAY_SIZE(caps); ++c) {
+    const size_t caps[] = { 256, 4096, MD_MEGABYTES(1) };
+    for (size_t c = 0; c < MD_COUNTOF(caps); ++c) {
         md_file_reader_t frd;
         ASSERT_TRUE(md_file_reader_open(&frd, path, caps[c], heap));
         md_reader_i sr = md_reader_from_str((str_t){ text, len });
@@ -887,7 +887,7 @@ UTEST(parse, reader_skip_lines) {
             while (at < num_lines) {
                 const size_t k = (size_t)(rng_next(&st) % 64);
                 const size_t skipped = md_reader_skip_lines(readers[r], k);
-                same &= skipped == MIN(k, (size_t)(num_lines - at));
+                same &= skipped == MD_MIN(k, (size_t)(num_lines - at));
                 at += (int)skipped;
                 str_t line;
                 if (at < num_lines) {

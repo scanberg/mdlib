@@ -15,7 +15,7 @@ typedef enum {
     MD_UNITCELL_PBC_ALL       = 4 | 8 | 16,
 } md_unitcell_flags_t;
 
-ENUM_FLAGS(md_unitcell_flags_t)
+MD_ENUM_FLAGS(md_unitcell_flags_t)
 
 typedef struct md_unitcell_t {
     double x, xy, xz;
@@ -123,8 +123,8 @@ void md_unitcell_G_extract_float (float  out_G[3][3], const md_unitcell_t* cell)
 // Create a mask which represents the periodic dimensions from a unit cell.
 // I.e. [0,-1,-1] -> periodic in y and z, but not x
 static inline void md_unitcell_pbc_mask_extract(int out_mask[3], const md_unitcell_t* cell) {
-    ASSERT(out_mask);
-    ASSERT(cell);
+    MD_ASSERT(out_mask);
+    MD_ASSERT(cell);
 
     out_mask[0] = (cell->flags & MD_UNITCELL_PBC_X) ? -1 : 0;
     out_mask[1] = (cell->flags & MD_UNITCELL_PBC_Y) ? -1 : 0;

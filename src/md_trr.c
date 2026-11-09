@@ -96,8 +96,8 @@ static int calc_framebytes(const trr_header_t* sh) {
 #define TRR_MAX_HEADER_SIZE (4 + 4 + 4 + 12 + 13 * 4 + 2 * 8)
 
 static bool trr_read_frame_header_buf(md_xdr_t* xdr, trr_header_t* sh) {
-    ASSERT(xdr);
-    ASSERT(sh);
+    MD_ASSERT(xdr);
+    MD_ASSERT(sh);
 
     const char version[] = "GMX_trn_file";
     int32_t magic, slen, nflsz;
@@ -300,7 +300,7 @@ static bool write_cache(const trr_cache_t* cache, str_t path, const md_file_info
 // What the file is, from its cache when that is current and from a scan otherwise (writing the
 // cache unless told not to). path must be canonical; every array is allocated from alloc.
 static bool trr_index_load(trr_cache_t* cache, str_t path, uint32_t flags, md_allocator_i* alloc) {
-    MEMSET(cache, 0, sizeof(*cache));
+    MD_MEMSET(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
@@ -317,7 +317,7 @@ static bool trr_index_load(trr_cache_t* cache, str_t path, uint32_t flags, md_al
         goto done;
     }
 
-    MEMSET(cache, 0, sizeof(*cache));
+    MD_MEMSET(cache, 0, sizeof(*cache));
     md_array(int64_t)  offsets  = 0;
     md_array(double)   times    = 0;
     md_array(int64_t)  steps    = 0;
@@ -369,7 +369,7 @@ static const struct {
 // frame that carries all three reads a third of it for the positions.
 static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attributes_t* attributes = &sys->attributes;
 
     // A whole temporal virtual attribute is refused before it gets here, so the frame is fixed.
@@ -379,7 +379,7 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
 
     int kind = -1;
     md_run_source_t src = {0};
-    for (int i = 0; i < (int)ARRAY_SIZE(trr_run_sections); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(trr_run_sections); ++i) {
         if (md_run_source(&src, attributes, attr, str_from_cstr(trr_run_sections[i].leaf))) {
             kind = i;
             break;
@@ -396,7 +396,7 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
     const str_t file_path = src.path;
 
     uint8_t head[TRR_MAX_HEADER_SIZE];
-    const size_t head_bytes = MIN(sizeof(head), (size_t)sizes[frame]);
+    const size_t head_bytes = MD_MIN(sizeof(head), (size_t)sizes[frame]);
     if (md_attribute_io_read_at(io, file_path, offsets[frame], head, head_bytes) != head_bytes) {
         MD_LOG_ERROR("TRR: Failed to read the header of frame %u from '" STR_FMT "'", frame, STR_ARG(file_path));
         return 0;
@@ -516,12 +516,12 @@ static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, 
 }
 
 bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
     const str_t path = {path_buf, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     trr_cache_t index;
@@ -582,7 +582,7 @@ bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
 
     // Velocities and forces: beside the positions when written in exactly the frames the positions
     // are, in a group of their own otherwise (GROMACS' nstvout and nstfout against nstxout).
-    for (int k = 1; k < (int)ARRAY_SIZE(trr_run_sections); ++k) {
+    for (int k = 1; k < (int)MD_COUNTOF(trr_run_sections); ++k) {
         const uint32_t section = trr_run_sections[k].section;
         bool any = false;
         bool aligned = true;

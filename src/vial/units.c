@@ -26,7 +26,7 @@ static const vial_unit_name_t vial_unit_names[] = {
 };
 
 bool vial_unit_name(str_t name, md_unit_t* unit) {
-    for (size_t i = 0; i < ARRAY_SIZE(vial_unit_names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(vial_unit_names); ++i) {
         if (str_eq(name, str_from_cstr(vial_unit_names[i].name))) {
             if (unit) md_unit_parse(unit, str_from_cstr(vial_unit_names[i].unit));
             return true;

@@ -374,7 +374,7 @@ vial_sets_t* vial_sets_boolop_each(const vial_sets_t* arr, const vial_sets_t* on
     vial_sets_t* s = sets_new(arr->count, total, alloc);
     uint32_t at = 0;
     for (uint32_t i = 0; i < arr->count; ++i) {
-        MEMCPY(s->idx + at, parts[i]->idx, parts[i]->offset[1] * sizeof(uint32_t));
+        MD_MEMCPY(s->idx + at, parts[i]->idx, parts[i]->offset[1] * sizeof(uint32_t));
         at += parts[i]->offset[1];
         s->offset[i + 1] = at;
     }
@@ -455,7 +455,7 @@ static size_t residue_label(char* buf, size_t cap, const vial_sys_t* s, uint32_t
 
 static const char* part_kind_name(uint8_t k) {
     static const char* names[] = {"ligand", "peptide", "dna", "rna", "nucleic", "polymer", "glycan", "lipid", "ion", "water"};
-    return k < ARRAY_SIZE(names) ? names[k] : "part";
+    return k < MD_COUNTOF(names) ? names[k] : "part";
 }
 
 size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint32_t unit) {
@@ -568,7 +568,7 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
 };
 
 uint8_t vial_select_key(str_t keyword) {
-    for (size_t i = 0; i < ARRAY_SIZE(keywords); ++i) if (str_eq(keyword, str_from_cstr(keywords[i].word))) return keywords[i].key;
+    for (size_t i = 0; i < MD_COUNTOF(keywords); ++i) if (str_eq(keyword, str_from_cstr(keywords[i].word))) return keywords[i].key;
     return VIAL_KEY_NONE;
 }
 
@@ -631,10 +631,10 @@ static bool in_list(const char** list, size_t n, str_t s) {
 
 bool vial_select_kind_known(uint8_t level, str_t kind) {
     switch (level) {
-    case VIAL_LEVEL_PARTICLE: return in_list(particle_kinds, ARRAY_SIZE(particle_kinds), kind);
-    case VIAL_LEVEL_RESIDUE:  return in_list(residue_kinds, ARRAY_SIZE(residue_kinds), kind);
-    case VIAL_LEVEL_PART:     return in_list(part_kinds, ARRAY_SIZE(part_kinds), kind);
-    case VIAL_LEVEL_RING:     return in_list(ring_kinds, ARRAY_SIZE(ring_kinds), kind);
+    case VIAL_LEVEL_PARTICLE: return in_list(particle_kinds, MD_COUNTOF(particle_kinds), kind);
+    case VIAL_LEVEL_RESIDUE:  return in_list(residue_kinds, MD_COUNTOF(residue_kinds), kind);
+    case VIAL_LEVEL_PART:     return in_list(part_kinds, MD_COUNTOF(part_kinds), kind);
+    case VIAL_LEVEL_RING:     return in_list(ring_kinds, MD_COUNTOF(ring_kinds), kind);
     default: return false;
     }
 }
@@ -743,7 +743,7 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
                 pass = match_element(f, sym);
                 break;
             }
-            case VIAL_KEY_KIND: pass = kind < ARRAY_SIZE(particle_kinds) && match_str(f, str_from_cstr(particle_kinds[kind]), false); break;
+            case VIAL_KEY_KIND: pass = kind < MD_COUNTOF(particle_kinds) && match_str(f, str_from_cstr(particle_kinds[kind]), false); break;
             default: break;
             }
         }
@@ -761,7 +761,7 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
         case VIAL_KEY_NAME:  if (!match_str(f, md_system_residue_name(sys, r), true)) return false; break;
         case VIAL_KEY_KIND: {
             const uint32_t k = (uint32_t)md_system_residue_kind(sys, r);
-            if (k >= ARRAY_SIZE(residue_kinds) || !match_str(f, str_from_cstr(residue_kinds[k]), false)) return false;
+            if (k >= MD_COUNTOF(residue_kinds) || !match_str(f, str_from_cstr(residue_kinds[k]), false)) return false;
             break;
         }
         case VIAL_KEY_CHAIN: if (!chain_matches(s, f, vial_sys_res_chain(s, r))) return false; break;

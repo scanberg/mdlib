@@ -184,7 +184,7 @@ static void solve(search_t* s, bidomain_t* d, int nd) {
         s->right[bd->r + idx] = s->right[bd->r + bd->right_len];
         s->right[bd->r + bd->right_len] = w;
         const size_t top = s->pool_top;
-        ASSERT(top + s->per_level <= s->pool_cap);
+        MD_ASSERT(top + s->per_level <= s->pool_cap);
         bidomain_t* nd2 = s->pool + top;
         s->pool_top += s->per_level;
         const int k = filter_domains(s, d, nd, nd2, v, w);
@@ -417,7 +417,7 @@ static bool by_residue(md_mcs_result_t* out, const md_mcs_desc_t* desc, const re
             mcs_graph_t g0, g1;
             name_pair_t e = {.key = key, .beg = (uint32_t)md_array_size(cache_a)};
             if (graph_init(&g0, sa, xa, xn, by_name, temp) && graph_init(&g1, sb, yb, yn, by_name, temp)) {
-                vpair_t* m = md_alloc(temp, (size_t)(MIN(g0.n, g1.n) + 1) * sizeof(vpair_t));
+                vpair_t* m = md_alloc(temp, (size_t)(MD_MIN(g0.n, g1.n) + 1) * sizeof(vpair_t));
                 bool gave_up = false;
                 const int c = graph_mcs(m, &g0, &g1, desc->max_steps ? desc->max_steps : 10000000, &gave_up, temp);
                 if (gave_up) out->incomplete = true;
@@ -469,7 +469,7 @@ bool md_mcs(md_mcs_result_t* out, const md_mcs_desc_t* desc, md_allocator_i* all
     out->alloc = alloc;
     out->a_heavy = count_heavy(&desc->a);
     out->b_heavy = count_heavy(&desc->b);
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_array(int32_t) pa = NULL;
     md_array(int32_t) pb = NULL;
     bool ok = true;
@@ -484,7 +484,7 @@ bool md_mcs(md_mcs_result_t* out, const md_mcs_desc_t* desc, md_allocator_i* all
             MD_LOG_ERROR("md_mcs: more than %d heavy atoms is too many to search as one graph", MD_MCS_GRAPH_MAX);
             ok = false;
         } else {
-            vpair_t* m = md_alloc(temp, (size_t)(MIN(g0.n, g1.n) + 1) * sizeof(vpair_t));
+            vpair_t* m = md_alloc(temp, (size_t)(MD_MIN(g0.n, g1.n) + 1) * sizeof(vpair_t));
             bool gave_up = false;
             const int c = graph_mcs(m, &g0, &g1, desc->max_steps ? desc->max_steps : 10000000, &gave_up, temp);
             out->incomplete = gave_up;

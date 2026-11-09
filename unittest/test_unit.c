@@ -110,8 +110,8 @@ UTEST(unit, print_parse_roundtrip) {
 	};
 
 	// Anything we print has to read back as the same unit
-	for (size_t i = 0; i < ARRAY_SIZE(base); ++i) {
-		for (size_t j = 0; j < ARRAY_SIZE(base); ++j) {
+	for (size_t i = 0; i < MD_COUNTOF(base); ++i) {
+		for (size_t j = 0; j < MD_COUNTOF(base); ++j) {
 			for (int exp = -2; exp <= 2; ++exp) {
 				const md_unit_t unit = md_unit_mul(base[i], md_unit_pow(base[j], exp));
 				if (md_unit_is_none(unit)) continue;
@@ -167,7 +167,7 @@ UTEST(unit, print_scaled_pair) {
 UTEST(unit, conversion_factor) {
 	double factor = 0.0;
 	EXPECT_TRUE(md_unit_conversion_factor(&factor, md_unit_degree(), md_unit_radian()));
-	EXPECT_NEAR(factor, DEG_TO_RAD(1.0), 1e-15);
+	EXPECT_NEAR(factor, MD_DEG_TO_RAD(1.0), 1e-15);
 
 	EXPECT_TRUE(md_unit_conversion_factor(&factor, md_unit_angstrom(), md_unit_meter()));
 	EXPECT_NEAR(factor, 1e-10, 1e-25);

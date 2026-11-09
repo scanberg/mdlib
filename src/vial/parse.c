@@ -599,7 +599,7 @@ static const char* v1_plural(str_t name) {
         {"residue", "residue"}, {"chain", "chain"}, {"atom", "particle"}, {"molecule", "molecule"},
         {"part", "part"}, {"polymer", "part"}, {"protein", "part"}, {"nucleic", "part"},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(map); ++i) if (str_eq_cstr(name, map[i][0])) return map[i][1];
+    for (size_t i = 0; i < MD_COUNTOF(map); ++i) if (str_eq_cstr(name, map[i][0])) return map[i][1];
     return NULL;
 }
 
@@ -748,27 +748,27 @@ static vial_node_id parse_binary(parser_t* p, parse_fn next, const vial_op_t* op
 
 static vial_node_id parse_term(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_STAR, VIAL_OP_SLASH, VIAL_OP_DSLASH, VIAL_OP_PERCENT, VIAL_OP_AT};
-    return parse_binary(p, parse_factor, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_factor, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_arith(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_PLUS, VIAL_OP_MINUS};
-    return parse_binary(p, parse_term, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_term, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_shift(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_LSHIFT, VIAL_OP_RSHIFT};
-    return parse_binary(p, parse_arith, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_arith, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_bitand(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_AMP};
-    return parse_binary(p, parse_shift, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_shift, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_bitxor(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_CARET};
-    return parse_binary(p, parse_bitand, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_bitand, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_bitor(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_PIPE};
-    return parse_binary(p, parse_bitxor, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_bitxor, ops, MD_COUNTOF(ops));
 }
 
 // a..b, the inclusive range: looser than arithmetic and bits, tighter than comparisons

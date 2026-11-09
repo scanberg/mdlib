@@ -32,18 +32,18 @@ extern "C" {
 
 static inline uint32_t md_xdr_load_u32(const void* ptr) {
     uint32_t v;
-    MEMCPY(&v, ptr, sizeof(v));
+    MD_MEMCPY(&v, ptr, sizeof(v));
 #if __LITTLE_ENDIAN__
-    v = BSWAP32(v);
+    v = MD_BSWAP32(v);
 #endif
     return v;
 }
 
 static inline uint64_t md_xdr_load_u64(const void* ptr) {
     uint64_t v;
-    MEMCPY(&v, ptr, sizeof(v));
+    MD_MEMCPY(&v, ptr, sizeof(v));
 #if __LITTLE_ENDIAN__
-    v = BSWAP64(v);
+    v = MD_BSWAP64(v);
 #endif
     return v;
 }
@@ -51,28 +51,28 @@ static inline uint64_t md_xdr_load_u64(const void* ptr) {
 static inline int32_t md_xdr_load_i32(const void* ptr) {
     const uint32_t u = md_xdr_load_u32(ptr);
     int32_t v;
-    MEMCPY(&v, &u, sizeof(v));
+    MD_MEMCPY(&v, &u, sizeof(v));
     return v;
 }
 
 static inline int64_t md_xdr_load_i64(const void* ptr) {
     const uint64_t u = md_xdr_load_u64(ptr);
     int64_t v;
-    MEMCPY(&v, &u, sizeof(v));
+    MD_MEMCPY(&v, &u, sizeof(v));
     return v;
 }
 
 static inline float md_xdr_load_f32(const void* ptr) {
     const uint32_t u = md_xdr_load_u32(ptr);
     float v;
-    MEMCPY(&v, &u, sizeof(v));
+    MD_MEMCPY(&v, &u, sizeof(v));
     return v;
 }
 
 static inline double md_xdr_load_f64(const void* ptr) {
     const uint64_t u = md_xdr_load_u64(ptr);
     double v;
-    MEMCPY(&v, &u, sizeof(v));
+    MD_MEMCPY(&v, &u, sizeof(v));
     return v;
 }
 
@@ -176,7 +176,7 @@ static inline bool md_xdr_read_f64(md_xdr_t* xdr, double* out) {
 static inline bool md_xdr_read_i32_array(md_xdr_t* xdr, int32_t* out, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / 4) ? md_xdr_take(xdr, count * 4) : md_xdr_take(xdr, SIZE_MAX);
     if (!p) {
-        MEMSET(out, 0, count * sizeof(int32_t));
+        MD_MEMSET(out, 0, count * sizeof(int32_t));
         return false;
     }
     md_xdr_load_i32_array(out, p, count);
@@ -186,7 +186,7 @@ static inline bool md_xdr_read_i32_array(md_xdr_t* xdr, int32_t* out, size_t cou
 static inline bool md_xdr_read_f32_array(md_xdr_t* xdr, float* out, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / 4) ? md_xdr_take(xdr, count * 4) : md_xdr_take(xdr, SIZE_MAX);
     if (!p) {
-        MEMSET(out, 0, count * sizeof(float));
+        MD_MEMSET(out, 0, count * sizeof(float));
         return false;
     }
     md_xdr_load_f32_array(out, p, count);
@@ -196,7 +196,7 @@ static inline bool md_xdr_read_f32_array(md_xdr_t* xdr, float* out, size_t count
 static inline bool md_xdr_read_f64_array(md_xdr_t* xdr, double* out, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / 8) ? md_xdr_take(xdr, count * 8) : md_xdr_take(xdr, SIZE_MAX);
     if (!p) {
-        MEMSET(out, 0, count * sizeof(double));
+        MD_MEMSET(out, 0, count * sizeof(double));
         return false;
     }
     md_xdr_load_f64_array(out, p, count);

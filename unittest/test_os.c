@@ -136,7 +136,7 @@ UTEST(os, path_relative) {
 UTEST(os, sys_info) {
 	md_os_sys_info_t info = { 0 };
 	EXPECT_TRUE(md_os_sys_info_query(&info));
-    printf("total physical ram %i GB\n", (int)(info.physical_ram_bytes / GIGABYTES(1)));
+    printf("total physical ram %i GB\n", (int)(info.physical_ram_bytes / MD_GIGABYTES(1)));
 	printf("physical cores: %d\n", info.num_physical_cores);
 	printf("virtual cores: %d\n", info.num_virtual_cores);
     EXPECT_GT(info.physical_ram_bytes, 0);
@@ -145,17 +145,17 @@ UTEST(os, sys_info) {
 }
 
 UTEST(os, mem) {
-    const uint64_t reserve_size = GIGABYTES(8);
+    const uint64_t reserve_size = MD_GIGABYTES(8);
     void* ptr = md_vm_reserve(reserve_size);
     EXPECT_NE(ptr, NULL);
 
-    md_vm_commit(ptr, MEGABYTES(1));
-    md_vm_commit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
+    md_vm_commit(ptr, MD_MEGABYTES(1));
+    md_vm_commit((char*)ptr + MD_MEGABYTES(1), MD_MEGABYTES(2));
 
-    md_vm_decommit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
-    md_vm_decommit(ptr, MEGABYTES(1));
+    md_vm_decommit((char*)ptr + MD_MEGABYTES(1), MD_MEGABYTES(2));
+    md_vm_decommit(ptr, MD_MEGABYTES(1));
 
-    const uint64_t commit_size = GIGABYTES(1);
+    const uint64_t commit_size = MD_GIGABYTES(1);
     md_vm_commit(ptr, commit_size);
     uint64_t* c = ptr;
     for (uint64_t i = 0; i < commit_size / sizeof(uint64_t); ++i) {
@@ -317,14 +317,14 @@ UTEST(os, file_read_seek_tell_size) {
     EXPECT_STREQ(buf, "he");
 
     EXPECT_TRUE(md_file_seek(file, 0, MD_FILE_BEG));
-    MEMSET(buf, 0, sizeof(buf));
+    MD_MEMSET(buf, 0, sizeof(buf));
     EXPECT_EQ(md_file_read(file, buf, 5), 5);
     EXPECT_STREQ(buf, "hello");
     EXPECT_EQ(md_file_tell(file), 5);
 
     EXPECT_TRUE(md_file_seek(file, -2, MD_FILE_END));
     EXPECT_EQ(md_file_tell(file), 3);
-    MEMSET(buf, 0, sizeof(buf));
+    MD_MEMSET(buf, 0, sizeof(buf));
     EXPECT_EQ(md_file_read(file, buf, 2), 2);
     EXPECT_STREQ(buf, "lo");
 
@@ -379,7 +379,7 @@ static bool write_pattern_file(const char* path, size_t n) {
     uint8_t buf[4096];
     bool ok = true;
     for (size_t at = 0; at < n && ok; at += sizeof(buf)) {
-        const size_t len = MIN(sizeof(buf), n - at);
+        const size_t len = MD_MIN(sizeof(buf), n - at);
         for (size_t i = 0; i < len; ++i) buf[i] = file_pattern(at + i);
         ok = md_file_write(file, buf, len) == len;
     }
@@ -415,7 +415,7 @@ static void concurrent_reads(void* arg) {
 // the end come back short; and the calls which take a position fail
 UTEST(os, file_concurrent_reads) {
     const char* path = "md_unittest_concurrent.bin";
-    const size_t size = MEGABYTES(4) + 123;
+    const size_t size = MD_MEGABYTES(4) + 123;
     ASSERT_TRUE(write_pattern_file(path, size));
 
     md_file_t file = {0};

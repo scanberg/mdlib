@@ -23,7 +23,7 @@ interface (md_reader_i), and its caller decides where the text comes from by whi
     md_file_reader_t        a file, through a buffer of its own
 
     md_file_reader_t fr;
-    if (md_file_reader_open(&fr, filename, MEGABYTES(1), alloc)) {
+    if (md_file_reader_open(&fr, filename, MD_MEGABYTES(1), alloc)) {
         str_t line;
         while (md_reader_extract_line(&fr.r, &line)) { ... }
         md_file_reader_close(&fr);
@@ -183,7 +183,7 @@ MD_TEXT_NO_SANITIZE static inline bool md_text_lines_next(md_text_lines_t* it, s
 #if defined(MD_TEXT_SCAN_WIDTH)
     for (;;) {
         if (it->mask) {
-            const uint32_t bit = (uint32_t)ctz64(it->mask);
+            const uint32_t bit = (uint32_t)md_ctz64(it->mask);
             // The lowest newline: its bit
             it->mask &= it->mask - 1;
             nl = it->chunk + bit;
@@ -215,13 +215,13 @@ MD_TEXT_NO_SANITIZE static inline size_t md_text_count_newlines(const char* c, c
     uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << (uintptr_t)(c - chunk));
     size_t n = 0;
     for (;;) {
-        const size_t past = (size_t)MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
+        const size_t past = (size_t)MD_MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
         if (past) {
             // The last chunk: not past e
             m &= ~UINT64_C(0) >> past;
-            return n + (size_t)popcnt64(m);
+            return n + (size_t)md_popcnt64(m);
         }
-        n += (size_t)popcnt64(m);
+        n += (size_t)md_popcnt64(m);
         chunk += MD_TEXT_CHUNK;
         if (chunk >= e) return n;   // e at the end of a chunk: none past it is loaded
         m = md_text_newline_chunk(chunk);
@@ -241,14 +241,14 @@ MD_TEXT_NO_SANITIZE static inline const char* md_text_skip_newlines(const char* 
     const char* chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
     uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << (uintptr_t)(c - chunk));
     for (;;) {
-        const size_t past = (size_t)MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
+        const size_t past = (size_t)MD_MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
         if (past) m &= ~UINT64_C(0) >> past;
-        const size_t k = (size_t)popcnt64(m);
+        const size_t k = (size_t)md_popcnt64(m);
         if (k >= *n) {
             // The n:th of this chunk's: the lowest n - 1 cleared
             for (size_t i = 1; i < *n; ++i) m &= m - 1;
             *n = 0;
-            return chunk + ctz64(m) + 1;
+            return chunk + md_ctz64(m) + 1;
         }
         *n -= k;
         chunk += MD_TEXT_CHUNK;
@@ -272,13 +272,13 @@ MD_TEXT_NO_SANITIZE static inline const char* md_text_find_newline(const char* c
     const char* a = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_SCAN_WIDTH - 1));
     uint64_t m = md_text_newline_mask(a) >> ((uintptr_t)(c - a) * MD_TEXT_SCAN_BITS);
     if (m) {
-        const char* nl = c + ctz64(m) / MD_TEXT_SCAN_BITS;
+        const char* nl = c + md_ctz64(m) / MD_TEXT_SCAN_BITS;
         return nl < e ? nl : e;
     }
     for (a += MD_TEXT_SCAN_WIDTH; a < e; a += MD_TEXT_SCAN_WIDTH) {
         m = md_text_newline_mask(a);
         if (m) {
-            const char* nl = a + ctz64(m) / MD_TEXT_SCAN_BITS;
+            const char* nl = a + md_ctz64(m) / MD_TEXT_SCAN_BITS;
             return nl < e ? nl : e;
         }
     }
@@ -290,7 +290,7 @@ MD_TEXT_NO_SANITIZE static inline const char* md_text_find_newline(const char* c
 }
 
 // The default size of a file reader's buffer: lines of any format we read fit many times over
-#define MD_READER_DEFAULT_CAPACITY MEGABYTES(1)
+#define MD_READER_DEFAULT_CAPACITY MD_MEGABYTES(1)
 
 typedef struct md_reader_i md_reader_i;
 
@@ -382,7 +382,7 @@ static inline bool md_reader_find_line(md_reader_i* r, str_t* line, const char**
 
 // The next line, taken. False at the end of the source.
 static inline bool md_reader_extract_line(md_reader_i* r, str_t* line) {
-    ASSERT(r && line);
+    MD_ASSERT(r && line);
     const char* next;
     if (!md_reader_find_line(r, line, &next)) return false;
     r->cur = next;
@@ -391,13 +391,13 @@ static inline bool md_reader_extract_line(md_reader_i* r, str_t* line) {
 
 // The next line, not taken
 static inline bool md_reader_peek_line(md_reader_i* r, str_t* line) {
-    ASSERT(r && line);
+    MD_ASSERT(r && line);
     const char* next;
     return md_reader_find_line(r, line, &next);
 }
 
 static inline bool md_reader_skip_line(md_reader_i* r) {
-    ASSERT(r);
+    MD_ASSERT(r);
     str_t line;
     const char* next;
     if (!md_reader_find_line(r, &line, &next)) return false;
@@ -413,14 +413,14 @@ str_t md_reader_block(md_reader_i* r);
 str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex);
 
 static inline void md_reader_advance(md_reader_i* r, size_t bytes) {
-    ASSERT(r && bytes <= (size_t)(r->end - r->cur));
+    MD_ASSERT(r && bytes <= (size_t)(r->end - r->cur));
     r->cur += bytes;
 }
 
 // Takes the next n lines, as n md_reader_skip_line would, but by the chunks of what is read rather than line by line:
 // how many there were (fewer than n at the end of the source)
 static inline size_t md_reader_skip_lines(md_reader_i* r, size_t n) {
-    ASSERT(r);
+    MD_ASSERT(r);
     size_t left = n;
     while (left) {
         const str_t block = md_reader_block(r);
@@ -480,14 +480,14 @@ void md_file_reader_close(md_file_reader_t* fr);
 // For the loaders which parse the lines of a block in parallel: a block cut into pieces at line boundaries, one per
 // task, of which the lines are taken with md_text_next_line.
 
-#define MD_TEXT_BLOCK_SIZE      MEGABYTES(32)   // The buffer of a loader which parses a block at a time
-#define MD_TEXT_MIN_PIECE_SIZE  KILOBYTES(256)
-#define MD_TEXT_PASS_SIZE       MEGABYTES(4)    // What a loader reads in two passes (lines, then fields): in cache for the second
-#define MD_TEXT_PASS_PER_THREAD MEGABYTES(1)    // and for each thread past four, so that every thread has pieces of a pass
+#define MD_TEXT_BLOCK_SIZE      MD_MEGABYTES(32)   // The buffer of a loader which parses a block at a time
+#define MD_TEXT_MIN_PIECE_SIZE  MD_KILOBYTES(256)
+#define MD_TEXT_PASS_SIZE       MD_MEGABYTES(4)    // What a loader reads in two passes (lines, then fields): in cache for the second
+#define MD_TEXT_PASS_PER_THREAD MD_MEGABYTES(1)    // and for each thread past four, so that every thread has pieces of a pass
 
 // The bytes of a pass for an executor of num_threads: a few pieces of MD_TEXT_MIN_PIECE_SIZE for each thread
 static inline size_t md_text_pass_size(uint32_t num_threads) {
-    return MAX((size_t)MD_TEXT_PASS_SIZE, (size_t)num_threads * MD_TEXT_PASS_PER_THREAD);
+    return MD_MAX((size_t)MD_TEXT_PASS_SIZE, (size_t)num_threads * MD_TEXT_PASS_PER_THREAD);
 }
 
 // The whole lines of the first pass_size bytes of a block of whole lines, all of it when it is no longer (or the first
@@ -514,14 +514,14 @@ typedef struct md_text_piece_t {
 static inline size_t md_text_num_pieces(size_t len, uint32_t num_threads) {
     if (num_threads <= 1) return 1;
     const size_t by_size = len / MD_TEXT_MIN_PIECE_SIZE;
-    return MAX((size_t)1, MIN((size_t)num_threads * 4, by_size));
+    return MD_MAX((size_t)1, MD_MIN((size_t)num_threads * 4, by_size));
 }
 
 // The pieces of a block of whole lines, at line boundaries: some may be empty when lines are long
 static inline void md_text_split(md_text_piece_t* pieces, size_t num_pieces, const char* text, size_t len) {
     size_t at = 0;
     for (size_t p = 0; p < num_pieces; ++p) {
-        size_t e = (p + 1 == num_pieces) ? len : MAX(at, len * (p + 1) / num_pieces);
+        size_t e = (p + 1 == num_pieces) ? len : MD_MAX(at, len * (p + 1) / num_pieces);
         if (e < len && e > 0 && text[e - 1] != '\n') {
             const char* nl = md_text_find_newline(text + e, text + len);
             e = nl < text + len ? (size_t)(nl - text) + 1 : len;

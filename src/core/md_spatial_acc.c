@@ -106,7 +106,7 @@ static inline vec4_t md_coord_stream_load_vec4(const md_coord_stream_t* s, size_
     } else {
         const char* p = (const char*)s->aos.base + src * s->aos.stride;
         vec4_t v = {0};
-        MEMCPY(&v, p, sizeof(float) * 3);
+        MD_MEMCPY(&v, p, sizeof(float) * 3);
         return v;
     }
 }
@@ -116,7 +116,7 @@ static inline int32_t md_coord_stream_load_idx(const md_coord_stream_t* s, size_
 }
 
 void md_spatial_acc_free(md_spatial_acc_t* acc) {
-    ASSERT(acc);
+    MD_ASSERT(acc);
     if (acc->alloc) {
         if (acc->elem_x)   md_array_free(acc->elem_x,   acc->alloc);
         if (acc->elem_y)   md_array_free(acc->elem_y,   acc->alloc);
@@ -130,11 +130,11 @@ void md_spatial_acc_free(md_spatial_acc_t* acc) {
             if (acc->tier_base[t]) md_array_free(acc->tier_base[t], acc->alloc);
         }
     }
-    MEMSET(acc, 0, sizeof(md_spatial_acc_t));
+    MD_MEMSET(acc, 0, sizeof(md_spatial_acc_t));
 }
 
 static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
-    ASSERT(acc);
+    MD_ASSERT(acc);
     md_array_shrink(acc->elem_x, 0);
 	md_array_shrink(acc->elem_y, 0);
 	md_array_shrink(acc->elem_z, 0);
@@ -148,7 +148,7 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
     }
     acc->num_tiers = 0;
     acc->cell_ext = 0.0;
-    MEMSET(acc->top_dim, 0, sizeof(acc->top_dim));
+    MD_MEMSET(acc->top_dim, 0, sizeof(acc->top_dim));
 
     acc->num_cells = 0;
     acc->num_elems = 0;
@@ -156,10 +156,10 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
     acc->G00 = acc->G11 = acc->G22 = 0.0f;
     acc->H01 = acc->H02 = acc->H12 = 0.0f;
 
-    MEMSET(acc->cell_dim,  0, sizeof(acc->cell_dim));
+    MD_MEMSET(acc->cell_dim,  0, sizeof(acc->cell_dim));
 
 	acc->flags = 0;
-	MEMSET(acc->origin, 0, sizeof(acc->origin));
+	MD_MEMSET(acc->origin, 0, sizeof(acc->origin));
 }
 
 // ### CELL INDEX ###
@@ -209,7 +209,7 @@ static inline void node_lookup(const md_spatial_acc_t* acc, const uint32_t c[3],
             *out_base = 0;
             return;
         }
-        const uint32_t idx = base + (uint32_t)popcnt64(mask & ((1ULL << bit) - 1));
+        const uint32_t idx = base + (uint32_t)md_popcnt64(mask & ((1ULL << bit) - 1));
         mask = acc->tier_mask[l - 1][idx];
         base = acc->tier_base[l - 1][idx];
     }
@@ -224,7 +224,7 @@ static inline uint32_t cell_lookup(const md_spatial_acc_t* acc, const uint32_t c
     node_lookup(acc, c, 1, &mask, &base);
     const uint32_t bit = local_bit(c, 0);
     if (!((mask >> bit) & 1)) return UINT32_MAX;
-    return base + (uint32_t)popcnt64(mask & ((1ULL << bit) - 1));
+    return base + (uint32_t)md_popcnt64(mask & ((1ULL << bit) - 1));
 }
 
 // Cell coordinates of a fractional coordinate, exactly as the elements were binned
@@ -245,7 +245,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     const uint32_t* cell_dim = acc->cell_dim;
 
     // Number of tiers: the top grid has at most max(N, 2^16) nodes
-    const size_t top_limit = MAX(N, (size_t)SPATIAL_ACC_MIN_TOP_LIMIT);
+    const size_t top_limit = MD_MAX(N, (size_t)SPATIAL_ACC_MIN_TOP_LIMIT);
     uint32_t L = 2;
     uint32_t top_dim[3];
     size_t num_top;
@@ -259,22 +259,22 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
         ++L;
     }
     acc->num_tiers = L;
-    MEMCPY(acc->top_dim, top_dim, sizeof(top_dim));
+    MD_MEMCPY(acc->top_dim, top_dim, sizeof(top_dim));
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(acc->alloc);
     elem_t*   buf[2] = {
-        (elem_t*)md_temp_alloc(temp_scope, MAX(N, 1) * sizeof(elem_t)),
-        (elem_t*)md_temp_alloc(temp_scope, MAX(N, 1) * sizeof(elem_t)),
+        (elem_t*)md_temp_alloc(temp_scope, MD_MAX(N, 1) * sizeof(elem_t)),
+        (elem_t*)md_temp_alloc(temp_scope, MD_MAX(N, 1) * sizeof(elem_t)),
     };
-    uint32_t* digit = (uint32_t*)md_temp_alloc(temp_scope, MAX(N, 1) * sizeof(uint32_t));
-    const size_t num_hist = MAX(num_top, 4096) + 1;
+    uint32_t* digit = (uint32_t*)md_temp_alloc(temp_scope, MD_MAX(N, 1) * sizeof(uint32_t));
+    const size_t num_hist = MD_MAX(num_top, 4096) + 1;
     uint32_t* hist = (uint32_t*)md_temp_alloc(temp_scope, num_hist * sizeof(uint32_t));
 
     const vec4_t  fcell_dim = vec4_set((float)cell_dim[0], (float)cell_dim[1], (float)cell_dim[2], 0);
     const ivec4_t icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
 
     float val;
-    MEMSET(&val, 0xFF, sizeof(val));
+    MD_MEMSET(&val, 0xFF, sizeof(val));
     const uint32_t flags = acc->flags;
     const vec4_t pbc_mask = vec4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
     const vec4_t origin = vec4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
@@ -298,7 +298,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     for (uint32_t pass = 0; pass <= num_local_passes; ++pass) {
         const bool top_pass = pass == num_local_passes;
         const size_t num_buckets = top_pass ? num_top : 4096;
-        MEMSET(hist, 0, (num_buckets + 1) * sizeof(uint32_t));
+        MD_MEMSET(hist, 0, (num_buckets + 1) * sizeof(uint32_t));
 
         for (size_t i = 0; i < N; ++i) {
             uint32_t c[3];
@@ -326,16 +326,16 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
             src ^= 1;
         } else {
             // The last pass scatters into the elements
-            const size_t alloc_len = ALIGN_TO(N + 8, 16);
+            const size_t alloc_len = MD_ALIGN_TO(N + 8, 16);
             md_array_resize(acc->elem_x,   alloc_len, acc->alloc);
             md_array_resize(acc->elem_y,   alloc_len, acc->alloc);
             md_array_resize(acc->elem_z,   alloc_len, acc->alloc);
             md_array_resize(acc->elem_idx, alloc_len, acc->alloc);
             // The padding is read (masked) by the vectorized loops
-            MEMSET(acc->elem_x + N, 0, (alloc_len - N) * sizeof(float));
-            MEMSET(acc->elem_y + N, 0, (alloc_len - N) * sizeof(float));
-            MEMSET(acc->elem_z + N, 0, (alloc_len - N) * sizeof(float));
-            MEMSET(acc->elem_idx + N, 0, (alloc_len - N) * sizeof(uint32_t));
+            MD_MEMSET(acc->elem_x + N, 0, (alloc_len - N) * sizeof(float));
+            MD_MEMSET(acc->elem_y + N, 0, (alloc_len - N) * sizeof(float));
+            MD_MEMSET(acc->elem_z + N, 0, (alloc_len - N) * sizeof(float));
+            MD_MEMSET(acc->elem_idx + N, 0, (alloc_len - N) * sizeof(uint32_t));
             for (size_t i = 0; i < N; ++i) {
                 const elem_t e = buf[src][i];
                 const uint32_t dst = hist[digit[i]]++;
@@ -354,8 +354,8 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     //    differs from it in the top node. Each node records the index of its first child as its base when it starts.
     md_array_resize(acc->top_mask, num_top, acc->alloc);
     md_array_resize(acc->top_base, num_top, acc->alloc);
-    MEMSET(acc->top_mask, 0, num_top * sizeof(uint64_t));
-    MEMSET(acc->top_base, 0, num_top * sizeof(uint32_t));
+    MD_MEMSET(acc->top_mask, 0, num_top * sizeof(uint64_t));
+    MD_MEMSET(acc->top_base, 0, num_top * sizeof(uint32_t));
     md_array_shrink(acc->cell_off, 0);
 
     uint32_t prev[3] = {0};
@@ -382,7 +382,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
             top_idx = top_index(acc, c);
             acc->top_base[top_idx] = (uint32_t)md_array_size(acc->tier_mask[L - 1]);
         }
-        for (uint32_t t = MIN(hi, L - 1); t >= 1; --t) {
+        for (uint32_t t = MD_MIN(hi, L - 1); t >= 1; --t) {
             const uint32_t first_child = (t == 1) ? num_occ : (uint32_t)md_array_size(acc->tier_mask[t - 1]);
             md_array_push(acc->tier_mask[t], 0, acc->alloc);
             md_array_push(acc->tier_base[t], first_child, acc->alloc);
@@ -395,7 +395,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
 
         md_array_push(acc->cell_off, (uint32_t)k, acc->alloc);
         num_occ += 1;
-        MEMCPY(prev, c, sizeof(prev));
+        MD_MEMCPY(prev, c, sizeof(prev));
     }
     md_array_push(acc->cell_off, (uint32_t)N, acc->alloc);
     acc->num_cells = num_occ;
@@ -445,14 +445,14 @@ static inline uint64_t occupancy_hash(uint64_t x) {
 // sharing its cell with k - 1 others of the subset sees about 1 + (k - 1) / f. The cells are counted in an
 // open-addressing table of cap slots (a power of two, at least twice m): one pass over the points, not a sort.
 static double occupancy_at(const vec4_t* pos, size_t m, vec4_t lo, double ext, double f, uint64_t* slot_key, uint32_t* slot_count, size_t cap) {
-    MEMSET(slot_key, 0, cap * sizeof(uint64_t));
+    MD_MEMSET(slot_key, 0, cap * sizeof(uint64_t));
     const float inv = (float)(1.0 / ext);
     const size_t mask = cap - 1;
     for (size_t i = 0; i < m; ++i) {
         const vec4_t c = vec4_mul1(vec4_sub(pos[i], lo), inv);
-        const uint64_t cx = (uint64_t)MIN(c.x, 2097151.0f);
-        const uint64_t cy = (uint64_t)MIN(c.y, 2097151.0f);
-        const uint64_t cz = (uint64_t)MIN(c.z, 2097151.0f);
+        const uint64_t cx = (uint64_t)MD_MIN(c.x, 2097151.0f);
+        const uint64_t cy = (uint64_t)MD_MIN(c.y, 2097151.0f);
+        const uint64_t cz = (uint64_t)MD_MIN(c.z, 2097151.0f);
         const uint64_t key = ((cx << 42) | (cy << 21) | cz) + 1;     // 0 marks an empty slot
         size_t h = (size_t)occupancy_hash(key) & mask;
         while (slot_key[h] && slot_key[h] != key) h = (h + 1) & mask;
@@ -473,7 +473,7 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
     if (N == 0 || !(cutoff > 0.0)) return cutoff;
 
     md_temp_scope_t temp = md_temp_begin_avoid(avoid);
-    const size_t max_m = MIN(N, (size_t)SPATIAL_ACC_OCCUPANCY_SAMPLES * 2);
+    const size_t max_m = MD_MIN(N, (size_t)SPATIAL_ACC_OCCUPANCY_SAMPLES * 2);
     size_t cap = 16;
     while (cap < 2 * max_m) cap *= 2;
     vec4_t*   pos        = md_temp_alloc_array(temp, vec4_t, max_m);
@@ -522,8 +522,8 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
 static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], vec4_t origin, uint32_t flags,
                         const uint32_t cell_dim[3], const float inv_cell_ext[3],
                         double G00, double G11, double G22, double H01, double H02, double H12) {
-    MEMCPY(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
-    MEMCPY(acc->inv_cell_ext, inv_cell_ext, sizeof(acc->inv_cell_ext));
+    MD_MEMCPY(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
+    MD_MEMCPY(acc->inv_cell_ext, inv_cell_ext, sizeof(acc->inv_cell_ext));
 
     acc->G00 = (float)G00;
     acc->G11 = (float)G11;
@@ -565,8 +565,8 @@ static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], v
 }
 
 static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags, double in_cell_ext) {
-    ASSERT(acc);
-    ASSERT(coords);
+    MD_ASSERT(acc);
+    MD_ASSERT(coords);
 
     if (!acc->alloc) {
         MD_LOG_ERROR("Must have allocator set within spatial acc");
@@ -592,10 +592,10 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     // Never below 3 A, which would only multiply the cells to visit. The caller's extent when given (another frame of
     // the same run); the cutoff itself for few points, where estimating would cost more than any query it speeds up
     const double cutoff   = in_cutoff > 0.0 ? in_cutoff : SPATIAL_ACC_DEFAULT_CUTOFF;
-    const double ext      = in_cell_ext > 0.0 ? MAX(in_cell_ext, cutoff) :
+    const double ext      = in_cell_ext > 0.0 ? MD_MAX(in_cell_ext, cutoff) :
                             coords->count < SPATIAL_ACC_OCCUPANCY_MIN_POINTS ? cutoff :
                             cell_ext_from_occupancy(coords, cutoff, acc->alloc);
-    const double CELL_EXT = MAX(ext, 3.0);
+    const double CELL_EXT = MD_MAX(ext, 3.0);
     acc->cell_ext = CELL_EXT;
 
     double A[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -611,7 +611,7 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     vec4_t origin = vec4_zero();
 
     if ((flags & MD_UNITCELL_PBC_ALL) != MD_UNITCELL_PBC_ALL) {
-        ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
+        MD_ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
         // Unit cell either missing or not periodic along one or more axis
         // Seed from the first point, not from the origin. A system which sits far from the origin would otherwise
         // get a grid spanning all the way back to it, and the cell count grows with that distance: two points at
@@ -708,12 +708,12 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
     // This is only a heuristic for bin counts; the grid is still in fractional space.
     uint32_t cell_dim[3] = {
-        (uint32_t)CLAMP(floor(norm_a / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
-        (uint32_t)CLAMP(floor(norm_b / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
-        (uint32_t)CLAMP(floor(norm_c / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
+        (uint32_t)MD_CLAMP(floor(norm_a / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
+        (uint32_t)MD_CLAMP(floor(norm_b / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
+        (uint32_t)MD_CLAMP(floor(norm_c / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
     };
 
-#if DEBUG
+#if MD_DEBUG
     MD_LOG_DEBUG("cell_dim: %i %i %i", cell_dim[0], cell_dim[1], cell_dim[2]);
 #endif
 
@@ -722,8 +722,8 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
 }
 
 void md_spatial_acc_init(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc) {
-    ASSERT(acc);
-    ASSERT(desc);
+    MD_ASSERT(acc);
+    MD_ASSERT(desc);
     if (!desc->coords) {
         MD_LOG_ERROR("md_spatial_acc_init: the description has no coordinates");
         return;
@@ -937,9 +937,9 @@ static inline void aabb_query_center(double out_frac[3], double out_cart[3], con
 }
 
 void md_spatial_acc_aabb_query_center(double out_center[3], const md_spatial_acc_t* acc, const double center[3]) {
-    ASSERT(out_center);
-    ASSERT(acc);
-    ASSERT(center);
+    MD_ASSERT(out_center);
+    MD_ASSERT(acc);
+    MD_ASSERT(center);
     aabb_query_center(NULL, out_center, center, acc);
 }
 
@@ -979,8 +979,8 @@ static inline void cell_range_from_aabb_center_radius(
                 cart_to_fract(s, c, acc);
 
                 for (int a = 0; a < 3; ++a) {
-                    fmin[a] = MIN(fmin[a], s[a]);
-                    fmax[a] = MAX(fmax[a], s[a]);
+                    fmin[a] = MD_MIN(fmin[a], s[a]);
+                    fmax[a] = MD_MAX(fmax[a], s[a]);
                 }
             }
         }
@@ -1004,9 +1004,9 @@ static inline void cell_range_from_aabb_center_radius(
         if (cmax <= cmin) cmax = cmin + 1;  // ensure at least one cell
 
         if (!pbc[a]) {
-            cmin = CLAMP(cmin, 0, dim);
-            cmax = CLAMP(cmax, 0, dim);
-            if (cmax <= cmin) cmax = MIN(cmin + 1, dim);
+            cmin = MD_CLAMP(cmin, 0, dim);
+            cmax = MD_CLAMP(cmax, 0, dim);
+            if (cmax <= cmin) cmax = MD_MIN(cmin + 1, dim);
         } else {
             // Cap the span at one full period either side of the centre cell. wrap_coord() moves an
             // index by exactly one period and the shift derived from it is only ever -1, 0 or +1, so
@@ -1016,10 +1016,10 @@ static inline void cell_range_from_aabb_center_radius(
             // Capping loses nothing: a full period in each direction already visits every cell of
             // the grid in each of its nearest images, and a more distant image cannot be nearer.
             const int ccen = (int)floor(out_fcen[a] * (double)dim);
-            cmin = MAX(cmin, ccen - dim);
-            cmax = MIN(cmax, ccen + dim + 1);
+            cmin = MD_MAX(cmin, ccen - dim);
+            cmax = MD_MIN(cmax, ccen + dim + 1);
             if (cmax <= cmin) cmax = cmin + 1;
-            ASSERT(cmin >= -dim && cmax <= 2 * dim);
+            MD_ASSERT(cmin >= -dim && cmax <= 2 * dim);
         }
 
         out_cmin[a] = cmin;
@@ -1089,7 +1089,7 @@ static inline elems_t elems_of(const md_spatial_acc_t* acc) {
 
 // Eight elements from ei/ex/ey/ez against the point (x, y, z): the pairs within the cutoff among the lanes set in
 // lanes are staged. Takes the number of staged pairs and returns it updated, which keeps it in a register.
-static FORCE_INLINE size_t point_vs_8(pair_out_t* out, size_t count, const metric_t* m, const float* ex, const float* ey, const float* ez, const uint32_t* ei,
+static MD_FORCE_INLINE size_t point_vs_8(pair_out_t* out, size_t count, const metric_t* m, const float* ex, const float* ey, const float* ez, const uint32_t* ei,
                                       md_256 v_x, md_256 v_y, md_256 v_z, md_256i v_idx, int lanes, const bool tri) {
     const md_256 dx = md_mm256_sub_ps(v_x, md_mm256_loadu_ps(ex));
     const md_256 dy = md_mm256_sub_ps(v_y, md_mm256_loadu_ps(ey));
@@ -1108,7 +1108,7 @@ static FORCE_INLINE size_t point_vs_8(pair_out_t* out, size_t count, const metri
         md_mm256_storeu_epi32(out->i  + count, v_idx);
         md_mm256_storeu_epi32(out->j  + count, md_mm256_permutevar8x32_epi32(md_mm256_loadu_si256((const md_256i*)ei), perm));
         md_mm256_storeu_ps   (out->d2 + count, md_mm256_permutevar8x32_ps(d2, perm));
-        count += popcnt32(mask);
+        count += md_popcnt32(mask);
     }
     return count;
 }
@@ -1116,7 +1116,7 @@ static FORCE_INLINE size_t point_vs_8(pair_out_t* out, size_t count, const metri
 // The point (x, y, z) with index idx against the elements [beg, beg + len): whole blocks of eight, then the rest
 // with the lanes past the end masked off. The loads of the last block run up to 7 elements past the range, which the
 // padding of the element arrays keeps in bounds.
-static FORCE_INLINE size_t point_vs_range(pair_out_t* out, size_t count, const metric_t* m, elems_t e, md_256 v_x, md_256 v_y, md_256 v_z, md_256i v_idx, uint32_t beg, uint32_t len, const bool tri) {
+static MD_FORCE_INLINE size_t point_vs_range(pair_out_t* out, size_t count, const metric_t* m, elems_t e, md_256 v_x, md_256 v_y, md_256 v_z, md_256i v_idx, uint32_t beg, uint32_t len, const bool tri) {
     const float*    ex = e.x + beg;
     const float*    ey = e.y + beg;
     const float*    ez = e.z + beg;
@@ -1132,7 +1132,7 @@ static FORCE_INLINE size_t point_vs_range(pair_out_t* out, size_t count, const m
 }
 
 // The elements of one cell against each other, every pair once
-static FORCE_INLINE size_t cell_self(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off, uint32_t len, const bool tri) {
+static MD_FORCE_INLINE size_t cell_self(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off, uint32_t len, const bool tri) {
     for (uint32_t i = 0; i + 1 < len; ++i) {
         const uint32_t k = off + i;
         count = point_vs_range(out, count, m, e, md_mm256_set1_ps(e.x[k]), md_mm256_set1_ps(e.y[k]), md_mm256_set1_ps(e.z[k]),
@@ -1142,7 +1142,7 @@ static FORCE_INLINE size_t cell_self(pair_out_t* out, size_t count, const metric
 }
 
 // The elements of cell i, moved by shift (in periods), against those of cell j
-static FORCE_INLINE size_t cell_vs_cell(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off_i, uint32_t len_i, uint32_t off_j, uint32_t len_j, vec4_t shift, const bool tri) {
+static MD_FORCE_INLINE size_t cell_vs_cell(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off_i, uint32_t len_i, uint32_t off_j, uint32_t len_j, vec4_t shift, const bool tri) {
     const md_256 sx = md_mm256_set1_ps(shift.x);
     const md_256 sy = md_mm256_set1_ps(shift.y);
     const md_256 sz = md_mm256_set1_ps(shift.z);
@@ -1176,7 +1176,7 @@ static inline grid_wrap_t grid_wrap_init(const md_spatial_acc_t* acc) {
 // not periodic. The shift is the image offset, in periods, to apply to the other side of the pair: +1 where n wrapped
 // up from below, -1 where it wrapped down from above. It stays an integer vector: most neighbour cells of a sparse
 // system turn out empty, and converting it is left to those which do not.
-static FORCE_INLINE bool grid_wrap(const grid_wrap_t* g, ivec4_t n, uint32_t out_c[3], ivec4_t* out_shift) {
+static MD_FORCE_INLINE bool grid_wrap(const grid_wrap_t* g, ivec4_t n, uint32_t out_c[3], ivec4_t* out_shift) {
     const ivec4_t upper = ivec4_cmpgt(n, g->dim_1);
     const ivec4_t lower = ivec4_cmplt(n, ivec4_set1(0));
     if (ivec4_any(ivec4_andnot(ivec4_or(upper, lower), g->pbc))) return false;
@@ -1211,11 +1211,11 @@ typedef struct node_cache_t {
 } node_cache_t;
 
 static inline void node_cache_init(node_cache_t* cache) {
-    MEMSET(cache->key, 0xFF, sizeof(cache->key));
+    MD_MEMSET(cache->key, 0xFF, sizeof(cache->key));
 }
 
 // The elements of the cell at c (within the grid), an empty range for an empty cell
-static FORCE_INLINE cell_range_t cell_at(const md_spatial_acc_t* acc, node_cache_t* cache, const uint32_t c[3]) {
+static MD_FORCE_INLINE cell_range_t cell_at(const md_spatial_acc_t* acc, node_cache_t* cache, const uint32_t c[3]) {
     const uint32_t nx = c[0] >> 2;
     const uint32_t ny = c[1] >> 2;
     const uint32_t nz = c[2] >> 2;
@@ -1228,7 +1228,7 @@ static FORCE_INLINE cell_range_t cell_at(const md_spatial_acc_t* acc, node_cache
     const uint64_t mask = cache->mask[slot];
     const uint32_t bit  = local_bit(c, 0);
     if (!((mask >> bit) & 1)) return (cell_range_t){ 0, 0 };
-    const uint32_t k   = cache->base[slot] + (uint32_t)popcnt64(mask & ((1ULL << bit) - 1));
+    const uint32_t k   = cache->base[slot] + (uint32_t)md_popcnt64(mask & ((1ULL << bit) - 1));
     const uint32_t off = acc->cell_off[k];
     return (cell_range_t){ off, acc->cell_off[k + 1] - off };
 }
@@ -1257,7 +1257,7 @@ typedef struct cell_iter_t {
 
 static inline cell_iter_t cell_iter(const md_spatial_acc_t* acc) {
     cell_iter_t it;
-    MEMSET(&it, 0, sizeof(it));
+    MD_MEMSET(&it, 0, sizeof(it));
     it.acc = acc;
     it.depth = acc->num_tiers + 1;
     it.top_end = (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
@@ -1287,7 +1287,7 @@ static inline bool cell_iter_next(cell_iter_t* it, uint32_t* out_idx, uint32_t o
             it->depth = d + 1;
             continue;
         }
-        const uint32_t bit = (uint32_t)ctz64(it->rem[d]);
+        const uint32_t bit = (uint32_t)md_ctz64(it->rem[d]);
         it->rem[d] &= it->rem[d] - 1;
         const uint32_t idx = it->next[d]++;
         const uint32_t s = 2 * (d - 1);
@@ -1330,7 +1330,7 @@ static inline uint32_t cell_lookup_near(const cell_iter_t* it, const uint32_t c[
     for (uint32_t t = l - 1; ; --t) {
         const uint32_t bit = local_bit(c, t);
         if (!((mask >> bit) & 1)) return UINT32_MAX;
-        const uint32_t idx = base + (uint32_t)popcnt64(mask & ((1ULL << bit) - 1));
+        const uint32_t idx = base + (uint32_t)md_popcnt64(mask & ((1ULL << bit) - 1));
         if (t == 0) return idx;
         mask = acc->tier_mask[t][idx];
         base = acc->tier_base[t][idx];
@@ -1360,7 +1360,7 @@ static inline void node_lookup_near(const cell_iter_t* it, const uint32_t c[3], 
             *out_base = 0;
             return;
         }
-        const uint32_t idx = base + (uint32_t)popcnt64(mask & ((1ULL << bit) - 1));
+        const uint32_t idx = base + (uint32_t)md_popcnt64(mask & ((1ULL << bit) - 1));
         mask = acc->tier_mask[t - 1][idx];
         base = acc->tier_base[t - 1][idx];
     }
@@ -1369,7 +1369,7 @@ static inline void node_lookup_near(const cell_iter_t* it, const uint32_t c[3], 
 }
 
 
-static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cutoff, size_t top_beg, size_t top_end, md_spatial_acc_pair_callback_t callback, void* user_param, const bool tri) {
+static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cutoff, size_t top_beg, size_t top_end, md_spatial_acc_pair_callback_t callback, void* user_param, const bool tri) {
     int ncell[3];
     neighbor_cell_extent(ncell, cutoff, acc);
     if (!neighbor_stencil_fits(ncell, "md_spatial_acc_for_each_internal_pair_within_cutoff")) return;
@@ -1395,7 +1395,7 @@ static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cuto
 
     cell_iter_t it = cell_iter(acc);
     it.top = top_beg;
-    it.top_end = MIN(top_end, it.top_end);
+    it.top_end = MD_MIN(top_end, it.top_end);
     uint32_t ci;
     uint32_t cc[3];
     while (cell_iter_next(&it, &ci, cc)) {
@@ -1421,14 +1421,14 @@ static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cuto
             if (!ivec4_any(shift)) {
                 // Within the grid: through the cached tier 1 nodes
                 const uint32_t slot = ((nc[0] >> 2) - cur_node[0] + 1) + 3 * ((nc[1] >> 2) - cur_node[1] + 1) + 9 * ((nc[2] >> 2) - cur_node[2] + 1);
-                ASSERT(slot < 27);
+                MD_ASSERT(slot < 27);
                 if (!((halo_valid >> slot) & 1)) {
                     halo_valid |= 1u << slot;
                     node_lookup_near(&it, nc, 1, &halo_mask[slot], &halo_base[slot]);
                 }
                 const uint32_t bit = local_bit(nc, 0);
                 if (!((halo_mask[slot] >> bit) & 1)) continue;
-                cj = halo_base[slot] + (uint32_t)popcnt64(halo_mask[slot] & ((1ULL << bit) - 1));
+                cj = halo_base[slot] + (uint32_t)md_popcnt64(halo_mask[slot] & ((1ULL << bit) - 1));
             } else {
                 cj = cell_lookup_near(&it, nc);
                 if (cj == UINT32_MAX) continue;
@@ -1447,7 +1447,7 @@ static void internal_pairs_tricl(const md_spatial_acc_t* acc, double cutoff, siz
 
 // --- EXTERNAL PAIRS ---
 
-static FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md_coord_stream_t* ext, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags, const bool tri) {
+static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md_coord_stream_t* ext, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags, const bool tri) {
     int ncell[3];
     neighbor_cell_extent(ncell, cutoff, acc);
     if (!neighbor_stencil_fits(ncell, "md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff")) return;
@@ -1473,7 +1473,7 @@ static FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md_co
     node_cache_init(&cache);
 
     vec4_t fract_mask;
-    MEMCPY(&fract_mask, &g.pbc, sizeof(fract_mask));
+    MD_MEMCPY(&fract_mask, &g.pbc, sizeof(fract_mask));
     const vec4_t fcell_dim = vec4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
 
     for (size_t pt = 0; pt < ext->count; ++pt) {
@@ -1516,7 +1516,7 @@ typedef struct point_out_t {
 
 // The orthorhombic kernel stages fractional coordinates and converts them a batch at a time, the triclinic one has
 // cartesian coordinates already (it tests the bounds in them)
-static FORCE_INLINE void point_out_flush(point_out_t* out, const md_spatial_acc_t* acc, const bool tri) {
+static MD_FORCE_INLINE void point_out_flush(point_out_t* out, const md_spatial_acc_t* acc, const bool tri) {
     if (out->count) {
         if (!tri) batch_fract_to_cart_ort_256(out->x, out->y, out->z, out->count, acc);
         out->callback(out->i, out->x, out->y, out->z, out->count, out->user_param);
@@ -1524,7 +1524,7 @@ static FORCE_INLINE void point_out_flush(point_out_t* out, const md_spatial_acc_
     }
 }
 
-static FORCE_INLINE void points_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param, const bool tri) {
+static MD_FORCE_INLINE void points_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param, const bool tri) {
     point_out_t out;
     out.callback   = callback;
     out.user_param = user_param;
@@ -1551,7 +1551,7 @@ static FORCE_INLINE void points_in_aabb(const md_spatial_acc_t* acc, const doubl
         for (int a = 0; a < 3; ++a) {
             // Along a periodic axis half a period already reaches every image; along one which is not, the frame is
             // only the extent of the points, and the box may well reach past it
-            const double r = pbc[a] ? MIN(frad[a], 0.5) : frad[a];
+            const double r = pbc[a] ? MD_MIN(frad[a], 0.5) : frad[a];
             v_min[a] = md_mm256_set1_ps((float)(fcen[a] - r));
             v_max[a] = md_mm256_set1_ps((float)(fcen[a] + r));
         }
@@ -1631,7 +1631,7 @@ static FORCE_INLINE void points_in_aabb(const md_spatial_acc_t* acc, const doubl
                         md_mm256_storeu_ps   (out.x + count, md_mm256_permutevar8x32_ps(px, perm));
                         md_mm256_storeu_ps   (out.y + count, md_mm256_permutevar8x32_ps(py, perm));
                         md_mm256_storeu_ps   (out.z + count, md_mm256_permutevar8x32_ps(pz, perm));
-                        count += popcnt32(mask);
+                        count += md_popcnt32(mask);
                     }
                     v_j = md_mm256_add_epi32(v_j, add8);
                 }
@@ -1648,39 +1648,39 @@ static void points_in_aabb_tricl(const md_spatial_acc_t* acc, const double cen[3
 // ### PUBLIC QUERIES ###
 
 void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param) {
-    ASSERT(acc);
-    ASSERT(callback);
+    MD_ASSERT(acc);
+    MD_ASSERT(callback);
     if (acc->num_elems == 0) return;
     const bool tricl = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
     tricl ? internal_pairs_tricl(acc, cutoff, 0, SIZE_MAX, callback, user_param) : internal_pairs_ortho(acc, cutoff, 0, SIZE_MAX, callback, user_param);
 }
 
 size_t md_spatial_acc_num_pieces(const md_spatial_acc_t* acc) {
-    ASSERT(acc);
+    MD_ASSERT(acc);
     if (acc->num_elems == 0) return 0;
     return (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
 }
 
 void md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_spatial_acc_t* acc, double cutoff, size_t piece_beg, size_t piece_end, md_spatial_acc_pair_callback_t callback, void* user_param) {
-    ASSERT(acc);
-    ASSERT(callback);
+    MD_ASSERT(acc);
+    MD_ASSERT(callback);
     if (acc->num_elems == 0 || piece_beg >= piece_end) return;
     const bool tricl = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
     tricl ? internal_pairs_tricl(acc, cutoff, piece_beg, piece_end, callback, user_param) : internal_pairs_ortho(acc, cutoff, piece_beg, piece_end, callback, user_param);
 }
 
 void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
-    ASSERT(acc);
-    ASSERT(ext_stream);
-    ASSERT(callback);
+    MD_ASSERT(acc);
+    MD_ASSERT(ext_stream);
+    MD_ASSERT(callback);
     if (acc->num_elems == 0) return;
     const bool tricl = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
     tricl ? external_pairs_tricl(acc, ext_stream, cutoff, callback, user_param, flags) : external_pairs_ortho(acc, ext_stream, cutoff, callback, user_param, flags);
 }
 
 void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param) {
-    ASSERT(acc);
-    ASSERT(callback);
+    MD_ASSERT(acc);
+    MD_ASSERT(callback);
     for (int i = 0; i < 3; ++i) {
         if (aabb_rad[i] < 0) {
             MD_LOG_ERROR("md_spatial_acc_for_each_point_in_aabb: negative radius not allowed");

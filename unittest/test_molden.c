@@ -31,7 +31,7 @@ static bool molden_load(qm_test_t* t, const char* path, size_t arena_bytes) {
 
 UTEST(molden, parse) {
     qm_test_t t = {0};
-    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MEGABYTES(16)));
+    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_MEGABYTES(16)));
 
     // The atoms land in the system itself, not in the table.
     EXPECT_EQ(3u, t.sys.atom.count);
@@ -48,7 +48,7 @@ UTEST(molden, parse) {
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
 
     double xyz[9] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
     EXPECT_NEAR(4.999999640091, xyz[0], 1.0e-6);
     EXPECT_NEAR(7.147076485541, xyz[1], 1.0e-6);
     EXPECT_NEAR(7.650970449270, xyz[2], 1.0e-6);
@@ -94,7 +94,7 @@ UTEST(molden, parse) {
 // published there is no recovering what the coefficients were read as.
 UTEST(molden, run_description_is_published) {
     qm_test_t t = {0};
-    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MEGABYTES(16)));
+    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_MEGABYTES(16)));
 
     EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("molden/ao_convention")), STR_LIT("5D7F15G")));
     EXPECT_TRUE(str_begins_with(qm_test_string(&t, STR_LIT("molden/title")), STR_LIT("H2O cc-pVDZ")));
@@ -110,12 +110,12 @@ UTEST(molden, run_description_is_published) {
 
 UTEST(molden, orbital_energies_and_occupations) {
     qm_test_t t = {0};
-    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MEGABYTES(16)));
+    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_MEGABYTES(16)));
 
     ASSERT_EQ(24u, (uint32_t)qm_test_count(&t, STR_LIT("orbital/alpha/energy")));
 
     double energy[24] = {0};
-    ASSERT_EQ(qm_test_series(energy, ARRAY_SIZE(energy), &t, STR_LIT("orbital/alpha/energy")), ARRAY_SIZE(energy));
+    ASSERT_EQ(qm_test_series(energy, MD_COUNTOF(energy), &t, STR_LIT("orbital/alpha/energy")), MD_COUNTOF(energy));
     EXPECT_NEAR(-20.546019802060, energy[0], 1.0e-9);
     EXPECT_NEAR( -1.318586,       energy[1], 1.0e-6);
     EXPECT_NEAR( -0.498086,       energy[4], 1.0e-6);
@@ -124,7 +124,7 @@ UTEST(molden, orbital_energies_and_occupations) {
     // The file states Occup= 2 and has no beta orbitals, so it is restricted and each spin channel
     // gets half - which is the per channel convention the orbital/ tree uses throughout.
     double occ[24] = {0};
-    ASSERT_EQ(qm_test_series(occ, ARRAY_SIZE(occ), &t, STR_LIT("orbital/alpha/occupation")), ARRAY_SIZE(occ));
+    ASSERT_EQ(qm_test_series(occ, MD_COUNTOF(occ), &t, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ));
     for (size_t i = 0; i < 5; ++i) {
         EXPECT_NEAR(1.0, occ[i], 1.0e-12);
     }
@@ -165,9 +165,9 @@ UTEST(molden, orbitals_are_orthonormal) {
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden",   // the two above with their Cartesian
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden", // functions normalised as a shell
     };
-    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
         qm_test_t t = {0};
-        ASSERT_TRUE(molden_load(&t, files[i], MEGABYTES(32)));
+        ASSERT_TRUE(molden_load(&t, files[i], MD_MEGABYTES(32)));
         EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
         qm_test_free(&t);
     }
@@ -184,9 +184,9 @@ UTEST(molden, total_density_holds_ten_electrons) {
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden",
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
         qm_test_t t = {0};
-        ASSERT_TRUE(molden_load(&t, files[i], MEGABYTES(32)));
+        ASSERT_TRUE(molden_load(&t, files[i], MD_MEGABYTES(32)));
         EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
         // Restricted, so the two spins hold five each and their difference is nothing.
         EXPECT_NEAR( 5.0, qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-5);
@@ -217,7 +217,7 @@ static bool molden_density_at(double* rho, const float* p, size_t n, qm_test_t* 
 static double molden_density_difference(const char* file_a, const char* file_b) {
     qm_test_t a = {0}, b = {0};
     double worst = INFINITY;
-    if (molden_load(&a, file_a, MEGABYTES(32)) && molden_load(&b, file_b, MEGABYTES(32))) {
+    if (molden_load(&a, file_a, MD_MEGABYTES(32)) && molden_load(&b, file_b, MD_MEGABYTES(32))) {
         const md_attribute_t* ca = qm_test_attr(&a, STR_LIT("qm/atom/coordinate"));
         double xyz[9] = {0};
         if (ca && md_attribute_extract_f64(xyz, 9, ca, md_attribute_slice_all(), md_unit_none()) == 9) {
@@ -258,8 +258,8 @@ static double molden_density_difference(const char* file_a, const char* file_b) 
 UTEST(molden, spherical_and_cartesian_describe_one_wavefunction) {
     qm_test_t sph = {0};
     qm_test_t car = {0};
-    ASSERT_TRUE(molden_load(&sph, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MEGABYTES(32)));
-    ASSERT_TRUE(molden_load(&car, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden", MEGABYTES(32)));
+    ASSERT_TRUE(molden_load(&sph, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_MEGABYTES(32)));
+    ASSERT_TRUE(molden_load(&car, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden", MD_MEGABYTES(32)));
     md_gto_basis_t sph_basis = {0};
     md_gto_basis_t car_basis = {0};
     ASSERT_TRUE(qm_test_basis(&sph_basis, &sph));
@@ -289,9 +289,9 @@ UTEST(molden, cartesian_normalisation_is_read_from_the_orbitals) {
         { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden",       "function" },
         { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden", "shell" },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         qm_test_t t = {0};
-        ASSERT_TRUE(molden_load(&t, cases[i].file, MEGABYTES(32)));
+        ASSERT_TRUE(molden_load(&t, cases[i].file, MD_MEGABYTES(32)));
         const bool has = qm_test_has(&t, STR_LIT("molden/cartesian_normalisation"));
         if (cases[i].expect) {
             EXPECT_TRUE(has);
@@ -305,7 +305,7 @@ UTEST(molden, cartesian_normalisation_is_read_from_the_orbitals) {
         { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",   MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden" },
         { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden", MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden" },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(pairs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(pairs); ++i) {
         const double worst = molden_density_difference(pairs[i][0], pairs[i][1]);
         printf("  %s: each function and shell normalised read to one density, %.1e (relative)\n", pairs[i][0] + strlen(MD_UNITTEST_DATA_DIR "/molden/"), worst);
         EXPECT_LT(worst, 1.0e-9);
@@ -323,8 +323,8 @@ UTEST(molden, cartesian_normalisation_is_read_from_the_orbitals) {
 UTEST(molden, sp_shells_expand_to_s_and_p) {
     qm_test_t split = {0};
     qm_test_t fused = {0};
-    ASSERT_TRUE(molden_load(&split, MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden",    MEGABYTES(16)));
-    ASSERT_TRUE(molden_load(&fused, MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g_sp.molden", MEGABYTES(16)));
+    ASSERT_TRUE(molden_load(&split, MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden",    MD_MEGABYTES(16)));
+    ASSERT_TRUE(molden_load(&fused, MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g_sp.molden", MD_MEGABYTES(16)));
 
     md_gto_basis_t a = {0};
     md_gto_basis_t b = {0};
@@ -378,7 +378,7 @@ UTEST(molden, sp_shells_expand_to_s_and_p) {
 // molecular orbitals are not orthonormal - so what is asserted is what the parser recovered.
 UTEST(molden, third_party_file_parses) {
     qm_test_t t = {0};
-    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden", MEGABYTES(16)));
+    ASSERT_TRUE(molden_load(&t, MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden", MD_MEGABYTES(16)));
 
     EXPECT_EQ(4u, t.sys.atom.count);
 
@@ -393,7 +393,7 @@ UTEST(molden, third_party_file_parses) {
 
     ASSERT_EQ(8u, (uint32_t)qm_test_count(&t, STR_LIT("orbital/alpha/energy")));
     double energy[8] = {0};
-    ASSERT_EQ(qm_test_series(energy, ARRAY_SIZE(energy), &t, STR_LIT("orbital/alpha/energy")), ARRAY_SIZE(energy));
+    ASSERT_EQ(qm_test_series(energy, MD_COUNTOF(energy), &t, STR_LIT("orbital/alpha/energy")), MD_COUNTOF(energy));
     EXPECT_NEAR(-15.3128, energy[0], 1.0e-4);
 
     qm_test_free(&t);
@@ -438,7 +438,7 @@ UTEST(molden, vibrational_blocks) {
         "  2.21  2.22  2.23\n";
 
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(4));
+    qm_test_init(&t, MD_MEGABYTES(4));
     ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
 
     EXPECT_EQ(3u, t.sys.atom.count);
@@ -447,16 +447,16 @@ UTEST(molden, vibrational_blocks) {
     double xyz[9] = {0};
     const md_attribute_t* coord = qm_test_attr(&t, STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
-    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
     EXPECT_NEAR(1.43 * 0.529177210903, xyz[4], 1.0e-9);
 
     double freq[3] = {0};
-    ASSERT_EQ(qm_test_series(freq, ARRAY_SIZE(freq), &t, STR_LIT("molden/vib/frequency")), ARRAY_SIZE(freq));
+    ASSERT_EQ(qm_test_series(freq, MD_COUNTOF(freq), &t, STR_LIT("molden/vib/frequency")), MD_COUNTOF(freq));
     EXPECT_NEAR(1600.0, freq[0], 1.0e-9);
     EXPECT_NEAR(3800.0, freq[2], 1.0e-9);
 
     double intensity[3] = {0};
-    ASSERT_EQ(qm_test_series(intensity, ARRAY_SIZE(intensity), &t, STR_LIT("molden/vib/ir_intensity")), ARRAY_SIZE(intensity));
+    ASSERT_EQ(qm_test_series(intensity, MD_COUNTOF(intensity), &t, STR_LIT("molden/vib/ir_intensity")), MD_COUNTOF(intensity));
     EXPECT_NEAR(70.0, intensity[0], 1.0e-9);
 
     // {D,N} of 3 component values: mode first, atom last, which is the convention an "atom axis is
@@ -469,7 +469,7 @@ UTEST(molden, vibrational_blocks) {
     ASSERT_EQ(3u, mode->format.components);
 
     double row[9] = {0};
-    ASSERT_EQ(qm_test_row(row, ARRAY_SIZE(row), &t, STR_LIT("qm/atom/normal_mode"), 1), ARRAY_SIZE(row));
+    ASSERT_EQ(qm_test_row(row, MD_COUNTOF(row), &t, STR_LIT("qm/atom/normal_mode"), 1), MD_COUNTOF(row));
     EXPECT_NEAR(1.01, row[0], 1.0e-9);
     EXPECT_NEAR(1.13, row[5], 1.0e-9);
     EXPECT_NEAR(1.23, row[8], 1.0e-9);
@@ -511,9 +511,9 @@ UTEST(molden, malformed_files_are_declined) {
           "[Molden Format]\n[Atoms] Angs\nH 1 1 0 0 0\n[GTO]\n1 0\n s 1 1.00\n  1.0 1.0\n\n[MO]\nEne= 0.0\nOccup= 1.0\n 9 1.0\n" },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         qm_test_t t = {0};
-        qm_test_init(&t, MEGABYTES(1));
+        qm_test_init(&t, MD_MEGABYTES(1));
         EXPECT_FALSE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(cases[i].text)));
         qm_test_free(&t);
     }
@@ -544,7 +544,7 @@ UTEST(molden, vibrations_without_atoms) {
         "  70.0\n"
         "  5.0\n";
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(4));
+    qm_test_init(&t, MD_MEGABYTES(4));
     ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
     ASSERT_EQ(3u, t.sys.atom.count);
     EXPECT_EQ(8, t.sys.atom.type.z[t.sys.atom.type_idx[0]]);
@@ -555,7 +555,7 @@ UTEST(molden, vibrations_without_atoms) {
     EXPECT_EQ(2u, mode->format.shape[0]);
     EXPECT_EQ(3u, mode->format.shape[1]);
     double row[9] = {0};
-    ASSERT_EQ(qm_test_row(row, ARRAY_SIZE(row), &t, STR_LIT("qm/atom/normal_mode"), 1), ARRAY_SIZE(row));
+    ASSERT_EQ(qm_test_row(row, MD_COUNTOF(row), &t, STR_LIT("qm/atom/normal_mode"), 1), MD_COUNTOF(row));
     EXPECT_NEAR(1.13, row[5], 1.0e-9);
     qm_test_free(&t);
 }
@@ -657,7 +657,7 @@ UTEST(molden, restricted_open_shell) {
         "   6       1.1343874373653\n";
 
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(16));
+    qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
     double occ_a[6] = {0}, occ_b[6] = {0};
     ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, STR_LIT("orbital/alpha/occupation")));

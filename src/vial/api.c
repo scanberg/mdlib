@@ -149,7 +149,7 @@ static struct {
 } shared_prelude;
 
 static void prelude_build(void) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
     const str_t src = {(const char*)prelude_vial, prelude_vial_size - 1};
     vial_diags_init(&shared_prelude.diags, src, arena);
     vial_token_t* tokens = vial_lex(src, &shared_prelude.diags, arena);
@@ -170,7 +170,7 @@ static void prelude_ensure(void) {
 
 md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, md_allocator_i* alloc) {
     (void)desc;
-    md_allocator_i* arena = md_arena_allocator_create(alloc, KILOBYTES(64));
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MD_KILOBYTES(64));
     if (!arena) return NULL;
     md_vial_program_t* prog = md_alloc(arena, sizeof(md_vial_program_t));
     memset(prog, 0, sizeof(*prog));
@@ -458,7 +458,7 @@ static size_t prelude_defs(str_t* out, size_t cap) {
 
 static bool is_prelude_def(str_t name) {
     str_t defs[64];
-    const size_t n = MIN(prelude_defs(defs, 64), 64);
+    const size_t n = MD_MIN(prelude_defs(defs, 64), 64);
     for (size_t i = 0; i < n; ++i) if (str_eq(defs[i], name)) return true;
     return false;
 }
@@ -472,7 +472,7 @@ size_t md_vial_builtin_names(str_t* out, size_t cap) {
         ++n;
     }
     str_t defs[64];
-    const size_t nd = MIN(prelude_defs(defs, 64), 64);
+    const size_t nd = MD_MIN(prelude_defs(defs, 64), 64);
     for (size_t i = 0; i < nd; ++i) {
         if (vial_builtin_find(defs[i])) continue;
         if (out && n < cap) out[n] = defs[i];
@@ -577,7 +577,7 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
                                (lv == VIAL_LEVEL_PART && str_eq(fname, STR_LIT("polymer")));
             if (!alias && !str_eq(fname, str_from_cstr(vial_select_name(lv)))) continue;
             static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "scope"};  // not serial, until it is supported
-            for (size_t w = 0; w < ARRAY_SIZE(words); ++w) {
+            for (size_t w = 0; w < MD_COUNTOF(words); ++w) {
                 if (alias && lv == VIAL_LEVEL_PARTICLE && str_eq(str_from_cstr(words[w]), STR_LIT("kind"))) continue;    // atom() and bead() are a kind
                 if (vial_select_takes(lv, vial_select_key(str_from_cstr(words[w])))) param_add(c, str_from_cstr(words[w]), given, ng);
             }
@@ -623,17 +623,17 @@ static void system_values(cmpl_t* c, const md_system_t* sys, str_t callee, str_t
     const bool residues = IS(callee, "residue");
     if (particles && IS(kw, "kind")) {
         static const char* k[] = {"atom", "bead", "virtual"};
-        for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
     if (residues && IS(kw, "kind")) {
         static const char* k[] = {"amino_acid", "nucleotide", "water", "ion", "lipid", "other"};
-        for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
     if (IS(callee, "part") && IS(kw, "kind")) {
         static const char* k[] = {"polymer", "peptide", "nucleic", "dna", "rna", "glycan", "ligand", "lipid", "ion", "water"};
-        for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
     if (!sys) return;
@@ -683,7 +683,7 @@ static int cmpl_cmp(const void* a, const void* b) {
     const md_vial_completion_t* y = b;
     const int r = cmpl_rank(x->kind) - cmpl_rank(y->kind);
     if (r) return r;
-    const size_t n = MIN(x->label.len, y->label.len);
+    const size_t n = MD_MIN(x->label.len, y->label.len);
     const int c = strncmp(x->label.ptr, y->label.ptr, n);
     return c ? c : (int)x->label.len - (int)y->label.len;
 }
@@ -776,7 +776,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         }
         // The selectors within each set, for .residue[i] and .particle(...)
         static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail"};
-        for (size_t i = 0; i < ARRAY_SIZE(views); ++i) cmpl_add(&c, str_from_cstr(views[i]), str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
+        for (size_t i = 0; i < MD_COUNTOF(views); ++i) cmpl_add(&c, str_from_cstr(views[i]), str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first
         if (callee.len && !kw.len) {
@@ -822,12 +822,12 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         // Stored selections
         for (size_t i = 0; i < prog->check.num_stored; ++i) cmpl_add(&c, prog->check.stored[i].name, prog->check.stored[i].name, MD_VIAL_COMPLETION_CONSTANT);
         str_t defs[64];
-        const size_t nd = MIN(prelude_defs(defs, 64), 64);
+        const size_t nd = MD_MIN(prelude_defs(defs, 64), 64);
         for (size_t i = 0; i < nd; ++i) cmpl_add(&c, defs[i], defs[i], MD_VIAL_COMPLETION_FUNCTION);
         // The keywords a script writes; the others are reserved and E08xx
         static const vial_kw_t kws[] = {VIAL_KW_FALSE, VIAL_KW_NONE_, VIAL_KW_TRUE, VIAL_KW_AND, VIAL_KW_ASSERT, VIAL_KW_DEF, VIAL_KW_ELIF,
                                         VIAL_KW_ELSE, VIAL_KW_FOR, VIAL_KW_IF, VIAL_KW_IN, VIAL_KW_IS, VIAL_KW_NOT, VIAL_KW_OR, VIAL_KW_RETURN};
-        for (size_t i = 0; i < ARRAY_SIZE(kws); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(kws); ++i) {
             const str_t w = str_from_cstr(vial_kw_str(kws[i]));
             cmpl_add(&c, w, w, MD_VIAL_COMPLETION_KEYWORD);
         }

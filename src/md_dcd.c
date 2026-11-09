@@ -71,13 +71,13 @@ typedef struct dcd_t {
 // ==================== Byte-swap helpers ====================
 
 static inline int32_t dcd_swap32(int32_t v, bool swap) {
-    return swap ? (int32_t)BSWAP32((uint32_t)v) : v;
+    return swap ? (int32_t)MD_BSWAP32((uint32_t)v) : v;
 }
 
 static inline void dcd_swap32_array(int32_t* data, int count, bool swap) {
     if (!swap) return;
     for (int i = 0; i < count; ++i) {
-        data[i] = BSWAP32(data[i]);
+        data[i] = MD_BSWAP32(data[i]);
     }
 }
 
@@ -85,13 +85,13 @@ static inline void dcd_swap32_array(int32_t* data, int count, bool swap) {
 static inline int64_t dcd_load_marker(const uint8_t* p, int marker, bool rev) {
     if (marker == 8) {
         uint64_t u;
-        MEMCPY(&u, p, 8);
-        if (rev) u = BSWAP64(u);
+        MD_MEMCPY(&u, p, 8);
+        if (rev) u = MD_BSWAP64(u);
         return (int64_t)u;
     }
     uint32_t u;
-    MEMCPY(&u, p, 4);
-    if (rev) u = BSWAP32(u);
+    MD_MEMCPY(&u, p, 4);
+    if (rev) u = MD_BSWAP32(u);
     return (int32_t)u;
 }
 
@@ -131,8 +131,8 @@ static void dcd_compute_frame_sizes(const dcd_file_header_t* h,
 // On success, populates *out and leaves the file positioned at the first frame.
 // When nfixed > 0, allocates out->free_indices from alloc.
 static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_allocator_i* alloc) {
-    ASSERT(md_file_valid(file) && out && alloc);
-    MEMSET(out, 0, sizeof(*out));
+    MD_ASSERT(md_file_valid(file) && out && alloc);
+    MD_MEMSET(out, 0, sizeof(*out));
 
     // The very first bytes are a Fortran record marker that must equal 84: 4 bytes of it, or 8 in a file written
     // with 64 bit markers. If they compare as 84 when swapped, the file uses reverse endianness.
@@ -185,11 +185,11 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     // Extract the integer fields packed into the 84-byte block.
     // Offsets are relative to the start of hdrbuf (i.e. 4 bytes after the initial marker).
     int32_t nset, istart, nsavc, namnf, charmm_version;
-    MEMCPY(&nset,           hdrbuf +  4, 4);
-    MEMCPY(&istart,         hdrbuf +  8, 4);
-    MEMCPY(&nsavc,          hdrbuf + 12, 4);
-    MEMCPY(&namnf,          hdrbuf + 36, 4);
-    MEMCPY(&charmm_version, hdrbuf + 80, 4);
+    MD_MEMCPY(&nset,           hdrbuf +  4, 4);
+    MD_MEMCPY(&istart,         hdrbuf +  8, 4);
+    MD_MEMCPY(&nsavc,          hdrbuf + 12, 4);
+    MD_MEMCPY(&namnf,          hdrbuf + 36, 4);
+    MD_MEMCPY(&charmm_version, hdrbuf + 80, 4);
     nset           = dcd_swap32(nset,           rev);
     istart         = dcd_swap32(istart,         rev);
     nsavc          = dcd_swap32(nsavc,          rev);
@@ -202,8 +202,8 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
         charmm = DCD_IS_CHARMM;
 
         int32_t has_extra, has_4dims;
-        MEMCPY(&has_extra, hdrbuf + 44, 4);
-        MEMCPY(&has_4dims, hdrbuf + 48, 4);
+        MD_MEMCPY(&has_extra, hdrbuf + 44, 4);
+        MD_MEMCPY(&has_4dims, hdrbuf + 48, 4);
         has_extra = dcd_swap32(has_extra, rev);
         has_4dims = dcd_swap32(has_4dims, rev);
 
@@ -217,16 +217,16 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     double delta = 0.0;
     if (charmm & DCD_IS_CHARMM) {
         uint32_t raw;
-        MEMCPY(&raw, hdrbuf + 40, 4);
-        if (rev) raw = BSWAP32(raw);
+        MD_MEMCPY(&raw, hdrbuf + 40, 4);
+        if (rev) raw = MD_BSWAP32(raw);
         float fdelta;
-        MEMCPY(&fdelta, &raw, 4);
+        MD_MEMCPY(&fdelta, &raw, 4);
         delta = (double)fdelta;
     } else {
         uint64_t raw;
-        MEMCPY(&raw, hdrbuf + 40, 8);
-        if (rev) raw = BSWAP64(raw);
-        MEMCPY(&delta, &raw, 8);
+        MD_MEMCPY(&raw, hdrbuf + 40, 8);
+        if (rev) raw = MD_BSWAP64(raw);
+        MD_MEMCPY(&delta, &raw, 8);
     }
 
     // Title block: [int32: size][size bytes: titles][int32: size]
@@ -335,7 +335,7 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 
     out->nset        = nset;
     out->istart      = istart;
-    out->nsavc       = MAX(nsavc, 1);
+    out->nsavc       = MD_MAX(nsavc, 1);
     out->nfixed      = namnf;
     out->natoms      = natoms;
     out->charmm      = charmm;
@@ -363,7 +363,7 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 // Angles in degrees that a cell can have: each strictly between 0 and 180, and the three spanning a volume
 static bool dcd_cell_angles_valid(double alpha, double beta, double gamma) {
     if (!(alpha > 0.0 && alpha < 180.0 && beta > 0.0 && beta < 180.0 && gamma > 0.0 && gamma < 180.0)) return false;
-    const double ca = cos(DEG_TO_RAD(alpha)), cb = cos(DEG_TO_RAD(beta)), cg = cos(DEG_TO_RAD(gamma));
+    const double ca = cos(MD_DEG_TO_RAD(alpha)), cb = cos(MD_DEG_TO_RAD(beta)), cg = cos(MD_DEG_TO_RAD(gamma));
     return 1.0 - ca * ca - cb * cb - cg * cg + 2.0 * ca * cb * cg > 1.0e-6;
 }
 
@@ -371,7 +371,7 @@ static double dcd_vec_angle(const double u[3], const double v[3]) {
     const double uu = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
     const double vv = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     const double c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (uu * vv);
-    return RAD_TO_DEG(acos(CLAMP(c, -1.0, 1.0)));
+    return MD_RAD_TO_DEG(acos(MD_CLAMP(c, -1.0, 1.0)));
 }
 
 // out_R (may be NULL): the rotation of the frame's positions into the orientation of the cell, p' = R p, and the
@@ -417,9 +417,9 @@ static md_unitcell_t dcd_unitcell_from_params(const double uc[6], int32_t versio
     const bool lengths = a > 0.0 && b > 0.0 && c > 0.0 && isfinite(a + b + c);
 
     if (lengths && fabs(uc[1]) <= 1.0 && fabs(uc[3]) <= 1.0 && fabs(uc[4]) <= 1.0) {
-        const double gamma = RAD_TO_DEG(acos(uc[1]));
-        const double beta  = RAD_TO_DEG(acos(uc[3]));
-        const double alpha = RAD_TO_DEG(acos(uc[4]));
+        const double gamma = MD_RAD_TO_DEG(acos(uc[1]));
+        const double beta  = MD_RAD_TO_DEG(acos(uc[3]));
+        const double alpha = MD_RAD_TO_DEG(acos(uc[4]));
         if (dcd_cell_angles_valid(alpha, beta, gamma)) {
             return md_unitcell_from_extent_and_angles(a, b, c, alpha, beta, gamma);
         }
@@ -437,8 +437,8 @@ static md_unitcell_t dcd_unitcell_from_params(const double uc[6], int32_t versio
 // ==================== Low-level frame reading ====================
 
 static bool dcd_read_bytes_at(md_file_t file, md_file_offset_t* offset, void* ptr, size_t num_bytes) {
-    ASSERT(md_file_valid(file));
-    ASSERT(offset);
+    MD_ASSERT(md_file_valid(file));
+    MD_ASSERT(offset);
 
     if (md_file_read_at(file, *offset, ptr, num_bytes) != num_bytes) {
         return false;
@@ -491,8 +491,8 @@ static bool dcd_read_frame_at(md_file_t file,
                               md_unitcell_t* out_unitcell,
                               float* out_x, float* out_y, float* out_z)
 {
-    ASSERT(md_file_valid(file));
-    ASSERT(offset);
+    MD_ASSERT(md_file_valid(file));
+    MD_ASSERT(offset);
     const bool coords_requested = (out_x && out_y && out_z);
     const int  nfree            = natoms - nfixed;
     const bool all_atoms        = (nfixed == 0 || is_first_frame);
@@ -516,9 +516,9 @@ static bool dcd_read_frame_at(md_file_t file,
             if (rev) {
                 for (int i = 0; i < 6; ++i) {
                     uint64_t tmp;
-                    MEMCPY(&tmp, &uc[i], 8);
-                    tmp = BSWAP64(tmp);
-                    MEMCPY(&uc[i], &tmp, 8);
+                    MD_MEMCPY(&tmp, &uc[i], 8);
+                    tmp = MD_BSWAP64(tmp);
+                    MD_MEMCPY(&uc[i], &tmp, 8);
                 }
             }
             if (out_unitcell)
@@ -600,7 +600,7 @@ done:
 // they were taken, the first frame in full (which the fixed atoms of every later frame take their
 // positions from). Allocated from alloc.
 static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
-    MEMSET(dcd, 0, sizeof(*dcd));
+    MD_MEMSET(dcd, 0, sizeof(*dcd));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
@@ -631,7 +631,7 @@ static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
     const int64_t payload = filesize - fhdr.header_size;
     size_t num_frames = 0;
     if (payload >= first_frame_size) {
-        num_frames = 1 + (size_t)MAX(0LL, (payload - first_frame_size) / frame_size);
+        num_frames = 1 + (size_t)MD_MAX(0LL, (payload - first_frame_size) / frame_size);
     }
 
     // If the header declares fewer frames, trust that (the file may be truncated or
@@ -719,16 +719,16 @@ static const void* dcd_resident(const md_attributes_t* attributes, str_t run, co
 
 static inline float dcd_load_f32(const uint8_t* p, bool rev) {
     uint32_t u;
-    MEMCPY(&u, p, 4);
-    if (rev) u = BSWAP32(u);
+    MD_MEMCPY(&u, p, 4);
+    if (rev) u = MD_BSWAP32(u);
     float f;
-    MEMCPY(&f, &u, 4);
+    MD_MEMCPY(&f, &u, 4);
     return f;
 }
 
 static inline int32_t dcd_load_i32(const uint8_t* p, bool rev) {
     int32_t v;
-    MEMCPY(&v, p, 4);
+    MD_MEMCPY(&v, p, 4);
     return dcd_swap32(v, rev);
 }
 
@@ -744,7 +744,7 @@ static bool dcd_has_cell_block(int32_t charmm) {
 // position, which the run holds as source/first_frame.
 static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attributes_t* attributes = &sys->attributes;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
@@ -803,7 +803,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
     if (raw && xyz && md_attribute_io_read_at(io, file_path, offsets[frame], raw, skip + 3 * record) == skip + 3 * record) {
         bool ok = true;
         if (!all_atoms) {
-            MEMCPY(xyz, first_frame, N * 3 * sizeof(float));
+            MD_MEMCPY(xyz, first_frame, N * 3 * sizeof(float));
         }
         for (size_t d = 0; d < 3 && ok; ++d) {
             const uint8_t* rec = raw + skip + d * record;
@@ -829,9 +829,9 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
             bool rotated = false;
             for (int i = 0; i < 6; ++i) {
                 uint64_t u;
-                MEMCPY(&u, raw + marker + i * 8, 8);
-                if (rev) u = BSWAP64(u);
-                MEMCPY(&uc[i], &u, 8);
+                MD_MEMCPY(&u, raw + marker + i * 8, 8);
+                if (rev) u = MD_BSWAP64(u);
+                MD_MEMCPY(&uc[i], &u, 8);
             }
             dcd_unitcell_from_params(uc, layout[DCD_LAYOUT_VERSION], R, &rotated);
             if (rotated) {
@@ -846,7 +846,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
         }
         if (ok) {
             if (count != N) {
-                MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
+                MD_MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
             }
             written = cap;
         }
@@ -860,7 +860,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
 // <run>/unitcell, for a file whose frames carry a cell block: 48 bytes at the start of the frame
 static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attributes_t* attributes = &sys->attributes;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
@@ -891,30 +891,30 @@ static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* att
         double uc[6];
         for (int i = 0; i < 6; ++i) {
             uint64_t u;
-            MEMCPY(&u, raw + marker + i * 8, 8);
-            if (rev) u = BSWAP64(u);
-            MEMCPY(&uc[i], &u, 8);
+            MD_MEMCPY(&u, raw + marker + i * 8, 8);
+            if (rev) u = MD_BSWAP64(u);
+            MD_MEMCPY(&uc[i], &u, 8);
         }
         const md_unitcell_t cell = dcd_unitcell_from_params(uc, layout[DCD_LAYOUT_VERSION], NULL, NULL);
         md_unitcell_A_extract_float(A, &cell);
     }
     // A block of another size carries no cell known here: the frame has none.
     if (slice->num_idx == 1) {
-        MEMCPY(dst, A, sizeof(A));
+        MD_MEMCPY(dst, A, sizeof(A));
     } else {
-        MEMCPY(dst, A[slice->idx[1]], sizeof(A[0]));
+        MD_MEMCPY(dst, A[slice->idx[1]], sizeof(A[0]));
     }
     return cap;
 }
 
 bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     (void)flags;
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
     const str_t path = {path_buf, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     dcd_t dcd;
@@ -942,7 +942,7 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         md_unitcell_A_extract_float(A, &sys->reference.unitcell);
         boxes = md_alloc(arena, F * 9 * sizeof(float));
         for (size_t i = 0; i < F; ++i) {
-            MEMCPY(boxes + i * 9, A, sizeof(A));
+            MD_MEMCPY(boxes + i * 9, A, sizeof(A));
         }
     }
 
@@ -1024,7 +1024,7 @@ done:
 size_t md_dcd_file_atom_count(str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     dcd_file_header_t header;
     const size_t n = dcd_parse_file_header(file, &header, arena) && header.natoms > 0 ? (size_t)header.natoms : 0;
     md_arena_allocator_destroy(arena);

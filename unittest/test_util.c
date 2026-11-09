@@ -44,10 +44,10 @@ static vec3_t com_planar(const float* x, const float* y, const float* z, const f
     size_t len = n;
     if (idx) {
         len = 0;
-        for (size_t i = 0; i < n; ++i) len = MAX(len, (size_t)idx[i] + 1);
+        for (size_t i = 0; i < n; ++i) len = MD_MAX(len, (size_t)idx[i] + 1);
     }
     md_temp_scope_t temp = md_temp_begin();
-    vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, ALIGN_TO(len, 16));
+    vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, MD_ALIGN_TO(len, 16));
     pack_xyz(xyz, x, y, z, len);
     const vec3_t com = md_util_com_compute(xyz, w, idx, n, cell);
     md_temp_end(temp);
@@ -79,7 +79,7 @@ struct util {
 };
 
 UTEST_F_SETUP(util) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     utest_fixture->alloc = alloc;
 
     utest_fixture->mol_ala.alloc = alloc;
@@ -157,7 +157,7 @@ UTEST_F(util, part) {
 	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.part.count);
 
     const md_system_t* sys = &utest_fixture->mol_centered;
-    ASSERT(sys->part.count > 253);
+    MD_ASSERT(sys->part.count > 253);
 
     const md_urange_t ref = md_system_part_atom_range(sys, 0);
     for (size_t i = 1; i < 253; ++i) {
@@ -195,7 +195,7 @@ UTEST_F(util, rmsd) {
     ASSERT_TRUE(mol);
 
     const size_t N = mol->atom.count;
-    const size_t cap = ALIGN_TO(N, 16);
+    const size_t cap = MD_ALIGN_TO(N, 16);
     vec3_t* xyz[2] = {
         md_alloc(alloc, cap * sizeof(vec3_t)),
         md_alloc(alloc, cap * sizeof(vec3_t)),
@@ -268,7 +268,7 @@ UTEST(util, com) {
             {4,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -280,7 +280,7 @@ UTEST(util, com) {
             {5,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
 		com = vec3_deperiodize_ortho(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -299,7 +299,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
         com = vec3_deperiodize_ortho(com, vec3_mul1(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -330,9 +330,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &cell);
-        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &cell);
-        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &cell);
+        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, MD_COUNTOF(pos0), &cell);
+        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, MD_COUNTOF(pos1), &cell);
+        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, MD_COUNTOF(pos2), &cell);
 
         com0 = vec3_deperiodize_ortho(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize_ortho(com1, (vec3_t){ 0,0,0 }, pbc_ext);
@@ -489,7 +489,7 @@ static void check_molecule_invariants(int* utest_result, const md_system_t* sys)
 // residue hierarchy: beads hang off their residue's anchor, consecutive polymer residues are
 // chained, non polymer residues stay separate, and nothing is written to sys->bond.
 UTEST(util, molecule_hierarchy_coarse_grained_without_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_system_t sys = {0};
     sys.alloc = alloc;
@@ -540,7 +540,7 @@ UTEST(util, molecule_hierarchy_coarse_grained_without_bonds) {
 // Where bonds exist they are used, and links only fill in what they leave disconnected. A system that is
 // not coarse grained gets no hierarchy: only what makes a molecule of a residue (synthesize_molecule_links).
 UTEST(util, molecule_hierarchy_coarse_grained_partial_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     {
         md_system_t sys = {0};
@@ -592,7 +592,7 @@ UTEST(util, molecule_hierarchy_coarse_grained_partial_bonds) {
 static size_t molecule_size_of_atom(const md_system_t* sys, int32_t atom);
 
 UTEST(util, coordinated_metals_are_molecules_of_their_own) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     {
         // The Mg of tubulin, between the phosphates of its GTP and four waters
         md_system_t sys = {.alloc = alloc};
@@ -646,7 +646,7 @@ static size_t molecule_size_of_atom(const md_system_t* sys, int32_t atom) {
 // A molecule holds its residues and its polymer chains whole, whatever its bonds say: a chain with residues missing
 // from a crystal structure is one molecule, and the waters of a TIP4P model are one each with their virtual sites
 UTEST(util, molecules_hold_residues_and_chains) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     // The molecule of an atom, by the slots of the structures
     #define MOLECULE_OF(sys, atom) md_system_molecule_find_by_atom_idx(&(sys), (size_t)(atom))
@@ -756,7 +756,7 @@ UTEST(util, molecules_hold_residues_and_chains) {
 // A bondless coarse grained chain wrapped into a small box must come out whole. The BB beads sit 3.8A
 // apart along x in a 10A box and each carries a side chain bead 3A up in y, across the cell boundary.
 UTEST(util, unwrap_molecule_coarse_grained_without_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_system_t sys = {0};
     sys.alloc = alloc;
@@ -797,7 +797,7 @@ UTEST(util, unwrap_molecule_coarse_grained_without_bonds) {
 // The coarse grained branch of covalent bond inference used to skip the first residue, test every bead
 // against itself (always under the cutoff, so a self bond) and emit every other pair twice.
 UTEST(util, infer_bonds_coarse_grained) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_system_t sys = {0};
     sys.alloc = alloc;
@@ -927,7 +927,7 @@ static void check_martini_peptide(int* utest_result, md_system_t* sys, md_system
 }
 
 UTEST(util, martini3_peptide_gro) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro), NULL));
@@ -937,7 +937,7 @@ UTEST(util, martini3_peptide_gro) {
 }
 
 UTEST(util, martini3_peptide_pdb) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
@@ -988,25 +988,25 @@ UTEST(util, martini_residue_names) {
         {"ASN", {"BB", "SC1", "SCP", "SCN"}},
         {"LYS", {"BB", "SC1", "SC2", "SCP"}},
     };
-    const int n = (int)ARRAY_SIZE(res);
+    const int n = (int)MD_COUNTOF(res);
 
     int num_beads = 0;
     for (int i = 0; i < n; ++i) {
-        for (int k = 0; k < (int)ARRAY_SIZE(res[i].beads) && res[i].beads[k]; ++k) num_beads += 1;
+        for (int k = 0; k < (int)MD_COUNTOF(res[i].beads) && res[i].beads[k]; ++k) num_beads += 1;
     }
     char text[16384];
     int len = snprintf(text, sizeof(text), "Martini residue names\n%5d\n", num_beads);
     int atom_nr = 0;
     for (int i = 0; i < n; ++i) {
         const float x = 1.0f + 0.35f * (float)i;
-        for (int k = 0; k < (int)ARRAY_SIZE(res[i].beads) && res[i].beads[k]; ++k) {
+        for (int k = 0; k < (int)MD_COUNTOF(res[i].beads) && res[i].beads[k]; ++k) {
             len += snprintf(text + len, sizeof(text) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, res[i].name, res[i].beads[k], ++atom_nr, x, 1.0f + 0.3f * (float)k, 1.0f);
         }
     }
     len += snprintf(text + len, sizeof(text) - len, "  20.00000  20.00000  20.00000\n");
     ASSERT_LT(len, (int)sizeof(text));
 
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, NULL));
@@ -1048,18 +1048,18 @@ static void check_bonds_against_topology(int* utest_result, const md_system_t* s
 // bead it is constructed from, as md_tpr bonds it (martinize2 writes no CONECT record for it). With the CONECT records,
 // the bonds are theirs, and inference adds that one.
 UTEST(util, martini3_peptide_bonds) {
-    int topology[ARRAY_SIZE(martini3_peptide_topology) + 1][2];
-    MEMCPY(topology, martini3_peptide_topology, sizeof(martini3_peptide_topology));
-    topology[ARRAY_SIZE(martini3_peptide_topology)][0] = 23;
-    topology[ARRAY_SIZE(martini3_peptide_topology)][1] = 25;
+    int topology[MD_COUNTOF(martini3_peptide_topology) + 1][2];
+    MD_MEMCPY(topology, martini3_peptide_topology, sizeof(martini3_peptide_topology));
+    topology[MD_COUNTOF(martini3_peptide_topology)][0] = 23;
+    topology[MD_COUNTOF(martini3_peptide_topology)][1] = 25;
 
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, ARRAY_SIZE(topology), NULL, 0);
+        check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, MD_COUNTOF(topology), NULL, 0);
         EXPECT_EQ(1u, md_bond_conn_count(&sys.bond, 23));
     }
     {
@@ -1067,7 +1067,7 @@ UTEST(util, martini3_peptide_bonds) {
         char text[8192];
         int len = snprintf(text, sizeof(text), "%s", martini3_peptide_pdb);
         len -= (int)strlen("END\n");
-        for (size_t i = 0; i < ARRAY_SIZE(martini3_peptide_topology); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(martini3_peptide_topology); ++i) {
             len += snprintf(text + len, sizeof(text) - len, "CONECT%5d%5d\n", martini3_peptide_topology[i][0] + 1, martini3_peptide_topology[i][1] + 1);
         }
         len += snprintf(text + len, sizeof(text) - len, "END\n");
@@ -1075,10 +1075,10 @@ UTEST(util, martini3_peptide_bonds) {
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, MD_PDB_OPTION_NONE, NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, ARRAY_SIZE(topology), NULL, 0);
-        EXPECT_EQ(ARRAY_SIZE(topology), sys.bond.count);
+        check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, MD_COUNTOF(topology), NULL, 0);
+        EXPECT_EQ(MD_COUNTOF(topology), sys.bond.count);
         for (size_t i = 0; i < sys.bond.count; ++i) {
-            const bool vsite = pair_in((const int (*)[2])topology + ARRAY_SIZE(martini3_peptide_topology), 1, sys.bond.pairs[i].idx[0], sys.bond.pairs[i].idx[1]);
+            const bool vsite = pair_in((const int (*)[2])topology + MD_COUNTOF(martini3_peptide_topology), 1, sys.bond.pairs[i].idx[0], sys.bond.pairs[i].idx[1]);
             EXPECT_EQ(vsite ? MD_BOND_ORIGIN_INFERRED : MD_BOND_ORIGIN_FILE, md_bond_origin(sys.bond.flags[i]));
         }
     }
@@ -1108,7 +1108,7 @@ static const char martini22p_peptide_pdb[] =
     "END\n";
 
 UTEST(util, martini22p_peptide) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini22p_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
@@ -1117,7 +1117,7 @@ UTEST(util, martini22p_peptide) {
     static const int topology[][2] = {
         {0, 1}, {0, 2}, {2, 3}, {2, 6}, {3, 4}, {4, 5}, {6, 7}, {6, 10}, {7, 8}, {8, 9}, {10, 11}, {10, 14}, {11, 12}, {12, 13},
     };
-    check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), NULL, 0);
+    check_bonds_against_topology(utest_result, &sys, topology, MD_COUNTOF(topology), NULL, 0);
 
     // The masses of polarizable Martini 2
     EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, 1));     // Met SC1
@@ -1135,7 +1135,7 @@ UTEST(util, martini22p_peptide) {
 // The masses and sizes of Martini beads are those of the version of Martini the system is from: the same names stand
 // for regular, small and tiny beads in Martini 3, for beads of 72 in Martini 2
 UTEST(util, martini_masses_by_version) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     {
         // Martini 3 (Tyr has SC4 and Trp SC5)
         md_system_t sys = { .alloc = alloc };
@@ -1190,7 +1190,7 @@ UTEST(util, martini_masses_by_version) {
 // A branched molecule of no polymer (a glycan) is one instance: its third residue is bonded to the first, not to the
 // second before it. A second one, bonded to nothing of the first, is an instance of its own.
 UTEST(util, branched_molecule_is_one_instance) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     static const char pdb[] =
         "HETATM    1  C1  SGR A   1       0.000   0.000   0.000  1.00  0.00           C\n"
         "HETATM    2  O1  SGR A   1       1.400   0.000   0.000  1.00  0.00           O\n"
@@ -1221,7 +1221,7 @@ UTEST(util, branched_molecule_is_one_instance) {
 
 // The caps of a peptide (ACE, NME) are of its strand: bonded into it by its backbone. The alanine dipeptide of tleap.
 UTEST(util, caps_are_of_their_strand) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     static const char pdb[] =
         "ATOM      1 HH31 ACE     1       2.000   1.000  -0.000  1.00  0.00\n"
         "ATOM      2  CH3 ACE     1       2.000   2.090   0.000  1.00  0.00\n"
@@ -1322,7 +1322,7 @@ static const char palmitoyl_cys_pdb[] =
     "END\n";
 
 UTEST(util, amino_acid_of_any_size) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(palmitoyl_cys_pdb), MD_PDB_OPTION_NONE, NULL));
@@ -1347,7 +1347,7 @@ UTEST(util, amino_acid_of_any_size) {
 // backbone before it, nor through a coordination bond into a metal, and a base is found from C1' whatever atom is
 // listed first among its bonds.
 UTEST(util, atom_roles_stay_in_their_residue) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
@@ -1457,7 +1457,7 @@ static const char martini2_dna_pdb[] =
     "END\n";
 
 UTEST(util, martini2_dna) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_pdb), MD_PDB_OPTION_NONE, NULL));
@@ -1490,7 +1490,7 @@ UTEST(util, martini2_dna) {
         {10, 12}, {11, 12}, {13, 14}, {14, 15}, {15, 16}, {15, 19}, {16, 17}, {16, 18}, {17, 18}, {19, 20}, {20, 21},
         {21, 22}, {22, 23}, {22, 25}, {23, 24}, {23, 25}, {24, 25},
     };
-    check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), NULL, 0);
+    check_bonds_against_topology(utest_result, &sys, topology, MD_COUNTOF(topology), NULL, 0);
 
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(1u, md_system_part_count(&sys));
@@ -1529,7 +1529,7 @@ static const char martini2_dna_second_strand_pdb[] =
     "END\n";
 
 UTEST(util, martini2_dna_strands_under_one_chain_id) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     char text[sizeof(martini2_dna_pdb) + sizeof(martini2_dna_second_strand_pdb)];
     const size_t first_len = sizeof(martini2_dna_pdb) - 1 - 4;     // without its END line
     memcpy(text, martini2_dna_pdb, first_len);
@@ -1570,7 +1570,7 @@ UTEST(util, martini_chain_links) {
         "    2CYS     BB    9   1.350   1.350   1.000\n"
         "    2CYS    SC1   10   1.350   1.250   1.380\n"
         "   5.00000   5.00000   5.00000\n";
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
@@ -1581,7 +1581,7 @@ UTEST(util, martini_chain_links) {
         {6, 8},                                     // the second chain
         {3, 9},                                     // the disulfide
     };
-    check_bonds_against_topology(utest_result, &sys, expected, ARRAY_SIZE(expected), NULL, 0);
+    check_bonds_against_topology(utest_result, &sys, expected, MD_COUNTOF(expected), NULL, 0);
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 4, 6));  // 3.5 A, but the numbering starts over
     md_vm_arena_destroy(alloc);
 }
@@ -1606,7 +1606,7 @@ UTEST(util, martini_bonds_by_geometry) {
         "   20ALA     BB   10   2.304   1.959   2.410\n"
         "   20ALA    SC1   11   2.104   1.959   2.410\n"
         "   5.00000   5.00000   5.00000\n";
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
@@ -1617,7 +1617,7 @@ UTEST(util, martini_bonds_by_geometry) {
         {0, 5},                                     // 5.0 A, numbered next
         {5, 7},                                     // 4.5 A, numbered next
     };
-    check_bonds_against_topology(utest_result, &sys, expected, ARRAY_SIZE(expected), NULL, 0);
+    check_bonds_against_topology(utest_result, &sys, expected, MD_COUNTOF(expected), NULL, 0);
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 7, 9));  // 4.6 A over a jump in the numbering
     md_vm_arena_destroy(alloc);
 }
@@ -1641,8 +1641,8 @@ UTEST(util, martini_reference_systems) {
         "martini2_rna",                 // An RNA duplex (martinize-nucleotide)
         "martini2_small_molecules",     // The solvents, sugars and ions of Martini 2
     };
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    for (size_t n = 0; n < ARRAY_SIZE(names); ++n) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    for (size_t n = 0; n < MD_COUNTOF(names); ++n) {
         char tpr_path[256], gro_path[256];
         snprintf(tpr_path, sizeof(tpr_path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", names[n]);
         snprintf(gro_path, sizeof(gro_path), MD_UNITTEST_DATA_DIR "/martini/%s.gro", names[n]);
@@ -1698,8 +1698,8 @@ UTEST(util, martini_nucleic_backbones) {
         { "martini2_rna", 14, MD_PART_KIND_RNA },
         { "martini3_rna", 22, MD_PART_KIND_RNA },
     };
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-    for (size_t n = 0; n < ARRAY_SIZE(systems); ++n) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    for (size_t n = 0; n < MD_COUNTOF(systems); ++n) {
         for (int with_tpr = 0; with_tpr < 2; ++with_tpr) {
             char path[256];
             snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.%s", systems[n].name, with_tpr ? "tpr" : "gro");
@@ -1784,7 +1784,7 @@ static const char martini2_dna_gap_pdb[] =
     "END\n";
 
 UTEST(util, martini_nucleic_break) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE, NULL));
@@ -1816,7 +1816,7 @@ UTEST(util, martini_nucleic_break) {
 // A bond of another origin (read from a file, user defined, from a topology) is kept wherever it sits in the arrays,
 // is never duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.
 UTEST(util, infer_bonds_replaces_only_inferred) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     // Four carbons 1.5A apart along x: inference finds 0-1, 1-2, 2-3
     md_system_t sys = { .alloc = alloc };
@@ -2039,7 +2039,7 @@ static float pbc_wrap(float v, float L) { v = fmodf(v, L); return v < 0.0f ? v +
 static float pbc_angle_err(mat3_t R, mat3_t R_true) {
     const mat3_t E = mat3_mul(R, R_true);
     const float tr = E.elem[0][0] + E.elem[1][1] + E.elem[2][2];
-    return acosf(CLAMP((tr - 1.0f) * 0.5f, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+    return acosf(MD_CLAMP((tr - 1.0f) * 0.5f, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
 }
 
 // A set broken across a boundary must come back whole, with a centre that does not depend on which
@@ -2082,7 +2082,7 @@ UTEST(util, pbc_deperiodize_self) {
 
     // Already consistent input must be left alone
     vec4_t again[PBC_NP];
-    MEMCPY(again, pts, sizeof(pts));
+    MD_MEMCPY(again, pts, sizeof(pts));
     vec3_t com2 = {0};
     ASSERT_TRUE(md_util_deperiodize_self_vec4(again, PBC_NP, &cell, &com2));
     for (int i = 0; i < PBC_NP; ++i) {
@@ -2341,7 +2341,7 @@ UTEST(util, com_pbc_matches_plain_mean) {
     ASSERT_TRUE(md_unitcell_is_triclinic(&cells[1]));
 
     for (int ci = 0; ci < 2; ++ci) {
-        for (size_t k = 0; k < ARRAY_SIZE(COM_COUNTS); ++k) {
+        for (size_t k = 0; k < MD_COUNTOF(COM_COUNTS); ++k) {
             const size_t n = COM_COUNTS[k];
             float x[COM_MAX_PTS], y[COM_MAX_PTS], z[COM_MAX_PTS], w[COM_MAX_PTS];
             int32_t idx[COM_MAX_PTS];
@@ -2397,7 +2397,7 @@ UTEST(util, com_pbc_invariant_under_lattice_shift) {
         mat3_t A = {0};
         md_unitcell_A_extract_float(A.elem, &cells[ci]);
 
-        for (size_t k = 0; k < ARRAY_SIZE(COM_COUNTS); ++k) {
+        for (size_t k = 0; k < MD_COUNTOF(COM_COUNTS); ++k) {
             const size_t n = COM_COUNTS[k];
             float x[COM_MAX_PTS], y[COM_MAX_PTS], z[COM_MAX_PTS], w[COM_MAX_PTS];
             int32_t idx[COM_MAX_PTS];
@@ -2850,7 +2850,7 @@ UTEST(util, radix_sort_u32) {
     radix_test_ref_t* scratch = md_temp_alloc_array(temp, radix_test_ref_t, cap);
 
     uint64_t rng = 0x5EED32;
-    for (size_t s = 0; s < ARRAY_SIZE(radix_test_sizes); ++s) {
+    for (size_t s = 0; s < MD_COUNTOF(radix_test_sizes); ++s) {
         const size_t n = radix_test_sizes[s];
         for (int d = 0; d < RADIX_TEST_DIST_COUNT; ++d) {
             char msg[128];
@@ -2893,7 +2893,7 @@ UTEST(util, radix_sort_u64) {
     radix_test_ref_t* scratch = md_temp_alloc_array(temp, radix_test_ref_t, cap);
 
     uint64_t rng = 0x5EED64;
-    for (size_t s = 0; s < ARRAY_SIZE(radix_test_sizes); ++s) {
+    for (size_t s = 0; s < MD_COUNTOF(radix_test_sizes); ++s) {
         const size_t n = radix_test_sizes[s];
         for (int d = 0; d < RADIX_TEST_DIST_COUNT; ++d) {
             char msg[128];
@@ -2923,7 +2923,7 @@ UTEST(util, radix_sort_u64) {
 // Timings on large arrays of random keys, each result checked for order
 UTEST(util, radix_sort) {
     uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 14, 7 };
-    size_t len = ARRAY_SIZE(arr);
+    size_t len = MD_COUNTOF(arr);
 
     uint32_t idx[16];
 
@@ -3029,7 +3029,7 @@ static str_t part_chain_id(const md_system_t* sys, size_t part_idx) {
 UTEST(util, part_and_part_type) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
 
     {
         // No chain ids: no units, and the parts are found over the whole system
@@ -3113,8 +3113,8 @@ UTEST(util, part_and_part_type) {
             {MD_PART_KIND_PEPTIDE, "peptide"}, {MD_PART_KIND_PEPTIDE, "peptide"}, {MD_PART_KIND_NON_POLYMER, "GTP"}, {MD_PART_KIND_NON_POLYMER, "MG"},
             {MD_PART_KIND_NON_POLYMER, "SO4"}, {MD_PART_KIND_WATER, "water"}, {MD_PART_KIND_NON_POLYMER, "GDP"}, {MD_PART_KIND_NON_POLYMER, "VLB"},
         };
-        ASSERT_EQ(md_system_part_type_count(&sys), ARRAY_SIZE(types));
-        for (size_t i = 0; i < ARRAY_SIZE(types); ++i) {
+        ASSERT_EQ(md_system_part_type_count(&sys), MD_COUNTOF(types));
+        for (size_t i = 0; i < MD_COUNTOF(types); ++i) {
             EXPECT_EQ(md_system_part_type_flags(&sys, i), inferred_kind(types[i].kind));
             EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, i), str_from_cstr(types[i].desc)));
         }
@@ -3127,8 +3127,8 @@ UTEST(util, part_and_part_type) {
             {"B", 6}, {"B", 4}, {"B", 5}, {"B", 5}, {"B", 5},
             {"C", 7},
         };
-        ASSERT_EQ(md_system_part_count(&sys), ARRAY_SIZE(parts));
-        for (size_t i = 0; i < ARRAY_SIZE(parts); ++i) {
+        ASSERT_EQ(md_system_part_count(&sys), MD_COUNTOF(parts));
+        for (size_t i = 0; i < MD_COUNTOF(parts); ++i) {
             EXPECT_TRUE(str_eq(part_chain_id(&sys, i), str_from_cstr(parts[i].chain)));
             EXPECT_EQ(md_system_part_type_idx(&sys, i), parts[i].type);
         }
@@ -3216,7 +3216,7 @@ UTEST(util, part_type_derived) {
 // mmCIF: the part types are the file's entities, and the molecules of a non-polymer asym (the waters of a chain) are
 // instances of their own which share the asym's id
 UTEST(util, part_type_instance_mmcif) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     {
         md_system_t sys = {.alloc = alloc};
@@ -3228,8 +3228,8 @@ UTEST(util, part_type_instance_mmcif) {
             {MD_PART_KIND_PEPTIDE, "PHOSPHONOACETALDEHYDE HYDROLASE"}, {MD_PART_KIND_NON_POLYMER, "MAGNESIUM ION"},
             {MD_PART_KIND_NON_POLYMER, "TUNGSTATE(VI)ION"}, {MD_PART_KIND_WATER, "water"},
         };
-        ASSERT_EQ(md_system_part_type_count(&sys), ARRAY_SIZE(types));
-        for (size_t i = 0; i < ARRAY_SIZE(types); ++i) {
+        ASSERT_EQ(md_system_part_type_count(&sys), MD_COUNTOF(types));
+        for (size_t i = 0; i < MD_COUNTOF(types); ++i) {
             EXPECT_EQ(md_system_part_type_kind(&sys, i), types[i].kind);
             EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, i), str_from_cstr(types[i].desc)));
         }
@@ -3239,8 +3239,8 @@ UTEST(util, part_type_instance_mmcif) {
             {"K", "A", 3}, {"K", "A", 3}, {"K", "A", 3}, {"K", "A", 3},
             {"L", "B", 3}, {"L", "B", 3}, {"L", "B", 3}, {"L", "B", 3},
         };
-        ASSERT_EQ(md_system_instance_count(&sys), ARRAY_SIZE(instances));
-        for (size_t i = 0; i < ARRAY_SIZE(instances); ++i) {
+        ASSERT_EQ(md_system_instance_count(&sys), MD_COUNTOF(instances));
+        for (size_t i = 0; i < MD_COUNTOF(instances); ++i) {
             EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i),      str_from_cstr(instances[i].id)));
             EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), str_from_cstr(instances[i].auth)));
             EXPECT_EQ(md_system_instance_part_type_idx(&sys, i),    instances[i].type);
@@ -3370,7 +3370,7 @@ UTEST(util, hypermodified_nucleotide) {
         "   38A       C4 4332  15.809  13.422   2.608\n"
         "122.00000 52.00000 36.00000\n"
         ;
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
@@ -3406,7 +3406,7 @@ static size_t chain_atoms(const md_system_t* sys, size_t c) {
 }
 
 UTEST(util, chains) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     {
         // One chain of a polymer, its arginine and its 106 waters: they carry its id, they are of it
@@ -3528,7 +3528,7 @@ UTEST(util, chains) {
 // A molecule of a topology is one molecule whatever its bonds, as GROMACS has it: here two waters made one molecule of
 // the topology by hand, which nothing else would join
 UTEST(util, topology_molecules_are_whole) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr")));
@@ -3562,7 +3562,7 @@ UTEST(util, topology_molecules_are_whole) {
 // Topologies: each molecule type is a molecule type of the system, each molecule an instance of it, and what the parts
 // of the molecules are is inferred from the residues
 UTEST(util, molecule_type_topology) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     {
         md_system_t sys = {.alloc = alloc};
@@ -3572,9 +3572,9 @@ UTEST(util, molecule_type_topology) {
         static const struct { md_part_kind_t kind; const char* name; size_t count; } types[] = {
             {MD_PART_KIND_PEPTIDE, "Protein_chain_U", 1}, {MD_PART_KIND_WATER, "SOL", 506}, {MD_PART_KIND_NON_POLYMER, "NA", 2}, {MD_PART_KIND_NON_POLYMER, "CL", 2},
         };
-        ASSERT_EQ(md_system_molecule_type_count(&sys), ARRAY_SIZE(types));
+        ASSERT_EQ(md_system_molecule_type_count(&sys), MD_COUNTOF(types));
         size_t inst = 0;
-        for (size_t t = 0; t < ARRAY_SIZE(types); ++t) {
+        for (size_t t = 0; t < MD_COUNTOF(types); ++t) {
             EXPECT_EQ(md_system_molecule_type_flags(&sys, t), MD_MOLECULE_TYPE_FLAG_NONE);
             EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, t), str_from_cstr(types[t].name)));
             for (size_t k = 0; k < types[t].count; ++k, ++inst) {
@@ -3587,11 +3587,11 @@ UTEST(util, molecule_type_topology) {
 
         // Inference leaves the topology's own alone: every molecule is of its type, and the parts are classified
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
-        EXPECT_EQ(md_system_molecule_type_count(&sys), ARRAY_SIZE(types));
+        EXPECT_EQ(md_system_molecule_type_count(&sys), MD_COUNTOF(types));
         EXPECT_EQ(md_system_instance_count(&sys), inst);
         ASSERT_EQ(md_system_molecule_count(&sys), inst);
         inst = 0;
-        for (size_t t = 0; t < ARRAY_SIZE(types); ++t) {
+        for (size_t t = 0; t < MD_COUNTOF(types); ++t) {
             for (size_t k = 0; k < types[t].count; ++k, ++inst) {
                 const md_urange_t atoms = md_system_instance_atom_range(&sys, inst);
                 const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atoms.beg);
@@ -3640,7 +3640,7 @@ UTEST(util, molecule_type_topology) {
 // The molecules of the same make share a type, inferred where no topology gives one: named by their parts, or by their
 // formula where they have none. Inferring them again gives the same types, not more of them.
 UTEST(util, molecule_type_inferred) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     {
         md_system_t sys = {.alloc = alloc};
@@ -3684,7 +3684,7 @@ UTEST(util, molecule_type_inferred) {
 // A coarse grained strand numbered over a gap, without bonds, in a chain the file names: one part, and so one molecule
 // (the hierarchy links follow the part, not the numbering), as every part is within one molecule
 UTEST(util, coarse_grained_strand_over_a_gap) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_str_writer_t sb = md_str_writer_create(alloc);
     static const int resids[] = {1, 2, 3, 4, 5, 10, 11, 12, 13, 14};
     for (int i = 0; i < 10; ++i) {
@@ -3708,7 +3708,7 @@ UTEST(util, coarse_grained_strand_over_a_gap) {
 // A topology supplementing a coarse grained GRO splits what the numbering ran together into its molecules: the parts and
 // the backbones follow, each backbone range of one part
 UTEST(util, topology_supplement_reinfers_backbones) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_str_writer_t sb = md_str_writer_create(alloc);
     md_str_writer_push_cstr(&sb, "cg\n12\n");
     for (int i = 0; i < 12; ++i) {
@@ -3755,7 +3755,7 @@ UTEST(util, topology_supplement_reinfers_backbones) {
 
 // Every change of the topology gives the system a version no consumer has seen
 UTEST(util, topology_version) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     EXPECT_EQ(sys.topology_version, 0u);
@@ -3808,7 +3808,7 @@ UTEST(util, topology_version) {
 
 // The backbone angles and secondary structure of a frame are the state's, in its attributes
 UTEST(util, state_backbone) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -3878,7 +3878,7 @@ UTEST(util, find_by_index) {
     EXPECT_EQ(md_offset_range_find(offset, 0, 0), -1);
     EXPECT_EQ(md_offset_range_find(NULL, 4, 0), -1);
 
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
@@ -3906,7 +3906,7 @@ UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
     md_bitmask_t ref  = md_bitmask_create(0, (uint32_t)sys->atom.count, utest_fixture->alloc);
 
     // Stale depths of 1 make every neighbour look as if it had already been reached at a lower depth
-    const size_t junk_size = MEGABYTES(1);
+    const size_t junk_size = MD_MEGABYTES(1);
     {
         md_temp_scope_t temp = md_temp_begin();
         memset(md_temp_alloc(temp, junk_size), 1, junk_size);
@@ -4015,8 +4015,8 @@ UTEST(util, aabb_paths) {
             const int32_t j = ii ? ii[k] : (int32_t)k;
             const float rad = rr ? rr[j] : 0.0f;
             for (int c = 0; c < 3; ++c) {
-                ref_min[c] = MIN(ref_min[c], xyz[j].elem[c] - rad);
-                ref_max[c] = MAX(ref_max[c], xyz[j].elem[c] + rad);
+                ref_min[c] = MD_MIN(ref_min[c], xyz[j].elem[c] - rad);
+                ref_max[c] = MD_MAX(ref_max[c], xyz[j].elem[c] + rad);
             }
         }
         float got_min[3], got_max[3];
@@ -4201,7 +4201,7 @@ UTEST(util, packed_kernels_any_alignment) {
         // Periodic COM of a cloud well inside the cell is its plain mean, weighted or not
         vec3_t near_center[N];
         for (int i = 0; i < N; ++i) near_center[i] = vec3_add(vec3_set(5, 6, 7), vec3_mul1(vec3_sub(a[i], vec3_set(5, 6, 7)), 0.1f));
-        MEMCPY(o, near_center, sizeof(near_center));
+        MD_MEMCPY(o, near_center, sizeof(near_center));
         const vec3_t pc  = md_util_com_compute(o, NULL, NULL, N, &cell);
         const vec3_t pcw = md_util_com_compute(o, w,    NULL, N, &cell);
         const vec3_t mc  = md_util_com_compute(o, NULL, NULL, N, NULL);
@@ -4216,7 +4216,7 @@ UTEST(util, packed_kernels_any_alignment) {
         md_util_aabb_compute(mn, mx, a, NULL, NULL, N);
         for (int k = 0; k < 3; ++k) {
             float lo = FLT_MAX, hi = -FLT_MAX;
-            for (int i = 0; i < N; ++i) { lo = MIN(lo, a[i].elem[k]); hi = MAX(hi, a[i].elem[k]); }
+            for (int i = 0; i < N; ++i) { lo = MD_MIN(lo, a[i].elem[k]); hi = MD_MAX(hi, a[i].elem[k]); }
             EXPECT_EQ(lo, mn[k]);
             EXPECT_EQ(hi, mx[k]);
         }
@@ -4249,7 +4249,7 @@ UTEST(util, packed_kernels_any_alignment) {
         EXPECT_EQ(-1.0f, base_o[off + N].x);
 
         // Wrapping
-        MEMCPY(o, b, N * sizeof(vec3_t));
+        MD_MEMCPY(o, b, N * sizeof(vec3_t));
         ASSERT_TRUE(md_util_pbc(o, NULL, N, &cell));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
@@ -4287,7 +4287,7 @@ static double dist_ref(vec3_t a, vec3_t b, const md_unitcell_t* cell) {
             for (int nx = per[0] ? -R : 0; nx <= (per[0] ? R : 0); ++nx) {
                 double v[3];
                 for (int j = 0; j < 3; ++j) v[j] = d[j] + nx * A[0][j] + ny * A[1][j] + nz * A[2][j];
-                best = MIN(best, v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                best = MD_MIN(best, v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
             }
         }
     }
@@ -4344,7 +4344,7 @@ UTEST(util, min_max_distance_groups) {
     float   dist[6];
     int64_t ia[6], ib[6];
 
-    for (size_t ci = 0; ci < ARRAY_SIZE(cells); ++ci) {
+    for (size_t ci = 0; ci < MD_COUNTOF(cells); ++ci) {
         const md_unitcell_t* cell = &cells[ci];
         for (int trial = 0; trial < 25; ++trial) {
             const size_t nb = trial == 0 ? 0 : (trial % 5 == 0 ? 1 + (size_t)(dist_rand() * 3) : 1 + (size_t)(dist_rand() * 59));
@@ -4391,7 +4391,7 @@ UTEST(util, min_max_distance_groups) {
                     for (size_t i = off[g]; i < off[g + 1]; ++i) {
                         for (size_t j = 0; j < nb; ++j) {
                             const double r = dist_ref(a[i], b[j], cell);
-                            ref = largest ? MAX(ref, r) : MIN(ref, r);
+                            ref = largest ? MD_MAX(ref, r) : MD_MIN(ref, r);
                         }
                     }
                     EXPECT_NEAR(ref, dist[g], 2.0e-3);
@@ -4440,7 +4440,7 @@ UTEST(util, min_max_distance_near) {
     int64_t* na_idx = malloc(CAP * sizeof(int64_t));
     int64_t* nb_idx = malloc(CAP * sizeof(int64_t));
     uint8_t* in_set = malloc(CAP);
-    for (size_t ci = 0; ci < ARRAY_SIZE(cells); ++ci) {
+    for (size_t ci = 0; ci < MD_COUNTOF(cells); ++ci) {
         const md_unitcell_t* cell = &cells[ci];
         for (int trial = 0; trial < 12; ++trial) {
             const size_t na = 1 + (size_t)(dist_rand() * (NA - 1)), nb = 1 + (size_t)(dist_rand() * (NB - 1));
@@ -4457,7 +4457,7 @@ UTEST(util, min_max_distance_near) {
                 for (size_t i = 0; i < na; ++i) {
                     for (size_t j = 0; j < nb; ++j) {
                         const double r = dist_ref(a[i], b[j], cell);
-                        ref = largest ? MAX(ref, r) : MIN(ref, r);
+                        ref = largest ? MD_MAX(ref, r) : MD_MIN(ref, r);
                     }
                 }
                 const size_t cnt = largest ? md_util_max_distance_near(na_idx, nb_idx, CAP, tol, a, na, b, nb, cell)
@@ -4531,14 +4531,14 @@ UTEST(util, ramachandran_classify) {
 
     // A guard on each side of the buffer catches a write outside it
     md_ramachandran_type_t buf[1 + 9 + 1];
-    MEMSET(buf, 0xAB, sizeof(buf));
+    MD_MEMSET(buf, 0xAB, sizeof(buf));
     EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 9, &sys));
     EXPECT_EQ(0xAB, buf[0]);
     EXPECT_EQ(0xAB, buf[10]);
     for (int i = 0; i < 9; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
 
     // A capacity short of the segments: the last type written is still decided by the segment after it
-    MEMSET(buf, 0xAB, sizeof(buf));
+    MD_MEMSET(buf, 0xAB, sizeof(buf));
     EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 4, &sys));
     EXPECT_EQ(0xAB, buf[0]);
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
@@ -4574,12 +4574,12 @@ static size_t xyz_text_of(str_t* out, int32_t* xyz_to_sys, const md_system_t* sy
 // The segment of each atom which is the CA (C4') of one, -1 for none
 static int32_t* segment_of_atom(size_t num_atoms, md_allocator_i* alloc) {
     int32_t* seg = md_alloc(alloc, sizeof(int32_t) * num_atoms);
-    MEMSET(seg, -1, sizeof(int32_t) * num_atoms);
+    MD_MEMSET(seg, -1, sizeof(int32_t) * num_atoms);
     return seg;
 }
 
 static void expect_backbones_from_bonds(int* utest_result, const char* path, bool by_element, bool compare_secondary_structure) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_state = { .alloc = alloc };
     const str_t file = str_from_cstr(path);
@@ -4602,7 +4602,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
 
     // An atom of the reference as an atom of the XYZ
     int32_t* to_xyz = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
-    MEMSET(to_xyz, -1, sizeof(int32_t) * ref.atom.count);
+    MD_MEMSET(to_xyz, -1, sizeof(int32_t) * ref.atom.count);
     for (size_t k = 0; k < num_xyz; ++k) to_xyz[xyz_to_ref[k]] = (int32_t)k;
 #define X(a) ((a) < 0 ? -1 : to_xyz[a])
 #define SEG(a) (X(a) < 0 ? -1 : seg[X(a)])
@@ -4652,7 +4652,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
                 // (LYS 156 of 9gfu)
                 const bool truncated = rb->segment.atoms[j].cb < 0 && rama_ref[j] != MD_RAMACHANDRAN_TYPE_GLYCINE;
                 same_rama += rama[s] == rama_ref[j] || (truncated && rama[s] == MD_RAMACHANDRAN_TYPE_GLYCINE);
-                same_ss += !compare_secondary_structure || MEMCMP(&ss[s], &ss_ref[j], sizeof(md_secondary_structure_t)) == 0;
+                same_ss += !compare_secondary_structure || MD_MEMCMP(&ss[s], &ss_ref[j], sizeof(md_secondary_structure_t)) == 0;
             }
             EXPECT_EQ(rb->segment.count, same_rama);
             EXPECT_EQ(rb->segment.count, same_ss);
@@ -4701,7 +4701,7 @@ UTEST(util, backbones_from_bonds_protein) {
         MD_UNITTEST_DATA_DIR "/2or2.cif",
         MD_UNITTEST_DATA_DIR "/9gfu.cif",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
         expect_backbones_from_bonds(utest_result, files[i], false, true);
     }
 }
@@ -4726,8 +4726,8 @@ UTEST(util, backbones_from_bonds_none) {
         MD_UNITTEST_DATA_DIR "/c720.xyz",
         MD_UNITTEST_DATA_DIR "/tryptophan.xyz",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, str_from_cstr(files[i]), MD_XYZ_OPTION_NONE));
@@ -4742,7 +4742,7 @@ UTEST(util, backbones_from_bonds_none) {
 
 UTEST(util, index_data_cleared) {
     // A cleared index data keeps its arrays, emptied: no ranges, as one never pushed to, and none in range
-    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(1));
     md_index_data_t data = { .alloc = alloc };
     EXPECT_EQ(0u, md_index_data_num_ranges(&data));
     const int32_t a[] = { 1, 2, 3 };
@@ -4833,7 +4833,7 @@ UTEST(util, unitcell_extent_angles_round_trip) {
         { 30.0, 31.0, 32.0, 60.0, 70.0, 80.0 },
         { 30.0, 31.0, 32.0, 90.0, 90.0, 90.0 },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cells); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cells); ++i) {
         const double* p = cells[i];
         const md_unitcell_t uc = md_unitcell_from_extent_and_angles(p[0], p[1], p[2], p[3], p[4], p[5]);
         double v[6];

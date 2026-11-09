@@ -35,8 +35,8 @@ typedef struct h5md_test_t {
 } h5md_test_t;
 
 static bool h5md_test_load(h5md_test_t* t, const char* path) {
-    MEMSET(t, 0, sizeof(*t));
-    t->arena = md_vm_arena_create(GIGABYTES(1));
+    MD_MEMSET(t, 0, sizeof(*t));
+    t->arena = md_vm_arena_create(MD_GIGABYTES(1));
     t->sys.alloc = t->arena;
     t->state.alloc = t->arena;
     return md_h5md_system_init_from_file(&t->sys, &t->state, str_from_cstr(path));
@@ -155,7 +155,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     for (size_t i = 0; i < h.state.num_atoms; ++i) {
         const vec3_t d = vec3_sub(tpr_state.xyz[i], h.state.xyz[i]);
         const double dx = d.x - L * round(d.x / L), dy = d.y - L * round(d.y / L), dz = d.z - L * round(d.z / L);
-        max_diff = MAX(max_diff, sqrt(dx * dx + dy * dy + dz * dz));
+        max_diff = MD_MAX(max_diff, sqrt(dx * dx + dy * dy + dz * dz));
     }
     EXPECT_LT(max_diff, 0.05);
     EXPECT_NEAR(tpr_state.unitcell.x, h.state.unitcell.x, 1.0e-4);
@@ -242,7 +242,7 @@ UTEST(h5md, gromacs_tip3p_run) {
         { 29.34552022, -21.48351553, 26.86924008},
         { -2.28961452,   8.71451763, 13.51708333},
     };
-    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip3p.h5md", tip3p_refs, ARRAY_SIZE(tip3p_refs), 1577, vel_sum);
+    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip3p.h5md", tip3p_refs, MD_COUNTOF(tip3p_refs), 1577, vel_sum);
 }
 
 UTEST(h5md, gromacs_tip4p_run) {
@@ -251,7 +251,7 @@ UTEST(h5md, gromacs_tip4p_run) {
         { 39.64799054, -14.61398636,  6.68716171},
         { -2.16551102, -26.56838597,  4.46162295},
     };
-    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip4p.h5md", tip4p_refs, ARRAY_SIZE(tip4p_refs), 2074, vel_sum);
+    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip4p.h5md", tip4p_refs, MD_COUNTOF(tip4p_refs), 2074, vel_sum);
 }
 
 // ### THE SPECIFICATION ###
@@ -472,7 +472,7 @@ typedef struct h5md_thread_job_t {
 
 static void h5md_thread_extract(void* data) {
     h5md_thread_job_t* job = (h5md_thread_job_t*)data;
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_state_t st = { .alloc = arena };
     md_system_state_init(&st, job->num_atoms);
     const str_t paths[] = { STR_INIT("atom/position") };
@@ -655,7 +655,7 @@ UTEST(h5md, box_in_any_orientation) {
     const int64_t steps[F] = { 0, 10 };
     // The cell, lower triangular, nm; and a rotation Q = Rx(20 deg) Rz(30 deg)
     const double L[3][3] = { { 3.0, 0.0, 0.0 }, { 0.8, 2.5, 0.0 }, { 0.4, 0.6, 2.2 } };
-    const double cz = cos(DEG_TO_RAD(30.0)), sz = sin(DEG_TO_RAD(30.0)), cx = cos(DEG_TO_RAD(20.0)), sx = sin(DEG_TO_RAD(20.0));
+    const double cz = cos(MD_DEG_TO_RAD(30.0)), sz = sin(MD_DEG_TO_RAD(30.0)), cx = cos(MD_DEG_TO_RAD(20.0)), sx = sin(MD_DEG_TO_RAD(20.0));
     const double Rz[3][3] = { { cz, -sz, 0 }, { sz, cz, 0 }, { 0, 0, 1 } };
     const double Rx[3][3] = { { 1, 0, 0 }, { 0, cx, -sx }, { 0, sx, cx } };
     double Q[3][3] = {0};

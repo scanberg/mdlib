@@ -62,7 +62,7 @@ UTEST(edr, comprehensive_validation) {
         EXPECT_GT(energies.num_frames, 0);
         
         // Validate that frame times are reasonable
-        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, energies.num_frames); ++i) {
+        for (int64_t i = 0; i < MD_MIN(MAX_VALIDATION_SAMPLES, energies.num_frames); ++i) {
             EXPECT_FALSE(isnan(energies.frame_time[i]));
             EXPECT_FALSE(isinf(energies.frame_time[i]));
             EXPECT_GE(energies.frame_time[i], 0.0);
@@ -71,7 +71,7 @@ UTEST(edr, comprehensive_validation) {
         // Validate that energy data is accessible
         for (int64_t j = 0; j < energies.num_energies; ++j) {
             if (energies.energy[j].values) {
-                for (int64_t i = 0; i < MIN(10, energies.num_frames); ++i) {
+                for (int64_t i = 0; i < MD_MIN(10, energies.num_frames); ++i) {
                     EXPECT_FALSE(isnan(energies.energy[j].values[i]));
                     EXPECT_FALSE(isinf(energies.energy[j].values[i]));
                 }

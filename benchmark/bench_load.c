@@ -85,7 +85,7 @@ static void bench_pool_run(bench_pool_t* pool, uint32_t thread_idx) {
         const uint64_t p = md_atomic_fetch_add64(&pool->next, 1);
         if (p >= num_pieces) break;
         const uint32_t beg = (uint32_t)(p * pool->grain);
-        const uint32_t end = (uint32_t)MIN((p + 1) * pool->grain, (uint64_t)pool->count);
+        const uint32_t end = (uint32_t)MD_MIN((p + 1) * pool->grain, (uint64_t)pool->count);
         pool->body(pool->arg, beg, end, thread_idx);
     }
 }
@@ -111,7 +111,7 @@ static bool bench_pool_for(void* user, uint32_t count, uint32_t grain, md_range_
     pool->next  = 0;
     // As many workers as there are pieces beyond the calling thread's
     const uint64_t num_pieces = ((uint64_t)count + pool->grain - 1) / pool->grain;
-    const uint32_t woken = (uint32_t)MIN((uint64_t)pool->num_workers, num_pieces - 1);
+    const uint32_t woken = (uint32_t)MD_MIN((uint64_t)pool->num_workers, num_pieces - 1);
     for (uint32_t i = 0; i < woken; ++i) md_semaphore_release(&pool->start[i]);
     bench_pool_run(pool, 0);
     for (uint32_t i = 0; i < woken; ++i) md_semaphore_aquire(&pool->done);
@@ -119,8 +119,8 @@ static bool bench_pool_for(void* user, uint32_t count, uint32_t grain, md_range_
 }
 
 static void bench_pool_init(bench_pool_t* pool, uint32_t num_threads) {
-    MEMSET(pool, 0, sizeof(*pool));
-    pool->num_workers = num_threads > 1 ? MIN(num_threads, MAX_THREADS) - 1 : 0;
+    MD_MEMSET(pool, 0, sizeof(*pool));
+    pool->num_workers = num_threads > 1 ? MD_MIN(num_threads, MAX_THREADS) - 1 : 0;
     pool->ex = (md_executor_t){ .parallel_for = bench_pool_for, .user = pool, .num_threads = pool->num_workers + 1 };
     md_semaphore_init(&pool->done, 0);
     for (uint32_t i = 0; i < pool->num_workers; ++i) {
@@ -192,10 +192,10 @@ typedef BOOL (WINAPI *prefetch_fn)(HANDLE, ULONG_PTR, bench_memory_range_t*, ULO
 #endif
 
 static bool map_file(mapped_file_t* m, const char* path, bool prefetch) {
-    MEMSET(m, 0, sizeof(*m));
+    MD_MEMSET(m, 0, sizeof(*m));
 #if MD_PLATFORM_WINDOWS
     wchar_t wpath[1024];
-    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, (int)ARRAY_SIZE(wpath))) return false;
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, (int)MD_COUNTOF(wpath))) return false;
     m->file = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (m->file == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size;
@@ -241,7 +241,7 @@ static void unmap_file(mapped_file_t* m) {
     munmap((void*)m->text.ptr, m->text.len);
     close(m->fd);
 #endif
-    MEMSET(m, 0, sizeof(*m));
+    MD_MEMSET(m, 0, sizeof(*m));
 }
 
 static bool load(md_system_t* sys, md_system_state_t* st, str_t path, str_t text, bool gro, const md_executor_t* ex) {
@@ -290,7 +290,7 @@ int main(int argc, char** argv) {
         } else if (!strcmp(a, "--threads") && i + 1 < argc) {
             for (const char* c = argv[++i]; *c && num_counts < MAX_COUNTS; ) {
                 const int n = atoi(c);
-                if (n > 0) counts[num_counts++] = MIN(n, MAX_THREADS);
+                if (n > 0) counts[num_counts++] = MD_MIN(n, MAX_THREADS);
                 while (*c && *c != ',') ++c;
                 if (*c == ',') ++c;
             }
@@ -311,10 +311,10 @@ int main(int argc, char** argv) {
             files[num_files++] = a;
         }
     }
-    reps = CLAMP(reps, 1, MAX_REPS);
+    reps = MD_CLAMP(reps, 1, MAX_REPS);
     if (num_counts == 0) {
         for (int n = 1; n < cores && num_counts < MAX_COUNTS - 1; n *= 2) counts[num_counts++] = n;
-        counts[num_counts++] = MIN(cores, MAX_THREADS);
+        counts[num_counts++] = MD_MIN(cores, MAX_THREADS);
     }
     if (num_files == 0) {
         printf("usage: %s [--reps n] [--threads a,b,c] [--str | --mmap | --mmap-prefetch] [--reuse-memory] [--phases] file ...\n", argv[0]);
@@ -360,10 +360,10 @@ int main(int argc, char** argv) {
             double best_ms = 1e300;
             char best_line[1024] = "";
             bool ok = true;
-            md_allocator_i* shared = reuse ? md_vm_arena_create(GIGABYTES(64)) : NULL;
+            md_allocator_i* shared = reuse ? md_vm_arena_create(MD_GIGABYTES(64)) : NULL;
             // One untimed load first: the page cache and the allocators as a load after another finds them
             for (int r = -1; r < reps && ok; ++r) {
-                md_allocator_i* alloc = shared ? shared : md_vm_arena_create(GIGABYTES(64));
+                md_allocator_i* alloc = shared ? shared : md_vm_arena_create(MD_GIGABYTES(64));
                 if (shared) md_vm_arena_reset(shared);
                 md_system_t sys = { .alloc = alloc };
                 md_system_state_t st = { .alloc = alloc };

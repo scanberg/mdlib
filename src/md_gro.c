@@ -96,7 +96,7 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool c
     }
 
     str_t tokens[16];
-    const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
+    const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), str_substr(line, 20, SIZE_MAX));
     if (num_tokens < 3) {
         // Fallback to fixed width format
         xyz[0] = (float)parse_float(str_substr(line, 20, 8));
@@ -121,7 +121,7 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool c
 // The coordinates and velocities of an atom line in the columns GROMACS writes by default, "%8.3f" and "%8.4f": three
 // fields at a time (md_parse_fixed_f32x3_w8), what gro_parse_coordinates reads by those columns. False where it would
 // read the line otherwise, or would find something there that is not three velocities: the caller reads the line with it.
-static FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], str_t line) {
+static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], str_t line) {
     if (line.len < 20 + 24 || !md_parse_fixed_f32x3_w8(xyz, line.ptr + 20, 3)) return false;
     if (line.len == 20 + 24) {
         vel[0] = vel[1] = vel[2] = NAN;
@@ -154,7 +154,7 @@ static FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], st
 // NAN, by its bits: mdlib builds with fast math
 static inline bool gro_absent(float v) {
     uint32_t u;
-    MEMCPY(&u, &v, sizeof(u));
+    MD_MEMCPY(&u, &v, sizeof(u));
     return (u & 0x7FFFFFFFu) > 0x7F800000u;
 }
 
@@ -166,31 +166,31 @@ typedef struct gro_res_fields_t {
     uint16_t len;
 } gro_res_fields_t;
 
-static FORCE_INLINE gro_res_fields_t gro_res_fields(str_t line) {
-    gro_res_fields_t f = { 0, 0, (uint16_t)MIN(line.len, GRO_RES_FIELDS) };
+static MD_FORCE_INLINE gro_res_fields_t gro_res_fields(str_t line) {
+    gro_res_fields_t f = { 0, 0, (uint16_t)MD_MIN(line.len, GRO_RES_FIELDS) };
     if (line.len >= GRO_RES_FIELDS) {
-        MEMCPY(&f.lo, line.ptr, 8);
-        MEMCPY(&f.hi, line.ptr + 8, 2);
+        MD_MEMCPY(&f.lo, line.ptr, 8);
+        MD_MEMCPY(&f.hi, line.ptr + 8, 2);
     } else if (line.len) {
         char c[GRO_RES_FIELDS] = {0};
-        MEMCPY(c, line.ptr, line.len);
-        MEMCPY(&f.lo, c, 8);
-        MEMCPY(&f.hi, c + 8, 2);
+        MD_MEMCPY(c, line.ptr, line.len);
+        MD_MEMCPY(&f.lo, c, 8);
+        MD_MEMCPY(&f.hi, c + 8, 2);
     }
     return f;
 }
 
-static FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields_t b) {
+static MD_FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields_t b) {
     return a.lo == b.lo && a.hi == b.hi && a.len == b.len;
 }
 
 // The field of 5 characters at offset as a label, without the whitespace around it: make_label(str_trim()) of it. As one
 // word where the line goes on for 8 characters from there and the field has no control character (whose blanks are
 // spaces alone, which a byte above ' ' bounds: no scan); else as make_label(str_trim()).
-static FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
+static MD_FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
     if (line.len >= offset + 8) {
         uint64_t w;
-        MEMCPY(&w, line.ptr + offset, 8);
+        MD_MEMCPY(&w, line.ptr + offset, 8);
         const uint64_t field = 0x8080808080ull;                             // the high bits of its 5 bytes
         const uint64_t x = w & 0x7F7F7F7F7F7F7F7Full;
         // 0x80 in each byte at or above ' ' (or with its high bit set): none below it, no control character
@@ -199,10 +199,10 @@ static FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
             const uint64_t mark = ((x + 0x5F5F5F5F5F5F5F5Full) | w) & field;
             md_label_t lbl = {0};
             if (mark) {
-                const uint32_t lo = ctz64(mark) >> 3;
-                const uint32_t hi = (63 - clz64(mark)) >> 3;
+                const uint32_t lo = md_ctz64(mark) >> 3;
+                const uint32_t hi = (63 - md_clz64(mark)) >> 3;
                 const uint64_t v = (w >> (8 * lo)) & (~UINT64_C(0) >> (64 - 8 * (hi - lo + 1)));
-                MEMCPY(lbl.buf, &v, sizeof(v));
+                MD_MEMCPY(lbl.buf, &v, sizeof(v));
             }
             return lbl;
         }
@@ -212,7 +212,7 @@ static FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
 
 // The residue number of a line (columns 0 to 4): parse_int(str_trim()) of it. Blanks and then digits up to its end
 // without a scan of what is around; else as parse_int(str_trim()).
-static FORCE_INLINE int64_t gro_res_number(str_t line) {
+static MD_FORCE_INLINE int64_t gro_res_number(str_t line) {
     if (line.len >= 5) {
         const char* c = line.ptr;
         uint32_t i = 0;
@@ -234,7 +234,7 @@ static inline md_unit_t gro_velocity_unit(void) {
 
 static bool gro_parse_box(md_unitcell_t* cell, str_t line) {
     str_t tokens[16];
-    const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), line);
+    const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), line);
     if (num_tokens != 3 && num_tokens != 9) {
         MD_LOG_ERROR("Failed to parse box, expected 3 or 9 tokens");
         return false;
@@ -363,7 +363,7 @@ static void gro_place_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
     gro_load_t* L = (gro_load_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         const gro_piece_t* piece = &L->pieces[p];
-        MEMCPY(L->res + piece->first_res, L->pass_res + piece->first_line, piece->num_res * sizeof(gro_residue_start_t));
+        MD_MEMCPY(L->res + piece->first_res, L->pass_res + piece->first_line, piece->num_res * sizeof(gro_residue_start_t));
     }
 }
 
@@ -379,7 +379,7 @@ typedef struct gro_residues_t {
 static void gro_build_residues(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
     (void)thread_idx;
     const gro_residues_t* rb = (const gro_residues_t*)arg;
-    const size_t r_end = MIN((size_t)end * GRO_RES_CHUNK, rb->num_res);
+    const size_t r_end = MD_MIN((size_t)end * GRO_RES_CHUNK, rb->num_res);
     for (size_t r = (size_t)beg * GRO_RES_CHUNK; r < r_end; ++r) {
         rb->residue->atom_offset[r] = rb->starts[r].atom;
         rb->residue->name[r]   = rb->starts[r].name;
@@ -390,7 +390,7 @@ static void gro_build_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
 
 // Room for count elements in an array of the load, which grows by doubling past what was reserved
 #define GRO_ROOM(arr, count, alloc) do { \
-        if ((count) > md_array_capacity(arr)) md_array_ensure((arr), MAX((size_t)(count), 2 * md_array_capacity(arr)), (alloc)); \
+        if ((count) > md_array_capacity(arr)) md_array_ensure((arr), MD_MAX((size_t)(count), 2 * md_array_capacity(arr)), (alloc)); \
         md_array_resize((arr), (count), (alloc)); \
     } while (0)
 
@@ -414,7 +414,7 @@ static bool gro_read_pass(gro_load_t* L, md_array(gro_piece_t)* pieces, md_array
         gro_piece_t* piece = &(*pieces)[p];
         piece->first_line = num_lines;
         const size_t first_atom = L->atom_beg + num_lines;
-        piece->num_atoms = first_atom < L->num_atoms ? MIN(piece->num_lines, L->num_atoms - first_atom) : 0;
+        piece->num_atoms = first_atom < L->num_atoms ? MD_MIN(piece->num_lines, L->num_atoms - first_atom) : 0;
         num_lines += piece->num_lines;
     }
     GRO_ROOM(*pass_res, num_lines, temp);
@@ -442,7 +442,7 @@ static bool gro_read_pass(gro_load_t* L, md_array(gro_piece_t)* pieces, md_array
 }
 
 static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, const md_executor_t* ex) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
         return false;
@@ -495,11 +495,11 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     if (!md_system_state_init(state, num_atoms)) goto done;
     {
         // The atoms' own are written as they are read (gro_parse_lines), the padding past them here
-        const size_t capacity = ROUND_UP(num_atoms, 16);
+        const size_t capacity = MD_ROUND_UP(num_atoms, 16);
         md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
         md_array_resize(sys->atom.flags, capacity, sys->alloc);
-        MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
-        MEMSET(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
+        MD_MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
+        MD_MEMSET(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
         sys->atom.count = num_atoms;
         md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
     }
@@ -540,8 +540,8 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
             // The residue fields of the last atom line, for the next pass
             if (L.atom_beg < num_atoms) {
                 const str_t last = md_text_line_before(block.ptr, taken);
-                const size_t n = MIN(last.len, sizeof(prev_res));
-                MEMCPY(prev_res, last.ptr, n);
+                const size_t n = MD_MIN(last.len, sizeof(prev_res));
+                MD_MEMCPY(prev_res, last.ptr, n);
                 L.prev = (str_t){ prev_res, n };
             }
         }
@@ -572,7 +572,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     sys->residue.count = num_res;
     {
         gro_residues_t rb = { &sys->residue, res, num_res };
-        if (!md_parallel_for(ex, (uint32_t)DIV_UP(num_res, GRO_RES_CHUNK), 1, gro_build_residues, &rb)) goto done;    // Cancelled
+        if (!md_parallel_for(ex, (uint32_t)MD_DIV_UP(num_res, GRO_RES_CHUNK), 1, gro_build_residues, &rb)) goto done;    // Cancelled
     }
     sys->residue.atom_offset[num_res] = (uint32_t)num_atoms;    // Final sentinel
 
@@ -599,7 +599,7 @@ bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     // The reader's buffer in a temp scope, below the one of the load (gro_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
-    const size_t cap = MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(ex)));
+    const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(ex)));
     if (!md_file_reader_open(&fr, filename, cap, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Could not open file '%.*s'", (int)filename.len, filename.ptr);
         md_temp_end(temp);

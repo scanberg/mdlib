@@ -22,7 +22,7 @@ struct vial_spec {
 };
 
 UTEST_F_SETUP(vial_spec) {
-    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     utest_fixture->text  = load_textfile(STR_LIT(VIAL_REFERENCE_PATH), utest_fixture->alloc);
     ASSERT_FALSE(str_empty(utest_fixture->text));
     vial_spec_read(&utest_fixture->spec, utest_fixture->text, utest_fixture->alloc);
@@ -160,7 +160,7 @@ UTEST(vial_spec, grammar) {
 // Whether a code is one the front end reports
 static bool vial_spec__is_syntax_code(const char* code) {
     static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803"};
-    for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
+    for (size_t i = 0; i < MD_COUNTOF(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }
 
@@ -268,7 +268,7 @@ static bool vial_spec__is_checked_code(const char* code) {
                                   "E0301", "W0405", "W0607", "E0315",
                                   "E0317", "E0401", "E0403", "E0404", "E0405", "W0404", "W0406", "E0303", "W0605", "E0306",
                                   "E0320", "E0406", "W0407", "E0321", "W0408", "E0503", "W0609"};
-    for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
+    for (size_t i = 0; i < MD_COUNTOF(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }
 
@@ -534,7 +534,7 @@ static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_
     e->in.load_user = &e->frames;
     e->num_workers = threads < VIAL_SPEC_MAX_WORKERS ? threads : VIAL_SPEC_MAX_WORKERS;
     for (int w = 0; w < e->num_workers; ++w) {
-        e->worker_arena[w] = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        e->worker_arena[w] = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
         vial_sys_init(&e->worker_vs[w], sys, e->worker_arena[w]);
         vial_interp_init(&e->workers[w], e->ir, &e->worker_vs[w], sys, md_get_heap_allocator());
         e->worker_frames[w] = (vial_spec__frames_t){.structure = structure, .sys = sys, .num_frames = e->num_frames, .state = {.alloc = e->worker_arena[w]}};
@@ -633,11 +633,11 @@ UTEST_F(vial_spec, deterministic) {
         const vial_block_t* b = &spec->blocks[i];
         if (!vial_spec__evaluable(b)) continue;
         const str_t src = vial_spec__block_src(spec, i, alloc);
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
         // Dirty the arena's first page, so memory it hands out is not zero
-        uint8_t* junk = md_alloc(arena, KILOBYTES(32));
-        memset(junk, 0xA5, KILOBYTES(32));
-        md_free(arena, junk, KILOBYTES(32));
+        uint8_t* junk = md_alloc(arena, MD_KILOBYTES(32));
+        memset(junk, 0xA5, MD_KILOBYTES(32));
+        md_free(arena, junk, MD_KILOBYTES(32));
         vial_spec__eval_t e[2];
         const bool ok0 = vial_spec__eval(&e[0], src, b->structure, alloc, md_get_heap_allocator(), 0);
         // The second on four threads, frames in chunks across them

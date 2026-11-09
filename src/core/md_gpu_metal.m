@@ -3515,7 +3515,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         NSArray* all = md_mtl_all_devices();
         enum { MD_MTL_MAX_ADAPTERS = 16 };
         md_gpu_adapter_info_t infos[MD_MTL_MAX_ADAPTERS];
-        const uint32_t n_all = (uint32_t)MIN([all count], (NSUInteger)MD_MTL_MAX_ADAPTERS);
+        const uint32_t n_all = (uint32_t)MD_MIN([all count], (NSUInteger)MD_MTL_MAX_ADAPTERS);
         for (uint32_t i = 0; i < n_all; ++i) {
             id<MTLDevice> d = all[i];
             md_mtl_adapter_info(d, &infos[i]);

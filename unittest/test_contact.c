@@ -60,7 +60,7 @@ struct contact {
 };
 
 UTEST_F_SETUP(contact) {
-    utest_fixture->alloc = md_vm_arena_create(GIGABYTES(4));
+    utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(4));
 
     utest_fixture->ala.alloc = utest_fixture->alloc;
     utest_fixture->ala_state = (md_system_state_t){ .alloc = utest_fixture->alloc };
@@ -317,10 +317,10 @@ static bool check_pairs(const md_contact_pairs_desc_t* desc, const md_system_t* 
     pair_collect_t c = { .alloc = md_temp_allocator(temp), .self = self, .ordered = true };
     bool ok = md_contact_pairs_for_each(&pairs, state, collect_pairs, &c);
     // Anything the stream released beneath the collected pairs gets overwritten here
-    memset(md_temp_alloc(temp, MEGABYTES(8)), 0xFF, MEGABYTES(8));
+    memset(md_temp_alloc(temp, MD_MEGABYTES(8)), 0xFF, MD_MEGABYTES(8));
     const size_t n = md_array_size(c.key);
 
-    key_r_t* got = md_alloc(alloc, sizeof(key_r_t) * MAX(n, 1));
+    key_r_t* got = md_alloc(alloc, sizeof(key_r_t) * MD_MAX(n, 1));
     for (size_t k = 0; k < n; ++k) got[k] = (key_r_t){ c.key[k], c.r[k] };
     md_temp_end(temp);
     qsort(got, n, sizeof(key_r_t), cmp_key_r);
@@ -515,11 +515,11 @@ static int cmp_u64_keys(const void* x, const void* y) {
 // A contact set made up by hand from unit pairs, as md_contact_query_eval would have produced it
 static md_contact_set_t make_contact_set(const uint32_t (*pairs)[2], size_t count, uint32_t num_a, uint32_t num_b, bool self, md_allocator_i* alloc) {
     md_contact_set_t set = { .num_a = num_a, .num_b = num_b, .flags = self ? MD_CONTACT_FLAG_SELF : 0, .count = count, .alloc = alloc };
-    set.i = md_alloc(alloc, sizeof(uint32_t) * MAX(count, 1));
-    set.j = md_alloc(alloc, sizeof(uint32_t) * MAX(count, 1));
-    set.atom_pairs = md_alloc(alloc, sizeof(uint32_t) * MAX(count, 1));
-    set.d_min = md_alloc(alloc, sizeof(float) * MAX(count, 1));
-    uint64_t* key = md_alloc(alloc, sizeof(uint64_t) * MAX(count, 1));
+    set.i = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(count, 1));
+    set.j = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(count, 1));
+    set.atom_pairs = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(count, 1));
+    set.d_min = md_alloc(alloc, sizeof(float) * MD_MAX(count, 1));
+    uint64_t* key = md_alloc(alloc, sizeof(uint64_t) * MD_MAX(count, 1));
     for (size_t k = 0; k < count; ++k) {
         uint32_t a = pairs[k][0], b = pairs[k][1];
         if (self && a > b) { uint32_t t = a; a = b; b = t; }
@@ -580,7 +580,7 @@ static size_t check_regions(const md_contact_region_set_t* r, const md_contact_s
 }
 
 UTEST(contact_regions, patterns) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const uint32_t L = 20;
     chains_t ch = make_chains(3, L, alloc);
     md_contact_region_set_t r;

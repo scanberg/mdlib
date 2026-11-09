@@ -40,8 +40,8 @@ struct ring {
 
 static void ring_sys_init(ring_sys_t* r, const ref_comp_t* comps, const char* id) {
     const ref_comp_t* c = find_component(comps, id);
-    ASSERT(c);
-    r->alloc = md_vm_arena_create(GIGABYTES(1));
+    MD_ASSERT(c);
+    r->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     r->sys = (md_system_t){ .alloc = r->alloc };
     r->st  = (md_system_state_t){ .alloc = r->alloc };
     int* map = md_alloc(r->alloc, sizeof(int) * (md_array_size(c->atom) + 1));
@@ -50,7 +50,7 @@ static void ring_sys_init(ring_sys_t* r, const ref_comp_t* comps, const char* id
 }
 
 UTEST_F_SETUP(ring) {
-    utest_fixture->alloc = md_vm_arena_create(GIGABYTES(1));
+    utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     utest_fixture->comps = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), utest_fixture->alloc);
     ASSERT_GT((int)md_array_size(utest_fixture->comps), 100);
     ring_sys_init(&utest_fixture->trp, utest_fixture->comps, "TRP");
@@ -86,7 +86,7 @@ static size_t ring_count_matches(const char* smiles, md_match_level_t level, md_
 
 // Matches with the rings of the system as the units
 static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, const md_system_t* sys) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const size_t num_rings = md_ring_data_count(&sys->ring);
     md_bitset_t* units = md_alloc(alloc, sizeof(md_bitset_t) * (num_rings + 1));
     for (size_t r = 0; r < num_rings; ++r) {
@@ -105,7 +105,7 @@ static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, cons
 
 // The number of selections ring() and the like give, SIZE_MAX on an error
 static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* out_atoms) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_array(md_bitset_t) arr = 0;
     size_t result = SIZE_MAX;
     const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
@@ -283,7 +283,7 @@ UTEST_F(ring, script_ring) {
 // The rings ring() and the like give, as indices into md_system_t::ring (-1 for a selection which is no ring), in
 // their order. Returns how many, -1 on an error.
 static int ring_filter_indices(int* out, int cap, const char* expr, const ring_sys_t* r) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_array(md_bitset_t) arr = 0;
     int result = -1;
     const md_filter_context_t ctx = {&r->sys, &r->st, NULL};

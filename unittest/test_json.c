@@ -98,7 +98,7 @@ UTEST(json, root_values) {
         { "[ ]",                MD_JSON_TYPE_ARRAY  },
         { "{ \n }",             MD_JSON_TYPE_OBJECT },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         parsed_t p = parse(cases[i].text);
         EXPECT_TRUE_MSG(p.doc != NULL, cases[i].text);
         EXPECT_EQ_MSG(cases[i].type, md_json_type(md_json_root(p.doc)), cases[i].text);
@@ -199,7 +199,7 @@ UTEST(json, rejects) {
         { "\xEF\xBB" "1",           0 },
         { " \xEF\xBB\xBF" "1",      1 },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         parsed_t p = parse(cases[i].text);
         EXPECT_TRUE_MSG(p.doc == NULL, cases[i].text);
         EXPECT_EQ_MSG(cases[i].offset, p.err.offset, cases[i].text);
@@ -261,7 +261,7 @@ UTEST(json, reads_only_its_view) {
         { "{\"a\":1}", 6, false },
         { "\"\\u0041\"", 6, false },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         parsed_t p = parse_n(cases[i].buffer, cases[i].len);
         EXPECT_EQ_MSG(cases[i].valid, p.doc != NULL, cases[i].buffer);
         release(&p);
@@ -398,7 +398,7 @@ UTEST(json, navigation) {
     const char* keys[] = { "name", "atoms", "empty_array", "empty_object", "nested", "flag", "nothing", "dup", "dup" };
     i = 0;
     for (md_json_val_t m = md_json_first(root); md_json_valid(m); m = md_json_next(m), ++i) {
-        ASSERT_LT(i, ARRAY_SIZE(keys));
+        ASSERT_LT(i, MD_COUNTOF(keys));
         EXPECT_EQ(md_json_at(root, i).idx, m.idx);
         const md_json_val_t k = md_json_key(m);
         EXPECT_EQ(MD_JSON_TYPE_STRING, md_json_type(k));
@@ -407,7 +407,7 @@ UTEST(json, navigation) {
         EXPECT_FALSE(md_json_valid(md_json_next(k)));
         EXPECT_FALSE(md_json_valid(md_json_key(k)));
     }
-    EXPECT_EQ(ARRAY_SIZE(keys), i);
+    EXPECT_EQ(MD_COUNTOF(keys), i);
 
     release(&p);
 }
@@ -432,7 +432,7 @@ UTEST(json, none_propagates) {
         md_json_first(get(root, "flag")),
         md_json_at(md_json_at(md_json_at(root, 100), 0), 0),
     };
-    for (size_t i = 0; i < ARRAY_SIZE(nones); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(nones); ++i) {
         const md_json_val_t v = nones[i];
         EXPECT_EQ(MD_JSON_TYPE_NONE, md_json_type(v));
         EXPECT_FALSE(md_json_valid(v));
@@ -475,7 +475,7 @@ UTEST(json, numbers) {
         "0.1", "-248.271233", "4.370019985270747", "1.396125e-30", "1e400", "-1e400", "1e-400", "2.2250738585072011e-308",
         "4.9406564584124654e-324", "1.7976931348623157e308", "NaN", "Infinity", "-Infinity",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(texts); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(texts); ++i) {
         parsed_t p = parse(texts[i]);
         ASSERT_TRUE_MSG(p.doc != NULL, texts[i]);
         double expected = 0, got = 0;
@@ -516,7 +516,7 @@ UTEST(json, numbers) {
         { "\"1\"",                  false, 0 },
         { "true",                   false, 0 },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ints); ++i) {
         parsed_t p = parse(ints[i].text);
         ASSERT_TRUE_MSG(p.doc != NULL, ints[i].text);
         int64_t v = 12345;
@@ -605,7 +605,7 @@ UTEST(json, strings) {
     };
 
     md_allocator_i* heap = md_get_heap_allocator();
-    for (size_t i = 0; i < ARRAY_SIZE(expected); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(expected); ++i) {
         const md_json_val_t v = md_json_at(root, i);
         const str_t want = { expected[i].decoded, expected[i].len };
 
@@ -648,10 +648,10 @@ UTEST(json, string_copy_cuts_between_characters) {
     };
     // a (1) e-acute (2) euro (3) grinning face (4): what fits in cap - 1 bytes
     const size_t expected_len[] = { 0, 0, 1, 1, 3, 3, 3, 6, 6, 6, 6, 10, 10 };
-    for (size_t t = 0; t < ARRAY_SIZE(texts); ++t) {
+    for (size_t t = 0; t < MD_COUNTOF(texts); ++t) {
         parsed_t p = parse(texts[t]);
         ASSERT_TRUE(p.doc != NULL);
-        for (size_t cap = 0; cap < ARRAY_SIZE(expected_len); ++cap) {
+        for (size_t cap = 0; cap < MD_COUNTOF(expected_len); ++cap) {
             char buf[16];
             memset(buf, 'x', sizeof(buf));
             const size_t n = md_json_string_copy(buf, cap, md_json_root(p.doc));
@@ -738,7 +738,7 @@ static size_t gen_expect(gen_t* g, expect_t e) {
 
 static void gen_ws(gen_t* g) {
     static const char* ws[] = { "", "", "", " ", "\n", "  ", "\t", "\r\n    " };
-    buf_pushc(&g->text, ws[rng_range(&g->rng, ARRAY_SIZE(ws))]);
+    buf_pushc(&g->text, ws[rng_range(&g->rng, MD_COUNTOF(ws))]);
 }
 
 static size_t utf8_of(char out[4], uint32_t cp) {

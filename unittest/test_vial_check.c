@@ -36,7 +36,7 @@ static const char* diags_on(const char* src, const struct md_system_t* sys, md_a
 static const char* diags_of(const char* src, md_allocator_i* alloc) { return diags_on(src, NULL, alloc); }
 
 struct vial_check { md_allocator_i* alloc; };
-UTEST_F_SETUP(vial_check) { utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4)); }
+UTEST_F_SETUP(vial_check) { utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4)); }
 UTEST_F_TEARDOWN(vial_check) { md_arena_allocator_destroy(utest_fixture->alloc); }
 
 #define EXPECT_DIAGS(src, want) do { \

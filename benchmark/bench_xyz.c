@@ -7,7 +7,7 @@
 #include <core/md_log.h>
 
 UBENCH_EX(xyz, xmol) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/40-40-2-ddba-dyna.xmol");
 
     md_file_t file = {0};

@@ -39,7 +39,7 @@ static const char* psf_text =
     "         0 !NTHETA: angles\n";
 
 UTEST(psf, builds_a_system_without_coordinates) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest.psf");
     ASSERT_TRUE(psf_write_text(path, psf_text));
     EXPECT_TRUE(md_psf_file_is_psf(path));
@@ -75,19 +75,19 @@ UTEST(psf, builds_a_system_without_coordinates) {
 }
 
 UTEST(namdbin, coordinates_in_either_byte_order) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest.coor");
     for (int swap = 0; swap < 2; ++swap) {
         md_file_t f = {0};
         ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
         uint32_t n = 3;
-        if (swap) n = BSWAP32(n);
+        if (swap) n = MD_BSWAP32(n);
         md_file_write(f, &n, 4);
         for (int i = 0; i < 9; ++i) {
             double v = 1.5 * i - 4.0;
             uint64_t u;
-            MEMCPY(&u, &v, 8);
-            if (swap) u = BSWAP64(u);
+            MD_MEMCPY(&u, &v, 8);
+            if (swap) u = MD_BSWAP64(u);
             md_file_write(f, &u, 8);
         }
         md_file_close(&f);
@@ -110,7 +110,7 @@ UTEST(namdbin, coordinates_in_either_byte_order) {
 // (I8,1X,A4,1X,A4,1X,A4,1X,A4,1X,A4 and I10,1X,A8,... in EXT), and read as words a blank field shifts every field
 // after it - the residue number read as the segment, the residue name as the number.
 UTEST(psf, blank_segment_ids) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_blank_segid.psf");
     static const char* texts[2] = {
         "PSF\n"

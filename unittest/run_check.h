@@ -50,7 +50,7 @@ static inline void run_check_refs(int* utest_result, const md_system_t* sys, str
     const size_t N = run_num_atoms(sys, run);
     ASSERT_EQ(expected_atoms, N);
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, N);
 

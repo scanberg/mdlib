@@ -17,31 +17,31 @@
 // ---------------------------------------------------------------------------
 
 void md_flow_graph_init(md_flow_graph_t* graph, uint32_t num_columns, struct md_allocator_i* alloc) {
-    ASSERT(graph);
-    ASSERT(alloc);
-    MEMSET(graph, 0, sizeof(md_flow_graph_t));
+    MD_ASSERT(graph);
+    MD_ASSERT(alloc);
+    MD_MEMSET(graph, 0, sizeof(md_flow_graph_t));
     graph->num_columns = num_columns;
     graph->alloc = alloc;
 }
 
 void md_flow_graph_free(md_flow_graph_t* graph) {
-    ASSERT(graph);
+    MD_ASSERT(graph);
     if (graph->alloc) {
         md_array_free(graph->nodes, graph->alloc);
         md_array_free(graph->links, graph->alloc);
     }
-    MEMSET(graph, 0, sizeof(md_flow_graph_t));
+    MD_MEMSET(graph, 0, sizeof(md_flow_graph_t));
 }
 
 void md_flow_graph_clear(md_flow_graph_t* graph) {
-    ASSERT(graph);
+    MD_ASSERT(graph);
     md_array_shrink(graph->nodes, 0);
     md_array_shrink(graph->links, 0);
 }
 
 uint32_t md_flow_graph_add_node(md_flow_graph_t* graph, const md_flow_node_t* node) {
-    ASSERT(graph);
-    ASSERT(node);
+    MD_ASSERT(graph);
+    MD_ASSERT(node);
 
     if (node->column >= graph->num_columns) {
         MD_LOG_ERROR("flow: node column %u is out of range (graph has %u columns)", node->column, graph->num_columns);
@@ -69,7 +69,7 @@ uint32_t md_flow_graph_add_node(md_flow_graph_t* graph, const md_flow_node_t* no
 }
 
 bool md_flow_graph_add_link(md_flow_graph_t* graph, uint32_t src, uint32_t dst, float weight) {
-    ASSERT(graph);
+    MD_ASSERT(graph);
 
     if (!(weight > 0.0f)) {
         // Zero and NaN links carry no information and would only add degenerate ribbons.
@@ -88,7 +88,7 @@ bool md_flow_graph_add_link(md_flow_graph_t* graph, uint32_t src, uint32_t dst, 
 }
 
 bool md_flow_node_is_leaf(const md_flow_graph_t* graph, uint32_t node_idx) {
-    ASSERT(graph);
+    MD_ASSERT(graph);
     const size_t count = md_array_size(graph->nodes);
     for (size_t i = node_idx + 1; i < count; ++i) {
         // Children always come after their parent, so the scan can start just past the node.
@@ -120,7 +120,7 @@ const char* md_flow_result_str(md_flow_result_t result) {
 // quadratic md_flow_node_is_leaf() when the answer is needed for the whole graph.
 static void flow_mark_internal(bool* out_has_children, const md_flow_graph_t* graph) {
     const size_t count = md_array_size(graph->nodes);
-    MEMSET(out_has_children, 0, sizeof(bool) * count);
+    MD_MEMSET(out_has_children, 0, sizeof(bool) * count);
     for (size_t i = 0; i < count; ++i) {
         const uint32_t parent = graph->nodes[i].parent;
         if (parent != MD_FLOW_INVALID_INDEX) {
@@ -130,7 +130,7 @@ static void flow_mark_internal(bool* out_has_children, const md_flow_graph_t* gr
 }
 
 md_flow_result_t md_flow_graph_validate(const md_flow_graph_t* graph, float eps) {
-    ASSERT(graph);
+    MD_ASSERT(graph);
 
     const size_t num_nodes = md_array_size(graph->nodes);
     const size_t num_links = md_array_size(graph->links);
@@ -229,16 +229,16 @@ md_flow_result_t md_flow_graph_validate(const md_flow_graph_t* graph, float eps)
 // ---------------------------------------------------------------------------
 
 void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc) {
-    ASSERT(cut);
-    ASSERT(alloc);
-    MEMSET(cut, 0, sizeof(md_flow_cut_t));
+    MD_ASSERT(cut);
+    MD_ASSERT(alloc);
+    MD_MEMSET(cut, 0, sizeof(md_flow_cut_t));
     md_bitmask_init(&cut->expanded, 0, MD_BITSET_MAX_INDEX, alloc);  // words are allocated as nodes are expanded
     cut->other_max = 1.0f;      // uncapped unless the caller says otherwise
     cut->alloc = alloc;
 }
 
 void md_flow_cut_free(md_flow_cut_t* cut) {
-    ASSERT(cut);
+    MD_ASSERT(cut);
     if (cut->alloc) {
         md_bitmask_free(&cut->expanded);
         md_array_free(cut->visible, cut->alloc);
@@ -246,11 +246,11 @@ void md_flow_cut_free(md_flow_cut_t* cut) {
         md_array_free(cut->other,   cut->alloc);
         md_array_free(cut->other_count, cut->alloc);
     }
-    MEMSET(cut, 0, sizeof(md_flow_cut_t));
+    MD_MEMSET(cut, 0, sizeof(md_flow_cut_t));
 }
 
 void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expanded) {
-    ASSERT(cut);
+    MD_ASSERT(cut);
     if (expanded) {
         md_bitmask_set_bit(&cut->expanded, node_idx);
     } else {
@@ -259,37 +259,37 @@ void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expand
 }
 
 void md_flow_cut_set_other_expanded(md_flow_cut_t* cut, uint32_t column, bool expanded) {
-    ASSERT(cut);
+    MD_ASSERT(cut);
     if (column >= MD_FLOW_MAX_COLUMNS) return;
     if (expanded) cut->other_expanded |=  (1u << column);
     else          cut->other_expanded &= ~(1u << column);
 }
 
 bool md_flow_cut_is_other_expanded(const md_flow_cut_t* cut, uint32_t column) {
-    ASSERT(cut);
+    MD_ASSERT(cut);
     return column < MD_FLOW_MAX_COLUMNS && (cut->other_expanded & (1u << column)) != 0;
 }
 
 bool md_flow_cut_is_expanded(const md_flow_cut_t* cut, uint32_t node_idx) {
-    ASSERT(cut);
+    MD_ASSERT(cut);
     return md_bitmask_test_bit(&cut->expanded, node_idx);
 }
 
 void md_flow_cut_collapse_all(md_flow_cut_t* cut) {
-    ASSERT(cut);
+    MD_ASSERT(cut);
     md_bitmask_clear(&cut->expanded);
 }
 
 void md_flow_cut_expand_all(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
-    ASSERT(cut);
-    ASSERT(graph);
+    MD_ASSERT(cut);
+    MD_ASSERT(graph);
     const size_t count = md_array_size(graph->nodes);
     if (count) md_bitmask_set_range(&cut->expanded, 0, (uint32_t)count);
 }
 
 const md_flow_node_t* md_flow_cut_node(const md_flow_cut_t* cut, const md_flow_graph_t* graph, uint32_t cut_idx) {
-    ASSERT(cut);
-    ASSERT(graph);
+    MD_ASSERT(cut);
+    MD_ASSERT(graph);
     const uint32_t num_graph_nodes = (uint32_t)md_array_size(graph->nodes);
     if (cut_idx < num_graph_nodes) {
         return graph->nodes + cut_idx;
@@ -310,8 +310,8 @@ static int flow_link_cmp(const void* a, const void* b) {
 }
 
 void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
-    ASSERT(cut);
-    ASSERT(graph);
+    MD_ASSERT(cut);
+    MD_ASSERT(graph);
 
     md_array_shrink(cut->visible, 0);
     md_array_shrink(cut->links,   0);
@@ -497,8 +497,8 @@ void md_flow_cut_resolve(md_flow_cut_t* cut, const md_flow_graph_t* graph) {
 }
 
 md_flow_result_t md_flow_cut_validate(const md_flow_cut_t* cut, const md_flow_graph_t* graph, float eps) {
-    ASSERT(cut);
-    ASSERT(graph);
+    MD_ASSERT(cut);
+    MD_ASSERT(graph);
 
     if (md_array_size(cut->visible) == 0) {
         return MD_FLOW_OK;
@@ -572,21 +572,21 @@ md_flow_layout_params_t md_flow_layout_params_default(void) {
 }
 
 void md_flow_layout_init(md_flow_layout_t* layout, struct md_allocator_i* alloc) {
-    ASSERT(layout);
-    ASSERT(alloc);
-    MEMSET(layout, 0, sizeof(md_flow_layout_t));
+    MD_ASSERT(layout);
+    MD_ASSERT(alloc);
+    MD_MEMSET(layout, 0, sizeof(md_flow_layout_t));
     layout->alloc = alloc;
 }
 
 void md_flow_layout_free(md_flow_layout_t* layout) {
-    ASSERT(layout);
+    MD_ASSERT(layout);
     if (layout->alloc) {
         md_array_free(layout->nodes,   layout->alloc);
         md_array_free(layout->ribbons, layout->alloc);
         md_array_free(layout->bands,   layout->alloc);
         md_array_free(layout->order,   layout->alloc);
     }
-    MEMSET(layout, 0, sizeof(md_flow_layout_t));
+    MD_MEMSET(layout, 0, sizeof(md_flow_layout_t));
 }
 
 // Stable insertion sort over an index array, keyed by a parallel float array. Columns and bands
@@ -652,9 +652,9 @@ static void flow_column_keys(float* out_key, const uint32_t* nodes, uint32_t cou
 void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* graph, const md_flow_cut_t* cut,
                             const md_flow_layout_params_t* params)
 {
-    ASSERT(layout);
-    ASSERT(graph);
-    ASSERT(cut);
+    MD_ASSERT(layout);
+    MD_ASSERT(graph);
+    MD_ASSERT(cut);
 
     md_array_shrink(layout->nodes,   0);
     md_array_shrink(layout->ribbons, 0);
@@ -719,7 +719,7 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
 
     uint32_t max_col_count = 0;
     for (uint32_t c = 0; c < num_columns; ++c) {
-        max_col_count = MAX(max_col_count, col_count[c]);
+        max_col_count = MD_MAX(max_col_count, col_count[c]);
     }
     if (max_col_count == 0) {
         md_temp_end(temp);
@@ -845,7 +845,7 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
         gap = (max_col_count > 1) ? (1.0f - usable) / (float)(max_col_count - 1) : 0.0f;
     }
 
-    const float thickness = CLAMP(p.node_thickness, 0.0f, 1.0f);
+    const float thickness = MD_CLAMP(p.node_thickness, 0.0f, 1.0f);
     const float span = (num_columns > 1) ? (1.0f - thickness) / (float)(num_columns - 1) : 0.0f;
 
     // A node's drawn share of its column, after the column's own exponent. Kept separately from
@@ -861,7 +861,7 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
         for (uint32_t i = 0; i < col_count[c]; ++i) {
             const uint32_t n = col_nodes[c][i];
             const float w = md_flow_cut_node(cut, graph, n)->weight;
-            const double sh = (e == 1.0f) ? (double)w : pow((double)MAX(w, 0.0f), (double)e);
+            const double sh = (e == 1.0f) ? (double)w : pow((double)MD_MAX(w, 0.0f), (double)e);
             draw_share[n] = (float)sh;
             share_sum += sh;
         }
@@ -918,8 +918,8 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
 
             for (uint32_t p = graph->nodes[n].parent; p != MD_FLOW_INVALID_INDEX; p = graph->nodes[p].parent) {
                 band_any[p] = true;
-                band_min[p] = MIN(band_min[p], y_min[n]);
-                band_max[p] = MAX(band_max[p], y_max[n]);
+                band_min[p] = MD_MIN(band_min[p], y_min[n]);
+                band_max[p] = MD_MAX(band_max[p], y_max[n]);
             }
         }
 
@@ -1037,16 +1037,16 @@ static vec2_t flow_lerp2(vec2_t a, vec2_t b, float t) {
 }
 
 void md_flow_layout_lerp(md_flow_layout_t* out, const md_flow_layout_t* a, const md_flow_layout_t* b, float t) {
-    ASSERT(out);
-    ASSERT(a);
-    ASSERT(b);
+    MD_ASSERT(out);
+    MD_ASSERT(a);
+    MD_ASSERT(b);
 
     md_array_shrink(out->nodes,   0);
     md_array_shrink(out->ribbons, 0);
     md_array_shrink(out->bands,   0);
     md_array_shrink(out->order,   0);
 
-    t = CLAMP(t, 0.0f, 1.0f);
+    t = MD_CLAMP(t, 0.0f, 1.0f);
 
     // Anything present on only one side collapses to zero extent on the other, so an expansion
     // reads as a node splitting rather than as a pop.

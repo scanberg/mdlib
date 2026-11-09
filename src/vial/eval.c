@@ -165,7 +165,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
     for (size_t i = 0; i < nd; ++i) if (d[i].severity == MD_VIAL_SEVERITY_ERROR) return NULL;
-    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
     if (!arena) return NULL;
     md_vial_eval_t* e = md_alloc(arena, sizeof(md_vial_eval_t));
     memset(e, 0, sizeof(*e));
@@ -253,7 +253,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
             eval_worker_t* r = &e->readers[w];
             r->e = e;
             // From the heap, which threads may share, not from alloc, which may be an arena
-            r->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+            r->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
             if (!r->arena) { md_vial_eval_free(e); return NULL; }
             e->num_readers = w + 1;
             r->state = (md_system_state_t){.alloc = r->arena};
@@ -710,7 +710,7 @@ size_t md_vial_eval_aggregate(const md_vial_eval_t* e, str_t name, const uint8_t
         // Its size is known without reading a frame: a caller asking for it does not pay for the frames
         const size_t nv = (size_t)vol->dims[0] * vol->dims[1] * vol->dims[2];
         if (!out || cap < nv) return nv;
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         hover_frames_t h = {.sys = e->sys, .run = e->run, .times = e->times, .num_frames = e->num_frames, .alloc = arena, .state = {.alloc = arena}};
         md_system_state_init(&h.state, e->sys->atom.count);
         vial_val_t r;
@@ -723,7 +723,7 @@ size_t md_vial_eval_aggregate(const md_vial_eval_t* e, str_t name, const uint8_t
         md_arena_allocator_destroy(arena);
         return n;
     }
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     vial_val_t r;
     size_t n = 0;
     if (vial_interp_over_frames(&e->in, v, frames, &r, arena) && (r.dtype == VIAL_DT_FLOAT || r.dtype == VIAL_DT_FLOAT64 || r.dtype == VIAL_DT_INT) && r.data) {
@@ -764,7 +764,7 @@ static const vial_val_t* point_eval(point_t* pt, const md_vial_program_t* prog, 
                                     int64_t num_frames, int64_t frame, const md_system_state_t* state, vial_ssa_t v, bool draw) {
     memset(pt, 0, sizeof(*pt));
     const vial_ir_t* ir = md_vial__ir(prog);
-    pt->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    pt->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     pt->h = (hover_frames_t){.sys = sys, .run = run, .times = times, .num_frames = num_frames, .alloc = pt->arena, .state = {.alloc = pt->arena}};
     md_system_state_init(&pt->h.state, sys->atom.count);
     vial_sys_init(&pt->vs, sys, pt->arena);
@@ -866,7 +866,7 @@ static uint64_t gcd64(uint64_t a, uint64_t b) { while (b) { const uint64_t t = a
 static void draw_spheres(draw_out_t* o) {
     const size_t n = md_array_size(o->spheres);
     if (!n) return;
-    const size_t m = MIN(n, (size_t)DRAW_MAX_SPHERES);
+    const size_t m = MD_MIN(n, (size_t)DRAW_MAX_SPHERES);
     size_t start = 0, stride = 1;
     if (m < n) {
         start = (size_t)(mix64((uint64_t)o->frame * 0x9e3779b97f4a7c15ull + 1) % n);
@@ -994,7 +994,7 @@ static bool draw_sdf(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_
     if (op->num_args > 16) return false;
     point_t pt;
     memset(&pt, 0, sizeof(pt));
-    pt.arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    pt.arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     pt.h = (hover_frames_t){.sys = desc->sys, .run = desc->run, .times = times, .num_frames = num_frames, .alloc = pt.arena, .state = {.alloc = pt.arena}};
     md_system_state_init(&pt.h.state, desc->sys->atom.count);
     vial_sys_init(&pt.vs, desc->sys, pt.arena);
@@ -1072,7 +1072,7 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element, .frame = desc->frame};
     const uint32_t so = sdf_op(ir, v);
     if (so != VIAL_IR_NO_OP) {
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         int64_t num_frames = 0;
         const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
         if (desc->eval) num_frames = desc->eval->num_frames;
@@ -1089,7 +1089,7 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
         draw_spheres(&o);
         return draw_done(out, true);
     }
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     int64_t num_frames = 0;
     const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
     if (desc->eval) num_frames = desc->eval->num_frames;
@@ -1113,7 +1113,7 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
         if (!trajectory_value(desc->eval, v, desc->frame, &one)) return 0;
         return vial_val_print_scaled(buf, cap, &one, 6, scale);
     }
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     int64_t num_frames = 0;
     const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
     if (desc->eval) num_frames = desc->eval->num_frames;
@@ -1237,7 +1237,7 @@ bool md_vial_filter(md_vial_filter_t* out, str_t expr, const md_vial_filter_desc
     const md_vial_span_t whole = {0, 0};
     if (!desc || !desc->sys || !alloc) return filter_fail(out, alloc ? alloc : md_get_heap_allocator(), expr, "E0101", whole, base, "no system");
     if (str_empty(str_trim(expr))) return filter_fail(out, alloc, expr, "E0101", whole, base, "the filter is empty");
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool reads_recipe = false;
     md_vial_program_t* fp = filter_compile(expr, desc, arena, &reads_recipe);
     bool ok = false;
@@ -1333,13 +1333,13 @@ bool md_vial_filter_complete(md_vial_completions_t* out, str_t expr, uint32_t cu
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     if (!desc || !desc->sys || !alloc || cursor > expr.len) return false;
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_vial_program_t* fp = filter_compile(expr, desc, arena, NULL);
     const uint32_t base = (uint32_t)(sizeof(FILTER_HEAD) - 1);
     const bool ok = fp && md_vial_complete(out, fp, base + cursor, alloc);
     if (ok) {
         out->span.beg = out->span.beg >= base ? out->span.beg - base : 0;
-        out->span.end = out->span.end >= base ? MIN(out->span.end - base, (uint32_t)expr.len) : 0;
+        out->span.end = out->span.end >= base ? MD_MIN(out->span.end - base, (uint32_t)expr.len) : 0;
         // The statement's own name is no name to write
         size_t k = 0;
         for (size_t i = 0; i < out->count; ++i) if (!str_eq(out->items[i].label, STR_LIT("_filter"))) out->items[k++] = out->items[i];

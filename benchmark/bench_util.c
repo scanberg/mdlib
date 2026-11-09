@@ -47,7 +47,7 @@ static const int size = 1024 * 1024;
 #pragma GCC optimize ("no-fast-math")
 #endif
 static double com_trig_ref(const float* in_x, const float* in_w, int64_t count, float x_max) {
-    const double scl = TWO_PI / x_max;
+    const double scl = MD_TWO_PI / x_max;
 
     double acc_c = 0.0;
     double acc_s = 0.0;
@@ -64,12 +64,12 @@ static double com_trig_ref(const float* in_x, const float* in_w, int64_t count, 
     const double x = acc_c / acc_w;
     const double r2 = x*x + y*y;
 
-    double theta_prim = PI;
+    double theta_prim = MD_PI;
     if (r2 > 1.0e-8) {
         theta_prim += atan2(-y, -x);
     }
 
-    return (theta_prim / TWO_PI) * x_max;
+    return (theta_prim / MD_TWO_PI) * x_max;
 }
 
 static double com_min_image_ref(const float* in_x, const float* in_w, int64_t count, float x_max) {
@@ -155,7 +155,7 @@ static double com_min_image_avx512(const float* in_x, const float* in_w, int64_t
 #endif
 
 static double com_trig_sse(const float* in_x, const float* in_w, int64_t count, float x_max) {
-    const md_128 v_scl = md_mm_set1_ps((float)(TWO_PI / x_max));
+    const md_128 v_scl = md_mm_set1_ps((float)(MD_TWO_PI / x_max));
     md_128 v_acc_c = md_mm_setzero_ps();
     md_128 v_acc_s = md_mm_setzero_ps();
     md_128 v_acc_w = md_mm_setzero_ps();
@@ -179,16 +179,16 @@ static double com_trig_sse(const float* in_x, const float* in_w, int64_t count, 
     const double x = acc_c / acc_w;
     const double r2 = x*x + y*y;
 
-    double theta_prim = PI;
+    double theta_prim = MD_PI;
     if (r2 > 1.0e-8) {
         theta_prim += atan2(-y, -x);
     }
 
-    return (theta_prim / TWO_PI) * x_max;
+    return (theta_prim / MD_TWO_PI) * x_max;
 }
 
 static double com_trig_avx2(const float* in_x, const float* in_w, int64_t count, float x_max) {
-    const md_256 v_scl = md_mm256_set1_ps((float)(TWO_PI / x_max));
+    const md_256 v_scl = md_mm256_set1_ps((float)(MD_TWO_PI / x_max));
     md_256 v_acc_c = md_mm256_setzero_ps();
     md_256 v_acc_s = md_mm256_setzero_ps();
     md_256 v_acc_w = md_mm256_setzero_ps();
@@ -212,18 +212,18 @@ static double com_trig_avx2(const float* in_x, const float* in_w, int64_t count,
     const double x = acc_c / acc_w;
     const double r2 = x*x + y*y;
 
-    double theta_prim = PI;
+    double theta_prim = MD_PI;
     if (r2 > 1.0e-8) {
         theta_prim += atan2(-y, -x);
     }
 
-    return (theta_prim / TWO_PI) * x_max;
+    return (theta_prim / MD_TWO_PI) * x_max;
 }
 
 #if defined(__AVX512F__)
 static double com_trig_avx512(const float* in_x, const float* in_w, int64_t count, float x_max) {
-    const double scl = TWO_PI / x_max;
-    const md_512 v_scl = _mm512_set1_ps((float)(TWO_PI / x_max));
+    const double scl = MD_TWO_PI / x_max;
+    const md_512 v_scl = _mm512_set1_ps((float)(MD_TWO_PI / x_max));
     md_512 v_acc_c = _mm512_setzero_ps();
     md_512 v_acc_s = _mm512_setzero_ps();
     md_512 v_acc_w = _mm512_setzero_ps();
@@ -247,12 +247,12 @@ static double com_trig_avx512(const float* in_x, const float* in_w, int64_t coun
     const double x = acc_c / acc_w;
     const double r2 = x*x + y*y;
 
-    double theta_prim = PI;
+    double theta_prim = MD_PI;
     if (r2 > 1.0e-8) {
         theta_prim += atan2(-y, -x);
     }
 
-    return (theta_prim / TWO_PI) * x_max;
+    return (theta_prim / MD_TWO_PI) * x_max;
 }
 #endif
 
@@ -307,7 +307,7 @@ typedef struct com_func_entry_t {
 } com_func_entry_t;
 
 void bench_com(void) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     SETUP_XYZW
 
@@ -332,7 +332,7 @@ void bench_com(void) {
     const int64_t num_iter = 100;
 
     printf("%-20s%25s%25s%25s\n", "name", "min iter time (ms)", "min elem time (ns)", "throughput (MB/s)");
-    for (int i = 0; i < (int)ARRAY_SIZE(tests); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(tests); ++i) {
         int64_t min_time = INT64_MAX;
         double acc = 0.0;
         for (int j = 0; j < num_iter; ++j) {
@@ -342,7 +342,7 @@ void bench_com(void) {
             double res_z = tests[i].func(z, w, size, pbc_ext.z);
             int64_t end = ubench_ns();
             acc += res_x + res_y + res_z;
-            min_time = MIN(min_time, end - start);
+            min_time = MD_MIN(min_time, end - start);
         }
         double GBps = (double)(size * sizeof(float) * 4) / (double)min_time;
         double MBps = GBps * 1024.0;

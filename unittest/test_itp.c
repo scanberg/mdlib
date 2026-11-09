@@ -81,7 +81,7 @@ static size_t count_origin(const md_system_t* sys, md_bond_origin_t origin) {
 }
 
 UTEST(itp, parse_sections_and_preprocessor) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     str_t src = STR_INIT(
         "; comment line\n"
@@ -193,7 +193,7 @@ UTEST(itp, parse_sections_and_preprocessor) {
 
 // The case this exists for: a coarse grained gro has no bonds and no bond inference that can find them.
 UTEST(itp, supplement_coarse_grained_cellulose) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     enum { SLICES = 20, MOLS = 3 };
     float box[3] = {30.0f, 30.0f, 20.0f};
@@ -233,7 +233,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, STR_LIT("atom/mass"));
     ASSERT_TRUE(mass_attr != NULL);
     float masses[SLICES * 7 * MOLS + 2];
-    ASSERT_EQ(md_attribute_extract_f32(masses, ARRAY_SIZE(masses), mass_attr, md_attribute_slice_all(), md_unit_dalton()), ARRAY_SIZE(masses));
+    ASSERT_EQ(md_attribute_extract_f32(masses, MD_COUNTOF(masses), mass_attr, md_attribute_slice_all(), md_unit_dalton()), MD_COUNTOF(masses));
     EXPECT_NEAR(masses[0], 3981.33f, 0.01f);
     EXPECT_NEAR(masses[7], 3885.336f, 0.01f);
 
@@ -258,7 +258,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
 // Atom names repeat along a polymer, so two consecutive 5-slice molecules carry exactly the names of one
 // 10-slice molecule. Residue boundaries have to decide, and scanning longest first must not glue them.
 UTEST(itp, residue_boundaries_disambiguate_polymers) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     float box[3] = {100.0f, 100.0f, 100.0f};
     const float origin[2][3] = {{10, 10, 10}, {10, 60, 10}};
@@ -292,7 +292,7 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
 
 // A .top lays molecules down in order. When its [ molecules ] does not fit, placement falls back to scanning.
 UTEST(itp, molecules_section_sequential_and_fallback) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     float box[3] = {100.0f, 100.0f, 100.0f};
     const float origin[2][3] = {{10, 10, 10}, {10, 60, 10}};
@@ -337,7 +337,7 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
 
 // Bonds outside matched molecules and user defined bonds survive; inferred bonds inside are replaced.
 UTEST(itp, supplement_replaces_only_covered_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     float box[3] = {100.0f, 100.0f, 100.0f};
     const float origin[1][3] = {{10, 10, 10}};
@@ -370,7 +370,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
 // than the links of the chain. The elastic bonds are kept, apart from the bonds of the molecule. A type 6 bond doubling
 // a bond is no elastic bond of its own.
 UTEST(itp, elastic_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_str_writer_t gro = md_str_writer_create(alloc);
     md_str_writer_fmt(&gro, "Hexa-alanine\n12\n");
@@ -441,8 +441,8 @@ UTEST(itp, supplement_beads_by_mass) {
         { "BUT", { "C1", "C2", "C3", "C4" }, { 15.035f, 14.027f, 14.027f, 15.035f }, MD_PARTICLE_ATOM },
         { "MET", { "C",  "H1", "H2", "H3" }, { 5.96f, 3.024f, 3.024f, 3.024f }, MD_PARTICLE_ATOM },
     };
-    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         char gro[1024];
         int len = snprintf(gro, sizeof(gro), "t\n    4\n");
         for (int i = 0; i < 4; ++i) {
@@ -478,7 +478,7 @@ UTEST(itp, supplement_beads_by_mass) {
 
 // A topology applied again, here with other charges: its columns replace those of the first
 UTEST(itp, supplement_again_replaces_charge_and_mass) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t gro = STR_LIT(
         "water\n"
         "    3\n"
@@ -517,7 +517,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
 // A charge or mass given as a macro of #define, as the CHARMM and Martini topologies of GROMACS do (grompp substitutes
 // them): the atom takes the macro's value, and an #undef takes it back.
 UTEST(itp, macros_for_charge_and_mass) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "#define QN  -0.47\n"
         "#define MC  12.011\n"

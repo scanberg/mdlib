@@ -56,9 +56,9 @@ UTEST(xyz, c60) {
 
 // The names of the atoms are the symbols as the file writes them, without the zeros which pad them in the parsed data
 UTEST(xyz, atom_names) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* files[] = { MD_UNITTEST_DATA_DIR "/C60-Ih.xyz", MD_UNITTEST_DATA_DIR "/tryptophan.xyz", MD_UNITTEST_DATA_DIR "/extended.xyz", MD_UNITTEST_DATA_DIR "/h2o.arc" };
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, str_from_cstr(files[f]), MD_XYZ_OPTION_NONE));
@@ -427,7 +427,7 @@ UTEST(xyz, extended_xyz_lattice_array) {
 }
 
 UTEST(xyz, create_molecule) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
 
     md_xyz_data_t data = {0};
@@ -533,9 +533,9 @@ static const run_ref_t xyz_refs_xmol[] = {
 // frames agree with what the reader it replaced gave. A single frame is refused. The number of frames
 // the run holds goes to out_frames when given.
 //
-// @NOTE: void, because the EXPECT and ASSERT macros expand to a bare return.
+// @NOTE: void, because the EXPECT and MD_ASSERT macros expand to a bare return.
 static void xyz_run_check(int* utest_result, str_t path, const run_ref_t* refs, size_t num_refs, size_t expected_frames, size_t* out_frames) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     size_t frames = 0;
     md_system_t sys = { .alloc = arena };
     md_system_state_t sys_state = { .alloc = arena };
@@ -556,7 +556,7 @@ static void xyz_run_check(int* utest_result, str_t path, const run_ref_t* refs, 
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     EXPECT_TRUE(run_extract_one(&got, &sys, XYZ_RUN, 0));
-    EXPECT_EQ(0, MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, MD_MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
 
 done:
     md_system_free(&sys);
@@ -565,15 +565,15 @@ done:
 }
 
 UTEST(xyz, run_matches_reference) {
-    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz"), xyz_refs_plain, ARRAY_SIZE(xyz_refs_plain), 10, NULL);
-    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/full.arc"), xyz_refs_arc, ARRAY_SIZE(xyz_refs_arc), 10, NULL);
-    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/o2.arc"), xyz_refs_o2, ARRAY_SIZE(xyz_refs_o2), 2000, NULL);
-    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol"), xyz_refs_xmol, ARRAY_SIZE(xyz_refs_xmol), 50, NULL);
+    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz"), xyz_refs_plain, MD_COUNTOF(xyz_refs_plain), 10, NULL);
+    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/full.arc"), xyz_refs_arc, MD_COUNTOF(xyz_refs_arc), 10, NULL);
+    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/o2.arc"), xyz_refs_o2, MD_COUNTOF(xyz_refs_o2), 2000, NULL);
+    xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol"), xyz_refs_xmol, MD_COUNTOF(xyz_refs_xmol), 50, NULL);
     xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/h2o.arc"), NULL, 0, 2000, NULL);
     xyz_run_check(utest_result, STR_LIT(MD_UNITTEST_DATA_DIR "/ch4.arc"), NULL, 0, 2000, NULL);
     // Single frames: structures, not runs
     const char* single[] = { "full.xyz", "extended.xyz", "extended1.xyz", "extended2.xyz", "c720.xyz" };
-    for (size_t i = 0; i < ARRAY_SIZE(single); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(single); ++i) {
         char buf[1024];
         const int len = snprintf(buf, sizeof(buf), MD_UNITTEST_DATA_DIR "/%s", single[i]);
         xyz_run_check(utest_result, (str_t){buf, (size_t)len}, NULL, 0, 0, NULL);
@@ -598,7 +598,7 @@ UTEST(xyz, run_extended_cell_per_frame) {
     xyz_run_check(utest_result, path, NULL, 0, 3, &frames);
     EXPECT_EQ(3u, frames);
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = arena };
     md_system_state_t sys_state = { .alloc = arena };
     ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &sys_state, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE));
@@ -622,7 +622,7 @@ static bool xyz_load_str(md_system_t* sys, md_system_state_t* state, const char*
 
 // Plain XYZ with more columns than the element and coordinates: they are not read (nor taken for Tinker's)
 UTEST(xyz, plain_extra_columns) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(xyz_load_str(&sys, &st, "2\nwith charges and forces\nC 0.0 0.0 0.0 -0.5 1.0 2.0\nO 1.2 0.0 0.0 0.5 -1.0 0.0\n"));
@@ -644,7 +644,7 @@ UTEST(xyz, plain_extra_columns) {
 
 // The element as an atomic number, or a symbol in another case or with a number after it: a name and an element
 UTEST(xyz, element_forms) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(xyz_load_str(&sys, &st, "4\nlabels\n8 0 0 0\nC1 1 0 0\nCL2 2 0 0\ncu 3 0 0\n"));
@@ -686,7 +686,7 @@ UTEST(xyz, extended_properties_order) {
 // A Lattice in another orientation than a along x and b in the xy plane (an fcc primitive cell, as ASE writes it): the
 // cell is turned into that orientation, and the atoms with it, so that what they are within it is kept
 UTEST(xyz, extended_general_lattice) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(xyz_load_str(&sys, &st, "2\nLattice=\"0 1.8 1.8 1.8 0 1.8 1.8 1.8 0\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\nCu 0 0 0\nCu 0.9 0.9 0\n"));
@@ -712,12 +712,12 @@ UTEST(xyz, extended_general_lattice) {
 
 // Tinker: atom names of a force field, a first line of only the number of atoms, and the connectivity as the bonds
 UTEST(xyz, tinker_names_and_bonds) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const char* files[] = {
         "3  water, tinker\n     1  OW     0.000000    0.000000    0.000000    63     2     3\n     2  HW     0.957200    0.000000    0.000000    64     1\n     3  HW    -0.239988    0.926627    0.000000    64     1\n",
         "3\n     1  O1     0.000000    0.000000    0.000000    63     2     3\n     2  H1     0.957200    0.000000    0.000000    64     1\n     3  H2    -0.239988    0.926627    0.000000    64     1\n",
     };
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         md_system_t sys = {.alloc = arena};
         md_system_state_t st = {.alloc = arena};
         ASSERT_TRUE(xyz_load_str(&sys, &st, files[f]));
@@ -743,7 +743,7 @@ UTEST(xyz, invalid_headers) {
     md_xyz_data_t data = {0};
     EXPECT_FALSE(md_xyz_data_parse_str(&data, STR_LIT("0\nnone\nH 0 0 0\n"), md_get_heap_allocator()));
     md_xyz_data_free(&data, md_get_heap_allocator());
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     EXPECT_FALSE(xyz_load_str(&sys, &st, "0\nnone\nH 0 0 0\n"));
@@ -770,7 +770,7 @@ UTEST(xyz, run_extra_columns) {
 
         size_t frames = 0;
         xyz_run_check(utest_result, paths[p], NULL, 0, 3, &frames);
-        md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+        md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = arena };
         md_system_state_t st = { .alloc = arena };
         ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &st, paths[p], MD_XYZ_OPTION_DISABLE_CACHE_WRITE));

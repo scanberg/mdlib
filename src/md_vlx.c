@@ -429,12 +429,12 @@ static inline basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* bas
 }
 
 static inline int compute_max_angular_momentum(const basis_set_t* basis_set, const md_element_t* atomic_numbers, size_t count) {
-	ASSERT(basis_set);
-	ASSERT(atomic_numbers);
+	MD_ASSERT(basis_set);
+	MD_ASSERT(atomic_numbers);
 	int max_angl = 0;
 	for (size_t i = 0; i < count; ++i) {
 		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_numbers[i]);
-		max_angl = MAX(max_angl, (int)atom_basis->max_type);
+		max_angl = MD_MAX(max_angl, (int)atom_basis->max_type);
 	}
 	return max_angl;
 }
@@ -498,7 +498,7 @@ static size_t basis_set_count_atomic_basis_func(const basis_set_t* basis_set, in
 // has no AO count: a partial sum would be a wrong number that every dimension check downstream then
 // agrees with, where 0 stops the load at the point the cause is still visible.
 static size_t vlx_basis_num_ao(const vlx_t* vlx, bool cartesian) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers) {
 		return 0;
 	}
@@ -534,8 +534,8 @@ static size_t vlx_basis_num_cart_ao(const vlx_t* vlx) {
 // ao_remap[shell_ao_idx] = vlx_ao_idx.
 // Returns the total number of AOs (length of the table), or 0 on failure.
 static bool build_ao_remap(int* out_remap, size_t capacity, const vlx_t* vlx) {
-	ASSERT(out_remap);
-	ASSERT(vlx);
+	MD_ASSERT(out_remap);
+	MD_ASSERT(vlx);
 
 	int natoms   = (int)vlx->number_of_atoms;
 	int max_angl = compute_max_angular_momentum(&vlx->basis_set, vlx->atomic_numbers, vlx->number_of_atoms);
@@ -556,7 +556,7 @@ static bool build_ao_remap(int* out_remap, size_t capacity, const vlx_t* vlx) {
 		return false;
 	}
 
-	MEMSET(out_remap, 0, sizeof(int) * num_aos);
+	MD_MEMSET(out_remap, 0, sizeof(int) * num_aos);
 
 	// VeloxChem matrix AO index: angl → isph → atom → func
 	// Shell AO index:            angl → atom → func → isph
@@ -572,15 +572,15 @@ static bool build_ao_remap(int* out_remap, size_t capacity, const vlx_t* vlx) {
 	md_temp_scope_t temp = md_temp_begin();
 	int* vlx_base = (int*)md_temp_alloc(temp, sizeof(int) * (max_angl + 1) * max_nsph * natoms);
 	int* vlx_num  = (int*)md_temp_alloc(temp, sizeof(int) * (max_angl + 1) * natoms);
-	MEMSET(vlx_base, 0, sizeof(int) * (max_angl + 1) * max_nsph * natoms);
-	MEMSET(vlx_num,  0, sizeof(int) * (max_angl + 1) * natoms);
+	MD_MEMSET(vlx_base, 0, sizeof(int) * (max_angl + 1) * max_nsph * natoms);
+	MD_MEMSET(vlx_num,  0, sizeof(int) * (max_angl + 1) * natoms);
 
 	// Count funcs per (angl, atom) so we know stride for vlx_base
 	for (int angl = 0; angl <= max_angl; angl++) {
 		for (int atomidx = 0; atomidx < natoms; atomidx++) {
 			int idelem = vlx->atomic_numbers[atomidx];
 			basis_func_t bf[128];
-			size_t nf = basis_set_extract_atomic_basis_func_angl(bf, ARRAY_SIZE(bf), &vlx->basis_set, idelem, angl);
+			size_t nf = basis_set_extract_atomic_basis_func_angl(bf, MD_COUNTOF(bf), &vlx->basis_set, idelem, angl);
 			vlx_num[angl * natoms + atomidx] = (int)nf;
 		}
 	}
@@ -619,7 +619,7 @@ static bool build_ao_remap(int* out_remap, size_t capacity, const vlx_t* vlx) {
 static inline double compute_overlap(basis_func_t func, int i, int j) {
 	const double fab  = 1.0 / (func.exponents[i] + func.exponents[j]);
 	const double fab2 = fab * fab;
-	const double ovl = func.normalization_coefficients[i] * func.normalization_coefficients[j] * pow(PI * fab, 1.5);
+	const double ovl = func.normalization_coefficients[i] * func.normalization_coefficients[j] * pow(MD_PI * fab, 1.5);
 
 	switch (func.type) {
 	case 0: return ovl;
@@ -630,13 +630,13 @@ static inline double compute_overlap(basis_func_t func, int i, int j) {
 	case 5: return 1890.0 * fab2 * fab2 * fab * ovl;
 	case 6: return 41580.0 * fab2 * fab2 * fab2 * ovl;
 	default:
-		ASSERT(false);
+		MD_ASSERT(false);
 		return 0;
 	}
 }
 
 static void rescale_basis_func(basis_func_t func) {
-	const double fpi = 2.0 / PI;
+	const double fpi = 2.0 / MD_PI;
 
 	for (int i = 0; i < func.count; i++) {
 		func.normalization_coefficients[i] *= pow(func.exponents[i] * fpi, 0.75);
@@ -692,7 +692,7 @@ static void normalize_basis_set(basis_set_t* basis_set) {
 }
 
 static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allocator_i* alloc) {
-	MEMSET(basis_set, 0, sizeof(basis_set_t));
+	MD_MEMSET(basis_set, 0, sizeof(basis_set_t));
 
 	str_t line;
 	str_t tok[4];
@@ -705,7 +705,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 	while (md_reader_extract_line(reader, &line)) {
 		line_count += 1;
 		str_t line_original = line;
-		size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
 		if (!num_tok) continue;
 
 		if ((num_tok == 2 || num_tok == 3) && str_eq(tok[0], STR_LIT("@BASIS_SET"))) {
@@ -777,7 +777,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 					MD_LOG_ERROR("Failed to parse coefficients in atom basis function");
 					return false;
 				}
-				num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+				num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
 				if (num_tok != 2) {
 					MD_LOG_ERROR("Unexpected number of parameters in atom basis function coefficients");
 					return false;
@@ -794,7 +794,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 			}
 
 			curr_atom_basis->basis_func_count += 1;
-			curr_atom_basis->max_type = MAX(curr_atom_basis->max_type, (uint8_t)type);
+			curr_atom_basis->max_type = MD_MAX(curr_atom_basis->max_type, (uint8_t)type);
 		}
 	}
 
@@ -834,7 +834,7 @@ static bool h5_link_exists(hid_t loc_id, const char* path) {
 		MD_LOG_ERROR("HDF5 path exceeds %zu characters: '%s'", sizeof(buf) - 1, path);
 		return false;
 	}
-	MEMCPY(buf, path, len + 1);
+	MD_MEMCPY(buf, path, len + 1);
 
 	for (size_t i = 0; i < len; ++i) {
 		if (buf[i] != '/') continue;
@@ -978,7 +978,7 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 		size_t len = tmp ? strlen(tmp) : 0;
 		str_t data = str_alloc(len, alloc);
 		if (len > 0) {
-			MEMCPY((char*)data.ptr, tmp, len);
+			MD_MEMCPY((char*)data.ptr, tmp, len);
 		}
 		*str = data;
 
@@ -994,7 +994,7 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 			MD_LOG_ERROR("Failed to allocate temporary buffer for H5 dataset: '%s'", field_name);
 			goto fixed_done;
 		}
-		MEMSET(tmp, 0, raw_len + 1);
+		MD_MEMSET(tmp, 0, raw_len + 1);
 
 		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
 		if (status < 0) {
@@ -1005,7 +1005,7 @@ static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_al
 		size_t len = strnlen(tmp, raw_len);
 		str_t data = str_alloc(len, alloc);
 		if (len > 0) {
-			MEMCPY((char*)data.ptr, tmp, len);
+			MD_MEMCPY((char*)data.ptr, tmp, len);
 		}
 		*str = data;
 		fixed_result = true;
@@ -1026,8 +1026,8 @@ done:
 }
 
 static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const char* field_name) {
-    ASSERT(out_str);
-	ASSERT(str_cap > 0);
+    MD_ASSERT(out_str);
+	MD_ASSERT(str_cap > 0);
 	out_str[0] = '\0';
 
 	if (!h5_link_exists(file_id, field_name)) {
@@ -1078,8 +1078,8 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 
 		if (tmp) {
 			size_t len = strlen(tmp);
-			result = MIN(len, str_cap - 1);
-			MEMCPY(out_str, tmp, result);
+			result = MD_MIN(len, str_cap - 1);
+			MD_MEMCPY(out_str, tmp, result);
 			out_str[result] = '\0';
 			H5free_memory(tmp);
 		}
@@ -1094,7 +1094,7 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 			MD_LOG_ERROR("Failed to allocate temporary buffer for H5 dataset: '%s'", field_name);
 			goto fixed_done;
 		}
-		MEMSET(tmp, 0, size + 1);
+		MD_MEMSET(tmp, 0, size + 1);
 
 		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
 		if (status < 0) {
@@ -1103,8 +1103,8 @@ static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const c
 		}
 
 		size_t len = strnlen(tmp, size);
-		result = MIN(len, str_cap - 1);
-		MEMCPY(out_str, tmp, result);
+		result = MD_MIN(len, str_cap - 1);
+		MD_MEMCPY(out_str, tmp, result);
 		out_str[result] = '\0';
 		fixed_result = true;
 
@@ -1128,7 +1128,7 @@ done:
 // Returns 0 for "not present" and for every failure. Never returns a negative value:
 // most call sites test this truthily, and a -1 would read as success.
 static int h5_read_dataset_dims(size_t* dims, int max_dims, hid_t file_id, const char* field_name) {
-	ASSERT(dims);
+	MD_ASSERT(dims);
 
 	if (max_dims <= 0 || max_dims > H5_MAX_RANK) {
 		MD_LOG_ERROR("Invalid max_dims (%i) requested for H5 dataset: '%s'", max_dims, field_name);
@@ -1202,8 +1202,8 @@ static bool h5_check_dataset_exists(hid_t file_id, const char* field_name) {
 // the writer chose, so reading it straight into the destination overflows for any
 // attribute longer than the caller's buffer.
 static bool h5_read_string_attribute(char* out_buf, size_t out_cap, hid_t obj_id, const char* attr_name) {
-	ASSERT(out_buf);
-	ASSERT(out_cap > 0);
+	MD_ASSERT(out_buf);
+	MD_ASSERT(out_cap > 0);
 	out_buf[0] = '\0';
 
 	// htri_t: negative on error, and negative is truthy.
@@ -1236,8 +1236,8 @@ static bool h5_read_string_attribute(char* out_buf, size_t out_cap, hid_t obj_id
 		}
 		// On success HDF5 may still hand back NULL for an empty string.
 		if (var_str) {
-			const size_t len = MIN(strlen(var_str), out_cap - 1);
-			MEMCPY(out_buf, var_str, len);
+			const size_t len = MD_MIN(strlen(var_str), out_cap - 1);
+			MD_MEMCPY(out_buf, var_str, len);
 			out_buf[len] = '\0';
 			H5free_memory(var_str);
 		}
@@ -1253,10 +1253,10 @@ static bool h5_read_string_attribute(char* out_buf, size_t out_cap, hid_t obj_id
 		md_temp_scope_t temp = md_temp_begin();
 		char* tmp = md_temp_alloc(temp, size + 1);
 		if (tmp) {
-			MEMSET(tmp, 0, size + 1);
+			MD_MEMSET(tmp, 0, size + 1);
 			if (H5Aread(attr_id, attr_type, tmp) >= 0) {
-				const size_t len = MIN(strnlen(tmp, size), out_cap - 1);
-				MEMCPY(out_buf, tmp, len);
+				const size_t len = MD_MIN(strnlen(tmp, size), out_cap - 1);
+				MD_MEMCPY(out_buf, tmp, len);
 				out_buf[len] = '\0';
 				result = true;
 			} else {
@@ -1281,7 +1281,7 @@ done:
 // densities are symmetric by construction; density properties are a generic pass-through from the
 // file, and nothing else checks them.
 static bool vlx_symmetrize(double* mat, size_t dim, double* out_max_asym, double* out_max_abs) {
-	ASSERT(mat);
+	MD_ASSERT(mat);
 
 	double max_asym = 0.0;
 	double max_abs  = 0.0;
@@ -1289,8 +1289,8 @@ static bool vlx_symmetrize(double* mat, size_t dim, double* out_max_asym, double
 		for (size_t j = i + 1; j < dim; ++j) {
 			const double a = mat[i * dim + j];
 			const double b = mat[j * dim + i];
-			max_asym = MAX(max_asym, fabs(a - b));
-			max_abs  = MAX(max_abs, MAX(fabs(a), fabs(b)));
+			max_asym = MD_MAX(max_asym, fabs(a - b));
+			max_abs  = MD_MAX(max_abs, MD_MAX(fabs(a), fabs(b)));
 		}
 	}
 	if (out_max_asym) *out_max_asym = max_asym;
@@ -1319,9 +1319,9 @@ typedef bool (*h5_group_visit_cb_t)(vlx_t* vlx, hid_t group_handle, const char* 
 #define H5_MAX_GROUP_DEPTH 32
 
 static bool h5_visit_groups_recursive_impl(vlx_t* vlx, hid_t group_handle, const char* group_path, h5_group_visit_cb_t callback, void* user_data, int depth) {
-	ASSERT(vlx);
-	ASSERT(group_path);
-	ASSERT(callback);
+	MD_ASSERT(vlx);
+	MD_ASSERT(group_path);
+	MD_ASSERT(callback);
 
 	if (!callback(vlx, group_handle, group_path, user_data)) {
 		return false;
@@ -1384,7 +1384,7 @@ static bool h5_visit_groups_recursive(vlx_t* vlx, hid_t group_handle, const char
 }
 
 static bool h5_read_dataset_data(void* out_data, size_t num_samples, hid_t file_id, hid_t mem_type_id, const char* field_name) {
-	ASSERT(out_data);
+	MD_ASSERT(out_data);
 
 	if (!h5_link_exists(file_id, field_name)) {
 		return false;
@@ -1438,7 +1438,7 @@ done:
 // half filled attribute would be worse than none.
 static bool vlx_publish_h5(md_system_t* sys, hid_t handle, const char* dataset, str_t path, str_t label,
 						   md_unit_t unit, md_attribute_format_t format) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	const size_t count = md_attribute_element_count(&format);
 	if (count == 0 || !h5_check_dataset_exists(handle, dataset)) {
@@ -1542,7 +1542,7 @@ static bool h5_read_complex_dataset_split(double* out_real, double* out_imag, si
 			}
 		}
 		if (out_imag) {
-			MEMSET(out_imag, 0, num_samples * sizeof(double));
+			MD_MEMSET(out_imag, 0, num_samples * sizeof(double));
 		}
 		result = true;
 		goto done;
@@ -1733,7 +1733,7 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 				const size_t num_rows = num_points / num_qm_atoms;
 				for (size_t r = 0; r < num_rows; ++r) {
 					double* row = dst + r * num_sys_atoms;
-					MEMCPY(row, src + r * num_qm_atoms, sizeof(double) * num_qm_atoms);
+					MD_MEMCPY(row, src + r * num_qm_atoms, sizeof(double) * num_qm_atoms);
 					for (size_t i = num_qm_atoms; i < num_sys_atoms; ++i) {
 						row[i] = NAN;
 					}
@@ -1756,7 +1756,7 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 // Where the values of a dataset are in the file, when they are one contiguous run of IEEE floats:
 // contiguous storage, with its space allocated. VLX_RAW_NONE, and *out_offset -1, otherwise.
 static vlx_raw_t vlx_h5_raw_location(int64_t* out_offset, hid_t dset) {
-	ASSERT(out_offset);
+	MD_ASSERT(out_offset);
 	*out_offset = -1;
 
 	vlx_raw_t raw = VLX_RAW_NONE;
@@ -1791,7 +1791,7 @@ static vlx_raw_t vlx_h5_raw_location(int64_t* out_offset, hid_t dset) {
 // matrices index the same functions in the same places - which is what a density property read from
 // the file later has to be able to rely on. Called holding the HDF5 lock.
 static bool vlx_h5_identity(uint64_t* out, hid_t root) {
-	ASSERT(out);
+	MD_ASSERT(out);
 
 	size_t charge_dims[2] = {0};
 	size_t coord_dims[2]  = {0};
@@ -1957,14 +1957,14 @@ static bool h5_read_density_properties(vlx_t* vlx, hid_t group_handle) {
 // AO-indexed can be interpreted: the values are kept as read, in the arena, and are not published.
 static bool vlx_read_orbitals(vlx_2d_data_t* out, md_attribute_id_t* out_id, vlx_t* vlx, hid_t handle, const char* dataset,
 							  const size_t dim[2], size_t num_ao, size_t num_mo, str_t path, str_t label) {
-	ASSERT(out && out_id && vlx && dataset);
+	MD_ASSERT(out && out_id && vlx && dataset);
 	*out_id = MD_ATTRIBUTE_INVALID;
 	const size_t count = dim[0] * dim[1];
 
 	if (!vlx->ao_remap) {
 		out->data = NULL;
 		md_array_resize(out->data, count, vlx->arena);
-		MEMCPY(out->size, dim, sizeof(out->size));
+		MD_MEMCPY(out->size, dim, sizeof(out->size));
 		return h5_read_dataset_data(out->data, count, handle, H5T_NATIVE_DOUBLE, dataset);
 	}
 
@@ -2023,8 +2023,8 @@ done:
 }
 
 static bool validate_square_matrix_dims(const vlx_2d_data_t* data, const char* label) {
-	ASSERT(data);
-	ASSERT(label);
+	MD_ASSERT(data);
+	MD_ASSERT(label);
 
 	if (data->size[0] == 0 || data->size[1] == 0) {
 		MD_LOG_ERROR("%s matrix has invalid dimensions [%zu x %zu]", label, data->size[0], data->size[1]);
@@ -2038,9 +2038,9 @@ static bool validate_square_matrix_dims(const vlx_2d_data_t* data, const char* l
 }
 
 static bool infer_num_mo_from_coeff_dims(size_t* num_mo, const size_t coeff_dim[2], size_t num_ao, const char* label) {
-	ASSERT(num_mo);
-	ASSERT(coeff_dim);
-	ASSERT(label);
+	MD_ASSERT(num_mo);
+	MD_ASSERT(coeff_dim);
+	MD_ASSERT(label);
 
 	if (coeff_dim[0] == 0 || coeff_dim[1] == 0) {
 		MD_LOG_ERROR("%s coefficient matrix has invalid dimensions [%zu x %zu]", label, coeff_dim[0], coeff_dim[1]);
@@ -2061,8 +2061,8 @@ static bool infer_num_mo_from_coeff_dims(size_t* num_mo, const size_t coeff_dim[
 }
 
 static bool validate_orbital_canonical_layout(const vlx_orbital_t* orb, size_t num_ao, const char* label) {
-	ASSERT(orb);
-	ASSERT(label);
+	MD_ASSERT(orb);
+	MD_ASSERT(label);
 
 	if (orb->coefficients.data) {
 		const size_t num_mo = orb->coefficients.size[0];
@@ -2085,7 +2085,7 @@ static bool validate_orbital_canonical_layout(const vlx_orbital_t* orb, size_t n
 
 // The orbitals in canonical [MO x AO] layout over the Cartesian AOs of the basis set
 static bool validate_scf_canonical_layout(const vlx_t* vlx) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 	const size_t num_ao = vlx_basis_num_cart_ao(vlx);
 	if (num_ao == 0) {
 		return true;
@@ -2106,7 +2106,7 @@ static vlx_raw_t vlx_h5_raw_location(int64_t* out_offset, hid_t dset);
 // Where an SCF density dataset is in the file: its full path in it, and its values' place when they
 // are one run of bytes. Left empty when it is not a [dim x dim] dataset.
 static void vlx_scf_density_locate(vlx_density_property_t* out, vlx_t* vlx, hid_t group, const char* name, size_t dim) {
-	MEMSET(out, 0, sizeof(*out));
+	MD_MEMSET(out, 0, sizeof(*out));
 	out->offset = -1;
 	hid_t dset = h5_link_exists(group, name) ? H5Dopen(group, name, H5P_DEFAULT) : H5I_INVALID_HID;
 	if (dset == H5I_INVALID_HID) {
@@ -2235,7 +2235,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	} else {
 		// Shallow copy fields from Alpha. One set of orbitals: beta's coefficients are a second name
 		// for alpha's, so a restricted calculation has an orbital/beta/coefficient for anyone to read.
-		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(vlx_orbital_t));
+		MD_MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(vlx_orbital_t));
 		if (alpha_coeff_id != MD_ATTRIBUTE_INVALID) {
 			md_qm_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
 		}
@@ -2313,8 +2313,8 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 			md_attribute_format_t format = {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)num_iter },
 			};
-			double* dst[ARRAY_SIZE(history)] = {0};
-			for (size_t f = 0; f < ARRAY_SIZE(history); ++f) {
+			double* dst[MD_COUNTOF(history)] = {0};
+			for (size_t f = 0; f < MD_COUNTOF(history); ++f) {
 				md_attribute_id_t id = md_qm_publish(sys, str_from_cstr(history[f].path), str_from_cstr(history[f].label),
 												   history[f].hartree ? md_unit_hartree() : md_unit_none(), format, NULL, 0);
 				dst[f] = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
@@ -2336,7 +2336,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 					H5Gclose(scf_history);
 					return false;
 				}
-				for (size_t f = 0; f < ARRAY_SIZE(history); ++f) {
+				for (size_t f = 0; f < MD_COUNTOF(history); ++f) {
 					if (!h5_read_dataset_data(dst[f] + iter, 1, iter_group, H5T_NATIVE_DOUBLE, history[f].group_field)) {
 						H5Gclose(iter_group);
 						H5Gclose(scf_history);
@@ -2354,7 +2354,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 			return false;
 		}
 
-		for (size_t f = 0; f < ARRAY_SIZE(history); ++f) {
+		for (size_t f = 0; f < MD_COUNTOF(history); ++f) {
 			if (!vlx_publish_h5_series(sys, handle, history[f].flat_field, str_from_cstr(history[f].path), str_from_cstr(history[f].label),
 									   history[f].hartree ? md_unit_hartree() : md_unit_none(), scf_hist_len)) {
 				return false;
@@ -2373,9 +2373,9 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 }
 
 static bool h5_read_optional_1d_data(vlx_1d_data_t* out_data, hid_t handle, const char* field_name, md_allocator_i* arena) {
-	ASSERT(out_data);
-	ASSERT(field_name);
-	ASSERT(arena);
+	MD_ASSERT(out_data);
+	MD_ASSERT(field_name);
+	MD_ASSERT(arena);
 
 	if (!h5_check_dataset_exists(handle, field_name)) {
 		return true;
@@ -2399,7 +2399,7 @@ static bool h5_read_optional_1d_data(vlx_1d_data_t* out_data, hid_t handle, cons
 	}
 
 	md_array_resize(out_data->data, sample_count, arena);
-	MEMSET(out_data->data, 0, md_array_bytes(out_data->data));
+	MD_MEMSET(out_data->data, 0, md_array_bytes(out_data->data));
 	out_data->size = sample_count;
 
 	if (!h5_read_dataset_data(out_data->data, sample_count, handle, H5T_NATIVE_DOUBLE, field_name)) {
@@ -2424,7 +2424,7 @@ static bool h5_read_optional_1d_data(vlx_1d_data_t* out_data, hid_t handle, cons
 // check is what makes this safe for a core excitation, where the file DOES name num_core and the
 // derived valence split would be wrong - there, the stored values are kept and this does nothing.
 static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 
 	if (vlx->rsp.num_core > 0 || vlx->rsp.num_valence > 0) {
 		return;     // the file said so
@@ -2657,7 +2657,7 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 		const size_t num_dipole_points = num_freqs * 3;
 		if (h5_check_dataset_exists(handle, "electric_transition_dipoles")) {
 			md_array_resize(vlx->rsp.electric_transition_dipoles, num_freqs, vlx->arena);
-			MEMSET(vlx->rsp.electric_transition_dipoles, 0, md_array_bytes(vlx->rsp.electric_transition_dipoles));
+			MD_MEMSET(vlx->rsp.electric_transition_dipoles, 0, md_array_bytes(vlx->rsp.electric_transition_dipoles));
 			if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
 				md_array_free(vlx->rsp.electric_transition_dipoles, vlx->arena);
 				vlx->rsp.electric_transition_dipoles = NULL;
@@ -2666,7 +2666,7 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 
 		if (h5_check_dataset_exists(handle, "magnetic_transition_dipoles")) {
 			md_array_resize(vlx->rsp.magnetic_transition_dipoles, num_freqs, vlx->arena);
-			MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, md_array_bytes(vlx->rsp.magnetic_transition_dipoles));
+			MD_MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, md_array_bytes(vlx->rsp.magnetic_transition_dipoles));
 			if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
 				md_array_free(vlx->rsp.magnetic_transition_dipoles, vlx->arena);
 				vlx->rsp.magnetic_transition_dipoles = NULL;
@@ -2675,7 +2675,7 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 
 		if (h5_check_dataset_exists(handle, "velocity_transition_dipoles")) {
 			md_array_resize(vlx->rsp.velocity_transition_dipoles, num_freqs, vlx->arena);
-			MEMSET(vlx->rsp.velocity_transition_dipoles, 0, md_array_bytes(vlx->rsp.velocity_transition_dipoles));
+			MD_MEMSET(vlx->rsp.velocity_transition_dipoles, 0, md_array_bytes(vlx->rsp.velocity_transition_dipoles));
 			if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, num_dipole_points, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
 				md_array_free(vlx->rsp.velocity_transition_dipoles, vlx->arena);
 				vlx->rsp.velocity_transition_dipoles = NULL;
@@ -2695,9 +2695,9 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 			// appear as an output dimension, so F is completely unrelated to C. The 2D datasets are
 			// stored row-major as [F][P]. Derive F from a representative dataset rather than assuming.
 			static const char* rixs_2d_fields[] = { "cross_sections", "energy_losses", "emission_energies" };
-			for (size_t i = 0; i < ARRAY_SIZE(rixs_2d_fields); ++i) {
+			for (size_t i = 0; i < MD_COUNTOF(rixs_2d_fields); ++i) {
 				size_t dim[2] = { 0 };
-				if (h5_read_dataset_dims(dim, (int)ARRAY_SIZE(dim), handle, rixs_2d_fields[i]) == 2 && dim[0] > 0 && dim[1] > 0) {
+				if (h5_read_dataset_dims(dim, (int)MD_COUNTOF(dim), handle, rixs_2d_fields[i]) == 2 && dim[0] > 0 && dim[1] > 0) {
 					num_final_states = dim[0];
 
 					if (num_photons == 0) {
@@ -2731,11 +2731,11 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 				// modulus should not have to know the storage convention to get it.
 				// Derive the element count from the dataset itself rather than assuming a rank.
 				size_t dim[4] = {0};
-				int ndim = h5_read_dataset_dims(dim, (int)ARRAY_SIZE(dim), handle, "scattering_amplitudes");
+				int ndim = h5_read_dataset_dims(dim, (int)MD_COUNTOF(dim), handle, "scattering_amplitudes");
 
 				// h5_read_dataset_dims reports the rank of the dataset, which may exceed the number of
 				// entries it actually wrote, so clamp before iterating.
-				if (ndim > (int)ARRAY_SIZE(dim)) {
+				if (ndim > (int)MD_COUNTOF(dim)) {
 					MD_LOG_ERROR("Unexpected rank of H5 dataset 'scattering_amplitudes'");
 					ndim = 0;
 				}
@@ -2928,8 +2928,8 @@ static bool h5_read_vib_data(vlx_t* vlx, hid_t handle) {
 // This procedure is an abstraction to help read illformed groups containing a collection of individual datasets containing one value each.
 // The expected names of the datasets are '0', '1', ... up to the expected count. The dataset prefix is used for error messages only, it does not have to be present in the actual dataset names.
 static bool h5_extract_group_as_array_double(md_array(double)* out_data, hid_t group_handle, md_allocator_i* arena) {
-	ASSERT(out_data);
-	ASSERT(arena);
+	MD_ASSERT(out_data);
+	MD_ASSERT(arena);
 
 	hsize_t num_links = 0;
 	if (H5Gget_num_objs(group_handle, &num_links) < 0) {
@@ -2959,9 +2959,9 @@ static bool h5_extract_group_as_array_double(md_array(double)* out_data, hid_t g
 }
 
 static bool h5_extract_as_array_double(md_array(double)* out_data, hid_t handle, const char* name, md_allocator_i* arena) {
-	ASSERT(out_data);
-	ASSERT(name);
-	ASSERT(arena);
+	MD_ASSERT(out_data);
+	MD_ASSERT(name);
+	MD_ASSERT(arena);
 
 	bool result = false;
 	
@@ -2982,7 +2982,7 @@ static bool h5_extract_as_array_double(md_array(double)* out_data, hid_t handle,
 			goto done;
 		}
 		md_array_resize(*out_data, dim, arena);
-		MEMSET(*out_data, 0, md_array_bytes(*out_data));
+		MD_MEMSET(*out_data, 0, md_array_bytes(*out_data));
 		result = h5_read_dataset_data(*out_data, dim, handle, H5T_NATIVE_DOUBLE, name);
 	} else {
 		MD_LOG_ERROR("Unrecognized object type for '%s'", name);
@@ -3000,7 +3000,7 @@ static bool h5_read_opt_data(vlx_t* vlx, hid_t handle) {
 	H5I_type_t  coord_type = H5I_BADID;
     vlx_opt_type_t opt_type = VLX_OPT_UNKNOWN;
 
-	for (size_t i = 0; i < ARRAY_SIZE(valid_prefixes); ++i) {
+	for (size_t i = 0; i < MD_COUNTOF(valid_prefixes); ++i) {
 		H5I_type_t type = -1;
 		char energy_name[32];
 		char coord_name[32];
@@ -3074,7 +3074,7 @@ static bool h5_read_opt_data(vlx_t* vlx, hid_t handle) {
 
 		if (coord_ident && coord_type == H5I_DATASET) {
 			size_t dim[4];
-			int num_dim = h5_read_dataset_dims(dim, ARRAY_SIZE(dim), handle, coord_ident);
+			int num_dim = h5_read_dataset_dims(dim, MD_COUNTOF(dim), handle, coord_ident);
 			if (num_dim <= 0) {
 				MD_LOG_ERROR("Invalid dimensions in '%s'", coord_ident);
 				return false;
@@ -3117,7 +3117,7 @@ static bool h5_read_opt_data(vlx_t* vlx, hid_t handle) {
 }
 
 static bool h5_read_core_data(vlx_t* vlx, hid_t handle) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 
 	if (!h5_read_str(&vlx->basis_set_ident, handle, "basis_set", vlx->arena)) {
 		return false;
@@ -3161,13 +3161,13 @@ static bool h5_read_core_data(vlx_t* vlx, hid_t handle) {
 	}
 
 	md_array_resize(vlx->atom_coordinates, vlx->number_of_atoms, vlx->arena);
-	MEMSET(vlx->atom_coordinates, 0, md_array_bytes(vlx->atom_coordinates));
+	MD_MEMSET(vlx->atom_coordinates, 0, md_array_bytes(vlx->atom_coordinates));
 	if (!h5_read_dataset_data(vlx->atom_coordinates, md_array_size(vlx->atom_coordinates) * 3, handle, H5T_NATIVE_DOUBLE, "atom_coordinates")) {
 		return false;
 	}
 
 	md_array_resize(vlx->atomic_numbers, vlx->number_of_atoms, vlx->arena);
-	MEMSET(vlx->atomic_numbers, 0, md_array_bytes(vlx->atomic_numbers));
+	MD_MEMSET(vlx->atomic_numbers, 0, md_array_bytes(vlx->atomic_numbers));
 	if (!h5_read_dataset_data(vlx->atomic_numbers, md_array_size(vlx->atomic_numbers), handle, H5T_NATIVE_UINT8, "nuclear_charges")) {
 		return false;
 	}
@@ -3192,7 +3192,7 @@ static bool h5_read_core_data(vlx_t* vlx, hid_t handle) {
 }
 
 static void vlx_symmetrize_square(double* mat, size_t dim) {
-	ASSERT(mat);
+	MD_ASSERT(mat);
 	for (size_t i = 0; i < dim; ++i) {
 		for (size_t j = i + 1; j < dim; ++j) {
 			const double value = 0.5 * (mat[i * dim + j] + mat[j * dim + i]);
@@ -3210,13 +3210,13 @@ static void vlx_symmetrize_square(double* mat, size_t dim) {
 // doubles and misses cache on essentially every step; at 1600 atomic orbitals that alone cost an
 // order of magnitude more than the arithmetic.
 static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_density, const double* coeff, size_t mo_offset, size_t mo_count, size_t num_ao) {
-	ASSERT(out_ao);
-	ASSERT(mo_density);
-	ASSERT(coeff);
+	MD_ASSERT(out_ao);
+	MD_ASSERT(mo_density);
+	MD_ASSERT(coeff);
 
 	md_temp_scope_t temp = md_temp_begin();
 	double* work = md_temp_alloc_array(temp, double, mo_count * num_ao);
-	MEMSET(work, 0, sizeof(double) * mo_count * num_ao);
+	MD_MEMSET(work, 0, sizeof(double) * mo_count * num_ao);
 
 	// work = P C
 	for (size_t i = 0; i < mo_count; ++i) {
@@ -3234,7 +3234,7 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 	}
 
 	// out = C^T work
-	MEMSET(out_ao, 0, sizeof(double) * num_ao * num_ao);
+	MD_MEMSET(out_ao, 0, sizeof(double) * num_ao * num_ao);
 	for (size_t i = 0; i < mo_count; ++i) {
 		const double* coeff_row = coeff + (mo_offset + i) * num_ao;
 		const double* work_row  = work + i * num_ao;
@@ -3265,15 +3265,15 @@ static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_dens
 static void vlx_build_attachment_density_ao(double* out_ao, const double* amp, size_t nocc, size_t nvir,
 	const double* coeff, size_t num_ao)
 {
-	ASSERT(out_ao);
-	ASSERT(amp);
-	ASSERT(coeff);
+	MD_ASSERT(out_ao);
+	MD_ASSERT(amp);
+	MD_ASSERT(coeff);
 
 	md_temp_scope_t temp = md_temp_begin();
 
 	// B = t C_v, one row per occupied orbital.
 	double* B = md_temp_alloc_array(temp, double, nocc * num_ao);
-	MEMSET(B, 0, sizeof(double) * nocc * num_ao);
+	MD_MEMSET(B, 0, sizeof(double) * nocc * num_ao);
 
 	for (size_t i = 0; i < nocc; ++i) {
 		double* b_row = B + i * num_ao;
@@ -3289,7 +3289,7 @@ static void vlx_build_attachment_density_ao(double* out_ao, const double* amp, s
 		}
 	}
 
-	MEMSET(out_ao, 0, sizeof(double) * num_ao * num_ao);
+	MD_MEMSET(out_ao, 0, sizeof(double) * num_ao * num_ao);
 	for (size_t i = 0; i < nocc; ++i) {
 		const double* b_row = B + i * num_ao;
 		for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
@@ -3320,9 +3320,9 @@ static void vlx_build_attachment_density_ao(double* out_ao, const double* amp, s
 static bool vlx_build_transition_density_matrix(double* out_matrix, const double* solution_vector, size_t vec_len,
 	size_t nocc, size_t nvir, const double* coeff, size_t num_ao, vlx_transition_type_t type)
 {
-	ASSERT(out_matrix);
-	ASSERT(solution_vector);
-	ASSERT(coeff);
+	MD_ASSERT(out_matrix);
+	MD_ASSERT(solution_vector);
+	MD_ASSERT(coeff);
 
 	if (nocc == 0 || nvir == 0 || num_ao == 0) {
 		return false;
@@ -3349,7 +3349,7 @@ static bool vlx_build_transition_density_matrix(double* out_matrix, const double
 			amp[k] = solution_vector[k] - solution_vector[amp_count + k];
 		}
 	} else {
-		MEMCPY(amp, solution_vector, sizeof(double) * amp_count);
+		MD_MEMCPY(amp, solution_vector, sizeof(double) * amp_count);
 	}
 
 	// The detachment density keeps the MO space route: its block is occupied x occupied, which is
@@ -3357,7 +3357,7 @@ static bool vlx_build_transition_density_matrix(double* out_matrix, const double
 	// would contract over the virtual index instead and cost more, not less.
 	if (type == VLX_TRANSITION_DETACHMENT || type == VLX_TRANSITION_DIFFERENCE) {
 		double* detach_mo = md_temp_alloc_array(temp, double, nocc * nocc);
-		MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
+		MD_MEMSET(detach_mo, 0, sizeof(double) * nocc * nocc);
 
 		for (size_t i = 0; i < nocc; ++i) {
 			for (size_t j = i; j < nocc; ++j) {
@@ -3657,8 +3657,8 @@ static void vlx_mm_order_sites(vlx_mm_t* mm, md_allocator_i* alloc) {
 // wrong is logged, and the load goes on without the environment. A SUPPLEMENTAL load leaves it out
 // altogether - the sites would have to become atoms, and that system's atoms are not this reader's.
 static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, str_t filename, bool supplemental) {
-	ASSERT(vlx);
-	MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+	MD_ASSERT(vlx);
+	MD_MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
 
 	if (!h5_link_exists(scf_handle, "potfile")) {
 		return;
@@ -3691,13 +3691,13 @@ static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, str_t filename
 
 	if (!md_pot_parse_file(&vlx->mm.pot, str_from_cstr(path), vlx->arena)) {
 		MD_LOG_ERROR("VeloxChem: failed to parse the embedding potential '%s'; the environment is not added", path);
-		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		MD_MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
 		return;
 	}
 
 	if (!vlx_mm_resolve_parameters(&vlx->mm, vlx->arena)) {
 		MD_LOG_ERROR("VeloxChem: '%s' is not the potential this calculation ran with; the environment is not added", path);
-		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		MD_MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
 		return;
 	}
 
@@ -3708,7 +3708,7 @@ static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, str_t filename
 	if (num_induced > 0 && num_induced != vlx->mm.num_polarizable) {
 		MD_LOG_ERROR("VeloxChem: the calculation has %zu induced dipoles, but '%s' has %zu polarizable sites; it is not the potential this calculation ran with, and the environment is not added",
 			num_induced, path, vlx->mm.num_polarizable);
-		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		MD_MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
 		return;
 	}
 
@@ -3746,7 +3746,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 	const double to_angstrom = md_pot_unit_to_angstrom(pot->unit);
 	const md_particle_type_flags_t vsite = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, MD_PARTICLE_VIRTUAL_SITE);
 
-	ASSERT(sys->residue.count == 0);
+	MD_ASSERT(sys->residue.count == 0);
 	md_array_push(sys->residue.atom_offset, 0u, sys->alloc);
 	md_array_push(sys->residue.name,     make_label(STR_LIT("QM")), sys->alloc);
 	md_array_push(sys->residue.seq_id, (md_sequence_id_t)0, sys->alloc);
@@ -3861,7 +3861,7 @@ static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
 		for (size_t row = 0; row < vlx->mm.count; ++row) {
 			dipole_of_row[row] = vlx->mm.polarizable[row] ? (uint32_t)next++ : UINT32_MAX;
 		}
-		ASSERT(next == num_sites);
+		MD_ASSERT(next == num_sites);
 		for (size_t k = 0; k < vlx->mm.count; ++k) {
 			const uint32_t d = dipole_of_row[vlx->mm.order[k]];
 			per_atom[num_qm + k] = d != UINT32_MAX ? mu[d] : (dvec3_t){0, 0, 0};
@@ -3877,7 +3877,7 @@ done:
 static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename);
 
 static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* state) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 
 	// Ensure a zero terminated string for interfacing to HDF5
 	char buf[2048];
@@ -3929,7 +3929,7 @@ done:
 static bool h5_read_xps_data(vlx_t* vlx, hid_t handle);
 
 static bool vlx_read_h5_file(vlx_t* vlx, str_t filename, md_system_state_t* state) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 
 	// Ensure a zero terminated string for interfacing to HDF5
 	char buf[2048];
@@ -4088,7 +4088,7 @@ static inline str_t resolve_basis_set_ident(str_t input) {
         {STR_INIT("DEF2-SV(P)"),		STR_INIT("DEF2-SV_P_")},
     };
 
-	for (size_t i = 0; i < ARRAY_SIZE(alias_table); ++i) {
+	for (size_t i = 0; i < MD_COUNTOF(alias_table); ++i) {
         if (str_eq(input, alias_table[i].in)) {
             return alias_table[i].out;
 		}
@@ -4127,7 +4127,7 @@ static int vlx_xps_compare_entry(const void* a, const void* b) {
 // every push, because finalizing takes pointers into an array that md_array_push may still realloc.
 static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 	md_array(vlx_xps_entry_t) entries = 0;
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 
 	H5G_info_t info = { 0 };
 	if (H5Gget_info(handle, &info) < 0) {
@@ -4231,7 +4231,7 @@ static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 		//
 		// The bool field is copied a byte at a time as U8; a wider bool would take the wrong byte on
 		// a big endian target, so it is worth failing the build rather than the render.
-		STATIC_ASSERT(sizeof(bool) == 1, "XPS is_delocalized is published as a single byte");
+		MD_STATIC_ASSERT(sizeof(bool) == 1, "XPS is_delocalized is published as a single byte");
 
 		md_system_t* sys = vlx->sys;
 		const size_t stride = sizeof(vlx_xps_entry_t);
@@ -4260,7 +4260,7 @@ static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 // to be there; a file without an SCF block then had no AO dimension at all, and its density
 // properties were dropped for not matching a dimension of zero.
 static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 
 	// No basis named: nothing AO-indexed can be interpreted. num_sph_ao stays 0, and every reader of
 	// an AO matrix checks for that.
@@ -4272,7 +4272,7 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
 	bool result = false;
 
-	const size_t cap = KILOBYTES(16);
+	const size_t cap = MD_KILOBYTES(16);
 	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
 	str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
@@ -4370,8 +4370,8 @@ done:
 }
 
 static inline void extract_row(double* dst, const vlx_2d_data_t* data, size_t row_idx) {
-        ASSERT(dst);
-        ASSERT(data);
+        MD_ASSERT(dst);
+        MD_ASSERT(data);
 	size_t num_cols = data->size[1];
 	for (size_t i = 0; i < num_cols; ++i) {
 		dst[i] = data->data[row_idx * num_cols + i];
@@ -4379,9 +4379,9 @@ static inline void extract_row(double* dst, const vlx_2d_data_t* data, size_t ro
 }
 
 static inline void extract_col(double* dst, const vlx_2d_data_t* data, size_t col_idx) {
-	ASSERT(dst);
-	ASSERT(data);
-	ASSERT(col_idx < data->size[1]);
+	MD_ASSERT(dst);
+	MD_ASSERT(data);
+	MD_ASSERT(col_idx < data->size[1]);
 
 	for (size_t i = 0; i < data->size[0]; ++i) {
 		dst[i] = data->data[i * data->size[1] + col_idx];
@@ -4389,24 +4389,24 @@ static inline void extract_col(double* dst, const vlx_2d_data_t* data, size_t co
 }
 
 static inline size_t number_of_molecular_orbitals(const vlx_orbital_t* orb) {
-	ASSERT(orb);
+	MD_ASSERT(orb);
 	return orb->coefficients.size[0];
 }
 
 static inline size_t number_of_atomic_orbitals(const vlx_orbital_t* orb) {
-	ASSERT(orb);
+	MD_ASSERT(orb);
 	return orb->coefficients.size[1];
 }
 
 static inline size_t number_of_ao_coefficients(const vlx_orbital_t* orb) {
-	ASSERT(orb);
+	MD_ASSERT(orb);
 	return orb->coefficients.size[1];
 }
 
 static inline void extract_ao_coefficients(double* out_coeff, const vlx_orbital_t* orb, size_t ao_idx) {
-	ASSERT(out_coeff);
-	ASSERT(orb);
-	ASSERT(ao_idx < number_of_atomic_orbitals(orb));
+	MD_ASSERT(out_coeff);
+	MD_ASSERT(orb);
+	MD_ASSERT(ao_idx < number_of_atomic_orbitals(orb));
 
 	extract_col(out_coeff, &orb->coefficients, ao_idx);
 }
@@ -4462,16 +4462,16 @@ bool vlx_rsp_has_nto(const vlx_t* vlx) {
 // takes from that same arena inside such a scope is released again by its md_temp_end, with vlx data
 // still in it, and the next temp allocation writes over it. The heap has no scopes to unwind.
 vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
-	ASSERT(backing);
-	md_allocator_i* arena = md_arena_allocator_create(backing, MEGABYTES(1));
-	ASSERT(arena);
+	MD_ASSERT(backing);
+	md_allocator_i* arena = md_arena_allocator_create(backing, MD_MEGABYTES(1));
+	MD_ASSERT(arena);
 	vlx_t* vlx = md_alloc(arena, sizeof(vlx_t));
 	if (!vlx) {
 		MD_LOG_ERROR("Failed to allocate memory for veloxchem object");
 		md_arena_allocator_destroy(arena);
 		return NULL;
 	}
-	MEMSET(vlx, 0, sizeof(vlx_t));
+	MD_MEMSET(vlx, 0, sizeof(vlx_t));
 	vlx->arena = arena;
 	vlx->sys = sys;
 	return vlx;
@@ -4781,9 +4781,9 @@ static bool vlx_density_source_read_raw(double* out, size_t count, const char* p
 				b[k] = (file_le == host_le) ? p[k] : p[elem - 1 - k];
 			}
 			if (is_f64) {
-				double v; MEMCPY(&v, b, 8); out[i] = v;
+				double v; MD_MEMCPY(&v, b, 8); out[i] = v;
 			} else {
-				float v;  MEMCPY(&v, b, 4); out[i] = (double)v;
+				float v;  MD_MEMCPY(&v, b, 4); out[i] = (double)v;
 			}
 		}
 	}
@@ -4860,7 +4860,7 @@ static bool vlx_density_source_read_cart(double* cart, vlx_density_source_t* src
 				cart[i * n_sph + j] = sph[si * n_sph + (size_t)remap[j]];
 			}
 		}
-		MEMCPY(sph, cart, sizeof(double) * n_sph * n_sph);
+		MD_MEMCPY(sph, cart, sizeof(double) * n_sph * n_sph);
 
 		md_gto_basis_t basis = {0};
 		ok = md_gto_basis_extract_attributes(&basis, &src->sys->attributes, md_temp_allocator(temp)) &&
@@ -4954,12 +4954,12 @@ static vlx_density_source_t* vlx_density_source_create(size_t* out_bytes, md_sys
 		.path_len    = (uint32_t)vlx->filename.len,
 		.dataset_len = (uint32_t)loc->dataset.len,
 	};
-	MEMCPY(vlx_density_source_remap(src), vlx->ao_remap, sizeof(int) * n_sph);
+	MD_MEMCPY(vlx_density_source_remap(src), vlx->ao_remap, sizeof(int) * n_sph);
 	char* src_path = vlx_density_source_path(src);
-	MEMCPY(src_path, vlx->filename.ptr, vlx->filename.len);
+	MD_MEMCPY(src_path, vlx->filename.ptr, vlx->filename.len);
 	src_path[vlx->filename.len] = '\0';
 	char* src_dataset = vlx_density_source_dataset(src);
-	MEMCPY(src_dataset, loc->dataset.ptr, loc->dataset.len);
+	MD_MEMCPY(src_dataset, loc->dataset.ptr, loc->dataset.len);
 	src_dataset[loc->dataset.len] = '\0';
 	*out_bytes = bytes;
 	return src;
@@ -5117,7 +5117,7 @@ static size_t vlx_rsp_solution_provide(void* dst, size_t cap, const md_attribute
 	const bool current = (info.modified_time == src->mtime && (int64_t)info.size == src->size) || vlx_rsp_source_rebuild(src, &info);
 	const vlx_raw_t raw = (vlx_raw_t)src->raw;
 	if (current) {
-		MEMCPY(offsets, vlx_rsp_source_offsets(src) + first, sizeof(int64_t) * rows);
+		MD_MEMCPY(offsets, vlx_rsp_source_offsets(src) + first, sizeof(int64_t) * rows);
 	}
 	md_hdf5_unlock(lock);
 
@@ -5158,9 +5158,9 @@ static vlx_rsp_source_t* vlx_rsp_source_create(size_t* out_bytes, md_system_t* s
 		.per_state  = vlx->rsp.solution_per_state ? 1 : 0,
 		.path_len   = (uint32_t)vlx->filename.len,
 	};
-	MEMCPY(vlx_rsp_source_offsets(src), vlx->rsp.solution_offset, sizeof(int64_t) * rows);
+	MD_MEMCPY(vlx_rsp_source_offsets(src), vlx->rsp.solution_offset, sizeof(int64_t) * rows);
 	char* path = vlx_rsp_source_path(src);
-	MEMCPY(path, vlx->filename.ptr, vlx->filename.len);
+	MD_MEMCPY(path, vlx->filename.ptr, vlx->filename.len);
 	path[vlx->filename.len] = '\0';
 	*out_bytes = bytes;
 	return src;
@@ -5271,7 +5271,7 @@ static bool vlx_symmetric_eigen(double* a, double* d, double* e, size_t n) {
 	double f = 0.0, tst1 = 0.0;
 	const double eps = DBL_EPSILON;
 	for (size_t l = 0; l < n; ++l) {
-		tst1 = MAX(tst1, fabs(d[l]) + fabs(e[l]));
+		tst1 = MD_MAX(tst1, fabs(d[l]) + fabs(e[l]));
 		size_t m = l;
 		while (m < n && fabs(e[m]) > eps * tst1) ++m;
 		if (m == n) m = n - 1; // e[n-1] is zero; not reached in exact arithmetic
@@ -5384,9 +5384,9 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 		return false;
 	}
 
-	MEMSET(lambda,   0, sizeof(double) * lmax);
-	MEMSET(hole,     0, sizeof(double) * lmax * num_ao);
-	MEMSET(particle, 0, sizeof(double) * lmax * num_ao);
+	MD_MEMSET(lambda,   0, sizeof(double) * lmax);
+	MD_MEMSET(hole,     0, sizeof(double) * lmax * num_ao);
+	MD_MEMSET(particle, 0, sizeof(double) * lmax * num_ao);
 
 	// The singular value decomposition goes through the Gram matrix over the shorter side: R R^T, with R
 	// the rows of X when there are no more occupied than virtual orbitals and of X^T otherwise. R is
@@ -5397,7 +5397,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 	const size_t m    = left ? nvir : nocc;           // R's columns
 	const size_t n4   = (n + 3) & ~(size_t)3;
 	const size_t m4   = (m + 3) & ~(size_t)3;
-	const size_t npairs = MIN(lmax, n);
+	const size_t npairs = MD_MIN(lmax, n);
 
 	md_temp_scope_t temp = md_temp_begin();
 	bool ok = false;
@@ -5418,7 +5418,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 	}
 
 	// R from X = Z - Y, X[i][a] = x[i * nvir + a]
-	MEMSET(R, 0, sizeof(double) * n4 * m4);
+	MD_MEMSET(R, 0, sizeof(double) * n4 * m4);
 	const double* y = vec_len == 2 * amp ? x + amp : NULL;
 	if (left) {
 		for (size_t i = 0; i < nocc; ++i) {
@@ -5428,7 +5428,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 				const double* yi = y + i * nvir;
 				for (size_t a = 0; a < nvir; ++a) r[a] = xi[a] - yi[a];
 			} else {
-				MEMCPY(r, xi, sizeof(double) * nvir);
+				MD_MEMCPY(r, xi, sizeof(double) * nvir);
 			}
 		}
 	} else {
@@ -5442,10 +5442,10 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 	// G = R R^T, the upper triangle, by 4 x 4 tiles of G whose sixteen sums run four lanes wide - which
 	// a compiler turns into vector registers, sixteen of them, fed by eight loads per four columns -
 	// over columns in blocks small enough that a block of every row stays in cache.
-	MEMSET(gram, 0, sizeof(double) * n4 * n4);
+	MD_MEMSET(gram, 0, sizeof(double) * n4 * n4);
 	enum { NTO_KC = 256 };
 	for (size_t c0 = 0; c0 < m4; c0 += NTO_KC) {
-		const size_t c1 = MIN(m4, c0 + NTO_KC);
+		const size_t c1 = MD_MIN(m4, c0 + NTO_KC);
 		for (size_t i0 = 0; i0 < n4; i0 += 4) {
 			const double* ri = R + i0 * m4;
 			for (size_t j0 = i0; j0 < n4; j0 += 4) {
@@ -5491,7 +5491,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 		if (!(lam >= VLX_NTO_EIGENVALUE_EPSILON)) break;
 		lambda[count] = lam;
 		double* s = sv + count * n;
-		MEMCPY(s, gram + (n - 1 - count) * n, sizeof(double) * n);
+		MD_MEMCPY(s, gram + (n - 1 - count) * n, sizeof(double) * n);
 		size_t imax = 0;
 		for (size_t i = 1; i < n; ++i) if (fabs(s[i]) > fabs(s[imax])) imax = i;
 		if (s[imax] < 0.0) for (size_t i = 0; i < n; ++i) s[i] = -s[i];
@@ -5502,7 +5502,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 	}
 
 	// every pair's longer vector in one pass over R
-	MEMSET(lv, 0, sizeof(double) * count * m);
+	MD_MEMSET(lv, 0, sizeof(double) * count * m);
 	for (size_t r = 0; r < n; ++r) {
 		const double* row = R + r * m4;
 		for (size_t k = 0; k < count; ++k) {
@@ -5525,7 +5525,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 		const double* v = left ? lv : sv;   // over the virtuals, stride nvir
 		enum { NTO_AOB = 512 };
 		for (size_t a0 = 0; a0 < num_ao; a0 += NTO_AOB) {
-			const size_t na = MIN((size_t)NTO_AOB, num_ao - a0);
+			const size_t na = MD_MIN((size_t)NTO_AOB, num_ao - a0);
 			for (size_t i = 0; i < nocc; ++i) {
 				const double* c = C + i * num_ao + a0;
 				for (size_t k = 0; k < count; ++k) {
@@ -5577,7 +5577,7 @@ static inline size_t vlx_nto_cache_slot_doubles(const vlx_nto_cache_t* c) {
 static inline size_t vlx_nto_cache_num_slots(size_t num_states, size_t lmax, size_t num_ao) {
 	const size_t slot  = sizeof(double) * lmax * (1 + 2 * num_ao);
 	const size_t fit   = slot > 0 ? (size_t)(VLX_NTO_CACHE_BUDGET / slot) : num_states;
-	return MIN(num_states, MAX(fit, (size_t)VLX_NTO_CACHE_MIN_SLOTS));
+	return MD_MIN(num_states, MD_MAX(fit, (size_t)VLX_NTO_CACHE_MIN_SLOTS));
 }
 static inline size_t vlx_nto_cache_bytes(size_t num_slots, size_t lmax, size_t num_ao) {
 	return sizeof(vlx_nto_cache_t) + (sizeof(int32_t) + sizeof(uint32_t)) * num_slots + sizeof(double) * num_slots * lmax * (1 + 2 * num_ao);
@@ -5604,7 +5604,7 @@ static bool vlx_nto_cache_fetch(double* out, vlx_nto_cache_t* c, uint32_t state,
 	for (size_t s = 0; s < c->num_slots; ++s) {
 		if (slot_state[s] == (int32_t)state) {
 			slot_used[s] = ++c->clock;
-			MEMCPY(out, vlx_nto_cache_part(c, s, part) + offset, sizeof(double) * count);
+			MD_MEMCPY(out, vlx_nto_cache_part(c, s, part) + offset, sizeof(double) * count);
 			md_hdf5_unlock(lock);
 			return true;
 		}
@@ -5629,8 +5629,8 @@ static bool vlx_nto_cache_fetch(double* out, vlx_nto_cache_t* c, uint32_t state,
 		}
 		slot_state[slot] = (int32_t)state;
 		slot_used[slot]  = ++c->clock;
-		MEMCPY(vlx_nto_cache_part(c, slot, VLX_NTO_LAMBDA), buf, sizeof(double) * vlx_nto_cache_slot_doubles(c));
-		MEMCPY(out, vlx_nto_cache_part(c, slot, part) + offset, sizeof(double) * count);
+		MD_MEMCPY(vlx_nto_cache_part(c, slot, VLX_NTO_LAMBDA), buf, sizeof(double) * vlx_nto_cache_slot_doubles(c));
+		MD_MEMCPY(out, vlx_nto_cache_part(c, slot, part) + offset, sizeof(double) * count);
 		md_hdf5_unlock(lock);
 	}
 	md_temp_end(temp);
@@ -5744,7 +5744,7 @@ static bool vlx_publish_scf_densities(md_system_t* sys, const vlx_t* vlx) {
 }
 
 void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	if (!vlx) {
 		return;
@@ -5974,7 +5974,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	if (have_solutions && vlx_rsp_has_nto(vlx)) {
 		const size_t nocc   = vlx->rsp.num_core > 0 ? (size_t)vlx->rsp.num_core : (size_t)vlx->rsp.num_valence;
 		const size_t nvir   = (size_t)vlx->rsp.num_virtual;
-		const size_t lmax   = MIN((size_t)VLX_NTO_MAX_LAMBDAS, MIN(nocc, nvir));
+		const size_t lmax   = MD_MIN((size_t)VLX_NTO_MAX_LAMBDAS, MD_MIN(nocc, nvir));
 		const size_t num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
 		const size_t slots  = vlx_nto_cache_num_slots(num_states, lmax, num_ao);
 		const size_t bytes  = vlx_nto_cache_bytes(slots, lmax, num_ao);
@@ -6050,7 +6050,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 // the table and therefore has to happen between reading them and publishing them.
 static bool vlx_publish_core(const vlx_t* vlx) {
 	md_system_t* sys = vlx->sys;
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	if (!sys->attributes.alloc) {
 		MD_LOG_ERROR("Attribute table allocator not set; the system has not been initialised");
@@ -6116,9 +6116,9 @@ static bool vlx_publish_core(const vlx_t* vlx) {
 // A NULL state means this file is SUPPLEMENTING a system somebody else loaded - its atoms and its
 // state belong to that loader and are left exactly as they are, and only the table grows.
 static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
-	ASSERT(vlx);
+	MD_ASSERT(vlx);
 	md_system_t* sys = vlx->sys;
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	if (vlx->number_of_atoms == 0) {
 		MD_LOG_ERROR("The veloxchem file contains no atoms");
@@ -6147,13 +6147,13 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	md_system_reset(sys);
 	md_system_state_init(state, num_atoms);
 
-	size_t capacity = ROUND_UP(num_atoms, 16);
+	size_t capacity = MD_ROUND_UP(num_atoms, 16);
 
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
 
-	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
-    MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
+	MD_MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
+    MD_MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
@@ -6201,7 +6201,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 // Publishing nothing is not the same as leaving it alone: a stale map from a previous load would
 // send every evaluation to the wrong atoms, so the standalone case actively removes it.
 static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bool supplemental) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	const str_t path = STR_INIT("qm/atom/system_index");
 	// Declared before the if: this is C, not the C++ side of the tree.
@@ -6244,7 +6244,7 @@ static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bo
 // two atom spaces coincide, as the system's first atoms - and the rest of the system is their
 // environment. The flags of an earlier supplement are cleared first, as its map is (see above).
 static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 	const size_t num_atoms = sys->atom.count;
 	const size_t num_qm_atoms = vlx_number_of_atoms(vlx);
 	if (num_atoms == 0 || num_qm_atoms == 0) {
@@ -6253,7 +6253,7 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	if (md_array_size(sys->atom.flags) < num_atoms) {
 		const size_t size = md_array_size(sys->atom.flags);
 		md_array_resize(sys->atom.flags, num_atoms, sys->alloc);
-		MEMSET(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
+		MD_MEMSET(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
 	}
 	for (size_t i = 0; i < num_atoms; ++i) {
 		sys->atom.flags[i] &= ~MD_ATOM_FLAG_QM;
@@ -6269,7 +6269,7 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 }
 
 bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, str_t filename, const struct md_executor_t* executor) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	// Heap backed, not temp backed - see vlx_create.
 	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
@@ -6295,7 +6295,7 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 }
 
 bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename, const struct md_executor_t* executor) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	if (!sys->attributes.alloc) {
 		MD_LOG_ERROR("Cannot supplement a system which has not been initialised");
@@ -6326,7 +6326,7 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename, const 
 
 // Attempt to open the file and check if it can supplement the existing system with QM data
 bool md_vlx_system_is_file_supplemental(const md_system_t* sys, str_t filename) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	// Simple check here, we just check for the existence of a couple of fields in h5 file.
 
@@ -6467,9 +6467,9 @@ const double* vlx_scf_mo_energy(const vlx_t* vlx, vlx_spin_t type) {
 
 bool vlx_gto_basis_extract(md_gto_basis_t* out, const vlx_t* vlx, md_allocator_i* alloc) {
 	if (!vlx || !out) return false;
-	ASSERT(alloc);
+	MD_ASSERT(alloc);
 
-	MEMSET(out, 0, sizeof(*out));
+	MD_MEMSET(out, 0, sizeof(*out));
 
 	int natoms   = (int)vlx->number_of_atoms;
 	int max_angl = compute_max_angular_momentum(&vlx->basis_set, vlx->atomic_numbers, vlx->number_of_atoms);
@@ -6482,7 +6482,7 @@ bool vlx_gto_basis_extract(md_gto_basis_t* out, const vlx_t* vlx, md_allocator_i
 			int idelem = vlx->atomic_numbers[atomidx];
 			basis_func_t basis_funcs[128];
 			size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(
-				basis_funcs, ARRAY_SIZE(basis_funcs), &vlx->basis_set, idelem, angl);
+				basis_funcs, MD_COUNTOF(basis_funcs), &vlx->basis_set, idelem, angl);
 
 			for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
 				const basis_func_t* bf = &basis_funcs[funcidx];

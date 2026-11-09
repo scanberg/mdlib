@@ -107,7 +107,7 @@ static bool hd_write(const hd_case_t* c) {
             if (!inside) continue;
             double tmp = hd_value(flat);   // converted in place: a double holds every type here
             H5Tconvert(H5T_NATIVE_DOUBLE, type, 1, &tmp, NULL, H5P_DEFAULT);
-            MEMCPY(raw + e * elem, &tmp, elem);
+            MD_MEMCPY(raw + e * elem, &tmp, elem);
         }
         const hsize_t offset[4] = {0};
         uint32_t mask = 0xffffffffu;
@@ -115,7 +115,7 @@ static bool hd_write(const hd_case_t* c) {
             // Shuffle is filter 0 and deflate filter 1: the bytes shuffled, deflate marked as skipped
             uint8_t* shuffled = malloc(chunk_elems * elem);
             for (size_t b = 0; b < elem; ++b) for (size_t e = 0; e < chunk_elems; ++e) shuffled[b * chunk_elems + e] = raw[e * elem + b];
-            MEMCPY(raw, shuffled, chunk_elems * elem);
+            MD_MEMCPY(raw, shuffled, chunk_elems * elem);
             free(shuffled);
             mask = 1u << 1;
         }
@@ -160,7 +160,7 @@ UTEST(hdf5_direct, storage_of_every_kind) {
         { "a frame never written",    3, {5, 13, 3},    {1, 13, 3},   H5T_IEEE_F32LE, .deflate = 4, .leave_unwritten = true, .direct = true },
         { "nbit: through HDF5",       3, {5, 13, 3},    {1, 13, 3},   H5T_STD_I32LE,  .nbit = true, .deflate = 1, .direct = false },
     };
-    for (size_t ci = 0; ci < ARRAY_SIZE(cases); ++ci) {
+    for (size_t ci = 0; ci < MD_COUNTOF(cases); ++ci) {
         const hd_case_t* c = &cases[ci];
         ASSERT_TRUE(hd_write(c));
         double* ref = hd_reference(c);
@@ -283,8 +283,8 @@ UTEST(hdf5_direct, fletcher32_as_hdf5) {
     size_t lengths[64];
     size_t num_lengths = 0;
     const size_t edges[] = { 1, 2, 3, 31, 32, 33, 719, 720, 721, 8191, 8192, 8193, 8194, 16384, 16385, 24576, 24577 };
-    for (size_t i = 0; i < ARRAY_SIZE(edges); ++i) lengths[num_lengths++] = edges[i];
-    while (num_lengths < ARRAY_SIZE(lengths)) { seed = seed * 1664525u + 1013904223u; lengths[num_lengths++] = 1 + seed % cap; }
+    for (size_t i = 0; i < MD_COUNTOF(edges); ++i) lengths[num_lengths++] = edges[i];
+    while (num_lengths < MD_COUNTOF(lengths)) { seed = seed * 1664525u + 1013904223u; lengths[num_lengths++] = 1 + seed % cap; }
     for (int fill = 0; fill < 4; ++fill) {
         for (size_t i = 0; i < cap; ++i) {
             seed = seed * 1664525u + 1013904223u;
@@ -293,7 +293,7 @@ UTEST(hdf5_direct, fletcher32_as_hdf5) {
         for (size_t l = 0; l < num_lengths; ++l) {
             // From an offset that is not aligned, too
             for (size_t off = 0; off < 2; ++off) {
-                const size_t len = MIN(lengths[l], cap - off);
+                const size_t len = MD_MIN(lengths[l], cap - off);
                 wrong += md_hdf5_fletcher32(d + off, len) != hd_fletcher_ref(d + off, len);
                 checks += 1;
             }

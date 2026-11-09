@@ -36,23 +36,23 @@ mat4_t md_grid_index_to_world(const md_grid_t* grid);
 mat4_t md_grid_world_to_index(const md_grid_t* grid);
 
 static inline vec3_t md_grid_origin(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
     return grid->origin;
 }
 
 static inline mat3_t md_grid_orientation(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
     return grid->orientation;
 }
 
 static inline vec3_t md_grid_extent(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
     vec3_t extent = vec3_mul(grid->spacing, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
     return extent;
 }
 
 static inline vec3_t md_grid_center(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
     vec3_t center = vec3_add(grid->origin, vec3_mul1(md_grid_extent(grid), 0.5f));
     return center;
 }

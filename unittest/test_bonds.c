@@ -23,8 +23,8 @@
 #include <math.h>
 
 static inline uint64_t pair_key(md_atom_pair_t p) {
-    const uint32_t a = (uint32_t)MIN(p.idx[0], p.idx[1]);
-    const uint32_t b = (uint32_t)MAX(p.idx[0], p.idx[1]);
+    const uint32_t a = (uint32_t)MD_MIN(p.idx[0], p.idx[1]);
+    const uint32_t b = (uint32_t)MD_MAX(p.idx[0], p.idx[1]);
     return ((uint64_t)a << 32) | b;
 }
 
@@ -51,8 +51,8 @@ static void expect_inference_matches_topology(int* utest_result, const md_system
 
 UTEST(bonds, topology_tpr) {
     const char* files[] = { MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr", MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr" };
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, str_from_cstr(files[f])));
@@ -64,7 +64,7 @@ UTEST(bonds, topology_tpr) {
 // The initial configuration of this system has hundreds of atoms of different molecules closer than 1 Å. Without a
 // limit on the bonds per atom, inference joins them (900 bonds too many, hydrogens with two or three bonds).
 UTEST(bonds, clashing_molecules) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), NULL));
@@ -97,7 +97,7 @@ static bool has_bond(const md_system_t* sys, int a, int b, md_bond_flags_t* out_
 }
 
 UTEST(bonds, metal_coordination) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -139,7 +139,7 @@ UTEST(bonds, metal_coordination) {
 // Metal sites of deposited structures: the four cysteines of the zinc fingers (Zn-S 2.4-2.7 Å in this cryo-EM
 // model), Mg to the GTP phosphates
 UTEST(bonds, metal_sites_deposited) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
@@ -172,7 +172,7 @@ UTEST(bonds, metal_sites_deposited) {
 
 // Inferring the bonds again keeps the bonds a user added by hand
 UTEST(bonds, reinference_keeps_user_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -192,7 +192,7 @@ UTEST(bonds, reinference_keeps_user_bonds) {
 // The persistent non-covalent bonds sit in a range of their own after the bond graph (md_bond_data_t): the graph and
 // everything derived from it never sees them, and inserting, removing and inferring bonds keeps both ranges
 UTEST(bonds, noncovalent_range) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -273,7 +273,7 @@ UTEST(bonds, noncovalent_range) {
 
 // A kind which was given stays: a metal-ligand bond marked covalent by hand is not made coordination
 UTEST(bonds, kind_given_stays) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -310,7 +310,7 @@ UTEST(bonds, kind_names) {
         { md_bond_flags_set_kind(given, MD_BOND_KIND_ELASTIC),                  "elastic" },
         { md_bond_flags_set_kind(given, MD_BOND_KIND_HYDROGEN),                 "noncovalent hydrogen" },
     };
-    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+    for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         char buf[128] = "";
         for (size_t i = 0; i < count; ++i) {
             if ((cases[c].flags & names[i].mask) == names[i].value) {
@@ -328,9 +328,9 @@ UTEST(bonds, kind_code) {
     const bool graph[]       = { true,  true,  false, false, false, false };
     const bool noncovalent[] = { false, false, false, false, true,  true  };
     const md_bond_flags_t rest = md_bond_flags_set_origin(md_bond_flags_set_order(MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_ORDER_PERCEIVED | MD_BOND_FLAG_KIND_GIVEN, 2), MD_BOND_ORIGIN_USER);
-    for (size_t i = 0; i < ARRAY_SIZE(kinds); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) {
         // Over a bond of another kind, so every bit of the old one goes
-        const md_bond_flags_t f = md_bond_flags_set_kind(md_bond_flags_set_kind(rest, kinds[(i + 1) % ARRAY_SIZE(kinds)]), kinds[i]);
+        const md_bond_flags_t f = md_bond_flags_set_kind(md_bond_flags_set_kind(rest, kinds[(i + 1) % MD_COUNTOF(kinds)]), kinds[i]);
         EXPECT_EQ(kinds[i], md_bond_kind(f));
         EXPECT_EQ(rest, f & ~MD_BOND_FLAG_KIND_MASK);
         EXPECT_EQ(graph[i], md_bond_is_graph(f));
@@ -356,20 +356,20 @@ typedef struct delta_fixture_t {
 } delta_fixture_t;
 
 static bool delta_fixture_init(delta_fixture_t* f) {
-    f->alloc = md_vm_arena_create(GIGABYTES(1));
+    f->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     f->sys = (md_system_t){ .alloc = f->alloc };
     f->ref = (md_system_state_t){ .alloc = f->alloc };
     if (!md_pdb_system_init_from_str(&f->sys, &f->ref, str_from_cstr(water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) return false;
     if (!md_util_system_infer(&f->sys, &f->ref, MD_UTIL_INFER_ALL, NULL)) return false;
     f->st = f->ref;
     f->st.xyz = md_alloc(f->alloc, sizeof(vec3_t) * f->ref.num_atoms);
-    MEMCPY(f->st.xyz, f->ref.xyz, sizeof(vec3_t) * f->ref.num_atoms);
+    MD_MEMCPY(f->st.xyz, f->ref.xyz, sizeof(vec3_t) * f->ref.num_atoms);
     return true;
 }
 
 static bool delta_has_formed(const md_bond_delta_t* d, int a, int b) {
     for (size_t k = 0; k < d->num_formed; ++k) {
-        if (d->formed_pair[k].idx[0] == MIN(a, b) && d->formed_pair[k].idx[1] == MAX(a, b)) return true;
+        if (d->formed_pair[k].idx[0] == MD_MIN(a, b) && d->formed_pair[k].idx[1] == MD_MAX(a, b)) return true;
     }
     return false;
 }
@@ -543,7 +543,7 @@ static size_t count_flag(const md_system_t* sys, md_atom_flags_t flag) {
 // of a crystal which is not periodic: a corner has 3) and to nothing else, and its bonds are of no ring nor structure
 UTEST(bonds, metallic_crystal) {
     for (int periodic = 0; periodic < 2; ++periodic) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         const int n = 4;
         const float a = 3.615f;
         md_system_t sys = { .alloc = alloc };
@@ -574,8 +574,8 @@ UTEST(bonds, metallic_crystal) {
 // (rock salt), with 6 anions to each cation
 UTEST(bonds, metallic_not_ionic) {
     const struct { const char* cation; const char* anion; float a; } salts[] = { {"Na", "Cl", 5.640f}, {"Mg", "O", 4.212f} };
-    for (size_t s = 0; s < ARRAY_SIZE(salts); ++s) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t s = 0; s < MD_COUNTOF(salts); ++s) {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         const crystal_site_t rock_salt[] = {
             {salts[s].cation, 0, 0, 0}, {salts[s].cation, 0.5f, 0.5f, 0}, {salts[s].cation, 0.5f, 0, 0.5f}, {salts[s].cation, 0, 0.5f, 0.5f},
             {salts[s].anion, 0.5f, 0, 0}, {salts[s].anion, 0, 0.5f, 0}, {salts[s].anion, 0, 0, 0.5f}, {salts[s].anion, 0.5f, 0.5f, 0.5f},
@@ -606,7 +606,7 @@ static float gauss(uint64_t* state) {
 // coordination each. The gold is metallic and has its 9 neighbours as metallic bonds, the molecules keep their bonds
 // and have none to the gold; per frame the carbon forms its coordination, the bromine (of an organohalide) none.
 UTEST(bonds, metallic_slab) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const int nx = 8, ny = 5;
     const float d = 2.884f;
     const float h = d * 0.8660254f;
@@ -714,7 +714,7 @@ UTEST(bonds, metallic_slab) {
 UTEST(bonds, metallic_slab_trajectory) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     if (!md_path_is_valid(path)) UTEST_SKIP("40-40-2-ddba-dyna.xmol not in the test data");
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_xyz_data_t data = {0};
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
     md_system_t sys = { .alloc = alloc };
@@ -826,10 +826,10 @@ static bool bonds_threads_same(const md_system_t* a, const md_system_t* b) {
 
 UTEST(bonds, threads) {
     static const char* files[] = { "/centered.gro", "/1k4r.pdb", "/nucl-dna.gro", "/martini/martini2_membrane_protein.gro" };
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     test_executor_t threads  = test_executor_threads(4);
     test_executor_t shuffled = test_executor_shuffled(3);
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         char path[512];
         snprintf(path, sizeof(path), "%s%s", MD_UNITTEST_DATA_DIR, files[f]);
         FILE* exists = fopen(path, "rb");
@@ -842,7 +842,7 @@ UTEST(bonds, threads) {
         ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL, NULL));
         EXPECT_GT(ref.bond.count, (size_t)0);
         const md_executor_t* executors[] = { test_executor(&threads), test_executor(&shuffled) };
-        for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+        for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
             md_system_t sys = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc };
             ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]) : md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), executors[e]));

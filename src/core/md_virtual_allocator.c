@@ -8,10 +8,10 @@ static void* vm_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size,
     (void)file;
     (void)line;
     md_vm_allocator_t* vm = (md_vm_allocator_t*)inst;
-    ASSERT(vm && vm->magic == MAGIC);
+    MD_ASSERT(vm && vm->magic == MAGIC);
 
-    size_t old_page_aligned_size = ALIGN_TO(old_size, vm->page_size);
-    size_t new_page_aligned_size = ALIGN_TO(new_size, vm->page_size);
+    size_t old_page_aligned_size = MD_ALIGN_TO(old_size, vm->page_size);
+    size_t new_page_aligned_size = MD_ALIGN_TO(new_size, vm->page_size);
 
     // FREE
     if (new_size == 0) {
@@ -39,7 +39,7 @@ static void* vm_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size,
             md_vm_commit((char*)vm->base + vm->commit_pos, commit_size);
             vm->commit_pos += commit_size;
             if (!last) {
-                MEMCPY(new_ptr, ptr, old_size);
+                MD_MEMCPY(new_ptr, ptr, old_size);
             }
             return new_ptr;
         } else {
@@ -54,7 +54,7 @@ static void* vm_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size,
 
     // ALLOC
     void* new_ptr = (char*)vm->base + vm->commit_pos;
-    size_t commit_size = ALIGN_TO(new_size, vm->page_size);
+    size_t commit_size = MD_ALIGN_TO(new_size, vm->page_size);
     md_vm_commit((char*)vm->base + vm->commit_pos, commit_size);
     vm->commit_pos += commit_size;
     return new_ptr;
@@ -73,7 +73,7 @@ void md_vm_allocator_init(md_vm_allocator_t* vm, size_t reservation_size) {
 }
 
 void md_vm_allocator_free(md_vm_allocator_t* vm) {
-    ASSERT(vm && vm->magic == MAGIC);
+    MD_ASSERT(vm && vm->magic == MAGIC);
     md_vm_release(vm->base, vm->size);
     vm->base = 0;
     vm->size = 0;
@@ -81,12 +81,12 @@ void md_vm_allocator_free(md_vm_allocator_t* vm) {
 }
 
 void* md_vm_allocator_base(md_vm_allocator_t* vm) {
-    ASSERT(vm && vm->magic == MAGIC);
+    MD_ASSERT(vm && vm->magic == MAGIC);
     return vm->base;
 }
 
 size_t md_vm_allocator_size(md_vm_allocator_t* vm) {
-    ASSERT(vm && vm->magic == MAGIC);
+    MD_ASSERT(vm && vm->magic == MAGIC);
     return vm->size;
 }
 

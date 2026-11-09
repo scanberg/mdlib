@@ -7,15 +7,15 @@
 #include <string.h>
 
 // The readers are handed over as &x.r, and their vtables cast r back to the reader
-STATIC_ASSERT(offsetof(md_file_reader_t, r) == 0, "md_reader_i must be the first member");
+MD_STATIC_ASSERT(offsetof(md_file_reader_t, r) == 0, "md_reader_i must be the first member");
 
 // ### THE INTERFACE ###
 
 bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, int64_t size, struct md_allocator_i* alloc) {
-    ASSERT(r);
-    ASSERT(vt && vt->read);
-    ASSERT(alloc);
-    MEMSET(r, 0, sizeof(*r));
+    MD_ASSERT(r);
+    MD_ASSERT(vt && vt->read);
+    MD_ASSERT(alloc);
+    MD_MEMSET(r, 0, sizeof(*r));
     if (cap == 0) cap = MD_READER_DEFAULT_CAPACITY;
     r->mem = (char*)md_alloc(alloc, cap + MD_READER_PADDING);
     if (!r->mem) {
@@ -23,7 +23,7 @@ bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, in
         return false;
     }
     // The padding is read, never written: what it holds is never part of a line, but it is defined
-    MEMSET(r->mem + cap, 0, MD_READER_PADDING);
+    MD_MEMSET(r->mem + cap, 0, MD_READER_PADDING);
     r->buf = r->cur = r->end = r->mem;
     r->cap = cap;
     r->vt = vt;
@@ -33,9 +33,9 @@ bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, in
 }
 
 void md_reader_free(md_reader_i* r) {
-    ASSERT(r);
+    MD_ASSERT(r);
     if (r->mem) md_free(r->alloc, r->mem, r->cap + MD_READER_PADDING);
-    MEMSET(r, 0, sizeof(*r));
+    MD_MEMSET(r, 0, sizeof(*r));
 }
 
 // Keeps what is not taken at the start of the buffer, and returns the room after it: 0 at the end of the source, for a
@@ -102,13 +102,13 @@ static str_t whole_lines(const md_reader_i* r) {
 }
 
 str_t md_reader_block(md_reader_i* r) {
-    ASSERT(r);
+    MD_ASSERT(r);
     refill(r);
     return whole_lines(r);
 }
 
 // The reads of a refill over the threads of an executor: pieces of the room, each read at its offset
-#define READER_PARALLEL_PIECE MEGABYTES(2)
+#define READER_PARALLEL_PIECE MD_MEGABYTES(2)
 
 typedef struct parallel_read_t {
     const md_reader_i* r;
@@ -123,13 +123,13 @@ static void parallel_read_piece(void* arg, uint32_t beg, uint32_t end, uint32_t 
     parallel_read_t* pr = (parallel_read_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         const size_t at = (size_t)p * READER_PARALLEL_PIECE;
-        const size_t len = MIN(READER_PARALLEL_PIECE, pr->want - at);
+        const size_t len = MD_MIN(READER_PARALLEL_PIECE, pr->want - at);
         pr->got[p] = pr->r->vt->read_at(pr->r, pr->offset + (int64_t)at, pr->dst + at, len);
     }
 }
 
 str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex) {
-    ASSERT(r);
+    MD_ASSERT(r);
     if (md_executor_num_threads(ex) <= 1 || !r->vt || !r->vt->read_at || !r->vt->seek) {
         return md_reader_block(r);
     }
@@ -151,7 +151,7 @@ str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex) {
         // What was read without a gap: a piece short of its length is the end of the source
         size_t n = 0;
         for (uint32_t p = 0; p < num_pieces; ++p) {
-            const size_t len = MIN(READER_PARALLEL_PIECE, want - (size_t)p * READER_PARALLEL_PIECE);
+            const size_t len = MD_MIN(READER_PARALLEL_PIECE, want - (size_t)p * READER_PARALLEL_PIECE);
             n += got[p];
             if (got[p] < len) break;
         }
@@ -164,7 +164,7 @@ str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex) {
 }
 
 bool md_reader_seek(md_reader_i* r, int64_t offset) {
-    ASSERT(r);
+    MD_ASSERT(r);
     if (offset < 0) return false;
     // Within what is buffered (all of a string)
     if (offset >= r->base && offset <= r->base + (int64_t)(r->end - r->buf)) {
@@ -223,9 +223,9 @@ static const md_reader_vtable_t file_vtable = {
 };
 
 bool md_file_reader_init(md_file_reader_t* fr, md_file_t file, size_t cap, struct md_allocator_i* alloc) {
-    ASSERT(fr);
+    MD_ASSERT(fr);
     if (!md_file_valid(file)) {
-        MEMSET(fr, 0, sizeof(*fr));
+        MD_MEMSET(fr, 0, sizeof(*fr));
         return false;
     }
     if (!md_reader_init(&fr->r, &file_vtable, cap, (int64_t)md_file_size(file), alloc)) {
@@ -240,12 +240,12 @@ bool md_file_reader_init(md_file_reader_t* fr, md_file_t file, size_t cap, struc
 }
 
 bool md_file_reader_open(md_file_reader_t* fr, str_t path, size_t cap, struct md_allocator_i* alloc) {
-    ASSERT(fr);
+    MD_ASSERT(fr);
     // Read front to back, and at offsets from several threads (md_reader_block_parallel): a handle every thread reads
     // at once, which on Windows a synchronous one would serialize
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT | MD_FILE_SEQUENTIAL)) {
-        MEMSET(fr, 0, sizeof(*fr));
+        MD_MEMSET(fr, 0, sizeof(*fr));
         return false;
     }
     if (!md_file_reader_init(fr, file, cap, alloc)) {
@@ -257,8 +257,8 @@ bool md_file_reader_open(md_file_reader_t* fr, str_t path, size_t cap, struct md
 }
 
 void md_file_reader_close(md_file_reader_t* fr) {
-    ASSERT(fr);
+    MD_ASSERT(fr);
     if (fr->owns_file) md_file_close(&fr->file);
     md_reader_free(&fr->r);
-    MEMSET(fr, 0, sizeof(*fr));
+    MD_MEMSET(fr, 0, sizeof(*fr));
 }

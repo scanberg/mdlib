@@ -118,7 +118,7 @@ UTEST(vial_bench, against_v1) {
     const str_t traj = traj_env ? str_from_cstr(traj_env) : STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     const int reps = getenv("VIAL_BENCH_REPS") ? atoi(getenv("VIAL_BENCH_REPS")) : 3;
 
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(vial_bench_load(&sys, &state, top, traj));
@@ -133,12 +133,12 @@ UTEST(vial_bench, against_v1) {
     // VIAL_BENCH_ONLY=i: pair i alone, for a profiler; nothing else is run
     const int only = getenv("VIAL_BENCH_ONLY") ? atoi(getenv("VIAL_BENCH_ONLY")) : -1;
     double sum_v1 = 0.0, sum_v2 = 0.0;
-    for (size_t i = 0; i < ARRAY_SIZE(vial_bench_pairs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(vial_bench_pairs); ++i) {
         if (only >= 0 && (size_t)only != i) continue;
         double best[4] = {1e30, 1e30, 1e30, 1e30};
         bool ok = true;
         for (int r = 0; r < reps && ok; ++r) {
-            md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+            md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
             double c1, e1, c2, e2;
             // Every other rep runs v2 first, so neither gains from running second, in a warm cache
             ok = r % 2 ? bench_v2(vial_bench_pairs[i].v2, &sys, a, &c2, &e2) && bench_v1(vial_bench_pairs[i].v1, &sys, nf, a, &c1, &e1)
@@ -174,7 +174,7 @@ UTEST(vial_bench, against_v1) {
     // What a cache across compiles would save: 100 lines of selections, compiled as on every keystroke
     {
         char* src = NULL;
-        md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+        md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
         const uint32_t nres = (uint32_t)md_system_residue_count(&sys);
         for (uint32_t k = 0; k < 100; ++k) {
             char line[160];
@@ -206,7 +206,7 @@ UTEST(vial_bench, against_v1) {
     {
         double with_at = 1e30, without = 1e30;
         for (int r = 0; r < reps; ++r) {
-            md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+            md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
             double c, e;
             if (bench_v2("ref = at(particle.xyz, frame=0)\np = rmsd(particle, ref)", &sys, a, &c, &e) && e < with_at) with_at = e;
             if (bench_v2("p = rmsd(particle, particle.xyz)", &sys, a, &c, &e) && e < without) without = e;

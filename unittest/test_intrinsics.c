@@ -9,9 +9,9 @@
 
 UTEST(intrinsics, memset) {
     char data[131];
-    MEMSET(data, 4, sizeof(data));
+    MD_MEMSET(data, 4, sizeof(data));
 
-    for (int i = 0; i < ARRAY_SIZE(data); ++i) {
+    for (int i = 0; i < MD_COUNTOF(data); ++i) {
         EXPECT_EQ(data[i], 4);
     }
 }
@@ -19,12 +19,12 @@ UTEST(intrinsics, memset) {
 UTEST(intrinsics, memcpy) {
     int a[131];
     int b[131];
-    for (int i = 0; i < ARRAY_SIZE(a); ++i) {
+    for (int i = 0; i < MD_COUNTOF(a); ++i) {
         a[i] = i;
     }
-    MEMCPY(b, a, sizeof(b));
+    MD_MEMCPY(b, a, sizeof(b));
 
-    for (int i = 0; i < ARRAY_SIZE(a); ++i) {
+    for (int i = 0; i < MD_COUNTOF(a); ++i) {
         EXPECT_EQ(a[i], b[i]);
     }
 }
@@ -33,53 +33,53 @@ UTEST(intrinsics, test) {
     {
         static const uint32_t mask[5] = {0, 0xFFU, 0xFFFFU, 0xFFFFFFU, 0xFFFFFFFFU};
 
-        EXPECT_EQ(clz32(mask[1]), 24);
-        EXPECT_EQ(clz32(mask[2]), 16);
-        EXPECT_EQ(clz32(mask[3]), 8);
-        EXPECT_EQ(clz32(mask[4]), 0);
+        EXPECT_EQ(md_clz32(mask[1]), 24);
+        EXPECT_EQ(md_clz32(mask[2]), 16);
+        EXPECT_EQ(md_clz32(mask[3]), 8);
+        EXPECT_EQ(md_clz32(mask[4]), 0);
 
-        EXPECT_EQ(popcnt32(mask[0]), 0);
-        EXPECT_EQ(popcnt32(mask[1]), 8);
-        EXPECT_EQ(popcnt32(mask[2]), 16);
-        EXPECT_EQ(popcnt32(mask[3]), 24);
-        EXPECT_EQ(popcnt32(mask[4]), 32);
+        EXPECT_EQ(md_popcnt32(mask[0]), 0);
+        EXPECT_EQ(md_popcnt32(mask[1]), 8);
+        EXPECT_EQ(md_popcnt32(mask[2]), 16);
+        EXPECT_EQ(md_popcnt32(mask[3]), 24);
+        EXPECT_EQ(md_popcnt32(mask[4]), 32);
     }
 
     {
         static const uint32_t mask[5] = {0, (1U << 8), (1U << 16), (1U << 24), (1U << 31)};
 
-        EXPECT_EQ(bsf32(mask[0]), 0);
-        EXPECT_EQ(bsf32(mask[1]), 9);
-        EXPECT_EQ(bsf32(mask[2]), 17);
-        EXPECT_EQ(bsf32(mask[3]), 25);
-        EXPECT_EQ(bsf32(mask[4]), 32);
+        EXPECT_EQ(md_bsf32(mask[0]), 0);
+        EXPECT_EQ(md_bsf32(mask[1]), 9);
+        EXPECT_EQ(md_bsf32(mask[2]), 17);
+        EXPECT_EQ(md_bsf32(mask[3]), 25);
+        EXPECT_EQ(md_bsf32(mask[4]), 32);
 
-        EXPECT_EQ(bsr32(mask[0]), 0);
-        EXPECT_EQ(bsr32(mask[1]), 9);
-        EXPECT_EQ(bsr32(mask[2]), 17);
-        EXPECT_EQ(bsr32(mask[3]), 25);
-        EXPECT_EQ(bsr32(mask[4]), 32);
+        EXPECT_EQ(md_bsr32(mask[0]), 0);
+        EXPECT_EQ(md_bsr32(mask[1]), 9);
+        EXPECT_EQ(md_bsr32(mask[2]), 17);
+        EXPECT_EQ(md_bsr32(mask[3]), 25);
+        EXPECT_EQ(md_bsr32(mask[4]), 32);
     }
 
-    EXPECT_EQ(next_power_of_two32(3), 4);
-    EXPECT_EQ(next_power_of_two32(31), 32);
-    EXPECT_EQ(next_power_of_two32(32), 32);
-    EXPECT_EQ(next_power_of_two32(5), 8);
-    EXPECT_EQ(next_power_of_two32(8000), 8192);
+    EXPECT_EQ(md_next_power_of_two32(3), 4);
+    EXPECT_EQ(md_next_power_of_two32(31), 32);
+    EXPECT_EQ(md_next_power_of_two32(32), 32);
+    EXPECT_EQ(md_next_power_of_two32(5), 8);
+    EXPECT_EQ(md_next_power_of_two32(8000), 8192);
 
-    EXPECT_EQ(next_power_of_two64(sizeof(void*)), sizeof(void*));
+    EXPECT_EQ(md_next_power_of_two64(sizeof(void*)), sizeof(void*));
 
 
 
     uint64_t res = 0;
-    res = find_first_zero_byte64(65280);
-    res = find_first_zero_byte64(255);
-    res = find_first_zero_byte64(65535);
+    res = md_find_first_zero_byte64(65280);
+    res = md_find_first_zero_byte64(255);
+    res = md_find_first_zero_byte64(65535);
 
 
-    EXPECT_EQ(find_first_zero_byte32(65280),      0); // 1111111100000000
-    EXPECT_EQ(find_first_zero_byte32(255),        1); // 0000000011111111
-    EXPECT_EQ(find_first_zero_byte32(65535),      2); // 000000001111111111111111
+    EXPECT_EQ(md_find_first_zero_byte32(65280),      0); // 1111111100000000
+    EXPECT_EQ(md_find_first_zero_byte32(255),        1); // 0000000011111111
+    EXPECT_EQ(md_find_first_zero_byte32(65535),      2); // 000000001111111111111111
 
 }
 
@@ -116,7 +116,7 @@ UTEST(intrinsics, bits_defined_everywhere) {
     vals[n++] = UINT64_MAX;
     for (unsigned i = 0; i < 64; ++i) vals[n++] = (uint64_t)1 << i;
     uint64_t s = 0x9E3779B97F4A7C15ull;
-    while (n < ARRAY_SIZE(vals)) {
+    while (n < MD_COUNTOF(vals)) {
         const uint64_t r = ref_rng(&s);
         vals[n++] = r >> (r & 63);      // all magnitudes
     }
@@ -124,21 +124,21 @@ UTEST(intrinsics, bits_defined_everywhere) {
     for (size_t i = 0; i < n; ++i) {
         const uint64_t x = vals[i];
         const uint32_t y = (uint32_t)x;
-        EXPECT_EQ(ref_clz(x, 64), clz64(x));
-        EXPECT_EQ(ref_ctz(x, 64), ctz64(x));
-        EXPECT_EQ(ref_clz(y, 32), clz32(y));
-        EXPECT_EQ(ref_ctz(y, 32), ctz32(y));
-        EXPECT_EQ(ref_pop(x), popcnt64(x));
-        EXPECT_EQ(ref_pop(y), popcnt32(y));
-        EXPECT_EQ(x ? ref_ctz(x, 64) + 1 : 0, bsf64(x));
-        EXPECT_EQ(x ? 64 - ref_clz(x, 64) : 0, bsr64(x));
-        EXPECT_EQ(y ? ref_ctz(y, 32) + 1 : 0, bsf32(y));
-        EXPECT_EQ(y ? 32 - ref_clz(y, 32) : 0, bsr32(y));
+        EXPECT_EQ(ref_clz(x, 64), md_clz64(x));
+        EXPECT_EQ(ref_ctz(x, 64), md_ctz64(x));
+        EXPECT_EQ(ref_clz(y, 32), md_clz32(y));
+        EXPECT_EQ(ref_ctz(y, 32), md_ctz32(y));
+        EXPECT_EQ(ref_pop(x), md_popcnt64(x));
+        EXPECT_EQ(ref_pop(y), md_popcnt32(y));
+        EXPECT_EQ(x ? ref_ctz(x, 64) + 1 : 0, md_bsf64(x));
+        EXPECT_EQ(x ? 64 - ref_clz(x, 64) : 0, md_bsr64(x));
+        EXPECT_EQ(y ? ref_ctz(y, 32) + 1 : 0, md_bsf32(y));
+        EXPECT_EQ(y ? 32 - ref_clz(y, 32) : 0, md_bsr32(y));
 
         unsigned zb = 0; while (zb < 8 && ((x >> (8 * zb)) & 0xFF)) ++zb;
-        EXPECT_EQ(zb, find_first_zero_byte64(x));
+        EXPECT_EQ(zb, md_find_first_zero_byte64(x));
         unsigned zn = 0; while (zn < 4 && ((y >> (4 * zn)) & 0xF)) ++zn;
-        EXPECT_EQ(zn, find_first_zero_nibble16((uint16_t)y));
+        EXPECT_EQ(zn, md_find_first_zero_nibble16((uint16_t)y));
 
         uint64_t lo, hi, rlo, rhi;
         const uint64_t b = vals[(i * 7 + 3) % n];

@@ -34,11 +34,11 @@ static str_t pot_intern(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
 }
 
 static void pot_copy_symbol(char dst[4], str_t tok, int line) {
-    size_t len = MIN(tok.len, (size_t)3);
+    size_t len = MD_MIN(tok.len, (size_t)3);
     if (tok.len > 3) {
         MD_LOG_INFO("POT: line %i: element symbol '%.*s' is longer than 3 characters and was truncated", line, (int)tok.len, tok.ptr);
     }
-    MEMCPY(dst, tok.ptr, len);
+    MD_MEMCPY(dst, tok.ptr, len);
     dst[len] = '\0';
 }
 
@@ -73,7 +73,7 @@ bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
         return false;
     }
 
-    MEMSET(pot, 0, sizeof(md_pot_t));
+    MD_MEMSET(pot, 0, sizeof(md_pot_t));
 
     section_t section = SECTION_NONE;
     bool in_xyz = false;    // Set once the 'xyz:' directive has been seen within @environment
@@ -123,7 +123,7 @@ bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
 
         str_t  tok[10];
         str_t  rem = l;
-        size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &rem);
+        size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rem);
 
         if (section == SECTION_ENVIRONMENT && !in_xyz) {
             // Directives of the form 'key: value'. Coordinate rows never contain a colon.
@@ -248,7 +248,7 @@ bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
             break;
         }
         default:
-            ASSERT(false);
+            MD_ASSERT(false);
             break;
         }
     }
@@ -300,8 +300,8 @@ bool md_pot_parse_file(md_pot_t* pot, str_t filename, md_allocator_i* alloc) {
 }
 
 void md_pot_free(md_pot_t* pot, md_allocator_i* alloc) {
-    ASSERT(pot);
-    ASSERT(alloc);
+    MD_ASSERT(pot);
+    MD_ASSERT(alloc);
 
     md_array_free(pot->sites, alloc);
     md_array_free(pot->charges, alloc);
@@ -312,5 +312,5 @@ void md_pot_free(md_pot_t* pot, md_allocator_i* alloc) {
     }
     md_array_free(pot->strings, alloc);
 
-    MEMSET(pot, 0, sizeof(md_pot_t));
+    MD_MEMSET(pot, 0, sizeof(md_pot_t));
 }

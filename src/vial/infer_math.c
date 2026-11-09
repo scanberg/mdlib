@@ -116,7 +116,7 @@ typedef enum red_t { RED_SUM, RED_MEAN, RED_MIN, RED_MAX, RED_STD, RED_VAR, RED_
 
 static int reduction_of(str_t name) {
     static const char* names[] = {"sum", "mean", "min", "max", "std", "var", "any", "all", "argmin", "argmax", "prod", "median", "percentile"};
-    for (int i = 0; i < (int)ARRAY_SIZE(names); ++i) if (str_eq(name, str_from_cstr(names[i]))) return i;
+    for (int i = 0; i < (int)MD_COUNTOF(names); ++i) if (str_eq(name, str_from_cstr(names[i]))) return i;
     return -1;
 }
 
@@ -1150,14 +1150,14 @@ bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (red >= 0) { *out = call_reduce(x, call, red, fname); return true; }
     static const char* math[] = {"abs", "floor", "ceil", "round", "clip", "sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos",
                                  "atan", "atan2", "dot", "cross", "norm", "normalize", "where", "unitless", "float", "int"};
-    for (size_t i = 0; i < ARRAY_SIZE(math); ++i) if (str_eq(name, str_from_cstr(math[i]))) { *out = call_math(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(math); ++i) if (str_eq(name, str_from_cstr(math[i]))) { *out = call_math(x, call, name, fname); return true; }
     static const char* build[] = {"shape", "zeros", "ones", "full", "zeros_like", "ones_like", "linspace", "arange", "eye", "reshape", "flatten", "diff",
                                   "cumsum", "sort", "argsort"};
-    for (size_t i = 0; i < ARRAY_SIZE(build); ++i) if (str_eq(name, str_from_cstr(build[i]))) { *out = call_build(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(build); ++i) if (str_eq(name, str_from_cstr(build[i]))) { *out = call_build(x, call, name, fname); return true; }
     static const char* linalg[] = {"covariance", "eigh", "trace", "det", "inv", "solve"};
-    for (size_t i = 0; i < ARRAY_SIZE(linalg); ++i) if (str_eq(name, str_from_cstr(linalg[i]))) { *out = call_linalg(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(linalg); ++i) if (str_eq(name, str_from_cstr(linalg[i]))) { *out = call_linalg(x, call, name, fname); return true; }
     static const char* missing[] = {"missing_where", "valid", "filled"};
-    for (size_t i = 0; i < ARRAY_SIZE(missing); ++i) if (str_eq(name, str_from_cstr(missing[i]))) { *out = call_missing(x, call, name, fname); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(missing); ++i) if (str_eq(name, str_from_cstr(missing[i]))) { *out = call_missing(x, call, name, fname); return true; }
     if (str_eq(name, STR_LIT("concatenate"))) { *out = call_concatenate(x, call); return true; }
     if (str_eq(name, STR_LIT("common")))      { *out = call_common(x, call); return true; }
     return false;

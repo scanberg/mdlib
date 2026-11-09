@@ -134,7 +134,7 @@ struct script {
 };
 
 UTEST_F_SETUP(script) {
-    utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
+    utest_fixture->arena = md_vm_arena_create(MD_GIGABYTES(4));
 
     utest_fixture->amy.alloc = utest_fixture->arena;
     md_system_state_t amy_state = { .alloc = utest_fixture->arena };
@@ -162,8 +162,8 @@ UTEST_F_TEARDOWN(script) {
 
 // The union of what expr evaluates to, allocated with alloc
 static bool eval_selection(md_bitset_t* out, str_t expr, md_system_t* mol, md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(mol);
+    MD_ASSERT(out);
+    MD_ASSERT(mol);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
@@ -196,7 +196,7 @@ static uint64_t bitset_bits64(md_bitset_t s) {
 static uint64_t make_bits(const char* bit_str) {    
     uint64_t bits = 0;
     const uint64_t num_bits = strlen(bit_str);
-    ASSERT(num_bits < 64);
+    MD_ASSERT(num_bits < 64);
     for (uint64_t i = 0; i < num_bits; i++) {
         const uint64_t bit_mask = (1LLU << i);
         if (bit_str[i] != '0')
@@ -360,7 +360,7 @@ static uint64_t compiled_fingerprint(md_script_ir_t* ir, const char* src, const 
 
 // A property's fingerprint is what it is computed from: not its name, its spelling, or the rest of the script
 UTEST_F(script, property_fingerprint) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* sys = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -1220,7 +1220,7 @@ UTEST(script, stride_procedures_selectors) {
 }
 
 UTEST_F(script, compile_script) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     str_t script_src = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
     // The script was written when the strands of a system without chain ids were chains found by position; they are
     // polymers now (chain() is the data's ids only). Read it as such until the file says polymer().
@@ -1249,7 +1249,7 @@ UTEST_F(script, compile_script) {
 
 // sum() of a constant array is folded at compile time, ints converted to floats
 UTEST_F(script, sum) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     data_t data = {0};
     ASSERT_TRUE(eval_expression(&data, STR_LIT("sum({1.0, 2.0, 3.5})"), &test_mol, alloc));
     EXPECT_EQ(6.5f, as_float(data));
@@ -1261,7 +1261,7 @@ UTEST_F(script, sum) {
 }
 
 UTEST_F(script, implicit_conversion) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->amy;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     
@@ -1274,7 +1274,7 @@ UTEST_F(script, implicit_conversion) {
 }
 
 UTEST_F(script, semantic) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->amy;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1308,7 +1308,7 @@ UTEST_F(script, semantic) {
 }
 
 UTEST_F(script, selection_big) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->amy;
 
     md_bitset_t bf = {0};
@@ -1345,7 +1345,7 @@ static const double WITHIN_RADII[] = { 2.0, 10.0, 24.0, 47.0, 60.0, 120.0, 700.0
 // in the test body, so a shared helper has to take it along explicitly.
 static void within_radius_sweep(int* utest_result, md_system_t* mol, const char* tag, md_allocator_i* alloc) {
     size_t prev_count = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(WITHIN_RADII); ++i) {
         char expr[128];
         snprintf(expr, sizeof(expr), "within(%.1f, atom(1))", WITHIN_RADII[i]);
 
@@ -1371,14 +1371,14 @@ static void within_radius_sweep(int* utest_result, md_system_t* mol, const char*
     // The last radius in the sweep dwarfs every cell in the fixture, so nothing can be outside it.
     if (prev_count != mol->atom.count - 1) {
         printf("  [%s] at r=%.1f expected all %zu atoms bar the query atom, got %zu\n",
-               tag, WITHIN_RADII[ARRAY_SIZE(WITHIN_RADII) - 1], mol->atom.count - 1, prev_count);
+               tag, WITHIN_RADII[MD_COUNTOF(WITHIN_RADII) - 1], mol->atom.count - 1, prev_count);
     }
     EXPECT_EQ(mol->atom.count - 1, prev_count);
 }
 
 UTEST_F(script, within_radius_sweep_ortho) {
     // 1ALA-560ns: orthorhombic, 46.6 x 96.7 x 48.4 A. Radii past ~46 A exceed the shortest axis.
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     within_radius_sweep(utest_result, &utest_fixture->ala, "1ALA ortho 47x97x48", alloc);
     md_arena_allocator_destroy(alloc);
 }
@@ -1386,7 +1386,7 @@ UTEST_F(script, within_radius_sweep_ortho) {
 UTEST_F(script, within_radius_sweep_elongated) {
     // centered.gro: 216 x 216 x 642 A. Very anisotropic, so the cell grid collapses along x and y
     // long before it does along z.
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     within_radius_sweep(utest_result, &utest_fixture->amy, "centered ortho 216x216x642", alloc);
     md_arena_allocator_destroy(alloc);
 }
@@ -1394,7 +1394,7 @@ UTEST_F(script, within_radius_sweep_elongated) {
 UTEST_F(script, within_radius_sweep_triclinic) {
     // npt.gro: rhombic dodecahedron, a = b = 47.8 A, c = 33.8 A, third vector leaning half a cell in
     // x and y. The triclinic neighbour walk is a separate code path from the orthorhombic one.
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     within_radius_sweep(utest_result, &utest_fixture->npt, "npt triclinic dodecahedron", alloc);
     md_arena_allocator_destroy(alloc);
 }
@@ -1402,10 +1402,10 @@ UTEST_F(script, within_radius_sweep_triclinic) {
 // The frange overload takes a different path into the same machinery, and it is the one the report
 // names ("the range argument"). An inner bound of zero has to agree with the scalar overload.
 UTEST_F(script, within_radius_sweep_frange) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
 
-    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(WITHIN_RADII); ++i) {
         char expr_rng[128];
         char expr_flt[128];
         snprintf(expr_rng, sizeof(expr_rng), "within(0:%.1f, atom(1))", WITHIN_RADII[i]);
@@ -1433,13 +1433,13 @@ UTEST_F(script, within_radius_sweep_frange) {
 // which is what a representation does. The spatial acc is rebuilt from each frame's coordinates and
 // unit cell, so a frame dependent failure only shows up here.
 UTEST_F(script, within_radius_over_trajectory) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
     ASSERT_GT(num_frames, 0u);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    for (size_t i = 0; i < ARRAY_SIZE(WITHIN_RADII); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(WITHIN_RADII); ++i) {
         char src_buf[160];
         snprintf(src_buf, sizeof(src_buf), "n%zu = count(within(%.1f, atom(1)));", i, WITHIN_RADII[i]);
 
@@ -1457,7 +1457,7 @@ UTEST_F(script, within_radius_over_trajectory) {
 }
 
 UTEST_F(script, dynamic_length) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1471,7 +1471,7 @@ UTEST_F(script, dynamic_length) {
 }
 
 UTEST_F(script, property_compute) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     uint32_t num_frames = (uint32_t)script_frames(mol);
 
@@ -1613,7 +1613,7 @@ UTEST_F(script, property_compute) {
 // this checks is that the attribute IS the property - the same storage and the shape the property
 // kind implies - rather than a second copy of it that could drift.
 UTEST_F(script, property_attributes) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     uint32_t num_frames = (uint32_t)script_frames(mol);
 
@@ -1717,8 +1717,8 @@ UTEST_F(script, property_attributes) {
         const float* values = (const float*)attr->data;
         float lo = FLT_MAX, hi = -FLT_MAX;
         for (uint32_t k = 0; k < pop; ++k) {
-            lo = MIN(lo, values[k]);
-            hi = MAX(hi, values[k]);
+            lo = MD_MIN(lo, values[k]);
+            hi = MD_MAX(hi, values[k]);
         }
         EXPECT_EQ(lo, minmax[0]);
         EXPECT_EQ(hi, minmax[1]);
@@ -1807,7 +1807,7 @@ UTEST_F(script, property_attributes) {
 }
 
 UTEST_F(script, identifier_names) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("first = 1;\nsecond = 2;"), &utest_fixture->ala, NULL));
 
@@ -1863,9 +1863,9 @@ void func(void* user_data) {
             snprintf(path, sizeof(path), "script/%.*s", (int)props[p_idx].len, props[p_idx].ptr);
             const md_attribute_t* cur = md_attributes_find(md_script_eval_attributes(data->eval),     str_from_cstr(path));
             const md_attribute_t* ref = md_attributes_find(md_script_eval_attributes(data->ref_eval), str_from_cstr(path));
-            ASSERT(cur && ref);
+            MD_ASSERT(cur && ref);
             const size_t num_values = md_attribute_element_count(&cur->format);
-            ASSERT(num_values == md_attribute_element_count(&ref->format));
+            MD_ASSERT(num_values == md_attribute_element_count(&ref->format));
             const float* cur_values = (const float*)cur->data;
             const float* ref_values = (const float*)ref->data;
             for (size_t i = 0; i < num_values; ++i) {
@@ -1879,7 +1879,7 @@ void func(void* user_data) {
 }
 
 UTEST_F(script, parallel_evaluation) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
 
     const str_t script = STR_INIT("p1 = distance(1,10);");
@@ -1937,7 +1937,7 @@ UTEST_F(script, parallel_evaluation) {
 }
 
 UTEST_F(script, parse_unary_binary) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1968,7 +1968,7 @@ UTEST_F(script, parse_unary_binary) {
 }
 
 UTEST_F(script, visualize) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -2015,7 +2015,7 @@ UTEST(script, named_args_signature_table) {
         STR_INIT("in"), STR_INIT("of"), STR_INIT("out"), STR_INIT("and"), STR_INIT("or"), STR_INIT("xor"), STR_INIT("not"),
     };
 
-    for (size_t s = 0; s < ARRAY_SIZE(signatures); ++s) {
+    for (size_t s = 0; s < MD_COUNTOF(signatures); ++s) {
         const proc_sig_t* sig = &signatures[s];
         char msg[256];
         snprintf(msg, sizeof(msg), "signature of '%.*s'", STR_ARG(sig->proc));
@@ -2023,7 +2023,7 @@ UTEST(script, named_args_signature_table) {
         EXPECT_TRUE_MSG(sig->num_params > 0 && sig->num_params <= MAX_SUPPORTED_PROC_ARGS, msg);
 
         // One signature per procedure name
-        for (size_t t = s + 1; t < ARRAY_SIZE(signatures); ++t) {
+        for (size_t t = s + 1; t < MD_COUNTOF(signatures); ++t) {
             EXPECT_FALSE_MSG(str_eq(sig->proc, signatures[t].proc), msg);
         }
 
@@ -2034,7 +2034,7 @@ UTEST(script, named_args_signature_table) {
             snprintf(msg, sizeof(msg), "parameter '%.*s' of '%.*s'", STR_ARG(param->name), STR_ARG(sig->proc));
 
             EXPECT_TRUE_MSG(md_script_identifier_name_valid(param->name), msg);
-            for (size_t k = 0; k < ARRAY_SIZE(keywords); ++k) {
+            for (size_t k = 0; k < MD_COUNTOF(keywords); ++k) {
                 EXPECT_FALSE_MSG(str_eq(param->name, keywords[k]), msg);
             }
             for (size_t q = p + 1; q < sig->num_params; ++q) {
@@ -2059,11 +2059,11 @@ UTEST(script, named_args_signature_table) {
         // Every overload fits the signature
         size_t num_overloads = 0;
         size_t min_arity = SIZE_MAX;
-        for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
             const procedure_t* proc = &procedures[i];
             if (!str_eq(proc->name, sig->proc)) continue;
             num_overloads += 1;
-            min_arity = MIN(min_arity, proc->num_args);
+            min_arity = MD_MIN(min_arity, proc->num_args);
 
             snprintf(msg, sizeof(msg), "overload of '%.*s' taking %i arguments", STR_ARG(sig->proc), (int)proc->num_args);
             EXPECT_FALSE_MSG(proc->flags & FLAG_SYMMETRIC_ARGS, msg);
@@ -2129,7 +2129,7 @@ static bool named_args_equivalent(const char* positional, const char* named, md_
 }
 
 UTEST_F(script, named_args_equivalence) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
 
     static const char* cases[][2] = {
@@ -2157,7 +2157,7 @@ UTEST_F(script, named_args_equivalence) {
         {"count(within(4.0, residue(1)))",          "count(sel=within(around=residue(1), radius=4.0))"},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         EXPECT_TRUE(named_args_equivalent(cases[i][0], cases[i][1], sys, alloc));
     }
 
@@ -2165,7 +2165,7 @@ UTEST_F(script, named_args_equivalence) {
 }
 
 UTEST_F(script, named_args_compile) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* sys = &utest_fixture->ala;
 
     // The default script of viamd, and the same script with its arguments given by name in a different order.
@@ -2237,7 +2237,7 @@ UTEST(script, index_selectors_in_context) {
     EXPECT_TRUE(test_selection("residue(1) in resname('PFT')", "0000000011111111"));
     EXPECT_TRUE(test_selection("residue(2) in resname('PFT')", "0000000000000000"));
 
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_script_ir_t* ir = md_script_ir_create(alloc);
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(5);",  "past the last residue (4)"));
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(0);",  "before the first residue"));
@@ -2250,7 +2250,7 @@ UTEST(script, index_selectors_in_context) {
 }
 
 UTEST_F(script, named_args_errors) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* sys = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -2281,7 +2281,7 @@ static ast_node_t* named_args_parse_only(md_script_ir_t* ir, const char* expr, m
 // The binder on its own, against signatures which exercise what the procedures ported so far do not:
 // defaults, keyword only parameters, omitted optional parameters and parameter names shadowing procedures.
 UTEST_F(script, named_args_binding) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_script_ir_t* ir = create_ir(alloc);
     eval_context_t ctx = {
         .ir = ir,
@@ -2400,7 +2400,7 @@ static bool compiles(md_script_ir_t* ir, const char* src, const md_system_t* sys
 // attr() reads a temporal attribute of the system at the frame being evaluated. The attribute keeps
 // its own axis - here one sampled twice as often as the trajectory - and the row is found by time.
 UTEST(script, attr_reads_a_temporal_attribute_at_the_frame) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
@@ -2522,7 +2522,7 @@ static str_t eval_label(const md_script_eval_t* eval, const char* path, size_t i
 // attr("edr/coul_sr_*"): every attribute the pattern matches, an array over them in path order, whose members are named
 // in the evaluation's table (script/<ident>/labels) wherever what a property holds is still that array.
 UTEST(script, attr_patterns) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
@@ -2742,7 +2742,7 @@ UTEST(script, glob_match) {
     EXPECT_TRUE (glob_match_path(STR_LIT("xvg/*/coul_*"), STR_LIT("xvg/energy/coul_sr")));
     EXPECT_FALSE(glob_match_path(STR_LIT("xvg/*/coul_*"), STR_LIT("xvg/energy/lj_sr")));
 
-    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_MEGABYTES(1));
     EXPECT_TRUE(str_eq(glob_varying_segments(STR_LIT("edr/coul_*"),   STR_LIT("edr/coul_sol"),   arena), STR_LIT("coul_sol")));
     EXPECT_TRUE(str_eq(glob_varying_segments(STR_LIT("xvg/*/coul_*"), STR_LIT("xvg/e/coul_x"),   arena), STR_LIT("e/coul_x")));
     md_vm_arena_destroy(arena);
@@ -2750,7 +2750,7 @@ UTEST(script, glob_match) {
 
 // name(), resname() and instance() select by the same patterns
 UTEST(script, name_patterns) {
-    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* arena = md_vm_arena_create(MD_MEGABYTES(64));
     const struct { const char* pattern; int kind; char a; char b; } cases[] = {
         {"*A*", 0, 'A', 0},     // contains A
         {"*E",  1, 'E', 0},     // ends with E
@@ -2758,7 +2758,7 @@ UTEST(script, name_patterns) {
         {"C*A", 3, 'C', 'A'},   // begins with C, ends with A
         {"*",   4, 0, 0},       // anything
     };
-    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+    for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         char src[64];
         snprintf(src, sizeof(src), "name(\"%s\")", cases[c].pattern);
         md_bitset_t sel = {0};
@@ -2794,7 +2794,7 @@ static const float* eval_property_data(md_script_eval_t* eval, const char* name)
 
 // distance_max used to call the routine for the minimum distance.
 UTEST_F(script, distance_max_is_the_largest_distance) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
 
@@ -2824,7 +2824,7 @@ UTEST(script, xor_of_selections_covers_the_union_of_the_ranges) {
 
 // contact_count started each element with the total of the previous ones.
 UTEST_F(script, contact_count_is_counted_per_element) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
 
@@ -2855,7 +2855,7 @@ UTEST_F(script, contact_count_is_counted_per_element) {
 
 // An identifier that unpacks a right hand side which is known at compile time used to hold a null pointer.
 UTEST_F(script, destructuring_a_constant) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -2887,7 +2887,7 @@ UTEST_F(script, destructuring_a_constant) {
 // Comparisons used to be rejected in every form: the array overload came first and swallowed a scalar operand, and
 // a comparison could not be followed by an identifier.
 UTEST_F(script, comparison_operators_compile) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -2900,7 +2900,7 @@ UTEST_F(script, comparison_operators_compile) {
         "a = distance(1, 2) in residue(1:3); b = (a < 1.01) and not (a > 1.005); c = (a >= 1.0) xor (a <= 1.5);",
         "d = distance(1, 2); b = (d < 2.0) and (d > 0.5);",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ok); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ok); ++i) {
         EXPECT_TRUE(compiles(ir, ok[i], mol));
         if (md_script_ir_valid(ir)) {
             md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -2962,7 +2962,7 @@ UTEST(script, reference_documents_every_procedure) {
         const str_t name = reference_meta_value(line, STR_LIT("name"));
         snprintf(msg, sizeof(msg), "procedure comment without a name: '%.*s'", STR_ARG(line));
         EXPECT_FALSE_MSG(str_empty(name), msg);
-        ASSERT_LT(num_names, ARRAY_SIZE(names));
+        ASSERT_LT(num_names, MD_COUNTOF(names));
         names[num_names++] = name;
 
         str_t list = reference_meta_value(line, STR_LIT("aliases"));
@@ -2971,28 +2971,28 @@ UTEST(script, reference_documents_every_procedure) {
             str_find_char(&comma, list, ',');
             const str_t alias = str_trim(str_substr(list, 0, comma));
             if (!str_empty(alias)) {
-                ASSERT_LT(num_names, ARRAY_SIZE(names));
+                ASSERT_LT(num_names, MD_COUNTOF(names));
                 names[num_names++] = alias;
             }
-            list = str_substr(list, MIN(comma + 1, list.len), SIZE_MAX);
+            list = str_substr(list, MD_MIN(comma + 1, list.len), SIZE_MAX);
         }
     }
     EXPECT_GT(num_names, (size_t)0);
 
-    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
         if (procedure_table_contains(procedures, i, procedures[i].name)) continue;  // another overload, already checked
         snprintf(msg, sizeof(msg), "procedure '%.*s' has no entry in docs/script_reference.md", STR_ARG(procedures[i].name));
         EXPECT_TRUE_MSG(reference_contains(names, num_names, procedures[i].name), msg);
     }
-    for (size_t i = 0; i < ARRAY_SIZE(intrinsics); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(intrinsics); ++i) {
         snprintf(msg, sizeof(msg), "procedure '%.*s' has no entry in docs/script_reference.md", STR_ARG(intrinsics[i]));
         EXPECT_TRUE_MSG(reference_contains(names, num_names, intrinsics[i]), msg);
     }
     for (size_t i = 0; i < num_names; ++i) {
-        const bool known = procedure_table_contains(procedures, ARRAY_SIZE(procedures), names[i]) ||
-                           procedure_table_contains(operators,  ARRAY_SIZE(operators),  names[i]) ||
-                           procedure_table_contains(casts,      ARRAY_SIZE(casts),      names[i]) ||
-                           reference_contains(intrinsics, ARRAY_SIZE(intrinsics), names[i]);
+        const bool known = procedure_table_contains(procedures, MD_COUNTOF(procedures), names[i]) ||
+                           procedure_table_contains(operators,  MD_COUNTOF(operators),  names[i]) ||
+                           procedure_table_contains(casts,      MD_COUNTOF(casts),      names[i]) ||
+                           reference_contains(intrinsics, MD_COUNTOF(intrinsics), names[i]);
         snprintf(msg, sizeof(msg), "docs/script_reference.md documents '%.*s', which the parser does not know", STR_ARG(names[i]));
         EXPECT_TRUE_MSG(known, msg);
     }
@@ -3054,7 +3054,7 @@ static bool memo_same_property(const md_script_eval_t* a, const md_script_eval_t
 }
 
 UTEST_F(script, identifier_memoization) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
     const size_t num_frames = script_frames(sys);
     ASSERT_GT(num_frames, (size_t)1);
@@ -3111,7 +3111,7 @@ UTEST_F(script, identifier_memoization) {
 // Referenced within a context, the expression is evaluated per context and must not be replaced by the
 // value computed outside of it.
 UTEST_F(script, identifier_memoization_context) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -3140,7 +3140,7 @@ UTEST_F(script, identifier_memoization_context) {
 // storage of a single element, which asserted. Now they are memoized, and where that cannot apply (within a
 // context) the element is extracted from an evaluation of the whole expression.
 UTEST_F(script, identifier_destructured_reference) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
     const size_t num_frames = script_frames(sys);
 
@@ -3149,7 +3149,7 @@ UTEST_F(script, identifier_destructured_reference) {
         "{x, y, z} = coord(1); a = x + y + z;",
         "{x, y, z} = com(residue(1)); a = x in residue(1:3);",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(srcs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(srcs); ++i) {
         md_script_ir_t* ir = md_script_ir_create(alloc);
         EXPECT_TRUE_MSG(md_script_ir_compile_from_source(ir, str_from_cstr(srcs[i]), sys, NULL), srcs[i]);
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -3176,7 +3176,7 @@ UTEST_F(script, identifier_destructured_reference) {
 // in the result, doubling the work for every level of nesting.
 
 UTEST_F(script, variable_length_single_evaluation) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
     const size_t num_frames = script_frames(sys);
 
@@ -3261,7 +3261,7 @@ static bool contacts_compile_fails_with(md_system_t* sys, md_allocator_i* alloc,
 }
 
 UTEST_F(script, contacts_compile) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* sys = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -3303,7 +3303,7 @@ static md_bitset_t* contacts_residue_groups(size_t* out_num, const md_system_t* 
 
 // Per frame, what the script publishes against md_contact on the same frame
 UTEST_F(script, contacts_matches_kernel) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
     const size_t num_frames = script_frames(sys);
 
@@ -3363,7 +3363,7 @@ UTEST_F(script, contacts_matches_kernel) {
 
 // chunks: consecutive runs of the given size, per element, in index order
 UTEST_F(script, chunks) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* sys = &utest_fixture->ala;
 
     // The evaluation's transient allocator is a temp arena, as in every evaluation
@@ -3382,7 +3382,7 @@ UTEST_F(script, chunks) {
     for (size_t c = 0; c < sys->residue.count; ++c) {
         const md_urange_t range = md_system_residue_atom_range(sys, c);
         for (uint32_t beg = range.beg; beg < range.end; beg += 7) {
-            const uint32_t end = MIN(beg + 7, range.end);
+            const uint32_t end = MD_MIN(beg + 7, range.end);
             ASSERT_LT(expected, num_chunks);
             EXPECT_EQ((size_t)(end - beg), md_bitset_count(chunk[expected]));
             EXPECT_EQ((size_t)(end - beg), md_bitset_count_range(chunk[expected], beg, end));
@@ -3396,7 +3396,7 @@ UTEST_F(script, chunks) {
 
 // parent and exclude_within against md_contact given the same parents and labels, derived here without the script
 UTEST_F(script, contacts_parent_and_exclude_within) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
 
     size_t num_res = 0;
@@ -3410,7 +3410,7 @@ UTEST_F(script, contacts_parent_and_exclude_within) {
         const md_urange_t range = md_system_residue_atom_range(sys, c);
         for (uint32_t k = range.beg; k < range.end; ++k) label[k] = (uint32_t)c;
         for (uint32_t beg = range.beg; beg < range.end; beg += 5) {
-            md_bitset_t bf = md_bitset_range(beg, MIN(beg + 5, range.end));
+            md_bitset_t bf = md_bitset_range(beg, MD_MIN(beg + 5, range.end));
             md_array_push(chunk, bf, alloc);
             md_array_push(parent, (uint32_t)c, alloc);
         }
@@ -3426,7 +3426,7 @@ UTEST_F(script, contacts_parent_and_exclude_within) {
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_script_ir_t* ir = create_ir(alloc);
         ast_node_t* node = parse_and_type_check_expression(str_from_cstr(cases[i].src), ir, sys, temp_alloc);
         ASSERT_TRUE(node);
@@ -3458,7 +3458,7 @@ UTEST_F(script, contacts_parent_and_exclude_within) {
 // Neither compiling nor visualizing searches for contacts: in a large system either would stall the application.
 // Only the evaluation of frames does.
 UTEST_F(script, contacts_no_search_outside_evaluation) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* sys = &utest_fixture->ala;
     const size_t num_frames = script_frames(sys);
 
@@ -3474,7 +3474,7 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
 
     // Hovering the expressions
     const str_t names[] = { STR_INIT("c"), STR_INIT("d"), STR_INIT("n") };
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
         identifier_t* ident = get_identifier(ir, names[i]);
         ASSERT_TRUE(ident);
         md_script_vis_t vis = {0};
@@ -3511,7 +3511,7 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
 
 // One group per component of the kind (or every component for ANY_KIND), as test_contact.c
 static md_bitset_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, int kind, md_allocator_i* alloc) {
-    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * MAX(sys->residue.count, 1));
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * MD_MAX(sys->residue.count, 1));
     size_t n = 0;
     for (size_t c = 0; c < sys->residue.count; ++c) {
         if (kind != ANY_KIND && (int)md_system_residue_kind(sys, c) != kind) continue;
@@ -3825,7 +3825,7 @@ UTEST_F(script, contacts_mirror_empty) {
 // A plain selection is one group. Legal, but it is the likeliest mistake, and one which looks like a broken
 // procedure: a single group has no contacts with itself, and two single groups are in contact or not.
 UTEST_F(script, contacts_single_group_warnings) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* sys = &utest_fixture->ala;
     const struct { const char* src; const char* warning; } cases[] = {
         { "c = contacts(all, cutoff=5.0);", "never in contact with itself" },
@@ -3833,7 +3833,7 @@ UTEST_F(script, contacts_single_group_warnings) {
         { "c = contacts(residue(:), cutoff=6.0);", NULL },
         { "c = contacts(residue(1:3), residue(5), cutoff=6.0);", NULL },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_script_ir_t* ir = md_script_ir_create(alloc);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(cases[i].src), sys, NULL));
         const size_t num = md_script_ir_num_warnings(ir);
@@ -3868,7 +3868,7 @@ static void mirror_job(void* data) {
 }
 
 UTEST_F(script, contacts_mirror_query_over_trajectory) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* sys = &utest_fixture->ala;
     ASSERT_GT(script_frames(sys), 0u);
     const size_t num_frames = script_frames(sys);
@@ -3963,13 +3963,13 @@ UTEST(script, keywords_and_builtin_identifiers) {
     const size_t count = md_script_builtin_identifiers(NULL, 0);
     ASSERT_GT(count, (size_t)0);
     str_t names[512];
-    ASSERT_LE(count, ARRAY_SIZE(names));
-    EXPECT_EQ(md_script_builtin_identifiers(names, ARRAY_SIZE(names)), count);
+    ASSERT_LE(count, MD_COUNTOF(names));
+    EXPECT_EQ(md_script_builtin_identifiers(names, MD_COUNTOF(names)), count);
 
     // A smaller buffer gets the first names, and the same count
     str_t few[4];
-    EXPECT_EQ(md_script_builtin_identifiers(few, ARRAY_SIZE(few)), count);
-    for (size_t i = 0; i < ARRAY_SIZE(few); ++i) EXPECT_TRUE(str_eq(few[i], names[i]));
+    EXPECT_EQ(md_script_builtin_identifiers(few, MD_COUNTOF(few)), count);
+    for (size_t i = 0; i < MD_COUNTOF(few); ++i) EXPECT_TRUE(str_eq(few[i], names[i]));
 
     bool has_attr = false, has_transpose = false, has_pi = false;
     for (size_t i = 0; i < count; ++i) {
@@ -3985,7 +3985,7 @@ UTEST(script, keywords_and_builtin_identifiers) {
     EXPECT_TRUE(has_transpose);
     EXPECT_TRUE(has_pi);
 
-    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
         bool found = false;
         for (size_t j = 0; j < count && !found; ++j) found = str_eq(procedures[i].name, names[j]);
         snprintf(msg, sizeof(msg), "procedure '%.*s'", STR_ARG(procedures[i].name));
@@ -4019,8 +4019,8 @@ static void pbc_translate(md_system_state_t* dst, const md_system_state_t* src, 
 static bool pbc_eval(data_t* out, md_script_ir_t* ir, const char* name, md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     identifier_t* ident = get_identifier(ir, str_from_cstr(name));
     if (!ident || !ident->node) return false;
-    float* mass   = md_alloc(alloc, sizeof(float) * ALIGN_TO(sys->atom.count, 16));
-    float* radius = md_alloc(alloc, sizeof(float) * ALIGN_TO(sys->atom.count, 16));
+    float* mass   = md_alloc(alloc, sizeof(float) * MD_ALIGN_TO(sys->atom.count, 16));
+    float* radius = md_alloc(alloc, sizeof(float) * MD_ALIGN_TO(sys->atom.count, 16));
     md_atom_extract_masses(mass,   0, sys->atom.count, &sys->atom);
     md_atom_extract_radii (radius, 0, sys->atom.count, &sys->atom);
     eval_context_t ctx = { .ir = ir, .sys = sys, .atom_mass = mass, .atom_radius = radius, .temp_alloc = alloc, .alloc = alloc, .cur_state = state, .ref_state = &sys->reference };
@@ -4082,7 +4082,7 @@ static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src,
         { { 1.0f,   1.0f,  -1.0f }, false },
     };
 
-    for (size_t t = 0; t < ARRAY_SIZE(targets); ++t) {
+    for (size_t t = 0; t < MD_COUNTOF(targets); ++t) {
         const vec3_t shift = mat3_mul_vec3(A, vec3_sub(targets[t].f, fc));
         pbc_translate(&state, ref, shift, targets[t].wrap);
 
@@ -4126,7 +4126,7 @@ static const pbc_probe_t PBC_PROBES[] = {
 };
 
 UTEST_F(script, pbc_invariance_ortho) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     pbc_invariance(utest_result, &utest_fixture->ala,
         "r = rmsd(residue(1:8));\n"
         "rf = rmsd(union(residue(1:8)));\n"
@@ -4135,12 +4135,12 @@ UTEST_F(script, pbc_invariance_ortho) {
         "x = distance(residue(1), residue(8));\n"
         "w = shape_weights(residue(1:8));\n"
         "v = sdf(residue(4), element('C'), 8.0);\n",
-        "residue(4)", PBC_PROBES, ARRAY_SIZE(PBC_PROBES), alloc);
+        "residue(4)", PBC_PROBES, MD_COUNTOF(PBC_PROBES), alloc);
     md_vm_arena_destroy(alloc);
 }
 
 UTEST_F(script, pbc_invariance_triclinic) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     pbc_invariance(utest_result, &utest_fixture->npt,
         "r = rmsd(residue(1:8));\n"
         "rf = rmsd(union(residue(1:8)));\n"
@@ -4149,14 +4149,14 @@ UTEST_F(script, pbc_invariance_triclinic) {
         "x = distance(residue(1), residue(8));\n"
         "w = shape_weights(residue(1:8));\n"
         "v = sdf(residue(4), element('O'), 8.0);\n",
-        "residue(4)", PBC_PROBES, ARRAY_SIZE(PBC_PROBES), alloc);
+        "residue(4)", PBC_PROBES, MD_COUNTOF(PBC_PROBES), alloc);
     md_vm_arena_destroy(alloc);
 }
 
 // rmsd takes each bitfield of its argument as a structure of its own: one fit and one value per bitfield.
 // union() pools them into a single structure.
 UTEST_F(script, rmsd_per_structure) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t* sys = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -4263,7 +4263,7 @@ static float extent_reference(md_system_t* sys, const md_system_state_t* state, 
             vec3_t dx = vec3_sub(state->xyz[it_a.idx], state->xyz[it_b.idx]);
             md_util_min_image_vec3(&dx, 1, &state->unitcell);
             const float d = vec3_length(dx);
-            ext = largest ? MAX(ext, d) : MIN(ext, d);
+            ext = largest ? MD_MAX(ext, d) : MD_MIN(ext, d);
         }
     }
     return ext;
@@ -4272,7 +4272,7 @@ static float extent_reference(md_system_t* sys, const md_system_state_t* state, 
 // distance_min and distance_max give one value per element of their first argument: the closest (farthest) approach of
 // the atoms of that element to everything in the second argument, which is taken as a whole.
 UTEST_F(script, distance_min_max_per_element_of_the_first_argument) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t* sys = &utest_fixture->ala;
     const md_system_state_t* state = &sys->reference;
 
@@ -4423,7 +4423,7 @@ static bool has_item(md_script_completions_t c, md_script_completion_kind_t kind
 }
 
 UTEST(script, completion_values_in_strings) {
-    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(64));
     md_script_completions_t c;
 
     // In a string that is not closed yet: the names, and the quote that closes it
@@ -4483,7 +4483,7 @@ UTEST(script, completion_values_in_strings) {
 }
 
 UTEST(script, completion_identifiers) {
-    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(64));
     md_script_completions_t c;
 
     // In an expression: variables, procedures, constants and keywords, and the identifier is replaced as a whole
@@ -4504,7 +4504,7 @@ UTEST(script, completion_identifiers) {
 
     // Every procedure name once
     const size_t num_builtin = md_script_builtin_identifiers(NULL, 0);
-    EXPECT_EQ((int)(num_builtin - ARRAY_SIZE(constants)), count_kind(c, MD_SCRIPT_COMPLETION_PROCEDURE));
+    EXPECT_EQ((int)(num_builtin - MD_COUNTOF(constants)), count_kind(c, MD_SCRIPT_COMPLETION_PROCEDURE));
 
     // A keyword being typed is an identifier being typed
     c = complete_at("x = resname(\"ALA\") in|", &test_mol, alloc);
@@ -4524,7 +4524,7 @@ UTEST(script, completion_identifiers) {
 }
 
 UTEST(script, completion_arguments) {
-    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(64));
     md_script_completions_t c;
 
     // At the start of an argument: the values it takes (quoted), next to everything else
@@ -4586,7 +4586,7 @@ static bool fits_item(md_script_completions_t c, md_script_completion_kind_t kin
 
 // In a call, what has the type of the parameter the argument is for fits; at the top of a script nothing in particular
 UTEST(script, completion_fits_the_parameter) {
-    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(64));
     md_script_completions_t c;
 
     c = complete_at("x = within(5, |", &test_mol, alloc);
@@ -4624,7 +4624,7 @@ UTEST(script, completion_fits_the_parameter) {
 }
 
 UTEST(script, completion_of_filters) {
-    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(64));
     md_script_completions_t c;
 
     // Outside of a call: what picks atoms, and the keyword that negates, but nothing that joins two
@@ -4681,19 +4681,19 @@ UTEST(script, completion_of_filters) {
 // Every procedure that takes a string says what the string is, and every entry is for a string parameter
 UTEST(script, completion_domain_table) {
     char msg[128];
-    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
         for (size_t p = 0; p < procedures[i].num_args; ++p) {
             if (procedures[i].arg_type[p].base_type != TYPE_STRING) continue;
             snprintf(msg, sizeof(msg), "procedure '%.*s' parameter %d", STR_ARG(procedures[i].name), (int)p);
             EXPECT_TRUE_MSG(find_param_domain(procedures[i].name, (int)p) != DOMAIN_NONE, msg);
         }
     }
-    for (size_t i = 0; i < ARRAY_SIZE(param_domains); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(param_domains); ++i) {
         bool found = false;
-        for (size_t j = 0; j < ARRAY_SIZE(script_intrinsics) && !found; ++j) {
+        for (size_t j = 0; j < MD_COUNTOF(script_intrinsics) && !found; ++j) {
             found = str_eq(script_intrinsics[j], param_domains[i].proc);  // Parsed, not in the procedure table
         }
-        for (size_t j = 0; j < ARRAY_SIZE(procedures) && !found; ++j) {
+        for (size_t j = 0; j < MD_COUNTOF(procedures) && !found; ++j) {
             found = str_eq(procedures[j].name, param_domains[i].proc) && param_domains[i].param < procedures[j].num_args &&
                     procedures[j].arg_type[param_domains[i].param].base_type == TYPE_STRING;
         }
@@ -4728,7 +4728,7 @@ UTEST(script, tokenizer_stays_within_its_string) {
     EXPECT_EQ(5, token.end);
 
     // A script that ends in a comment compiles
-    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(64));
+    md_allocator_i* arena = md_vm_arena_create(MD_MEGABYTES(64));
     md_script_ir_t* ir = md_script_ir_create(arena);
     EXPECT_TRUE(compiles(ir, "x = 1; # comment", &test_mol));
     md_script_ir_free(ir);
@@ -4736,7 +4736,7 @@ UTEST(script, tokenizer_stays_within_its_string) {
 }
 
 UTEST(script, completion_attribute_paths) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
@@ -4855,7 +4855,7 @@ static uint64_t ir_snapshot(const md_script_ir_t* ir) {
 }
 
 UTEST_F(script, evaluation_does_not_write_ir) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
     ASSERT_GT(num_frames, 0u);
@@ -4904,7 +4904,7 @@ UTEST_F(script, evaluation_does_not_write_ir) {
 
 // The diagnostics of an evaluation go to its own log, never into the IR. Only a compilation records them there.
 UTEST_F(script, evaluation_diagnostics_go_to_its_log) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_script_ir_t* ir = create_ir(alloc);
     const token_t tok = {0};
 
@@ -4937,7 +4937,7 @@ UTEST_F(script, evaluation_diagnostics_go_to_its_log) {
 
 // A visualization of an expression reports whether it produced one, and marks the atoms involved
 UTEST_F(script, vis_eval_string_reports_success) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     md_script_vis_t vis = {0};
     md_script_vis_init(&vis, alloc);
@@ -4956,7 +4956,7 @@ UTEST_F(script, vis_eval_string_reports_success) {
 // A visualization reference names a part of one compilation. It resolves in that IR only: not in another, not
 // in one compiled later from the same source, and not in its own IR once that has been recompiled.
 UTEST_F(script, vis_ref_resolves_in_its_own_compilation_only) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     const str_t src = STR_LIT(
         "sel = residue(1:4);"
@@ -5028,7 +5028,7 @@ UTEST_F(script, vis_ref_resolves_in_its_own_compilation_only) {
 // A node is referred to by its position in the IR: that has to hold for every node, also those the parser and
 // the static check make by copying another (subscripts, casts)
 UTEST_F(script, node_index_is_position_in_ir) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
@@ -5057,7 +5057,7 @@ static const eval_property_t* find_eval_property(const md_script_eval_t* eval, s
 // frames that has to be sum(values) / sum(weights) over the frames evaluated so far: the weights of an rdf differ
 // between frames (it normalizes by the pair count of its frame), so those of any one frame will not do.
 UTEST_F(script, distribution_weights_accumulate) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
     ASSERT_GT(num_frames, 2u);
@@ -5082,14 +5082,14 @@ UTEST_F(script, distribution_weights_accumulate) {
             sum_v   = md_alloc(alloc, num_bins * sizeof(double));
             sum_w   = md_alloc(alloc, num_bins * sizeof(double));
             first_w = md_alloc(alloc, num_bins * sizeof(float));
-            MEMSET(sum_v, 0, num_bins * sizeof(double));
-            MEMSET(sum_w, 0, num_bins * sizeof(double));
-            MEMCPY(first_w, p->weights, num_bins * sizeof(float));
+            MD_MEMSET(sum_v, 0, num_bins * sizeof(double));
+            MD_MEMSET(sum_w, 0, num_bins * sizeof(double));
+            MD_MEMCPY(first_w, p->weights, num_bins * sizeof(float));
         }
         for (size_t i = 0; i < num_bins; ++i) {
             sum_v[i] += p->values[i];
             sum_w[i] += p->weights[i];
-            weights_differ |= fabsf(p->weights[i] - first_w[i]) > 1.0e-6f * MAX(1.0f, fabsf(first_w[i]));
+            weights_differ |= fabsf(p->weights[i] - first_w[i]) > 1.0e-6f * MD_MAX(1.0f, fabsf(first_w[i]));
         }
         md_script_eval_free(single);
     }
@@ -5116,7 +5116,7 @@ UTEST_F(script, distribution_weights_accumulate) {
             if (sum_w[i] <= 0.0) continue;
             const double expected = sum_v[i] / sum_w[i];
             const double shown    = p->weights[i] > 0.0f ? (double)p->values[i] / (double)p->weights[i] : 0.0;
-            if (fabs(shown - expected) > 1.0e-4 * MAX(1.0, fabs(expected))) {
+            if (fabs(shown - expected) > 1.0e-4 * MD_MAX(1.0, fabs(expected))) {
                 mismatches += 1;
             }
         }
@@ -5133,7 +5133,7 @@ UTEST_F(script, distribution_weights_accumulate) {
                 ev += sum_v[i];    ew += sum_w[i];
             }
             if (w <= 0.0 || ew <= 0.0) continue;
-            if (fabs(v / w - ev / ew) > 1.0e-4 * MAX(1.0, fabs(ev / ew))) {
+            if (fabs(v / w - ev / ew) > 1.0e-4 * MD_MAX(1.0, fabs(ev / ew))) {
                 merged_mismatches += 1;
             }
         }
@@ -5161,7 +5161,7 @@ static bool dist_same(const eval_property_t* a, const eval_property_t* b) {
     for (size_t i = 0; i < a->count; ++i) {
         const double ra = a->weights[i] > 0 ? (double)a->values[i] / a->weights[i] : 0.0;
         const double rb = b->weights[i] > 0 ? (double)b->values[i] / b->weights[i] : 0.0;
-        if (fabs(ra - rb) > 1.0e-4 * MAX(1.0, fabs(rb))) return false;
+        if (fabs(ra - rb) > 1.0e-4 * MD_MAX(1.0, fabs(rb))) return false;
     }
     return true;
 }
@@ -5179,7 +5179,7 @@ static md_script_eval_t* eval_over(const md_script_ir_t* ir, md_system_t* sys, u
     }
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     const size_t count = md_bitset_count(*frames);
-    uint32_t* indices = md_temp_alloc_array(temp, uint32_t, MAX(count, 1));
+    uint32_t* indices = md_temp_alloc_array(temp, uint32_t, MD_MAX(count, 1));
     md_bitset_extract_indices(indices, count, *frames);
     md_script_eval_frames(eval, ir, sys, SCRIPT_RUN, indices, count);
     md_temp_end(temp);
@@ -5209,7 +5209,7 @@ static md_script_eval_slot_info_t slot_info_of(const md_script_eval_t* eval, uin
 
 // A distribution kept per frame: a slot over any frames is summed from what is kept, and nothing is evaluated for it
 UTEST_F(script, slots_of_a_distribution_kept_per_frame) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5294,7 +5294,7 @@ UTEST_F(script, slots_of_a_distribution_kept_per_frame) {
 // A distribution not kept per frame is added up as frames are evaluated: a slot moved evaluates the frames it no
 // longer wants and those it now wants, nothing else, and holds exactly what it would over its frames alone
 UTEST_F(script, slots_added_up_as_frames_are_evaluated) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5368,7 +5368,7 @@ UTEST_F(script, slots_added_up_as_frames_are_evaluated) {
 }
 
 UTEST_F(script, slots_of_a_volume) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(64));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5413,7 +5413,7 @@ UTEST_F(script, slots_of_a_volume) {
 
 // Recompiled, the slots of what did not change keep what they hold; those of what changed are kept as asked for
 UTEST_F(script, slots_carry_over_to_the_next_evaluation) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5478,7 +5478,7 @@ static void eval_job_run(void* data) {
 // Read while another thread evaluates: whatever it holds when it is read, it is exactly the aggregate over the frames
 // it holds. Evaluated in order by one thread, those are the first of its frames.
 UTEST_F(script, slots_read_while_evaluating) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5523,7 +5523,7 @@ UTEST_F(script, slots_read_while_evaluating) {
                 }
                 for (size_t i = 0; i < bins; ++i) {
                     const double e = expect[i] / info.num_frames;
-                    if (fabs(values[i] - e) > 1e-4 * MAX(1.0, fabs(e))) { mismatches += 1; break; }
+                    if (fabs(values[i] - e) > 1e-4 * MD_MAX(1.0, fabs(e))) { mismatches += 1; break; }
                 }
             }
             if (finished) break;
@@ -5543,7 +5543,7 @@ UTEST_F(script, slots_read_while_evaluating) {
 
 // What an edit changes is known before anything is evaluated, and it is what md_script_eval_create_from then does
 UTEST_F(script, plan_is_what_create_from_does) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5560,7 +5560,7 @@ UTEST_F(script, plan_is_what_create_from_does) {
     // Against no evaluation, everything is new
     md_script_eval_plan_t plans[8] = {0};
     md_bitset_t pending = {0};
-    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, NULL, ir1, n, alloc));
+    ASSERT_TRUE(md_script_eval_plan(plans, MD_COUNTOF(plans), &pending, NULL, ir1, n, alloc));
     EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_NEW, plans[0].status);
     EXPECT_EQ(n, plans[0].num_pending);
     EXPECT_EQ((size_t)n, md_bitset_count(pending));
@@ -5573,7 +5573,7 @@ UTEST_F(script, plan_is_what_create_from_does) {
     EXPECT_EQ((uint64_t)0, md_script_eval_property_fingerprint(eval1, STR_LIT("none")));
 
     // Against itself, what remains is what remains
-    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir1, n, alloc));
+    ASSERT_TRUE(md_script_eval_plan(plans, MD_COUNTOF(plans), &pending, eval1, ir1, n, alloc));
     EXPECT_TRUE(bits_equal(pending, md_script_eval_pending_frames(eval1, alloc)));
     EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[0].status);
     EXPECT_EQ(n / 2, plans[0].num_frames);
@@ -5599,7 +5599,7 @@ UTEST_F(script, plan_is_what_create_from_does) {
         const md_script_range_marker_t none = md_script_ir_property_range(ir2, STR_LIT("none"));
         EXPECT_EQ(none.beg, none.end);
     }
-    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir2, n, alloc));
+    ASSERT_TRUE(md_script_eval_plan(plans, MD_COUNTOF(plans), &pending, eval1, ir2, n, alloc));
     EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[0].status);
     EXPECT_TRUE(str_eq(plans[0].from, STR_LIT("d")));
     EXPECT_EQ(n / 2, plans[0].num_frames);
@@ -5623,7 +5623,7 @@ UTEST_F(script, plan_is_what_create_from_does) {
     // With s alone: what it has not evaluated, and what its slot has to add, which is within that
     md_script_ir_t* ir3 = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir3, STR_LIT("s = rdf(element('N'), element('O'), 6.0);"), mol, NULL));
-    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir3, n, alloc));
+    ASSERT_TRUE(md_script_eval_plan(plans, MD_COUNTOF(plans), &pending, eval1, ir3, n, alloc));
     EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[0].status);
     md_script_eval_t* eval3 = md_script_eval_create_from(eval1, ir3, &desc, alloc);
     EXPECT_TRUE(bits_equal(pending, md_script_eval_pending_frames(eval3, alloc)));
@@ -5634,7 +5634,7 @@ UTEST_F(script, plan_is_what_create_from_does) {
     EXPECT_FALSE(md_script_eval_plan(plans, 3, &pending, eval1, ir2, n, alloc));
 
     // Over another number of frames, nothing is taken over
-    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir3, n - 1, alloc));
+    ASSERT_TRUE(md_script_eval_plan(plans, MD_COUNTOF(plans), &pending, eval1, ir3, n - 1, alloc));
     EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_CHANGED, plans[0].status);
 
     md_script_eval_free(eval3);
@@ -5649,7 +5649,7 @@ UTEST_F(script, plan_is_what_create_from_does) {
 // A distribution taken over is kept as it was, per frame or not, whatever the budget of the new evaluation: what it
 // holds comes along, its slots too
 UTEST_F(script, taken_over_distribution_is_kept_as_it_was) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 6u);
@@ -5686,13 +5686,13 @@ UTEST_F(script, taken_over_distribution_is_kept_as_it_was) {
 
 static bool floats_near(const float* a, const float* b, size_t n, float rel) {
     for (size_t i = 0; i < n; ++i) {
-        if (fabsf(a[i] - b[i]) > rel * MAX(1.0f, fabsf(b[i]))) return false;
+        if (fabsf(a[i] - b[i]) > rel * MD_MAX(1.0f, fabsf(b[i]))) return false;
     }
     return true;
 }
 
 UTEST_F(script, distribution_type) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -5728,7 +5728,7 @@ UTEST_F(script, distribution_type) {
 
 // Scaling scales the values and leaves the weights; pooling adds both; an array is per element, published [n][bins]
 UTEST_F(script, distribution_ops_and_arrays) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
     ASSERT_GT(n, 0u);
@@ -5809,7 +5809,7 @@ UTEST_F(script, distribution_ops_and_arrays) {
 // An element past the end of what a reference refers to resolves to nothing, and an empty selection has no closest
 // pair to draw: neither may reach the procedures, which index unchecked
 UTEST_F(script, vis_ref_out_of_range_and_empty) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
@@ -5846,7 +5846,7 @@ static double dist_shown_sum(const eval_property_t* p, size_t off) {
 // density() is the three axis profiles: each is the one of density_x/y/z over the longest extent, so the same mass
 // per slab volume, whose cross section is the cell's
 UTEST_F(script, density_axes_agree) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(8));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
@@ -5859,7 +5859,7 @@ UTEST_F(script, density_axes_agree) {
     // Over its own extent an axis has bins of its own thickness: the mass per bin times the bin thickness, summed,
     // is the total mass over the cross section whichever the extent. Compare that.
     const double L[3] = { mol->reference.unitcell.x, mol->reference.unitcell.y, mol->reference.unitcell.z };
-    const double Lmax = MAX(L[0], MAX(L[1], L[2]));
+    const double Lmax = MD_MAX(L[0], MD_MAX(L[1], L[2]));
     for (int a = 0; a < 3; ++a) {
         const eval_property_t* single = find_eval_property(eval, str_from_cstr(names[a]));
         ASSERT_TRUE(single != NULL);
@@ -5875,7 +5875,7 @@ UTEST_F(script, density_axes_agree) {
 // An rdf's weights are the pairs a uniform distribution would put in each shell: over the window they add up to
 // the pairs counted, and the first shell is a shell, also when the window starts away from 0
 UTEST_F(script, rdf_shell_weights) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(8));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("g = rdf(element('C'), element('O'), 3.0:8.0);"), mol, NULL));
@@ -5906,7 +5906,7 @@ typedef struct plane_sys_t {
 } plane_sys_t;
 
 static bool plane_sys_init(plane_sys_t* p, const char* id) {
-    p->alloc = md_vm_arena_create(GIGABYTES(1));
+    p->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_array(ref_comp_t) residues = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), p->alloc);
     const ref_comp_t* c = find_component(residues, id);
     if (!c) return false;
@@ -6003,7 +6003,7 @@ UTEST(script, plane) {
         EXPECT_GT(vec3_dot(ni, vec3_normalize(newell)), 0.999f);
     }
     // The two rings of indole lie in one plane
-    EXPECT_LT(RAD_TO_DEG(((const float*)a.ptr)[0]), 3.0f);
+    EXPECT_LT(MD_RAD_TO_DEG(((const float*)a.ptr)[0]), 3.0f);
 
     // Turned over (180 degrees about an axis in the plane of the first ring): the planes turn with the atoms, and the
     // normal of a group which is not a ring keeps to its atoms as well
@@ -6252,7 +6252,7 @@ UTEST(script, pucker_pyranose) {
     const pucker_rec_t* r = (const pucker_rec_t*)p.ptr;
     // beta-D-GlcNAc is a 4C1 chair: theta near 0 in the order O5, C1, ..., C5
     EXPECT_STREQ("4C1 chair", r->name);
-    EXPECT_LT(RAD_TO_DEG(((const float*)t.ptr)[0]), 10.0f);
+    EXPECT_LT(MD_RAD_TO_DEG(((const float*)t.ptr)[0]), 10.0f);
     EXPECT_NEAR(0.59f, ((const float*)q.ptr)[0], 0.05f);
     EXPECT_TRUE(r->anchored);
 
@@ -6269,7 +6269,7 @@ UTEST(script, pucker_pyranose) {
     ASSERT_TRUE(plane_compile(ir2, src, &nag));
     data_t u = {0};
     ASSERT_TRUE(pucker_eval(&u, ir2, "u", &nag, &nag.st));
-    EXPECT_NEAR(180.0f - RAD_TO_DEG(((const float*)t.ptr)[0]), RAD_TO_DEG(((const float*)u.ptr)[0]), 0.01f);
+    EXPECT_NEAR(180.0f - MD_RAD_TO_DEG(((const float*)t.ptr)[0]), MD_RAD_TO_DEG(((const float*)u.ptr)[0]), 0.01f);
 
     // Errors before evaluation
     EXPECT_TRUE(plane_compile_fails_with(&nag, "x = pseudorotation(pucker(ring(kind='sugar')));", "is not a furanose"));
@@ -6296,8 +6296,8 @@ UTEST(script, pucker_furanose) {
     ASSERT_TRUE(pucker_eval(&f, ir, "f", &ade, &ade.st));
     const pucker_rec_t* r = (const pucker_rec_t*)p.ptr;
     // Altona-Sundaralingam P is Cremer-Pople phi2 plus 90 degrees, to within a degree
-    const float d = fmodf(RAD_TO_DEG(((const float*)P.ptr)[0]) - RAD_TO_DEG(((const float*)f.ptr)[0]) - 90.0f + 720.0f, 360.0f);
-    EXPECT_LT(MIN(d, 360.0f - d), 1.5f);
+    const float d = fmodf(MD_RAD_TO_DEG(((const float*)P.ptr)[0]) - MD_RAD_TO_DEG(((const float*)f.ptr)[0]) - 90.0f + 720.0f, 360.0f);
+    EXPECT_LT(MD_MIN(d, 360.0f - d), 1.5f);
     // The name agrees with P: an envelope at P = 18 + 36 k, a twist between
     const char* phrase = strchr(r->name, ',');
     ASSERT_TRUE(phrase != NULL);
@@ -6360,8 +6360,8 @@ UTEST(script, pucker_order) {
 // The table of canonical conformations names itself back, and reads as the conventions do
 UTEST(script, pucker_canonical) {
     md_pucker_canonical_t c6[64], c5[64];
-    ASSERT_EQ(38, (int)md_pucker_canonical(c6, ARRAY_SIZE(c6), 6));
-    ASSERT_EQ(20, (int)md_pucker_canonical(c5, ARRAY_SIZE(c5), 5));
+    ASSERT_EQ(38, (int)md_pucker_canonical(c6, MD_COUNTOF(c6), 6));
+    ASSERT_EQ(20, (int)md_pucker_canonical(c5, MD_COUNTOF(c5), 5));
     EXPECT_EQ(0, (int)md_pucker_canonical(NULL, 0, 7));
     EXPECT_EQ(38, (int)md_pucker_canonical(NULL, 0, 6));
 
@@ -6403,7 +6403,7 @@ UTEST(script, pucker_canonical) {
 // What is computed from the same thing as before is taken over, values and frames, and not evaluated again; what is
 // new, or computed from something else now, starts over. The versions published carry on from the previous ones.
 UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
     ASSERT_GE(num_frames, 4u);
@@ -6420,7 +6420,7 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
 
     uint64_t max_version = 0;
     for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval1), (str_t){0}); md_attributes_next(&it);) {
-        max_version = MAX(max_version, it.attr->version);
+        max_version = MD_MAX(max_version, it.attr->version);
     }
 
     // d and g as they were, under other names and after a line of its own; a is new
@@ -6473,7 +6473,7 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
 
     // Over another number of frames, another run: nothing is taken over, yet the versions still carry on
     for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval2), (str_t){0}); md_attributes_next(&it);) {
-        max_version = MAX(max_version, it.attr->version);
+        max_version = MD_MAX(max_version, it.attr->version);
     }
     const md_script_eval_desc_t fewer = { .num_frames = num_frames - 1 };
     md_script_eval_t* eval4 = md_script_eval_create_from(eval2, ir2, &fewer, alloc);
@@ -6497,7 +6497,7 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
 
 // A frame only some properties still need evaluates what those need: the variables they use, not the others
 UTEST_F(script, eval_evaluates_only_what_is_needed) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = (uint32_t)script_frames(mol);
     ASSERT_GE(num_frames, 4u);
@@ -6562,7 +6562,7 @@ static bool diagnostics_contain(str_t txt, const char* expected) {
 }
 
 UTEST(script, diagnostics) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_str_writer_t sw = md_str_writer_create(alloc);
 
@@ -6646,7 +6646,7 @@ UTEST(script, diagnostics) {
 // An operator where an operand belongs is an error. It used to be accepted by the parser as a node with a NULL
 // operand, which the static check then crashed on
 UTEST(script, stray_mult) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_str_writer_t sw = md_str_writer_create(alloc);
 
@@ -6671,7 +6671,7 @@ UTEST(script, stray_mult) {
         "a = not *2;",
         "*2;",
     };
-    for (size_t i = 0; i < ARRAY_SIZE(missing_left); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(missing_left); ++i) {
         md_script_ir_clear(ir);
         EXPECT_FALSE(md_script_ir_compile_from_source(ir, str_from_cstr(missing_left[i]), &test_mol, NULL));
         EXPECT_TRUE(diagnostics_contain(diagnostics_text(&sw, ir), "left operand of"));
@@ -6699,7 +6699,7 @@ UTEST(script, stray_mult) {
 // What is wrong with a script is an error of its compilation: never an assertion, nor a crash in a release build
 // (where the assertion is gone), nor a script which compiles into something other than what was written
 UTEST_F(script, malformed_scripts_are_errors) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_str_writer_t sw = md_str_writer_create(alloc);
@@ -6727,7 +6727,7 @@ UTEST_F(script, malformed_scripts_are_errors) {
         // A selection which is empty (the system has no water) where one atom is needed
         {"m = match(water);",                       "error: match: the reference is empty"},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_script_ir_clear(ir);
         EXPECT_FALSE(md_script_ir_compile_from_source(ir, str_from_cstr(cases[i].src), mol, NULL));
         EXPECT_FALSE(md_script_ir_valid(ir));
@@ -6740,7 +6740,7 @@ UTEST_F(script, malformed_scripts_are_errors) {
 
 // Visualizing what an editor hovers: the procedures are called without a destination, which only some of them take
 UTEST_F(script, visualize_without_destination) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -6753,7 +6753,7 @@ UTEST_F(script, visualize_without_destination) {
 
     md_script_vis_ctx_t vctx = { .ir = ir, .sys = mol, .state = &mol->reference };
     const char* names[] = {"arr", "cx", "c", "r"};
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
         identifier_t* ident = get_identifier(ir, str_from_cstr(names[i]));
         ASSERT_TRUE(ident);
         // An element of an array: the others are skipped, they used to be called as if for the length of their result
@@ -6789,9 +6789,9 @@ UTEST_F(script, visualize_without_destination) {
 
 // Scripts which compile, and crashed when they were evaluated or visualized
 UTEST_F(script, evaluate_edge_cases) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(4));
     md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)MIN(script_frames(mol), 4);
+    const uint32_t num_frames = (uint32_t)MD_MIN(script_frames(mol), 4);
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
     const char* srcs[] = {
@@ -6809,7 +6809,7 @@ UTEST_F(script, evaluate_edge_cases) {
         "g = -coord_x(not residue(1)) in residue(1:2);",
     };
     md_script_vis_ctx_t vctx = { .ir = ir, .sys = mol, .state = &mol->reference };
-    for (size_t i = 0; i < ARRAY_SIZE(srcs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(srcs); ++i) {
         md_script_ir_clear(ir);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(srcs[i]), mol, NULL));
         if (!md_script_ir_valid(ir)) {
@@ -6843,7 +6843,7 @@ UTEST_F(script, evaluate_edge_cases) {
 // The operands of an operator are taken in the order they are written. FLAG_SYMMETRIC_ARGS lets a match swap them,
 // and was set on '-', '/' and '//' with an array and a scalar: '2.0 - {1.0, 2.0}' was {1.0, 2.0} - 2.0
 UTEST_F(script, operand_order) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* mol = &utest_fixture->ala;
 
     struct {
@@ -6860,7 +6860,7 @@ UTEST_F(script, operand_order) {
         {"2 - {1, 2}",          {1.0f, 0.0f}},
         {"{1, 2} - 2",          {-1.0f, 0.0f}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         data_t d = {0};
         ASSERT_TRUE(eval_expression(&d, str_from_cstr(cases[i].expr), mol, alloc));
         ASSERT_EQ((size_t)2, (size_t)type_info_array_len(d.type));
@@ -6877,7 +6877,7 @@ UTEST_F(script, operand_order) {
         {"10 // {2, 5}",        {5, 2}},
         {"{10, 20} // 5",       {2, 4}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(int_cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(int_cases); ++i) {
         data_t d = {0};
         ASSERT_TRUE(eval_expression(&d, str_from_cstr(int_cases[i].expr), mol, alloc));
         ASSERT_EQ(TYPE_INT, d.type.base_type);
@@ -6900,13 +6900,13 @@ UTEST_F(script, operand_order) {
 
     // Only what is commutative swaps its operands
     const procedure_t* tables[] = {operators, procedures};
-    const size_t table_len[] = {ARRAY_SIZE(operators), ARRAY_SIZE(procedures)};
+    const size_t table_len[] = {MD_COUNTOF(operators), MD_COUNTOF(procedures)};
     const str_t commutative[] = {STR_LIT("+"), STR_LIT("*"), STR_LIT("and"), STR_LIT("or"), STR_LIT("xor"), STR_LIT("min"), STR_LIT("max")};
-    for (size_t t = 0; t < ARRAY_SIZE(tables); ++t) {
+    for (size_t t = 0; t < MD_COUNTOF(tables); ++t) {
         for (size_t i = 0; i < table_len[t]; ++i) {
             if (!(tables[t][i].flags & FLAG_SYMMETRIC_ARGS)) continue;
             bool ok = false;
-            for (size_t c = 0; c < ARRAY_SIZE(commutative); ++c) {
+            for (size_t c = 0; c < MD_COUNTOF(commutative); ++c) {
                 ok |= str_eq(tables[t][i].name, commutative[c]);
             }
             if (!ok) printf("FLAG_SYMMETRIC_ARGS on '" STR_FMT "', which is not commutative\n", STR_ARG(tables[t][i].name));
@@ -6921,9 +6921,9 @@ UTEST_F(script, operand_order) {
 // it is as a volume alone. A context makes one, and so does an array of volumes, which stacks them: '{sdf(a), sdf(b)}'
 // was one volume twice as long along x, and not a property.
 UTEST_F(script, volume_arrays) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(16));
     md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)MIN(script_frames(mol), 2);
+    const uint32_t num_frames = (uint32_t)MD_MIN(script_frames(mol), 2);
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
     const char* src =
@@ -6948,7 +6948,7 @@ UTEST_F(script, volume_arrays) {
         {"script/arr", {"script/arr1", "script/arr2"}},
     };
     const size_t vol_size = (size_t)MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM;
-    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+    for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         const md_attribute_t* a = md_attributes_find(table, str_from_cstr(cases[c].array));
         ASSERT_TRUE(a);
         ASSERT_EQ(4u, a->format.rank);
@@ -6976,7 +6976,7 @@ UTEST_F(script, volume_arrays) {
     // Visualized, element m of the array is the structure of its own volume: residue m + 1
     md_script_vis_ctx_t vctx = { .ir = ir, .sys = mol, .state = &mol->reference };
     const char* arrays[] = {"ctx", "arr"};
-    for (size_t a = 0; a < ARRAY_SIZE(arrays); ++a) {
+    for (size_t a = 0; a < MD_COUNTOF(arrays); ++a) {
         identifier_t* ident = get_identifier(ir, str_from_cstr(arrays[a]));
         ASSERT_TRUE(ident);
         for (int m = 0; m < 2; ++m) {
@@ -7042,7 +7042,7 @@ static float float_of(md_script_ir_t* ir, const char* name, md_system_t* sys, co
 }
 
 UTEST(script, bondsets) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -7127,14 +7127,14 @@ UTEST(script, bondsets) {
         // Evaluated with scratch memory of its own, which is written over once it is done: nothing of the result may
         // be in it. Of the frame (within), so that it is evaluated here rather than when the script is compiled, and so is
         // the set it is taken from.
-        md_allocator_i* scratch = md_vm_arena_create(GIGABYTES(1));
+        md_allocator_i* scratch = md_vm_arena_create(MD_GIGABYTES(1));
         identifier_t* ident = get_identifier(ir, STR_LIT("pick"));
         ASSERT_TRUE(ident && ident->node);
         eval_context_t ctx = { .ir = ir, .sys = &sys, .temp_alloc = scratch, .alloc = alloc, .cur_state = &st, .ref_state = &sys.reference };
         data_t d = {0};
         ASSERT_TRUE(evaluate_node_alloc(&d, ident->node, &ctx, alloc));
         md_vm_arena_reset(scratch);
-        MEMSET(md_vm_arena_push(scratch, MEGABYTES(4)), 0xFF, MEGABYTES(4));
+        MD_MEMSET(md_vm_arena_push(scratch, MD_MEGABYTES(4)), 0xFF, MD_MEGABYTES(4));
         ASSERT_EQ(TYPE_BONDSET, d.type.base_type);
         ASSERT_EQ(1, (int)element_count(d));
         // Two bonds apart from one another, Mg-O1 and Cu-Cu: words of their own
@@ -7220,7 +7220,7 @@ static const char bonds_water_pair_pdb[] =
     "END\n";
 
 UTEST(script, bond_delta) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t ref = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -7258,7 +7258,7 @@ UTEST(script, bond_delta) {
     // The proton moved to the second water
     md_system_state_t st = ref;
     st.xyz = md_alloc(alloc, sizeof(vec3_t) * ref.num_atoms);
-    MEMCPY(st.xyz, ref.xyz, sizeof(vec3_t) * ref.num_atoms);
+    MD_MEMCPY(st.xyz, ref.xyz, sizeof(vec3_t) * ref.num_atoms);
     st.xyz[1] = vec3_set(1.80f, 0.0f, 0.0f);
     EXPECT_EQ(1, bondset_count_of(ir, "f", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "b", &sys, &st, alloc));
@@ -7305,7 +7305,7 @@ static period_t ident_period(md_script_ir_t* ir, const char* name) {
 #define EXPECT_NOT_PERIODIC(ir, name) EXPECT_FALSE(period_valid(ident_period(ir, name)))
 
 UTEST_F(script, periodic_propagation) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
@@ -7336,26 +7336,26 @@ UTEST_F(script, periodic_propagation) {
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), mol, NULL));
 
     // A dihedral is given in [-180, 180[ and cut at 0
-    EXPECT_PERIOD(ir, "d",    -PI, PI, 0);
+    EXPECT_PERIOD(ir, "d",    -MD_PI, MD_PI, 0);
     // Scaled: degrees, and half angles
     EXPECT_PERIOD(ir, "deg",  -180, 180, 0);
-    EXPECT_PERIOD(ir, "half", -PI / 2, PI / 2, 0);
+    EXPECT_PERIOD(ir, "half", -MD_PI / 2, MD_PI / 2, 0);
     // Moved along by a constant, on either side
-    EXPECT_PERIOD(ir, "sh",   -PI + 1, PI + 1, 1);
-    EXPECT_PERIOD(ir, "lsh",  -PI + 1, PI + 1, 1);
-    EXPECT_PERIOD(ir, "rsh",  1 - PI, 1 + PI, 1);
-    EXPECT_PERIOD(ir, "neg",  -PI, PI, 0);
+    EXPECT_PERIOD(ir, "sh",   -MD_PI + 1, MD_PI + 1, 1);
+    EXPECT_PERIOD(ir, "lsh",  -MD_PI + 1, MD_PI + 1, 1);
+    EXPECT_PERIOD(ir, "rsh",  1 - MD_PI, 1 + MD_PI, 1);
+    EXPECT_PERIOD(ir, "neg",  -MD_PI, MD_PI, 0);
     // Two angles: about the difference (sum) of the middles, cut half a period from it
-    EXPECT_PERIOD(ir, "diff", -PI, PI, -PI);
-    EXPECT_PERIOD(ir, "sum2", -PI, PI, -PI);
+    EXPECT_PERIOD(ir, "diff", -MD_PI, MD_PI, -MD_PI);
+    EXPECT_PERIOD(ir, "sum2", -MD_PI, MD_PI, -MD_PI);
     // Arrays of them, their elements, the least of them, references
-    EXPECT_PERIOD(ir, "arr",  -PI, PI, 0);
-    EXPECT_PERIOD(ir, "elem", -PI, PI, 0);
-    EXPECT_PERIOD(ir, "lo",   -PI, PI, 0);
-    EXPECT_PERIOD(ir, "tot",  -PI, PI, 0);
-    EXPECT_PERIOD(ir, "ref",  -PI, PI, 0);
+    EXPECT_PERIOD(ir, "arr",  -MD_PI, MD_PI, 0);
+    EXPECT_PERIOD(ir, "elem", -MD_PI, MD_PI, 0);
+    EXPECT_PERIOD(ir, "lo",   -MD_PI, MD_PI, 0);
+    EXPECT_PERIOD(ir, "tot",  -MD_PI, MD_PI, 0);
+    EXPECT_PERIOD(ir, "ref",  -MD_PI, MD_PI, 0);
     // atan2 is cut where it cuts
-    EXPECT_PERIOD(ir, "at",   -PI, PI, -PI);
+    EXPECT_PERIOD(ir, "at",   -MD_PI, MD_PI, -MD_PI);
 
     // What no longer lies on a circle
     EXPECT_NOT_PERIODIC(ir, "mix");
@@ -7412,8 +7412,8 @@ UTEST(script, periodic_pucker_phases) {
     ASSERT_TRUE(plane_sys_init(&ade, "A"));
     md_script_ir_t* ir = md_script_ir_create(ade.alloc);
     ASSERT_TRUE(plane_compile(ir, "p = pucker(ring(kind='sugar')); P = pseudorotation(p); f = phase(p); t = theta(pucker(ring(size=6))); q = amplitude(p);", &ade));
-    EXPECT_PERIOD(ir, "P", 0, TWO_PI, 1.5 * PI);
-    EXPECT_PERIOD(ir, "f", 0, TWO_PI, 0);
+    EXPECT_PERIOD(ir, "P", 0, MD_TWO_PI, 1.5 * MD_PI);
+    EXPECT_PERIOD(ir, "f", 0, MD_TWO_PI, 0);
     EXPECT_NOT_PERIODIC(ir, "t");
     EXPECT_NOT_PERIODIC(ir, "q");
     md_script_ir_free(ir);
@@ -7447,8 +7447,8 @@ UTEST(script, circular_summary) {
         EXPECT_NEAR(10.0f, mn, 1.0e-4f);
         EXPECT_NEAR(30.0f, mx, 1.0e-4f);
         // Close to the linear standard deviation (8.165 degrees) when the values are close together
-        const double R = (1.0 + 2.0 * cos(DEG_TO_RAD(10.0))) / 3.0;
-        EXPECT_NEAR((float)RAD_TO_DEG(sqrt(-2.0 * log(R))), sqrtf(var), 1.0e-3f);
+        const double R = (1.0 + 2.0 * cos(MD_DEG_TO_RAD(10.0))) / 3.0;
+        EXPECT_NEAR((float)MD_RAD_TO_DEG(sqrt(-2.0 * log(R))), sqrtf(var), 1.0e-3f);
         EXPECT_NEAR(8.165f, sqrtf(var), 0.05f);
     }
     // Given outside of the period, a whole number of periods away
@@ -7479,18 +7479,18 @@ UTEST(script, circular_summary) {
     }
     // A period of another length and place: [0, 2 PI[
     {
-        const period_t rad = period_make(0, TWO_PI, 0);
-        const float v[] = {(float)DEG_TO_RAD(350.0), (float)DEG_TO_RAD(20.0)};
+        const period_t rad = period_make(0, MD_TWO_PI, 0);
+        const float v[] = {(float)MD_DEG_TO_RAD(350.0), (float)MD_DEG_TO_RAD(20.0)};
         compute_circular_summary(&mn, &mx, &mean, &var, v, 2, rad, scratch);
-        EXPECT_LT(circ_diff(mean, DEG_TO_RAD(5.0), TWO_PI), 1.0e-4);
-        EXPECT_NEAR((float)DEG_TO_RAD(350.0), mn, 1.0e-4f);
-        EXPECT_NEAR((float)DEG_TO_RAD(380.0), mx, 1.0e-4f);
+        EXPECT_LT(circ_diff(mean, MD_DEG_TO_RAD(5.0), MD_TWO_PI), 1.0e-4);
+        EXPECT_NEAR((float)MD_DEG_TO_RAD(350.0), mn, 1.0e-4f);
+        EXPECT_NEAR((float)MD_DEG_TO_RAD(380.0), mx, 1.0e-4f);
     }
 }
 
 // The summary over the population of a periodic property, frame by frame, against circular statistics done here
 UTEST_F(script, periodic_summary_over_trajectory) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MD_MEGABYTES(1));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t num_frames = script_frames(mol);
     ASSERT_GT(num_frames, 1u);
@@ -7506,7 +7506,7 @@ UTEST_F(script, periodic_summary_over_trajectory) {
     ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
 
     const char* names[2] = {"psi", "psi_deg"};
-    const double lens[2] = {TWO_PI, 360.0};
+    const double lens[2] = {MD_TWO_PI, 360.0};
     for (int n = 0; n < 2; ++n) {
         char path[64];
         const md_attributes_t* attributes = md_script_eval_attributes(eval);
@@ -7524,7 +7524,7 @@ UTEST_F(script, periodic_summary_over_trajectory) {
 
         const double len = lens[n];
         const double beg = -0.5 * len;
-        const double to_angle = TWO_PI / len;
+        const double to_angle = MD_TWO_PI / len;
         for (uint32_t f = 0; f < num_frames; ++f) {
             const float* v = (const float*)attr->data + (size_t)f * pop;
             double c = 0, s = 0;
@@ -7539,7 +7539,7 @@ UTEST_F(script, periodic_summary_over_trajectory) {
             const float m = ((const float*)mean->data)[f];
             EXPECT_TRUE(beg <= m && m < beg + len);
             EXPECT_LT(circ_diff(m, ref_mean, len), 1.0e-3 * len);
-            const double ref_sd = sqrt(MIN(-2.0 * log(R), PI * PI)) / to_angle;
+            const double ref_sd = sqrt(MD_MIN(-2.0 * log(R), MD_PI * MD_PI)) / to_angle;
             EXPECT_NEAR((float)ref_sd, sqrtf(((const float*)var->data)[f]), (float)(1.0e-3 * len));
 
             // Every value lies on the arc, which is no longer than it has to be: it begins and ends at values

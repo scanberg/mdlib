@@ -20,7 +20,7 @@
 
 UTEST(filter, centered) {
     const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -40,7 +40,7 @@ UTEST(filter, centered) {
 // A filter whose number of bitfields is only known once evaluated: the residues within some distance
 UTEST(filter, variable_length) {
     const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -84,7 +84,7 @@ UTEST(filter, variable_length) {
 // calculation: in any other, both are compile errors rather than empty selections
 UTEST(filter, qm_regions_need_a_qm_system) {
     const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -107,7 +107,7 @@ UTEST(filter, qm_regions_need_a_qm_system) {
 // What goes wrong is said, and where in the expression
 UTEST(filter, errors_say_where) {
     const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -170,7 +170,7 @@ UTEST(filter, errors_say_where) {
 // depends on the coordinates
 UTEST(filter, in_context) {
     const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -191,7 +191,7 @@ UTEST(filter, in_context) {
         {"polymer(1)",          "out resname('PFT')"},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_bitset_t context = {0};
         ASSERT_TRUE(md_filter(&context, str_from_cstr(cases[i][0]), &whole, alloc).success);
 
@@ -256,7 +256,7 @@ static bool completes_with(md_script_completions_t c, const char* text) {
 // The values a selector is completed with are those within the context: one that is not there would not match
 UTEST(filter, completion_within_context) {
     const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -313,7 +313,7 @@ static bool offers(md_script_completions_t c, const char* label) {
 
 // A filter of bonds picks those of a bond set, or the persistent bonds among the atoms of a set of atoms
 UTEST(filter, bonds) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -387,7 +387,7 @@ UTEST(filter, bonds) {
     const struct { md_bond_kind_t kind; const char* expr; } outside[] = {
         { MD_BOND_KIND_ELASTIC, "bond(kind='elastic')" }, { MD_BOND_KIND_METALLIC, "bond(kind='metallic')" },
     };
-    for (size_t k = 0; k < ARRAY_SIZE(outside); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(outside); ++k) {
         sys.bond.flags[cu] = md_bond_flags_set_kind(sys.bond.flags[cu], outside[k].kind);
         md_system_bond_build_connectivity(&sys);
         res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
@@ -415,7 +415,7 @@ UTEST(filter, bonds) {
 
 // A filter of atoms which picks bonds picks the atoms of those bonds; within an expression, bonds and atoms do not mix
 UTEST(filter, bonds_as_atoms) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -482,7 +482,7 @@ UTEST(filter, bonds_as_atoms) {
 // chain("A") is every atom which carries the author's chain id A, as one set: the polymer and the ligands, ions and
 // waters filed under it, wherever they are in the file. chain(i) is the i-th chain, one set per chain.
 UTEST(filter, chains_by_author_id) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -575,7 +575,7 @@ UTEST(filter, chains_by_author_id) {
 // Where the data gives no chain ids none are made up: the system has no chains, and the strands of its polymers are
 // found as parts by their kind, polymer(i) by position
 UTEST(filter, chains_without_ids) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -623,7 +623,7 @@ UTEST(filter, chains_without_ids) {
 // A molecule is atoms joined by bonds, closed over its residues and its polymer chains: molecule(i) by position, one set
 // each, molecule(sel) grown to whole molecules
 UTEST(filter, molecules) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
@@ -665,7 +665,7 @@ UTEST(filter, molecules) {
 // A part is a strand, a glycan tree, a ligand: an O-linked glycan of the spike protein (6vsb_2_2_2, CHARMM-GUI, its heavy
 // atoms) bonded to its threonine is one molecule of two parts, the threonine and the glycan, which glycan() selects
 UTEST(filter, parts_and_glycans) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     static const char pdb[] =
         "CRYST1  246.108  246.108  398.534  90.00  90.00  90.00 P 1           1\n"
         "ATOM   5111  N   THR A 323     220.790 133.490 398.290  0.00  0.00           N\n"

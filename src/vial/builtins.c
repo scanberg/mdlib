@@ -61,14 +61,14 @@ static const vial_builtin_t builtins[] = {
 #undef K
 
 const vial_builtin_t* vial_builtin_find(str_t name) {
-    for (size_t i = 0; i < ARRAY_SIZE(builtins); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(builtins); ++i) {
         if (str_eq(name, str_from_cstr(builtins[i].name))) return &builtins[i];
     }
     return NULL;
 }
 
-size_t vial_builtin_count(void) { return ARRAY_SIZE(builtins); }
-const vial_builtin_t* vial_builtin_at(size_t i) { return i < ARRAY_SIZE(builtins) ? &builtins[i] : NULL; }
+size_t vial_builtin_count(void) { return MD_COUNTOF(builtins); }
+const vial_builtin_t* vial_builtin_at(size_t i) { return i < MD_COUNTOF(builtins) ? &builtins[i] : NULL; }
 uint32_t vial_builtin_index(const vial_builtin_t* b) { return (uint32_t)(b - builtins); }
 
 // v1's names, with what to write in VIAL
@@ -82,7 +82,7 @@ static const struct { const char* v1; const char* message; const char* fix; } v1
 };
 
 bool vial_builtin_v1(str_t name, const char** message, const char** fix) {
-    for (size_t i = 0; i < ARRAY_SIZE(v1_names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(v1_names); ++i) {
         if (str_eq(name, str_from_cstr(v1_names[i].v1))) {
             if (message) *message = v1_names[i].message;
             if (fix) *fix = v1_names[i].fix;
@@ -104,7 +104,7 @@ static const struct { const char* word; const char* name; } synonyms[] = {
 };
 
 const char* vial_builtin_synonym(str_t word) {
-    for (size_t i = 0; i < ARRAY_SIZE(synonyms); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(synonyms); ++i) {
         if (str_eq(word, str_from_cstr(synonyms[i].word))) return synonyms[i].name;
     }
     return NULL;

@@ -15,7 +15,7 @@
 UBENCH_EX(str, reader_lines) {
     str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
     md_file_reader_t fr;
-    if (!md_file_reader_open(&fr, path, MEGABYTES(1), md_get_heap_allocator())) {
+    if (!md_file_reader_open(&fr, path, MD_MEGABYTES(1), md_get_heap_allocator())) {
         MD_LOG_ERROR("Could not open file '%.*s'", (int)path.len, path.ptr);
         return;
     }
@@ -42,7 +42,7 @@ UBENCH_EX(str, parse_int) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -67,7 +67,7 @@ UBENCH_EX(str, strtoll) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += strlen(str[i]);
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -91,7 +91,7 @@ UBENCH_EX(str, parse_float) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -116,7 +116,7 @@ UBENCH_EX(str, strtod) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += strlen(str[i]);
     }
     UBENCH_SET_BYTES(num_bytes);

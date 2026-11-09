@@ -51,9 +51,9 @@ static bool csv_next_line(md_reader_i* reader, str_t* line) {
 // row has no comma (as spreadsheets with a decimal comma write them). An empty field is a value that is missing:
 // NaN. Blank lines and comments ('#') are passed over.
 static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* alloc) {
-    ASSERT(csv);
-    ASSERT(reader);
-    ASSERT(alloc);
+    MD_ASSERT(csv);
+    MD_ASSERT(reader);
+    MD_ASSERT(alloc);
     
     str_t line;
     if (!csv_next_line(reader, &line)) {
@@ -65,7 +65,7 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
         MD_LOG_DEBUG("CSV: potential memory leak, csv structure was not empty");
     }
 
-    MEMSET(csv, 0, sizeof(md_csv_t));
+    MD_MEMSET(csv, 0, sizeof(md_csv_t));
 
     size_t pos = 0;
     const char delim = str_find_char(&pos, line, ',') ? ',' : str_find_char(&pos, line, ';') ? ';' : str_find_char(&pos, line, '\t') ? '\t' : ',';
@@ -145,7 +145,7 @@ bool md_csv_parse_str (md_csv_t* csv, str_t in_str, struct md_allocator_i* alloc
 bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* alloc) {
     md_file_t file = {0};
     if (md_file_open(&file, in_path, MD_FILE_READ)) {
-        size_t cap = MEGABYTES(1);
+        size_t cap = MD_MEGABYTES(1);
         md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
         md_file_reader_t reader;
         md_file_reader_init(&reader, file, cap, md_temp_allocator(temp_scope));
@@ -161,7 +161,7 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
 }
 
 void md_csv_write(md_writer_i* w, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
-    ASSERT(w);
+    MD_ASSERT(w);
     if (!field_values || num_fields == 0) {
         return;
     }
@@ -212,8 +212,8 @@ bool md_csv_write_to_file(const float* const field_values[], const str_t field_n
 }
 
 void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
-    ASSERT(csv);
-    ASSERT(alloc);
+    MD_ASSERT(csv);
+    MD_ASSERT(alloc);
 
     if (csv->field_names) {
         for (size_t i = 0; i < md_array_size(csv->field_names); ++i) {
@@ -224,7 +224,7 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
     for (size_t i = 0; i < md_array_size(csv->field_values); ++i) {
         md_array_free(csv->field_values[i], alloc);
     }
-    MEMSET(csv, 0, sizeof(md_csv_t));
+    MD_MEMSET(csv, 0, sizeof(md_csv_t));
 }
 
 // ### RUN ###
@@ -266,7 +266,7 @@ static str_t csv_group(char* buf, size_t cap, const char* kind, str_t filename) 
 }
 
 bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     bool result = false;

@@ -32,7 +32,7 @@ typedef enum {
     MD_UTIL_INFER_ALL                 = -1,
 } md_infer_flags_t;
 
-ENUM_FLAGS(md_infer_flags_t)
+MD_ENUM_FLAGS(md_infer_flags_t)
 
 // Access to the static arrays (preserved for direct access)
 const str_t* md_util_element_symbols(void);

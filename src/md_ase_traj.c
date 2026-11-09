@@ -32,7 +32,7 @@
 // Arrays are read as the host's numbers: like the rest of mdlib this assumes a little endian host.
 
 #define ASE_HEADER_SIZE   48
-#define ASE_MAX_ITEM_SIZE MEGABYTES(64)
+#define ASE_MAX_ITEM_SIZE MD_MEGABYTES(64)
 #define ASE_CELL_EPS      1.0e-6
 
 typedef struct ase_index_t {
@@ -78,7 +78,7 @@ static bool ase_array(ase_array_t* out, md_json_val_t item, str_t key, size_t ra
     }
 
     out->width = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(dtypes); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(dtypes); ++i) {
         if (md_json_string_eq(dtype, dtypes[i].name)) {
             out->width    = dtypes[i].width;
             out->is_float = dtypes[i].is_float;
@@ -159,7 +159,7 @@ static bool ase_mat3(double out[3][3], md_json_val_t mat) {
 // periodicity the cell is dropped altogether: the box ASE keeps around a molecule would otherwise be taken for a
 // periodic one. A periodic axis of no length is refused.
 static bool ase_cell(float out[9], float out_rot[9], bool* out_rotated, const double A[3][3], const bool pbc[3]) {
-    MEMSET(out, 0, 9 * sizeof(float));
+    MD_MEMSET(out, 0, 9 * sizeof(float));
     *out_rotated = false;
     for (int i = 0; i < 9; ++i) out_rot[i] = (i % 4 == 0) ? 1.0f : 0.0f;
     if (!pbc[0] && !pbc[1] && !pbc[2]) {
@@ -228,7 +228,7 @@ static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item
         if (!numbers || !ase_numbers(numbers, item, idx->num_atoms, file, file_size, temp)) {
             return "malformed atomic numbers";
         }
-        if (MEMCMP(numbers, idx->numbers, idx->num_atoms * sizeof(md_atomic_number_t)) != 0) {
+        if (MD_MEMCMP(numbers, idx->numbers, idx->num_atoms * sizeof(md_atomic_number_t)) != 0) {
             return "different atoms than the first frame, which a run cannot hold";
         }
     }
@@ -239,7 +239,7 @@ static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item
         return "no pbc";
     }
     if (i == 0) {
-        MEMCPY(pbc0, pbc, sizeof(pbc));
+        MD_MEMCPY(pbc0, pbc, sizeof(pbc));
     }
 
     double A[3][3];
@@ -266,15 +266,15 @@ static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, si
     const int64_t file_size = (int64_t)md_file_size(file);
     uint8_t header[ASE_HEADER_SIZE];
     if (file_size < ASE_HEADER_SIZE || md_file_read_at(file, 0, header, sizeof(header)) != sizeof(header) ||
-        MEMCMP(header, "- of Ulm", 8) != 0 || MEMCMP(header + 8, "ASE-Trajectory  ", 16) != 0) {
+        MD_MEMCMP(header, "- of Ulm", 8) != 0 || MD_MEMCMP(header + 8, "ASE-Trajectory  ", 16) != 0) {
         MD_LOG_ERROR("ASE: '" STR_FMT "' is not an ASE trajectory", STR_ARG(path));
         return false;
     }
 
     int64_t version, num_items, table_offset;
-    MEMCPY(&version,      header + 24, sizeof(int64_t));
-    MEMCPY(&num_items,    header + 32, sizeof(int64_t));
-    MEMCPY(&table_offset, header + 40, sizeof(int64_t));
+    MD_MEMCPY(&version,      header + 24, sizeof(int64_t));
+    MD_MEMCPY(&num_items,    header + 32, sizeof(int64_t));
+    MD_MEMCPY(&table_offset, header + 40, sizeof(int64_t));
     if (version != 3) {
         MD_LOG_ERROR("ASE: '" STR_FMT "' is of ULM version %lld, only version 3 is supported", STR_ARG(path), (long long)version);
         return false;
@@ -284,7 +284,7 @@ static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, si
         return false;
     }
 
-    const size_t F = MIN((size_t)num_items, max_frames);
+    const size_t F = MD_MIN((size_t)num_items, max_frames);
     int64_t* items  = md_temp_alloc_array(temp, int64_t, F);
     idx->num_frames = F;
     idx->offset     = md_temp_alloc_array(out, int64_t, F);
@@ -326,7 +326,7 @@ static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, si
 // The first max_frames frames of the file at path. The index goes in out, the caller's scope, and is
 // gone when it ends; what is only needed while reading comes from the other temp arena.
 static bool ase_index_read(ase_index_t* idx, str_t path, size_t max_frames, md_temp_scope_t out) {
-    MEMSET(idx, 0, sizeof(ase_index_t));
+    MD_MEMSET(idx, 0, sizeof(ase_index_t));
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
         MD_LOG_ERROR("ASE: could not open '" STR_FMT "'", STR_ARG(path));
@@ -369,7 +369,7 @@ static bool ase_positions_read(float* dst, size_t count, size_t width, md_attrib
 // <run>/atom/position: one read of the frame, or of the one atom asked for
 static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
@@ -399,8 +399,8 @@ static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t*
 }
 
 bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
-    ASSERT(state);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
     if (!sys->alloc || !state->alloc) {
         MD_LOG_ERROR("ASE: system or state allocator not set");
         return false;
@@ -423,7 +423,7 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
     if (result) {
         const size_t N = idx.num_atoms;
         ase_rotate(xyz, N, idx.rotation);
-        MEMCPY(state->xyz, xyz, N * sizeof(vec3_t));
+        MD_MEMCPY(state->xyz, xyz, N * sizeof(vec3_t));
         state->unitcell = md_unitcell_from_matrix_float((const float (*)[3])idx.cell);
 
         md_array_ensure(sys->atom.type_idx, N, sys->alloc);
@@ -444,7 +444,7 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
 }
 
 bool md_ase_traj_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     (void)flags;    // no index cache to write: the file has a table of its frames
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);

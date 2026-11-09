@@ -104,7 +104,7 @@ static bool gpu_is_software(md_gpu_device_t dev) {
         "Apple Paravirtual"
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(software_drivers); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(software_drivers); ++i) {
         if (strstr(info.name, software_drivers[i]) != NULL) {
             return true;
         }
@@ -2818,7 +2818,7 @@ UTEST(gpu, transient_pages_are_not_recycled_under_pending_data) {
     ASSERT_TRUE(s != NULL);
 
     const size_t big0 = 200 * 1024, big1 = 100 * 1024, big2 = 110 * 1024;
-    uint8_t* zeros = (uint8_t*)calloc(1, MAX(big0, MAX(big1, big2)));   /* the source of every upload below */
+    uint8_t* zeros = (uint8_t*)calloc(1, MD_MAX(big0, MD_MAX(big1, big2)));   /* the source of every upload below */
     ASSERT_TRUE(zeros != NULL);
     md_gpu_addr_t a = gpu_alloc(&f, s, big0);
     md_gpu_addr_t b = gpu_alloc(&f, s, 64);

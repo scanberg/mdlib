@@ -106,7 +106,7 @@ UTEST(vial_types, matches) {
 
 // Every result in the reference reads as types or a value, with its stage and pass where written
 UTEST(vial_types, results_read) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     str_t text = load_textfile(STR_LIT(VIAL_TYPES_REFERENCE), alloc);
     ASSERT_FALSE(str_empty(text));
     vial_spec_t spec;

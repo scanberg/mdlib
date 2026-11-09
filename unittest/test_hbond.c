@@ -172,7 +172,7 @@ struct hbond {
 };
 
 UTEST_F_SETUP(hbond) {
-    utest_fixture->alloc = md_vm_arena_create(GIGABYTES(8));
+    utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(8));
     md_allocator_i* alloc = utest_fixture->alloc;
 
     utest_fixture->npt = (md_system_t){ .alloc = alloc };
@@ -204,7 +204,7 @@ static const char* water_dimer =
     "H  3.140 -0.464  0.803\n";
 
 UTEST(hbond, water_dimer) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys;
     md_system_state_t st;
     ASSERT_TRUE(load_xyz(&sys, &st, water_dimer, NULL, alloc));
@@ -233,7 +233,7 @@ UTEST(hbond, water_dimer) {
 
 // The same dimer straddling the boundary of a periodic cell: the donor's own O-H is split, and so is H...A.
 UTEST(hbond, water_dimer_periodic) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* shifted =
         "6\n"
         "water dimer across the boundary at x = 10\n"
@@ -263,7 +263,7 @@ UTEST(hbond, water_dimer_periodic) {
 // One hydrogen between two acceptors: a bifurcated bond. One bond per hydrogen keeps the stronger, two keep both, and
 // the tolerance drops the second when it is much weaker.
 UTEST(hbond, bifurcation) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* text =
         "9\n"
         "water donating to two waters\n"
@@ -294,13 +294,13 @@ UTEST(hbond, bifurcation) {
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
     ASSERT_EQ(2, (int)set.count);
     const float s0 = set.strength[0], s1 = set.strength[1];
-    const float ratio = MIN(s0, s1) / MAX(s0, s1);
+    const float ratio = MD_MIN(s0, s1) / MD_MAX(s0, s1);
 
-    p.bifurcation_tol = MIN(1.0f, ratio + 0.05f);
+    p.bifurcation_tol = MD_MIN(1.0f, ratio + 0.05f);
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
     EXPECT_EQ(1, (int)set.count);
 
-    p.bifurcation_tol = MAX(0.0f, ratio - 0.05f);
+    p.bifurcation_tol = MD_MAX(0.0f, ratio - 0.05f);
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
     EXPECT_EQ(2, (int)set.count);
     md_vm_arena_destroy(alloc);
@@ -308,7 +308,7 @@ UTEST(hbond, bifurcation) {
 
 // A pyramidal NH3 has a free lone pair, a flattened one does not
 UTEST(hbond, roles_planarity) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* text =
         "8\n"
         "pyramidal and planar NH3\n"
@@ -345,7 +345,7 @@ UTEST(hbond, roles_planarity) {
 
 // Without coordinates the N of an amide is sp2 by the perceived chemistry and does not accept, that of an amine does
 UTEST(hbond, roles_from_chemistry) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* text =
         "13\n"
         "formamide and methylamine\n"
@@ -383,7 +383,7 @@ UTEST(hbond, roles_from_chemistry) {
 }
 
 UTEST(hbond, no_hydrogens) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
@@ -408,7 +408,7 @@ UTEST(hbond, no_hydrogens) {
 }
 
 UTEST(hbond, invalid_params) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys;
     md_system_state_t st;
     ASSERT_TRUE(load_xyz(&sys, &st, water_dimer, NULL, alloc));
@@ -491,7 +491,7 @@ UTEST_F(hbond, roles_water) {
 }
 
 UTEST(hbond, roles_nucleic) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
@@ -546,7 +546,7 @@ UTEST_F(hbond, roles_halide) {
         size_t n = 0;
         const uint32_t a = set.acceptor[k];
         for (size_t m = 0; m < set.count; ++m) n += set.acceptor[m] == a;
-        if (md_atom_atomic_number(&sys->atom, a) == MD_Z_Cl) max_per_cl = MAX(max_per_cl, (int)n);
+        if (md_atom_atomic_number(&sys->atom, a) == MD_Z_Cl) max_per_cl = MD_MAX(max_per_cl, (int)n);
         ++k;
     }
     EXPECT_GE(max_per_cl, 3);
@@ -717,7 +717,7 @@ UTEST_F(hbond, selection_ligand) {
 // weaker bond that would win if the competitor were ignored. Distant waters make the selection a small part of the
 // system, which is when the shell of competitors is built rather than the whole system taken.
 UTEST(hbond, selection_competitor_outside) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     char text[8192];
     int len = 0;
     const int num_far = 20;
@@ -761,7 +761,7 @@ UTEST(hbond, selection_competitor_outside) {
 // bond only and a third hydrogen H3, further than one search radius from the selection, bonds to it more strongly.
 // So in the full system H1 bonds to A1. Getting that right for the selection needs H3, a competitor's competitor.
 UTEST(hbond, selection_competitor_chain) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     char text[8192];
     int len = 0;
     const int num_far = 20;

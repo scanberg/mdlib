@@ -43,7 +43,7 @@ allocation_t* new_allocation(tracking_t* tracking) {
 }
 
 void register_deallocation(tracking_t* tracking, allocation_t* alloc) {
-    ASSERT(find_allocation(tracking, alloc->ptr));
+    MD_ASSERT(find_allocation(tracking, alloc->ptr));
     size_t idx = alloc - tracking->allocations;
     md_array_swap_back_and_pop(tracking->allocations, idx);
     //*alloc = *md_array_last(tracking->allocations);
@@ -55,7 +55,7 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old
     (void)file;
     (void)line;
     tracking_t* tracking = (tracking_t*)inst;
-    ASSERT(tracking && tracking->magic == MAGIC_NUMBER);
+    MD_ASSERT(tracking && tracking->magic == MAGIC_NUMBER);
 
     void* result = 0;
 
@@ -65,8 +65,8 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old
         // MAKE SURE OLD PTR AND SIZE ARE REPRESENTED!
 
         allocation_t* alloc = find_allocation(tracking, ptr);
-        ASSERT(alloc);
-        ASSERT(alloc->size == old_size);
+        MD_ASSERT(alloc);
+        MD_ASSERT(alloc->size == old_size);
 
         if (new_size) {
             // REALLOC
@@ -96,11 +96,11 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old
 }
 
 struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backing) {
-    ASSERT(backing);
+    MD_ASSERT(backing);
     tracking_t* inst = (tracking_t*)md_alloc(backing, sizeof(tracking_t) + sizeof(md_allocator_i));
     inst->backing = backing;
     inst->allocations = 0;
-    inst->arena = md_vm_arena_create(GIGABYTES(1));
+    inst->arena = md_vm_arena_create(MD_GIGABYTES(1));
     inst->mutex = md_mutex_create();
     inst->magic = MAGIC_NUMBER;
 
@@ -112,10 +112,10 @@ struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backi
 }
 
 void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
-    ASSERT(alloc);
-    ASSERT(alloc->inst);
+    MD_ASSERT(alloc);
+    MD_ASSERT(alloc->inst);
     tracking_t* tracking = (tracking_t*)alloc->inst;
-    ASSERT(tracking->magic == MAGIC_NUMBER);
+    MD_ASSERT(tracking->magic == MAGIC_NUMBER);
 
     md_mutex_lock(&tracking->mutex);
     size_t size = md_array_size(tracking->allocations);
@@ -131,10 +131,10 @@ void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
 }
 
 void md_tracking_allocator_print(struct md_allocator_i* alloc) {
-    ASSERT(alloc);
-    ASSERT(alloc->inst);
+    MD_ASSERT(alloc);
+    MD_ASSERT(alloc->inst);
     tracking_t* tracking = (tracking_t*)alloc->inst;
-    ASSERT(tracking->magic == MAGIC_NUMBER);
+    MD_ASSERT(tracking->magic == MAGIC_NUMBER);
 
     md_mutex_lock(&tracking->mutex);
 

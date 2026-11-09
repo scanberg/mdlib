@@ -24,7 +24,7 @@ static inline const md_system_t* vial_test_system(char which) {
     const int i = which == 'T' ? 0 : 1;
     if (!loaded[i]) {
         loaded[i] = true;
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         sys[i] = (md_system_t){.alloc = alloc};
         md_system_state_t* st = &vial_test__state[i];
         *st = (md_system_state_t){.alloc = alloc};

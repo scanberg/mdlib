@@ -51,7 +51,7 @@ static int compare_component(const md_system_t* sys, const int* map, const ref_c
     int errors = 0;
 
     uint8_t* aromatic_atom = md_alloc(alloc, n + 1);
-    MEMSET(aromatic_atom, 0, n + 1);
+    MD_MEMSET(aromatic_atom, 0, n + 1);
     for (size_t b = 0; b < sys->bond.count; ++b) {
         if (sys->bond.flags[b] & MD_BOND_FLAG_AROMATIC) aromatic_atom[sys->bond.pairs[b].idx[0]] = aromatic_atom[sys->bond.pairs[b].idx[1]] = 1;
     }
@@ -86,20 +86,20 @@ static int compare_component(const md_system_t* sys, const int* map, const ref_c
         }
         if ((f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)) || ref->aromatic) {
             const int x = find_root(group, a), y = find_root(group, b);
-            if (x != y) group[MAX(x, y)] = MIN(x, y);
+            if (x != y) group[MD_MAX(x, y)] = MD_MIN(x, y);
         }
     }
 
     int* h_ref = md_alloc(alloc, sizeof(int) * (na + 1));
-    MEMSET(h_ref, 0, sizeof(int) * (na + 1));
+    MD_MEMSET(h_ref, 0, sizeof(int) * (na + 1));
     for (int r = 0; r < nb; ++r) {
         if (c->atom[c->bond[r].i].z == 1) h_ref[c->bond[r].j] += 1;
         if (c->atom[c->bond[r].j].z == 1) h_ref[c->bond[r].i] += 1;
     }
     int* sum_ref = md_alloc(alloc, sizeof(int) * (n + 1));
     int* sum_our = md_alloc(alloc, sizeof(int) * (n + 1));
-    MEMSET(sum_ref, 0, sizeof(int) * (n + 1));
-    MEMSET(sum_our, 0, sizeof(int) * (n + 1));
+    MD_MEMSET(sum_ref, 0, sizeof(int) * (n + 1));
+    MD_MEMSET(sum_our, 0, sizeof(int) * (n + 1));
     for (int i = 0; i < na; ++i) {
         const int a = map[i];
         if (a < 0 || c->atom[i].z == 1) continue;
@@ -124,7 +124,7 @@ static int check_all(const ref_comp_t* comps, bool strip_h, bool infer, int* out
     int failed = 0;
     *out_checked = 0;
     for (size_t i = 0; i < md_array_size(comps); ++i) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         int* map = md_alloc(alloc, sizeof(int) * (md_array_size(comps[i].atom) + 1));
@@ -143,7 +143,7 @@ struct chem {
 };
 
 UTEST_F_SETUP(chem) {
-    utest_fixture->alloc = md_vm_arena_create(GIGABYTES(1));
+    utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     utest_fixture->comps = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), utest_fixture->alloc);
     ASSERT_GT((int)md_array_size(utest_fixture->comps), 100);
 }
@@ -189,10 +189,10 @@ UTEST_F(chem, residues_ph7) {
         // Phosphates: 1- for each, 2- for the terminal one; the purine aromatic
         { "ATP", -4, 10, 7 },
     };
-    for (size_t e = 0; e < ARRAY_SIZE(expect); ++e) {
+    for (size_t e = 0; e < MD_COUNTOF(expect); ++e) {
         const ref_comp_t* c = find_component(utest_fixture->comps, expect[e].id);
         ASSERT_TRUE(c != NULL);
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
@@ -213,7 +213,7 @@ UTEST_F(chem, residues_ph7) {
 
 // Ions without hydrogens, built here: nitrate, phosphate, sulfate, and the monatomic ones
 UTEST(chem, ions) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const char pdb[] =
@@ -265,14 +265,14 @@ UTEST(chem, ions) {
 UTEST_F(chem, given_orders_and_rerun) {
     const ref_comp_t* c = find_component(utest_fixture->comps, "PHE");
     ASSERT_TRUE(c != NULL);
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
     build_component(&sys, &st, map, c, false, false);
     ASSERT_TRUE(md_chem_perceive(&sys, &st, MD_CHEM_FLAG_NONE));
     md_bond_flags_t* first = md_alloc(alloc, sizeof(md_bond_flags_t) * sys.bond.count);
-    MEMCPY(first, sys.bond.flags, sizeof(md_bond_flags_t) * sys.bond.count);
+    MD_MEMCPY(first, sys.bond.flags, sizeof(md_bond_flags_t) * sys.bond.count);
     ASSERT_TRUE(md_chem_perceive(&sys, &st, MD_CHEM_FLAG_NONE));
     EXPECT_EQ(0, memcmp(first, sys.bond.flags, sizeof(md_bond_flags_t) * sys.bond.count));
 
@@ -300,7 +300,7 @@ UTEST_F(chem, given_orders_and_rerun) {
 UTEST_F(chem, given_charges) {
     const ref_comp_t* c = find_component(utest_fixture->comps, "HIS");
     ASSERT_TRUE(c != NULL);
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
@@ -336,7 +336,7 @@ UTEST_F(chem, given_charges) {
 // A protein from a crystal structure (no hydrogens) through md_util_system_infer: charged side chains and termini,
 // and the cysteines of the zinc fingers as thiolates
 UTEST(chem, deposited_structure) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
@@ -384,7 +384,7 @@ UTEST(chem, deposited_structure) {
 
 // A simulation with all hydrogens: the protonation is the force field's, and every residue gets its charge
 UTEST(chem, simulation_with_hydrogens) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
@@ -463,15 +463,15 @@ UTEST_F(chem, ring_flags) {
 
     md_array(ref_comp_t) mols = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ring_chem.txt"), utest_fixture->alloc);
     const struct { const ref_comp_t* comps; const ring_expect_t* expect; size_t count; bool strip_h; } sets[] = {
-        { utest_fixture->comps, expect_ccd, ARRAY_SIZE(expect_ccd), false },
-        { mols,                 expect_mol, ARRAY_SIZE(expect_mol), true  },
+        { utest_fixture->comps, expect_ccd, MD_COUNTOF(expect_ccd), false },
+        { mols,                 expect_mol, MD_COUNTOF(expect_mol), true  },
     };
-    for (size_t s = 0; s < ARRAY_SIZE(sets); ++s) {
+    for (size_t s = 0; s < MD_COUNTOF(sets); ++s) {
         for (size_t e = 0; e < sets[s].count; ++e) {
             const ring_expect_t* ex = &sets[s].expect[e];
             const ref_comp_t* c = find_component(sets[s].comps, ex->id);
             ASSERT_TRUE_MSG(c != NULL, ex->id);
-            md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+            md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
             md_system_t sys = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc };
             int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
@@ -513,10 +513,10 @@ UTEST_F(chem, sugar_ring_order) {
     };
     for (int pass = 0; pass < 2; ++pass) {          // All atoms, heavy atoms only
         const bool strip_h = pass == 1;
-        for (size_t e = 0; e < ARRAY_SIZE(expect); ++e) {
+        for (size_t e = 0; e < MD_COUNTOF(expect); ++e) {
             const ref_comp_t* c = find_component(utest_fixture->comps, expect[e].id);
             ASSERT_TRUE_MSG(c != NULL, expect[e].id);
-            md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+            md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
             md_system_t sys = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc };
             int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
@@ -914,8 +914,8 @@ typedef struct delta_fixture_chem_t {
 } delta_fixture_chem_t;
 
 static void delta_load(delta_fixture_chem_t* f, const char* before, const char* after) {
-    MEMSET(f, 0, sizeof(*f));
-    f->alloc = md_vm_arena_create(GIGABYTES(1));
+    MD_MEMSET(f, 0, sizeof(*f));
+    f->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     f->before = (md_system_t){ .alloc = f->alloc };
     f->after  = (md_system_t){ .alloc = f->alloc };
     f->before_state = (md_system_state_t){ .alloc = f->alloc };
@@ -1168,7 +1168,7 @@ UTEST(chem, delta_empty) {
 UTEST(chem, delta_metal_contact) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     if (!md_path_is_valid(path)) UTEST_SKIP("40-40-2-ddba-dyna.xmol not in the test data");
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_xyz_data_t data = {0};
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
     md_system_t sys = { .alloc = alloc };

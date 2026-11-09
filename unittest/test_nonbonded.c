@@ -100,7 +100,7 @@ UTEST(nonbonded, systems_against_gromacs) {
         { "nb_pswitch_cut.tpr",  { 12.926515579224, 29.370998382568, -13.620864868164 }, { -1.002470016479, -0.167487099767, -0.003118790453 }, true,  1e-5 },
         { "nb_potshift_pme.tpr", { -17.877027511597, 0.242650389671, -80.129722595215 }, { -0.999014973640, -0.182620733976, -0.002159389667 }, false, 1e-4 },
     };
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c) {
         char path[512];
         snprintf(path, sizeof(path), "%s%s", TPR_DIR, cases[c].file);
@@ -158,7 +158,7 @@ UTEST(nonbonded, systems_against_gromacs) {
 }
 
 UTEST(nonbonded, from_tpr) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     // LJ-PME has a grid part which is not a sum over pairs
     md_tpr_data_t tpr = {0};
@@ -188,7 +188,7 @@ UTEST(nonbonded, from_tpr) {
 
 // The force field a system loaded from a tpr carries: the same energies, from the system's own coordinates (Å)
 UTEST(nonbonded, system_forcefield) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "nb_fswitch_rf.tpr")));

@@ -1364,7 +1364,7 @@ too_many:
 static void method_refused(infer_t* x, vial_node_id at, vial_node_id on, vial_node_id nn, bool call) {
     const str_t o = text(x, on), f = text(x, nn);
     char fix[192];
-    snprintf(fix, sizeof(fix), "%.*s(%.*s%s)", (int)MIN(f.len, 40), f.ptr, (int)MIN(o.len, 120), o.ptr, call ? ", ..." : "");
+    snprintf(fix, sizeof(fix), "%.*s(%.*s%s)", (int)MD_MIN(f.len, 40), f.ptr, (int)MD_MIN(o.len, 120), o.ptr, call ? ", ..." : "");
     diag_fix(x, "E0319", at, call ? NULL : fix, "`.%.*s` is no property: VIAL calls functions, %s", (int)f.len, f.ptr, fix);
 }
 
@@ -1387,13 +1387,13 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         const str_t o = vial_excerpt(ex, sizeof(ex), text(x, on));
         const int nl = (int)name.len;
         char fix[160];
-        snprintf(fix, sizeof(fix), "%.*s(%.*s)", nl, name.ptr, (int)MIN(o.len, 120), o.ptr);
+        snprintf(fix, sizeof(fix), "%.*s(%.*s)", nl, name.ptr, (int)MD_MIN(o.len, 120), o.ptr);
         // Only what a unit can hold: a residue holds rings but no chains
         static const uint8_t rank[] = {[VIAL_LEVEL_PARTICLE] = 1, [VIAL_LEVEL_RING] = 2, [VIAL_LEVEL_HEAD] = 2, [VIAL_LEVEL_TAIL] = 2,
                                        [VIAL_LEVEL_RESIDUE] = 3, [VIAL_LEVEL_PART] = 4, [VIAL_LEVEL_MOLECULE] = 5, [VIAL_LEVEL_CHAIN] = 6};
         const vial_value_t av = value_of(x, on);
-        if (av.kind == VIAL_VAL_SETS && !av.sets->single && av.sets->level < ARRAY_SIZE(rank) && rank[av.sets->level] &&
-            vlevel < ARRAY_SIZE(rank) && rank[vlevel] >= rank[av.sets->level]) {
+        if (av.kind == VIAL_VAL_SETS && !av.sets->single && av.sets->level < MD_COUNTOF(rank) && rank[av.sets->level] &&
+            vlevel < MD_COUNTOF(rank) && rank[vlevel] >= rank[av.sets->level]) {
             const char* unit = vial_select_name(av.sets->level);
             diag_fix(x, "E0319", id, fix, "a %s holds no %.*s of its own; the %.*ss that hold them are %s", unit, nl, name.ptr, nl, name.ptr, fix);
             return err();

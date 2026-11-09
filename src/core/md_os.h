@@ -60,7 +60,7 @@ typedef enum md_file_info_flags_t {
     MD_FILE_INFO_IS_REGULAR   = 1u << 1,
     MD_FILE_INFO_IS_READONLY  = 1u << 2,
 } md_file_info_flags_t;
-ENUM_FLAGS(md_file_info_flags_t)
+MD_ENUM_FLAGS(md_file_info_flags_t)
 
 typedef struct md_file_info_t {
     md_file_offset_t size;
@@ -97,7 +97,7 @@ typedef enum md_file_flags_t {
     MD_FILE_SEQUENTIAL = 1u << 6,
     MD_FILE_RANDOM     = 1u << 7,
 } md_file_flags_t;
-ENUM_FLAGS(md_file_flags_t)
+MD_ENUM_FLAGS(md_file_flags_t)
 
 typedef enum md_file_seek_origin_t {
     MD_FILE_BEG = 0,

@@ -121,7 +121,7 @@ static void diag_fix(resolver_t* r, const char code[6], vial_node_id at, const c
 
 static bool is_kind_name(str_t s) {
     static const char* kinds[] = {"set", "group", "point", "points", "float", "int", "bool"};
-    for (size_t i = 0; i < ARRAY_SIZE(kinds); ++i) if (str_eq(s, str_from_cstr(kinds[i]))) return true;
+    for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) if (str_eq(s, str_from_cstr(kinds[i]))) return true;
     return false;
 }
 

@@ -137,9 +137,9 @@ static inline md_particle_kind_t particle(const md_system_t* sys, size_t i) {
 }
 
 UTEST(water, virtual_sites) {
-    for (size_t k = 0; k < ARRAY_SIZE(water_cases); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(water_cases); ++k) {
         const water_case_t* c = &water_cases[k];
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys;
         md_system_state_t st;
         ASSERT_TRUE(load_case(&sys, &st, c, alloc));
@@ -211,7 +211,7 @@ UTEST(water, unwrap_virtual_site) {
         "    1SOL    HW2    3   0.049   0.924   1.000\n"
         "    1SOL     MW    4   0.005   1.000   1.000\n"
         "   3.00000   3.00000   3.00000\n";
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text), NULL));
@@ -228,7 +228,7 @@ UTEST(water, unwrap_virtual_site) {
 
 // A peptide in TIP4P water, from the GROMACS coordinates and from the run input: the same waters and sites either way
 UTEST(water, tip4p_gro_and_tpr) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     size_t counts[2][4] = { 0 };
     for (int f = 0; f < 2; ++f) {
         md_system_t sys = { .alloc = alloc };
@@ -267,7 +267,7 @@ UTEST(water, martini_bead_unchanged) {
         "    1W        W    1   1.000   1.000   1.000\n"
         "    2W        W    2   1.500   1.000   1.000\n"
         "   3.00000   3.00000   3.00000\n";
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text), NULL));

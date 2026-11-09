@@ -105,7 +105,7 @@ static bool psf_has_flag(str_t text, const char* flag) {
         const str_t line = str_trim(psf_next_line(&text));
         if (str_empty(line)) continue;
         str_t tok[16];
-        const size_t n = psf_tokens(tok, ARRAY_SIZE(tok), line);
+        const size_t n = psf_tokens(tok, MD_COUNTOF(tok), line);
         for (size_t i = 1; i < n; ++i) {
             if (str_eq_cstr(tok[i], flag)) return true;
         }
@@ -152,7 +152,7 @@ static bool psf_atom_columns(psf_atom_fields_t* f, str_t line, bool ext) {
 // be told apart here, so the columns are tried first.
 static bool psf_atom_words(psf_atom_fields_t* f, str_t line) {
     str_t tok[8];
-    if (psf_tokens(tok, ARRAY_SIZE(tok), line) < 8) return false;
+    if (psf_tokens(tok, MD_COUNTOF(tok), line) < 8) return false;
     f->id = tok[0]; f->seg = tok[1]; f->resid = tok[2]; f->resname = tok[3];
     f->name = tok[4]; f->type = tok[5]; f->charge = tok[6]; f->mass = tok[7];
     return true;
@@ -173,7 +173,7 @@ typedef struct psf_data_t {
 } psf_data_t;
 
 static bool psf_read(psf_data_t* d, str_t path, md_allocator_i* alloc) {
-    MEMSET(d, 0, sizeof(*d));
+    MD_MEMSET(d, 0, sizeof(*d));
     str_t text = load_textfile(path, alloc);
     if (!psf_is_header(text)) {
         MD_LOG_ERROR("PSF: '" STR_FMT "' does not start with 'PSF'", STR_ARG(path));
@@ -245,7 +245,7 @@ static bool psf_read(psf_data_t* d, str_t path, md_allocator_i* alloc) {
             int64_t read = 0;
             while (read < 2 * count && text.len) {
                 str_t tok[16];
-                const size_t n = psf_tokens(tok, ARRAY_SIZE(tok), psf_next_line(&text));
+                const size_t n = psf_tokens(tok, MD_COUNTOF(tok), psf_next_line(&text));
                 for (size_t k = 0; k < n; ++k) {
                     int64_t v = 0;
                     if (md_parse_i64(&v, tok[k]) != tok[k].len || v < 1 || v > (int64_t)d->num_atoms) {
@@ -294,8 +294,8 @@ static md_topology_desc_t psf_desc(const psf_data_t* d) {
 }
 
 bool md_psf_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
-    ASSERT(state);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     psf_data_t d;
     bool result = psf_read(&d, filename, md_temp_allocator(temp));
@@ -308,7 +308,7 @@ bool md_psf_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
 }
 
 bool md_psf_system_supplement_from_file(md_system_t* sys, str_t filename) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     psf_data_t d;
     bool result = psf_read(&d, filename, md_temp_allocator(temp));

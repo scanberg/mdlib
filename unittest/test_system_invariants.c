@@ -74,8 +74,8 @@ UTEST(system_invariants, lammps) {
 
 // A copy is the same system in another allocator: valid, and inferred on it gives what inferred on the original gave
 UTEST(system_invariants, copy) {
-    md_allocator_i* a1 = md_vm_arena_create(GIGABYTES(1));
-    md_allocator_i* a2 = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* a1 = md_vm_arena_create(MD_GIGABYTES(1));
+    md_allocator_i* a2 = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = a1 };
     md_system_state_t state = { .alloc = a1 };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -98,7 +98,7 @@ UTEST(system_invariants, copy) {
     EXPECT_EQ(md_system_molecule_count(&sys), md_system_molecule_count(&core));
 
     // And the inferred system copied: everything there, nothing shared
-    md_allocator_i* a3 = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* a3 = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t full = { .alloc = a3 };
     ASSERT_TRUE(md_system_copy(&full, &sys));
     expect_valid_system(utest_result, __FILE__, __LINE__, &full);
@@ -171,10 +171,10 @@ static void expect_same_derived(int* utest_result, const char* file, int line, c
 #undef SAME_STRINGS
 
 static void check_infer_write_set(int* utest_result, sys_load_fn load, str_t path) {
-    md_allocator_i* a_sys  = md_vm_arena_create(GIGABYTES(4));
-    md_allocator_i* a_work = md_vm_arena_create(GIGABYTES(4));
-    md_allocator_i* a_snap = md_vm_arena_create(GIGABYTES(4));
-    md_allocator_i* a_ref  = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* a_sys  = md_vm_arena_create(MD_GIGABYTES(4));
+    md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
+    md_allocator_i* a_snap = md_vm_arena_create(MD_GIGABYTES(4));
+    md_allocator_i* a_ref  = md_vm_arena_create(MD_GIGABYTES(4));
 
     md_system_t sys = { .alloc = a_sys };
     md_system_state_t state = { .alloc = a_sys };

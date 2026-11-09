@@ -209,7 +209,7 @@ static bool load_martini3_ubiquitin(md_system_t* sys, md_system_state_t* state) 
 
 // The BB beads of a Martini protein make a trace: one segment per residue, the bead in ca and no atoms
 UTEST(secondary_structure, martini_trace_backbone) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&sys, &state));
@@ -247,7 +247,7 @@ UTEST(secondary_structure, martini_trace_backbone) {
 // (89 %): the helices, the five strands, and the coil between them; a residue more or less at the ends of strands and
 // helices is all that differs.
 UTEST(secondary_structure, martini_cg_dssp) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&sys, &state));
@@ -275,7 +275,7 @@ UTEST(secondary_structure, martini_cg_dssp) {
 
 // A trace split by the periodic boundary gets the secondary structure it has whole
 UTEST(secondary_structure, martini_cg_dssp_periodic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&sys, &state));
@@ -305,7 +305,7 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
 
 // The atomistic DSSP of 1LAF as it was before traces were added beside it: atomistic ranges keep their bonds and patterns
 UTEST(secondary_structure, atomistic_dssp_unchanged) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -329,7 +329,7 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
 // A protein split by the periodic boundary, residues and all (every atom wrapped into the cell on its own), gets the
 // secondary structure it has whole: the bonds between residues in different images are those of the nearest image
 UTEST(secondary_structure, atomistic_dssp_periodic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -361,7 +361,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
 // A trace and an atomistic protein in one backbone, overlapping in space: each gets the secondary structure it has on
 // its own, as the bonds of one kind are never looked for between residues of the other
 UTEST(secondary_structure, mixed_trace_and_atomistic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t cg = { .alloc = alloc };
     md_system_state_t cg_state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&cg, &cg_state));

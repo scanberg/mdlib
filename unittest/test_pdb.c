@@ -15,7 +15,7 @@
 
 // The file's atoms, its cell and the bonds of its CONECT records, as the system has them
 UTEST(pdb, ordinary) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -28,7 +28,7 @@ UTEST(pdb, ordinary) {
 }
 
 UTEST(pdb, tryptophan) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -38,7 +38,7 @@ UTEST(pdb, tryptophan) {
 
 // A MODEL record without its ENDMDL: all of the atoms after it
 UTEST(pdb, unmatched_model_entry) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -50,7 +50,7 @@ UTEST(pdb, unmatched_model_entry) {
 
 // The models of a file of several: the first is the system, and the run's frames begin at the MODEL records
 UTEST(pdb, models) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
@@ -77,7 +77,7 @@ UTEST(pdb, models) {
 
 // REMARK 350 of 1k4r: biomolecule 1 is its three chains by 60 transforms, the shell of the virion
 UTEST(pdb, assemblies) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -90,7 +90,7 @@ UTEST(pdb, assemblies) {
     EXPECT_EQ(3, ir.end - ir.beg);
     EXPECT_EQ(60, md_assembly_copy_count(a, 0));
     const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, MEMCMP(&I, &a->oper_transform[a->oper[0]], sizeof(mat4_t)));
+    EXPECT_EQ(0, MD_MEMCMP(&I, &a->oper_transform[a->oper[0]], sizeof(mat4_t)));
     md_vm_arena_destroy(alloc);
 }
 
@@ -118,7 +118,7 @@ UTEST(pdb, assembly_groups) {
         "ATOM      5  N   ALA C   1       0.000  40.000   0.000  1.00  0.00           N\n"
         "ATOM      6  CA  ALA C   1       1.458  40.000   0.000  1.00  0.00           C\n"
         "END\n";
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){pdb, sizeof(pdb) - 1}, MD_PDB_OPTION_NONE, NULL));
@@ -147,7 +147,7 @@ UTEST(pdb, assembly_groups) {
 }
 
 UTEST(pdb, create_system) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = { .alloc = arena };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -174,7 +174,7 @@ static size_t count_bonds_of_origin(const md_system_t* sys, md_bond_origin_t ori
 // The cell as some tools write it: CRYST with a blank for the 1 and all angles 0 (the Conformational Analysis Tools of
 // CHARMM-GUI). A rectangular box: the bonds of a residue which lies across its boundary are found through it.
 UTEST(pdb, cryst_record_without_its_1) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     static const char pdb[] =
         "CRYST   246.108  246.108  398.534   0.00   0.00   0.00\n"
         "ATOM      1  N   ALA A   1     245.000  10.000  10.000  0.00  0.00           N\n"
@@ -202,7 +202,7 @@ UTEST(pdb, cryst_record_without_its_1) {
 // which begins a number past 99999 with a letter. They are not numbers of the format: the atoms are read in their
 // order, and no CONECT record can name them. Hexadecimal without a letter (18700) is decimal; A0000 is 100000.
 UTEST(pdb, serials_which_are_not_numbers) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     static const char pdb[] =
         "ATOM  99999  OW  SOL X3333       0.000   0.000   0.000  1.00  0.00           O\n"
         "ATOM  186a0  OW  SOL X3334       3.000   0.000   0.000  1.00  0.00           O\n"
@@ -226,7 +226,7 @@ UTEST(pdb, serials_which_are_not_numbers) {
 }
 
 UTEST(pdb, conect_bonds) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -261,7 +261,7 @@ UTEST(pdb, conect_bonds) {
 // A record of more than four bonded atoms goes on over several CONECT lines, and the serials of atoms past 99999 are
 // hybrid-36 (A0000 is 100000)
 UTEST(pdb, conect_continued_and_hybrid36) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "HETATM    1 FE   HEM A   1       0.000   0.000   0.000  1.00  0.00          FE\n"
         "HETATM    2  N1  HEM A   1       2.000   0.000   0.000  1.00  0.00           N\n"
@@ -294,7 +294,7 @@ UTEST(pdb, conect_continued_and_hybrid36) {
 // same serial twice: the first atom of it), wherever in the file they are, and a bond given twice (each of its atoms
 // names the other, or a writer repeats it for its order) is one
 UTEST(pdb, conect_serials_out_of_order) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "HETATM   30  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00           C\n"
         "HETATM   10  C2  LIG A   1       1.500   0.000   0.000  1.00  0.00           C\n"
@@ -321,7 +321,7 @@ UTEST(pdb, conect_serials_out_of_order) {
 // each given by both of them: as many as there are, in time linear in them (a map of pairs keyed by their atoms took
 // time quadratic in them, as neighbouring atoms hashed alike)
 UTEST(pdb, conect_dense) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const size_t n = 50000;
     const size_t cap = n * 82 + (n - 1) * 34 + 1;
     char* buf = md_alloc(alloc, cap);
@@ -348,7 +348,7 @@ UTEST(pdb, conect_dense) {
 
 // An atom name of four characters fills columns 13 to 16 and is kept whole: HN4' and HN4A are two atoms, not two HN4
 UTEST(pdb, four_character_atom_names) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     const str_t text = STR_LIT(
@@ -366,7 +366,7 @@ UTEST(pdb, four_character_atom_names) {
 }
 
 UTEST(pdb, parse_nonexistent_file) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     EXPECT_FALSE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -375,7 +375,7 @@ UTEST(pdb, parse_nonexistent_file) {
 }
 
 UTEST(pdb, parse_empty_path) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     EXPECT_FALSE(md_pdb_system_init_from_file(&sys, &st, (str_t){0}, MD_PDB_OPTION_NONE, NULL));
@@ -394,13 +394,13 @@ static const run_ref_t pdb_refs[] = {
 
 // One frame per model, time as model ordinals, and the file's one CRYST1 cell at every frame.
 UTEST(pdb, run_matches_reference) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_pdb_system_publish_run(&sys, path, PDB_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    run_check_refs(utest_result, &sys, PDB_RUN, 38, 153, pdb_refs, ARRAY_SIZE(pdb_refs));
+    run_check_refs(utest_result, &sys, PDB_RUN, 38, 153, pdb_refs, MD_COUNTOF(pdb_refs));
 
     const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/1ala/time"));
     const md_attribute_t* pos  = md_attributes_find(&sys.attributes, STR_LIT("run/1ala/atom/position"));
@@ -412,7 +412,7 @@ UTEST(pdb, run_matches_reference) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 0));
-    EXPECT_EQ(0, MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, MD_MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
 
     // One atom of one model: the text is read up to that atom and no further.
     float xyz[3];
@@ -429,7 +429,7 @@ UTEST(pdb, run_matches_reference) {
 // The atoms of a model are those the system has: an alternate location other than the first is in neither, so the
 // frames are of the system's atoms (they were not, when the models were read whole)
 UTEST(pdb, run_alternate_locations) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "CRYST1   20.000   20.000   20.000  90.00  90.00  90.00 P 1           1\n"
         "MODEL        1\n"
@@ -460,7 +460,7 @@ UTEST(pdb, run_alternate_locations) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, STR_LIT("run/alt"), 0));
-    EXPECT_EQ(0, MEMCMP(st.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, MD_MEMCMP(st.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
     ASSERT_TRUE(run_extract_one(&got, &sys, STR_LIT("run/alt"), 1));
     EXPECT_EQ(1.5f, got.xyz[0].x);
     EXPECT_EQ(2.5f, got.xyz[1].x);     // the A location of the CA
@@ -473,7 +473,7 @@ UTEST(pdb, run_alternate_locations) {
 
 // A file of one model is a structure, not a run.
 UTEST(pdb, run_needs_several_models) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     EXPECT_FALSE(md_pdb_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), PDB_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/1ala/time")) == NULL);
@@ -485,7 +485,7 @@ UTEST(pdb, run_needs_several_models) {
 #include <core/md_parse.h>
 
 static size_t pdb_test_compare_with_columns(str_t path) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     if (!md_pdb_system_init_from_file(&sys, &st, path, MD_PDB_OPTION_NONE, NULL)) {
@@ -586,13 +586,13 @@ static size_t count_residues_with(const md_system_t* sys, md_residue_flags_t fla
 // 52, 52A and 52B are three residues of the same number, also when two of them share a name, and a chain whose backbone is
 // bonded through them is not broken by their numbers
 UTEST(pdb, insertion_codes) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const peptide_pick_t pick[] = {
         {0, 50, 0, NULL}, {1, 51, 0, NULL}, {2, 52, 0, "CYS"}, {3, 52, 'A', "CYS"}, {4, 52, 'B', NULL}, {5, 53, 0, NULL},
     };
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, MD_COUNTOF(pick), alloc));
 
     ASSERT_EQ((size_t)6, sys.residue.count);
     for (size_t i = 0; i < sys.residue.count; ++i) {
@@ -609,13 +609,13 @@ UTEST(pdb, insertion_codes) {
 
 // Numbering that skips (1, 2, 3, 14, 15, 16) over a bonded backbone is no break
 UTEST(pdb, numbering_jump_is_no_break) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const peptide_pick_t pick[] = {
         {0, 1, 0, NULL}, {1, 2, 0, NULL}, {2, 3, 0, NULL}, {3, 14, 0, NULL}, {4, 15, 0, NULL}, {5, 16, 0, NULL},
     };
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, MD_COUNTOF(pick), alloc));
 
     ASSERT_EQ((size_t)6, sys.residue.count);
     EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
@@ -659,13 +659,13 @@ static void expect_break_after_fourth(int* utest_result, const md_system_t* sys)
 }
 
 UTEST(pdb, chain_break_numbering_runs_on) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const peptide_pick_t pick[] = {
         {0, 1, 0, NULL}, {1, 2, 0, NULL}, {2, 3, 0, NULL}, {3, 4, 0, NULL}, {6, 5, 0, NULL}, {7, 6, 0, NULL}, {8, 7, 0, NULL}, {9, 8, 0, NULL},
     };
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, MD_COUNTOF(pick), alloc));
     expect_break_after_fourth(utest_result, &sys);
 
     // Without bonds the distance of the C and the N tells the same
@@ -680,13 +680,13 @@ UTEST(pdb, chain_break_numbering_runs_on) {
 }
 
 UTEST(pdb, chain_break_numbering_skips) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const peptide_pick_t pick[] = {
         {0, 1, 0, NULL}, {1, 2, 0, NULL}, {2, 3, 0, NULL}, {3, 4, 0, NULL}, {6, 7, 0, NULL}, {7, 8, 0, NULL}, {8, 9, 0, NULL}, {9, 10, 0, NULL},
     };
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, MD_COUNTOF(pick), alloc));
     expect_break_after_fourth(utest_result, &sys);
 
     // Inferring again finds the same breaks, not more
@@ -700,7 +700,7 @@ UTEST(pdb, chain_break_numbering_skips) {
 // amino acid bound to the protein, not the chain going on. 1k4r and 1a64 are whole (1a64 misses the first residues of its
 // chains only, which leaves no break)
 UTEST(pdb, chain_breaks_of_files) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
@@ -716,7 +716,7 @@ UTEST(pdb, chain_breaks_of_files) {
         EXPECT_TRUE(md_system_residue_flags(&sys, asp) & MD_RESIDUE_FLAG_TERMINAL_END);
     }
     const str_t whole[] = {STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb")};
-    for (size_t f = 0; f < ARRAY_SIZE(whole); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(whole); ++f) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, whole[f], MD_PDB_OPTION_NONE, NULL));
@@ -729,7 +729,7 @@ UTEST(pdb, chain_breaks_of_files) {
 // The writer ends each part with a TER before the next part begins, never within a residue: two waters of a GRO file,
 // which has no chains, read back as two residues of three atoms
 UTEST(pdb, write_ter_between_parts) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* gro =
         "two waters\n6\n"
         "    1SOL     OW    1   0.000   0.000   0.000\n"
@@ -781,7 +781,7 @@ static void pdb_blocks_atom(md_array(char)* text, md_allocator_i* alloc, int ser
 }
 
 UTEST(pdb, blocks_and_pieces) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_array(char) text = 0;
     const char* header = "CRYST1  100.000  100.000  100.000  90.00  90.00  90.00 P 1           1\nMODEL        1\n";
     md_array_push_array(text, header, strlen(header), alloc);
@@ -822,7 +822,7 @@ UTEST(pdb, blocks_and_pieces) {
     const char* conect = "CONECT    2  400\nCONECT  400    2\nEND\n";
     md_array_push_array(text, conect, strlen(conect), alloc);
     const str_t str = { text, md_array_size(text) };
-    ASSERT_GT(str.len, (size_t)MEGABYTES(33));
+    ASSERT_GT(str.len, (size_t)MD_MEGABYTES(33));
 
     const char* path = "md_unittest_blocks.pdb";
     ASSERT_TRUE(load_blocks_write(path, str));
@@ -838,7 +838,7 @@ UTEST(pdb, blocks_and_pieces) {
     test_executor_t threads  = test_executor_threads(4);
     test_executor_t shuffled = test_executor_shuffled(3);
     const md_executor_t* executors[] = { NULL, test_executor(&threads), test_executor(&shuffled) };
-    for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+    for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]));
@@ -866,7 +866,7 @@ UTEST(pdb, blocks_and_pieces) {
 // A TER record ends a chain, also the three letters alone and also between two chains of the same id: the segments of
 // an EM structure (T4SS, chain J of segment Z and of segment ZA) are two units, with no break of a chain between them
 UTEST(pdb, ter_ends_the_unit) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "ATOM      1  N   GLY J  48      10.000  10.000  10.000  1.00  0.00      Z    N\n"
         "ATOM      2  CA  GLY J  48      11.458  10.000  10.000  1.00  0.00      Z    C\n"
@@ -906,7 +906,7 @@ UTEST(pdb, ter_ends_the_unit) {
 // The charge column is the formal charge the file gives (atom/formal_charge), which chemistry perception starts from:
 // the glutamate of T4SS whose OE2 is "O1-" keeps its charge there, not on the OE1 perception would choose
 UTEST(pdb, formal_charge_column) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "ATOM  99999  N   GLU J  48     278.601 255.559 389.405  1.00 44.59      Z    N  \n"
         "ATOM  99999  CA  GLU J  48     278.674 256.483 390.532  1.00 44.59      Z    C  \n"
@@ -932,7 +932,7 @@ UTEST(pdb, formal_charge_column) {
 // The chain id is whatever character column 22 holds, a digit as well as a letter, kept as a string (a blank is no
 // chain): '1' and 'A' are two chains, and '1' is not the number 1
 UTEST(pdb, chain_ids_as_given) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "ATOM      1  CA  GLY 1   1       0.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      2  CA  GLY 1   2       3.800   0.000   0.000  1.00  0.00           C\n"
@@ -954,7 +954,7 @@ UTEST(pdb, chain_ids_as_given) {
 
 // A residue number which is not a number of the format ('****' past 9999) is the one after the residue before
 UTEST(pdb, residue_numbers_which_are_not_numbers) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t text = STR_LIT(
         "ATOM      1  OW  SOL X9998       0.000   0.000   0.000  1.00  0.00           O\n"
         "ATOM      2  OW  SOL X9999       3.000   0.000   0.000  1.00  0.00           O\n"
@@ -975,7 +975,7 @@ UTEST(pdb, residue_numbers_which_are_not_numbers) {
 // CONECT records which follow the models: of a file larger than what is looked through at the end at first, and of one
 // whose models have no ENDMDL. And the same where the rest is a single model's CONECT records, which are read through.
 UTEST(pdb, models_then_conect) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     test_executor_t threads = test_executor_threads(3);
     const md_executor_t* executors[] = { NULL, test_executor(&threads) };
     for (int variant = 0; variant < 3; ++variant) {
@@ -1001,11 +1001,11 @@ UTEST(pdb, models_then_conect) {
         }
         md_array_push_array(text, "END\n", 4, alloc);
         const str_t str = { text, md_array_size(text) };
-        ASSERT_GT(str.len, (size_t)MEGABYTES(5));
+        ASSERT_GT(str.len, (size_t)MD_MEGABYTES(5));
 
         const char* path = "md_unittest_models_conect.pdb";
         ASSERT_TRUE(load_blocks_write(path, str));
-        for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+        for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
             md_system_t sys = { .alloc = alloc }, sys2 = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc }, st2 = { .alloc = alloc };
             ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]));
@@ -1025,7 +1025,7 @@ UTEST(pdb, models_then_conect) {
 // record gives what it has (lengths without angles are a box of right angles), and a record that describes no cell
 // - the PDB's 1 1 1 placeholder, a zero length, an angle of 0 - gives none rather than a cell of infinities.
 UTEST(pdb, cryst1_short_or_empty) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* atom = "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n";
     static const struct { const char* cryst1; bool cell; float x; } cases[] = {
         { "CRYST1   40.000   50.000   60.000\n",                                         true,  40.0f },
@@ -1035,7 +1035,7 @@ UTEST(pdb, cryst1_short_or_empty) {
         { "CRYST1   40.000   50.000   60.000   0.00  90.00  90.00 P 1           1\n",   false, 0.0f },
         { "CRYST1   40.000\n",                                                          false, 0.0f },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         char text[512];
         snprintf(text, sizeof(text), "%s%s", cases[i].cryst1, atom);
         md_system_t sys = {.alloc = alloc};

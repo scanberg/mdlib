@@ -153,7 +153,7 @@ static float angle_sum(const md_system_t* sys, const md_system_state_t* ref, siz
     if (n < 3) return 360.0f;
     md_util_min_image_vec3(v, 3, &ref->unitcell);
     const float a = vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]);
-    return (float)RAD_TO_DEG(a);
+    return (float)MD_RAD_TO_DEG(a);
 }
 
 // Whether the lone pair of a three connected N is drawn into a pi system, from the bond graph alone: a neighbour which
@@ -358,7 +358,7 @@ void md_hbond_query_free(md_hbond_query_t* q) {
     md_array_free(q->acc_nbr_off, alloc);
     md_array_free(q->acc_nbr, alloc);
     md_array_free(q->sel, alloc);
-    MEMSET(q, 0, sizeof(md_hbond_query_t));
+    MD_MEMSET(q, 0, sizeof(md_hbond_query_t));
 }
 
 static bool apply_override(uint8_t* role, const md_bitset_t* set, uint8_t bit, size_t N) {
@@ -398,10 +398,10 @@ static void build_exclusions(md_hbond_query_t* q, const md_system_t* sys, const 
     const size_t N = q->num_atoms;
     md_allocator_i* alloc = q->alloc;
     uint8_t* depth = md_alloc(temp_alloc, N);
-    MEMSET(depth, 0, N);
+    MD_MEMSET(depth, 0, N);
     md_array(uint32_t) queue = 0;
     md_array(uint32_t) row   = 0;
-    const uint32_t depth_limit = MIN(max_bonds, 254) + 1;
+    const uint32_t depth_limit = MD_MIN(max_bonds, 254) + 1;
 
     md_array_resize(q->excl_off, q->num_donors + 1, alloc);
     q->excl_off[0] = 0;
@@ -438,8 +438,8 @@ static void build_exclusions(md_hbond_query_t* q, const md_system_t* sys, const 
 }
 
 bool md_hbond_query_init(md_hbond_query_t* q, const md_hbond_desc_t* desc, const md_system_t* sys, md_allocator_i* alloc) {
-    ASSERT(q);
-    MEMSET(q, 0, sizeof(md_hbond_query_t));
+    MD_ASSERT(q);
+    MD_MEMSET(q, 0, sizeof(md_hbond_query_t));
     if (!sys || !alloc) {
         MD_LOG_ERROR("Hydrogen bonds: missing system or allocator");
         return false;
@@ -465,8 +465,8 @@ bool md_hbond_query_init(md_hbond_query_t* q, const md_hbond_desc_t* desc, const
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = false;
 
-    uint8_t* role = md_alloc(temp_alloc, MAX(N, 1));
-    uint8_t* cap  = md_alloc(temp_alloc, MAX(N, 1));
+    uint8_t* role = md_alloc(temp_alloc, MD_MAX(N, 1));
+    uint8_t* cap  = md_alloc(temp_alloc, MD_MAX(N, 1));
     if (!md_hbond_perceive_roles(role, cap, sys, desc ? desc->reference : NULL, params.roles)) goto done;
 
     if (desc && desc->donors && !apply_override(role, desc->donors, MD_HBOND_ROLE_DONOR, N)) goto done;
@@ -511,15 +511,15 @@ bool md_hbond_query_init(md_hbond_query_t* q, const md_hbond_desc_t* desc, const
     q->num_acceptors = md_array_size(q->acceptor);
 
     if (params.exclude_bonds > 0 && q->num_donors && q->num_acceptors && sys->bond.conn.offset) {
-        uint8_t* is_acc = md_alloc(temp_alloc, MAX(N, 1));
-        MEMSET(is_acc, 0, N);
+        uint8_t* is_acc = md_alloc(temp_alloc, MD_MAX(N, 1));
+        MD_MEMSET(is_acc, 0, N);
         for (size_t k = 0; k < q->num_acceptors; ++k) is_acc[q->acceptor[k]] = 1;
         build_exclusions(q, sys, is_acc, params.exclude_bonds, temp_alloc);
     }
 
     if (desc && desc->set_a) {
         md_array_resize(q->sel, N, alloc);
-        MEMSET(q->sel, 0, N);
+        MD_MEMSET(q->sel, 0, N);
         if (!mark_selection(q->sel, desc->set_a, 1, N)) goto done;
         if (desc->set_b && !mark_selection(q->sel, desc->set_b, 2, N)) goto done;
         q->flags |= MD_HBOND_FLAG_SELECTION;
@@ -602,7 +602,7 @@ static inline bool is_excluded(const md_hbond_query_t* q, uint32_t donor, uint32
 #define HBOND_IDEAL_DA 2.8f
 
 static inline float smoothstep01(float x) {
-    x = CLAMP(x, 0.0f, 1.0f);
+    x = MD_CLAMP(x, 0.0f, 1.0f);
     return x * x * (3.0f - 2.0f * x);
 }
 
@@ -628,7 +628,7 @@ static float edge_strength(const hb_eval_t* e, float r_ha, float r_da, float ang
     if (p->min_dha > 0) {
         s_a = p->min_dha < 180.0f ? smoothstep01((angle_dha - p->min_dha) / (180.0f - p->min_dha)) : 1.0f;
     } else if (p->max_hda > 0) {
-        const float hda = (float)RAD_TO_DEG(acosf(CLAMP(cos_hda, -1.0f, 1.0f)));
+        const float hda = (float)MD_RAD_TO_DEG(acosf(MD_CLAMP(cos_hda, -1.0f, 1.0f)));
         s_a = smoothstep01((p->max_hda - hda) / p->max_hda);
     }
     return s_d * s_a;
@@ -691,7 +691,7 @@ static void pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const fl
             if (!ok) continue;
         }
 
-        const float angle = (float)RAD_TO_DEG(acosf(CLAMP(cos_dha, -1.0f, 1.0f)));
+        const float angle = (float)MD_RAD_TO_DEG(acosf(MD_CLAMP(cos_dha, -1.0f, 1.0f)));
         const float s = edge_strength(e, r_ha, r_da, angle, cos_hda);
         if (p->min_strength > 0 && s < p->min_strength) continue;
 
@@ -741,8 +741,8 @@ static void mark_near_seeds(uint8_t* out_hit, const vec3_t* pts, size_t num_pts,
             float f = I[0][r] * x.x + I[1][r] * x.y + I[2][r] * x.z;
             if (pbc[r]) f -= floorf(f);
             frac[3 * k + r] = f;
-            fmin[r] = MIN(fmin[r], f);
-            fmax[r] = MAX(fmax[r], f);
+            fmin[r] = MD_MIN(fmin[r], f);
+            fmax[r] = MD_MAX(fmax[r], f);
         }
     }
 
@@ -750,16 +750,16 @@ static void mark_near_seeds(uint8_t* out_hit, const vec3_t* pts, size_t num_pts,
     uint32_t n[3];
     float origin[3], scale[3];
     for (int r = 0; r < 3; ++r) {
-        const float range = pbc[r] ? 1.0f : MAX(fmax[r] - fmin[r], 1.0e-6f);
+        const float range = pbc[r] ? 1.0f : MD_MAX(fmax[r] - fmin[r], 1.0e-6f);
         origin[r] = pbc[r] ? 0.0f : fmin[r];
-        n[r] = (uint32_t)MAX(1.0f, floorf(range * width[r] / radius));
+        n[r] = (uint32_t)MD_MAX(1.0f, floorf(range * width[r] / radius));
     }
     // Keep the bit grid modest; coarser cells are still a superset
     while ((uint64_t)n[0] * n[1] * n[2] > (1ull << 24)) {
-        for (int r = 0; r < 3; ++r) n[r] = MAX(1u, n[r] / 2);
+        for (int r = 0; r < 3; ++r) n[r] = MD_MAX(1u, n[r] / 2);
     }
     for (int r = 0; r < 3; ++r) {
-        const float range = pbc[r] ? 1.0f : MAX(fmax[r] - fmin[r], 1.0e-6f);
+        const float range = pbc[r] ? 1.0f : MD_MAX(fmax[r] - fmin[r], 1.0e-6f);
         scale[r] = (float)n[r] / range;
     }
 
@@ -767,13 +767,13 @@ static void mark_near_seeds(uint8_t* out_hit, const vec3_t* pts, size_t num_pts,
     for (size_t k = 0; k < num_pts; ++k) {
         for (int r = 0; r < 3; ++r) {
             const int64_t c = (int64_t)floorf((frac[3 * k + r] - origin[r]) * scale[r]);
-            cell_of[3 * k + r] = (uint32_t)CLAMP(c, 0, (int64_t)n[r] - 1);
+            cell_of[3 * k + r] = (uint32_t)MD_CLAMP(c, 0, (int64_t)n[r] - 1);
         }
     }
 
     const size_t num_cells = (size_t)n[0] * n[1] * n[2];
     uint64_t* occ = md_alloc(arena, sizeof(uint64_t) * ((num_cells + 63) / 64));
-    MEMSET(occ, 0, sizeof(uint64_t) * ((num_cells + 63) / 64));
+    MD_MEMSET(occ, 0, sizeof(uint64_t) * ((num_cells + 63) / 64));
     for (size_t k = 0; k < num_pts; ++k) {
         if (!is_seed[k]) continue;
         for (int dz = -1; dz <= 1; ++dz) {
@@ -839,12 +839,12 @@ void md_hbond_set_free(md_hbond_set_t* set) {
         md_free(set->alloc, set->dist_ha,   sizeof(float) * set->count);
         md_free(set->alloc, set->angle_dha, sizeof(float) * set->count);
     }
-    MEMSET(set, 0, sizeof(md_hbond_set_t));
+    MD_MEMSET(set, 0, sizeof(md_hbond_set_t));
 }
 
 bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const md_system_state_t* state, md_allocator_i* alloc) {
-    ASSERT(out);
-    MEMSET(out, 0, sizeof(md_hbond_set_t));
+    MD_ASSERT(out);
+    MD_MEMSET(out, 0, sizeof(md_hbond_set_t));
     if (!q || !q->alloc || !state || !alloc) {
         MD_LOG_ERROR("Hydrogen bonds: missing query, state or allocator");
         return false;
@@ -864,7 +864,7 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
     }
 
     // Scratch in an arena of its own, sized by the system rather than by what a temp scope has room for
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
 
     const vec3_t* xyz = state->xyz;
     const md_unitcell_t* cell = &state->unitcell;
@@ -897,16 +897,16 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
             num_seed += acc_active[k];
         }
     } else {
-        MEMSET(don_active, 1, nd);
-        MEMSET(acc_active, 1, na);
+        MD_MEMSET(don_active, 1, nd);
+        MD_MEMSET(acc_active, 1, na);
         num_seed = nd + na;
     }
 
     if (q->sel && compete && num_seed > 0) {
         if (2 * num_seed > nd + na) {
             // Most of the system: the shell would be all of it anyway
-            MEMSET(don_active, 1, nd);
-            MEMSET(acc_active, 1, na);
+            MD_MEMSET(don_active, 1, nd);
+            MD_MEMSET(acc_active, 1, na);
         } else {
             // The search points of every candidate, donors first
             vec3_t* pts = md_alloc(arena, sizeof(vec3_t) * (nd + na));
@@ -917,8 +917,8 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
             for (size_t k = 0; k < na; ++k) pts[nd + k] = xyz[q->acceptor[k]];
 
             uint8_t* is_seed = md_alloc(arena, nd + na);
-            MEMCPY(is_seed, don_active, nd);
-            MEMCPY(is_seed + nd, acc_active, na);
+            MD_MEMCPY(is_seed, don_active, nd);
+            MD_MEMCPY(is_seed + nd, acc_active, na);
 
             uint8_t* hit = md_alloc(arena, nd + na);
             mark_near_seeds(hit, pts, nd + na, is_seed, 3.0f * radius, cell, arena);
@@ -963,11 +963,11 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
         .act_acc       = act_acc,
         .acc_pt        = acc_pt,
         .search_from_h = search_from_h,
-        .cos_min_dha   = cosf((float)DEG_TO_RAD(p->min_dha)),
-        .cos_max_hda   = cosf((float)DEG_TO_RAD(p->max_hda)),
-        .cos_min_xah   = cosf((float)DEG_TO_RAD(p->min_xah)),
-        .w_ha          = MAX(0.1f, p->max_ha - HBOND_IDEAL_HA),
-        .w_da          = MAX(0.1f, p->max_da - HBOND_IDEAL_DA),
+        .cos_min_dha   = cosf((float)MD_DEG_TO_RAD(p->min_dha)),
+        .cos_max_hda   = cosf((float)MD_DEG_TO_RAD(p->max_hda)),
+        .cos_min_xah   = cosf((float)MD_DEG_TO_RAD(p->min_xah)),
+        .w_ha          = MD_MAX(0.1f, p->max_ha - HBOND_IDEAL_HA),
+        .w_da          = MD_MAX(0.1f, p->max_da - HBOND_IDEAL_DA),
         .alloc         = arena,
     };
 
@@ -990,8 +990,8 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
     if (compete && num_edges) {
         uint32_t* h_deg = md_alloc(arena, sizeof(uint32_t) * nd);
         uint32_t* a_deg = md_alloc(arena, sizeof(uint32_t) * na);
-        MEMSET(h_deg, 0, sizeof(uint32_t) * nd);
-        MEMSET(a_deg, 0, sizeof(uint32_t) * na);
+        MD_MEMSET(h_deg, 0, sizeof(uint32_t) * nd);
+        MD_MEMSET(a_deg, 0, sizeof(uint32_t) * na);
         for (size_t k = 0; k < num_edges; ++k) {
             h_deg[edges[k].donor] += 1;
             a_deg[edges[k].acc]   += 1;
@@ -1081,8 +1081,8 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
 }
 
 bool md_hbond_compute(md_hbond_set_t* out, const md_hbond_desc_t* desc, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
-    ASSERT(out);
-    MEMSET(out, 0, sizeof(md_hbond_set_t));
+    MD_ASSERT(out);
+    MD_MEMSET(out, 0, sizeof(md_hbond_set_t));
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_hbond_query_t q;
     bool result = md_hbond_query_init(&q, desc, sys, md_temp_allocator(temp)) && md_hbond_query_eval(out, &q, state, alloc);

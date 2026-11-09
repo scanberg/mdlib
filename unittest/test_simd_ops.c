@@ -547,17 +547,17 @@ UTEST(simd_ops, integer) {
 
 UTEST(simd_ops, load_store_set) {
     int fails = 0;
-    ALIGNAS(32) float   f[8];
-    ALIGNAS(32) double  d[4];
-    ALIGNAS(32) int32_t i32[8];
-    ALIGNAS(32) int64_t i64[4];
+    MD_ALIGNAS(32) float   f[8];
+    MD_ALIGNAS(32) double  d[4];
+    MD_ALIGNAS(32) int32_t i32[8];
+    MD_ALIGNAS(32) int64_t i64[4];
     for (int i = 0; i < 8; ++i) { f[i] = (float)(i + 1) * 1.5f; i32[i] = -3 * i + 7; }
     for (int i = 0; i < 4; ++i) { d[i] = (double)(i + 1) * -2.25; i64[i] = ((int64_t)1 << 40) * (i + 1) - i; }
 
-    ALIGNAS(32) float   fo[8];
-    ALIGNAS(32) double  dout[4];
-    ALIGNAS(32) int32_t io[8];
-    ALIGNAS(32) int64_t lo[4];
+    MD_ALIGNAS(32) float   fo[8];
+    MD_ALIGNAS(32) double  dout[4];
+    MD_ALIGNAS(32) int32_t io[8];
+    MD_ALIGNAS(32) int64_t lo[4];
 
 #define ROUND_TRIP(store, load, out, in, n) do { memset(out, 0, sizeof(out)); store(out, load(in)); if (memcmp(out, in, n) != 0) { printf("%s/%s\n", #store, #load); fails += 1; } } while (0)
     ROUND_TRIP(md_mm_storeu_ps,    md_mm_loadu_ps,    fo, f, 16);
@@ -1003,7 +1003,7 @@ UTEST(simd_ops, native_width) {
     int fails = 0;
     enum { W = MD_XV_WIDTH };
     for (int c = 0; c < 64; ++c) {
-        ALIGNAS(32) float a[8], b[8], d[8], o[8];
+        MD_ALIGNAS(32) float a[8], b[8], d[8], o[8];
         fill_f32(a, 8); fill_f32(b, 8); fill_f32(d, 8);
         const md_xv A = md_xv_loadu_ps(a), B = md_xv_loadu_ps(b), D = md_xv_loadu_ps(d);
 #define XV_CHECK(name, expr, ref) do { md_xv_storeu_ps(o, expr); for (int i = 0; i < W; ++i) CHECK_F32(name, i, ref, o[i]); } while (0)
@@ -1044,7 +1044,7 @@ UTEST(simd_ops, native_width) {
 
         int mask = 0;
         float sum_ref = 0, mn = a[0], mx = a[0];
-        for (int i = 0; i < W; ++i) { mask |= (a[i] < 0) << i; mn = MIN(mn, a[i]); mx = MAX(mx, a[i]); }
+        for (int i = 0; i < W; ++i) { mask |= (a[i] < 0) << i; mn = MD_MIN(mn, a[i]); mx = MD_MAX(mx, a[i]); }
         CHECK_I64("md_xv_movemask_ps", 0, mask, md_xv_movemask_ps(A));
         CHECK_F32("md_xv_reduce_min_ps", 0, mn, md_xv_reduce_min_ps(A));
         CHECK_F32("md_xv_reduce_max_ps", 0, mx, md_xv_reduce_max_ps(A));
@@ -1134,7 +1134,7 @@ UTEST(simd_ops, avx512) {
         // reductions
         double sum = 0, scale = 0;
         float mn = a[0], mx = a[0];
-        for (int i = 0; i < 16; ++i) { mn = MIN(mn, a[i]); mx = MAX(mx, a[i]); sum += a[i]; scale += fabs(a[i]); }
+        for (int i = 0; i < 16; ++i) { mn = MD_MIN(mn, a[i]); mx = MD_MAX(mx, a[i]); sum += a[i]; scale += fabs(a[i]); }
         if (fabs(md_mm512_reduce_add_ps(A) - sum) > 1e-6 * scale) { FAIL_F32("md_mm512_reduce_add_ps", 0, (float)sum, md_mm512_reduce_add_ps(A)); fails += 1; }
         CHECK_F32("md_mm512_reduce_min_ps", 0, mn, md_mm512_reduce_min_ps(A));
         CHECK_F32("md_mm512_reduce_max_ps", 0, mx, md_mm512_reduce_max_ps(A));

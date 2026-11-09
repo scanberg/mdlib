@@ -8,10 +8,6 @@
 #include <math.h>
 #include <string.h>
 
-#ifndef PI
-#define PI 3.14159265358979323846
-#endif
-
 static md_vg_style_t safe_style(const md_vg_style_t* style) {
     return style ? *style : md_vg_style_default();
 }
@@ -25,24 +21,24 @@ static bool paint_is_gradient(md_vg_paint_t paint) {
 }
 
 static uint32_t push_points(md_vg_scene_t* scene, const vec2_t* points, size_t count) {
-    ASSERT(scene);
-    ASSERT(scene->alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(scene->alloc);
     const uint32_t offset = (uint32_t)md_array_size(scene->points);
     md_array_push_array(scene->points, points, count, scene->alloc);
     return offset;
 }
 
 static uint32_t push_verbs(md_vg_scene_t* scene, const md_vg_path_verb_t* verbs, size_t count) {
-    ASSERT(scene);
-    ASSERT(scene->alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(scene->alloc);
     const uint32_t offset = (uint32_t)md_array_size(scene->verbs);
     md_array_push_array(scene->verbs, verbs, count, scene->alloc);
     return offset;
 }
 
 static uint32_t push_string(md_vg_scene_t* scene, str_t str) {
-    ASSERT(scene);
-    ASSERT(scene->alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(scene->alloc);
     const uint32_t offset = (uint32_t)md_array_size(scene->strings);
     md_array_push_array(scene->strings, str.ptr, str.len, scene->alloc);
     md_array_push(scene->strings, '\0', scene->alloc);
@@ -50,8 +46,8 @@ static uint32_t push_string(md_vg_scene_t* scene, str_t str) {
 }
 
 static void push_cmd(md_vg_scene_t* scene, const md_vg_cmd_t* cmd) {
-    ASSERT(scene);
-    ASSERT(scene->alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(scene->alloc);
     md_array_push(scene->commands, *cmd, scene->alloc);
 }
 
@@ -284,7 +280,7 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
                 cmd->data.ellipse.radius.x, cmd->data.ellipse.radius.y);
             if (cmd->data.ellipse.rotation != 0.0f) {
                 md_writef(w, " transform=\"rotate(%.9g %.9g %.9g)\"",
-                    cmd->data.ellipse.rotation * (180.0 / PI),
+                    cmd->data.ellipse.rotation * (180.0 / MD_PI),
                     cmd->data.ellipse.center.x,
                     cmd->data.ellipse.center.y);
             }
@@ -363,10 +359,10 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
 }
 
 md_vg_color_t md_vg_color_from_vec4(vec4_t color) {
-    uint32_t r = (uint32_t)CLAMP(color.x * 255.0f + 0.5f, 0.0f, 255.0f);
-    uint32_t g = (uint32_t)CLAMP(color.y * 255.0f + 0.5f, 0.0f, 255.0f);
-    uint32_t b = (uint32_t)CLAMP(color.z * 255.0f + 0.5f, 0.0f, 255.0f);
-    uint32_t a = (uint32_t)CLAMP(color.w * 255.0f + 0.5f, 0.0f, 255.0f);
+    uint32_t r = (uint32_t)MD_CLAMP(color.x * 255.0f + 0.5f, 0.0f, 255.0f);
+    uint32_t g = (uint32_t)MD_CLAMP(color.y * 255.0f + 0.5f, 0.0f, 255.0f);
+    uint32_t b = (uint32_t)MD_CLAMP(color.z * 255.0f + 0.5f, 0.0f, 255.0f);
+    uint32_t a = (uint32_t)MD_CLAMP(color.w * 255.0f + 0.5f, 0.0f, 255.0f);
     return MD_VG_COLOR_RGBA(r, g, b, a);
 }
 
@@ -382,8 +378,8 @@ vec4_t md_vg_color_to_vec4(md_vg_color_t color) {
 }
 
 void md_vg_scene_init(md_vg_scene_t* scene, vec2_t size, md_allocator_i* alloc) {
-    ASSERT(scene);
-    ASSERT(alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(alloc);
     *scene = (md_vg_scene_t){0};
     scene->size = size;
     scene->alloc = alloc;
@@ -403,7 +399,7 @@ void md_vg_scene_free(md_vg_scene_t* scene) {
 }
 
 void md_vg_scene_clear(md_vg_scene_t* scene) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     md_array_shrink(scene->commands, 0);
     md_array_shrink(scene->points, 0);
     md_array_shrink(scene->verbs, 0);
@@ -413,33 +409,33 @@ void md_vg_scene_clear(md_vg_scene_t* scene) {
 }
 
 void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     scene->size = size;
 }
 
 void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, str_t font_family) {
-    ASSERT(scene);
-    ASSERT(scene->alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(scene->alloc);
     str_free(scene->default_font_family, scene->alloc);
     scene->default_font_family = str_copy(font_family, scene->alloc);
 }
 
 void md_vg_scene_write_svg(md_writer_i* w, const md_vg_scene_t* scene) {
-    ASSERT(w);
-    ASSERT(scene);
+    MD_ASSERT(w);
+    MD_ASSERT(scene);
     emit_svg_scene(w, scene);
 }
 
 str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
-    ASSERT(scene);
-    ASSERT(alloc);
+    MD_ASSERT(scene);
+    MD_ASSERT(alloc);
     md_str_writer_t sw = md_str_writer_create(alloc);
     emit_svg_scene(&sw.w, scene);
     return md_str_writer_release(&sw);
 }
 
 bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, str_t path) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         return false;
@@ -592,17 +588,17 @@ void md_vg_add_ellipse_styled(md_vg_scene_t* scene, vec2_t center, vec2_t radius
 
 void md_vg_add_triangle(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, md_vg_color_t color, float thickness) {
     const vec2_t points[] = { p0, p1, p2 };
-    md_vg_add_polyline(scene, points, ARRAY_SIZE(points), color, true, thickness);
+    md_vg_add_polyline(scene, points, MD_COUNTOF(points), color, true, thickness);
 }
 
 void md_vg_add_triangle_filled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, md_vg_color_t color) {
     const vec2_t points[] = { p0, p1, p2 };
-    md_vg_add_convex_poly_filled(scene, points, ARRAY_SIZE(points), color);
+    md_vg_add_convex_poly_filled(scene, points, MD_COUNTOF(points), color);
 }
 
 void md_vg_add_triangle_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, const md_vg_style_t* style) {
     const vec2_t points[] = { p0, p1, p2 };
-    md_vg_add_polygon_styled(scene, points, ARRAY_SIZE(points), style);
+    md_vg_add_polygon_styled(scene, points, MD_COUNTOF(points), style);
 }
 
 void md_vg_add_polyline(md_vg_scene_t* scene, const vec2_t* points, size_t count, md_vg_color_t color, bool closed, float thickness) {
@@ -740,19 +736,19 @@ void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, co
 }
 
 void md_vg_path_clear(md_vg_scene_t* scene) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     md_array_shrink(scene->path_points, 0);
     md_array_shrink(scene->path_verbs, 0);
 }
 
 void md_vg_path_move_to(md_vg_scene_t* scene, vec2_t pos) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     md_array_push(scene->path_verbs, MD_VG_PATH_MOVE_TO, scene->alloc);
     md_array_push(scene->path_points, pos, scene->alloc);
 }
 
 void md_vg_path_line_to(md_vg_scene_t* scene, vec2_t pos) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     if (md_array_size(scene->path_verbs) == 0) {
         md_vg_path_move_to(scene, pos);
         return;
@@ -762,14 +758,14 @@ void md_vg_path_line_to(md_vg_scene_t* scene, vec2_t pos) {
 }
 
 void md_vg_path_bezier_quadratic_curve_to(md_vg_scene_t* scene, vec2_t p1, vec2_t p2) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     md_array_push(scene->path_verbs, MD_VG_PATH_QUADRATIC_TO, scene->alloc);
     md_array_push(scene->path_points, p1, scene->alloc);
     md_array_push(scene->path_points, p2, scene->alloc);
 }
 
 void md_vg_path_bezier_cubic_curve_to(md_vg_scene_t* scene, vec2_t p1, vec2_t p2, vec2_t p3) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     md_array_push(scene->path_verbs, MD_VG_PATH_CUBIC_TO, scene->alloc);
     md_array_push(scene->path_points, p1, scene->alloc);
     md_array_push(scene->path_points, p2, scene->alloc);
@@ -777,7 +773,7 @@ void md_vg_path_bezier_cubic_curve_to(md_vg_scene_t* scene, vec2_t p1, vec2_t p2
 }
 
 void md_vg_path_close(md_vg_scene_t* scene) {
-    ASSERT(scene);
+    MD_ASSERT(scene);
     if (md_array_size(scene->path_verbs) == 0) return;
     md_array_push(scene->path_verbs, MD_VG_PATH_CLOSE, scene->alloc);
 }

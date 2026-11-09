@@ -33,8 +33,8 @@ typedef struct {
 } bench_esp_t;
 
 static bool bench_esp_load(bench_esp_t* b) {
-    MEMSET(b, 0, sizeof(*b));
-    b->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    MD_MEMSET(b, 0, sizeof(*b));
+    b->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = b->arena };
     md_system_state_t state = { .alloc = b->arena };
     if (!md_vlx_system_init_from_file(&sys, &state, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"), NULL)) {
@@ -59,7 +59,7 @@ static bool bench_esp_load(bench_esp_t* b) {
     vec3_t lo = vec3_set1(FLT_MAX), hi = vec3_set1(-FLT_MAX);
     for (size_t i = 0; i < b->num_atoms; ++i) {
         const vec3_t p = vec3_set((float)(xyz[3 * i + 0] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 1] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 2] * BENCH_ANGSTROM_TO_BOHR));
-        MEMCPY(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
+        MD_MEMCPY(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
         lo = vec3_min(lo, p);
         hi = vec3_max(hi, p);
     }

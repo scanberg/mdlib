@@ -127,10 +127,10 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     in->ir = ir;
     in->sys = sys;
     in->msys = msys;
-    in->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+    in->alloc = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
     // A frame's values: a virtual memory arena, reset per frame and keeping what it committed, so a frame allocates
     // no pages and faults none in after the first
-    in->temp = md_vm_arena_create(GIGABYTES(4));
+    in->temp = md_vm_arena_create(MD_GIGABYTES(4));
     if (!in->alloc || !in->temp) return false;
     const size_t nv = md_array_size(ir->values);
     md_array_resize(in->vals, nv, in->alloc);
@@ -294,7 +294,7 @@ static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e
 static md_allocator_i* map_scratch(vial_interp_t* in) {
     if (in->map_depth >= VIAL_MAP_SCRATCH_DEPTH) return NULL;
     md_allocator_i** a = &in->map_scratch[in->map_depth];
-    if (!*a) *a = md_vm_arena_create(GIGABYTES(4));
+    if (!*a) *a = md_vm_arena_create(MD_GIGABYTES(4));
     return *a;
 }
 
@@ -1251,10 +1251,10 @@ typedef struct sweep_job_t {
 static void sweep_chunk(void* arg, uint32_t c_beg, uint32_t c_end, uint32_t thread_idx) {
     sweep_job_t* job = arg;
     vial_interp_t* main = job->main;
-    ASSERT(thread_idx < main->num_workers);
+    MD_ASSERT(thread_idx < main->num_workers);
     vial_interp_t* w = &main->workers[thread_idx];
     for (uint32_t c = c_beg; c < c_end; ++c) {
-        const int64_t beg = (int64_t)c * job->chunk, end = MIN(beg + job->chunk, job->num_frames);
+        const int64_t beg = (int64_t)c * job->chunk, end = MD_MIN(beg + job->chunk, job->num_frames);
         for (int64_t f = beg; f < end && !md_atomic_load64(&job->stop); ++f) {
             const int r = run_frame(w, main, job->sweep, f);
             if (r == FRAME_FAILED) md_atomic_fetch_add64(&job->failed, 1);
@@ -1380,7 +1380,7 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
             if (in->num_workers && in->executor && !has_fold[sweep]) {
                 for (size_t w = 0; w < in->num_workers; ++w) worker_sync(&in->workers[w], in);
                 // Chunks of a few frames: enough of them that the workers finish together
-                const int64_t chunk = MAX((int64_t)1, num_frames / (int64_t)(in->num_workers * 8));
+                const int64_t chunk = MD_MAX((int64_t)1, num_frames / (int64_t)(in->num_workers * 8));
                 sweep_job_t job = {.main = in, .sweep = (uint8_t)sweep, .num_frames = num_frames, .chunk = chunk};
                 // Not every chunk run (the executor's work was cancelled): stopped, as when interrupted
                 const bool all = md_parallel_for(in->executor, (uint32_t)((num_frames + chunk - 1) / chunk), 1, sweep_chunk, &job);

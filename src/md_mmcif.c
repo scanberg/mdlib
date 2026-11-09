@@ -139,7 +139,7 @@ static const str_t entity_type_str[] = {
 typedef int mmcif_entity_type_t;
 
 static inline mmcif_entity_type_t mmcif_entity_type_from_str(str_t type) {
-    for (size_t i = 0; i < ARRAY_SIZE(entity_type_str); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(entity_type_str); ++i) {
         if (str_eq(type, entity_type_str[i])) {
             return (mmcif_entity_type_t)i;
         }
@@ -174,7 +174,7 @@ static const str_t entity_poly_type_str[] = {
 typedef int mmcif_entity_poly_type_t;
 
 static inline mmcif_entity_poly_type_t mmcif_entity_poly_type_from_str(str_t type) {
-    for (size_t i = 0; i < ARRAY_SIZE(entity_poly_type_str); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(entity_poly_type_str); ++i) {
         if (str_eq(type, entity_poly_type_str[i])) {
             return (mmcif_entity_poly_type_t)i;
         }
@@ -245,7 +245,7 @@ static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_
 // as "this atom has no value" without confusing it with a real zero.
 static inline bool float_bits_nan(float v) {
     uint32_t u;
-    MEMCPY(&u, &v, sizeof(u));
+    MD_MEMCPY(&u, &v, sizeof(u));
     return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0;
 }
 
@@ -347,8 +347,8 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
 }
 
 static inline bool mmcif_next_token(str_t* tok, mmcif_parse_state_t* state) {
-    ASSERT(tok);
-    ASSERT(state);
+    MD_ASSERT(tok);
+    MD_ASSERT(state);
     if (state->has_peek) {
         *tok = state->peek;
         state->has_peek = false;
@@ -358,8 +358,8 @@ static inline bool mmcif_next_token(str_t* tok, mmcif_parse_state_t* state) {
 }
 
 static inline bool mmcif_peek_token(str_t* tok, mmcif_parse_state_t* state) {
-    ASSERT(tok);
-    ASSERT(state);
+    MD_ASSERT(tok);
+    MD_ASSERT(state);
     if (state->has_peek) {
         *tok = state->peek;
         return true;
@@ -376,13 +376,13 @@ static inline bool mmcif_peek_token(str_t* tok, mmcif_parse_state_t* state) {
 // This is a bit wierd, since were mixing lines and token semantics.
 // But will return the current line within the state that is about to be tokenized
 static inline str_t mmcif_cur_line(mmcif_parse_state_t* s) {
-    ASSERT(s);     
+    MD_ASSERT(s);     
     return s->line;
 }
 
 // Advances to the next line, which is not part of a multiline string token
 static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
-    ASSERT(s);
+    MD_ASSERT(s);
     str_t tok = {0};
     while (mmcif_peek_token(&tok, s)) {
         if (s->line_start) return true;
@@ -393,7 +393,7 @@ static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
 
 // Advances to a new line which starts with a valid control or item token
 static inline bool mmcif_advance_to_next_control_token(mmcif_parse_state_t* s) {
-    ASSERT(s);
+    MD_ASSERT(s);
 
     str_t tok = {0};
     while (mmcif_peek_token(&tok, s)) {
@@ -455,10 +455,10 @@ static str_t mmcif_category(str_t item) {
 
 // This is an internal procedure, we do not care about cleaning anything up
 static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state, md_allocator_i* alloc) {
-    ASSERT(sec);
-    ASSERT(state);
-    ASSERT(alloc);
-    MEMSET(sec, 0, sizeof(*sec));
+    MD_ASSERT(sec);
+    MD_ASSERT(state);
+    MD_ASSERT(alloc);
+    MD_MEMSET(sec, 0, sizeof(*sec));
 
     if (state->in_loop) {
         // --------------- Collect headers ---------------
@@ -592,9 +592,9 @@ static inline int mmcif_section_find_col_idx(const mmcif_section_t* sec, str_t f
 }
 
 static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_state_t* state, md_allocator_i* alloc) {
-    ASSERT(entities);
-    ASSERT(state);
-    ASSERT(alloc);
+    MD_ASSERT(entities);
+    MD_ASSERT(state);
+    MD_ASSERT(alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
@@ -628,7 +628,7 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
         str_t id = mmcif_section_value(&sec, i, id_col);
         if (!str_empty(id)) {
             mmcif_entity_t* ent = mmcif_entity_find_or_create(entities, id, alloc);
-            ASSERT(ent);
+            MD_ASSERT(ent);
             ent->type = mmcif_entity_type_from_str(mmcif_section_value(&sec, i, type_col));
             ent->description = str_copy(mmcif_section_value(&sec, i, desc_col), alloc);
         }
@@ -642,9 +642,9 @@ done:
 
 // We only populate the entity_poly type within the given entities
 static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_parse_state_t* state, md_allocator_i* alloc) {
-    ASSERT(entities);
-    ASSERT(state);
-    ASSERT(alloc);
+    MD_ASSERT(entities);
+    MD_ASSERT(state);
+    MD_ASSERT(alloc);
 
     bool success = false;
 
@@ -673,7 +673,7 @@ static bool mmcif_parse_entity_poly(md_array(mmcif_entity_t)* entities, mmcif_pa
         str_t id = mmcif_section_value(&sec, i, id_col);
         if (!str_empty(id)) {
             mmcif_entity_t* ent = mmcif_entity_find_or_create(entities, id, alloc);
-            ASSERT(ent);
+            MD_ASSERT(ent);
             ent->poly_type = mmcif_entity_poly_type_from_str(mmcif_section_value(&sec, i, type_col));
         }
     }
@@ -803,7 +803,7 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(
 
     // The operators of each group
     const size_t group_count = md_array_size(groups);
-    md_array(uint32_t)* group_ops = md_temp_alloc_zero(temp, MAX(group_count, 1) * sizeof(md_array(uint32_t)));
+    md_array(uint32_t)* group_ops = md_temp_alloc_zero(temp, MD_MAX(group_count, 1) * sizeof(md_array(uint32_t)));
     const size_t base_count = md_array_size(*opers);
     for (size_t g = 0; g < group_count; ++g) {
         str_t list = groups[g];
@@ -869,7 +869,7 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(
                 const mmcif_oper_t* f = *opers + group_ops[g][idx[g]];
                 op.transform = mat4_mul(op.transform, f->transform);
                 len += snprintf(name + len, sizeof(name) - len, "%s" STR_FMT, g ? "x" : "", STR_ARG(f->id));
-                len = MIN(len, (int)sizeof(name) - 1);
+                len = MD_MIN(len, (int)sizeof(name) - 1);
             }
             op.id = str_copy((str_t){name, (size_t)len}, alloc);
             md_array_push(*out, (uint32_t)md_array_size(*opers), alloc);
@@ -989,13 +989,13 @@ MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const ch
         carry = ws >> 63;
         uint64_t starts = ~ws & prev;
         uint64_t ends = ws & ~prev;
-        const size_t count = (size_t)popcnt64(starts);
+        const size_t count = (size_t)md_popcnt64(starts);
         if (n + count > num) return false;                      // More tokens than columns
-        // Four at a time, a branch for four (a bit past the last is no bit: ctz64(0) is past the chunk, written to the
+        // Four at a time, a branch for four (a bit past the last is no bit: md_ctz64(0) is past the chunk, written to the
         // room past the count, and a later chunk's token there writes over it)
         for (size_t k = 0; k < count; k += 4) {
             for (int j = 0; j < 4; ++j) {
-                const char* t = chunk + (starts ? ctz64(starts) : 0);
+                const char* t = chunk + (starts ? md_ctz64(starts) : 0);
                 tok[n + k + j].ptr = t;
                 first |= starts ? mmcif_first_char[(uint8_t)*t] : 0;
                 starts &= starts - 1;
@@ -1003,11 +1003,11 @@ MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const ch
         }
         n += count;
         // Of tokens which began here or before
-        const size_t count_end = (size_t)popcnt64(ends);
+        const size_t count_end = (size_t)md_popcnt64(ends);
         for (size_t k = 0; k < count_end; k += 4) {
             for (int j = 0; j < 4; ++j) {
                 const size_t i = n_end + k + j;
-                if (i < n) tok[i].len = (size_t)(chunk + (ends ? ctz64(ends) : 0) - tok[i].ptr);
+                if (i < n) tok[i].len = (size_t)(chunk + (ends ? md_ctz64(ends) : 0) - tok[i].ptr);
                 ends &= ends - 1;
             }
         }
@@ -1171,7 +1171,7 @@ static mmcif_rows_result_t mmcif_rows_from_blocks(md_array(mmcif_atom_site_entry
     md_text_piece_t*    ranges = md_alloc(alloc, max_pieces * sizeof(md_text_piece_t));
     mmcif_rows_piece_t* pieces = md_alloc(alloc, max_pieces * sizeof(mmcif_rows_piece_t));
     // Rows of fewer bytes than a character and a blank for each column there are not
-    const size_t min_row = 2 * MAX(cols->num_cols, 1);
+    const size_t min_row = 2 * MD_MAX(cols->num_cols, 1);
 
     for (;;) {
         const str_t block = md_reader_block_parallel(reader, ex);
@@ -1180,7 +1180,7 @@ static mmcif_rows_result_t mmcif_rows_from_blocks(md_array(mmcif_atom_site_entry
         while (taken < block.len) {
             const char* text = block.ptr + taken;
             const size_t len = md_text_pass_len_of(text, block.len - taken, pass_size);
-            const size_t num_pieces = MIN(md_text_num_pieces(len, num_threads), max_pieces);
+            const size_t num_pieces = MD_MIN(md_text_num_pieces(len, num_threads), max_pieces);
             md_text_split(ranges, num_pieces, text, len);
             mmcif_rows_t R = { .text = text, .len = len, .pieces = pieces, .cols = cols };
             for (size_t p = 0; p < num_pieces; ++p) pieces[p] = (mmcif_rows_piece_t){ .range = ranges[p] };
@@ -1222,14 +1222,14 @@ static mmcif_rows_result_t mmcif_rows_from_blocks(md_array(mmcif_atom_site_entry
 }
 
 static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc, const md_executor_t* ex) {
-    ASSERT(atom_entries);
-    ASSERT(state);
-    ASSERT(alloc);
-    ASSERT(state->in_loop == true);
+    MD_ASSERT(atom_entries);
+    MD_ASSERT(state);
+    MD_ASSERT(alloc);
+    MD_ASSERT(state->in_loop == true);
 
     mmcif_atom_site_cols_t cols = {0};
     int* table = cols.table;
-    MEMSET(table, -1, sizeof(cols.table));
+    MD_MEMSET(table, -1, sizeof(cols.table));
     size_t num_cols = 0;
 
     // Read category headers
@@ -1240,7 +1240,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
             return false;
         }
         str_t field = str_substr(item, 11, SIZE_MAX);
-        for (size_t i = 0; i < ARRAY_SIZE(atom_site_labels); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(atom_site_labels); ++i) {
             if (table[i] != -1) {
                 continue;
             }
@@ -1252,7 +1252,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
         num_cols += 1;
     }
 
-    for (size_t i = 0; i < ARRAY_SIZE(required_atom_site_fields); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(required_atom_site_fields); ++i) {
         if (table[required_atom_site_fields[i]] == -1) {
             MD_LOG_ERROR("Missing required column in _atom_site: "STR_FMT, STR_ARG(atom_site_labels[required_atom_site_fields[i]]));
             return false;
@@ -1266,7 +1266,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
     // the row is sized by them rather than by a fixed bound.
     str_t* tok = md_alloc(alloc, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
-    MEMSET(tok, 0, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
+    MD_MEMSET(tok, 0, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
 
     // Where the tokenizer has nothing of a line left, the rows which follow are read in blocks (mmcif_rows_from_blocks),
     // up to a line which is not a row of its own: that line is the tokenizer's, given back to it whole, which reads it
@@ -1338,9 +1338,9 @@ enum {
 };
 
 static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* state) {
-    ASSERT(cell);
-    ASSERT(state);
-    ASSERT(state->in_loop == false);
+    MD_ASSERT(cell);
+    MD_ASSERT(state);
+    MD_ASSERT(state->in_loop == false);
 
     uint32_t field_flags = 0;
 
@@ -1488,7 +1488,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
     // Populate molecule from parsed data
     if (atom_site_parsed) {
         size_t num_atoms = md_array_size(atom_entries);
-        size_t reserve_size = ALIGN_TO(num_atoms, 16);
+        size_t reserve_size = MD_ALIGN_TO(num_atoms, 16);
 
         md_array_ensure(out_state->xyz, reserve_size, out_state->alloc);
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
@@ -1532,13 +1532,13 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             const mmcif_atom_site_entry_t* entry = &atom_entries[i];
             uint64_t asym, comp, entity, name;
             uint32_t symbol_word = 0;
-            STATIC_ASSERT(sizeof(entry->label_asym_id) == 8 && sizeof(entry->label_comp_id) == 8 && sizeof(entry->label_entity_id) == 8 &&
+            MD_STATIC_ASSERT(sizeof(entry->label_asym_id) == 8 && sizeof(entry->label_comp_id) == 8 && sizeof(entry->label_entity_id) == 8 &&
                           sizeof(entry->label_atom_id) == 8 && sizeof(entry->type_symbol) == 3, "Fields of 8 characters (a word), the symbol of 3");
-            MEMCPY(&asym,   entry->label_asym_id,   8);
-            MEMCPY(&comp,   entry->label_comp_id,   8);
-            MEMCPY(&entity, entry->label_entity_id, 8);
-            MEMCPY(&name,   entry->label_atom_id,   8);
-            MEMCPY(&symbol_word, entry->type_symbol, 3);
+            MD_MEMCPY(&asym,   entry->label_asym_id,   8);
+            MD_MEMCPY(&comp,   entry->label_comp_id,   8);
+            MD_MEMCPY(&entity, entry->label_entity_id, 8);
+            MD_MEMCPY(&name,   entry->label_atom_id,   8);
+            MD_MEMCPY(&symbol_word, entry->type_symbol, 3);
             const int seq_id = entry->label_seq_id != INT32_MIN ? entry->label_seq_id : entry->auth_seq_id;
 
             if (!have_prev || entity != prev_entity) {
@@ -1565,7 +1565,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
 
             const bool new_inst = !have_prev || asym != prev_asym;
             if (new_inst || comp != prev_comp || seq_id != prev_seq) {
-                str_t comp_id = str_from_cstrn(entry->label_comp_id, ARRAY_SIZE(entry->label_comp_id));
+                str_t comp_id = str_from_cstrn(entry->label_comp_id, MD_COUNTOF(entry->label_comp_id));
                 str_t label_asym_id = str_from_cstrn(entry->label_asym_id, sizeof(entry->label_asym_id));
                 str_t auth_asym_id = str_from_cstrn(entry->auth_asym_id, sizeof(entry->auth_asym_id));
                 // The chain id is the author's (md_chain_data_t). A file which does not give it calls its chains by their
@@ -1614,7 +1614,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             sys->atom.count += 1;
         }
 
-        ASSERT(md_array_size(out_state->xyz) == sys->atom.count);
+        MD_ASSERT(md_array_size(out_state->xyz) == sys->atom.count);
         out_state->num_atoms = sys->atom.count;
 
         // The same three paths and units md_pdb publishes, because they are the same quantities out
@@ -1634,7 +1634,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 md_array_resize(sys->atom.formal_charge, sys->atom.count, alloc);
                 for (size_t i = 0; i < sys->atom.count; ++i) {
                     const float q = formal_charge[i];
-                    sys->atom.formal_charge[i] = float_bits_nan(q) ? 0 : (int8_t)CLAMP(lroundf(q), -8, 8);
+                    sys->atom.formal_charge[i] = float_bits_nan(q) ? 0 : (int8_t)MD_CLAMP(lroundf(q), -8, 8);
                 }
             }
         }
@@ -1666,8 +1666,8 @@ done:
 }
 
 bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const md_executor_t* ex) {
-    ASSERT(sys);
-    ASSERT(state);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
 
     if (str_empty(str)) {
         MD_LOG_ERROR("Input string is empty");
@@ -1694,8 +1694,8 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, s
 }
 
 bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
-    ASSERT(sys);
-    ASSERT(state);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -1719,7 +1719,7 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, 
     // The reader's buffer in a temp scope below the one of the load (mmcif_parse): blocks of the rows of _atom_site, a
     // few passes of them (mmcif_rows_from_blocks)
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    const size_t cap = MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(ex)));
+    const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(ex)));
 
     md_file_reader_t reader;
     md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));

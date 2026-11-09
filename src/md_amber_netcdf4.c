@@ -40,7 +40,7 @@ typedef struct nc4_source_t {
     double scale;               // what a stored value is multiplied by: scale_factor / icompressfac
 } nc4_source_t;
 
-STATIC_ASSERT(sizeof(nc4_source_t) % 8 == 0, "the storage after it must be aligned");
+MD_STATIC_ASSERT(sizeof(nc4_source_t) % 8 == 0, "the storage after it must be aligned");
 
 static const md_hdf5_direct_t* nc4_source_direct(const nc4_source_t* src) {
     return (const md_hdf5_direct_t*)(src + 1);
@@ -61,8 +61,8 @@ static size_t h5_attr_text(hid_t obj, const char* name, char* buf, size_t cap) {
             H5Tset_size(mt, H5T_VARIABLE);
             char* s = NULL;
             if (H5Aread(a, mt, &s) >= 0 && s) {
-                len = MIN(strlen(s), cap - 1);
-                MEMCPY(buf, s, len);
+                len = MD_MIN(strlen(s), cap - 1);
+                MD_MEMCPY(buf, s, len);
                 H5free_memory(s);
             }
             H5Tclose(mt);
@@ -70,7 +70,7 @@ static size_t h5_attr_text(hid_t obj, const char* name, char* buf, size_t cap) {
             const hid_t space = H5Aget_space(a);
             const hssize_t n = H5Sget_simple_extent_npoints(space);
             H5Sclose(space);
-            const size_t size = H5Tget_size(t) * (size_t)MAX(n, 1);
+            const size_t size = H5Tget_size(t) * (size_t)MD_MAX(n, 1);
             if (size < cap && H5Aread(a, t, buf) >= 0) len = size;
         }
     }
@@ -281,7 +281,7 @@ static md_unitcell_t nc4_cell(const double lengths[3], const double* angles) {
 }
 
 bool md_amber_nc4_state_init_from_file(md_system_state_t* state, str_t filename, size_t num_atoms) {
-    ASSERT(state && state->alloc);
+    MD_ASSERT(state && state->alloc);
     char path[NC4_PATH_MAX];
     str_copy_to_char_buf(path, sizeof(path), filename);
 
@@ -327,7 +327,7 @@ bool md_amber_nc4_state_init_from_file(md_system_state_t* state, str_t filename,
 
     if (ok) ok = md_system_state_init(state, N);
     if (ok) {
-        MEMCPY(state->xyz, xyz, N * 3 * sizeof(float));
+        MD_MEMCPY(state->xyz, xyz, N * 3 * sizeof(float));
         state->num_atoms = N;
         state->unitcell = cell;
     }
@@ -346,7 +346,7 @@ static md_unit_t nc4_time_unit(const char* units, bool* known) {
 }
 
 bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     (void)flags;
     char path[NC4_PATH_MAX];
     const size_t path_len = md_path_write_canonical(path, sizeof(path), filename);
@@ -356,7 +356,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
     }
     const str_t spath = {path, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     // ## Everything the run needs from HDF5, at once and under the lock
@@ -461,7 +461,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
 
     // ## Cells, zero without a box
     float* boxes = md_alloc(arena, F * 9 * sizeof(float));
-    MEMSET(boxes, 0, F * 9 * sizeof(float));
+    MD_MEMSET(boxes, 0, F * 9 * sizeof(float));
     for (size_t f = 0; lengths && f < F; ++f) {
         const md_unitcell_t cell = nc4_cell(lengths + f * 3, angles ? angles + f * 3 : NULL);
         md_unitcell_A_extract_float((float(*)[3])(boxes + f * 9), &cell);
@@ -475,11 +475,11 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
         const size_t size = sizeof(nc4_source_t) + (size_t)direct[k]->size;
         nc4_source_t* src = md_attributes_alloc_user_data(&sys->attributes, size);
         if (!src) goto done;
-        MEMSET(src, 0, size);
+        MD_MEMSET(src, 0, size);
         src->scale = scale[k];
         str_copy_to_char_buf(src->dataset, sizeof(src->dataset), str_from_cstr(names[k]));
         str_copy_to_char_buf(src->path, sizeof(src->path), spath);
-        MEMCPY(src + 1, direct[k], (size_t)direct[k]->size);
+        MD_MEMCPY(src + 1, direct[k], (size_t)direct[k]->size);
         virt[k] = (md_attribute_virtual_t){ .provider = nc4_provider, .user_data = src, .user_data_size = size };
     }
 
@@ -512,7 +512,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
         { 2, "atom/force",    md_unit_div(kcal_per_mol, md_unit_angstrom()),         STR_INIT("Force") },
     };
     bool published = true;
-    for (size_t i = 0; published && i < ARRAY_SIZE(per_atom); ++i) {
+    for (size_t i = 0; published && i < MD_COUNTOF(per_atom); ++i) {
         const int k = per_atom[i].k;
         if (!names[k]) continue;
         published = md_attributes_replace(attributes, &(md_attribute_desc_t){
@@ -532,7 +532,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
         { repidx, "remd/repidx", STR_INIT("Replica index") },
         { crdidx, "remd/crdidx", STR_INIT("Coordinate index") },
     };
-    for (size_t i = 0; published && i < ARRAY_SIZE(indices); ++i) {
+    for (size_t i = 0; published && i < MD_COUNTOF(indices); ++i) {
         if (!indices[i].v) continue;
         int32_t* ints = md_alloc(arena, F * sizeof(int32_t));
         for (size_t f = 0; f < F; ++f) ints[f] = (int32_t)indices[i].v[f];

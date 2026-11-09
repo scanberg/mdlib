@@ -14,7 +14,7 @@
 #include <time.h>
 
 str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
-	ASSERT(str_alloc);
+	MD_ASSERT(str_alloc);
 	
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(str_alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
@@ -55,7 +55,7 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 }
 
 str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc) {
-	ASSERT(str_alloc);
+	MD_ASSERT(str_alloc);
 	str_t str = {0};
 
 	if (num_fields == 0) {
@@ -93,7 +93,7 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 }
 
 str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
-	ASSERT(alloc);
+	MD_ASSERT(alloc);
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, temp_alloc);
@@ -168,7 +168,7 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, m
 	
 	// Read meta
 	while (str_extract_line(&line, &header)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		int64_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
 		if (num_tok >= 3 && str_eq(tok[0], STR_LIT("@"))) {
 			if		  (str_eq(tok[1], STR_LIT("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
@@ -250,14 +250,14 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 }
 
 bool md_xvg_parse_str(md_xvg_t* xvg, str_t str, md_allocator_i* alloc) {
-	ASSERT(alloc);
+	MD_ASSERT(alloc);
 
 	md_reader_i reader = md_reader_from_str(str);
 	return parse(xvg, &reader, alloc);
 }
 
 bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
-	ASSERT(alloc);
+	MD_ASSERT(alloc);
 
 	md_file_t file = {0};
 
@@ -266,7 +266,7 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 		return false;
 	}
 
-	const size_t cap = MEGABYTES(1);
+	const size_t cap = MD_MEGABYTES(1);
 	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
 	md_file_reader_t reader;
 	md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));
@@ -279,8 +279,8 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 }
 
 void md_xvg_free(md_xvg_t* xvg, md_allocator_i* alloc) {
-	ASSERT(xvg);
-	ASSERT(alloc);
+	MD_ASSERT(xvg);
+	MD_ASSERT(alloc);
 	if (!str_empty(xvg->header_info.header)) {
 		str_free(xvg->header_info.header, alloc);
 	}
@@ -330,7 +330,7 @@ static str_t xvg_group(char* buf, size_t cap, const char* kind, str_t filename) 
 }
 
 bool md_xvg_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     bool result = false;

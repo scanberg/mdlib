@@ -6,17 +6,17 @@
 
 #define ARENA_MAGIC 0xfdc1728d827856cb
 #define DEFAULT_ALIGNMENT (sizeof(void*)*2) // Should be 16 when compiled for x64
-#define MIN_PAGE_SIZE KILOBYTES(4)
+#define MIN_PAGE_SIZE MD_KILOBYTES(4)
 
 #define VM_MAGIC 0x87b716a78ccb2813
-#define VM_COMMIT_SIZE MEGABYTES(1)
-#define VM_DECOMMIT_THRESHOLD MEGABYTES(1)
+#define VM_COMMIT_SIZE MD_MEGABYTES(1)
+#define VM_DECOMMIT_THRESHOLD MD_MEGABYTES(1)
 
 #define VALIDATE_AND_EXTRACT_ARENA(alloc) \
-    ASSERT(alloc); \
-    ASSERT(alloc->inst); \
+    MD_ASSERT(alloc); \
+    MD_ASSERT(alloc->inst); \
     arena_t* arena = (arena_t*)alloc->inst; \
-    ASSERT(arena->magic == ARENA_MAGIC);
+    MD_ASSERT(arena->magic == ARENA_MAGIC);
 
 typedef struct page_t {
     void* mem;
@@ -57,7 +57,7 @@ static inline void* arena_push(arena_t* arena, size_t size, size_t alignment) {
     page_t* p = arena->curr_page;
     if (!p || p->curr + size + alignment > p->size) {
         // We add the alignment here to be conservative in that the new page will have room for the size
-        p = arena_new_page(arena, MAX(size + alignment, arena->default_page_size));
+        p = arena_new_page(arena, MD_MAX(size + alignment, arena->default_page_size));
     }
 
     const size_t addr = (size_t)p->mem + p->curr;
@@ -72,7 +72,7 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
     (void)file;
     (void)line;
     arena_t* arena = (arena_t*)inst;
-    ASSERT(arena && arena->magic == ARENA_MAGIC);
+    MD_ASSERT(arena && arena->magic == ARENA_MAGIC);
 
     // Realloc or Free
     if (ptr && old_size) {
@@ -84,7 +84,7 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
             // This is the last allocation that occured, then we can shrink or grow that sucker
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
             int64_t new_curr = (int64_t)arena->curr_page->curr + diff;
-            ASSERT(new_curr >= 0);
+            MD_ASSERT(new_curr >= 0);
             if (new_curr < (int64_t)arena->curr_page->size) {
                 arena->curr_page->curr = new_curr;
                 return ptr;
@@ -98,7 +98,7 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         // ptr is not the last allocation or the new size did not fit into the existing page.
         void* new_ptr = arena_push(arena, new_size, alignment);
-        MEMCPY(new_ptr, ptr, old_size);
+        MD_MEMCPY(new_ptr, ptr, old_size);
         return new_ptr;
     }
     // Alloc
@@ -107,11 +107,11 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
 }
 
 struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing, size_t page_size) {
-    ASSERT(backing);
+    MD_ASSERT(backing);
     arena_t* arena = (arena_t*)md_alloc(backing, sizeof(arena_t) + sizeof(md_allocator_i));
     arena->backing = backing;
     arena->curr_page = NULL;
-    arena->default_page_size = page_size ? MAX(MIN_PAGE_SIZE, page_size) : MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE;
+    arena->default_page_size = page_size ? MD_MAX(MIN_PAGE_SIZE, page_size) : MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE;
     arena->magic = ARENA_MAGIC;
 
     md_allocator_i* arena_alloc = (md_allocator_i*)((char*)arena + sizeof(arena_t));
@@ -147,22 +147,22 @@ void* md_arena_allocator_push_zero(struct md_allocator_i* alloc, size_t size) {
     VALIDATE_AND_EXTRACT_ARENA(alloc);
     size_t alignment = size <= 2 ? size : DEFAULT_ALIGNMENT;
     void* mem = arena_push(arena, size, alignment);
-    MEMSET(mem, 0, size);
+    MD_MEMSET(mem, 0, size);
     return mem;
 }
 
 void* md_arena_allocator_push_aligned(struct md_allocator_i* alloc, size_t size, size_t alignment) {
     VALIDATE_AND_EXTRACT_ARENA(alloc);
-    ASSERT(IS_POW2(alignment));
+    MD_ASSERT(MD_IS_POW2(alignment));
     return arena_push(arena, size, alignment);
 }
 
 // VM
 #define VALIDATE_AND_EXTRACT_VM_ARENA(alloc) \
-    ASSERT(alloc); \
-    ASSERT(alloc->inst); \
+    MD_ASSERT(alloc); \
+    MD_ASSERT(alloc->inst); \
     vm_arena_t* arena = (vm_arena_t*)alloc->inst; \
-    ASSERT(arena->magic == VM_MAGIC);
+    MD_ASSERT(arena->magic == VM_MAGIC);
 #define MIN_VM_POS (sizeof(vm_arena_t) + sizeof(md_allocator_i))
 
 typedef struct vm_arena_t {
@@ -175,14 +175,14 @@ typedef struct vm_arena_t {
 } vm_arena_t;
 
 static inline void* vm_push(vm_arena_t* arena, size_t size, size_t alignment) {
-    ASSERT(IS_POW2(alignment));
+    MD_ASSERT(MD_IS_POW2(alignment));
 
     void* mem = 0;
-    alignment = MAX(arena->align, alignment);
+    alignment = MD_MAX(arena->align, alignment);
 
     size_t pos = arena->pos;
     size_t pos_address = (size_t)arena->base + pos;
-    size_t alignment_size = ALIGN_TO(pos_address, alignment) - pos_address;
+    size_t alignment_size = MD_ALIGN_TO(pos_address, alignment) - pos_address;
 
     if (pos + alignment_size + size <= arena->size) {
         mem = (char*)arena->base + pos + alignment_size;
@@ -190,7 +190,7 @@ static inline void* vm_push(vm_arena_t* arena, size_t size, size_t alignment) {
         arena->pos = new_pos;
 
         if (new_pos > arena->commit_pos) {
-            size_t commit_size = ALIGN_TO(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
+            size_t commit_size = MD_ALIGN_TO(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
             md_vm_commit((char*)arena->base + arena->commit_pos, commit_size);
             arena->commit_pos += commit_size;
         }
@@ -200,10 +200,10 @@ static inline void* vm_push(vm_arena_t* arena, size_t size, size_t alignment) {
 }
 
 static inline void vm_set_pos(vm_arena_t* arena, size_t pos) {
-    ASSERT(pos <= arena->pos);
+    MD_ASSERT(pos <= arena->pos);
     arena->pos = pos;
 #if 0
-    size_t decommit_pos = ALIGN_TO(pos, VM_COMMIT_SIZE);
+    size_t decommit_pos = MD_ALIGN_TO(pos, VM_COMMIT_SIZE);
     size_t over_commited = arena->commit_pos - decommit_pos;
     if (decommit_pos > 0 && over_commited >= VM_DECOMMIT_THRESHOLD) {
         md_vm_decommit((char*)arena->base + decommit_pos, over_commited);
@@ -216,7 +216,7 @@ static inline void vm_pop(vm_arena_t* arena, size_t size) {
     // Ensure that the new position is not within the meta information of the allocator
     // That would be very bad...
     int64_t new_pos = (int64_t)arena->pos - (int64_t)size;
-    ASSERT(new_pos >= (int64_t)MIN_VM_POS);
+    MD_ASSERT(new_pos >= (int64_t)MIN_VM_POS);
     vm_set_pos(arena, (size_t)new_pos);
 }
 
@@ -226,7 +226,7 @@ static inline bool vm_set_pos_forward(vm_arena_t* arena, size_t pos) {
     }
 
     if (pos > arena->commit_pos) {
-        size_t commit_size = ALIGN_TO(pos - arena->commit_pos, VM_COMMIT_SIZE);
+        size_t commit_size = MD_ALIGN_TO(pos - arena->commit_pos, VM_COMMIT_SIZE);
         md_vm_commit((char*)arena->base + arena->commit_pos, commit_size);
         arena->commit_pos += commit_size;
     }
@@ -239,30 +239,30 @@ static void* vm_arena_realloc(struct md_allocator_o* inst, void* ptr, size_t old
     (void)file;
     (void)line;
     vm_arena_t* arena = (vm_arena_t*)inst;
-    ASSERT(arena);
-    ASSERT(arena->magic == VM_MAGIC);
+    MD_ASSERT(arena);
+    MD_ASSERT(arena->magic == VM_MAGIC);
 
     if (new_size == 0) {
         if ((char*)arena->base + arena->pos == (char*)ptr + old_size) {
             size_t ptr_pos = (size_t)((char*)ptr - (char*)arena->base);
-            ASSERT(ptr_pos >= MIN_VM_POS && ptr_pos <= arena->pos);
+            MD_ASSERT(ptr_pos >= MIN_VM_POS && ptr_pos <= arena->pos);
             vm_set_pos(arena, ptr_pos);
         }
         return NULL;
     }
 
     if (old_size) {
-        ASSERT(ptr);
+        MD_ASSERT(ptr);
         if ((char*)arena->base + arena->pos == (char*)ptr + old_size) {
             size_t ptr_pos = (size_t)((char*)ptr - (char*)arena->base);
             size_t new_pos = ptr_pos + new_size;
-            ASSERT(ptr_pos >= MIN_VM_POS);
-            ASSERT(new_pos <= arena->size);
+            MD_ASSERT(ptr_pos >= MIN_VM_POS);
+            MD_ASSERT(new_pos <= arena->size);
             return vm_set_pos_forward(arena, new_pos) ? ptr : NULL;
         }
         void* new_ptr = vm_push(arena, new_size, arena->align);
         if (new_ptr) {
-            MEMCPY(new_ptr, ptr, MIN(old_size, new_size));
+            MD_MEMCPY(new_ptr, ptr, MD_MIN(old_size, new_size));
         }
         return new_ptr;
     }
@@ -271,7 +271,7 @@ static void* vm_arena_realloc(struct md_allocator_o* inst, void* ptr, size_t old
 }
 
 struct md_allocator_i* md_vm_arena_create(size_t reservation_size) {
-    reservation_size = ALIGN_TO(reservation_size, MEGABYTES(1));
+    reservation_size = MD_ALIGN_TO(reservation_size, MD_MEGABYTES(1));
     void* base = md_vm_reserve(reservation_size);
     md_vm_commit(base, VM_COMMIT_SIZE);
     vm_arena_t* arena = base;
@@ -295,14 +295,14 @@ void md_vm_arena_destroy(struct md_allocator_i* alloc) {
 
 void* md_vm_arena_push_aligned(struct md_allocator_i* alloc, size_t size, size_t align) {
     VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
-    ASSERT(IS_POW2(align));
+    MD_ASSERT(MD_IS_POW2(align));
 
     void* mem = 0;
-    align = MAX(arena->align, align);
+    align = MD_MAX(arena->align, align);
 
     size_t pos = arena->pos;
     size_t pos_address = (size_t)arena->base + pos;
-    size_t alignment_size = ALIGN_TO(pos_address, align) - pos_address;
+    size_t alignment_size = MD_ALIGN_TO(pos_address, align) - pos_address;
 
     if (pos + alignment_size + size <= arena->size) {
         mem = (char*)arena->base + pos + alignment_size;
@@ -310,7 +310,7 @@ void* md_vm_arena_push_aligned(struct md_allocator_i* alloc, size_t size, size_t
         arena->pos = new_pos;
 
         if (new_pos > arena->commit_pos) {
-            size_t commit_size = ALIGN_TO(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
+            size_t commit_size = MD_ALIGN_TO(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
             md_vm_commit((char*)arena->base + arena->commit_pos, commit_size);
             arena->commit_pos += commit_size;
         }
@@ -327,7 +327,7 @@ void* md_vm_arena_push(struct md_allocator_i* alloc, size_t size) {
 void* md_vm_arena_push_zero(struct md_allocator_i* alloc, size_t size) {
     VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
     void* mem = vm_push(arena, size, arena->align);
-    MEMSET(mem, 0, size);
+    MD_MEMSET(mem, 0, size);
     return mem;
 }
 
@@ -353,7 +353,7 @@ size_t md_vm_arena_get_pos(struct md_allocator_i* alloc) {
 
 void md_vm_arena_trim(struct md_allocator_i* alloc) {
     VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
-    const size_t keep = ALIGN_TO(arena->pos, VM_COMMIT_SIZE);
+    const size_t keep = MD_ALIGN_TO(arena->pos, VM_COMMIT_SIZE);
     if (arena->commit_pos > keep) {
         md_vm_decommit((char*)arena->base + keep, arena->commit_pos - keep);
         arena->commit_pos = keep;

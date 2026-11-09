@@ -466,11 +466,11 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
     md_gto_gpu_dmat_view_t v;
     md_gto_gpu_dmat_view(&v, dm);
     const size_t nao = v.num_ao;
-    const size_t pool = 256 * (size_t)MAX(1, v.num_tiles);
+    const size_t pool = 256 * (size_t)MD_MAX(1, v.num_tiles);
     bool ok = pool * num_dmat < (size_t)UINT32_MAX;
     if (ok) {
         set->dmat   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * pool * num_dmat);
-        set->dm_tao = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * MAX(1, nao));
+        set->dm_tao = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * MD_MAX(1, nao));
         set->dm_map = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * (size_t)v.nt * v.nt);
         ok = set->dmat.gpu && set->dm_tao.gpu && set->dm_map.gpu;
     }
@@ -636,7 +636,7 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
         }
         set->fields[k].term_count = (uint32_t)nt - set->fields[k].term_off;
     }
-    ASSERT(nt == num_terms);
+    MD_ASSERT(nt == num_terms);
 
     // the terms per field and column, when each is w a, w a^2 or w a b with a even and b = a + 1 (what
     // orbitals, density matrices and products of pairs give): the register-form epilogues' weights
@@ -689,7 +689,7 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
             ijk[a->ao + n] = (uint32_t)a->ijk[n][0] | ((uint32_t)a->ijk[n][1] << 4) | ((uint32_t)a->ijk[n][2] << 8);
         }
     }
-    ASSERT(np == num_prims && nc == num_crit);
+    MD_ASSERT(np == num_prims && nc == num_crit);
 
     // the densities as matrices (dform): D = sum of the terms' symmetrized products, times the AO
     // normalizations, one per distinct field; when every field is a density of products (no linear
@@ -1343,7 +1343,7 @@ static void isog_jfree(md_gto_iso_gpu_job_t* j, md_gpu_addr_t p) {
 // A copy of [src, src + bytes) to dst, made with the next isog_jfetch. Every add takes the next slot, of no
 // bytes too: the callers find their copies in fetch_off by the order of their adds.
 static void isog_jfetch_add(md_gto_iso_gpu_job_t* j, void* dst, md_gpu_addr_t src, size_t bytes) {
-    ASSERT(j->num_fetch < ISOG_JOB_FETCH);
+    MD_ASSERT(j->num_fetch < ISOG_JOB_FETCH);
     if (j->num_fetch >= ISOG_JOB_FETCH) return;
     j->fetch_dst[j->num_fetch] = dst;
     j->fetch_off[j->num_fetch] = (size_t)src;      // the source until isog_jfetch
@@ -1866,7 +1866,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                         for (uint32_t f = 0; f < F && !in; ++f) {
                             const uint32_t fb = (m >> (2 * f)) & 3u;
                             if (fb == 0) continue;
-                            const float* c = cv + (size_t)(slot[b] + popcnt32((m | (m >> 1)) & 0x55555555u & ((1u << (2 * f)) - 1u))) * 125;
+                            const float* c = cv + (size_t)(slot[b] + md_popcnt32((m | (m >> 1)) & 0x55555555u & ((1u << (2 * f)) - 1u))) * 125;
                             for (uint32_t sh = 0; sh < 2 && !in; ++sh) {
                                 if (!(fb & (1u << sh))) continue;
                                 const float sg = sh == 0 ? 1.0f : -1.0f;
@@ -2451,7 +2451,7 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
     float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (size_t i = 0; i < n; ++i) {
         const float* p = ISOG_P(i);
-        for (int c = 0; c < 3; ++c) { lo[c] = MIN(lo[c], p[c]); hi[c] = MAX(hi[c], p[c]); }
+        for (int c = 0; c < 3; ++c) { lo[c] = MD_MIN(lo[c], p[c]); hi[c] = MD_MAX(hi[c], p[c]); }
     }
     float scl[3];
     for (int c = 0; c < 3; ++c) scl[c] = hi[c] > lo[c] ? 1023.0f / (hi[c] - lo[c]) : 0.0f;

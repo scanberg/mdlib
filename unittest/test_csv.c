@@ -15,7 +15,7 @@ static const float col_distance[] = { 1.25f, -2.5f, 3.0f };
 
 UTEST(csv, write_and_parse) {
     md_allocator_i* heap  = md_get_heap_allocator();
-    md_allocator_i* arena = md_arena_allocator_create(heap, KILOBYTES(64));
+    md_allocator_i* arena = md_arena_allocator_create(heap, MD_KILOBYTES(64));
 
     const float* const values[] = { col_time, col_distance };
     const str_t names[] = { STR_LIT("time"), STR_LIT("Distance (nm)") };
@@ -63,7 +63,7 @@ UTEST(csv, write_and_parse) {
 // The CSV that spreadsheets, pandas and hand edits write: no header row (the first row is data, not names), ';' or tab
 // between the fields, quoted names, CRLF, blank and '#' lines, and empty fields (NaN, where the value is missing).
 UTEST(csv, the_csv_that_is_written) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     {
         md_csv_t csv = {0};
         ASSERT_TRUE(md_csv_parse_str(&csv, STR_LIT("0,1.5\n1,1.6\n2,1.7\n"), arena));

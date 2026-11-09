@@ -226,7 +226,7 @@ static inline bool vial_spec_read_result(vial_result_t* r, const vial_expect_t* 
     static const char* dtypes[] = {"bool", "int", "float64", "float", "str", "set", "range", "drawing", "("};
     for (int k = 0; k < r->num_types; ++k) {
         bool ok = false;
-        for (size_t i = 0; i < ARRAY_SIZE(dtypes) && !ok; ++i) ok = str_begins_with(r->types[k], str_from_cstr(dtypes[i]));
+        for (size_t i = 0; i < MD_COUNTOF(dtypes) && !ok; ++i) ok = str_begins_with(r->types[k], str_from_cstr(dtypes[i]));
         if (!ok) return false;
     }
     return true;

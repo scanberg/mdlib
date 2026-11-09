@@ -1167,7 +1167,7 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
         if (missing_len + 1 < missing_cap) {                                                   \
             int w_ = md_snprintf(missing + missing_len, missing_cap - missing_len, "%s%s",        \
                               missing_len ? ", " : "", (name));                                \
-            if (w_ > 0) missing_len = MIN(missing_len + (size_t)w_, missing_cap - 1);           \
+            if (w_ > 0) missing_len = MD_MIN(missing_len + (size_t)w_, missing_cap - 1);           \
         }                                                                                      \
     } while (0)
 #define MD_VK_REQUIRE(cond, name) do { if (!(cond)) MD_VK_MISSING(name); } while (0)

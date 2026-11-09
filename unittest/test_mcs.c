@@ -28,7 +28,7 @@ static mcs_fixture_t* mcs_tubulin(void) {
     static bool loaded;
     if (!loaded) {
         loaded = true;
-        f.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        f.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         f.sys = (md_system_t){.alloc = f.alloc};
         f.state = (md_system_state_t){.alloc = f.alloc};
         f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
@@ -100,7 +100,7 @@ UTEST(mcs, residues) {
     struct { const char* a; const char* b; unsigned common; } cases[] = {
         {"PHE", "TYR", 11}, {"PHE", "TRP", 10}, {"LYS", "ARG", 7}, {"ASP", "GLU", 6}, {"LEU", "ILE", 7}, {"SER", "CYS", 5},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_mcs_result_t r = mcs_of(f, cases[i].a, 0, cases[i].b, 0, true);
         EXPECT_EQ(cases[i].common, (unsigned)r.count);
         if (r.count != cases[i].common) printf("mcs: %s and %s share %zu\n", cases[i].a, cases[i].b, r.count);
@@ -151,7 +151,7 @@ UTEST(mcs, chains) {
 }
 
 UTEST(mcs, nucleotides) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));

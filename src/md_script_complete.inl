@@ -58,7 +58,7 @@ static const completion_frame_t* completion_call(const completion_context_t* ctx
 
 static value_domain_t find_param_domain(str_t proc, int param) {
     if (param < 0) return DOMAIN_NONE;
-    for (size_t i = 0; i < ARRAY_SIZE(param_domains); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(param_domains); ++i) {
         if (param_domains[i].param == (uint32_t)param && str_eq(param_domains[i].proc, proc)) {
             return param_domains[i].domain;
         }
@@ -89,7 +89,7 @@ static md_array(token_t) completion_tokenize(str_t str, md_allocator_i* alloc) {
 
 // Follows the tokens of the statement that ends at the last of them
 static void completion_scan(completion_context_t* ctx, const token_t* tokens, size_t count) {
-    MEMSET(ctx, 0, sizeof(*ctx));
+    MD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->lhs = true;
 
     size_t beg = count;
@@ -109,7 +109,7 @@ static void completion_scan(completion_context_t* ctx, const token_t* tokens, si
             ctx->depth += 1;
             completion_frame_t* frame = completion_top(ctx);
             if (frame) {
-                MEMSET(frame, 0, sizeof(*frame));
+                MD_MEMSET(frame, 0, sizeof(*frame));
                 frame->open = type;
                 if (type == '(' && i > beg && tokens[i - 1].type == TOKEN_IDENT) {
                     frame->callee = tokens[i - 1].str;
@@ -222,7 +222,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         if (sys && sys->atom.type.name) {
             if (atoms && sys->atom.type_idx) {
                 bool* present = (bool*)md_alloc(alloc, sys->atom.type.count + 1);
-                MEMSET(present, 0, sys->atom.type.count + 1);
+                MD_MEMSET(present, 0, sys->atom.type.count + 1);
                 for (md_bitset_iter_t it = md_bitset_iter(*atoms); md_bitset_iter_next(&it);) {
                     if (it.idx < sys->atom.count && sys->atom.type_idx[it.idx] < sys->atom.type.count) {
                         present[sys->atom.type_idx[it.idx]] = true;
@@ -277,16 +277,16 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         }
         break;
     case DOMAIN_MATCH_LEVEL:
-        for (size_t i = 0; i < ARRAY_SIZE(match_levels); ++i) completion_add_value(&values, &seen, match_levels[i].name, alloc);
+        for (size_t i = 0; i < MD_COUNTOF(match_levels); ++i) completion_add_value(&values, &seen, match_levels[i].name, alloc);
         break;
     case DOMAIN_MATCH_MODE:
-        for (size_t i = 0; i < ARRAY_SIZE(match_modes); ++i) completion_add_value(&values, &seen, match_modes[i].name, alloc);
+        for (size_t i = 0; i < MD_COUNTOF(match_modes); ++i) completion_add_value(&values, &seen, match_modes[i].name, alloc);
         break;
     case DOMAIN_MATCH_LABEL:
-        for (size_t i = 0; i < ARRAY_SIZE(match_labels); ++i) completion_add_value(&values, &seen, match_labels[i].name, alloc);
+        for (size_t i = 0; i < MD_COUNTOF(match_labels); ++i) completion_add_value(&values, &seen, match_labels[i].name, alloc);
         break;
     case DOMAIN_RING_KIND:
-        for (size_t i = 0; i < ARRAY_SIZE(ring_kinds); ++i) completion_add_value(&values, &seen, ring_kinds[i].name, alloc);
+        for (size_t i = 0; i < MD_COUNTOF(ring_kinds); ++i) completion_add_value(&values, &seen, ring_kinds[i].name, alloc);
         break;
     case DOMAIN_BOND_KIND: {
         size_t count = 0;
@@ -295,7 +295,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         break;
     }
     case DOMAIN_BOND_RESONANCE:
-        for (size_t i = 0; i < ARRAY_SIZE(bond_resonances); ++i) completion_add_value(&values, &seen, bond_resonances[i].name, alloc);
+        for (size_t i = 0; i < MD_COUNTOF(bond_resonances); ++i) completion_add_value(&values, &seen, bond_resonances[i].name, alloc);
         break;
     case DOMAIN_BOND_ORIGIN:
         for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) completion_add_value(&values, &seen, str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)), alloc);
@@ -337,7 +337,7 @@ static uint32_t completion_type_bits(type_info_t ti) {
 // What a procedure gives. 0 for those the parser handles itself (attr, flatten, transpose), which depends on how.
 static uint32_t completion_return_types(str_t name) {
     uint32_t bits = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
         if (str_eq(procedures[i].name, name)) bits |= completion_type_bits(procedures[i].return_type);
     }
     return bits;
@@ -347,7 +347,7 @@ static uint32_t completion_return_types(str_t name) {
 static uint32_t completion_param_types(str_t name, int param) {
     if (param < 0) return 0;
     uint32_t bits = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
         if (str_eq(procedures[i].name, name) && (size_t)param < procedures[i].num_args) {
             bits |= completion_type_bits(procedures[i].arg_type[param]);
         }
@@ -381,7 +381,7 @@ static uint32_t completion_expected(const completion_context_t* ctx, completion_
 static bool completion_fits(uint32_t types, uint32_t expected) {
     if (!types || !expected) return false;
     if (types & expected) return true;
-    for (size_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(casts); ++i) {
         const base_type_t from = casts[i].arg_type[0].base_type;
         const base_type_t to   = casts[i].return_type.base_type;
         if (to != TYPE_ATOMSET && (types & TYPE_BIT(from)) && (expected & TYPE_BIT(to))) return true;
@@ -427,9 +427,9 @@ static void completion_push(md_array(md_script_completion_t)* items, md_script_c
     } else {
         const size_t len = pre.len + label.len + post.len;
         char* buf = md_alloc(alloc, len + 1);
-        if (pre.len)   MEMCPY(buf, pre.ptr, pre.len);
-        if (label.len) MEMCPY(buf + pre.len, label.ptr, label.len);
-        if (post.len)  MEMCPY(buf + pre.len + label.len, post.ptr, post.len);
+        if (pre.len)   MD_MEMCPY(buf, pre.ptr, pre.len);
+        if (label.len) MD_MEMCPY(buf + pre.len, label.ptr, label.len);
+        if (post.len)  MD_MEMCPY(buf + pre.len + label.len, post.ptr, post.len);
         buf[len] = '\0';
         item.text = (str_t){buf, len};
     }
@@ -446,10 +446,10 @@ static void completion_push_values(md_array(md_script_completion_t)* items, valu
 // A script (COMPLETE_SCRIPT), or a filter, an expression which picks atoms (or bonds) and whose names are those of
 // ctx_ir, evaluated within atoms (NULL for the whole system)
 static md_script_completions_t complete(str_t src, int cursor, const md_system_t* sys, const md_bitset_t* atoms, const md_script_ir_t* ctx_ir, completion_mode_t filter, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     md_script_completions_t result = {0};
     if (!src.ptr) src.len = 0;
-    cursor = CLAMP(cursor, 0, (int)src.len);
+    cursor = MD_CLAMP(cursor, 0, (int)src.len);
     result.range.beg = cursor;
     result.range.end = cursor;
 
@@ -523,7 +523,7 @@ static md_script_completions_t complete(str_t src, int cursor, const md_system_t
                 completion_push_values(&items, domain, sys, atoms, result.prefix, (str_t){0}, closed ? (str_t){0} : quote_str, alloc, temp_alloc);
             }
         } else if (after_operand) {
-            for (size_t i = 0; i < ARRAY_SIZE(script_keywords); ++i) {
+            for (size_t i = 0; i < MD_COUNTOF(script_keywords); ++i) {
                 if (!is_binary_keyword(script_keywords[i])) continue;
                 const bool fits = completion_fits(completion_keyword_types(script_keywords[i]), expected);
                 completion_push(&items, MD_SCRIPT_COMPLETION_KEYWORD, script_keywords[i], (str_t){0}, (str_t){0}, fits, alloc);
@@ -571,23 +571,23 @@ static md_script_completions_t complete(str_t src, int cursor, const md_system_t
                     if (!OFFERED(variable_types[i])) continue;
                     completion_push(&items, MD_SCRIPT_COMPLETION_VARIABLE, variables[i], (str_t){0}, (str_t){0}, completion_fits(variable_types[i], expected), alloc);
                 }
-                for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+                for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
                     if (procedure_name_before(i, procedures[i].name)) continue;
                     const uint32_t types = completion_return_types(procedures[i].name);
                     if (!OFFERED(types)) continue;
                     completion_push(&items, MD_SCRIPT_COMPLETION_PROCEDURE, procedures[i].name, (str_t){0}, (str_t){0}, completion_fits(types, expected), alloc);
                 }
-                for (size_t i = 0; i < ARRAY_SIZE(script_intrinsics); ++i) {
-                    if (!procedure_name_before(ARRAY_SIZE(procedures), script_intrinsics[i])) {
+                for (size_t i = 0; i < MD_COUNTOF(script_intrinsics); ++i) {
+                    if (!procedure_name_before(MD_COUNTOF(procedures), script_intrinsics[i])) {
                         completion_push(&items, MD_SCRIPT_COMPLETION_PROCEDURE, script_intrinsics[i], (str_t){0}, (str_t){0}, false, alloc);
                     }
                 }
-                for (size_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+                for (size_t i = 0; i < MD_COUNTOF(constants); ++i) {
                     const uint32_t types = TYPE_BIT(TYPE_FLOAT);
                     if (!OFFERED(types)) continue;
                     completion_push(&items, MD_SCRIPT_COMPLETION_CONSTANT, constants[i].name, (str_t){0}, (str_t){0}, completion_fits(types, expected), alloc);
                 }
-                for (size_t i = 0; i < ARRAY_SIZE(script_keywords); ++i) {
+                for (size_t i = 0; i < MD_COUNTOF(script_keywords); ++i) {
                     // In a filter, where an operand goes: not the operators which join two, nor 'of', which is reserved
                     if (filter && (is_binary_keyword(script_keywords[i]) || str_eq_cstr(script_keywords[i], "of"))) continue;
                     const bool fits = completion_fits(completion_keyword_types(script_keywords[i]), expected);

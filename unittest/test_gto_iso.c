@@ -243,7 +243,7 @@ static bool iso_load(iso_field_t* f, const char* file, int which, const char* na
     vlx_test_t t = {0};
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&t, str_from_cstr(path), MEGABYTES(64))) return false;
+    if (!vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(64))) return false;
 
     bool ok = false;
     const size_t num_atoms = t.sys.atom.count;
@@ -311,7 +311,7 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         vlx_test_t t = {0};
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", tc->file);
-        ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MEGABYTES(64)));
+        ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(64)));
         const size_t num_atoms = t.sys.atom.count;
         float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
         ASSERT_EQ(vlx_test_atom_xyz_bohr(xyz, 3 * num_atoms, &t), num_atoms);
@@ -1144,7 +1144,7 @@ static bool iso_api_load(iso_api_case_t* c, const iso_case_t* tc) {
     memset(c, 0, sizeof(*c));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", tc->file);
-    if (!vlx_test_load(&c->t, str_from_cstr(path), MEGABYTES(64))) return false;
+    if (!vlx_test_load(&c->t, str_from_cstr(path), MD_MEGABYTES(64))) return false;
     const size_t num_atoms = c->t.sys.atom.count;
     c->xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
     if (vlx_test_atom_xyz_bohr(c->xyz, 3 * num_atoms, &c->t) != num_atoms || !qm_test_basis(&c->basis, &c->t)) return false;
@@ -1344,7 +1344,7 @@ static bool iso_dens_src_load_ex(iso_dens_src_t* s, const char* file, bool need_
     memset(s, 0, sizeof(*s));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&s->t, str_from_cstr(path), MEGABYTES(512))) return false;
+    if (!vlx_test_load(&s->t, str_from_cstr(path), MD_MEGABYTES(512))) return false;
     s->num_atoms = s->t.sys.atom.count;
     s->xyz = (float*)malloc(sizeof(float) * 3 * s->num_atoms);
     if (vlx_test_atom_xyz_bohr(s->xyz, 3 * s->num_atoms, &s->t) != s->num_atoms || !qm_test_basis(&s->basis, &s->t)) return false;
@@ -2207,7 +2207,7 @@ UTEST(qm_leae, orbitals_and_sign) {
 static bool elf_molden_load(vlx_test_t* t, float** xyz, size_t* num_atoms, const char* file) {
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/molden/%s", file);
-    qm_test_init(t, MEGABYTES(64));
+    qm_test_init(t, MD_MEGABYTES(64));
     if (!md_molden_system_init_from_file(&t->sys, &t->state, str_from_cstr(path))) return false;
     *num_atoms = t->sys.atom.count;
     *xyz = (float*)malloc(sizeof(float) * 3 * *num_atoms);
@@ -2985,7 +2985,7 @@ UTEST(gto_iso_gpu, benchmark) {
         vlx_test_t t = {0};
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", bc->file);
-        if (!vlx_test_load(&t, str_from_cstr(path), MEGABYTES(256))) { printf("  %-11s (no %s, skipped)\n", bc->name, bc->file); continue; }
+        if (!vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(256))) { printf("  %-11s (no %s, skipped)\n", bc->name, bc->file); continue; }
         const size_t num_atoms = t.sys.atom.count;
         float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
         md_gto_basis_t basis = {0};
@@ -4814,7 +4814,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
     md_tick_t t0 = md_tick_now();
     vlx_test_t t;
-    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MEGABYTES(1024)));
+    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MD_MEGABYTES(1024)));
     const size_t num_atoms = t.sys.atom.count;
     float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
     md_gto_basis_t basis;

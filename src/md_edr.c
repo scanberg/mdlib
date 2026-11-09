@@ -135,7 +135,7 @@ static void resize_data_subblock(md_enxsubblock_t* subblock, size_t new_size, md
 	case MD_ENX_DATATYPE_CHAR:   md_array_resize(subblock->value.cval, new_size, alloc); break;
 	case MD_ENX_DATATYPE_STRING: md_array_resize(subblock->value.sval, new_size, alloc); break;
 	default:
-		ASSERT(false);
+		MD_ASSERT(false);
 	}
 }
 
@@ -143,7 +143,7 @@ static void add_subblock_enxblock(md_enxblock_t* block, size_t new_size, md_allo
 	const size_t old_size = md_array_size(block->sub);
 	md_array_resize(block->sub, new_size, alloc);
 	if (new_size > old_size) {
-		MEMSET(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
+		MD_MEMSET(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
 	}
 }
 
@@ -151,7 +151,7 @@ static void add_blocks_enxframe(md_enxframe_t* frame, size_t new_size, md_alloca
 	const size_t old_size = md_array_size(frame->block);
 	md_array_resize(frame->block, new_size, alloc);
 	if (new_size > old_size) {
-		MEMSET(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
+		MD_MEMSET(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
 	}
 }
 
@@ -226,7 +226,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 				return false;
 			}
 		} else {
-			nsteps = MAX(1, nsum);
+			nsteps = MD_MAX(1, nsum);
 		}
 		if (file_version >= 5) {
 			if (!md_xdr_read_f64(&fp->xdr, &dt)) {
@@ -500,7 +500,7 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 		const size_t new_size = (size_t)frame->nre;
 		const size_t old_size = md_array_size(frame->ener);
 		md_array_resize(frame->ener, (size_t)frame->nre, alloc);
-		MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
+		MD_MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
 	}
 
 	for (int i = 0; i < frame->nre; ++i) {
@@ -567,7 +567,7 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 					ok = md_xdr_read_string(&fp->xdr, &str, sizeof(buf) - 1);
 					if (ok) {
 						sub->value.sval[j] = md_alloc(alloc, str.len + 1);
-						MEMCPY(sub->value.sval[j], str.ptr, str.len);
+						MD_MEMCPY(sub->value.sval[j], str.ptr, str.len);
 						sub->value.sval[j][str.len] = '\0';
 					}
 				}
@@ -756,7 +756,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 		md_log(MD_LOG_TYPE_DEBUG, "Reading energies into non-zero energy structure, potential memory leak here");
 	}
 	*energies = (md_edr_energies_t){0};
-	energies->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+	energies->alloc = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
 
 	energies->num_frames = 0;
 	energies->frame_time = NULL;
@@ -846,7 +846,7 @@ static int edr_find_term(const md_edr_energies_t* e, str_t prefix, const char* s
 	for (size_t i = 0; i < e->num_energies; ++i) {
 		str_t name = e->energy[i].name;
 		if (name.len == prefix.len + 1 + slen && str_begins_with(name, prefix) && name.ptr[prefix.len] == '-' &&
-			MEMCMP(name.ptr + prefix.len + 1, suffix, slen) == 0) {
+			MD_MEMCMP(name.ptr + prefix.len + 1, suffix, slen) == 0) {
 			return (int)i;
 		}
 	}
@@ -923,16 +923,16 @@ static str_t edr_join(char* buf, size_t cap, str_t a, const char* b, size_t b_le
 	if (a.len + 1 + b_len + 1 > cap) {
 		return (str_t){0};
 	}
-	MEMCPY(buf, a.ptr, a.len);
+	MD_MEMCPY(buf, a.ptr, a.len);
 	buf[a.len] = '/';
-	MEMCPY(buf + a.len + 1, b, b_len);
+	MD_MEMCPY(buf + a.len + 1, b, b_len);
 	buf[a.len + 1 + b_len] = '\0';
 	return (str_t){buf, a.len + 1 + b_len};
 }
 
 bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energies, str_t run) {
-	ASSERT(sys);
-	ASSERT(energies);
+	MD_ASSERT(sys);
+	MD_ASSERT(energies);
 
 	md_attributes_t* attributes = &sys->attributes;
 	if (!attributes->alloc) {
@@ -1018,7 +1018,7 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 
 	{
 		bool* used = md_temp_alloc_array(temp, bool, energies->num_energies);
-		MEMSET(used, 0, energies->num_energies * sizeof(bool));
+		MD_MEMSET(used, 0, energies->num_energies * sizeof(bool));
 		edr_output_t* plan = md_temp_alloc_array(temp, edr_output_t, energies->num_energies);
 		const size_t num_out = edr_plan(plan, energies, used);
 
@@ -1095,7 +1095,7 @@ done:
 }
 
 bool md_edr_system_supplement_from_file(md_system_t* sys, str_t filename, str_t run) {
-	ASSERT(sys);
+	MD_ASSERT(sys);
 
 	md_edr_energies_t energies = {0};
 	if (!md_edr_energies_parse_file(&energies, filename, md_get_heap_allocator())) {

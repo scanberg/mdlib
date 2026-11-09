@@ -138,7 +138,7 @@ static void gto_int_boys_table_fill(double* tab) {
     }
 }
 
-STATIC_ASSERT(GTO_INT_BOYS_TAB_TERMS == 8, "gto_int_boys_tab unrolls the expansion for 8 terms");
+MD_STATIC_ASSERT(GTO_INT_BOYS_TAB_TERMS == 8, "gto_int_boys_tab unrolls the expansion for 8 terms");
 
 // Above this exp(-T) is below 1e-17 of (2n+1) F_n(T) for every n <= GTO_INT_MAX_R_ORDER (~1e-24 at
 // T = 80, n = 9), so the upward recursion leaves it out. That saves the exp where most pairs of a
@@ -220,7 +220,7 @@ static void gto_int_hermite_recurse(double* R, int L, const double* base, double
         }
         double* tmp = cur; cur = nxt; nxt = tmp;
     }
-    MEMCPY(R, nxt, sizeof(double) * md_gto_int_num_hermite((uint32_t)L));
+    MD_MEMCPY(R, nxt, sizeof(double) * md_gto_int_num_hermite((uint32_t)L));
 }
 
 static void gto_int_hermite_R(double* R, int L, double p, double x, double y, double z, const double* boys_tab) {
@@ -246,7 +246,7 @@ static void gto_int_hermite_R(double* R, int L, double p, double x, double y, do
 typedef double gto_int_E_t[MD_GTO_MAX_ANGULAR_MOMENTUM + 1][MD_GTO_MAX_ANGULAR_MOMENTUM + 1][MD_GTO_INT_MAX_ORDER + 1];
 
 static void gto_int_hermite_E(gto_int_E_t E, int la, int lb, double p, double PA, double PB, double K) {
-    MEMSET(E, 0, sizeof(gto_int_E_t));
+    MD_MEMSET(E, 0, sizeof(gto_int_E_t));
     const double o2p = 0.5 / p;
     E[0][0][0] = K;
     for (int i = 0; i <= la; ++i) {
@@ -296,7 +296,7 @@ static void gto_int_hermite_E(gto_int_E_t E, int la, int lb, double p, double PA
 #define GTO_INT_FAR_MAX_DEPTH  32
 #define GTO_INT_FAR_STACK      (GTO_INT_FAR_MAX_DEPTH * 8 + 8)
 
-STATIC_ASSERT(GTO_INT_FAR_MIN_ORDER + 1 <= GTO_INT_MAX_R_ORDER, "the far field's field needs T one order up");
+MD_STATIC_ASSERT(GTO_INT_FAR_MIN_ORDER + 1 <= GTO_INT_MAX_R_ORDER, "the far field's field needs T one order up");
 
 // T_tuv(Y) = d^tuv (1/|Y|) for t+u+v <= K, in herm_idx order: the Hermite recursion with
 // R^n_000 = (-1)^n (2n-1)!! / |Y|^(2n+1), the limit of (-2p)^n F_n(p |Y|^2) without the 1/2 sqrt(pi/p).
@@ -356,7 +356,7 @@ static int gto_int_item_moments(double* c, const md_gto_int_charges_t* q, uint32
         return (int)L;
     }
     const uint32_t k = it - q->num_gaussians;
-    MEMSET(c, 0, sizeof(double) * 10);
+    MD_MEMSET(c, 0, sizeof(double) * 10);
     c[0] = q->point_charge[k];
     int L = 0;
     if (q->point_dipole) {
@@ -384,7 +384,7 @@ static inline double gto_int_item_extent(const md_gto_int_charges_t* q, uint32_t
 static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_allocator_i* alloc) {
     const uint32_t n = q->num_gaussians + q->num_points;
     if (n == 0) return true;
-    const uint32_t K  = MAX((uint32_t)GTO_INT_FAR_MIN_ORDER, q->max_order);
+    const uint32_t K  = MD_MAX((uint32_t)GTO_INT_FAR_MIN_ORDER, q->max_order);
     const uint32_t nh = md_gto_int_num_hermite(K);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -405,10 +405,10 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
         double lo[3] = { HUGE_VAL, HUGE_VAL, HUGE_VAL }, hi[3] = { -HUGE_VAL, -HUGE_VAL, -HUGE_VAL };
         for (uint32_t i = beg; i < end; ++i) {
             const double* x = gto_int_item_xyz(q, item[i]);
-            for (int k = 0; k < 3; ++k) { lo[k] = MIN(lo[k], x[k]); hi[k] = MAX(hi[k], x[k]); }
+            for (int k = 0; k < 3; ++k) { lo[k] = MD_MIN(lo[k], x[k]); hi[k] = MD_MAX(hi[k], x[k]); }
         }
         const double O[3] = { 0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]) };
-        MEMCPY(nodes[ni].center, O, sizeof(O));
+        MD_MEMCPY(nodes[ni].center, O, sizeof(O));
 
         const bool splittable = (hi[0] > lo[0] || hi[1] > lo[1] || hi[2] > lo[2]);
         if (end - beg <= GTO_INT_FAR_LEAF || !splittable || depth[ni] >= GTO_INT_FAR_MAX_DEPTH) continue;
@@ -422,12 +422,12 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
         uint32_t off[8], run = beg;
         for (int o = 0; o < 8; ++o) { off[o] = run; run += count[o]; }
         uint32_t w[8];
-        MEMCPY(w, off, sizeof(w));
+        MD_MEMCPY(w, off, sizeof(w));
         for (uint32_t i = beg; i < end; ++i) {
             const double* x = gto_int_item_xyz(q, item[i]);
             scratch[w[(x[0] > O[0]) | ((x[1] > O[1]) << 1) | ((x[2] > O[2]) << 2)]++] = item[i];
         }
-        MEMCPY(item + beg, scratch + beg, sizeof(uint32_t) * (end - beg));
+        MD_MEMCPY(item + beg, scratch + beg, sizeof(uint32_t) * (end - beg));
 
         const uint32_t first = (uint32_t)md_array_size(nodes);
         uint32_t num = 0;
@@ -451,8 +451,8 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
         for (uint32_t i = nd->item_begin; i < nd->item_end; ++i) {
             const double* x = gto_int_item_xyz(q, item[i]);
             const double r = sqrt((x[0] - nd->center[0]) * (x[0] - nd->center[0]) + (x[1] - nd->center[1]) * (x[1] - nd->center[1]) + (x[2] - nd->center[2]) * (x[2] - nd->center[2]));
-            rad   = MAX(rad, r);
-            reach = MAX(reach, r + gto_int_item_extent(q, item[i]));
+            rad   = MD_MAX(rad, r);
+            reach = MD_MAX(reach, r + gto_int_item_extent(q, item[i]));
         }
         nd->radius = rad;
         nd->reach  = reach;
@@ -474,8 +474,8 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
         if (node) md_free(alloc, node, sizeof(md_gto_int_node_t) * num_nodes);
         goto done;
     }
-    MEMSET(M, 0, sizeof(double) * nh * num_nodes);
-    MEMCPY(node, nodes, sizeof(md_gto_int_node_t) * num_nodes);
+    MD_MEMSET(M, 0, sizeof(double) * nh * num_nodes);
+    MD_MEMCPY(node, nodes, sizeof(md_gto_int_node_t) * num_nodes);
 
     // Children come after their parent, so in reverse every child is complete before its parent
     for (uint32_t ni = num_nodes; ni-- > 0; ) {
@@ -534,7 +534,7 @@ static inline uint64_t gto_int_mix_key(uint64_t x) {
 
 static inline uint32_t gto_int_float_bits(float f) {
     uint32_t u;
-    MEMCPY(&u, &f, sizeof(u));
+    MD_MEMCPY(&u, &f, sizeof(u));
     return u;
 }
 
@@ -553,7 +553,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
     const md_gto_basis_t* basis = desc->basis;
     const size_t stride = desc->atom_xyz_stride ? desc->atom_xyz_stride : sizeof(float) * 3;
     const double scale  = desc->density_scale != 0.0 ? desc->density_scale : -1.0;
-    const double threshold = MAX(desc->threshold, 0.0);
+    const double threshold = MD_MAX(desc->threshold, 0.0);
     const double* D = desc->density_matrix;
     const size_t N = md_gto_basis_num_ao(basis);
 
@@ -625,9 +625,9 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
         const md_gto_shell_t* A = &basis->shells[sa];
         double amin = HUGE_VAL, amax = 0.0, cmax = 0.0;
         for (uint32_t k = 0; k < A->num_primitives; ++k) {
-            amin = MIN(amin, (double)basis->alpha[A->primitive_offset + k]);
-            amax = MAX(amax, (double)basis->alpha[A->primitive_offset + k]);
-            cmax = MAX(cmax, fabs((double)basis->coeff[A->primitive_offset + k]));
+            amin = MD_MIN(amin, (double)basis->alpha[A->primitive_offset + k]);
+            amax = MD_MAX(amax, (double)basis->alpha[A->primitive_offset + k]);
+            cmax = MD_MAX(cmax, fabs((double)basis->coeff[A->primitive_offset + k]));
         }
         sh_amin[sa] = amin;
         sh_amax[sa] = amax;
@@ -645,7 +645,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
 
     double dmax2 = 0.0;   // bounds |D_mu,nu + D_nu,mu|
     if (threshold > 0.0) {
-        for (size_t i = 0; i < N * N; ++i) dmax2 = MAX(dmax2, fabs(D[i]));
+        for (size_t i = 0; i < N * N; ++i) dmax2 = MD_MAX(dmax2, fabs(D[i]));
         dmax2 *= 2.0;
     }
 
@@ -664,7 +664,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                 gauss[g].coeff_offset = (uint32_t)num_scratch_coeff;
                 num_scratch_coeff += md_gto_int_num_hermite(gauss[g].L);
             }
-            scratch_coeff = md_temp_alloc_zero_array(temp, double, MAX(num_scratch_coeff, 1));
+            scratch_coeff = md_temp_alloc_zero_array(temp, double, MD_MAX(num_scratch_coeff, 1));
             if (!scratch_coeff) goto done;
         }
 
@@ -704,7 +704,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                         const size_t nu = ao_off[sb] + cb;
                         const double d = same ? D[mu * N + nu] : (D[mu * N + nu] + D[nu * N + mu]);
                         w[ca][cb] = d;
-                        wmax = MAX(wmax, fabs(d));
+                        wmax = MD_MAX(wmax, fabs(d));
                     }
                 }
                 if (wmax == 0.0) continue;
@@ -745,7 +745,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                         if (pass == 0) {
                             uint32_t* found = md_hashmap_get(&pair_map, key);
                             if (found) {
-                                gauss[*found].L = MAX(gauss[*found].L, (uint32_t)(la + lb));
+                                gauss[*found].L = MD_MAX(gauss[*found].L, (uint32_t)(la + lb));
                             } else {
                                 gto_int_scratch_t g = { .P = { P[0], P[1], P[2] }, .p = p, .L = (uint32_t)(la + lb) };
                                 md_hashmap_add(&pair_map, key, (uint32_t)md_array_size(gauss));
@@ -755,7 +755,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                         }
 
                         uint32_t* found = md_hashmap_get(&pair_map, key);
-                        ASSERT(found);
+                        MD_ASSERT(found);
                         double* h = scratch_coeff + gauss[*found].coeff_offset;
 
                         gto_int_E_t Ex, Ey, Ez;
@@ -793,7 +793,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
     // Screen on the merged gaussians and sort by order (a counting sort, stable).
     {
         const size_t num = md_array_size(gauss);
-        double*   bound = md_temp_alloc_array(temp, double, MAX(num, 1));
+        double*   bound = md_temp_alloc_array(temp, double, MD_MAX(num, 1));
         uint32_t  count[MD_GTO_INT_MAX_ORDER + 1] = {0};
         size_t    kept_coeffs = 0;
         if (!bound) goto done;
@@ -854,7 +854,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                 out->exponent[dst]       = gauss[g].p;
                 out->bound[dst]          = bound[g];
                 out->coeff_offset[dst]   = (uint32_t)coeff_next[L];
-                MEMCPY(out->coeff + coeff_next[L], scratch_coeff + gauss[g].coeff_offset, sizeof(double) * nh);
+                MD_MEMCPY(out->coeff + coeff_next[L], scratch_coeff + gauss[g].coeff_offset, sizeof(double) * nh);
                 coeff_next[L] += nh;
             }
         }
@@ -874,12 +874,12 @@ static bool gto_int_any_nonzero(const double* v, size_t n) {
 }
 
 bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges_desc_t* desc, md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(alloc);
+    MD_ASSERT(out);
+    MD_ASSERT(alloc);
     if (!desc) {
         return false;
     }
-    MEMSET(out, 0, sizeof(*out));
+    MD_MEMSET(out, 0, sizeof(*out));
 
     const bool has_density = desc->basis && desc->density_matrix && desc->basis->num_shells > 0;
     if (has_density) {
@@ -931,7 +931,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
                 md_gto_int_charges_free(out, alloc);
                 return false;
             }
-            MEMCPY(out->point_dipole, desc->point_dipole, sizeof(double) * 3 * desc->num_points);
+            MD_MEMCPY(out->point_dipole, desc->point_dipole, sizeof(double) * 3 * desc->num_points);
         }
         if (desc->point_quadrupole && gto_int_any_nonzero(desc->point_quadrupole, desc->num_points * 6)) {
             out->point_quadrupole = md_alloc(alloc, sizeof(double) * 6 * desc->num_points);
@@ -939,7 +939,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
                 md_gto_int_charges_free(out, alloc);
                 return false;
             }
-            MEMCPY(out->point_quadrupole, desc->point_quadrupole, sizeof(double) * 6 * desc->num_points);
+            MD_MEMCPY(out->point_quadrupole, desc->point_quadrupole, sizeof(double) * 6 * desc->num_points);
         }
     } else if (desc->point_dipole || desc->point_quadrupole) {
         MD_LOG_ERROR("md_gto_int_charges_init: point multipoles given without points");
@@ -957,7 +957,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
 
 void md_gto_int_charges_free(md_gto_int_charges_t* q, md_allocator_i* alloc) {
     if (!q) return;
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     if (q->center)       md_free(alloc, q->center,       sizeof(double) * 3 * q->num_gaussians);
     if (q->exponent)     md_free(alloc, q->exponent,     sizeof(double) * q->num_gaussians);
     if (q->bound)        md_free(alloc, q->bound,        sizeof(double) * q->num_gaussians);
@@ -971,7 +971,7 @@ void md_gto_int_charges_free(md_gto_int_charges_t* q, md_allocator_i* alloc) {
     if (q->node)             md_free(alloc, q->node,             sizeof(md_gto_int_node_t) * q->num_nodes);
     if (q->node_multipole)   md_free(alloc, q->node_multipole,   sizeof(double) * md_gto_int_num_hermite(q->far_field_order) * q->num_nodes);
     if (q->item)             md_free(alloc, q->item,             sizeof(uint32_t) * ((size_t)q->num_gaussians + q->num_points));
-    MEMSET(q, 0, sizeof(*q));
+    MD_MEMSET(q, 0, sizeof(*q));
 }
 
 // Work of one gaussian at one voxel, in recursion steps: the recursion itself (C(L+4,4) updates),
@@ -1013,14 +1013,14 @@ uint64_t md_gto_int_charges_work_per_point(const md_gto_int_charges_t* q) {
         // Not one number any more: it depends on where the point is. Sampled 3 bohr off members spread
         // over the whole distribution, which is about where a molecular surface is and the dear end.
         const uint32_t n = q->num_gaussians + q->num_points;
-        const uint32_t num_samples = MIN(n, 64u);
+        const uint32_t num_samples = MD_MIN(n, 64u);
         uint64_t w = 0;
         for (uint32_t s = 0; s < num_samples; ++s) {
             const double* x = gto_int_item_xyz(q, q->item[(uint64_t)s * n / num_samples]);
             const double C[3] = { x[0] + 3.0, x[1], x[2] };
             w += gto_int_far_work_at(C, q);
         }
-        return w / MAX(num_samples, 1u);
+        return w / MD_MAX(num_samples, 1u);
     }
     // A point charge is a step; a dipole about as much again, a quadrupole about twice that
     uint64_t w = (uint64_t)q->num_points * (1 + (q->point_dipole ? 1 : 0) + (q->point_quadrupole ? 2 : 0));
@@ -1072,7 +1072,7 @@ md_gto_int_moments_t md_gto_int_charges_moments(const md_gto_int_charges_t* q, c
         const double norm = p / (2.0 * GTO_INT_PI) * pow(GTO_INT_PI / p, 1.5);
         const double* h = q->coeff + q->coeff_offset[g];
         const uint32_t L = gto_int_order_of(q, g, &L_hint);
-        const uint32_t top = MIN(L, 2u);
+        const uint32_t top = MD_MIN(L, 2u);
         uint32_t i = 0;
         for (uint32_t deg = 0; deg <= top; ++deg) {
             for (int t = (int)deg; t >= 0; --t) {
@@ -1288,7 +1288,7 @@ static double gto_int_eval_point_far(double field[3], const double C[3], const m
                 }
             }
         } else {
-            ASSERT(sp + (int)nd->num_children <= GTO_INT_FAR_STACK);
+            MD_ASSERT(sp + (int)nd->num_children <= GTO_INT_FAR_STACK);
             for (uint32_t c = 0; c < nd->num_children; ++c) stack[sp++] = nd->first_child + c;
         }
     }
@@ -1329,9 +1329,9 @@ static double gto_int_eval_point(double field[3], const double C[3], const md_gt
 
 void md_gto_int_potential_xyz(double* out_potential, double* out_field, const float* xyz, size_t num_xyz, size_t xyz_stride,
                               const md_gto_int_charges_t* charges) {
-    ASSERT(out_potential);
-    ASSERT(xyz);
-    ASSERT(charges);
+    MD_ASSERT(out_potential);
+    MD_ASSERT(xyz);
+    MD_ASSERT(charges);
     const size_t stride = xyz_stride ? xyz_stride : sizeof(float) * 3;
     for (size_t i = 0; i < num_xyz; ++i) {
         const float* x = gto_int_xyz(xyz, stride, i);
@@ -1342,9 +1342,9 @@ void md_gto_int_potential_xyz(double* out_potential, double* out_field, const fl
 
 void md_gto_int_potential_grid_sub(float* out_values, const md_grid_t* grid, const float sample_offset[3],
                                    const int idx_off[3], const int idx_len[3], const md_gto_int_charges_t* charges) {
-    ASSERT(out_values);
-    ASSERT(grid);
-    ASSERT(charges);
+    MD_ASSERT(out_values);
+    MD_ASSERT(grid);
+    MD_ASSERT(charges);
     const double so[3] = { sample_offset ? sample_offset[0] : 0.0, sample_offset ? sample_offset[1] : 0.0, sample_offset ? sample_offset[2] : 0.0 };
 
     for (int k = idx_off[2]; k < idx_off[2] + idx_len[2]; ++k) {
@@ -1457,7 +1457,7 @@ typedef struct {
     md_gpu_addr_t   out;
     uint32_t        _pad_end[2];
 } gto_int_potential_xyz_args_t;
-STATIC_ASSERT(sizeof(gto_int_potential_xyz_args_t) == 112, "gto_int_potential_xyz_args_t must match RootArgs in eval_gto_int_potential_xyz.slang");
+MD_STATIC_ASSERT(sizeof(gto_int_potential_xyz_args_t) == 112, "gto_int_potential_xyz_args_t must match RootArgs in eval_gto_int_potential_xyz.slang");
 
 /* Mirrors RootArgs in eval_gto_int_potential_far.slang. */
 typedef struct {
@@ -1500,7 +1500,7 @@ typedef struct {
     md_gpu_storage_tex_t out_tex;
     uint32_t        _pad_end[2];
 } gto_int_potential_far_args_t;
-STATIC_ASSERT(sizeof(gto_int_potential_far_args_t) == 320, "gto_int_potential_far_args_t must match RootArgs in eval_gto_int_potential_far.slang");
+MD_STATIC_ASSERT(sizeof(gto_int_potential_far_args_t) == 320, "gto_int_potential_far_args_t must match RootArgs in eval_gto_int_potential_far.slang");
 
 static md_gpu_device_t gto_int_gpu_device = NULL;
 static md_gpu_kernel_t gto_int_k_order[MD_GTO_INT_MAX_ORDER + 1] = {0};
@@ -1664,7 +1664,7 @@ static bool gto_int_gpu_far_layout(const md_gto_int_gpu_charges* g, char* dst, c
     for (uint32_t L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) next[L] = q->order_offset[L];
     uint32_t next_point = 0;
     for (uint32_t i = 0; i < n; ++i) {
-        MEMCPY(prefix + (size_t)i * nr, count, sizeof(uint32_t) * nr);
+        MD_MEMCPY(prefix + (size_t)i * nr, count, sizeof(uint32_t) * nr);
         const uint32_t it = q->item[i];
         if (it < ng) {
             const uint32_t L = gto_int_order_of_gaussian(q, it);
@@ -1687,7 +1687,7 @@ static bool gto_int_gpu_far_layout(const md_gto_int_gpu_charges* g, char* dst, c
             count[nr - 1]++;
         }
     }
-    MEMCPY(prefix + (size_t)n * nr, count, sizeof(uint32_t) * nr);
+    MD_MEMCPY(prefix + (size_t)n * nr, count, sizeof(uint32_t) * nr);
 
     float*    geom  = (float*)(dst + g->off_node_geom);
     uint32_t* link  = (uint32_t*)(dst + g->off_node_link);
@@ -1700,7 +1700,7 @@ static bool gto_int_gpu_far_layout(const md_gto_int_gpu_charges* g, char* dst, c
         geom[ni * 4 + 1] = (float)(nd->center[1] - g->ref[1]);
         geom[ni * 4 + 2] = (float)(nd->center[2] - g->ref[2]);
         // a hair further than the CPU's, for the float rounding of the distances it is compared with
-        geom[ni * 4 + 3] = (float)(MAX(nd->radius / q->far_field_theta, nd->reach) * (1.0 + 1.0e-5) + 1.0e-5);
+        geom[ni * 4 + 3] = (float)(MD_MAX(nd->radius / q->far_field_theta, nd->reach) * (1.0 + 1.0e-5) + 1.0e-5);
         link[ni * 4 + 0] = nd->first_child;
         link[ni * 4 + 1] = nd->num_children;
         link[ni * 4 + 2] = 0;
@@ -1730,11 +1730,11 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
 
     md_gto_int_gpu_charges* g = md_alloc(md_get_heap_allocator(), sizeof(md_gto_int_gpu_charges));
     if (!g) return NULL;
-    MEMSET(g, 0, sizeof(*g));
+    MD_MEMSET(g, 0, sizeof(*g));
     g->num_gaussians = q->num_gaussians;
     g->num_points    = q->num_points;
     g->max_order     = q->max_order;
-    MEMCPY(g->order_offset, q->order_offset, sizeof(g->order_offset));
+    MD_MEMCPY(g->order_offset, q->order_offset, sizeof(g->order_offset));
     {
         uint32_t run = 0;
         for (uint32_t L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) {
@@ -1751,10 +1751,10 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
     {
         double lo[3] = { HUGE_VAL, HUGE_VAL, HUGE_VAL }, hi[3] = { -HUGE_VAL, -HUGE_VAL, -HUGE_VAL };
         for (uint32_t i = 0; i < q->num_gaussians; ++i) for (int k = 0; k < 3; ++k) {
-            lo[k] = MIN(lo[k], q->center[i * 3 + k]); hi[k] = MAX(hi[k], q->center[i * 3 + k]);
+            lo[k] = MD_MIN(lo[k], q->center[i * 3 + k]); hi[k] = MD_MAX(hi[k], q->center[i * 3 + k]);
         }
         for (uint32_t i = 0; i < q->num_points; ++i) for (int k = 0; k < 3; ++k) {
-            lo[k] = MIN(lo[k], q->point_xyz[i * 3 + k]); hi[k] = MAX(hi[k], q->point_xyz[i * 3 + k]);
+            lo[k] = MD_MIN(lo[k], q->point_xyz[i * 3 + k]); hi[k] = MD_MAX(hi[k], q->point_xyz[i * 3 + k]);
         }
         // A float: the xyz kernel subtracts it from the points in float, and a ref the device could not
         // hold would shift every point against the frame the gaussians were placed in.
@@ -1763,14 +1763,14 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
 
     // One allocation: Boys table | gaussians (float4) | coefficients | point charges (float4)
     const size_t boys_bytes  = sizeof(float) * GTO_INT_BOYS_ROWS * GTO_INT_BOYS_NN;
-    const size_t gauss_bytes = sizeof(float) * 4 * MAX(q->num_gaussians, 1);
-    const size_t coeff_bytes = sizeof(float) * MAX(q->num_coeffs, 1);
-    const size_t point_bytes = sizeof(float) * 4 * MAX(q->num_points, 1);
+    const size_t gauss_bytes = sizeof(float) * 4 * MD_MAX(q->num_gaussians, 1);
+    const size_t coeff_bytes = sizeof(float) * MD_MAX(q->num_coeffs, 1);
+    const size_t point_bytes = sizeof(float) * 4 * MD_MAX(q->num_points, 1);
     g->off_boys      = 0;
-    g->off_gaussians = ALIGN_TO(g->off_boys      + boys_bytes,  256);
-    g->off_coeffs    = ALIGN_TO(g->off_gaussians + gauss_bytes, 256);
-    g->off_points    = ALIGN_TO(g->off_coeffs    + coeff_bytes, 256);
-    g->size          = ALIGN_TO(g->off_points    + point_bytes, 256);
+    g->off_gaussians = MD_ALIGN_TO(g->off_boys      + boys_bytes,  256);
+    g->off_coeffs    = MD_ALIGN_TO(g->off_gaussians + gauss_bytes, 256);
+    g->off_points    = MD_ALIGN_TO(g->off_coeffs    + coeff_bytes, 256);
+    g->size          = MD_ALIGN_TO(g->off_points    + point_bytes, 256);
 
     // The far field: node geometry (centre, far distance), links (first child, children), the
     // members' run per order and the points' run per node, the multipoles.
@@ -1781,10 +1781,10 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
         g->far_order  = q->far_field_order;
         const size_t nh = md_gto_int_num_hermite(q->far_field_order);
         g->off_node_geom  = g->size;
-        g->off_node_link  = ALIGN_TO(g->off_node_geom  + sizeof(float) * 4 * q->num_nodes, 256);
-        g->off_node_range = ALIGN_TO(g->off_node_link  + sizeof(uint32_t) * 4 * q->num_nodes, 256);
-        g->off_multipoles = ALIGN_TO(g->off_node_range + sizeof(uint32_t) * 2 * g->num_ranges * q->num_nodes, 256);
-        g->size           = ALIGN_TO(g->off_multipoles + sizeof(float) * nh * q->num_nodes, 256);
+        g->off_node_link  = MD_ALIGN_TO(g->off_node_geom  + sizeof(float) * 4 * q->num_nodes, 256);
+        g->off_node_range = MD_ALIGN_TO(g->off_node_link  + sizeof(uint32_t) * 4 * q->num_nodes, 256);
+        g->off_multipoles = MD_ALIGN_TO(g->off_node_range + sizeof(uint32_t) * 2 * g->num_ranges * q->num_nodes, 256);
+        g->size           = MD_ALIGN_TO(g->off_multipoles + sizeof(float) * nh * q->num_nodes, 256);
     }
 
     g->buffer = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, g->size).gpu;
@@ -1800,7 +1800,7 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
         md_free(md_get_heap_allocator(), g, sizeof(*g));
         return NULL;
     }
-    MEMSET(dst, 0, g->size);
+    MD_MEMSET(dst, 0, g->size);
 
     // The table the kernel's Boys function interpolates in, from the double precision one here.
     {
@@ -1895,7 +1895,7 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 #define GTO_INT_JOB_IN_FLIGHT_0   8
 #define GTO_INT_JOB_IN_FLIGHT_MAX 48
 #define GTO_INT_JOB_MARKS         64
-STATIC_ASSERT(GTO_INT_JOB_MARKS >= GTO_INT_JOB_IN_FLIGHT_MAX, "a mark per piece in flight");
+MD_STATIC_ASSERT(GTO_INT_JOB_MARKS >= GTO_INT_JOB_IN_FLIGHT_MAX, "a mark per piece in flight");
 
 // The points' sort (ORDER in eval_gto_int_potential_far.slang): each kernel loops over what it has
 // with a stride of the threads it was given
@@ -1949,7 +1949,7 @@ static md_gto_int_gpu_job_t* gto_int_job_create(md_gpu_stream_t stream, const md
 }
 
 static md_gpu_addr_t gto_int_job_alloc(md_gto_int_gpu_job_t* j, size_t bytes) {
-    if (j->num_alloc == ARRAY_SIZE(j->alloc)) return 0;
+    if (j->num_alloc == MD_COUNTOF(j->alloc)) return 0;
     const md_gpu_addr_t addr = md_gpu_malloc(j->stream, MD_GPU_MEM_DEVICE, bytes).gpu;
     if (addr) j->alloc[j->num_alloc++] = addr;
     return addr;
@@ -1979,7 +1979,7 @@ static void gto_int_job_take_marks(md_gto_int_gpu_job_t* j) {
     }
     // every piece done with more to come: the GPU ran dry
     const bool more = j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN;
-    if (any && j->mark_head == j->mark_tail && more) j->in_flight = MIN(2 * j->in_flight, (uint32_t)GTO_INT_JOB_IN_FLIGHT_MAX);
+    if (any && j->mark_head == j->mark_tail && more) j->in_flight = MD_MIN(2 * j->in_flight, (uint32_t)GTO_INT_JOB_IN_FLIGHT_MAX);
 }
 
 // One step of the sort: true unless a launch failed; *full when the piece should end
@@ -1994,7 +1994,7 @@ static bool gto_int_job_sort_step(md_gto_int_gpu_job_t* j, bool* full) {
         // min at the largest key, max at the smallest
         ok = k && md_gpu_memset(j->stream, a->bounds, 0xFF, sizeof(uint32_t) * 3);
         ok = ok && md_gpu_memset(j->stream, a->bounds + sizeof(uint32_t) * 3, 0x00, sizeof(uint32_t) * 3);
-        groups = MIN(DIV_UP(DIV_UP(a->num_xyz, GTO_INT_FAR_GROUP), GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+        groups = MD_MIN(MD_DIV_UP(MD_DIV_UP(a->num_xyz, GTO_INT_FAR_GROUP), GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
         a->sort_stride = groups * GTO_INT_FAR_GROUP;
         ok = ok && md_gpu_launch(j->stream, k, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
         j->sort_step = 1;
@@ -2002,7 +2002,7 @@ static bool gto_int_job_sort_step(md_gto_int_gpu_job_t* j, bool* full) {
     }
     case 1: {
         md_gpu_kernel_t k = gto_int_kernel(&gto_int_k_sort[1], md_shader_eval_gto_int_potential_far_xyz_keys_kernel());
-        groups = MIN(DIV_UP(n, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+        groups = MD_MIN(MD_DIV_UP(n, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
         a->sort_stride = groups * GTO_INT_FAR_GROUP;
         ok = k && md_gpu_launch(j->stream, k, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
         j->sort_step = 2;
@@ -2012,7 +2012,7 @@ static bool gto_int_job_sort_step(md_gto_int_gpu_job_t* j, bool* full) {
     }
     default: {
         md_gpu_kernel_t k = gto_int_kernel(&gto_int_k_sort[2], md_shader_eval_gto_int_potential_far_xyz_bitonic_kernel());
-        groups = MIN(DIV_UP(n / 2, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+        groups = MD_MIN(MD_DIV_UP(n / 2, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
         a->sort_stride = groups * GTO_INT_FAR_GROUP;
         a->sort_j = (uint32_t)j->sort_j;
         a->sort_k = (uint32_t)j->sort_k;
@@ -2036,7 +2036,7 @@ static bool gto_int_job_run_step(md_gto_int_gpu_job_t* j, bool* full) {
     const md_gto_int_gpu_charges* g = j->g;
     gto_int_potential_far_args_t* a = &j->a;
     md_gpu_stream_t stream = j->stream;
-    const uint32_t nb = MIN(j->batch, j->num_groups - j->b0);
+    const uint32_t nb = MD_MIN(j->batch, j->num_groups - j->b0);
     bool ok = true;
     if (j->pass == -2) {
         // a batch begins: its accumulators cleared, its lists made
@@ -2044,7 +2044,7 @@ static bool gto_int_job_run_step(md_gto_int_gpu_job_t* j, bool* full) {
         a->group_first = j->b0;
         a->group_end   = j->b0 + nb;
         ok = md_gpu_memset(stream, a->accum, 0, sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * (size_t)nb);
-        ok = ok && md_gpu_launch(stream, gto_int_far_lists_kernel(j->pts), md_gpu_grid(DIV_UP(nb, GTO_INT_FAR_GROUP), 1, 1), a, sizeof(*a));
+        ok = ok && md_gpu_launch(stream, gto_int_far_lists_kernel(j->pts), md_gpu_grid(MD_DIV_UP(nb, GTO_INT_FAR_GROUP), 1, 1), a, sizeof(*a));
         *full = gto_int_pace(&j->pacer, 0);
         j->pass = -1;
         j->g0 = 0;
@@ -2068,7 +2068,7 @@ static bool gto_int_job_run_step(md_gto_int_gpu_job_t* j, bool* full) {
             a->coeff_first = g->coeff_first[L];
             a->order_first = g->order_offset[L];
         }
-        const uint32_t n = MIN(j->per_dispatch, nb - j->g0);
+        const uint32_t n = MD_MIN(j->per_dispatch, nb - j->g0);
         a->group_first = j->b0 + j->g0;
         ok = md_gpu_launch(stream, k, md_gpu_grid(n, 1, 1), a, sizeof(*a));
         j->work_issued += (uint64_t)n * j->per_group;
@@ -2081,7 +2081,7 @@ static bool gto_int_job_run_step(md_gto_int_gpu_job_t* j, bool* full) {
         return ok;
     }
     // the resolve, and the next batch
-    const uint32_t n = MIN(GTO_INT_FAR_MAX_DISPATCH, nb - j->g0);
+    const uint32_t n = MD_MIN(GTO_INT_FAR_MAX_DISPATCH, nb - j->g0);
     a->group_first = j->b0 + j->g0;
     ok = md_gpu_launch(stream, gto_int_far_resolve_kernel(j->pts), md_gpu_grid(n, 1, 1), a, sizeof(*a));
     *full = gto_int_pace(&j->pacer, 0);
@@ -2115,7 +2115,7 @@ static void gto_int_job_piece(md_gto_int_gpu_job_t* j) {
 static void gto_int_job_log(const md_gto_int_gpu_job_t* j, const char* what) {
     if (j->num_groups == 0) return;
     MD_LOG_DEBUG("md_gto_int: far field over %u groups of %u %s in %u batches: %u dispatches in %u submissions, %s in %.1f ms (%u in flight)", j->num_groups,
-                 GTO_INT_FAR_GROUP, j->pts ? "points" : "voxels", DIV_UP(j->num_groups, MAX(j->batch, 1)), j->pacer.dispatches,
+                 GTO_INT_FAR_GROUP, j->pts ? "points" : "voxels", MD_DIV_UP(j->num_groups, MD_MAX(j->batch, 1)), j->pacer.dispatches,
                  j->pacer.submissions, what, md_tick_to_milliseconds(md_tick_now() - j->t0), j->in_flight);
 }
 
@@ -2147,9 +2147,9 @@ static bool gto_int_job_far_setup(md_gto_int_gpu_job_t* j, uint32_t num_groups, 
     a->far_nh     = md_gto_int_num_hermite(g->far_order);
 
     j->num_groups   = num_groups;
-    j->per_group    = MAX(1, g->work_per_point) * GTO_INT_FAR_GROUP;
-    j->per_dispatch = (uint32_t)CLAMP(budget / j->per_group, GTO_INT_FAR_MIN_DISPATCH, GTO_INT_FAR_MAX_DISPATCH);
-    j->batch        = MAX(1, MIN(num_groups, GTO_INT_FAR_BATCH_GROUPS));
+    j->per_group    = MD_MAX(1, g->work_per_point) * GTO_INT_FAR_GROUP;
+    j->per_dispatch = (uint32_t)MD_CLAMP(budget / j->per_group, GTO_INT_FAR_MIN_DISPATCH, GTO_INT_FAR_MAX_DISPATCH);
+    j->batch        = MD_MAX(1, MD_MIN(num_groups, GTO_INT_FAR_BATCH_GROUPS));
     j->work_total   = (uint64_t)num_groups * j->per_group * num_passes;
     j->pass         = -2;
     if (num_groups == 0) {
@@ -2225,7 +2225,7 @@ static md_gto_int_gpu_job_t* gto_int_far_grid_job(md_gpu_stream_t stream, const 
             const double f[3] = { 3.0, (sgn & 1) ? -3.0 : 3.0, (sgn & 2) ? -3.0 : 3.0 };
             double v[3] = {0, 0, 0};
             for (int c = 0; c < 3; ++c) for (int k = 0; k < 3; ++k) v[k] += f[c] * grid->orientation.elem[c][k] * grid->spacing.elem[c];
-            r = MAX(r, 0.5 * sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]));
+            r = MD_MAX(r, 0.5 * sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]));
         }
         a.brick_radius = (float)(r * (1.0 + 1.0e-5) + 1.0e-5);
     }
@@ -2284,7 +2284,7 @@ static md_gto_int_gpu_job_t* gto_int_far_xyz_job(md_gpu_stream_t stream, const m
     j->a.xyz_stride = (desc->xyz_stride ? desc->xyz_stride : 12u) / 4u;
     j->a.xyz        = desc->xyz;
     j->a.out        = desc->out_potential;
-    if (!gto_int_job_far_setup(j, DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget)) {
+    if (!gto_int_job_far_setup(j, MD_DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget)) {
         gto_int_job_destroy(j);
         return NULL;
     }
@@ -2440,8 +2440,8 @@ static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_char
 
     // Slabs of whole z planes: bounded by the accumulator size, and by the budget so that a single
     // gaussian of the highest order present still fits one dispatch.
-    uint64_t slab_vox = MIN((uint64_t)GTO_INT_MAX_SLAB_VOXELS, budget / gto_int_cost(g->max_order));
-    uint32_t slab_z   = (uint32_t)CLAMP(slab_vox / plane, 1, dz);
+    uint64_t slab_vox = MD_MIN((uint64_t)GTO_INT_MAX_SLAB_VOXELS, budget / gto_int_cost(g->max_order));
+    uint32_t slab_z   = (uint32_t)MD_CLAMP(slab_vox / plane, 1, dz);
 
     gto_int_potential_args_t a = {0};
     gto_int_index_to_world(&a.index_to_world, grid, desc->sample_offset, g->ref);
@@ -2466,7 +2466,7 @@ static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_char
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: failed to allocate %zu bytes of accumulator", accum_bytes);
     } else {
         for (uint32_t z0 = 0; z0 < dz; z0 += slab_z) {
-            const uint32_t nz = MIN(slab_z, dz - z0);
+            const uint32_t nz = MD_MIN(slab_z, dz - z0);
             const uint64_t nvox = plane * nz;
             a.box_off = (md_gpu_uint4){ 0, 0, z0, 0 };
             a.box_dim = (md_gpu_uint4){ dx, dy, nz, 0 };
@@ -2477,12 +2477,12 @@ static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_char
                 const uint32_t begin = g->order_offset[L], end = g->order_offset[L + 1];
                 if (begin == end) continue;
                 md_gpu_kernel_t k = gto_int_order_kernel(L);
-                const uint64_t per = MAX(1, budget / (nvox * gto_int_cost(L)));
+                const uint64_t per = MD_MAX(1, budget / (nvox * gto_int_cost(L)));
                 const uint32_t nh  = md_gto_int_num_hermite(L);
                 const md_gpu_grid_t grid_groups = md_gpu_grid_for(k, dx, dy, nz);
-                for (uint32_t first = begin; first < end; first += (uint32_t)MIN(per, (uint64_t)(end - first))) {
+                for (uint32_t first = begin; first < end; first += (uint32_t)MD_MIN(per, (uint64_t)(end - first))) {
                     a.first       = first;
-                    a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
+                    a.count       = (uint32_t)MD_MIN(per, (uint64_t)(end - first));
                     a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
                     md_gpu_launch(stream, k, grid_groups, &a, sizeof(a));
                     if (gto_int_pace(&pacer, nvox * a.count * gto_int_cost(L))) md_gpu_stream_flush(stream);
@@ -2513,7 +2513,7 @@ static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charg
     const uint32_t n = desc->num_xyz;
     // Batches of points: bounded by the accumulator size, and by the budget so that a single gaussian of
     // the highest order present still fits one dispatch
-    const uint32_t batch = (uint32_t)CLAMP(MIN((uint64_t)GTO_INT_MAX_SLAB_VOXELS, budget / gto_int_cost(g->max_order)), 1, n);
+    const uint32_t batch = (uint32_t)MD_CLAMP(MD_MIN((uint64_t)GTO_INT_MAX_SLAB_VOXELS, budget / gto_int_cost(g->max_order)), 1, n);
 
     gto_int_potential_xyz_args_t a = {0};
     for (int k = 0; k < 3; ++k) a.ref[k] = (float)g->ref[k];
@@ -2537,7 +2537,7 @@ static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charg
         MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: failed to allocate %zu bytes of accumulator", accum_bytes);
     } else {
         for (uint32_t p0 = 0; p0 < n; p0 += batch) {
-            const uint32_t np = MIN(batch, n - p0);
+            const uint32_t np = MD_MIN(batch, n - p0);
             a.xyz_first = p0;
             a.xyz_count = np;
             md_gpu_memset(stream, a.accum, 0, sizeof(uint32_t) * 2 * (size_t)np);
@@ -2546,12 +2546,12 @@ static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charg
                 const uint32_t begin = g->order_offset[L], end = g->order_offset[L + 1];
                 if (begin == end) continue;
                 md_gpu_kernel_t k = gto_int_xyz_order_kernel(L);
-                const uint64_t per = MAX(1, budget / ((uint64_t)np * gto_int_cost(L)));
+                const uint64_t per = MD_MAX(1, budget / ((uint64_t)np * gto_int_cost(L)));
                 const uint32_t nh  = md_gto_int_num_hermite(L);
                 const md_gpu_grid_t groups = md_gpu_grid_for(k, np, 1, 1);
-                for (uint32_t first = begin; first < end; first += (uint32_t)MIN(per, (uint64_t)(end - first))) {
+                for (uint32_t first = begin; first < end; first += (uint32_t)MD_MIN(per, (uint64_t)(end - first))) {
                     a.first       = first;
-                    a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
+                    a.count       = (uint32_t)MD_MIN(per, (uint64_t)(end - first));
                     a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
                     md_gpu_launch(stream, k, groups, &a, sizeof(a));
                     if (gto_int_pace(&pacer, (uint64_t)np * a.count * gto_int_cost(L))) md_gpu_stream_flush(stream);

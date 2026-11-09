@@ -161,7 +161,7 @@ static T ragged_positions(infer_t* x, vial_node_id node, const T* a) {
 
 static const char* kind_name(uint8_t k) {
     static const char* names[] = {"anything", "set", "group", "point", "points", "float", "int", "bool"};
-    return k < ARRAY_SIZE(names) ? names[k] : "?";
+    return k < MD_COUNTOF(names) ? names[k] : "?";
 }
 
 static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const char* fname, const char* pname, split_t* out) {
@@ -313,7 +313,7 @@ static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t
                 // A keyword VIAL once spelt otherwise, or that another tool spells so: the fix writes this one
                 static const char* const renamed[][2] = {{"by", "match"}, {"label", "text"}, {"weight", "weights"}, {"mass_weighted", "weights"}};
                 const char* instead = NULL;
-                for (size_t q = 0; q < ARRAY_SIZE(renamed) && !instead; ++q) {
+                for (size_t q = 0; q < MD_COUNTOF(renamed) && !instead; ++q) {
                     if (!str_eq(kw, str_from_cstr(renamed[q][0]))) continue;
                     for (uint32_t r = 0; r < np && !instead; ++r) if (!strcmp(params[r].name, renamed[q][1])) instead = renamed[q][1];
                 }

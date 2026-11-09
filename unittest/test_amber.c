@@ -50,11 +50,11 @@ static void put(buf_t* b, const void* p, size_t n) {
         b->cap = (b->size + n) * 2 + 1024;
         b->data = realloc(b->data, b->cap);
     }
-    MEMCPY(b->data + b->size, p, n);
+    MD_MEMCPY(b->data + b->size, p, n);
     b->size += n;
 }
-static void put_u32(buf_t* b, uint32_t v) { v = BSWAP32(v); put(b, &v, 4); }
-static void put_u64(buf_t* b, uint64_t v) { v = BSWAP64(v); put(b, &v, 8); }
+static void put_u32(buf_t* b, uint32_t v) { v = MD_BSWAP32(v); put(b, &v, 4); }
+static void put_u64(buf_t* b, uint64_t v) { v = MD_BSWAP64(v); put(b, &v, 8); }
 static void put_name(buf_t* b, const char* s) {
     const size_t n = strlen(s);
     put_u32(b, (uint32_t)n);
@@ -63,8 +63,8 @@ static void put_name(buf_t* b, const char* s) {
     put(b, zero, (4 - n % 4) % 4);
 }
 static void put_value(buf_t* b, int type, double v) {
-    if (type == NC_FLOAT_) { float f = (float)v; uint32_t u; MEMCPY(&u, &f, 4); put_u32(b, u); }
-    else if (type == NC_DOUBLE_) { uint64_t u; MEMCPY(&u, &v, 8); put_u64(b, u); }
+    if (type == NC_FLOAT_) { float f = (float)v; uint32_t u; MD_MEMCPY(&u, &f, 4); put_u32(b, u); }
+    else if (type == NC_DOUBLE_) { uint64_t u; MD_MEMCPY(&u, &v, 8); put_u64(b, u); }
     else { put_u32(b, (uint32_t)(int32_t)v); }
 }
 static size_t type_size(int type) { return type == NC_DOUBLE_ ? 8 : type == NC_CHAR_ ? 1 : 4; }
@@ -244,7 +244,7 @@ static void check_positions(int* utest_result, md_system_t* sys, str_t run, uint
 }
 
 UTEST(amber_netcdf, trajectory_with_records) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber.nc");
     for (int version = 1; version <= 2; ++version) {
         ncw_t w = amber_trajectory(version, 4);
@@ -299,7 +299,7 @@ UTEST(amber_netcdf, trajectory_with_records) {
 
 // A file still being written: the last record is incomplete, and with the header's record count unknown
 UTEST(amber_netcdf, trajectory_cut_short) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber_cut.nc");
     for (int streaming = 0; streaming < 2; ++streaming) {
         ncw_t w = amber_trajectory(2, 5);
@@ -319,7 +319,7 @@ UTEST(amber_netcdf, trajectory_cut_short) {
 
 // Frames along a fixed dimension rather than records, no time, no cell: CDF-1 as some converters write it
 UTEST(amber_netcdf, trajectory_fixed_frames) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber_fixed.nc");
     ncw_t w = { .version = 1, .numrecs = 0, .records = 0, .value = fixed_value };
     w.dim[w.num_dim++] = (ncw_dim_t){ "frame", 3 };
@@ -356,7 +356,7 @@ static double restart_value(const char* var, uint32_t r, size_t k) {
 }
 
 UTEST(amber_netcdf, restart_and_what_is_not_amber) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber.ncrst");
     ncw_t w = { .version = 2, .value = restart_value };
     w.dim[w.num_dim++] = (ncw_dim_t){ "spatial", 3 };
@@ -464,7 +464,7 @@ static const char* prmtop_text =
     "  9.00000000E+01  2.00000000E+01  2.10000000E+01  2.20000000E+01\n";
 
 UTEST(amber_prmtop, builds_a_system_without_coordinates) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber.prmtop");
     ASSERT_TRUE(write_text(path, prmtop_text));
     EXPECT_TRUE(md_amber_prmtop_file_is_topology(path));
@@ -507,7 +507,7 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
 }
 
 UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber_supp.prmtop");
     ASSERT_TRUE(write_text(path, prmtop_text));
     md_system_t sys = { .alloc = arena };
@@ -523,7 +523,7 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
     char other[8192];
     snprintf(other, sizeof(other), "%s", prmtop_text);
     char* name = strstr(other, "HO1 ");
-    MEMCPY(name, "XX1 ", 4);
+    MD_MEMCPY(name, "XX1 ", 4);
     ASSERT_TRUE(write_text(path, other));
     EXPECT_FALSE(md_amber_prmtop_system_supplement_from_file(&sys, path));
     EXPECT_EQ(8u, sys.bond.count);
@@ -536,7 +536,7 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
 // ## ASCII restart
 
 UTEST(amber_rst7, coordinates_velocities_and_box) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t path = STR_LIT("md_unittest_amber.rst7");
     // 3 atoms: two lines of coordinates, two of velocities, a box
     const char* text =
@@ -618,7 +618,7 @@ static double two_frames(const char* var, uint32_t r, size_t k) {
 }
 
 UTEST(amber_energy, mdout_and_mden_along_the_run) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t nc = STR_LIT("md_unittest_amber_energy.nc");
     const str_t out = STR_LIT("md_unittest_amber.mdout");
     ncw_t w = amber_trajectory(2, 2);
@@ -679,7 +679,7 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
 // record of the last step. One row per step: region 1 under the terms' own names, region 2 as "(TI region 2)". Read
 // as records of their own, every time was on the axis twice, and the DV/DL averages overwrote the last step.
 UTEST(amber_energy, ti_regions_are_one_record) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t out = STR_LIT("md_unittest_amber_ti.mdout");
     const char* text =
         "          PMEMD implementation of SANDER, Release 22\n"

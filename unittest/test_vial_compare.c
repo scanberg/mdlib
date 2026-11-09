@@ -103,11 +103,11 @@ UTEST(vial_compare, v1_and_v2_agree) {
     const uint32_t nf = (uint32_t)vial_test_run('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(nf, 1u);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     double* a = md_alloc(alloc, nf * sizeof(double));
     double* b = md_alloc(alloc, nf * sizeof(double));
     int agree = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(vial_pairs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(vial_pairs); ++i) {
         const vial_pair_t* pr = &vial_pairs[i];
         const md_tick_t t0 = md_tick_now();
         if (!v1_values(pr->v1, sys, nf, a, alloc)) { EXPECT_TRUE(false); continue; }
@@ -127,7 +127,7 @@ UTEST(vial_compare, v1_and_v2_agree) {
             agree += 1;
         }
     }
-    printf("vial compare: %d of %d pairs agree over %u frames\n", agree, (int)ARRAY_SIZE(vial_pairs), nf);
+    printf("vial compare: %d of %d pairs agree over %u frames\n", agree, (int)MD_COUNTOF(vial_pairs), nf);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -139,7 +139,7 @@ UTEST(vial_compare, sdf_agrees_with_v1) {
     const uint32_t nf = (uint32_t)vial_test_run('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(nf, 1u);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     enum { D = 128 };
     const double ext = 6.0, step = 2.0 * ext / D;
     // v1

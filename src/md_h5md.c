@@ -152,7 +152,7 @@ static bool h5_attr_read(void* dst, hid_t loc, const char* name, hid_t mem_type)
             md_temp_scope_t temp = md_temp_begin();
             void* buf = md_temp_alloc(temp, (size_t)n * H5Tget_size(mem_type));
             if (buf && H5Aread(attr, mem_type, buf) >= 0) {
-                MEMCPY(dst, buf, H5Tget_size(mem_type));
+                MD_MEMCPY(dst, buf, H5Tget_size(mem_type));
                 ok = true;
             }
             md_temp_end(temp);
@@ -180,7 +180,7 @@ static size_t h5_attr_i32s(int32_t* dst, size_t cap, hid_t loc, const char* name
         int32_t* buf = md_temp_alloc_array(temp, int32_t, (size_t)n);
         if (buf && H5Aread(attr, H5T_NATIVE_INT32, buf) >= 0) {
             count = (size_t)n;
-            if (cap) MEMCPY(dst, buf, MIN(count, cap) * sizeof(int32_t));
+            if (cap) MD_MEMCPY(dst, buf, MD_MIN(count, cap) * sizeof(int32_t));
         }
         md_temp_end(temp);
     }
@@ -206,7 +206,7 @@ static size_t h5_read_strs(str_t* dst, size_t cap, hid_t obj, bool is_attr, md_a
                 H5Tset_size(mem, H5T_VARIABLE);
                 H5Tset_cset(mem, H5Tget_cset(type));
                 char** buf = md_temp_alloc_array(temp, char*, (size_t)n);
-                if (buf) MEMSET(buf, 0, (size_t)n * sizeof(char*));
+                if (buf) MD_MEMSET(buf, 0, (size_t)n * sizeof(char*));
                 const herr_t err = !buf ? -1 : is_attr ? H5Aread(obj, mem, buf) : H5Dread(obj, mem, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
                 if (err >= 0) {
                     count = (size_t)n;
@@ -222,7 +222,7 @@ static size_t h5_read_strs(str_t* dst, size_t cap, hid_t obj, bool is_attr, md_a
                 const herr_t err = !buf ? -1 : is_attr ? H5Aread(obj, type, buf) : H5Dread(obj, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
                 if (err >= 0) {
                     count = (size_t)n;
-                    for (size_t i = 0; i < MIN((size_t)n, cap); ++i) {
+                    for (size_t i = 0; i < MD_MIN((size_t)n, cap); ++i) {
                         const char* s = buf + i * size;
                         size_t len = 0;
                         while (len < size && s[len] != '\0') ++len;
@@ -400,7 +400,7 @@ static bool h5md_read_axis(void* dst, hid_t mem_type, size_t num_frames, hid_t g
 // Opens the element at path. False when there is none; logged when there is something there that
 // is not an element.
 static bool h5md_element_open(h5md_element_t* e, hid_t file, const char* path, md_allocator_i* alloc) {
-    MEMSET(e, 0, sizeof(*e));
+    MD_MEMSET(e, 0, sizeof(*e));
     const H5I_type_t kind = h5_kind(file, path);
     if (kind == H5I_DATASET) {
         md_snprintf(e->value, sizeof(e->value), "%s", path);
@@ -487,7 +487,7 @@ typedef struct h5md_particles_t {
 // element it has instead. Only the shape is looked at.
 static size_t h5md_group_size(hid_t file, const char* group) {
     static const char* names[] = { "position", "species", "mass", "charge", "id", "velocity", "force" };
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
         char path[H5MD_PATH_MAX];
         md_snprintf(path, sizeof(path), "%s/%s", group, names[i]);
         const H5I_type_t kind = h5_kind(file, path);
@@ -512,7 +512,7 @@ static size_t h5md_group_size(hid_t file, const char* group) {
 // Opens the file's H5MD structure: the metadata group, which is what makes an HDF5 file an H5MD
 // one, and the particle group read - the one with the most particles, the first by name of equals.
 static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
-    MEMSET(p, 0, sizeof(*p));
+    MD_MEMSET(p, 0, sizeof(*p));
 
     int32_t version[2] = {0};
     hid_t meta = H5Gopen(file, "h5md", H5P_DEFAULT);
@@ -620,7 +620,7 @@ static void h5md_rotate(float* xyz, size_t count, const float R[9]) {
 // has one. Read as it was, the components above the diagonal were dropped: the cell of another shape, silently.
 static bool h5md_read_cells(float* out, float* out_rot, bool* out_rotated, hid_t file, const h5md_particles_t* p, md_allocator_i* alloc) {
     const size_t F = p->position.temporal ? p->position.num_frames : 1;
-    MEMSET(out, 0, F * 9 * sizeof(float));
+    MD_MEMSET(out, 0, F * 9 * sizeof(float));
     *out_rotated = false;
     for (size_t f = 0; f < F; ++f) {
         for (int i = 0; i < 9; ++i) out_rot[f * 9 + i] = (i % 4 == 0) ? 1.0f : 0.0f;
@@ -636,7 +636,7 @@ static bool h5md_read_cells(float* out, float* out_rot, bool* out_rotated, hid_t
     const bool   matrix = p->edges.rank - (p->edges.temporal ? 1 : 0) == 2;
     const size_t width  = matrix ? 9 : 3;
     const size_t rows   = p->edges.temporal ? p->edges.num_frames : 1;
-    double* edges = md_alloc(alloc, MAX(rows, 1) * width * sizeof(double));
+    double* edges = md_alloc(alloc, MD_MAX(rows, 1) * width * sizeof(double));
     if (rows > 0 && !h5_read_rows_at(edges, file, p->edges.value, H5T_NATIVE_DOUBLE, -1, rows * width)) {
         MD_LOG_ERROR("H5MD: failed to read the box of '%s'", p->path);
         return false;
@@ -646,7 +646,7 @@ static bool h5md_read_cells(float* out, float* out_rot, bool* out_rotated, hid_t
     // which is also what makes sense of a file whose steps do not increase (all 0, as MDAnalysis writes when the
     // trajectory it writes has none), where matching by step would give every frame the first row.
     const bool row_per_frame = p->edges.temporal && p->position.temporal && rows == F &&
-        MEMCMP(p->edges.step, p->position.step, F * sizeof(int64_t)) == 0;
+        MD_MEMCMP(p->edges.step, p->position.step, F * sizeof(int64_t)) == 0;
 
     size_t missing = 0;
     size_t row = 0;
@@ -666,7 +666,7 @@ static bool h5md_read_cells(float* out, float* out_rot, bool* out_rotated, hid_t
         const double* m = edges + row * width;
         float* cell = out + f * 9;
         if (matrix) {
-            const double big = MAX(fabs(m[0]), MAX(fabs(m[4]), fabs(m[8])));
+            const double big = MD_MAX(fabs(m[0]), MD_MAX(fabs(m[4]), fabs(m[8])));
             const double tol = 1.0e-6 * big;
             if (fabs(m[1]) > tol || fabs(m[2]) > tol || fabs(m[5]) > tol) {
                 // The whole box turned, the vectors of axes that are not periodic as well: they fix the orientation
@@ -802,7 +802,7 @@ static void h5md_read_bonds(md_array(md_atom_pair_t)* out, hid_t file, const h5m
         if (dcpl >= 0) H5Pclose(dcpl);
 
         const size_t count = (size_t)dims[0];
-        int64_t* idx = md_alloc(scratch, MAX(count, 1) * 2 * sizeof(int64_t));
+        int64_t* idx = md_alloc(scratch, MD_MAX(count, 1) * 2 * sizeof(int64_t));
         if (count && h5_read_rows(idx, dset, H5T_NATIVE_INT64, -1, count * 2)) {
             size_t skipped = 0;
             for (size_t i = 0; i < count; ++i) {
@@ -819,7 +819,7 @@ static void h5md_read_bonds(md_array(md_atom_pair_t)* out, hid_t file, const h5m
                     skipped += 1;
                     continue;
                 }
-                const md_atom_pair_t pair = { { (md_atom_idx_t)MIN(a, b), (md_atom_idx_t)MAX(a, b) } };
+                const md_atom_pair_t pair = { { (md_atom_idx_t)MD_MIN(a, b), (md_atom_idx_t)MD_MAX(a, b) } };
                 md_array_push(*out, pair, alloc);
             }
             if (skipped) {
@@ -862,8 +862,8 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
     int32_t version[2] = {0};
     const size_t num_version = h5_attr_i32s(version, 2, top, "version");
     const size_t num_blocks  = h5_attr_strs(NULL, 0, top, "molecule_block_names", alloc);
-    str_t*   block_names  = md_alloc(alloc, MAX(num_blocks, 1) * sizeof(str_t));
-    int32_t* block_counts = md_alloc(alloc, MAX(num_blocks, 1) * sizeof(int32_t));
+    str_t*   block_names  = md_alloc(alloc, MD_MAX(num_blocks, 1) * sizeof(str_t));
+    int32_t* block_counts = md_alloc(alloc, MD_MAX(num_blocks, 1) * sizeof(int32_t));
     h5_attr_strs(block_names, num_blocks, top, "molecule_block_names", alloc);
     const size_t num_counts  = h5_attr_i32s(block_counts, num_blocks, top, "molecule_block_counts");
 
@@ -876,7 +876,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
         goto done;
     }
 
-    MEMSET(data, 0, sizeof(*data));
+    MD_MEMSET(data, 0, sizeof(*data));
     data->name = h5_attr_str(top, "system_name", alloc);
     data->molblocks  = md_alloc(alloc, num_blocks * sizeof(md_tpr_molblock_t));
     data->moltypes   = md_alloc(alloc, num_blocks * sizeof(md_tpr_moltype_t));   // at most one per block
@@ -892,7 +892,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
         while (t < data->num_moltypes && !str_eq(data->moltypes[t].name, block_names[b])) ++t;
         if (t == data->num_moltypes) {
             md_tpr_moltype_t* mt = &data->moltypes[t];
-            MEMSET(mt, 0, sizeof(*mt));
+            MD_MEMSET(mt, 0, sizeof(*mt));
             mt->name = block_names[b];
 
             char group_path[H5MD_PATH_MAX];
@@ -958,7 +958,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
                     res->ic = ' ';
                 }
                 md_tpr_atom_t* atom = &mt->atoms[i];
-                MEMSET(atom, 0, sizeof(*atom));
+                MD_MEMSET(atom, 0, sizeof(*atom));
                 atom->name          = names[name_idx[i]];
                 atom->type          = STR_LIT("");
                 atom->mass          = mass[i];
@@ -973,7 +973,7 @@ static bool h5md_read_gromacs_topology(md_tpr_data_t* data, hid_t file, const h5
         }
         data->molblocks[b].moltype = (int32_t)t;
         data->molblocks[b].nmol    = block_counts[b];
-        num_atoms += (size_t)MAX(block_counts[b], 0) * data->moltypes[t].num_atoms;
+        num_atoms += (size_t)MD_MAX(block_counts[b], 0) * data->moltypes[t].num_atoms;
     }
 
     if (num_atoms != p->num_particles) {
@@ -1019,7 +1019,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
             if (h5_read_rows(raw, dset, mem, e.temporal ? 0 : -1, N)) {
                 from_label = true;
                 for (size_t i = 0; i < N; ++i) {
-                    if (i > 0 && MEMCMP(raw + i * size, raw + (i - 1) * size, size) == 0) {
+                    if (i > 0 && MD_MEMCMP(raw + i * size, raw + (i - 1) * size, size) == 0) {
                         names[i] = names[i - 1];
                         continue;
                     }
@@ -1041,11 +1041,11 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
         if (dset >= 0) H5Dclose(dset);
     }
 
-    const size_t capacity = ROUND_UP(N, 16);
+    const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    MD_MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // Particles of one species are identical (the specification says so), so a type is a species
@@ -1097,8 +1097,8 @@ static void h5md_publish_str(md_attributes_t* attributes, const char* path, str_
 }
 
 bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
-    ASSERT(state);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
         return false;
@@ -1149,7 +1149,7 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
         if (!h5md_read_cells(cells, rot, &rotated, file, &p, scratch)) {
             goto done;
         }
-        MEMCPY(cell, cells, sizeof(cell));
+        MD_MEMCPY(cell, cells, sizeof(cell));
         if (rotated) {
             h5md_rotate(xyz, N, rot);
         }
@@ -1186,7 +1186,7 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
 
     // Per particle vectors written without frames belong to the structure
     static const char* columns[] = { "velocity", "force", "image" };
-    for (size_t k = 0; k < ARRAY_SIZE(columns); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(columns); ++k) {
         char probe[H5MD_PATH_MAX];
         md_snprintf(probe, sizeof(probe), "%s/%s", p.path, columns[k]);
         h5md_element_t e;
@@ -1246,7 +1246,7 @@ typedef struct h5md_source_t {
     char               dataset[H5MD_PATH_MAX];
 } h5md_source_t;
 
-STATIC_ASSERT(sizeof(h5md_source_t) % 8 == 0, "the storage after it must be aligned");
+MD_STATIC_ASSERT(sizeof(h5md_source_t) % 8 == 0, "the storage after it must be aligned");
 
 static const md_hdf5_direct_t* h5md_source_direct(const h5md_source_t* src) {
     return (const md_hdf5_direct_t*)(src + 1);
@@ -1307,7 +1307,7 @@ static h5md_source_t* h5md_source_make(size_t* out_size, hid_t file, const h5md_
     h5md_source_t* state = md_attributes_alloc_user_data(attributes, size);
     if (state) {
         *state = *src;
-        MEMCPY(state + 1, direct, (size_t)direct->size);
+        MD_MEMCPY(state + 1, direct, (size_t)direct->size);
         *out_size = size;
     }
     md_free(md_get_heap_allocator(), direct, (size_t)direct->size);
@@ -1336,7 +1336,7 @@ static bool h5md_time_from_step(double* out, const int64_t* step, size_t n, cons
     const double dt = (run_time[num_frames - 1] - run_time[0]) / (double)(run_step[num_frames - 1] - run_step[0]);
     for (size_t f = 0; f < num_frames; ++f) {
         const double t = run_time[0] + dt * (double)(run_step[f] - run_step[0]);
-        if (fabs(t - run_time[f]) > 1.0e-6 * MAX(fabs(run_time[f]), 1.0)) {
+        if (fabs(t - run_time[f]) > 1.0e-6 * MD_MAX(fabs(run_time[f]), 1.0)) {
             return false;
         }
     }
@@ -1401,7 +1401,7 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
         }
 
         const size_t K = e.rank == 3 ? (size_t)e.dims[2] : 1;
-        const bool aligned_steps = e.num_frames == F && MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
+        const bool aligned_steps = e.num_frames == F && MD_MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
         h5md_source_t src = *position;
         src.components = (uint32_t)K;
         src.scale      = 1.0;
@@ -1418,7 +1418,7 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
         int64_t* sizes   = md_alloc(scratch, e.num_frames * sizeof(int64_t));
         md_hdf5_direct_frame_spans(offsets, sizes, h5md_source_direct(state), e.num_frames);
 
-        const bool aligned = e.num_frames == F && MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
+        const bool aligned = e.num_frames == F && MD_MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
         char group_buf[512];
         const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md/particles/" STR_FMT, STR_ARG(run), STR_ARG(name));
         char leaf_buf[256];
@@ -1515,7 +1515,7 @@ static bool h5md_publish_observables(md_system_t* sys, hid_t file, const char* d
 }
 
 bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     (void)flags;
     if (str_empty(run)) {
         MD_LOG_ERROR("H5MD: no run to publish into");
@@ -1541,7 +1541,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
         return false;
     }
 
-    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
     bool published = false;
 

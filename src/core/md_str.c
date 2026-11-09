@@ -14,7 +14,7 @@
 
 size_t str_count_equal_chars(str_t a, str_t b) {
     if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
-    const size_t len = MIN(a.len, b.len);
+    const size_t len = MD_MIN(a.len, b.len);
     size_t i = 0;
     for (; i < len; ++i) {
         if (a.ptr[i] != b.ptr[i]) break;
@@ -32,8 +32,8 @@ size_t str_count_occur_char(str_t str, char c) {
 }
 
 bool str_extract_i32(int32_t* val, str_t* str) {
-    ASSERT(val);
-    ASSERT(str);
+    MD_ASSERT(val);
+    MD_ASSERT(str);
 
     str_t tok;
     if (!extract_token(&tok, str)) return false;
@@ -45,8 +45,8 @@ bool str_extract_i32(int32_t* val, str_t* str) {
 }
 
 bool str_extract_i64(int64_t* val, str_t* str) {
-    ASSERT(val);
-    ASSERT(str);
+    MD_ASSERT(val);
+    MD_ASSERT(str);
 
     str_t tok;
     if (!extract_token(&tok, str)) return false;
@@ -58,8 +58,8 @@ bool str_extract_i64(int64_t* val, str_t* str) {
 }
 
 bool str_extract_f32(float* val, str_t* str) {
-    ASSERT(val);
-    ASSERT(str);
+    MD_ASSERT(val);
+    MD_ASSERT(str);
 
     str_t tok;
     if (!extract_token(&tok, str)) return false;
@@ -71,8 +71,8 @@ bool str_extract_f32(float* val, str_t* str) {
 }
 
 bool str_extract_f64(double* val, str_t* str) {
-    ASSERT(val);
-    ASSERT(str);
+    MD_ASSERT(val);
+    MD_ASSERT(str);
 
     str_t tok;
     if (!extract_token(&tok, str)) return false;
@@ -93,7 +93,7 @@ bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
     for (const char* c = h_beg; c <= last; ++c) {
         c = (const char*)memchr(c, needle.ptr[0], (size_t)(last - c) + 1);
         if (!c) break;
-        if (MEMCMP(c, needle.ptr, needle.len) == 0) {
+        if (MD_MEMCMP(c, needle.ptr, needle.len) == 0) {
             if (loc) *loc = (size_t)(c - h_beg);
             return true;
         }
@@ -103,7 +103,7 @@ bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
 }
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     md_file_t file = {0};
     str_t result = {0};
     if (md_file_open(&file, filename, MD_FILE_READ)) {
@@ -128,25 +128,25 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
 }
 
 str_t str_alloc(size_t len, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
-    MEMSET(mem, 0, len + 1);
+    MD_MEMSET(mem, 0, len + 1);
     str_t str = {mem, len};
     return str;
 }
 
 void str_free(str_t str, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     md_free(alloc, (void*)str.ptr, str.len + 1);
 }
 
 str_t str_copy(const str_t str, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     str_t result = {0,0};
     if (str.ptr && str.len > 0) {
         char* data = md_alloc(alloc, str.len + 1);
         data[str.len] = '\0';
-        MEMCPY(data, str.ptr, str.len);
+        MD_MEMCPY(data, str.ptr, str.len);
         result.ptr = data;
         result.len = str.len;
     }
@@ -154,13 +154,13 @@ str_t str_copy(const str_t str, md_allocator_i* alloc) {
 }
 
 str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     str_t result = {0,0};
     if (cstr) {
         size_t len = strlen(cstr);
         char* data = md_alloc(alloc, len + 1);
         data[len] = '\0';
-        MEMCPY(data, cstr, len);
+        MD_MEMCPY(data, cstr, len);
         result.ptr = data;
         result.len = len;
     }
@@ -168,12 +168,12 @@ str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
 }
 
 str_t str_copy_cstrn(const char* cstr, size_t len, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     str_t result = {0,0};
     if (cstr) {
         char* data = md_alloc(alloc, len + 1);
         data[len] = '\0';
-        MEMCPY(data, cstr, len);
+        MD_MEMCPY(data, cstr, len);
         result.ptr = data;
         result.len = len;
     }
@@ -274,14 +274,14 @@ void replace_char(char* str, size_t len, char target, char replacement) {
 }
 
 void convert_to_lower(char* str, size_t len) {
-    ASSERT(str);
+    MD_ASSERT(str);
     for (char* c = str; c != str + len; ++c) {
         *c = (char)to_lower(*c);
     }
 }
 
 void convert_to_upper(char* str, size_t len) {
-    ASSERT(str);
+    MD_ASSERT(str);
     for (char* c = str; c != str + len; ++c) {
         *c = (char)to_upper(*c);
     }
@@ -316,8 +316,8 @@ int str_edit_distance(str_t s1, str_t s2) {
             if (*c1 == *c2) {
                 costs[j+1] = corner;
             } else {
-                int t = MIN(upper, corner);
-                costs[j+1] = MIN(costs[j], t) + 1;
+                int t = MD_MIN(upper, corner);
+                costs[j+1] = MD_MIN(costs[j], t) + 1;
             }
 
             corner = upper;

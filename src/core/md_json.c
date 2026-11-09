@@ -45,8 +45,8 @@ struct md_json_t {
     // tok_t tok[num_tok] follows
 };
 
-STATIC_ASSERT(sizeof(tok_t) == 16, "token is meant to be 16 bytes");
-STATIC_ASSERT(sizeof(struct md_json_t) % 4 == 0, "tokens follow the header");
+MD_STATIC_ASSERT(sizeof(tok_t) == 16, "token is meant to be 16 bytes");
+MD_STATIC_ASSERT(sizeof(struct md_json_t) % 4 == 0, "tokens follow the header");
 
 static inline const tok_t* doc_tok(const md_json_t* doc) {
     return (const tok_t*)(doc + 1);
@@ -56,7 +56,7 @@ static const tok_t none_tok = { 0, 0, 0, MD_JSON_TYPE_NONE, TOK_LAST, 0 };
 
 static inline const tok_t* val_tok(md_json_val_t v) {
     if (!v.doc) return &none_tok;
-    ASSERT(v.idx < v.doc->num_tok);
+    MD_ASSERT(v.idx < v.doc->num_tok);
     return doc_tok(v.doc) + v.idx;
 }
 
@@ -124,7 +124,7 @@ static inline const char* skip_ws(const char* p, const char* end) {
             p += 8;
             continue;
         }
-        p += ctz64(x) >> 3;
+        p += md_ctz64(x) >> 3;
         if (!(CLASS(*p) & CC_WS)) return p;
         ++p;
     }
@@ -273,7 +273,7 @@ static void report_error(md_json_error_t* err, const char* msg, const char* beg,
 }
 
 md_json_t* md_json_parse(str_t text, md_allocator_i* alloc, md_json_error_t* err) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
 
     const char* beg = text.ptr ? text.ptr : "";
     const size_t len = text.ptr ? text.len : 0;
@@ -298,7 +298,7 @@ md_json_t* md_json_parse(str_t text, md_allocator_i* alloc, md_json_error_t* err
             e.at  = beg;
             goto fail;
         }
-        MEMSET(doc, 0, sizeof(md_json_t));
+        MD_MEMSET(doc, 0, sizeof(md_json_t));
         tok_t* tok = (tok_t*)(doc + 1);
         tok[0] = none_tok;
 
@@ -319,7 +319,7 @@ value:
             goto fail;
         }
         {
-            ASSERT(n < max_tok);
+            MD_ASSERT(n < max_tok);
             const uint32_t i = n++;
             tok_t* t = &tok[i];
             t->offset = (uint32_t)(p - beg);
@@ -375,8 +375,8 @@ value:
                     { "Infinity", 8, MD_JSON_TYPE_NUMBER },
                 };
                 int k = 0;
-                while (k < (int)ARRAY_SIZE(lits) && lits[k].text[0] != c) ++k;
-                if (k == (int)ARRAY_SIZE(lits)) {
+                while (k < (int)MD_COUNTOF(lits) && lits[k].text[0] != c) ++k;
+                if (k == (int)MD_COUNTOF(lits)) {
                     e.msg = "unexpected character, expected a value";
                     e.at  = p;
                     goto fail;
@@ -443,7 +443,7 @@ key:
             goto fail;
         }
         {
-            ASSERT(n < max_tok);
+            MD_ASSERT(n < max_tok);
             const uint32_t i = n++;
             tok_t* t = &tok[i];
             bool escaped = false;
@@ -480,7 +480,7 @@ fail:
 }
 
 void md_json_free(md_json_t* doc, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     if (doc) md_free(alloc, doc, doc->alloc_size);
 }
 
@@ -674,7 +674,7 @@ bool md_json_string_eq(md_json_val_t v, str_t str) {
 }
 
 size_t md_json_string_copy(char* buf, size_t cap, md_json_val_t v) {
-    ASSERT(buf || cap == 0);
+    MD_ASSERT(buf || cap == 0);
     if (cap == 0) return 0;
     const tok_t* t = val_tok(v);
     size_t len = 0;
@@ -695,7 +695,7 @@ size_t md_json_string_copy(char* buf, size_t cap, md_json_val_t v) {
 }
 
 str_t md_json_string(md_json_val_t v, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     str_t result = { 0, 0 };
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_STRING) return result;
@@ -722,19 +722,19 @@ str_t md_json_string(md_json_val_t v, md_allocator_i* alloc) {
 // ---------------------------------------------------------------------------
 
 bool md_json_f64(double* out, md_json_val_t v) {
-    ASSERT(out);
+    MD_ASSERT(out);
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_NUMBER) return false;
     double value = 0.0;
     const size_t n = md_parse_f64(&value, tok_text(v.doc, t));
-    ASSERT(n == t->len);
+    MD_ASSERT(n == t->len);
     (void)n;
     *out = value;
     return true;
 }
 
 bool md_json_i64(int64_t* out, md_json_val_t v) {
-    ASSERT(out);
+    MD_ASSERT(out);
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_NUMBER) return false;
     const str_t text = tok_text(v.doc, t);
@@ -764,7 +764,7 @@ bool md_json_i64(int64_t* out, md_json_val_t v) {
 }
 
 bool md_json_bool(bool* out, md_json_val_t v) {
-    ASSERT(out);
+    MD_ASSERT(out);
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_BOOL) return false;
     *out = v.doc->text[t->offset] == 't';
@@ -772,10 +772,10 @@ bool md_json_bool(bool* out, md_json_val_t v) {
 }
 
 size_t md_json_extract_f64(double* out, size_t cap, md_json_val_t v) {
-    ASSERT(out || cap == 0);
+    MD_ASSERT(out || cap == 0);
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_ARRAY) return 0;
-    const size_t count = MIN((size_t)t->len, cap);
+    const size_t count = MD_MIN((size_t)t->len, cap);
     const tok_t* tok = doc_tok(v.doc);
     uint32_t k = v.idx + 1;
     size_t i = 0;
@@ -789,10 +789,10 @@ size_t md_json_extract_f64(double* out, size_t cap, md_json_val_t v) {
 }
 
 size_t md_json_extract_f32(float* out, size_t cap, md_json_val_t v) {
-    ASSERT(out || cap == 0);
+    MD_ASSERT(out || cap == 0);
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_ARRAY) return 0;
-    const size_t count = MIN((size_t)t->len, cap);
+    const size_t count = MD_MIN((size_t)t->len, cap);
     const tok_t* tok = doc_tok(v.doc);
     uint32_t k = v.idx + 1;
     size_t i = 0;

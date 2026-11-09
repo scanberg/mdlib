@@ -406,7 +406,7 @@ static char closer_of(char open) { return open == '(' ? ')' : open == '[' ? ']' 
 
 static void lex_op(lexer_t* l) {
     const size_t beg = l->pos;
-    for (size_t i = 0; i < ARRAY_SIZE(op_table); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(op_table); ++i) {
         const op_entry_t* e = &op_table[i];
         if (l->pos + e->len <= l->src.len && memcmp(l->src.ptr + l->pos, e->str, e->len) == 0) {
             const char c = e->str[0];

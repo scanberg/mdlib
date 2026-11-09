@@ -48,7 +48,7 @@ bool md_parse_is_float(str_t str);
 // Saturates to INT64_MIN / INT64_MAX, reading every digit either way. Inline, as it has no floating
 // point to keep away from fast math.
 static inline size_t md_parse_i64(int64_t* out_value, str_t str) {
-    ASSERT(out_value);
+    MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
     const char* c   = str.ptr;
@@ -162,8 +162,8 @@ static inline uint32_t md_parse_eight_digits(uint64_t val) {
 }
 
 // Inline always: a parser calls it for each column of each line, with constant widths and decimals which fold
-static FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
-    ASSERT(out);
+static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
+    MD_ASSERT(out);
     const size_t width = field.len;
     // A digit, the dot and the decimals at least
     if (!field.ptr || decimals == 0 || width < decimals + 2) return false;
@@ -174,11 +174,11 @@ static FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t deci
     // and no store to forward from.
     uint64_t w;
     if (width == 8) {
-        MEMCPY(&w, field.ptr, 8);
+        MD_MEMCPY(&w, field.ptr, 8);
     } else if (width >= 4) {
         uint32_t lo, hi;
-        MEMCPY(&lo, field.ptr, 4);
-        MEMCPY(&hi, field.ptr + width - 4, 4);
+        MD_MEMCPY(&lo, field.ptr, 4);
+        MD_MEMCPY(&hi, field.ptr + width - 4, 4);
         w = ((uint64_t)hi << 32) | ((uint64_t)lo << (8 * (8 - width))) | (0x2020202020202020ull >> (8 * width));
     } else {
         w = 0x2020202020202020ull;
@@ -221,8 +221,8 @@ static FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t deci
 // Extracts the next token delimited by whitespace, skipping any whitespace in front of it, and
 // consumes the one delimiter character after it. False when only whitespace is left.
 static inline bool extract_token(str_t* tok, str_t* str) {
-    ASSERT(tok);
-    ASSERT(str);
+    MD_ASSERT(tok);
+    MD_ASSERT(str);
     if (str_empty(*str)) return false;
 
     const char* end = str->ptr + str->len;
@@ -244,8 +244,8 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 
 // Up to tok_cap whitespace delimited tokens
 static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str) {
-    ASSERT(tok_arr);
-    ASSERT(str);
+    MD_ASSERT(tok_arr);
+    MD_ASSERT(str);
 
     size_t num_tokens = 0;
     while (num_tokens < tok_cap && extract_token(&tok_arr[num_tokens], str)) {
@@ -258,8 +258,8 @@ static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str)
 // skipped and empty fields are returned as such: "a,,b" is "a", "" and "b". A delimiter at the very
 // end does NOT give a trailing empty field - "a," is the one field "a" - as the input is used up.
 static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
-    ASSERT(tok);
-    ASSERT(str);
+    MD_ASSERT(tok);
+    MD_ASSERT(str);
     if (!str->ptr || str->len == 0) return false;
 
     const char* beg = str->ptr;
@@ -279,8 +279,8 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 
 // Up to tok_cap fields, see extract_token_delim
 static inline size_t extract_tokens_delim(str_t tok_arr[], size_t tok_cap, str_t* str, char delim) {
-    ASSERT(tok_arr);
-    ASSERT(str);
+    MD_ASSERT(tok_arr);
+    MD_ASSERT(str);
 
     size_t num_tokens = 0;
     while (num_tokens < tok_cap && extract_token_delim(&tok_arr[num_tokens], str, delim)) {

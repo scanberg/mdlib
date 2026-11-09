@@ -151,9 +151,9 @@ void  md_writer_write_slow(md_writer_i* w, const void* data, size_t len);
 char* md_writer_reserve_slow(md_writer_i* w, size_t n);
 
 static inline void md_write(md_writer_i* w, const void* data, size_t len) {
-    ASSERT(w);
+    MD_ASSERT(w);
     if (len <= (size_t)(w->end - w->cur)) {
-        if (len) MEMCPY(w->cur, data, len);
+        if (len) MD_MEMCPY(w->cur, data, len);
         w->cur += len;
     } else {
         md_writer_write_slow(w, data, len);
@@ -161,7 +161,7 @@ static inline void md_write(md_writer_i* w, const void* data, size_t len) {
 }
 
 static inline void md_write_char(md_writer_i* w, char c) {
-    ASSERT(w);
+    MD_ASSERT(w);
     if (w->cur < w->end) {
         *w->cur++ = c;
     } else {
@@ -195,13 +195,13 @@ void md_write_f64(md_writer_i* w, double x, int decimals);
 // many. NULL if the writer cannot make that much room (n is more than its buffer holds, or it has none): write the
 // same through md_write then.
 static inline char* md_writer_reserve(md_writer_i* w, size_t n) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return n <= (size_t)(w->end - w->cur) ? w->cur : md_writer_reserve_slow(w, n);
 }
 
 static inline void md_writer_commit(md_writer_i* w, size_t n) {
-    ASSERT(w);
-    ASSERT(n <= (size_t)(w->end - w->cur));
+    MD_ASSERT(w);
+    MD_ASSERT(n <= (size_t)(w->end - w->cur));
     w->cur += n;
 }
 
@@ -211,19 +211,19 @@ void md_writer_flush(md_writer_i* w);
 
 // How many bytes have been written in all. For a fixed array writer this counts what was dropped as well.
 static inline size_t md_writer_tell(const md_writer_i* w) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return w->drained + (size_t)(w->cur - w->buf);
 }
 
 // False once the sink has failed
 static inline bool md_writer_ok(const md_writer_i* w) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return !(w->flags & MD_WRITER_FLAG_ERROR);
 }
 
 // The allocator the writer allocated its buffer with, NULL if it was given one: for md_temp_begin_avoid (see above)
 static inline struct md_allocator_i* md_writer_allocator(const md_writer_i* w) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return w->alloc;
 }
 

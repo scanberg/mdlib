@@ -17,7 +17,7 @@ static const double ref_ener_tot = -444.518500783179;
 
 UTEST(vlx, parse) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), MD_MEGABYTES(64)));
 
 	// The atoms land in the system itself, not in the table.
 	EXPECT_EQ(26u, t.sys.atom.count);
@@ -37,7 +37,7 @@ UTEST(vlx, parse) {
 	ASSERT_EQ(md_attribute_value_count(&coord->format), 26u);
 
 	double xyz[3 * 26] = {0};
-	ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
+	ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
 	EXPECT_NEAR(-3.259400000000, xyz[0], 1.0e-5);
 	EXPECT_NEAR( 0.145200000000, xyz[1], 1.0e-5);
 	EXPECT_NEAR(-0.048400000000, xyz[2], 1.0e-5);
@@ -62,7 +62,7 @@ UTEST(vlx, parse) {
 // tell a restricted run from an unrestricted one except by guessing from which arrays are shared.
 UTEST(vlx, run_description_is_published) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(16)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(16)));
 
 	EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("vlx/scf/type")), STR_LIT("restricted")));
 	EXPECT_TRUE(qm_test_scalar(&t, STR_LIT("vlx/spin_multiplicity"), 0.0) == 1.0);
@@ -103,9 +103,9 @@ UTEST(vlx, nto_lambdas_match_the_file) {
 		{ MD_UNITTEST_DATA_DIR "/vlx/amide.h5", 4, { 0.951067058354, 0.001038273356, 0.000565841191, 0.000215796789 } },
 	};
 
-	for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+	for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
 		vlx_test_t t = {0};
-		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(cases[c].path), MEGABYTES(64)));
+		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(cases[c].path), MD_MEGABYTES(64)));
 
 		// {S,Lmax}: one row per excited state, padded to the widest row with zeros.
 		const md_attribute_t* a = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
@@ -141,7 +141,7 @@ UTEST(vlx, nto_lambdas_match_the_file) {
 UTEST(vlx, minimal_example) {
 	vlx_test_t t = {0};
 	str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5");
-	ASSERT_TRUE(vlx_test_load(&t, path, MEGABYTES(32)));
+	ASSERT_TRUE(vlx_test_load(&t, path, MD_MEGABYTES(32)));
 
 	md_allocator_i* arena = t.alloc;
 
@@ -193,7 +193,7 @@ UTEST(vlx, minimal_example) {
 
 	// Allocate data for storing the result
 	float* vol_data = (float*)md_alloc(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
-	MEMSET(vol_data, 0, sizeof(float) * vol_dim * vol_dim * vol_dim);
+	MD_MEMSET(vol_data, 0, sizeof(float) * vol_dim * vol_dim * vol_dim);
 
 	// Setup the grid structure that control how we aim to sample over space
 	md_grid_t grid = (md_grid_t) {
@@ -210,7 +210,7 @@ UTEST(vlx, minimal_example) {
 	// came back empty rather than wrong.
 	double max_value = 0.0;
 	for (int i = 0; i < vol_dim * vol_dim * vol_dim; ++i) {
-		max_value = MAX(max_value, fabs((double)vol_data[i]));
+		max_value = MD_MAX(max_value, fabs((double)vol_data[i]));
 	}
 	EXPECT_TRUE(max_value > 1.0e-6);
 
@@ -219,13 +219,13 @@ UTEST(vlx, minimal_example) {
 
 UTEST(vlx, mol) {
 	vlx_test_t t = {0};
-	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), MEGABYTES(64)));
+	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), MD_MEGABYTES(64)));
 	qm_test_free(&t);
 }
 
 UTEST(vlx, scf_results) {
 	vlx_test_t t = {0};
-	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/tq.scf.results.h5"), MEGABYTES(64)));
+	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/tq.scf.results.h5"), MD_MEGABYTES(64)));
 	qm_test_free(&t);
 }
 
@@ -237,13 +237,13 @@ UTEST(vlx, scf_results) {
 // not in test_data - this test and vlx.acro_rsp both used to name it and both used to fail on that.
 UTEST(vlx, file_without_xps_publishes_none) {
 	vlx_test_t t = {0};
-	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(64)));
+	EXPECT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(64)));
 
 	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/xps/ionization_energy")));
 	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/xps/element")));
 
 	md_attribute_id_t ids[8];
-	EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &t.sys.attributes, STR_LIT("vlx/xps")), 0u);
+	EXPECT_EQ(md_attributes_query(ids, MD_COUNTOF(ids), &t.sys.attributes, STR_LIT("vlx/xps")), 0u);
 
 	qm_test_free(&t);
 }
@@ -254,7 +254,7 @@ UTEST(vlx, file_without_xps_publishes_none) {
 // pins, because it is the thing that breaks silently if the sort ever changes.
 UTEST(vlx, acro_xps) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5"), MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5"), MD_MEGABYTES(64)));
 
 	const size_t count = qm_test_count(&t, STR_LIT("vlx/xps/ionization_energy"));
 	ASSERT_TRUE(count > 0);
@@ -298,7 +298,7 @@ UTEST(vlx, acro_xps) {
 // test can pin. See the AO CONVENTION block in md_gto.h.
 UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(16)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(16)));
 
 	const md_attribute_t* coeff = qm_test_attr(&t, STR_LIT("orbital/alpha/coefficient"));
 	const md_attribute_t* occup = qm_test_attr(&t, STR_LIT("orbital/alpha/occupation"));
@@ -329,7 +329,7 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 
 	// D = sum over molecular orbitals of occ_i * c_i c_i^T, which is the definition and not a
 	// restatement of the provider: it reads the same two attributes any consumer would.
-	MEMSET(ref, 0, sizeof(double) * plane);
+	MD_MEMSET(ref, 0, sizeof(double) * plane);
 	double occ_sum = 0.0;
 	for (size_t mo = 0; mo < num_mo; ++mo) {
 		occ_sum += occ[mo];
@@ -348,9 +348,9 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	double max_diff = 0.0, max_asym = 0.0, magnitude = 0.0;
 	for (size_t i = 0; i < num_ao; ++i) {
 		for (size_t j = 0; j < num_ao; ++j) {
-			max_diff  = MAX(max_diff,  fabs(D[i * num_ao + j] - ref[i * num_ao + j]));
-			max_asym  = MAX(max_asym,  fabs(D[i * num_ao + j] - D[j * num_ao + i]));
-			magnitude = MAX(magnitude, fabs(D[i * num_ao + j]));
+			max_diff  = MD_MAX(max_diff,  fabs(D[i * num_ao + j] - ref[i * num_ao + j]));
+			max_asym  = MD_MAX(max_asym,  fabs(D[i * num_ao + j] - D[j * num_ao + i]));
+			magnitude = MD_MAX(magnitude, fabs(D[i * num_ao + j]));
 		}
 	}
 	EXPECT_NEAR(0.0, max_diff, 1.0e-12);
@@ -374,7 +374,7 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 // is exactly twice alpha, and the difference is exactly zero.
 UTEST(vlx, combined_spin_densities_h2o) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(16)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(16)));
 
 	EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("vlx/scf/type")), STR_LIT("restricted")));
 
@@ -410,10 +410,10 @@ UTEST(vlx, combined_spin_densities_h2o) {
 
 	double max_total = 0.0, max_diff = 0.0, max_beta = 0.0, magnitude = 0.0;
 	for (size_t i = 0; i < plane; ++i) {
-		max_beta  = MAX(max_beta,  fabs(mat[1][i] - mat[0][i]));            // beta IS alpha
-		max_total = MAX(max_total, fabs(mat[2][i] - 2.0 * mat[0][i]));      // total = alpha + beta
-		max_diff  = MAX(max_diff,  fabs(mat[3][i]));                        // difference = 0
-		magnitude = MAX(magnitude, fabs(mat[0][i]));
+		max_beta  = MD_MAX(max_beta,  fabs(mat[1][i] - mat[0][i]));            // beta IS alpha
+		max_total = MD_MAX(max_total, fabs(mat[2][i] - 2.0 * mat[0][i]));      // total = alpha + beta
+		max_diff  = MD_MAX(max_diff,  fabs(mat[3][i]));                        // difference = 0
+		magnitude = MD_MAX(magnitude, fabs(mat[0][i]));
 	}
 	EXPECT_NEAR(0.0, max_beta,  1.0e-12);
 	EXPECT_NEAR(0.0, max_total, 1.0e-12);
@@ -435,7 +435,7 @@ UTEST(vlx, combined_spin_densities_h2o) {
 // so asking for one state has to mean reconstructing one state. Both paths are exercised below.
 static void check_transition_density_attributes(int* utest_result, str_t file) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, file, MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, file, MD_MEGABYTES(64)));
 
 	const size_t num_states = qm_test_count(&t, STR_LIT("vlx/rsp/oscillator_strength"));
 	ASSERT_TRUE(num_states > 0);
@@ -498,8 +498,8 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 				const double v = mat[i][r * num_ao + c];
 				ASSERT_TRUE(v == v);                    // not NaN
 				ASSERT_TRUE(fabs(v) < DBL_MAX);         // not inf
-				max_asym  = MAX(max_asym,  fabs(v - mat[i][c * num_ao + r]));
-				max_value = MAX(max_value, fabs(v));
+				max_asym  = MD_MAX(max_asym,  fabs(v - mat[i][c * num_ao + r]));
+				max_value = MD_MAX(max_value, fabs(v));
 			}
 		}
 	}
@@ -516,7 +516,7 @@ static void check_transition_density_attributes(int* utest_result, str_t file) {
 	// between the three that no reference values are needed to know.
 	double max_diff = 0.0;
 	for (size_t i = 0; i < plane; ++i) {
-		max_diff = MAX(max_diff, fabs(mat[2][i] - (mat[0][i] - mat[1][i])));
+		max_diff = MD_MAX(max_diff, fabs(mat[2][i] - (mat[0][i] - mat[1][i])));
 	}
 	EXPECT_NEAR(0.0, max_diff, 1.0e-12);
 
@@ -560,9 +560,9 @@ UTEST(vlx, overlap_describes_the_same_basis_as_the_coefficients) {
 		MD_UNITTEST_DATA_DIR "/vlx/h2o.h5",
 		MD_UNITTEST_DATA_DIR "/vlx/mol.h5",
 	};
-	for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+	for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
 		vlx_test_t t = {0};
-		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(files[i]), MEGABYTES(256)));
+		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(files[i]), MD_MEGABYTES(256)));
 
 		// The molecular orbitals are orthonormal against it, or the two disagree about the basis.
 		EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
@@ -596,7 +596,7 @@ UTEST(vlx, transition_density_attributes_amide) {
 // what catches the two coming apart on the lambda padding axis.
 UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
 
 	const md_attribute_t* lambda   = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
 	const md_attribute_t* particle = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
@@ -706,7 +706,7 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_relative.h5");
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	remove(h5.ptr);
 	ASSERT_TRUE(loaded);
 
@@ -836,7 +836,7 @@ UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
 	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "/cluster/scratch/run42/unittest_pe_custom.pot"));
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	remove(h5.ptr);
 	remove(pot.ptr);
 	ASSERT_TRUE(loaded);
@@ -884,7 +884,7 @@ UTEST(vlx, pe_regions_are_selectable) {
 	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "unittest_pe_regions.pot"));
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	remove(h5.ptr);
 	remove(pot.ptr);
 	ASSERT_TRUE(loaded);
@@ -936,7 +936,7 @@ UTEST(vlx, pe_regions_in_a_script) {
 	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_script.h5");
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	remove(h5.ptr);
 	ASSERT_TRUE(loaded);
 
@@ -1016,7 +1016,7 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 	ASSERT_TRUE(vlx_test_write_file(pot, pot_text, sizeof(pot_text) - 1));
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "unittest_pe_order.pot"));
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	remove(h5.ptr);
 	remove(pot.ptr);
 	ASSERT_TRUE(loaded);
@@ -1078,7 +1078,7 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 // A calculation without an embedding is QM throughout: 'qm' is all of it and 'environment' is no selection at all
 UTEST(vlx, qm_without_environment) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_MEGABYTES(64)));
 
 	const md_filter_context_t fctx = {&t.sys, &t.state, NULL};
 	md_bitset_t bf = {0};
@@ -1115,8 +1115,8 @@ UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5_none, "unittest_pe_not_there.pot"));
 
 	vlx_test_t bad = {0}, none = {0};
-	const bool loaded_bad  = vlx_test_load(&bad,  h5_bad,  MEGABYTES(64));
-	const bool loaded_none = vlx_test_load(&none, h5_none, MEGABYTES(64));
+	const bool loaded_bad  = vlx_test_load(&bad,  h5_bad,  MD_MEGABYTES(64));
+	const bool loaded_none = vlx_test_load(&none, h5_none, MD_MEGABYTES(64));
 	remove(h5_bad.ptr);
 	remove(h5_none.ptr);
 	remove(pot.ptr);
@@ -1140,7 +1140,7 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
 
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_MEGABYTES(64));
 	const bool supplemented = loaded && md_vlx_system_supplement_from_file(&t.sys, h5, NULL);
 	remove(h5.ptr);
 
@@ -1233,7 +1233,7 @@ UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
 	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_induced_pot, sizeof(vlx_test_induced_pot) - 1));
 	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5, "unittest_pe_induced.pot", &vlx_test_induced_mu[0][0], 4, 3));
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	remove(h5.ptr);
 	remove(pot.ptr);
 	ASSERT_TRUE(loaded);
@@ -1258,7 +1258,7 @@ UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
 	EXPECT_TRUE(md_unit_equal(attr->unit, md_unit_elementary_charge_bohr()));
 
 	double mu[3 * 12];
-	ASSERT_EQ(3 * num_atoms, qm_test_series(mu, ARRAY_SIZE(mu), &t, STR_LIT("atom/induced_dipole")));
+	ASSERT_EQ(3 * num_atoms, qm_test_series(mu, MD_COUNTOF(mu), &t, STR_LIT("atom/induced_dipole")));
 	for (size_t i = 0; i < 3 * num_qm; ++i) {
 		EXPECT_TRUE(vlx_test_absent(mu[i]));	// The QM atoms are no sites
 	}
@@ -1295,8 +1295,8 @@ UTEST(vlx, pe_induced_dipoles_must_match_the_potential) {
 	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5_shape, "unittest_pe_induced_count.pot", &vlx_test_induced_mu[0][0], 6, 2));	// 12 values, as [4][3] holds
 
 	vlx_test_t count = {0}, shape = {0};
-	const bool loaded_count = vlx_test_load(&count, h5_count, MEGABYTES(64));
-	const bool loaded_shape = vlx_test_load(&shape, h5_shape, MEGABYTES(64));
+	const bool loaded_count = vlx_test_load(&count, h5_count, MD_MEGABYTES(64));
+	const bool loaded_shape = vlx_test_load(&shape, h5_shape, MD_MEGABYTES(64));
 	remove(h5_count.ptr);
 	remove(h5_shape.ptr);
 	remove(pot.ptr);
@@ -1326,7 +1326,7 @@ UTEST(vlx, pe_induced_dipoles_must_match_the_potential) {
 // which the 48 of fragments 6 (LYS), 8 (ILE) and 9 (GLY) are polarizable - one per induced dipole.
 UTEST(vlx, pe_induced_dipoles_from_file) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5"), MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5"), MD_MEGABYTES(64)));
 
 	const size_t num_qm = 10, num_atoms = num_qm + 769;
 	ASSERT_EQ(num_atoms, t.sys.atom.count);
@@ -1339,7 +1339,7 @@ UTEST(vlx, pe_induced_dipoles_from_file) {
 	EXPECT_TRUE(md_unit_equal(raw->unit, md_unit_elementary_charge_bohr()));
 
 	double mu[3 * 48];
-	ASSERT_EQ(ARRAY_SIZE(mu), qm_test_series(mu, ARRAY_SIZE(mu), &t, STR_LIT("vlx/scf/embedding/induced_dipole")));
+	ASSERT_EQ(MD_COUNTOF(mu), qm_test_series(mu, MD_COUNTOF(mu), &t, STR_LIT("vlx/scf/embedding/induced_dipole")));
 	EXPECT_NEAR( 0.0558321,  mu[0], 1e-7);
 	EXPECT_NEAR( 0.00781969, mu[1], 1e-8);
 	EXPECT_NEAR( 0.05448396, mu[2], 1e-8);
@@ -1510,7 +1510,7 @@ UTEST(vlx, density_property_is_read_from_the_file) {
 	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
 
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	ASSERT_TRUE(loaded);
 
 	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
@@ -1527,7 +1527,7 @@ UTEST(vlx, density_property_is_read_from_the_file) {
 	ASSERT_TRUE(packed != NULL);
 	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n);
 	double full[VLX_TEST_H2O_NUM_CART * VLX_TEST_H2O_NUM_CART];
-	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, ARRAY_SIZE(full), attr, md_attribute_slice_all(), NULL));
+	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, MD_COUNTOF(full), attr, md_attribute_slice_all(), NULL));
 	size_t k = 0;
 	double max_diff = 0.0;
 	for (size_t i = 0; i < n; ++i) {
@@ -1553,7 +1553,7 @@ UTEST(vlx, density_property_is_in_the_order_of_the_basis) {
 	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
 
 	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
 	ASSERT_TRUE(loaded);
 
 	size_t n_prop = 0, n_dens = 0;
@@ -1580,8 +1580,8 @@ UTEST(vlx, density_property_without_scf) {
 
 	vlx_test_t ref = {0};
 	vlx_test_t t   = {0};
-	const bool loaded_ref = vlx_test_load(&ref, h5_scf,    MEGABYTES(64));
-	const bool loaded     = vlx_test_load(&t,   h5_no_scf, MEGABYTES(64));
+	const bool loaded_ref = vlx_test_load(&ref, h5_scf,    MD_MEGABYTES(64));
+	const bool loaded     = vlx_test_load(&t,   h5_no_scf, MD_MEGABYTES(64));
 	ASSERT_TRUE(loaded_ref);
 	ASSERT_TRUE(loaded);
 
@@ -1635,8 +1635,8 @@ UTEST(vlx, density_property_compressed_is_read_through_hdf5) {
 
 	vlx_test_t plain = {0};
 	vlx_test_t comp  = {0};
-	ASSERT_TRUE(vlx_test_load(&plain, h5_plain, MEGABYTES(64)));
-	ASSERT_TRUE(vlx_test_load(&comp,  h5_comp,  MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&plain, h5_plain, MD_MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&comp,  h5_comp,  MD_MEGABYTES(64)));
 
 	size_t n = 0, n_comp = 0;
 	float* a = vlx_test_packed(&n,      &plain, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
@@ -1659,7 +1659,7 @@ UTEST(vlx, density_property_follows_a_rewritten_file) {
 	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
 
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, h5, MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, h5, MD_MEGABYTES(64)));
 	size_t n = 0, n_after = 0;
 	float* before = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
 	ASSERT_TRUE(before != NULL);
@@ -1681,7 +1681,7 @@ UTEST(vlx, density_property_refuses_a_different_calculation) {
 	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
 
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, h5, MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, h5, MD_MEGABYTES(64)));
 	size_t n = 0;
 	float* before = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
 	ASSERT_TRUE(before != NULL);
@@ -1813,9 +1813,9 @@ static void vlx_test_check_solutions(int32_t* utest_result, const vlx_test_t* t,
 
 UTEST(vlx, response_vectors_are_read_on_demand) {
 	const char* files[] = { MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5", MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5" };
-	for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+	for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
 		vlx_test_t t = {0};
-		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(files[f]), MEGABYTES(64)));
+		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(files[f]), MD_MEGABYTES(64)));
 		vlx_test_check_solutions(utest_result, &t, files[f]);
 		qm_test_free(&t);
 	}
@@ -1827,7 +1827,7 @@ UTEST(vlx, response_vectors_chunked_are_read_through_hdf5) {
 	ASSERT_TRUE(vlx_test_write_chunked_solutions_h5(plain_path, chunk_path));
 
 	vlx_test_t plain = {0}, chunked = {0};
-	const bool loaded = vlx_test_load(&plain, plain_path, MEGABYTES(64)) && vlx_test_load(&chunked, chunk_path, MEGABYTES(64));
+	const bool loaded = vlx_test_load(&plain, plain_path, MD_MEGABYTES(64)) && vlx_test_load(&chunked, chunk_path, MD_MEGABYTES(64));
 	if (loaded) {
 		vlx_test_check_solutions(utest_result, &chunked, chunk_path.ptr);
 	}
@@ -1858,7 +1858,7 @@ UTEST(vlx, response_vectors_chunked_are_read_through_hdf5) {
 // The first state read again after all the others is the same to the bit.
 UTEST(vlx, nto_are_the_transition_decomposed) {
 	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5"), MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5"), MD_MEGABYTES(64)));
 	const md_attribute_t* la  = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
 	const md_attribute_t* ha  = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/hole/coefficient"));
 	const md_attribute_t* pa  = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
@@ -1923,7 +1923,7 @@ UTEST(vlx, nto_are_the_transition_decomposed) {
 
 		// one pair's orbital alone is that row of the state's
 		double one[4096];
-		ASSERT_TRUE(num_ao <= ARRAY_SIZE(one));
+		ASSERT_TRUE(num_ao <= MD_COUNTOF(one));
 		ASSERT_EQ(md_attribute_extract_f64(one, num_ao, pa, md_attribute_slice_2(s, 0), md_unit_none()), num_ao);
 		EXPECT_EQ(0, memcmp(one, orb, sizeof(double) * num_ao));
 	}

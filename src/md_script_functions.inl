@@ -114,7 +114,7 @@ static inline set_writer_t set_writer_begin(data_t* dst, eval_context_t* ctx, bo
     set_writer_t w = {0};
     w.dst = dst;
     w.ctx = ctx;
-    w.cap = (size_t)MAX(0, type_info_array_len(dst->type));
+    w.cap = (size_t)MD_MAX(0, type_info_array_len(dst->type));
     w.restrict_ctx = restrict_ctx && ctx->mol_ctx;
     if (w.cap == 1) w.union_b = result_mask(ctx);
     return w;
@@ -125,7 +125,7 @@ static inline void set_writer_push(set_writer_t* w, md_bitset_t s) {
         md_bitmask_or(&w->union_b, s);
         return;
     }
-    ASSERT(w->idx < w->cap);
+    MD_ASSERT(w->idx < w->cap);
     if (w->idx >= w->cap) return;
     md_allocator_i* alloc = data_bitset_alloc(w->dst, w->ctx);
     as_bitset(*w->dst)[w->idx++] = w->restrict_ctx ? md_bitset_and(s, *w->ctx->mol_ctx, alloc) : md_bitset_copy(s, alloc);
@@ -170,7 +170,7 @@ static inline void set_writer_end(set_writer_t* w) {
 // arguments alike: the dimensions of an empty array (none, all 0) make for a size of 1 (see dim_size). For the same
 // reason the type of an empty destination is not that of an array, and the asserts on it let one through
 // (dst->size == 0).
-#define ELEMENTWISE_COUNT(d, a, type) (MIN((d).size, (a).size) / sizeof(type))
+#define ELEMENTWISE_COUNT(d, a, type) (MD_MIN((d).size, (a).size) / sizeof(type))
 
 #define BAKE_FUNC_FARR__FARR(prefix, func) \
     static int prefix##func(data_t* dst, data_t arg[], eval_context_t* ctx) { \
@@ -274,7 +274,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        const size_t n = MIN(ELEMENTWISE_COUNT(*dst, arg[0], base_type), arg[1].size / sizeof(base_type)); \
+        const size_t n = MD_MIN(ELEMENTWISE_COUNT(*dst, arg[0], base_type), arg[1].size / sizeof(base_type)); \
         for (size_t i = 0; i < n; ++i) { \
             ((base_type*)dst->ptr)[i] = ((base_type*)arg[0].ptr)[i] op ((base_type*)arg[1].ptr)[i]; \
         } \
@@ -284,14 +284,14 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
 #define BAKE_SIMDF_OP_M_M(name, op) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
-        ASSERT(dst); \
-        ASSERT(dst->type.base_type == TYPE_FLOAT); \
-        ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
-        ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(dst); \
+        MD_ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
-        ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
-        ASSERT(count % 8 == 0); \
+        MD_ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
+        MD_ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
+        MD_ASSERT(count % 8 == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -306,13 +306,13 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
 #define BAKE_SIMDF_OP_M_S(name, op) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
-        ASSERT(dst); \
-        ASSERT(dst->type.base_type == TYPE_FLOAT); \
-        ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
-        ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT)); \
+        MD_ASSERT(dst); \
+        MD_ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT)); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
-        ASSERT(count % 8 == 0); \
+        MD_ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
+        MD_ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
         md_256 s = md_mm256_set1_ps(as_float(arg[1])); \
@@ -325,13 +325,13 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
 #define BAKE_SIMDF_OP_S_M(name, op) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
-        ASSERT(dst); \
-        ASSERT(dst->type.base_type == TYPE_FLOAT); \
-        ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT)); \
-        ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(dst); \
+        MD_ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT)); \
+        MD_ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
-        ASSERT(count % 8 == 0); \
+        MD_ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
+        MD_ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
         md_256 s = md_mm256_set1_ps(as_float(arg[0])); \
@@ -344,12 +344,12 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
 #define BAKE_SIMDF_OP_M(name, op) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
-        ASSERT(dst); \
-        ASSERT(dst->type.base_type == TYPE_FLOAT); \
-        ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(dst); \
+        MD_ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        MD_ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
-        ASSERT(count % 8 == 0); \
+        MD_ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
+        MD_ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
         for (size_t i = 0; i < count; i += 8) { \
@@ -437,7 +437,7 @@ static int _op_div_iarr_iarr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int* a = (const int*)arg[0].ptr;
     const int* b = (const int*)arg[1].ptr;
     int* d = (int*)dst->ptr;
-    const size_t n = MIN(ELEMENTWISE_COUNT(*dst, arg[0], int), arg[1].size / sizeof(int));
+    const size_t n = MD_MIN(ELEMENTWISE_COUNT(*dst, arg[0], int), arg[1].size / sizeof(int));
     for (size_t i = 0; i < n; ++i) {
         if (!int_div_valid(a[i], b[i], ctx)) return -1;
         d[i] = a[i] / b[i];
@@ -685,9 +685,9 @@ static int _count_with_arg(data_t* , data_t[], eval_context_t*); // (atomset) ->
 
 static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
-    ASSERT(dst);
+    MD_ASSERT(dst);
     int64_t total_count = type_info_element_stride_count(arg[0].type);
-    ASSERT(total_count % 8 == 0);
+    MD_ASSERT(total_count % 8 == 0);
     const float* src_arr = as_float_arr(arg[0]);
     float* dst_arr = as_float_arr(*dst);
 
@@ -1209,7 +1209,7 @@ static const match_name_t match_labels[] = {
 };
 
 static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_cutoff) {
-    ASSERT(ctx);
+    MD_ASSERT(ctx);
     
     // Built for a cutoff at least as large as asked for: reused, otherwise rebuilt
     if (ctx->spatial_acc_cutoff < max_cutoff) {
@@ -1229,21 +1229,21 @@ static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_
 }
 
 static inline void visualize_atom_mask(const md_bitset_t* mask, eval_context_t* ctx) {
-    ASSERT(ctx->vis);
+    MD_ASSERT(ctx->vis);
     if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
         md_bitmask_or(ctx->vis_structure, *mask);
     }
 }
 
 static inline void visualize_atom_range(irange_t range, eval_context_t* ctx) {
-    ASSERT(ctx->vis);
+    MD_ASSERT(ctx->vis);
     if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
         md_bitmask_set_range(ctx->vis_structure, (uint32_t)range.beg, (uint32_t)range.end);
     }
 }
 
 static inline void visualize_atom_index(int64_t index, eval_context_t* ctx) {
-    ASSERT(ctx->vis);
+    MD_ASSERT(ctx->vis);
     if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
         md_bitmask_set_bit(ctx->vis_structure, (uint32_t)index);
     }
@@ -1259,36 +1259,36 @@ static inline md_script_vis_vertex_t vertex(vec3_t p, uint32_t color) {
 }
 
 static inline void push_point(md_script_vis_vertex_t v, md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
     md_array_push(vis->points, v, vis->alloc);
 }
 
 static inline void push_line(md_script_vis_vertex_t v0, md_script_vis_vertex_t v1, md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
     md_array_push(vis->lines, v0, vis->alloc);
     md_array_push(vis->lines, v1, vis->alloc);
 }
 
 static inline void push_triangle(md_script_vis_vertex_t v0, md_script_vis_vertex_t v1, md_script_vis_vertex_t v2, md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
     md_array_push(vis->triangles, v0, vis->alloc);
     md_array_push(vis->triangles, v1, vis->alloc);
     md_array_push(vis->triangles, v2, vis->alloc);
 }
 
 static inline void push_sphere(vec3_t xyz, float r, uint32_t color, md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
     md_script_vis_sphere_t sphere = {xyz, r, color};
     md_array_push(vis->spheres, sphere, vis->alloc);
 }
 
 static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
     md_script_vis_text_t text = {xyz, str_copy_cstr(cstr, vis->alloc) };
     md_array_push(vis->text, text, vis->alloc);
 } 
@@ -1297,8 +1297,8 @@ static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis)
 // be drawn without looking at anything else, but the value and its unit are carried alongside for a
 // viewer which would rather show it in a unit of its own choosing.
 static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
 
     char buf[64];
     size_t len = (size_t)md_snprintf(buf, sizeof(buf), "%.2f", value);
@@ -1311,7 +1311,7 @@ static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, 
             len += (size_t)md_snprintf(buf + len, sizeof(buf) - len, "%s%s", sep, unit_buf);
         }
     }
-    len = MIN(len, sizeof(buf) - 1);
+    len = MD_MIN(len, sizeof(buf) - 1);
 
     md_script_vis_text_t text = {
         .pos   = xyz,
@@ -1325,8 +1325,8 @@ static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, 
 // Adds an empty structure to the visualization and returns its index. Filled in when it is complete, as an
 // md_array may move its elements when it grows.
 static inline size_t push_structure(md_script_vis_t* vis) {
-    ASSERT(vis);
-    ASSERT(vis->alloc);
+    MD_ASSERT(vis);
+    MD_ASSERT(vis->alloc);
     md_array_push(vis->structures, md_bitset_empty_set(), vis->alloc);
     return md_array_size(vis->structures) - 1;
 }
@@ -1341,8 +1341,8 @@ static inline bool range_in_range(irange_t small_range, irange_t big_range) {
 }
 
 static inline vec3_t extract_com(const vec3_t* xyz, const float* w, const md_bitset_t* bitfield) {
-    ASSERT(xyz);
-    ASSERT(bitfield);
+    MD_ASSERT(xyz);
+    MD_ASSERT(bitfield);
 
     vec4_t sum = {0};
     md_bitset_iter_t it = md_bitset_iter(*bitfield);
@@ -1358,9 +1358,9 @@ static inline vec3_t extract_com(const vec3_t* xyz, const float* w, const md_bit
 }
 
 static inline vec3_t* extract_vec3(const vec3_t* xyz, const md_bitset_t* bf, md_allocator_i* alloc) {
-    ASSERT(xyz);
-    ASSERT(bf);
-    ASSERT(alloc);
+    MD_ASSERT(xyz);
+    MD_ASSERT(bf);
+    MD_ASSERT(alloc);
 
     size_t count = md_bitset_count(*bf);
     if (count == 0) {
@@ -1378,9 +1378,9 @@ static inline vec3_t* extract_vec3(const vec3_t* xyz, const md_bitset_t* bf, md_
 }
 
 static inline size_t extract_xyzw_vec4(vec4_t* dst_xyzw, const vec3_t* src_xyz, const float* src_w, const md_bitset_t* bf) {
-    ASSERT(dst_xyzw);
-    ASSERT(src_xyz);
-    ASSERT(bf);
+    MD_ASSERT(dst_xyzw);
+    MD_ASSERT(src_xyz);
+    MD_ASSERT(bf);
 
     size_t count = 0;
     
@@ -1418,8 +1418,8 @@ static inline int32_t remap_index_to_context(int32_t index, irange_t context) {
 }
 
 static inline irange_t clamp_range(irange_t range, irange_t context) {
-    range.beg = CLAMP(range.beg, context.beg, context.end);
-    range.end = CLAMP(range.end, context.beg, context.end);
+    range.beg = MD_CLAMP(range.beg, context.beg, context.end);
+    range.end = MD_CLAMP(range.end, context.beg, context.end);
     return range;
 }
 
@@ -1464,8 +1464,8 @@ static inline bool chain_in_context(const md_system_t* sys, size_t chain_idx, co
 // within it. Only those within the span of the context [beg, end) can have one, so they are found from a binary search
 // rather than a walk over all of the residues, which residue(1) in residue(:) would otherwise make once per residue.
 static md_array(md_residue_idx_t) get_res_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
-    ASSERT(sys);
-    ASSERT(alloc);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
     const md_residue_data_t* res = &sys->residue;
@@ -1497,8 +1497,8 @@ static md_array(md_residue_idx_t) get_res_indices_in_context(const md_system_t* 
 
 // The chains with an atom in the context (all of them without one), in their order: what chain(index) counts
 static md_array(int32_t) get_chain_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
-    ASSERT(sys);
-    ASSERT(alloc);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
     for (size_t c = 0; c < md_system_chain_count(sys); ++c) {
@@ -1508,7 +1508,7 @@ static md_array(int32_t) get_chain_indices_in_context(const md_system_t* sys, co
 }
 
 static inline irange_t get_atom_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     irange_t range = { 0, (int32_t)sys->atom.count };
     if (mol_ctx) {
         range.beg = mol_ctx->beg;
@@ -1540,7 +1540,7 @@ static int select_positions(md_array(int32_t)* out, const irange_t* ranges, size
             }
             return STATIC_VALIDATION_ERROR;
         }
-        for (int64_t k = beg; k <= MIN(end, num); k += step) {
+        for (int64_t k = beg; k <= MD_MIN(end, num); k += step) {
             if (out) md_array_push(*out, (int32_t)(k - 1), ctx->temp_alloc);
             count += 1;
         }
@@ -1549,7 +1549,7 @@ static int select_positions(md_array(int32_t)* out, const irange_t* ranges, size
 }
 
 static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const eval_context_t* ctx) {
-    ASSERT(ctx);
+    MD_ASSERT(ctx);
 
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
     const int ctx_size = ctx_range.end - ctx_range.beg;
@@ -1568,7 +1568,7 @@ static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const 
 }
 
 static bool validate_atom_range_in_context(irange_t in_range, token_t token, const eval_context_t* ctx) {
-    ASSERT(ctx);
+    MD_ASSERT(ctx);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
     const int ctx_size = ctx_range.end - ctx_range.beg;
     const irange_t range = remap_range_to_context(in_range, ctx_range);
@@ -1586,7 +1586,7 @@ static bool validate_atom_range_in_context(irange_t in_range, token_t token, con
 }
 
 static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     if (element_count(arg) == 0) return 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
@@ -1597,7 +1597,7 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         return (int)type_info_array_len(arg.type);
     case TYPE_INT: {
         int* indices = as_int_arr(arg);
@@ -1627,7 +1627,7 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
                 int64_t pop = (int64_t)md_bitset_count_range(*ctx->mol_ctx, range.beg, range.end);
                 count += (int)((pop + step - 1) / step);
             } else {
-                int64_t len = MAX(0, range.end - range.beg);
+                int64_t len = MD_MAX(0, range.end - range.beg);
                 count += (int)((len + step - 1) / step);
             }
         }
@@ -1646,7 +1646,7 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
         }
     }
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         return STATIC_VALIDATION_ERROR;
     }
 }
@@ -1668,15 +1668,15 @@ static inline md_bitset_t _internal_flatten_bf(const md_bitset_t* bf_arr, size_t
 }
 
 static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(ctx->vis);
+    MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(ctx->vis);
 
     if (element_count(arg) == 0) return;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
             const vec3_t* pos = as_vec3_arr(arg);
             const int64_t len = element_count(arg);
@@ -1758,18 +1758,18 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
         }
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 }
 
 static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(vec3_t) positions = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         md_array_ensure(positions, element_count(arg), ctx->temp_alloc);
         md_array_push_array(positions, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
         break;
@@ -1808,7 +1808,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                 }
             }
             else {
-                int64_t len = MAX(0, range.end - range.beg);
+                int64_t len = MD_MAX(0, range.end - range.beg);
                 md_array_ensure(positions, (size_t)((len + step - 1) / step), ctx->temp_alloc);
                 for (int64_t j = range.beg; j < range.end; j += step) {
                     vec3_t pos = { ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z };
@@ -1854,7 +1854,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
                     md_array_push(positions, com, ctx->temp_alloc);
                 }
             }
-            ASSERT(num_bf == md_array_size(positions));
+            MD_ASSERT(num_bf == md_array_size(positions));
         }
 
         break;
@@ -1867,13 +1867,13 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
 }
 
 static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(vec4_t) out_xyzw = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         size_t num_xyz = element_count(arg);
         md_array_resize(out_xyzw, num_xyz, ctx->temp_alloc);
         const vec3_t* src_xyz = as_vec3_arr(arg);
@@ -1883,7 +1883,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
         md_array_push_array(out_xyzw, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
         break;
     case TYPE_INT: {
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_INT_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_INT_ARR));
         size_t num_idx = element_count(arg);
         md_array_resize(out_xyzw, num_idx, ctx->temp_alloc);
         const int* in_idx = as_int_arr(arg);
@@ -1895,7 +1895,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
         break;
     }
     case TYPE_IRANGE: {
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_IRANGE_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_IRANGE_ARR));
         const irange_t* ranges = as_irange_arr(arg);
         size_t num_ranges = element_count(arg);
         for (size_t i = 0; i < num_ranges; ++i) {
@@ -1973,7 +1973,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
 }
 
 static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(int) out_indices = NULL;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
@@ -2009,7 +2009,7 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
                 }
             }
             else {
-                int len = MAX(0, range.end - range.beg);
+                int len = MD_MAX(0, range.end - range.beg);
                 md_array_ensure(out_indices, md_array_size(out_indices) + (size_t)((len + step - 1) / step), ctx->temp_alloc);
                 for (int j = range.beg; j < range.end; j += step) {
                     md_array_push(out_indices, j, ctx->temp_alloc);
@@ -2049,7 +2049,7 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
 }
 
 static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     vec3_t com = {0};
 
     md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
@@ -2058,7 +2058,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     switch (arg.type.base_type) {
     case TYPE_FLOAT: {
         // This corresponds to user supplied coordinates
-        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         vec3_t* in_pos = as_vec3_arr(arg);
         size_t len = element_count(arg);
 
@@ -2119,7 +2119,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
             else {
-                size_t len = (size_t)((MAX(0, range.end - range.beg) + step - 1) / step);
+                size_t len = (size_t)((MD_MAX(0, range.end - range.beg) + step - 1) / step);
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, 0);
                 for (int32_t j = range.beg; j < range.end; j += (int32_t)step) {
@@ -2197,8 +2197,8 @@ static bool validate_query(str_t query) {
 // @TODO: Add more here
 
 static int _min_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     if (dst) {
@@ -2208,7 +2208,7 @@ static int _min_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (element_count(arg[0]) > 0) {
             min_val = FLT_MAX;
             for (size_t i = 0; i < element_count(arg[0]); ++i) {
-                min_val = MIN(min_val, src[i]);
+                min_val = MD_MIN(min_val, src[i]);
             }
         }
 
@@ -2218,8 +2218,8 @@ static int _min_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     if (dst) {
@@ -2229,7 +2229,7 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (element_count(arg[0]) > 0) {
             max_val = -FLT_MAX;
             for (size_t i = 0; i < element_count(arg[0]); ++i) {
-                max_val = MAX(max_val, src[i]);
+                max_val = MD_MAX(max_val, src[i]);
             }
         }
 
@@ -2241,8 +2241,8 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 // The sum of the elements, 0 for none. Accumulated in double: a float sum of many terms of mixed sign (energies)
 // loses digits that the result keeps.
 static int _sum_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     if (dst) {
@@ -2257,8 +2257,8 @@ static int _sum_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src = arg[0].ptr;
@@ -2280,9 +2280,9 @@ static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _and(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
@@ -2302,9 +2302,9 @@ static int _and(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _or(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
@@ -2325,9 +2325,9 @@ static int _or(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src[2] = { arg[0].ptr, arg[1].ptr };
@@ -2347,9 +2347,9 @@ static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _dot(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     if (dst) {
@@ -2365,9 +2365,9 @@ static int _dot(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cross(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT3));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT3));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT3));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT3));
     (void)ctx;
 
     if (dst) {
@@ -2383,8 +2383,8 @@ static int _cross(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     if (dst) {
@@ -2400,8 +2400,8 @@ static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     if (dst) {
@@ -2412,7 +2412,7 @@ static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
             len2 += (double)val[i] * (double)val[i];
         }
         if (len2 < DBL_EPSILON) {
-            MEMSET(dst->ptr, 0, dst->size);
+            MD_MEMSET(dst->ptr, 0, dst->size);
             return 0;
         }
         double scl = 1.0 / sqrt(len2);
@@ -2425,9 +2425,9 @@ static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT44));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT44));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT44));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT44));
     (void)ctx;
 
     if (dst) {
@@ -2440,9 +2440,9 @@ static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type,   (type_info_t)TI_FLOAT4));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT4));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type,   (type_info_t)TI_FLOAT4));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT4));
     (void)ctx;
 
     if (dst) {
@@ -2455,9 +2455,9 @@ static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     if (dst) {
@@ -2469,10 +2469,10 @@ static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type,  (type_info_t)TI_FLOAT3));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type,  (type_info_t)TI_FLOAT3));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     if (dst) {
@@ -2485,11 +2485,11 @@ static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT4));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT4));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     if (dst) {
@@ -2504,7 +2504,7 @@ static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         (void)arg;
         const md_bitset_t all = md_bitset_range(0, (uint32_t)ctx->sys->atom.count);
         as_bitset(*dst)[0] = ctx->mol_ctx ? md_bitset_and(all, *ctx->mol_ctx, data_bitset_alloc(dst, ctx)) : all;
@@ -2513,15 +2513,15 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+    MD_ASSERT(ctx && ctx->sys);
 
     const str_t* str = as_string_arr(arg[0]);
     const size_t num_str = element_count(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
@@ -2562,8 +2562,8 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+    MD_ASSERT(ctx && ctx->sys);
 
     md_atomic_number_t* query_z = 0;
 
@@ -2588,7 +2588,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         if (ctx_range.beg < ctx_range.end) md_bitmask_reserve(&b, (uint32_t)ctx_range.beg, (uint32_t)ctx_range.end);
 
@@ -2626,16 +2626,16 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
 
     irange_t* ranges = as_irange_arr(arg[0]);
     const size_t num_ranges = element_count(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr);
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(dst->ptr);
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitset_test(*ctx->mol_ctx, i)) continue;
@@ -2679,7 +2679,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, frange_t range_y, frange_t range_z) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const md_bitset_t* src_bf = ctx->mol_ctx;
 
     if (dst) {
@@ -2740,24 +2740,24 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
 }
 
 static int _within_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, as_frange(arg[0]), (frange_t){-FLT_MAX, FLT_MAX}, (frange_t){-FLT_MAX, FLT_MAX});
 }
 
 static int _within_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, (frange_t){-FLT_MAX, FLT_MAX}, as_frange(arg[0]), (frange_t){-FLT_MAX, FLT_MAX});
 }
 
 static int _within_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, (frange_t){-FLT_MAX, FLT_MAX}, (frange_t){-FLT_MAX, FLT_MAX}, as_frange(arg[0]));
 }
 
 static int _within_xyz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, as_frange(arg[0]), as_frange(arg[1]), as_frange(arg[2]));
 }
 
@@ -2769,9 +2769,9 @@ static void within_float_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
 }
 
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys && ctx->cur_state);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(ctx && ctx->sys && ctx->cur_state);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     const float radius = as_float(arg[0]);
 
@@ -2789,12 +2789,12 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(vec3_t), NULL, num_pos);
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         } else {
             // Visualize
-            ASSERT(ctx->vis);
+            MD_ASSERT(ctx->vis);
             bf_dst = ctx->vis_structure;
             coordinate_visualize(arg[1], ctx);
             
@@ -2807,7 +2807,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, radius, within_float_cb, bf_dst, 0);
             
         if (bf_mask) {
-            ASSERT(bf_dst);
+            MD_ASSERT(bf_dst);
             // Exclude the input atoms from the result
             md_bitmask_andnot(bf_dst, *bf_mask);
         }
@@ -2825,8 +2825,8 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys && ctx->cur_state);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(ctx && ctx->sys && ctx->cur_state);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
 
     const float radius = as_float(arg[0]);
 
@@ -2842,20 +2842,20 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int32_t* idx = md_temp_alloc_array(temp, int32_t, num_idx);
         size_t num_written = md_bitset_iter_extract_indices(idx, num_idx, md_bitset_iter(*ctx->mol_ctx));
         (void)num_written;
-        ASSERT(num_written == num_idx);
+        MD_ASSERT(num_written == num_idx);
             
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
 
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), idx, num_idx);
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         }
         else {
             // Visualize
-            ASSERT(ctx->vis);
+            MD_ASSERT(ctx->vis);
             bf_dst = ctx->vis_structure;
             visualize_atom_mask(ctx->mol_ctx, ctx);
             for (size_t i = 0; i < num_idx; ++i) {
@@ -2902,9 +2902,9 @@ static void within_frng_cb(const uint32_t* i_idx, const uint32_t* j_idx, const f
 }
 
 static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys && ctx->cur_state);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(ctx && ctx->sys && ctx->cur_state);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     const frange_t rad_range = as_frange(arg[0]);
 
@@ -2921,7 +2921,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         }
@@ -2941,7 +2941,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, rad_range.end, within_frng_cb, &payload, 0);
 
         if (bf_mask) {
-            ASSERT(bf_dst);
+            MD_ASSERT(bf_dst);
             // Exclude the input atoms from the result
             md_bitmask_andnot(bf_dst, *bf_mask);
         }
@@ -2959,8 +2959,8 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys && ctx->cur_state);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(ctx && ctx->sys && ctx->cur_state);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
 
     const frange_t rad_range = as_frange(arg[0]);
 
@@ -2976,14 +2976,14 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int32_t* idx = md_temp_alloc_array(temp, int32_t, num_idx);
         size_t num_written = md_bitset_iter_extract_indices(idx, num_idx, md_bitset_iter(*ctx->mol_ctx));
         (void)num_written;
-        ASSERT(num_written == num_idx);
+        MD_ASSERT(num_written == num_idx);
 
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), idx, num_idx);
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
         
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         }
@@ -3058,10 +3058,10 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
 }
 
 static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
     const float cutoff = as_float(arg[2]);
 	int path_length = 4; // Default minimum path length
 
@@ -3081,7 +3081,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         float* out_counts = NULL;
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             int dst_len = type_info_array_len(dst->type);
             if (dst_len != dim_a) {
                 EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Mismatching size in dst array");
@@ -3170,19 +3170,19 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
 
     const size_t num_ranges = element_count(arg[0]);
     const irange_t* ranges = as_irange_arr(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         // The common case, a single contiguous range, is a RUN: no payload at all
         if (num_ranges == 1 && ranges[0].step <= 1) {
             irange_t range = clamp_range(remap_range_to_context(ranges[0], ctx_range), ctx_range);
-            const md_bitset_t set = md_bitset_range((uint32_t)MAX(range.beg, 0), (uint32_t)MAX(range.end, 0));
+            const md_bitset_t set = md_bitset_range((uint32_t)MD_MAX(range.beg, 0), (uint32_t)MD_MAX(range.end, 0));
             as_bitset(*dst)[0] = ctx->mol_ctx ? md_bitset_and(set, *ctx->mol_ctx, data_bitset_alloc(dst, ctx)) : set;
             return 0;
         }
@@ -3207,7 +3207,7 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         finish_result(dst, 0, &b, ctx);
     }
     else {
-        ASSERT(ctx->arg_tokens);
+        MD_ASSERT(ctx->arg_tokens);
         for (size_t i = 0; i < num_ranges; ++i) {
             if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
                 return STATIC_VALIDATION_ERROR;
@@ -3219,15 +3219,15 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
+    MD_ASSERT(ctx && ctx->sys);
 
     const size_t num_indices = element_count(arg[0]);
     const int* indices = as_int_arr(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < num_indices; ++i) {
             const int32_t idx = remap_index_to_context(indices[i], ctx_range);
@@ -3241,7 +3241,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         finish_result(dst, 0, &b, ctx);
     }
     else {
-        ASSERT(ctx->arg_tokens);
+        MD_ASSERT(ctx->arg_tokens);
         for (size_t i = 0; i < num_indices; ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
                 return STATIC_VALIDATION_ERROR;
@@ -3290,7 +3290,7 @@ static size_t match_query_parts(const md_match_query_t* q, md_allocator_i* alloc
         int32_t a = (int32_t)q->bonds[i].a, b = (int32_t)q->bonds[i].b;
         while (parent[a] != a) a = parent[a] = parent[parent[a]];
         while (parent[b] != b) b = parent[b] = parent[parent[b]];
-        if (a != b) parent[MAX(a, b)] = MIN(a, b);
+        if (a != b) parent[MD_MAX(a, b)] = MD_MIN(a, b);
     }
     size_t num = 0;
     for (size_t i = 0; i < q->num_atoms; ++i) num += parent[i] == (int32_t)i;
@@ -3301,12 +3301,12 @@ static size_t match_query_parts(const md_match_query_t* q, md_allocator_i* alloc
 // proc: the procedure, what: what the query was made from, as the error names them ("match", "reference")
 static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], int level_arg, int mode_arg, uint32_t select_flags, const char* proc, const char* what, eval_context_t* ctx) {
     int level = 0, mode = 0;
-    if (!match_lookup(&level, match_levels, ARRAY_SIZE(match_levels), as_string(arg[level_arg]))) {
-        if (!dst) match_report_unknown(ctx, level_arg, "level", match_levels, ARRAY_SIZE(match_levels), as_string(arg[level_arg]));
+    if (!match_lookup(&level, match_levels, MD_COUNTOF(match_levels), as_string(arg[level_arg]))) {
+        if (!dst) match_report_unknown(ctx, level_arg, "level", match_levels, MD_COUNTOF(match_levels), as_string(arg[level_arg]));
         return STATIC_VALIDATION_ERROR;
     }
-    if (!match_lookup(&mode, match_modes, ARRAY_SIZE(match_modes), as_string(arg[mode_arg]))) {
-        if (!dst) match_report_unknown(ctx, mode_arg, "mode", match_modes, ARRAY_SIZE(match_modes), as_string(arg[mode_arg]));
+    if (!match_lookup(&mode, match_modes, MD_COUNTOF(match_modes), as_string(arg[mode_arg]))) {
+        if (!dst) match_report_unknown(ctx, mode_arg, "mode", match_modes, MD_COUNTOF(match_modes), as_string(arg[mode_arg]));
         return STATIC_VALIDATION_ERROR;
     }
     if (level == MD_MATCH_LEVEL_RESIDUE && ctx->sys->residue.count == 0) {
@@ -3371,7 +3371,7 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
 
     int result = 0;
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (dst->ptr && res.count > 0) {
             md_bitset_t* bf_arr = as_bitset(*dst);
             md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
@@ -3395,7 +3395,7 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
     } else {
         result = (int)res.count;
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            result = MIN(1, result);
+            result = MD_MIN(1, result);
         }
     }
 
@@ -3404,8 +3404,8 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
 }
 
 static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING));
 
     const str_t pattern = as_string(arg[0]);
     md_match_query_t query = {0};
@@ -3416,8 +3416,8 @@ static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
             token_t tok = ctx->arg_tokens[0];
             if (tok.type == TOKEN_STRING && tok.str.len == pattern.len + 2) {
                 tok.beg = tok.beg + 1 + (int)err.offset;
-                tok.end = MIN(tok.beg + 1, tok.end - 1);
-                tok.end = MAX(tok.end, tok.beg);
+                tok.end = MD_MIN(tok.beg + 1, tok.end - 1);
+                tok.end = MD_MAX(tok.end, tok.beg);
             }
             EVAL_LOG_ERROR(ctx, tok, "Invalid SMILES: %s", err.message);
         }
@@ -3431,8 +3431,8 @@ static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
 
     if (!dst && !ctx->vis && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
         EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "match: the reference cannot depend on the frame");
@@ -3440,8 +3440,8 @@ static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int label = 0;
-    if (!match_lookup(&label, match_labels, ARRAY_SIZE(match_labels), as_string(arg[1]))) {
-        if (!dst) match_report_unknown(ctx, 1, "label", match_labels, ARRAY_SIZE(match_labels), as_string(arg[1]));
+    if (!match_lookup(&label, match_labels, MD_COUNTOF(match_labels), as_string(arg[1]))) {
+        if (!dst) match_report_unknown(ctx, 1, "label", match_labels, MD_COUNTOF(match_labels), as_string(arg[1]));
         return STATIC_VALIDATION_ERROR;
     }
 
@@ -3510,8 +3510,8 @@ static void report_smiles_error(eval_context_t* ctx, int arg, str_t pattern, con
     token_t tok = ctx->arg_tokens[arg];
     if (tok.type == TOKEN_STRING && tok.str.len == pattern.len + 2) {
         tok.beg = tok.beg + 1 + (int)err->offset;
-        tok.end = MIN(tok.beg + 1, tok.end - 1);
-        tok.end = MAX(tok.end, tok.beg);
+        tok.end = MD_MIN(tok.beg + 1, tok.end - 1);
+        tok.end = MD_MAX(tok.end, tok.beg);
     }
     EVAL_LOG_ERROR(ctx, tok, "Invalid SMILES: %s", err->message);
 }
@@ -3525,8 +3525,8 @@ static bool ring_pattern_query(md_match_query_t* query, str_t pattern, bool repo
     }
     // Hydrogens written as atoms of their own ([H]C) are hydrogen counts, not ring atoms
     const size_t n = query->num_atoms;
-    uint32_t* degree = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MAX(n, 1));
-    MEMSET(degree, 0, sizeof(uint32_t) * MAX(n, 1));
+    uint32_t* degree = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MD_MAX(n, 1));
+    MD_MEMSET(degree, 0, sizeof(uint32_t) * MD_MAX(n, 1));
     size_t num_heavy = 0;
     for (size_t i = 0; i < n; ++i) {
         const md_match_atom_t* a = &query->atoms[i];
@@ -3563,13 +3563,13 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     // Kinds
     uint32_t kind_mask = 0;
     if (!is_absent_type(arg[1].type)) {
-        ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING_ARR));
         const str_t* kinds = as_string_arr(arg[1]);
         const size_t num_kinds = element_count(arg[1]);
         for (size_t i = 0; i < num_kinds; ++i) {
             int kind = 0;
-            if (!match_lookup(&kind, ring_kinds, ARRAY_SIZE(ring_kinds), kinds[i])) {
-                if (report) match_report_unknown(ctx, 1, "ring kind", ring_kinds, ARRAY_SIZE(ring_kinds), kinds[i]);
+            if (!match_lookup(&kind, ring_kinds, MD_COUNTOF(ring_kinds), kinds[i])) {
+                if (report) match_report_unknown(ctx, 1, "ring kind", ring_kinds, MD_COUNTOF(ring_kinds), kinds[i]);
                 return STATIC_VALIDATION_ERROR;
             }
             kind_mask |= 1u << kind;
@@ -3579,7 +3579,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     // Size
     int size_lo = INT32_MIN, size_hi = INT32_MAX;
     if (!is_absent_type(arg[2].type)) {
-        ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_IRANGE));
+        MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_IRANGE));
         const irange_t r = as_irange(arg[2]);
         size_lo = r.beg;
         size_hi = r.end;
@@ -3592,13 +3592,13 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     // Patterns: the rings which have any of them
     uint8_t* has_pattern = NULL;
     if (!is_absent_type(arg[0].type)) {
-        ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+        MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
         const str_t* patterns = as_string_arr(arg[0]);
         const size_t num_patterns = element_count(arg[0]);
-        has_pattern = md_alloc(ctx->temp_alloc, MAX(num_rings, 1));
-        MEMSET(has_pattern, 0, MAX(num_rings, 1));
+        has_pattern = md_alloc(ctx->temp_alloc, MD_MAX(num_rings, 1));
+        MD_MEMSET(has_pattern, 0, MD_MAX(num_rings, 1));
         // The rings as the units to match within
-        md_bitset_t* units = md_alloc(ctx->temp_alloc, sizeof(md_bitset_t) * MAX(num_rings, 1));
+        md_bitset_t* units = md_alloc(ctx->temp_alloc, sizeof(md_bitset_t) * MD_MAX(num_rings, 1));
         for (size_t r = 0; r < num_rings; ++r) {
             units[r] = md_bitset_from_indices((const uint32_t*)md_ring_atoms(&sys->ring, r), md_ring_size(&sys->ring, r), ctx->temp_alloc);
         }
@@ -3637,7 +3637,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
         if (kind_mask) {
             const md_ring_flags_t f = md_system_ring_flags(sys, r);
             bool any = false;
-            for (int k = 0; k < (int)ARRAY_SIZE(ring_kinds) && !any; ++k) {
+            for (int k = 0; k < (int)MD_COUNTOF(ring_kinds) && !any; ++k) {
                 any = (kind_mask & (1u << k)) && ring_is_kind(f, k);
             }
             if (!any) continue;
@@ -3661,7 +3661,7 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
     const md_system_t* sys = ctx->sys;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr) return 0;
         md_bitset_t* bf_arr = as_bitset(*dst);
         const int64_t cap = type_info_array_len(dst->type);
@@ -3671,7 +3671,7 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
         md_bitmask_t b = result_mask(ctx);
         int64_t slot = 0;
         for (int i = 0; i < count; ++i) {
-            const int64_t s = cap == 1 ? 0 : MIN(i, cap - 1);
+            const int64_t s = cap == 1 ? 0 : MD_MIN(i, cap - 1);
             if (s != slot) {
                 bf_arr[slot] = md_bitmask_extract(&b, alloc);
                 md_bitmask_clear(&b);
@@ -3704,12 +3704,12 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
         return 0;
     }
 
-    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
+    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MD_MIN(1, count);
     return count;
 }
 
 static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
 
     md_array(uint32_t) rings = 0;
     const int count = ring_select(&rings, arg, !dst && !ctx->vis, ctx);
@@ -3723,8 +3723,8 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // circle of an aromatic ring picks as (md_gl_picking_offset_t). An index before the first is an error; one past the
 // last is an error without a context, and selects nothing within one (a residue need not have a second ring).
 static int _ring_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     const bool report = !dst && !ctx->vis;
 
     // The rings to index into: those the filters let through. The index takes the place of the pattern.
@@ -3736,19 +3736,19 @@ static int _ring_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_array(int32_t) pos = 0;
     const int count = select_positions(&pos, as_irange_arr(arg[0]), element_count(arg[0]), num_rings, "ring", report, ctx);
     if (count < 0) return count;
-    uint32_t* picked = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MAX(count, 1));
+    uint32_t* picked = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MD_MAX(count, 1));
     for (int i = 0; i < count; ++i) picked[i] = rings[pos[i]];
     return ring_result(dst, picked, count, ctx);
 }
 
 static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, md_atom_flags_t flags) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     (void)arg;
 
     int result = 0;
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
 
         if (ctx->mol_ctx) {
@@ -3773,7 +3773,7 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
 }
 
 static int _select_residues_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, md_residue_kind_t kind) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     (void)arg;
 
     int result = 0;
@@ -3782,7 +3782,7 @@ static int _select_residues_of_kind(data_t* dst, data_t arg[], eval_context_t* c
 	size_t num_res = md_array_size(res_indices);
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         const int cap = type_info_array_len(dst->type);
         if (cap == 0) return 0;
 
@@ -3810,7 +3810,7 @@ static int _select_residues_of_kind(data_t* dst, data_t arg[], eval_context_t* c
             }
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
+            count = MD_MIN(1, count);
         }
         result = count;
     }
@@ -3844,7 +3844,7 @@ static md_array(int32_t) get_parts_of_kind(const md_system_t* sys, part_kind_pre
 }
 
 static int select_parts_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, part_kind_pred_t pred, md_residue_kind_t res_kind) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
     if (md_system_part_count(sys) == 0) {
         if (res_kind == MD_RESIDUE_KIND_OTHER) {
@@ -3861,7 +3861,7 @@ static int select_parts_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, 
     md_array(int32_t) parts = get_parts_of_kind(sys, pred, ctx->mol_ctx, ctx->temp_alloc);
     const int count = (int)md_array_size(parts);
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, false);
         for (int i = 0; i < count; ++i) {
@@ -3871,12 +3871,12 @@ static int select_parts_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, 
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 static int select_parts_of_kind_irng(data_t* dst, data_t arg[], eval_context_t* ctx, part_kind_pred_t pred, const char* unit) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     const md_system_t* sys = ctx->sys;
     if (md_system_part_count(sys) == 0) {
         if (!dst) EVAL_LOG_ERROR(ctx, ctx->op_token, "The system has no parts to count the %ss of", unit);
@@ -3898,7 +3898,7 @@ static int select_parts_of_kind_irng(data_t* dst, data_t arg[], eval_context_t* 
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 static int _polymer(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3926,7 +3926,7 @@ static int _nucleic_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // and O antigen of a lipopolysaccharide) is not of it. Within a context the lipids with an atom in it, whole, as
 // protein() takes its residues. A system whose lipids were not inferred has a lipid per residue of the kind.
 static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
     const md_lipid_data_t* lipid = &sys->lipid;
     if (lipid->count == 0) {
@@ -3958,14 +3958,14 @@ static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int count = (int)md_array_size(sets);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, false);
         for (int i = 0; i < count; ++i) set_writer_push(&w, sets[i]);
         set_writer_end(&w);
         return 0;
     }
-    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
+    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MD_MIN(1, count);
     return count;
 }
 
@@ -3995,7 +3995,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // the truth is that the system does not say. Within a context ('qm in water') it is the part of the
 // region that lies there, which can be nothing.
 static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool qm) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     (void)arg;
 
     const md_system_t* sys = ctx->sys;
@@ -4035,7 +4035,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
 
     int result = 0;
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         md_bitset_t* bf = as_bitset(*dst);
         const int cap = type_info_array_len(dst->type);
         if (cap > 0) {
@@ -4052,7 +4052,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
                     }
                 }
                 if (any && cap > 1) {
-                    ASSERT(dst_idx < cap);
+                    MD_ASSERT(dst_idx < cap);
                     if (dst_idx < cap) bf[dst_idx++] = md_bitmask_extract(&b, alloc);
                     md_bitmask_clear(&b);
                 }
@@ -4071,7 +4071,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
             }
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
+            count = MD_MIN(1, count);
         }
         result = count;
     }
@@ -4112,10 +4112,10 @@ static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // head group, the phosphate, the glycerol and the linkages of a phospholipid, the hydroxyl of a sterol, both heads of a
 // bolalipid. A lipid whose heads and tails are not known has none.
 static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     (void)arg;
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         const md_system_t* sys = ctx->sys;
         md_bitmask_t b = result_mask(ctx);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
@@ -4139,7 +4139,7 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // acyl, alkyl and sphingoid chains, and the ring skeleton of a sterol. Within a context the tails fully within it, as
 // ring() takes the rings. Visualized as the spines of the tails.
 static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     (void)arg;
     const md_system_t* sys = ctx->sys;
     const md_lipid_data_t* lipid = &sys->lipid;
@@ -4159,7 +4159,7 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int count = (int)md_array_size(tails);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr) return 0;
         md_bitset_t* bf_arr = as_bitset(*dst);
         const int64_t cap = type_info_array_len(dst->type);
@@ -4169,7 +4169,7 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t b = result_mask(ctx);
         int64_t slot = 0;
         for (int i = 0; i < count; ++i) {
-            const int64_t s = cap == 1 ? 0 : MIN(i, cap - 1);
+            const int64_t s = cap == 1 ? 0 : MD_MIN(i, cap - 1);
             if (s != slot) {
                 bf_arr[slot] = md_bitmask_extract(&b, alloc);
                 md_bitmask_clear(&b);
@@ -4198,7 +4198,7 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return 0;
     }
 
-    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
+    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MD_MIN(1, count);
     return count;
 }
 
@@ -4207,8 +4207,8 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // chain. A position before the first is an error; one past the last is an error without a context, and selects
 // nothing within one (a chain need not have a tenth residue), as ring(index) does.
 static int _res(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     const md_system_t* sys = ctx->sys;
 
     // The residues counted: those of the context, or all of the system (no list)
@@ -4220,7 +4220,7 @@ static int _res(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (count < 0) return count;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, true);
         for (int i = 0; i < count; ++i) {
@@ -4230,11 +4230,11 @@ static int _res(data_t* dst, data_t arg[], eval_context_t* ctx) {
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 static int _fill_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     const size_t num_bf = element_count(arg[0]);
     const md_bitset_t* src_bf = as_bitset(arg[0]);
 
@@ -4250,7 +4250,7 @@ static int _fill_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             const int cap = type_info_array_len(dst->type);
             if (cap == 0) return 0;
-            ASSERT(cap > 0);
+            MD_ASSERT(cap > 0);
 
             set_writer_t w = set_writer_begin(dst, ctx, false);
             for (size_t i = 0; i < ctx->sys->residue.count; ++i) {
@@ -4280,7 +4280,7 @@ static int _fill_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
 
             if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-                count = MIN(1, count);
+                count = MD_MIN(1, count);
             }
             result = count;
         }
@@ -4293,8 +4293,8 @@ static int _fill_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // chain(sel): the chains the selection has an atom of, whole, one set each. An atom of no chain (a molecule the data
 // gives no chain id, which is not a polymer) adds none.
 static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
 
     if (md_system_chain_count(sys) == 0) {
@@ -4334,12 +4334,12 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
         ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     int result = 0;
 
@@ -4356,7 +4356,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const size_t res_count = md_array_size(res_indices);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (dst->ptr) {
             const int64_t cap = type_info_array_len(dst->type);
             if (cap == 0) return 0;
@@ -4397,7 +4397,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
+            count = MD_MIN(1, count);
         }
         result = count;
     }
@@ -4408,8 +4408,8 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _res_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
 
@@ -4425,7 +4425,7 @@ static int _res_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int32_t* res_indices = get_res_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (dst->ptr) {
             const int64_t cap = type_info_array_len(dst->type);
             if (cap == 0) return 0;
@@ -4472,7 +4472,7 @@ static int _res_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
+            count = MD_MIN(1, count);
         }
         result = count;
     }
@@ -4481,8 +4481,8 @@ static int _res_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     if (md_system_chain_count(ctx->sys) == 0) {
         if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The data gives no chain ids, so the system has no chains: a strand of a polymer is polymer(i)");
@@ -4496,7 +4496,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (count < 0) return count;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, true);
         for (int i = 0; i < count; ++i) {
@@ -4508,7 +4508,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 // chain("A"): every atom which carries the chain id, as one set (see md_chain_data_t): a chain id is a label of the
@@ -4517,8 +4517,8 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // is a compile error, and so is any id where the data gives none: the system then has no chains, and a strand of a
 // polymer is found as one (polymer(i)).
 static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     const md_system_t* sys = ctx->sys;
 
     const size_t num_str = element_count(arg[0]);
@@ -4526,7 +4526,7 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_array(int32_t) chains = get_chain_indices_in_context(sys, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < md_array_size(chains); ++i) {
             const str_t id = md_system_chain_id(sys, (size_t)chains[i]);
@@ -4608,8 +4608,8 @@ static md_array(int32_t) get_molecule_indices_in_context(const md_system_t* sys,
 
 // molecule(i): the molecules by their 1-based position, inside a context among those with an atom in it, each cut to it
 static int _molecule_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     md_array(int32_t) indices = get_molecule_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(int32_t) pos = 0;
@@ -4628,13 +4628,13 @@ static int _molecule_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 // molecule(sel): the molecules the selection has an atom of, whole, one set each
 static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
 
     const int64_t num_bf = element_count(arg[0]);
@@ -4650,7 +4650,7 @@ static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const size_t num_mols = md_system_molecule_count(sys);
     if (num_mols && sys->molecule.atom_slot) {
         uint8_t* taken = (uint8_t*)md_alloc(ctx->temp_alloc, num_mols);
-        MEMSET(taken, 0, num_mols);
+        MD_MEMSET(taken, 0, num_mols);
         md_bitset_iter_t it = md_bitset_iter(*src_bf);
         while (md_bitset_iter_next(&it)) {
             if (it.idx >= sys->atom.count) break;
@@ -4679,7 +4679,7 @@ static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
         ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 // ### PARTS ###
@@ -4698,8 +4698,8 @@ static md_array(int32_t) get_part_indices_in_context(const md_system_t* sys, con
 
 // part(i): the parts by their 1-based position, inside a context among those with an atom in it, each cut to it
 static int _part_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     md_array(int32_t) indices = get_part_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(int32_t) pos = 0;
@@ -4716,13 +4716,13 @@ static int _part_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 // part(sel): the parts the selection has an atom of, whole, one set each
 static int _fill_part(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
 
     const int64_t num_bf = element_count(arg[0]);
@@ -4749,7 +4749,7 @@ static int _fill_part(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
         ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 // glycan(): one selection per glycan, a part of saccharides only: each of its residues has the ring of a monosaccharide
@@ -4757,7 +4757,7 @@ static int _fill_part(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // single sugar. Within a context the glycans with an atom in it, whole, as lipid() takes them.
 static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)arg;
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
     const size_t num_res = sys->residue.count;
 
@@ -4765,7 +4765,7 @@ static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (num_res && md_system_part_count(sys)) {
         // The residues with a sugar ring
         uint8_t* sugar = (uint8_t*)md_alloc(ctx->temp_alloc, num_res);
-        MEMSET(sugar, 0, num_res);
+        MD_MEMSET(sugar, 0, num_res);
         const size_t num_rings = md_ring_data_count(&sys->ring);
         for (size_t r = 0; r < num_rings; ++r) {
             if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_SUGAR)) continue;
@@ -4789,7 +4789,7 @@ static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int count = (int)md_array_size(glycans);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, false);
         for (int i = 0; i < count; ++i) {
@@ -4799,7 +4799,7 @@ static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
         set_writer_end(&w);
         return 0;
     }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 
 // Property Compute
@@ -4845,9 +4845,9 @@ static void draw_distances(const vec3_t* a, size_t num_a, const vec3_t* b, size_
 }
 
 static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         vec3_t a = coordinate_extract_com(arg[0], ctx);
@@ -4859,7 +4859,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float dist = vec3_distance(a, b);
 
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
             float* ptr = dst->ptr;
             *ptr = dist;
         }
@@ -4889,9 +4889,9 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // element to any position of b. An element of a is a selection, an atom index, a range of atoms or a point, and is
 // measured by its atoms, not by its centre of mass. b is taken as a whole: an array of selections is merged into one.
 static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool largest) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     const size_t num_elem = element_count(arg[0]);
 
@@ -4913,10 +4913,10 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
         float* out = NULL;
         size_t out_len = 0;
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             out = as_float_arr(*dst);
             out_len = type_info_total_element_count(dst->type);
-            MEMSET(out, 0, out_len * sizeof(float));
+            MD_MEMSET(out, 0, out_len * sizeof(float));
         }
 
         size_t beg = 0;
@@ -4924,8 +4924,8 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
         md_array(irange_t) subscript_ranges = ctx->subscript_ranges;
         if (ctx->vis && subscript_ranges) {
             // Only the elements of the result which are shown, e.g. a hovered element of its plot
-            beg = (size_t)CLAMP(subscript_ranges[0].beg, 0, (int)num_elem);
-            end = (size_t)CLAMP(subscript_ranges[0].end, (int)beg, (int)num_elem);
+            beg = (size_t)MD_CLAMP(subscript_ranges[0].beg, 0, (int)num_elem);
+            end = (size_t)MD_CLAMP(subscript_ranges[0].end, (int)beg, (int)num_elem);
             // Which is a subscript of the result, not of the single elements and of b which are visualized below
             ctx->subscript_ranges = NULL;
         }
@@ -5019,8 +5019,8 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
     
     int result = 0;
 
@@ -5035,7 +5035,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float* dst_arr = 0;
 
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             // As for coord_x, dst can be of another length than there are pairs: then they are computed aside, and
             // what fits is written with the rest zeroed
             dst_arr = (dst->size == a_len * b_len * sizeof(float)) ? as_float_arr(*dst) : md_temp_alloc_array(temp, float, a_len * b_len);
@@ -5044,9 +5044,9 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
         if (dst && dst_arr != as_float_arr(*dst)) {
-            const size_t n = MIN(dst->size / sizeof(float), a_len * b_len);
-            MEMCPY(dst->ptr, dst_arr, n * sizeof(float));
-            MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            const size_t n = MD_MIN(dst->size / sizeof(float), a_len * b_len);
+            MD_MEMCPY(dst->ptr, dst_arr, n * sizeof(float));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
         }
         if (ctx->vis) {
             if (ctx->subscript_ranges) {
@@ -5119,13 +5119,13 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_t color, md_script_vis_t* vis) {
-    ASSERT(vis);
+    MD_ASSERT(vis);
     const float len = 0.5f;
     /*if (angle < 0.0f) {
         axis = vec3_mul1(axis, -1.0f);
         angle = -angle;
     }*/
-    const size_t num_segments = MAX(1, (size_t)(fabs(angle) / DEG_TO_RAD(10)));
+    const size_t num_segments = MD_MAX(1, (size_t)(fabs(angle) / MD_DEG_TO_RAD(10)));
     const float scl = 1.0f / (float)num_segments;
     md_script_vis_vertex_t vb = vertex(c, color);
     md_script_vis_vertex_t vp = vertex(vec3_add(c, vec3_mul1(v, len)), color);
@@ -5150,9 +5150,9 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
     
     if (dst || ctx->vis) {
         const vec3_t b = coordinate_extract_com(arg[1], ctx);
@@ -5164,17 +5164,17 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
             vec3_sub(coordinate_extract_com(arg[0], ctx), b),
             vec3_sub(coordinate_extract_com(arg[2], ctx), b),
         };
-        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->cur_state->unitcell);
+        md_util_min_image_vec3(dx, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
 
         // The ends placed in the images the arms were taken in, so the drawn angle is the measured one
         const vec3_t a = vec3_add(b, dx[0]);
         const vec3_t c = vec3_add(b, dx[1]);
         const vec3_t v0 = vec3_normalize(dx[0]);
         const vec3_t v1 = vec3_normalize(dx[1]);
-        const float  cos_angle = CLAMP(vec3_dot(v0, v1), -1.0f, 1.0f);
+        const float  cos_angle = MD_CLAMP(vec3_dot(v0, v1), -1.0f, 1.0f);
 
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = acosf(cos_angle);
         }
 
@@ -5234,10 +5234,10 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         vec3_t x[4] = {
@@ -5252,11 +5252,11 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             vec3_sub(x[2], x[1]),
             vec3_sub(x[3], x[2]),
         };
-        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->cur_state->unitcell);
+        md_util_min_image_vec3(dx, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
         float angle = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
 
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = angle;
         }
         if (ctx->vis) {
@@ -5347,7 +5347,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // the highest barrier of an sp3-sp3 torsion (chi, the nucleic acid backbone), the rare cis of a peptide
             // omega, and a phi which the backbone does not reach. At 180 they would be cut through the trans of
             // all of these, and through the beta strands of psi.
-            ctx->backchannel->period = period_make(-PI, PI, 0.0);
+            ctx->backchannel->period = period_make(-MD_PI, MD_PI, 0.0);
         }
     }
 
@@ -5355,16 +5355,16 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(ctx);
 
     // One value per atomset of the argument: rmsd(residue(:)) gives the deviation of every residue on its
     // own, each fitted separately. rmsd(union(...)) pools them into a single fit and a single value.
     const size_t num_bf = element_count(arg[0]);
 
     if (dst) {
-        ASSERT(ctx->sys);
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+        MD_ASSERT(ctx->sys);
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
         // Without masses (outside the evaluation of frames, when it is visualized) the atoms weigh the same, as they
         // do for every other procedure
         if (!ctx->ref_state || !ctx->ref_state->xyz) {
@@ -5390,7 +5390,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_array(vec4_t) xyzw[2] = {0};
 
-        for (size_t i = 0; i < MIN(num_bf, out_len); ++i) {
+        for (size_t i = 0; i < MD_MIN(num_bf, out_len); ++i) {
             const md_bitset_t* bf = &bf_arr[i];
             if (ctx->mol_ctx) {
                 tmp_bf = md_bitset_and(*bf, *ctx->mol_ctx, ctx->temp_alloc);
@@ -5450,8 +5450,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _cast_int_to_flt(data_t* dst, data_t arg[], eval_context_t* ctx){
     if (!dst) return 0;
     
-    ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
+    MD_ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
     (void)ctx;
     as_float(*dst) = (float)as_int(arg[0]);
     return 0;
@@ -5460,8 +5460,8 @@ static int _cast_int_to_flt(data_t* dst, data_t arg[], eval_context_t* ctx){
 static int _cast_int_to_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return 0;
     
-    ASSERT(type_info_equal(dst->type, (type_info_t)TI_IRANGE));
-    ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
+    MD_ASSERT(type_info_equal(dst->type, (type_info_t)TI_IRANGE));
+    MD_ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
     (void)ctx;
     as_irange(*dst) = (irange_t){as_int(arg[0]), as_int(arg[0])};
     return 0;
@@ -5470,8 +5470,8 @@ static int _cast_int_to_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return 0;
     
-    ASSERT(type_info_equal(dst->type, (type_info_t)TI_FRANGE));
-    ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_IRANGE));
+    MD_ASSERT(type_info_equal(dst->type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_IRANGE));
     (void)ctx;
     as_frange(*dst) = (frange_t){(float)as_irange(arg[0]).beg, (float)as_irange(arg[0]).end};
     return 0;
@@ -5480,11 +5480,11 @@ static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return 0;
 
-    ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
+    MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     (void)ctx;
     // The length is deduced from the argument, so the two agree: the smaller is what can be read and written
-    const size_t dst_len = MIN(element_count(*dst), element_count(arg[0]));
+    const size_t dst_len = MD_MIN(element_count(*dst), element_count(arg[0]));
 
     irange_t* d = dst->ptr;
     int*      s = arg[0].ptr;
@@ -5499,11 +5499,11 @@ static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* 
 static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return 0;
     
-    ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
+    MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     (void)ctx;
     // The length is deduced from the argument, so the two agree: the smaller is what can be read and written
-    const size_t dst_len = MIN(element_count(*dst), element_count(arg[0]));
+    const size_t dst_len = MD_MIN(element_count(*dst), element_count(arg[0]));
 
     float* d = dst->ptr;
     int*   s = arg[0].ptr;
@@ -5517,11 +5517,11 @@ static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* c
 static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return 0;
     
-    ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FRANGE_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FRANGE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     (void)ctx;
     // The length is deduced from the argument, so the two agree: the smaller is what can be read and written
-    const size_t dst_len = MIN(element_count(*dst), element_count(arg[0]));
+    const size_t dst_len = MD_MIN(element_count(*dst), element_count(arg[0]));
 
     frange_t* d = dst->ptr;
     irange_t* s = arg[0].ptr;
@@ -5534,8 +5534,8 @@ static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t*
 }
 
 static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
-    ASSERT(arg[0].ptr);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
+    MD_ASSERT(arg[0].ptr);
 
     int result = 0;
 
@@ -5546,7 +5546,7 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // The idea here is that if we have a context, we only make sure to add the indices which are represented within the context.
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
@@ -5571,8 +5571,8 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    ASSERT(arg[0].ptr);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    MD_ASSERT(arg[0].ptr);
 
     int result = 0;
 
@@ -5581,13 +5581,13 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < num_ranges; ++i) {
             const irange_t range = clamp_range(remap_range_to_context(ranges[i], ctx_range), ctx_range);
             const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
             if (ctx->mol_ctx) {
-                md_bitset_iter_t it = md_bitset_iter_range(*ctx->mol_ctx, (uint32_t)MAX(range.beg, 0), (uint32_t)MAX(range.end, 0));
+                md_bitset_iter_t it = md_bitset_iter_range(*ctx->mol_ctx, (uint32_t)MD_MAX(range.beg, 0), (uint32_t)MD_MAX(range.end, 0));
                 int64_t k = 0;
                 while (md_bitset_iter_next(&it)) {
                     if ((k % step) == 0) {
@@ -5624,8 +5624,8 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     if (!dst) return 0;
 
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     const md_bitset_t* src_bf_arr = (md_bitset_t*)arg[0].ptr;
     const int64_t count = type_info_array_len(arg[0].type);
@@ -5653,8 +5653,8 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Implement integer split for now
 	(void)ctx;
 
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_INT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_INT));
 
 	int in_N = as_int(arg[1]);
 
@@ -5699,13 +5699,13 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     vec3_t com;
     if (dst || ctx->vis) {
         com = coordinate_extract_com(arg[0], ctx);
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3));
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3));
             as_vec3(*dst) = com;
         }
         if (ctx->vis) {
@@ -5753,16 +5753,16 @@ static plane_rings_t plane_rings_build(const md_system_t* sys, md_allocator_i* a
     const size_t N = sys->atom.count;
     if (num_rings == 0 || N == 0) return pr;
     pr.off = md_alloc(alloc, sizeof(uint32_t) * (N + 1));
-    MEMSET(pr.off, 0, sizeof(uint32_t) * (N + 1));
+    MD_MEMSET(pr.off, 0, sizeof(uint32_t) * (N + 1));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
         const size_t n = md_ring_size(&sys->ring, r);
         for (size_t k = 0; k < n; ++k) if ((size_t)ring[k] < N) pr.off[ring[k] + 1] += 1;
     }
     for (size_t i = 0; i < N; ++i) pr.off[i + 1] += pr.off[i];
-    pr.ring = md_alloc(alloc, sizeof(uint32_t) * MAX(pr.off[N], 1));
+    pr.ring = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(pr.off[N], 1));
     uint32_t* fill = md_alloc(alloc, sizeof(uint32_t) * N);
-    MEMCPY(fill, pr.off, sizeof(uint32_t) * N);
+    MD_MEMCPY(fill, pr.off, sizeof(uint32_t) * N);
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
         const size_t n = md_ring_size(&sys->ring, r);
@@ -5847,14 +5847,14 @@ static void plane_from_points(plane_t* out, const vec4_t* xyzw, size_t count, ve
     out->centroid  = c;
     out->normal    = n;
     out->axis      = axis;
-    out->extent[0] = sqrtf(MAX(E.values.elem[order[0]], 0.0f));
-    out->extent[1] = sqrtf(MAX(E.values.elem[order[1]], 0.0f));
+    out->extent[0] = sqrtf(MD_MAX(E.values.elem[order[0]], 0.0f));
+    out->extent[1] = sqrtf(MD_MAX(E.values.elem[order[1]], 0.0f));
     out->radius    = radius / (float)count;
     out->deviation = sqrtf(dev / (float)count);
 }
 
 static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
-    MEMSET(out, 0, sizeof(plane_t));
+    MD_MEMSET(out, 0, sizeof(plane_t));
     out->count = (int)count;
     if (count < 3) return;
     const md_system_t* sys = ctx->sys;
@@ -5908,7 +5908,7 @@ static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
     const int segments = 32;
     md_script_vis_vertex_t prev = vertex(vec3_add(p->centroid, u), COLOR_WHITE);
     for (int i = 1; i <= segments; ++i) {
-        const float t = (float)i / (float)segments * 2.0f * PI;
+        const float t = (float)i / (float)segments * 2.0f * MD_PI;
         const vec3_t x = vec3_add(p->centroid, vec3_add(vec3_mul1(u, cosf(t)), vec3_mul1(v, sinf(t))));
         md_script_vis_vertex_t cur = vertex(x, COLOR_WHITE);
         push_line(prev, cur, ctx->vis);
@@ -5920,8 +5920,8 @@ static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
 }
 
 static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     const md_bitset_t* groups = as_bitset(arg[0]);
     const size_t num = element_count(arg[0]);
 
@@ -5949,7 +5949,7 @@ static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst && ctx->backchannel) {
         // Evaluated within the static check, for a procedure asking about its argument (centroid() its length):
         // there are no coordinates there, only the shape
-        MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        MD_MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
         return 0;
     }
 
@@ -5959,10 +5959,10 @@ static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     plane_t* out = dst ? (plane_t*)dst->ptr : NULL;
     const size_t cap = dst ? element_count(*dst) : num;
-    size_t beg = 0, end = MIN(num, cap);
+    size_t beg = 0, end = MD_MIN(num, cap);
     if (!dst && ctx->vis && ctx->subscript_ranges) {
-        beg = (size_t)MAX(ctx->subscript_ranges[0].beg, 0);
-        end = MIN((size_t)MAX(ctx->subscript_ranges[0].end, 0), end);
+        beg = (size_t)MD_MAX(ctx->subscript_ranges[0].beg, 0);
+        end = MD_MIN((size_t)MD_MAX(ctx->subscript_ranges[0].end, 0), end);
     }
 
     for (size_t g = beg; g < end; ++g) {
@@ -5972,7 +5972,7 @@ static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         const md_bitset_t* bf = &group;
         const size_t count = md_bitset_count(group);
-        int32_t* idx = md_alloc(temp_alloc, sizeof(int32_t) * MAX(count, 1));
+        int32_t* idx = md_alloc(temp_alloc, sizeof(int32_t) * MD_MAX(count, 1));
         md_bitset_iter_extract_indices(idx, count, md_bitset_iter(group));
         plane_t p;
         plane_fit(&p, idx, count, plane_rings_find(&pr, ctx->sys, idx, count), ctx, temp_alloc);
@@ -5988,8 +5988,8 @@ static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _plane_points(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (!dst && !ctx->vis) {
         // Positions only counted when they are evaluated (coord(within(...))) are checked then
@@ -6012,7 +6012,7 @@ static int _plane_points(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst && ctx->backchannel) {
         // Evaluated within the static check, for a procedure asking about its argument: the shape only
-        MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        MD_MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
         return 0;
     }
 
@@ -6057,7 +6057,7 @@ static int _plane_centroid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
     const plane_t* p = as_planes(arg[0]);
     vec3_t* out = as_vec3_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
+    const size_t n = MD_MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
     for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].centroid : (vec3_t){0};
     return 0;
 }
@@ -6066,7 +6066,7 @@ static int _plane_normal(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return plane_accessor_static(arg, md_unit_none(), ctx);
     const plane_t* p = as_planes(arg[0]);
     vec3_t* out = as_vec3_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
+    const size_t n = MD_MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
     for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].normal : (vec3_t){0};
     return 0;
 }
@@ -6075,7 +6075,7 @@ static int _plane_radius(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
     const plane_t* p = as_planes(arg[0]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    const size_t n = MD_MIN(element_count(arg[0]), element_count(*dst));
     for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].radius : 0.0f;
     return 0;
 }
@@ -6084,7 +6084,7 @@ static int _plane_deviation(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
     const plane_t* p = as_planes(arg[0]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    const size_t n = MD_MIN(element_count(arg[0]), element_count(*dst));
     for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].deviation : 0.0f;
     return 0;
 }
@@ -6101,19 +6101,19 @@ static int _plane_angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->backchannel) {
             ctx->backchannel->unit[0] = md_unit_none();
             ctx->backchannel->unit[1] = md_unit_radian();
-            ctx->backchannel->value_range = (frange_t){0, PI / 2};
+            ctx->backchannel->value_range = (frange_t){0, MD_PI / 2};
         }
-        return (int)MAX(na, nb);
+        return (int)MD_MAX(na, nb);
     }
     const plane_t* a = as_planes(arg[0]);
     const plane_t* b = as_planes(arg[1]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(MAX(na, nb), element_count(*dst));
+    const size_t n = MD_MIN(MD_MAX(na, nb), element_count(*dst));
     for (size_t i = 0; i < n; ++i) {
         const plane_t* pa = &a[na == 1 ? 0 : i];
         const plane_t* pb = &b[nb == 1 ? 0 : i];
         const float c = fabsf(vec3_dot(pa->normal, pb->normal));
-        out[i] = acosf(CLAMP(c, 0.0f, 1.0f));
+        out[i] = acosf(MD_CLAMP(c, 0.0f, 1.0f));
     }
     return 0;
 }
@@ -6146,7 +6146,7 @@ static int64_t pucker_group_ring(const plane_rings_t* pr, const md_bitset_t* bf,
 }
 
 static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const md_bitset_t* groups = as_bitset(arg[0]);
     const size_t num = element_count(arg[0]);
     const md_system_t* sys = ctx->sys;
@@ -6182,16 +6182,16 @@ static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     pucker_rec_t* out = dst ? (pucker_rec_t*)dst->ptr : NULL;
-    const size_t end = MIN(num, dst ? element_count(*dst) : num);
+    const size_t end = MD_MIN(num, dst ? element_count(*dst) : num);
     size_t beg = 0, vend = end;
     if (!dst && ctx->vis && ctx->subscript_ranges) {
-        beg = (size_t)MAX(ctx->subscript_ranges[0].beg, 0);
-        vend = MIN((size_t)MAX(ctx->subscript_ranges[0].end, 0), end);
+        beg = (size_t)MD_MAX(ctx->subscript_ranges[0].beg, 0);
+        vend = MD_MIN((size_t)MD_MAX(ctx->subscript_ranges[0].end, 0), end);
     }
     for (size_t g = beg; g < vend; ++g) {
         const int64_t r = pucker_group_ring(&pr, &groups[g], ctx, temp_alloc);
         if (r < 0) {
-            if (out) MEMSET(&out[g], 0, sizeof(pucker_rec_t));
+            if (out) MD_MEMSET(&out[g], 0, sizeof(pucker_rec_t));
             continue;
         }
         int32_t order[MD_RING_MAX_SIZE];
@@ -6201,7 +6201,7 @@ static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (out) {
             if (ctx->backchannel) {
                 // The static check asking about the argument of an accessor: the shape only
-                MEMSET(&out[g], 0, sizeof(pucker_rec_t));
+                MD_MEMSET(&out[g], 0, sizeof(pucker_rec_t));
                 out[g].cp.size = (uint32_t)n;
                 out[g].size = (uint8_t)n;
                 out[g].anchored = anchored;
@@ -6220,7 +6220,7 @@ done:
 }
 
 static int _pucker_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const int* in = as_int_arr(arg[0]);
     const size_t n = element_count(arg[0]);
     const irange_t range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
@@ -6262,7 +6262,7 @@ static int _pucker_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         pucker_rec_t* out = (pucker_rec_t*)dst->ptr;
         if (ctx->backchannel) {
-            MEMSET(out, 0, sizeof(pucker_rec_t));
+            MD_MEMSET(out, 0, sizeof(pucker_rec_t));
             out->cp.size = (uint32_t)n;
             out->size = (uint8_t)n;
             out->anchored = true;
@@ -6310,12 +6310,12 @@ static int pucker_accessor_static(data_t arg[], pucker_need_t need, md_unit_t un
         if (need == PUCKER_NEED_PHASE) {
             // Cremer-Pople phi2 in [0, 360[, cut at 0: it moves around the whole circle (the pseudorotation of a five
             // membered ring, the boats and skews of a six), and where it is least likely to be depends on the ring
-            ctx->backchannel->period = period_make(0.0, TWO_PI, 0.0);
+            ctx->backchannel->period = period_make(0.0, MD_TWO_PI, 0.0);
         } else if (need == PUCKER_NEED_PSEUDO) {
             // P in [0, 360[, cut at 270: the west of the pseudorotation wheel (O4'-exo), the highest barrier of a
             // furanose. North (C3'-endo, P near 18) and south (C2'-endo, near 162) meet through the east. At 0 they
             // would be cut through the north.
-            ctx->backchannel->period = period_make(0.0, TWO_PI, 1.5 * PI);
+            ctx->backchannel->period = period_make(0.0, MD_TWO_PI, 1.5 * MD_PI);
         }
     }
     return (int)n;
@@ -6325,7 +6325,7 @@ static int _pucker_amplitude(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_ANY, md_unit_angstrom(), ctx);
     const pucker_rec_t* p = as_puckers(arg[0]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    const size_t n = MD_MIN(element_count(arg[0]), element_count(*dst));
     for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].cp.amplitude : 0.0f;
     return 0;
 }
@@ -6334,8 +6334,8 @@ static int _pucker_phase(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_PHASE, md_unit_radian(), ctx);
     const pucker_rec_t* p = as_puckers(arg[0]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
-    for (size_t i = 0; i < n; ++i) out[i] = p ? DEG_TO_RAD(p[i].cp.phi2) : 0.0f;
+    const size_t n = MD_MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? MD_DEG_TO_RAD(p[i].cp.phi2) : 0.0f;
     return 0;
 }
 
@@ -6343,8 +6343,8 @@ static int _pucker_theta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_THETA, md_unit_radian(), ctx);
     const pucker_rec_t* p = as_puckers(arg[0]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
-    for (size_t i = 0; i < n; ++i) out[i] = p ? DEG_TO_RAD(p[i].cp.theta) : 0.0f;
+    const size_t n = MD_MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? MD_DEG_TO_RAD(p[i].cp.theta) : 0.0f;
     return 0;
 }
 
@@ -6352,13 +6352,13 @@ static int _pucker_pseudorotation(data_t* dst, data_t arg[], eval_context_t* ctx
     if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_PSEUDO, md_unit_radian(), ctx);
     const pucker_rec_t* p = as_puckers(arg[0]);
     float* out = as_float_arr(*dst);
-    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
-    for (size_t i = 0; i < n; ++i) out[i] = p ? DEG_TO_RAD(p[i].pseudo_phase) : 0.0f;
+    const size_t n = MD_MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? MD_DEG_TO_RAD(p[i].pseudo_phase) : 0.0f;
     return 0;
 }
 
 static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int axis) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         float* density[3];
@@ -6366,7 +6366,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         // Set the distribution weight vector for each dimension
         // And zero the contributuion of each bin
-        ASSERT(dst->weight);
+        MD_ASSERT(dst->weight);
         if (axis == -1) {
             // Three distributions: x, y, z
             float* ptr = dst->ptr;
@@ -6411,7 +6411,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         vec4_t ext = vec4_from_vec3(re, 0);
         if (axis == -1) {
             // We use the max axis as we cannot output three individual value_ranges
-            ext = vec4_set1(MAX(re.x, MAX(re.y, re.z)));
+            ext = vec4_set1(MD_MAX(re.x, MD_MAX(re.y, re.z)));
             ext.w = 0;
         }
 
@@ -6445,9 +6445,9 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             float w = xyzw[i].w;
 
             int bin_idx[3] = {
-                CLAMP((int)(fc.x * MD_DIST_BINS), 0, MD_DIST_BINS - 1),
-                CLAMP((int)(fc.y * MD_DIST_BINS), 0, MD_DIST_BINS - 1),
-                CLAMP((int)(fc.z * MD_DIST_BINS), 0, MD_DIST_BINS - 1),
+                MD_CLAMP((int)(fc.x * MD_DIST_BINS), 0, MD_DIST_BINS - 1),
+                MD_CLAMP((int)(fc.y * MD_DIST_BINS), 0, MD_DIST_BINS - 1),
+                MD_CLAMP((int)(fc.z * MD_DIST_BINS), 0, MD_DIST_BINS - 1),
             };
 
             if (axis == -1) {
@@ -6517,7 +6517,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             // We use the max axis half ext as we cannot output three individual value_ranges
             float rad = 0;
             if (axis == -1) {
-                rad  = MAX(re.x, MAX(re.y, re.z));
+                rad  = MD_MAX(re.x, MD_MAX(re.y, re.z));
             } else {
                 rad = re.elem[axis];
             }
@@ -6547,16 +6547,16 @@ static int _density_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
             md_array(vec3_t) pos = coordinate_extract(arg[0], ctx);
             // As for coord_x: what fits is written and the rest zeroed
-            const size_t bytes = MIN(dst->size, md_array_bytes(pos));
-            MEMCPY(dst->ptr, pos, bytes);
-            MEMSET((char*)dst->ptr + bytes, 0, dst->size - bytes);
+            const size_t bytes = MD_MIN(dst->size, md_array_bytes(pos));
+            MD_MEMCPY(dst->ptr, pos, bytes);
+            MD_MEMSET((char*)dst->ptr + bytes, 0, dst->size - bytes);
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
@@ -6568,17 +6568,17 @@ static int _coordinate(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             const vec3_t* pos = coordinate_extract(arg[0], ctx);
             float* x = as_float_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MIN(dst->size / sizeof(float), md_array_size(pos));
-            MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            const size_t n = MD_MIN(dst->size / sizeof(float), md_array_size(pos));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
             for (size_t i = 0; i < n; ++i) {
                 x[i] = pos[i].x;
             }
@@ -6593,17 +6593,17 @@ static int _coordinate_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             const vec3_t* pos = coordinate_extract(arg[0], ctx);
             float* y = as_float_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MIN(dst->size / sizeof(float), md_array_size(pos));
-            MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            const size_t n = MD_MIN(dst->size / sizeof(float), md_array_size(pos));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
             for (size_t i = 0; i < n; ++i) {
                 y[i] = pos[i].y;
             }
@@ -6618,17 +6618,17 @@ static int _coordinate_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             const vec3_t* pos = coordinate_extract(arg[0], ctx);
             float* z = as_float_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MIN(dst->size / sizeof(float), md_array_size(pos));
-            MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            const size_t n = MD_MIN(dst->size / sizeof(float), md_array_size(pos));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
             for (size_t i = 0; i < n; ++i) {
                 z[i] = pos[i].z;
             }
@@ -6643,17 +6643,17 @@ static int _coordinate_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
             const vec3_t* pos = coordinate_extract(arg[0], ctx);
             vec2_t* xy = as_vec2_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
-            MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
+            const size_t n = MD_MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
             for (size_t i = 0; i < n; ++i) {
                 xy[i] = (vec2_t){pos[i].x, pos[i].y};
             }
@@ -6668,17 +6668,17 @@ static int _coordinate_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
             const vec3_t* pos = coordinate_extract(arg[0], ctx);
             vec2_t* xz = as_vec2_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
-            MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
+            const size_t n = MD_MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
             for (size_t i = 0; i < n; ++i) {
                 xz[i] = (vec2_t){pos[i].x, pos[i].z};
             }
@@ -6693,17 +6693,17 @@ static int _coordinate_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _coordinate_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
             const vec3_t* pos = coordinate_extract(arg[0], ctx);
             vec2_t* yz = as_vec2_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
-            MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
+            const size_t n = MD_MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
+            MD_MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
             for (size_t i = 0; i < n; ++i) {
                 yz[i] = (vec2_t){pos[i].y, pos[i].z};
             }
@@ -6731,12 +6731,12 @@ bool rdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
     rdf_payload_t* data = user_param;
     
     while (mask) {
-        const int idx = ctz32(mask);
+        const int idx = md_ctz32(mask);
         const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
         if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
             const float d = sqrtf(d2);
             int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
-            bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+            bin_idx = MD_CLAMP(bin_idx, 0, data->num_bins - 1);
             data->bins[bin_idx] += 1.0f;
             data->total_count += 1;
         }
@@ -6750,13 +6750,13 @@ bool rdf_iter_excl_mask(const md_spatial_hash_elem_t* elem_arr, int mask, void* 
     rdf_payload_t* data = user_param;
 
     while (mask) {
-        const int idx = ctz32(mask);
+        const int idx = md_ctz32(mask);
         if (!md_bitset_test(*data->exclusion_mask, elem_arr[idx].idx)) {
             const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
             if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
                 const float d = sqrtf(d2);
                 int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
-                bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+                bin_idx = MD_CLAMP(bin_idx, 0, data->num_bins - 1);
                 data->bins[bin_idx] += 1.0f;
                 data->total_count += 1;
             }
@@ -6769,7 +6769,7 @@ bool rdf_iter_excl_mask(const md_spatial_hash_elem_t* elem_arr, int mask, void* 
 
 static inline void rdf_increment_bin(rdf_payload_t* data, float d) {
     int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
-    bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+    bin_idx = MD_CLAMP(bin_idx, 0, data->num_bins - 1);
     data->bins[bin_idx] += 1.0f;
     data->total_count += 1;
 }
@@ -6806,7 +6806,7 @@ void rdf_cb_excl_mask(const uint32_t* i_idx, const uint32_t* j_idx, const float*
 }
 
 static inline double sphere_volume(double r) {
-    return (4.0 / 3.0) * PI * (r * r * r);
+    return (4.0 / 3.0) * MD_PI * (r * r * r);
 }
 
 static void compute_rdf(float bins[], float weights[], int num_bins, const data_t arg[2], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
@@ -6815,7 +6815,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     size_t total_count = 0;
 
     // Add a small bias to avoid adding 'zero' distances, also to remove *self* when counting atomic RDFs
-    min_cutoff = MAX(min_cutoff, 1e-3f);
+    min_cutoff = MD_MAX(min_cutoff, 1e-3f);
 
     md_array(int32_t) ref_idx = coordinate_extract_indices(arg[0], ctx);
     size_t ref_len  = 0;
@@ -6889,7 +6889,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
 
 #if 0
 static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
-    ASSERT(ctx->vis);
+    MD_ASSERT(ctx->vis);
 
     //coordinate_visualize(arg[0], ctx);
     //coordinate_visualize(arg[1], ctx);
@@ -6946,9 +6946,9 @@ static int dist_scaled(data_t* dst, data_t arg[], float scl) {
         return dist_count(arg);
     }
     {
-        ASSERT(dst->weight);
+        MD_ASSERT(dst->weight);
         const size_t n = dist_bin_count(&arg[0]);
-        ASSERT(n == dist_bin_count(dst));
+        MD_ASSERT(n == dist_bin_count(dst));
         const float* v = (const float*)arg[0].ptr;
         float* out = (float*)dst->ptr;
         for (size_t i = 0; i < n; ++i) {
@@ -6975,9 +6975,9 @@ static int _dist_pool(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return dist_count(arg);
     }
     {
-        ASSERT(dst->weight);
+        MD_ASSERT(dst->weight);
         const size_t n = dist_bin_count(&arg[0]);
-        ASSERT(n == dist_bin_count(&arg[1]) && n == dist_bin_count(dst));
+        MD_ASSERT(n == dist_bin_count(&arg[1]) && n == dist_bin_count(dst));
         const float* a = (const float*)arg[0].ptr;
         const float* b = (const float*)arg[1].ptr;
         float* out = (float*)dst->ptr;
@@ -6994,8 +6994,8 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
         const int num_bins = MD_DIST_BINS;
        
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_DISTRIBUTION));
-            ASSERT(dst->ptr && dst->weight);
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_DISTRIBUTION));
+            MD_ASSERT(dst->ptr && dst->weight);
             float* bins    = (float*)dst->ptr;
             float* weights = dst->weight;
             compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, ctx);
@@ -7036,18 +7036,18 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
 }
 
 static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     const float cutoff = as_float(arg[2]);
     return internal_rdf(dst, arg, 0, cutoff, ctx);
 }
 
 static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
 
     const frange_t cutoff = as_frange(arg[2]);
     return internal_rdf(dst, arg, cutoff.beg, cutoff.end, ctx);
@@ -7082,7 +7082,7 @@ count_type_t count_type_from_str(str_t str) {
 }
 
 size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t count_type, eval_context_t* ctx) {
-    ASSERT(ctx);
+    MD_ASSERT(ctx);
     if (!bf_arr || bf_len == 0) {
         return 0;
     }
@@ -7136,7 +7136,7 @@ size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t cou
             break;
         }
         default: {
-            ASSERT(false);
+            MD_ASSERT(false);
             break;
         }
     }
@@ -7144,10 +7144,10 @@ size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t cou
 }
 
 static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
         const md_bitset_t* bf = as_bitset(arg[0]);
         size_t len = element_count(arg[0]);
         size_t count = internal_count(bf, len, COUNT_TYPE_ATOM, ctx);
@@ -7158,11 +7158,11 @@ static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+        MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
         const md_bitset_t* bf = as_bitset(arg[0]);
         size_t len = element_count(arg[0]);
         count_type_t type = count_type_from_str(as_string(arg[1]));
@@ -7299,20 +7299,20 @@ void sdf_cb(const uint32_t in_idx[], const float in_x[], const float in_y[], con
             continue;
         }
 
-        const uint32_t ix = MIN((uint32_t)c.x, MD_VOL_DIM - 1);
-        const uint32_t iy = MIN((uint32_t)c.y, MD_VOL_DIM - 1);
-        const uint32_t iz = MIN((uint32_t)c.z, MD_VOL_DIM - 1);
+        const uint32_t ix = MD_MIN((uint32_t)c.x, MD_VOL_DIM - 1);
+        const uint32_t iy = MD_MIN((uint32_t)c.y, MD_VOL_DIM - 1);
+        const uint32_t iz = MD_MIN((uint32_t)c.z, MD_VOL_DIM - 1);
         const size_t vol_idx = iz * (MD_VOL_DIM * MD_VOL_DIM) + iy * MD_VOL_DIM + ix;
-        ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
+        MD_ASSERT(vol_idx < MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM);
         data->vol[vol_idx] += 1.0f;
     }
 }
 
 static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     const size_t num_ref_bitfields = element_count(arg[0]);
     const md_bitset_t* ref_bf_arr = as_bitset(arg[0]);
@@ -7345,8 +7345,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         float* vol = 0;
         if (dst) {
-            ASSERT(dst->ptr);
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_VOLUME));
+            MD_ASSERT(dst->ptr);
+            MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_VOLUME));
             vol = as_float_arr(*dst);
         }
 
@@ -7398,7 +7398,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             vec3_t ext = {0};
             md_unitcell_diag_extract_float(ext.elem, &ctx->cur_state->unitcell);
             for (int k = 0; k < 3; ++k) {
-                if (ext.elem[k] > 0.0f) min_cell_extent = MIN(min_cell_extent, ext.elem[k]);
+                if (ext.elem[k] > 0.0f) min_cell_extent = MD_MIN(min_cell_extent, ext.elem[k]);
             }
         }
 
@@ -7455,7 +7455,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
                 md_allocator_i* alloc = ctx->vis->alloc;
-                ASSERT(alloc);
+                MD_ASSERT(alloc);
                 md_bitset_t bf_cpy = md_bitset_copy(*bf, alloc);
 
                 mat4_t ART = mat4_mul(A, RT);
@@ -7503,8 +7503,8 @@ done:
 
 // Construct a ratio of void space over total space within the bounding box of the selected atoms
 static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
 
     // Static/validation path
     if (!dst) {
@@ -7516,7 +7516,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return 1; // Produces a single scalar
     }
 
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
 
     // Only support orthogonal cells for now
     if (ctx->cur_state->unitcell.flags & MD_UNITCELL_TRICLINIC) {
@@ -7570,15 +7570,15 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     // Compute voxel sizes from ROI extents; guard zero extents
     vec3_t ext = vec3_max(vec3_sub(bmax, bmin), vec3_set1(1.0));
-    float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
+    float max_ext = MD_MAX(ext.x, MD_MAX(ext.y, ext.z));
 
     const int max_dim = 512; // Use this for largest extent then try to construct a uniform voxel size
     const float target_voxel_ext = max_ext / max_dim;
 
     int dim[3] = {
-        MAX(1, (int)(ext.x / target_voxel_ext)),
-        MAX(1, (int)(ext.y / target_voxel_ext)),
-        MAX(1, (int)(ext.z / target_voxel_ext)),
+        MD_MAX(1, (int)(ext.x / target_voxel_ext)),
+        MD_MAX(1, (int)(ext.y / target_voxel_ext)),
+        MD_MAX(1, (int)(ext.z / target_voxel_ext)),
     };
 
     const int dim2 = dim[0] * dim[1];
@@ -7605,12 +7605,12 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int iz_max = (int)floorf((z + r - bmin.z) / dz);
 
         // Clamp to grid
-        ix_min = MAX(0, MIN(dim[0] - 1, ix_min));
-        iy_min = MAX(0, MIN(dim[1] - 1, iy_min));
-        iz_min = MAX(0, MIN(dim[2] - 1, iz_min));
-        ix_max = MAX(0, MIN(dim[0] - 1, ix_max));
-        iy_max = MAX(0, MIN(dim[1] - 1, iy_max));
-        iz_max = MAX(0, MIN(dim[2] - 1, iz_max));
+        ix_min = MD_MAX(0, MD_MIN(dim[0] - 1, ix_min));
+        iy_min = MD_MAX(0, MD_MIN(dim[1] - 1, iy_min));
+        iz_min = MD_MAX(0, MD_MIN(dim[2] - 1, iz_min));
+        ix_max = MD_MAX(0, MD_MIN(dim[0] - 1, ix_max));
+        iy_max = MD_MAX(0, MD_MIN(dim[1] - 1, iy_max));
+        iz_max = MD_MAX(0, MD_MIN(dim[2] - 1, iz_max));
 
         const float r2 = r * r;
 
@@ -7635,7 +7635,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     // Count occupied voxels
     size_t set_bits = 0;
-    for (size_t i = 0; i < num_u64; ++i) set_bits += popcnt64(vol_bits[i]);
+    for (size_t i = 0; i < num_u64; ++i) set_bits += md_popcnt64(vol_bits[i]);
 
     // Compute void ratio e = V_void / V_solid
     if (set_bits == 0) {
@@ -7654,12 +7654,12 @@ done:
 }
 
 static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));    
-    ASSERT(arg[0].ptr);
+    MD_ASSERT(ctx);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));    
+    MD_ASSERT(arg[0].ptr);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
         md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
 
         vec3_t* out_weights = as_vec3_arr(*dst);
@@ -7669,7 +7669,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_array(vec4_t)  xyzw = 0;
         if (arg[0].type.base_type == TYPE_ATOMSET) {
-            const size_t bf_len = MIN(element_count(arg[0]), out_len);
+            const size_t bf_len = MD_MIN(element_count(arg[0]), out_len);
             const md_bitset_t* bf_arr = as_bitset(arg[0]);
             md_bitset_t tmp_bf = {0};
 
@@ -7731,30 +7731,30 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 #define BAKE_CMP_ARR(name, op) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
-        ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR)); \
-        ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR)); \
+        MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR)); \
+        MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR)); \
         const float* a = as_float_arr(arg[0]); \
         const float* b = as_float_arr(arg[1]); \
         int a_len = type_info_array_len(arg[0].type); \
         int b_len = type_info_array_len(arg[1].type); \
         if (dst) { \
-            ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR)); \
+            MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR)); \
             int out_len = type_info_array_len(dst->type); \
             bool* out = as_bool_arr(*dst); \
             if (a_len < b_len) { \
-                ASSERT(a_len == 1); \
+                MD_ASSERT(a_len == 1); \
                 for (int i = 0; i < out_len; ++i) out[i] = a[0] op b[i]; \
             } else if (a_len > b_len) { \
-                ASSERT(b_len == 1); \
-                ASSERT(out_len == a_len); \
+                MD_ASSERT(b_len == 1); \
+                MD_ASSERT(out_len == a_len); \
                 for (int i = 0; i < out_len; ++i) out[i] = a[i] op b[0]; \
             } else { \
-                ASSERT(a_len == out_len && b_len == out_len); \
+                MD_ASSERT(a_len == out_len && b_len == out_len); \
                 for (int i = 0; i < a_len; ++i) out[i] = a[i] op b[i]; \
             } \
             return 0; \
         } \
-        return MAX(a_len, b_len); \
+        return MD_MAX(a_len, b_len); \
     }
 
 #define BAKE_CMP_S_S(name, op) \
@@ -7796,12 +7796,12 @@ static int32_t greedy_align(const md_bitset_t* a, const md_bitset_t* b, const md
 }
 
 static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
+    MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET));
 
     if (dst) {
-        ASSERT(dst->ptr);
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_INT_ARR));
+        MD_ASSERT(dst->ptr);
+        MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_INT_ARR));
     }
 }
 */
@@ -7814,7 +7814,7 @@ static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // The element of arr which holds each particle. Particles in no element get a label of their own (num + index),
 // so they never share one. The first element holding a particle wins.
 static uint32_t* contacts_label_particles(const md_bitset_t* arr, size_t num, uint32_t num_atoms, md_allocator_i* alloc) {
-    uint32_t* label = md_alloc(alloc, sizeof(uint32_t) * MAX(num_atoms, 1));
+    uint32_t* label = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(num_atoms, 1));
     for (uint32_t k = 0; k < num_atoms; ++k) label[k] = (uint32_t)num + k;
     for (size_t e = num; e-- > 0;) {
         md_bitset_iter_t it = md_bitset_iter(arr[e]);
@@ -7876,7 +7876,7 @@ static const md_contact_query_t* contacts_find_query(const eval_context_t* ctx) 
 }
 
 static int _contacts(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
 
     if (!dst && !ctx->vis) {
         // Static validation: everything a query is prepared from must be the same for every frame
@@ -7938,7 +7938,7 @@ static int _contacts(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Evaluated within the static check, for a procedure which is asking about its argument (degree asks for the
         // number of groups). The shape is known without searching, and a search here would stall the compilation.
         md_contact_set_t* set = (md_contact_set_t*)dst->ptr;
-        MEMSET(set, 0, sizeof(md_contact_set_t));
+        MD_MEMSET(set, 0, sizeof(md_contact_set_t));
         set->num_a = (uint32_t)element_count(arg[0]);
         set->num_b = is_absent_type(arg[1].type) ? set->num_a : (uint32_t)element_count(arg[1]);
         set->flags = is_absent_type(arg[1].type) ? MD_CONTACT_FLAG_SELF : MD_CONTACT_FLAG_NONE;
@@ -8035,7 +8035,7 @@ static int _degree_contact(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     float* out = as_float_arr(*dst);
     const size_t len = element_count(*dst);
-    MEMSET(out, 0, len * sizeof(float));
+    MD_MEMSET(out, 0, len * sizeof(float));
     if (set) {
         const bool self = set->flags & MD_CONTACT_FLAG_SELF;
         for (size_t k = 0; k < set->count; ++k) {
@@ -8077,13 +8077,13 @@ static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t pop = md_bitset_count(*bf);
         if (!pop) continue;
         if (!dst) {
-            count += DIV_UP(pop, (size_t)size);
+            count += MD_DIV_UP(pop, (size_t)size);
             continue;
         }
         md_array_resize(idx, pop, temp_alloc);
         md_bitset_iter_extract_indices(idx, pop, md_bitset_iter(*bf));
         for (size_t k0 = 0; k0 < pop; k0 += (size_t)size) {
-            const size_t k1 = MIN(k0 + (size_t)size, pop);
+            const size_t k1 = MD_MIN(k0 + (size_t)size, pop);
             const size_t c = count + k0 / (size_t)size;
             if (c + 1 < cap) {
                 dst_bf[c] = md_bitset_from_indices((const uint32_t*)idx + k0, k1 - k0, dst_alloc);
@@ -8092,7 +8092,7 @@ static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_bitmask_set_indices(&last, (const uint32_t*)idx + k0, k1 - k0);
             }
         }
-        count += DIV_UP(pop, (size_t)size);
+        count += MD_DIV_UP(pop, (size_t)size);
     }
     if (dst && cap > 0 && !md_bitmask_empty(&last)) {
         dst_bf[cap - 1] = md_bitmask_extract(&last, dst_alloc);
@@ -8104,7 +8104,7 @@ static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
+            count = MD_MIN(1, count);
         }
         return (int)count;
     }
@@ -8128,7 +8128,7 @@ static inline uint32_t bond_total(const md_system_t* sys) {
 }
 
 static inline uint64_t bond_pair_key(md_atom_pair_t p) {
-    return ((uint64_t)(uint32_t)MIN(p.idx[0], p.idx[1]) << 32) | (uint32_t)MAX(p.idx[0], p.idx[1]);
+    return ((uint64_t)(uint32_t)MD_MIN(p.idx[0], p.idx[1]) << 32) | (uint32_t)MD_MAX(p.idx[0], p.idx[1]);
 }
 
 static inline md_atom_pair_t bond_key_pair(uint64_t key) {
@@ -8168,7 +8168,7 @@ static void bond_extras_tidy(bond_extras_t* e, md_allocator_i* temp) {
     }
     qsort(k, n, sizeof(bond_keyed_t), compare_bond_key);
     md_bond_flags_t* flags = md_alloc(temp, sizeof(md_bond_flags_t) * n);
-    MEMCPY(flags, e->flags, sizeof(md_bond_flags_t) * n);
+    MD_MEMCPY(flags, e->flags, sizeof(md_bond_flags_t) * n);
     size_t w = 0;
     for (size_t i = 0; i < n; ++i) {
         if (w > 0 && e->key[w - 1] == k[i].key) continue;
@@ -8283,7 +8283,7 @@ static bool bond_origin_lookup(int* out, str_t name) {
 static void bond_report_unknown_origin(eval_context_t* ctx, int arg, str_t name) {
     match_name_t names[4];
     for (int o = 0; o < 4; ++o) names[o] = (match_name_t){ str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)), o };
-    match_report_unknown(ctx, arg, "bond origin", names, ARRAY_SIZE(names), name);
+    match_report_unknown(ctx, arg, "bond origin", names, MD_COUNTOF(names), name);
 }
 
 // The origins of a string argument as a mask, or false (reported when validating)
@@ -8302,7 +8302,7 @@ static bool bond_origin_mask(uint32_t* out, data_t arg, int arg_idx, bool report
 }
 
 static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report, eval_context_t* ctx) {
-    MEMSET(f, 0, sizeof(bond_filter_t));
+    MD_MEMSET(f, 0, sizeof(bond_filter_t));
     if (!is_absent_type(arg[2].type)) {
         size_t count = 0;
         const md_bond_kind_name_t* table = md_bond_kind_names(&count);
@@ -8313,12 +8313,12 @@ static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report,
             if (k == count) {
                 if (report) {
                     match_name_t valid[16];
-                    for (size_t j = 0; j < count && j < ARRAY_SIZE(valid); ++j) valid[j] = (match_name_t){ str_from_cstr(table[j].name), (int)j };
-                    match_report_unknown(ctx, 2, "bond kind", valid, MIN(count, ARRAY_SIZE(valid)), names[i]);
+                    for (size_t j = 0; j < count && j < MD_COUNTOF(valid); ++j) valid[j] = (match_name_t){ str_from_cstr(table[j].name), (int)j };
+                    match_report_unknown(ctx, 2, "bond kind", valid, MD_MIN(count, MD_COUNTOF(valid)), names[i]);
                 }
                 return false;
             }
-            if (f->num_kinds < ARRAY_SIZE(f->kinds)) f->kinds[f->num_kinds++] = table[k];
+            if (f->num_kinds < MD_COUNTOF(f->kinds)) f->kinds[f->num_kinds++] = table[k];
         }
     }
     if (!is_absent_type(arg[3].type)) {
@@ -8335,9 +8335,9 @@ static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report,
         const str_t* names = as_string_arr(arg[4]);
         for (size_t i = 0; i < element_count(arg[4]); ++i) {
             size_t k = 0;
-            while (k < ARRAY_SIZE(bond_resonances) && !str_eq(names[i], bond_resonances[k].name)) ++k;
-            if (k == ARRAY_SIZE(bond_resonances)) {
-                if (report) match_report_unknown(ctx, 4, "bond resonance", bond_resonances, ARRAY_SIZE(bond_resonances), names[i]);
+            while (k < MD_COUNTOF(bond_resonances) && !str_eq(names[i], bond_resonances[k].name)) ++k;
+            if (k == MD_COUNTOF(bond_resonances)) {
+                if (report) match_report_unknown(ctx, 4, "bond resonance", bond_resonances, MD_COUNTOF(bond_resonances), names[i]);
                 return false;
             }
             f->resonance |= 1u << k;
@@ -8364,7 +8364,7 @@ static bool bond_filter_pass(const bond_filter_t* f, md_bond_flags_t fl) {
         if (!graph) return false;
         const uint32_t r = fl & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED);
         bool any = false;
-        for (size_t k = 0; k < ARRAY_SIZE(bond_resonances) && !any; ++k) any = (f->resonance & (1u << k)) && r == (uint32_t)bond_resonances[k].value;
+        for (size_t k = 0; k < MD_COUNTOF(bond_resonances) && !any; ++k) any = (f->resonance & (1u << k)) && r == (uint32_t)bond_resonances[k].value;
         if (!any) return false;
     }
     if (f->origin && !(f->origin & (1u << md_bond_origin(fl)))) return false;
@@ -8403,7 +8403,7 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.
 // bond(d, ...) with a bond_delta in place of a is _bond_of_delta.
 static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const bool report = !dst && !ctx->vis;
     bond_filter_t filter;
     if (!bond_filter_parse(&filter, arg, report, ctx)) return STATIC_VALIDATION_ERROR;
@@ -8413,9 +8413,9 @@ static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int num_groups = has_a ? (int)element_count(arg[0]) : 1;
     if (!dst) {
         if (ctx->vis) return 0;
-        return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, num_groups) : num_groups;
+        return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, num_groups) : num_groups;
     }
-    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BONDSET_ARR));
+    MD_ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BONDSET_ARR));
     const int64_t cap = type_info_array_len(dst->type);
     if (cap <= 0 || !dst->ptr) return 0;
 
@@ -8433,7 +8433,7 @@ static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t b = md_bitmask_create(0, total, temp_alloc);
         // The groups of this slot: one each, or all of them when there is one slot for many (flattened)
         const int g_beg = cap == 1 ? 0 : (int)slot;
-        const int g_end = cap == 1 ? num_groups : MIN((int)slot + 1, num_groups);
+        const int g_end = cap == 1 ? num_groups : MD_MIN((int)slot + 1, num_groups);
         for (int g = g_beg; g < g_end; ++g) {
             const md_bitset_t* A = has_a ? &as_bitset(arg[0])[g] : NULL;
             if (A) {
@@ -8489,7 +8489,7 @@ static void bondset_atoms_into(md_bitmask_t* b, const bondset_t* set, const md_s
 static int _bond_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return (int)element_count(arg[0]);
     const bondset_t* src = as_bondset(arg[0]);
-    const int64_t len = MIN((int64_t)element_count(arg[0]), type_info_array_len(dst->type));
+    const int64_t len = MD_MIN((int64_t)element_count(arg[0]), type_info_array_len(dst->type));
     for (int64_t i = 0; i < len; ++i) {
         md_bitmask_t b = result_mask(ctx);
         bondset_atoms_into(&b, &src[i], ctx->sys);
@@ -8506,7 +8506,7 @@ static size_t bondset_union_pairs(md_atom_pair_t** out, const bondset_t* sets, s
     bondset_union_into(&b, &e, sets, count, temp);
     const size_t num_bonds = (size_t)md_bitmask_count(&b);
     const size_t n = num_bonds + md_array_size(e.key);
-    md_atom_pair_t* pairs = md_alloc(temp, sizeof(md_atom_pair_t) * MAX(n, 1));
+    md_atom_pair_t* pairs = md_alloc(temp, sizeof(md_atom_pair_t) * MD_MAX(n, 1));
     size_t w = 0;
     md_bitset_iter_t it = md_bitmask_iter(&b);
     while (md_bitset_iter_next(&it) && w < num_bonds) pairs[w++] = sys->bond.pairs[it.idx];
@@ -8540,7 +8540,7 @@ static int _bond_length(data_t* dst, data_t arg[], eval_context_t* ctx) {
         result = ctx->vis ? 0 : (int)n;
     } else if (ctx->cur_state && ctx->cur_state->xyz) {
         float* out = as_float_arr(*dst);
-        const size_t len = MIN(n, (size_t)element_count(*dst));
+        const size_t len = MD_MIN(n, (size_t)element_count(*dst));
         for (size_t k = 0; k < len; ++k) {
             vec3_t dx = vec3_sub(ctx->cur_state->xyz[pairs[k].idx[1]], ctx->cur_state->xyz[pairs[k].idx[0]]);
             md_util_min_image_vec3(&dx, 1, &ctx->cur_state->unitcell);
@@ -8571,7 +8571,7 @@ static int bond_logic(data_t* dst, data_t arg[], int num_args, char op, eval_con
         md_bitmask_invert_range(&x, 0, total);
         md_bitmask_andnot(&x, set);
     } else {
-        ASSERT(num_args == 2);
+        MD_ASSERT(num_args == 2);
         md_bitmask_t y = md_bitmask_create(0, total, temp_alloc);
         bond_extras_t ey = {0};
         bondset_union_into(&y, &ey, as_bondset(arg[1]), element_count(arg[1]), temp_alloc);
@@ -8585,7 +8585,7 @@ static int bond_logic(data_t* dst, data_t arg[], int num_args, char op, eval_con
             md_bitmask_andnot(&x, md_bitset_and(xs, ys, temp_alloc));
             break;
         }
-        default: ASSERT(false); break;
+        default: MD_ASSERT(false); break;
         }
         // The extras: a merge of the two sorted lists
         size_t i = 0, j = 0;
@@ -8625,7 +8625,7 @@ static int _bond_xor(data_t* dst, data_t arg[], eval_context_t* ctx) { return bo
 //   tolerance  Half the width of the band around the cutoffs, a fraction of them in [0, 0.5): 0.1 without it.
 //   breakable  The origins whose bonds may break: 'file' and 'inferred' without it.
 static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const bool has_scope = !is_absent_type(arg[0].type);
     const float tolerance = is_absent_type(arg[1].type) ? MD_BOND_DELTA_TOLERANCE : as_float(arg[1]);
     uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
@@ -8649,7 +8649,7 @@ static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_system_t* sys = ctx->sys;
     const uint32_t total = bond_total(sys);
     bond_delta_value_t* val = (bond_delta_value_t*)dst->ptr;
-    MEMSET(val, 0, sizeof(bond_delta_value_t));
+    MD_MEMSET(val, 0, sizeof(bond_delta_value_t));
     // Asked about within the static check (the shape only): no search
     if (ctx->backchannel) return 0;
 
@@ -8712,7 +8712,7 @@ static int _bond_delta_broken(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // for a persistent bond, and those md_util_bond_delta gives a bond formed (inferred; covalent or coordinate, of no
 // known order).
 static int _bond_of_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+    MD_ASSERT(ctx && ctx->sys);
     const bool report = !dst && !ctx->vis;
     bond_filter_t filter;
     if (!bond_filter_parse(&filter, arg, report, ctx)) return STATIC_VALIDATION_ERROR;

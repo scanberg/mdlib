@@ -165,7 +165,7 @@ static md_monomer_t match_name(str_t name, md_residue_kind_t kind) {
         if (monomer_table[m].kind == kind && str_eq_ignore_case(name, monomer_table[m].id)) return (md_monomer_t)m;
     }
     const monomer_alias_t* aliases = kind == MD_RESIDUE_KIND_AMINO_ACID ? amino_acid_aliases : nucleotide_aliases;
-    const size_t num_aliases = kind == MD_RESIDUE_KIND_AMINO_ACID ? ARRAY_SIZE(amino_acid_aliases) : ARRAY_SIZE(nucleotide_aliases);
+    const size_t num_aliases = kind == MD_RESIDUE_KIND_AMINO_ACID ? MD_COUNTOF(amino_acid_aliases) : MD_COUNTOF(nucleotide_aliases);
     for (size_t i = 0; i < num_aliases; ++i) {
         if (str_eq_cstr_ignore_case(name, aliases[i].name)) return aliases[i].monomer;
     }
@@ -173,7 +173,7 @@ static md_monomer_t match_name(str_t name, md_residue_kind_t kind) {
 }
 
 static inline bool is_peptide_cap(str_t name) {
-    for (size_t i = 0; i < ARRAY_SIZE(peptide_caps); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(peptide_caps); ++i) {
         if (str_eq_cstr_ignore_case(name, peptide_caps[i])) return true;
     }
     return false;

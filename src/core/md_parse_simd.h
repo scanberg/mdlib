@@ -31,8 +31,8 @@
 #   define MD_PARSE_SIMD_NO_SANITIZE
 #endif
 
-MD_PARSE_SIMD_NO_SANITIZE static FORCE_INLINE uint64_t md_parse_whitespace_mask64(const char* p) {
-    ASSERT(((uintptr_t)p & 63) == 0);
+MD_PARSE_SIMD_NO_SANITIZE static MD_FORCE_INLINE uint64_t md_parse_whitespace_mask64(const char* p) {
+    MD_ASSERT(((uintptr_t)p & 63) == 0);
     md_128i m[4];
     for (int k = 0; k < 4; ++k) {
         const md_128i v = md_mm_load_si128((const md_128i*)(p + 16 * k));
@@ -46,7 +46,7 @@ MD_PARSE_SIMD_NO_SANITIZE static FORCE_INLINE uint64_t md_parse_whitespace_mask6
 // character: not zero in the lane of one laid out otherwise than md_parse_fixed_f32 takes it (blanks, then an
 // optional '-', then digits up to the '.', then the decimals). Of each, its two halves (*parts): the digits of its
 // first and second 4 characters as numbers (the '.' a 0), and all bits of its lane where it has no '-' (*pos).
-static FORCE_INLINE md_128i md_parse_fixed_w8_pair(md_128i v, int decimals, md_128i* parts, md_128i* pos) {
+static MD_FORCE_INLINE md_128i md_parse_fixed_w8_pair(md_128i v, int decimals, md_128i* parts, md_128i* pos) {
     const int dot = 7 - decimals;   // 4 or 3
     const md_128i d     = md_mm_sub_epi8(v, md_mm_set1_epi8('0'));
     const md_128i digit = md_mm_cmpeq_epi8(md_mm_min_epu8(d, md_mm_set1_epi8(9)), d);
@@ -82,8 +82,8 @@ static FORCE_INLINE md_128i md_parse_fixed_w8_pair(md_128i v, int decimals, md_1
 // the field's integer (at most 9999999, exact as a float) over 10^decimals, correctly rounded as a float, as is its
 // double rounded to a float (no decimal of 7 digits is near enough to a float's rounding boundary to round otherwise),
 // and negated last (a "-0.000" is -0).
-static FORCE_INLINE bool md_parse_fixed_f32x3_w8(float out[3], const char* p, int decimals) {
-    ASSERT(decimals == 3 || decimals == 4);
+static MD_FORCE_INLINE bool md_parse_fixed_f32x3_w8(float out[3], const char* p, int decimals) {
+    MD_ASSERT(decimals == 3 || decimals == 4);
     const md_128i z = md_mm_loadl_epi64((const md_128i*)(p + 16));
     md_128i parts01, parts2, pos01, pos2;
     const md_128i bad = md_mm_or_si128(md_parse_fixed_w8_pair(md_mm_loadu_si128((const md_128i*)p), decimals, &parts01, &pos01),

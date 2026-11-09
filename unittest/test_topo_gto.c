@@ -26,7 +26,7 @@ typedef struct topo_gto_input_t {
 
 static bool topo_gto_load_water(topo_gto_input_t* in) {
     memset(in, 0, sizeof(*in));
-    qm_test_init(&in->t, MEGABYTES(16));
+    qm_test_init(&in->t, MD_MEGABYTES(16));
     if (!md_molden_system_init_from_file(&in->t.sys, &in->t.state, str_from_cstr(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"))) return false;
     if (!qm_test_basis(&in->basis, &in->t)) return false;
     size_t dim = 0;

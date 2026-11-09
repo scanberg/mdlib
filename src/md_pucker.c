@@ -96,8 +96,8 @@ static inline double wrap360(double a) {
 }
 
 bool md_pucker_cremer_pople(md_pucker_t* out, const vec3_t* xyz, size_t count) {
-    ASSERT(out);
-    MEMSET(out, 0, sizeof(md_pucker_t));
+    MD_ASSERT(out);
+    MD_MEMSET(out, 0, sizeof(md_pucker_t));
     if (!xyz || count < 5 || count > 7) return false;
     const int N = (int)count;
 
@@ -113,7 +113,7 @@ bool md_pucker_cremer_pople(md_pucker_t* out, const vec3_t* xyz, size_t count) {
         r[j][0] = xyz[j].x - c[0];
         r[j][1] = xyz[j].y - c[1];
         r[j][2] = xyz[j].z - c[2];
-        const double s = sin(2.0 * PI * j / N), co = cos(2.0 * PI * j / N);
+        const double s = sin(2.0 * MD_PI * j / N), co = cos(2.0 * MD_PI * j / N);
         for (int k = 0; k < 3; ++k) {
             rp[k]  += r[j][k] * s;
             rpp[k] += r[j][k] * co;
@@ -140,8 +140,8 @@ bool md_pucker_cremer_pople(md_pucker_t* out, const vec3_t* xyz, size_t count) {
     for (int m = 2; m <= (N - 1) / 2; ++m) {
         double a = 0.0, b = 0.0;
         for (int j = 0; j < N; ++j) {
-            a += z[j] * cos(2.0 * PI * m * j / N);
-            b -= z[j] * sin(2.0 * PI * m * j / N);
+            a += z[j] * cos(2.0 * MD_PI * m * j / N);
+            b -= z[j] * sin(2.0 * MD_PI * m * j / N);
         }
         a *= sqrt(2.0 / N);
         b *= sqrt(2.0 / N);
@@ -243,7 +243,7 @@ md_pucker_conformer_t md_pucker_conformer(const md_pucker_t* p) {
         const double t = rad(p->theta), f = rad(p->phi2);
         double best = -2.0;
         size_t bi = 0;
-        for (size_t i = 0; i < ARRAY_SIZE(pucker_canon6); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(pucker_canon6); ++i) {
             const double tc = rad(pucker_canon6[i].theta), fc = rad(pucker_canon6[i].phi);
             const double c = cos(t) * cos(tc) + sin(t) * sin(tc) * cos(f - fc);
             if (c > best) { best = c; bi = i; }
@@ -253,7 +253,7 @@ md_pucker_conformer_t md_pucker_conformer(const md_pucker_t* p) {
     // Nearest along phi2
     double best = 1.0e9;
     size_t bi = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(pucker_canon5); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(pucker_canon5); ++i) {
         double d = fabs(wrap360(p->phi2 - pucker_canon5[i].phi + 180.0) - 180.0);
         if (d < best) { best = d; bi = i; }
     }
@@ -301,15 +301,15 @@ static size_t write_locants(char* buf, size_t cap, const int8_t pos[2], const ch
     if (n == 2 && !locant_before(l[0], l[1])) { const char* t = l[0]; l[0] = l[1]; l[1] = t; }
     size_t len = 0;
     for (int i = 0; i < n; ++i) {
-        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s", i ? "," : "", l[i]);
+        len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), "%s%s", i ? "," : "", l[i]);
     }
     return len;
 }
 
 size_t md_pucker_canonical(md_pucker_canonical_t* out, size_t cap, size_t size) {
     const pucker_canon_t* table = size == 6 ? pucker_canon6 : size == 5 ? pucker_canon5 : NULL;
-    const size_t count = size == 6 ? ARRAY_SIZE(pucker_canon6) : size == 5 ? ARRAY_SIZE(pucker_canon5) : 0;
-    for (size_t i = 0; out && i < MIN(cap, count); ++i) {
+    const size_t count = size == 6 ? MD_COUNTOF(pucker_canon6) : size == 5 ? MD_COUNTOF(pucker_canon5) : 0;
+    for (size_t i = 0; out && i < MD_MIN(cap, count); ++i) {
         out[i].theta = table[i].theta;
         out[i].phi2  = table[i].phi;
         out[i].conf  = conformer_of(&table[i]);
@@ -332,8 +332,8 @@ size_t md_pucker_conformer_name(char* buf, size_t cap, md_pucker_conformer_t c, 
         return (size_t)md_snprintf(buf, cap, "%s", md_pucker_kind_name(c.kind));
     }
     size_t len = write_locants(buf, cap, c.above, locants);
-    len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%c", kind_letter(c.kind));
-    len += write_locants(buf + MIN(len, cap), cap - MIN(len, cap), c.below, locants);
+    len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), "%c", kind_letter(c.kind));
+    len += write_locants(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), c.below, locants);
     return len;
 }
 
@@ -352,8 +352,8 @@ static int exocyclic_heavy(const md_system_t* sys, int32_t a, const int32_t* rin
 }
 
 size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const md_system_t* sys, size_t ring_idx) {
-    ASSERT(out);
-    ASSERT(sys);
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
     if (out_anchored) *out_anchored = false;
     if (ring_idx >= md_ring_data_count(&sys->ring)) return 0;
     const int32_t* ring = md_ring_atoms(&sys->ring, ring_idx);
@@ -361,7 +361,7 @@ size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const md_system_t*
     if (n == 0 || n > MD_RING_MAX_SIZE) return 0;
 
     if (md_system_ring_flags(sys, ring_idx) & MD_RING_FLAG_SUGAR) {
-        MEMCPY(out, ring, n * sizeof(int32_t));
+        MD_MEMCPY(out, ring, n * sizeof(int32_t));
         if (out_anchored) *out_anchored = true;
         return n;
     }
@@ -426,7 +426,7 @@ static void sugar_locant(char out[8], const md_system_t* sys, int32_t atom, size
 
 static void atom_label(char* out, size_t cap, const md_system_t* sys, int32_t atom) {
     const str_t s = md_atom_name(&sys->atom, atom);
-    md_snprintf(out, cap, "%.*s", (int)MIN(s.len, cap - 1), s.ptr);
+    md_snprintf(out, cap, "%.*s", (int)MD_MIN(s.len, cap - 1), s.ptr);
 }
 
 static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state, const vec3_t* xyz, vec3_t c) {
@@ -449,7 +449,7 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
     }
     if (r->sugar) {
         size_t len = md_pucker_conformer_name(buf, cap, conf, locants);
-        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), " %s", md_pucker_kind_name(conf.kind));
+        len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), " %s", md_pucker_kind_name(conf.kind));
         if (n != 5 || (conf.kind != MD_PUCKER_KIND_ENVELOPE && conf.kind != MD_PUCKER_KIND_TWIST)) return;
         // Endo: the side of the C outside of the ring on the last C (C5' of a nucleotide)
         int32_t ref = -1;
@@ -473,23 +473,23 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
         if (conf.below[0] >= 0) atom_label(bn, sizeof(bn), sys, r->atoms[conf.below[0]]);
         const char* up = ref_above ? "endo" : "exo";
         const char* dn = ref_above ? "exo" : "endo";
-        if (an[0] && bn[0]) len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s %s-%s", an, up, bn, dn);
-        else if (an[0])     len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", an, up);
-        else if (bn[0])     len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", bn, dn);
+        if (an[0] && bn[0]) len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), ", %s-%s %s-%s", an, up, bn, dn);
+        else if (an[0])     len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), ", %s-%s", an, up);
+        else if (bn[0])     len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), ", %s-%s", bn, dn);
         return;
     }
     // Another ring: the atoms out of the plane by name
     size_t len = (size_t)md_snprintf(buf, cap, "%s (", md_pucker_kind_name(conf.kind));
     bool first = true;
     for (int i = 0; i < 2; ++i) if (conf.above[i] >= 0) {
-        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s above", first ? "" : ", ", locants[conf.above[i]]);
+        len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), "%s%s above", first ? "" : ", ", locants[conf.above[i]]);
         first = false;
     }
     for (int i = 0; i < 2; ++i) if (conf.below[i] >= 0) {
-        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s below", first ? "" : ", ", locants[conf.below[i]]);
+        len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), "%s%s below", first ? "" : ", ", locants[conf.below[i]]);
         first = false;
     }
-    md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ")");
+    md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), ")");
 }
 
 static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state) {
@@ -520,8 +520,8 @@ static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_s
 }
 
 bool md_pucker_ring(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, size_t ring_idx) {
-    ASSERT(out);
-    MEMSET(out, 0, sizeof(md_pucker_ring_t));
+    MD_ASSERT(out);
+    MD_MEMSET(out, 0, sizeof(md_pucker_ring_t));
     if (!sys || !state || !state->xyz || ring_idx >= md_ring_data_count(&sys->ring)) return false;
     const size_t n = md_ring_size(&sys->ring, ring_idx);
     if (n < 5 || n > 7) return false;
@@ -535,10 +535,10 @@ bool md_pucker_ring(md_pucker_ring_t* out, const md_system_t* sys, const md_syst
 }
 
 bool md_pucker_ring_atoms(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, const int32_t* atoms, size_t count) {
-    ASSERT(out);
-    MEMSET(out, 0, sizeof(md_pucker_ring_t));
+    MD_ASSERT(out);
+    MD_MEMSET(out, 0, sizeof(md_pucker_ring_t));
     if (!sys || !state || !state->xyz || !atoms || count < 5 || count > 7) return false;
-    MEMCPY(out->atoms, atoms, count * sizeof(int32_t));
+    MD_MEMCPY(out->atoms, atoms, count * sizeof(int32_t));
     out->size = (uint8_t)count;
     out->anchored = true;
     out->has_pseudo = count == 5;

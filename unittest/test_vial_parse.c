@@ -72,7 +72,7 @@ struct vial_lex {
 };
 
 UTEST_F_SETUP(vial_lex) {
-    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 }
 
 UTEST_F_TEARDOWN(vial_lex) {
@@ -299,7 +299,7 @@ struct vial_parse {
 };
 
 UTEST_F_SETUP(vial_parse) {
-    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 }
 
 UTEST_F_TEARDOWN(vial_parse) {
@@ -481,7 +481,7 @@ UTEST_F(vial_parse, golden) {
     md_allocator_i* alloc = utest_fixture->alloc;
     static const char* names[] = {"expressions", "statements", "refused", "errors"};
     const bool update = getenv("VIAL_UPDATE_GOLDEN") != NULL;
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
         char in_path[512], out_path[512];
         snprintf(in_path, sizeof(in_path), VIAL_GOLDEN_DIR "%s.vial", names[i]);
         snprintf(out_path, sizeof(out_path), VIAL_GOLDEN_DIR "%s.out", names[i]);

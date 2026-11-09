@@ -43,9 +43,9 @@ static inline void bit_clear(uint64_t* bits, size_t i) {
 }
 
 static uint64_t* bits_create(size_t num_bits, md_allocator_i* alloc) {
-    const size_t bytes = MAX(1, DIV_UP(num_bits, 64)) * sizeof(uint64_t);
+    const size_t bytes = MD_MAX(1, MD_DIV_UP(num_bits, 64)) * sizeof(uint64_t);
     uint64_t* bits = md_alloc(alloc, bytes);
-    MEMSET(bits, 0, bytes);
+    MD_MEMSET(bits, 0, bytes);
     return bits;
 }
 
@@ -162,7 +162,7 @@ static inline uint32_t count_hydrogens(const target_t* tg, int32_t a) {
 // Atoms outside of what md_chem_perceive handles have a count of 0, whatever is bonded to them.
 static inline uint32_t target_hydrogens(const target_t* tg, int32_t a) {
     const uint32_t bonded = count_hydrogens(tg, a);
-    return tg->h_count ? MAX((uint32_t)tg->h_count[a], bonded) : bonded;
+    return tg->h_count ? MD_MAX((uint32_t)tg->h_count[a], bonded) : bonded;
 }
 
 static inline int target_charge(const target_t* tg, int32_t a) {
@@ -196,10 +196,10 @@ static inline int64_t target_molecule(const target_t* tg, int32_t a) {
 
 // Elements (z < 128) of which some atom of the molecule has a hydrogen bonded to it, and whether it has hydrogens
 static const resolution_t* molecule_resolution(const target_t* tg, int64_t m) {
-    ASSERT(tg->mol_res && 0 <= m && (size_t)m < tg->num_mol);
+    MD_ASSERT(tg->mol_res && 0 <= m && (size_t)m < tg->num_mol);
     resolution_t* res = &tg->mol_res[m];
     if (!tg->mol_res_done[m]) {
-        MEMSET(res, 0, sizeof(resolution_t));
+        MD_MEMSET(res, 0, sizeof(resolution_t));
         for (uint32_t i = tg->mol_off[m]; i < tg->mol_off[m + 1]; ++i) {
             const int32_t a = tg->mol_atom[i];
             if (target_z(tg, a) != MD_Z_H) continue;
@@ -236,12 +236,12 @@ static int32_t uf_find(int32_t* parent, int32_t x) {
 static void uf_union(int32_t* parent, int32_t a, int32_t b) {
     a = uf_find(parent, a);
     b = uf_find(parent, b);
-    if (a != b) parent[MAX(a, b)] = MIN(a, b);
+    if (a != b) parent[MD_MAX(a, b)] = MD_MIN(a, b);
 }
 
 // what: TARGET_RESOLUTION, TARGET_GROUPS. Everything is allocated from arena.
 static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md_allocator_i* arena) {
-    MEMSET(tg, 0, sizeof(target_t));
+    MD_MEMSET(tg, 0, sizeof(target_t));
     const size_t N = sys->atom.count;
     tg->sys        = sys;
     tg->num_atoms  = N;
@@ -260,7 +260,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE) {
             if (!skip) {
                 skip = md_alloc(arena, N);
-                MEMSET(skip, 0, N);
+                MD_MEMSET(skip, 0, N);
             }
             skip[i] = 1;
         }
@@ -280,7 +280,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
             if (is_coordination(sys, f, i, j) || (skip && (skip[i] || skip[j]))) {
                 if (!drop) {
                     drop = md_alloc(arena, sys->bond.count);
-                    MEMSET(drop, 0, sys->bond.count);
+                    MD_MEMSET(drop, 0, sys->bond.count);
                 }
                 drop[b] = 1;
             }
@@ -293,8 +293,8 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         } else {
             const uint32_t total = conn->offset[N];
             uint32_t*      off   = md_alloc(arena, sizeof(uint32_t) * (N + 1));
-            md_atom_idx_t* atom  = md_alloc(arena, sizeof(md_atom_idx_t) * MAX(1, total));
-            md_bond_idx_t* bond  = md_alloc(arena, sizeof(md_bond_idx_t) * MAX(1, total));
+            md_atom_idx_t* atom  = md_alloc(arena, sizeof(md_atom_idx_t) * MD_MAX(1, total));
+            md_bond_idx_t* bond  = md_alloc(arena, sizeof(md_bond_idx_t) * MD_MAX(1, total));
             uint32_t n = 0;
             for (size_t a = 0; a < N; ++a) {
                 off[a] = n;
@@ -385,8 +385,8 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         }
         // The atoms of each, ascending
         uint32_t* mol_off = md_alloc(arena, sizeof(uint32_t) * (num_mol + 1));
-        uint32_t* fill    = md_alloc(arena, sizeof(uint32_t) * MAX(1, num_mol));
-        MEMSET(mol_off, 0, sizeof(uint32_t) * (num_mol + 1));
+        uint32_t* fill    = md_alloc(arena, sizeof(uint32_t) * MD_MAX(1, num_mol));
+        MD_MEMSET(mol_off, 0, sizeof(uint32_t) * (num_mol + 1));
         for (size_t i = 0; i < N; ++i) {
             if (mol_of[i] >= 0) mol_off[mol_of[i] + 1]++;
         }
@@ -405,9 +405,9 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
     }
 
     if (what & TARGET_RESOLUTION) {
-        tg->mol_res      = md_alloc(arena, sizeof(resolution_t) * MAX(1, tg->num_mol));
-        tg->mol_res_done = md_alloc(arena, MAX(1, tg->num_mol));
-        MEMSET(tg->mol_res_done, 0, MAX(1, tg->num_mol));
+        tg->mol_res      = md_alloc(arena, sizeof(resolution_t) * MD_MAX(1, tg->num_mol));
+        tg->mol_res_done = md_alloc(arena, MD_MAX(1, tg->num_mol));
+        MD_MEMSET(tg->mol_res_done, 0, MD_MAX(1, tg->num_mol));
     }
 
     if ((what & TARGET_GROUPS) && tg->conn_off) {
@@ -434,10 +434,10 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
             const int32_t r = uf_find(parent, (int32_t)a);
             group_of[a] = (r == (int32_t)a) ? (int32_t)num_groups++ : group_of[r];
         }
-        tg->group_charge = md_alloc(arena, sizeof(int32_t)  * MAX(1, num_groups));
-        tg->group_size   = md_alloc(arena, sizeof(uint32_t) * MAX(1, num_groups));
-        MEMSET(tg->group_charge, 0, sizeof(int32_t)  * MAX(1, num_groups));
-        MEMSET(tg->group_size,   0, sizeof(uint32_t) * MAX(1, num_groups));
+        tg->group_charge = md_alloc(arena, sizeof(int32_t)  * MD_MAX(1, num_groups));
+        tg->group_size   = md_alloc(arena, sizeof(uint32_t) * MD_MAX(1, num_groups));
+        MD_MEMSET(tg->group_charge, 0, sizeof(int32_t)  * MD_MAX(1, num_groups));
+        MD_MEMSET(tg->group_size,   0, sizeof(uint32_t) * MD_MAX(1, num_groups));
         for (size_t a = 0; a < N; ++a) {
             const int32_t g = group_of[a];
             if (g < 0) continue;
@@ -514,8 +514,8 @@ static pos_atom_t make_pos_atom(const md_match_atom_t* a, uint32_t num_folded) {
     uint32_t lo = p.h_stated ? a->h_min : 0;
     uint32_t hi = p.h_stated ? a->h_max : H_OPEN;
     // The count includes the hydrogens given as atoms (see md_match_atom_t)
-    lo = MAX(lo, num_folded);
-    p.h_lo   = (uint8_t)MIN(lo, 255);
+    lo = MD_MAX(lo, num_folded);
+    p.h_lo   = (uint8_t)MD_MIN(lo, 255);
     p.h_hi   = (uint8_t)hi;
     p.h_test = lo > 0 || hi < H_OPEN;
     return p;
@@ -564,8 +564,8 @@ static bool query_validate(const md_match_query_t* q) {
         md_temp_scope_t temp = md_temp_begin();
         uint64_t* keys = md_temp_alloc_array(temp, uint64_t, q->num_bonds);
         for (size_t i = 0; i < q->num_bonds; ++i) {
-            const uint64_t a = MIN(q->bonds[i].a, q->bonds[i].b);
-            const uint64_t b = MAX(q->bonds[i].a, q->bonds[i].b);
+            const uint64_t a = MD_MIN(q->bonds[i].a, q->bonds[i].b);
+            const uint64_t b = MD_MAX(q->bonds[i].a, q->bonds[i].b);
             keys[i] = (a << 32) | b;
         }
         qsort(keys, q->num_bonds, sizeof(uint64_t), cmp_u64);
@@ -647,10 +647,10 @@ static void sym_part_alloc(sym_part_t* p, uint32_t n, md_allocator_i* arena) {
 }
 
 static void sym_part_copy(sym_part_t* dst, const sym_part_t* src, uint32_t n) {
-    MEMCPY(dst->elem, src->elem, sizeof(uint32_t) * n);
-    MEMCPY(dst->pos,  src->pos,  sizeof(uint32_t) * n);
-    MEMCPY(dst->cell, src->cell, sizeof(uint32_t) * n);
-    MEMCPY(dst->end,  src->end,  sizeof(uint32_t) * n);
+    MD_MEMCPY(dst->elem, src->elem, sizeof(uint32_t) * n);
+    MD_MEMCPY(dst->pos,  src->pos,  sizeof(uint32_t) * n);
+    MD_MEMCPY(dst->cell, src->cell, sizeof(uint32_t) * n);
+    MD_MEMCPY(dst->end,  src->end,  sizeof(uint32_t) * n);
     dst->num_cells = src->num_cells;
 }
 
@@ -826,7 +826,7 @@ typedef struct sym_key_t {
 
 static int cmp_sym_key_bytes(const sym_key_t* x, const sym_key_t* y) {
     if (x->len != y->len) return x->len < y->len ? -1 : 1;
-    return MEMCMP(x->ptr, y->ptr, x->len);
+    return MD_MEMCMP(x->ptr, y->ptr, x->len);
 }
 
 static int cmp_sym_key(const void* a, const void* b) {
@@ -840,15 +840,15 @@ static int cmp_sym_key(const void* a, const void* b) {
 // What the search tests of an atom, as bytes
 static void sym_key_atom(md_array(uint8_t)* key, const pos_atom_t* a, md_allocator_i* arena) {
     uint8_t b[20] = {0};
-    MEMCPY(b, &a->flags, 4);
+    MD_MEMCPY(b, &a->flags, 4);
     b[4] = a->z;
     b[5] = a->is_h;
     b[6] = a->h_lo;
     b[7] = a->h_hi;
     b[8] = a->h_stated;
     b[9] = (uint8_t)a->charge;
-    MEMCPY(b + 10, &a->degree, 2);
-    MEMCPY(b + 12, a->name.buf, 8);
+    MD_MEMCPY(b + 10, &a->degree, 2);
+    MD_MEMCPY(b + 12, a->name.buf, 8);
     md_array_push_array(*key, b, 20, arena);
 }
 
@@ -879,7 +879,7 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
 
     // The graph of the core
     y.off = md_alloc(arena, sizeof(uint32_t) * (n + 1));
-    MEMSET(y.off, 0, sizeof(uint32_t) * (n + 1));
+    MD_MEMSET(y.off, 0, sizeof(uint32_t) * (n + 1));
     for (size_t i = 0; i < q->num_bonds; ++i) {
         const int32_t a = pos_of[q->bonds[i].a], b = pos_of[q->bonds[i].b];
         if (a < 0 || b < 0 || (uint32_t)a >= n || (uint32_t)b >= n) continue;
@@ -888,11 +888,11 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
     }
     for (uint32_t i = 0; i < n; ++i) y.off[i + 1] += y.off[i];
     const uint32_t num_edges = y.off[n];
-    y.nbr = md_alloc(arena, sizeof(uint32_t) * MAX(1, num_edges));
-    y.ord = md_alloc(arena, sizeof(uint8_t)  * MAX(1, num_edges));
+    y.nbr = md_alloc(arena, sizeof(uint32_t) * MD_MAX(1, num_edges));
+    y.ord = md_alloc(arena, sizeof(uint8_t)  * MD_MAX(1, num_edges));
     {
         uint32_t* fill = md_alloc(arena, sizeof(uint32_t) * n);
-        MEMCPY(fill, y.off, sizeof(uint32_t) * n);
+        MD_MEMCPY(fill, y.off, sizeof(uint32_t) * n);
         for (size_t i = 0; i < q->num_bonds; ++i) {
             const int32_t a = pos_of[q->bonds[i].a], b = pos_of[q->bonds[i].b];
             if (a < 0 || b < 0 || (uint32_t)a >= n || (uint32_t)b >= n) continue;
@@ -910,7 +910,7 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
     {
         md_array(uint8_t) h_keys = 0;
         for (uint32_t f = 0; f < plan->num_folded; ++f) sym_key_atom(&h_keys, &plan->folded[f], arena);
-        sym_key_t* parts = md_alloc(arena, sizeof(sym_key_t) * MAX(1, MAX(plan->num_folded, plan->num - n)));
+        sym_key_t* parts = md_alloc(arena, sizeof(sym_key_t) * MD_MAX(1, MD_MAX(plan->num_folded, plan->num - n)));
         uint32_t f = 0;
         for (uint32_t p = 0; p < plan->num; ++p) {
             // The folded hydrogens are grouped by the position of their atom, ascending
@@ -922,7 +922,7 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
             sym_key_append_sorted(&key_of[p], parts, num, arena);
         }
         bool* has_leaves = md_alloc(arena, sizeof(bool) * n);
-        MEMSET(has_leaves, 0, sizeof(bool) * n);
+        MD_MEMSET(has_leaves, 0, sizeof(bool) * n);
         for (uint32_t g = 0; g < plan->num_leaf_groups; ++g) {
             uint32_t num = 0;
             for (uint32_t p = plan->leaf_beg[g]; p < plan->leaf_beg[g + 1]; ++p) {
@@ -951,9 +951,9 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
     y.sorted    = md_alloc(arena, sizeof(sym_count_t) * n);
     y.stack     = md_alloc(arena, sizeof(uint32_t) * n);
     y.in_stack  = md_alloc(arena, sizeof(uint8_t)  * n);
-    MEMSET(y.count, 0, sizeof(uint64_t) * n);
-    MEMSET(y.cell_mark, 0, n);
-    MEMSET(y.in_stack, 0, n);
+    MD_MEMSET(y.count, 0, sizeof(uint64_t) * n);
+    MD_MEMSET(y.cell_mark, 0, n);
+    MD_MEMSET(y.in_stack, 0, n);
     // Generous for molecules: refinement is close to linear in the size of the graph, and a search for a symmetry
     // mostly takes one branch
     y.budget = 200000 + (size_t)64 * (n + num_edges) * (1 + log2_floor(n));
@@ -1021,7 +1021,7 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
                     }
                     if (found > 0) {
                         uint32_t* gen = md_alloc(arena, sizeof(uint32_t) * n);
-                        MEMCPY(gen, gamma, sizeof(uint32_t) * n);
+                        MD_MEMCPY(gen, gamma, sizeof(uint32_t) * n);
                         md_array_push(gens, gen, arena);
                         for (uint32_t i = 0; i < n; ++i) uf_union(orbit, (int32_t)i, (int32_t)gen[i]);
                     }
@@ -1049,15 +1049,15 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
     plan->sym_off   = md_alloc(arena, sizeof(uint32_t) * (plan->num + 1));
     plan->sym_other = md_alloc(arena, sizeof(uint32_t) * num_cond);
     plan->sym_less  = md_alloc(arena, sizeof(bool) * num_cond);
-    MEMSET(plan->sym_off, 0, sizeof(uint32_t) * (plan->num + 1));
-    for (uint32_t i = 0; i < num_cond; ++i) plan->sym_off[MAX(cond_v[i], cond_u[i]) + 1]++;
+    MD_MEMSET(plan->sym_off, 0, sizeof(uint32_t) * (plan->num + 1));
+    for (uint32_t i = 0; i < num_cond; ++i) plan->sym_off[MD_MAX(cond_v[i], cond_u[i]) + 1]++;
     for (uint32_t p = 0; p < plan->num; ++p) plan->sym_off[p + 1] += plan->sym_off[p];
     uint32_t* fill = md_alloc(arena, sizeof(uint32_t) * plan->num);
-    MEMCPY(fill, plan->sym_off, sizeof(uint32_t) * plan->num);
+    MD_MEMCPY(fill, plan->sym_off, sizeof(uint32_t) * plan->num);
     for (uint32_t i = 0; i < num_cond; ++i) {
         const uint32_t v = cond_v[i], u = cond_u[i];
-        const uint32_t k = MAX(v, u);
-        plan->sym_other[fill[k]] = MIN(v, u);
+        const uint32_t k = MD_MAX(v, u);
+        plan->sym_other[fill[k]] = MD_MIN(v, u);
         plan->sym_less[fill[k]++] = k == v;
     }
 }
@@ -1065,7 +1065,7 @@ static void plan_symmetry(plan_t* plan, const md_match_query_t* q, const int32_t
 // rarity[z]: candidate atoms of the system with that element, num_candidates: all of them. symmetry: work out the
 // conditions which break the symmetries of the query (see plan_symmetry), which all modes but ALL use.
 static void plan_build(plan_t* plan, const md_match_query_t* q, const uint32_t* rarity, uint32_t num_candidates, bool symmetry, md_allocator_i* arena) {
-    MEMSET(plan, 0, sizeof(plan_t));
+    MD_MEMSET(plan, 0, sizeof(plan_t));
     const uint32_t n = (uint32_t)q->num_atoms;
     const uint32_t m = (uint32_t)q->num_bonds;
     plan->num_atoms  = n;
@@ -1073,9 +1073,9 @@ static void plan_build(plan_t* plan, const md_match_query_t* q, const uint32_t* 
 
     // Adjacency of the whole query in compressed rows
     uint32_t* off   = md_alloc(arena, sizeof(uint32_t) * (n + 1));
-    uint32_t* nbr   = md_alloc(arena, sizeof(uint32_t) * MAX(1, 2 * m));
-    uint8_t*  nbr_o = md_alloc(arena, sizeof(uint8_t)  * MAX(1, 2 * m));
-    MEMSET(off, 0, sizeof(uint32_t) * (n + 1));
+    uint32_t* nbr   = md_alloc(arena, sizeof(uint32_t) * MD_MAX(1, 2 * m));
+    uint8_t*  nbr_o = md_alloc(arena, sizeof(uint8_t)  * MD_MAX(1, 2 * m));
+    MD_MEMSET(off, 0, sizeof(uint32_t) * (n + 1));
     for (uint32_t i = 0; i < m; ++i) {
         off[q->bonds[i].a + 1]++;
         off[q->bonds[i].b + 1]++;
@@ -1083,7 +1083,7 @@ static void plan_build(plan_t* plan, const md_match_query_t* q, const uint32_t* 
     for (uint32_t i = 0; i < n; ++i) off[i + 1] += off[i];
     {
         uint32_t* fill = md_alloc(arena, sizeof(uint32_t) * n);
-        MEMCPY(fill, off, sizeof(uint32_t) * n);
+        MD_MEMCPY(fill, off, sizeof(uint32_t) * n);
         for (uint32_t i = 0; i < m; ++i) {
             const uint32_t a = q->bonds[i].a, b = q->bonds[i].b;
             nbr[fill[a]] = b; nbr_o[fill[a]++] = (uint8_t)q->bonds[i].order;
@@ -1114,8 +1114,8 @@ static void plan_build(plan_t* plan, const md_match_query_t* q, const uint32_t* 
     plan->parent       = md_alloc(arena, sizeof(int32_t)    * num_search);
     plan->parent_order = md_alloc(arena, sizeof(uint8_t)    * num_search);
     plan->back_off     = md_alloc(arena, sizeof(uint32_t)   * (num_search + 1));
-    plan->back_pos     = md_alloc(arena, sizeof(uint32_t)   * MAX(1, m));
-    plan->back_order   = md_alloc(arena, sizeof(uint8_t)    * MAX(1, m));
+    plan->back_pos     = md_alloc(arena, sizeof(uint32_t)   * MD_MAX(1, m));
+    plan->back_order   = md_alloc(arena, sizeof(uint8_t)    * MD_MAX(1, m));
     plan->atom         = md_alloc(arena, sizeof(pos_atom_t) * num_search);
 
     // Number of bonds to searched atoms, and the rarity of each atom among the candidates of the system
@@ -1273,7 +1273,7 @@ static void plan_build(plan_t* plan, const md_match_query_t* q, const uint32_t* 
         for (uint32_t i = 0; i < n; ++i) {
             if (leaf[i]) keys[f++] = ((uint64_t)pos_of[leaf_host[i]] << 32) | i;
         }
-        ASSERT(f == num_leaf);
+        MD_ASSERT(f == num_leaf);
         qsort(keys, num_leaf, sizeof(uint64_t), cmp_u64);
         plan->leaf_beg  = md_alloc(arena, sizeof(uint32_t) * (num_leaf + 1));
         plan->leaf_host = md_alloc(arena, sizeof(uint32_t) * num_leaf);
@@ -1300,7 +1300,7 @@ static void plan_build(plan_t* plan, const md_match_query_t* q, const uint32_t* 
         }
         plan->leaf_beg[plan->num_leaf_groups] = k;
     }
-    ASSERT(k == num_search);
+    MD_ASSERT(k == num_search);
     plan->back_off[num_search] = num_back;
 
     // Folded hydrogens, grouped by the position of their atom, in query order within a group
@@ -1354,7 +1354,7 @@ static void uniq_grow(uniq_t* u) {
     const uint32_t new_cap = u->cap ? u->cap * 2 : 1024;
     uint64_t* hash  = md_alloc(u->alloc, sizeof(uint64_t) * new_cap);
     uint32_t* entry = md_alloc(u->alloc, sizeof(uint32_t) * new_cap);
-    MEMSET(hash, 0, sizeof(uint64_t) * new_cap);
+    MD_MEMSET(hash, 0, sizeof(uint64_t) * new_cap);
     for (uint32_t i = 0; i < u->cap; ++i) {
         if (!u->slot_hash[i]) continue;
         uint32_t s = (uint32_t)(u->slot_hash[i] & (new_cap - 1));
@@ -1378,7 +1378,7 @@ static bool uniq_insert(uniq_t* u, const int32_t* key) {
     const uint64_t h = md_hash64(key, bytes, 0) | 1;
     uint32_t s = (uint32_t)(h & (u->cap - 1));
     while (u->slot_hash[s]) {
-        if (u->slot_hash[s] == h && MEMCMP(u->keys + (size_t)u->slot_entry[s] * u->width, key, bytes) == 0) {
+        if (u->slot_hash[s] == h && MD_MEMCMP(u->keys + (size_t)u->slot_entry[s] * u->width, key, bytes) == 0) {
             return false;
         }
         s = (s + 1) & (u->cap - 1);
@@ -1804,7 +1804,7 @@ static bool groups_ok(search_t* s) {
 
         group_acc_t* acc = &s->group_acc[g];
         if (acc->stamp != s->group_stamp) {
-            MEMSET(acc, 0, sizeof(group_acc_t));
+            MD_MEMSET(acc, 0, sizeof(group_acc_t));
             acc->stamp = s->group_stamp;
             s->group_touched[num_touched++] = g;
         }
@@ -1838,7 +1838,7 @@ static bool groups_ok(search_t* s) {
             if (acc->q_query == acc->q_target) continue;
             if (whole_group) return false;
             const int32_t q = tg->group_charge[g];
-            if (acc->q_query < MIN(0, q) || acc->q_query > MAX(0, q)) return false;
+            if (acc->q_query < MD_MIN(0, q) || acc->q_query > MD_MAX(0, q)) return false;
         }
     }
     return true;
@@ -1856,7 +1856,7 @@ static void report(search_t* s) {
     switch (s->mode) {
     case MD_MATCH_MODE_UNIQUE:
         if (pl->num > 1) {
-            MEMCPY(s->key, s->map, sizeof(int32_t) * pl->num);
+            MD_MEMCPY(s->key, s->map, sizeof(int32_t) * pl->num);
             sort_i32(s->key, pl->num);
             // Units given may overlap: the same atoms are a match of each unit they are in
             if (s->units) s->key[pl->num] = (int32_t)s->unit;
@@ -2098,7 +2098,7 @@ static void unit_begin(search_t* s, int64_t unit) {
         s->unit_set = s->units[unit];
         const uint64_t n = md_bitset_count(s->unit_set);
         if (n > s->unit_scratch_cap) {
-            s->unit_scratch_cap = (uint32_t)MAX(n, 2 * (uint64_t)s->unit_scratch_cap);
+            s->unit_scratch_cap = (uint32_t)MD_MAX(n, 2 * (uint64_t)s->unit_scratch_cap);
             s->unit_scratch = md_alloc(s->arena, sizeof(int32_t) * s->unit_scratch_cap);
         }
         s->unit_atoms = s->unit_scratch;
@@ -2122,11 +2122,11 @@ static void unit_begin(search_t* s, int64_t unit) {
         end = sys->residue.atom_offset[sys->part.res_offset[unit + 1]];
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
-    end = MIN(end, (uint32_t)tg->num_atoms);
-    beg = MIN(beg, end);
+    end = MD_MIN(end, (uint32_t)tg->num_atoms);
+    beg = MD_MIN(beg, end);
     s->unit_beg   = beg;
     s->unit_end   = end;
     s->unit_count = end - beg;
@@ -2185,7 +2185,7 @@ static void unit_search(search_t* s, bool whole_checked) {
 static void search_init(search_t* s, const target_t* tg, md_match_level_t level, md_match_mode_t mode, uint32_t flags, md_match_resolve_t hydrogens,
                         md_match_resolve_t bond_orders, md_match_resolve_t charges, const md_bitset_t* mask, const md_bitset_t* units, size_t num_units,
                         md_allocator_i* arena) {
-    MEMSET(s, 0, sizeof(search_t));
+    MD_MEMSET(s, 0, sizeof(search_t));
     s->tg          = tg;
     s->level       = level;
     s->mode        = mode;
@@ -2200,7 +2200,7 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
     s->unit        = -1;
     s->mapped      = bits_create(tg->num_atoms, arena);
     s->res_cache   = md_alloc(arena, sizeof(res_cache_t));
-    MEMSET(s->res_cache, 0, sizeof(res_cache_t));
+    MD_MEMSET(s->res_cache, 0, sizeof(res_cache_t));
     s->res_cache->mol = -1;
     if (mask) {
         s->mask = bits_create(tg->num_atoms, arena);
@@ -2213,21 +2213,21 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
     }
     if (mode == MD_MATCH_MODE_DISJOINT) s->used = bits_create(tg->num_atoms, arena);
     if (tg->group_of) {
-        s->group_acc = md_alloc(arena, sizeof(group_acc_t) * MAX(1, tg->num_groups));
-        MEMSET(s->group_acc, 0, sizeof(group_acc_t) * MAX(1, tg->num_groups));
+        s->group_acc = md_alloc(arena, sizeof(group_acc_t) * MD_MAX(1, tg->num_groups));
+        MD_MEMSET(s->group_acc, 0, sizeof(group_acc_t) * MD_MAX(1, tg->num_groups));
     }
 }
 
 // Room for plans of up to num positions and num_atoms atoms
 static void search_reserve(search_t* s, uint32_t num, size_t num_atoms, md_allocator_i* arena) {
-    s->map           = md_alloc(arena, sizeof(int32_t)  * MAX(1, num));
-    s->cursor        = md_alloc(arena, sizeof(uint32_t) * MAX(1, num));
+    s->map           = md_alloc(arena, sizeof(int32_t)  * MD_MAX(1, num));
+    s->cursor        = md_alloc(arena, sizeof(uint32_t) * MD_MAX(1, num));
     s->key           = md_alloc(arena, sizeof(int32_t)  * (num + 1));     // The unit as well, for units given
-    s->group_touched = md_alloc(arena, sizeof(int32_t)  * MAX(1, num));
-    s->row           = md_alloc(arena, sizeof(int32_t)  * MAX(1, num_atoms));
+    s->group_touched = md_alloc(arena, sizeof(int32_t)  * MD_MAX(1, num));
+    s->row           = md_alloc(arena, sizeof(int32_t)  * MD_MAX(1, num_atoms));
     s->leaf_base     = md_alloc(arena, sizeof(uint32_t) * (num + 1));
-    s->leaf_comb     = md_alloc(arena, sizeof(uint32_t) * MAX(1, num));
-    s->leaf_fresh    = md_alloc(arena, sizeof(bool)     * MAX(1, num));
+    s->leaf_comb     = md_alloc(arena, sizeof(uint32_t) * MD_MAX(1, num));
+    s->leaf_fresh    = md_alloc(arena, sizeof(bool)     * MD_MAX(1, num));
     s->leaf_cand     = 0;
     md_array_ensure(s->leaf_cand, 64, arena);
     s->arena         = arena;
@@ -2235,7 +2235,7 @@ static void search_reserve(search_t* s, uint32_t num, size_t num_atoms, md_alloc
 
 // How common each element is among the candidate atoms, to start from the rarest. Returns the number of candidates.
 static uint32_t count_candidates(uint32_t rarity[256], const search_t* s) {
-    MEMSET(rarity, 0, sizeof(uint32_t) * 256);
+    MD_MEMSET(rarity, 0, sizeof(uint32_t) * 256);
     uint32_t num_candidates = 0;
     for (size_t i = 0; i < s->tg->num_atoms; ++i) {
         if (target_skipped(s->tg, (int32_t)i)) continue;
@@ -2312,7 +2312,7 @@ static bool elements_suffice(const md_match_query_t* q, const md_system_t* sys) 
     md_temp_scope_t temp = md_temp_begin();
     uint32_t* degree = md_temp_alloc_array(temp, uint32_t, q->num_atoms);
     int32_t*  other  = md_temp_alloc_array(temp, int32_t, q->num_atoms);
-    MEMSET(degree, 0, sizeof(uint32_t) * q->num_atoms);
+    MD_MEMSET(degree, 0, sizeof(uint32_t) * q->num_atoms);
     for (size_t i = 0; i < q->num_bonds; ++i) {
         degree[q->bonds[i].a]++;
         degree[q->bonds[i].b]++;
@@ -2355,7 +2355,7 @@ static bool match_run(size_t* out_count, bool* out_incomplete, const md_match_de
 
     // The scratch memory lives in an arena of its own: the callback may allocate from any allocator, temp arenas
     // included, without interleaving with it.
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
 
     target_t tg;
     target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, query_states_charge(desc->query)), arena);
@@ -2408,7 +2408,7 @@ static void smiles_ring_atoms(bool* in_ring, const md_smiles_t* g, md_allocator_
         const md_smiles_bond_t* b = &g->bonds[i];
         if (b->flags & MD_SMILES_BOND_RING) continue;
         // A chain or branch bond joins an atom to the one it follows, written before it
-        const uint32_t lo = MIN(b->a, b->b), hi = MAX(b->a, b->b);
+        const uint32_t lo = MD_MIN(b->a, b->b), hi = MD_MAX(b->a, b->b);
         parent[hi] = (int32_t)lo;
     }
     for (size_t i = 0; i < n; ++i) {
@@ -2434,9 +2434,9 @@ static void smiles_ring_atoms(bool* in_ring, const md_smiles_t* g, md_allocator_
 }
 
 bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md_allocator_i* alloc, struct md_smiles_error_t* err) {
-    ASSERT(query);
-    ASSERT(alloc);
-    MEMSET(query, 0, sizeof(md_match_query_t));
+    MD_ASSERT(query);
+    MD_ASSERT(alloc);
+    MD_MEMSET(query, 0, sizeof(md_match_query_t));
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
@@ -2477,7 +2477,7 @@ bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md
     query->alloc     = alloc;
     query->num_atoms = n;
     query->atoms     = md_alloc(alloc, sizeof(md_match_atom_t) * n);
-    MEMSET(query->atoms, 0, sizeof(md_match_atom_t) * n);
+    MD_MEMSET(query->atoms, 0, sizeof(md_match_atom_t) * n);
     for (size_t i = 0; i < n; ++i) {
         const md_smiles_atom_t* src = &g.atoms[i];
         md_match_atom_t* dst = &query->atoms[i];
@@ -2499,7 +2499,7 @@ bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md
         const bool only_class = src->atom_class != 0 && src->isotope == 0 && organic &&
                                 !(src->flags & (MD_SMILES_ATOM_H_GIVEN | MD_SMILES_ATOM_CHARGE_GIVEN));
         if ((src->flags & MD_SMILES_ATOM_BRACKET) && !only_class) {
-            const uint32_t h = MIN((uint32_t)src->h_count + h_atoms[i], 254u);
+            const uint32_t h = MD_MIN((uint32_t)src->h_count + h_atoms[i], 254u);
             dst->flags |= MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE;
             dst->h_min  = (uint8_t)h;
             dst->h_max  = (uint8_t)h;
@@ -2538,9 +2538,9 @@ bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md
 }
 
 bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx, size_t count, md_match_label_t label, const struct md_system_t* sys, struct md_allocator_i* alloc) {
-    ASSERT(query);
-    ASSERT(alloc);
-    MEMSET(query, 0, sizeof(md_match_query_t));
+    MD_ASSERT(query);
+    MD_ASSERT(alloc);
+    MD_MEMSET(query, 0, sizeof(md_match_query_t));
 
     if (!sys) {
         MD_LOG_ERROR("md_match: no system");
@@ -2555,7 +2555,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
         return false;
     }
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     target_t tg;
     target_build(&tg, sys, TARGET_RESOLUTION, arena);
 
@@ -2596,7 +2596,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
     query->alloc     = alloc;
     query->num_atoms = count;
     query->atoms     = md_alloc(alloc, sizeof(md_match_atom_t) * count);
-    MEMSET(query->atoms, 0, sizeof(md_match_atom_t) * count);
+    MD_MEMSET(query->atoms, 0, sizeof(md_match_atom_t) * count);
 
     md_array(md_match_bond_t) bonds = 0;
     for (size_t i = 0; i < count; ++i) {
@@ -2630,8 +2630,8 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
             const uint32_t h_total = target_hydrogens(&tg, a);
             if (h_given == h_total) {
                 dst->flags |= MD_MATCH_ATOM_HCOUNT;
-                dst->h_min = (uint8_t)MIN(h_total, 254);
-                dst->h_max = (uint8_t)MIN(h_total, 254);
+                dst->h_min = (uint8_t)MD_MIN(h_total, 254);
+                dst->h_max = (uint8_t)MD_MIN(h_total, 254);
                 if (tg.charge) {
                     dst->flags |= MD_MATCH_ATOM_CHARGE;
                     dst->charge = tg.charge[a];
@@ -2668,7 +2668,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
     if (num_bonds > 0) {
         query->num_bonds = num_bonds;
         query->bonds = md_alloc(alloc, sizeof(md_match_bond_t) * num_bonds);
-        MEMCPY(query->bonds, bonds, sizeof(md_match_bond_t) * num_bonds);
+        MD_MEMCPY(query->bonds, bonds, sizeof(md_match_bond_t) * num_bonds);
     }
 
     // A reference in several parts is matched part by part within one unit (a chain with a gap in it)
@@ -2688,12 +2688,12 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
 }
 
 void md_match_query_free(md_match_query_t* query) {
-    ASSERT(query);
+    MD_ASSERT(query);
     if (query->alloc) {
         if (query->atoms) md_free(query->alloc, query->atoms, sizeof(md_match_atom_t) * query->num_atoms);
         if (query->bonds) md_free(query->alloc, query->bonds, sizeof(md_match_bond_t) * query->num_bonds);
     }
-    MEMSET(query, 0, sizeof(md_match_query_t));
+    MD_MEMSET(query, 0, sizeof(md_match_query_t));
 }
 
 bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param) {
@@ -2714,9 +2714,9 @@ static bool collect_callback(const int32_t* atom_idx, size_t width, uint32_t uni
 }
 
 bool md_match_find(md_match_result_t* out, const md_match_desc_t* desc, const struct md_system_t* sys, struct md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(alloc);
-    MEMSET(out, 0, sizeof(md_match_result_t));
+    MD_ASSERT(out);
+    MD_ASSERT(alloc);
+    MD_MEMSET(out, 0, sizeof(md_match_result_t));
 
     collect_t c = {.alloc = alloc};
     size_t count = 0;
@@ -2737,12 +2737,12 @@ bool md_match_find(md_match_result_t* out, const md_match_desc_t* desc, const st
 }
 
 void md_match_result_free(md_match_result_t* result) {
-    ASSERT(result);
+    MD_ASSERT(result);
     if (result->alloc) {
         md_array_free(result->atom_idx, result->alloc);
         md_array_free(result->unit, result->alloc);
     }
-    MEMSET(result, 0, sizeof(md_match_result_t));
+    MD_MEMSET(result, 0, sizeof(md_match_result_t));
 }
 
 // The atoms of one match, with the hydrogens of its atoms when asked for
@@ -2763,11 +2763,11 @@ static void select_row(md_bitmask_t* bf, const int32_t* row, size_t width, const
 }
 
 size_t md_match_result_select(struct md_bitset_t* out, size_t cap, const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags, struct md_allocator_i* alloc) {
-    ASSERT(result);
-    ASSERT(alloc);
+    MD_ASSERT(result);
+    MD_ASSERT(alloc);
     if (!out || cap == 0 || result->count == 0) return 0;
     const bool hydrogens = (flags & MD_MATCH_SELECT_HYDROGENS) != 0;
-    const size_t n = MIN(cap, result->count);
+    const size_t n = MD_MIN(cap, result->count);
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_bitmask_t mask = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
     for (size_t i = 0; i < n; ++i) {
@@ -2780,8 +2780,8 @@ size_t md_match_result_select(struct md_bitset_t* out, size_t cap, const md_matc
 }
 
 md_bitset_t md_match_result_select_all(const md_match_result_t* result, const struct md_system_t* sys, uint32_t flags, struct md_allocator_i* alloc) {
-    ASSERT(result);
-    ASSERT(alloc);
+    MD_ASSERT(result);
+    MD_ASSERT(alloc);
     const bool hydrogens = (flags & MD_MATCH_SELECT_HYDROGENS) != 0;
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_bitmask_t mask = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
@@ -2824,9 +2824,9 @@ static inline uint64_t element_hash(md_atomic_number_t z) {
 #define BOND_HASH 0xD6E8FEB86659FD93ULL
 
 md_match_library_t* md_match_library_create(struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     md_match_library_t* lib = md_alloc(alloc, sizeof(md_match_library_t));
-    MEMSET(lib, 0, sizeof(md_match_library_t));
+    MD_MEMSET(lib, 0, sizeof(md_match_library_t));
     lib->alloc = alloc;
     return lib;
 }
@@ -2853,7 +2853,7 @@ static int32_t library_push(md_match_library_t* lib, md_match_query_t query, str
     md_temp_scope_t temp = md_temp_begin_avoid(lib->alloc);
     uint32_t* degree = md_temp_alloc_array(temp, uint32_t, n);
     uint32_t  count[256] = {0};
-    MEMSET(degree, 0, sizeof(uint32_t) * n);
+    MD_MEMSET(degree, 0, sizeof(uint32_t) * n);
     for (size_t i = 0; i < query.num_bonds; ++i) {
         degree[query.bonds[i].a]++;
         degree[query.bonds[i].b]++;
@@ -2882,7 +2882,7 @@ static int32_t library_push(md_match_library_t* lib, md_match_query_t query, str
 
     e.comp_off = (uint32_t)md_array_size(lib->comp);
     for (uint32_t z = 0; z < 256; ++z) {
-        if (count[z]) md_array_push(lib->comp, z << 16 | MIN(count[z], 0xFFFFu), lib->alloc);
+        if (count[z]) md_array_push(lib->comp, z << 16 | MD_MIN(count[z], 0xFFFFu), lib->alloc);
     }
     e.comp_len = (uint32_t)md_array_size(lib->comp) - e.comp_off;
 
@@ -2891,23 +2891,23 @@ static int32_t library_push(md_match_library_t* lib, md_match_query_t query, str
 }
 
 int32_t md_match_library_add(md_match_library_t* lib, const md_match_query_t* query, str_t name) {
-    ASSERT(lib);
+    MD_ASSERT(lib);
     if (!query_validate(query)) return -1;
     md_match_query_t copy = {0};
     copy.alloc     = lib->alloc;
     copy.num_atoms = query->num_atoms;
     copy.atoms     = md_alloc(lib->alloc, sizeof(md_match_atom_t) * query->num_atoms);
-    MEMCPY(copy.atoms, query->atoms, sizeof(md_match_atom_t) * query->num_atoms);
+    MD_MEMCPY(copy.atoms, query->atoms, sizeof(md_match_atom_t) * query->num_atoms);
     if (query->num_bonds > 0) {
         copy.num_bonds = query->num_bonds;
         copy.bonds     = md_alloc(lib->alloc, sizeof(md_match_bond_t) * query->num_bonds);
-        MEMCPY(copy.bonds, query->bonds, sizeof(md_match_bond_t) * query->num_bonds);
+        MD_MEMCPY(copy.bonds, query->bonds, sizeof(md_match_bond_t) * query->num_bonds);
     }
     return library_push(lib, copy, name);
 }
 
 int32_t md_match_library_add_smiles(md_match_library_t* lib, str_t smiles, str_t name, struct md_smiles_error_t* err) {
-    ASSERT(lib);
+    MD_ASSERT(lib);
     md_match_query_t query = {0};
     if (!md_match_query_init_smiles(&query, smiles, lib->alloc, err)) return -1;
     return library_push(lib, query, name);
@@ -2948,16 +2948,16 @@ typedef struct identify_row_t {
 static bool identify_callback(const int32_t* atom_idx, size_t width, uint32_t unit, void* user_param) {
     (void)unit;
     identify_row_t* r = (identify_row_t*)user_param;
-    MEMCPY(r->row, atom_idx, sizeof(int32_t) * width);
+    MD_MEMCPY(r->row, atom_idx, sizeof(int32_t) * width);
     r->width = width;
     r->found = true;
     return true;
 }
 
 bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_desc_t* desc, const struct md_system_t* sys, struct md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(alloc);
-    MEMSET(out, 0, sizeof(md_match_identify_result_t));
+    MD_ASSERT(out);
+    MD_ASSERT(alloc);
+    MD_MEMSET(out, 0, sizeof(md_match_identify_result_t));
     out->alloc = alloc;
 
     if (!desc || !desc->library) {
@@ -2980,7 +2980,7 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
     const size_t num_entries = md_array_size(lib->entries);
     if (sys->atom.count == 0 || num_entries == 0) return true;
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
 
     bool has_charge = false;
     for (size_t e = 0; e < num_entries; ++e) has_charge |= query_states_charge(&lib->entries[e].query);
@@ -3001,8 +3001,8 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
     size_t max_atoms = 1;
     for (size_t e = 0; e < num_entries; ++e) {
         plan_build(&plans[e], &lib->entries[e].query, rarity, num_candidates, true, arena);
-        max_num   = MAX(max_num, plans[e].num);
-        max_atoms = MAX(max_atoms, plans[e].num_atoms);
+        max_num   = MD_MAX(max_num, plans[e].num);
+        max_atoms = MD_MAX(max_atoms, plans[e].num_atoms);
     }
     search_reserve(&s, max_num, max_atoms, arena);
     identify_row_t found = {.row = md_alloc(arena, sizeof(int32_t) * max_atoms)};
@@ -3112,12 +3112,12 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
 }
 
 void md_match_identify_result_free(md_match_identify_result_t* result) {
-    ASSERT(result);
+    MD_ASSERT(result);
     if (result->alloc) {
         md_array_free(result->unit, result->alloc);
         md_array_free(result->entry, result->alloc);
         md_array_free(result->offset, result->alloc);
         md_array_free(result->atom_idx, result->alloc);
     }
-    MEMSET(result, 0, sizeof(md_match_identify_result_t));
+    MD_MEMSET(result, 0, sizeof(md_match_identify_result_t));
 }

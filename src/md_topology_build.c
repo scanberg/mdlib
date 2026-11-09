@@ -50,9 +50,9 @@ static bool topology_is_virtual(const md_topology_desc_t* d, size_t i, md_atomic
 }
 
 bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const md_topology_desc_t* desc) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(desc);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    MD_ASSERT(desc);
     if (!sys->alloc || !state->alloc) {
         TOPO_LOG_ERROR(desc->format, "system or state allocator not set");
         return false;
@@ -94,11 +94,11 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     }
 
     // ## Particle types: one per name, force field type, element, mass and kind
-    const size_t capacity = ROUND_UP(N, 16);
+    const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    MD_MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
@@ -196,8 +196,8 @@ static bool topology_name_matches(str_t structure, str_t topology) {
 }
 
 bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* desc, str_t filename) {
-    ASSERT(sys);
-    ASSERT(desc);
+    MD_ASSERT(sys);
+    MD_ASSERT(desc);
     if (!sys->alloc || sys->atom.count == 0) {
         TOPO_LOG_ERROR(desc->format, "a topology can only supplement a loaded system");
         return false;
@@ -264,15 +264,15 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
             count += 1;
         }
         if (num_noncovalent) {
-            MEMCPY(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
-            MEMCPY(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
+            MD_MEMCPY(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
+            MD_MEMCPY(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
         }
         md_bond_data_clear(&sys->bond);
         md_array_resize(sys->bond.pairs, count + num_noncovalent, sys->alloc);
         md_array_resize(sys->bond.flags, count + num_noncovalent, sys->alloc);
         if (count + num_noncovalent) {
-            MEMCPY(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
-            MEMCPY(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
+            MD_MEMCPY(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
+            MD_MEMCPY(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
         }
         sys->bond.count = count;
         sys->bond.noncovalent_count = num_noncovalent;

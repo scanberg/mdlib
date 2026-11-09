@@ -33,7 +33,7 @@ static const size_t attr_type_size[MD_ATTRIBUTE_TYPE_COUNT] = {
 // producer's and the consumer's business, and the table only has to avoid destroying it.
 static inline uint32_t attr_f32_bits(float v) {
     uint32_t u;
-    MEMCPY(&u, &v, sizeof(u));
+    MD_MEMCPY(&u, &v, sizeof(u));
     return u;
 }
 
@@ -55,7 +55,7 @@ bool md_attribute_type_is_numeric(md_attribute_type_t type) {
 // Every axis in shape is an index axis, so this is the whole product. Rank 0 is the empty
 // product, which is 1 - the single value case falls out rather than being branched on.
 size_t md_attribute_value_count(const md_attribute_format_t* format) {
-    ASSERT(format);
+    MD_ASSERT(format);
     size_t count = 1;
     for (uint32_t i = 0; i < format->rank; ++i) {
         count *= (size_t)format->shape[i];
@@ -64,12 +64,12 @@ size_t md_attribute_value_count(const md_attribute_format_t* format) {
 }
 
 size_t md_attribute_element_count(const md_attribute_format_t* format) {
-    ASSERT(format);
+    MD_ASSERT(format);
     return md_attribute_value_count(format) * (size_t)format->components;
 }
 
 size_t md_attribute_byte_size(const md_attribute_format_t* format) {
-    ASSERT(format);
+    MD_ASSERT(format);
     return md_attribute_element_count(format) * md_attribute_type_size(format->type);
 }
 
@@ -79,7 +79,7 @@ static bool attr_path_split(size_t* loc, str_t path) {
 }
 
 str_t md_attribute_group(const md_attribute_t* attr) {
-    ASSERT(attr);
+    MD_ASSERT(attr);
     size_t loc;
     if (!attr_path_split(&loc, attr->path)) {
         return (str_t){0};
@@ -88,7 +88,7 @@ str_t md_attribute_group(const md_attribute_t* attr) {
 }
 
 str_t md_attribute_leaf(const md_attribute_t* attr) {
-    ASSERT(attr);
+    MD_ASSERT(attr);
     size_t loc;
     if (!attr_path_split(&loc, attr->path)) {
         return attr->path;
@@ -103,7 +103,7 @@ str_t md_attribute_leaf(const md_attribute_t* attr) {
 #define MD_ATTR_DEFINE_EXTRACT_RANGE(SUFFIX, DST_T)                                                 \
 static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_t* attr,      \
                                           size_t first, size_t count, const md_attribute_slice_t* slice, md_unit_t dst_unit, md_attribute_io_t* io) { \
-    ASSERT(attr);                                                                                   \
+    MD_ASSERT(attr);                                                                                   \
                                                                                                     \
     if (!dst) {                                                                                     \
         return 0;                                                                                   \
@@ -173,7 +173,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
                                                                                                     \
     size_t result = count;                                                                          \
     if (as_stored) {                                                                                \
-        MEMCPY(dst, src, count * sizeof(DST_T));                                                    \
+        MD_MEMCPY(dst, src, count * sizeof(DST_T));                                                    \
     } else {                                                                                        \
         /* The scale is applied in double and narrowed once, at the end. */                         \
         switch (attr->format.type) {                                                                \
@@ -219,7 +219,7 @@ MD_ATTR_DEFINE_EXTRACT_RANGE(F64, double)
 // The one piece of layout arithmetic in the library. Row major, so fixing the first num_idx axes
 // selects one contiguous block. Reads only the FORMAT, never the storage.
 bool md_attribute_slice_window(size_t* out_first, size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice) {
-    ASSERT(attr);
+    MD_ASSERT(attr);
 
     const md_attribute_format_t* fmt = &attr->format;
 
@@ -250,14 +250,14 @@ bool md_attribute_slice_window(size_t* out_first, size_t* out_count, const md_at
 }
 
 size_t md_attribute_slice_count(const md_attribute_t* attr, md_attribute_slice_t slice) {
-    ASSERT(attr);
+    MD_ASSERT(attr);
     size_t first, count;
     return md_attribute_slice_window(&first, &count, attr, slice) ? count : 0;
 }
 
 bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t* attr, md_attribute_slice_t slice) {
-    ASSERT(out);
-    ASSERT(attr);
+    MD_ASSERT(out);
+    MD_ASSERT(attr);
 
     size_t first, count;
     if (!md_attribute_slice_window(&first, &count, attr, slice)) {
@@ -266,7 +266,7 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
 
     // Slicing picks values and never splits one, so only the index axes change.
     const md_attribute_format_t* fmt = &attr->format;
-    MEMSET(out, 0, sizeof(*out));
+    MD_MEMSET(out, 0, sizeof(*out));
     out->type       = fmt->type;
     out->components = fmt->components;
     out->rank       = fmt->rank - slice.num_idx;
@@ -290,7 +290,7 @@ static bool attr_reject_whole_temporal(const md_attribute_t* attr, md_attribute_
 
 #define MD_ATTR_DEFINE_EXTRACT(SUFFIX, suffix, DST_T)                                                     \
 static size_t attr_extract_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) { \
-    ASSERT(attr);                                                                                   \
+    MD_ASSERT(attr);                                                                                   \
     if (attr_reject_whole_temporal(attr, slice)) return 0;                                          \
     size_t first, count;                                                                            \
     if (!md_attribute_slice_window(&first, &count, attr, slice)) return 0;                          \
@@ -298,8 +298,8 @@ static size_t attr_extract_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_
 }                                                                                                   \
                                                                                                     \
 DST_T* md_attribute_extract_alloc_##suffix(size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_allocator_i* alloc) { \
-    ASSERT(attr);                                                                                   \
-    ASSERT(alloc);                                                                                  \
+    MD_ASSERT(attr);                                                                                   \
+    MD_ASSERT(alloc);                                                                                  \
     if (out_count) *out_count = 0;                                                                  \
     const size_t count = md_attribute_slice_count(attr, slice);                                     \
     if (count == 0) return NULL;                                                                    \
@@ -335,8 +335,8 @@ size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_
 }
 
 bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
-    ASSERT(dst);
-    ASSERT(attr);
+    MD_ASSERT(dst);
+    MD_ASSERT(attr);
     size_t first, count;
     if (!md_attribute_slice_window(&first, &count, attr, slice)) {
         return false;
@@ -348,7 +348,7 @@ bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribut
         return false;
     }
     const size_t type_size = md_attribute_type_size(attr->format.type);
-    MEMCPY(dst, (const uint8_t*)attr->data + first * type_size, count * type_size);
+    MD_MEMCPY(dst, (const uint8_t*)attr->data + first * type_size, count * type_size);
     return true;
 }
 
@@ -432,7 +432,7 @@ static void attr_id_index_rebuild(md_attributes_t* attributes) {
             return;
         }
     }
-    MEMSET(attributes->id_index, 0, cap * sizeof(uint32_t));
+    MD_MEMSET(attributes->id_index, 0, cap * sizeof(uint32_t));
     const size_t mask = cap - 1;
     for (size_t i = 0; i < count; ++i) {
         size_t slot = (size_t)attributes->attr[i].id & mask;
@@ -518,11 +518,11 @@ static const md_attribute_t* attr_axis_above(const md_attributes_t* attributes, 
                 MD_LOG_ERROR("Attribute path '" STR_FMT "' is too long to search for a frame axis", STR_ARG(path));
                 return NULL;
             }
-            MEMCPY(buf, group.ptr, group.len);
+            MD_MEMCPY(buf, group.ptr, group.len);
             len = group.len;
             buf[len++] = '/';
         }
-        MEMCPY(buf + len, "time", 4);
+        MD_MEMCPY(buf + len, "time", 4);
         len += 4;
 
         const md_attribute_t* axis = md_attributes_find(attributes, (str_t){buf, len});
@@ -546,7 +546,7 @@ static bool attr_consistent(const md_attribute_t* attr) {
 // producers so they cannot drift on what "this path is available" means. Hands back where the
 // entry belongs in the sorted array and the id it will have.
 static bool attr_reserve_slot(md_attributes_t* attributes, str_t path, size_t* out_idx, md_attribute_id_t* out_id) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
 
     if (!attributes->alloc) {
         MD_LOG_ERROR("Attribute table allocator not set");
@@ -577,14 +577,14 @@ static bool attr_reserve_slot(md_attributes_t* attributes, str_t path, size_t* o
 // The one place an attribute enters the table. idx comes from attr_reserve_slot, so opening the
 // hole keeps the array sorted by path.
 static void attr_insert_at(md_attributes_t* attributes, size_t idx, const md_attribute_t* attr) {
-    ASSERT(attr_consistent(attr));
+    MD_ASSERT(attr_consistent(attr));
 
     md_attribute_t empty = {0};
     md_array_push(attributes->attr, empty, attributes->alloc);
 
     size_t count = md_array_size(attributes->attr);
     if (idx + 1 < count) {
-        MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
+        MD_MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     attributes->attr[idx] = *attr;
     attributes->num_aliases += md_attribute_is_alias(attr) ? 1 : 0;
@@ -595,9 +595,9 @@ static void attr_insert_at(md_attributes_t* attributes, size_t idx, const md_att
 // this, and when they were two copies of the list they were one edit away from disagreeing - which
 // is a leak in one path or a double free in the other, neither visible until it is.
 static void attr_release(md_attribute_t* attr, md_allocator_i* alloc) {
-    ASSERT(attr);
-    ASSERT(alloc);
-    ASSERT(attr_consistent(attr));
+    MD_ASSERT(attr);
+    MD_ASSERT(alloc);
+    MD_ASSERT(attr_consistent(attr));
     str_free(attr->path, alloc);
     // Both are optional and an absent one is a zeroed str_t, which is not something to hand to an
     // allocator.
@@ -618,7 +618,7 @@ static void attr_release(md_attribute_t* attr, md_allocator_i* alloc) {
 }
 
 void md_attributes_free(md_attributes_t* attributes) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     md_allocator_i* alloc = attributes->alloc;
     if (alloc) {
         for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
@@ -631,16 +631,16 @@ void md_attributes_free(md_attributes_t* attributes) {
         md_array_free(attributes->str_offset, alloc);
         md_array_free(attributes->str_index,  alloc);
     }
-    MEMSET(attributes, 0, sizeof(md_attributes_t));
+    MD_MEMSET(attributes, 0, sizeof(md_attributes_t));
 }
 
 size_t md_attributes_count(const md_attributes_t* attributes) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     return md_array_size(attributes->attr);
 }
 
 void* md_attributes_alloc_user_data(md_attributes_t* attributes, size_t size) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     if (size == 0) {
         return NULL;
     }
@@ -719,7 +719,7 @@ static bool attr_str_index_reserve(md_attributes_t* attributes, size_t needed) {
         attributes->str_index = old_index;
         return false;
     }
-    MEMSET(attributes->str_index, 0, sizeof(uint32_t) * new_cap);
+    MD_MEMSET(attributes->str_index, 0, sizeof(uint32_t) * new_cap);
 
     const size_t num_entries = md_array_size(attributes->str_offset) - 1;
     for (uint32_t h = 0; h < (uint32_t)num_entries; ++h) {
@@ -764,8 +764,8 @@ static uint32_t attr_str_intern(md_attributes_t* attributes, str_t str) {
 }
 
 str_t md_attribute_str(const md_attributes_t* attributes, const md_attribute_t* attr, size_t index) {
-    ASSERT(attributes);
-    ASSERT(attr);
+    MD_ASSERT(attributes);
+    MD_ASSERT(attr);
     if (attr->format.type != MD_ATTRIBUTE_TYPE_STR || !attr->data) {
         MD_LOG_ERROR("Attribute '" STR_FMT "' is not a resident string attribute", STR_ARG(attr->path));
         return (str_t){0};
@@ -777,8 +777,8 @@ str_t md_attribute_str(const md_attributes_t* attributes, const md_attribute_t* 
 }
 
 size_t md_attribute_extract_str(str_t dst[], size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr) {
-    ASSERT(attributes);
-    ASSERT(attr);
+    MD_ASSERT(attributes);
+    MD_ASSERT(attr);
     if (!dst) {
         return 0;
     }
@@ -925,9 +925,9 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
                 handles[i] = attr_str_intern(attributes, values[i]);
             }
         } else if (desc->data) {
-            MEMCPY(storage, desc->data, required);
+            MD_MEMCPY(storage, desc->data, required);
         } else if (!uninitialized) {
-            MEMSET(storage, 0, required);
+            MD_MEMSET(storage, 0, required);
         }
     }
 
@@ -964,7 +964,7 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
 
 
 md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
 
     if (!desc) {
         MD_LOG_ERROR("Attribute descriptor is NULL");
@@ -988,8 +988,8 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
 }
 
 md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_attribute_desc_t* desc, void** out_data) {
-    ASSERT(attributes);
-    ASSERT(out_data);
+    MD_ASSERT(attributes);
+    MD_ASSERT(out_data);
     *out_data = NULL;
     if (!desc) {
         MD_LOG_ERROR("Attribute descriptor is NULL");
@@ -1016,7 +1016,7 @@ md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_at
 }
 
 md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_id_t target, str_t path, str_t label, str_t description) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
 
     size_t idx;
     md_attribute_id_t id;
@@ -1074,21 +1074,21 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
 }
 
 bool md_attribute_same_data(const md_attribute_t* a, const md_attribute_t* b) {
-    ASSERT(a);
-    ASSERT(b);
+    MD_ASSERT(a);
+    MD_ASSERT(b);
     return a->root == b->root;
 }
 
 static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
     md_allocator_i* alloc = attributes->alloc;
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
 
     attributes->num_aliases -= md_attribute_is_alias(attributes->attr + idx) ? 1 : 0;
     attr_release(attributes->attr + idx, alloc);
 
     size_t count = md_array_size(attributes->attr);
     if (idx + 1 < count) {
-        MEMMOVE(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
+        MD_MEMMOVE(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     md_array_pop(attributes->attr);
     attr_id_index_rebuild(attributes);
@@ -1157,7 +1157,7 @@ static bool attr_atom_column_informative(const float values[], size_t count, uin
 }
 
 md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
 
     if (count == 0 || components == 0 || !values) {
         return MD_ATTRIBUTE_INVALID;
@@ -1185,8 +1185,8 @@ md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes,
 }
 
 float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id) {
-    ASSERT(attributes);
-    ASSERT(out_id);
+    MD_ASSERT(attributes);
+    MD_ASSERT(out_id);
     *out_id = MD_ATTRIBUTE_INVALID;
     if (count == 0 || components == 0 || count > UINT32_MAX) {
         return NULL;
@@ -1208,7 +1208,7 @@ float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path
 }
 
 md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, md_attribute_id_t id) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     const size_t idx = attr_index_from_id(attributes, id);
     if (idx == SIZE_MAX) {
         return MD_ATTRIBUTE_INVALID;
@@ -1227,13 +1227,13 @@ md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, 
 }
 
 uint64_t md_attributes_version(const md_attributes_t* attributes, md_attribute_id_t id) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     size_t idx = attr_index_from_id(attributes, id);
     return idx == SIZE_MAX ? 0 : attributes->attr[idx].version;
 }
 
 uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     size_t idx = attr_index_from_id(attributes, id);
     if (idx == SIZE_MAX) {
         return 0;
@@ -1260,8 +1260,8 @@ uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id) 
 }
 
 md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
-    ASSERT(attributes);
-    ASSERT(desc);
+    MD_ASSERT(attributes);
+    MD_ASSERT(desc);
 
     const md_attribute_t* existing = md_attributes_find(attributes, desc->path);
     if (!existing) {
@@ -1286,7 +1286,7 @@ md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_at
 }
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
 
     if (attr_index_from_id(attributes, id) == SIZE_MAX) {
         return false;
@@ -1305,7 +1305,7 @@ bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
 }
 
 size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
 
     if (str_empty(attr_prefix_trim(prefix))) {
         MD_LOG_ERROR("Refusing to remove attributes under an empty prefix");
@@ -1317,11 +1317,11 @@ size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix) {
     const size_t before = md_array_size(attributes->attr);
     md_attribute_id_t ids[64];
     for (;;) {
-        const size_t n = md_attributes_query(ids, ARRAY_SIZE(ids), attributes, prefix);
+        const size_t n = md_attributes_query(ids, MD_COUNTOF(ids), attributes, prefix);
         if (n == 0) {
             break;
         }
-        for (size_t i = 0; i < MIN(n, ARRAY_SIZE(ids)); ++i) {
+        for (size_t i = 0; i < MD_MIN(n, MD_COUNTOF(ids)); ++i) {
             md_attributes_remove(attributes, ids[i]);
         }
     }
@@ -1329,13 +1329,13 @@ size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix) {
 }
 
 const md_attribute_t* md_attributes_get(const md_attributes_t* attributes, md_attribute_id_t id) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     size_t idx = attr_index_from_id(attributes, id);
     return idx == SIZE_MAX ? NULL : attributes->attr + idx;
 }
 
 const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_t path) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     size_t idx = attr_lower_bound(attributes, path);
     if (idx < md_array_size(attributes->attr) && str_eq(attributes->attr[idx].path, path)) {
         return attributes->attr + idx;
@@ -1344,7 +1344,7 @@ const md_attribute_t* md_attributes_find(const md_attributes_t* attributes, str_
 }
 
 void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_attribute_type_t expected_type) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     size_t idx = attr_index_from_id(attributes, id);
     if (idx == SIZE_MAX) {
         return NULL;
@@ -1378,7 +1378,7 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
 // that a path may continue the prefix with a character below '/' ("atom-x" under "atom"), which sorts
 // inside the run without being covered by it and is skipped.
 static md_attribute_iter_t attr_iter_begin(const md_attributes_t* attributes, str_t prefix, bool children) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     const str_t base = attr_prefix_trim(prefix);
     md_attribute_iter_t it = {
         ._table    = attributes,
@@ -1398,7 +1398,7 @@ md_attribute_iter_t md_attributes_iter_children(const md_attributes_t* attribute
 }
 
 bool md_attributes_next(md_attribute_iter_t* it) {
-    ASSERT(it);
+    MD_ASSERT(it);
     const md_attributes_t* attributes = it->_table;
     if (!attributes) {
         return false;
@@ -1464,7 +1464,7 @@ size_t md_attributes_query(md_attribute_id_t out_ids[], size_t cap, const md_att
 }
 
 const md_attribute_t* md_attributes_find_in(const md_attributes_t* attributes, str_t group, str_t leaf) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     group = attr_prefix_trim(group);
     if (str_empty(group)) {
         return md_attributes_find(attributes, leaf);
@@ -1474,14 +1474,14 @@ const md_attribute_t* md_attributes_find_in(const md_attributes_t* attributes, s
         MD_LOG_ERROR("Attribute path '" STR_FMT "/" STR_FMT "' is too long", STR_ARG(group), STR_ARG(leaf));
         return NULL;
     }
-    MEMCPY(buf, group.ptr, group.len);
+    MD_MEMCPY(buf, group.ptr, group.len);
     buf[group.len] = '/';
-    MEMCPY(buf + group.len + 1, leaf.ptr, leaf.len);
+    MD_MEMCPY(buf + group.len + 1, leaf.ptr, leaf.len);
     return md_attributes_find(attributes, (str_t){buf, group.len + 1 + leaf.len});
 }
 
 const md_attribute_t* md_attributes_sibling(const md_attributes_t* attributes, const md_attribute_t* attr, str_t leaf) {
-    ASSERT(attributes);
+    MD_ASSERT(attributes);
     if (!attr) {
         return NULL;
     }
@@ -1489,8 +1489,8 @@ const md_attribute_t* md_attributes_sibling(const md_attributes_t* attributes, c
 }
 
 const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, const md_attribute_t* attr) {
-    ASSERT(attributes);
-    ASSERT(attr);
+    MD_ASSERT(attributes);
+    MD_ASSERT(attr);
 
     // An alias is a second name for a datum, and the datum's axis is decided by where its owner
     // lives. Searching from the alias' own path would pair it with whatever "time" happens to sit
@@ -1522,9 +1522,9 @@ static bool attr_axis_value(double* out, const md_attribute_t* axis, size_t i, m
 }
 
 bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis) {
-    ASSERT(out_index);
-    ASSERT(src_axis);
-    ASSERT(dst_axis);
+    MD_ASSERT(out_index);
+    MD_ASSERT(src_axis);
+    MD_ASSERT(dst_axis);
 
     if (!attr_format_is_axis(&src_axis->format, src_axis->flags) || !attr_format_is_axis(&dst_axis->format, dst_axis->flags)) {
         MD_LOG_ERROR("Mapping between '" STR_FMT "' and '" STR_FMT "': both have to be frame axes", STR_ARG(src_axis->path), STR_ARG(dst_axis->path));
@@ -1608,7 +1608,7 @@ bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, si
             }
         }
     }
-    tol = MAX(tol, 1.0e-3 * spacing);
+    tol = MD_MAX(tol, 1.0e-3 * spacing);
 
     if (best_dist > tol) {
         return false;
@@ -1623,7 +1623,7 @@ static void attr_io_close_slot(md_attribute_io_t* io, size_t i) {
     if (io->slot[i].hash) {
         md_file_close(&io->slot[i].file);
         str_free(io->slot[i].path, io->alloc);
-        MEMSET(&io->slot[i], 0, sizeof(io->slot[i]));
+        MD_MEMSET(&io->slot[i], 0, sizeof(io->slot[i]));
     }
 }
 
@@ -1633,15 +1633,15 @@ void md_attribute_io_close_all(md_attribute_io_t* io) {
     }
     for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
         if (io->block[i].data) md_free(md_get_heap_allocator(), io->block[i].data, io->block[i].capacity);
-        MEMSET(&io->block[i], 0, sizeof(io->block[i]));
+        MD_MEMSET(&io->block[i], 0, sizeof(io->block[i]));
     }
 }
 
 md_attribute_io_t* md_attribute_io_create(const struct md_executor_t* executor, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     md_attribute_io_t* io = md_alloc(alloc, sizeof(md_attribute_io_t));
     if (!io) return NULL;
-    MEMSET(io, 0, sizeof(*io));
+    MD_MEMSET(io, 0, sizeof(*io));
     io->alloc = alloc;
     io->executor = executor;
     return io;
@@ -1674,7 +1674,7 @@ uint64_t md_attribute_io_block_key(str_t path, int64_t offset) {
 }
 
 void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, bool* hit) {
-    ASSERT(hit);
+    MD_ASSERT(hit);
     *hit = false;
     if (!io || key == 0 || bytes == 0) return NULL;
     io->tick += 1;
@@ -1690,7 +1690,7 @@ void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, b
     // The least recently used slot, grown when it is too small for the block
     if (io->block[lru].capacity < bytes) {
         if (io->block[lru].data) md_free(md_get_heap_allocator(), io->block[lru].data, io->block[lru].capacity);
-        MEMSET(&io->block[lru], 0, sizeof(io->block[lru]));
+        MD_MEMSET(&io->block[lru], 0, sizeof(io->block[lru]));
         io->block[lru].data = md_alloc(md_get_heap_allocator(), bytes);
         if (!io->block[lru].data) return NULL;
         io->block[lru].capacity = bytes;

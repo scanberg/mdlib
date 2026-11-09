@@ -162,7 +162,7 @@ struct vial_fuzz {
 };
 
 UTEST_F_SETUP(vial_fuzz) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     utest_fixture->alloc = alloc;
     utest_fixture->seeds = NULL;
 
@@ -174,7 +174,7 @@ UTEST_F_SETUP(vial_fuzz) {
 
     const char* files[] = {VIAL_FUZZ_PRELUDE, VIAL_FUZZ_GOLDEN "expressions.vial", VIAL_FUZZ_GOLDEN "statements.vial",
                            VIAL_FUZZ_GOLDEN "refused.vial", VIAL_FUZZ_GOLDEN "errors.vial"};
-    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
         str_t s = load_textfile(str_from_cstr(files[i]), alloc);
         ASSERT_FALSE(str_empty(s));
         md_array_push(utest_fixture->seeds, s, alloc);
@@ -190,7 +190,7 @@ UTEST_F_TEARDOWN(vial_fuzz) {
 
 // Every seed as it is, then every prefix of the golden error input: text cut off anywhere
 UTEST_F(vial_fuzz, seeds_and_prefixes) {
-    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const str_t* seeds = utest_fixture->seeds;
     for (size_t i = 0; i < md_array_size(seeds); ++i) {
         const char* err = fuzz_check_copy(seeds[i].ptr, seeds[i].len, scratch);
@@ -250,7 +250,7 @@ typedef struct extremes_out_t {
 
 static void* extremes_run(void* arg) {
     extremes_out_t* out = (extremes_out_t*)arg;
-    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     for (size_t c = 0; c < NUM_EXTREMES; ++c) {
         const extreme_t* e = &extremes[c];
         char* src = NULL;
@@ -315,7 +315,7 @@ UTEST_F(vial_fuzz, extremes) {
 UTEST_F(vial_fuzz, mutations) {
     const size_t iterations = (size_t)fuzz_env("VIAL_FUZZ_ITERATIONS", 3000);
     fuzz_rng_t rng = {fuzz_env("VIAL_FUZZ_SEED", 0x5eed5eedull) | 1};
-    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const str_t* seeds = utest_fixture->seeds;
     const size_t num_seeds = md_array_size(seeds);
 

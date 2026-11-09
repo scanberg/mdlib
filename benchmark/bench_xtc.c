@@ -16,7 +16,7 @@ static const str_t asp_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/aspirin-phospholi
 static const str_t ion_path = STR_INIT(MD_BENCHMARK_DATA_DIR "/ef.xtc");
 
 UBENCH_EX(xtc, xdr_catalyst) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, cat_path, MD_FILE_READ)) {
@@ -57,7 +57,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
 
 #if FULL_TEST
 UBENCH_EX(xtc, xdr_amyloid) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, amy_path, MD_FILE_READ)) {
@@ -96,7 +96,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
 }
 
 UBENCH_EX(xtc, xdr_aspirin) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, asp_path, MD_FILE_READ)) {
@@ -135,7 +135,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
 }
 
 UBENCH_EX(xtc, xdr_ion_channel) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, ion_path, MD_FILE_READ)) {
@@ -175,7 +175,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
 #endif
 
 UBENCH_EX(xtc, xtc_catalyst) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, cat_path, MD_FILE_READ)) {
@@ -218,7 +218,7 @@ UBENCH_EX(xtc, xtc_catalyst) {
 
 #if FULL_TEST
 UBENCH_EX(xtc, xtc_amyloid) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, amy_path, MD_FILE_READ)) {
@@ -259,7 +259,7 @@ UBENCH_EX(xtc, xtc_amyloid) {
 }
 
 UBENCH_EX(xtc, xtc_aspirin) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, asp_path, MD_FILE_READ)) {
@@ -300,7 +300,7 @@ UBENCH_EX(xtc, xtc_aspirin) {
 }
 
 UBENCH_EX(xtc, xtc_ion_channel) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_file_t file = {0};
 
     if (!md_file_open(&file, ion_path, MD_FILE_READ)) {

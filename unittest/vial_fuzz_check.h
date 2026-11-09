@@ -133,10 +133,10 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
     if (!vial_sys_init(&vs, sys, alloc)) return NULL;
     vial_interp_t in, again;
     if (!vial_fuzz__run(&in, ir, &vs, sys, state, md_get_heap_allocator(), false)) return NULL;
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    void* junk = md_alloc(arena, KILOBYTES(32));
-    memset(junk, 0xA5, KILOBYTES(32));
-    md_free(arena, junk, KILOBYTES(32));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
+    void* junk = md_alloc(arena, MD_KILOBYTES(32));
+    memset(junk, 0xA5, MD_KILOBYTES(32));
+    md_free(arena, junk, MD_KILOBYTES(32));
     // The second time, the script inlined and contracted but not with its reductions over every pair lowered: they
     // must give the matrix's bits
     vial_ir_t plain;

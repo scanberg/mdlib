@@ -23,7 +23,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     char* buf = malloc(size ? size : 1);
     if (!buf) return 0;
     if (size) memcpy(buf, data, size);
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
     const char* err = vial_fuzz_check((str_t){buf, size}, vial_test_system('T'), vial_test_state('T'), arena);
     if (err) {
         fprintf(stderr, "vial_fuzz_check: %s\n", err);

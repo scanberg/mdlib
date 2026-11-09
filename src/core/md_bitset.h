@@ -145,7 +145,7 @@ static inline bool md_bitset_iter_next(md_bitset_iter_t* it) {
         it->base += 64;
         it->mask = md_bitset__window(it->words, it->word_base, it->beg, it->end, it->base);
     }
-    const uint32_t i = it->base + (uint32_t)ctz64(it->mask);
+    const uint32_t i = it->base + (uint32_t)md_ctz64(it->mask);
     if (i >= it->end) { it->mask = 0; return false; }
     it->mask &= it->mask - 1;
     it->idx = i;

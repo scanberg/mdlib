@@ -37,8 +37,8 @@ static inline cplx_t c_div(cplx_t a, cplx_t b) {
 // Principal square root (Re >= 0, Im has the sign of the input imaginary part, Im >= 0 for negative reals)
 static inline cplx_t c_sqrt(cplx_t a) {
     const double r = hypot(a.re, a.im);
-    const double re = sqrt(MAX(0.0, (r + a.re) * 0.5));
-    double im = sqrt(MAX(0.0, (r - a.re) * 0.5));
+    const double re = sqrt(MD_MAX(0.0, (r + a.re) * 0.5));
+    double im = sqrt(MD_MAX(0.0, (r - a.re) * 0.5));
     if (a.im < 0.0) im = -im;
     return c_make(re, im);
 }
@@ -93,7 +93,7 @@ static inline size_t packed_row_offset(size_t row, size_t n) {
 
 static void* aligned_alloc_zero(size_t bytes) {
     void* ptr = md_fft_alloc(bytes);
-    if (ptr) MEMSET(ptr, 0, bytes);
+    if (ptr) MD_MEMSET(ptr, 0, bytes);
     return ptr;
 }
 
@@ -185,7 +185,7 @@ static int cmp_float(const void* a, const void* b) {
 static size_t build_classes(double out_sigma[GISAXS_MAX_CLASSES], uint32_t* out_cls, const md_gisaxs_input_t* in, const uint8_t* include) {
     const size_t N = in->count;
     if (!in->sigma) {
-        out_sigma[0] = MAX(0.0, (double)in->sigma_uniform);
+        out_sigma[0] = MD_MAX(0.0, (double)in->sigma_uniform);
         for (size_t i = 0; i < N; ++i) out_cls[i] = 0;
         return 1;
     }
@@ -196,7 +196,7 @@ static size_t build_classes(double out_sigma[GISAXS_MAX_CLASSES], uint32_t* out_
     bool overflow = false;
     for (size_t i = 0; i < N && !overflow; ++i) {
         if (!include[i]) continue;
-        const float s = roundf(MAX(0.0f, in->sigma[i]) * 1.0e4f) * 1.0e-4f;
+        const float s = roundf(MD_MAX(0.0f, in->sigma[i]) * 1.0e4f) * 1.0e-4f;
         size_t j = 0;
         for (; j < num_uniq; ++j) {
             if (uniq[j] == s) break;
@@ -219,7 +219,7 @@ static size_t build_classes(double out_sigma[GISAXS_MAX_CLASSES], uint32_t* out_
         for (size_t i = 0; i < N; ++i) {
             out_cls[i] = 0;
             if (!include[i]) continue;
-            const float s = roundf(MAX(0.0f, in->sigma[i]) * 1.0e4f) * 1.0e-4f;
+            const float s = roundf(MD_MAX(0.0f, in->sigma[i]) * 1.0e4f) * 1.0e-4f;
             for (uint32_t j = 0; j < num_uniq; ++j) {
                 if (uniq[j] == s) { out_cls[i] = j; break; }
             }
@@ -232,13 +232,13 @@ static size_t build_classes(double out_sigma[GISAXS_MAX_CLASSES], uint32_t* out_
     MD_LOG_INFO("GISAXS: more than %i distinct Gaussian widths, grouping into %i classes", GISAXS_MAX_CLASSES, GISAXS_MAX_CLASSES);
     size_t num_incl = 0;
     for (size_t i = 0; i < N; ++i) num_incl += include[i] ? 1 : 0;
-    float* sorted = (float*)malloc(sizeof(float) * MAX(num_incl, 1));
+    float* sorted = (float*)malloc(sizeof(float) * MD_MAX(num_incl, 1));
     size_t n = 0;
-    for (size_t i = 0; i < N; ++i) if (include[i]) sorted[n++] = MAX(0.0f, in->sigma[i]);
+    for (size_t i = 0; i < N; ++i) if (include[i]) sorted[n++] = MD_MAX(0.0f, in->sigma[i]);
     qsort(sorted, n, sizeof(float), cmp_float);
     float bounds[GISAXS_MAX_CLASSES];
     for (int c = 0; c < GISAXS_MAX_CLASSES; ++c) {
-        size_t idx = MIN(n - 1, ((size_t)(c + 1) * n) / GISAXS_MAX_CLASSES);
+        size_t idx = MD_MIN(n - 1, ((size_t)(c + 1) * n) / GISAXS_MAX_CLASSES);
         bounds[c] = sorted[idx];
     }
     bounds[GISAXS_MAX_CLASSES - 1] = FLT_MAX;
@@ -249,7 +249,7 @@ static size_t build_classes(double out_sigma[GISAXS_MAX_CLASSES], uint32_t* out_
     for (size_t i = 0; i < N; ++i) {
         out_cls[i] = 0;
         if (!include[i]) continue;
-        const float s = MAX(0.0f, in->sigma[i]);
+        const float s = MD_MAX(0.0f, in->sigma[i]);
         uint32_t c = 0;
         while (c < GISAXS_MAX_CLASSES - 1 && s > bounds[c]) ++c;
         out_cls[i] = c;
@@ -269,7 +269,7 @@ static size_t build_classes(double out_sigma[GISAXS_MAX_CLASSES], uint32_t* out_
         }
     }
     for (size_t i = 0; i < N; ++i) out_cls[i] = remap[out_cls[i]];
-    return MAX(num, 1);
+    return MD_MAX(num, 1);
 }
 
 md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_params_t* params, struct md_allocator_i* alloc) {
@@ -291,19 +291,19 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     }
 
     const size_t N = in->count;
-    const double os = params->oversampling > 0.0 ? MAX(params->oversampling, 1.0) : GISAXS_DEFAULT_OVERSAMPLING;
+    const double os = params->oversampling > 0.0 ? MD_MAX(params->oversampling, 1.0) : GISAXS_DEFAULT_OVERSAMPLING;
     const size_t max_slices = params->max_slices ? params->max_slices : GISAXS_DEFAULT_MAX_SLICES;
     const bool   use_range = params->z_max > params->z_min;
 
     md_gisaxs_t* ctx = (md_gisaxs_t*)md_alloc(alloc, sizeof(md_gisaxs_t));
-    MEMSET(ctx, 0, sizeof(md_gisaxs_t));
+    MD_MEMSET(ctx, 0, sizeof(md_gisaxs_t));
     ctx->alloc = alloc;
     ctx->box_x = in->box_x;
     ctx->box_y = in->box_y;
     ctx->area  = in->box_x * in->box_y;
 
     // --- Particle selection and z extent ---
-    uint8_t* include = (uint8_t*)malloc(MAX(N, 1));
+    uint8_t* include = (uint8_t*)malloc(MD_MAX(N, 1));
     double zmin = DBL_MAX, zmax = -DBL_MAX;
     size_t num_incl = 0;
     size_t num_clipped = 0;
@@ -317,8 +317,8 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
         }
         include[i] = inc;
         if (inc) {
-            zmin = MIN(zmin, z);
-            zmax = MAX(zmax, z);
+            zmin = MD_MIN(zmin, z);
+            zmax = MD_MAX(zmax, z);
             num_incl += 1;
         }
     }
@@ -335,11 +335,11 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     ctx->particle_z_max = zmax;
 
     // --- Classes ---
-    uint32_t* cls = (uint32_t*)malloc(sizeof(uint32_t) * MAX(N, 1));
+    uint32_t* cls = (uint32_t*)malloc(sizeof(uint32_t) * MD_MAX(N, 1));
     ctx->num_classes = build_classes(ctx->class_sigma, cls, in, include);
 
     // --- Slices ---
-    double dz = params->dz > 0.0 ? params->dz : PI / (os * params->q_z_max);
+    double dz = params->dz > 0.0 ? params->dz : MD_PI / (os * params->q_z_max);
     // B-spline support: a particle at u touches floor(u)-1 .. floor(u)+2
     double z0 = zmin - 2.0 * dz;
     size_t num_slices = (size_t)ceil((zmax - z0) / dz) + 3;
@@ -365,8 +365,8 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
 
     // --- In-plane grid ---
     const double q_max = params->q_par_max;
-    ctx->nx = md_fft_valid_size((int)ceil(os * q_max * in->box_x / PI), true);
-    ctx->ny = md_fft_valid_size((int)ceil(os * q_max * in->box_y / PI), true);
+    ctx->nx = md_fft_valid_size((int)ceil(os * q_max * in->box_x / MD_PI), true);
+    ctx->ny = md_fft_valid_size((int)ceil(os * q_max * in->box_y / MD_PI), true);
     ctx->nkx = ctx->nx / 2 + 1;
     ctx->dx = in->box_x / ctx->nx;
     ctx->dy = in->box_y / ctx->ny;
@@ -379,11 +379,11 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
         return NULL;
     }
 
-    const double dqx = 2.0 * PI / in->box_x;
-    const double dqy = 2.0 * PI / in->box_y;
+    const double dqx = 2.0 * MD_PI / in->box_x;
+    const double dqy = 2.0 * MD_PI / in->box_y;
     const int kx_max = (int)floor(q_max / dqx);
     const int ky_max = (int)floor(q_max / dqy);
-    ctx->kx_count = MIN(kx_max + 1, ctx->nkx);
+    ctx->kx_count = MD_MIN(kx_max + 1, ctx->nkx);
 
     // --- Rings ---
     // The half plane lattice points (kx > 0: all ky, kx == 0: ky > 0, each representing itself and its conjugate
@@ -392,7 +392,7 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     // At low q this keeps every shell as its own ring (|q| is sampled at the exact lattice values, no binning), at
     // intermediate q the ring width is relative (logarithmic spacing) and at high q it is the uniform lattice spacing
     // dq = max(2 pi / box_x, 2 pi / box_y).
-    ctx->dq = MAX(dqx, dqy);
+    ctx->dq = MD_MAX(dqx, dqy);
     const double rel_w = params->ring_rel_width > 0.0 ? params->ring_rel_width : GISAXS_DEFAULT_RING_REL_WIDTH;
 
     size_t num_points = 0;
@@ -429,7 +429,7 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
                 n += 1;
             }
         }
-        ASSERT(n == num_points);
+        MD_ASSERT(n == num_points);
         qsort(lp, num_points, sizeof(lattice_point_t), cmp_lattice_point);
     }
 
@@ -439,7 +439,7 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     for (size_t i = 0; i < num_points;) {
         ring_beg[R++] = (uint32_t)i;
         const double q0  = lp[i].q;
-        const double w   = MIN(rel_w * q0, ctx->dq);
+        const double w   = MD_MIN(rel_w * q0, ctx->dq);
         const double tol = GISAXS_SHELL_TOL * q0;
         size_t j = i + 1;
         while (j < num_points && (lp[j].q - q0 < w || lp[j].q - q0 <= tol)) ++j;
@@ -467,7 +467,7 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
         ctx->ring_edge[r]   = r == 0 ? 0.5 * lp[0].q : 0.5 * (lp[b - 1].q + lp[b].q);
     }
     ctx->ring_offset[R] = (uint32_t)num_points;
-    ctx->ring_edge[R]   = MAX(q_max, lp[num_points - 1].q);
+    ctx->ring_edge[R]   = MD_MAX(q_max, lp[num_points - 1].q);
     free(ring_beg);
 
     const size_t C = ctx->num_classes;
@@ -482,8 +482,8 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
         ctx->point_index[p] = (uint32_t)(ky_idx * ctx->nkx + kx);
         ctx->point_k[2 * p + 0] = (int16_t)kx;
         ctx->point_k[2 * p + 1] = (int16_t)ky;
-        const double wx = bspline4_window(PI * kx / ctx->nx);
-        const double wy = bspline4_window(PI * ky / ctx->ny);
+        const double wx = bspline4_window(MD_PI * kx / ctx->nx);
+        const double wy = bspline4_window(MD_PI * ky / ctx->ny);
         for (size_t c = 0; c < C; ++c) {
             const double s = ctx->class_sigma[c];
             ctx->point_scale[p * C + c] = (float)(exp(-0.5 * q * q * s * s) / (wx * wy));
@@ -521,7 +521,7 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     free(cls);
 
     // --- Storage ---
-    ctx->spectra_bytes = sizeof(float) * 2 * ctx->dim * MAX(num_points, 1);
+    ctx->spectra_bytes = sizeof(float) * 2 * ctx->dim * MD_MAX(num_points, 1);
     ctx->matrix_bytes  = sizeof(float) * ctx->packed_size * R;
     ctx->spectra = (float*)aligned_alloc_zero(ctx->spectra_bytes);
     ctx->matrix  = (float*)aligned_alloc_zero(ctx->matrix_bytes);
@@ -539,7 +539,7 @@ void md_gisaxs_destroy(md_gisaxs_t* ctx) {
     if (!ctx) return;
     struct md_allocator_i* alloc = ctx->alloc;
     const size_t R = ctx->num_rings;
-    const size_t P = MAX(ctx->num_points, 1);
+    const size_t P = MD_MAX(ctx->num_points, 1);
     if (ctx->particles)   md_free(alloc, ctx->particles,   sizeof(particle_t) * ctx->num_particles);
     if (ctx->particle_u)  md_free(alloc, ctx->particle_u,  sizeof(float) * ctx->num_particles);
     if (ctx->slice_z)     md_free(alloc, ctx->slice_z,     sizeof(double) * ctx->num_slices);
@@ -559,7 +559,7 @@ void md_gisaxs_destroy(md_gisaxs_t* ctx) {
 
 void md_gisaxs_get_info(const md_gisaxs_t* ctx, md_gisaxs_info_t* info) {
     if (!info) return;
-    MEMSET(info, 0, sizeof(md_gisaxs_info_t));
+    MD_MEMSET(info, 0, sizeof(md_gisaxs_info_t));
     if (!ctx) return;
     info->nx = ctx->nx;
     info->ny = ctx->ny;
@@ -585,16 +585,16 @@ void md_gisaxs_get_info(const md_gisaxs_t* ctx, md_gisaxs_info_t* info) {
 // ------------------------------------------------------------------------------------------------
 
 static inline size_t grid_floats(const md_gisaxs_t* ctx) {
-    return ALIGN_TO((size_t)ctx->nx * (size_t)ctx->ny, 16);
+    return MD_ALIGN_TO((size_t)ctx->nx * (size_t)ctx->ny, 16);
 }
 
 static inline size_t spec_floats(const md_gisaxs_t* ctx) {
-    return ALIGN_TO((size_t)ctx->nkx * (size_t)ctx->ny * 2, 16);
+    return MD_ALIGN_TO((size_t)ctx->nkx * (size_t)ctx->ny * 2, 16);
 }
 
 size_t md_gisaxs_slice_scratch_bytes(const md_gisaxs_t* ctx) {
     if (!ctx) return 0;
-    const size_t floats = ctx->num_classes * grid_floats(ctx) + spec_floats(ctx) + ALIGN_TO(md_fft_2d_scratch_size(ctx->fft), 16);
+    const size_t floats = ctx->num_classes * grid_floats(ctx) + spec_floats(ctx) + MD_ALIGN_TO(md_fft_2d_scratch_size(ctx->fft), 16);
     return floats * sizeof(float);
 }
 
@@ -608,9 +608,9 @@ static size_t lower_bound_f(const float* arr, size_t n, float v) {
 }
 
 void md_gisaxs_compute_slices(md_gisaxs_t* ctx, size_t beg, size_t end, void* scratch) {
-    ASSERT(ctx);
-    ASSERT(scratch);
-    end = MIN(end, ctx->num_slices);
+    MD_ASSERT(ctx);
+    MD_ASSERT(scratch);
+    end = MD_MIN(end, ctx->num_slices);
     if (beg >= end) return;
 
     const int nx = ctx->nx;
@@ -625,7 +625,7 @@ void md_gisaxs_compute_slices(md_gisaxs_t* ctx, size_t beg, size_t end, void* sc
     float* fft_scratch = spec + spec_floats(ctx);
 
     for (size_t k = beg; k < end; ++k) {
-        MEMSET(grids, 0, sizeof(float) * C * grid_floats(ctx));
+        MD_MEMSET(grids, 0, sizeof(float) * C * grid_floats(ctx));
 
         // Particles with u in (k - 2, k + 2] contribute to slice k (floor(u) in [k-2, k+1])
         const float u_lo = (float)k - 2.0f;
@@ -699,8 +699,8 @@ void md_gisaxs_compute_slices(md_gisaxs_t* ctx, size_t beg, size_t end, void* sc
 // ------------------------------------------------------------------------------------------------
 
 void md_gisaxs_compute_rings(md_gisaxs_t* ctx, size_t beg, size_t end) {
-    ASSERT(ctx);
-    end = MIN(end, ctx->num_rings);
+    MD_ASSERT(ctx);
+    end = MD_MIN(end, ctx->num_rings);
     if (beg >= end) return;
     if (!ctx->spectra) {
         MD_LOG_ERROR("GISAXS: spectra have been released");
@@ -711,7 +711,7 @@ void md_gisaxs_compute_rings(md_gisaxs_t* ctx, size_t beg, size_t end) {
     double* acc = (double*)md_fft_alloc(sizeof(double) * ctx->packed_size);
 
     for (size_t r = beg; r < end; ++r) {
-        MEMSET(acc, 0, sizeof(double) * ctx->packed_size);
+        MD_MEMSET(acc, 0, sizeof(double) * ctx->packed_size);
         const uint32_t p_beg = ctx->ring_offset[r];
         const uint32_t p_end = ctx->ring_offset[r + 1];
         for (uint32_t p = p_beg; p < p_end; ++p) {
@@ -812,7 +812,7 @@ static void stack_init(layer_stack_t* st, const md_gisaxs_t* ctx, const md_gisax
     st->sld = (cplx_t*)md_fft_alloc(sizeof(cplx_t) * (N + 2));
     st->h   = (double*)md_fft_alloc(sizeof(double) * (N + 1));
     st->d   = (double*)md_fft_alloc(sizeof(double) * (N + 2));
-    st->slice_layer = (uint32_t*)md_fft_alloc(sizeof(uint32_t) * MAX(S, 1));
+    st->slice_layer = (uint32_t*)md_fft_alloc(sizeof(uint32_t) * MD_MAX(S, 1));
     st->roughness2 = m->substrate_roughness * m->substrate_roughness;
 
     st->sld[0] = c_make(0.0, 0.0);
@@ -826,7 +826,7 @@ static void stack_init(layer_stack_t* st, const md_gisaxs_t* ctx, const md_gisax
             const double top = st->h[j - 1];
             const double bot = (j == N) ? m->z_substrate : ctx->slice_z[k] - 0.5 * dz;
             st->h[j] = bot;
-            st->d[j] = MAX(top - bot, 0.0);
+            st->d[j] = MD_MAX(top - bot, 0.0);
             // SLD = re - i*abs, relative to the ambient
             st->sld[j] = c_make(m->profile_sld_scale * ctx->profile[k], -m->profile_abs_scale * ctx->profile[k]);
         }
@@ -872,7 +872,7 @@ static void field_compute(field_t* f, cplx_t* X, const layer_stack_t* st, double
     // Vertical wave numbers: k_j^2 = kz0^2 - 4 pi dSLD_j
     for (size_t j = 0; j < N + 2; ++j) {
         const cplx_t s = st->sld[j];
-        f->k[j] = c_sqrt(c_make(kz0 * kz0 - 4.0 * PI * s.re, -4.0 * PI * s.im));
+        f->k[j] = c_sqrt(c_make(kz0 * kz0 - 4.0 * MD_PI * s.re, -4.0 * MD_PI * s.im));
     }
     f->k[0] = c_make(kz0, 0.0);
 
@@ -935,15 +935,15 @@ static void accumulate_intensity(const md_gisaxs_t* ctx, const double* cr, const
             }
             I += row[m] * (a * a + b * b) + 2.0 * (a * sa + b * sb);
         }
-        dst[r] = (float)(MAX(I, 0.0) * scale);
+        dst[r] = (float)(MD_MAX(I, 0.0) * scale);
     }
 }
 
 void md_gisaxs_evaluate_range(const md_gisaxs_t* ctx, const md_gisaxs_model_t* model, const double* qz, size_t qz_beg, size_t qz_end, float* out) {
-    ASSERT(ctx);
-    ASSERT(model);
-    ASSERT(qz);
-    ASSERT(out);
+    MD_ASSERT(ctx);
+    MD_ASSERT(model);
+    MD_ASSERT(qz);
+    MD_ASSERT(out);
     if (model->dwba && !(model->wavelength > 0.0)) {
         MD_LOG_ERROR("GISAXS: invalid wavelength");
         return;
@@ -986,7 +986,7 @@ void md_gisaxs_evaluate_range(const md_gisaxs_t* ctx, const md_gisaxs_model_t* m
     field_alloc(&ff, N);
     cplx_t* X = (cplx_t*)md_fft_alloc(sizeof(cplx_t) * (N + 2));
 
-    const double k0 = 2.0 * PI / model->wavelength;
+    const double k0 = 2.0 * MD_PI / model->wavelength;
     const double p = k0 * sin(model->alpha_i);   // incident, downward (ambient)
     field_compute(&fi, X, &st, p);
 
@@ -994,7 +994,7 @@ void md_gisaxs_evaluate_range(const md_gisaxs_t* ctx, const md_gisaxs_model_t* m
         float* dst = out + iq * R;
         const double q = qz[iq] - p;             // exit, upward (ambient)
         if (q < 0.0) {                           // Below the horizon
-            MEMSET(dst, 0, sizeof(float) * R);
+            MD_MEMSET(dst, 0, sizeof(float) * R);
             continue;
         }
         field_compute(&ff, X, &st, q);
@@ -1039,8 +1039,8 @@ void md_gisaxs_evaluate(const md_gisaxs_t* ctx, const md_gisaxs_model_t* model, 
 }
 
 void md_gisaxs_reflectivity(const md_gisaxs_t* ctx, const md_gisaxs_model_t* model, const double* qz, size_t num_qz, double* out) {
-    ASSERT(ctx);
-    ASSERT(model);
+    MD_ASSERT(ctx);
+    MD_ASSERT(model);
     layer_stack_t st;
     stack_init(&st, ctx, model);
     field_t f;
@@ -1062,11 +1062,11 @@ void md_gisaxs_reflectivity(const md_gisaxs_t* ctx, const md_gisaxs_model_t* mod
 // ------------------------------------------------------------------------------------------------
 
 void md_gisaxs_reference_born(const md_gisaxs_t* ctx, const md_gisaxs_input_t* in, const double* qz, size_t num_qz, double* out) {
-    ASSERT(ctx);
-    ASSERT(in);
+    MD_ASSERT(ctx);
+    MD_ASSERT(in);
     const size_t R = ctx->num_rings;
-    const double dqx = 2.0 * PI / ctx->box_x;
-    const double dqy = 2.0 * PI / ctx->box_y;
+    const double dqx = 2.0 * MD_PI / ctx->box_x;
+    const double dqy = 2.0 * MD_PI / ctx->box_y;
 
     for (size_t iq = 0; iq < num_qz; ++iq) {
         for (size_t r = 0; r < R; ++r) {

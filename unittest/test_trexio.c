@@ -25,7 +25,7 @@ static bool trexio_load(qm_test_t* t, const char* path, size_t arena_bytes) {
 
 UTEST(trexio, parse) {
     qm_test_t t = {0};
-    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MEGABYTES(16)));
+    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(16)));
 
     EXPECT_EQ(3u, t.sys.atom.count);
     EXPECT_EQ(3u, t.state.num_atoms);
@@ -37,7 +37,7 @@ UTEST(trexio, parse) {
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
 
     double xyz[9] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(xyz, ARRAY_SIZE(xyz), coord, md_attribute_slice_all(), md_unit_none()), ARRAY_SIZE(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
     EXPECT_NEAR(4.999999640091311, xyz[0], 1.0e-9);
     EXPECT_NEAR(7.147076485540978, xyz[1], 1.0e-9);
     EXPECT_NEAR(7.650970449269813, xyz[2], 1.0e-9);
@@ -96,16 +96,16 @@ UTEST(trexio, parse) {
 // lost.
 UTEST(trexio, restricted_occupations_are_split_per_spin) {
     qm_test_t t = {0};
-    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MEGABYTES(16)));
+    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(16)));
 
     double file_occ[24] = {0};
-    ASSERT_EQ(qm_test_series(file_occ, ARRAY_SIZE(file_occ), &t, STR_LIT("trexio/mo/occupation")), ARRAY_SIZE(file_occ));
+    ASSERT_EQ(qm_test_series(file_occ, MD_COUNTOF(file_occ), &t, STR_LIT("trexio/mo/occupation")), MD_COUNTOF(file_occ));
     EXPECT_NEAR(2.0, file_occ[0], 1.0e-12);
     EXPECT_NEAR(2.0, file_occ[4], 1.0e-12);
     EXPECT_NEAR(0.0, file_occ[5], 1.0e-12);
 
     double occ[24] = {0};
-    ASSERT_EQ(qm_test_series(occ, ARRAY_SIZE(occ), &t, STR_LIT("orbital/alpha/occupation")), ARRAY_SIZE(occ));
+    ASSERT_EQ(qm_test_series(occ, MD_COUNTOF(occ), &t, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ));
     for (size_t i = 0; i < 5; ++i) {
         EXPECT_NEAR(1.0, occ[i], 1.0e-12);
     }
@@ -126,14 +126,14 @@ UTEST(trexio, restricted_occupations_are_split_per_spin) {
 // unpermuted read of this file gives orbitals that are visibly not orthonormal.
 UTEST(trexio, orbitals_are_orthonormal) {
     qm_test_t t = {0};
-    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MEGABYTES(32)));
+    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
     EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
     qm_test_free(&t);
 }
 
 UTEST(trexio, total_density_holds_ten_electrons) {
     qm_test_t t = {0};
-    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MEGABYTES(32)));
+    ASSERT_TRUE(trexio_load(&t, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
     EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
     EXPECT_NEAR( 5.0, qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-5);
     EXPECT_NEAR( 0.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-9);
@@ -150,8 +150,8 @@ UTEST(trexio, total_density_holds_ten_electrons) {
 UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
     qm_test_t tx = {0};
     qm_test_t md = {0};
-    ASSERT_TRUE(trexio_load(&tx, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MEGABYTES(32)));
-    qm_test_init(&md, MEGABYTES(32));
+    ASSERT_TRUE(trexio_load(&tx, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
+    qm_test_init(&md, MD_MEGABYTES(32));
     ASSERT_TRUE(md_molden_system_init_from_file(&md.sys, &md.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
 
     ASSERT_EQ(tx.sys.atom.count, md.sys.atom.count);
@@ -195,9 +195,9 @@ UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
     // both land on the same per channel numbers.
     double occ_a[24] = {0};
     double occ_b[24] = {0};
-    ASSERT_EQ(qm_test_series(occ_a, ARRAY_SIZE(occ_a), &tx, STR_LIT("orbital/alpha/occupation")), ARRAY_SIZE(occ_a));
-    ASSERT_EQ(qm_test_series(occ_b, ARRAY_SIZE(occ_b), &md, STR_LIT("orbital/alpha/occupation")), ARRAY_SIZE(occ_b));
-    for (size_t i = 0; i < ARRAY_SIZE(occ_a); ++i) {
+    ASSERT_EQ(qm_test_series(occ_a, MD_COUNTOF(occ_a), &tx, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ_a));
+    ASSERT_EQ(qm_test_series(occ_b, MD_COUNTOF(occ_b), &md, STR_LIT("orbital/alpha/occupation")), MD_COUNTOF(occ_b));
+    for (size_t i = 0; i < MD_COUNTOF(occ_a); ++i) {
         EXPECT_NEAR(occ_a[i], occ_b[i], 1.0e-12);
     }
 
@@ -215,7 +215,7 @@ UTEST(trexio, file_recognition) {
 
 UTEST(trexio, a_file_that_is_not_hdf5_is_declined) {
     qm_test_t t = {0};
-    qm_test_init(&t, MEGABYTES(1));
+    qm_test_init(&t, MD_MEGABYTES(1));
     EXPECT_FALSE(md_trexio_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     qm_test_free(&t);
 }
@@ -258,9 +258,9 @@ static bool tx_write(const char* path, const tx_item_t* items, size_t count) {
 // sqrt(4 pi), and its density held the wrong number of electrons.
 UTEST(trexio, pyscf_cartesian_functions_as_stated) {
     const char* path = "md_unittest_pyscf_h2o_cart.trexio";
-    ASSERT_TRUE(tx_write(path, h2o_631gs_cart, ARRAY_SIZE(h2o_631gs_cart)));
+    ASSERT_TRUE(tx_write(path, h2o_631gs_cart, MD_COUNTOF(h2o_631gs_cart)));
     qm_test_t t = {0};
-    ASSERT_TRUE(trexio_load(&t, path, MEGABYTES(32)));
+    ASSERT_TRUE(trexio_load(&t, path, MD_MEGABYTES(32)));
     EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
     EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
     qm_test_free(&t);
@@ -271,9 +271,9 @@ UTEST(trexio, pyscf_cartesian_functions_as_stated) {
 // occupied orbital holds an alpha electron - halved into both channels, the radical had no spin density at all.
 UTEST(trexio, restricted_open_shell) {
     const char* path = "md_unittest_pyscf_oh_rohf.trexio";
-    ASSERT_TRUE(tx_write(path, oh_sto3g_rohf, ARRAY_SIZE(oh_sto3g_rohf)));
+    ASSERT_TRUE(tx_write(path, oh_sto3g_rohf, MD_COUNTOF(oh_sto3g_rohf)));
     qm_test_t t = {0};
-    ASSERT_TRUE(trexio_load(&t, path, MEGABYTES(32)));
+    ASSERT_TRUE(trexio_load(&t, path, MD_MEGABYTES(32)));
     EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
     double occ_a[6] = {0}, occ_b[6] = {0};
     ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, STR_LIT("orbital/alpha/occupation")));

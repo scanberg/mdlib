@@ -58,7 +58,7 @@ UTEST(lammps, water_ethane_cubic) {
         {6, 1, 1,  0.02274982, 37.906493379107445,  19.594063602913423, 17.143473777787637 },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(ref_atoms); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_atoms); ++i) {
         EXPECT_EQ(  ref_atoms[i].id,        data.atoms[i].id);
         EXPECT_EQ(  ref_atoms[i].resid,     data.atoms[i].resid);
         EXPECT_EQ(  ref_atoms[i].type,      data.atoms[i].type);
@@ -75,7 +75,7 @@ UTEST(lammps, water_ethane_cubic) {
         {4, 1.008f,    1.1f},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(ref_particle_types); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_particle_types); ++i) {
         EXPECT_EQ(ref_particle_types[i].id, data.particle_types[i].id);
         EXPECT_NEAR(ref_particle_types[i].mass, data.particle_types[i].mass, 1.0e-5f);
         EXPECT_NEAR(ref_particle_types[i].radius, data.particle_types[i].radius, 1.0e-5f);
@@ -90,7 +90,7 @@ UTEST(lammps, water_ethane_cubic) {
         {6, 1, {2, 7}},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(ref_bonds); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_bonds); ++i) {
         EXPECT_EQ(ref_bonds[i].id, data.bonds[i].id);
         EXPECT_EQ(ref_bonds[i].type, data.bonds[i].type);
         EXPECT_EQ(ref_bonds[i].atom_id[0], data.bonds[i].atom_id[0]);
@@ -105,7 +105,7 @@ UTEST(lammps, water_ethane_cubic) {
         {5, 1, {3, 1, 5}},
         {6, 1, {4, 1, 5}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ref_angles); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_angles); ++i) {
         EXPECT_EQ(ref_angles[i].id, data.angles[i].id);
         EXPECT_EQ(ref_angles[i].type, data.angles[i].type);
         EXPECT_EQ(ref_angles[i].atom_id[0], data.angles[i].atom_id[0]);
@@ -121,7 +121,7 @@ UTEST(lammps, water_ethane_cubic) {
         {5, 1, {4, 1, 2, 7}},
         {6, 1, {4, 1, 2, 8}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ref_dihedrals); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_dihedrals); ++i) {
         EXPECT_EQ(ref_dihedrals[i].id,          data.dihedrals[i].id);
         EXPECT_EQ(ref_dihedrals[i].type,        data.dihedrals[i].type);
         EXPECT_EQ(ref_dihedrals[i].atom_id[0],  data.dihedrals[i].atom_id[0]);
@@ -216,7 +216,7 @@ UTEST(lammps, water_ethane_triclinic) {
         {6, 1, 1,  0.02274982, 10.063894441320446, 29.21529541522476,  23.689841754669413},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(ref_atoms); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_atoms); ++i) {
         EXPECT_EQ(  ref_atoms[i].id,        data.atoms[i].id);
         EXPECT_EQ(  ref_atoms[i].resid,     data.atoms[i].resid);
         EXPECT_EQ(  ref_atoms[i].type,      data.atoms[i].type);
@@ -234,7 +234,7 @@ UTEST(lammps, water_ethane_triclinic) {
         {5, 1, {2, 6}},
         {6, 1, {2, 7}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ref_bonds); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_bonds); ++i) {
         EXPECT_EQ(ref_bonds[i].id, data.bonds[i].id);
         EXPECT_EQ(ref_bonds[i].type, data.bonds[i].type);
         EXPECT_EQ(ref_bonds[i].atom_id[0], data.bonds[i].atom_id[0]);
@@ -249,7 +249,7 @@ UTEST(lammps, water_ethane_triclinic) {
         {5, 1, {3, 1, 5}},
         {6, 1, {4, 1, 5}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ref_angles); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_angles); ++i) {
         EXPECT_EQ(ref_angles[i].id, data.angles[i].id);
         EXPECT_EQ(ref_angles[i].type, data.angles[i].type);
         EXPECT_EQ(ref_angles[i].atom_id[0], data.angles[i].atom_id[0]);
@@ -265,7 +265,7 @@ UTEST(lammps, water_ethane_triclinic) {
         {5, 1, {4, 1, 2, 7}},
         {6, 1, {4, 1, 2, 8}},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(ref_dihedrals); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref_dihedrals); ++i) {
         EXPECT_EQ(ref_dihedrals[i].id,          data.dihedrals[i].id);
         EXPECT_EQ(ref_dihedrals[i].type,        data.dihedrals[i].type);
         EXPECT_EQ(ref_dihedrals[i].atom_id[0],  data.dihedrals[i].atom_id[0]);
@@ -305,10 +305,10 @@ static const run_ref_t lammps_refs_triclinic[] = {
 };
 
 UTEST(lammps, run_cubic) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7800, lammps_refs_cubic, ARRAY_SIZE(lammps_refs_cubic));
+    run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7800, lammps_refs_cubic, MD_COUNTOF(lammps_refs_cubic));
 
     // Scaled coordinates in the file: the first atom sits at these fractions of the cell
     md_system_state_t st = {.alloc = arena};
@@ -326,7 +326,7 @@ UTEST(lammps, run_cubic) {
 // reported exactly and the times fall back to ordinals with no unit, rather than the steps being
 // handed out as femtoseconds.
 UTEST(lammps, frame_steps_and_time_fallback) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/dump/time"));
@@ -349,10 +349,10 @@ UTEST(lammps, frame_steps_and_time_fallback) {
 }
 
 UTEST(lammps, run_triclinic) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     ASSERT_TRUE(md_lammps_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/triclinic_standardASCII.lammpstrj"), LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7722, lammps_refs_triclinic, ARRAY_SIZE(lammps_refs_triclinic));
+    run_check_refs(utest_result, &sys, LAMMPS_RUN, 10, 7722, lammps_refs_triclinic, MD_COUNTOF(lammps_refs_triclinic));
 
     // One atom: the whole frame is parsed, the atom lines being in no order, and one kept.
     md_system_state_t st = {.alloc = arena};
@@ -389,7 +389,7 @@ UTEST(lammps, comprehensive_data_validation) {
         EXPECT_GT(sys.atom.count, 0);
         
         // Validate coordinates are finite for a sample of atoms
-        for (int64_t i = 0; i < MIN(MAX_VALIDATION_SAMPLES, sys.atom.count); ++i) {
+        for (int64_t i = 0; i < MD_MIN(MAX_VALIDATION_SAMPLES, sys.atom.count); ++i) {
             EXPECT_FALSE(isnan(sys_state.xyz[i].x));
             EXPECT_FALSE(isnan(sys_state.xyz[i].y));
             EXPECT_FALSE(isnan(sys_state.xyz[i].z));
@@ -411,7 +411,7 @@ static bool lammps_load_str(md_system_t* sys, md_system_state_t* state, const ch
 
 // Comments after the counts and the keywords, as LAMMPS allows them anywhere after a blank
 UTEST(lammps, data_comments) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st,
@@ -430,7 +430,7 @@ UTEST(lammps, data_comments) {
 
 // Masses is optional: the types are there without it, of no element
 UTEST(lammps, data_without_masses) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st,
@@ -444,7 +444,7 @@ UTEST(lammps, data_without_masses) {
 
 // Atom ids need not be 1 to N (atoms deleted), nor Masses in the order of the types: bonds are by the ids
 UTEST(lammps, data_sparse_ids) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st,
@@ -466,7 +466,7 @@ UTEST(lammps, data_sparse_ids) {
 
 // Type labels: in Masses and Atoms in place of the numbers, and the names of the types
 UTEST(lammps, data_type_labels) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st,
@@ -490,7 +490,7 @@ UTEST(lammps, data_many_types) {
     for (int t = 1; t <= 120; ++t) len += snprintf(text + len, 64 * 1024 - len, "%d %s\n", t, t % 2 ? "12.011" : "1.008");
     len += snprintf(text + len, 64 * 1024 - len, "\nAtoms # molecular\n\n");
     for (int i = 1; i <= 120; ++i) len += snprintf(text + len, 64 * 1024 - len, "%d %d %d %g 1.0 1.0\n", i, i, i, i * 0.5);
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st, text));
@@ -514,11 +514,11 @@ UTEST(lammps, data_detect_style) {
         { "1 1 -0.8 1.0 2.0 3.0\n2 2 0.4 1.5 2.0 3.0\n",                  MD_LAMMPS_ATOM_FORMAT_CHARGE },
         { "1 1 1.0 2.0 3.0 1 0 -1\n2 2 1.5 2.0 3.0 0 0 0\n",              MD_LAMMPS_ATOM_FORMAT_ATOMIC },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         char buf[1024];
         const int len = snprintf(buf, sizeof(buf), "%s%s", head, cases[i].atoms);
         EXPECT_EQ((int)cases[i].format, (int)md_lammps_atom_format_from_str((str_t){buf, (size_t)len}));
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         md_system_t sys = {.alloc = arena};
         md_system_state_t st = {.alloc = arena};
         EXPECT_TRUE(lammps_load_str(&sys, &st, buf));
@@ -542,7 +542,7 @@ UTEST(lammps, element_from_mass) {
 
 // A general triclinic box: the cell turned so that a lies along x, and the atoms with it
 UTEST(lammps, data_general_triclinic) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st,
@@ -579,7 +579,7 @@ UTEST(lammps, dump_triclinic_bounds) {
     ASSERT_TRUE(write_text(path,
         "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS xy xz yz pp pp pp\n0.0 13.5 2.0\n0.0 10.0 1.5\n0.0 10.0 0.0\n"
         "ITEM: ATOMS id type x y z\n2 1 5.0 5.0 5.0\n1 1 1.0 1.0 1.0\n"));
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st, lammps_two_atoms));
@@ -605,7 +605,7 @@ UTEST(lammps, dump_time_boundaries_images) {
         "ITEM: ATOMS id type xs ys zs ix iy iz\n1 1 0.1 0.1 0.1 1 0 0\n2 1 0.5 0.5 0.5 0 0 0\n"
         "ITEM: TIME\n1.0\nITEM: TIMESTEP\n100\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS ff pp fm\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
         "ITEM: ATOMS id type xs ys zs ix iy iz\n1 1 0.2 0.1 0.1 1 0 0\n2 1 0.5 0.6 0.5 0 0 0\n"));
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st, lammps_two_atoms));
@@ -627,7 +627,7 @@ UTEST(lammps, dump_unwrapped_with_images) {
     ASSERT_TRUE(write_text(path,
         "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
         "ITEM: ATOMS id type xu yu zu ix iy iz\n1 1 11.0 1.0 1.0 1 0 0\n2 1 5.0 5.0 5.0 0 0 0\n"));
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     ASSERT_TRUE(lammps_load_str(&sys, &st, lammps_two_atoms));

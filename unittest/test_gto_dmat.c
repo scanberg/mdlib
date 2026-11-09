@@ -59,7 +59,7 @@ static bool dm_load(dm_src_t* s, const char* file) {
     memset(s, 0, sizeof(*s));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&s->t, str_from_cstr(path), MEGABYTES(1024))) return false;
+    if (!vlx_test_load(&s->t, str_from_cstr(path), MD_MEGABYTES(1024))) return false;
     if (!qm_test_basis(&s->basis, &s->t)) return false;
     s->num_atoms = s->t.sys.atom.count;
     s->xyz = (float*)malloc(sizeof(float) * 3 * s->num_atoms);
@@ -469,9 +469,9 @@ static bool loc_load(loc_src_t* s, const char* file) {
     const bool molden = strstr(file, ".molden") != NULL;
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/%s/%s", molden ? "molden" : "vlx", file);
     if (molden) {
-        qm_test_init(&s->t, MEGABYTES(256));
+        qm_test_init(&s->t, MD_MEGABYTES(256));
         if (!md_molden_system_init_from_file(&s->t.sys, &s->t.state, str_from_cstr(path))) return false;
-    } else if (!vlx_test_load(&s->t, str_from_cstr(path), MEGABYTES(1024))) {
+    } else if (!vlx_test_load(&s->t, str_from_cstr(path), MD_MEGABYTES(1024))) {
         return false;
     }
     if (!qm_test_basis(&s->basis, &s->t)) return false;

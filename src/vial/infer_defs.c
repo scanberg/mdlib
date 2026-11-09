@@ -596,7 +596,7 @@ bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
         vx_set_value(x, call, vx_value_of(x, first));
         return true;
     }
-    for (size_t i = 0; i < ARRAY_SIZE(prims); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(prims); ++i) {
         if (str_eq(name, str_from_cstr(prims[i].name))) { *out = call_primitive(x, call, &prims[i]); return true; }
     }
     return false;

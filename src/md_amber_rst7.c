@@ -87,7 +87,7 @@ size_t md_amber_rst7_file_atom_count(str_t filename) {
 }
 
 bool md_amber_rst7_state_init_from_file(md_system_state_t* state, str_t filename, size_t num_atoms) {
-    ASSERT(state);
+    MD_ASSERT(state);
     if (!state->alloc) {
         MD_LOG_ERROR("Amber restart: the state has no allocator");
         return false;
@@ -119,7 +119,7 @@ bool md_amber_rst7_state_init_from_file(md_system_state_t* state, str_t filename
     double v[6];
     for (size_t l = 0; l < lines_per_block; ++l) {
         const str_t line = rst7_next_line(&text);
-        const size_t want = MIN((size_t)6, 3 * N - read);
+        const size_t want = MD_MIN((size_t)6, 3 * N - read);
         if (rst7_fields(v, 6, line) != want) {
             MD_LOG_ERROR("Amber restart: line %zu of '" STR_FMT "' does not hold %zu coordinates", l + 3, STR_ARG(filename), want);
             goto done;
@@ -157,7 +157,7 @@ bool md_amber_rst7_state_init_from_file(md_system_state_t* state, str_t filename
     }
 
     if (!md_system_state_init(state, N)) goto done;
-    MEMCPY(state->xyz, xyz, 3 * N * sizeof(float));
+    MD_MEMCPY(state->xyz, xyz, 3 * N * sizeof(float));
     state->num_atoms = N;
     state->unitcell = cell;
     result = true;

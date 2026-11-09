@@ -57,7 +57,7 @@ UTEST(xdr, cursor) {
 
 // Checks the system built from a tpr against the .gro gmx writes from the same file
 static void compare_with_gro(int* utest_result, const md_system_t* sys, const md_system_state_t* state, str_t gro_path) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t gro = { .alloc = alloc };
     md_system_state_t gro_st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_st, gro_path, NULL));
@@ -86,7 +86,7 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
 }
 
 UTEST(tpr, parse_tip3p) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_tpr_data_t data = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
@@ -135,7 +135,7 @@ UTEST(tpr, parse_tip3p) {
 }
 
 UTEST(tpr, system_tip3p) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
@@ -181,7 +181,7 @@ UTEST(tpr, system_tip3p) {
 }
 
 UTEST(tpr, double_precision) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t s = {0};
     md_tpr_data_t d = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&s, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
@@ -195,14 +195,14 @@ UTEST(tpr, double_precision) {
     }
     float max_diff = 0;
     for (size_t i = 0; i < s.num_atoms * 3; ++i) {
-        max_diff = MAX(max_diff, fabsf(s.x[i] - d.x[i]));
+        max_diff = MD_MAX(max_diff, fabsf(s.x[i] - d.x[i]));
     }
     EXPECT_LT(max_diff, 1e-5f);
     md_arena_allocator_destroy(arena);
 }
 
 UTEST(tpr, virtual_sites) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
@@ -249,7 +249,7 @@ static void expect_elements_as(int* utest_result, const md_system_t* ref, const 
 }
 
 UTEST(tpr, missing_atomic_numbers) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "peptide_tip3p.tpr"), arena));
 
@@ -275,7 +275,7 @@ UTEST(tpr, missing_atomic_numbers) {
 }
 
 UTEST(tpr, corrupt) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_allocator_i* heap = md_get_heap_allocator();
 
     md_file_t file = {0};
@@ -297,7 +297,7 @@ UTEST(tpr, corrupt) {
     uint8_t* bad = md_alloc(heap, size);
     uint32_t seed = 12345;
     for (int k = 0; k < 400; ++k) {
-        MEMCPY(bad, buf, size);
+        MD_MEMCPY(bad, buf, size);
         seed = seed * 1664525u + 1013904223u;
         const size_t pos = 100 + (seed >> 8) % (size - 100);
         bad[pos] ^= (uint8_t)(0x80 | (seed & 0x7F));
@@ -316,7 +316,7 @@ UTEST(tpr, corrupt) {
 // A Martini 3 system (martinized Trp-Ile, two POPC, ions, water): no atomic numbers anywhere, so
 // every particle is a bead whose radius comes from its Lennard-Jones parameters
 UTEST(tpr, martini) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_tpr_data_t data = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "martini3.tpr"), arena));
@@ -463,8 +463,8 @@ UTEST(tpr, nonbonded_settings) {
           MD_TPR_VDW_CUT, MD_TPR_MODIFIER_POT_SHIFT, 0.0f, 1.1f, MD_TPR_DISP_CORR_NO, 1e-5f, 1e-3f, 0, 0.5f },
     };
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         const nb_expect_t* e = &cases[i];
         char path[512];
         snprintf(path, sizeof(path), "%s%s", TPR_DIR, e->file);
@@ -501,7 +501,7 @@ UTEST(tpr, nonbonded_settings) {
 // A-B which [ nonbond_params ] sets to sigma 0.25, epsilon 2.0. CHAIN is A B A B A bonded in a row with
 // nrexcl 2 and an explicit [ exclusions ] 1 4; three of them, then four single atom molecules: two SOLP, two SOLN.
 UTEST(tpr, nonbonded_parameters_and_exclusions) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), arena));
 
@@ -606,8 +606,8 @@ UTEST(tpr, martini_no_elastic_bonds) {
         "martini3_membrane", "martini3_lipids", "martini3_peptides", "martini3_rna", "martini3_small_molecules", "martini3_polymer",
         "martini2_membrane_protein", "martini2_lipids", "martini2p_protein", "martini2_dna", "martini2_rna", "martini2_small_molecules",
     };
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
         md_system_t sys = { .alloc = arena };
         md_system_state_t state = { .alloc = arena };
         char path[512];
@@ -623,7 +623,7 @@ UTEST(tpr, martini_no_elastic_bonds) {
 // (which the file keeps apart) and a plain bond between residues which are not neighbours, which the system tells. A bond
 // between the ends of chignolin closes it into a cyclic peptide, which is a bond of the chain.
 UTEST(tpr, elastic_bonds) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_peptides.tpr"), arena));
 

@@ -29,7 +29,7 @@ md_unit_t md_qm_unit_amu(void)        { return md_unit_scl(md_unit_kilogram(), 1
 
 md_attribute_id_t md_qm_publish(md_system_t* sys, str_t path, str_t label, md_unit_t unit,
                                 md_attribute_format_t format, const void* data, size_t byte_size) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
         .path      = path,
         .format    = format,
@@ -42,7 +42,7 @@ md_attribute_id_t md_qm_publish(md_system_t* sys, str_t path, str_t label, md_un
 
 md_attribute_id_t md_qm_publish_virtual(md_system_t* sys, str_t path, str_t label, md_unit_t unit,
                                         md_attribute_format_t format, const md_attribute_virtual_t* virt) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
         .path   = path,
         .format = format,
@@ -201,7 +201,7 @@ md_attribute_id_t md_qm_publish_strings(md_system_t* sys, str_t path, str_t labe
 
 md_attribute_id_t md_qm_publish_column(md_system_t* sys, str_t path, str_t label, md_unit_t unit, md_attribute_type_t type,
                                        const void* base, size_t stride, size_t count) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (!base || count == 0) {
         return MD_ATTRIBUTE_INVALID;
     }
@@ -222,7 +222,7 @@ md_attribute_id_t md_qm_publish_column(md_system_t* sys, str_t path, str_t label
     const size_t   elem_size = md_attribute_type_size(type);
     const uint8_t* src       = (const uint8_t*)base;
     for (size_t i = 0; i < count; ++i) {
-        MEMCPY(dst + i * elem_size, src + i * stride, elem_size);
+        MD_MEMCPY(dst + i * elem_size, src + i * stride, elem_size);
     }
     return id;
 }
@@ -233,7 +233,7 @@ md_attribute_id_t md_qm_publish_origin(md_system_t* sys, str_t path, dvec3_t ori
 }
 
 md_attribute_id_t md_qm_alias(md_system_t* sys, md_attribute_id_t target, str_t path) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (target == MD_ATTRIBUTE_INVALID) {
         return MD_ATTRIBUTE_INVALID;
     }
@@ -313,7 +313,7 @@ static double qm_same_centre_monomial_overlap(const int lmn_a[3], const int lmn_
 // f(i,j,k) exactly cancels the (2i-1)!!(2j-1)!!(2k-1)!! the integral produces, so every Cartesian
 // AO of a shell has the same norm and this closed form serves all of them.
 static double qm_cart_self_overlap(uint32_t l, double p) {
-    return pow(PI / p, 1.5) / pow(2.0 * p, (double)l);
+    return pow(MD_PI / p, 1.5) / pow(2.0 * p, (double)l);
 }
 
 // ||md_gto's spherical AO||^2 / ||its Cartesian AO||^2 for angular momentum l.
@@ -364,7 +364,7 @@ static double qm_spherical_norm_ratio(uint32_t l) {
                 md_gto_cart_ijk(&ib, &jb, &kb, l, b);
                 const int lmn_b[3] = { ib, jb, kb };
                 const double fb = md_gto_cart_norm_factor(ib, jb, kb);
-                num += cart[a] * cart[b] * fa * fb * qm_same_centre_monomial_overlap(lmn_a, lmn_b, p) * pow(PI / p, 1.5);
+                num += cart[a] * cart[b] * fa * fb * qm_same_centre_monomial_overlap(lmn_a, lmn_b, p) * pow(MD_PI / p, 1.5);
             }
         }
         ratio = num / qm_cart_self_overlap(l, p);
@@ -419,7 +419,7 @@ double md_qm_cart_coeff_factor(uint32_t l, uint32_t cart_idx) {
 // ---------------------------------------------------------------------------
 
 bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 
     if (!basis || basis->num_shells == 0 || basis->num_primitives == 0) {
         return false;
@@ -450,7 +450,7 @@ bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
 }
 
 bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const dvec3_t coord_angstrom[], size_t count) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 
     if (count == 0 || !atomic_number || !coord_angstrom) {
         return false;
@@ -524,7 +524,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
     }
 
     const size_t num_ao = md_gto_basis_num_ao(basis);
-    MEMSET(out, 0, sizeof(double) * num_ao * num_ao);
+    MD_MEMSET(out, 0, sizeof(double) * num_ao * num_ao);
 
     // Shell offsets into the AO axis, so the pair loop below can start anywhere.
     md_temp_scope_t temp = md_temp_begin();
@@ -583,7 +583,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
             for (int k = 0; k < 3; ++k) r2 += (Av[k] - Bv[k]) * (Av[k] - Bv[k]);
 
             double blk[NC][NC];
-            MEMSET(blk, 0, sizeof(blk));
+            MD_MEMSET(blk, 0, sizeof(blk));
             for (uint32_t p = 0; p < a->num_primitives; ++p) {
                 const double alpha_a = basis->alpha[a->primitive_offset + p];
                 const double coeff_a = basis->coeff[a->primitive_offset + p];
@@ -593,7 +593,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
                     const double pp = alpha_a + alpha_b;
                     const double mu = alpha_a * alpha_b / pp;
                     if (mu * r2 > 46.0) continue;
-                    const double pref = coeff_a * coeff_b * exp(-mu * r2) * pow(PI / pp, 1.5);
+                    const double pref = coeff_a * coeff_b * exp(-mu * r2) * pow(MD_PI / pp, 1.5);
                     double E[3][L1][L1];
                     for (int k = 0; k < 3; ++k) {
                         const double P = (alpha_a * Av[k] + alpha_b * Bv[k]) / pp;
@@ -669,7 +669,7 @@ static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* a
 }
 
 bool md_qm_publish_overlap(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 
     if (!sys->attributes.alloc) {
         MD_LOG_ERROR("Attribute table allocator not set; the system has not been initialised");
@@ -773,7 +773,7 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
     if (md_attribute_same_data(alpha, beta)) {
         const double scale = 1.0 + beta_scale;
         if (scale == 0.0) {
-            MEMSET(out, 0, sizeof(double) * cap);
+            MD_MEMSET(out, 0, sizeof(double) * cap);
             return cap;
         }
         if (md_attribute_extract_io_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none(), io) != cap) {
@@ -822,7 +822,7 @@ static size_t qm_difference_density_provider(void* dst, size_t cap, const md_att
 }
 
 bool md_qm_publish_orbital_densities(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 
     if (!sys->attributes.alloc) {
         MD_LOG_ERROR("Attribute table allocator not set; the system has not been initialised");
@@ -1121,7 +1121,7 @@ bool md_qm_attachment_available(const md_system_t* sys) {
 }
 
 bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
     const md_attribute_t* beta  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/density"));
     if (!alpha || !beta || alpha->format.rank != 2 || alpha->format.shape[0] != alpha->format.shape[1]) {
@@ -1149,7 +1149,7 @@ size_t md_qm_kinetic_orbitals(double** out_rows, double** out_weights, size_t* o
     *out_rows = NULL;
     *out_weights = NULL;
     *out_num_ao = 0;
-    MEMSET(out_basis, 0, sizeof(*out_basis));
+    MD_MEMSET(out_basis, 0, sizeof(*out_basis));
     if (!str_eq(density_path, STR_LIT("orbital/alpha/density")) && !str_eq(density_path, STR_LIT("orbital/beta/density")) &&
         !str_eq(density_path, STR_LIT("orbital/total/density"))) {
         return 0;
@@ -1298,7 +1298,7 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
         }
     } else if (ok) {
         // a spin without occupied orbitals has no density: zero, not a failure
-        MEMSET(t, 0, sizeof(double) * count * 6);
+        MD_MEMSET(t, 0, sizeof(double) * count * 6);
         if (an) ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/alpha/density"), atom_xyz, atom_xyz_stride, alloc);
         if (ok && bn) ok = qm_elf_terms(rho_b, g2_b, tau_b, xyz, count, stride, sys, STR_LIT("orbital/beta/density"), atom_xyz, atom_xyz_stride, alloc);
         for (size_t i = 0; ok && i < count; ++i) {

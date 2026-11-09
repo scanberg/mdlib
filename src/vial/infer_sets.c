@@ -101,7 +101,7 @@ static bool key_takes_str(uint8_t level, uint8_t key) {
 
 static const char* key_word(uint8_t key) {
     static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size"};
-    return key < ARRAY_SIZE(words) ? words[key] : "";
+    return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
 static bool int_of(const vial_value_t* v, int64_t* out) {
@@ -354,7 +354,7 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
         for (size_t j = 0; j < md_array_size(f->any); ++j) {
             static const char* strands[] = {"polymer", "peptide", "nucleic", "dna", "rna"};
             bool ok = false;
-            for (size_t k = 0; k < ARRAY_SIZE(strands) && !ok; ++k) ok = str_eq(f->any[j].s, str_from_cstr(strands[k]));
+            for (size_t k = 0; k < MD_COUNTOF(strands) && !ok; ++k) ok = str_eq(f->any[j].s, str_from_cstr(strands[k]));
             if (ok) continue;
             vx_diag_fix(x, "E0206", call, NULL, "'%.*s' is not a kind of polymer; the kinds are polymer, peptide, nucleic, dna and rna",
                 (int)f->any[j].s.len, f->any[j].s.ptr);
@@ -458,13 +458,13 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         // All of a level's units, once per compile, as the predefined sets
         const vial_sets_t* s = NULL;
         size_t k = 0;
-        for (; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
+        for (; k < MD_COUNTOF(x->predefined) && x->predefined[k].sets; ++k) {
             if (str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
         }
         if (!s) {
             const vial_select_t q = {.level = level, .particle_kind = pkind};
             s = vial_select(x->sys, &q, x->alloc);
-            if (k < ARRAY_SIZE(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
+            if (k < MD_COUNTOF(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
         }
         *out = vx_sets_type(x, s, id);
         vx_set_value(x, id, sets_value(s));
@@ -480,13 +480,13 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         if (!x->sys) { *out = vial_type_scalar(VIAL_DT_SET); return true; }
         const vial_sets_t* s = NULL;
         size_t k = 0;
-        for (; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
+        for (; k < MD_COUNTOF(x->predefined) && x->predefined[k].sets; ++k) {
             if (str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
         }
         if (!s) {
             s = vial_select_predefined(x->sys, name, x->alloc);
             if (!s) return false;
-            if (k < ARRAY_SIZE(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
+            if (k < MD_COUNTOF(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
         }
         *out = vx_sets_type(x, s, id);
         vx_set_value(x, id, sets_value(s));
@@ -556,7 +556,7 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
         const vial_sets_t* res = select_named(x, VIAL_LEVEL_RESIDUE, name);
         if (res->count) {
             char fix[96];
-            snprintf(fix, sizeof(fix), "residue('%.*s')", (int)MIN(name.len, 60), name.ptr);
+            snprintf(fix, sizeof(fix), "residue('%.*s')", (int)MD_MIN(name.len, 60), name.ptr);
             vx_diag_fix(x, "W0601", in, fix, "no particle is named '%.*s'; a subscript names particles, and residues of that name are %s",
                 (int)name.len, name.ptr, fix);
         } else {
@@ -625,14 +625,14 @@ bool vx_is_particles_view(const infer_t* x, vial_node_id n) {
 
 const vial_sets_t* vx_view_units(infer_t* x, str_t name) {
     if (!x->sys) return NULL;
-    for (size_t k = 0; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(x->predefined) && x->predefined[k].sets; ++k) {
         if (str_eq(x->predefined[k].name, name)) return x->predefined[k].sets;
     }
     uint8_t pkind = 0;
     const uint8_t level = selector_level(name, &pkind);
     const vial_select_t q = {.level = level, .particle_kind = pkind};
     const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
-    for (size_t k = 0; k < ARRAY_SIZE(x->predefined); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(x->predefined); ++k) {
         if (!x->predefined[k].sets) { x->predefined[k].name = name; x->predefined[k].sets = s; break; }
     }
     return s;

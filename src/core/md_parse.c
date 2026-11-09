@@ -552,7 +552,7 @@ static uint64_t eisel_lemire(uint64_t w, int64_t q) {
     if (q < POW5_MIN_Q) return 0;                                       // Rounds to zero
     if (q > POW5_MAX_Q) return (uint64_t)INF_POWER << MANTISSA_BITS;    // Infinity
 
-    const int lz = (int)clz64(w);
+    const int lz = (int)md_clz64(w);
     w <<= lz;
 
     // The first 64 bits of the product are enough unless the bits below the 55 that matter are all
@@ -639,7 +639,7 @@ static double float_value(const float_parts_t* p) {
 }
 
 size_t md_parse_f64(double* out_value, str_t str) {
-    ASSERT(out_value);
+    MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
     // The shape nearly every number in a structure or trajectory file has - a plain decimal of at
@@ -695,7 +695,7 @@ bool md_parse_is_float(str_t str) {
 
 // md_parse_fixed_f32 for a field wider than a word: the same layout, checked character by character
 bool md_parse_fixed_f32_wide(float* out, str_t field, size_t decimals) {
-    ASSERT(out);
+    MD_ASSERT(out);
     const char*  p     = field.ptr;
     const size_t width = field.len;
     if (!p || decimals == 0 || width < decimals + 2) return false;

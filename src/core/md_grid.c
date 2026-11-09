@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
 void md_grid_extract_points(float* out_xyz, const md_grid_t* grid) {
-    ASSERT(out_xyz);
-    ASSERT(grid);
+    MD_ASSERT(out_xyz);
+    MD_ASSERT(grid);
 
     mat4_t index_to_world = md_grid_index_to_world(grid);
 
@@ -26,14 +26,14 @@ void md_grid_extract_points(float* out_xyz, const md_grid_t* grid) {
 }
 
 mat4_t md_grid_model_to_world(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
     mat4_t R = mat4_from_mat3(grid->orientation);
     mat4_t T = mat4_translate_vec3(grid->origin);
     return mat4_mul(T, R);
 }
 
 mat4_t md_grid_world_to_model(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
     // These are the inverse matrices
     mat4_t R = mat4_from_mat3(mat3_transpose(grid->orientation));
     mat4_t T = mat4_translate_vec3(vec3_mul1(grid->origin, -1.0f));
@@ -41,7 +41,7 @@ mat4_t md_grid_world_to_model(const md_grid_t* grid) {
 }
 
 mat4_t md_grid_index_to_world(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
 
     mat4_t S = mat4_scale_vec3(grid->spacing);
     mat4_t R = mat4_from_mat3(grid->orientation);
@@ -51,7 +51,7 @@ mat4_t md_grid_index_to_world(const md_grid_t* grid) {
 }
 
 mat4_t md_grid_world_to_index(const md_grid_t* grid) {
-    ASSERT(grid);
+    MD_ASSERT(grid);
 
     // These are the inverse matrices
     mat4_t S = mat4_scale_vec3(vec3_div(vec3_set1(1.0f), grid->spacing));

@@ -13,7 +13,7 @@ struct md_tlsf_slab_t {
 };
 
 static inline uint32_t md_tlsf_msb(uint64_t v) {
-    return 63u - (uint32_t)clz64(v);
+    return 63u - (uint32_t)md_clz64(v);
 }
 
 /* The (fl, sl) list a free node of `size` lives in. */
@@ -125,11 +125,11 @@ static md_tlsf_node_t* md_tlsf_find(md_tlsf_t* t, uint64_t size) {
         if (!sl_map) {
             const uint64_t fl_map = (fl + 1 < MD_TLSF_FL_COUNT) ? (t->fl_bitmap & (~0ull << (fl + 1))) : 0;
             if (fl_map) {
-                fl     = (uint32_t)ctz64(fl_map);
+                fl     = (uint32_t)md_ctz64(fl_map);
                 sl_map = t->sl_bitmap[fl];
             }
         }
-        if (sl_map) return t->heads[fl][(uint32_t)ctz32(sl_map)];
+        if (sl_map) return t->heads[fl][(uint32_t)md_ctz32(sl_map)];
     }
     md_tlsf_mapping(size, &fl, &sl);
     for (md_tlsf_node_t* n = t->heads[fl][sl]; n; n = n->next_free) {

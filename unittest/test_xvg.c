@@ -118,7 +118,7 @@ static void series_run(md_system_t* sys, str_t run, const double* times, size_t 
 // energy.xvg: time in ps every 2 ps, four energy columns. Along a run with a frame every 4 ps each
 // frame finds its row by time; along a run offset from it, none does and nothing is published.
 UTEST(xvg, series_along_a_run) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     sys.attributes.alloc = arena;
 
@@ -174,7 +174,7 @@ UTEST(xvg, series_along_a_run) {
 
 // A CSV with a time column goes on its own axis; one without has a row per frame, or is refused.
 UTEST(xvg, csv_series_along_a_run) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     sys.attributes.alloc = arena;
     const double times[4] = { 0.0, 1.0, 2.0, 3.0 };

@@ -89,7 +89,7 @@ UTEST(monomer, from_res_name) {
         {"LIG", MD_RESIDUE_KIND_OTHER, MD_MONOMER_NONE},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         const md_monomer_t m = md_monomer_from_residue_name(str_from_cstr(cases[i].name), cases[i].kind);
         if (m != cases[i].expected) {
             printf("'%s' (kind %d): expected " STR_FMT ", got " STR_FMT "\n", cases[i].name, (int)cases[i].kind,
@@ -112,7 +112,7 @@ static md_residue_type_idx_t type_of_name(const md_system_t* sys, const char* na
 }
 
 UTEST(monomer, residue_types_nucleosome) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
@@ -135,7 +135,7 @@ UTEST(monomer, residue_types_nucleosome) {
         {"DA", MD_MONOMER_DA}, {"DT", MD_MONOMER_DT}, {"DG", MD_MONOMER_DG}, {"DC", MD_MONOMER_DC},
         {"ARG", MD_MONOMER_ARG}, {"LYS", MD_MONOMER_LYS}, {"ALA", MD_MONOMER_ALA},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(expected); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(expected); ++i) {
         const md_residue_type_idx_t t = type_of_name(&sys, expected[i].name);
         ASSERT_GE(t, 0);
         EXPECT_EQ(expected[i].monomer, md_residue_type_monomer(type, t));
@@ -169,7 +169,7 @@ static const char* ligand_water_ion_pdb =
     "END\n";
 
 UTEST(monomer, residue_types_without_monomer) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));

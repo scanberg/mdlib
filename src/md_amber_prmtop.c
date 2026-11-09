@@ -96,7 +96,7 @@ static str_t prmtop_next_line(str_t* text) {
 
 // Finds the blocks of the file. The values are left where they are, read when asked for.
 static bool prmtop_parse(prmtop_t* top, str_t text, md_allocator_i* alloc, str_t path) {
-    MEMSET(top, 0, sizeof(*top));
+    MD_MEMSET(top, 0, sizeof(*top));
     const char* text_end = text.ptr + text.len;
     prmtop_block_t* cur = NULL;
     const char* data_beg = NULL;
@@ -253,7 +253,7 @@ typedef struct prmtop_data_t {
 } prmtop_data_t;
 
 static bool prmtop_read(prmtop_data_t* d, str_t path, md_allocator_i* alloc) {
-    MEMSET(d, 0, sizeof(*d));
+    MD_MEMSET(d, 0, sizeof(*d));
     const str_t text = load_textfile(path, alloc);
     if (str_empty(text)) {
         MD_LOG_ERROR("Amber topology: cannot read '" STR_FMT "'", STR_ARG(path));
@@ -341,7 +341,7 @@ static bool prmtop_read(prmtop_data_t* d, str_t path, md_allocator_i* alloc) {
 
     // ## Bonds: triples of (3 * (i - 1), 3 * (j - 1), parameter index), the coordinate offsets of the atoms
     const char* bond_blocks[] = { "BONDS_INC_HYDROGEN", "BONDS_WITHOUT_HYDROGEN" };
-    for (size_t k = 0; k < ARRAY_SIZE(bond_blocks); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(bond_blocks); ++k) {
         const prmtop_block_t* b = prmtop_block(&top, bond_blocks[k]);
         if (!b) continue;
         const size_t n = prmtop_count(b);
@@ -437,8 +437,8 @@ static md_topology_desc_t prmtop_desc(const prmtop_data_t* d) {
 }
 
 bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
-    ASSERT(state);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     prmtop_data_t d;
     bool result = prmtop_read(&d, filename, md_temp_allocator(temp));
@@ -454,7 +454,7 @@ bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* 
 }
 
 bool md_amber_prmtop_system_supplement_from_file(md_system_t* sys, str_t filename) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     prmtop_data_t d;
     bool result = prmtop_read(&d, filename, md_temp_allocator(temp));

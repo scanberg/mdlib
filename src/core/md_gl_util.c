@@ -69,7 +69,7 @@ bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_inj
 
     if (!success) {
         char err_buf[1024];
-        glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
+        glGetShaderInfoLog(shader, MD_COUNTOF(err_buf), NULL, err_buf);
         MD_LOG_ERROR("Shader compile error:\n%s\n", err_buf);
         goto done;
     }
@@ -81,7 +81,7 @@ done:
 }
 
 bool md_gl_program_attach_and_link(uint32_t program, const uint32_t shaders[], size_t shader_count) {
-    ASSERT(program);
+    MD_ASSERT(program);
 
     for (size_t i = 0; i < shader_count; i++) {
         GLint compile_status;
@@ -99,7 +99,7 @@ bool md_gl_program_attach_and_link(uint32_t program, const uint32_t shaders[], s
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         char err_buf[256];
-        glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
+        glGetProgramInfoLog(program, MD_COUNTOF(err_buf), NULL, err_buf);
         MD_LOG_ERROR("Program link error:\n%s\n", err_buf);
         return false;
     }
@@ -112,8 +112,8 @@ bool md_gl_program_attach_and_link(uint32_t program, const uint32_t shaders[], s
 }
 
 bool md_gl_program_attach_and_link_transform_feedback(uint32_t program, const uint32_t shader[], size_t shader_count, const char* varying[], size_t varying_count, uint32_t capture_mode) {
-    ASSERT(program);
-    ASSERT(capture_mode == GL_INTERLEAVED_ATTRIBS || capture_mode == GL_SEPARATE_ATTRIBS);
+    MD_ASSERT(program);
+    MD_ASSERT(capture_mode == GL_INTERLEAVED_ATTRIBS || capture_mode == GL_SEPARATE_ATTRIBS);
 
     for (size_t i = 0; i < shader_count; i++) {
         GLint compile_status;
@@ -132,7 +132,7 @@ bool md_gl_program_attach_and_link_transform_feedback(uint32_t program, const ui
     glGetProgramiv(program, GL_LINK_STATUS, &link_status);
     if (!link_status) {
         char err_buf[256];
-        glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
+        glGetProgramInfoLog(program, MD_COUNTOF(err_buf), NULL, err_buf);
         MD_LOG_ERROR("Program link error:\n%s\n", err_buf);
         return false;
     }

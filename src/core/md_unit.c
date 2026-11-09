@@ -49,7 +49,7 @@ static inline bool value_equal(double a, double b) {
 }
 
 static str_t find_prefix_str_from_value(double value) {
-    for (size_t i = 0; i < ARRAY_SIZE(si_prefixes); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(si_prefixes); ++i) {
         if (si_prefixes[i].alias) continue;
         if (value_equal(value, si_prefixes[i].value)) return si_prefixes[i].str;
     }
@@ -57,7 +57,7 @@ static str_t find_prefix_str_from_value(double value) {
 }
 
 static double find_prefix_value_from_str(str_t str) {
-    for (size_t i = 0; i < ARRAY_SIZE(si_prefixes); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(si_prefixes); ++i) {
         if (str_eq(str, si_prefixes[i].str)) return si_prefixes[i].value;
     }
     return 0;
@@ -107,7 +107,7 @@ typedef struct {
 #define UNIT_FEMTOSECOND    {.base = {.dim = {.time = 1,}},     .mult = 1e-15}
 
 // The scale is expressed in SI base units, one degree is PI/180 radians
-#define UNIT_DEGREE         {.base = {.dim = {.angle = 1,}},    .mult = DEG_TO_RAD(1.0)}
+#define UNIT_DEGREE         {.base = {.dim = {.angle = 1,}},    .mult = MD_DEG_TO_RAD(1.0)}
 
 #define UNIT_METER_SQ       {.base = {.dim = {.length = 2,}},   .mult = 1.0}
 
@@ -180,7 +180,7 @@ static const unit_name_t predefined_units[] = {
 };
 
 static bool find_unit_from_predefined(md_unit_t* unit, str_t name) {
-    for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
         if (str_eq(name, predefined_units[i].str)) {
             *unit = predefined_units[i].unit;
             return true;
@@ -190,7 +190,7 @@ static bool find_unit_from_predefined(md_unit_t* unit, str_t name) {
 }
 
 static str_t find_name_from_predefined(md_unit_t unit) {
-    for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
         if (md_unit_equal(predefined_units[i].unit, unit)) {
             return predefined_units[i].str;
         }
@@ -214,7 +214,7 @@ static bool name_can_be_raised(str_t str) {
 // True if none of the dimensions are inverted, we prefer to express leftover dimensions
 // using such units, i.e. 'm/s^2' rather than 'mHz^2'
 static bool base_is_positive(md_unit_t unit) {
-    for (size_t i = 0; i < ARRAY_SIZE(unit.base.arr); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(unit.base.arr); ++i) {
         if (unit.base.arr[i] < 0) return false;
     }
     return true;
@@ -226,7 +226,7 @@ static bool base_is_positive(md_unit_t unit) {
 // e.g. 'count/Å^3' rather than 'Zcount/mm^3'.
 static int compute_match_score(md_unit_t unit, md_unit_t ref, int exponent) {
     int score = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(ref.base.arr); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ref.base.arr); ++i) {
         if (ref.base.arr[i] == 0) continue;
         if (unit.base.arr[i] != ref.base.arr[i] * exponent) return 0;
         score += 10;
@@ -259,7 +259,7 @@ static int find_best_matching_predefined(int* exponent, md_unit_t unit) {
     for (int mag = 1; mag <= MAX_UNIT_EXPONENT; ++mag) {
         for (int sign = 1; sign >= -1; sign -= 2) {
             const int exp = mag * sign;
-            for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+            for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
                 if (mag > 1 && !name_can_be_raised(predefined_units[i].str)) continue;
                 int score = compute_match_score(unit, predefined_units[i].unit, exp);
                 if (score > best_score) {
@@ -376,7 +376,7 @@ md_unit_t md_unit_scl(md_unit_t unit, double scl) {
 }
 
 bool md_unit_conversion_factor(double* factor, md_unit_t from_unit, md_unit_t to_unit) {
-    ASSERT(factor);
+    MD_ASSERT(factor);
 
     if (!md_unit_base_equal(from_unit, to_unit)) {
         return false;
@@ -387,7 +387,7 @@ bool md_unit_conversion_factor(double* factor, md_unit_t from_unit, md_unit_t to
     return true;
 }
 
-#define PRINT(...) len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ##__VA_ARGS__)
+#define PRINT(...) len += (size_t)md_snprintf(buf + MD_MIN(len, cap), cap - MD_MIN(len, cap), ##__VA_ARGS__)
 
 // Each print_* procedure writes from the beginning of buf and returns the length written.
 // A return value of zero means that the representation was not applicable and the next one should be tried.
@@ -439,7 +439,7 @@ static size_t print_predefined_pow(char* buf, size_t cap, md_unit_t unit) {
         for (int mag = 1; mag <= MAX_UNIT_EXPONENT; ++mag) {
             for (int sign = 1; sign >= -1; sign -= 2) {
                 const int exp = mag * sign;
-                for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+                for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
                     if (mag > 1 && !name_can_be_raised(predefined_units[i].str)) continue;
 
                     const md_unit_t ref = md_unit_pow(predefined_units[i].unit, exp);
@@ -487,7 +487,7 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
     size_t num_terms = 0;
 
     md_unit_t rem = unit;
-    while (rem.base.raw_bits != 0 && num_terms < ARRAY_SIZE(term)) {
+    while (rem.base.raw_bits != 0 && num_terms < MD_COUNTOF(term)) {
         int exp = 0;
         int idx = find_best_matching_predefined(&exp, rem);
         if (idx == -1) break;
@@ -524,11 +524,11 @@ static size_t print_decomposed(char* buf, size_t cap, md_unit_t unit) {
             for (int mag = 1; mag <= 3; ++mag) {
                 for (int sign = -1; sign <= 1; sign += 2) {
                     const int exp = sign * mag;
-                    for (size_t j = 0; j < ARRAY_SIZE(predefined_units); ++j) {
+                    for (size_t j = 0; j < MD_COUNTOF(predefined_units); ++j) {
                         if (mag > 1 && !name_can_be_raised(predefined_units[j].str)) continue;
                         // What is left once b^exp is divided out has to be a predefined unit itself
                         const md_unit_t a = md_unit_div(unit, md_unit_pow(predefined_units[j].unit, exp));
-                        for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+                        for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
                             if (i == j || !md_unit_equal(a, predefined_units[i].unit)) continue;
                             PRINT(STR_FMT"%c"STR_FMT, STR_ARG(predefined_units[i].str), exp < 0 ? '/' : '*', STR_ARG(predefined_units[j].str));
                             if (mag > 1) PRINT("^%i", mag);
@@ -589,7 +589,7 @@ static size_t print_SI(char* buf, size_t cap, md_unit_t unit) {
         len += print_scale(buf, cap, scale);
     }
 
-    for (size_t i = 0, printed = 0; i < ARRAY_SIZE(unit.base.arr); ++i) {
+    for (size_t i = 0, printed = 0; i < MD_COUNTOF(unit.base.arr); ++i) {
         const int exp = unit.base.arr[i];
         if (exp == 0) continue;
         if (printed++ > 0) PRINT("*");
@@ -656,7 +656,7 @@ static bool parse_term(md_unit_t* unit, str_t str) {
 
     // Match against the longest predefined unit which the base ends with, the remainder is an SI prefix
     int best_match_idx = -1;
-    for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(predefined_units); ++i) {
         if (str_ends_with(base, predefined_units[i].str)) {
             if (best_match_idx == -1 || predefined_units[i].str.len > predefined_units[best_match_idx].str.len) {
                 best_match_idx = (int)i;
@@ -745,7 +745,7 @@ static bool parse_unit(md_unit_t* unit, str_t str) {
 }
 
 bool md_unit_parse(md_unit_t* unit, str_t str) {
-    ASSERT(unit);
+    MD_ASSERT(unit);
 
     if (!parse_unit(unit, str)) {
         *unit = md_unit_none();

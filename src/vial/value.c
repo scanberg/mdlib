@@ -291,7 +291,7 @@ const vial_drawing_t* vial_drawing_concat_n(const vial_drawing_t* const* ds, siz
     size_t total = 0;
     for (size_t i = 0; i < n; ++i) total += ds[i] ? ds[i]->count : 0;
     vial_drawing_t* d = md_alloc(alloc, sizeof(vial_drawing_t));
-    d->count = (uint32_t)MIN(total, (size_t)UINT32_MAX);
+    d->count = (uint32_t)MD_MIN(total, (size_t)UINT32_MAX);
     vial_prim_t* p = d->count ? md_alloc(alloc, d->count * sizeof(vial_prim_t)) : NULL;
     size_t at = 0;
     for (size_t i = 0; p && i < n; ++i) {

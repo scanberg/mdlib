@@ -26,8 +26,8 @@
     } \
     md_array_free(arr, alloc); \
     \
-    uint32_t size[] = {16, KILOBYTES(1), 1, 2, 7, 3, 2, 4, 11, 12, 13, 14, KILOBYTES(2), 17, 1, 2, 256, 1, 16, 7, 2, KILOBYTES(3), 23, 24, 25, 26, 27, 1, 29, 30, 4, 8}; \
-    for (int64_t i = 0; i < ARRAY_SIZE(size); ++i) { \
+    uint32_t size[] = {16, MD_KILOBYTES(1), 1, 2, 7, 3, 2, 4, 11, 12, 13, 14, MD_KILOBYTES(2), 17, 1, 2, 256, 1, 16, 7, 2, MD_KILOBYTES(3), 23, 24, 25, 26, 27, 1, 29, 30, 4, 8}; \
+    for (int64_t i = 0; i < MD_COUNTOF(size); ++i) { \
         uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
         mem = md_alloc(alloc, size[i]); \
         EXPECT_EQ((uint64_t)mem % expected_alignment, 0ULL); \
@@ -35,7 +35,7 @@
     }
 
 // Common buffer for allocators to use
-static char buf[KILOBYTES(16)];
+static char buf[MD_KILOBYTES(16)];
 
 // COMMON TESTS
 UTEST(allocator, default) {
@@ -128,7 +128,7 @@ UTEST(allocator, arena_shrink_not_last) {
 
     uint8_t* b = md_alloc(arena, 64);
     ASSERT_NE(b, NULL);
-    MEMSET(b, 0xCD, 64);
+    MD_MEMSET(b, 0xCD, 64);
 
     // a is no longer the last allocation: it is shrunk where it is, keeping what fits
     uint8_t* a_shrunk = md_realloc(arena, a, 64, 16);
@@ -146,13 +146,13 @@ UTEST(allocator, arena_shrink_not_last) {
 }
 
 UTEST(allocator, vm_arena) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     ASSERT_TRUE(arena);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         size_t size = rand() % 63 + 1;
         void* mem = md_vm_arena_push(arena, size);
-        MEMSET(mem, 0, size);   // Important to touch memory in order to validate that it is writable
+        MD_MEMSET(mem, 0, size);   // Important to touch memory in order to validate that it is writable
     }
 
     md_vm_arena_reset(arena);
@@ -160,7 +160,7 @@ UTEST(allocator, vm_arena) {
     for (uint32_t i = 0; i < 1000; ++i) {
         size_t size = rand() % 127 + 1;
         void* mem = md_vm_arena_push_aligned(arena, size, 32);
-        MEMSET(mem, 0, size); // Important to touch memory in order to validate that it is writable
+        MD_MEMSET(mem, 0, size); // Important to touch memory in order to validate that it is writable
         md_vm_arena_pop(arena, size);
     }
 
@@ -170,20 +170,20 @@ UTEST(allocator, vm_arena) {
 // Trimmed, what was above the position is given back but for the commit granule (1 MB) the position is in;
 // what is below stays as it was, and the arena is usable as before
 UTEST(allocator, vm_arena_trim) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     ASSERT_TRUE(arena);
     uint8_t* keep = (uint8_t*)md_vm_arena_push(arena, 1000);
-    MEMSET(keep, 0x5a, 1000);
-    const size_t big = MEGABYTES(8) + 12345;
+    MD_MEMSET(keep, 0x5a, 1000);
+    const size_t big = MD_MEGABYTES(8) + 12345;
     uint8_t* mem = (uint8_t*)md_vm_arena_push(arena, big);
-    MEMSET(mem, 0xab, big);
+    MD_MEMSET(mem, 0xab, big);
     md_vm_arena_pop(arena, big);
     md_vm_arena_trim(arena);
     md_vm_arena_trim(arena);    // nothing more to give back
     for (size_t i = 0; i < 1000; ++i) ASSERT_EQ(keep[i], 0x5a);
     uint8_t* again = (uint8_t*)md_vm_arena_push(arena, big);
     ASSERT_EQ(again, mem);
-    MEMSET(again, 0xcd, big);   // writable again
+    MD_MEMSET(again, 0xcd, big);   // writable again
     md_vm_arena_destroy(arena);
 }
 
@@ -193,20 +193,20 @@ UTEST(allocator, temp_trim) {
     for (uint32_t i = 0; i < 16; ++i) kept[i] = i;
     {
         md_temp_scope_t inner = md_temp_begin();
-        uint8_t* big = (uint8_t*)md_temp_alloc(inner, MEGABYTES(16));
-        MEMSET(big, 0xff, MEGABYTES(16));
+        uint8_t* big = (uint8_t*)md_temp_alloc(inner, MD_MEGABYTES(16));
+        MD_MEMSET(big, 0xff, MD_MEGABYTES(16));
         md_temp_end(inner);
     }
     md_temp_trim();     // within a scope: what the scope holds stays
     for (uint32_t i = 0; i < 16; ++i) ASSERT_EQ(kept[i], i);
-    uint8_t* big = (uint8_t*)md_temp_alloc(outer, MEGABYTES(16));
-    MEMSET(big, 0, MEGABYTES(16));
+    uint8_t* big = (uint8_t*)md_temp_alloc(outer, MD_MEGABYTES(16));
+    MD_MEMSET(big, 0, MD_MEGABYTES(16));
     md_temp_end(outer);
     md_temp_trim();
 }
 
 UTEST(allocator, vm_arena_generic) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     ASSERT_TRUE(alloc);
     COMMON_ALLOCATOR_TEST_BODY
     md_vm_arena_destroy(alloc);
@@ -215,7 +215,7 @@ UTEST(allocator, vm_arena_generic) {
 
 UTEST(allocator, vm) {
     md_vm_allocator_t vm;
-    md_vm_allocator_init(&vm, GIGABYTES(64)); // Reserve ridiculous amounts of space
+    md_vm_allocator_init(&vm, MD_GIGABYTES(64)); // Reserve ridiculous amounts of space
     md_allocator_i alloc = md_vm_allocator_create_interface(&vm);
 
     // Commit to smaller portion by allocating

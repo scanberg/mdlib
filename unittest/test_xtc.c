@@ -66,20 +66,20 @@ static inline uint64_t load_qword(const uint64_t* p) {
 }
 
 static void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
-    ASSERT(num_qwords >= 2);
+    MD_ASSERT(num_qwords >= 2);
     r->stream = stream + 2;
     r->data   = load_qword(stream + 0);
     r->next   = load_qword(stream + 1);
 #if __LITTLE_ENDIAN__
-    r->data   = BSWAP64(r->data);
-    r->next   = BSWAP64(r->next);
+    r->data   = MD_BSWAP64(r->data);
+    r->next   = MD_BSWAP64(r->next);
 #endif
     r->cache_bits = 128;
     r->stream_size = (uint32_t)num_qwords - 2;
 }
 
 static inline uint64_t br_peek(br_t* r, size_t num_bits) {
-    ASSERT(num_bits <= 64);
+    MD_ASSERT(num_bits <= 64);
     uint64_t shft = 64 - num_bits;
     uint64_t res  = r->data >> shft;
     return res;
@@ -91,7 +91,7 @@ static inline void br_load_next(br_t* r) {
         r->stream_size -= 1;
         uint64_t data = load_qword(r->stream++);
 #if __LITTLE_ENDIAN__
-        data = BSWAP64(data);
+        data = MD_BSWAP64(data);
 #endif
         if (r->cache_bits < 64) {
             // Fill in missing bits
@@ -109,7 +109,7 @@ static inline void br_load_next(br_t* r) {
     r->stream_size -= 1;
 
 #if __LITTLE_ENDIAN__
-    data = BSWAP64(data);
+    data = MD_BSWAP64(data);
 #endif
 
     // Always perform unified update
@@ -122,7 +122,7 @@ static inline void br_load_next(br_t* r) {
 
 static inline uint64_t br_read(br_t* r, size_t num_bits) {
 #if 0
-    ASSERT(num_bits <= 64);
+    MD_ASSERT(num_bits <= 64);
     uint64_t shft = 64 - num_bits;
     uint64_t res  = r->data >> shft;
 
@@ -141,7 +141,7 @@ static inline uint64_t br_read(br_t* r, size_t num_bits) {
         r->stream_size -= 1;
         uint64_t data = load_qword(r->stream++);
 #if __LITTLE_ENDIAN__
-        data = BSWAP64(data);
+        data = MD_BSWAP64(data);
 #endif
         // Fill in missing bits
         if (r->cache_bits < 64) {
@@ -155,7 +155,7 @@ static inline uint64_t br_read(br_t* r, size_t num_bits) {
 
     return res;
 #else
-    ASSERT(num_bits <= 64);
+    MD_ASSERT(num_bits <= 64);
 
     uint64_t res = r->data >> (64 - num_bits);
     r->cache_bits -= (uint32_t)num_bits;
@@ -190,7 +190,7 @@ UTEST(xtc, bitread) {
     br_t r;
     br_init(&r, (const uint64_t*)&buf[3], 512 * sizeof(int));
 
-    for (size_t i = 0; i < ARRAY_SIZE(num_bits); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(num_bits); ++i) {
         uint64_t ref = decodebits(buf, num_bits[i]);
         uint64_t val = br_read(&r, num_bits[i]);
         EXPECT_EQ(val, ref);
@@ -224,7 +224,7 @@ UTEST(xtc, decode_bits) {
     br_t r = {0};
     br_init(&r, (const uint64_t*)&buf[3], 512 * sizeof(int));
 
-    for (size_t i = 0; i < ARRAY_SIZE(num_bits); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(num_bits); ++i) {
         int num_of_bits = num_bits[i];
            
         int fullbytes = num_of_bits >> 3;
@@ -245,18 +245,18 @@ UTEST(xtc, decode_bits) {
         uint64_t sml_shift = (8 - partbits) & 7;             // Avoid branch, ensures zero when partbits == 0
         uint64_t part_mask = partbits ? (1ull << partbits) - 1 : 0xFF;
 
-        uint64_t next = ALIGN_TO(num_of_bits, 8);
+        uint64_t next = MD_ALIGN_TO(num_of_bits, 8);
         uint64_t u = br_peek(&r, num_of_bits);
         uint64_t l = u << sml_shift;
-        uint64_t j = BSWAP64(u);
-        uint64_t m = BSWAP64(l);
+        uint64_t j = MD_BSWAP64(u);
+        uint64_t m = MD_BSWAP64(l);
         uint64_t k = j >> big_shift;
 
         uint64_t w = br_read(&r, num_of_bits);
         // Remove unnecessary masking by directly applying shifts
         uint64_t t = (w << sml_shift) & ~0xFFull | (w & part_mask);
         // Byte-swap and shift to align the result correctly
-        uint64_t q = BSWAP64(t) >> big_shift;
+        uint64_t q = MD_BSWAP64(t) >> big_shift;
 
         EXPECT_EQ(v, q);
         if (v != q) {
@@ -269,7 +269,7 @@ UTEST(xtc, decode_bits) {
 
 // Every frame of the file extracts, with no structure to go with it: the run is the file alone.
 UTEST(xtc, run_every_frame) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/c"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
@@ -554,10 +554,10 @@ static bool xtc_load_catalyst(md_system_t* sys, md_allocator_i* arena) {
 // The run holds the file's frames as attributes, and a state extracted from it holds what the
 // trajectory reader it replaced gave for the same frame.
 UTEST(xtc, run_matches_reference) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(xtc_load_catalyst(&sys, arena));
-    run_check_refs(utest_result, &sys, XTC_RUN, 501, 1336, xtc_refs, ARRAY_SIZE(xtc_refs));
+    run_check_refs(utest_result, &sys, XTC_RUN, 501, 1336, xtc_refs, MD_COUNTOF(xtc_refs));
 
     const md_attributes_t* t = &sys.attributes;
     const size_t F = 501;
@@ -581,7 +581,7 @@ UTEST(xtc, run_matches_reference) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, N);
 
-    md_system_extract_t* ex = md_system_extract_begin(&sys, XTC_RUN, xtc_coord_paths, ARRAY_SIZE(xtc_coord_paths), md_get_heap_allocator());
+    md_system_extract_t* ex = md_system_extract_begin(&sys, XTC_RUN, xtc_coord_paths, MD_COUNTOF(xtc_coord_paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     ASSERT_TRUE(md_system_extract_frame(ex, 7, &got));
     EXPECT_EQ(7.0, got.frame);
@@ -621,7 +621,7 @@ UTEST(xtc, run_matches_reference) {
 }
 
 UTEST(xtc, run_extracts_other_attributes_into_the_state) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(xtc_load_catalyst(&sys, arena));
     const size_t F = run_num_frames(&sys, XTC_RUN);
@@ -650,7 +650,7 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
         .unit = md_unit_none(), .data = obs_label, .byte_size = F * 3 * sizeof(int32_t)}), MD_ATTRIBUTE_INVALID);
 
     const str_t paths[] = { STR_INIT("obs/value"), STR_INIT("label") };
-    md_system_extract_t* ex = md_system_extract_begin(&sys, XTC_RUN, paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+    md_system_extract_t* ex = md_system_extract_begin(&sys, XTC_RUN, paths, MD_COUNTOF(paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
 
     md_system_state_t st = {.alloc = arena};
@@ -685,7 +685,7 @@ UTEST(xtc, run_extracts_other_attributes_into_the_state) {
 // A script evaluated along the run gives the same values in one range as split over ranges the way
 // a pool splits it, each range with its own extraction context.
 UTEST(xtc, script_evaluates_along_the_run) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(xtc_load_catalyst(&sys, arena));
     const uint32_t F = (uint32_t)run_num_frames(&sys, XTC_RUN);
@@ -702,7 +702,7 @@ UTEST(xtc, script_evaluates_along_the_run) {
     const md_attribute_t* da = md_attributes_find(md_script_eval_attributes(a), STR_LIT("script/d"));
     const md_attribute_t* db = md_attributes_find(md_script_eval_attributes(b), STR_LIT("script/d"));
     ASSERT_TRUE(da && db);
-    EXPECT_EQ(0, MEMCMP(da->data, db->data, md_attribute_byte_size(&da->format)));
+    EXPECT_EQ(0, MD_MEMCMP(da->data, db->data, md_attribute_byte_size(&da->format)));
 
     md_script_eval_free(a);
     md_script_eval_free(b);
@@ -713,7 +713,7 @@ UTEST(xtc, script_evaluates_along_the_run) {
 
 // A trajectory that does not fit the system is refused, rather than published and read out of step.
 UTEST(xtc, run_refuses_a_different_system) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
@@ -724,7 +724,7 @@ UTEST(xtc, run_refuses_a_different_system) {
 
 // A run is its positions: a frame axis alone gives nothing to extract, and neither does no run.
 UTEST(xtc, run_needs_positions) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     sys.attributes.alloc = arena;
     const double times[3] = { 0.0, 1.0, 2.0 };
@@ -747,7 +747,7 @@ UTEST(xtc, run_needs_positions) {
 // the first frame leaves the open file readable on unix, so every later frame still extracts - which
 // it could not if the file were opened again per frame, as it is without a context.
 UTEST(xtc, run_context_keeps_the_file_open) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t src = STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     const str_t tmp = STR_INIT("/tmp/md_unittest_run_context.xtc");
 
@@ -847,7 +847,7 @@ static bool xtc_write_bytes(str_t path, const uint8_t* bytes, size_t size) {
 }
 
 UTEST(xtc, planar_frames) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     const str_t path = STR_LIT("md_unittest_planar.xtc");
     ASSERT_TRUE(xtc_write_bytes(path, xtc_planar, sizeof(xtc_planar)));
@@ -868,7 +868,7 @@ UTEST(xtc, planar_frames) {
 }
 
 UTEST(xtc, ranges_beyond_24_bits) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     const str_t path = STR_LIT("md_unittest_wide_range.xtc");
     ASSERT_TRUE(xtc_write_bytes(path, xtc_wide_range, sizeof(xtc_wide_range)));
@@ -906,7 +906,7 @@ static size_t xtc_to_magic_2023(uint8_t* dst, const uint8_t* src, size_t size) {
 }
 
 UTEST(xtc, magic_2023) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t path = STR_LIT("md_unittest_magic_2023.xtc");
     uint8_t bytes[512];
     struct { const uint8_t* src; size_t size; int frames; } files[2] = {

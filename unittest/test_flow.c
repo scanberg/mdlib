@@ -85,7 +85,7 @@ static void build(test_graph_t* t, md_allocator_i* alloc) {
 #define EPS 1.0e-4f
 
 UTEST(flow, graph_validates) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -95,7 +95,7 @@ UTEST(flow, graph_validates) {
 }
 
 UTEST(flow, rejects_bad_hierarchy) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_flow_graph_t g = {0};
     md_flow_graph_init(&g, 2, alloc);
 
@@ -109,7 +109,7 @@ UTEST(flow, rejects_bad_hierarchy) {
 }
 
 UTEST(flow, rejects_skipped_column) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_flow_graph_t g = {0};
     md_flow_graph_init(&g, 3, alloc);
 
@@ -124,7 +124,7 @@ UTEST(flow, rejects_skipped_column) {
 }
 
 UTEST(flow, rejects_broken_partition) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -137,7 +137,7 @@ UTEST(flow, rejects_broken_partition) {
 }
 
 UTEST(flow, rejects_node_flow_mismatch) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -151,7 +151,7 @@ UTEST(flow, rejects_node_flow_mismatch) {
 
 // The invariant the whole design rests on: whatever the user expands, the diagram still adds up.
 UTEST(flow, conserved_on_every_cut) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -184,7 +184,7 @@ UTEST(flow, conserved_on_every_cut) {
 // Aggregation must be exact, not approximate: the collapsed A -> o0 flow is the sum of the leaf
 // flows it contains, and nothing else.
 UTEST(flow, aggregation_is_a_sum_of_leaves) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -221,7 +221,7 @@ UTEST(flow, aggregation_is_a_sum_of_leaves) {
 }
 
 UTEST(flow, threshold_folds_into_others_without_losing_weight) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -240,7 +240,7 @@ UTEST(flow, threshold_folds_into_others_without_losing_weight) {
 }
 
 UTEST(flow, layout_ribbons_match_at_both_ends) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -282,7 +282,7 @@ UTEST(flow, layout_ribbons_match_at_both_ends) {
 // Ribbon stubs are sub-allocated inside their node's own span; if that ever drifts, ribbons draw
 // outside the bar they belong to and the picture silently stops being a Sankey.
 UTEST(flow, layout_stubs_stay_inside_their_node) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -318,7 +318,7 @@ UTEST(flow, layout_stubs_stay_inside_their_node) {
 }
 
 UTEST(flow, empty_graph_is_not_a_special_case) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_flow_graph_t g = {0};
     md_flow_graph_init(&g, 3, alloc);
 
@@ -343,7 +343,7 @@ UTEST(flow, empty_graph_is_not_a_special_case) {
 // together - so this pins the two-level ordering that makes an expansion read as a closer look at
 // the same diagram rather than as a different one.
 UTEST(flow, expansion_keeps_siblings_together) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -392,7 +392,7 @@ UTEST(flow, expansion_keeps_siblings_together) {
 // A partially expanded cut is the normal case, not a special one: one group open, its neighbour
 // closed, and the numbers still add up.
 UTEST(flow, partial_expansion_is_ordinary) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -433,7 +433,7 @@ UTEST(flow, partial_expansion_is_ordinary) {
 // landed, so it cannot disagree with them - and because siblings are kept contiguous, the band is
 // a solid run rather than something with holes in it.
 UTEST(flow, bands_bracket_their_expanded_ancestors) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -478,7 +478,7 @@ UTEST(flow, bands_bracket_their_expanded_ancestors) {
 // Ordering by contribution has to hold at EVERY level of expansion, not just the top one: within
 // a column, families are ranked by the ancestor's weight and members by their own.
 UTEST(flow, weight_order_ranks_within_families) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -528,7 +528,7 @@ UTEST(flow, weight_order_ranks_within_families) {
 // A long tail of small nodes must not let "Others" swallow a quarter of the column. Folding runs
 // smallest-first and stops at the cap, so what stays hidden is the genuinely negligible part.
 UTEST(flow, others_never_exceeds_its_cap) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     // One dominant node and forty small ones, the shape a delocalized virtual column takes.
     md_flow_graph_t g = {0};
@@ -577,7 +577,7 @@ UTEST(flow, others_never_exceeds_its_cap) {
 
 // Folding exactly one node would replace a labelled row with a grey box saying the same thing.
 UTEST(flow, others_is_not_created_for_a_single_node) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -601,7 +601,7 @@ UTEST(flow, others_is_not_created_for_a_single_node) {
 // stubs must still exactly fill each node, at both ends, or ribbons overflow the bars they belong
 // to - which is the whole reason the proportional layout was safe in the first place.
 UTEST(flow, compressed_column_still_fills_its_nodes) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     test_graph_t t = {0};
     build(&t, alloc);
 
@@ -652,7 +652,7 @@ UTEST(flow, compressed_column_still_fills_its_nodes) {
 // the column's "Others" is how you look anyway - which is what lets the threshold stay honest
 // instead of being quietly overridden.
 UTEST(flow, threshold_is_honest_and_others_opens) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     md_flow_graph_t g = {0};
     md_flow_graph_init(&g, 2, alloc);

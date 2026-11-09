@@ -238,7 +238,7 @@ static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, str_t arg)
 
         str_t tok[8];
         str_t rest = line;
-        const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &rest);
+        const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
         if (num_tok < 6) {
             continue;
         }
@@ -297,7 +297,7 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
 
         str_t tok[4];
         str_t scan = rest;
-        const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &scan);
+        const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &scan);
         if (num_tok == 0) {
             continue;
         }
@@ -346,7 +346,7 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
             }
             str_t ptok[4];
             str_t pscan = prim_line;
-            const size_t n = extract_tokens(ptok, ARRAY_SIZE(ptok), &pscan);
+            const size_t n = extract_tokens(ptok, MD_COUNTOF(ptok), &pscan);
             if (n < 2) {
                 MD_LOG_ERROR("MOLDEN: malformed primitive line '" STR_FMT "'", STR_ARG(str_trim(prim_line)));
                 return false;
@@ -399,14 +399,14 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
         if (is_key) {
             if (have_orb && num_coeff > 0) {
                 md_array_push(molden->orbital, orb, molden->alloc);
-                MEMSET(&orb, 0, sizeof(orb));
+                MD_MEMSET(&orb, 0, sizeof(orb));
                 have_orb  = false;
                 num_coeff = 0;
             }
             if (!have_orb) {
                 orb = (molden_orbital_t){0};
                 orb.coefficient = (double*)md_alloc(molden->alloc, sizeof(double) * num_ao);
-                MEMSET(orb.coefficient, 0, sizeof(double) * num_ao);
+                MD_MEMSET(orb.coefficient, 0, sizeof(double) * num_ao);
                 have_orb = true;
             }
 
@@ -430,7 +430,7 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
 
         str_t tok[2];
         str_t scan = s;
-        if (extract_tokens(tok, ARRAY_SIZE(tok), &scan) < 2) {
+        if (extract_tokens(tok, MD_COUNTOF(tok), &scan) < 2) {
             continue;
         }
         const int64_t ao = parse_int(tok[0]) - 1;
@@ -460,7 +460,7 @@ static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
 
         str_t tok[5];
         str_t scan = line;
-        if (extract_tokens(tok, ARRAY_SIZE(tok), &scan) < 4) {
+        if (extract_tokens(tok, MD_COUNTOF(tok), &scan) < 4) {
             continue;
         }
         const md_atomic_number_t z = md_atomic_number_from_symbol(tok[0], true);
@@ -501,7 +501,7 @@ static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
             str_t tok[4];
             str_t scan = disp_line;
             dvec3_t d = {0};
-            if (extract_tokens(tok, ARRAY_SIZE(tok), &scan) >= 3) {
+            if (extract_tokens(tok, MD_COUNTOF(tok), &scan) >= 3) {
                 d.x = molden_parse_float(tok[0]);
                 d.y = molden_parse_float(tok[1]);
                 d.z = molden_parse_float(tok[2]);
@@ -526,7 +526,7 @@ static void molden_parse_number_series(md_array(double)* out, md_reader_i* reade
         }
         str_t tok[2];
         str_t scan = s;
-        if (extract_tokens(tok, ARRAY_SIZE(tok), &scan) >= 1) {
+        if (extract_tokens(tok, MD_COUNTOF(tok), &scan) >= 1) {
             md_array_push(*out, molden_parse_float(tok[0]), alloc);
         }
     }
@@ -684,7 +684,7 @@ static bool molden_normalise_basis(molden_t* molden) {
 }
 
 static bool molden_gto_basis_extract(md_gto_basis_t* out, const molden_t* molden, md_allocator_i* alloc) {
-    MEMSET(out, 0, sizeof(*out));
+    MD_MEMSET(out, 0, sizeof(*out));
     const size_t num_shells = md_array_size(molden->shell);
     if (num_shells == 0) {
         return false;
@@ -935,7 +935,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
     double max_occupation = 0.0;
     for (size_t i = 0; i < num_orb; ++i) {
         has_beta = has_beta || molden->orbital[i].beta;
-        max_occupation = MAX(max_occupation, molden->orbital[i].occupation);
+        max_occupation = MD_MAX(max_occupation, molden->orbital[i].occupation);
     }
     const bool restricted = !has_beta && max_occupation > 1.0;
 
@@ -972,7 +972,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
                     return false;
                 }
                 for (size_t i = 0; i < num_orb; ++i) {
-                    occ[i] = molden->orbital[i].occupation - MIN(molden->orbital[i].occupation, 1.0);
+                    occ[i] = molden->orbital[i].occupation - MD_MIN(molden->orbital[i].occupation, 1.0);
                 }
                 md_qm_publish_series(sys, STR_LIT("orbital/beta/occupation"), STR_LIT("Occupation"), md_unit_none(), occ, num_orb);
             }
@@ -1004,7 +1004,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
                 continue;
             }
             energy[m] = o->energy;
-            occ[m]    = !restricted ? o->occupation : open_shell ? MIN(o->occupation, 1.0) : 0.5 * o->occupation;
+            occ[m]    = !restricted ? o->occupation : open_shell ? MD_MIN(o->occupation, 1.0) : 0.5 * o->occupation;
             sym[m]    = o->symmetry;
             have_symmetry = have_symmetry || !str_empty(o->symmetry);
             if (!molden_coefficients_to_cartesian(coeff + m * num_cart_ao, num_cart_ao, molden, o->coefficient, num_file_ao)) {
@@ -1087,11 +1087,11 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
     md_system_reset(sys);
     md_system_state_init(state, num_atoms);
 
-    const size_t capacity = ROUND_UP(num_atoms, 16);
+    const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
-    MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
-    MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
+    MD_MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
+    MD_MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
@@ -1154,7 +1154,7 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
 // ---------------------------------------------------------------------------
 
 bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
@@ -1170,7 +1170,7 @@ bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
 }
 
 bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {

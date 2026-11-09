@@ -37,10 +37,10 @@ static bool trr_load(md_system_t* sys, md_allocator_i* arena) {
 }
 
 UTEST(trr, run_matches_reference) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(trr_load(&sys, arena));
-    run_check_refs(utest_result, &sys, TRR_RUN, 101, 6495, trr_refs, ARRAY_SIZE(trr_refs));
+    run_check_refs(utest_result, &sys, TRR_RUN, 101, 6495, trr_refs, MD_COUNTOF(trr_refs));
 
     const md_attributes_t* t = &sys.attributes;
     const md_attribute_t* time = md_attributes_find(t, STR_LIT("run/tryptophan/time"));
@@ -59,7 +59,7 @@ UTEST(trr, run_matches_reference) {
     const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("atom/velocity") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
-    for (size_t r = 0; r < ARRAY_SIZE(trr_vel_refs); ++r) {
+    for (size_t r = 0; r < MD_COUNTOF(trr_vel_refs); ++r) {
         ASSERT_TRUE(md_system_extract_frame(ex, (int64_t)trr_vel_refs[r].frame, &st));
         const md_attribute_t* v = md_attributes_find(&st.attributes, STR_LIT("atom/velocity"));
         ASSERT_TRUE(v && v->data);
@@ -81,14 +81,14 @@ UTEST(trr, run_matches_reference) {
     const md_attribute_t* pos = md_attributes_find(t, STR_LIT("run/tryptophan/atom/position"));
     md_attribute_slice_t one = md_attribute_slice_2(7, 11);
     ASSERT_EQ(3u, md_attribute_extract_f32(one_xyz, 3, pos, one, md_unit_none()));
-    EXPECT_EQ(0, MEMCMP(full, one_xyz, sizeof(full)));
+    EXPECT_EQ(0, MD_MEMCMP(full, one_xyz, sizeof(full)));
 
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
 }
 
 UTEST(trr, nonexistent_file) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     EXPECT_FALSE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.trr"), TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(0u, run_num_frames(&sys, TRR_RUN));
@@ -96,7 +96,7 @@ UTEST(trr, nonexistent_file) {
 }
 
 UTEST(trr, frame_boundary_conditions) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(trr_load(&sys, arena));
     const int64_t F = (int64_t)run_num_frames(&sys, TRR_RUN);
@@ -113,7 +113,7 @@ UTEST(trr, frame_boundary_conditions) {
 }
 
 UTEST(trr, run_refuses_a_different_system) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
@@ -132,7 +132,7 @@ static void trr_put_i32(md_file_t file, int32_t v) {
 
 static void trr_put_f32(md_file_t file, float v) {
     int32_t i;
-    MEMCPY(&i, &v, 4);
+    MD_MEMCPY(&i, &v, 4);
     trr_put_i32(file, i);
 }
 
@@ -157,7 +157,7 @@ static void trr_put_frame(md_file_t file, int natoms, int step, float time, cons
 // leaves it. The run's frames are the complete frames with coordinates; the forces sit beside the
 // positions and the velocities get a group of their own, each at the time it was written.
 UTEST(trr, run_publishes_sections_at_their_own_times) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t path = STR_INIT("md_unittest_trr_sections.trr");
     enum { NA = 5 };
 
@@ -221,7 +221,7 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     EXPECT_EQ(0.5f * 4 * 10.0f, vv[4]);
 
     const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell"), STR_INIT("atom/force") };
-    md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+    md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, MD_COUNTOF(paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, NA);
@@ -273,7 +273,7 @@ UTEST(trr, atom_count_from_the_first_frame) {
 // A header of no atoms which still promises coordinates: the size of a value is the section's bytes over the atoms,
 // which was a division by zero. Refused instead.
 UTEST(trr, no_atoms_with_coordinates_is_refused) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     const str_t path = STR_INIT("md_unittest_trr_no_atoms.trr");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));

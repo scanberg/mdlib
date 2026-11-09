@@ -92,7 +92,7 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
 
 UTEST(lipid, dppc_united_atom_pdb) {
     // 64 DPPC named DPP (the three letters of a PDB residue name), atoms numbered C1 .. C50: a lipid by its structure
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -186,7 +186,7 @@ static bool martini_membrane_ok(const md_system_t* sys, int num_two_tailed, int 
 }
 
 UTEST(lipid, martini3_membrane) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"), NULL));
@@ -197,7 +197,7 @@ UTEST(lipid, martini3_membrane) {
 }
 
 UTEST(lipid, martini3_membrane_tpr) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr")));
@@ -208,7 +208,7 @@ UTEST(lipid, martini3_membrane_tpr) {
 }
 
 UTEST(lipid, martini2_membrane_protein) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"), NULL));
@@ -239,7 +239,7 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
     md_particle_type_add(&sys->atom.type, STR_LIT(""), (str_t){0}, 0, 0, 0, 0, 0, alloc);
     md_array_resize(sys->atom.type_idx, n, alloc);
     md_array_resize(sys->atom.flags, n, alloc);
-    MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+    MD_MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     for (size_t i = 0; i < n; ++i) {
         const md_atomic_number_t z = g.atoms[i].z;
         char name[8];
@@ -294,8 +294,8 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
 UTEST(lipid, cholesterol) {
     // By name (CHARMM) and by its structure alone
     const char* names[] = { "CHL1", "XXX" };
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         ASSERT_TRUE(lipid_system_from_smiles(&sys, names[i], CHOLESTEROL));
         ASSERT_EQ(1, (int)sys.lipid.count);
@@ -321,7 +321,7 @@ UTEST(lipid, cholesterol) {
 }
 
 UTEST(lipid, popc_by_structure) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     ASSERT_TRUE(lipid_system_from_smiles(&sys, "XYZ", POPC));
     ASSERT_EQ(1, (int)sys.lipid.count);
@@ -336,7 +336,7 @@ UTEST(lipid, popc_by_structure) {
 
 UTEST(lipid, fatty_acid_by_structure) {
     // Palmitic acid as a ligand of a crystal structure (PLM): a lipid by its structure
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     ASSERT_TRUE(lipid_system_from_smiles(&sys, "PLM", "CCCCCCCCCCCCCCCC(=O)O"));
     ASSERT_EQ(1, (int)sys.lipid.count);
@@ -349,7 +349,7 @@ UTEST(lipid, fatty_acid_by_structure) {
 }
 
 UTEST(lipid, cardiolipin) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     ASSERT_TRUE(lipid_system_from_smiles(&sys, "CDL", CARDIOLIPIN));
     ASSERT_EQ(1, (int)sys.lipid.count);
@@ -361,7 +361,7 @@ UTEST(lipid, cardiolipin) {
 }
 
 UTEST(lipid, sphingomyelin) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     ASSERT_TRUE(lipid_system_from_smiles(&sys, "SSM", SPHINGOMYELIN));
     ASSERT_EQ(1, (int)sys.lipid.count);
@@ -374,7 +374,7 @@ UTEST(lipid, sphingomyelin) {
 }
 
 UTEST(lipid, bolalipid) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     ASSERT_TRUE(lipid_system_from_smiles(&sys, "GDG", CALDARCHAEOL));
     ASSERT_EQ(1, (int)sys.lipid.count);
@@ -404,8 +404,8 @@ UTEST(lipid, not_lipids) {
         "CC(C)CCCC(C)CCCC(C)CCCC(C)=CCOC(=O)CCC(=O)O[Mg]",  // A phytyl ester with a metal in its head (as chlorophyll)
         "CCCCCCCCCCCCCCCCOC(=O)CCc1ccc[nH]1",       // An aromatic head (as the porphyrin of a pheophytin)
     };
-    for (size_t i = 0; i < ARRAY_SIZE(smiles); ++i) {
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    for (size_t i = 0; i < MD_COUNTOF(smiles); ++i) {
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         ASSERT_TRUE(lipid_system_from_smiles(&sys, "XXX", smiles[i]));
         EXPECT_EQ(0, (int)sys.lipid.count);
@@ -418,7 +418,7 @@ UTEST(lipid, not_lipids) {
 #include <core/md_bitset.h>
 
 UTEST(lipid, script) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
@@ -469,7 +469,7 @@ UTEST(lipid, molecule_of_several_residues) {
     // POPC split into residues as AMBER Lipid21 splits it: the oleoyl (OL) and the palmitoyl (PA) from their carbonyls,
     // and the glycerol phosphocholine (PC), here in two runs of atoms as the SMILES orders them. One lipid molecule of
     // the four residues, whatever they are named (PA is a lipid by name, OL and PC are not).
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     const char* names[] = { "OL", "PC", "PA", "PC" };
     const int sizes[]   = { 19, 4, 17, 12 };
@@ -493,7 +493,7 @@ UTEST(lipid, molecule_of_several_residues) {
 
 UTEST(lipid, by_name_without_bonds) {
     // A lipid by name in a system without bonds: a lipid molecule (its residue), without heads and tails
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     const char* name = "POPC";
     ASSERT_TRUE(lipid_system_from_smiles_residues(&sys, &name, NULL, 0, POPC, false));
@@ -560,7 +560,7 @@ static void lipid_head_names(char* buf, size_t cap, const md_system_t* sys, int 
 // Martini molecules renamed, as the three letters of a PDB file make cholesterol CHL, PSM SPM and PCER CER: told by
 // their beads, which give them their bonds, kinds and anatomy, in a Martini system (here the POPC tells)
 UTEST(lipid, martini_renamed_by_beads) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const martini_residue_t res[] = {
@@ -569,7 +569,7 @@ UTEST(lipid, martini_renamed_by_beads) {
         {"SPM",  "NC3 PO4 OH1 AM2 T1A C2A C3A C4A C1B C2B C3B C4B"},
         {"CER",  "COH OH1 AM2 T1A C2A C3A C4A C1B C2B C3B C4B"},
     };
-    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, MD_COUNTOF(res)));
     ASSERT_EQ(4u, sys.lipid.count);
     EXPECT_TRUE(lipid_invariants_hold(&sys));
     char head[256];
@@ -605,7 +605,7 @@ UTEST(lipid, martini_renamed_by_beads) {
 
 // The same through a topology: the cholesterol of martini3_membrane.tpr renamed CHL is still a sterol
 UTEST(lipid, martini_renamed_tpr) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_tpr_data_t data = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"), alloc));
     size_t renamed = 0;
@@ -655,7 +655,7 @@ static size_t res_num_bonds(const md_system_t* sys, size_t res) {
 // dummies alone. Beads of the masses and bonds of its topology, the hydroxyl bead for a head and a skeleton of the
 // dummies and ring beads out to the end of the side chain, as the cholesterol of 8 beads beside it has.
 UTEST(lipid, martini2_cholesterol_optlincs) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const martini_residue_t res[] = {
@@ -663,7 +663,7 @@ UTEST(lipid, martini2_cholesterol_optlincs) {
         {"CHOL", "VOH V2 V3 V1 ROH R1 R2 R3 R4 R5 C1 C2"},
         {"CHOL", "ROH R1 R2 R3 R4 R5 C1 C2"},
     };
-    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, MD_COUNTOF(res)));
     ASSERT_EQ(3u, sys.lipid.count);
     EXPECT_TRUE(lipid_invariants_hold(&sys));
 
@@ -702,7 +702,7 @@ UTEST(lipid, martini2_cholesterol_optlincs) {
 // without a topology no bonds, a lipid by name without heads and tails. Atoms named as an atomistic force field names them
 // (a cholesterol of CHARMM, whose C1 and C2 are beads of the Martini one too) stay atoms.
 UTEST(lipid, martini_unknown_variant_is_beads) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const martini_residue_t res[] = {
@@ -710,7 +710,7 @@ UTEST(lipid, martini_unknown_variant_is_beads) {
         {"CHOL", "VXH V2 V3 V1 ROH R1 R2 R3 R4 R5 C1 C2"},
         {"CHOL", "C1 C2 C3 O3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18 C19 C20 C21 C22 C23 C24 C25 C26 C27"},
     };
-    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, MD_COUNTOF(res)));
     EXPECT_TRUE(lipid_invariants_hold(&sys));
 
     const md_urange_t r = md_system_residue_atom_range(&sys, 1);
@@ -739,7 +739,7 @@ UTEST(lipid, martini_unknown_variant_is_beads) {
 // phosphatidyl y) has it. Of either, the beads and bonds of the topology: a head of the glycerol and the phosphatidyls,
 // and the four tails each off its glycerol bead.
 UTEST(lipid, martini2_cardiolipin_of_either_name) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const martini_residue_t res[] = {
@@ -747,7 +747,7 @@ UTEST(lipid, martini2_cardiolipin_of_either_name) {
         {"CDL2", "GL0 PO41 GL11 GL21 C1A1 C2A1 D3A1 C4A1 C5A1 C1B1 C2B1 D3B1 C4B1 C5B1 PO42 GL12 GL22 C1A2 C2A2 D3A2 C4A2 C5A2 C1B2 C2B2 D3B2 C4B2 C5B2"},
         {"CDL2", "GL0 PO41 GL11 GL21 C1A1 C2A1 D3A1 C4A1 C5A1 C1B1 C2B1 D3B1 C4B1 C5B1 PO42 GL21 GL22 C1A2 C2A2 D3A2 C4A2 C5A2 C1B2 C2B2 D3B2 C4B2 C5B2"},
     };
-    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, MD_COUNTOF(res)));
     ASSERT_EQ(3, (int)sys.lipid.count);
     EXPECT_TRUE(lipid_invariants_hold(&sys));
     char head[256];
@@ -780,7 +780,7 @@ UTEST(lipid, martini2_cardiolipin_of_either_name) {
 }
 
 UTEST(lipid, martini2_letterless_chains) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const martini_residue_t res[] = {
@@ -791,7 +791,7 @@ UTEST(lipid, martini2_letterless_chains) {
         {"CPC",  "NC3 PO4 GL1 GL2 C1B"},                        // A lyso PC of a short tail
         {"POPI", "C1 C2 C3 PO4 GL1 GL2 C1A D2A C3A C4A C1B C2B C3B C4B"},
     };
-    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, MD_COUNTOF(res)));
     ASSERT_EQ(6u, sys.lipid.count);
     EXPECT_TRUE(lipid_invariants_hold(&sys));
 
@@ -804,7 +804,7 @@ UTEST(lipid, martini2_letterless_chains) {
         {"C1 C2 C3 PO4 GL1 GL2", 2, 4},
     };
     char head[256];
-    for (size_t c = 0; c < ARRAY_SIZE(expected); ++c) {
+    for (size_t c = 0; c < MD_COUNTOF(expected); ++c) {
         const int l = lipid_of_res(&sys, c);
         ASSERT_TRUE(l >= 0);
         lipid_head_names(head, sizeof(head), &sys, l);
@@ -835,7 +835,7 @@ UTEST(lipid, glycolipid_of_several_residues) {
     // Lactosylceramide as CHARMM-GUI writes a glycolipid: the ceramide (d18:1/16:0) a residue, each sugar one of its own.
     // The lipid is the ceramide and the glucose on it, its head group; the galactose beyond is attached to the lipid but no
     // part of it, nor of its head, and is no lipid.
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     const char* names[] = { "CER", "BGLC", "BGAL" };
     const int sizes[]   = { 38, 11, 11 };
@@ -870,7 +870,7 @@ UTEST(lipid, molecule_of_residues_apart) {
     // A lipid whose residues are not consecutive, as a PDB entry lists a lipid A: its sugars in a chain of their own and
     // its acyl chains as ligands after the rest. Here a monopalmitoyl glycerol, its glycerol (GOL) and palmitoyl (PLM) with
     // a water between them. One lipid of the two, and the water no part of it.
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     const char* names[] = { "GOL", "HOH", "PLM" };
     const int sizes[]   = { 6, 1, 17 };
@@ -1070,7 +1070,7 @@ UTEST(lipid, amber_tail_kept_on_its_head_over_a_clash) {
         "  170PE     C21  157   3.063   7.109   2.411\n"
         "  170PE     O22  158   3.066   6.996   2.371\n"
         "  15.35366  15.35366   8.45366\n";
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro), NULL));
@@ -1105,13 +1105,13 @@ UTEST(lipid, martini_unknown_by_tail_beads) {
     // A coarse grained glycolipid the Martini database does not have (a ganglioside of a topology of its own), from a GRO
     // and its topology: its sugar beads (GM1 GM2 GM3) and amides (AM1 AM2), its tails named as those of the lipidomes. The
     // topology's masses make the particles beads (C1B was a carbon, AM1 americium); then it is a lipid by its beads.
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     static const martini_residue_t res[] = {
         {"GSL", "GM1 GM2 GM3 AM1 AM2 D1A C2A C3A C4A C1B C2B C3B C4B"},
     };
-    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, MD_COUNTOF(res)));
     EXPECT_EQ(0u, sys.lipid.count);
 
     const char* itp =

@@ -21,7 +21,7 @@ static const md_system_t* tubulin(void) {
     static bool loaded, ok;
     if (!loaded) {
         loaded = true;
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t st = {.alloc = alloc};
         ok = md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
@@ -48,9 +48,9 @@ UTEST(smiles_write, canonical_and_found_again) {
     const md_system_t* sys = tubulin();
     ASSERT_TRUE(sys != NULL);
     const char* names[] = {"GTP", "GDP", "VLB", "PHE", "TRP", "HIS", "ARG", "PRO"};
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     uint32_t seed = 7;
-    for (size_t k = 0; k < ARRAY_SIZE(names); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(names); ++k) {
         int32_t atoms[256];
         const size_t n = residue_atoms(atoms, 256, sys, names[k]);
         ASSERT_GT(n, 2u);

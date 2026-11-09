@@ -67,12 +67,12 @@ typedef struct md_array_header_t {
 
 #define md_array_push_array(a, items, n, alloc) \
     __pragma(warning(suppress:6011 6387)) \
-    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
+    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MD_MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 
 #else
 #define md_array_push(a, item, alloc) (md_array_ensure((a), md_array_size(a) + 1, alloc), MD_ASSUME((a) != NULL), (a)[md_array_header(a)->size++] = item)
 #define md_array_push_no_grow(a, item)  (a)[md_array_header(a)->size++] = (item)
-#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
+#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MD_MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 #endif
 #define md_array_free(a, alloc)         ((a) ? (*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__) : 0)
 
@@ -94,7 +94,7 @@ typedef struct md_array_header_t {
 // Notes:
 // - The RAW operations are strongly typed through 'data' (T*).
 // - Use TRY variants when allocation failure should be handled gracefully.
-// - Non-TRY variants ASSERT on allocation failure.
+// - Non-TRY variants MD_ASSERT on allocation failure.
 
 // Define a standalone typed array struct.
 // Example:
@@ -140,7 +140,7 @@ typedef struct md_array_header_t {
 
 #define MD_ARRAY_RAW_SET_CAPACITY(capacity, size, data, new_capacity, alloc) \
     do {                                                                       \
-        ASSERT(MD_ARRAY_RAW_TRY_SET_CAPACITY((capacity), (size), (data), (new_capacity), (alloc))); \
+        MD_ASSERT(MD_ARRAY_RAW_TRY_SET_CAPACITY((capacity), (size), (data), (new_capacity), (alloc))); \
     } while (0)
 
 #define MD_ARRAY_RAW_TRY_ENSURE(capacity, size, data, min_capacity, alloc) \
@@ -148,7 +148,7 @@ typedef struct md_array_header_t {
 
 #define MD_ARRAY_RAW_ENSURE(capacity, size, data, min_capacity, alloc) \
     do {                                                                 \
-        ASSERT(MD_ARRAY_RAW_TRY_ENSURE((capacity), (size), (data), (min_capacity), (alloc))); \
+        MD_ASSERT(MD_ARRAY_RAW_TRY_ENSURE((capacity), (size), (data), (min_capacity), (alloc))); \
     } while (0)
 
 // RAW element operations
@@ -157,7 +157,7 @@ typedef struct md_array_header_t {
 
 #define MD_ARRAY_RAW_PUSH(capacity, size, data, item, alloc) \
     do {                                                       \
-        ASSERT(MD_ARRAY_RAW_TRY_PUSH((capacity), (size), (data), (item), (alloc))); \
+        MD_ASSERT(MD_ARRAY_RAW_TRY_PUSH((capacity), (size), (data), (item), (alloc))); \
     } while (0)
 
 #define MD_ARRAY_RAW_POP(size) (--(size))
@@ -173,7 +173,7 @@ typedef struct md_array_header_t {
 #define MD_ARRAY_RAW_PUSH_ARRAY(capacity, size, data, items, count, alloc) \
     do {                                                                     \
         void* _md_dst = MD_ARRAY_RAW_EXTEND((capacity), (size), (data), (count), (alloc)); \
-        if (_md_dst) MEMCPY(_md_dst, (items), (count) * sizeof(*(data)));    \
+        if (_md_dst) MD_MEMCPY(_md_dst, (items), (count) * sizeof(*(data)));    \
     } while (0)
 
 #define MD_ARRAY_RAW_SWAP_BACK_AND_POP(data, size, idx) \
@@ -186,7 +186,7 @@ typedef struct md_array_header_t {
 
 #define MD_ARRAY_RAW_FREE(capacity, size, data, alloc) \
     do {                                                \
-        ASSERT(MD_ARRAY_RAW_TRY_FREE((capacity), (size), (data), (alloc))); \
+        MD_ASSERT(MD_ARRAY_RAW_TRY_FREE((capacity), (size), (data), (alloc))); \
     } while (0)
 
 // STRUCT convenience wrappers (expects fields: capacity, size, data, alloc)
@@ -283,10 +283,10 @@ static inline size_t md_array_raw_grow_cap_internal(size_t cap, size_t n) {
 
 static inline bool md_array_raw_set_capacity_internal(void** data_ptr, size_t* cap_ptr, size_t size, size_t new_cap, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
     (void)size;
-    ASSERT(data_ptr);
-    ASSERT(cap_ptr);
-    ASSERT(alloc);
-    ASSERT(size <= *cap_ptr);
+    MD_ASSERT(data_ptr);
+    MD_ASSERT(cap_ptr);
+    MD_ASSERT(alloc);
+    MD_ASSERT(size <= *cap_ptr);
 
     const size_t old_cap = *cap_ptr;
     size_t bytes_before = 0;
@@ -313,7 +313,7 @@ static inline bool md_array_raw_set_capacity_internal(void** data_ptr, size_t* c
 }
 
 static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     uint8_t* p = arr ? (uint8_t*)md_array_header(arr) : 0;
     const size_t extra = sizeof(md_array_header_t);
     const size_t size = md_array_size(arr);
@@ -333,10 +333,10 @@ static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, si
 }
 
 static inline bool md_array_raw_set_capacity_impl(void* data_addr, size_t* capacity, size_t* size, size_t new_capacity, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(data_addr);
-    ASSERT(capacity);
-    ASSERT(size);
-    ASSERT(alloc);
+    MD_ASSERT(data_addr);
+    MD_ASSERT(capacity);
+    MD_ASSERT(size);
+    MD_ASSERT(alloc);
 
     if (item_size == 0) {
         return false;
@@ -367,7 +367,7 @@ static inline bool md_array_raw_set_capacity_impl(void* data_addr, size_t* capac
 }
 
 static inline bool md_array_raw_count_add(size_t a, size_t b, size_t* out_sum) {
-    ASSERT(out_sum);
+    MD_ASSERT(out_sum);
     if (a > SIZE_MAX - b) {
         return false;
     }
@@ -387,8 +387,8 @@ static inline size_t md_array_raw_grow_cap(size_t capacity, size_t min_capacity)
 }
 
 static inline bool md_array_raw_ensure_impl(void* data_addr, size_t* capacity, size_t size, size_t min_capacity, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(capacity);
-    ASSERT(size <= *capacity);
+    MD_ASSERT(capacity);
+    MD_ASSERT(size <= *capacity);
 
     if (*capacity >= min_capacity) {
         return true;
@@ -400,8 +400,8 @@ static inline bool md_array_raw_ensure_impl(void* data_addr, size_t* capacity, s
 }
 
 static inline bool md_array_raw_push_impl(void* data_addr, size_t* capacity, size_t* size, size_t item_size, const void* item, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(size);
-    ASSERT(item);
+    MD_ASSERT(size);
+    MD_ASSERT(item);
 
     size_t needed = 0;
     if (!md_array_raw_count_add(*size, 1, &needed)) {
@@ -413,13 +413,13 @@ static inline bool md_array_raw_push_impl(void* data_addr, size_t* capacity, siz
     }
 
     void** data = (void**)data_addr;
-    MEMCPY((uint8_t*)(*data) + (*size) * item_size, item, item_size);
+    MD_MEMCPY((uint8_t*)(*data) + (*size) * item_size, item, item_size);
     *size += 1;
     return true;
 }
 
 static inline void* md_array_raw_extend_impl(void* data_addr, size_t* capacity, size_t* size, size_t item_size, size_t count, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(size);
+    MD_ASSERT(size);
 
     size_t old_size = *size;
     size_t needed = 0;
@@ -438,7 +438,7 @@ static inline void* md_array_raw_extend_impl(void* data_addr, size_t* capacity, 
 
 static inline void* md_array_raw_extend_assert_impl(void* data_addr, size_t* capacity, size_t* size, size_t item_size, size_t count, struct md_allocator_i* alloc, const char* file, size_t line) {
     void* ptr = md_array_raw_extend_impl(data_addr, capacity, size, item_size, count, alloc, file, line);
-    ASSERT(ptr || count == 0);
+    MD_ASSERT(ptr || count == 0);
     return ptr;
 }
 

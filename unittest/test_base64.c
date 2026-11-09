@@ -24,7 +24,7 @@ UTEST(base64, encode_decode) {
     char enc_buf[256];
     char dec_buf[256];
 
-    for (int64_t i = 0; i < ARRAY_SIZE(input); ++i) {
+    for (int64_t i = 0; i < MD_COUNTOF(input); ++i) {
         int str_len = (int)strlen(input[i]);
         int enc_len = md_base64_encode(enc_buf, input[i], str_len);
 

@@ -740,7 +740,7 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
 
 bool vx_call_frames2(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     static const char* names[] = {"smooth", "derivative", "histogram", "autocorrelation", "at"};
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
         if (strcmp(b->name, names[i]) == 0) { *out = call_over_frames(x, call, str_from_cstr(b->name), b->name); return true; }
     }
     return false;

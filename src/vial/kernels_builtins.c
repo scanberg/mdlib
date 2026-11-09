@@ -1685,7 +1685,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
     float* ay = ax + cap;
     float* az = ay + cap;
     for (size_t j = 0; j < cap; ++j) {
-        const float* q = w->xyz + 3 * MIN(j, na - 1);
+        const float* q = w->xyz + 3 * MD_MIN(j, na - 1);
         ax[j] = q[0]; ay[j] = q[1]; az[j] = q[2];
     }
     // `of` in groups of eight points in order, each as one image around its first point: a centre and a radius. A
@@ -1694,15 +1694,15 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
     float* cen = md_alloc(k->alloc, 4 * nc * sizeof(float));
     for (size_t c = 0; c < nc; ++c) {
         const float* p0 = w->p + 24 * c;
-        const size_t cnt = MIN((size_t)8, np - 8 * c);
+        const size_t cnt = MD_MIN((size_t)8, np - 8 * c);
         float q[8][3], lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
         for (size_t i = 0; i < cnt; ++i) {
             for (int d = 0; d < 3; ++d) {
                 float v = p0[3 * i + d] - p0[d];
                 if (ortho && ext[d] != 0.0f) v -= ext[d] * nearbyintf(v / ext[d]);
                 q[i][d] = p0[d] + v;
-                lo[d] = i ? MIN(lo[d], q[i][d]) : q[i][d];
-                hi[d] = i ? MAX(hi[d], q[i][d]) : q[i][d];
+                lo[d] = i ? MD_MIN(lo[d], q[i][d]) : q[i][d];
+                hi[d] = i ? MD_MAX(hi[d], q[i][d]) : q[i][d];
             }
         }
         float r2 = 0.0f;
@@ -1710,7 +1710,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
         for (size_t i = 0; i < cnt; ++i) {
             float e = 0.0f;
             for (int d = 0; d < 3; ++d) e += (q[i][d] - cen[4 * c + d]) * (q[i][d] - cen[4 * c + d]);
-            r2 = MAX(r2, e);
+            r2 = MD_MAX(r2, e);
         }
         cen[4 * c + 3] = sqrtf(r2);
     }
@@ -1732,7 +1732,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
             // Not a number passes, for the exact distance to decide
             const int near = (md_mm256_movemask_ps(md_mm256_cmpgt_ps(dc2, md_mm256_set1_ps(reach * reach))) ^ 0xFF) & valid & ~hit;
             if (!near) continue;
-            for (size_t i = 8 * c; i < MIN(np, 8 * c + 8); ++i) {
+            for (size_t i = 8 * c; i < MD_MIN(np, 8 * c + 8); ++i) {
                 const float* p = w->p + 3 * i;
                 dx = md_mm256_sub_ps(x, md_mm256_set1_ps(p[0]));
                 dy = md_mm256_sub_ps(y, md_mm256_set1_ps(p[1]));
@@ -1747,14 +1747,14 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
                 // Near r, or not a number: the exact distance decides
                 int unsure = ~(in | out) & near & ~hit;
                 while (unsure) {
-                    const int lane = ctz32((uint32_t)unsure);
+                    const int lane = md_ctz32((uint32_t)unsure);
                     unsure &= unsure - 1;
                     if (pair_entry(p, w->xyz + 3 * (j0 + lane), cell) <= w->r) hit |= 1 << lane;
                 }
             }
         }
         while (hit) {
-            const int lane = ctz32((uint32_t)hit);
+            const int lane = md_ctz32((uint32_t)hit);
             hit &= hit - 1;
             w->hit[j0 + lane] = 1;
         }
@@ -2001,7 +2001,7 @@ static bool k_spread(vial_kctx_t* k, const vial_val_t* values, const vial_val_t*
     uint32_t dims[VIAL_MAX_DIMS];
     memcpy(dims, values->dims, values->ndim * sizeof(uint32_t));
     dims[0] = n;
-    double* acc = md_alloc(k->alloc, MAX((size_t)n * inner, (size_t)1) * sizeof(double));
+    double* acc = md_alloc(k->alloc, MD_MAX((size_t)n * inner, (size_t)1) * sizeof(double));
     uint32_t* cnt = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
     memset(acc, 0, (size_t)n * inner * sizeof(double));
     memset(cnt, 0, n * sizeof(uint32_t));
@@ -2238,7 +2238,7 @@ static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, con
         buf[len++] = ' ';
         len += (int)md_unit_print(buf + len, sizeof(buf) - (size_t)len, p->unit);
     }
-    p->text = str_copy((str_t){buf, (size_t)MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
+    p->text = str_copy((str_t){buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
 }
 
 static bool core_prim(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
@@ -2316,7 +2316,7 @@ static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, via
         {"text",      VIAL_PRIM_LABEL,     {"p", "x"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, 1},
         {"highlight", VIAL_PRIM_HIGHLIGHT, {"s"},                            {VX_KIND_SET}, 1, -1},
     };
-    for (size_t t = 0; t < ARRAY_SIZE(tab); ++t) {
+    for (size_t t = 0; t < MD_COUNTOF(tab); ++t) {
         if (strcmp(name, tab[t].name)) continue;
         const vial_val_t* a[4] = {0};
         uint8_t kinds[4];
@@ -2703,8 +2703,8 @@ static bool k_eigh(vial_kctx_t* k, const vial_val_t* m, vial_val_t* out) {
     if (!square(k, m, &n, &cnt)) return false;
     vial_val_t w; if (!vial_k_make(k, VIAL_DT_FLOAT, m->ndim - 1, m->dims, &w)) return false;
     vial_val_t v; if (!vial_k_make(k, VIAL_DT_FLOAT, m->ndim, m->dims, &v)) return false;
-    double* A = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
-    double* V = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* A = md_alloc(k->alloc, MD_MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* V = md_alloc(k->alloc, MD_MAX((size_t)n * n, (size_t)1) * sizeof(double));
     uint32_t* order = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
     double* val = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
     double* scratch = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
@@ -2787,8 +2787,8 @@ static bool k_linalg(vial_kctx_t* k, const char* name, const vial_val_t* m, cons
         nrhs = b->ndim == 1 ? 1 : b->dims[1];
         if (!vial_k_make(k, VIAL_DT_FLOAT, b->ndim, b->dims, &o)) return false;
     }
-    double* A = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
-    double* B = md_alloc(k->alloc, MAX((size_t)n * nrhs, (size_t)1) * sizeof(double));
+    double* A = md_alloc(k->alloc, MD_MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* B = md_alloc(k->alloc, MD_MAX((size_t)n * nrhs, (size_t)1) * sizeof(double));
     for (size_t q = 0; q < cnt; ++q) {
         for (size_t i = 0; i < (size_t)n * n; ++i) A[i] = num_at(m, q * n * n + i);
         if (is_trace) {

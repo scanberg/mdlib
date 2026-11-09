@@ -250,7 +250,7 @@ UTEST(mmcif, assembly_key_value) {
     const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(sys.instance.count, ir.end - ir.beg);
     const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, MEMCMP(&I, &a->oper_transform[0], sizeof(mat4_t)));
+    EXPECT_EQ(0, MD_MEMCMP(&I, &a->oper_transform[0], sizeof(mat4_t)));
     md_system_free(&sys);
     md_system_state_free(&state);
 }
@@ -266,7 +266,7 @@ UTEST(mmcif, tokenizer) {
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
         md_file_reader_t reader;
-        ASSERT_TRUE(md_file_reader_init(&reader, file, MEGABYTES(1), alloc));
+        ASSERT_TRUE(md_file_reader_init(&reader, file, MD_MEGABYTES(1), alloc));
 
         mmcif_parse_state_t state = {
             .reader = &reader.r,
@@ -308,7 +308,7 @@ UTEST(mmcif, tokenizer) {
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
         md_file_reader_t reader;
-        ASSERT_TRUE(md_file_reader_init(&reader, file, MEGABYTES(1), alloc));
+        ASSERT_TRUE(md_file_reader_init(&reader, file, MD_MEGABYTES(1), alloc));
 
         mmcif_parse_state_t state = {
             .reader = &reader.r,
@@ -561,7 +561,7 @@ UTEST(mmcif, advance_to_next_control) {
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
     md_file_reader_t reader;
-    ASSERT_TRUE(md_file_reader_init(&reader, file, MEGABYTES(1), alloc));
+    ASSERT_TRUE(md_file_reader_init(&reader, file, MD_MEGABYTES(1), alloc));
 
     mmcif_parse_state_t state = {
         .reader = &reader.r,
@@ -625,7 +625,7 @@ UTEST(mmcif, atom_site_many_columns) {
         "ATOM 2 C CA . ALA A 1 1 ? 4.000 5.000 6.000 1 A\n",
         "ATOM 3 C C  . ALA A 1 1 ? 7.000 8.000 9.000 1 A\n",
     };
-    for (size_t r = 0; r < ARRAY_SIZE(rows); ++r) {
+    for (size_t r = 0; r < MD_COUNTOF(rows); ++r) {
         for (int i = 0; i < num_extra; ++i) {
             md_str_writer_push_cstr(&sb, "x ");
         }
@@ -649,7 +649,7 @@ UTEST(mmcif, atom_site_many_columns) {
 // 259-260 of chain A, and 62-71 of chain B. Each leaves a break between the residues on either side, whose numbers (the
 // residues of the sequence) count the missing ones exactly. The residues missing at the ends of the chains leave none.
 UTEST(mmcif, chain_breaks) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
@@ -665,7 +665,7 @@ UTEST(mmcif, chain_breaks) {
     size_t found = 0;
     for (size_t i = 0; i + 1 < sys.residue.count; ++i) {
         if (!(md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER)) continue;
-        if (found < ARRAY_SIZE(expected)) {
+        if (found < MD_COUNTOF(expected)) {
             const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&sys, i);
             EXPECT_TRUE(str_eq_cstr(md_system_instance_id(&sys, (size_t)inst), expected[found].chain));
             EXPECT_EQ(expected[found].before, md_system_residue_seq_id(&sys, i));
@@ -677,7 +677,7 @@ UTEST(mmcif, chain_breaks) {
         }
         ++found;
     }
-    EXPECT_EQ(ARRAY_SIZE(expected), found);
+    EXPECT_EQ(MD_COUNTOF(expected), found);
 
     md_vm_arena_destroy(alloc);
 }

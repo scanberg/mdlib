@@ -503,7 +503,7 @@ static bool fit_structure(const vial_sdf_kind_t* kind, uint32_t j, const float* 
     if (has_cell(cell)) {
         float ext[3];
         md_unitcell_diag_extract_float(ext, cell);
-        for (int q = 0; q < 3; ++q) if (ext[q] > 0.0f) min_ext = MIN(min_ext, ext[q]);
+        for (int q = 0; q < 3; ++q) if (ext[q] > 0.0f) min_ext = MD_MIN(min_ext, ext[q]);
     }
     return residual <= 0.25f * min_ext;
 }
@@ -630,7 +630,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
     if (sdf) {
         vec4_t* scratch = md_alloc(k->alloc, vol->max_n * sizeof(vec4_t));
         double reach = 0.0;
-        for (int q = 0; q < 3; ++q) reach = MAX(reach, vol->extent[q] + sqrt(vol->basis[q][0] * vol->basis[q][0] + vol->basis[q][1] * vol->basis[q][1] + vol->basis[q][2] * vol->basis[q][2]));
+        for (int q = 0; q < 3; ++q) reach = MD_MAX(reach, vol->extent[q] + sqrt(vol->basis[q][0] * vol->basis[q][0] + vol->basis[q][1] * vol->basis[q][1] + vol->basis[q][2] * vol->basis[q][2]));
         md_spatial_acc_t acc = {.alloc = k->alloc};
         md_coord_stream_t pts = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
         // The cell extent of the last frame this interpreter built for, so the spread of the points is estimated once

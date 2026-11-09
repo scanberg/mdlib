@@ -47,7 +47,7 @@ typedef struct _SEMAPHORE_BASIC_INFORMATION {
     ULONG MaximumCount;
 } SEMAPHORE_BASIC_INFORMATION;
 
-STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
+MD_STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
 
 #elif MD_PLATFORM_UNIX
 
@@ -67,7 +67,7 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 
 #if MD_PLATFORM_LINUX
 #include <semaphore.h>
-STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit into md_semaphore_t!");
+MD_STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit into md_semaphore_t!");
 #endif
 
 #if MD_PLATFORM_OSX
@@ -80,13 +80,13 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 #include <mach-o/dyld.h>
 #include <xlocale.h>
 
-STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
+MD_STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 #endif
 
 #include <string.h>
 #include <stdlib.h>   // getenv, setenv, unsetenv, _putenv_s
 
-#define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MIN(sizeof(buf)-1, str.len))
+#define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MD_MIN(sizeof(buf)-1, str.len))
 
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
@@ -115,8 +115,8 @@ static void print_windows_error(void) {
 // code page (and cap paths at MAX_PATH), so the path layer speaks UTF-16 exclusively,
 // just like the file layer further down.
 static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
-    ASSERT(dst);
-    ASSERT(cap > 0);
+    MD_ASSERT(dst);
+    MD_ASSERT(cap > 0);
 
     if (!src.ptr || src.len == 0) {
         return false;
@@ -132,8 +132,8 @@ static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
 }
 
 static size_t utf16_to_utf8_path(char* dst, size_t cap, const wchar_t* src, int src_len) {
-    ASSERT(dst);
-    ASSERT(cap > 0);
+    MD_ASSERT(dst);
+    MD_ASSERT(cap > 0);
 
     if (!src || src_len <= 0) {
         return 0;
@@ -193,7 +193,7 @@ static bool path_char_equal(char a, char b) {
 // Whole components are compared: '/data/foo/' and '/data/foobar/' share '/data/', not
 // '/data/foo'.
 static size_t common_folder_len(str_t a, str_t b) {
-    const size_t len = MIN(a.len, b.len);
+    const size_t len = MD_MIN(a.len, b.len);
     size_t common = 0;
     for (size_t i = 0; i < len; ++i) {
         if (!path_char_equal(a.ptr[i], b.ptr[i])) {
@@ -210,8 +210,8 @@ static size_t common_folder_len(str_t a, str_t b) {
 // Resolves '.' and '..' components and collapses repeated separators, purely lexically.
 // A trailing separator is preserved. Returns the new length.
 static size_t normalize_path(char* buf, size_t cap, size_t len) {
-    ASSERT(buf);
-    ASSERT(len < cap);
+    MD_ASSERT(buf);
+    MD_ASSERT(len < cap);
     (void)cap;
 
     const size_t root = path_root_len((str_t){buf, len});
@@ -238,7 +238,7 @@ static size_t normalize_path(char* buf, size_t cap, size_t len) {
             }
         } else {
             // The write cursor never overtakes the read cursor, so this stays in bounds
-            MEMMOVE(buf + w, buf + r, comp_len);
+            MD_MEMMOVE(buf + w, buf + r, comp_len);
             w += comp_len;
             buf[w++] = '/';
         }
@@ -264,7 +264,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
     if (len + 1 > sizeof(tmp)) {
         return len;
     }
-    MEMCPY(tmp, buf, len);
+    MD_MEMCPY(tmp, buf, len);
     tmp[len] = '\0';
 
     size_t split = len;
@@ -281,7 +281,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
                 free(res);
                 return len;
             }
-            MEMCPY(buf, res, res_len);
+            MD_MEMCPY(buf, res, res_len);
             free(res);
 
             size_t w = res_len;
@@ -289,7 +289,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
                 if (w > 0 && buf[w - 1] != '/') {
                     buf[w++] = '/';
                 }
-                MEMCPY(buf + w, tmp + split, tail_len);
+                MD_MEMCPY(buf + w, tmp + split, tail_len);
                 w += tail_len;
             }
             buf[w] = '\0';
@@ -313,7 +313,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
 // Resolves path into its canonical form (see above). Returns the number of characters
 // written, or 0 on failure. The path does not need to exist.
 static size_t fullpath(char* buf, size_t cap, str_t path) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (cap == 0) {
         return 0;
     }
@@ -329,17 +329,17 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
     wchar_t w_path[MD_MAX_PATH];
     wchar_t w_full[MD_MAX_PATH];
 
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
         MD_LOG_ERROR("Failed to convert path to UTF-16: '" STR_FMT "'", STR_ARG(path));
         return 0;
     }
 
-    const DWORD w_len = GetFullPathNameW(w_path, (DWORD)ARRAY_SIZE(w_full), w_full, NULL);
+    const DWORD w_len = GetFullPathNameW(w_path, (DWORD)MD_COUNTOF(w_full), w_full, NULL);
     if (w_len == 0) {
         print_windows_error();
         return 0;
     }
-    if (w_len >= (DWORD)ARRAY_SIZE(w_full)) {
+    if (w_len >= (DWORD)MD_COUNTOF(w_full)) {
         MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
         return 0;
     }
@@ -365,7 +365,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
             free(res);
             return 0;
         }
-        MEMCPY(buf, res, len);
+        MD_MEMCPY(buf, res, len);
         buf[len] = '\0';
         free(res);
     } else if (errno == ENOENT || errno == ENOTDIR) {
@@ -403,7 +403,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
         return 0;
     }
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 
@@ -423,7 +423,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
 }
 
 size_t md_path_write_cwd(char* buf, size_t cap) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (cap == 0) {
         return 0;
     }
@@ -432,8 +432,8 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
     size_t len = 0;
 #if MD_PLATFORM_WINDOWS
     wchar_t w_buf[MD_MAX_PATH];
-    const DWORD w_len = GetCurrentDirectoryW((DWORD)ARRAY_SIZE(w_buf), w_buf);
-    if (w_len == 0 || w_len >= (DWORD)ARRAY_SIZE(w_buf)) {
+    const DWORD w_len = GetCurrentDirectoryW((DWORD)MD_COUNTOF(w_buf), w_buf);
+    if (w_len == 0 || w_len >= (DWORD)MD_COUNTOF(w_buf)) {
         MD_LOG_ERROR("Failed to get current working directory");
         return 0;
     }
@@ -450,13 +450,13 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
     }
     len = strnlen(buf, cap);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
     return len;
 }
 
 size_t md_path_write_exe(char* buf, size_t buf_cap) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (buf_cap == 0) {
         return 0;
     }
@@ -464,8 +464,8 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
 
 #if MD_PLATFORM_WINDOWS
     wchar_t w_buf[MD_MAX_PATH];
-    const DWORD w_len = GetModuleFileNameW(NULL, w_buf, (DWORD)ARRAY_SIZE(w_buf));
-    if (w_len == 0 || w_len >= (DWORD)ARRAY_SIZE(w_buf)) {
+    const DWORD w_len = GetModuleFileNameW(NULL, w_buf, (DWORD)MD_COUNTOF(w_buf));
+    if (w_len == 0 || w_len >= (DWORD)MD_COUNTOF(w_buf)) {
         MD_LOG_ERROR("Failed to get path to executable");
         return 0;
     }
@@ -489,7 +489,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         return strnlen(buf, buf_cap);
     }
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
     MD_LOG_ERROR("Failed to get path to executable");
     return 0;
@@ -520,7 +520,7 @@ bool md_os_env_set(const char* name, const char* value) {
 }
 
 size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (buf_cap == 0) {
         return 0;
     }
@@ -561,7 +561,7 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
     }
     return (size_t)written;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 }
@@ -573,7 +573,7 @@ bool md_path_set_cwd(str_t path) {
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
         MD_LOG_ERROR("CWD: Failed to convert path to UTF-16 '" STR_FMT "'", STR_ARG(path));
         return false;
     }
@@ -602,7 +602,7 @@ bool md_path_set_cwd(str_t path) {
     default:            MD_LOG_ERROR("CWD: Undefined error"); break;
     }
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
     return false;
 }
@@ -612,7 +612,7 @@ size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
 }
 
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     char buf[MD_MAX_PATH];
     const size_t len = fullpath(buf, sizeof(buf), path);
 
@@ -627,7 +627,7 @@ str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
 }
 
 size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t to) {
-    ASSERT(out_buf);
+    MD_ASSERT(out_buf);
     if (out_cap == 0) {
         return 0;
     }
@@ -683,15 +683,15 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     char* dst = out_buf;
     if (up_count) {
         for (size_t i = 0; i < up_count; ++i) {
-            MEMCPY(dst, "../", 3);
+            MD_MEMCPY(dst, "../", 3);
             dst += 3;
         }
     } else {
-        MEMCPY(dst, "./", 2);
+        MD_MEMCPY(dst, "./", 2);
         dst += 2;
     }
     if (rel_to.len) {
-        MEMCPY(dst, rel_to.ptr, rel_to.len);
+        MD_MEMCPY(dst, rel_to.ptr, rel_to.len);
         dst += rel_to.len;
     }
     *dst = '\0';
@@ -700,7 +700,7 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
 }
 
 str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     char  rel_buf[MD_MAX_PATH];
     const size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
     if (len == 0) {
@@ -731,7 +731,7 @@ bool md_path_is_valid(str_t path) {
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
         return false;
     }
     return GetFileAttributesW(w_path) != INVALID_FILE_ATTRIBUTES;
@@ -743,7 +743,7 @@ bool md_path_is_valid(str_t path) {
     }
     return access(buf, F_OK) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }
@@ -754,7 +754,7 @@ bool md_path_is_directory(str_t path) {
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
         return false;
     }
     const DWORD attr = GetFileAttributesW(w_path);
@@ -770,7 +770,7 @@ bool md_path_is_directory(str_t path) {
     // sockets and block devices, so use the S_ISDIR predicate instead.
     return stat(buf, &s) == 0 && S_ISDIR(s.st_mode);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }
@@ -883,7 +883,7 @@ static md_file_time_t filetime_to_unix_ns(FILETIME ft) {
 }
 
 static void fill_file_info_from_win32_data(md_file_info_t* info, DWORD attrs, uint64_t size, FILETIME access_time, FILETIME write_time) {
-    ASSERT(info);
+    MD_ASSERT(info);
 
     info->size = (md_file_offset_t)size;
     info->modified_time = filetime_to_unix_ns(write_time);
@@ -906,8 +906,8 @@ static md_file_time_t timespec_to_unix_ns(time_t sec, long nsec) {
 }
 
 static void fill_file_info_from_stat(md_file_info_t* info, const struct stat* st) {
-    ASSERT(info);
-    ASSERT(st);
+    MD_ASSERT(info);
+    MD_ASSERT(st);
 
     info->size = (md_file_offset_t)st->st_size;
 
@@ -937,7 +937,7 @@ bool md_file_info_extract(md_file_t file, md_file_info_t* out_info) {
         return false;
     }
 
-    MEMSET(out_info, 0, sizeof(md_file_info_t));
+    MD_MEMSET(out_info, 0, sizeof(md_file_info_t));
 
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_info_extract: file was invalid");
@@ -977,7 +977,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
         return false;
     }
 
-    MEMSET(out_info, 0, sizeof(md_file_info_t));
+    MD_MEMSET(out_info, 0, sizeof(md_file_info_t));
 
     if (!filename.ptr || filename.len == 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: filename was empty");
@@ -986,7 +986,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
-    if (!utf8_to_utf16_path(w_file, ARRAY_SIZE(w_file), filename)) {
+    if (!utf8_to_utf16_path(w_file, MD_COUNTOF(w_file), filename)) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to convert path to UTF-16");
         return false;
     }
@@ -1070,8 +1070,8 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
 
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
-    const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
-    if (w_file_len <= 0 || w_file_len >= (int)ARRAY_SIZE(w_file)) {
+    const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, MD_COUNTOF(w_file));
+    if (w_file_len <= 0 || w_file_len >= (int)MD_COUNTOF(w_file)) {
         MD_LOG_ERROR("md_file_open: failed to convert path to UTF-16");
         return false;
     }
@@ -1204,7 +1204,7 @@ bool md_file_close(md_file_t* file) {
         return false;
     }
 #endif
-	MEMSET(file, 0, sizeof(md_file_t));
+	MD_MEMSET(file, 0, sizeof(md_file_t));
     return true;
 }
 
@@ -1345,7 +1345,7 @@ size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         DWORD transferred = 0;
 
         if (!ReadFile((HANDLE)file.handle, out + total, chunk, &transferred, NULL)) {
@@ -1368,7 +1368,7 @@ size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = read(file.fd, out + total, chunk);
 
         if (transferred < 0) {
@@ -1416,7 +1416,7 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         DWORD transferred = 0;
 
         if (!WriteFile((HANDLE)file.handle, in + total, chunk, &transferred, NULL)) {
@@ -1440,7 +1440,7 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = write(file.fd, in + total, chunk);
 
         if (transferred < 0) {
@@ -1530,7 +1530,7 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
 
         DWORD transferred = 0, err = 0;
@@ -1559,7 +1559,7 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = pread(file.fd, out + total, chunk, (off_t)(offset + (md_file_offset_t)total));
 
         if (transferred < 0) {
@@ -1615,7 +1615,7 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
 
         DWORD transferred = 0, err = 0;
@@ -1642,7 +1642,7 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = pwrite(file.fd, in + total, chunk, (off_t)(offset + (md_file_offset_t)total));
 
         if (transferred < 0) {
@@ -1733,7 +1733,7 @@ md_tick_t md_tick_now(void) {
     clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec * 1000000000 + t.tv_nsec;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1748,7 +1748,7 @@ double md_tick_to_nanoseconds(md_tick_t ticks) {
 #elif MD_PLATFORM_UNIX
     return (double)ticks;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1760,7 +1760,7 @@ double md_tick_to_milliseconds(md_tick_t ticks) {
 #elif MD_PLATFORM_UNIX
     return ticks * 1.0e-6;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1772,7 +1772,7 @@ double md_tick_to_seconds(md_tick_t ticks) {
 #elif MD_PLATFORM_UNIX
     return ticks * 1.0e-9;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1792,7 +1792,7 @@ size_t md_os_physical_ram(void) {
     long page_size = sysconf(_SC_PAGE_SIZE);
     return (size_t)(pages * page_size);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 }
@@ -1807,7 +1807,7 @@ size_t md_os_num_processors(void) {
     int num_cpu = sysconf(_SC_NPROCESSORS_ONLN);
     return (size_t)num_cpu;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 }
@@ -1823,22 +1823,22 @@ size_t md_vm_page_size(void) {
 #elif MD_PLATFORM_UNIX
         page_size = sysconf(_SC_PAGE_SIZE);
 #else
-        ASSERT(false);
+        MD_ASSERT(false);
 #endif
     }
     return page_size;
 }
 
 void* md_vm_reserve(size_t size) {
-    const size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    const size_t gb_snapped_size = MD_ALIGN_TO(size, MD_GIGABYTES(1));
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
     void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    ASSERT(result != MAP_FAILED);
+    MD_ASSERT(result != MAP_FAILED);
     return result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1847,30 +1847,30 @@ void md_vm_release(void* ptr, size_t size) {
     (void)size;
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif MD_PLATFORM_UNIX
-    size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    size_t gb_snapped_size = MD_ALIGN_TO(size, MD_GIGABYTES(1));
     int result;
     //result = madvise(ptr, -1, MADV_DONTNEED);
-    //ASSERT(result == 0);
+    //MD_ASSERT(result == 0);
     result = munmap(ptr, gb_snapped_size);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
     (void)result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
 void md_vm_commit(void* ptr, size_t size) {
-    const size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    const size_t page_snapped_size = MD_ALIGN_TO(size, md_vm_page_size());
 #if MD_PLATFORM_WINDOWS
     void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
     (void)result;
-    ASSERT(result != NULL);
+    MD_ASSERT(result != NULL);
 #elif MD_PLATFORM_UNIX
     int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
     (void)result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1882,22 +1882,22 @@ void md_vm_decommit(void* ptr, size_t size) {
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int result;
-    size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    size_t page_snapped_size = MD_ALIGN_TO(size, md_vm_page_size());
 #if defined(__APPLE__)
     // MADV_DONTNEED does not free the pages on macOS (they stay resident with their contents).
     // Remapping the range as fresh anonymous memory is what actually returns them to the system.
     void* mapped = mmap(ptr, page_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
     result = (mapped == MAP_FAILED) ? -1 : 0;
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
 #else
     result = mprotect(ptr, page_snapped_size, PROT_NONE);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
     result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
 #endif
     (void)result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1928,7 +1928,7 @@ md_thread_t* md_thread_create(md_thread_entry func, void* user_data) {
 #pragma clang diagnostic pop
 #endif
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1938,7 +1938,7 @@ void md_thread_detach(md_thread_t* thread) {
 #elif MD_PLATFORM_UNIX
     pthread_detach((pthread_t)thread);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1949,7 +1949,7 @@ bool md_thread_join(md_thread_t* thread) {
 #elif MD_PLATFORM_UNIX
     return pthread_join((pthread_t)thread, NULL) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1959,7 +1959,7 @@ md_thread_id_t md_thread_get_id(md_thread_t* thread) {
 #elif MD_PLATFORM_UNIX
     return (md_thread_id_t)thread;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1969,12 +1969,12 @@ md_thread_id_t md_thread_id(void) {
 #elif MD_PLATFORM_UNIX
     return (md_thread_id_t)pthread_self();
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
 bool md_thread_key_create(md_thread_key_t* key, md_thread_exit callback) {
-    ASSERT(key);
+    MD_ASSERT(key);
     if (!callback) {
         MD_LOG_ERROR("OS: callback was NULL");
         return false;
@@ -1992,7 +1992,7 @@ bool md_thread_key_create(md_thread_key_t* key, md_thread_exit callback) {
     int ret = pthread_key_create(key, callback);
     return ret == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }
@@ -2003,7 +2003,7 @@ void md_thread_key_delete(md_thread_key_t key) {
 #elif MD_PLATFORM_UNIX
 	pthread_key_delete(key);
 #else
-	ASSERT(false);
+	MD_ASSERT(false);
 #endif
 }
 
@@ -2013,7 +2013,7 @@ void md_thread_key_set_value(md_thread_key_t key, void* value) {
     #elif MD_PLATFORM_UNIX
     pthread_setspecific(key, value);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2023,7 +2023,7 @@ void md_thread_sleep(size_t milliseconds) {
 #elif MD_PLATFORM_UNIX
     usleep(milliseconds * 1000);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2035,7 +2035,7 @@ bool md_mutex_init(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_init((pthread_mutex_t*)mutex, NULL) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2049,7 +2049,7 @@ md_mutex_t md_mutex_create(void) {
     md_mutex_init(&mutex);
     return mutex;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2060,7 +2060,7 @@ bool md_mutex_destroy(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_destroy((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2071,7 +2071,7 @@ bool md_mutex_lock(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_lock((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2081,7 +2081,7 @@ bool md_mutex_try_lock(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_trylock((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2092,7 +2092,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_unlock((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -2101,7 +2101,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 // ### SEMAPHORE ###
 
 bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
-    ASSERT(initial_count < INT32_MAX);
+    MD_ASSERT(initial_count < INT32_MAX);
 #if MD_PLATFORM_WINDOWS
     semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
     return semaphore != NULL;
@@ -2114,7 +2114,7 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
     if (ret != KERN_SUCCESS) {
         MD_LOG_ERROR("Failed to initialize semaphore");
     }
-    MEMCPY(semaphore, &sema, sizeof(semaphore_t));
+    MD_MEMCPY(semaphore, &sema, sizeof(semaphore_t));
     return ret == KERN_SUCCESS;
 #endif
 }
@@ -2126,7 +2126,7 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
     return sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     mach_port_t self = mach_task_self();
     return semaphore_destroy(self, sema) == KERN_SUCCESS;
 #endif
@@ -2139,7 +2139,7 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     return semaphore_wait(sema) == KERN_SUCCESS;
 #endif
 }
@@ -2151,7 +2151,7 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
     return sem_trywait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     mach_timespec_t mts;
     mts.tv_sec = 0;
     mts.tv_nsec = 0;
@@ -2160,8 +2160,8 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 }
 
 bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count) {
-    ASSERT(semaphore);
-    ASSERT(count);
+    MD_ASSERT(semaphore);
+    MD_ASSERT(count);
 #if MD_PLATFORM_WINDOWS
     HMODULE hntdll = GetModuleHandle("ntdll.dll");
     if (hntdll) {
@@ -2199,7 +2199,7 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
     return sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     return semaphore_signal(sema) == KERN_SUCCESS;
 #endif
 }
@@ -2213,7 +2213,7 @@ md_semaphore_t md_semaphore_create(size_t initial_count) {
 }
 
 bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
-    ASSERT(count > 0);
+    MD_ASSERT(count > 0);
     size_t aquired_count = 0;
     for (size_t i = 0; i < count; ++i) {
         if (!md_semaphore_try_aquire(semaphore)) {
@@ -2245,7 +2245,7 @@ bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
 // Returns system information such as core counts and RAM. See md_os_info_t in header.
 bool md_os_sys_info_query(md_os_sys_info_t* info) {
     if (!info) return false;
-    MEMSET(info, 0, sizeof(md_os_sys_info_t));
+    MD_MEMSET(info, 0, sizeof(md_os_sys_info_t));
 
 #if MD_PLATFORM_WINDOWS
 
@@ -2357,7 +2357,7 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
                         }
                     }
 
-                    if (!found && core_count < (int)ARRAY_SIZE(cores)) {
+                    if (!found && core_count < (int)MD_COUNTOF(cores)) {
                         cores[core_count++] = (core_pair_t){phys_id, core_id};
                     }
                 }
@@ -2380,7 +2380,7 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
     return true;
 
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }

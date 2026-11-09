@@ -43,14 +43,14 @@ UTEST(gisaxs, fft_2d_matches_dft) {
             double re = 0.0, im = 0.0;
             for (int y = 0; y < ny; ++y) {
                 for (int x = 0; x < nx; ++x) {
-                    const double ph = -2.0 * PI * ((double)kx * x / nx + (double)ky * y / ny);
+                    const double ph = -2.0 * MD_PI * ((double)kx * x / nx + (double)ky * y / ny);
                     re += in[y * nx + x] * cos(ph);
                     im += in[y * nx + x] * sin(ph);
                 }
             }
             const float* v = out + 2 * (ky * nkx + kx);
-            max_err = MAX(max_err, fabs(re - v[0]));
-            max_err = MAX(max_err, fabs(im - v[1]));
+            max_err = MD_MAX(max_err, fabs(re - v[0]));
+            max_err = MD_MAX(max_err, fabs(im - v[1]));
         }
     }
     EXPECT_LT(max_err, 1.0e-3);
@@ -120,7 +120,7 @@ UTEST(gisaxs, born_matches_direct_sum) {
     ASSERT_TRUE(md_gisaxs_compute(ctx));
 
     const double qz[] = {0.0, 0.05, -0.12, 0.2, 0.33, 0.4};
-    const size_t num_qz = ARRAY_SIZE(qz);
+    const size_t num_qz = MD_COUNTOF(qz);
     const size_t R = md_gisaxs_num_rings(ctx);
     float*  I   = (float*)malloc(sizeof(float) * num_qz * R);
     double* ref = (double*)malloc(sizeof(double) * num_qz * R);
@@ -130,12 +130,12 @@ UTEST(gisaxs, born_matches_direct_sum) {
     md_gisaxs_reference_born(ctx, &input, qz, num_qz, ref);
 
     double max_ref = 0.0;
-    for (size_t i = 0; i < num_qz * R; ++i) max_ref = MAX(max_ref, ref[i]);
+    for (size_t i = 0; i < num_qz * R; ++i) max_ref = MD_MAX(max_ref, ref[i]);
 
     double max_rel = 0.0;
     for (size_t i = 0; i < num_qz * R; ++i) {
         const double err = fabs(I[i] - ref[i]) / (ref[i] + 1.0e-4 * max_ref);
-        max_rel = MAX(max_rel, err);
+        max_rel = MD_MAX(max_rel, err);
     }
     printf("born vs direct sum: max relative error %.3e\n", max_rel);
     // The lowest rings are single lattice points (no averaging of the z B-spline aliasing error, largest at q_z_max)
@@ -161,7 +161,7 @@ UTEST(gisaxs, rings_lattice_shells) {
     md_gisaxs_t* ctx = md_gisaxs_create(&input, &params, md_get_heap_allocator());
     ASSERT_TRUE(ctx != NULL);
 
-    const double dq = 2.0 * PI / L;
+    const double dq = 2.0 * MD_PI / L;
     const size_t R = md_gisaxs_num_rings(ctx);
     const double* rq = md_gisaxs_ring_q(ctx);
     const double* edges = md_gisaxs_ring_edges(ctx);
@@ -218,9 +218,9 @@ UTEST(gisaxs, rings_rectangular_box) {
     ASSERT_TRUE(ctx != NULL);
     const double* rq = md_gisaxs_ring_q(ctx);
     const unsigned* count = md_gisaxs_ring_count(ctx);
-    EXPECT_NEAR(rq[0], 2.0 * PI / bx, 1.0e-9);
+    EXPECT_NEAR(rq[0], 2.0 * MD_PI / bx, 1.0e-9);
     EXPECT_EQ(count[0], 2u);
-    EXPECT_NEAR(rq[1], 2.0 * PI / by, 1.0e-9);
+    EXPECT_NEAR(rq[1], 2.0 * MD_PI / by, 1.0e-9);
     EXPECT_EQ(count[1], 2u);
     md_gisaxs_destroy(ctx);
     free_system(&sys);
@@ -243,8 +243,8 @@ UTEST(gisaxs, dwba_without_contrast_equals_born) {
     ASSERT_TRUE(md_gisaxs_compute(ctx));
 
     const double lambda = 1.0;
-    const double alpha_i = 0.3 * PI / 180.0;
-    const double k0 = 2.0 * PI / lambda;
+    const double alpha_i = 0.3 * MD_PI / 180.0;
+    const double k0 = 2.0 * MD_PI / lambda;
     const double p = k0 * sin(alpha_i);
     double qz[16];
     for (int i = 0; i < 16; ++i) qz[i] = p + 0.28 * i / 15.0;
@@ -267,7 +267,7 @@ UTEST(gisaxs, dwba_without_contrast_equals_born) {
 
     double max_rel = 0.0;
     for (size_t i = 0; i < 16 * R; ++i) {
-        max_rel = MAX(max_rel, fabs(I_dwba[i] - I_born[i]) / (I_born[i] + 1e-30));
+        max_rel = MD_MAX(max_rel, fabs(I_dwba[i] - I_born[i]) / (I_born[i] + 1e-30));
     }
     printf("dwba (no contrast) vs born: max relative error %.3e\n", max_rel);
     EXPECT_LT(max_rel, 1.0e-3);
@@ -296,9 +296,9 @@ UTEST(gisaxs, dwba_yoneda_peak) {
     ASSERT_TRUE(md_gisaxs_compute(ctx));
 
     const double lambda = 1.0332;   // 12 keV
-    const double k0 = 2.0 * PI / lambda;
+    const double k0 = 2.0 * MD_PI / lambda;
     const double sld_si = MD_GISAXS_R_E * 0.6991;
-    const double alpha_c = sqrt(4.0 * PI * sld_si) / k0;   // sin(alpha_c) ~ alpha_c
+    const double alpha_c = sqrt(4.0 * MD_PI * sld_si) / k0;   // sin(alpha_c) ~ alpha_c
     const double alpha_i = 2.0 * alpha_c;
 
     md_gisaxs_model_t model = {
@@ -308,7 +308,7 @@ UTEST(gisaxs, dwba_yoneda_peak) {
         .z_substrate = 0.0,
         .sld_ambient = 0.0,
         .sld_substrate = sld_si,
-        .sld_substrate_abs = 2.0 * PI * 1.0e-7 / (lambda * lambda),
+        .sld_substrate_abs = 2.0 * MD_PI * 1.0e-7 / (lambda * lambda),
     };
 
     enum { N = 200 };
@@ -352,7 +352,7 @@ static tc_t tc_sqrt(tc_t a) {
     return r;
 }
 static tc_t fresnel(double kz, double dsld_re, double sld_abs) {
-    tc_t kz2 = {kz*kz - 4.0*PI*dsld_re, 4.0*PI*sld_abs};
+    tc_t kz2 = {kz*kz - 4.0*MD_PI*dsld_re, 4.0*MD_PI*sld_abs};
     tc_t ks = tc_sqrt(kz2);
     tc_t num = {kz - ks.re, -ks.im};
     tc_t den = {kz + ks.re, ks.im};
@@ -375,13 +375,13 @@ UTEST(gisaxs, dwba_matches_direct_sum) {
     ASSERT_TRUE(md_gisaxs_compute(ctx));
 
     const double lambda = 1.0332;
-    const double k0 = 2.0 * PI / lambda;
-    const double alpha_i = 0.25 * PI / 180.0;
+    const double k0 = 2.0 * MD_PI / lambda;
+    const double alpha_i = 0.25 * MD_PI / 180.0;
     const double p = k0 * sin(alpha_i);
     const double z_sub = 2.0;
     const double sld_amb = 0.0;
     const double sld_sub = MD_GISAXS_R_E * 0.6991;
-    const double sld_abs = 2.0 * PI * 1.7e-7 / (lambda * lambda);
+    const double sld_abs = 2.0 * MD_PI * 1.7e-7 / (lambda * lambda);
 
     md_gisaxs_model_t model = {
         .wavelength = lambda, .alpha_i = alpha_i, .dwba = true, .z_substrate = z_sub,
@@ -400,7 +400,7 @@ UTEST(gisaxs, dwba_matches_direct_sum) {
     // possible (cross terms), so the ring points are reconstructed here from the ring edges.
     const double* edges = md_gisaxs_ring_edges(ctx);
     const unsigned* ring_count = md_gisaxs_ring_count(ctx);
-    const double dqx = 2.0 * PI / bx, dqy = 2.0 * PI / by;
+    const double dqx = 2.0 * MD_PI / bx, dqy = 2.0 * MD_PI / by;
     double* ref = (double*)calloc(N * R, sizeof(double));
     double* cnt = (double*)calloc(R, sizeof(double));
     const int kxm = (int)floor(params.q_par_max / dqx), kym = (int)floor(params.q_par_max / dqy);
@@ -443,11 +443,11 @@ UTEST(gisaxs, dwba_matches_direct_sum) {
     for (size_t i = 0; i < N * R; ++i) {
         const size_t r = i % R;
         ref[i] = cnt[r] > 0 ? ref[i] / cnt[r] / (bx * by) : 0.0;
-        max_ref = MAX(max_ref, ref[i]);
+        max_ref = MD_MAX(max_ref, ref[i]);
     }
     double max_rel = 0.0;
     for (size_t i = 0; i < N * R; ++i) {
-        max_rel = MAX(max_rel, fabs(I[i] - ref[i]) / (ref[i] + 1.0e-4 * max_ref));
+        max_rel = MD_MAX(max_rel, fabs(I[i] - ref[i]) / (ref[i] + 1.0e-4 * max_ref));
     }
     printf("dwba vs direct sum: max relative error %.3e\n", max_rel);
     EXPECT_LT(max_rel, 2.0e-2);
@@ -472,8 +472,8 @@ UTEST(gisaxs, graded_without_film_contrast_equals_simple) {
     ASSERT_TRUE(md_gisaxs_compute(ctx));
 
     const double lambda = 1.0;
-    const double k0 = 2.0 * PI / lambda;
-    const double alpha_i = 0.3 * PI / 180.0;
+    const double k0 = 2.0 * MD_PI / lambda;
+    const double alpha_i = 0.3 * MD_PI / 180.0;
     enum { N = 24 };
     double qz[N];
     for (int i = 0; i < N; ++i) qz[i] = k0 * sin(alpha_i) + 0.19 * i / (N - 1);
@@ -494,7 +494,7 @@ UTEST(gisaxs, graded_without_film_contrast_equals_simple) {
 
     double max_rel = 0.0;
     for (size_t i = 0; i < N * R; ++i) {
-        max_rel = MAX(max_rel, fabs(a[i] - b[i]) / (fabs(a[i]) + 1e-30));
+        max_rel = MD_MAX(max_rel, fabs(a[i] - b[i]) / (fabs(a[i]) + 1e-30));
     }
     printf("graded (no film contrast) vs simple: max relative error %.3e\n", max_rel);
     // Same physics, different phase bookkeeping; differences are float rounding in c^H S c
@@ -516,7 +516,7 @@ UTEST(gisaxs, reflectivity_single_interface) {
     ASSERT_TRUE(ctx != NULL);
 
     const double sld = 2.0e-5;
-    const double qc = 4.0 * sqrt(PI * sld);
+    const double qc = 4.0 * sqrt(MD_PI * sld);
     md_gisaxs_model_t model = { .wavelength = 1.0, .dwba = true, .z_substrate = 0.0, .sld_substrate = sld };
     double qz[3] = {0.5 * qc, 2.0 * qc, 5.0 * qc};
     double Rf[3];
@@ -550,9 +550,9 @@ UTEST(gisaxs, graded_film_yoneda_peak) {
     ASSERT_TRUE(md_gisaxs_compute(ctx));
 
     const double lambda = 1.0;
-    const double k0 = 2.0 * PI / lambda;
+    const double k0 = 2.0 * MD_PI / lambda;
     const double sld_film = MD_GISAXS_R_E * rho_film;
-    const double alpha_c = asin(sqrt(4.0 * PI * sld_film) / k0);
+    const double alpha_c = asin(sqrt(4.0 * MD_PI * sld_film) / k0);
     const double alpha_i = 3.0 * alpha_c;
 
     md_gisaxs_model_t model = {
@@ -585,7 +585,7 @@ UTEST(gisaxs, graded_film_yoneda_peak) {
         enum { NR = 4000 };
         double* qr = (double*)malloc(sizeof(double) * NR);
         double* Rr = (double*)malloc(sizeof(double) * NR);
-        const double qc = 4.0 * sqrt(PI * sld_film);
+        const double qc = 4.0 * sqrt(MD_PI * sld_film);
         for (int i = 0; i < NR; ++i) qr[i] = 1.5 * qc + 0.1 * i / (NR - 1);
         md_gisaxs_reflectivity(ctx, &model, qr, NR, Rr);
         double first = -1, last = -1; int nmin = 0;
@@ -598,7 +598,7 @@ UTEST(gisaxs, graded_film_yoneda_peak) {
         }
         ASSERT_GT(nmin, 3);
         const double spacing = (last - first) / (nmin - 1);
-        const double expected = 2.0 * PI / (z1 - z0);
+        const double expected = 2.0 * MD_PI / (z1 - z0);
         printf("kiessig spacing %.5f, expected %.5f\n", spacing, expected);
         EXPECT_NEAR(spacing / expected, 1.0, 0.1);
         free(qr); free(Rr);

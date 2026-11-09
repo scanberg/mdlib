@@ -69,7 +69,7 @@ static size_t amber_term(amber_table_t* t, str_t name) {
         if (strcmp(t->terms[i].slug, slug) == 0) return i;
     }
     amber_term_t term = { .name = str_copy(name, t->alloc) };
-    MEMCPY(term.slug, slug, sizeof(slug));
+    MD_MEMCPY(term.slug, slug, sizeof(slug));
     // Rows recorded before the term appeared lack it
     for (size_t r = 0; r < md_array_size(t->time); ++r) md_array_push(term.values, NAN, t->alloc);
     md_array_push(t->terms, term, t->alloc);
@@ -123,8 +123,8 @@ static void amber_parse_pairs(amber_table_t* t, str_t line, bool first_line, dou
         }
         if (region > 1) {
             char buf[128];
-            const int len = snprintf(buf, sizeof(buf), "%.*s (TI region %d)", (int)MIN(name.len, 64), name.ptr, region);
-            amber_set(t, (str_t){ buf, (size_t)MAX(len, 0) }, value);
+            const int len = snprintf(buf, sizeof(buf), "%.*s (TI region %d)", (int)MD_MIN(name.len, 64), name.ptr, region);
+            amber_set(t, (str_t){ buf, (size_t)MD_MAX(len, 0) }, value);
         } else {
             amber_set(t, name, value);
         }
@@ -230,7 +230,7 @@ static str_t amber_mden_name(str_t name) {
         { "E_hbon", "EHBOND" }, { "E_bon", "BOND" }, { "E_angle", "ANGLE" }, { "E_dih", "DIHED" }, { "E_14vdw", "1-4 NB" },
         { "E_14el", "1-4 EEL" }, { "E_const", "RESTRAINT" }, { "E_pol", "EPOLZ" }, { "Density", "Density" }, { "dV/dlambda", "DV/DL" },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(map); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(map); ++i) {
         if (str_eq_cstr(name, map[i][0])) return str_from_cstr(map[i][1]);
     }
     return name;
@@ -323,11 +323,11 @@ static md_unit_t amber_term_unit(const char* slug) {
     static const char* const angstrom[] = { "boxx", "boxy", "boxz" };
     static const char* const debye[] = { "av_permmoment", "av_indmoment", "av_totmoment" };
     static const char* const none[] = { "pres_scal_solu", "pres_scal_solv", "ewald_error_estimate", "surften", "solvent_accessible_surface" };
-    for (size_t i = 0; i < ARRAY_SIZE(kelvin); ++i)   if (!strcmp(slug, kelvin[i]))   return md_unit_kelvin();
-    for (size_t i = 0; i < ARRAY_SIZE(bar); ++i)      if (!strcmp(slug, bar[i]))      return md_unit_bar();
-    for (size_t i = 0; i < ARRAY_SIZE(angstrom); ++i) if (!strcmp(slug, angstrom[i])) return md_unit_angstrom();
-    for (size_t i = 0; i < ARRAY_SIZE(debye); ++i)    if (!strcmp(slug, debye[i]))    return md_unit_debye();
-    for (size_t i = 0; i < ARRAY_SIZE(none); ++i)     if (!strcmp(slug, none[i]))     return md_unit_none();
+    for (size_t i = 0; i < MD_COUNTOF(kelvin); ++i)   if (!strcmp(slug, kelvin[i]))   return md_unit_kelvin();
+    for (size_t i = 0; i < MD_COUNTOF(bar); ++i)      if (!strcmp(slug, bar[i]))      return md_unit_bar();
+    for (size_t i = 0; i < MD_COUNTOF(angstrom); ++i) if (!strcmp(slug, angstrom[i])) return md_unit_angstrom();
+    for (size_t i = 0; i < MD_COUNTOF(debye); ++i)    if (!strcmp(slug, debye[i]))    return md_unit_debye();
+    for (size_t i = 0; i < MD_COUNTOF(none); ++i)     if (!strcmp(slug, none[i]))     return md_unit_none();
     if (!strcmp(slug, "volume")) return md_unit_pow(md_unit_angstrom(), 3);
     if (!strcmp(slug, "density")) {
         // g/cm^3
@@ -364,15 +364,15 @@ bool md_amber_energy_file_is_mden(str_t filename) {
 static str_t amber_join(char* buf, size_t cap, str_t a, const char* b) {
     const size_t b_len = strlen(b);
     if (a.len + 1 + b_len + 1 > cap) return (str_t){0};
-    MEMCPY(buf, a.ptr, a.len);
+    MD_MEMCPY(buf, a.ptr, a.len);
     buf[a.len] = '/';
-    MEMCPY(buf + a.len + 1, b, b_len);
+    MD_MEMCPY(buf + a.len + 1, b, b_len);
     buf[a.len + 1 + b_len] = '\0';
     return (str_t){buf, a.len + 1 + b_len};
 }
 
 bool md_amber_energy_system_supplement_from_file(md_system_t* sys, str_t filename, str_t run) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (str_empty(run)) {
         MD_LOG_ERROR("Amber energy: no run to publish the energies under; load the trajectory first");
         return false;

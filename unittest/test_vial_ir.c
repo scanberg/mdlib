@@ -29,7 +29,7 @@ static md_vial_program_t* vial_ir__compile(const char* src, char sys, md_allocat
 UTEST(vial_ir, dump_script) {
     const char* path = getenv("VIAL_IR_SCRIPT");
     if (!path) return;
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const str_t text = load_textfile(str_from_cstr(path), alloc);
     const char* sys = getenv("VIAL_IR_SYS");
     const md_vial_compile_desc_t desc = {.sys = vial_test_system(sys ? sys[0] : 0)};
@@ -71,7 +71,7 @@ UTEST(vial_ir, dump_script) {
 }
 
 UTEST(vial_ir, lowers_and_verifies) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_vial_program_t* prog = vial_ir__compile("a = 1 + 2\nb = residue(chain='A')\nc = distance(b.com, b[0].com)\n", 'T', alloc);
     const vial_ir_t* ir = md_vial__ir(prog);
     char err[256];
@@ -100,7 +100,7 @@ typedef struct vial_ir__run_t {
 
 static bool vial_ir__start(vial_ir__run_t* r, const char* src, const md_system_t* sys) {
     memset(r, 0, sizeof(*r));
-    r->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    r->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const md_vial_compile_desc_t desc = {.sys = sys};
     r->prog = md_vial_compile(str_from_cstr(src), &desc, r->alloc);
     const vial_ir_t* ir = md_vial__run_ir(r->prog);
@@ -189,7 +189,7 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
     static int64_t frames;
     if (!loaded) {
         loaded = true;
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
@@ -309,7 +309,7 @@ static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
 
 // __all__: exactly the names it lists are published; the others stay for hover, as _names do
 UTEST(vial_ir, all_publishes) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     const char* src = "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\n_h = d * 2\nshown_too = _h + 1\n__all__ = ['d', '_h']\n";
@@ -390,7 +390,7 @@ UTEST(vial_ir, weights_uniform) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 2);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     const char* src =
         "s   = residue[3]\n"
         "ref = at(s.xyz, frame=0)\n"
@@ -424,7 +424,7 @@ UTEST(vial_ir, weights_uniform) {
     ASSERT_TRUE(ran);
     const md_attributes_t* at = md_vial_eval_attributes(e);
     static const char* pairs[][2] = {{"c1", "c2"}, {"c3", "c4"}, {"g1", "g2"}, {"g3", "g4"}, {"r1", "r2"}, {"r3", "r4"}, {"f1", "f2"}, {"w1", "w2"}};
-    for (size_t q = 0; q < ARRAY_SIZE(pairs); ++q) {
+    for (size_t q = 0; q < MD_COUNTOF(pairs); ++q) {
         char pa[32], pb[32];
         snprintf(pa, sizeof(pa), "script/%s", pairs[q][0]);
         snprintf(pb, sizeof(pb), "script/%s", pairs[q][1]);
@@ -559,7 +559,7 @@ UTEST(vial_ir, eval_api) {
     const md_system_t* sys = vial_test_system('P');
     const int64_t nf = vial_test_run('P');
     ASSERT_TRUE(sys && nf > 2);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca   = particle(name='CA')\n"
         "ends = distance(ca[0], ca[14])\n"
@@ -664,7 +664,7 @@ UTEST(vial_ir, eval_threads) {
     const md_system_t* sys = vial_test_system('P');
     const int64_t nf = vial_test_run('P');
     ASSERT_TRUE(sys && nf > 2);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca   = particle(name='CA')\n"
         "ends = distance(ca[0], ca[14])\n"
@@ -724,7 +724,7 @@ UTEST(vial_ir, output_fingerprints) {
     ASSERT_TRUE(sys != NULL);
     const int64_t nf = vial_test_run('P');     // publishes the run, before anything is compiled against it
     ASSERT_GT(nf, 2);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* a =
         "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
@@ -816,7 +816,7 @@ UTEST(vial_ir, eval_aggregate) {
     ASSERT_TRUE(sys != NULL);
     const int64_t nf = vial_test_run('P');
     ASSERT_GT(nf, 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
@@ -868,7 +868,7 @@ UTEST(vial_ir, eval_aggregate) {
         for (int64_t f = 1; f < nf; f += 2) {
             const int bin = (int)(d[f] / 2.0f);
             if (bin >= 0 && bin < 10) want[bin] += 1.0f;
-            sum += d[f]; mx = MAX(mx, 2.0 * d[f]); ++n;
+            sum += d[f]; mx = MD_MAX(mx, 2.0 * d[f]); ++n;
         }
         ASSERT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), odd, h, 10));
         for (int i = 0; i < 10; ++i) EXPECT_EQ(want[i], h[i]);
@@ -904,7 +904,7 @@ UTEST(vial_ir, draw_spheres_capped) {
     const md_system_t* sys = vial_test_system('T');
     ASSERT_TRUE(sys != NULL);
     const md_system_state_t* st = vial_test_state('T');
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     const char* src = "w = within(2.0, of=particle[0:3000])\nv = within(2.0, of=particle[0:10])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     ASSERT_TRUE(prog != NULL);
@@ -931,7 +931,7 @@ UTEST(vial_ir, draw_spheres_capped) {
         ASSERT_LT(j, 3000u);
         EXPECT_EQ(0, seen[j]);
         seen[j] = 1;
-        lo = MIN(lo, j); hi = MAX(hi, j);
+        lo = MD_MIN(lo, j); hi = MD_MAX(hi, j);
     }
     // Spread over the points, not the first 1,000
     EXPECT_LT(lo, 50u);
@@ -958,7 +958,7 @@ UTEST(vial_ir, draw) {
     const int64_t nf = vial_test_run('P');
     ASSERT_GT(nf, 3);
     const md_system_state_t* st = vial_test_state('P');
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
@@ -1131,7 +1131,7 @@ UTEST(vial_ir, draw) {
     {
         const size_t nr = md_system_residue_count(sys);
         EXPECT_EQ(nr * nr, dr.num_elements);
-        EXPECT_EQ(MIN(nr * nr, (size_t)5000), dr.num_prims);
+        EXPECT_EQ(MD_MIN(nr * nr, (size_t)5000), dr.num_prims);
     }
 
     // A script's def: what it attached, through the call and the name; an operation on it is drawn by its type
@@ -1185,7 +1185,7 @@ static const md_vial_completion_t* vial_ir__find(const md_vial_completions_t* c,
 UTEST(vial_ir, editor) {
     ASSERT_TRUE(vial_test_system('P') != NULL);
     ASSERT_GT(vial_test_run('P'), 0);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     // Lists for highlighting, and names
     EXPECT_EQ(35u, md_vial_keywords(NULL, 0));
@@ -1289,7 +1289,7 @@ UTEST(vial_ir, filters) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     const md_system_state_t* st = vial_test_state('P');
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const uint32_t mine[] = {2, 0, 1, 1};     // out of order, once twice: the set is 0, 1, 2
     const md_vial_named_set_t stored[] = {{STR_LIT("mysel"), mine, 4}, {STR_LIT("bad name"), mine, 1}};
 
@@ -1459,7 +1459,7 @@ static bool vial_ir__same_sets(const char* a, const char* b, const md_system_t* 
 
 // s.residue[i] and the like, known when compiling and evaluated per frame: the same sets
 UTEST(vial_ir, selector_views) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     const md_system_t* sys = vial_test_system('T');
     const md_system_state_t* st = vial_test_state('T');
     ASSERT_TRUE(sys && st);
@@ -1503,7 +1503,7 @@ UTEST(vial_ir, selector_views) {
 }
 
 UTEST(vial_ir, anatomy_sets) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys;
     md_system_state_t st;
     ASSERT_TRUE(vial_ir__load_file(&sys, &st, "dppc64.pdb", alloc));
@@ -1555,7 +1555,7 @@ UTEST(vial_ir, set_mask) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     const char* src =
         "n = count(particle[particle.z > particle[0].z])\n"
         "m = sum(particle.z > particle[0].z)\n"
@@ -1594,7 +1594,7 @@ UTEST(vial_ir, population_summaries) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     const char* src =
         "ca  = particle(name='CA')\n"
         "d   = distance(ca[0], ca.xyz)\n"
@@ -1668,7 +1668,7 @@ UTEST(vial_ir, taken_over_whole) {
     ASSERT_TRUE(sys != NULL);
     const size_t nf = (size_t)vial_test_run('P');
     ASSERT_GT(nf, 3u);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* a = "_ca = particle(name='CA')\nd = distance(_ca[0], _ca[1])\nt = dihedral(_ca[0], _ca[1], _ca[2], _ca[3])\n";
     const char* b = "# moved down\n\n_ca = particle(name='CA')\nt = dihedral(_ca[0], _ca[1], _ca[2], _ca[3])\n\nd2 = distance(_ca[0], _ca[1])\n";
     const md_vial_compile_desc_t cd = {.sys = sys, .run = STR_LIT("run")};
@@ -1716,7 +1716,7 @@ UTEST(vial_ir, for_over_dynamic_residues) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "_d = [distance(r[1], r[2]) for r in residue(within(5.0, of=residue[14]))]\n"
         "m = mean(_d)\n"
@@ -1752,7 +1752,7 @@ UTEST(vial_ir, periodic_outputs) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca = particle(name='CA')\n"
         "t  = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
@@ -1801,7 +1801,7 @@ UTEST(vial_ir, missing_is_said) {
     ASSERT_TRUE(sys != NULL);
     const int64_t nf = vial_test_run('P');
     ASSERT_GT(nf, 20);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca = particle(name='CA')\n"
         "x = distance(ca[0], ca[frame()])\n"
@@ -1830,7 +1830,7 @@ UTEST(vial_ir, missing_is_said) {
 }
 
 UTEST(vial_ir, contraction) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     // Fused: a product used once, floats throughout. Not fused: ints, and a product that is also published.
     md_vial_program_t* prog = vial_ir__compile("a = [1.5, 2.5]\nb = [3.0, 4.0]\nc = a * b + 1.0\nd = 2 * 3 + 1\ne = a * b\nf = e + 1.0\n", 0, alloc);
     const vial_ir_t* ir = md_vial__run_ir(prog);
@@ -2383,7 +2383,7 @@ UTEST(vial_ir, at_in_a_def) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     const char* src =
         "def first_x(r: group):\n    return at(r.xyz, frame=0)[0, 0]\n"
         "def drift(r: group):\n    return rmsd(r, at(r.xyz, frame=0))\n"
@@ -2433,7 +2433,7 @@ UTEST(vial_ir, volumes) {
     ASSERT_TRUE(sys != NULL);
     const int64_t nf = vial_test_run('P');
     ASSERT_GT(nf, 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     const char* src =
         "s  = sdf(residue[1:5], particle(name='O'), 6.0)\n"
         "sw = sdf(residue[1:5], particle(name='O'), (6.0, 4.0, 3.0), samples=2, weights=mass(particle(name='O')))\n"
@@ -2508,7 +2508,7 @@ UTEST(vial_ir, volumes) {
         EXPECT_EQ(0.25, vial_ir__attr1(at, "script/s/basis", 8));
         EXPECT_EQ(4.0 * nf, vial_ir__attr1(at, "script/s/samples", 0));
         double smax = 0, stot = 0;
-        for (size_t i = 0; i < 48 * 48 * 48; ++i) { smax = MAX(smax, ((const float*)asd->data)[i]); stot += ((const float*)asd->data)[i]; }
+        for (size_t i = 0; i < 48 * 48 * 48; ++i) { smax = MD_MAX(smax, ((const float*)asd->data)[i]); stot += ((const float*)asd->data)[i]; }
         EXPECT_GT(stot, 0.0);
         const md_attribute_t* an = md_attributes_find(at, STR_LIT("script/n"));
         ASSERT_TRUE(an != NULL);
@@ -2528,7 +2528,7 @@ UTEST(vial_ir, volumes) {
         float* over = md_alloc(alloc, nv * sizeof(float));
         ASSERT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), all, over, nv));
         double maxdiff = 0;
-        for (size_t i = 0; i < nv; ++i) maxdiff = MAX(maxdiff, fabs((double)over[i] - ((const float*)asd->data)[i]));
+        for (size_t i = 0; i < nv; ++i) maxdiff = MD_MAX(maxdiff, fabs((double)over[i] - ((const float*)asd->data)[i]));
         EXPECT_LT(maxdiff, 1e-5 * (smax + 1));
         // The first frame alone is not the whole
         uint8_t* one = md_alloc(alloc, (size_t)nf);
@@ -2561,7 +2561,7 @@ UTEST(vial_ir, volume_diagnostics) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     vial_test_run('P');
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     struct { const char* src; const char* code; } cases[] = {
         {"v = sdf(residue[0:5], particle(name='O'), 6.0)\n", "E0320"},           // the first residue has three Hs on N
         {"v = sdf(residue[1:5], particle(name='O'), 300.0)\n", "W0407"},         // 2,400 a side at 4 per Å
@@ -2571,7 +2571,7 @@ UTEST(vial_ir, volume_diagnostics) {
         {"v = density(particle(), box=((0, 0, 0), (0, 10, 10)))\n", "E0313"},
         {"x = 4.0\nv = sdf(residue[1:5], particle(name='O'), 6.0, ref=particle(name='O').xyz)\n", "E0313"},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_vial_program_t* prog = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
         const md_vial_diagnostic_t* d;
         const size_t n = md_vial_diagnostics(prog, &d);
@@ -2591,7 +2591,7 @@ UTEST(vial_ir, volume_diagnostics) {
 UTEST(vial_ir, mcs) {
     const md_system_t* sys = vial_test_system('T');
     ASSERT_TRUE(sys != NULL);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     const char* src =
         "gtp = particle(resname='GTP')\n"
         "gdp = particle(resname='GDP')\n"
@@ -2634,7 +2634,7 @@ UTEST(vial_ir, mcs) {
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), match='colour')\n", "E0313"},
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='element')\n", "E0202"},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(bad); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(bad); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
         const size_t n = md_vial_diagnostics(p, &d);
         bool found = false;
@@ -2656,7 +2656,7 @@ static double vial_ir__max_diff(const md_attributes_t* at, const char* p, const 
     const size_t n = md_attribute_element_count(&a->format);
     if (n != md_attribute_element_count(&b->format)) return INFINITY;
     double d = 0;
-    for (size_t i = 0; i < n; ++i) d = MAX(d, fabs((double)((const float*)a->data)[i] - ((const float*)b->data)[i]));
+    for (size_t i = 0; i < n; ++i) d = MD_MAX(d, fabs((double)((const float*)a->data)[i] - ((const float*)b->data)[i]));
     if (n_out) *n_out = n;
     return d;
 }
@@ -2667,7 +2667,7 @@ UTEST(vial_ir, sdf_columns) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     const char* src =
         "ala = residue[1:3] and not particle(element='H')\n"
         "cb  = particle(name='CB')\n"
@@ -2735,7 +2735,7 @@ UTEST(vial_ir, sdf_columns) {
         {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0)\n", "E0313"},
         {T, "v = sdf(residue('PHE'), particle(name='O'), 8.0, poses=None)\n", "E0202"},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);
         const size_t nd = md_vial_diagnostics(p, &dg);
         bool found = cases[i].code == NULL ? nd == 0 : false;

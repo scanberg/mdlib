@@ -106,7 +106,7 @@ static section_t section_from_name(str_t name) {
         {"molecules",       SECTION_MOLECULES},
         {"system",          SECTION_SYSTEM},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(table); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(table); ++i) {
         if (str_eq_cstr_ignore_case(name, table[i].name)) return table[i].section;
     }
     return SECTION_IGNORE;
@@ -125,7 +125,7 @@ static void add_local_pair(itp_parser_t* p, int64_t a1, int64_t b1, bool elastic
         MD_LOG_INFO("itp: skipping connection %lld-%lld outside of moleculetype '" STR_FMT "' (%lld atoms)", (long long)a1, (long long)b1, STR_ARG(mol->name), (long long)n);
         return;
     }
-    md_atom_pair_t pair = {{ (md_atom_idx_t)(MIN(a1, b1) - 1), (md_atom_idx_t)(MAX(a1, b1) - 1) }};
+    md_atom_pair_t pair = {{ (md_atom_idx_t)(MD_MIN(a1, b1) - 1), (md_atom_idx_t)(MD_MAX(a1, b1) - 1) }};
     if (elastic) {
         md_array_push(mol->elastic_bonds, pair, p->alloc);
     } else {
@@ -158,7 +158,7 @@ static float parse_f32(str_t tok) {
 static void parse_data_line(itp_parser_t* p, str_t line) {
     str_t tok[ITP_MAX_TOKENS];
     str_t rest = line;
-    const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &rest);
+    const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
     if (num_tok == 0) return;
 
     switch (p->section) {
@@ -492,8 +492,8 @@ static size_t sort_unique_pairs(md_atom_pair_t* pairs, size_t count) {
 }
 
 bool md_itp_data_parse_str(md_itp_data_t* data, str_t str, str_t base_folder, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     itp_parser_t p = {
@@ -529,8 +529,8 @@ bool md_itp_data_parse_str(md_itp_data_t* data, str_t str, str_t base_folder, md
 }
 
 bool md_itp_data_parse_file(md_itp_data_t* data, str_t filename, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     bool ok = false;
@@ -547,8 +547,8 @@ bool md_itp_data_parse_file(md_itp_data_t* data, str_t filename, md_allocator_i*
 }
 
 void md_itp_data_free(md_itp_data_t* data, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
     for (size_t i = 0; i < md_array_size(data->atomtypes); ++i) {
         str_free(data->atomtypes[i].name, alloc);
     }
@@ -571,7 +571,7 @@ void md_itp_data_free(md_itp_data_t* data, md_allocator_i* alloc) {
     md_array_free(data->atomtypes, alloc);
     md_array_free(data->moleculetypes, alloc);
     md_array_free(data->molecules, alloc);
-    MEMSET(data, 0, sizeof(*data));
+    MD_MEMSET(data, 0, sizeof(*data));
 }
 
 // ### MATCHING ###
@@ -693,10 +693,10 @@ static void match_scan(md_itp_instance_t** out, const match_ctx_t* ctx, const md
 }
 
 size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_t* data, const md_system_t* sys, md_allocator_i* alloc) {
-    ASSERT(out_instances);
-    ASSERT(data);
-    ASSERT(sys);
-    ASSERT(alloc);
+    MD_ASSERT(out_instances);
+    MD_ASSERT(data);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     match_ctx_t ctx = { .sys = sys };
@@ -736,8 +736,8 @@ static const md_itp_atomtype_t* find_atomtype(const md_itp_data_t* data, str_t n
 }
 
 bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
-    ASSERT(sys);
-    ASSERT(data);
+    MD_ASSERT(sys);
+    MD_ASSERT(data);
 
     if (!sys->alloc || sys->atom.count == 0) {
         MD_LOG_ERROR("A topology can only supplement a loaded system");
@@ -776,7 +776,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     uint8_t* covered = md_temp_alloc_array(temp, uint8_t, atom_count);
     float*   charge  = md_temp_alloc_array(temp, float, atom_count);
     float*   mass    = md_temp_alloc_array(temp, float, atom_count);
-    MEMSET(covered, 0, atom_count);
+    MD_MEMSET(covered, 0, atom_count);
     for (size_t i = 0; i < atom_count; ++i) {
         charge[i] = NAN;
         mass[i]   = NAN;
@@ -858,24 +858,24 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         md_atom_pair_t*  nc_pairs = md_temp_alloc_array(temp, md_atom_pair_t,  num_noncovalent + 1);
         md_bond_flags_t* nc_flags = md_temp_alloc_array(temp, md_bond_flags_t, num_noncovalent + 1);
         if (num_noncovalent) {
-            MEMCPY(nc_pairs, sys->bond.pairs + old_count, sizeof(md_atom_pair_t)  * num_noncovalent);
-            MEMCPY(nc_flags, sys->bond.flags + old_count, sizeof(md_bond_flags_t) * num_noncovalent);
+            MD_MEMCPY(nc_pairs, sys->bond.pairs + old_count, sizeof(md_atom_pair_t)  * num_noncovalent);
+            MD_MEMCPY(nc_flags, sys->bond.flags + old_count, sizeof(md_bond_flags_t) * num_noncovalent);
         }
 
         md_bond_data_clear(&sys->bond);
         md_array_resize(sys->bond.pairs, count + num_user + num_noncovalent, sys->alloc);
         md_array_resize(sys->bond.flags, count + num_user + num_noncovalent, sys->alloc);
         if (count) {
-            MEMCPY(sys->bond.pairs, pairs, sizeof(md_atom_pair_t) * count);
-            MEMCPY(sys->bond.flags, flags, sizeof(md_bond_flags_t) * count);
+            MD_MEMCPY(sys->bond.pairs, pairs, sizeof(md_atom_pair_t) * count);
+            MD_MEMCPY(sys->bond.flags, flags, sizeof(md_bond_flags_t) * count);
         }
         if (num_user) {
-            MEMCPY(sys->bond.pairs + count, user_pairs, sizeof(md_atom_pair_t) * num_user);
-            MEMCPY(sys->bond.flags + count, user_flags, sizeof(md_bond_flags_t) * num_user);
+            MD_MEMCPY(sys->bond.pairs + count, user_pairs, sizeof(md_atom_pair_t) * num_user);
+            MD_MEMCPY(sys->bond.flags + count, user_flags, sizeof(md_bond_flags_t) * num_user);
         }
         if (num_noncovalent) {
-            MEMCPY(sys->bond.pairs + count + num_user, nc_pairs, sizeof(md_atom_pair_t)  * num_noncovalent);
-            MEMCPY(sys->bond.flags + count + num_user, nc_flags, sizeof(md_bond_flags_t) * num_noncovalent);
+            MD_MEMCPY(sys->bond.pairs + count + num_user, nc_pairs, sizeof(md_atom_pair_t)  * num_noncovalent);
+            MD_MEMCPY(sys->bond.flags + count + num_user, nc_flags, sizeof(md_bond_flags_t) * num_noncovalent);
         }
         sys->bond.count = count + num_user;
         sys->bond.noncovalent_count = num_noncovalent;
@@ -908,7 +908,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         const float BEAD_MIN_MASS = 20.0f;
         const size_t num_particle_types = sys->atom.type.count;
         uint8_t* bead = md_temp_alloc_array(temp, uint8_t, num_particle_types); // 0 unseen, 1 of beads, 2 of atoms
-        MEMSET(bead, 0, num_particle_types);
+        MD_MEMSET(bead, 0, num_particle_types);
         for (size_t k = 0; k < num_instances; ++k) {
             const md_itp_moleculetype_t* mol = &data->moleculetypes[instances[k].type];
             const size_t off = instances[k].atom_offset;
@@ -935,7 +935,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         if (md_array_size(sys->atom.type.flags) < num_particle_types) {
             const size_t size = md_array_size(sys->atom.type.flags);
             md_array_resize(sys->atom.type.flags, num_particle_types, sys->alloc);
-            MEMSET(sys->atom.type.flags + size, 0, (num_particle_types - size) * sizeof(md_particle_type_flags_t));
+            MD_MEMSET(sys->atom.type.flags + size, 0, (num_particle_types - size) * sizeof(md_particle_type_flags_t));
         }
         size_t num_bead_types = 0;
         for (size_t t = 1; t < num_particle_types; ++t) {
@@ -959,7 +959,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         const size_t num_particle_types = sys->atom.type.count;
         float*   fill  = md_temp_alloc_array(temp, float,   num_particle_types);
         uint8_t* state = md_temp_alloc_array(temp, uint8_t, num_particle_types); // 0 unseen, 1 agreeing, 2 conflicting
-        MEMSET(state, 0, num_particle_types);
+        MD_MEMSET(state, 0, num_particle_types);
         for (size_t i = 0; i < atom_count; ++i) {
             if (!covered[i]) continue;
             const size_t t = sys->atom.type_idx[i];
@@ -1039,7 +1039,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             md_array_free(sys->instance.res_offset, sys->alloc);
             md_array_free(sys->instance.part_type_idx, sys->alloc);
             md_array_free(sys->instance.mol_type_idx, sys->alloc);
-            MEMSET(&sys->instance, 0, sizeof(sys->instance));
+            MD_MEMSET(&sys->instance, 0, sizeof(sys->instance));
             md_molecule_type_data_free(&sys->molecule.type, sys->alloc);
         }
     }
@@ -1061,7 +1061,7 @@ done:
 }
 
 bool md_itp_system_supplement_from_file(md_system_t* sys, str_t filename) {
-    ASSERT(sys);
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
