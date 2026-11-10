@@ -578,17 +578,15 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                     stack[top++] = b;
                 }
             }
-            // The fragments it touches: the backbones apart, as a CB goes with its side chain
+            // The fragments it touches: the backbone apart, which takes no side chain (a CB goes with its side chain)
             int32_t touch[2] = { -1, -1 };
             uint32_t num_touch = 0;
             int32_t backbone = -1;
             uint32_t num_backbone = 0;
-            bool to_backbone_n = false;     // the ring of a proline: from CA round to N
             for (size_t m = 0; m < num; ++m) {
                 const uint32_t a = members[m];
                 for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
                     const uint32_t j = c->nb[k];
-                    if (c->z[j] == MD_Z_N && frag_on_backbone(c, j)) to_backbone_n = true;
                     const int32_t u = c->unit_of[j];
                     if (u < 0) continue;
                     if (c->unit_kind[u] == MD_FRAGMENT_BACKBONE) {
@@ -600,15 +598,12 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                     num_touch++;
                 }
             }
-            int32_t alpha = -1;     // the alpha carbon it is of, where it is the side chain of one
-            if (backbone >= 0 && c->unit_role[backbone] == FRAG_ROLE_ALPHA_CARBON) alpha = backbone;
-            if (alpha >= 0 && num_backbone == 1 && to_backbone_n) {
-                // Closes a ring through the backbone: goes with the alpha carbon, as the ring is of the residue
-                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], alpha, false);
-            } else if (num <= 2 && num_touch == 1) {
+            // A methyl or ethyl on a functional group is of it, as a chemist names them together: the methyls of a
+            // dimethylamino, the methyl of a methoxy or an acetyl, the CB of a serine's hydroxyl. On a ring it is a
+            // substituent of its own (toluene is a phenyl and a methyl), as it is on the backbone (the CB of an
+            // alanine is a methyl, the CB of a phenylalanine the methylene between its alpha carbon and phenyl).
+            if (num <= 2 && num_touch == 1 && c->unit_kind[touch[0]] == MD_FRAGMENT_GROUP) {
                 for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], touch[0], false);
-            } else if (num <= 2 && num_touch == 0 && num_backbone == 1) {
-                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], backbone, false);
             } else {
                 const int32_t u = frag_new_unit(c, num_touch + num_backbone >= 2 ? MD_FRAGMENT_LINKER : MD_FRAGMENT_ALKYL);
                 for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], u, true);

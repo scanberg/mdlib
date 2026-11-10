@@ -28,8 +28,8 @@
 // WHAT A FRAGMENT IS
 //
 //   backbone        Of a polymer whose residues were resolved (their atoms have roles, MD_RESIDUE_FLAG_RESOLVED). Of a
-//                   protein: the alpha carbon of each amino acid (CA, with a side chain of one carbon: the CB of an
-//                   alanine, the ring of a proline), the peptide group between two (C, O and the next N: "peptide"),
+//                   protein: the alpha carbon of each amino acid (CA alone, with its hydrogen), the peptide group
+//                   between two (C, O and the next N: "peptide"),
 //                   and the termini (an ammonium, a carboxylate). Of a nucleic acid: the sugar of each nucleotide (its
 //                   ring and C5': "deoxyribose", "ribose") and the phosphate between two. Any group with an atom of
 //                   MD_ATOM_FLAG_BACKBONE is of the backbone; the side chains and bases are fragmented as below.
@@ -39,10 +39,13 @@
 //   functional      Ertl's algorithm (J. Cheminform. 9:36, 2017): the heteroatoms, the carbons double or triple
 //   group           bonded to a heteroatom, the carbons of C=C and C#C outside of rings, the acetal carbons and the
 //                   carbons carrying two or more halogens are marked; each connected set of marked atoms is a group.
-//   alkyl, linker   What is left of the carbon skeleton, as connected pieces. A piece of one or two carbons which
-//                   touches exactly one fragment other than of the backbone is part of it (the CB of a tyrosine, with
-//                   its ring), one which touches only the backbone part of that; larger ones are an ALKYL (isopropyl,
-//                   isobutyl, sec-butyl of valine, leucine, isoleucine), or a LINKER between two or more fragments.
+//   alkyl, linker   What is left of the carbon skeleton, as connected pieces. A piece of one or two carbons on one
+//                   functional group, and nothing else but the backbone, is part of the group, as a chemist names them
+//                   together (the methyls of a dimethylamino, the methyl of a methoxy, the CB of a serine's hydroxyl).
+//                   Any other piece is an ALKYL (a methyl on a ring; the methyl, isopropyl, isobutyl and sec-butyl of
+//                   alanine, valine, leucine, isoleucine) or a LINKER between two or more fragments (the methylene
+//                   between a phenylalanine's alpha carbon and its ring). Neither a ring system nor the backbone takes
+//                   a piece of the skeleton: what is drawn as a phenyl is the six carbons of its ring.
 //   atom            Anything else on its own: a metal, an ion, a lone atom.
 //
 // A single halogen belongs to the fragment of the atom it is bonded to, every hydrogen to that of its heavy atom.

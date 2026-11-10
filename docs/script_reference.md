@@ -615,9 +615,10 @@ One selection per fragment: the chemically meaningful pieces each molecule is cu
 - `"functional group"`: by Ertl's algorithm, the heteroatoms and the carbons bonded to them by double or triple
   bonds, joined.
 - `"linker"` and `"alkyl"`: the carbon skeleton left over, between fragments or at an end. A piece of one or two carbons
-  goes with the one fragment it touches: the CB of a serine goes with its hydroxyl, a methyl with its ring, the CB of an
-  alanine with its alpha carbon. Larger pieces are named by their shape: the `"isopropyl"` of a valine, the
-  `"isobutyl"` of a leucine, the `"sec-butyl"` of an isoleucine.
+  on a functional group goes with it: the methyls of a dimethylamino, the CB of a serine with its hydroxyl. A ring or
+  the backbone takes none: a methyl on a ring is a `"methyl"`, as is the CB of an alanine, and the CB of a
+  phenylalanine is the `"methylene"` between its alpha carbon and its ring. Alkyls are named by their shape: the
+  `"isopropyl"` of a valine, the `"isobutyl"` of a leucine, the `"sec-butyl"` of an isoleucine.
 - `"atom"`: a metal, an ion, a lone atom.
 
 Hydrogens go with their heavy atom. Each fragment is named from a library of SMILES (`"phenyl"`, `"pyridyl"`,

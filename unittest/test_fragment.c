@@ -244,7 +244,6 @@ UTEST(fragment, single_fragment_molecules) {
         { "CCOC(C)=O",        "ester",       MD_FRAGMENT_GROUP },        // the ethyl and the methyl go with it
         { "c1ccc2ccccc2c1",   "naphthyl",    MD_FRAGMENT_RING_SYSTEM },  // fused: one fragment
         { "Clc1ccccc1",       "phenyl",      MD_FRAGMENT_RING_SYSTEM },  // a single halogen goes with its ring
-        { "Cc1ccncc1",        "pyridyl",     MD_FRAGMENT_RING_SYSTEM },  // and so does a methyl
         { "O=C1C=CC(=O)C=C1", "benzoquinone",MD_FRAGMENT_RING_SYSTEM },  // the exocyclic O are the ring's
         { "c1ccc2c(c1)ccn2",  "indolyl",     MD_FRAGMENT_RING_SYSTEM },
     };
@@ -258,6 +257,25 @@ UTEST(fragment, single_fragment_molecules) {
         if (!md_str_eq_cstr(md_system_fragment_name(&u.sys, 0), cases[i].name)) frag_print(&u.sys);
         frag_case_free(&u);
     }
+}
+
+UTEST(fragment, an_alkyl_is_of_a_group_but_on_a_ring_of_its_own) {
+    // 4-methylpyridine: the methyl is a substituent of the ring, not a part of it
+    frag_case_t t = {0};
+    ASSERT_TRUE(frag_case(&t, "Cc1ccncc1"));
+    frag_check(utest_result, &t.sys);
+    ASSERT_EQ(md_system_fragment_count(&t.sys), (size_t)2);
+    EXPECT_FRAG(&t.sys, "pyridyl", MD_FRAGMENT_RING_SYSTEM, 6);
+    EXPECT_FRAG(&t.sys, "methyl",  MD_FRAGMENT_ALKYL,       1);
+    frag_case_free(&t);
+
+    // anisole: the methyl of the methoxy is of the ether
+    ASSERT_TRUE(frag_case(&t, "COc1ccccc1"));
+    frag_check(utest_result, &t.sys);
+    ASSERT_EQ(md_system_fragment_count(&t.sys), (size_t)2);
+    EXPECT_FRAG(&t.sys, "ether",  MD_FRAGMENT_GROUP,       2);
+    EXPECT_FRAG(&t.sys, "phenyl", MD_FRAGMENT_RING_SYSTEM, 6);
+    frag_case_free(&t);
 }
 
 UTEST(fragment, donor_bridge_acceptor_stays_apart) {
@@ -410,8 +428,8 @@ UTEST(fragment, the_backbone_of_a_peptide) {
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(fragment, the_side_chain_of_an_alanine_is_its_alpha_carbon) {
-    // Ala-Ala: the CB, one carbon on CA alone, goes with the alpha carbon
+UTEST(fragment, the_alpha_carbon_is_of_the_backbone_alone) {
+    // Ala-Ala: the alpha carbon is CA alone, of the backbone; the CB of each a methyl of its own
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     const char* names[] = { "ALA", "ALA" };
@@ -428,10 +446,14 @@ UTEST(fragment, the_side_chain_of_an_alanine_is_its_alpha_carbon) {
     }
     ASSERT_TRUE(md_util_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
-    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)5);
+    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)7);
     EXPECT_EQ(frag_count_named(&sys, "alpha carbon"), (size_t)2);
+    EXPECT_EQ(frag_count_named(&sys, "methyl"), (size_t)2);
     for (md_fragment_idx_t f = 0; f < md_system_fragment_count(&sys); ++f) {
-        if (md_str_eq_cstr(md_system_fragment_name(&sys, f), "alpha carbon")) EXPECT_EQ(frag_heavy_count(&sys, f), (size_t)2);
+        if (md_str_eq_cstr(md_system_fragment_name(&sys, f), "alpha carbon")) EXPECT_EQ(frag_heavy_count(&sys, f), (size_t)1);
+        if (md_str_eq_cstr(md_system_fragment_name(&sys, f), "methyl")) {
+            EXPECT_EQ((int)md_system_fragment_kind(&sys, f), (int)MD_FRAGMENT_ALKYL);
+        }
     }
     md_arena_allocator_destroy(alloc);
 }
