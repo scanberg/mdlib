@@ -749,6 +749,24 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
         conn->bond_idx[idx_b] = (md_bond_idx_t)i;
     }
 
+    // Each atom's neighbours ascending by atom index, whatever order the bonds were found in (a spatial search finds
+    // them in cell order). What walks the graph - the slot order of the molecules (md_molecule_data_t) above all -
+    // then depends on the atoms' order alone, so that molecules alike, written alike, are walked alike.
+    for (size_t a = 0; a < atom_count; ++a) {
+        const uint32_t beg = conn->offset[a], end = conn->offset[a + 1];
+        for (uint32_t k = beg + 1; k < end; ++k) {
+            const md_atom_idx_t ai = conn->atom_idx[k];
+            const md_bond_idx_t bi = conn->bond_idx[k];
+            uint32_t j = k;
+            for (; j > beg && conn->atom_idx[j - 1] > ai; --j) {
+                conn->atom_idx[j] = conn->atom_idx[j - 1];
+                conn->bond_idx[j] = conn->bond_idx[j - 1];
+            }
+            conn->atom_idx[j] = ai;
+            conn->bond_idx[j] = bi;
+        }
+    }
+
     md_temp_end(temp);
 }
 
