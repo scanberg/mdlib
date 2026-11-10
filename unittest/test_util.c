@@ -1321,6 +1321,110 @@ static const char palmitoyl_cys_pdb[] =
     "ATOM  19172 H16C CYS A1236     130.750 134.090 209.140  0.00  0.00           H\n"
     "END\n";
 
+// A nucleotide by name is one of the standard names, padded or with the terminal suffix of Amber and GROMACS (DA5, A3),
+// and nothing else: not a ligand of the extended codes of the chemical component dictionary (A1IK6, A1JB9), whose letters
+// before the digit are a standard name, nor U5P, nor TIP3P water (T3P).
+UTEST(util, nucleotide_resname) {
+    const char* yes_rna[] = {"A", "U", " G ", "C5", "A3"};
+    const char* yes_dna[] = {"DA", "DT", "DG5", "DC3", " DA "};
+    const char* no[]      = {"A1IK6", "A1JB9", "U5P", "T3P", "T4P", "T5P", "C14", "A2M", "N1", "5DA", "XA", "DA53", "DA7", "3", "", "ALA", "ADE"};
+    for (size_t i = 0; i < MD_COUNTOF(yes_rna); ++i) {
+        EXPECT_TRUE(md_util_resname_rna(md_str_from_cstr(yes_rna[i])));
+        EXPECT_TRUE(md_util_resname_nucleotide(md_str_from_cstr(yes_rna[i])));
+    }
+    for (size_t i = 0; i < MD_COUNTOF(yes_dna); ++i) {
+        EXPECT_TRUE(md_util_resname_dna(md_str_from_cstr(yes_dna[i])));
+        EXPECT_TRUE(md_util_resname_nucleotide(md_str_from_cstr(yes_dna[i])));
+    }
+    for (size_t i = 0; i < MD_COUNTOF(no); ++i) {
+        EXPECT_FALSE(md_util_resname_nucleotide(md_str_from_cstr(no[i])));
+    }
+}
+
+// The ligand A1JB9 of 9qzl, a covalent inhibitor of NonO, has no atoms named as the backbone of a nucleotide: its name
+// alone could make it one, and must not
+static const char a1jb9_cif[] =
+    "data_A1JB9\n"
+    "loop_\n"
+    "_atom_site.group_PDB\n"
+    "_atom_site.id\n"
+    "_atom_site.type_symbol\n"
+    "_atom_site.label_atom_id\n"
+    "_atom_site.label_alt_id\n"
+    "_atom_site.label_comp_id\n"
+    "_atom_site.label_asym_id\n"
+    "_atom_site.label_entity_id\n"
+    "_atom_site.label_seq_id\n"
+    "_atom_site.Cartn_x\n"
+    "_atom_site.Cartn_y\n"
+    "_atom_site.Cartn_z\n"
+    "_atom_site.auth_asym_id\n"
+    "_atom_site.auth_seq_id\n"
+    "HETATM 1 C C21 . A1JB9 C 2 . -14.89088 34.98645 8.41739 C 401\n"
+    "HETATM 2 C C22 . A1JB9 C 2 . -13.54556 35.10987 8.12241 C 401\n"
+    "HETATM 3 C C25 . A1JB9 C 2 . -10.62193 32.96442 7.63592 C 401\n"
+    "HETATM 4 C C02 . A1JB9 C 2 . -13.84536 33.61134 13.30844 C 401\n"
+    "HETATM 5 C C04 . A1JB9 C 2 . -15.65973 34.74598 12.08074 C 401\n"
+    "HETATM 6 C C05 . A1JB9 C 2 . -16.95876 34.26957 11.68238 C 401\n"
+    "HETATM 7 C C06 . A1JB9 C 2 . -18.12849 34.80314 12.38640 C 401\n"
+    "HETATM 8 C C26 . A1JB9 C 2 . -13.34836 32.71988 7.99413 C 401\n"
+    "HETATM 9 C C27 . A1JB9 C 2 . -14.69327 32.58878 8.28672 C 401\n"
+    "HETATM 10 C C30 . A1JB9 C 2 . -16.32890 32.04194 11.23282 C 401\n"
+    "HETATM 11 N N03 . A1JB9 C 2 . -14.79462 33.60739 12.37260 C 401\n"
+    "HETATM 12 C C20 . A1JB9 C 2 . -15.45832 33.72549 8.50526 C 401\n"
+    "HETATM 13 C C23 . A1JB9 C 2 . -12.77472 33.97918 7.91633 C 401\n"
+    "HETATM 14 C C31 . A1JB9 C 2 . -14.88078 32.41807 11.51333 C 401\n"
+    "HETATM 15 C C32 . A1JB9 C 2 . -13.05443 34.83487 13.50164 C 401\n"
+    "HETATM 16 N N07 . A1JB9 C 2 . -17.93222 35.07418 13.69030 C 401\n"
+    "HETATM 17 N N18 . A1JB9 C 2 . -17.05650 33.23376 10.72339 C 401\n"
+    "HETATM 18 O O01 . A1JB9 C 2 . -13.57555 32.59012 13.96340 C 401\n"
+    "HETATM 19 O O17 . A1JB9 C 2 . -19.21791 34.95509 11.83548 C 401\n"
+    "HETATM 20 O O24 . A1JB9 C 2 . -11.42294 34.14170 7.75883 C 401\n"
+    "HETATM 21 O O28 . A1JB9 C 2 . -17.75356 34.83010 8.95684 C 401\n"
+    "HETATM 22 O O29 . A1JB9 C 2 . -17.68353 32.41143 8.45239 C 401\n"
+    "HETATM 23 S S19 . A1JB9 C 2 . -17.11222 33.56123 9.08767 C 401\n"
+    "HETATM 24 C C1 . A1JB9 C 2 . -19.05794 35.27664 14.59092 C 401\n"
+    "HETATM 25 C C3 . A1JB9 C 2 . -19.76980 37.42108 13.48350 C 401\n"
+    "HETATM 26 C C4 . A1JB9 C 2 . -20.15111 38.74873 13.52344 C 401\n"
+    "HETATM 27 C C5 . A1JB9 C 2 . -20.27179 39.39254 14.74358 C 401\n"
+    "HETATM 28 C C6 . A1JB9 C 2 . -20.00894 38.70341 15.91567 C 401\n"
+    "HETATM 29 C C2 . A1JB9 C 2 . -19.50314 36.71711 14.64668 C 401\n"
+    "HETATM 30 C C8 . A1JB9 C 2 . -20.91030 41.38337 13.57517 C 401\n"
+    "HETATM 31 C C7 . A1JB9 C 2 . -19.62866 37.37564 15.86020 C 401\n"
+    "HETATM 32 O O1 . A1JB9 C 2 . -20.65529 40.70556 14.80583 C 401\n"
+    "#\n";
+
+UTEST(util, extended_ccd_ligand_is_not_nucleotide) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (md_str_t){a1jb9_cif, sizeof(a1jb9_cif) - 1}, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_EQ(1u, md_system_residue_count(&sys));
+    EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 0), "A1JB9"));
+    EXPECT_EQ((int)MD_RESIDUE_KIND_OTHER, (int)md_system_residue_kind(&sys, 0));
+    md_vm_arena_destroy(alloc);
+}
+
+// TIP3P water named T3P is water, not the nucleotide T
+UTEST(util, t3p_is_water) {
+    static const char gro[] =
+        "T3P\n"
+        "    3\n"
+        "    1T3P     OW    1   0.000   0.000   0.000\n"
+        "    1T3P    HW1    2   0.096   0.000   0.000\n"
+        "    1T3P    HW2    3  -0.024   0.093   0.000\n"
+        "   3.00000   3.00000   3.00000\n";
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (md_str_t){gro, sizeof(gro) - 1}, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_EQ(1u, md_system_residue_count(&sys));
+    EXPECT_EQ((int)MD_RESIDUE_KIND_WATER, (int)md_system_residue_kind(&sys, 0));
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(util, amino_acid_of_any_size) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};

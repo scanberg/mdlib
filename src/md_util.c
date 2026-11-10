@@ -1067,17 +1067,17 @@ static inline bool find_str_in_cstr_arr(size_t* loc, md_str_t str, const char* a
     return false;
 }
 
-// Trim whitespace, digits and 'X's
-static inline md_str_t trim_label(md_str_t lbl) {
-    const char* beg = md_str_beg(lbl);
-    const char* end = md_str_end(lbl);
-    const char* c = beg;
-    while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
-    beg = c;
-    while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
-    end = c;
-
-    return (md_str_t) { .ptr = beg, .len = end-beg };
+// A residue name as a name of a nucleotide: without the padding, and without the terminal suffix of Amber and GROMACS
+// (DA5, DT3, A5, U3). A name which goes on otherwise is not one, empty: A1JB9 (a ligand of the extended codes of the
+// chemical component dictionary, A1xxx), U5P (uridine monophosphate, a ligand) or T3P (TIP3P water) are not A, U or T.
+static inline md_str_t nucleotide_resname(md_str_t name) {
+    name = md_str_trim(name);
+    const char* p = md_str_ptr(name);
+    size_t n = 0;
+    while (n < name.len && is_alpha(p[n])) ++n;
+    if (n == name.len) return name;
+    if (n > 0 && n + 1 == name.len && (p[n] == '5' || p[n] == '3')) return md_str_substr(name, 0, n);
+    return (md_str_t){0};
 }
 
 // Modeled after gromacs implementation which assumes a separation of less than half smallest box dimension (diagonal element)
@@ -1202,17 +1202,17 @@ static inline int simd_xyz_mask(float ext[3]) {
 }
 
 bool md_util_resname_rna(md_str_t str) {
-    str = trim_label(str);
+    str = nucleotide_resname(str);
     return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna));
 }
     
 bool md_util_resname_dna(md_str_t str) {
-    str = trim_label(str);
+    str = nucleotide_resname(str);
     return find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
 }
 
 bool md_util_resname_nucleotide(md_str_t str) {
-    str = trim_label(str);
+    str = nucleotide_resname(str);
     return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna)) || find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
 }
 
