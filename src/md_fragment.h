@@ -35,13 +35,16 @@
 //                   MD_ATOM_FLAG_BACKBONE is of the backbone; the side chains and bases are fragmented as below.
 //   lipid tail      The atoms of MD_ATOM_FLAG_LIPID_TAIL, one fragment per tail.
 //   ring system     Rings (sys->ring) sharing an atom, with the terminal atoms double bonded to them (the O of a
-//                   quinone or a lactam).
+//                   quinone or a lactam). A macrocycle is no ring there (a ring is of at most MD_RING_MAX_SIZE atoms),
+//                   so its conjugated bridges join the ring systems they are between: an atom with a multiple or
+//                   aromatic bond on a cycle between two ring systems (the meso carbons of a porphyrin).
 //   functional      Ertl's algorithm (J. Cheminform. 9:36, 2017): the heteroatoms, the carbons double or triple
 //   group           bonded to a heteroatom, the carbons of C=C and C#C outside of rings, the acetal carbons and the
 //                   carbons carrying two or more halogens are marked; each connected set of marked atoms is a group.
 //   alkyl, linker   What is left of the carbon skeleton, as connected pieces. A piece of one or two carbons on one
-//                   functional group, and nothing else but the backbone, is part of the group, as a chemist names them
-//                   together (the methyls of a dimethylamino, the methyl of a methoxy, the CB of a serine's hydroxyl).
+//                   functional group (whatever ring or backbone it also touches) is part of the group, as a chemist
+//                   names them together: the methyls of a dimethylamino, the methyl of a methoxy, the CH2 of a
+//                   hydroxymethyl, the CB of a serine's hydroxyl.
 //                   Any other piece is an ALKYL (a methyl on a ring; the methyl, isopropyl, isobutyl and sec-butyl of
 //                   alanine, valine, leucine, isoleucine) or a LINKER between two or more fragments (the methylene
 //                   between a phenylalanine's alpha carbon and its ring). Neither a ring system nor the backbone takes
@@ -57,8 +60,9 @@
 // A fragment type is a kind and a name ("functional group", "amide"), shared by every fragment so called, as a residue
 // type is a name and a kind: what a selection by name takes and a legend lists, and it carries a colour, which
 // inferring again keeps. Names: the core (the ring system, or the marked atoms) identified as a whole against a
-// library of SMILES (md_match_identify: phenyl, pyridyl, amide, nitro, ...); a core of one atom by its element and
-// bonds (amine, hydroxyl, ether, water); the backbone by its part in it (alpha carbon, peptide, deoxyribose); else by
+// library of SMILES (md_match_identify: phenyl, pyridyl, amide, nitro, porphyrin, steroid, ...); a carbonyl as a
+// ketone or an aldehyde by its hydrogens; a core of one atom by its element and bonds (amine, hydroxyl, ether,
+// water); the backbone by its part in it (alpha carbon, peptide, deoxyribose); else by
 // kind and composition ("aryl C9N", "group C2NO", "C16 tail"). Two phenyls of one molecule are both "phenyl": a view
 // that needs them apart numbers them.
 //

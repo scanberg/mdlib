@@ -2,6 +2,8 @@
 
 #include <md_fragment.h>
 #include <md_smiles.h>
+#include <md_xyz.h>
+#include <md_pdb.h>
 #include <md_system.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
@@ -11,6 +13,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "component_util.h"
 
 // A system built from SMILES the way a quantum chemistry file arrives: every hydrogen an atom of its own
 // (right after its heavy atom), bond orders and aromaticity known, metal - non metal bonds coordinate.
@@ -309,7 +313,7 @@ UTEST(fragment, a_name_is_a_type) {
     frag_case_t t = {0};
     ASSERT_TRUE(frag_case(&t, "O=C(c1ccccc1)c1ccccc1"));
     frag_check(utest_result, &t.sys);
-    EXPECT_FRAG(&t.sys, "carbonyl", MD_FRAGMENT_GROUP, 2);
+    EXPECT_FRAG(&t.sys, "ketone", MD_FRAGMENT_GROUP, 2);     // benzophenone
     EXPECT_EQ(frag_count_named(&t.sys, "phenyl"), (size_t)2);
     EXPECT_EQ(md_system_fragment_type_count(&t.sys), (size_t)2);
     frag_case_free(&t);
@@ -507,4 +511,191 @@ UTEST(fragment, no_molecules_no_fragments) {
     EXPECT_EQ(md_system_fragment_count(&sys), (size_t)0);
     EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, 0), MD_FRAGMENT_NONE);
     md_arena_allocator_destroy(alloc);
+}
+
+// ---------------------------------------------------------------------------
+// The reference molecules (unittest/frag_chem.txt): each read as a user's xyz file is, elements and coordinates
+// only, and its fragments compared with those the file lists
+// ---------------------------------------------------------------------------
+
+#define FRAG_REF_LINE 96
+
+typedef struct frag_ref_t {
+    char id[8];
+    md_array(char) lines;       // FRAG_REF_LINE each: "heavy kind name"
+} frag_ref_t;
+
+static const char* frag_kind_token(md_fragment_kind_t k) {
+    switch (k) {
+    case MD_FRAGMENT_BACKBONE:    return "backbone";
+    case MD_FRAGMENT_LIPID_TAIL:  return "tail";
+    case MD_FRAGMENT_RING_SYSTEM: return "ring";
+    case MD_FRAGMENT_GROUP:       return "group";
+    case MD_FRAGMENT_LINKER:      return "linker";
+    case MD_FRAGMENT_ALKYL:       return "alkyl";
+    case MD_FRAGMENT_ATOM:        return "atom";
+    default:                      return "?";
+    }
+}
+
+static int frag_cmp_line(const void* a, const void* b) {
+    return strcmp((const char*)a, (const char*)b);
+}
+
+static md_array(frag_ref_t) frag_read_refs(md_str_t path, md_allocator_i* alloc) {
+    md_array(frag_ref_t) refs = 0;
+    md_str_t text = md_load_textfile(path, alloc);
+    md_str_t line;
+    while (md_str_extract_line(&line, &text)) {
+        if (line.len >= 5 && (!strncmp(line.ptr, "COMP ", 5) || !strncmp(line.ptr, "FRAG ", 5))) {
+            frag_ref_t r = { 0 };
+            char buf[64] = { 0 };
+            memcpy(buf, line.ptr + 5, MD_MIN(line.len - 5, sizeof(buf) - 1));
+            sscanf(buf, "%7s", r.id);
+            md_array_push(refs, r, alloc);
+        } else if (line.len > 2 && line.ptr[0] == 'F' && line.ptr[1] == ' ' && md_array_size(refs)) {
+            frag_ref_t* r = md_array_last(refs);
+            const size_t base = md_array_size(r->lines);
+            md_array_resize(r->lines, base + FRAG_REF_LINE, alloc);
+            snprintf(r->lines + base, FRAG_REF_LINE, "%.*s", (int)(line.len - 2), line.ptr + 2);
+        }
+    }
+    return refs;
+}
+
+// The fragments of a component read from its elements and coordinates, one line each, sorted
+static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_allocator_i* alloc) {
+    md_array(char) xyz = 0;
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf), "%zu\n%s\n", md_array_size(c->atom), c->id);
+    md_array_push_array(xyz, buf, (size_t)len, alloc);
+    for (size_t i = 0; i < md_array_size(c->atom); ++i) {
+        const ref_atom_t* a = &c->atom[i];
+        const md_str_t sym = md_util_element_symbol((md_element_t)a->z);
+        len = snprintf(buf, sizeof(buf), "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, a->x.x, a->x.y, a->x.z);
+        md_array_push_array(xyz, buf, (size_t)len, alloc);
+    }
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, 0)) return 0;
+    if (!md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) return 0;
+    const size_t n = md_system_fragment_count(&sys);
+    md_array_resize(*out, n * FRAG_REF_LINE, alloc);
+    for (md_fragment_idx_t f = 0; f < n; ++f) {
+        size_t heavy = 0;
+        for (md_fragment_atom_iter_t it = md_fragment_atom_iter(&sys, f); md_fragment_atom_iter_next(&it);) {
+            heavy += md_atom_atomic_number(&sys.atom, (size_t)it.atom) > 1;
+        }
+        const md_str_t name = md_system_fragment_name(&sys, f);
+        snprintf(*out + (size_t)f * FRAG_REF_LINE, FRAG_REF_LINE, "%zu %s %.*s", heavy, frag_kind_token(md_system_fragment_kind(&sys, f)), (int)name.len, name.ptr);
+    }
+    qsort(*out, n, FRAG_REF_LINE, frag_cmp_line);
+    return n;
+}
+
+UTEST(fragment, reference_molecules) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
+    const md_str_t frag_path = MD_STR_LIT(MD_UNITTEST_SOURCE_DIR "/frag_chem.txt");
+    md_array(ref_comp_t) own = read_components(frag_path, alloc);
+    md_array(ref_comp_t) ccd = read_components(MD_STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), alloc);
+    md_array(frag_ref_t) refs = frag_read_refs(frag_path, alloc);
+    ASSERT_GT(md_array_size(refs), (size_t)200);
+
+    size_t failed = 0;
+    for (size_t r = 0; r < md_array_size(refs); ++r) {
+        const frag_ref_t* ref = &refs[r];
+        const ref_comp_t* c = find_component(own, ref->id);
+        if (!c) c = find_component(ccd, ref->id);
+        EXPECT_TRUE(c != NULL);
+        if (!c) continue;
+
+        const size_t num_want = md_array_size(ref->lines) / FRAG_REF_LINE;
+        char* want = md_alloc(alloc, (num_want ? num_want : 1) * FRAG_REF_LINE);
+        if (num_want) memcpy(want, ref->lines, num_want * FRAG_REF_LINE);
+        qsort(want, num_want, FRAG_REF_LINE, frag_cmp_line);
+
+        md_allocator_i* malloc_ = md_vm_arena_create(MD_GIGABYTES(1));
+        md_array(char) got = 0;
+        const size_t num_got = frag_component_lines(&got, c, malloc_);
+        bool same = num_got == num_want;
+        for (size_t i = 0; same && i < num_got; ++i) same = strcmp(got + i * FRAG_REF_LINE, want + i * FRAG_REF_LINE) == 0;
+        if (!same) {
+            failed++;
+            printf("  %s: want", ref->id);
+            for (size_t i = 0; i < num_want; ++i) printf(" [%s]", want + i * FRAG_REF_LINE);
+            printf("\n  %*s  got ", (int)strlen(ref->id), "");
+            for (size_t i = 0; i < num_got; ++i) printf(" [%s]", got + i * FRAG_REF_LINE);
+            printf("\n");
+        }
+        md_vm_arena_destroy(malloc_);
+    }
+    EXPECT_EQ(failed, (size_t)0);
+    md_vm_arena_destroy(alloc);
+}
+
+// A peptide from a structure file: the backbone as peptide groups and alpha carbons, each residue's side chain as
+// its chemistry has it
+UTEST(fragment, the_residues_of_a_protein) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+
+    // The side chain of each amino acid within a chain: its fragments of no backbone, by heavy atoms and name
+    static const struct { const char* res; const char* side; } want[] = {
+        { "ALA", "1 methyl" },
+        { "ARG", "3 C3 linker | 4 guanidine" },
+        { "ASN", "4 amide" },
+        { "ASP", "4 carboxylate" },
+        { "GLN", "5 amide" },
+        { "GLU", "5 carboxylate" },
+        { "GLY", "" },
+        { "HIS", "1 methylene | 5 imidazolyl" },
+        { "ILE", "4 sec-butyl" },
+        { "LEU", "4 isobutyl" },
+        { "LYS", "1 ammonium | 4 C4 linker" },
+        { "MET", "4 thioether" },
+        { "PHE", "1 methylene | 6 phenyl" },
+        { "PRO", "3 C3 linker" },
+        { "SER", "2 hydroxyl" },
+        { "THR", "3 hydroxyl" },
+        { "TRP", "1 methylene | 9 indolyl" },
+        { "TYR", "1 hydroxyl | 1 methylene | 6 phenyl" },
+        { "VAL", "3 isopropyl" },
+    };
+    for (size_t w = 0; w < MD_COUNTOF(want); ++w) {
+        // The first residue of the name with a peptide group on either side
+        bool found = false;
+        for (size_t r = 0; r < sys.residue.count && !found; ++r) {
+            if (!md_str_eq_cstr(md_system_residue_name(&sys, r), want[w].res)) continue;
+            md_fragment_idx_t frags[16];
+            const size_t num = MD_MIN(md_system_residue_fragments(frags, 16, &sys, r), (size_t)16);
+            size_t num_peptide = 0, num_alpha = 0;
+            char side[8][FRAG_REF_LINE];
+            size_t num_side = 0;
+            for (size_t k = 0; k < num; ++k) {
+                const md_str_t name = md_system_fragment_name(&sys, frags[k]);
+                if (md_str_eq_cstr(name, "peptide")) { num_peptide++; continue; }
+                if (md_str_eq_cstr(name, "alpha carbon")) { num_alpha++; continue; }
+                size_t heavy = 0;
+                for (md_fragment_atom_iter_t it = md_fragment_atom_iter(&sys, frags[k]); md_fragment_atom_iter_next(&it);) {
+                    heavy += md_atom_atomic_number(&sys.atom, (size_t)it.atom) > 1;
+                }
+                if (num_side < 8) snprintf(side[num_side++], FRAG_REF_LINE, "%zu %.*s", heavy, (int)name.len, name.ptr);
+            }
+            if (num_peptide != 2 || num_alpha != 1) continue;
+            found = true;
+            qsort(side, num_side, FRAG_REF_LINE, frag_cmp_line);
+            char got[256] = "";
+            for (size_t k = 0; k < num_side; ++k) {
+                if (k) strcat(got, " | ");
+                strcat(got, side[k]);
+            }
+            EXPECT_STREQ(want[w].side, got);
+            if (strcmp(want[w].side, got)) printf("  %s: want '%s', got '%s'\n", want[w].res, want[w].side, got);
+        }
+        EXPECT_TRUE(found);
+    }
+    md_vm_arena_destroy(alloc);
 }

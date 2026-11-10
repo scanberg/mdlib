@@ -103,6 +103,12 @@ static const frag_lib_entry_t frag_library[] = {
     { "c1ccc2c(c1)ocn2",            "benzoxazolyl" },
     { "c1ccc2c(c1)scn2",            "benzothiazolyl" },
     { "c1ccc2c(c1)nsn2",            "benzothiadiazolyl" },
+    { "C1~C~C2~C~C3~C~C~C(~N3)~C~C3~C~C~C(~N3)~C~C3~C~C~C(~N3)~C~C1~N2", "porphyrin" },
+    { "B1~N2~C~C~C~C~2~C~C2~C~C~C~N~1~2", "BODIPY" },
+    { "C1~C~C~C2~C(~C1)~C~C~C1~C2~C~C~C2~C~C~C~C~1~2", "steroid" },
+    { "O~C1~N~C(~O)~C2~N~C~N~C~2~N1", "xanthine" },
+    { "O~C1~C~C~N~C2~C~C~C~C~C~1~2", "quinolone" },
+    { "O~C1~C~C2~S~C~C~N~1~2",      "penam" },
     { "c1ncc2ncnc2n1",              "purinyl" },
     // the ring systems of the nucleobases, with their oxygens (an amine on them is a group of its own): of guanine,
     // of thymine and uracil, of cytosine. Any bonds, as the tautomer perceived varies.
@@ -123,6 +129,8 @@ static const frag_lib_entry_t frag_library[] = {
     { "c1ccnn1",                    "pyrazolyl" },
     { "c1cscn1",                    "thiazolyl" },
     { "c1cocn1",                    "oxazolyl" },
+    { "c1ccon1",                    "isoxazolyl" },
+    { "c1ccsn1",                    "isothiazolyl" },
     { "c1ncnn1",                    "triazolyl" },
     { "c1nnnn1",                    "tetrazolyl" },
     // saturated and partly saturated rings
@@ -132,10 +140,13 @@ static const frag_lib_entry_t frag_library[] = {
     { "C1CCCC1",                    "cyclopentyl" },
     { "C1CCC1",                     "cyclobutyl" },
     { "C1CC1",                      "cyclopropyl" },
+    { "C1=CCCCC1",                  "cyclohexenyl" },
+    { "C1=CCCC1",                   "cyclopentenyl" },
     { "C1CNCCN1",                   "piperazinyl" },
     { "C1COCCN1",                   "morpholinyl" },
     { "C1CCNCC1",                   "piperidyl" },
     { "C1CCOCC1",                   "oxanyl" },
+    { "C1~C~C~O~C~C~1",             "pyranyl" },     // unsaturated, after oxanyl
     { "C1CCNC1",                    "pyrrolidinyl" },
     { "C1CCOC1",                    "oxolanyl" },
     { "C1CO1",                      "epoxide" },
@@ -146,7 +157,10 @@ static const frag_lib_entry_t frag_library[] = {
     { "S(=O)(=O)O",                 "sulfonic ester" },
     { "S(=O)=O",                    "sulfonyl" },
     { "S=O",                        "sulfinyl" },
+    { "O~P(~O)(~O)~O~P(~O)(~O)~O~P(~O)(~O)~O", "triphosphate" },
+    { "O~P(~O)(~O)~O~P(~O)(~O)~O",  "diphosphate" },
     { "P(~O)(~O)(~O)~O",            "phosphate" },
+    { "P(~S)(~O)(~O)~O",            "thiophosphate" },
     { "P(~O)(~O)~O",                "phosphonate" },
     { "P=O",                        "phosphoryl" },
     { "NC(=O)N",                    "urea" },
@@ -169,6 +183,7 @@ static const frag_lib_entry_t frag_library[] = {
     { "C=NN",                       "hydrazone" },
     { "NN",                         "hydrazine" },
     { "C=N",                        "imine" },
+    { "C(~C#N)~C#N",                "dicyanomethylene" },
     { "C#N",                        "nitrile" },
     { "C=CC=O",                     "enone" },
     { "C=O",                        "carbonyl" },
@@ -177,15 +192,18 @@ static const frag_lib_entry_t frag_library[] = {
     { "SS",                         "disulfide" },
     { "C(O)O",                      "acetal" },
     { "C(N)O",                      "hemiaminal" },
+    { "C(F)(F)(F)C(~O)~O",          "trifluoroacetyl" },
     { "C(F)(F)F",                   "trifluoromethyl" },
     { "C(F)F",                      "difluoromethyl" },
     { "C(Cl)(Cl)Cl",                "trichloromethyl" },
     { "C(Cl)Cl",                    "dichloromethyl" },
+    { "C(Br)(Br)Br",                "tribromomethyl" },
     { "C=CC=C",                     "diene" },
     { "C=C",                        "alkene" },
     { "C#C",                        "alkyne" },
     { "C=C=C",                      "allene" },
     { "NO",                         "hydroxylamine" },
+    { "N=O",                        "nitroso" },
 };
 
 // ---------------------------------------------------------------------------
@@ -394,6 +412,57 @@ static void frag_name_single(char* buf, size_t cap, const frag_mol_t* c, uint32_
     }
 }
 
+// The bonds between heavy atoms which are on no cycle (Tarjan's bridges, iteratively): bridge[k] for c->nb[k]
+static void frag_find_bridges(bool* bridge, const frag_mol_t* c, md_allocator_i* temp) {
+    const size_t n = c->n;
+    const size_t nn = c->nb_off[n];
+    uint32_t* disc = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
+    uint32_t* low  = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
+    uint32_t* next = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));     // the adjacency entry to look at next
+    uint32_t* from = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));     // the parent's adjacency entry it was reached by
+    uint32_t* stack = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
+    for (size_t i = 0; i < n; ++i) disc[i] = UINT32_MAX;
+    for (size_t k = 0; k < nn; ++k) bridge[k] = false;
+    uint32_t time = 0;
+    for (uint32_t s = 0; s < n; ++s) {
+        if (disc[s] != UINT32_MAX || !frag_heavy(c, s)) continue;
+        size_t top = 0;
+        stack[top++] = s;
+        disc[s] = low[s] = time++;
+        next[s] = c->nb_off[s];
+        from[s] = UINT32_MAX;
+        while (top) {
+            const uint32_t v = stack[top - 1];
+            if (next[v] < c->nb_off[v + 1]) {
+                const uint32_t k = next[v]++;
+                const uint32_t w = c->nb[k];
+                if (!frag_heavy(c, w)) continue;
+                if (disc[w] == UINT32_MAX) {
+                    disc[w] = low[w] = time++;
+                    next[w] = c->nb_off[w];
+                    from[w] = k;
+                    stack[top++] = w;
+                } else {
+                    // A back edge, unless it is the edge back to the parent v was reached from
+                    const uint32_t parent = top >= 2 ? stack[top - 2] : UINT32_MAX;
+                    if (w != parent) low[v] = MD_MIN(low[v], disc[w]);
+                }
+            } else {
+                --top;
+                if (top) {
+                    const uint32_t parent = stack[top - 1];
+                    low[parent] = MD_MIN(low[parent], low[v]);
+                    if (low[v] > disc[parent]) {
+                        // parent - v is a bridge: both of its adjacency entries
+                        bridge[from[v]] = true;
+                        for (uint32_t k = c->nb_off[v]; k < c->nb_off[v + 1]; ++k) if (c->nb[k] == parent) bridge[k] = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The fragments of one molecule: c->unit_of and c->unit_kind. rings: the rings of the molecule (global atoms).
 // ---------------------------------------------------------------------------
@@ -497,6 +566,41 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
             if (root_unit[r] < 0) root_unit[r] = frag_new_unit(c, MD_FRAGMENT_RING_SYSTEM);
             frag_assign(c, i, root_unit[r], true);
         }
+        // The conjugated bridges of a macrocycle, which is no ring here (rings are of at most MD_RING_MAX_SIZE atoms):
+        // an atom outside the rings with a multiple or aromatic bond, on a cycle (by no bridge bond) between two
+        // atoms of ring systems, joins them and they one another. The meso carbons of a porphyrin make it one ring
+        // system, as the aza bridges of a phthalocyanine; a C=C between two rings on no cycle (a stilbene) does not.
+        {
+            bool* bridge = md_alloc(temp, sizeof(bool) * (c->nb_off[n] ? c->nb_off[n] : 1));
+            frag_find_bridges(bridge, c, temp);
+            for (uint32_t i = 0; i < n; ++i) {
+                if (c->unit_of[i] >= 0 || in_ring[i] || !frag_heavy(c, i)) continue;
+                bool conjugated = false;
+                int32_t sys_a = -1, sys_b = -1;
+                uint32_t num_ring_nb = 0;
+                for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
+                    conjugated |= frag_bond_multiple(c->nb_flags[k]);
+                    const uint32_t j = c->nb[k];
+                    if (bridge[k] || !in_ring[j]) continue;
+                    const int32_t u = c->unit_of[j];
+                    if (u < 0 || c->unit_kind[u] != MD_FRAGMENT_RING_SYSTEM) continue;
+                    num_ring_nb++;
+                    if (sys_a < 0) sys_a = u;
+                    else if (u != sys_a) sys_b = u;
+                }
+                if (!conjugated || num_ring_nb < 2) continue;
+                frag_assign(c, i, sys_a, true);
+                in_ring[i] = true;
+                if (sys_b >= 0) {
+                    for (uint32_t a = 0; a < n; ++a) {
+                        if (c->unit_of[a] == sys_b) c->unit_of[a] = sys_a;
+                        if (c->core_of[a] == sys_b) c->core_of[a] = sys_a;
+                    }
+                }
+            }
+            // A bridge atom found before the ring systems it joins were joined by a later one is in a ring system
+            // still: one pass suffices, as each joins its own neighbours' systems
+        }
         // Terminal atoms double bonded to a ring atom: the O of a quinone or a lactam
         for (uint32_t i = 0; i < n; ++i) {
             if (!in_ring[i]) continue;
@@ -578,9 +682,12 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                     stack[top++] = b;
                 }
             }
-            // The fragments it touches: the backbone apart, which takes no side chain (a CB goes with its side chain)
+            // The fragments it touches: the backbone apart, which takes no side chain (a CB goes with its side chain);
+            // and of them the functional groups
             int32_t touch[2] = { -1, -1 };
             uint32_t num_touch = 0;
+            int32_t group[2] = { -1, -1 };
+            uint32_t num_group = 0;
             int32_t backbone = -1;
             uint32_t num_backbone = 0;
             for (size_t m = 0; m < num; ++m) {
@@ -593,17 +700,22 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                         if (u != backbone) { backbone = u; num_backbone++; }
                         continue;
                     }
+                    if (c->unit_kind[u] == MD_FRAGMENT_GROUP && u != group[0] && u != group[1]) {
+                        if (num_group < 2) group[num_group] = u;
+                        num_group++;
+                    }
                     if (u == touch[0] || u == touch[1]) continue;
                     if (num_touch < 2) touch[num_touch] = u;
                     num_touch++;
                 }
             }
-            // A methyl or ethyl on a functional group is of it, as a chemist names them together: the methyls of a
-            // dimethylamino, the methyl of a methoxy or an acetyl, the CB of a serine's hydroxyl. On a ring it is a
-            // substituent of its own (toluene is a phenyl and a methyl), as it is on the backbone (the CB of an
-            // alanine is a methyl, the CB of a phenylalanine the methylene between its alpha carbon and phenyl).
-            if (num <= 2 && num_touch == 1 && c->unit_kind[touch[0]] == MD_FRAGMENT_GROUP) {
-                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], touch[0], false);
+            // A piece of one or two carbons on one functional group is of it, as a chemist names them together: the
+            // methyls of a dimethylamino, the methyl of a methoxy or an acetyl, the CH2 of a hydroxymethyl or of a
+            // serine's hydroxyl, whatever ring or backbone it also touches. With no group it is a substituent or a
+            // linker of its own: a ring or the backbone takes none (toluene is a phenyl and a methyl, the CB of an
+            // alanine a methyl, that of a phenylalanine the methylene between its alpha carbon and phenyl).
+            if (num <= 2 && num_group == 1) {
+                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], group[0], false);
             } else {
                 const int32_t u = frag_new_unit(c, num_touch + num_backbone >= 2 ? MD_FRAGMENT_LINKER : MD_FRAGMENT_ALKYL);
                 for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], u, true);
@@ -976,11 +1088,33 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                         aromatic |= (frag_aflags(&c, core[k]) & MD_ATOM_FLAG_AROMATIC) != 0;
                         carbon_only &= c.z[core[k]] == MD_Z_C;
                     }
+                    // A carbonyl of carbons only, and of a conjugated chain: by its carbon's hydrogens an aldehyde or
+                    // a ketone (the library's "carbonyl" and "enone" say less)
+                    uint32_t num_o = 0, carbonyl_c = UINT32_MAX;
+                    for (size_t k = 0; k < num_core; ++k) {
+                        if (c.z[core[k]] == MD_Z_O) num_o++;
+                        else if (c.z[core[k]] != MD_Z_C) num_o = 99;
+                    }
+                    if (num_o == 1) {
+                        for (size_t k = 0; k < num_core && carbonyl_c == UINT32_MAX; ++k) {
+                            if (c.z[core[k]] != MD_Z_O || frag_heavy_degree(&c, core[k]) != 1) continue;
+                            for (uint32_t e = c.nb_off[core[k]]; e < c.nb_off[core[k] + 1]; ++e) {
+                                if (c.z[c.nb[e]] == MD_Z_C && md_bond_order(c.nb_flags[e]) == 2) carbonyl_c = c.nb[e];
+                            }
+                        }
+                    }
+                    const bool carbonyl = kind == MD_FRAGMENT_GROUP && num_o == 1 && carbonyl_c != UINT32_MAX;
+                    const bool aldehyde = carbonyl && frag_hydrogens(&c, carbonyl_c) > 0;
                     if (kind == MD_FRAGMENT_GROUP && carbon_only && num_core >= 4) {
                         snprintf(name, FRAG_NAME_CAP, "polyene");      // conjugated C=C beyond a diene
+                    } else if (carbonyl && num_core == 2) {
+                        snprintf(name, FRAG_NAME_CAP, "%s", aldehyde ? "aldehyde" : "ketone");
+                    } else if (carbonyl && num_core >= 6) {
+                        snprintf(name, FRAG_NAME_CAP, "%s", aldehyde ? "polyenal" : "polyenone");
                     } else {
                         snprintf(name, FRAG_NAME_CAP, "%s %s", kind != MD_FRAGMENT_RING_SYSTEM ? "group" : aromatic ? "aryl" : "ring", formula);
                     }
+                    if (carbonyl && num_core == 2) break;   // named: not to the library, whose "carbonyl" would win
                     // identified as a whole against the library, below; global atoms, ascending
                     for (size_t k = 0; k < num_core; ++k) core_global[k] = (uint32_t)c.atom[core[k]];
                     qsort(core_global, num_core, sizeof(uint32_t), frag_cmp_u32);
