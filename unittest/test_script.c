@@ -2698,6 +2698,65 @@ UTEST(script, attr_patterns) {
     md_vm_arena_destroy(arena);
 }
 
+// attr() of terms of groups shows the groups: each once, each a group of the visualization of its own, and of one
+// member of a pattern that member's
+UTEST(script, attr_visualizes_groups) {
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t state = {.alloc = arena};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    ASSERT_GE(sys.atom.count, 12u);
+    const uint32_t ga = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 4), 0);
+    const uint32_t gb = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("B-H"), md_bitset_range(4, 10), 0);
+    const uint32_t eg[] = {ga, gb};
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, eg, 2);
+
+    md_attributes_t* t = &sys.attributes;
+    const md_attribute_t* run_time = md_attributes_find(t, MD_STR_LIT("run/t/time"));
+    ASSERT_TRUE(run_time != NULL);
+    const uint32_t F = run_time->format.shape[0];
+    double* val = md_alloc(arena, F * sizeof(double));
+    for (uint32_t f = 0; f < F; ++f) val[f] = f;
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_a_a",     "Coul-SR:A-A",     F, 1, md_unit_none(), val), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_a_b_h",   "Coul-SR:A-B-H",   F, 1, md_unit_none(), val), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_b_h_b_h", "Coul-SR:B-H-B-H", F, 1, md_unit_none(), val), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/potential",       "Potential",       F, 1, md_unit_none(), val), MD_ATTRIBUTE_INVALID);
+
+    md_script_ir_t* ir = md_script_ir_create(arena);
+    ASSERT_TRUE(compiles(ir, "p = attr(\"edr/coul_sr_a_b_h\");\ne = attr(\"edr/coul_sr_*\");\nd = e - e;\nu = attr(\"edr/potential\");", &sys));
+    md_script_vis_ctx_t vctx = {.ir = ir, .sys = &sys, .state = &state};
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, arena);
+
+    // A pair: its two groups
+    EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, get_identifier(ir, MD_STR_LIT("p"))->node), -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    ASSERT_EQ((size_t)2, md_array_size(vis.groups));
+    EXPECT_TRUE(md_bitset_equal(vis.groups[0], md_bitset_range(0, 4)));
+    EXPECT_TRUE(md_bitset_equal(vis.groups[1], md_bitset_range(4, 10)));
+    EXPECT_TRUE(md_bitset_equal(vis.atom_mask, md_bitset_range(0, 10)));
+    md_script_vis_clear(&vis);
+
+    // Every pair: each group once
+    EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, get_identifier(ir, MD_STR_LIT("e"))->node), -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ((size_t)2, md_array_size(vis.groups));
+    md_script_vis_clear(&vis);
+    // The last member, B-H with itself: one group
+    EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, get_identifier(ir, MD_STR_LIT("e"))->node), 2, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    ASSERT_EQ((size_t)1, md_array_size(vis.groups));
+    EXPECT_TRUE(md_bitset_equal(vis.groups[0], md_bitset_range(4, 10)));
+    md_script_vis_clear(&vis);
+    // Arithmetic that keeps the members keeps their groups
+    EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, get_identifier(ir, MD_STR_LIT("d"))->node), -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ((size_t)2, md_array_size(vis.groups));
+    md_script_vis_clear(&vis);
+    // A term of no groups shows none
+    md_script_vis_eval_ref(&vis, make_vis_ref(ir, get_identifier(ir, MD_STR_LIT("u"))->node), -1, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT);
+    EXPECT_EQ((size_t)0, md_array_size(vis.groups));
+    md_script_vis_free(&vis);
+    md_vm_arena_destroy(arena);
+}
+
 // '*' stands for any run of characters, anywhere and as many times as it is written
 UTEST(script, glob_match) {
     EXPECT_TRUE (glob_match(MD_STR_LIT("CA"),    MD_STR_LIT("CA")));

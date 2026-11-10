@@ -32,6 +32,7 @@
 #include <md_smiles.h>
 
 #include <md_system.h>
+#include <md_edr.h>
 #include <md_filter.h>
 #include <md_util.h>
 
@@ -9733,6 +9734,38 @@ md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, md_str_t expr,
 
 #define VIS_MAGIC 0xbc6169abd9628947
 
+// An attr() of terms of groups (Coul-SR:Protein-SOL, md_edr_term_groups): the groups, each a group of the visualization
+// of its own, so that each is told apart, and once only where a group is of several terms (attr("edr/coul_sr_*")). Of a
+// pattern, the members the subscript ranges pick, where there are any.
+static void visualize_attr_groups(const ast_node_t* attr, eval_context_t* ctx) {
+    const md_system_t* sys = ctx->sys;
+    if (!sys || !sys->group.count) return;
+    md_script_vis_t* vis = ctx->vis;
+    const size_t n = md_array_size(attr->attr_members);
+    uint8_t* drawn = md_alloc(ctx->temp_alloc, sys->group.count);
+    md_memset(drawn, 0, sys->group.count);
+    for (size_t m = 0; m < n; ++m) {
+        if (attr->attr_pattern && ctx->subscript_ranges) {
+            bool picked = false;
+            for (size_t r = 0; r < md_array_size(ctx->subscript_ranges) && !picked; ++r) {
+                picked = ctx->subscript_ranges[r].beg <= (int)m && (int)m < ctx->subscript_ranges[r].end;
+            }
+            if (!picked) continue;
+        }
+        const md_attribute_t* at = md_attributes_get(&sys->attributes, attr->attr_members[m].id);
+        if (!at) continue;
+        md_edr_term_groups_t tg;
+        if (!md_edr_term_groups(&tg, sys, md_str_empty(at->label) ? md_attribute_leaf(at) : at->label)) continue;
+        for (uint32_t k = 0; k < tg.count; ++k) {
+            const uint32_t gi = tg.group[k];
+            if (gi >= sys->group.count || drawn[gi]) continue;
+            drawn[gi] = 1;
+            if (ctx->vis_atom_mask) md_bitmask_or(ctx->vis_atom_mask, sys->group.atoms[gi]);
+            if (vis) md_array_push(vis->groups, md_bitset_copy(sys->group.atoms[gi], vis->alloc), vis->alloc);
+        }
+    }
+}
+
 static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
 
     if (!node) {
@@ -9752,6 +9785,12 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         break;
     default:
         break;
+    }
+
+    // The groups of what an attr() reads: the node itself, or a pattern whose members it still holds ('e', 'e - e0')
+    {
+        const ast_node_t* src = node->type == AST_ATTRIBUTE ? node : labelled_pattern(node, 0);
+        if (src) visualize_attr_groups(src, ctx);
     }
 
     if (node->data.type.base_type == TYPE_ATOMSET) {

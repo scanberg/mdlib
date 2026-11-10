@@ -1184,6 +1184,7 @@ Hovering an expression in the editor draws its value in the 3D view, at the fram
 | `bond(...)` | the bonds |
 | `angle`, `dihedral` | an arc at the vertex; for a dihedral also the two planes |
 | `within(r, of=x)` | a sphere of radius r around each point of x, and the particles inside highlighted |
+| `attr(path)` of an energy term of groups | the groups it is of, each in a colour of its own: `Coul-SR:Protein-SOL` as Protein and SOL, `T-Protein` as Protein (see Groups). Of a pattern every group its terms name, once each, or of the hovered member its groups. A name bound to it draws as it does. Known from the path, so nothing is evaluated |
 | anything else | nothing; hover shows the value as text |
 
 `shown(x, d)` is `x`, with `d` drawn when it is hovered. Its type, unit, stage and pass are `x`'s, and published values are computed exactly as without it: `d` is evaluated only for hover, at the frame being shown, so a drawing costs evaluation nothing. A name bound to `shown(...)`, and a call of a `def` that returns it, are drawn with `d`; passing the value through names and returns keeps its drawing, and any operation on it gives a new value, drawn by its type. Hover draws the hovered expression's own drawing only; its inputs show theirs when their spans are hovered.

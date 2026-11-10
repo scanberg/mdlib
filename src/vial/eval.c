@@ -8,6 +8,7 @@
 
 #include <md_system.h>
 #include <md_attributes.h>
+#include <md_edr.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
@@ -1061,6 +1062,68 @@ static bool draw_sdf(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_
     return ok;
 }
 
+// The attr op that makes v, VIAL_IR_NO_OP for another value
+static uint32_t attr_op(const vial_ir_t* ir, vial_ssa_t v) {
+    const uint32_t op = ir->values[v].op;
+    if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "attr")) return VIAL_IR_NO_OP;
+    return op;
+}
+
+// An attr() drawn: the groups of the system its terms are of (md_edr_term_groups), Coul-SR:Protein-SOL as Protein and
+// SOL, each a group of the drawing of its own so that each is told apart, and once only where a group is of several
+// terms (attr('edr/coul_sr_*')), as an element of the first member that names it. Of one member of an array drawn alone,
+// that member's groups. The groups are known from the
+// path alone, which is constant, so nothing is evaluated. False for a path that names no attribute.
+static bool draw_attr(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_ir_t* ir, uint32_t opi) {
+    const vial_ir_op_t* op = &ir->ops[opi];
+    if (op->num_args < 1 || md_str_empty(desc->run)) return false;
+    const vial_ssa_t a = ir->args[op->arg_beg];
+    if (!a || ir->values[a].op == VIAL_IR_NO_OP || ir->ops[ir->values[a].op].kind != VIAL_IR_CONST) return false;
+    const vial_val_t* pv = &ir->consts[ir->ops[ir->values[a].op].aux];
+    if (pv->dtype != VIAL_DT_STR || pv->ndim || !pv->data) return false;
+    const md_str_t pattern = *(const md_str_t*)pv->data;
+    const md_system_t* sys = desc->sys;
+
+    // The members, as the check found them: one path, or every attribute of the run the pattern matches, in path order
+    md_array(md_str_t) terms = 0;
+    const md_str_t run = desc->run;
+    bool glob = false;
+    for (size_t i = 0; i < pattern.len; ++i) glob = glob || pattern.ptr[i] == '*' || pattern.ptr[i] == '?';
+    for (md_attribute_iter_t it = md_attributes_iter(&sys->attributes, run); md_attributes_next(&it);) {
+        const md_str_t path = it.attr->path;
+        if (path.len <= run.len + 1 || path.ptr[run.len] != '/') continue;
+        const md_str_t rel = {path.ptr + run.len + 1, path.len - run.len - 1};
+        if (glob ? !vial_glob(pattern, rel) : !md_str_eq(pattern, rel)) continue;
+        if (!md_attribute_type_is_numeric(it.attr->format.type)) continue;
+        md_array_push(terms, md_str_empty(it.attr->label) ? md_attribute_leaf(it.attr) : it.attr->label, o->alloc);
+    }
+    const size_t n = md_array_size(terms);
+    if (!n) return false;
+    o->d->num_elements = glob ? n : 1;
+    if (!sys->group.count) return true;
+
+    // Each group once, as an element of the first member that names it; of one member drawn alone, its groups
+    uint8_t* drawn = md_alloc(o->alloc, sys->group.count);
+    memset(drawn, 0, sys->group.count);
+    const uint32_t N = (uint32_t)sys->atom.count;
+    for (size_t m = 0; m < n; ++m) {
+        if (glob && o->only >= 0 && (int64_t)m != o->only) continue;
+        md_edr_term_groups_t tg;
+        if (!md_edr_term_groups(&tg, sys, terms[m])) continue;
+        for (uint32_t k = 0; k < tg.count; ++k) {
+            const uint32_t gi = tg.group[k];
+            if (gi >= sys->group.count || drawn[gi]) continue;
+            drawn[gi] = 1;
+            const md_bitset_t g = md_bitset_and(sys->group.atoms[gi], md_bitset_range(0, N), o->alloc);
+            const size_t count = md_bitset_count(g);
+            uint32_t* atoms = md_alloc(o->alloc, (count ? count : 1) * sizeof(uint32_t));
+            md_bitset_extract_indices(atoms, count, g);
+            draw_group(o, glob ? (uint32_t)m : 0, atoms, (uint32_t)count);
+        }
+    }
+    return true;
+}
+
 bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t expr, md_allocator_i* alloc) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
@@ -1080,6 +1143,8 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
         md_arena_allocator_destroy(arena);
         return draw_done(out, ok);
     }
+    const uint32_t ao = attr_op(ir, v);
+    if (ao != VIAL_IR_NO_OP) return draw_done(out, draw_attr(&o, desc, ir, ao));
     if (t->stage == VIAL_STAGE_TRAJECTORY) {
         // Over the trajectory: the evaluation's value, drawn by its type
         vial_val_t one;

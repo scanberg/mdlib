@@ -1195,6 +1195,24 @@ bool md_edr_term_groups(md_edr_term_groups_t* out, const md_system_t* sys, md_st
     return true;
 }
 
+size_t md_edr_terms_groups(uint32_t out_groups[], size_t cap, const md_system_t* sys, const md_str_t terms[], size_t count) {
+    MD_ASSERT(sys);
+    size_t n = 0;
+    for (size_t i = 0; i < count; ++i) {
+        md_edr_term_groups_t tg;
+        if (!md_edr_term_groups(&tg, sys, terms[i])) continue;
+        for (uint32_t k = 0; k < 2; ++k) {
+            if (k == 1 && tg.group[1] == tg.group[0]) break;
+            bool seen = false;
+            for (size_t j = 0; j < n && j < cap && !seen; ++j) seen = out_groups[j] == tg.group[k];
+            if (seen) continue;
+            if (n < cap) out_groups[n] = tg.group[k];
+            n += 1;
+        }
+    }
+    return n;
+}
+
 // ### THE ROLES OF THE GROUPS, FROM THE TERMS ###
 
 #define EDR_MAX_ROLE_GROUPS 256

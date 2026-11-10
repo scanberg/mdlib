@@ -473,3 +473,22 @@ UTEST(edr, supplement_infers_group_roles) {
     EXPECT_EQ(5u, r.end - r.beg);
     md_system_free(&sys);
 }
+
+UTEST(edr, terms_groups) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 100;
+    const uint32_t a = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 10), 0);
+    const uint32_t b = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("B"), md_bitset_range(10, 20), 0);
+    const uint32_t c = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("C"), md_bitset_range(20, 30), 0);
+    const uint32_t eg[] = { a, b, c };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, eg, 3);
+    const md_str_t terms[] = { MD_STR_LIT("Coul-SR:B-B"), MD_STR_LIT("Potential"), MD_STR_LIT("Coul-SR:A-B"), MD_STR_LIT("LJ-SR:B-C"), MD_STR_LIT("LJ-SR:A-C") };
+    uint32_t out[8];
+    ASSERT_EQ(3u, md_edr_terms_groups(out, 8, &sys, terms, 5));
+    EXPECT_EQ(b, out[0]);       // In the order the terms first name them
+    EXPECT_EQ(a, out[1]);
+    EXPECT_EQ(c, out[2]);
+    EXPECT_EQ(0u, md_edr_terms_groups(out, 8, &sys, terms + 1, 1));
+    md_system_free(&sys);
+}

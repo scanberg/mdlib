@@ -81,6 +81,11 @@ typedef struct md_edr_term_groups_t {
 
 bool md_edr_term_groups(md_edr_term_groups_t* out, const struct md_system_t* sys, md_str_t term);
 
+// The groups of several terms, each once, in the order the terms first name them: what drawing an array of terms shows,
+// such as every Coul-SR term, where a group is in many pairs and is one group all the same. Terms of no groups add none.
+// Writes at most cap group indices and returns how many there are.
+size_t md_edr_terms_groups(uint32_t out_groups[], size_t cap, const struct md_system_t* sys, const md_str_t terms[], size_t count);
+
 // THE ROLES OF THE GROUPS, FROM THE TERMS. A tpr says which groups were the energy groups and which the T-coupling groups
 // (md_group_data_t); an index file only what groups there are. Of a system without the role, an energy file tells it by
 // its terms: every pair of energy groups has its terms, each group with itself too (Coul-SR:SOL-SOL), in the order of

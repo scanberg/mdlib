@@ -2749,3 +2749,71 @@ UTEST(vial_ir, sdf_columns) {
     }
     md_arena_allocator_destroy(alloc);
 }
+
+// ### ENERGY TERMS DRAW THEIR GROUPS ###
+
+#include <md_edr.h>
+
+// inside-md-pullout: its energy file onto its structure, with groups as an index file of the run would give them; the
+// energy file names them the energy groups, CA Protein AIN SOL rest. attr() of a term draws its groups, each a group of
+// the drawing of its own; of a pattern every group once, or of one member that member's.
+UTEST(vial_ir, attr_draws_groups) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
+    ASSERT_GE(sys.atom.count, 1000u);
+    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 10), 0);
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300), 0);
+    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400), 0);
+    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900), 0);
+    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), MD_STR_LIT("run/md")));
+    const md_urange_t er = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
+    ASSERT_EQ(5u, er.end - er.beg);
+
+    const char* src = "p = attr('edr/coul_sr_ca_protein')\nall = attr('edr/coul_sr_*')\nself = attr('edr/lj_sr_sol_sol')\nu = attr('edr/potential')\n";
+    const md_vial_compile_desc_t cd = {.sys = &sys, .run = MD_STR_LIT("run/md")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(prog != NULL);
+    #define AT(text, plus) ((uint32_t)(strstr(src, text) - src) + (plus))
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = &sys, .run = MD_STR_LIT("run/md"), .element = -1};
+    md_vial_drawing_t dr;
+
+    // A pair: CA, then Protein, each a group of its own
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("attr('edr/coul_sr_ca", 2)), alloc));
+    ASSERT_EQ(2u, dr.num_groups);
+    EXPECT_EQ(10u, dr.groups[0].end - dr.groups[0].beg);
+    EXPECT_EQ(0u, dr.atoms[dr.groups[0].beg]);
+    EXPECT_EQ(290u, dr.groups[1].end - dr.groups[1].beg);
+    EXPECT_EQ(10u, dr.atoms[dr.groups[1].beg]);
+    EXPECT_EQ(0u, dr.num_prims);
+    // The name bound to it draws as it does
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("p = ", 0)), alloc));
+    EXPECT_EQ(2u, dr.num_groups);
+
+    // Every Coul-SR pair: the five energy groups, each once; rest is the atoms of none of the others
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("attr('edr/coul_sr_*", 2)), alloc));
+    EXPECT_EQ(15u, dr.num_elements);
+    ASSERT_EQ(5u, dr.num_groups);
+    size_t total = 0;
+    for (size_t i = 0; i < dr.num_groups; ++i) total += dr.groups[i].end - dr.groups[i].beg;
+    EXPECT_EQ(sys.atom.count, total);
+    // One member alone: in path order the first is coul_sr_ain_ain, AIN with itself
+    md_vial_draw_desc_t one = desc;
+    one.element = 0;
+    ASSERT_TRUE(md_vial_draw(&dr, &one, md_vial_expr_at(prog, AT("attr('edr/coul_sr_*", 2)), alloc));
+    ASSERT_EQ(1u, dr.num_groups);
+    EXPECT_EQ(100u, dr.groups[0].end - dr.groups[0].beg);
+    EXPECT_EQ(300u, dr.atoms[dr.groups[0].beg]);
+
+    // A group with itself: the group once
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("attr('edr/lj_sr_sol", 2)), alloc));
+    ASSERT_EQ(1u, dr.num_groups);
+    EXPECT_EQ(500u, dr.groups[0].end - dr.groups[0].beg);
+    // A term of no groups draws nothing
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("attr('edr/potential", 2)), alloc));
+    EXPECT_EQ(0u, dr.num_groups);
+    #undef AT
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
