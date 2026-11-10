@@ -5907,6 +5907,20 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
     md_array_shrink(sys->molecule.atom_slot, 0);
     sys->molecule.count = 0;
 
+    // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
+    // (md_util_system_infer_fragments). Their types stay, for the colours to be kept.
+    sys->fragment.count = 0;
+    sys->fragment.template_count = 0;
+    md_array_shrink(sys->fragment.mol_template, 0);
+    md_array_shrink(sys->fragment.frag_offset, 0);
+    md_array_shrink(sys->fragment.template_molecule, 0);
+    md_array_shrink(sys->fragment.template_slot_offset, 0);
+    md_array_shrink(sys->fragment.slot_frag, 0);
+    md_array_shrink(sys->fragment.template_frag_offset, 0);
+    md_array_shrink(sys->fragment.frag_type, 0);
+    md_array_shrink(sys->fragment.frag_slot_offset, 0);
+    md_array_shrink(sys->fragment.frag_slot, 0);
+
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
@@ -12824,6 +12838,11 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // Last of what depends on the classification of the residues, which the lipids are the last to change. Cheap,
     // and what a residue type is follows from the residues alone, so not behind a bit.
     md_util_system_infer_residue_types(sys);
+
+    if (flags & MD_UTIL_INFER_FRAGMENT_BIT) {
+        // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails
+        md_util_system_infer_fragments(sys);
+    }
 
     // Record the state the topology above was inferred from. Written here, as part of performing
     // the inference, so it cannot disagree with what it produced.

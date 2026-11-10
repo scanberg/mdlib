@@ -593,6 +593,50 @@ third = ring(3);                                        # the third ring of the 
 first_aromatic = ring(1, kind="aromatic") in residue(:); # the first aromatic ring of each residue that has one
 ```
 
+### fragment
+
+<!-- proc name=fragment category=selector.atom -->
+
+```text
+fragment()                 -> atomset[]
+fragment(query: string[])  -> atomset[]     # by name or kind
+fragment(sel: atomset[])   -> atomset[]     # grow to whole fragments
+```
+
+One selection per fragment: the chemically meaningful pieces each molecule is cut into, every atom in exactly one
+(`src/md_fragment.h`). A fragment is one of these kinds:
+
+- `"backbone"`: N, CA, C, O of a resolved amino acid, or the sugar and phosphate of a resolved nucleotide, one per
+  residue.
+- `"lipid tail"`: one per tail.
+- `"ring system"`: rings sharing an atom, with the atoms double bonded to them.
+- `"functional group"`: by Ertl's algorithm, the heteroatoms and the carbons bonded to them by double or triple
+  bonds, joined.
+- `"linker"` and `"alkyl"`: the carbon skeleton left over, between fragments or at an end. A piece of one or two carbons
+  goes with the one fragment it touches: the CB of an alanine goes with its backbone, a methyl with its ring.
+- `"atom"`: a metal, an ion, a lone atom.
+
+Hydrogens go with their heavy atom. Each fragment is named from a library of SMILES (`"phenyl"`, `"pyridyl"`,
+`"amide"`, `"carboxylate"`, `"hydroxyl"`, `"water"`, ...), or else by its kind and composition (`"aryl C9N"`,
+`"C16 tail"`).
+
+- `fragment()`: every fragment, in the order of their molecules. Within a context, the fragments with an atom in it,
+  cut to the context: `fragment() in residue(66)` is the fragments of residue 66, with only its own part of a group it
+  shares with a neighbour.
+- `fragment(query)`: the fragments whose name or kind matches one of the queries, with `*` and `?` as wildcards:
+  `"amide"`, `"phen*"`, `"ring system"`. A query which matches no fragment is a compile error.
+- `fragment(sel)`: every fragment that the selection touches, whole, one selection per fragment. A group shared by two
+  residues is whole here: `fragment(residue(66))` holds all of the ester to residue 67.
+
+```mdscript
+rings = fragment("ring system");
+amides = fragment("amide");
+n_backbone_atoms = count(fragment("backbone"));
+its_group = fragment(atom(42));                     # the fragment of atom 42, whole
+in_tyr = fragment() in resname("TYR");              # each fragment of each tyrosine
+d = distance_pair(fragment("carboxylate"), fragment("ammonium"));   # salt bridges, centre to centre
+```
+
 ### Selectors: by kind
 
 These return a `atomset[]` with one selection per [part](#part) of the kind: a strand of a polymer (with its caps and

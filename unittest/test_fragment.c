@@ -133,6 +133,7 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
     }
 
     md_bond_build_connectivity(&sys->bond, n, alloc);
+    md_util_system_infer_molecules(sys);
     md_util_system_infer_rings(sys);
     return true;
 }
@@ -140,66 +141,80 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
 typedef struct frag_case_t {
     md_allocator_i* alloc;
     md_system_t sys;
-    md_fragments_t frags;
 } frag_case_t;
 
 static bool frag_case(frag_case_t* t, const char* smiles) {
     t->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     t->sys = (md_system_t){ .alloc = t->alloc };
-    return frag_system_from_smiles(&t->sys, smiles, NULL, NULL, 0) && md_fragments_compute(&t->frags, &t->sys, t->alloc);
+    return frag_system_from_smiles(&t->sys, smiles, NULL, NULL, 0) && md_util_system_infer_fragments(&t->sys);
 }
 
 static void frag_case_free(frag_case_t* t) {
     md_arena_allocator_destroy(t->alloc);
 }
 
-static int frag_find(const md_fragments_t* f, const char* name) {
-    for (size_t i = 0; i < f->count; ++i) if (strcmp(f->name + i * MD_FRAGMENT_NAME_CAP, name) == 0) return (int)i;
-    return -1;
+// The first fragment of that name, MD_FRAGMENT_NONE for none
+static md_fragment_idx_t frag_find(const md_system_t* sys, const char* name) {
+    for (size_t f = 0; f < md_system_fragment_count(sys); ++f) {
+        if (md_str_eq_cstr(md_system_fragment_name(sys, (md_fragment_idx_t)f), name)) return (md_fragment_idx_t)f;
+    }
+    return MD_FRAGMENT_NONE;
 }
 
-static size_t frag_heavy_count(const frag_case_t* t, int frag) {
+static size_t frag_count_named(const md_system_t* sys, const char* name) {
+    const md_fragment_type_idx_t t = md_fragment_type_find(sys, md_str_from_cstr(name), MD_FRAGMENT_KIND_COUNT);
+    return t == MD_FRAGMENT_NONE ? 0 : md_system_fragment_find_by_type(NULL, 0, sys, t);
+}
+
+static size_t frag_heavy_count(const md_system_t* sys, md_fragment_idx_t f) {
     size_t c = 0;
-    for (uint32_t k = t->frags.atom_beg[frag]; k < t->frags.atom_end[frag]; ++k) {
-        c += md_atom_atomic_number(&t->sys.atom, (size_t)t->frags.atom_idx[k]) > 1 ? 1 : 0;
+    for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, f); md_fragment_atom_iter_next(&it);) {
+        c += md_atom_atomic_number(&sys->atom, (size_t)it.atom) > 1 ? 1 : 0;
     }
     return c;
 }
 
-// What every result must satisfy: pre-order, nested contiguous ranges, every atom in exactly one leaf
-static void frag_check_tree(int* utest_result, const frag_case_t* t) {
-    const md_fragments_t* f = &t->frags;
-    size_t* seen = calloc(f->num_atoms, sizeof(size_t));
-    for (size_t i = 0; i < f->count; ++i) {
-        const uint32_t p = f->parent[i];
-        if (p != MD_FRAGMENT_NONE) {
-            EXPECT_LT(p, (uint32_t)i);
-            EXPECT_LE(f->atom_beg[p], f->atom_beg[i]);
-            EXPECT_GE(f->atom_end[p], f->atom_end[i]);
+// What every result must satisfy: the fragments' atoms are a partition of the atoms with an element, each fragment
+// within one molecule, and the lookups both ways agree
+static void frag_check(int* utest_result, const md_system_t* sys) {
+    const size_t n = sys->atom.count;
+    size_t* seen = calloc(n ? n : 1, sizeof(size_t));
+    for (size_t f = 0; f < md_system_fragment_count(sys); ++f) {
+        const size_t m = md_system_fragment_molecule(sys, (md_fragment_idx_t)f);
+        size_t count = 0;
+        for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, (md_fragment_idx_t)f); md_fragment_atom_iter_next(&it);) {
+            ASSERT_GE(it.atom, 0);
+            seen[it.atom]++;
+            count++;
+            EXPECT_EQ(md_system_fragment_find_by_atom_idx(sys, (size_t)it.atom), (md_fragment_idx_t)f);
+            EXPECT_EQ((size_t)md_system_molecule_find_by_atom_idx(sys, (size_t)it.atom), m);
         }
-        EXPECT_LT(f->atom_beg[i], f->atom_end[i]);
-        if (md_fragment_is_leaf(f, i)) {
-            for (uint32_t k = f->atom_beg[i]; k < f->atom_end[i]; ++k) {
-                const int32_t a = f->atom_idx[k];
-                seen[a]++;
-                EXPECT_EQ(f->atom_fragment[a], (uint32_t)i);
-            }
-        }
+        EXPECT_GT(count, (size_t)0);
+        EXPECT_EQ(count, md_system_fragment_atom_count(sys, (md_fragment_idx_t)f));
+        EXPECT_LT((size_t)md_system_fragment_kind(sys, (md_fragment_idx_t)f), (size_t)MD_FRAGMENT_KIND_COUNT);
     }
-    for (size_t a = 0; a < f->num_atoms; ++a) EXPECT_EQ(seen[a], (size_t)1);
+    for (size_t a = 0; a < n; ++a) EXPECT_EQ(seen[a], md_atom_atomic_number(&sys->atom, a) ? (size_t)1 : (size_t)0);
     free(seen);
 }
 
-#define EXPECT_FRAG(T, NAME, KIND, HEAVY) do { \
-    const int i_ = frag_find(&(T).frags, NAME); \
-    EXPECT_GE(i_, 0); \
-    if (i_ >= 0) { \
-        EXPECT_EQ((int)(T).frags.kind[i_], (int)(KIND)); \
-        EXPECT_EQ(frag_heavy_count(&(T), i_), (size_t)(HEAVY)); \
+static void frag_print(const md_system_t* sys) {
+    printf("  have:");
+    for (size_t f = 0; f < md_system_fragment_count(sys); ++f) {
+        const md_str_t nm = md_system_fragment_name(sys, (md_fragment_idx_t)f);
+        printf(" [%.*s]", (int)nm.len, nm.ptr);
+    }
+    printf("\n");
+}
+
+#define EXPECT_FRAG(SYS, NAME, KIND, HEAVY) do { \
+    const md_fragment_idx_t i_ = frag_find((SYS), NAME); \
+    EXPECT_NE(i_, MD_FRAGMENT_NONE); \
+    if (i_ != MD_FRAGMENT_NONE) { \
+        EXPECT_EQ((int)md_system_fragment_kind((SYS), i_), (int)(KIND)); \
+        EXPECT_EQ(frag_heavy_count((SYS), i_), (size_t)(HEAVY)); \
     } else { \
-        printf("  no fragment '%s'; have:", NAME); \
-        for (size_t k_ = 0; k_ < (T).frags.count; ++k_) printf(" [%s]", (T).frags.name + k_ * MD_FRAGMENT_NAME_CAP); \
-        printf("\n"); \
+        printf("  no fragment '%s'\n", NAME); \
+        frag_print(SYS); \
     } \
 } while (0)
 
@@ -207,32 +222,27 @@ UTEST(fragment, amine_linker_phenyl) {
     // The S1 of test_data/vlx/mol.h5 moves its electron from the amine to the ring through this split
     frag_case_t t = {0};
     ASSERT_TRUE(frag_case(&t, "CNC(C)Cc1ccccc1"));
-    frag_check_tree(utest_result, &t);
-    ASSERT_EQ(t.frags.count, (size_t)4);
-    EXPECT_EQ(t.frags.kind[0], (uint8_t)MD_FRAGMENT_MOLECULE);
-    EXPECT_STREQ(t.frags.name, "C10H15N");
-    EXPECT_FRAG(t, "amine",     MD_FRAGMENT_GROUP,       2);   // N and its methyl
-    EXPECT_FRAG(t, "C3 linker", MD_FRAGMENT_LINKER,      3);
-    EXPECT_FRAG(t, "phenyl",    MD_FRAGMENT_RING_SYSTEM, 6);
-    // in the order of their first atoms
-    EXPECT_STREQ(t.frags.name + 1 * MD_FRAGMENT_NAME_CAP, "amine");
-    EXPECT_STREQ(t.frags.name + 3 * MD_FRAGMENT_NAME_CAP, "phenyl");
+    frag_check(utest_result, &t.sys);
+    ASSERT_EQ(md_system_fragment_count(&t.sys), (size_t)3);
+    EXPECT_FRAG(&t.sys, "amine",     MD_FRAGMENT_GROUP,       2);   // N and its methyl
+    EXPECT_FRAG(&t.sys, "C3 linker", MD_FRAGMENT_LINKER,      3);
+    EXPECT_FRAG(&t.sys, "phenyl",    MD_FRAGMENT_RING_SYSTEM, 6);
     frag_case_free(&t);
 }
 
-UTEST(fragment, single_unit_molecules) {
+UTEST(fragment, single_fragment_molecules) {
     // DMF: the methyls go with the amide, which is then the whole molecule
     frag_case_t t = {0};
     ASSERT_TRUE(frag_case(&t, "CN(C)C=O"));
-    frag_check_tree(utest_result, &t);
-    ASSERT_EQ(t.frags.count, (size_t)1);
-    EXPECT_FRAG(t, "amide", MD_FRAGMENT_GROUP, 5);
-    EXPECT_EQ(t.frags.atom_end[0] - t.frags.atom_beg[0], 12u);
+    frag_check(utest_result, &t.sys);
+    ASSERT_EQ(md_system_fragment_count(&t.sys), (size_t)1);
+    EXPECT_FRAG(&t.sys, "amide", MD_FRAGMENT_GROUP, 5);
+    EXPECT_EQ(md_system_fragment_atom_count(&t.sys, 0), (size_t)12);
     frag_case_free(&t);
 
     const struct { const char* smiles; const char* name; int kind; } cases[] = {
         { "CCOC(C)=O",        "ester",       MD_FRAGMENT_GROUP },        // the ethyl and the methyl go with it
-        { "c1ccc2ccccc2c1",   "naphthyl",    MD_FRAGMENT_RING_SYSTEM },  // fused: one unit
+        { "c1ccc2ccccc2c1",   "naphthyl",    MD_FRAGMENT_RING_SYSTEM },  // fused: one fragment
         { "Clc1ccccc1",       "phenyl",      MD_FRAGMENT_RING_SYSTEM },  // a single halogen goes with its ring
         { "Cc1ccncc1",        "pyridyl",     MD_FRAGMENT_RING_SYSTEM },  // and so does a methyl
         { "O=C1C=CC(=O)C=C1", "benzoquinone",MD_FRAGMENT_RING_SYSTEM },  // the exocyclic O are the ring's
@@ -241,10 +251,11 @@ UTEST(fragment, single_unit_molecules) {
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         frag_case_t u = {0};
         ASSERT_TRUE(frag_case(&u, cases[i].smiles));
-        frag_check_tree(utest_result, &u);
-        EXPECT_EQ(u.frags.count, (size_t)1);
-        EXPECT_STREQ(u.frags.name, cases[i].name);
-        EXPECT_EQ((int)u.frags.kind[0], cases[i].kind);
+        frag_check(utest_result, &u.sys);
+        EXPECT_EQ(md_system_fragment_count(&u.sys), (size_t)1);
+        EXPECT_TRUE(md_str_eq_cstr(md_system_fragment_name(&u.sys, 0), cases[i].name));
+        EXPECT_EQ((int)md_system_fragment_kind(&u.sys, 0), cases[i].kind);
+        if (!md_str_eq_cstr(md_system_fragment_name(&u.sys, 0), cases[i].name)) frag_print(&u.sys);
         frag_case_free(&u);
     }
 }
@@ -253,54 +264,86 @@ UTEST(fragment, donor_bridge_acceptor_stays_apart) {
     // 4-(dimethylamino)benzonitrile, the textbook twisted charge transfer molecule
     frag_case_t t = {0};
     ASSERT_TRUE(frag_case(&t, "CN(C)c1ccc(cc1)C#N"));
-    frag_check_tree(utest_result, &t);
-    EXPECT_EQ(t.frags.count, (size_t)4);
-    EXPECT_FRAG(t, "amine",   MD_FRAGMENT_GROUP,       3);
-    EXPECT_FRAG(t, "phenyl",  MD_FRAGMENT_RING_SYSTEM, 6);
-    EXPECT_FRAG(t, "nitrile", MD_FRAGMENT_GROUP,       2);
+    frag_check(utest_result, &t.sys);
+    EXPECT_EQ(md_system_fragment_count(&t.sys), (size_t)3);
+    EXPECT_FRAG(&t.sys, "amine",   MD_FRAGMENT_GROUP,       3);
+    EXPECT_FRAG(&t.sys, "phenyl",  MD_FRAGMENT_RING_SYSTEM, 6);
+    EXPECT_FRAG(&t.sys, "nitrile", MD_FRAGMENT_GROUP,       2);
     frag_case_free(&t);
 
     t = (frag_case_t){0};
     ASSERT_TRUE(frag_case(&t, "c1ccccc1[N+](=O)[O-]"));
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "phenyl", MD_FRAGMENT_RING_SYSTEM, 6);
-    EXPECT_FRAG(t, "nitro",  MD_FRAGMENT_GROUP,       3);
+    frag_check(utest_result, &t.sys);
+    EXPECT_FRAG(&t.sys, "phenyl", MD_FRAGMENT_RING_SYSTEM, 6);
+    EXPECT_FRAG(&t.sys, "nitro",  MD_FRAGMENT_GROUP,       3);
     frag_case_free(&t);
 
     t = (frag_case_t){0};
     ASSERT_TRUE(frag_case(&t, "FC(F)(F)c1ccccc1"));
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "trifluoromethyl", MD_FRAGMENT_GROUP,       4);
-    EXPECT_FRAG(t, "phenyl",          MD_FRAGMENT_RING_SYSTEM, 6);
+    frag_check(utest_result, &t.sys);
+    EXPECT_FRAG(&t.sys, "trifluoromethyl", MD_FRAGMENT_GROUP,       4);
+    EXPECT_FRAG(&t.sys, "phenyl",          MD_FRAGMENT_RING_SYSTEM, 6);
     frag_case_free(&t);
 }
 
-UTEST(fragment, repeated_names_are_numbered) {
+UTEST(fragment, a_name_is_a_type) {
+    // Two phenyls of one molecule are two fragments of one type
     frag_case_t t = {0};
     ASSERT_TRUE(frag_case(&t, "O=C(c1ccccc1)c1ccccc1"));
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "carbonyl", MD_FRAGMENT_GROUP,       2);
-    EXPECT_FRAG(t, "phenyl 1", MD_FRAGMENT_RING_SYSTEM, 6);
-    EXPECT_FRAG(t, "phenyl 2", MD_FRAGMENT_RING_SYSTEM, 6);
+    frag_check(utest_result, &t.sys);
+    EXPECT_FRAG(&t.sys, "carbonyl", MD_FRAGMENT_GROUP, 2);
+    EXPECT_EQ(frag_count_named(&t.sys, "phenyl"), (size_t)2);
+    EXPECT_EQ(md_system_fragment_type_count(&t.sys), (size_t)2);
     frag_case_free(&t);
 
     t = (frag_case_t){0};
     ASSERT_TRUE(frag_case(&t, "c1ccc(cc1)-c1ccccc1"));   // biphenyl is two rings, not one system
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "phenyl 1", MD_FRAGMENT_RING_SYSTEM, 6);
-    EXPECT_FRAG(t, "phenyl 2", MD_FRAGMENT_RING_SYSTEM, 6);
+    frag_check(utest_result, &t.sys);
+    EXPECT_EQ(md_system_fragment_count(&t.sys), (size_t)2);
+    EXPECT_EQ(frag_count_named(&t.sys, "phenyl"), (size_t)2);
     frag_case_free(&t);
 }
 
-UTEST(fragment, identical_small_molecules_form_a_set) {
+UTEST(fragment, molecules_alike_share_a_template) {
     frag_case_t t = {0};
-    ASSERT_TRUE(frag_case(&t, "O.O.O.CC#N"));
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "water \xc3\x97" "3", MD_FRAGMENT_MOLECULE_SET, 3);
-    EXPECT_FRAG(t, "water 2", MD_FRAGMENT_GROUP, 1);
-    EXPECT_FRAG(t, "nitrile", MD_FRAGMENT_GROUP, 3);   // acetonitrile: its methyl goes with it
-    const int w = frag_find(&t.frags, "water \xc3\x97" "3");
-    if (w >= 0) EXPECT_EQ(t.frags.atom_end[w] - t.frags.atom_beg[w], 9u);
+    ASSERT_TRUE(frag_case(&t, "O.O.O.CC#N.O"));
+    frag_check(utest_result, &t.sys);
+    EXPECT_EQ(md_system_molecule_count(&t.sys), (size_t)5);
+    EXPECT_EQ(t.sys.fragment.template_count, (size_t)2);
+    EXPECT_EQ(md_system_fragment_count(&t.sys), (size_t)5);
+    EXPECT_EQ(frag_count_named(&t.sys, "water"), (size_t)4);
+    EXPECT_FRAG(&t.sys, "nitrile", MD_FRAGMENT_GROUP, 3);   // acetonitrile: its methyl goes with it
+    // every fragment of a type, ascending
+    const md_fragment_type_idx_t w = md_fragment_type_find(&t.sys, MD_STR_LIT("water"), MD_FRAGMENT_GROUP);
+    md_fragment_idx_t found[8];
+    ASSERT_EQ(md_system_fragment_find_by_type(found, 8, &t.sys, w), (size_t)4);
+    for (size_t i = 1; i < 4; ++i) EXPECT_LT(found[i - 1], found[i]);
+    frag_case_free(&t);
+}
+
+UTEST(fragment, molecules_alike_share_a_template_whatever_order_their_bonds_came_in) {
+    // A spatial search finds bonds in cell order, so the bonds of molecules alike come in different orders. The
+    // connectivity is ordered by atom, so the molecules are walked alike and share their template.
+    frag_case_t t = {0};
+    ASSERT_TRUE(frag_case(&t, "CC(C)C(O)CN.CC(C)C(O)CN.CC(C)C(O)CN"));
+    md_bond_data_t* bond = &t.sys.bond;
+    uint32_t seed = 12345;
+    for (size_t i = bond->count; i > 1; --i) {   // shuffled: each molecule's bonds in an order of their own
+        seed = seed * 1664525u + 1013904223u;
+        const size_t j = (seed >> 8) % i;
+        const md_atom_pair_t p = bond->pairs[i - 1];
+        bond->pairs[i - 1] = bond->pairs[j];
+        bond->pairs[j] = p;
+        const md_bond_flags_t f = bond->flags[i - 1];
+        bond->flags[i - 1] = bond->flags[j];
+        bond->flags[j] = f;
+    }
+    md_bond_build_connectivity(bond, t.sys.atom.count, t.alloc);
+    ASSERT_TRUE(md_util_system_infer_molecules(&t.sys));
+    ASSERT_TRUE(md_util_system_infer_fragments(&t.sys));
+    frag_check(utest_result, &t.sys);
+    EXPECT_EQ(md_system_molecule_count(&t.sys), (size_t)3);
+    EXPECT_EQ(t.sys.fragment.template_count, (size_t)1);
     frag_case_free(&t);
 }
 
@@ -308,23 +351,96 @@ UTEST(fragment, metal_complex) {
     // Coordination bonds join nothing: the metal and each ligand are molecules of their own
     frag_case_t t = {0};
     ASSERT_TRUE(frag_case(&t, "[Zn](n1ccccc1)n1ccccc1"));
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "Zn", MD_FRAGMENT_METAL, 1);
-    EXPECT_FRAG(t, "pyridyl \xc3\x97" "2", MD_FRAGMENT_MOLECULE_SET, 12);
-    EXPECT_FRAG(t, "pyridyl 1", MD_FRAGMENT_RING_SYSTEM, 6);
+    frag_check(utest_result, &t.sys);
+    EXPECT_FRAG(&t.sys, "Zn", MD_FRAGMENT_ATOM, 1);
+    EXPECT_EQ(frag_count_named(&t.sys, "pyridyl"), (size_t)2);
+    EXPECT_EQ(md_system_fragment_find_by_ring(&t.sys, 0) != MD_FRAGMENT_NONE, true);
+    EXPECT_TRUE(md_str_eq_cstr(md_system_fragment_name(&t.sys, md_system_fragment_find_by_ring(&t.sys, 0)), "pyridyl"));
     frag_case_free(&t);
 }
 
-UTEST(fragment, residues) {
+UTEST(fragment, backbones_of_resolved_residues) {
+    // Gly-Gly: N, CA, C carry the backbone role; each residue's backbone is one fragment with its carbonyl O (and
+    // the OXT of the second), and no amide reaches across the peptide bond
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    frag_case_t t = { .alloc = alloc, .sys = { .alloc = alloc } };
+    md_system_t sys = { .alloc = alloc };
     const char* names[] = { "GLY", "GLY" };
     const int heavy[] = { 4, 5 };
-    ASSERT_TRUE(frag_system_from_smiles(&t.sys, "NCC(=O)NCC(=O)O", names, heavy, 2));
-    ASSERT_TRUE(md_fragments_compute(&t.frags, &t.sys, alloc));
-    frag_check_tree(utest_result, &t);
-    EXPECT_FRAG(t, "protein", MD_FRAGMENT_MOLECULE, 9);
-    EXPECT_FRAG(t, "GLY 1", MD_FRAGMENT_RESIDUE, 4);
-    EXPECT_FRAG(t, "GLY 2", MD_FRAGMENT_RESIDUE, 5);
+    ASSERT_TRUE(frag_system_from_smiles(&sys, "NCC(=O)NCC(=O)O", names, heavy, 2));
+    for (size_t r = 0; r < 2; ++r) sys.residue.flags[r] |= MD_RESIDUE_FLAG_RESOLVED;
+    // heavy atoms in SMILES order, each followed by its hydrogens: the backbone are the N, CA and C of each
+    const md_atomic_number_t want[] = { MD_Z_N, MD_Z_C, MD_Z_C, MD_Z_N, MD_Z_C, MD_Z_C };
+    size_t k = 0, heavy_seen = 0;
+    for (size_t a = 0; a < sys.atom.count && k < 6; ++a) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, a);
+        if (z == MD_Z_H) continue;
+        const size_t h = heavy_seen++;
+        if (h == 0 || h == 1 || h == 2 || h == 4 || h == 5 || h == 6) {
+            EXPECT_EQ(z, want[k]);
+            sys.atom.flags[a] |= MD_ATOM_FLAG_BACKBONE;
+            k++;
+        }
+    }
+    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    frag_check(utest_result, &sys);
+    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)2);
+    EXPECT_EQ(frag_count_named(&sys, "backbone"), (size_t)2);
+    EXPECT_EQ(frag_heavy_count(&sys, 0) + frag_heavy_count(&sys, 1), (size_t)9);
+    EXPECT_EQ((int)md_system_fragment_kind(&sys, 0), (int)MD_FRAGMENT_BACKBONE);
+    // each in its own residue
+    md_residue_idx_t res[4];
+    EXPECT_EQ(md_system_fragment_residues(res, 4, &sys, 0), (size_t)1);
+    EXPECT_EQ(md_system_fragment_residues(res, 4, &sys, 1), (size_t)1);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(fragment, a_group_across_residues_is_of_both) {
+    // Propyl ethyl ester cut into two residues through the ester: one fragment, of both residues, and in the list of
+    // each residue's fragments
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_system_t sys = { .alloc = alloc };
+    const char* names[] = { "PRO", "ETH" };
+    const int heavy[] = { 4, 3 };
+    ASSERT_TRUE(frag_system_from_smiles(&sys, "CCC(=O)OCC", names, heavy, 2));
+    for (size_t r = 0; r < 2; ++r) sys.residue.flags[r] = md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, MD_RESIDUE_KIND_OTHER);
+    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    frag_check(utest_result, &sys);
+    const md_fragment_idx_t ester = frag_find(&sys, "ester");
+    ASSERT_NE(ester, MD_FRAGMENT_NONE);
+    md_residue_idx_t res[4];
+    ASSERT_EQ(md_system_fragment_residues(res, 4, &sys, ester), (size_t)2);
+    EXPECT_EQ(res[0], 0);
+    EXPECT_EQ(res[1], 1);
+    md_fragment_idx_t frags[8];
+    for (size_t r = 0; r < 2; ++r) {
+        const size_t n = md_system_residue_fragments(frags, 8, &sys, r);
+        bool has = false;
+        for (size_t i = 0; i < n; ++i) has |= frags[i] == ester;
+        EXPECT_TRUE(has);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(fragment, inferring_again_keeps_the_colours) {
+    frag_case_t t = {0};
+    ASSERT_TRUE(frag_case(&t, "CN(C)c1ccc(cc1)C#N"));
+    const md_fragment_type_idx_t p = md_fragment_type_find(&t.sys, MD_STR_LIT("phenyl"), MD_FRAGMENT_RING_SYSTEM);
+    ASSERT_NE(p, MD_FRAGMENT_NONE);
+    t.sys.fragment.type.color[p] = 0xFF123456u;
+    const uint64_t v = t.sys.topology_version;
+    ASSERT_TRUE(md_util_system_infer_fragments(&t.sys));
+    EXPECT_NE(t.sys.topology_version, v);
+    const md_fragment_type_idx_t q = md_fragment_type_find(&t.sys, MD_STR_LIT("phenyl"), MD_FRAGMENT_RING_SYSTEM);
+    ASSERT_NE(q, MD_FRAGMENT_NONE);
+    EXPECT_EQ(md_fragment_type_color(&t.sys, q), 0xFF123456u);
+    frag_case_free(&t);
+}
+
+UTEST(fragment, no_molecules_no_fragments) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)0);
+    EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, 0), MD_FRAGMENT_NONE);
     md_arena_allocator_destroy(alloc);
 }

@@ -8,9 +8,12 @@
 #include <core/md_array.h>
 #include <core/md_bitset.h>
 #include <core/md_common.h>
+#include <core/md_hash.h>
 #include <core/md_log.h>
 
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ---------------------------------------------------------------------------
@@ -35,7 +38,7 @@ static inline bool frag_is_noble(md_atomic_number_t z) {
 }
 
 // Ertl's heteroatom: anything but carbon and hydrogen - here also not a halogen (a single one goes with its
-// atom, see the header), a metal (a unit of its own) or a noble gas
+// atom, see the header), a metal (a fragment of its own) or a noble gas
 static inline bool frag_is_hetero(md_atomic_number_t z) {
     return z > 1 && z != MD_Z_C && !frag_is_halogen(z) && !frag_is_metal(z) && !frag_is_noble(z);
 }
@@ -47,17 +50,30 @@ static inline bool frag_bond_multiple(md_bond_flags_t f) {
 
 const char* md_fragment_kind_str(md_fragment_kind_t kind) {
     switch (kind) {
-    case MD_FRAGMENT_MOLECULE_SET: return "molecules";
-    case MD_FRAGMENT_MOLECULE:     return "molecule";
-    case MD_FRAGMENT_RESIDUE:      return "residue";
-    case MD_FRAGMENT_METAL:        return "metal";
-    case MD_FRAGMENT_RING_SYSTEM:  return "ring system";
-    case MD_FRAGMENT_GROUP:        return "functional group";
-    case MD_FRAGMENT_LINKER:       return "linker";
-    case MD_FRAGMENT_ALKYL:        return "alkyl";
-    case MD_FRAGMENT_ATOM:         return "atom";
-    default:                       return "";
+    case MD_FRAGMENT_BACKBONE:    return "backbone";
+    case MD_FRAGMENT_LIPID_TAIL:  return "lipid tail";
+    case MD_FRAGMENT_RING_SYSTEM: return "ring system";
+    case MD_FRAGMENT_GROUP:       return "functional group";
+    case MD_FRAGMENT_LINKER:      return "linker";
+    case MD_FRAGMENT_ALKYL:       return "alkyl";
+    case MD_FRAGMENT_ATOM:        return "atom";
+    default:                      return "";
     }
+}
+
+static int frag_cmp_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static int frag_cmp_u32(const void* a, const void* b) {
+    const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return (x > y) - (x < y);
+}
+
+static int frag_cmp_i32(const void* a, const void* b) {
+    const int32_t x = *(const int32_t*)a, y = *(const int32_t*)b;
+    return (x > y) - (x < y);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +104,11 @@ static const frag_lib_entry_t frag_library[] = {
     { "c1ccc2c(c1)scn2",            "benzothiazolyl" },
     { "c1ccc2c(c1)nsn2",            "benzothiadiazolyl" },
     { "c1ncc2ncnc2n1",              "purinyl" },
+    // the ring systems of the nucleobases, with their oxygens (an amine on them is a group of its own): of guanine,
+    // of thymine and uracil, of cytosine. Any bonds, as the tautomer perceived varies.
+    { "O~C1~N~C~N~C2~C1~N~C~N2",    "purinone" },
+    { "O~C1~N~C(~O)~N~C~C1",        "pyrimidinedione" },
+    { "O~C1~N~C~C~C~N1",            "pyrimidinone" },
     // aromatic rings
     { "c1ccccc1",                   "phenyl" },
     { "c1ccncc1",                   "pyridyl" },
@@ -168,45 +189,106 @@ static const frag_lib_entry_t frag_library[] = {
 };
 
 // ---------------------------------------------------------------------------
-// Work state
+// One molecule, in local indices (its slots)
 // ---------------------------------------------------------------------------
 
-typedef struct frag_ctx_t {
-    const md_system_t* sys;
-    size_t n;
-    md_atomic_number_t* z;
-    uint32_t* nb_off;               // [n + 1] covalent neighbours
-    uint32_t* nb;
-    md_bond_flags_t* nb_flags;
-    int32_t* unit_of;               // [n]
-    int32_t* core_of;               // [n] the unit whose core the atom is in, -1 for none
-    md_array(uint8_t) unit_kind;
-    md_array(int32_t) unit_residue; // residue of a RESIDUE unit, -1 otherwise
-    md_allocator_i* temp;
-} frag_ctx_t;
+#define FRAG_NAME_CAP 48
 
-static int32_t frag_new_unit(frag_ctx_t* c, md_fragment_kind_t kind, int32_t residue) {
+// The atom flags a template depends on
+#define FRAG_ROLE_MASK (MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE | \
+                        MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END | MD_ATOM_FLAG_LIPID_TAIL | \
+                        MD_ATOM_FLAG_METALLIC | MD_ATOM_FLAG_AROMATIC)
+
+typedef struct frag_mol_t {
+    const md_system_t* sys;
+    size_t           n;
+    const int32_t*   atom;          // [n] global atom of each slot
+    const int32_t*   atom_res;      // [atom count] residue of each atom, -1 for none (shared)
+    md_atomic_number_t* z;          // [n]
+    uint32_t*        nb_off;        // [n + 1] covalent neighbours, local
+    uint32_t*        nb;
+    md_bond_flags_t* nb_flags;
+    int32_t*         unit_of;       // [n] the fragment (local) of each atom, -1 for none yet
+    int32_t*         core_of;       // [n] the fragment whose core the atom is in, -1 for none
+    md_array(uint8_t) unit_kind;
+    md_allocator_i*  temp;
+} frag_mol_t;
+
+// The covalent graph of molecule m in local indices. Coordination bonds join nothing here: a metal and its ligands
+// are fragments of their own.
+static void frag_mol_init(frag_mol_t* c, const md_system_t* sys, size_t m, const int32_t* atom_res, md_allocator_i* temp) {
+    const md_molecule_data_t* mol = &sys->molecule;
+    const uint32_t off = mol->offset[m];
+    const size_t n = mol->offset[m + 1] - off;
+    md_memset(c, 0, sizeof(*c));
+    c->sys = sys;
+    c->n = n;
+    c->atom = mol->atom_idx + off;
+    c->atom_res = atom_res;
+    c->temp = temp;
+    c->z = md_alloc(temp, sizeof(md_atomic_number_t) * (n ? n : 1));
+    c->nb_off = md_alloc(temp, sizeof(uint32_t) * (n + 1));
+    c->unit_of = md_alloc(temp, sizeof(int32_t) * (n ? n : 1));
+    c->core_of = md_alloc(temp, sizeof(int32_t) * (n ? n : 1));
+    c->nb_off[0] = 0;
+    for (size_t i = 0; i < n; ++i) {
+        c->z[i] = md_atom_atomic_number(&sys->atom, (size_t)c->atom[i]);
+        c->unit_of[i] = -1;
+        c->core_of[i] = -1;
+        uint32_t k = 0;
+        for (md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)c->atom[i]); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            if (md_bond_kind(md_bond_iter_bond_flags(&it)) != MD_BOND_KIND_COVALENT) continue;
+            const int32_t s = mol->atom_slot[md_bond_iter_atom_index(&it)] - (int32_t)off;
+            k += (s >= 0 && (size_t)s < n);
+        }
+        c->nb_off[i + 1] = c->nb_off[i] + k;
+    }
+    const size_t nn = c->nb_off[n];
+    c->nb = md_alloc(temp, sizeof(uint32_t) * (nn ? nn : 1));
+    c->nb_flags = md_alloc(temp, sizeof(md_bond_flags_t) * (nn ? nn : 1));
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t k = c->nb_off[i];
+        for (md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)c->atom[i]); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
+            if (md_bond_kind(f) != MD_BOND_KIND_COVALENT) continue;
+            const int32_t s = mol->atom_slot[md_bond_iter_atom_index(&it)] - (int32_t)off;
+            if (s < 0 || (size_t)s >= n) continue;
+            c->nb[k] = (uint32_t)s;
+            c->nb_flags[k] = f;
+            k++;
+        }
+    }
+}
+
+static inline md_atom_flags_t frag_aflags(const frag_mol_t* c, uint32_t i) {
+    return md_atom_flags(&c->sys->atom, (size_t)c->atom[i]);
+}
+
+static inline int32_t frag_res(const frag_mol_t* c, uint32_t i) {
+    return c->atom_res ? c->atom_res[c->atom[i]] : -1;
+}
+
+static int32_t frag_new_unit(frag_mol_t* c, md_fragment_kind_t kind) {
     md_array_push(c->unit_kind, (uint8_t)kind, c->temp);
-    md_array_push(c->unit_residue, residue, c->temp);
     return (int32_t)md_array_size(c->unit_kind) - 1;
 }
 
-static inline void frag_assign(frag_ctx_t* c, uint32_t atom, int32_t unit, bool core) {
-    c->unit_of[atom] = unit;
-    if (core) c->core_of[atom] = unit;
+static inline void frag_assign(frag_mol_t* c, uint32_t i, int32_t unit, bool core) {
+    c->unit_of[i] = unit;
+    if (core) c->core_of[i] = unit;
 }
 
-static inline bool frag_heavy(const frag_ctx_t* c, uint32_t i) {
+static inline bool frag_heavy(const frag_mol_t* c, uint32_t i) {
     return c->z[i] > 1;
 }
 
-static uint32_t frag_heavy_degree(const frag_ctx_t* c, uint32_t i) {
+static uint32_t frag_heavy_degree(const frag_mol_t* c, uint32_t i) {
     uint32_t d = 0;
     for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) d += frag_heavy(c, c->nb[k]) ? 1 : 0;
     return d;
 }
 
-static bool frag_bonded(const frag_ctx_t* c, uint32_t a, uint32_t b) {
+static bool frag_bonded(const frag_mol_t* c, uint32_t a, uint32_t b) {
     for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) if (c->nb[k] == b) return true;
     return false;
 }
@@ -220,9 +302,8 @@ static void uf_union(uint32_t* p, uint32_t a, uint32_t b) {
     if (a != b) { if (a < b) p[b] = a; else p[a] = b; }
 }
 
-// Composition of a set of atoms, carbon first and the rest alphabetically (Hill), without hydrogens unless
-// 'with_h'
-static void frag_formula(char* buf, size_t cap, const frag_ctx_t* c, const uint32_t* atoms, size_t count, bool with_h) {
+// Composition of a set of atoms without hydrogens, carbon first and the rest alphabetically (Hill)
+static void frag_formula(char* buf, size_t cap, const frag_mol_t* c, const uint32_t* atoms, size_t count) {
     uint32_t num[128] = {0};
     for (size_t i = 0; i < count; ++i) {
         const md_atomic_number_t z = c->z[atoms[i]];
@@ -237,8 +318,6 @@ static void frag_formula(char* buf, size_t cap, const frag_ctx_t* c, const uint3
         if (w > 0) len = MD_MIN(cap - 1, len + (size_t)w); \
     } while (0)
     if (num[MD_Z_C]) FRAG_APPEND(MD_Z_C);
-    if (with_h && num[MD_Z_H]) FRAG_APPEND(MD_Z_H);
-    // the rest alphabetically by symbol
     bool done[128] = {0};
     done[MD_Z_C] = done[MD_Z_H] = done[0] = true;
     for (;;) {
@@ -257,17 +336,17 @@ static void frag_formula(char* buf, size_t cap, const frag_ctx_t* c, const uint3
 }
 
 // Hydrogens on an atom: the system's count where it has one, the bonded hydrogen atoms otherwise
-static int frag_hydrogens(const frag_ctx_t* c, uint32_t i) {
-    if (c->sys->atom.hydrogen_count) return md_atom_hydrogen_count(&c->sys->atom, i);
+static int frag_hydrogens(const frag_mol_t* c, uint32_t i) {
+    if (c->sys->atom.hydrogen_count) return md_atom_hydrogen_count(&c->sys->atom, (size_t)c->atom[i]);
     int h = 0;
     for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) h += c->z[c->nb[k]] == MD_Z_H ? 1 : 0;
     return h;
 }
 
-static void frag_name_single(char* buf, size_t cap, const frag_ctx_t* c, uint32_t i) {
+static void frag_name_single(char* buf, size_t cap, const frag_mol_t* c, uint32_t i) {
     const md_atomic_number_t z = c->z[i];
     const uint32_t deg = frag_heavy_degree(c, i);
-    const int charge = c->sys->atom.formal_charge ? md_atom_formal_charge(&c->sys->atom, i) : 0;
+    const int charge = c->sys->atom.formal_charge ? md_atom_formal_charge(&c->sys->atom, (size_t)c->atom[i]) : 0;
     const char* name = NULL;
     switch (z) {
     case MD_Z_N: name = (charge > 0 || deg + (uint32_t)frag_hydrogens(c, i) >= 4) ? "ammonium" : "amine"; break;
@@ -288,145 +367,135 @@ static void frag_name_single(char* buf, size_t cap, const frag_ctx_t* c, uint32_
 }
 
 // ---------------------------------------------------------------------------
+// The fragments of one molecule: c->unit_of and c->unit_kind. rings: the rings of the molecule (global atoms).
+// ---------------------------------------------------------------------------
 
-bool md_fragments_compute(md_fragments_t* out, const md_system_t* sys, md_allocator_i* alloc) {
-    if (!out || !sys || !alloc) return false;
-    md_memset(out, 0, sizeof(*out));
-    out->alloc = alloc;
+static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint32_t* ring_idx, size_t num_rings,
+                         int32_t* res_unit /* [residue count], all -1, left so */) {
+    const size_t n = c->n;
+    const md_system_t* sys = c->sys;
+    md_allocator_i* temp = c->temp;
+    uint32_t* stack = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
 
-    const size_t n = md_atom_count(&sys->atom);
-    out->num_atoms = n;
-    if (n == 0) return true;
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* talloc = md_temp_allocator(temp);
-
-    frag_ctx_t c = {0};
-    c.sys = sys;
-    c.n = n;
-    c.temp = talloc;
-    c.z = md_temp_alloc_array(temp, md_atomic_number_t, n);
-    c.unit_of = md_temp_alloc_array(temp, int32_t, n);
-    c.core_of = md_temp_alloc_array(temp, int32_t, n);
-    for (size_t i = 0; i < n; ++i) {
-        c.z[i] = md_atom_atomic_number(&sys->atom, i);
-        c.unit_of[i] = -1;
-        c.core_of[i] = -1;
-    }
-
-    // Covalent neighbours. Coordination bonds join nothing here: a metal and its ligands are units, and
-    // molecules, of their own.
-    c.nb_off = md_temp_alloc_zero_array(temp, uint32_t, n + 1);
-    for (size_t i = 0; i < n; ++i) {
-        uint32_t k = 0;
-        for (md_bond_iter_t it = md_bond_iter(&sys->bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-            if (md_bond_kind(md_bond_iter_bond_flags(&it)) == MD_BOND_KIND_COVALENT) k++;
-        }
-        c.nb_off[i + 1] = c.nb_off[i] + k;
-    }
-    c.nb = md_temp_alloc_array(temp, uint32_t, c.nb_off[n] ? c.nb_off[n] : 1);
-    c.nb_flags = md_temp_alloc_array(temp, md_bond_flags_t, c.nb_off[n] ? c.nb_off[n] : 1);
-    for (size_t i = 0; i < n; ++i) {
-        uint32_t k = c.nb_off[i];
-        for (md_bond_iter_t it = md_bond_iter(&sys->bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-            const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
-            if (md_bond_kind(f) != MD_BOND_KIND_COVALENT) continue;
-            c.nb[k] = (uint32_t)md_bond_iter_atom_index(&it);
-            c.nb_flags[k] = f;
-            k++;
-        }
-    }
-
-    // 1. Residues of polymers
-    for (size_t r = 0; r < md_system_residue_count(sys); ++r) {
-        const md_residue_kind_t kind = md_system_residue_kind(sys, r);
-        if (kind != MD_RESIDUE_KIND_AMINO_ACID && kind != MD_RESIDUE_KIND_NUCLEOTIDE) continue;
-        const md_urange_t range = md_system_residue_atom_range(sys, r);
-        int32_t u = -1;
-        for (uint32_t i = range.beg; i < range.end && i < n; ++i) {
-            if (c.z[i] == 0 || c.unit_of[i] >= 0) continue;
-            if (u < 0) u = frag_new_unit(&c, MD_FRAGMENT_RESIDUE, (int32_t)r);
-            frag_assign(&c, i, u, true);
-        }
-    }
-
-    // 2. Metals
+    // 0a. Backbones of resolved amino acids and nucleotides: one fragment per residue
+    md_array(int32_t) touched_res = 0;
     for (uint32_t i = 0; i < n; ++i) {
-        if (c.unit_of[i] < 0 && frag_is_metal(c.z[i])) {
-            frag_assign(&c, i, frag_new_unit(&c, MD_FRAGMENT_METAL, -1), true);
+        const int32_t r = frag_res(c, i);
+        if (r < 0 || !frag_heavy(c, i)) continue;
+        const md_residue_flags_t rf = md_system_residue_flags(sys, (size_t)r);
+        if (!(rf & MD_RESIDUE_FLAG_RESOLVED)) continue;
+        const md_residue_kind_t rk = md_residue_flags_kind(rf);
+        const md_atom_flags_t af = frag_aflags(c, i);
+        bool bb = false;
+        if (rk == MD_RESIDUE_KIND_AMINO_ACID)      bb = (af & MD_ATOM_FLAG_BACKBONE) != 0;
+        else if (rk == MD_RESIDUE_KIND_NUCLEOTIDE) bb = !(af & MD_ATOM_FLAG_NUCLEOBASE);
+        if (!bb) continue;
+        if (res_unit[r] < 0) {
+            res_unit[r] = frag_new_unit(c, MD_FRAGMENT_BACKBONE);
+            md_array_push(touched_res, r, temp);
+        }
+        frag_assign(c, i, res_unit[r], true);
+    }
+    // the terminal atoms bonded to an amino acid's backbone: the carbonyl O, OXT
+    for (uint32_t i = 0; i < n; ++i) {
+        const int32_t u = c->unit_of[i];
+        if (u < 0 || c->unit_kind[u] != MD_FRAGMENT_BACKBONE) continue;
+        for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
+            const uint32_t j = c->nb[k];
+            if (c->unit_of[j] >= 0 || !frag_heavy(c, j) || frag_heavy_degree(c, j) != 1) continue;
+            if (frag_aflags(c, j) & MD_ATOM_FLAG_SIDE_CHAIN) continue;
+            if (frag_res(c, j) != frag_res(c, i)) continue;
+            frag_assign(c, j, u, true);
+        }
+    }
+    for (size_t k = 0; k < md_array_size(touched_res); ++k) res_unit[touched_res[k]] = -1;
+
+    // 0b. Lipid tails: each connected set of their heavy atoms
+    for (uint32_t s = 0; s < n; ++s) {
+        if (c->unit_of[s] >= 0 || !frag_heavy(c, s) || !(frag_aflags(c, s) & MD_ATOM_FLAG_LIPID_TAIL)) continue;
+        const int32_t u = frag_new_unit(c, MD_FRAGMENT_LIPID_TAIL);
+        size_t top = 0;
+        stack[top++] = s;
+        frag_assign(c, s, u, true);
+        while (top) {
+            const uint32_t a = stack[--top];
+            for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
+                const uint32_t b = c->nb[k];
+                if (c->unit_of[b] >= 0 || !frag_heavy(c, b) || !(frag_aflags(c, b) & MD_ATOM_FLAG_LIPID_TAIL)) continue;
+                frag_assign(c, b, u, true);
+                stack[top++] = b;
+            }
         }
     }
 
-    // 3. Ring systems
+    // 1. Metals
+    for (uint32_t i = 0; i < n; ++i) {
+        if (c->unit_of[i] < 0 && frag_is_metal(c->z[i])) frag_assign(c, i, frag_new_unit(c, MD_FRAGMENT_ATOM), true);
+    }
+
+    // 2. Ring systems
     {
-        md_ring_data_t local = {0};
-        const md_ring_data_t* rings = &sys->ring;
-        if (md_ring_data_count(rings) == 0 && sys->bond.count > 0 && sys->bond.conn.offset) {
-            md_util_infer_rings(&local, &sys->bond, n, talloc);
-            rings = &local;
-        }
-
-        uint32_t* uf = md_temp_alloc_array(temp, uint32_t, n);
-        bool* in_ring = md_temp_alloc_zero_array(temp, bool, n);
-        for (uint32_t i = 0; i < n; ++i) uf[i] = i;
-
-        for (size_t r = 0; r < md_ring_data_count(rings); ++r) {
+        uint32_t* uf = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
+        bool* in_ring = md_alloc(temp, sizeof(bool) * (n ? n : 1));
+        for (uint32_t i = 0; i < n; ++i) { uf[i] = i; in_ring[i] = false; }
+        const md_molecule_data_t* mol = &sys->molecule;
+        int32_t local[MD_RING_MAX_SIZE];
+        for (size_t q = 0; q < num_rings; ++q) {
+            const size_t r = ring_idx[q];
             const int32_t* atoms = md_ring_atoms(rings, r);
             const size_t size = md_ring_size(rings, r);
-            bool ok = size >= 3;
+            bool ok = size >= 3 && size <= MD_RING_MAX_SIZE;
             for (size_t k = 0; k < size && ok; ++k) {
-                const uint32_t a = (uint32_t)atoms[k];
-                const uint32_t b = (uint32_t)atoms[(k + 1) % size];
-                // A ring through a metal is a chelate ring, and a ring through a residue already placed is
-                // that residue's
-                ok = a < n && b < n && c.unit_of[a] < 0 && frag_heavy(&c, a) && frag_bonded(&c, a, b);
+                const int32_t s = mol->atom_slot[atoms[k]] - (int32_t)(c->atom - mol->atom_idx);
+                ok = s >= 0 && (size_t)s < n;
+                if (ok) local[k] = s;
+            }
+            for (size_t k = 0; k < size && ok; ++k) {
+                const uint32_t a = (uint32_t)local[k], b = (uint32_t)local[(k + 1) % size];
+                // A ring through a metal is a chelate ring, and one through a backbone or a tail is theirs
+                ok = c->unit_of[a] < 0 && frag_heavy(c, a) && frag_bonded(c, a, b);
             }
             if (!ok) continue;
             for (size_t k = 0; k < size; ++k) {
-                in_ring[atoms[k]] = true;
-                uf_union(uf, (uint32_t)atoms[k], (uint32_t)atoms[(k + 1) % size]);
+                in_ring[local[k]] = true;
+                uf_union(uf, (uint32_t)local[k], (uint32_t)local[(k + 1) % size]);
             }
         }
-
-        int32_t* root_unit = md_temp_alloc_array(temp, int32_t, n);
+        int32_t* root_unit = md_alloc(temp, sizeof(int32_t) * (n ? n : 1));
         for (uint32_t i = 0; i < n; ++i) root_unit[i] = -1;
         for (uint32_t i = 0; i < n; ++i) {
             if (!in_ring[i]) continue;
             const uint32_t r = uf_find(uf, i);
-            if (root_unit[r] < 0) root_unit[r] = frag_new_unit(&c, MD_FRAGMENT_RING_SYSTEM, -1);
-            frag_assign(&c, i, root_unit[r], true);
+            if (root_unit[r] < 0) root_unit[r] = frag_new_unit(c, MD_FRAGMENT_RING_SYSTEM);
+            frag_assign(c, i, root_unit[r], true);
         }
-
         // Terminal atoms double bonded to a ring atom: the O of a quinone or a lactam
         for (uint32_t i = 0; i < n; ++i) {
             if (!in_ring[i]) continue;
-            for (uint32_t k = c.nb_off[i]; k < c.nb_off[i + 1]; ++k) {
-                const uint32_t j = c.nb[k];
-                if (in_ring[j] || c.unit_of[j] >= 0 || !frag_heavy(&c, j) || frag_is_halogen(c.z[j])) continue;
-                if (!frag_bond_multiple(c.nb_flags[k]) || frag_heavy_degree(&c, j) != 1) continue;
-                frag_assign(&c, j, c.unit_of[i], true);
+            for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
+                const uint32_t j = c->nb[k];
+                if (in_ring[j] || c->unit_of[j] >= 0 || !frag_heavy(c, j) || frag_is_halogen(c->z[j])) continue;
+                if (!frag_bond_multiple(c->nb_flags[k]) || frag_heavy_degree(c, j) != 1) continue;
+                frag_assign(c, j, c->unit_of[i], true);
             }
         }
-
-        if (rings == &local) md_ring_data_free(&local, talloc);
     }
 
-    // 4. Ertl's marking, over what is left
-    bool* marked = md_temp_alloc_zero_array(temp, bool, n);
+    // 3. Ertl's marking, over what is left
+    bool* marked = md_alloc(temp, sizeof(bool) * (n ? n : 1));
+    for (uint32_t i = 0; i < n; ++i) marked[i] = false;
     for (uint32_t i = 0; i < n; ++i) {
-        if (c.unit_of[i] >= 0 || !frag_heavy(&c, i)) continue;
-        if (frag_is_hetero(c.z[i])) {
+        if (c->unit_of[i] >= 0 || !frag_heavy(c, i)) continue;
+        if (frag_is_hetero(c->z[i])) {
             marked[i] = true;
             continue;
         }
-        if (c.z[i] != MD_Z_C) continue;
-
+        if (c->z[i] != MD_Z_C) continue;
         uint32_t num_halogen = 0, num_single_hetero = 0;
         bool all_single = true;
-        for (uint32_t k = c.nb_off[i]; k < c.nb_off[i + 1]; ++k) {
-            const uint32_t j = c.nb[k];
-            const md_atomic_number_t zj = c.z[j];
-            if (frag_bond_multiple(c.nb_flags[k])) {
+        for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
+            const md_atomic_number_t zj = c->z[c->nb[k]];
+            if (frag_bond_multiple(c->nb_flags[k])) {
                 all_single = false;
                 if (frag_is_hetero(zj) || zj == MD_Z_C) marked[i] = true;   // C=O, C=N, C#N, C=S; C=C, C#C
             } else if (zj == MD_Z_O || zj == MD_Z_N || zj == MD_Z_S) {
@@ -437,458 +506,636 @@ bool md_fragments_compute(md_fragments_t* out, const md_system_t* sys, md_alloca
         if (all_single && num_single_hetero >= 2) marked[i] = true;        // acetal
         if (num_halogen >= 2) {                                             // CX2, CX3
             marked[i] = true;
-            for (uint32_t k = c.nb_off[i]; k < c.nb_off[i + 1]; ++k) {
-                if (frag_is_halogen(c.z[c.nb[k]]) && c.unit_of[c.nb[k]] < 0) marked[c.nb[k]] = true;
+            for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
+                if (frag_is_halogen(c->z[c->nb[k]]) && c->unit_of[c->nb[k]] < 0) marked[c->nb[k]] = true;
             }
         }
     }
-
-    uint32_t* stack = md_temp_alloc_array(temp, uint32_t, n);
-
-    // Each connected set of marked atoms is a group
+    // each connected set of marked atoms is a group
     for (uint32_t s = 0; s < n; ++s) {
-        if (!marked[s] || c.unit_of[s] >= 0) continue;
-        const int32_t u = frag_new_unit(&c, MD_FRAGMENT_GROUP, -1);
+        if (!marked[s] || c->unit_of[s] >= 0) continue;
+        const int32_t u = frag_new_unit(c, MD_FRAGMENT_GROUP);
         size_t top = 0;
         stack[top++] = s;
-        frag_assign(&c, s, u, true);
+        frag_assign(c, s, u, true);
         while (top) {
             const uint32_t a = stack[--top];
-            for (uint32_t k = c.nb_off[a]; k < c.nb_off[a + 1]; ++k) {
-                const uint32_t b = c.nb[k];
-                if (!marked[b] || c.unit_of[b] >= 0) continue;
-                frag_assign(&c, b, u, true);
+            for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
+                const uint32_t b = c->nb[k];
+                if (!marked[b] || c->unit_of[b] >= 0) continue;
+                frag_assign(c, b, u, true);
                 stack[top++] = b;
             }
         }
     }
 
-    // 5. The rest of the skeleton, in connected pieces (single halogens and hydrogens come after)
+    // 4. The rest of the skeleton, in connected pieces (single halogens and hydrogens come after)
     {
-        int32_t* piece = md_temp_alloc_array(temp, int32_t, n);
-        uint32_t* members = md_temp_alloc_array(temp, uint32_t, n);
+        int32_t* piece = md_alloc(temp, sizeof(int32_t) * (n ? n : 1));
+        uint32_t* members = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
         for (uint32_t i = 0; i < n; ++i) piece[i] = -1;
-
+        #define FRAG_SKELETON(A) (c->unit_of[A] < 0 && piece[A] < 0 && frag_heavy(c, A) && !frag_is_halogen(c->z[A]) && !frag_is_noble(c->z[A]))
         for (uint32_t s = 0; s < n; ++s) {
-            if (c.unit_of[s] >= 0 || piece[s] >= 0 || !frag_heavy(&c, s) || frag_is_halogen(c.z[s]) || frag_is_noble(c.z[s])) continue;
-
+            if (!FRAG_SKELETON(s)) continue;
             size_t num = 0, top = 0;
             stack[top++] = s;
             piece[s] = (int32_t)s;
             while (top) {
                 const uint32_t a = stack[--top];
                 members[num++] = a;
-                for (uint32_t k = c.nb_off[a]; k < c.nb_off[a + 1]; ++k) {
-                    const uint32_t b = c.nb[k];
-                    if (c.unit_of[b] >= 0 || piece[b] >= 0 || !frag_heavy(&c, b) || frag_is_halogen(c.z[b]) || frag_is_noble(c.z[b])) continue;
+                for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
+                    const uint32_t b = c->nb[k];
+                    if (!FRAG_SKELETON(b)) continue;
                     piece[b] = (int32_t)s;
                     stack[top++] = b;
                 }
             }
-
-            // The units it touches
+            // The fragments it touches: the backbones apart, as a CB goes with its side chain
             int32_t touch[2] = { -1, -1 };
             uint32_t num_touch = 0;
+            int32_t backbone = -1;
+            uint32_t num_backbone = 0;
             for (size_t m = 0; m < num; ++m) {
                 const uint32_t a = members[m];
-                for (uint32_t k = c.nb_off[a]; k < c.nb_off[a + 1]; ++k) {
-                    const int32_t u = c.unit_of[c.nb[k]];
-                    if (u < 0 || u == touch[0] || u == touch[1]) continue;
+                for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
+                    const int32_t u = c->unit_of[c->nb[k]];
+                    if (u < 0) continue;
+                    if (c->unit_kind[u] == MD_FRAGMENT_BACKBONE) {
+                        if (u != backbone) { backbone = u; num_backbone++; }
+                        continue;
+                    }
+                    if (u == touch[0] || u == touch[1]) continue;
                     if (num_touch < 2) touch[num_touch] = u;
                     num_touch++;
                 }
             }
-
             if (num <= 2 && num_touch == 1) {
-                for (size_t m = 0; m < num; ++m) frag_assign(&c, members[m], touch[0], false);
+                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], touch[0], false);
+            } else if (num <= 2 && num_touch == 0 && num_backbone == 1) {
+                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], backbone, false);
             } else {
-                const int32_t u = frag_new_unit(&c, num_touch >= 2 ? MD_FRAGMENT_LINKER : MD_FRAGMENT_ALKYL, -1);
-                for (size_t m = 0; m < num; ++m) frag_assign(&c, members[m], u, true);
+                const int32_t u = frag_new_unit(c, num_touch + num_backbone >= 2 ? MD_FRAGMENT_LINKER : MD_FRAGMENT_ALKYL);
+                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], u, true);
             }
         }
+        #undef FRAG_SKELETON
     }
 
-    // 6. Single halogens with their atom, hydrogens with theirs, anything else on its own
+    // 5. Single halogens with their atom, hydrogens with theirs, anything else on its own
     for (int pass = 0; pass < 2; ++pass) {
         for (uint32_t i = 0; i < n; ++i) {
-            if (c.unit_of[i] >= 0 || c.z[i] == 0) continue;
-            const bool hydrogen = c.z[i] == MD_Z_H;
+            if (c->unit_of[i] >= 0 || c->z[i] == 0) continue;
+            const bool hydrogen = c->z[i] == MD_Z_H;
             if (hydrogen != (pass == 1)) continue;
             int32_t u = -1;
-            for (uint32_t k = c.nb_off[i]; k < c.nb_off[i + 1] && u < 0; ++k) {
-                const uint32_t j = c.nb[k];
-                if (c.unit_of[j] >= 0 && (frag_heavy(&c, j) || hydrogen)) u = c.unit_of[j];
+            for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1] && u < 0; ++k) {
+                const uint32_t j = c->nb[k];
+                if (c->unit_of[j] >= 0 && (frag_heavy(c, j) || hydrogen)) u = c->unit_of[j];
             }
-            if (u >= 0) {
-                frag_assign(&c, i, u, false);
-            } else {
-                frag_assign(&c, i, frag_new_unit(&c, MD_FRAGMENT_ATOM, -1), true);
-            }
+            if (u >= 0) frag_assign(c, i, u, false);
+            else        frag_assign(c, i, frag_new_unit(c, MD_FRAGMENT_ATOM), true);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoding: what makes two molecules alike, in slot order
+// ---------------------------------------------------------------------------
+
+static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t m, const int32_t* atom_res, md_allocator_i* temp) {
+    const md_molecule_data_t* mol = &sys->molecule;
+    const uint32_t off = mol->offset[m];
+    const size_t n = mol->offset[m + 1] - off;
+    md_array_shrink(*enc, 0);
+    md_array_push(*enc, (uint64_t)n, temp);
+    for (size_t i = 0; i < n; ++i) {
+        const size_t a = (size_t)mol->atom_idx[off + i];
+        const uint64_t z = md_atom_atomic_number(&sys->atom, a);
+        const uint64_t q = sys->atom.formal_charge ? (uint8_t)(int8_t)md_atom_formal_charge(&sys->atom, a) : 0;
+        const uint64_t h = sys->atom.hydrogen_count ? (uint8_t)md_atom_hydrogen_count(&sys->atom, a) : 0;
+        const uint64_t f = (uint64_t)(md_atom_flags(&sys->atom, a) & FRAG_ROLE_MASK) & 0xFFFF;
+        uint64_t rk = 0;
+        const int32_t r = atom_res ? atom_res[a] : -1;
+        if (r >= 0) {
+            const md_residue_flags_t rf = md_system_residue_flags(sys, (size_t)r);
+            rk = (uint64_t)md_residue_flags_kind(rf) | ((rf & MD_RESIDUE_FLAG_RESOLVED) ? 8u : 0u);
+        }
+        md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40), temp);
+    }
+    const size_t atoms_end = md_array_size(*enc);
+    for (size_t i = 0; i < n; ++i) {
+        for (md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)mol->atom_idx[off + i]); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const md_bond_flags_t bf = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
+            if (md_bond_kind(bf) != MD_BOND_KIND_COVALENT) continue;
+            const int32_t j = mol->atom_slot[md_bond_iter_atom_index(&it)] - (int32_t)off;
+            if (j <= (int32_t)i || (size_t)j >= n) continue;
+            const uint64_t b = (uint64_t)md_bond_order(bf) | ((bf & MD_BOND_FLAG_AROMATIC) ? 4u : 0u) | ((bf & MD_BOND_FLAG_DELOCALIZED) ? 8u : 0u);
+            md_array_push(*enc, ((uint64_t)i << 40) | ((uint64_t)j << 16) | b, temp);
+        }
+    }
+    // the bonds in order, whatever the order of the connectivity
+    qsort(*enc + atoms_end, md_array_size(*enc) - atoms_end, sizeof(uint64_t), frag_cmp_u64);
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+static inline uint64_t frag_type_key(md_str_t name, md_fragment_kind_t kind) {
+    uint64_t k = md_hash64_str(name, (uint64_t)kind + 1);
+    return k >= MD_HASH_TOMBSTONE ? k - 2 : k;
+}
+
+static uint32_t frag_default_color(md_str_t name) {
+    // The golden ratio spreads the hues of names which hash alike; channels within [0.45, 0.9]
+    const uint32_t h = (uint32_t)md_hash64_str(name, 0) * 0x9E3779B9u;
+    const float hue = (float)(h >> 8) * (1.0f / 16777216.0f) * 6.0f;
+    const float s = 0.5f, v = 0.9f;
+    const int sector = (int)hue % 6;
+    const float f = hue - floorf(hue);
+    const float p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
+    float r, g, b;
+    switch (sector) {
+    case 0:  r = v; g = t; b = p; break;
+    case 1:  r = q; g = v; b = p; break;
+    case 2:  r = p; g = v; b = t; break;
+    case 3:  r = p; g = q; b = v; break;
+    case 4:  r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q; break;
+    }
+    return (0xFFu << 24) | ((uint32_t)(b * 255.0f + 0.5f) << 16) | ((uint32_t)(g * 255.0f + 0.5f) << 8) | (uint32_t)(r * 255.0f + 0.5f);
+}
+
+void md_fragment_data_free(md_fragment_data_t* d, md_allocator_i* alloc) {
+    if (!d || !alloc) return;
+    md_array_free(d->mol_template, alloc);
+    md_array_free(d->frag_offset, alloc);
+    md_array_free(d->template_molecule, alloc);
+    md_array_free(d->template_slot_offset, alloc);
+    md_array_free(d->slot_frag, alloc);
+    md_array_free(d->template_frag_offset, alloc);
+    md_array_free(d->frag_type, alloc);
+    md_array_free(d->frag_slot_offset, alloc);
+    md_array_free(d->frag_slot, alloc);
+    md_array_free(d->type.kind, alloc);
+    for (size_t i = 0; i < md_array_size(d->type.name); ++i) {
+        if (!md_str_empty(d->type.name[i])) md_str_free(d->type.name[i], alloc);
+    }
+    md_array_free(d->type.name, alloc);
+    md_array_free(d->type.color, alloc);
+    md_memset(d, 0, sizeof(*d));
+}
+
+// ---------------------------------------------------------------------------
+// Inference
+// ---------------------------------------------------------------------------
+
+bool md_util_system_infer_fragments(md_system_t* sys) {
+    if (!sys || !sys->alloc) return false;
+    md_allocator_i* alloc = sys->alloc;
+
+    // Scratch on a temporary arena other than the system's: the system may live on one (a scope begun on it would
+    // take back what is given to the system when it ends). One scope, for all of it: a second, nested one would have
+    // no third arena to go to.
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* talloc = md_temp_allocator(temp);
+
+    // The colours of the types there were, by kind and name
+
+    md_hashmap32_t old_color = { .allocator = talloc };
+    for (size_t t = 0; t < sys->fragment.type.count; ++t) {
+        md_hashmap_add(&old_color, frag_type_key(sys->fragment.type.name[t], (md_fragment_kind_t)sys->fragment.type.kind[t]), sys->fragment.type.color[t]);
+    }
+    md_fragment_data_free(&sys->fragment, alloc);
+    md_fragment_data_t* out = &sys->fragment;
+    md_system_topology_changed(sys);
+
+    const md_molecule_data_t* mol = &sys->molecule;
+    const size_t num_mols = mol->count;
+    const size_t num_atoms = sys->atom.count;
+    if (num_mols == 0 || !mol->offset || !mol->atom_slot || num_atoms == 0) {
+        md_temp_end(temp);
+        return true;
+    }
+
+    // The residue of each atom
+    int32_t* atom_res = NULL;
+    if (sys->residue.count && sys->residue.atom_offset) {
+        atom_res = md_temp_alloc_array(temp, int32_t, num_atoms);
+        for (size_t i = 0; i < num_atoms; ++i) atom_res[i] = -1;
+        for (size_t r = 0; r < sys->residue.count; ++r) {
+            const md_urange_t range = md_system_residue_atom_range(sys, r);
+            for (uint32_t a = range.beg; a < range.end && a < num_atoms; ++a) atom_res[a] = (int32_t)r;
         }
     }
 
-    const size_t num_units = md_array_size(c.unit_kind);
+    // ---- templates: the molecules by their encoding ----
+    md_array(uint32_t) tmpl_enc_off = 0;    // [template + 1] its encoding in enc_pool
+    md_array(uint64_t) enc_pool = 0;
+    md_array(uint32_t) tmpl_next = 0;       // the next template of the same hash
+    md_array(uint64_t) enc = 0;
+    md_hashmap32_t by_hash = { .allocator = talloc };
+    md_array_push(tmpl_enc_off, 0, talloc);
+    md_array_resize(out->mol_template, num_mols, alloc);
 
-    // Atoms of each unit, in index order
-    uint32_t* unit_off = md_temp_alloc_zero_array(temp, uint32_t, num_units + 1);
-    for (uint32_t i = 0; i < n; ++i) if (c.unit_of[i] >= 0) unit_off[c.unit_of[i] + 1]++;
-    for (size_t u = 0; u < num_units; ++u) unit_off[u + 1] += unit_off[u];
-    uint32_t* unit_atoms = md_temp_alloc_array(temp, uint32_t, unit_off[num_units] ? unit_off[num_units] : 1);
+    for (size_t m = 0; m < num_mols; ++m) {
+        frag_encode(&enc, sys, m, atom_res, talloc);
+        const size_t len = md_array_size(enc);
+        uint64_t h = md_hash64(enc, len * sizeof(uint64_t), 0);
+        if (h >= MD_HASH_TOMBSTONE) h -= 2;
+        uint32_t t = UINT32_MAX;
+        const uint32_t* first = md_hashmap_get(&by_hash, h);
+        for (uint32_t c = first ? *first : UINT32_MAX; c != UINT32_MAX; c = tmpl_next[c]) {
+            const uint32_t beg = tmpl_enc_off[c], end = tmpl_enc_off[c + 1];
+            if (end - beg == len && memcmp(enc_pool + beg, enc, len * sizeof(uint64_t)) == 0) { t = c; break; }
+        }
+        if (t == UINT32_MAX) {
+            t = (uint32_t)md_array_size(out->template_molecule);
+            md_array_push(out->template_molecule, (uint32_t)m, alloc);
+            md_array_push_array(enc_pool, enc, len, talloc);
+            md_array_push(tmpl_enc_off, (uint32_t)md_array_size(enc_pool), talloc);
+            md_array_push(tmpl_next, first ? *first : UINT32_MAX, talloc);
+            if (first) *(uint32_t*)md_hashmap_get(&by_hash, h) = t;
+            else       md_hashmap_add(&by_hash, h, t);
+        }
+        out->mol_template[m] = t;
+    }
+    const size_t num_tmpl = md_array_size(out->template_molecule);
+    out->template_count = num_tmpl;
+
+    // The rings of each template's molecule, by the molecule of their first atom
+    const size_t num_rings = md_ring_data_count(&sys->ring);
+    uint32_t* ring_off = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
+    uint32_t* ring_list = md_temp_alloc_array(temp, uint32_t, num_rings ? num_rings : 1);
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t m = md_system_molecule_find_by_atom_idx(sys, (size_t)md_ring_atoms(&sys->ring, r)[0]);
+        if (m >= 0) ring_off[m + 1]++;
+    }
+    for (size_t m = 0; m < num_mols; ++m) ring_off[m + 1] += ring_off[m];
     {
-        uint32_t* fill = md_temp_alloc_zero_array(temp, uint32_t, num_units + 1);
-        for (uint32_t i = 0; i < n; ++i) {
+        uint32_t* fill = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
+        for (size_t r = 0; r < num_rings; ++r) {
+            const int32_t m = md_system_molecule_find_by_atom_idx(sys, (size_t)md_ring_atoms(&sys->ring, r)[0]);
+            if (m >= 0) ring_list[ring_off[m] + fill[m]++] = (uint32_t)r;
+        }
+    }
+
+    int32_t* res_unit = md_temp_alloc_array(temp, int32_t, sys->residue.count ? sys->residue.count : 1);
+    for (size_t r = 0; r < sys->residue.count; ++r) res_unit[r] = -1;
+
+    // ---- the analysis, per template; names of the multi atom cores identified together after ----
+    md_array(char) names = 0;                   // FRAG_NAME_CAP per template fragment
+    md_array(uint8_t) kinds = 0;
+    md_array(md_bitset_t) queries = 0;
+    md_array(uint32_t) query_frag = 0;          // the template fragment of each query
+
+    md_array_push(out->template_slot_offset, 0, alloc);
+    md_array_push(out->template_frag_offset, 0, alloc);
+    md_array_push(out->frag_slot_offset, 0, alloc);
+
+    for (size_t t = 0; t < num_tmpl; ++t) {
+        const size_t m = out->template_molecule[t];
+        md_allocator_i* salloc = talloc;     // a template's scratch: the unique molecules', in all
+
+        frag_mol_t c;
+        frag_mol_init(&c, sys, m, atom_res, salloc);
+        frag_analyse(&c, &sys->ring, ring_list + ring_off[m], ring_off[m + 1] - ring_off[m], res_unit);
+        const size_t n = c.n;
+        const size_t num_units = md_array_size(c.unit_kind);
+
+        // Fragments in the order of their first slot
+        int32_t* order = md_alloc(salloc, sizeof(int32_t) * (num_units ? num_units : 1));
+        for (size_t u = 0; u < num_units; ++u) order[u] = -1;
+        uint32_t num_frags = 0;
+        for (size_t i = 0; i < n; ++i) {
             const int32_t u = c.unit_of[i];
-            if (u >= 0) unit_atoms[unit_off[u] + fill[u]++] = i;
+            if (u >= 0 && order[u] < 0) order[u] = (int32_t)num_frags++;
         }
-    }
 
-    // Molecules: covalent components, a unit always within one
-    uint32_t* mol_uf = md_temp_alloc_array(temp, uint32_t, n);
-    for (uint32_t i = 0; i < n; ++i) mol_uf[i] = i;
-    for (uint32_t i = 0; i < n; ++i) {
-        if (c.unit_of[i] < 0) continue;
-        for (uint32_t k = c.nb_off[i]; k < c.nb_off[i + 1]; ++k) {
-            if (c.unit_of[c.nb[k]] >= 0) uf_union(mol_uf, i, c.nb[k]);
+        const uint32_t frag_base = (uint32_t)md_array_size(kinds);
+        md_array_resize(kinds, frag_base + num_frags, talloc);
+        md_array_resize(names, (size_t)(frag_base + num_frags) * FRAG_NAME_CAP, talloc);
+        for (size_t u = 0; u < num_units; ++u) if (order[u] >= 0) kinds[frag_base + order[u]] = c.unit_kind[u];
+
+        // slot -> fragment
+        for (size_t i = 0; i < n; ++i) {
+            const int32_t u = c.unit_of[i];
+            md_array_push(out->slot_frag, u >= 0 ? (uint32_t)order[u] : MD_FRAGMENT_NONE, alloc);
         }
-    }
-    for (size_t u = 0; u < num_units; ++u) {
-        for (uint32_t k = unit_off[u] + 1; k < unit_off[u + 1]; ++k) uf_union(mol_uf, unit_atoms[unit_off[u]], unit_atoms[k]);
-    }
+        md_array_push(out->template_slot_offset, (uint32_t)md_array_size(out->slot_frag), alloc);
 
-    // Units ordered by first atom are already in that order within a molecule if visited by first atom
-    int32_t* mol_of_root = md_temp_alloc_array(temp, int32_t, n);
-    for (uint32_t i = 0; i < n; ++i) mol_of_root[i] = -1;
-    md_array(uint32_t) mol_first_unit_order = 0;    // units in order of first atom
-    int32_t* unit_mol = md_temp_alloc_array(temp, int32_t, num_units ? num_units : 1);
-    bool* unit_seen = md_temp_alloc_zero_array(temp, bool, num_units ? num_units : 1);
-    size_t num_mols = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-        const int32_t u = c.unit_of[i];
-        if (u < 0 || unit_seen[u]) continue;
-        unit_seen[u] = true;
-        const uint32_t r = uf_find(mol_uf, i);
-        if (mol_of_root[r] < 0) mol_of_root[r] = (int32_t)num_mols++;
-        unit_mol[u] = mol_of_root[r];
-        md_array_push(mol_first_unit_order, (uint32_t)u, talloc);
-    }
-
-    // ---- names of the units ----
-    char* unit_name = md_temp_alloc_zero_array(temp, char, (num_units ? num_units : 1) * MD_FRAGMENT_NAME_CAP);
-    {
-        // Cores of two or more heavy atoms are identified against the library
-        md_array(md_bitset_t) units = 0;
-        md_array(uint32_t) unit_of_query = 0;
-        uint32_t* core = md_temp_alloc_array(temp, uint32_t, n);
-
-        for (size_t u = 0; u < num_units; ++u) {
-            char* name = unit_name + u * MD_FRAGMENT_NAME_CAP;
-            const md_fragment_kind_t kind = (md_fragment_kind_t)c.unit_kind[u];
-
-            size_t num_core = 0;
-            for (uint32_t k = unit_off[u]; k < unit_off[u + 1]; ++k) {
-                const uint32_t a = unit_atoms[k];
-                if (c.core_of[a] == (int32_t)u && frag_heavy(&c, a)) core[num_core++] = a;
+        // fragment -> slots, ascending
+        uint32_t* cnt = md_alloc(salloc, sizeof(uint32_t) * (num_frags + 1));
+        md_memset(cnt, 0, sizeof(uint32_t) * (num_frags + 1));
+        for (size_t i = 0; i < n; ++i) if (c.unit_of[i] >= 0) cnt[order[c.unit_of[i]] + 1]++;
+        for (uint32_t f = 0; f < num_frags; ++f) cnt[f + 1] += cnt[f];
+        const uint32_t slot_base = (uint32_t)md_array_size(out->frag_slot);
+        md_array_resize(out->frag_slot, slot_base + cnt[num_frags], alloc);
+        for (uint32_t f = 0; f < num_frags; ++f) md_array_push(out->frag_slot_offset, slot_base + cnt[f + 1], alloc);
+        {
+            uint32_t* fill = md_alloc(salloc, sizeof(uint32_t) * (num_frags ? num_frags : 1));
+            md_memset(fill, 0, sizeof(uint32_t) * (num_frags ? num_frags : 1));
+            for (size_t i = 0; i < n; ++i) {
+                if (c.unit_of[i] < 0) continue;
+                const uint32_t f = (uint32_t)order[c.unit_of[i]];
+                out->frag_slot[slot_base + cnt[f] + fill[f]++] = (uint32_t)i;
             }
+        }
+        md_array_push(out->template_frag_offset, frag_base + num_frags, alloc);
 
+        // names
+        uint32_t* core = md_alloc(salloc, sizeof(uint32_t) * (n ? n : 1));
+        uint32_t* core_global = md_alloc(salloc, sizeof(uint32_t) * (n ? n : 1));
+        for (size_t u = 0; u < num_units; ++u) {
+            if (order[u] < 0) continue;
+            const uint32_t f = frag_base + (uint32_t)order[u];
+            char* name = names + (size_t)f * FRAG_NAME_CAP;
+            const md_fragment_kind_t kind = (md_fragment_kind_t)c.unit_kind[u];
+            size_t num_core = 0;
+            uint32_t first = UINT32_MAX;
+            for (size_t i = 0; i < n; ++i) {
+                if (c.unit_of[i] != (int32_t)u) continue;
+                if (first == UINT32_MAX) first = (uint32_t)i;
+                if (c.core_of[i] == (int32_t)u && frag_heavy(&c, (uint32_t)i)) core[num_core++] = (uint32_t)i;
+            }
             switch (kind) {
-            case MD_FRAGMENT_RESIDUE: {
-                const int32_t r = c.unit_residue[u];
-                const md_str_t rn = md_system_residue_name(sys, (size_t)r);
-                snprintf(name, MD_FRAGMENT_NAME_CAP, "%.*s %d", (int)rn.len, rn.ptr, (int)md_system_residue_seq_id(sys, (size_t)r));
+            case MD_FRAGMENT_BACKBONE:
+                snprintf(name, FRAG_NAME_CAP, "backbone");
+                break;
+            case MD_FRAGMENT_LIPID_TAIL: {
+                uint32_t num_c = 0;
+                for (size_t k = 0; k < num_core; ++k) num_c += c.z[core[k]] == MD_Z_C;
+                snprintf(name, FRAG_NAME_CAP, "C%u tail", num_c);
                 break;
             }
-            case MD_FRAGMENT_METAL:
             case MD_FRAGMENT_ATOM: {
-                const md_str_t sym = md_util_element_symbol((md_element_t)c.z[unit_atoms[unit_off[u]]]);
-                snprintf(name, MD_FRAGMENT_NAME_CAP, "%.*s", (int)sym.len, sym.ptr);
+                const md_str_t sym = md_util_element_symbol((md_element_t)c.z[first]);
+                snprintf(name, FRAG_NAME_CAP, "%.*s", (int)sym.len, sym.ptr);
                 break;
             }
             case MD_FRAGMENT_ALKYL: {
                 static const char* alkyl[] = { "", "methyl", "ethyl", "propyl", "butyl", "pentyl", "hexyl" };
-                if (num_core < MD_COUNTOF(alkyl)) snprintf(name, MD_FRAGMENT_NAME_CAP, "%s", alkyl[num_core]);
-                else                              snprintf(name, MD_FRAGMENT_NAME_CAP, "C%zu alkyl", num_core);
+                if (num_core < MD_COUNTOF(alkyl)) snprintf(name, FRAG_NAME_CAP, "%s", alkyl[num_core]);
+                else                              snprintf(name, FRAG_NAME_CAP, "C%zu alkyl", num_core);
                 break;
             }
-            case MD_FRAGMENT_LINKER: {
-                if      (num_core == 1) snprintf(name, MD_FRAGMENT_NAME_CAP, "methylene");
-                else if (num_core == 2) snprintf(name, MD_FRAGMENT_NAME_CAP, "ethylene");
-                else                    snprintf(name, MD_FRAGMENT_NAME_CAP, "C%zu linker", num_core);
+            case MD_FRAGMENT_LINKER:
+                if      (num_core == 1) snprintf(name, FRAG_NAME_CAP, "methylene");
+                else if (num_core == 2) snprintf(name, FRAG_NAME_CAP, "ethylene");
+                else                    snprintf(name, FRAG_NAME_CAP, "C%zu linker", num_core);
                 break;
-            }
             case MD_FRAGMENT_GROUP:
             case MD_FRAGMENT_RING_SYSTEM:
                 if (num_core == 1) {
-                    frag_name_single(name, MD_FRAGMENT_NAME_CAP, &c, core[0]);
+                    frag_name_single(name, FRAG_NAME_CAP, &c, core[0]);
                 } else if (num_core > 1) {
-                    // sorted, as md_bitset_from_indices wants them
-                    for (size_t a = 1; a < num_core; ++a) {
-                        const uint32_t v = core[a];
-                        size_t b = a;
-                        while (b > 0 && core[b - 1] > v) { core[b] = core[b - 1]; b--; }
-                        core[b] = v;
+                    char formula[32];
+                    frag_formula(formula, sizeof(formula), &c, core, num_core);
+                    bool aromatic = false, carbon_only = true;
+                    for (size_t k = 0; k < num_core; ++k) {
+                        aromatic |= (frag_aflags(&c, core[k]) & MD_ATOM_FLAG_AROMATIC) != 0;
+                        carbon_only &= c.z[core[k]] == MD_Z_C;
                     }
-                    md_array_push(units, md_bitset_from_indices(core, num_core, talloc), talloc);
-                    md_array_push(unit_of_query, (uint32_t)u, talloc);
-                    // the fallback, overwritten when identified
-                    char formula[24];
-                    frag_formula(formula, sizeof(formula), &c, core, num_core, false);
-                    bool aromatic = false;
-                    for (size_t a = 0; a < num_core; ++a) aromatic |= (md_atom_flags(&sys->atom, core[a]) & MD_ATOM_FLAG_AROMATIC) != 0;
-                    bool carbon_only = true;
-                    for (size_t a = 0; a < num_core; ++a) carbon_only &= c.z[core[a]] == MD_Z_C;
                     if (kind == MD_FRAGMENT_GROUP && carbon_only && num_core >= 4) {
-                        snprintf(name, MD_FRAGMENT_NAME_CAP, "polyene");    // conjugated C=C beyond a diene
+                        snprintf(name, FRAG_NAME_CAP, "polyene");      // conjugated C=C beyond a diene
                     } else {
-                        snprintf(name, MD_FRAGMENT_NAME_CAP, "%s %s",
-                                 kind == MD_FRAGMENT_GROUP ? "group" : aromatic ? "aryl" : "ring", formula);
+                        snprintf(name, FRAG_NAME_CAP, "%s %s", kind == MD_FRAGMENT_GROUP ? "group" : aromatic ? "aryl" : "ring", formula);
                     }
+                    // identified as a whole against the library, below; global atoms, ascending
+                    for (size_t k = 0; k < num_core; ++k) core_global[k] = (uint32_t)c.atom[core[k]];
+                    qsort(core_global, num_core, sizeof(uint32_t), frag_cmp_u32);
+                    md_array_push(queries, md_bitset_from_indices(core_global, num_core, talloc), talloc);
+                    md_array_push(query_frag, f, talloc);
                 }
                 break;
             default:
+                snprintf(name, FRAG_NAME_CAP, "%s", md_fragment_kind_str(kind));
                 break;
             }
         }
-
-        if (md_array_size(units) > 0) {
-            md_match_library_t* lib = md_match_library_create(talloc);
-            for (size_t e = 0; e < MD_COUNTOF(frag_library); ++e) {
-                const int32_t idx = md_match_library_add_smiles(lib, md_str_from_cstr(frag_library[e].smiles),
-                                                                md_str_from_cstr(frag_library[e].name), NULL);
-                if (idx < 0) MD_LOG_ERROR("Fragments: library entry '%s' does not parse", frag_library[e].smiles);
-            }
-            md_match_identify_desc_t desc = {
-                .library = lib,
-                .level = MD_MATCH_LEVEL_MOLECULE,
-                .flags = MD_MATCH_FLAG_WHOLE,
-                .units = units,
-                .num_units = md_array_size(units),
-            };
-            md_match_identify_result_t res = {0};
-            if (md_match_identify(&res, &desc, sys, talloc)) {
-                for (size_t k = 0; k < res.count; ++k) {
-                    const uint32_t u = unit_of_query[res.unit[k]];
-                    const md_str_t nm = md_match_library_name(lib, res.entry[k]);
-                    snprintf(unit_name + u * MD_FRAGMENT_NAME_CAP, MD_FRAGMENT_NAME_CAP, "%.*s", (int)nm.len, nm.ptr);
-                }
-                md_match_identify_result_free(&res);
-            }
-            md_match_library_destroy(lib);
-        }
+        md_array_free(c.unit_kind, salloc);
     }
 
-    // ---- molecules: their units, names, and sets of identical small ones ----
-    uint32_t* mol_unit_off = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
-    for (size_t u = 0; u < num_units; ++u) mol_unit_off[unit_mol[u] + 1]++;
-    for (size_t m = 0; m < num_mols; ++m) mol_unit_off[m + 1] += mol_unit_off[m];
-    uint32_t* mol_units = md_temp_alloc_array(temp, uint32_t, num_units ? num_units : 1);
-    {
-        uint32_t* fill = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
-        for (size_t k = 0; k < md_array_size(mol_first_unit_order); ++k) {
-            const uint32_t u = mol_first_unit_order[k];
-            const int32_t m = unit_mol[u];
-            mol_units[mol_unit_off[m] + fill[m]++] = u;
-        }
-    }
-
-    // Repeated unit names within a molecule are numbered
-    for (size_t m = 0; m < num_mols; ++m) {
-        const uint32_t beg = mol_unit_off[m], end = mol_unit_off[m + 1];
-        for (uint32_t a = beg; a < end; ++a) {
-            char* na = unit_name + mol_units[a] * MD_FRAGMENT_NAME_CAP;
-            if (c.unit_kind[mol_units[a]] == MD_FRAGMENT_RESIDUE) continue;
-            uint32_t total = 0;
-            for (uint32_t b = beg; b < end; ++b) total += strcmp(na, unit_name + mol_units[b] * MD_FRAGMENT_NAME_CAP) == 0 ? 1 : 0;
-            if (total < 2) continue;
-            // number all of them, in order; the copies compared against are still unnumbered
-            char base[MD_FRAGMENT_NAME_CAP];
-            snprintf(base, sizeof(base), "%s", na);
-            uint32_t idx = 0;
-            for (uint32_t b = beg; b < end; ++b) {
-                char* nb_ = unit_name + mol_units[b] * MD_FRAGMENT_NAME_CAP;
-                if (strcmp(nb_, base) != 0) continue;
-                char tmp[MD_FRAGMENT_NAME_CAP + 8];
-                snprintf(tmp, sizeof(tmp), "%s %u", base, ++idx);
-                snprintf(nb_, MD_FRAGMENT_NAME_CAP, "%s", tmp);
+    // ---- the library ----
+    if (md_array_size(queries) > 0) {
+        md_match_library_t* lib = md_match_library_create(talloc);
+        for (size_t e = 0; e < MD_COUNTOF(frag_library); ++e) {
+            if (md_match_library_add_smiles(lib, md_str_from_cstr(frag_library[e].smiles), md_str_from_cstr(frag_library[e].name), NULL) < 0) {
+                MD_LOG_ERROR("Fragments: library entry '%s' does not parse", frag_library[e].smiles);
             }
         }
-    }
-
-    char* mol_name = md_temp_alloc_zero_array(temp, char, (num_mols ? num_mols : 1) * MD_FRAGMENT_NAME_CAP);
-    uint32_t* mol_atom_count = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
-    for (size_t m = 0; m < num_mols; ++m) {
-        const uint32_t beg = mol_unit_off[m], end = mol_unit_off[m + 1];
-        char* name = mol_name + m * MD_FRAGMENT_NAME_CAP;
-        md_array(uint32_t) atoms = 0;
-        bool protein = false, nucleic = false;
-        for (uint32_t k = beg; k < end; ++k) {
-            const uint32_t u = mol_units[k];
-            for (uint32_t a = unit_off[u]; a < unit_off[u + 1]; ++a) md_array_push(atoms, unit_atoms[a], talloc);
-            if (c.unit_kind[u] == MD_FRAGMENT_RESIDUE) {
-                const md_residue_kind_t rk = md_system_residue_kind(sys, (size_t)c.unit_residue[u]);
-                protein |= rk == MD_RESIDUE_KIND_AMINO_ACID;
-                nucleic |= rk == MD_RESIDUE_KIND_NUCLEOTIDE;
+        md_match_identify_desc_t desc = {
+            .library = lib,
+            .level = MD_MATCH_LEVEL_MOLECULE,
+            .flags = MD_MATCH_FLAG_WHOLE,
+            .units = queries,
+            .num_units = md_array_size(queries),
+        };
+        md_match_identify_result_t res = {0};
+        if (md_match_identify(&res, &desc, sys, talloc)) {
+            for (size_t k = 0; k < res.count; ++k) {
+                const uint32_t f = query_frag[res.unit[k]];
+                const md_str_t nm = md_match_library_name(lib, res.entry[k]);
+                snprintf(names + (size_t)f * FRAG_NAME_CAP, FRAG_NAME_CAP, "%.*s", (int)nm.len, nm.ptr);
             }
+            md_match_identify_result_free(&res);
         }
-        mol_atom_count[m] = (uint32_t)md_array_size(atoms);
-        if (end - beg == 1) {
-            snprintf(name, MD_FRAGMENT_NAME_CAP, "%s", unit_name + mol_units[beg] * MD_FRAGMENT_NAME_CAP);
-        } else if (protein) {
-            snprintf(name, MD_FRAGMENT_NAME_CAP, "protein");
-        } else if (nucleic) {
-            snprintf(name, MD_FRAGMENT_NAME_CAP, "nucleic acid");
-        } else {
-            frag_formula(name, MD_FRAGMENT_NAME_CAP, &c, atoms, md_array_size(atoms), true);
-        }
+        md_match_library_destroy(lib);
     }
 
-    // Sets: single unit molecules of one name and size, two or more of them. set_of[m] is the first member.
-    int32_t* set_of = md_temp_alloc_array(temp, int32_t, num_mols ? num_mols : 1);
-    uint32_t* set_size = md_temp_alloc_zero_array(temp, uint32_t, num_mols ? num_mols : 1);
-    for (size_t m = 0; m < num_mols; ++m) {
-        set_of[m] = (int32_t)m;
-        if (mol_unit_off[m + 1] - mol_unit_off[m] != 1) {
-            set_size[m] = 1;
+    // ---- types ----
+    const size_t num_tfrags = md_array_size(kinds);
+    md_array_resize(out->frag_type, num_tfrags, alloc);
+    md_hashmap32_t type_of = { .allocator = talloc };
+    for (size_t f = 0; f < num_tfrags; ++f) {
+        const md_str_t name = md_str_from_cstr(names + f * FRAG_NAME_CAP);
+        const md_fragment_kind_t kind = (md_fragment_kind_t)kinds[f];
+        const uint64_t key = frag_type_key(name, kind);
+        const uint32_t* found = md_hashmap_get(&type_of, key);
+        if (found) {
+            out->frag_type[f] = *found;
             continue;
         }
-        set_of[m] = -1;
-        for (size_t p = 0; p < m; ++p) {
-            if (set_of[p] != (int32_t)p) continue;
-            if (mol_atom_count[p] == mol_atom_count[m] &&
-                strcmp(mol_name + p * MD_FRAGMENT_NAME_CAP, mol_name + m * MD_FRAGMENT_NAME_CAP) == 0) {
-                set_of[m] = (int32_t)p;
-                break;
-            }
-        }
-        if (set_of[m] < 0) set_of[m] = (int32_t)m;
-        set_size[set_of[m]]++;
+        const uint32_t t = (uint32_t)out->type.count++;
+        md_array_push(out->type.kind, (uint8_t)kind, alloc);
+        md_array_push(out->type.name, md_str_copy(name, alloc), alloc);
+        const uint32_t* old = md_hashmap_get(&old_color, key);
+        md_array_push(out->type.color, old ? *old : frag_default_color(name), alloc);
+        md_hashmap_add(&type_of, key, t);
+        out->frag_type[f] = t;
     }
 
-    // Repeated names among what stays a root are numbered too
-    {
-        for (size_t m = 0; m < num_mols; ++m) {
-            if (set_of[m] != (int32_t)m || set_size[m] > 1) continue;
-            const char* nm = mol_name + m * MD_FRAGMENT_NAME_CAP;
-            uint32_t total = 0;
-            for (size_t p = 0; p < num_mols; ++p) {
-                if (set_of[p] == (int32_t)p && set_size[p] == 1 && strcmp(nm, mol_name + p * MD_FRAGMENT_NAME_CAP) == 0) total++;
-            }
-            if (total < 2) continue;
-            char base[MD_FRAGMENT_NAME_CAP];
-            snprintf(base, sizeof(base), "%s", nm);
-            uint32_t idx = 0;
-            for (size_t p = 0; p < num_mols; ++p) {
-                char* np = mol_name + p * MD_FRAGMENT_NAME_CAP;
-                if (set_of[p] != (int32_t)p || set_size[p] != 1 || strcmp(np, base) != 0) continue;
-                char tmp[MD_FRAGMENT_NAME_CAP + 8];
-                snprintf(tmp, sizeof(tmp), "%s %u", base, ++idx);
-                snprintf(np, MD_FRAGMENT_NAME_CAP, "%s", tmp);
-            }
-        }
-    }
-
-    // ---- the tree, in pre-order ----
-    md_array(uint32_t) parent = 0;
-    md_array(uint8_t)  kind   = 0;
-    md_array(char)     names  = 0;
-    md_array(uint32_t) abeg   = 0;
-    md_array(uint32_t) aend   = 0;
-    md_array(int32_t)  aidx   = 0;
-    out->atom_fragment = md_array_create(uint32_t, n, alloc);
-    for (size_t i = 0; i < n; ++i) out->atom_fragment[i] = MD_FRAGMENT_NONE;
-
-    #define FRAG_PUSH(PARENT, KIND, NAME) do { \
-        md_array_push(parent, (PARENT), alloc); \
-        md_array_push(kind, (uint8_t)(KIND), alloc); \
-        const size_t base_ = md_array_size(names); \
-        md_array_resize(names, base_ + MD_FRAGMENT_NAME_CAP, alloc); \
-        snprintf(names + base_, MD_FRAGMENT_NAME_CAP, "%s", (NAME)); \
-        md_array_push(abeg, (uint32_t)md_array_size(aidx), alloc); \
-        md_array_push(aend, (uint32_t)md_array_size(aidx), alloc); \
-    } while (0)
-
-    #define FRAG_ATOMS_OF_UNIT(FRAG, U) do { \
-        for (uint32_t k_ = unit_off[(U)]; k_ < unit_off[(U) + 1]; ++k_) { \
-            md_array_push(aidx, (int32_t)unit_atoms[k_], alloc); \
-            out->atom_fragment[unit_atoms[k_]] = (FRAG); \
-        } \
-    } while (0)
-
-    // ends the ranges of a fragment and all of its ancestors at the current end
-    #define FRAG_CLOSE(FRAG) do { \
-        for (uint32_t f_ = (FRAG); f_ != MD_FRAGMENT_NONE; f_ = parent[f_]) aend[f_] = (uint32_t)md_array_size(aidx); \
-    } while (0)
-
+    // ---- the molecules' fragments ----
+    md_array_resize(out->frag_offset, num_mols + 1, alloc);
+    out->frag_offset[0] = 0;
     for (size_t m = 0; m < num_mols; ++m) {
-        const bool in_set = set_size[set_of[m]] > 1;
-        if (in_set && set_of[m] != (int32_t)m) continue;    // emitted with the first of its set
-
-        if (in_set) {
-            char set_name[MD_FRAGMENT_NAME_CAP];
-            snprintf(set_name, sizeof(set_name), "%s \xc3\x97%u", mol_name + m * MD_FRAGMENT_NAME_CAP, set_size[m]);
-            const uint32_t set_idx = (uint32_t)md_array_size(parent);
-            FRAG_PUSH(MD_FRAGMENT_NONE, MD_FRAGMENT_MOLECULE_SET, set_name);
-            uint32_t member = 0;
-            for (size_t p = m; p < num_mols; ++p) {
-                if (set_of[p] != (int32_t)m) continue;
-                const uint32_t u = mol_units[mol_unit_off[p]];
-                char member_name[MD_FRAGMENT_NAME_CAP + 12];
-                snprintf(member_name, sizeof(member_name), "%s %u", mol_name + m * MD_FRAGMENT_NAME_CAP, ++member);
-                char clipped[MD_FRAGMENT_NAME_CAP];
-                snprintf(clipped, sizeof(clipped), "%s", member_name);
-                const uint32_t f = (uint32_t)md_array_size(parent);
-                FRAG_PUSH(set_idx, c.unit_kind[u], clipped);
-                FRAG_ATOMS_OF_UNIT(f, u);
-                FRAG_CLOSE(f);
-            }
-            continue;
-        }
-
-        const uint32_t beg = mol_unit_off[m], end = mol_unit_off[m + 1];
-        if (end - beg == 1) {
-            const uint32_t u = mol_units[beg];
-            const uint32_t f = (uint32_t)md_array_size(parent);
-            FRAG_PUSH(MD_FRAGMENT_NONE, c.unit_kind[u], mol_name + m * MD_FRAGMENT_NAME_CAP);
-            FRAG_ATOMS_OF_UNIT(f, u);
-            FRAG_CLOSE(f);
-        } else {
-            const uint32_t mf = (uint32_t)md_array_size(parent);
-            FRAG_PUSH(MD_FRAGMENT_NONE, MD_FRAGMENT_MOLECULE, mol_name + m * MD_FRAGMENT_NAME_CAP);
-            for (uint32_t k = beg; k < end; ++k) {
-                const uint32_t u = mol_units[k];
-                const uint32_t f = (uint32_t)md_array_size(parent);
-                FRAG_PUSH(mf, c.unit_kind[u], unit_name + u * MD_FRAGMENT_NAME_CAP);
-                FRAG_ATOMS_OF_UNIT(f, u);
-                FRAG_CLOSE(f);
-            }
-        }
+        const uint32_t t = out->mol_template[m];
+        out->frag_offset[m + 1] = out->frag_offset[m] + (out->template_frag_offset[t + 1] - out->template_frag_offset[t]);
     }
-    #undef FRAG_PUSH
-    #undef FRAG_ATOMS_OF_UNIT
-    #undef FRAG_CLOSE
-
-    out->count        = md_array_size(parent);
-    out->parent       = parent;
-    out->kind         = kind;
-    out->name         = names;
-    out->atom_beg     = abeg;
-    out->atom_end     = aend;
-    out->atom_idx     = aidx;
-    out->num_atom_idx = md_array_size(aidx);
+    out->count = out->frag_offset[num_mols];
 
     md_temp_end(temp);
+    md_system_topology_changed(sys);
     return true;
 }
 
-void md_fragments_free(md_fragments_t* f) {
-    if (!f) return;
-    if (f->alloc) {
-        md_array_free(f->parent, f->alloc);
-        md_array_free(f->kind, f->alloc);
-        md_array_free(f->name, f->alloc);
-        md_array_free(f->atom_beg, f->alloc);
-        md_array_free(f->atom_end, f->alloc);
-        md_array_free(f->atom_idx, f->alloc);
-        md_array_free(f->atom_fragment, f->alloc);
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+size_t md_system_fragment_count(const md_system_t* sys) {
+    return sys ? sys->fragment.count : 0;
+}
+
+size_t md_system_fragment_type_count(const md_system_t* sys) {
+    return sys ? sys->fragment.type.count : 0;
+}
+
+// The molecule of a fragment and the fragment's index within its template's
+static inline bool frag_locate(const md_system_t* sys, md_fragment_idx_t frag, size_t* mol, uint32_t* tfrag) {
+    const md_fragment_data_t* d = &sys->fragment;
+    if (frag >= d->count || !d->frag_offset) return false;
+    const int32_t m = md_offset_range_find(d->frag_offset, md_array_size(d->mol_template), frag);
+    if (m < 0) return false;
+    *mol = (size_t)m;
+    *tfrag = d->template_frag_offset[d->mol_template[m]] + (frag - d->frag_offset[m]);
+    return true;
+}
+
+md_fragment_idx_t md_system_fragment_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+    if (!sys || !sys->fragment.frag_offset || atom_idx >= sys->atom.count) return MD_FRAGMENT_NONE;
+    const md_fragment_data_t* d = &sys->fragment;
+    const int32_t m = md_system_molecule_find_by_atom_idx(sys, atom_idx);
+    if (m < 0 || (size_t)m >= md_array_size(d->mol_template)) return MD_FRAGMENT_NONE;
+    const uint32_t t = d->mol_template[m];
+    const uint32_t local = (uint32_t)sys->molecule.atom_slot[atom_idx] - sys->molecule.offset[m];
+    const uint32_t f = d->slot_frag[d->template_slot_offset[t] + local];
+    return f == MD_FRAGMENT_NONE ? MD_FRAGMENT_NONE : d->frag_offset[m] + f;
+}
+
+md_fragment_idx_t md_system_fragment_find_by_ring(const md_system_t* sys, size_t ring_idx) {
+    if (!sys || ring_idx >= md_ring_data_count(&sys->ring)) return MD_FRAGMENT_NONE;
+    return md_system_fragment_find_by_atom_idx(sys, (size_t)md_ring_atoms(&sys->ring, ring_idx)[0]);
+}
+
+size_t md_system_fragment_molecule(const md_system_t* sys, md_fragment_idx_t frag) {
+    size_t m = 0; uint32_t tf = 0;
+    return frag_locate(sys, frag, &m, &tf) ? m : SIZE_MAX;
+}
+
+md_fragment_type_idx_t md_system_fragment_type(const md_system_t* sys, md_fragment_idx_t frag) {
+    size_t m = 0; uint32_t tf = 0;
+    return frag_locate(sys, frag, &m, &tf) ? sys->fragment.frag_type[tf] : MD_FRAGMENT_NONE;
+}
+
+md_fragment_kind_t md_system_fragment_kind(const md_system_t* sys, md_fragment_idx_t frag) {
+    return md_fragment_type_kind(sys, md_system_fragment_type(sys, frag));
+}
+
+md_str_t md_system_fragment_name(const md_system_t* sys, md_fragment_idx_t frag) {
+    return md_fragment_type_name(sys, md_system_fragment_type(sys, frag));
+}
+
+size_t md_system_fragment_atom_count(const md_system_t* sys, md_fragment_idx_t frag) {
+    size_t m = 0; uint32_t tf = 0;
+    if (!frag_locate(sys, frag, &m, &tf)) return 0;
+    return sys->fragment.frag_slot_offset[tf + 1] - sys->fragment.frag_slot_offset[tf];
+}
+
+md_fragment_atom_iter_t md_fragment_atom_iter(const md_system_t* sys, md_fragment_idx_t frag) {
+    md_fragment_atom_iter_t it = {0};
+    it.atom = -1;
+    size_t m = 0; uint32_t tf = 0;
+    if (!frag_locate(sys, frag, &m, &tf)) return it;
+    const md_fragment_data_t* d = &sys->fragment;
+    it.slot = d->frag_slot + d->frag_slot_offset[tf];
+    it.end  = d->frag_slot + d->frag_slot_offset[tf + 1];
+    it.mol_atom = sys->molecule.atom_idx + sys->molecule.offset[m];
+    return it;
+}
+
+bool md_fragment_atom_iter_next(md_fragment_atom_iter_t* it) {
+    if (!it || !it->slot || it->slot >= it->end) return false;
+    it->atom = it->mol_atom[*it->slot++];
+    return true;
+}
+
+// Sorts and removes repeats of a small list, returns the new count
+static size_t frag_unique_u32(uint32_t* v, size_t n) {
+    qsort(v, n, sizeof(uint32_t), frag_cmp_u32);
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i) if (k == 0 || v[k - 1] != v[i]) v[k++] = v[i];
+    return k;
+}
+
+size_t md_system_residue_fragments(md_fragment_idx_t* out, size_t cap, const md_system_t* sys, size_t res_idx) {
+    if (!sys || res_idx >= sys->residue.count) return 0;
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    uint32_t* f = md_temp_alloc_array(temp, uint32_t, range.end > range.beg ? range.end - range.beg : 1);
+    size_t n = 0;
+    for (uint32_t a = range.beg; a < range.end; ++a) {
+        const md_fragment_idx_t x = md_system_fragment_find_by_atom_idx(sys, a);
+        if (x != MD_FRAGMENT_NONE) f[n++] = x;
     }
-    md_memset(f, 0, sizeof(*f));
+    n = frag_unique_u32(f, n);
+    if (out) md_memcpy(out, f, sizeof(uint32_t) * MD_MIN(n, cap));
+    md_temp_end(temp);
+    return n;
+}
+
+size_t md_system_fragment_residues(md_residue_idx_t* out, size_t cap, const md_system_t* sys, md_fragment_idx_t frag) {
+    if (!sys || !sys->residue.count) return 0;
+    const size_t num = md_system_fragment_atom_count(sys, frag);
+    if (!num) return 0;
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    int32_t* r = md_temp_alloc_array(temp, int32_t, num);
+    size_t n = 0;
+    for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, frag); md_fragment_atom_iter_next(&it);) {
+        const md_residue_idx_t x = md_system_residue_find_by_atom_idx(sys, (size_t)it.atom);
+        if (x >= 0) r[n++] = x;
+    }
+    qsort(r, n, sizeof(int32_t), frag_cmp_i32);
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i) if (k == 0 || r[k - 1] != r[i]) r[k++] = r[i];
+    if (out) md_memcpy(out, r, sizeof(int32_t) * MD_MIN(k, cap));
+    md_temp_end(temp);
+    return k;
+}
+
+size_t md_system_fragment_find_by_type(md_fragment_idx_t* out, size_t cap, const md_system_t* sys, md_fragment_type_idx_t type) {
+    if (!sys || type >= sys->fragment.type.count) return 0;
+    const md_fragment_data_t* d = &sys->fragment;
+    size_t n = 0;
+    for (size_t m = 0; m < md_array_size(d->mol_template); ++m) {
+        const uint32_t t = d->mol_template[m];
+        const uint32_t beg = d->template_frag_offset[t], end = d->template_frag_offset[t + 1];
+        for (uint32_t f = beg; f < end; ++f) {
+            if (d->frag_type[f] != type) continue;
+            if (out && n < cap) out[n] = d->frag_offset[m] + (f - beg);
+            n++;
+        }
+    }
+    return n;
+}
+
+md_fragment_kind_t md_fragment_type_kind(const md_system_t* sys, md_fragment_type_idx_t type) {
+    return (sys && type < sys->fragment.type.count) ? (md_fragment_kind_t)sys->fragment.type.kind[type] : MD_FRAGMENT_KIND_COUNT;
+}
+
+md_str_t md_fragment_type_name(const md_system_t* sys, md_fragment_type_idx_t type) {
+    return (sys && type < sys->fragment.type.count) ? sys->fragment.type.name[type] : (md_str_t){0};
+}
+
+uint32_t md_fragment_type_color(const md_system_t* sys, md_fragment_type_idx_t type) {
+    return (sys && type < sys->fragment.type.count) ? sys->fragment.type.color[type] : 0xFFFFFFFFu;
+}
+
+md_fragment_type_idx_t md_fragment_type_find(const md_system_t* sys, md_str_t name, md_fragment_kind_t kind) {
+    if (!sys) return MD_FRAGMENT_NONE;
+    for (size_t t = 0; t < sys->fragment.type.count; ++t) {
+        if (kind != MD_FRAGMENT_KIND_COUNT && sys->fragment.type.kind[t] != (uint8_t)kind) continue;
+        if (md_str_eq(sys->fragment.type.name[t], name)) return (md_fragment_type_idx_t)t;
+    }
+    return MD_FRAGMENT_NONE;
 }
