@@ -18,19 +18,21 @@
 // the residue flags and atom roles, the rings, the chemistry and the lipids, which they are made from), are DERIVED
 // (md_system_fields.h) and covered by sys->topology_version, and are what a selection of fragment granularity grows to.
 //
-// Fragments and residues are both ways of cutting a molecule, and neither nests in the other: most fragments are
-// within a residue, but an ester between the residues of a lipid, or a glycosidic link, is of both. So a fragment is
-// of every residue it has atoms in, and a residue's fragments are those of its atoms - both found from the atoms
+// Fragments and residues are both ways of cutting a molecule, and neither nests in the other: the peptide group joins
+// two amino acids, the phosphate two nucleotides, an ester the residues of a lipid. So a fragment is of every residue
+// it has atoms in, and a residue's fragments are those of its atoms - both found from the atoms
 // (md_system_residue_fragments, md_system_fragment_residues), neither stored. Quantities aggregate by atoms (a
 // residue's mass, charge or share of an excitation is over its atoms), never by adding up a residue's fragments,
 // which counts such a fragment in each of its residues.
 //
 // WHAT A FRAGMENT IS
 //
-//   backbone        Of an amino acid whose backbone was resolved (its atoms have roles, MD_RESIDUE_FLAG_RESOLVED):
-//                   the atoms of MD_ATOM_FLAG_BACKBONE (N, CA, C) with their hydrogens and the terminal atoms bonded to
-//                   them (the carbonyl O, OXT). Of a resolved nucleotide: its atoms but the base (MD_ATOM_FLAG_NUCLEOBASE),
-//                   the sugar and the phosphate. One per residue; the rest of the residue is fragmented as below.
+//   backbone        Of a polymer whose residues were resolved (their atoms have roles, MD_RESIDUE_FLAG_RESOLVED). Of a
+//                   protein: the alpha carbon of each amino acid (CA, with a side chain of one carbon: the CB of an
+//                   alanine, the ring of a proline), the peptide group between two (C, O and the next N: "peptide"),
+//                   and the termini (an ammonium, a carboxylate). Of a nucleic acid: the sugar of each nucleotide (its
+//                   ring and C5': "deoxyribose", "ribose") and the phosphate between two. Any group with an atom of
+//                   MD_ATOM_FLAG_BACKBONE is of the backbone; the side chains and bases are fragmented as below.
 //   lipid tail      The atoms of MD_ATOM_FLAG_LIPID_TAIL, one fragment per tail.
 //   ring system     Rings (sys->ring) sharing an atom, with the terminal atoms double bonded to them (the O of a
 //                   quinone or a lactam).
@@ -38,9 +40,9 @@
 //   group           bonded to a heteroatom, the carbons of C=C and C#C outside of rings, the acetal carbons and the
 //                   carbons carrying two or more halogens are marked; each connected set of marked atoms is a group.
 //   alkyl, linker   What is left of the carbon skeleton, as connected pieces. A piece of one or two carbons which
-//                   touches exactly one fragment other than a backbone is part of it, one which touches only a backbone
-//                   part of that (the CB of an alanine, of a tyrosine with its ring); larger ones are an ALKYL, or a
-//                   LINKER between two or more fragments.
+//                   touches exactly one fragment other than of the backbone is part of it (the CB of a tyrosine, with
+//                   its ring), one which touches only the backbone part of that; larger ones are an ALKYL (isopropyl,
+//                   isobutyl, sec-butyl of valine, leucine, isoleucine), or a LINKER between two or more fragments.
 //   atom            Anything else on its own: a metal, an ion, a lone atom.
 //
 // A single halogen belongs to the fragment of the atom it is bonded to, every hydrogen to that of its heavy atom.
@@ -53,8 +55,13 @@
 // type is a name and a kind: what a selection by name takes and a legend lists, and it carries a colour, which
 // inferring again keeps. Names: the core (the ring system, or the marked atoms) identified as a whole against a
 // library of SMILES (md_match_identify: phenyl, pyridyl, amide, nitro, ...); a core of one atom by its element and
-// bonds (amine, hydroxyl, ether, water); else by kind and composition ("aryl C9N", "group C2NO", "C16 tail"). Two
-// phenyls of one molecule are both "phenyl": a view that needs them apart numbers them.
+// bonds (amine, hydroxyl, ether, water); the backbone by its part in it (alpha carbon, peptide, deoxyribose); else by
+// kind and composition ("aryl C9N", "group C2NO", "C16 tail"). Two phenyls of one molecule are both "phenyl": a view
+// that needs them apart numbers them.
+//
+// The kind is what a fragment is to its molecule, not its chemistry: a peptide group is an amide, but of kind backbone
+// and named "peptide", where the amide of an asparagine is a functional group named "amide". So fragment("backbone")
+// is the whole backbone and fragment("amide") the amides of the side chains.
 //
 // TEMPLATES: analysed once per kind of molecule, looked up for every molecule of that kind
 //

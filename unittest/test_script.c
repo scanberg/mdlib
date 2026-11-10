@@ -7634,27 +7634,32 @@ UTEST_F(script, fragment) {
     ASSERT_TRUE(eval_expression(&data, MD_STR_LIT("fragment()"), sys, talloc));
     EXPECT_EQ((size_t)type_info_array_len(data.type), num_frags);
 
-    // by name: the backbones, as the C side has them
-    md_bitset_t bb = {0};
-    ASSERT_TRUE(eval_selection(&bb, MD_STR_LIT("fragment(\"backbone\")"), sys, talloc));
-    const md_fragment_type_idx_t t = md_fragment_type_find(sys, MD_STR_LIT("backbone"), MD_FRAGMENT_BACKBONE);
+    // by name: the peptide groups, as the C side has them
+    md_bitset_t pep = {0};
+    ASSERT_TRUE(eval_selection(&pep, MD_STR_LIT("fragment(\"peptide\")"), sys, talloc));
+    const md_fragment_type_idx_t t = md_fragment_type_find(sys, MD_STR_LIT("peptide"), MD_FRAGMENT_BACKBONE);
     ASSERT_NE(t, MD_FRAGMENT_NONE);
     size_t want = 0;
-    const size_t num_bb = md_system_fragment_find_by_type(NULL, 0, sys, t);
-    md_fragment_idx_t* frags = md_temp_alloc_array(temp, md_fragment_idx_t, num_bb);
-    md_system_fragment_find_by_type(frags, num_bb, sys, t);
-    for (size_t i = 0; i < num_bb; ++i) want += md_system_fragment_atom_count(sys, frags[i]);
-    EXPECT_EQ(md_bitset_count(bb), want);
-    // and by kind
-    md_bitset_t bb_kind = {0};
-    ASSERT_TRUE(eval_selection(&bb_kind, MD_STR_LIT("fragment(\"backbone\") and fragment(\"backb*\")"), sys, talloc));
-    EXPECT_EQ(md_bitset_count(bb_kind), want);
+    const size_t num_pep = md_system_fragment_find_by_type(NULL, 0, sys, t);
+    md_fragment_idx_t* frags = md_temp_alloc_array(temp, md_fragment_idx_t, num_pep);
+    md_system_fragment_find_by_type(frags, num_pep, sys, t);
+    for (size_t i = 0; i < num_pep; ++i) want += md_system_fragment_atom_count(sys, frags[i]);
+    EXPECT_EQ(md_bitset_count(pep), want);
+    // and by kind: the backbone holds the peptide groups, and holds the same atoms whether queried by kind or wildcard
+    md_bitset_t bb = {0}, bb_wild = {0};
+    ASSERT_TRUE(eval_selection(&bb, MD_STR_LIT("fragment(\"backbone\")"), sys, talloc));
+    ASSERT_TRUE(eval_selection(&bb_wild, MD_STR_LIT("fragment(\"backb*\")"), sys, talloc));
+    EXPECT_GT(md_bitset_count(bb), md_bitset_count(pep));
+    EXPECT_EQ(md_bitset_count(md_bitset_and(bb, pep, talloc)), md_bitset_count(pep));
+    EXPECT_EQ(md_bitset_count(bb_wild), md_bitset_count(bb));
 
     // fragment(sel): whole fragments, a superset of the selection
     md_bitset_t res1 = {0}, frag1 = {0};
     ASSERT_TRUE(eval_selection(&res1, MD_STR_LIT("residue(1)"), sys, talloc));
     ASSERT_TRUE(eval_selection(&frag1, MD_STR_LIT("fragment(residue(1))"), sys, talloc));
     EXPECT_EQ(md_bitset_count(md_bitset_and(res1, frag1, talloc)), md_bitset_count(res1));
+    // the peptide group to residue 2 whole: more than residue 1
+    EXPECT_GT(md_bitset_count(frag1), md_bitset_count(res1));
     for (md_bitset_iter_t it = md_bitset_iter(frag1); md_bitset_iter_next(&it);) {
         // every atom of it is in a fragment that has an atom in residue 1
         const md_fragment_idx_t f = md_system_fragment_find_by_atom_idx(sys, it.idx);

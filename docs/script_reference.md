@@ -606,14 +606,18 @@ fragment(sel: atomset[])   -> atomset[]     # grow to whole fragments
 One selection per fragment: the chemically meaningful pieces each molecule is cut into, every atom in exactly one
 (`src/md_fragment.h`). A fragment is one of these kinds:
 
-- `"backbone"`: N, CA, C, O of a resolved amino acid, or the sugar and phosphate of a resolved nucleotide, one per
-  residue.
+- `"backbone"`: of a protein, the `"alpha carbon"` of each amino acid, the `"peptide"` group (C, O and the next N)
+  between two, and the termini; of a nucleic acid, the sugar of each nucleotide (`"deoxyribose"`, `"ribose"`) and the
+  `"phosphate"` between two. A peptide group is chemically an amide, but `fragment("amide")` selects the amides of
+  side chains (Asn, Gln) only.
 - `"lipid tail"`: one per tail.
 - `"ring system"`: rings sharing an atom, with the atoms double bonded to them.
 - `"functional group"`: by Ertl's algorithm, the heteroatoms and the carbons bonded to them by double or triple
   bonds, joined.
 - `"linker"` and `"alkyl"`: the carbon skeleton left over, between fragments or at an end. A piece of one or two carbons
-  goes with the one fragment it touches: the CB of an alanine goes with its backbone, a methyl with its ring.
+  goes with the one fragment it touches: the CB of a serine goes with its hydroxyl, a methyl with its ring, the CB of an
+  alanine with its alpha carbon. Larger pieces are named by their shape: the `"isopropyl"` of a valine, the
+  `"isobutyl"` of a leucine, the `"sec-butyl"` of an isoleucine.
 - `"atom"`: a metal, an ion, a lone atom.
 
 Hydrogens go with their heavy atom. Each fragment is named from a library of SMILES (`"phenyl"`, `"pyridyl"`,
@@ -626,11 +630,12 @@ Hydrogens go with their heavy atom. Each fragment is named from a library of SMI
 - `fragment(query)`: the fragments whose name or kind matches one of the queries, with `*` and `?` as wildcards:
   `"amide"`, `"phen*"`, `"ring system"`. A query which matches no fragment is a compile error.
 - `fragment(sel)`: every fragment that the selection touches, whole, one selection per fragment. A group shared by two
-  residues is whole here: `fragment(residue(66))` holds all of the ester to residue 67.
+  residues is whole here: `fragment(residue(66))` holds the peptide groups to residues 65 and 67 whole.
 
 ```mdscript
 rings = fragment("ring system");
-amides = fragment("amide");
+peptides = fragment("peptide");
+amides = fragment("amide");                         # of the side chains
 n_backbone_atoms = count(fragment("backbone"));
 its_group = fragment(atom(42));                     # the fragment of atom 42, whole
 in_tyr = fragment() in resname("TYR");              # each fragment of each tyrosine

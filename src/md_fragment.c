@@ -211,8 +211,16 @@ typedef struct frag_mol_t {
     int32_t*         unit_of;       // [n] the fragment (local) of each atom, -1 for none yet
     int32_t*         core_of;       // [n] the fragment whose core the atom is in, -1 for none
     md_array(uint8_t) unit_kind;
+    md_array(uint8_t) unit_role;    // frag_role_t: what names a fragment other than its core
     md_allocator_i*  temp;
 } frag_mol_t;
+
+// Fragments named by what they are in a polymer rather than by their core
+typedef enum frag_role_t {
+    FRAG_ROLE_NONE = 0,
+    FRAG_ROLE_ALPHA_CARBON,         // CA of an amino acid, with its hydrogen and a side chain of one carbon
+    FRAG_ROLE_SUGAR,                // The sugar of a nucleotide: its ring and C5'
+} frag_role_t;
 
 // The covalent graph of molecule m in local indices. Coordination bonds join nothing here: a metal and its ligands
 // are fragments of their own.
@@ -268,9 +276,14 @@ static inline int32_t frag_res(const frag_mol_t* c, uint32_t i) {
     return c->atom_res ? c->atom_res[c->atom[i]] : -1;
 }
 
-static int32_t frag_new_unit(frag_mol_t* c, md_fragment_kind_t kind) {
+static int32_t frag_new_unit_role(frag_mol_t* c, md_fragment_kind_t kind, frag_role_t role) {
     md_array_push(c->unit_kind, (uint8_t)kind, c->temp);
+    md_array_push(c->unit_role, (uint8_t)role, c->temp);
     return (int32_t)md_array_size(c->unit_kind) - 1;
+}
+
+static int32_t frag_new_unit(frag_mol_t* c, md_fragment_kind_t kind) {
+    return frag_new_unit_role(c, kind, FRAG_ROLE_NONE);
 }
 
 static inline void frag_assign(frag_mol_t* c, uint32_t i, int32_t unit, bool core) {
@@ -280,6 +293,21 @@ static inline void frag_assign(frag_mol_t* c, uint32_t i, int32_t unit, bool cor
 
 static inline bool frag_heavy(const frag_mol_t* c, uint32_t i) {
     return c->z[i] > 1;
+}
+
+// The kind of the residue of an atom where it is a resolved amino acid or nucleotide (its atoms have roles),
+// MD_RESIDUE_KIND_OTHER otherwise
+static md_residue_kind_t frag_resolved_kind(const frag_mol_t* c, uint32_t i) {
+    const int32_t r = c->atom_res ? c->atom_res[c->atom[i]] : -1;
+    if (r < 0) return MD_RESIDUE_KIND_OTHER;
+    const md_residue_flags_t rf = md_system_residue_flags(c->sys, (size_t)r);
+    if (!(rf & MD_RESIDUE_FLAG_RESOLVED)) return MD_RESIDUE_KIND_OTHER;
+    const md_residue_kind_t rk = md_residue_flags_kind(rf);
+    return (rk == MD_RESIDUE_KIND_AMINO_ACID || rk == MD_RESIDUE_KIND_NUCLEOTIDE) ? rk : MD_RESIDUE_KIND_OTHER;
+}
+
+static inline bool frag_on_backbone(const frag_mol_t* c, uint32_t i) {
+    return (md_atom_flags(&c->sys->atom, (size_t)c->atom[i]) & MD_ATOM_FLAG_BACKBONE) && frag_resolved_kind(c, i) != MD_RESIDUE_KIND_OTHER;
 }
 
 static uint32_t frag_heavy_degree(const frag_mol_t* c, uint32_t i) {
@@ -376,36 +404,36 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
     const md_system_t* sys = c->sys;
     md_allocator_i* temp = c->temp;
     uint32_t* stack = md_alloc(temp, sizeof(uint32_t) * (n ? n : 1));
-
-    // 0a. Backbones of resolved amino acids and nucleotides: one fragment per residue
     md_array(int32_t) touched_res = 0;
+
+    // 0a. Of the backbone of a polymer whose residues are resolved, what Ertl's marking would not make sense of: the
+    // alpha carbon of each amino acid, and the sugar of each nucleotide (its ring with C5'), which would otherwise be
+    // a ring system and a methylene linker. The rest of the backbone is found as groups below: the peptide groups
+    // and the phosphates, each between two residues, and the termini.
     for (uint32_t i = 0; i < n; ++i) {
-        const int32_t r = frag_res(c, i);
-        if (r < 0 || !frag_heavy(c, i)) continue;
-        const md_residue_flags_t rf = md_system_residue_flags(sys, (size_t)r);
-        if (!(rf & MD_RESIDUE_FLAG_RESOLVED)) continue;
-        const md_residue_kind_t rk = md_residue_flags_kind(rf);
+        if (c->unit_of[i] >= 0 || !frag_heavy(c, i)) continue;
+        const md_residue_kind_t rk = frag_resolved_kind(c, i);
+        if (rk == MD_RESIDUE_KIND_OTHER) continue;
         const md_atom_flags_t af = frag_aflags(c, i);
-        bool bb = false;
-        if (rk == MD_RESIDUE_KIND_AMINO_ACID)      bb = (af & MD_ATOM_FLAG_BACKBONE) != 0;
-        else if (rk == MD_RESIDUE_KIND_NUCLEOTIDE) bb = !(af & MD_ATOM_FLAG_NUCLEOBASE);
-        if (!bb) continue;
-        if (res_unit[r] < 0) {
-            res_unit[r] = frag_new_unit(c, MD_FRAGMENT_BACKBONE);
-            md_array_push(touched_res, r, temp);
-        }
-        frag_assign(c, i, res_unit[r], true);
-    }
-    // the terminal atoms bonded to an amino acid's backbone: the carbonyl O, OXT
-    for (uint32_t i = 0; i < n; ++i) {
-        const int32_t u = c->unit_of[i];
-        if (u < 0 || c->unit_kind[u] != MD_FRAGMENT_BACKBONE) continue;
-        for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
-            const uint32_t j = c->nb[k];
-            if (c->unit_of[j] >= 0 || !frag_heavy(c, j) || frag_heavy_degree(c, j) != 1) continue;
-            if (frag_aflags(c, j) & MD_ATOM_FLAG_SIDE_CHAIN) continue;
-            if (frag_res(c, j) != frag_res(c, i)) continue;
-            frag_assign(c, j, u, true);
+        if (rk == MD_RESIDUE_KIND_AMINO_ACID) {
+            // CA: the carbon of the backbone bonded to no oxygen (C is bonded to its O)
+            if (c->z[i] != MD_Z_C || !(af & MD_ATOM_FLAG_BACKBONE)) continue;
+            bool to_o = false;
+            for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) to_o |= c->z[c->nb[k]] == MD_Z_O;
+            if (to_o) continue;
+            frag_assign(c, i, frag_new_unit_role(c, MD_FRAGMENT_BACKBONE, FRAG_ROLE_ALPHA_CARBON), true);
+        } else {
+            // The ring of the sugar (C1', C2', C3', C4', O4' are of the nucleoside, not of the base) and C5' (a carbon
+            // of the backbone), one fragment per residue
+            const bool ring = (af & MD_ATOM_FLAG_NUCLEOSIDE) && !(af & MD_ATOM_FLAG_NUCLEOBASE);
+            const bool c5 = c->z[i] == MD_Z_C && (af & MD_ATOM_FLAG_BACKBONE);
+            if (!ring && !c5) continue;
+            const int32_t r = frag_res(c, i);
+            if (res_unit[r] < 0) {
+                res_unit[r] = frag_new_unit_role(c, MD_FRAGMENT_BACKBONE, FRAG_ROLE_SUGAR);
+                md_array_push(touched_res, r, temp);
+            }
+            frag_assign(c, i, res_unit[r], true);
         }
     }
     for (size_t k = 0; k < md_array_size(touched_res); ++k) res_unit[touched_res[k]] = -1;
@@ -555,10 +583,13 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
             uint32_t num_touch = 0;
             int32_t backbone = -1;
             uint32_t num_backbone = 0;
+            bool to_backbone_n = false;     // the ring of a proline: from CA round to N
             for (size_t m = 0; m < num; ++m) {
                 const uint32_t a = members[m];
                 for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
-                    const int32_t u = c->unit_of[c->nb[k]];
+                    const uint32_t j = c->nb[k];
+                    if (c->z[j] == MD_Z_N && frag_on_backbone(c, j)) to_backbone_n = true;
+                    const int32_t u = c->unit_of[j];
                     if (u < 0) continue;
                     if (c->unit_kind[u] == MD_FRAGMENT_BACKBONE) {
                         if (u != backbone) { backbone = u; num_backbone++; }
@@ -569,7 +600,12 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                     num_touch++;
                 }
             }
-            if (num <= 2 && num_touch == 1) {
+            int32_t alpha = -1;     // the alpha carbon it is of, where it is the side chain of one
+            if (backbone >= 0 && c->unit_role[backbone] == FRAG_ROLE_ALPHA_CARBON) alpha = backbone;
+            if (alpha >= 0 && num_backbone == 1 && to_backbone_n) {
+                // Closes a ring through the backbone: goes with the alpha carbon, as the ring is of the residue
+                for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], alpha, false);
+            } else if (num <= 2 && num_touch == 1) {
                 for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], touch[0], false);
             } else if (num <= 2 && num_touch == 0 && num_backbone == 1) {
                 for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], backbone, false);
@@ -595,6 +631,12 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
             if (u >= 0) frag_assign(c, i, u, false);
             else        frag_assign(c, i, frag_new_unit(c, MD_FRAGMENT_ATOM), true);
         }
+    }
+
+    // 6. A group of the backbone (a peptide group, a phosphate, a terminus) is of the backbone
+    for (uint32_t i = 0; i < n; ++i) {
+        const int32_t u = c->unit_of[i];
+        if (u >= 0 && c->unit_kind[u] == MD_FRAGMENT_GROUP && frag_on_backbone(c, i)) c->unit_kind[u] = MD_FRAGMENT_BACKBONE;
     }
 }
 
@@ -858,10 +900,25 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                 if (first == UINT32_MAX) first = (uint32_t)i;
                 if (c.core_of[i] == (int32_t)u && frag_heavy(&c, (uint32_t)i)) core[num_core++] = (uint32_t)i;
             }
+            const frag_role_t role = (frag_role_t)c.unit_role[u];
+            if (role == FRAG_ROLE_ALPHA_CARBON) {
+                snprintf(name, FRAG_NAME_CAP, "alpha carbon");
+                continue;
+            }
+            if (role == FRAG_ROLE_SUGAR) {
+                // Ribose has an oxygen on C2' as well as on C3' and C5'
+                uint32_t num_o = 0;
+                for (size_t k = 0; k < num_core; ++k) {
+                    if (c.z[core[k]] != MD_Z_C) continue;
+                    for (uint32_t q = c.nb_off[core[k]]; q < c.nb_off[core[k] + 1]; ++q) {
+                        const uint32_t j = c.nb[q];
+                        num_o += c.z[j] == MD_Z_O && c.unit_of[j] != (int32_t)u;
+                    }
+                }
+                snprintf(name, FRAG_NAME_CAP, "%s", num_o >= 3 ? "ribose" : "deoxyribose");
+                continue;
+            }
             switch (kind) {
-            case MD_FRAGMENT_BACKBONE:
-                snprintf(name, FRAG_NAME_CAP, "backbone");
-                break;
             case MD_FRAGMENT_LIPID_TAIL: {
                 uint32_t num_c = 0;
                 for (size_t k = 0; k < num_core; ++k) num_c += c.z[core[k]] == MD_Z_C;
@@ -877,6 +934,33 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                 static const char* alkyl[] = { "", "methyl", "ethyl", "propyl", "butyl", "pentyl", "hexyl" };
                 if (num_core < MD_COUNTOF(alkyl)) snprintf(name, FRAG_NAME_CAP, "%s", alkyl[num_core]);
                 else                              snprintf(name, FRAG_NAME_CAP, "C%zu alkyl", num_core);
+                if (num_core == 3 || num_core == 4) {
+                    // Branched by the carbons' degrees within it and the one it is attached by: the side chains of
+                    // valine (isopropyl), leucine (isobutyl) and isoleucine (sec-butyl)
+                    uint32_t attach_deg = 0, max_deg = 0;
+                    bool attached = false;
+                    for (size_t q = 0; q < num_core; ++q) {
+                        const uint32_t a = core[q];
+                        uint32_t deg = 0;
+                        bool out = false;
+                        for (uint32_t e = c.nb_off[a]; e < c.nb_off[a + 1]; ++e) {
+                            const uint32_t b = c.nb[e];
+                            if (!frag_heavy(&c, b)) continue;
+                            if (c.unit_of[b] == (int32_t)u) deg++;
+                            else out = true;
+                        }
+                        max_deg = MD_MAX(max_deg, deg);
+                        if (out && !attached) { attached = true; attach_deg = deg; }
+                    }
+                    if (attached) {
+                        const char* branched = NULL;
+                        if (num_core == 3 && attach_deg == 2)                    branched = "isopropyl";
+                        else if (num_core == 4 && attach_deg == 3)               branched = "tert-butyl";
+                        else if (num_core == 4 && max_deg == 3)                  branched = "isobutyl";
+                        else if (num_core == 4 && attach_deg == 2)               branched = "sec-butyl";
+                        if (branched) snprintf(name, FRAG_NAME_CAP, "%s", branched);
+                    }
+                }
                 break;
             }
             case MD_FRAGMENT_LINKER:
@@ -884,6 +968,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                 else if (num_core == 2) snprintf(name, FRAG_NAME_CAP, "ethylene");
                 else                    snprintf(name, FRAG_NAME_CAP, "C%zu linker", num_core);
                 break;
+            case MD_FRAGMENT_BACKBONE:     // a group of the backbone: a peptide group, a phosphate, a terminus
             case MD_FRAGMENT_GROUP:
             case MD_FRAGMENT_RING_SYSTEM:
                 if (num_core == 1) {
@@ -899,7 +984,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                     if (kind == MD_FRAGMENT_GROUP && carbon_only && num_core >= 4) {
                         snprintf(name, FRAG_NAME_CAP, "polyene");      // conjugated C=C beyond a diene
                     } else {
-                        snprintf(name, FRAG_NAME_CAP, "%s %s", kind == MD_FRAGMENT_GROUP ? "group" : aromatic ? "aryl" : "ring", formula);
+                        snprintf(name, FRAG_NAME_CAP, "%s %s", kind != MD_FRAGMENT_RING_SYSTEM ? "group" : aromatic ? "aryl" : "ring", formula);
                     }
                     // identified as a whole against the library, below; global atoms, ascending
                     for (size_t k = 0; k < num_core; ++k) core_global[k] = (uint32_t)c.atom[core[k]];
@@ -914,6 +999,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
             }
         }
         md_array_free(c.unit_kind, salloc);
+        md_array_free(c.unit_role, salloc);
     }
 
     // ---- the library ----
@@ -941,6 +1027,11 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
             md_match_identify_result_free(&res);
         }
         md_match_library_destroy(lib);
+    }
+    // The amide of a backbone is the peptide group, apart from the amides of side chains (Asn, Gln)
+    for (size_t f = 0; f < md_array_size(kinds); ++f) {
+        char* name = names + f * FRAG_NAME_CAP;
+        if (kinds[f] == MD_FRAGMENT_BACKBONE && strcmp(name, "amide") == 0) snprintf(name, FRAG_NAME_CAP, "peptide");
     }
 
     // ---- types ----

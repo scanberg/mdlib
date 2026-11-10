@@ -359,9 +359,9 @@ UTEST(fragment, metal_complex) {
     frag_case_free(&t);
 }
 
-UTEST(fragment, backbones_of_resolved_residues) {
-    // Gly-Gly: N, CA, C carry the backbone role; each residue's backbone is one fragment with its carbonyl O (and
-    // the OXT of the second), and no amide reaches across the peptide bond
+UTEST(fragment, the_backbone_of_a_peptide) {
+    // Gly-Gly, N, CA and C of each with the backbone role: the N-terminal amine, an alpha carbon per residue, the
+    // peptide group between them (of both residues), and the C-terminal acid; all of the backbone
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     const char* names[] = { "GLY", "GLY" };
@@ -370,27 +370,69 @@ UTEST(fragment, backbones_of_resolved_residues) {
     for (size_t r = 0; r < 2; ++r) sys.residue.flags[r] |= MD_RESIDUE_FLAG_RESOLVED;
     // heavy atoms in SMILES order, each followed by its hydrogens: the backbone are the N, CA and C of each
     const md_atomic_number_t want[] = { MD_Z_N, MD_Z_C, MD_Z_C, MD_Z_N, MD_Z_C, MD_Z_C };
+    md_atom_idx_t heavy_atom[9];
     size_t k = 0, heavy_seen = 0;
-    for (size_t a = 0; a < sys.atom.count && k < 6; ++a) {
+    for (size_t a = 0; a < sys.atom.count; ++a) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, a);
         if (z == MD_Z_H) continue;
         const size_t h = heavy_seen++;
+        if (h < 9) heavy_atom[h] = (md_atom_idx_t)a;
         if (h == 0 || h == 1 || h == 2 || h == 4 || h == 5 || h == 6) {
             EXPECT_EQ(z, want[k]);
             sys.atom.flags[a] |= MD_ATOM_FLAG_BACKBONE;
             k++;
         }
     }
+    ASSERT_EQ(heavy_seen, (size_t)9);
     ASSERT_TRUE(md_util_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
-    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)2);
-    EXPECT_EQ(frag_count_named(&sys, "backbone"), (size_t)2);
-    EXPECT_EQ(frag_heavy_count(&sys, 0) + frag_heavy_count(&sys, 1), (size_t)9);
-    EXPECT_EQ((int)md_system_fragment_kind(&sys, 0), (int)MD_FRAGMENT_BACKBONE);
-    // each in its own residue
+    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)5);
+    EXPECT_EQ(frag_count_named(&sys, "alpha carbon"), (size_t)2);
+    EXPECT_EQ(frag_count_named(&sys, "peptide"), (size_t)1);
+    for (md_fragment_idx_t f = 0; f < md_system_fragment_count(&sys); ++f) {
+        EXPECT_EQ((int)md_system_fragment_kind(&sys, f), (int)MD_FRAGMENT_BACKBONE);
+    }
+    // the peptide group: C, O of the first residue, N of the second, and of both
+    const md_fragment_idx_t pep = md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[2]);
+    EXPECT_TRUE(md_str_eq_cstr(md_system_fragment_name(&sys, pep), "peptide"));
+    EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[3]), pep);
+    EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[4]), pep);
+    EXPECT_EQ(frag_heavy_count(&sys, pep), (size_t)3);
     md_residue_idx_t res[4];
-    EXPECT_EQ(md_system_fragment_residues(res, 4, &sys, 0), (size_t)1);
-    EXPECT_EQ(md_system_fragment_residues(res, 4, &sys, 1), (size_t)1);
+    EXPECT_EQ(md_system_fragment_residues(res, 4, &sys, pep), (size_t)2);
+    // an alpha carbon is CA alone (with its hydrogens), the termini groups of their own
+    const md_fragment_idx_t ca = md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[1]);
+    EXPECT_TRUE(md_str_eq_cstr(md_system_fragment_name(&sys, ca), "alpha carbon"));
+    EXPECT_EQ(frag_heavy_count(&sys, ca), (size_t)1);
+    EXPECT_NE(md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[0]), ca);
+    const md_fragment_idx_t cterm = md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[6]);
+    EXPECT_EQ(frag_heavy_count(&sys, cterm), (size_t)3);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(fragment, the_side_chain_of_an_alanine_is_its_alpha_carbon) {
+    // Ala-Ala: the CB, one carbon on CA alone, goes with the alpha carbon
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_system_t sys = { .alloc = alloc };
+    const char* names[] = { "ALA", "ALA" };
+    const int heavy[] = { 5, 6 };
+    // N CA(CB) C(=O) | N CA(CB) C(=O) O
+    ASSERT_TRUE(frag_system_from_smiles(&sys, "NC(C)C(=O)NC(C)C(=O)O", names, heavy, 2));
+    for (size_t r = 0; r < 2; ++r) sys.residue.flags[r] |= MD_RESIDUE_FLAG_RESOLVED;
+    size_t heavy_seen = 0;
+    for (size_t a = 0; a < sys.atom.count; ++a) {
+        if (md_atom_atomic_number(&sys.atom, a) == MD_Z_H) continue;
+        const size_t h = heavy_seen++;
+        if (h == 0 || h == 1 || h == 3 || h == 5 || h == 6 || h == 8) sys.atom.flags[a] |= MD_ATOM_FLAG_BACKBONE;
+        if (h == 2 || h == 7) sys.atom.flags[a] |= MD_ATOM_FLAG_SIDE_CHAIN;
+    }
+    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    frag_check(utest_result, &sys);
+    EXPECT_EQ(md_system_fragment_count(&sys), (size_t)5);
+    EXPECT_EQ(frag_count_named(&sys, "alpha carbon"), (size_t)2);
+    for (md_fragment_idx_t f = 0; f < md_system_fragment_count(&sys); ++f) {
+        if (md_str_eq_cstr(md_system_fragment_name(&sys, f), "alpha carbon")) EXPECT_EQ(frag_heavy_count(&sys, f), (size_t)2);
+    }
     md_arena_allocator_destroy(alloc);
 }
 
