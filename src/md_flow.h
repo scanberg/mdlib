@@ -275,10 +275,21 @@ typedef struct md_flow_layout_ribbon_t {
 // Bands are what makes a group an organizing layer OUTSIDE the column rather than an alternative
 // to it. The layout reports the extent and the column's own x range; which side of the column to
 // put it on, and how far out, is the drawing backend's decision.
+//
+// A CONTAINER (a node whose children have children of their own: a molecule of fragments, say) has its band
+// when collapsed too, spanning just its own row and flagged MD_FLOW_BAND_FLAG_COLLAPSED: the level it belongs
+// to stays on screen whether it is open or not, in the same place, and a collapsed one reads as a group
+// rather than as one more row. A node whose children are leaves has none while collapsed (a fragment of
+// atoms would otherwise put a band on every row).
+enum {
+    MD_FLOW_BAND_FLAG_COLLAPSED = 1,
+};
+
 typedef struct md_flow_layout_band_t {
-    uint32_t node;      // graph node index of the ancestor
+    uint32_t node;      // graph node index of the ancestor (or of the collapsed container)
     uint32_t column;
     uint32_t depth;     // 0 = outermost ancestor, 1 = its child, ...
+    uint32_t flags;     // MD_FLOW_BAND_FLAG_*
     vec2_t   min;       // y spans the visible descendants; x matches the column's node rects
     vec2_t   max;
 } md_flow_layout_band_t;
