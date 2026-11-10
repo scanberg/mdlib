@@ -58,6 +58,11 @@ typedef struct trr_header_t {
 static bool n_float_size(const trr_header_t* sh, int* nflsz) {
     int nflsize = 0;
 
+    if (sh->natoms <= 0 && (sh->x_size || sh->v_size || sh->f_size)) {
+        MD_LOG_ERROR("TRR: Invalid number of atoms in header");
+        return false;
+    }
+
     if (sh->box_size) {
         nflsize = sh->box_size / (DIM * DIM);
     } else if (sh->x_size) {
@@ -91,8 +96,8 @@ static int calc_framebytes(const trr_header_t* sh) {
 #define TRR_MAX_HEADER_SIZE (4 + 4 + 4 + 12 + 13 * 4 + 2 * 8)
 
 static bool trr_read_frame_header_buf(md_xdr_t* xdr, trr_header_t* sh) {
-    ASSERT(xdr);
-    ASSERT(sh);
+    MD_ASSERT(xdr);
+    MD_ASSERT(sh);
 
     const char version[] = "GMX_trn_file";
     int32_t magic, slen, nflsz;
@@ -107,7 +112,7 @@ static bool trr_read_frame_header_buf(md_xdr_t* xdr, trr_header_t* sh) {
     }
 
     // The length including the terminating zero, then the string as XDR (without it)
-    str_t str;
+    md_str_t str;
     if (!md_xdr_read_i32(xdr, &slen) || !md_xdr_read_string(xdr, &str, 128)) {
         MD_LOG_ERROR("TRR: Failed to read header version string");
         return false;
@@ -253,7 +258,7 @@ static bool cache_read_block(md_file_t file, void** dst, size_t bytes, md_alloca
 }
 
 // On failure nothing is freed here: alloc is an arena owned by the caller, which goes as a whole.
-static bool try_read_cache(trr_cache_t* cache, str_t path, md_allocator_i* alloc) {
+static bool try_read_cache(trr_cache_t* cache, md_str_t path, md_allocator_i* alloc) {
     md_file_t file = {0};
     if (!md_run_cache_open(&file, &cache->header, path, MD_TRR_CACHE_MAGIC, MD_TRR_CACHE_VERSION)) {
         return false;
@@ -267,13 +272,13 @@ static bool try_read_cache(trr_cache_t* cache, str_t path, md_allocator_i* alloc
         cache_read_block(file, (void**)&cache->frame_boxes,    n * 9 * sizeof(float),     alloc) &&
         md_file_tell(file) == (int64_t)md_file_size(file);
     if (!ok) {
-        MD_LOG_ERROR("TRR: the cache of '" STR_FMT "' is incomplete", STR_ARG(path));
+        MD_LOG_ERROR("TRR: the cache of '" MD_STR_FMT "' is incomplete", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
 }
 
-static bool write_cache(const trr_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+static bool write_cache(const trr_cache_t* cache, md_str_t path, const md_file_info_t* scanned) {
     md_file_t file = {0};
     const size_t n = cache->header.num_frames;
     if (!md_run_cache_create(&file, path, scanned, MD_TRR_CACHE_MAGIC, MD_TRR_CACHE_VERSION, cache->header.num_atoms, n)) {
@@ -286,7 +291,7 @@ static bool write_cache(const trr_cache_t* cache, str_t path, const md_file_info
         md_file_write(file, cache->frame_sections, n * sizeof(uint32_t))      == n * sizeof(uint32_t) &&
         md_file_write(file, cache->frame_boxes,    n * 9 * sizeof(float))     == n * 9 * sizeof(float);
     if (!ok) {
-        MD_LOG_ERROR("TRR: failed to write the cache of '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("TRR: failed to write the cache of '" MD_STR_FMT "'", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
@@ -294,12 +299,12 @@ static bool write_cache(const trr_cache_t* cache, str_t path, const md_file_info
 
 // What the file is, from its cache when that is current and from a scan otherwise (writing the
 // cache unless told not to). path must be canonical; every array is allocated from alloc.
-static bool trr_index_load(trr_cache_t* cache, str_t path, uint32_t flags, md_allocator_i* alloc) {
-    MEMSET(cache, 0, sizeof(*cache));
+static bool trr_index_load(trr_cache_t* cache, md_str_t path, uint32_t flags, md_allocator_i* alloc) {
+    md_memset(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("TRR: Failed to open file '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("TRR: Failed to open file '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
 
@@ -312,7 +317,7 @@ static bool trr_index_load(trr_cache_t* cache, str_t path, uint32_t flags, md_al
         goto done;
     }
 
-    MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
     md_array(int64_t)  offsets  = 0;
     md_array(double)   times    = 0;
     md_array(int64_t)  steps    = 0;
@@ -321,7 +326,7 @@ static bool trr_index_load(trr_cache_t* cache, str_t path, uint32_t flags, md_al
     int natoms = 0;
     const size_t num_frames = trr_scan(file, &natoms, &offsets, &times, &steps, &sections, &boxes, alloc);
     if (num_frames == 0 || natoms <= 0) {
-        MD_LOG_ERROR("TRR: '" STR_FMT "' holds no readable frames", STR_ARG(path));
+        MD_LOG_ERROR("TRR: '" MD_STR_FMT "' holds no readable frames", MD_STR_ARG(path));
         goto done;
     }
 
@@ -335,7 +340,7 @@ static bool trr_index_load(trr_cache_t* cache, str_t path, uint32_t flags, md_al
 
     if (!(flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         if (write_cache(cache, path, &scanned)) {
-            MD_LOG_INFO("TRR: Successfully created cache file for '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_INFO("TRR: Successfully created cache file for '" MD_STR_FMT "'", MD_STR_ARG(path));
         }
     }
     result = true;
@@ -364,7 +369,7 @@ static const struct {
 // frame that carries all three reads a third of it for the positions.
 static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attributes_t* attributes = &sys->attributes;
 
     // A whole temporal virtual attribute is refused before it gets here, so the frame is fixed.
@@ -374,8 +379,8 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
 
     int kind = -1;
     md_run_source_t src = {0};
-    for (int i = 0; i < (int)ARRAY_SIZE(trr_run_sections); ++i) {
-        if (md_run_source(&src, attributes, attr, str_from_cstr(trr_run_sections[i].leaf))) {
+    for (int i = 0; i < (int)MD_COUNTOF(trr_run_sections); ++i) {
+        if (md_run_source(&src, attributes, attr, md_str_from_cstr(trr_run_sections[i].leaf))) {
             kind = i;
             break;
         }
@@ -388,12 +393,12 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
 
     const uint32_t frame = slice->idx[0];
     const size_t num_atoms = attr->format.shape[1];
-    const str_t file_path = src.path;
+    const md_str_t file_path = src.path;
 
     uint8_t head[TRR_MAX_HEADER_SIZE];
-    const size_t head_bytes = MIN(sizeof(head), (size_t)sizes[frame]);
+    const size_t head_bytes = MD_MIN(sizeof(head), (size_t)sizes[frame]);
     if (md_attribute_io_read_at(io, file_path, offsets[frame], head, head_bytes) != head_bytes) {
-        MD_LOG_ERROR("TRR: Failed to read the header of frame %u from '" STR_FMT "'", frame, STR_ARG(file_path));
+        MD_LOG_ERROR("TRR: Failed to read the header of frame %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(file_path));
         return 0;
     }
     md_xdr_t xdr = md_xdr_init(head, head_bytes);
@@ -410,7 +415,7 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
     if ((size_t)section_size != num_atoms * 3 * elem) {
         // Not in this frame. The run only publishes what every frame carries, so this is a file
         // that changed underneath it.
-        MD_LOG_ERROR("TRR: frame %u of '" STR_FMT "' has no %s", frame, STR_ARG(file_path), trr_run_sections[kind].leaf);
+        MD_LOG_ERROR("TRR: frame %u of '" MD_STR_FMT "' has no %s", frame, MD_STR_ARG(file_path), trr_run_sections[kind].leaf);
         return 0;
     }
 
@@ -439,7 +444,7 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
         }
         written = cap;
     } else {
-        MD_LOG_ERROR("TRR: Failed to read frame %u from '" STR_FMT "'", frame, STR_ARG(file_path));
+        MD_LOG_ERROR("TRR: Failed to read frame %u from '" MD_STR_FMT "'", frame, MD_STR_ARG(file_path));
     }
     md_temp_end(temp);
     return written;
@@ -448,7 +453,7 @@ static size_t trr_section_provider(void* dst, size_t cap, const md_attribute_t* 
 // A section that is not in exactly the frames that have positions: its own group below the run,
 // "<run>/trr/<name>", with its own frame axis and frame table, so each of its values sits at the
 // time it was written.
-static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, const trr_cache_t* index, int kind, const md_unit_t unit, const str_t label,
+static bool trr_publish_sparse_section(md_system_t* sys, md_str_t run, md_str_t path, const trr_cache_t* index, int kind, const md_unit_t unit, const md_str_t label,
     const md_attribute_virtual_t* virt, md_allocator_i* arena) {
     const size_t F = index->header.num_frames;
     const size_t N = index->header.num_atoms;
@@ -473,14 +478,14 @@ static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, 
     }
 
     // "<run>/trr/velocity" from "atom/velocity"
-    const str_t leaf = str_from_cstr(trr_run_sections[kind].leaf);
-    const str_t name = str_substr(leaf, 5, SIZE_MAX);
+    const md_str_t leaf = md_str_from_cstr(trr_run_sections[kind].leaf);
+    const md_str_t name = md_str_substr(leaf, 5, SIZE_MAX);
     char group_buf[512];
-    const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/trr/" STR_FMT, STR_ARG(run), STR_ARG(name));
+    const int group_len = md_snprintf(group_buf, sizeof(group_buf), MD_STR_FMT "/trr/" MD_STR_FMT, MD_STR_ARG(run), MD_STR_ARG(name));
     if (group_len <= 0 || group_len >= (int)sizeof(group_buf)) {
         return false;
     }
-    const str_t group = { group_buf, (size_t)group_len };
+    const md_str_t group = { group_buf, (size_t)group_len };
 
     const md_attribute_format_t series_f64 = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)n } };
     const md_attribute_format_t series_i64 = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)n } };
@@ -488,20 +493,20 @@ static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, 
     char buf[512];
 
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), group, STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = md_unit_picosecond(), .label = STR_INIT("Time"), .data = times, .byte_size = n * sizeof(double)});
+        .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_picosecond(), .label = MD_STR_INIT("Time"), .data = times, .byte_size = n * sizeof(double)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), group, STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = md_unit_none(), .label = STR_INIT("Step"), .data = steps, .byte_size = n * sizeof(int64_t)});
+        .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("step")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .unit = md_unit_none(), .label = MD_STR_INIT("Step"), .data = steps, .byte_size = n * sizeof(int64_t)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/path")),
+        .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("source/path")),
         .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
-        .unit = md_unit_none(), .data = &path, .byte_size = sizeof(str_t)});
+        .unit = md_unit_none(), .data = &path, .byte_size = sizeof(md_str_t)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/offset")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("source/offset")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = offsets, .byte_size = n * sizeof(int64_t)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/size")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .path = md_run_path(buf, sizeof(buf), group, MD_STR_LIT("source/size")), .format = series_i64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
         .unit = md_unit_none(), .data = sizes, .byte_size = n * sizeof(int64_t)});
     ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), group, leaf),
@@ -510,13 +515,13 @@ static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, 
     return ok;
 }
 
-bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+bool md_trr_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
+    MD_ASSERT(sys);
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = {path_buf, path_len};
+    const md_str_t path = {path_buf, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     trr_cache_t index;
@@ -546,7 +551,7 @@ bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         R += 1;
     }
     if (R == 0) {
-        MD_LOG_ERROR("TRR: '" STR_FMT "' has no frame with coordinates", STR_ARG(path));
+        MD_LOG_ERROR("TRR: '" MD_STR_FMT "' has no frame with coordinates", MD_STR_ARG(path));
         goto done;
     }
 
@@ -572,12 +577,12 @@ bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         md_unit_div(md_unit_angstrom(), md_unit_picosecond()),
         md_unit_div(md_unit_div(md_unit_scl(md_unit_joule(), 1.0e3), md_unit_mole()), md_unit_nanometer()),
     };
-    const str_t labels[] = { STR_INIT("Position"), STR_INIT("Velocity"), STR_INIT("Force") };
+    const md_str_t labels[] = { MD_STR_INIT("Position"), MD_STR_INIT("Velocity"), MD_STR_INIT("Force") };
     char buf[512];
 
     // Velocities and forces: beside the positions when written in exactly the frames the positions
     // are, in a group of their own otherwise (GROMACS' nstvout and nstfout against nstxout).
-    for (int k = 1; k < (int)ARRAY_SIZE(trr_run_sections); ++k) {
+    for (int k = 1; k < (int)MD_COUNTOF(trr_run_sections); ++k) {
         const uint32_t section = trr_run_sections[k].section;
         bool any = false;
         bool aligned = true;
@@ -592,7 +597,7 @@ bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         bool ok;
         if (aligned) {
             ok = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
-                .path = md_run_path(buf, sizeof(buf), run, str_from_cstr(trr_run_sections[k].leaf)),
+                .path = md_run_path(buf, sizeof(buf), run, md_str_from_cstr(trr_run_sections[k].leaf)),
                 .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = { (uint32_t)R, (uint32_t)N } },
                 .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = units[k], .label = labels[k],
                 .virt = &virt});
@@ -600,7 +605,7 @@ bool md_trr_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
             ok = trr_publish_sparse_section(sys, run, path, &index, k, units[k], labels[k], &virt, arena);
         }
         if (!ok) {
-            MD_LOG_ERROR("TRR: failed to publish '" STR_FMT "' as '" STR_FMT "'", STR_ARG(path), STR_ARG(run));
+            MD_LOG_ERROR("TRR: failed to publish '" MD_STR_FMT "' as '" MD_STR_FMT "'", MD_STR_ARG(path), MD_STR_ARG(run));
             md_attributes_remove_prefix(&sys->attributes, run);
             goto done;
         }
@@ -612,7 +617,7 @@ done:
     return result;
 }
 
-size_t md_trr_file_atom_count(str_t filename) {
+size_t md_trr_file_atom_count(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
     uint8_t head[TRR_MAX_HEADER_SIZE];

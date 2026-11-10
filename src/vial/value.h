@@ -12,7 +12,7 @@
 //     INT       int32_t
 //     FLOAT     float
 //     FLOAT64   double                time() and what is computed from it alone
-//     STR       str_t                 the text is owned by the program or the evaluation's arena
+//     STR       md_str_t                 the text is owned by the program or the evaluation's arena
 //     SET       none                  sets: one set per element, in element order
 //     RANGE     double[2]             a..b, both included; a scalar
 //     DRAWING   vial_drawing_t*       drawings: one list of primitives per element; NULL draws nothing
@@ -45,7 +45,7 @@ typedef struct vial_prim_t {
     float           r;
     double          value;      // the label's number, with its unit; NaN when the label is text
     md_unit_t       unit;
-    str_t           text;       // the label as text: the number with its unit, or the string
+    md_str_t           text;       // the label as text: the number with its unit, or the string
     const uint32_t* atoms;      // highlight: the particles, ascending
     uint32_t        num_atoms;
 } vial_prim_t;
@@ -99,7 +99,7 @@ vial_val_t vial_val_bool(bool b, md_allocator_i* alloc);
 vial_val_t vial_val_int(int32_t i, md_allocator_i* alloc);
 vial_val_t vial_val_float(float f, md_allocator_i* alloc);
 vial_val_t vial_val_float64(double f, md_allocator_i* alloc);
-vial_val_t vial_val_str(str_t s, md_allocator_i* alloc);    // copies s
+vial_val_t vial_val_str(md_str_t s, md_allocator_i* alloc);    // copies s
 vial_val_t vial_val_none(void);
 vial_val_t vial_val_sets(const vial_sets_t* s);             // a set when s->single, else an array of them
 

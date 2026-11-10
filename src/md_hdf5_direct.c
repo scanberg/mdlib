@@ -97,7 +97,7 @@ static int direct_chunk_visit(const hsize_t* offset, unsigned filter_mask, haddr
 #endif
 
 md_hdf5_direct_t* md_hdf5_direct_describe(hid_t file, hid_t dset, md_allocator_i* alloc) {
-    ASSERT(alloc);
+    MD_ASSERT(alloc);
     const hid_t space = H5Dget_space(dset);
     if (space < 0) return NULL;
     const int rank = H5Sget_simple_extent_ndims(space);
@@ -140,7 +140,7 @@ md_hdf5_direct_t* md_hdf5_direct_describe(hid_t file, hid_t dset, md_allocator_i
         ok = ok && num_filters >= 0 && num_filters <= MD_HDF5_DIRECT_MAX_FILTERS;
         for (int i = 0; ok && i < num_filters; ++i) {
             unsigned int flags = 0, values[8];
-            size_t num_values = ARRAY_SIZE(values);
+            size_t num_values = MD_COUNTOF(values);
             char name[64];
             const H5Z_filter_t f = H5Pget_filter2(dcpl, (unsigned)i, &flags, &num_values, values, sizeof(name), name, NULL);
             ok = direct_filter_known(f);
@@ -217,11 +217,11 @@ static size_t direct_row_length(const md_hdf5_direct_t* d) {
     return n;
 }
 
-static inline uint16_t direct_load16(const uint8_t* p, bool swap) { uint16_t u; MEMCPY(&u, p, 2); return swap ? BSWAP16(u) : u; }
-static inline uint32_t direct_load32(const uint8_t* p, bool swap) { uint32_t u; MEMCPY(&u, p, 4); return swap ? BSWAP32(u) : u; }
-static inline uint64_t direct_load64(const uint8_t* p, bool swap) { uint64_t u; MEMCPY(&u, p, 8); return swap ? BSWAP64(u) : u; }
-static inline float    direct_f32(uint32_t u) { float f; MEMCPY(&f, &u, 4); return f; }
-static inline double   direct_f64(uint64_t u) { double f; MEMCPY(&f, &u, 8); return f; }
+static inline uint16_t direct_load16(const uint8_t* p, bool swap) { uint16_t u; md_memcpy(&u, p, 2); return swap ? md_bswap16(u) : u; }
+static inline uint32_t direct_load32(const uint8_t* p, bool swap) { uint32_t u; md_memcpy(&u, p, 4); return swap ? md_bswap32(u) : u; }
+static inline uint64_t direct_load64(const uint8_t* p, bool swap) { uint64_t u; md_memcpy(&u, p, 8); return swap ? md_bswap64(u) : u; }
+static inline float    direct_f32(uint32_t u) { float f; md_memcpy(&f, &u, 4); return f; }
+static inline double   direct_f64(uint64_t u) { double f; md_memcpy(&f, &u, 8); return f; }
 
 // One loop per type: what a frame costs after it is inflated is mostly this
 #define DIRECT_CONVERT(SIZE, EXPR) \
@@ -236,9 +236,9 @@ static void direct_convert(float* out, const uint8_t* raw, size_t count, const m
     switch (d->type) {
     case DIRECT_F32:
         if (!swap && scale == 1.0) {
-            MEMCPY(out, raw, count * sizeof(float));
+            md_memcpy(out, raw, count * sizeof(float));
         } else if (!swap) {
-            for (size_t i = 0; i < count; ++i) { float f; MEMCPY(&f, raw + i * 4, 4); out[i] = (float)(f * scale); }
+            for (size_t i = 0; i < count; ++i) { float f; md_memcpy(&f, raw + i * 4, 4); out[i] = (float)(f * scale); }
         } else {
             DIRECT_CONVERT(4, direct_f32(direct_load32(p, true)));
         }
@@ -252,7 +252,7 @@ static void direct_convert(float* out, const uint8_t* raw, size_t count, const m
     case DIRECT_U32: DIRECT_CONVERT(4, direct_load32(p, swap)); break;
     case DIRECT_I64: DIRECT_CONVERT(8, (int64_t)direct_load64(p, swap)); break;
     case DIRECT_U64: DIRECT_CONVERT(8, direct_load64(p, swap)); break;
-    default: MEMSET(out, 0, count * sizeof(float)); break;
+    default: md_memset(out, 0, count * sizeof(float)); break;
     }
 }
 
@@ -260,7 +260,7 @@ static void direct_convert(float* out, const uint8_t* raw, size_t count, const m
 
 static void direct_unshuffle(uint8_t* dst, const uint8_t* src, size_t bytes, size_t elem) {
     if (elem <= 1 || bytes < elem) {
-        MEMCPY(dst, src, bytes);
+        md_memcpy(dst, src, bytes);
         return;
     }
     const size_t n = bytes / elem;
@@ -283,14 +283,14 @@ static void direct_unshuffle(uint8_t* dst, const uint8_t* src, size_t bytes, siz
         }
     }
     // What does not fill an element is stored as it is
-    MEMCPY(dst + n * elem, src + n * elem, bytes - n * elem);
+    md_memcpy(dst + n * elem, src + n * elem, bytes - n * elem);
 }
 
 static bool direct_inflate(uint8_t* dst, size_t* dst_len, size_t cap, const uint8_t* src, size_t src_len) {
     // A chunk is at most 4 GB, which is what zlib's counters hold
     if (src_len > UINT32_MAX || cap > UINT32_MAX) return false;
     z_stream z;
-    MEMSET(&z, 0, sizeof(z));
+    md_memset(&z, 0, sizeof(z));
     if (inflateInit(&z) != Z_OK) return false;
     z.next_in   = (Bytef*)src;
     z.avail_in  = (uInt)src_len;
@@ -449,12 +449,12 @@ static bool direct_decode(uint8_t* out, size_t out_bytes, const uint8_t* stored,
         }
     }
     if (len != out_bytes) return false;
-    if (cur != out) MEMCPY(out, cur, len);
+    if (cur != out) md_memcpy(out, cur, len);
     return true;
 }
 
 // The decoded bytes of chunk c, kept by io when there is one
-static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t chunk_bytes, str_t path, md_attribute_io_t* io, md_temp_scope_t temp) {
+static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t chunk_bytes, md_str_t path, md_attribute_io_t* io, md_temp_scope_t temp) {
     const md_hdf5_direct_chunk_t* e = &d->table[c];
     const uint64_t key = md_attribute_io_block_key(path, e->offset);
     bool hit = false;
@@ -475,7 +475,7 @@ static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t
         ok = stored && md_attribute_io_read_at(io, path, e->offset, stored, e->size) == e->size &&
              direct_decode(out, chunk_bytes, stored, e->size, d, e->filter_mask, &bad_checksum, temp);
         if (bad_checksum) {
-            MD_LOG_ERROR("HDF5: the chunk at %" PRId64 " of '" STR_FMT "' does not match its Fletcher-32 checksum: the file is damaged", e->offset, STR_ARG(path));
+            MD_LOG_ERROR("HDF5: the chunk at %" PRId64 " of '" MD_STR_FMT "' does not match its Fletcher-32 checksum: the file is damaged", e->offset, MD_STR_ARG(path));
         }
     }
     if (!ok) {
@@ -486,7 +486,7 @@ static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t
 }
 
 // Through HDF5, under the lock: the rows of axis 1 the range touches, then the range of them
-static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale) {
+static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, md_str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale) {
     size_t inner = 1;
     for (uint32_t i = 2; i < d->rank; ++i) inner *= (size_t)d->dims[i];
     hsize_t start[MD_HDF5_DIRECT_MAX_RANK] = {0}, extent[MD_HDF5_DIRECT_MAX_RANK] = {0};
@@ -504,7 +504,7 @@ static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, str_t path, 
     }
 
     char cpath[4096];
-    str_copy_to_char_buf(cpath, sizeof(cpath), path);
+    md_str_copy_to_char_buf(cpath, sizeof(cpath), path);
     md_temp_scope_t temp = md_temp_begin();
     float* buf = total == count ? out : md_temp_alloc_array(temp, float, total);
     bool ok = false;
@@ -526,7 +526,7 @@ static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, str_t path, 
         md_hdf5_unlock(lock);
     }
     if (ok) {
-        if (buf != out) MEMCPY(out, buf + skip, count * sizeof(float));
+        if (buf != out) md_memcpy(out, buf + skip, count * sizeof(float));
         if (scale != 1.0) for (size_t i = 0; i < count; ++i) out[i] = (float)(out[i] * scale);
     }
     md_temp_end(temp);
@@ -544,7 +544,7 @@ static bool direct_next(size_t* k, const size_t* lo, const size_t* hi, uint32_t 
 
 // The chunked read: every chunk of the frame's slab whose elements reach into the range, and of each the runs along
 // the last axis that do. 1 when read, 0 when it failed, -1 when a chunk it needs was never written.
-static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, str_t path, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io, md_temp_scope_t temp) {
+static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, md_str_t path, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io, md_temp_scope_t temp) {
     const uint32_t r = d->rank;
     const uint32_t L = r - 1;           // the last axis
     const size_t last = first + count;  // exclusive
@@ -570,7 +570,7 @@ static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, str_t path
         size_t lo = 0, hi = 0;
         for (uint32_t i = 1; i < r; ++i) {
             cs[i] = g[i] * (size_t)d->chunk[i];
-            ce[i] = MIN(cs[i] + (size_t)d->chunk[i], (size_t)d->dims[i]);
+            ce[i] = MD_MIN(cs[i] + (size_t)d->chunk[i], (size_t)d->dims[i]);
             lo += cs[i] * stride[i];
             hi += (ce[i] - 1) * stride[i];
         }
@@ -598,14 +598,14 @@ static int direct_read_chunked(float* out, const md_hdf5_direct_t* d, str_t path
                 local = local * (size_t)d->chunk[i] + (k[i] - cs[i]);
             }
             local *= (size_t)d->chunk[L];
-            const size_t a = MAX(t, first), b = MIN(t + run, last);
+            const size_t a = MD_MAX(t, first), b = MD_MIN(t + run, last);
             if (a < b) direct_convert(out + (a - first), bytes + (local + (a - t)) * d->elem_size, b - a, d, scale);
         } while (direct_next(k, cs, ce, 1, L));
     } while (direct_next(g, zero, grid, 1, r));
     return 1;
 }
 
-bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io) {
+bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, md_str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale, md_attribute_io_t* io) {
     if (!d || !out || frame >= d->dims[0] || count == 0) return false;
     const size_t row = direct_row_length(d);
     if (first + count > row) return false;

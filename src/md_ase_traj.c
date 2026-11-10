@@ -1,6 +1,7 @@
 #include <md_ase_traj.h>
 
 #include <md_system.h>
+#include <md_unitcell.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_json.h>
@@ -22,14 +23,16 @@
 // absolute offset. All of it is little endian unless an item says "_little_endian": false, which a
 // big endian machine writes and which is refused here.
 //
-// Every frame has "positions." and "cell", whose rows are the box vectors. The first frame also has
+// Every frame has "positions." and "cell", whose rows are the box vectors, in any orientation (ase.build.bulk gives
+// the primitive cell of fcc as [[0, a/2, a/2], [a/2, 0, a/2], [a/2, a/2, 0]]): md_unitcell_t holds a along x and b
+// in the xy plane, so such a cell is turned into that orientation, and the positions of its frame with it. The first frame also has
 // the header - "version", "pbc", "numbers." - which ASE writes again only in a frame where something
 // in it changed; a frame without one has the first frame's, as ASE reads it.
 //
 // Arrays are read as the host's numbers: like the rest of mdlib this assumes a little endian host.
 
 #define ASE_HEADER_SIZE   48
-#define ASE_MAX_ITEM_SIZE MEGABYTES(64)
+#define ASE_MAX_ITEM_SIZE MD_MEGABYTES(64)
 #define ASE_CELL_EPS      1.0e-6
 
 typedef struct ase_index_t {
@@ -38,7 +41,11 @@ typedef struct ase_index_t {
     md_atomic_number_t* numbers;    // num_atoms, from the first frame
     int64_t*            offset;     // num_frames: where the positions of each frame start
     int64_t*            size;       // num_frames: their byte size, num_atoms * 3 * (4 or 8)
-    float*              cell;       // num_frames * 9: row i box vector i, zero without periodicity
+    float*              cell;       // num_frames * 9: row i box vector i, turned as md_unitcell_t holds it; zero along
+                                    // an axis that is not periodic
+    float*              rotation;   // num_frames * 9, row major, the rotation of each frame's positions into the
+                                    // orientation of its cell
+    bool                rotated;    // whether any frame's is other than the identity
     double*             time;       // num_frames
     md_unit_t           time_unit;
 } ase_index_t;
@@ -53,15 +60,15 @@ typedef struct ase_array_t {
 
 // The array an item holds under key, of the given rank. False when it is missing, of a dtype not
 // read here, or does not fit in the file.
-static bool ase_array(ase_array_t* out, md_json_val_t item, str_t key, size_t rank, int64_t file_size) {
-    static const struct { str_t name; size_t width; bool is_float; } dtypes[] = {
-        { STR_INIT("float64"), 8, true  },
-        { STR_INIT("float32"), 4, true  },
-        { STR_INIT("int64"),   8, false },
-        { STR_INIT("int32"),   4, false },   // numpy's default integer on Windows before numpy 2
+static bool ase_array(ase_array_t* out, md_json_val_t item, md_str_t key, size_t rank, int64_t file_size) {
+    static const struct { md_str_t name; size_t width; bool is_float; } dtypes[] = {
+        { MD_STR_INIT("float64"), 8, true  },
+        { MD_STR_INIT("float32"), 4, true  },
+        { MD_STR_INIT("int64"),   8, false },
+        { MD_STR_INIT("int32"),   4, false },   // numpy's default integer on Windows before numpy 2
     };
 
-    const md_json_val_t nd    = md_json_get(md_json_get(item, key), STR_LIT("ndarray"));
+    const md_json_val_t nd    = md_json_get(md_json_get(item, key), MD_STR_LIT("ndarray"));
     const md_json_val_t shape = md_json_at(nd, 0);
     const md_json_val_t dtype = md_json_at(nd, 1);
     if (md_json_type(nd) != MD_JSON_TYPE_ARRAY || md_json_count(nd) != 3 ||
@@ -71,7 +78,7 @@ static bool ase_array(ase_array_t* out, md_json_val_t item, str_t key, size_t ra
     }
 
     out->width = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(dtypes); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(dtypes); ++i) {
         if (md_json_string_eq(dtype, dtypes[i].name)) {
             out->width    = dtypes[i].width;
             out->is_float = dtypes[i].is_float;
@@ -104,14 +111,14 @@ static md_json_val_t ase_item(md_file_t file, int64_t file_size, int64_t offset,
     if (!text || md_file_read_at(file, offset + 8, text, (size_t)len) != (size_t)len) {
         return none;
     }
-    const md_json_val_t root = md_json_root(md_json_parse((str_t){ text, (size_t)len }, md_temp_allocator(temp), NULL));
+    const md_json_val_t root = md_json_root(md_json_parse((md_str_t){ text, (size_t)len }, md_temp_allocator(temp), NULL));
     return md_json_type(root) == MD_JSON_TYPE_OBJECT ? root : none;
 }
 
 // "numbers." of an item, num_atoms atomic numbers, into out. Scratch from temp.
 static bool ase_numbers(md_atomic_number_t* out, md_json_val_t item, size_t num_atoms, md_file_t file, int64_t file_size, md_temp_scope_t temp) {
     ase_array_t arr;
-    if (!ase_array(&arr, item, STR_LIT("numbers."), 1, file_size) || arr.is_float || arr.dim[0] != num_atoms) {
+    if (!ase_array(&arr, item, MD_STR_LIT("numbers."), 1, file_size) || arr.is_float || arr.dim[0] != num_atoms) {
         return false;
     }
     const size_t bytes = num_atoms * arr.width;
@@ -146,27 +153,43 @@ static bool ase_mat3(double out[3][3], md_json_val_t mat) {
     return true;
 }
 
-// The cell of a frame as a run holds it. md_unitcell_t has a along x and b in the xy plane, and is
-// periodic along every axis its diagonal is non zero along. A fully periodic cell in that orientation
-// is kept. Without periodicity the cell is dropped: the box ASE keeps around a molecule would
-// otherwise be taken to be a periodic one. Anything else - a rotated cell, or one periodic along
-// only some axes - is refused rather than shown wrong.
-static bool ase_cell(float out[9], const double A[3][3], const bool pbc[3]) {
-    MEMSET(out, 0, 9 * sizeof(float));
+// The cell of a frame as a run holds it, and the rotation of its positions into it (true when they need one). Turned
+// into the orientation of md_unitcell_t, which is periodic along every axis its diagonal is non zero along: an axis
+// that is not periodic has its vector left out (a slab, pbc [T, T, F], is periodic in the plane only). Without
+// periodicity the cell is dropped altogether: the box ASE keeps around a molecule would otherwise be taken for a
+// periodic one. A periodic axis of no length is refused.
+static bool ase_cell(float out[9], float out_rot[9], bool* out_rotated, const double A[3][3], const bool pbc[3]) {
+    md_memset(out, 0, 9 * sizeof(float));
+    *out_rotated = false;
+    for (int i = 0; i < 9; ++i) out_rot[i] = (i % 4 == 0) ? 1.0f : 0.0f;
     if (!pbc[0] && !pbc[1] && !pbc[2]) {
         return true;
     }
-    if (!pbc[0] || !pbc[1] || !pbc[2] ||
-        fabs(A[0][1]) > ASE_CELL_EPS || fabs(A[0][2]) > ASE_CELL_EPS || fabs(A[1][2]) > ASE_CELL_EPS ||
-        !(A[0][0] > 0.0 && A[1][1] > 0.0 && A[2][2] > 0.0)) {
-        return false;
+    for (int i = 0; i < 3; ++i) {
+        if (pbc[i] && !(A[i][0] * A[i][0] + A[i][1] * A[i][1] + A[i][2] * A[i][2] > 0.0)) return false;
     }
-    for (size_t i = 0; i < 3; ++i) {
-        for (size_t j = 0; j <= i; ++j) {
-            out[i * 3 + j] = (float)A[i][j];
-        }
+    md_unitcell_t cell;
+    double R[3][3];
+    *out_rotated = md_unitcell_from_basis_vectors(&cell, R, A);
+    float M[3][3];
+    md_unitcell_A_extract_float(M, &cell);
+    if (!(M[0][0] > 0.0f)) return false;
+    for (int i = 0; i < 3; ++i) {
+        if (!pbc[i]) continue;
+        for (int j = 0; j < 3; ++j) out[i * 3 + j] = M[i][j];
     }
+    for (int i = 0; i < 9; ++i) out_rot[i] = (float)R[i / 3][i % 3];
     return true;
+}
+
+static void ase_rotate(float* xyz, size_t count, const float R[9]) {
+    for (size_t i = 0; i < count; ++i) {
+        float* p = xyz + i * 3;
+        const float x = p[0], y = p[1], z = p[2];
+        p[0] = R[0] * x + R[1] * y + R[2] * z;
+        p[1] = R[3] * x + R[4] * y + R[5] * z;
+        p[2] = R[6] * x + R[7] * y + R[8] * z;
+    }
 }
 
 // Frame i of the index from its item: the first frame sets the atoms and the header, the others
@@ -178,19 +201,19 @@ static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item
         return "not a JSON object";
     }
     bool little_endian = true;
-    md_json_bool(&little_endian, md_json_get(item, STR_LIT("_little_endian")));
+    md_json_bool(&little_endian, md_json_get(item, MD_STR_LIT("_little_endian")));
     if (!little_endian) {
         return "written on a big endian machine, which is not supported";
     }
 
     ase_array_t pos;
-    if (!ase_array(&pos, item, STR_LIT("positions."), 2, file_size) || !pos.is_float || pos.dim[1] != 3) {
+    if (!ase_array(&pos, item, MD_STR_LIT("positions."), 2, file_size) || !pos.is_float || pos.dim[1] != 3) {
         return "no positions";
     }
 
     if (i == 0) {
         int64_t version = 0;
-        if (!md_json_i64(&version, md_json_get(item, STR_LIT("version"))) || version != 1) {
+        if (!md_json_i64(&version, md_json_get(item, MD_STR_LIT("version"))) || version != 1) {
             return "not version 1 of the trajectory format";
         }
         idx->num_atoms = pos.dim[0];
@@ -200,35 +223,37 @@ static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item
         }
     } else if (pos.dim[0] != idx->num_atoms) {
         return "a different number of atoms than the first frame, which a run cannot hold";
-    } else if (md_json_valid(md_json_get(item, STR_LIT("numbers.")))) {
+    } else if (md_json_valid(md_json_get(item, MD_STR_LIT("numbers.")))) {
         md_atomic_number_t* numbers = md_temp_alloc_array(temp, md_atomic_number_t, idx->num_atoms);
         if (!numbers || !ase_numbers(numbers, item, idx->num_atoms, file, file_size, temp)) {
             return "malformed atomic numbers";
         }
-        if (MEMCMP(numbers, idx->numbers, idx->num_atoms * sizeof(md_atomic_number_t)) != 0) {
+        if (md_memcmp(numbers, idx->numbers, idx->num_atoms * sizeof(md_atomic_number_t)) != 0) {
             return "different atoms than the first frame, which a run cannot hold";
         }
     }
 
-    const md_json_val_t pbc_val = md_json_get(item, STR_LIT("pbc"));
+    const md_json_val_t pbc_val = md_json_get(item, MD_STR_LIT("pbc"));
     bool pbc[3] = { pbc0[0], pbc0[1], pbc0[2] };
     if ((i == 0 || md_json_valid(pbc_val)) && !ase_pbc(pbc, pbc_val)) {
         return "no pbc";
     }
     if (i == 0) {
-        MEMCPY(pbc0, pbc, sizeof(pbc));
+        md_memcpy(pbc0, pbc, sizeof(pbc));
     }
 
     double A[3][3];
-    if (!ase_mat3(A, md_json_get(item, STR_LIT("cell")))) {
+    if (!ase_mat3(A, md_json_get(item, MD_STR_LIT("cell")))) {
         return "no cell";
     }
-    if (!ase_cell(idx->cell + i * 9, A, pbc)) {
-        return "a cell that is rotated or periodic along only some axes, which mdlib cannot represent";
+    bool rotated = false;
+    if (!ase_cell(idx->cell + i * 9, idx->rotation + i * 9, &rotated, (const double (*)[3])A, pbc)) {
+        return "a periodic axis of no length";
     }
+    idx->rotated |= rotated;
 
     // Not an ASE convention: some workflows keep the simulation time in info
-    *has_time = *has_time && md_json_f64(&idx->time[i], md_json_get(md_json_get(item, STR_LIT("info")), STR_LIT("time_ps")));
+    *has_time = *has_time && md_json_f64(&idx->time[i], md_json_get(md_json_get(item, MD_STR_LIT("info")), MD_STR_LIT("time_ps")));
 
     idx->offset[i] = pos.offset;
     idx->size[i]   = (int64_t)(idx->num_atoms * 3 * pos.width);
@@ -237,38 +262,39 @@ static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item
 
 // The frames of an open file, as many as max_frames. The index goes in out, scratch in temp, which
 // must be in another arena.
-static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, size_t max_frames, md_temp_scope_t out, md_temp_scope_t temp) {
+static bool ase_index_read_file(ase_index_t* idx, md_file_t file, md_str_t path, size_t max_frames, md_temp_scope_t out, md_temp_scope_t temp) {
     const int64_t file_size = (int64_t)md_file_size(file);
     uint8_t header[ASE_HEADER_SIZE];
     if (file_size < ASE_HEADER_SIZE || md_file_read_at(file, 0, header, sizeof(header)) != sizeof(header) ||
-        MEMCMP(header, "- of Ulm", 8) != 0 || MEMCMP(header + 8, "ASE-Trajectory  ", 16) != 0) {
-        MD_LOG_ERROR("ASE: '" STR_FMT "' is not an ASE trajectory", STR_ARG(path));
+        md_memcmp(header, "- of Ulm", 8) != 0 || md_memcmp(header + 8, "ASE-Trajectory  ", 16) != 0) {
+        MD_LOG_ERROR("ASE: '" MD_STR_FMT "' is not an ASE trajectory", MD_STR_ARG(path));
         return false;
     }
 
     int64_t version, num_items, table_offset;
-    MEMCPY(&version,      header + 24, sizeof(int64_t));
-    MEMCPY(&num_items,    header + 32, sizeof(int64_t));
-    MEMCPY(&table_offset, header + 40, sizeof(int64_t));
+    md_memcpy(&version,      header + 24, sizeof(int64_t));
+    md_memcpy(&num_items,    header + 32, sizeof(int64_t));
+    md_memcpy(&table_offset, header + 40, sizeof(int64_t));
     if (version != 3) {
-        MD_LOG_ERROR("ASE: '" STR_FMT "' is of ULM version %lld, only version 3 is supported", STR_ARG(path), (long long)version);
+        MD_LOG_ERROR("ASE: '" MD_STR_FMT "' is of ULM version %lld, only version 3 is supported", MD_STR_ARG(path), (long long)version);
         return false;
     }
     if (num_items <= 0 || table_offset < ASE_HEADER_SIZE || table_offset > file_size || num_items > (file_size - table_offset) / 8) {
-        MD_LOG_ERROR("ASE: '" STR_FMT "' has no frames, or a damaged table of them", STR_ARG(path));
+        MD_LOG_ERROR("ASE: '" MD_STR_FMT "' has no frames, or a damaged table of them", MD_STR_ARG(path));
         return false;
     }
 
-    const size_t F = MIN((size_t)num_items, max_frames);
+    const size_t F = MD_MIN((size_t)num_items, max_frames);
     int64_t* items  = md_temp_alloc_array(temp, int64_t, F);
     idx->num_frames = F;
     idx->offset     = md_temp_alloc_array(out, int64_t, F);
     idx->size       = md_temp_alloc_array(out, int64_t, F);
     idx->cell       = md_temp_alloc_array(out, float, F * 9);
+    idx->rotation   = md_temp_alloc_array(out, float, F * 9);
     idx->time       = md_temp_alloc_array(out, double, F);
-    if (!items || !idx->offset || !idx->size || !idx->cell || !idx->time ||
+    if (!items || !idx->offset || !idx->size || !idx->cell || !idx->rotation || !idx->time ||
         md_file_read_at(file, table_offset, items, F * sizeof(int64_t)) != F * sizeof(int64_t)) {
-        MD_LOG_ERROR("ASE: could not read the table of frames of '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("ASE: could not read the table of frames of '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
 
@@ -281,7 +307,7 @@ static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, si
         const char* error = ase_frame_read(idx, i, item, pbc0, &has_time, file, file_size, out, frame_temp);
         md_temp_end(frame_temp);
         if (error) {
-            MD_LOG_ERROR("ASE: frame %zu of '" STR_FMT "': %s", i, STR_ARG(path), error);
+            MD_LOG_ERROR("ASE: frame %zu of '" MD_STR_FMT "': %s", i, MD_STR_ARG(path), error);
             return false;
         }
     }
@@ -299,11 +325,11 @@ static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, si
 
 // The first max_frames frames of the file at path. The index goes in out, the caller's scope, and is
 // gone when it ends; what is only needed while reading comes from the other temp arena.
-static bool ase_index_read(ase_index_t* idx, str_t path, size_t max_frames, md_temp_scope_t out) {
-    MEMSET(idx, 0, sizeof(ase_index_t));
+static bool ase_index_read(ase_index_t* idx, md_str_t path, size_t max_frames, md_temp_scope_t out) {
+    md_memset(idx, 0, sizeof(ase_index_t));
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("ASE: could not open '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("ASE: could not open '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
     md_temp_scope_t temp = md_temp_begin_avoid(out.arena);
@@ -322,7 +348,7 @@ static size_t ase_frame_width(int64_t size, size_t num_atoms) {
 
 // count positions stored with width bytes per coordinate, at offset in the file at path, into dst as
 // count * 3 floats: float32 straight into place, float64 through a buffer. Through io when given.
-static bool ase_positions_read(float* dst, size_t count, size_t width, md_attribute_io_t* io, str_t path, int64_t offset) {
+static bool ase_positions_read(float* dst, size_t count, size_t width, md_attribute_io_t* io, md_str_t path, int64_t offset) {
     const size_t n = count * 3;
     if (width == sizeof(float)) {
         return md_attribute_io_read_at(io, path, offset, dst, n * sizeof(float)) == n * sizeof(float);
@@ -343,11 +369,11 @@ static bool ase_positions_read(float* dst, size_t count, size_t width, md_attrib
 // <run>/atom/position: one read of the frame, or of the one atom asked for
 static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, STR_LIT("atom/position"))) return 0;
+    if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
 
     const size_t frame = slice->idx[0];
     const size_t N = attr->format.shape[1];
@@ -361,15 +387,20 @@ static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t*
 
     const size_t width = ase_frame_width(src.size[frame], N);
     if (!ase_positions_read((float*)dst, count, width, io, src.path, src.offset[frame] + (int64_t)(first * 3 * width))) {
-        MD_LOG_ERROR("ASE: failed to read frame %zu of '" STR_FMT "'", frame, STR_ARG(src.path));
+        MD_LOG_ERROR("ASE: failed to read frame %zu of '" MD_STR_FMT "'", frame, MD_STR_ARG(src.path));
         return 0;
+    }
+    // A cell in another orientation than md_unitcell_t's: its frame's positions turn with it
+    const md_attribute_t* rot = md_attributes_find_in(&sys->attributes, src.run, MD_STR_LIT("source/rotation"));
+    if (rot && rot->data && rot->format.type == MD_ATTRIBUTE_TYPE_F32 && md_attribute_value_count(&rot->format) == src.num_frames * 9) {
+        ase_rotate((float*)dst, count, (const float*)rot->data + frame * 9);
     }
     return cap;
 }
 
-bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
-    ASSERT(state);
+bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
     if (!sys->alloc || !state->alloc) {
         MD_LOG_ERROR("ASE: system or state allocator not set");
         return false;
@@ -391,12 +422,13 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
     }
     if (result) {
         const size_t N = idx.num_atoms;
-        MEMCPY(state->xyz, xyz, N * sizeof(vec3_t));
-        state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(idx.cell));
+        ase_rotate(xyz, N, idx.rotation);
+        md_memcpy(state->xyz, xyz, N * sizeof(vec3_t));
+        state->unitcell = md_unitcell_from_matrix_float((const float (*)[3])idx.cell);
 
         md_array_ensure(sys->atom.type_idx, N, sys->alloc);
         md_array_ensure(sys->atom.flags,    N, sys->alloc);
-        md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+        md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
         for (size_t i = 0; i < N; ++i) {
             const md_atomic_number_t z = idx.numbers[i];
             const md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
@@ -411,16 +443,16 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
     return result;
 }
 
-bool md_ase_traj_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+bool md_ase_traj_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
+    MD_ASSERT(sys);
     (void)flags;    // no index cache to write: the file has a table of its frames
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
     if (path_len == 0) {
-        MD_LOG_ERROR("ASE: could not resolve the path '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("ASE: could not resolve the path '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
-    const str_t path = { path_buf, path_len };
+    const md_str_t path = { path_buf, path_len };
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
 
@@ -428,7 +460,7 @@ bool md_ase_traj_system_publish_run(md_system_t* sys, str_t filename, str_t run,
     bool result = ase_index_read(&idx, path, SIZE_MAX, temp);
     if (result && idx.num_frames < 2) {
         // A structure, as a PDB of one model is: md_ase_traj_system_init_from_file has all of it
-        MD_LOG_INFO("ASE: '" STR_FMT "' has a single frame and is not read as a trajectory", STR_ARG(path));
+        MD_LOG_INFO("ASE: '" MD_STR_FMT "' has a single frame and is not read as a trajectory", MD_STR_ARG(path));
         result = false;
     }
     if (result) {
@@ -445,6 +477,16 @@ bool md_ase_traj_system_publish_run(md_system_t* sys, str_t filename, str_t run,
             .position_virt = &virt,
         };
         result = md_run_publish(sys, run, &desc);
+        if (result && idx.rotated) {
+            char buf[512];
+            result = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+                .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("source/rotation")),
+                .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = { (uint32_t)idx.num_frames, 9 } },
+                .unit = md_unit_none(),
+                .description = MD_STR_INIT("The rotation (row major) of each frame's positions into the orientation of its cell"),
+                .data = idx.rotation, .byte_size = idx.num_frames * 9 * sizeof(float)});
+            if (!result) md_attributes_remove_prefix(&sys->attributes, run);
+        }
     }
 
     md_temp_end(temp);

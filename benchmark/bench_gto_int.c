@@ -33,18 +33,18 @@ typedef struct {
 } bench_esp_t;
 
 static bool bench_esp_load(bench_esp_t* b) {
-    MEMSET(b, 0, sizeof(*b));
-    b->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    md_memset(b, 0, sizeof(*b));
+    b->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = b->arena };
     md_system_state_t state = { .alloc = b->arena };
-    if (!md_vlx_system_init_from_file(&sys, &state, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"))) {
+    if (!md_vlx_system_init_from_file(&sys, &state, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"), NULL)) {
         MD_LOG_ERROR("Could not load benchmark vlx file");
         return false;
     }
-    const md_attribute_t* c = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"));
-    const md_attribute_t* z = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/nuclear_charge"));
-    const md_attribute_t* d = md_attributes_find(&sys.attributes, STR_LIT("orbital/total/density"));
-    if (!d) d = md_attributes_find(&sys.attributes, STR_LIT("orbital/alpha/density"));
+    const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* z = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/nuclear_charge"));
+    const md_attribute_t* d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
+    if (!d) d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/density"));
     if (!c || !z || !d || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
         MD_LOG_ERROR("Benchmark file lacks a basis, a geometry or a density");
         return false;
@@ -59,7 +59,7 @@ static bool bench_esp_load(bench_esp_t* b) {
     vec3_t lo = vec3_set1(FLT_MAX), hi = vec3_set1(-FLT_MAX);
     for (size_t i = 0; i < b->num_atoms; ++i) {
         const vec3_t p = vec3_set((float)(xyz[3 * i + 0] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 1] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 2] * BENCH_ANGSTROM_TO_BOHR));
-        MEMCPY(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
+        md_memcpy(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
         lo = vec3_min(lo, p);
         hi = vec3_max(hi, p);
     }

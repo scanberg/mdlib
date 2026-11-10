@@ -47,17 +47,17 @@ static inline void qm_test_free(qm_test_t* t) {
     memset(t, 0, sizeof(*t));
 }
 
-static inline const md_attribute_t* qm_test_attr(const qm_test_t* t, str_t path) {
+static inline const md_attribute_t* qm_test_attr(const qm_test_t* t, md_str_t path) {
     return md_attributes_find(&t->sys.attributes, path);
 }
 
-static inline bool qm_test_has(const qm_test_t* t, str_t path) {
+static inline bool qm_test_has(const qm_test_t* t, md_str_t path) {
     return md_attributes_find(&t->sys.attributes, path) != NULL;
 }
 
 // A rank 0 attribute. 'fallback' is what an absent path reads as, which is the caller's way of
 // saying whether absence is a failure or simply a block the file did not carry.
-static inline double qm_test_scalar(const qm_test_t* t, str_t path, double fallback) {
+static inline double qm_test_scalar(const qm_test_t* t, md_str_t path, double fallback) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
     double value = fallback;
     if (a && md_attribute_extract_f64(&value, 1, a, md_attribute_slice_all(), md_unit_none()) == 1) {
@@ -68,34 +68,34 @@ static inline double qm_test_scalar(const qm_test_t* t, str_t path, double fallb
 
 // One entry of a string attribute; index 0 is the whole value for the rank 1 {1} case a single
 // string is published as.
-static inline str_t qm_test_string_at(const qm_test_t* t, str_t path, size_t index) {
+static inline md_str_t qm_test_string_at(const qm_test_t* t, md_str_t path, size_t index) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
-    return a ? md_attribute_str(&t->sys.attributes, a, index) : (str_t){0};
+    return a ? md_attribute_str(&t->sys.attributes, a, index) : (md_str_t){0};
 }
 
-static inline str_t qm_test_string(const qm_test_t* t, str_t path) {
+static inline md_str_t qm_test_string(const qm_test_t* t, md_str_t path) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
-    str_t value = {0};
+    md_str_t value = {0};
     if (a && md_attribute_extract_str(&value, 1, &t->sys.attributes, a) == 1) {
         return value;
     }
-    return (str_t){0};
+    return (md_str_t){0};
 }
 
 // Length of a rank 1 series, 0 when the path is absent.
-static inline size_t qm_test_count(const qm_test_t* t, str_t path) {
+static inline size_t qm_test_count(const qm_test_t* t, md_str_t path) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
     return a ? md_attribute_element_count(&a->format) : 0;
 }
 
-static inline size_t qm_test_series(double* dst, size_t cap, const qm_test_t* t, str_t path) {
+static inline size_t qm_test_series(double* dst, size_t cap, const qm_test_t* t, md_str_t path) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
     return a ? md_attribute_extract_f64(dst, cap, a, md_attribute_slice_all(), md_unit_none()) : 0;
 }
 
 // One row of a rank 2 {rows, cols} attribute. The slice is the point: a computed attribute
 // reconstructs only the plane that was asked for.
-static inline size_t qm_test_row(double* dst, size_t cap, const qm_test_t* t, str_t path, size_t row) {
+static inline size_t qm_test_row(double* dst, size_t cap, const qm_test_t* t, md_str_t path, size_t row) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
     if (!a) {
         return 0;
@@ -106,7 +106,7 @@ static inline size_t qm_test_row(double* dst, size_t cap, const qm_test_t* t, st
 
 // A whole rank 2 attribute, allocated from the test's own arena. NULL when the path is absent or
 // the extraction comes up short, so a caller asserts on the pointer rather than on a count.
-static inline double* qm_test_matrix(const qm_test_t* t, str_t path, size_t* out_dim) {
+static inline double* qm_test_matrix(const qm_test_t* t, md_str_t path, size_t* out_dim) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, path);
     if (!a || a->format.rank != 2) {
         return NULL;
@@ -135,7 +135,7 @@ static inline bool qm_test_basis(md_gto_basis_t* out, const qm_test_t* t) {
 // spherical to Cartesian expansion lost a factor, or if the overlap does not describe the same
 // basis the coefficients are stated against - and it cannot pass by accident, because an
 // orthonormal set of orbitals in the wrong basis is not orthonormal in this one.
-static inline double qm_test_orthonormality(const qm_test_t* t, str_t coefficient_path) {
+static inline double qm_test_orthonormality(const qm_test_t* t, md_str_t coefficient_path) {
     size_t num_ao = 0, dim = 0;
     const md_attribute_t* ca = md_attributes_find(&t->sys.attributes, coefficient_path);
     if (!ca || ca->format.rank != 2) {
@@ -143,7 +143,7 @@ static inline double qm_test_orthonormality(const qm_test_t* t, str_t coefficien
     }
     const size_t num_mo = ca->format.shape[0];
     double* C = qm_test_matrix(t, coefficient_path, &num_ao);
-    double* S = qm_test_matrix(t, STR_LIT("basis/overlap"), &dim);
+    double* S = qm_test_matrix(t, MD_STR_LIT("basis/overlap"), &dim);
     if (!C || !S || dim != num_ao) {
         return HUGE_VAL;
     }
@@ -180,10 +180,10 @@ static inline double qm_test_orthonormality(const qm_test_t* t, str_t coefficien
 // density built from the published coefficients and occupations describes the right number of
 // electrons - and it is sensitive to the occupation convention, which is what makes it worth
 // asserting separately from orthonormality.
-static inline double qm_test_electron_count(const qm_test_t* t, str_t density_path) {
+static inline double qm_test_electron_count(const qm_test_t* t, md_str_t density_path) {
     size_t dn = 0, sn = 0;
     double* D = qm_test_matrix(t, density_path, &dn);
-    double* S = qm_test_matrix(t, STR_LIT("basis/overlap"), &sn);
+    double* S = qm_test_matrix(t, MD_STR_LIT("basis/overlap"), &sn);
     if (!D || !S || dn != sn) {
         return -1.0;
     }

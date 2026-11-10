@@ -72,6 +72,7 @@ uint4 unpack_ijkl(uint packed) {
 #define WG_Y 8
 #define WG_Z 8
 #define WG_SIZE        (WG_X * WG_Y * WG_Z)   // 512
+#include "gto_screen.slang"
 #define TILE_SIZE      16
 #define MAX_SCREENED   2048
 #define MAX_TILE_PGTOS (TILE_SIZE * 32)        // 512 PGTOs per tile
@@ -168,19 +169,16 @@ void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_GroupIndex, uint3 dtid: SV_DispatchThreadID) {
-    if (tid == 0) {
-        num_screened_cgtos = 0;
-    }
-    GroupMemoryBarrierWithGroupSync();
-
     bool active = all(dtid < args.grid_dim.xyz);
 
     float3 model_aabb_min = float3(gid * uint3(WG_X, WG_Y, WG_Z)) * args.step.xyz;
     float3 model_aabb_max = float3((gid + uint3(1, 1, 1)) * uint3(WG_X, WG_Y, WG_Z)) * args.step.xyz;
 
-    // Stage 1: Screening - Prune CGTOs relevant for this workgroup region.
-    // Wave-coalesced allocation: one LDS atomic per wave instead of per thread.
-    for (uint i = tid; i < args.num_cgtos; i += WG_SIZE) {
+    // Stage 1: Screening - Prune CGTOs relevant for this workgroup region, listed in the order of their index
+    // (gto_screen.slang): the order of the sums below, the same every run.
+    uint total = 0u;
+    for (uint base = 0u; base < args.num_cgtos; base += WG_SIZE) {
+        uint i = base + tid;
         bool passed = false;
         if (i < args.num_cgtos) {
             float r = args.cgto_r[min(i, args.num_cgtos - 1u)];
@@ -194,20 +192,14 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
             }
         }
 
-        uint wave_count = WaveActiveCountBits(passed);
-        uint wave_offset = WavePrefixSum(passed ? 1u : 0u);
-        uint wave_base = 0u;
-        if (WaveIsFirstLane() && wave_count > 0u) {
-            InterlockedAdd(num_screened_cgtos, wave_count, wave_base);
+        uint2 rc = gto_screen_round(passed, tid);
+        if (passed && total + rc.x < MAX_SCREENED) {
+            screened_cgtos[total + rc.x] = i;
         }
-        wave_base = WaveReadLaneFirst(wave_base);
-
-        if (passed) {
-            uint idx = wave_base + wave_offset;
-            if (idx < MAX_SCREENED) {
-                screened_cgtos[idx] = i;
-            }
-        }
+        total += rc.y;
+    }
+    if (tid == 0) {
+        num_screened_cgtos = total;
     }
     GroupMemoryBarrierWithGroupSync();
 

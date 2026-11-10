@@ -66,7 +66,7 @@ typedef struct {
     uint32_t id;
 } md_gl_shaders_t;
 
-md_gl_shaders_t md_gl_shaders_create(str_t str);
+md_gl_shaders_t md_gl_shaders_create(md_str_t str);
 void md_gl_shaders_destroy(md_gl_shaders_t handle);
 
 
@@ -136,6 +136,12 @@ md_gl_mol_t md_gl_mol_create(const struct md_system_t* mol);
 // (md_gl_mol_set_tubes, MD_GL_REP_TUBES). Positions and radii start at 0.
 md_gl_mol_t md_gl_mol_create_particles(uint32_t count);
 void md_gl_mol_destroy(md_gl_mol_t handle);
+// The molecule made again of the system (as md_gl_mol_create does), keeping its handle: for a system whose bonds,
+// backbone or chains changed (they were inferred after it was made) but whose atoms did not. The representations and
+// subsets made of it, and the molecules derived from it (md_gl_mol_set_derived), stay valid: what holds one need not
+// know. The positions, velocities, flags and secondary structure set before are not kept: set them again. Fails, and
+// leaves the molecule as it was, when the atom count changed.
+bool md_gl_mol_rebuild(md_gl_mol_t handle, const struct md_system_t* sys);
 
 // ### DERIVED PARTICLES ###
 // The particles of a molecule (md_gl_mol_create_particles) derived on the GPU from the atoms of another molecule, their
@@ -240,8 +246,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // A bond whose order is unknown is drawn as a single bond.
 // It also tells the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field, which the licorice and ball and
 // stick representations leave out unless their elastic_bonds is set, and then draw as single bonds, and the metallic
-// bonds (MD_BOND_KIND_METALLIC), which they never draw (a Bonds representation does). Until it is set for the bonds of
-// the molecule every bond is drawn.
+// bonds (MD_BOND_KIND_METALLIC), which they never draw (a Bonds representation does), and the coordinate bonds
+// (MD_BOND_KIND_COORDINATE), which they draw dashed (see BOND DASHES below) unless their solid_coordinate_bonds is set.
+// Until it is set for the bonds of the molecule every bond is drawn, as a single bond.
 // The bonds of a frame which has other bonds than the system (md_gl_mol_set_bonds given those of the system, then the
 // bonds formed): delta, its bonds broken and formed, and chem, the chemistry of the region they reach
 // (md_chem_perceive_delta), which gives the orders, aromaticity and rings there. The rings of the system keep their
@@ -287,14 +294,29 @@ void        md_gl_rep_destroy(md_gl_rep_t rep);
 
 void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
 
+// BOND DASHES. A bond which is not covalent is drawn dashed, in a style of its kind (md_bond_kind_t), so that the kinds
+// are told apart and the stronger reads as the stronger: the thicker, the more of its length covered, the longer its
+// dashes. Given relative to the radius r of the sticks of the representation, so the look holds at any scale:
+//                  radius    dash    gap     covered   dash / diameter
+//   COORDINATE     0.70 r    2.0 r   0.8 r   71 %      1.4     long dashes, narrow gaps: nearly a stick
+//   HYDROGEN       0.45 r    0.9 r   0.9 r   50 %      1.0     even dashes
+//   INTERACTION    0.35 r    0.5 r   1.1 r   31 %      0.7     short dashes, wide gaps: dotted
+//   other kinds    1.00 r    2.4 r   0.6 r   80 %      1.2     only where every bond is dashed (MD_GL_DASHES_ALL)
+// Under minification the dashes blend into lines whose weight (radius times coverage) halves from one kind to the
+// next, so the order holds where they are too small to be seen as dashes. Other dashed lines of md_gl keep styles of
+// their own apart from these: the partners of delocalized bonds (thin, beside a stick) and the gaps of chains (long
+// dashes, long gaps). The dashes run between the surfaces of the spheres at the atoms (the joints of a licorice, the
+// balls of a ball and stick), not from the centers of the atoms, so that none is hidden or cut by a sphere.
+
 // Weak bonds (e.g. hydrogen bonds) of the representation, drawn by MD_GL_REP_WEAK_BONDS as dashed cylinders between the
 // atoms. Unlike the covalent bonds of the molecule they belong to the representation, and are typically set every frame.
 // Replaces the previous set; count 0 clears it. The arrays match md_hbond_set_t (hydrogen, acceptor, strength).
 //  atom_a, atom_b: [count] atom indices of the bonds. Bonds with an atom outside of the molecule are left out.
 //  weight:         [count] (optional, NULL for 1) scales the radius of each bond, so a bond can fade out continuously. A
 //                  weight of 0 or less hides it.
+//  flags:          [count] (optional, NULL for hydrogen bonds) of each bond: its kind gives its dashes (BOND DASHES).
 // As for the other representations, a bond is shown only when both of its atoms are (alpha of the colors, atom mask).
-void        md_gl_rep_set_weak_bonds(md_gl_rep_t rep, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight);
+void        md_gl_rep_set_weak_bonds(md_gl_rep_t rep, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight, const md_bond_flags_t* flags);
 
 /*
  *  SUBSETS
@@ -360,6 +382,14 @@ typedef enum {
     MD_GL_BOND_MODE_UNIFORM,
 } md_gl_bond_mode_t;
 
+// Which of the weak bonds of a representation are dashed (MD_GL_REP_WEAK_BONDS), each in the style of its kind (BOND
+// DASHES). Solid ones are plain cylinders with flat ends, of the radius of the sticks.
+typedef enum {
+    MD_GL_DASHES_BY_KIND,   // Those which are not covalent: coordinate, hydrogen bonds and interactions
+    MD_GL_DASHES_NONE,      // None
+    MD_GL_DASHES_ALL,       // All, covalent ones too (and elastic and metallic), in a style of their own
+} md_gl_dashes_t;
+
 // COPIES. The copies of the molecule a draw op shows (the periodic images of a cell, the copies of an assembly), drawn
 // by instancing: each draw of the op covers all of them, whatever their number. Copy i is the molecule moved by
 // transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1), and
@@ -391,6 +421,7 @@ typedef struct md_gl_draw_op_t {
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
             bool elastic_bonds;     // Show the elastic bonds (MD_BOND_KIND_ELASTIC), which are left out otherwise
+            bool solid_coordinate_bonds; // Draw the coordinate bonds (MD_BOND_KIND_COORDINATE) as sticks, not dashed
         } licorice;
 
         struct {
@@ -402,6 +433,7 @@ typedef struct md_gl_draw_op_t {
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
             bool elastic_bonds;     // Show the elastic bonds (MD_BOND_KIND_ELASTIC), which are left out otherwise
+            bool solid_coordinate_bonds; // Draw the coordinate bonds (MD_BOND_KIND_COORDINATE) as sticks, not dashed
         } ball_and_stick;
 
         struct {
@@ -417,15 +449,18 @@ typedef struct md_gl_draw_op_t {
             bool  chain_gaps;       // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } cartoon;
 
-        // Dashed cylinders between the atoms. As every dashed line of md_gl (the partners of delocalized bonds, the gaps
-        // of chains), they are given by the lengths of their dashes and of the gaps between them, not by a number of
-        // dashes: a bond has as many flat ended dashes as come closest to the lengths, at least two, the first starting
-        // at the first atom and the last ending at the second, the dashes and gaps stretched or shrunk alike to fit. No
-        // dash is cut off at an end, and the pattern looks the same on a bond of any length.
+        // Dashed cylinders between the atoms, each in the style of its kind (BOND DASHES), relative to the radius. As
+        // every dashed line of md_gl (the partners of delocalized bonds, the gaps of chains), they are given by the
+        // lengths of their dashes and of the gaps between them, not by a number of dashes: a bond has as many flat ended
+        // dashes as come closest to the lengths, at least two, the first starting at the sphere of its first atom and
+        // the last ending at that of the second, the dashes and gaps stretched or shrunk alike to fit. No dash is cut
+        // off at an end, and the pattern looks the same on a bond of any length.
         struct {
-            float radius;           // Ångström, scaled by the weight of each bond
-            float dash_length;      // Ångström, positive: a draw op without it draws nothing
-            float gap_length;       // Ångström, 0 or less for the dash length
+            float radius;           // Ångström, of the sticks the dashes are relative to, scaled by the weight of each bond
+            md_gl_dashes_t dashes;  // Which are dashed
+            float end_radius;       // Ångström, of the spheres at the atoms the dashes start from: the joints of a
+            float end_radius_scale; // licorice (end_radius), the balls of a ball and stick (end_radius_scale, of the
+                                    // radii of the atoms as space_fill radius_scale), whichever is larger; 0 for none
             md_gl_bond_mode_t color_mode;
             float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM

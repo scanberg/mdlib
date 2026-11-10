@@ -36,7 +36,7 @@ static double ewald_coefficient(double rc, double rtol) {
 
 bool md_nb_potential_init(md_nb_potential_t* pot, const md_nb_desc_t* desc) {
     if (!pot || !desc) return false;
-    MEMSET(pot, 0, sizeof(md_nb_potential_t));
+    md_memset(pot, 0, sizeof(md_nb_potential_t));
 
     // Lennard-Jones
     if (!(desc->lj_cutoff > 0)) {
@@ -125,7 +125,7 @@ bool md_nb_potential_init(md_nb_potential_t* pot, const md_nb_desc_t* desc) {
 
 double md_nb_potential_cutoff(const md_nb_potential_t* pot) {
     if (!pot) return 0;
-    return sqrt(MAX(pot->lj_cutoff2, pot->coulomb != MD_NB_COULOMB_NONE ? pot->coulomb_cutoff2 : 0.0));
+    return sqrt(MD_MAX(pot->lj_cutoff2, pot->coulomb != MD_NB_COULOMB_NONE ? pot->coulomb_cutoff2 : 0.0));
 }
 
 double md_nb_lj_energy(const md_nb_potential_t* pot, double c6, double c12, double r2) {
@@ -133,7 +133,7 @@ double md_nb_lj_energy(const md_nb_potential_t* pot, double c6, double c12, doub
     const double rinv6 = 1 / (r2 * r2 * r2);
     double v = c12 * (rinv6 * rinv6 + pot->rep_cpot) - c6 * (rinv6 + pot->disp_cpot);
     if (pot->lj_modifier == MD_NB_MODIFIER_FORCE_SWITCH || pot->lj_modifier == MD_NB_MODIFIER_POT_SWITCH) {
-        const double s = MAX(sqrt(r2) - pot->lj_switch, 0.0);
+        const double s = MD_MAX(sqrt(r2) - pot->lj_switch, 0.0);
         if (pot->lj_modifier == MD_NB_MODIFIER_FORCE_SWITCH) {
             const double s3 = s * s * s;
             v += -6 * c6 * (-pot->disp_c2 / 3 - pot->disp_c3 / 4 * s) * s3
@@ -156,7 +156,7 @@ double md_nb_coulomb_energy(const md_nb_potential_t* pot, double qq, double r2) 
 
 bool md_nb_potential_init_from_tpr(md_nb_potential_t* pot, const md_tpr_data_t* tpr) {
     if (!pot || !tpr) return false;
-    MEMSET(pot, 0, sizeof(md_nb_potential_t));
+    md_memset(pot, 0, sizeof(md_nb_potential_t));
     const md_tpr_nonbonded_t* nb = &tpr->nonbonded;
     if (!nb->valid) {
         MD_LOG_INFO("Non-bonded potential: the tpr has no readable simulation parameters");
@@ -251,22 +251,22 @@ void md_nb_forcefield_free(md_nb_forcefield_t* ff) {
     if (!ff || !ff->alloc) return;
     md_allocator_i* a = ff->alloc;
     const size_t T2 = ff->num_types * ff->num_types;
-    if (ff->c6)        md_free(a, ff->c6,  sizeof(float) * MAX(T2, 1));
-    if (ff->c12)       md_free(a, ff->c12, sizeof(float) * MAX(T2, 1));
-    if (ff->type)      md_free(a, ff->type,     sizeof(uint16_t) * MAX(ff->num_atoms, 1));
-    if (ff->charge)    md_free(a, ff->charge,   sizeof(float)    * MAX(ff->num_atoms, 1));
-    if (ff->mol_beg)   md_free(a, ff->mol_beg,  sizeof(uint32_t) * MAX(ff->num_atoms, 1));
-    if (ff->mol_type)  md_free(a, ff->mol_type, sizeof(uint32_t) * MAX(ff->num_atoms, 1));
-    if (ff->off_base)  md_free(a, ff->off_base,  sizeof(uint32_t) * MAX(ff->num_mol_types, 1));
-    if (ff->excl_base) md_free(a, ff->excl_base, sizeof(uint32_t) * MAX(ff->num_mol_types, 1));
-    if (ff->excl_off)  md_free(a, ff->excl_off, sizeof(uint32_t) * MAX(ff->excl_off_count, 1));
-    if (ff->excl)      md_free(a, ff->excl,     sizeof(uint32_t) * MAX(ff->excl_count, 1));
-    MEMSET(ff, 0, sizeof(md_nb_forcefield_t));
+    if (ff->c6)        md_free(a, ff->c6,  sizeof(float) * MD_MAX(T2, 1));
+    if (ff->c12)       md_free(a, ff->c12, sizeof(float) * MD_MAX(T2, 1));
+    if (ff->type)      md_free(a, ff->type,     sizeof(uint16_t) * MD_MAX(ff->num_atoms, 1));
+    if (ff->charge)    md_free(a, ff->charge,   sizeof(float)    * MD_MAX(ff->num_atoms, 1));
+    if (ff->mol_beg)   md_free(a, ff->mol_beg,  sizeof(uint32_t) * MD_MAX(ff->num_atoms, 1));
+    if (ff->mol_type)  md_free(a, ff->mol_type, sizeof(uint32_t) * MD_MAX(ff->num_atoms, 1));
+    if (ff->off_base)  md_free(a, ff->off_base,  sizeof(uint32_t) * MD_MAX(ff->num_mol_types, 1));
+    if (ff->excl_base) md_free(a, ff->excl_base, sizeof(uint32_t) * MD_MAX(ff->num_mol_types, 1));
+    if (ff->excl_off)  md_free(a, ff->excl_off, sizeof(uint32_t) * MD_MAX(ff->excl_off_count, 1));
+    if (ff->excl)      md_free(a, ff->excl,     sizeof(uint32_t) * MD_MAX(ff->excl_count, 1));
+    md_memset(ff, 0, sizeof(md_nb_forcefield_t));
 }
 
 bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const md_tpr_data_t* tpr, md_allocator_i* alloc) {
     if (!ff || !tpr || !alloc) return false;
-    MEMSET(ff, 0, sizeof(md_nb_forcefield_t));
+    md_memset(ff, 0, sizeof(md_nb_forcefield_t));
     if (!md_nb_potential_init_from_tpr(&ff->potential, tpr)) return false;
     if (tpr->num_atoms > UINT32_MAX - 1) return false;
 
@@ -275,16 +275,16 @@ bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const md_tpr_data_t*
     ff->num_types = T;
     ff->num_atoms = N;
     ff->num_mol_types = M;
-    ff->c6  = md_alloc(alloc, sizeof(float) * MAX(T * T, 1));
-    ff->c12 = md_alloc(alloc, sizeof(float) * MAX(T * T, 1));
+    ff->c6  = md_alloc(alloc, sizeof(float) * MD_MAX(T * T, 1));
+    ff->c12 = md_alloc(alloc, sizeof(float) * MD_MAX(T * T, 1));
     for (size_t i = 0; i < T * T; ++i) {
         ff->c6[i]  = tpr->lj[i].c6;
         ff->c12[i] = tpr->lj[i].c12;
     }
 
     // Exclusions of the molecule types, concatenated
-    ff->off_base  = md_alloc(alloc, sizeof(uint32_t) * MAX(M, 1));
-    ff->excl_base = md_alloc(alloc, sizeof(uint32_t) * MAX(M, 1));
+    ff->off_base  = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(M, 1));
+    ff->excl_base = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(M, 1));
     size_t num_off = 0, num_excl = 0;
     for (size_t t = 0; t < M; ++t) {
         const md_tpr_moltype_t* mt = &tpr->moltypes[t];
@@ -295,8 +295,8 @@ bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const md_tpr_data_t*
     }
     ff->excl_off_count = num_off;
     ff->excl_count = num_excl;
-    ff->excl_off = md_alloc(alloc, sizeof(uint32_t) * MAX(num_off, 1));
-    ff->excl     = md_alloc(alloc, sizeof(uint32_t) * MAX(num_excl, 1));
+    ff->excl_off = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(num_off, 1));
+    ff->excl     = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(num_excl, 1));
     num_off = num_excl = 0;
     for (size_t t = 0; t < M; ++t) {
         const md_tpr_moltype_t* mt = &tpr->moltypes[t];
@@ -307,16 +307,16 @@ bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const md_tpr_data_t*
         }
         ff->off_base[t] = (uint32_t)num_off;
         ff->excl_base[t] = (uint32_t)num_excl;
-        MEMCPY(ff->excl_off + num_off, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
-        MEMCPY(ff->excl + num_excl, mt->excl, sizeof(uint32_t) * mt->excl_offset[mt->num_atoms]);
+        md_memcpy(ff->excl_off + num_off, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
+        md_memcpy(ff->excl + num_excl, mt->excl, sizeof(uint32_t) * mt->excl_offset[mt->num_atoms]);
         num_off  += mt->num_atoms + 1;
         num_excl += mt->excl_offset[mt->num_atoms];
     }
 
-    ff->type     = md_alloc(alloc, sizeof(uint16_t) * MAX(N, 1));
-    ff->charge   = md_alloc(alloc, sizeof(float)    * MAX(N, 1));
-    ff->mol_beg  = md_alloc(alloc, sizeof(uint32_t) * MAX(N, 1));
-    ff->mol_type = md_alloc(alloc, sizeof(uint32_t) * MAX(N, 1));
+    ff->type     = md_alloc(alloc, sizeof(uint16_t) * MD_MAX(N, 1));
+    ff->charge   = md_alloc(alloc, sizeof(float)    * MD_MAX(N, 1));
+    ff->mol_beg  = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(N, 1));
+    ff->mol_type = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(N, 1));
     size_t n = 0;
     for (size_t b = 0; b < tpr->num_molblocks; ++b) {
         const uint32_t t = (uint32_t)tpr->molblocks[b].moltype;

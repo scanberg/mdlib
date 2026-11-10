@@ -2,11 +2,11 @@
 
 #include <core/md_str.h>
 #include <core/md_array.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <stdint.h>
 
-#if DEBUG
+#if MD_DEBUG
 #include <core/md_log.h>
 #endif
 
@@ -71,7 +71,7 @@ typedef enum {
     MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK = 0x3,     // md_particle_kind_t, see md_particle_type_flags_particle_kind
 } md_particle_type_flags_t;
 
-ENUM_FLAGS(md_particle_type_flags_t)
+MD_ENUM_FLAGS(md_particle_type_flags_t)
 
 // ### ATOM ###
 
@@ -120,7 +120,7 @@ typedef enum {
     // D-H pair rather than an atom. See md_hbond_perceive_roles and md_hbond_query_t.
 } md_atom_flags_t;
 
-ENUM_FLAGS(md_atom_flags_t)
+MD_ENUM_FLAGS(md_atom_flags_t)
 
 // ### RESIDUE ###
 
@@ -153,7 +153,7 @@ typedef enum {
     MD_RESIDUE_FLAG_BREAK_AFTER         = 0x100,
 } md_residue_flags_t;
 
-ENUM_FLAGS(md_residue_flags_t)
+MD_ENUM_FLAGS(md_residue_flags_t)
 
 // ### MONOMER ###
 
@@ -210,7 +210,7 @@ typedef enum {
     MD_PART_TYPE_FLAG_INFERRED     = 0x10,
 } md_part_type_flags_t;
 
-ENUM_FLAGS(md_part_type_flags_t)
+MD_ENUM_FLAGS(md_part_type_flags_t)
 
 typedef enum {
     MD_MOLECULE_TYPE_FLAG_NONE     = 0,
@@ -220,7 +220,7 @@ typedef enum {
     MD_MOLECULE_TYPE_FLAG_INFERRED = 0x1,
 } md_molecule_type_flags_t;
 
-ENUM_FLAGS(md_molecule_type_flags_t)
+MD_ENUM_FLAGS(md_molecule_type_flags_t)
 
 // What a tail of a lipid is (md_lipid_data_t)
 typedef enum md_lipid_tail_kind_t {
@@ -352,7 +352,7 @@ typedef enum {
     MD_BOND_FLAG_KIND_GIVEN      = 0x800,   // The kind was given, not perceived
 } md_bond_flags_t;
 
-ENUM_FLAGS(md_bond_flags_t)
+MD_ENUM_FLAGS(md_bond_flags_t)
 
 enum {
     MD_BOND_ORDER_UNKNOWN   = 0,
@@ -392,7 +392,7 @@ typedef enum md_ring_flags_t {
     MD_RING_FLAG_FUSED_AROMATIC = 1u << 4,
 } md_ring_flags_t;
 
-ENUM_FLAGS(md_ring_flags_t)
+MD_ENUM_FLAGS(md_ring_flags_t)
 
 // Where a bond came from. FILE is 0, so a bond added without saying where it came from counts as given.
 typedef enum md_bond_origin_t {
@@ -654,7 +654,7 @@ typedef struct md_nucleic_acid_atoms_t {
 typedef struct md_label_t {
     char buf[8];
 #ifdef __cplusplus
-    inline operator str_t() const;
+    inline operator md_str_t() const;
 #endif
 } md_label_t;
 
@@ -662,7 +662,7 @@ typedef struct md_label_t {
 typedef struct md_label16_t {
     char buf[16];
 #ifdef __cplusplus
-    inline operator str_t() const;
+    inline operator md_str_t() const;
 #endif
 } md_label16_t;
 
@@ -684,7 +684,7 @@ typedef struct md_ring_t {
     uint16_t flags;                     // md_ring_flags_t bits
 } md_ring_t;
 
-STATIC_ASSERT(sizeof(md_ring_t) == 32, "md_ring_t should be 32 bytes");
+MD_STATIC_ASSERT(sizeof(md_ring_t) == 32, "md_ring_t should be 32 bytes");
 
 // The rings of a system.
 typedef struct md_ring_data_t {
@@ -718,8 +718,8 @@ typedef struct md_bond_kind_name_t {
 const md_bond_kind_name_t* md_bond_kind_names(size_t* count);
 
 // Element property functions
-str_t md_atomic_number_name(md_atomic_number_t z);
-str_t md_atomic_number_symbol(md_atomic_number_t z);
+md_str_t md_atomic_number_name(md_atomic_number_t z);
+md_str_t md_atomic_number_symbol(md_atomic_number_t z);
 float md_atomic_number_mass(md_atomic_number_t z);
 float md_atomic_number_vdw_radius(md_atomic_number_t z);
 float md_atomic_number_covalent_radius(md_atomic_number_t z);
@@ -727,13 +727,13 @@ int   md_atomic_number_max_valence(md_atomic_number_t z);
 uint32_t md_atomic_number_cpk_color(md_atomic_number_t z);
 
 // Element symbol and name lookup functions
-md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case);
+md_atomic_number_t md_atomic_number_from_symbol(md_str_t sym, bool ignore_case);
 
 // Infer atomic number from other properties, this is a heuristic and may fail. 0 is returned on failure
 // Per-atom inference from labels (atom name + residue)
 // res_name is the name of the residue of the atom [optional]
 // res_size is the size of the residue of the atom [optional]
-md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name, size_t res_size);
+md_atomic_number_t md_atomic_number_infer_from_label(md_str_t atom_name, md_str_t res_name, size_t res_size);
 md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 
 // Batch form wired to molecule structure
@@ -742,21 +742,21 @@ md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
 
 // Standard monomers (md_monomer_t), "" / 0 for MD_MONOMER_NONE or a value out of range
-str_t    md_monomer_id(md_monomer_t monomer);          // Id in the Chemical Component Dictionary: "ALA", "DA", "A"
-str_t    md_monomer_name(md_monomer_t monomer);        // "Alanine", "Deoxyadenosine", "Adenosine"
+md_str_t    md_monomer_id(md_monomer_t monomer);          // Id in the Chemical Component Dictionary: "ALA", "DA", "A"
+md_str_t    md_monomer_name(md_monomer_t monomer);        // "Alanine", "Deoxyadenosine", "Adenosine"
 char     md_monomer_letter(md_monomer_t monomer);      // One letter code: 'A' for ALA, DA and A
 md_residue_kind_t md_monomer_kind(md_monomer_t monomer);    // MD_RESIDUE_KIND_AMINO_ACID or _NUCLEOTIDE
 uint32_t md_monomer_color(md_monomer_t monomer);       // Default color (RGBA, R in the lowest byte, as the CPK colors)
 
 // The monomer of the given id ("HIS"), exactly and ignoring case. MD_MONOMER_NONE if there is none.
-md_monomer_t md_monomer_from_id(str_t id);
+md_monomer_t md_monomer_from_id(md_str_t id);
 
 // The standard monomer a residue of the given name and kind is a form of. Only amino acids and nucleotides are forms
 // of one: the variants of the force fields (HID, HIE, HSP, HISH, CYX, ASH, LYN, the Martini ARG0, ...), the termini of
 // Amber (NALA, CALA, DA5, RA3), the names of CHARMM (ADE, CYT, ...) and the common modified residues (MSE, SEP, PSU,
 // 5MC, ...). An amino acid or nucleotide which is not known is MD_MONOMER_UNK or MD_MONOMER_N, any other kind
 // MD_MONOMER_NONE, except the caps of a peptide chain (ACE, NME, ...) which are MD_MONOMER_UNK.
-md_monomer_t md_monomer_from_residue_name(str_t res_name, md_residue_kind_t kind);
+md_monomer_t md_monomer_from_residue_name(md_str_t res_name, md_residue_kind_t kind);
 
 #ifdef __cplusplus
 }
@@ -769,12 +769,12 @@ md_monomer_t md_monomer_from_residue_name(str_t res_name, md_residue_kind_t kind
 // upwards from a zero byte, so the lowest flagged byte is the first zero byte.
 static inline size_t md_word_zero_byte(uint64_t v) {
     const uint64_t z = (v - 0x0101010101010101ull) & ~v & 0x8080808080808080ull;
-    return z ? (size_t)(ctz64(z) >> 3) : 8;
+    return z ? (size_t)(md_ctz64(z) >> 3) : 8;
 }
 
 static inline uint64_t md_label_key(md_label_t lbl) {
     uint64_t v;
-    MEMCPY(&v, lbl.buf, sizeof(v));
+    md_memcpy(&v, lbl.buf, sizeof(v));
     return v;
 }
 
@@ -784,19 +784,19 @@ static inline size_t md_label_len(const md_label_t* lbl) {
 
 static inline size_t md_label16_len(const md_label16_t* lbl) {
     uint64_t v[2];
-    MEMCPY(v, lbl->buf, sizeof(v));
+    md_memcpy(v, lbl->buf, sizeof(v));
     const size_t n = md_word_zero_byte(v[0]);
     return n < 8 ? n : 8 + md_word_zero_byte(v[1]);
 }
 
 // A view of the label: valid while the label is where it is
-static inline str_t md_label_str(const md_label_t* lbl) {
-    str_t s = {lbl->buf, md_label_len(lbl)};
+static inline md_str_t md_label_str(const md_label_t* lbl) {
+    md_str_t s = {lbl->buf, md_label_len(lbl)};
     return s;
 }
 
-static inline str_t md_label16_str(const md_label16_t* lbl) {
-    str_t s = {lbl->buf, md_label16_len(lbl)};
+static inline md_str_t md_label16_str(const md_label16_t* lbl) {
+    md_str_t s = {lbl->buf, md_label16_len(lbl)};
     return s;
 }
 
@@ -811,50 +811,50 @@ static inline bool label_empty(md_label_t lbl) {
 }
 
 // The first 8 characters of str
-static inline md_label_t make_label(str_t str) {
+static inline md_label_t make_label(md_str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
-        MEMCPY(lbl.buf, str.ptr, MIN(str.len, sizeof(lbl.buf)));
+        md_memcpy(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
     }
     return lbl;
 }
 
 // The first 16 characters of str
-static inline md_label16_t make_label16(str_t str) {
+static inline md_label16_t make_label16(md_str_t str) {
     md_label16_t lbl = {0};
     if (str.ptr) {
-        MEMCPY(lbl.buf, str.ptr, MIN(str.len, sizeof(lbl.buf)));
+        md_memcpy(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
     }
     return lbl;
 }
 
 #ifdef __cplusplus
-inline md_label_t::operator str_t() const { return md_label_str(this); }
-inline md_label16_t::operator str_t() const { return md_label16_str(this); }
+inline md_label_t::operator md_str_t() const { return md_label_str(this); }
+inline md_label16_t::operator md_str_t() const { return md_label16_str(this); }
 inline bool operator==(const md_label_t& a, const md_label_t& b) { return md_label_eq(a, b); }
 inline bool operator!=(const md_label_t& a, const md_label_t& b) { return !md_label_eq(a, b); }
 #endif
 
 // Access to substructure data
 static inline void md_index_data_free (md_index_data_t* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     if (data->offsets) {
-        ASSERT(data->alloc);
+        MD_ASSERT(data->alloc);
         md_array_free(data->offsets,  data->alloc);
     }
     if (data->indices) {
-        ASSERT(data->alloc);
+        MD_ASSERT(data->alloc);
         md_array_free(data->indices,  data->alloc);
     }
-#if DEBUG
-    MEMSET(data, 0, sizeof(md_index_data_t));
+#if MD_DEBUG
+    md_memset(data, 0, sizeof(md_index_data_t));
 #endif
 }
 
 static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count) {
-    ASSERT(data);
-    ASSERT(data->alloc);
-    ASSERT(index_count > 0);
+    MD_ASSERT(data);
+    MD_ASSERT(data->alloc);
+    MD_ASSERT(index_count > 0);
 
     if (md_array_size(data->offsets) == 0) {
         md_array_push(data->offsets, 0, data->alloc);
@@ -875,21 +875,21 @@ static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_
 }
 
 static inline void md_index_data_clear(md_index_data_t* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     md_array_shrink(data->offsets, 0);
     md_array_shrink(data->indices, 0);
 }
 
 // The offsets of a cleared index data are empty rather than NULL: it has no ranges, as one never pushed to
 static inline size_t md_index_data_num_ranges(const md_index_data_t* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     const size_t num_offsets = md_array_size(data->offsets);
     return num_offsets > 0 ? num_offsets - 1 : 0;
 }
 
 // Access to individual substructures
 static inline const int32_t* md_index_range_beg(const md_index_data_t* data, size_t range_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     const int32_t* ptr = NULL;
     if (data->indices && data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         ptr = data->indices + data->offsets[range_idx];
@@ -898,7 +898,7 @@ static inline const int32_t* md_index_range_beg(const md_index_data_t* data, siz
 }
 
 static inline const int32_t* md_index_range_end(const md_index_data_t* data, size_t range_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     const int32_t* ptr = NULL;
     if (data->indices && data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         ptr = data->indices + data->offsets[range_idx + 1];
@@ -908,7 +908,7 @@ static inline const int32_t* md_index_range_end(const md_index_data_t* data, siz
 
 // This is a mutable version of md_index_range_beg
 static inline int32_t* md_index_range_ptr(md_index_data_t* data, size_t range_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     int32_t* ptr = NULL;
     if (data->indices && data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         ptr = data->indices + data->offsets[range_idx];
@@ -917,7 +917,7 @@ static inline int32_t* md_index_range_ptr(md_index_data_t* data, size_t range_id
 }
 
 static inline size_t md_index_range_size(const md_index_data_t* data, size_t range_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     size_t size = 0;
     if (data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         size = data->offsets[range_idx+1] - data->offsets[range_idx];
@@ -926,9 +926,9 @@ static inline size_t md_index_range_size(const md_index_data_t* data, size_t ran
 }
 
 static inline void md_index_data_merge(md_index_data_t* dest, const md_index_data_t* src) {
-    ASSERT(dest);
-    ASSERT(src);
-    ASSERT(dest->alloc == src->alloc);
+    MD_ASSERT(dest);
+    MD_ASSERT(src);
+    MD_ASSERT(dest->alloc == src->alloc);
     size_t dest_num_indices = md_array_size(dest->indices);
     size_t src_num_ranges = md_index_data_num_ranges(src);
     for (size_t i = 0; i < src_num_ranges; ++i) {
@@ -948,34 +948,34 @@ static inline void md_index_data_merge(md_index_data_t* dest, const md_index_dat
 }
 
 static inline void md_ring_data_free(md_ring_data_t* data, struct md_allocator_i* alloc) {
-    ASSERT(data);
+    MD_ASSERT(data);
     if (data->rings) {
-        ASSERT(alloc);
+        MD_ASSERT(alloc);
         md_array_free(data->rings, alloc);
     }
-#if DEBUG
-    MEMSET(data, 0, sizeof(md_ring_data_t));
+#if MD_DEBUG
+    md_memset(data, 0, sizeof(md_ring_data_t));
 #endif
 }
 
 static inline void md_ring_data_clear(md_ring_data_t* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     md_array_shrink(data->rings, 0);
 }
 
 static inline size_t md_ring_data_count(const md_ring_data_t* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     return md_array_size(data->rings);
 }
 
 // Pushes a ring of count atoms (MD_RING_MIN_SIZE to MD_RING_MAX_SIZE) and returns its index
 static inline size_t md_ring_data_push(md_ring_data_t* data, const int32_t* atoms, size_t count, md_ring_flags_t flags, struct md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
-    ASSERT(atoms);
-    ASSERT(MD_RING_MIN_SIZE <= count && count <= MD_RING_MAX_SIZE);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
+    MD_ASSERT(atoms);
+    MD_ASSERT(MD_RING_MIN_SIZE <= count && count <= MD_RING_MAX_SIZE);
     md_ring_t ring = {0};
-    MEMCPY(ring.atoms, atoms, count * sizeof(int32_t));
+    md_memcpy(ring.atoms, atoms, count * sizeof(int32_t));
     ring.count = (uint16_t)count;
     ring.flags = (uint16_t)flags;
     md_array_push(data->rings, ring, alloc);
@@ -984,21 +984,21 @@ static inline size_t md_ring_data_push(md_ring_data_t* data, const int32_t* atom
 
 // The atoms of a ring in order, NULL if the ring does not exist
 static inline const int32_t* md_ring_atoms(const md_ring_data_t* data, size_t ring_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     return ring_idx < md_array_size(data->rings) ? data->rings[ring_idx].atoms : NULL;
 }
 
 static inline int32_t* md_ring_atoms_mut(md_ring_data_t* data, size_t ring_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     return ring_idx < md_array_size(data->rings) ? data->rings[ring_idx].atoms : NULL;
 }
 
 static inline size_t md_ring_size(const md_ring_data_t* data, size_t ring_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     return ring_idx < md_array_size(data->rings) ? data->rings[ring_idx].count : 0;
 }
 
 static inline md_ring_flags_t md_ring_flags(const md_ring_data_t* data, size_t ring_idx) {
-    ASSERT(data);
+    MD_ASSERT(data);
     return ring_idx < md_array_size(data->rings) ? (md_ring_flags_t)data->rings[ring_idx].flags : MD_RING_FLAG_NONE;
 }

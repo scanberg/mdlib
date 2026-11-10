@@ -103,7 +103,7 @@ static inline vec2_t extract_jitter_uv(const mat4_t P) {
 
 static inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
     uint32_t mips = 1;
-    uint32_t max_dim = MAX(width, height);
+    uint32_t max_dim = MD_MAX(width, height);
     while (max_dim >>= 1) ++mips;
     return mips;
 }
@@ -321,8 +321,8 @@ typedef struct velocity_t {
     float x, y, z;
 } velocity_t;
 
-STATIC_ASSERT(sizeof(bond_t) == sizeof(uint32_t), "Invalid size of bond");
-STATIC_ASSERT(sizeof(segment_t) == sizeof(uint32_t), "Invalid size of segment");
+MD_STATIC_ASSERT(sizeof(bond_t) == sizeof(uint32_t), "Invalid size of bond");
+MD_STATIC_ASSERT(sizeof(segment_t) == sizeof(uint32_t), "Invalid size of segment");
 
 static inline gl_texture_t gl_texture_create(uint32_t width, uint32_t height, uint32_t levels, uint32_t format) {
     gl_texture_t tex = {0};
@@ -361,15 +361,15 @@ static inline void gl_buffer_set_sub_data(gl_buffer_t buf, uint32_t byte_offset,
 }
 
 static bool extract_version_string(char version_str[], uint32_t version_cap, const char** src) {
-    ASSERT(version_str);
-    ASSERT(version_cap > 0);
-    ASSERT(src);
+    MD_ASSERT(version_str);
+    MD_ASSERT(version_cap > 0);
+    MD_ASSERT(src);
     if (strncmp(*src, "#version", 8) == 0) {
         const char* endline;
         if ((endline = strchr(*src, '\n')) != NULL) {
             ++endline;
             const size_t length = endline - *src;
-            strncpy(version_str, *src, MIN(version_cap, length));
+            strncpy(version_str, *src, MD_MIN(version_cap, length));
         }
         *src = endline;
         return true;
@@ -385,7 +385,7 @@ typedef struct include_file_t {
 #define APPEND_STR(a, str, alloc)   md_array_push_array(a, str.ptr, str.len, alloc)
 #define APPEND_CSTR(a, cstr, alloc) md_array_push_array(a, cstr, (int64_t)strlen(cstr), alloc)
 #define APPEND_CHAR(a, ch, alloc) md_array_push(a, ch, alloc);
-#define APPEND_LINE(a, line, alloc) APPEND_STR(a, str_printf(alloc, "#line %u\n", line), alloc)
+#define APPEND_LINE(a, line, alloc) APPEND_STR(a, md_str_printf(alloc, "#line %u\n", line), alloc)
 
 static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     if (!source) {
@@ -397,39 +397,39 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     bool result = false;
 
-    str_t str = str_from_cstr(source);
+    md_str_t str = md_str_from_cstr(source);
 
-    str_t version_str;
-    if (!str_extract_line(&version_str, &str) || !str_eq_cstr_n(version_str, "#version", 8)) {
+    md_str_t version_str;
+    if (!md_str_extract_line(&version_str, &str) || !md_str_eq_cstr_n(version_str, "#version", 8)) {
         MD_LOG_ERROR("Missing version as first line in shader!");
         goto done;
     }
 
     char* buf = 0;
-    md_array_ensure(buf, KILOBYTES(4), alloc);
+    md_array_ensure(buf, MD_KILOBYTES(4), alloc);
 
     uint32_t line_count = 0;
     APPEND_STR(buf, version_str, alloc);
     line_count += 1;
 
-    str_t glsl_define = STR_INIT("#ifndef GLSL\n#define GLSL\n#endif");
+    md_str_t glsl_define = MD_STR_INIT("#ifndef GLSL\n#define GLSL\n#endif");
     APPEND_STR(buf, glsl_define, alloc);
     line_count += 3;
 
     if (defines) {
-        str_t def = str_from_cstr(defines);
-        line_count += (uint32_t)str_count_occur_char(def, '\n');        
+        md_str_t def = md_str_from_cstr(defines);
+        line_count += (uint32_t)md_str_count_occur_char(def, '\n');        
         APPEND_LINE(buf, line_count, alloc);
     }
 
-    str_t line;
-    while (str_extract_line(&line, &str)) {
-        if (str_eq_cstr_n(line, "#include", 8)) {
+    md_str_t line;
+    while (md_str_extract_line(&line, &str)) {
+        if (md_str_eq_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
                 MD_LOG_ERROR("Failed to parse include in shader file: no include files have been supplied");
                 goto done;
             }
-            str_t file = str_trim(str_substr(line, 8, SIZE_MAX));
+            md_str_t file = md_str_trim(md_str_substr(line, 8, SIZE_MAX));
             if (!file.len) {
                 MD_LOG_ERROR("Failed to parse include in shader file: file is missing");
                 goto done;
@@ -443,15 +443,15 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
                 MD_LOG_ERROR("Failed to parse include in shader file: missing or mismatched delimiters");
                 goto done;
             }
-            file = str_substr(file, 1, file.len-2);
-            str_t src = {0};
+            file = md_str_substr(file, 1, file.len-2);
+            md_str_t src = {0};
             for (uint32_t i = 0; i < include_file_count; ++i) {
-                if (str_eq_cstr(file, include_files[i].filename)) {
-                    src = str_from_cstr(include_files[i].source);
+                if (md_str_eq_cstr(file, include_files[i].filename)) {
+                    src = md_str_from_cstr(include_files[i].source);
                     break;
                 }
             }
-            if (str_empty(src)) {
+            if (md_str_empty(src)) {
                 MD_LOG_ERROR("Failed to parse include in shader file: could not find include file '%.*s'", (int)file.len, file.ptr);
                 goto done;
             }
@@ -466,14 +466,14 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     APPEND_CHAR(buf, '\0', alloc);
 
     const char* c_src[] = {buf};
-    glShaderSource(shader, ARRAY_SIZE(c_src), c_src, 0);
+    glShaderSource(shader, MD_COUNTOF(c_src), c_src, 0);
     
     GLint success;
     glCompileShader(shader);
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         char err_buf[1024];
-        glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
+        glGetShaderInfoLog(shader, MD_COUNTOF(err_buf), NULL, err_buf);
         MD_LOG_ERROR("Shader compile error:\n%s\n", err_buf);
         goto done;
     }
@@ -487,8 +487,8 @@ done:
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    str_t src = load_textfile(str_from_cstr(filename), temp_alloc);
-    if (!str_empty(src)) {
+    md_str_t src = md_load_textfile(md_str_from_cstr(filename), temp_alloc);
+    if (!md_str_empty(src)) {
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
@@ -503,7 +503,7 @@ static bool compile_shader_from_file(GLuint shader, const char* filename, const 
 }
 
 static bool link_program(GLuint program, const GLuint shader[], uint32_t count) {
-    ASSERT(program);
+    MD_ASSERT(program);
      
     for (uint32_t i = 0; i < count; i++) {
         GLint compile_status;
@@ -521,7 +521,7 @@ static bool link_program(GLuint program, const GLuint shader[], uint32_t count) 
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         char err_buf[1024];
-        glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
+        glGetProgramInfoLog(program, MD_COUNTOF(err_buf), NULL, err_buf);
         MD_LOG_ERROR("Program link error:\n%s\n", err_buf);
         return false;
     }
@@ -557,7 +557,7 @@ static inline uint32_t gl_get_shader_type_bit(uint32_t shader_type) {
 
 static gl_program_t gl_program_create_from_files(const char* shader_files[], uint32_t shader_file_count, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     uint32_t shaders[8] = {0};
-    ASSERT(shader_file_count < ARRAY_SIZE(shaders));
+    MD_ASSERT(shader_file_count < MD_COUNTOF(shaders));
     gl_program_t prog = {0};
 
     uint32_t flags = 0;
@@ -594,7 +594,7 @@ static inline bool validate_context(void) {
 }
 
 void init_handles(void) {
-    for (uint32_t i = 0; i < ARRAY_SIZE(ctx.handles); ++i) {
+    for (uint32_t i = 0; i < MD_COUNTOF(ctx.handles); ++i) {
         ctx.handles[i].idx = (uint16_t)(i + 1);
         // Scramble generations a bit
         ctx.handles[i].gen = (uint16_t)((i + 1) * (1236285 ^ 23645) + 123745);
@@ -609,8 +609,8 @@ static inline void free_handle(uint16_t idx) {
 }
 
 static inline uint16_t alloc_handle(void) {
-    if (ctx.handle_next_idx >= ARRAY_SIZE(ctx.handles)) {
-        ASSERT(false);
+    if (ctx.handle_next_idx >= MD_COUNTOF(ctx.handles)) {
+        MD_ASSERT(false);
     }
     uint16_t idx = ctx.handle_next_idx;
     ctx.handle_next_idx = ctx.handles[idx].idx;
@@ -618,17 +618,17 @@ static inline uint16_t alloc_handle(void) {
 }
 
 static inline bool validate_handle(md_gfx_handle_t id) {
-    if (id.idx >= ARRAY_SIZE(ctx.handles)) return false;
+    if (id.idx >= MD_COUNTOF(ctx.handles)) return false;
     return ctx.handles[id.idx].gen == id.gen;
 }
 
 static inline representation_t* get_representation(md_gfx_handle_t id) {
-    if (id.idx >= ARRAY_SIZE(ctx.handles)) return NULL;
+    if (id.idx >= MD_COUNTOF(ctx.handles)) return NULL;
     return (ctx.handles[id.idx].gen == id.gen) ? &ctx.representations[ctx.handles[id.idx].idx] : NULL;
 }
 
 static inline structure_t* get_structure(md_gfx_handle_t id) {
-    if (id.idx >= ARRAY_SIZE(ctx.handles)) return NULL;
+    if (id.idx >= MD_COUNTOF(ctx.handles)) return NULL;
     return (ctx.handles[id.idx].gen == id.gen) ? &ctx.structures[ctx.handles[id.idx].idx] : NULL;
 }
 
@@ -653,7 +653,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         glCreateFramebuffers(1, &ctx.fbo_id);
         glCreateVertexArrays(1, &ctx.vao_id);
 
-        ctx.ubo_buf = gl_buffer_create(KILOBYTES(1), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.ubo_buf = gl_buffer_create(MD_KILOBYTES(1), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
         ctx.instance_data_buf = gl_buffer_create(sizeof(InstanceData) * MAX_INSTANCE_COUNT, NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.instance_vis_buf  = gl_buffer_create(sizeof(uint) * MAX_INSTANCE_COUNT, NULL, 0);
@@ -662,20 +662,20 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         // Fully GPU Resident Buffers
         ctx.draw_ind_param_buf      = gl_buffer_create(sizeof(DrawParameters), NULL, GL_DYNAMIC_STORAGE_BIT);
 
-        ctx.cluster_instance_data_buf       = gl_buffer_create(MEGABYTES(256), NULL, 0);
-        ctx.cluster_instance_vis_idx_buf    = gl_buffer_create(MEGABYTES(64), NULL, 0);
-        ctx.cluster_instance_occ_idx_buf    = gl_buffer_create(MEGABYTES(64), NULL, 0);
+        ctx.cluster_instance_data_buf       = gl_buffer_create(MD_MEGABYTES(256), NULL, 0);
+        ctx.cluster_instance_vis_idx_buf    = gl_buffer_create(MD_MEGABYTES(64), NULL, 0);
+        ctx.cluster_instance_occ_idx_buf    = gl_buffer_create(MD_MEGABYTES(64), NULL, 0);
 
-        ctx.vertex_buf                      = gl_buffer_create(MEGABYTES(32), NULL, 0);
-        ctx.index_buf                       = gl_buffer_create(MEGABYTES(32), NULL, 0);
+        ctx.vertex_buf                      = gl_buffer_create(MD_MEGABYTES(32), NULL, 0);
+        ctx.index_buf                       = gl_buffer_create(MD_MEGABYTES(32), NULL, 0);
 
         // @TODO: This can be improved with drawMultiIndirectArraysCount
         // The current approach is suboptimal using individual elements for cluster_idx + sphere_idx
-        ctx.draw_sphere_idx_buf             = gl_buffer_create(MEGABYTES(128), NULL, 0);
+        ctx.draw_sphere_idx_buf             = gl_buffer_create(MD_MEGABYTES(128), NULL, 0);
 
-        ctx.cluster_instance_rast_idx_buf   = gl_buffer_create(MEGABYTES(256),  NULL, 0);
+        ctx.cluster_instance_rast_idx_buf   = gl_buffer_create(MD_MEGABYTES(256),  NULL, 0);
 
-        ctx.DEBUG_BUF = gl_buffer_create(KILOBYTES(1), NULL, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+        ctx.DEBUG_BUF = gl_buffer_create(MD_KILOBYTES(1), NULL, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
         ctx.debug_data = glMapNamedBuffer(ctx.DEBUG_BUF.id, GL_READ_ONLY);
 
         // Storage buffers for structure data
@@ -711,17 +711,17 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* temp_arena = md_temp_allocator(temp);
 
-#define CONCAT_STR(STR_A, STR_B) (str_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (md_str_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
-        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), temp_arena);
-        if (str_empty(common_src)) {
+        md_str_t common_src = md_load_textfile(md_str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), temp_arena);
+        if (md_str_empty(common_src)) {
             MD_LOG_ERROR("Failed to read common.h required for shaders");
             return false;
         }
 
-        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), temp_arena);
-        if (str_empty(culling_src)) {
+        md_str_t culling_src = md_load_textfile(md_str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), temp_arena);
+        if (md_str_empty(culling_src)) {
             MD_LOG_ERROR("Failed to read culling.glsl required for shaders");
             return false;
         }
@@ -744,62 +744,62 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
                 CONCAT_STR(BASE, "/gfx/spacefill.geom"),
                 CONCAT_STR(BASE, "/gfx/spacefill.frag"),
             };
-            ctx.spacefill_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.spacefill_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/cluster_compute_data.comp") };
-            ctx.cluster_compute_data_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.cluster_compute_data_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/instance_cull.comp") };
-            ctx.instance_cull_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.instance_cull_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/instance_cull_late.comp") };
-            ctx.instance_cull_late_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.instance_cull_late_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/instance_cluster_cull.comp") };
-            ctx.instance_cluster_cull_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.instance_cluster_cull_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/cluster_cull_late.comp") };
-            ctx.cluster_cull_late_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.cluster_cull_late_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/cluster_write_elem_idx.comp") };
-            ctx.cluster_write_element_indices_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.cluster_write_element_indices_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/cluster_rasterize.comp") };
-            ctx.cluster_raster_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.cluster_raster_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/vis_reduce.comp") };
-            ctx.vis_reduce_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.vis_reduce_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/depth_reduce.comp") };
-            ctx.depth_reduce_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.depth_reduce_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/write_picking_data.comp") };
-            ctx.write_picking_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.write_picking_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         {
             const char* files[] = { CONCAT_STR(BASE, "/gfx/fs_quad.vert"), CONCAT_STR(BASE, "/gfx/compose.frag"), };
-            ctx.compose_prog = gl_program_create_from_files(files, ARRAY_SIZE(files), 0, include_files, ARRAY_SIZE(include_files));
+            ctx.compose_prog = gl_program_create_from_files(files, MD_COUNTOF(files), 0, include_files, MD_COUNTOF(include_files));
         }
 
         md_temp_end(temp);
@@ -921,7 +921,7 @@ static void field_free(allocation_field_t* field, allocation_range_t range) {
 }
 
 md_gfx_handle_t md_gfx_structure_create_from_mol(const md_system_t* mol) {
-    ASSERT(mol);
+    MD_ASSERT(mol);
     return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)mol->bond.count, (uint32_t)mol->protein_backbone.segment.count, (uint32_t)mol->protein_backbone.range.count, (uint32_t)mol->residue.count, (uint32_t)mol->assembly.count);
 }
 
@@ -947,7 +947,7 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
     s->bond     = field_alloc(&ctx.bond, bond_count);
     s->bb_seg   = field_alloc(&ctx.bb_seg, backbone_segment_count);
     s->bb_range = field_alloc(&ctx.bb_range, backbone_range_count);
-    s->cluster  = field_alloc(&ctx.cluster, DIV_UP(atom_count, MIN_COUNT_PER_CLUSTER)); // Reserve the maximum amount of clusters we need (this changes dynamically when recomputing clusters)
+    s->cluster  = field_alloc(&ctx.cluster, MD_DIV_UP(atom_count, MIN_COUNT_PER_CLUSTER)); // Reserve the maximum amount of clusters we need (this changes dynamically when recomputing clusters)
 
     md_array_ensure(s->groups, group_count, md_get_heap_allocator());
     md_array_ensure(s->instances, instance_count, md_get_heap_allocator());
@@ -965,7 +965,7 @@ bool md_gfx_structure_destroy(md_gfx_handle_t id) {
     uint16_t s_idx = ctx.handles[h_idx].idx;
     free_handle(h_idx);
 
-    ASSERT(ctx.structure_count > 0);
+    MD_ASSERT(ctx.structure_count > 0);
     ctx.structure_count -= 1;
 
     structure_t* s = &ctx.structures[s_idx];
@@ -997,7 +997,7 @@ uint32_t* create_cluster_ranges(uint32_t atom_range_beg, uint32_t atom_range_end
     uint32_t* ranges = 0;
     for (uint32_t i = atom_range_beg; i < atom_range_end;) {
         uint32_t cluster_offset = i;
-        uint32_t cluster_size   = MIN(MAX_COUNT_PER_CLUSTER, atom_range_end - i);
+        uint32_t cluster_size   = MD_MIN(MAX_COUNT_PER_CLUSTER, atom_range_end - i);
 
         uint32_t cluster_range = (cluster_offset << 8) | cluster_size;
         md_array_push(ranges, cluster_range, alloc);
@@ -1151,7 +1151,7 @@ void recompute_clusters(structure_t* s, const vec3_t* xyz, uint32_t count) {
     uint32_t* src_indices = md_alloc(alloc, sizeof(uint32_t) * count);
 
     md_util_sort_spatial(src_indices, xyz, count);
-    md_array_ensure(cluster_ranges, DIV_UP(count, MIN_COUNT_PER_CLUSTER), alloc);
+    md_array_ensure(cluster_ranges, MD_DIV_UP(count, MIN_COUNT_PER_CLUSTER), alloc);
 
     vec3_t min_xyz = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
     vec3_t max_xyz = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -1160,7 +1160,7 @@ void recompute_clusters(structure_t* s, const vec3_t* xyz, uint32_t count) {
     // We basically start at the minimum size and keep on adding points until we get a substantial increase in the surface area of the bounding box
     for (uint32_t i = 0; i < count;) {
         uint32_t cluster_offset = i;
-        uint32_t cluster_size   = MIN(MIN_COUNT_PER_CLUSTER, count - i);
+        uint32_t cluster_size   = MD_MIN(MIN_COUNT_PER_CLUSTER, count - i);
         vec3_t cluster_aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
         vec3_t cluster_aabb_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
 
@@ -1175,7 +1175,7 @@ void recompute_clusters(structure_t* s, const vec3_t* xyz, uint32_t count) {
 
         vec3_t ext = vec3_sub(cluster_aabb_max, cluster_aabb_min);
         float area = 2.0f * (ext.x*ext.y + ext.x*ext.z + ext.y*ext.z);
-        for (; i < MIN(cluster_offset + MAX_COUNT_PER_CLUSTER, count); ++i) {
+        for (; i < MD_MIN(cluster_offset + MAX_COUNT_PER_CLUSTER, count); ++i) {
             uint32_t idx = src_indices[i];
             vec3_t p = (vec3_t){xyz[idx].x, xyz[idx].y, xyz[idx].z};
 
@@ -1263,7 +1263,7 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const vec3_t* xyz, u
     md_temp_scope_t temp = md_temp_begin();
 
     // Strided input is packed first: the buffer and the clustering both take packed positions
-    byte_stride = MAX(sizeof(vec3_t), byte_stride);
+    byte_stride = MD_MAX(sizeof(vec3_t), byte_stride);
     if (byte_stride > sizeof(vec3_t)) {
         vec3_t* packed = md_temp_alloc_array(temp, vec3_t, count);
         for (uint32_t i = 0; i < count; ++i) {
@@ -1306,7 +1306,7 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, u
             MD_LOG_ERROR("Failed to set atom radius data: Could not map buffer");
             return false;
         }
-        byte_stride = MAX(element_size, byte_stride);
+        byte_stride = MD_MAX(element_size, byte_stride);
         for (uint32_t i = 0; i < count; ++i) {
             ptr[i] = *(const float*)((const uint8_t*)radius + byte_stride * i);
         }
@@ -1318,8 +1318,8 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, u
     float min_r = +FLT_MAX;
     float max_r = -FLT_MAX;
     for (uint32_t i = 0; i < count; ++i) {
-        min_r = MIN(min_r, radius[i]);
-        max_r = MAX(max_r, radius[i]);
+        min_r = MD_MIN(min_r, radius[i]);
+        max_r = MD_MAX(max_r, radius[i]);
     }
 
     s->base_instance.min_xyzr.w = min_r;
@@ -1354,7 +1354,7 @@ bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, 
             MD_LOG_ERROR("Failed to set atom flags data: Could not map buffer");
             return false;
         }
-        byte_stride = MAX(element_size, byte_stride);
+        byte_stride = MD_MAX(element_size, byte_stride);
         for (uint32_t i = 0; i < count; ++i) {
             ptr[i] = *(const uint32_t*)((const uint8_t*)flags + byte_stride * i);
         }
@@ -1382,7 +1382,7 @@ bool md_gfx_structure_set_group_atom_ranges(md_gfx_handle_t id, const md_gfx_ran
         return false;
     }
 
-    byte_stride = MAX(byte_stride, sizeof(md_gfx_range_t));
+    byte_stride = MD_MAX(byte_stride, sizeof(md_gfx_range_t));
     for (uint32_t i = 0; i < count; ++i) {
         md_gfx_range_t range = *(const md_gfx_range_t*)((const uint8_t*)atom_ranges + byte_stride * i);
         s->groups[i].offset = range.beg_idx;
@@ -1410,7 +1410,7 @@ bool md_gfx_structure_set_instance_atom_ranges(md_gfx_handle_t id, const md_gfx_
         return false;
     }
 
-    byte_stride = MAX(byte_stride, sizeof(md_gfx_range_t));
+    byte_stride = MD_MAX(byte_stride, sizeof(md_gfx_range_t));
     for (uint32_t i = 0; i < count; ++i) {
         md_gfx_range_t range = *(const md_gfx_range_t*)((const uint8_t*)atom_ranges + byte_stride * i);
         s->instances[i].atom_range.offset = range.beg_idx;
@@ -1439,7 +1439,7 @@ bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, const struct m
 
     md_array_resize(s->instances, count, md_get_heap_allocator());
 
-    byte_stride = MAX(byte_stride, sizeof(mat4_t));
+    byte_stride = MD_MAX(byte_stride, sizeof(mat4_t));
     for (uint32_t i = 0; i < count; ++i) {
         mat4_t mat = *(const mat4_t*)((const uint8_t*)transforms + byte_stride * i);
         s->instances[i].transform = mat;
@@ -1480,7 +1480,7 @@ bool md_gfx_rep_destroy(md_gfx_handle_t id) {
     uint16_t r_idx = ctx.handles[h_idx].idx;
     free_handle(h_idx);
 
-    ASSERT(ctx.representation_count > 0);
+    MD_ASSERT(ctx.representation_count > 0);
     ctx.representation_count -= 1;
 
     representation_t* r = &ctx.representations[r_idx];
@@ -1521,7 +1521,7 @@ bool md_gfx_rep_set_data(md_gfx_handle_t id, md_gfx_rep_type_t type, md_gfx_rep_
             MD_LOG_ERROR("Failed to set color data: Could not map buffer");
             return false;
         }
-        byte_stride = MAX(element_size, byte_stride);
+        byte_stride = MD_MAX(element_size, byte_stride);
         for (uint32_t i = 0; i < count; ++i) {
             ptr[i] = *(const md_gfx_color_t*)((const uint8_t*)color + byte_stride * i);
         }
@@ -1581,7 +1581,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glGetFloatv(GL_COLOR_CLEAR_VALUE, old_clear_color);
     glGetFloatv(GL_DEPTH_CLEAR_VALUE, &old_clear_depth);
 
-    for (old_draw_buffer_count = 0; old_draw_buffer_count < ARRAY_SIZE(old_draw_buffers); ++old_draw_buffer_count) {
+    for (old_draw_buffer_count = 0; old_draw_buffer_count < MD_COUNTOF(old_draw_buffers); ++old_draw_buffer_count) {
         glGetIntegerv(GL_DRAW_BUFFER0 + old_draw_buffer_count, (GLint*)(&old_draw_buffers[old_draw_buffer_count]));
         if (old_draw_buffers[old_draw_buffer_count] == 0) {
             break;
@@ -1591,7 +1591,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     // Set state
     const uint32_t draw_buffers[] = { GL_COLOR_ATTACHMENT0 + COLOR_TEX_ATTACHMENT, GL_COLOR_ATTACHMENT0 + NORMAL_TEX_ATTACHMENT, GL_COLOR_ATTACHMENT0 + SS_VEL_TEX_ATTACHMENT, GL_COLOR_ATTACHMENT0 + INDEX_TEX_ATTACHMENT };
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx.fbo_id);
-    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers(MD_COUNTOF(draw_buffers), draw_buffers);
     glViewport(0, 0, ctx.fbo_width, ctx.fbo_height);
 
     glEnable(GL_CULL_FACE);
@@ -1753,7 +1753,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glClearNamedBufferData(ctx.visibility_buf.id,     GL_RG32UI, GL_RG,  GL_UNSIGNED_INT, &vis_clear_val);
     glNamedBufferSubData(ctx.draw_ind_param_buf.id, 0, sizeof(DrawParameters), &draw_param);
 
-    MEMSET(ctx.debug_data, 0, sizeof(DebugData));
+    md_memset(ctx.debug_data, 0, sizeof(DebugData));
 
     GL_POP_GPU_SECTION();
 }
@@ -1770,7 +1770,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
 {
     GL_PUSH_GPU_SECTION("INSTANCE CULL");
     glUseProgram(ctx.instance_cull_prog.id);
-    uint wg_size = DIV_UP(instance_count, INSTANCE_CULL_GROUP_SIZE);
+    uint wg_size = MD_DIV_UP(instance_count, INSTANCE_CULL_GROUP_SIZE);
     glDispatchCompute(wg_size, 1, 1);
     GL_POP_GPU_SECTION();
 }
@@ -1831,20 +1831,20 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     GL_PUSH_GPU_SECTION("DEPTH REDUCE");
     glUseProgram(ctx.vis_reduce_prog.id);
     glBindImageTexture(0, ctx.depth_pyramid_tex.id, 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
-    glDispatchCompute(DIV_UP(ctx.fbo_width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(ctx.fbo_height, DEPTH_REDUCE_GROUP_SIZE), 1);
+    glDispatchCompute(MD_DIV_UP(ctx.fbo_width, DEPTH_REDUCE_GROUP_SIZE), MD_DIV_UP(ctx.fbo_height, DEPTH_REDUCE_GROUP_SIZE), 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
     glUseProgram(ctx.depth_reduce_prog.id);
     glBindTextureUnit(1, ctx.depth_pyramid_tex.id);
     for (uint32_t i = 1; i < ctx.depth_pyramid_tex.levels; ++i) {
         // Output
-        uint width  = MAX(1, ctx.depth_pyramid_tex.width >> i);
-        uint height = MAX(1, ctx.depth_pyramid_tex.height >> i);
+        uint width  = MD_MAX(1, ctx.depth_pyramid_tex.width >> i);
+        uint height = MD_MAX(1, ctx.depth_pyramid_tex.height >> i);
         float lod = (float)(i-1);
         glUniform2ui(0, width, height);
         glUniform1f(1, lod);
         glBindImageTexture(0, ctx.depth_pyramid_tex.id, i, 0, 0, GL_WRITE_ONLY, GL_R32F);
-        glDispatchCompute(DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
+        glDispatchCompute(MD_DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), MD_DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
     GL_POP_GPU_SECTION();
@@ -1930,20 +1930,20 @@ GL_POP_GPU_SECTION();
     GL_PUSH_GPU_SECTION("DEPTH REDUCE LATE");
     glUseProgram(ctx.vis_reduce_prog.id);
     glBindImageTexture(0, ctx.depth_pyramid_tex.id, 0, 0, 0, GL_WRITE_ONLY, GL_R32F);
-    glDispatchCompute(DIV_UP(ctx.fbo_width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(ctx.fbo_height, DEPTH_REDUCE_GROUP_SIZE), 1);
+    glDispatchCompute(MD_DIV_UP(ctx.fbo_width, DEPTH_REDUCE_GROUP_SIZE), MD_DIV_UP(ctx.fbo_height, DEPTH_REDUCE_GROUP_SIZE), 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
     glUseProgram(ctx.depth_reduce_prog.id);
     glBindTextureUnit(1, ctx.depth_pyramid_tex.id);
     for (uint32_t i = 1; i < ctx.depth_pyramid_tex.levels; ++i) {
         // Output
-        uint width  = MAX(1, ctx.depth_pyramid_tex.width >> i);
-        uint height = MAX(1, ctx.depth_pyramid_tex.height >> i);
+        uint width  = MD_MAX(1, ctx.depth_pyramid_tex.width >> i);
+        uint height = MD_MAX(1, ctx.depth_pyramid_tex.height >> i);
         float lod = (float)(i-1);
         glUniform2ui(0, width, height);
         glUniform1f(1, lod);
         glBindImageTexture(0, ctx.depth_pyramid_tex.id, i, 0, 0, GL_WRITE_ONLY, GL_R32F);
-        glDispatchCompute(DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
+        glDispatchCompute(MD_DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), MD_DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
     GL_POP_GPU_SECTION();

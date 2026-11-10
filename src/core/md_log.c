@@ -76,7 +76,7 @@ static void set_console_text_color(console_color_t color, bool intense) {
         fg_color = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 
     fg_color |= intense ? FOREGROUND_INTENSITY : 0;
@@ -113,7 +113,7 @@ static void set_console_text_color(console_color_t color, bool intense) {
         fprintf(stderr, ANSI_COLOR_RESET);
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
     
 #endif
@@ -168,7 +168,7 @@ static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
         fprintf(stderr, "[error]: ");
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
     set_console_text_color(COLOR_DEFAULT, false);

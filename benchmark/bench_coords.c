@@ -23,7 +23,7 @@
 static bool load_big(md_system_t* sys, md_system_state_t* st, md_allocator_i* arena) {
     sys->alloc = arena;
     st->alloc  = arena;
-    if (!md_gro_system_init_from_file(sys, st, STR_LIT(BIG_GRO))) {
+    if (!md_gro_system_init_from_file(sys, st, MD_STR_LIT(BIG_GRO), NULL)) {
         fprintf(stderr, "Failed to load " BIG_GRO "\n");
         return false;
     }
@@ -42,7 +42,7 @@ static void jitter(md_system_state_t* dst, const md_system_state_t* src, float a
 }
 
 UBENCH_EX(coords, com_pbc) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
@@ -56,7 +56,7 @@ UBENCH_EX(coords, com_pbc) {
 }
 
 UBENCH_EX(coords, com_nopbc) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
@@ -70,7 +70,7 @@ UBENCH_EX(coords, com_nopbc) {
 }
 
 UBENCH_EX(coords, aabb) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
@@ -84,7 +84,7 @@ UBENCH_EX(coords, aabb) {
 }
 
 UBENCH_EX(coords, pbc_wrap) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0}, moved = {.alloc = arena};
     if (load_big(&sys, &st, arena)) {
         jitter(&moved, &st, 30.0f);
@@ -98,7 +98,7 @@ UBENCH_EX(coords, pbc_wrap) {
 }
 
 UBENCH_EX(coords, interpolate_linear) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0}, b = {.alloc = arena}, out = {.alloc = arena};
     if (load_big(&sys, &st, arena)) {
         jitter(&b, &st, 3.0f);
@@ -114,7 +114,7 @@ UBENCH_EX(coords, interpolate_linear) {
 }
 
 UBENCH_EX(coords, interpolate_cubic) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0}, s[3] = {{.alloc = arena}, {.alloc = arena}, {.alloc = arena}}, out = {.alloc = arena};
     if (load_big(&sys, &st, arena)) {
         for (int i = 0; i < 3; ++i) jitter(&s[i], &st, 1.0f + i);
@@ -130,7 +130,7 @@ UBENCH_EX(coords, interpolate_cubic) {
 }
 
 UBENCH_EX(coords, rmsd) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0}, b = {.alloc = arena};
     if (load_big(&sys, &st, arena)) {
         jitter(&b, &st, 1.0f);
@@ -150,7 +150,7 @@ UBENCH_EX(coords, rmsd) {
 }
 
 UBENCH_EX(coords, sort_spatial) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         uint32_t* idx = md_alloc(arena, st.num_atoms * sizeof(uint32_t));
@@ -168,13 +168,13 @@ static void count_pairs(const uint32_t* i_idx, const uint32_t* j_idx, const floa
 }
 
 UBENCH_EX(coords, spatial_acc_build_and_pairs) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)st.xyz, sizeof(vec3_t), NULL, st.num_atoms);
         size_t count = 0;
         UBENCH_DO_BENCHMARK() {
-            md_allocator_i* tmp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+            md_allocator_i* tmp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
             md_spatial_acc_t acc = { .alloc = tmp };
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &st.unitcell });
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 3.0, count_pairs, &count);
@@ -186,11 +186,11 @@ UBENCH_EX(coords, spatial_acc_build_and_pairs) {
 }
 
 UBENCH_EX(coords, infer_covalent_bonds) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_DO_BENCHMARK() {
-            md_util_system_infer_covalent_bonds(&sys, &st);
+            md_util_system_infer_covalent_bonds(&sys, &st, NULL);
             UBENCH_DO_NOTHING(&sys.bond);
         }
     }
@@ -198,11 +198,11 @@ UBENCH_EX(coords, infer_covalent_bonds) {
 }
 
 UBENCH_EX(coords, protein_backbone) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    if (md_pdb_system_init_from_file(&sys, &st, STR_LIT(PROTEIN_PDB), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) &&
-        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL)) {
+    if (md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(PROTEIN_PDB), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
+        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) {
         const size_t n = sys.protein_backbone.segment.count;
         md_secondary_structure_t* ss = md_alloc(arena, n * sizeof(md_secondary_structure_t));
         md_backbone_angles_t* ang = md_alloc(arena, n * sizeof(md_backbone_angles_t));
@@ -219,13 +219,13 @@ UBENCH_EX(coords, protein_backbone) {
 
 // Hydrogen bonds of one frame of the big system: the query is prepared once, the evaluation is what a frame costs.
 static void bench_hbonds(struct ubench_run_state_s* ubench_run_state, md_hbond_preset_t preset, bool selection) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
-    if (load_big(&sys, &st, arena) && md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL)) {
+    if (load_big(&sys, &st, arena) && md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) {
         md_hbond_params_t params = md_hbond_params_preset(preset);
         // Selection: the bonds within the first 40 residues, a small part of the system
         md_bitmask_t few_mask = md_bitmask_create(0, (uint32_t)sys.atom.count, arena);
-        for (size_t c = 0; c < MIN(sys.residue.count, 40); ++c) {
+        for (size_t c = 0; c < MD_MIN(sys.residue.count, 40); ++c) {
             const md_urange_t r = md_system_residue_atom_range(&sys, c);
             md_bitmask_set_range(&few_mask, r.beg, r.end);
         }
@@ -233,7 +233,7 @@ static void bench_hbonds(struct ubench_run_state_s* ubench_run_state, md_hbond_p
         md_hbond_desc_t desc = { .params = &params, .set_a = selection ? &few : NULL };
         md_hbond_query_t q;
         if (md_hbond_query_init(&q, &desc, &sys, arena)) {
-            md_allocator_i* out_arena = md_vm_arena_create(GIGABYTES(1));
+            md_allocator_i* out_arena = md_vm_arena_create(MD_GIGABYTES(1));
             UBENCH_DO_BENCHMARK() {
                 md_hbond_set_t set;
                 md_hbond_query_eval(&set, &q, &st, out_arena);
@@ -253,21 +253,21 @@ UBENCH_EX(coords, hbonds_realistic_selection) { bench_hbonds(ubench_run_state, M
 // Script evaluation over a run: extraction of each frame and the coordinate kernels behind the
 // properties. The TRR is uncompressed, so decoding is a small part of it.
 UBENCH_EX(coords, script_eval_trr) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    const str_t run = STR_INIT("run/t");
-    if (md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro")) &&
-        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL) &&
-        md_trr_system_publish_run(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
+    const md_str_t run = MD_STR_INIT("run/t");
+    if (md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) &&
+        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL) &&
+        md_trr_system_publish_run(&sys, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         md_script_ir_t* ir = md_script_ir_create(arena);
-        const str_t src = STR_INIT(
+        const md_str_t src = MD_STR_INIT(
             "c = com(all);\n"
             "d = distance(com(residue(1)), com(all));\n"
             "g = rdf(element('C'), element('O'), 8.0);\n"
             "r = rmsd(all);\n");
         if (md_script_ir_compile_from_source(ir, src, &sys, NULL)) {
-            const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/t/time"));
+            const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/t/time"));
             const uint32_t F = time ? (uint32_t)time->format.shape[0] : 0;
             md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
             UBENCH_DO_BENCHMARK() {
@@ -284,13 +284,13 @@ UBENCH_EX(coords, script_eval_trr) {
 
 // One frame after another into a state, positions and cell
 UBENCH_EX(coords, extract_trr) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    const str_t run = STR_INIT("run/t");
-    if (md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro")) &&
-        md_trr_system_publish_run(&sys, STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
-        const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+    const md_str_t run = MD_STR_INIT("run/t");
+    if (md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) &&
+        md_trr_system_publish_run(&sys, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
+        const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
         md_system_extract_t* ex = md_system_extract_begin(&sys, run, paths, 2, md_get_heap_allocator());
         UBENCH_DO_BENCHMARK() {
             for (int64_t f = 0; f < 101; ++f) md_system_extract_frame(ex, f, &st);

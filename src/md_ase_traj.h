@@ -22,7 +22,7 @@ extern "C" {
 // SYSTEM
 // The atoms, typed by their atomic numbers, with the positions and cell of the first frame, which is
 // all that is read. The system is left as it was when the file cannot be read.
-bool md_ase_traj_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, str_t filename);
+bool md_ase_traj_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename);
 
 // RUN
 // Publishes the file as a run in the system's attribute table (see RUNS in md_system.h):
@@ -42,7 +42,7 @@ bool md_ase_traj_system_init_from_file(struct md_system_t* sys, struct md_system
 // flags has nothing to change. The provider reads through the io it is handed. Its
 // user_data is sys, borrowed: the run goes before the system does. The atom count must match the
 // system's.
-bool md_ase_traj_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_ase_traj_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

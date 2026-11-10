@@ -2,6 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -10,42 +11,38 @@
 #include <stdlib.h>
 #include <string.h>
 
-UBENCH_EX(str, buffered_reader) {
-    str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
-    md_file_t file = {0};
-    if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
+// Lines through a file reader (md_reader.h): the search for the line ends, what md_reader_extract_line costs per byte
+UBENCH_EX(str, reader_lines) {
+    md_str_t path = MD_STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    md_file_reader_t fr;
+    if (!md_file_reader_open(&fr, path, MD_MEGABYTES(1), md_get_heap_allocator())) {
+        MD_LOG_ERROR("Could not open file '%.*s'", (int)path.len, path.ptr);
         return;
     }
-    const int64_t cap = MEGABYTES(1);
-    char* buf = md_alloc(md_get_heap_allocator(), cap);
-    
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
-    UBENCH_SET_BYTES(md_file_size(file));
+    UBENCH_SET_BYTES(md_reader_size(&fr.r));
 
     UBENCH_DO_BENCHMARK() {
-        md_file_seek(file, 0, MD_FILE_BEG);
-        str_t line;
-        while (md_buffered_reader_extract_line(&line, &reader)) {
+        md_reader_rewind(&fr.r);
+        md_str_t line;
+        while (md_reader_extract_line(&fr.r, &line)) {
             // do nothing
         }
     }
 
-    md_free(md_get_heap_allocator(), buf, cap);
-    md_file_close(&file);
+    md_file_reader_close(&fr);
 }
 
 UBENCH_EX(str, parse_int) {
-    str_t str[] = {
-        STR_INIT("1928123123123"),
-        STR_INIT("1123    "),
-        STR_INIT("19228123"),
-        STR_INIT("1921238123"),
+    md_str_t str[] = {
+        MD_STR_INIT("1928123123123"),
+        MD_STR_INIT("1123    "),
+        MD_STR_INIT("19228123"),
+        MD_STR_INIT("1921238123"),
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -70,7 +67,7 @@ UBENCH_EX(str, strtoll) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += strlen(str[i]);
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -86,15 +83,15 @@ UBENCH_EX(str, strtoll) {
 }
 
 UBENCH_EX(str, parse_float) {
-    str_t str[] = {
-        STR_INIT("1928123.2767"),
-        STR_INIT("19.2    "),
-        STR_INIT("12323   "),
-        STR_INIT("0.000000"),
+    md_str_t str[] = {
+        MD_STR_INIT("1928123.2767"),
+        MD_STR_INIT("19.2    "),
+        MD_STR_INIT("12323   "),
+        MD_STR_INIT("0.000000"),
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -119,7 +116,7 @@ UBENCH_EX(str, strtod) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(str); ++i) {
         num_bytes += strlen(str[i]);
     }
     UBENCH_SET_BYTES(num_bytes);

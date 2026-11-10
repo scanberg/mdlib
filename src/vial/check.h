@@ -22,7 +22,7 @@ typedef enum vial_sym_kind_t {
 } vial_sym_kind_t;
 
 typedef struct vial_symbol_t {
-    str_t                   name;
+    md_str_t                   name;
     uint8_t                 kind;       // vial_sym_kind_t
     bool                    in_prelude; // bound in the prelude's tree
     uint32_t                scope;
@@ -58,7 +58,7 @@ typedef struct vial_names_t {
 // prelude's names. Diagnostics go to diags, the prelude's to prelude_diags.
 typedef struct vial_check_t {
     const vial_tree_t*  tree;
-    str_t               src;
+    md_str_t               src;
     vial_diags_t*       diags;
     vial_names_t        names;
 
@@ -66,13 +66,13 @@ typedef struct vial_check_t {
     // The prelude's names, resolved once for every program (they do not depend on a script or a system): copied in,
     // read only. NULL to resolve them here.
     const struct vial_names_t* prelude_resolved;
-    str_t               prelude_src;
+    md_str_t               prelude_src;
     vial_diags_t*       prelude_diags;
     vial_names_t        prelude_names;
 
     const struct md_system_t* sys;  // the system selectors are evaluated against, or NULL
     uint64_t            num_frames; // of the run, or 0 when not known
-    str_t               run;        // the run's prefix in sys->attributes, or empty
+    md_str_t               run;        // the run's prefix in sys->attributes, or empty
     struct vial_ir_t*   ir;         // when not NULL, the check lowers the script into it
     const struct md_vial_named_set_t* stored;   // stored selections the script may read by name
     size_t              num_stored;
@@ -83,8 +83,8 @@ typedef struct vial_check_t {
 void vial_check_names(vial_check_t* c);
 
 // The prelude's names alone, as vial_check_names resolves them: once, for every program to share
-void vial_check_prelude(const vial_tree_t* prelude, str_t src, vial_diags_t* diags, vial_names_t* out, md_allocator_i* alloc);
+void vial_check_prelude(const vial_tree_t* prelude, md_str_t src, vial_diags_t* diags, vial_names_t* out, md_allocator_i* alloc);
 
 // The symbol a NAME node reads or binds, or NULL
 const vial_symbol_t* vial_names_symbol(const vial_names_t* n, vial_node_id id);
-uint32_t             vial_names_lookup_top(const vial_names_t* n, str_t name);   // the top-level symbol of a name, or 0
+uint32_t             vial_names_lookup_top(const vial_names_t* n, md_str_t name);   // the top-level symbol of a name, or 0

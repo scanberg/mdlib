@@ -14,7 +14,6 @@
 
 #include <md_system.h>
 #include <md_util.h>
-#include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>
@@ -34,7 +33,7 @@ bool vial_k_index_set(vial_kctx_t* k, const vial_val_t* a, const vial_index_item
 
 typedef struct bargs_t {
     const vial_val_t* const* v;
-    const str_t*      names;
+    const md_str_t*      names;
     uint32_t          n;
 } bargs_t;
 
@@ -43,7 +42,7 @@ static const vial_val_t* arg(const bargs_t* a, const char* name, uint32_t pos) {
     bool bound = false;
     for (uint32_t i = 0; i < a->n; ++i) {
         if (!a->names[i].len) continue;
-        if (a->names[i].ptr[0] == name[0] && str_eq(a->names[i], str_from_cstr(name))) return a->v[i];
+        if (a->names[i].ptr[0] == name[0] && md_str_eq(a->names[i], md_str_from_cstr(name))) return a->v[i];
         if (i == 0) bound = true;   // a bound call names its first parameter
     }
     if (bound) return NULL;
@@ -77,7 +76,7 @@ static bool is_num(uint8_t dt) { return dt == VIAL_DT_BOOL || dt == VIAL_DT_INT 
 
 
 static bool str_is(const vial_val_t* v, const char* s) {
-    return v && v->dtype == VIAL_DT_STR && v->ndim == 0 && str_eq(*(const str_t*)v->data, str_from_cstr(s));
+    return v && v->dtype == VIAL_DT_STR && v->ndim == 0 && md_str_eq(*(const md_str_t*)v->data, md_str_from_cstr(s));
 }
 
 // ### POSITIONS ###
@@ -674,7 +673,7 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
     const uint32_t* idx = vial_sets_items(s->sets, 0);
     const bool str = !strcmp(name, "name") || !strcmp(name, "element");
     vial_val_t o; if (!vial_k_make(k, str ? VIAL_DT_STR : VIAL_DT_FLOAT, 1, &n, &o)) return false;
-    const md_attribute_t* charges = !strcmp(name, "charge") ? md_attributes_find(&sys->attributes, STR_LIT("atom/charge")) : NULL;
+    const md_attribute_t* charges = !strcmp(name, "charge") ? md_attributes_find(&sys->attributes, MD_STR_LIT("atom/charge")) : NULL;
     const float* cq = charges ? md_attribute_view(charges, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
     const int which = !strcmp(name, "mass") ? 0 : !strcmp(name, "charge") ? 1 : !strcmp(name, "name") ? 2 : !strcmp(name, "element") ? 3 : -1;
     if (which < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
@@ -684,8 +683,8 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
         switch (which) {
         case 0:  ((float*)o.data)[i] = k_mass(ms, sys, a); break;
         case 1:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
-        case 2:  ((str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
-        default: ((str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a)); break;
+        case 2:  ((md_str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
+        default: ((md_str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a)); break;
         }
     }
     o.origin = s->sets;
@@ -1686,7 +1685,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
     float* ay = ax + cap;
     float* az = ay + cap;
     for (size_t j = 0; j < cap; ++j) {
-        const float* q = w->xyz + 3 * MIN(j, na - 1);
+        const float* q = w->xyz + 3 * MD_MIN(j, na - 1);
         ax[j] = q[0]; ay[j] = q[1]; az[j] = q[2];
     }
     // `of` in groups of eight points in order, each as one image around its first point: a centre and a radius. A
@@ -1695,15 +1694,15 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
     float* cen = md_alloc(k->alloc, 4 * nc * sizeof(float));
     for (size_t c = 0; c < nc; ++c) {
         const float* p0 = w->p + 24 * c;
-        const size_t cnt = MIN((size_t)8, np - 8 * c);
+        const size_t cnt = MD_MIN((size_t)8, np - 8 * c);
         float q[8][3], lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
         for (size_t i = 0; i < cnt; ++i) {
             for (int d = 0; d < 3; ++d) {
                 float v = p0[3 * i + d] - p0[d];
                 if (ortho && ext[d] != 0.0f) v -= ext[d] * nearbyintf(v / ext[d]);
                 q[i][d] = p0[d] + v;
-                lo[d] = i ? MIN(lo[d], q[i][d]) : q[i][d];
-                hi[d] = i ? MAX(hi[d], q[i][d]) : q[i][d];
+                lo[d] = i ? MD_MIN(lo[d], q[i][d]) : q[i][d];
+                hi[d] = i ? MD_MAX(hi[d], q[i][d]) : q[i][d];
             }
         }
         float r2 = 0.0f;
@@ -1711,7 +1710,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
         for (size_t i = 0; i < cnt; ++i) {
             float e = 0.0f;
             for (int d = 0; d < 3; ++d) e += (q[i][d] - cen[4 * c + d]) * (q[i][d] - cen[4 * c + d]);
-            r2 = MAX(r2, e);
+            r2 = MD_MAX(r2, e);
         }
         cen[4 * c + 3] = sqrtf(r2);
     }
@@ -1733,7 +1732,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
             // Not a number passes, for the exact distance to decide
             const int near = (md_mm256_movemask_ps(md_mm256_cmpgt_ps(dc2, md_mm256_set1_ps(reach * reach))) ^ 0xFF) & valid & ~hit;
             if (!near) continue;
-            for (size_t i = 8 * c; i < MIN(np, 8 * c + 8); ++i) {
+            for (size_t i = 8 * c; i < MD_MIN(np, 8 * c + 8); ++i) {
                 const float* p = w->p + 3 * i;
                 dx = md_mm256_sub_ps(x, md_mm256_set1_ps(p[0]));
                 dy = md_mm256_sub_ps(y, md_mm256_set1_ps(p[1]));
@@ -1748,14 +1747,14 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
                 // Near r, or not a number: the exact distance decides
                 int unsure = ~(in | out) & near & ~hit;
                 while (unsure) {
-                    const int lane = ctz32((uint32_t)unsure);
+                    const int lane = md_ctz32((uint32_t)unsure);
                     unsure &= unsure - 1;
                     if (pair_entry(p, w->xyz + 3 * (j0 + lane), cell) <= w->r) hit |= 1 << lane;
                 }
             }
         }
         while (hit) {
-            const int lane = ctz32((uint32_t)hit);
+            const int lane = md_ctz32((uint32_t)hit);
             hit &= hit - 1;
             w->hit[j0 + lane] = 1;
         }
@@ -2002,7 +2001,7 @@ static bool k_spread(vial_kctx_t* k, const vial_val_t* values, const vial_val_t*
     uint32_t dims[VIAL_MAX_DIMS];
     memcpy(dims, values->dims, values->ndim * sizeof(uint32_t));
     dims[0] = n;
-    double* acc = md_alloc(k->alloc, MAX((size_t)n * inner, (size_t)1) * sizeof(double));
+    double* acc = md_alloc(k->alloc, MD_MAX((size_t)n * inner, (size_t)1) * sizeof(double));
     uint32_t* cnt = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
     memset(acc, 0, (size_t)n * inner * sizeof(double));
     memset(cnt, 0, n * sizeof(uint32_t));
@@ -2050,7 +2049,7 @@ static uint8_t core_rank(uint8_t kind, const vial_val_t* v) {
     switch (kind) {
     case VX_KIND_POINT:  return v->dtype == VIAL_DT_SET ? 0 : 1;
     case VX_KIND_POINTS: return v->dtype == VIAL_DT_SET ? 0 : (v->ndim >= 2 ? 2 : 1);
-    case VX_KIND_GROUP:  return v->dtype == VIAL_DT_SET ? 0 : 1;
+    case VX_KIND_BODY:  return v->dtype == VIAL_DT_SET ? 0 : 1;
     case VX_KIND_SET: case VX_KIND_FLOAT: case VX_KIND_INT: case VX_KIND_BOOL: return 0;
     default:             return v->ndim;
     }
@@ -2225,7 +2224,7 @@ static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, con
         p->labelled = true;
         p->value = NAN;
         p->unit = md_unit_none();
-        p->text = lab->data ? *(const str_t*)lab->data : (str_t){0};
+        p->text = lab->data ? *(const md_str_t*)lab->data : (md_str_t){0};
         return;
     }
     double x;
@@ -2239,7 +2238,7 @@ static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, con
         buf[len++] = ' ';
         len += (int)md_unit_print(buf + len, sizeof(buf) - (size_t)len, p->unit);
     }
-    p->text = str_copy((str_t){buf, (size_t)MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
+    p->text = md_str_copy((md_str_t){buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
 }
 
 static bool core_prim(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
@@ -2317,7 +2316,7 @@ static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, via
         {"text",      VIAL_PRIM_LABEL,     {"p", "x"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, 1},
         {"highlight", VIAL_PRIM_HIGHLIGHT, {"s"},                            {VX_KIND_SET}, 1, -1},
     };
-    for (size_t t = 0; t < ARRAY_SIZE(tab); ++t) {
+    for (size_t t = 0; t < MD_COUNTOF(tab); ++t) {
         if (strcmp(name, tab[t].name)) continue;
         const vial_val_t* a[4] = {0};
         uint8_t kinds[4];
@@ -2411,7 +2410,7 @@ static bool core_dihedral_draw(vial_kctx_t* k, const vial_val_t* const* a, vial_
     return true;
 }
 
-bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n,
                          const vial_val_t* result, vial_val_t* out) {
     bargs_t ba = {.v = args, .names = names, .n = n};
     const bool is_angle = !strcmp(name, "angle"), is_dihedral = !strcmp(name, "dihedral");
@@ -2704,8 +2703,8 @@ static bool k_eigh(vial_kctx_t* k, const vial_val_t* m, vial_val_t* out) {
     if (!square(k, m, &n, &cnt)) return false;
     vial_val_t w; if (!vial_k_make(k, VIAL_DT_FLOAT, m->ndim - 1, m->dims, &w)) return false;
     vial_val_t v; if (!vial_k_make(k, VIAL_DT_FLOAT, m->ndim, m->dims, &v)) return false;
-    double* A = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
-    double* V = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* A = md_alloc(k->alloc, MD_MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* V = md_alloc(k->alloc, MD_MAX((size_t)n * n, (size_t)1) * sizeof(double));
     uint32_t* order = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
     double* val = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
     double* scratch = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
@@ -2788,8 +2787,8 @@ static bool k_linalg(vial_kctx_t* k, const char* name, const vial_val_t* m, cons
         nrhs = b->ndim == 1 ? 1 : b->dims[1];
         if (!vial_k_make(k, VIAL_DT_FLOAT, b->ndim, b->dims, &o)) return false;
     }
-    double* A = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
-    double* B = md_alloc(k->alloc, MAX((size_t)n * nrhs, (size_t)1) * sizeof(double));
+    double* A = md_alloc(k->alloc, MD_MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* B = md_alloc(k->alloc, MD_MAX((size_t)n * nrhs, (size_t)1) * sizeof(double));
     for (size_t q = 0; q < cnt; ++q) {
         for (size_t i = 0; i < (size_t)n * n; ++i) A[i] = num_at(m, q * n * n + i);
         if (is_trace) {
@@ -2860,6 +2859,7 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     if (!strcmp(name, "tail")) return VIAL_LEVEL_TAIL;
     if (!strcmp(name, "head")) return VIAL_LEVEL_HEAD;
     if (!strcmp(name, "ring")) return VIAL_LEVEL_RING;
+    if (!strcmp(name, "group")) return VIAL_LEVEL_GROUP;
     return VIAL_LEVEL_NONE;
 }
 
@@ -2869,7 +2869,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
     const uint8_t level = level_of(name, &pkind);
     if (level == VIAL_LEVEL_NONE) {
         // A predefined set
-        vial_sets_t* s = vial_select_predefined(k->in->sys, str_from_cstr(name), k->alloc);
+        vial_sets_t* s = vial_select_predefined(k->in->sys, md_str_from_cstr(name), k->alloc);
         if (!s) return vial_rt_fail(k, "R0103", "%s is not a set", name);
         *out = vial_val_sets(s);
         return true;
@@ -2893,7 +2893,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
         const size_t cnt = vial_val_count(v);
         for (size_t e = 0; e < cnt; ++e) {
             vial_match_t m = {0};
-            if (v->dtype == VIAL_DT_STR) { m.kind = 0; m.s = ((const str_t*)v->data)[e]; }
+            if (v->dtype == VIAL_DT_STR) { m.kind = 0; m.s = ((const md_str_t*)v->data)[e]; }
             else if (v->dtype == VIAL_DT_RANGE) { m.kind = 2; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
             else if (v->dtype == VIAL_DT_INT) { m.kind = 1; m.lo = ((const int32_t*)v->data)[e]; }
             else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int or a range");
@@ -3044,7 +3044,7 @@ static bool k_autocorrelation(vial_kctx_t* k, const vial_val_t* x, const vial_va
 
 // ### DISPATCH ###
 
-bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out) {
+bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out) {
     bargs_t ba = {.v = args, .names = names, .n = n};
     // The first letter first: most names differ there, and a mapped call dispatches once per element
     #define IS(s) (name[0] == (s)[0] && strcmp(name, s) == 0)

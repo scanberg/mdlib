@@ -1,9 +1,6 @@
 ﻿#pragma once
 
 #include <core/md_str.h>
-#include <core/md_os.h>
-
-#include <string.h>
 
 // Text parsing primitives: buffered line reading, whitespace and delimiter tokenization, and numbers.
 //
@@ -23,8 +20,9 @@
 //
 // The float value is CORRECTLY ROUNDED - the same double strtod gives - and does not depend on the
 // process locale: a decimal comma locale, which a GTK file dialog can switch the process into, does
-// not change what "1.5" means. A plain decimal of up to ~15 digits (every fixed width MD format) is
-// one exact division; up to 19 significant digits with any exponent goes through Eisel-Lemire, as
+// not change what "1.5" means. A mantissa of up to ~15 digits with a power of ten of at most 22, the
+// exponent included (every fixed width MD format, and %E as prmtop and cube files print it), is one
+// exact multiplication or division; up to 19 significant digits with any exponent goes through Eisel-Lemire, as
 // fast_float does it; only a longer mantissa whose 19 digit truncation straddles a rounding boundary
 // is handed to strtod, in a form without a decimal point. This takes IEEE arithmetic in the default
 // round to nearest mode, which is why md_parse.c is compiled without fast math.
@@ -39,18 +37,102 @@
 extern "C" {
 #endif
 
-size_t md_parse_f64(double* out_value, str_t str);
+// The out of line parts of md_parse_f64, below, which is inline: the scan, and the value when it is one
+// exact division, are all a reader's loop runs for nearly every number.
+//   md_parse_f64_slow     the value of a scanned number that is not one exact division: a positive power of
+//                         ten, a mantissa past 2^53, more than 19 digits. From what the scan found - the
+//                         mantissa (its first 19 digits), the power of ten, and the digits as written for
+//                         the rare number with more - so nothing is read twice.
+//   md_parse_f64_special  a number without a digit: "inf", "infinity" or "nan" in any case, or none at all
+double md_parse_f64_slow(uint64_t mantissa, int64_t exp10, size_t num_digits, const char* mant_beg, const char* mant_end);
+size_t md_parse_f64_special(double* out_value, md_str_t str);
 
-bool md_parse_is_float(str_t str);
+bool md_parse_is_float(md_str_t str);
+
+// 10^0 .. 10^22, every power of ten a double holds exactly
+extern const double md_parse_pow10_exact[23];
 
 #ifdef __cplusplus
 }
 #endif
 
+// When the mantissa is an integer a double holds (up to 2^53) and the power of ten - the written exponent less
+// the fraction digits - is 10^0 to 10^-22, the value is one exact IEEE division (Clinger, 1990). That is every
+// fixed width decimal, and every %E whose exponent is at most its number of fraction digits: "-12.345",
+// "1.23456789E+02" (123456789 / 10^6). Only a division is done here: a multiplication by a positive power,
+// inlined, could be fused by -ffp-contract=fast with an addition of the caller's into one FMA, so that the
+// same text could read differently at different call sites. md_parse_f64_slow does those, out of line. Like
+// md_parse_fixed_f32 this assumes IEEE division, which a TU built with -ffast-math or /fp:fast does not give.
+static MD_FORCE_INLINE size_t md_parse_f64(double* out_value, md_str_t str) {
+    MD_ASSERT(out_value);
+    const char* s   = str.ptr;
+    const char* end = str.ptr + str.len;
+    const char* c   = s;
+    if (!s) return 0;
+
+    bool negative = false;
+    if (c < end && (*c == '-' || *c == '+')) {
+        negative = (*c == '-');
+        ++c;
+    }
+    // The mantissa: digits, at most one '.', more digits. 'm' holds them all while there are at most 19.
+    const char* mant = c;
+    uint64_t m = 0;
+    while (c < end && (unsigned)(*c - '0') < 10u) {
+        m = m * 10 + (unsigned)(*c - '0');
+        ++c;
+    }
+    size_t num_digits = (size_t)(c - mant);
+    int64_t exp10 = 0;
+    if (c < end && *c == '.') {
+        const char* frac = ++c;
+        while (c < end && (unsigned)(*c - '0') < 10u) {
+            m = m * 10 + (unsigned)(*c - '0');
+            ++c;
+        }
+        exp10 = -(int64_t)(c - frac);
+        num_digits += (size_t)(c - frac);
+    }
+    const char* mant_end = c;
+
+    // The exponent; an 'e' without digits after it is not part of the number. Past 100000 it is 0 or
+    // infinity whatever the mantissa, so it stops growing there, but every digit is read. (Without a digit
+    // in the mantissa this reads nothing that is used: the number goes to md_parse_f64_special below.)
+    if (c < end && (*c | 0x20) == 'e') {
+        const char* x = c + 1;
+        bool exp_negative = false;
+        if (x < end && (*x == '-' || *x == '+')) {
+            exp_negative = (*x == '-');
+            ++x;
+        }
+        if (x < end && (unsigned)(*x - '0') < 10u) {
+            int64_t w = 0;
+            for (; x < end && (unsigned)(*x - '0') < 10u; ++x) {
+                if (w < 100000) w = w * 10 + (*x - '0');
+            }
+            exp10 += exp_negative ? -w : w;
+            c = x;
+        }
+    }
+
+    // num_digits - 1 < 19: 1 to 19 digits, so m holds them all. The signed conversion is one instruction
+    // where an unsigned one is a branchy sequence; m < 2^63 here.
+    double v;
+    if (num_digits - 1 < 19 && m <= (UINT64_C(1) << 53) && -22 <= exp10 && exp10 <= 0) {
+        v = (double)(int64_t)m / md_parse_pow10_exact[-exp10];
+    } else if (num_digits == 0) {
+        return md_parse_f64_special(out_value, str);
+    } else {
+        v = md_parse_f64_slow(m, exp10, num_digits, mant, mant_end);
+    }
+    *out_value = negative ? -v : v;
+    return (size_t)(c - s);
+}
+
 // Saturates to INT64_MIN / INT64_MAX, reading every digit either way. Inline, as it has no floating
 // point to keep away from fast math.
-static inline size_t md_parse_i64(int64_t* out_value, str_t str) {
-    ASSERT(out_value);
+static inline size_t md_parse_i64(int64_t* out_value, md_str_t str) {
+    MD_ASSERT(out_value);
     if (!str.ptr) return 0;
 
     const char* c   = str.ptr;
@@ -97,23 +179,23 @@ static inline size_t md_parse_i64(int64_t* out_value, str_t str) {
     return (size_t)(c - str.ptr);
 }
 
-static inline double parse_float(str_t str) {
+static inline double parse_float(md_str_t str) {
     double value = 0.0;
-    md_parse_f64(&value, str_trim_beg(str));
+    md_parse_f64(&value, md_str_trim_beg(str));
     return value;
 }
 
-static inline int64_t parse_int(str_t str) {
+static inline int64_t parse_int(md_str_t str) {
     int64_t value = 0;
-    md_parse_i64(&value, str_trim_beg(str));
+    md_parse_i64(&value, md_str_trim_beg(str));
     return value;
 }
 
-static inline bool is_float(str_t str) {
+static inline bool is_float(md_str_t str) {
     return md_parse_is_float(str);
 }
 
-static inline bool is_int(str_t str) {
+static inline bool is_int(md_str_t str) {
     const char* c   = str.ptr;
     const char* end = str.ptr + str.len;
     if (c < end && (*c == '-' || *c == '+')) ++c;
@@ -145,7 +227,7 @@ static inline bool is_int(str_t str) {
 extern "C" {
 #endif
 
-bool md_parse_fixed_f32_wide(float* out, str_t field, size_t decimals);
+bool md_parse_fixed_f32_wide(float* out, md_str_t field, size_t decimals);
 
 #ifdef __cplusplus
 }
@@ -163,8 +245,9 @@ static inline uint32_t md_parse_eight_digits(uint64_t val) {
     return (uint32_t)val;
 }
 
-static inline bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
-    ASSERT(out);
+// Inline always: a parser calls it for each column of each line, with constant widths and decimals which fold
+static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, md_str_t field, size_t decimals) {
+    MD_ASSERT(out);
     const size_t width = field.len;
     // A digit, the dot and the decimals at least
     if (!field.ptr || decimals == 0 || width < decimals + 2) return false;
@@ -175,11 +258,11 @@ static inline bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) 
     // and no store to forward from.
     uint64_t w;
     if (width == 8) {
-        MEMCPY(&w, field.ptr, 8);
+        md_memcpy(&w, field.ptr, 8);
     } else if (width >= 4) {
         uint32_t lo, hi;
-        MEMCPY(&lo, field.ptr, 4);
-        MEMCPY(&hi, field.ptr + width - 4, 4);
+        md_memcpy(&lo, field.ptr, 4);
+        md_memcpy(&hi, field.ptr + width - 4, 4);
         w = ((uint64_t)hi << 32) | ((uint64_t)lo << (8 * (8 - width))) | (0x2020202020202020ull >> (8 * width));
     } else {
         w = 0x2020202020202020ull;
@@ -215,122 +298,16 @@ static inline bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) 
     return true;
 }
 
-// LINES
-
-// Reads as many COMPLETE lines from the file as fit in buf, and leaves the file positioned at the
-// start of the first line it did not return. A single line longer than cap is returned in pieces.
-static inline size_t md_parse_read_lines(md_file_t file, char* buf, size_t cap) {
-    if (!md_file_valid(file) || !buf || cap < 1) return 0;
-    size_t len = md_file_read(file, buf, cap);
-    if (len == cap) {
-        size_t loc;
-        const str_t str = {buf, len};
-        if (str_rfind_char(&loc, str, '\n')) {
-            const int64_t offset = (int64_t)loc + 1 - (int64_t)len;
-            // Set file pointer to the beginning of the next line
-            md_file_seek(file, offset, MD_FILE_CUR);
-            len = loc + 1;
-        }
-    }
-    return len;
-}
-
-// Line by line reading from a file through a caller owned buffer, or from a string in memory, behind
-// one interface. The lines are views into the buffer or the string: a file backed line is valid
-// until the next call that refills the buffer.
-typedef struct md_buffered_reader_t {
-    str_t   str;
-    char*   buf;
-    size_t  cap;
-    md_file_t  file;
-} md_buffered_reader_t;
-
-static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_t  file) {
-    ASSERT(buf);
-    ASSERT(md_file_valid(file));
-
-    md_buffered_reader_t lr = {
-        .str = {0, 0},
-        .buf = buf,
-        .cap = cap,
-        .file = file,
-    };
-
-    return lr;
-}
-
-static inline md_buffered_reader_t md_buffered_reader_from_str(str_t str) {
-    md_buffered_reader_t reader = {
-        .str = str,
-        .cap = str.len,
-        .file = {0},
-    };
-    return reader;
-}
-
-static inline void md_buffered_reader_ensure_lines(md_buffered_reader_t* r) {
-    ASSERT(r);
-    if (md_file_valid(r->file) && !r->str.len) {
-        ASSERT(r->buf);
-        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
-        if (bytes_read > 0) {
-            r->str.ptr = r->buf;
-            r->str.len = bytes_read;
-        }
-    }
-}
-
-static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_reader_t* r) {
-    ASSERT(r);
-    ASSERT(line);
-    md_buffered_reader_ensure_lines(r);
-    return str_extract_line(line, &r->str);
-}
-
-static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_t* r) {
-    ASSERT(r);
-    ASSERT(line);
-    md_buffered_reader_ensure_lines(r);
-    return str_peek_line(line, &r->str);
-}
-
-static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
-    ASSERT(r);
-    md_buffered_reader_ensure_lines(r);
-    return str_skip_line(&r->str);
-}
-
-// Back to the first line
-static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
-    ASSERT(r);
-    if (md_file_valid(r->file)) {
-        md_file_seek(r->file, 0, MD_FILE_BEG);
-        r->str.ptr = NULL;
-        r->str.len = 0;
-    } else {
-        ASSERT(r->str.ptr && "Cannot reset uninitialized reader");
-        r->str.ptr += r->str.len - r->cap;
-        r->str.len = r->cap;
-    }
-}
-
-// Offset of the next unread byte from the start of the file or string
-static inline int64_t md_buffered_reader_tellg(const md_buffered_reader_t* r) {
-    if (md_file_valid(r->file)) {
-        return md_file_tell(r->file) - r->str.len;
-    } else {
-        return r->cap - r->str.len;
-    }
-}
+// LINES: a reader of a file or a string (md_reader.h)
 
 // TOKENS
 
 // Extracts the next token delimited by whitespace, skipping any whitespace in front of it, and
 // consumes the one delimiter character after it. False when only whitespace is left.
-static inline bool extract_token(str_t* tok, str_t* str) {
-    ASSERT(tok);
-    ASSERT(str);
-    if (str_empty(*str)) return false;
+static inline bool extract_token(md_str_t* tok, md_str_t* str) {
+    MD_ASSERT(tok);
+    MD_ASSERT(str);
+    if (md_str_empty(*str)) return false;
 
     const char* end = str->ptr + str->len;
     const char* c = str->ptr;
@@ -350,9 +327,9 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 }
 
 // Up to tok_cap whitespace delimited tokens
-static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str) {
-    ASSERT(tok_arr);
-    ASSERT(str);
+static inline size_t extract_tokens(md_str_t tok_arr[], size_t tok_cap, md_str_t* str) {
+    MD_ASSERT(tok_arr);
+    MD_ASSERT(str);
 
     size_t num_tokens = 0;
     while (num_tokens < tok_cap && extract_token(&tok_arr[num_tokens], str)) {
@@ -364,9 +341,9 @@ static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str)
 // Extracts the field up to the next 'delim' (or the end) and consumes the delimiter. No whitespace is
 // skipped and empty fields are returned as such: "a,,b" is "a", "" and "b". A delimiter at the very
 // end does NOT give a trailing empty field - "a," is the one field "a" - as the input is used up.
-static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
-    ASSERT(tok);
-    ASSERT(str);
+static inline bool extract_token_delim(md_str_t* tok, md_str_t* str, char delim) {
+    MD_ASSERT(tok);
+    MD_ASSERT(str);
     if (!str->ptr || str->len == 0) return false;
 
     const char* beg = str->ptr;
@@ -385,9 +362,9 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 }
 
 // Up to tok_cap fields, see extract_token_delim
-static inline size_t extract_tokens_delim(str_t tok_arr[], size_t tok_cap, str_t* str, char delim) {
-    ASSERT(tok_arr);
-    ASSERT(str);
+static inline size_t extract_tokens_delim(md_str_t tok_arr[], size_t tok_cap, md_str_t* str, char delim) {
+    MD_ASSERT(tok_arr);
+    MD_ASSERT(str);
 
     size_t num_tokens = 0;
     while (num_tokens < tok_cap && extract_token_delim(&tok_arr[num_tokens], str, delim)) {

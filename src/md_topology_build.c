@@ -19,7 +19,7 @@
 
 // The element of an atom from its name and mass, for a topology without ATOMIC_NUMBER. The name first when its
 // element is of about the mass (hydrogen mass repartitioning puts some 3 Da on a hydrogen), else the mass alone.
-static md_atomic_number_t topology_infer_element(str_t name, str_t res_name, size_t res_size, double mass) {
+static md_atomic_number_t topology_infer_element(md_str_t name, md_str_t res_name, size_t res_size, double mass) {
     const md_atomic_number_t z = md_atomic_number_infer_from_label(name, res_name, res_size);
     if (z) {
         const double m = md_atomic_number_mass(z);
@@ -50,9 +50,9 @@ static bool topology_is_virtual(const md_topology_desc_t* d, size_t i, md_atomic
 }
 
 bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const md_topology_desc_t* desc) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(desc);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    MD_ASSERT(desc);
     if (!sys->alloc || !state->alloc) {
         TOPO_LOG_ERROR(desc->format, "system or state allocator not set");
         return false;
@@ -94,19 +94,19 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     }
 
     // ## Particle types: one per name, force field type, element, mass and kind
-    const size_t capacity = ROUND_UP(N, 16);
+    const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     sys->atom.type.count = 0;
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     md_hashmap32_t type_map = { .allocator = temp_alloc };
     bool names_cut = false;
     for (size_t i = 0; i < N; ++i) {
         const float mass = d.mass ? (float)d.mass[i] : 0.0f;
-        const str_t ff = d.atom_type ? d.atom_type[i] : (str_t){0};
+        const md_str_t ff = d.atom_type ? d.atom_type[i] : (md_str_t){0};
         const md_particle_kind_t kind = topology_is_virtual(&d, i, z[i]) ? MD_PARTICLE_VIRTUAL_SITE : MD_PARTICLE_ATOM;
         const struct { float mass; uint32_t z; uint32_t kind; } key_data = { mass, z[i], (uint32_t)kind };
         const uint64_t key = md_hash64_str(d.atom_name[i], md_hash64_str(ff, md_hash64(&key_data, sizeof(key_data), 0)));
@@ -163,8 +163,8 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Chains, as ParmEd keeps them from the structure the topology was made from
     if (d.res_chain) {
         bool any = false;
-        for (size_t r = 0; r < R && !any; ++r) any = !str_empty(d.res_chain[r]);
-        if (any) md_util_system_instances_from_chain_ids(sys, d.res_chain);
+        for (size_t r = 0; r < R && !any; ++r) any = !md_str_empty(d.res_chain[r]);
+        if (any) md_util_system_instances_from_chain_ids(sys, d.res_chain, NULL);
     }
 
     // ## Attributes
@@ -172,14 +172,14 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     float* column = md_temp_alloc_array(temp, float, N);
     if (d.charge) {
         for (size_t i = 0; i < N; ++i) column[i] = (float)d.charge[i];
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, column, N);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, column, N);
     }
     if (d.mass) {
         for (size_t i = 0; i < N; ++i) column[i] = (float)d.mass[i];
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/mass"), md_unit_dalton(), 1, column, N);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/mass"), md_unit_dalton(), 1, column, N);
     }
-    if (!str_empty(d.title)) {
-        sys->description = str_copy(d.title, alloc);
+    if (!md_str_empty(d.title)) {
+        sys->description = md_str_copy(d.title, alloc);
     }
 
     state->unitcell = d.cell;
@@ -190,14 +190,14 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
 
 // Names as a structure file has them against the topology's: equal ignoring case, or the structure's a cut short
 // form of the topology's.
-static bool topology_name_matches(str_t structure, str_t topology) {
-    if (str_eq_ignore_case(structure, topology)) return true;
-    return structure.len >= 3 && topology.len > structure.len && str_eq_n_ignore_case(structure, topology, structure.len);
+static bool topology_name_matches(md_str_t structure, md_str_t topology) {
+    if (md_str_eq_ignore_case(structure, topology)) return true;
+    return structure.len >= 3 && topology.len > structure.len && md_str_eq_n_ignore_case(structure, topology, structure.len);
 }
 
-bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* desc, str_t filename) {
-    ASSERT(sys);
-    ASSERT(desc);
+bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* desc, md_str_t filename) {
+    MD_ASSERT(sys);
+    MD_ASSERT(desc);
     if (!sys->alloc || sys->atom.count == 0) {
         TOPO_LOG_ERROR(desc->format, "a topology can only supplement a loaded system");
         return false;
@@ -209,16 +209,16 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
 
     const size_t N = sys->atom.count;
     if (d.num_atoms != N) {
-        TOPO_LOG_ERROR(d.format, "'" STR_FMT "' has %zu atoms, the loaded system %zu", STR_ARG(filename), d.num_atoms, N);
+        TOPO_LOG_ERROR(d.format, "'" MD_STR_FMT "' has %zu atoms, the loaded system %zu", MD_STR_ARG(filename), d.num_atoms, N);
         goto done;
     }
     // The atoms in the same order: every name matches. The residues may be cut otherwise in the structure (a PDB file
     // of several chains which reuse residue numbers), so their boundaries are compared only when the counts agree.
     for (size_t i = 0; i < N; ++i) {
-        const str_t name = md_atom_name(&sys->atom, i);
+        const md_str_t name = md_atom_name(&sys->atom, i);
         if (!topology_name_matches(name, d.atom_name[i])) {
-            TOPO_LOG_ERROR(d.format, "atom %zu is '" STR_FMT "' in the loaded system and '" STR_FMT "' in '" STR_FMT "'; the topology is not of these atoms in this order",
-                i + 1, STR_ARG(name), STR_ARG(d.atom_name[i]), STR_ARG(filename));
+            TOPO_LOG_ERROR(d.format, "atom %zu is '" MD_STR_FMT "' in the loaded system and '" MD_STR_FMT "' in '" MD_STR_FMT "'; the topology is not of these atoms in this order",
+                i + 1, MD_STR_ARG(name), MD_STR_ARG(d.atom_name[i]), MD_STR_ARG(filename));
             goto done;
         }
     }
@@ -227,7 +227,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         for (size_t r = 0; r < d.num_residues; ++r) {
             const md_urange_t range = md_system_residue_atom_range(sys, r);
             if (range.beg != d.res_offset[r] || range.end != d.res_offset[r + 1]) {
-                TOPO_LOG_ERROR(d.format, "residue %zu of '" STR_FMT "' does not have the atoms of the loaded system's", r + 1, STR_ARG(filename));
+                TOPO_LOG_ERROR(d.format, "residue %zu of '" MD_STR_FMT "' does not have the atoms of the loaded system's", r + 1, MD_STR_ARG(filename));
                 goto done;
             }
             renamed += !topology_name_matches(md_system_residue_name(sys, r), d.res_name[r]);
@@ -264,15 +264,15 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
             count += 1;
         }
         if (num_noncovalent) {
-            MEMCPY(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
-            MEMCPY(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
+            md_memcpy(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
+            md_memcpy(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
         }
         md_bond_data_clear(&sys->bond);
         md_array_resize(sys->bond.pairs, count + num_noncovalent, sys->alloc);
         md_array_resize(sys->bond.flags, count + num_noncovalent, sys->alloc);
         if (count + num_noncovalent) {
-            MEMCPY(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
-            MEMCPY(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
+            md_memcpy(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
+            md_memcpy(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
         }
         sys->bond.count = count;
         sys->bond.noncovalent_count = num_noncovalent;
@@ -286,19 +286,19 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
     if (!sys->attributes.alloc) sys->attributes.alloc = sys->alloc;
     float* column = md_temp_alloc_array(temp, float, N);
     // Replacing what the structure file published, if anything
-    md_attributes_remove_prefix(&sys->attributes, STR_LIT("atom/charge"));
-    md_attributes_remove_prefix(&sys->attributes, STR_LIT("atom/mass"));
+    md_attributes_remove_prefix(&sys->attributes, MD_STR_LIT("atom/charge"));
+    md_attributes_remove_prefix(&sys->attributes, MD_STR_LIT("atom/mass"));
     if (d.charge) {
         for (size_t i = 0; i < N; ++i) column[i] = (float)d.charge[i];
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, column, N);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, column, N);
     }
     if (d.mass) {
         for (size_t i = 0; i < N; ++i) column[i] = (float)d.mass[i];
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/mass"), md_unit_dalton(), 1, column, N);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/mass"), md_unit_dalton(), 1, column, N);
     }
 
     // ## Derived topology, from the new bonds and the coordinates the system was inferred from
-    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT);
+    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT, NULL);
     md_util_system_infer_lipids(sys);
     md_util_system_infer_residue_types(sys);
     result = true;

@@ -11,6 +11,7 @@
 #include "select.h"
 
 #include <md_unitcell.h>
+#include <core/md_executor.h>
 
 struct md_system_t;
 struct vec3_t;
@@ -36,10 +37,6 @@ typedef struct vial_rt_error_t {
     uint32_t        seq;
     bool            note;       // vial_rt_note: fails nothing; once per place and code
 } vial_rt_error_t;
-
-// Frames in parallel: calls fn(arg, i) for every i in [0, count), from any threads, at most as many at once as there
-// are workers, and returns when every call has returned
-typedef void (*vial_parallel_for_t)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
 
 #define VIAL_MAP_SCRATCH_DEPTH 8
 
@@ -91,13 +88,11 @@ typedef struct vial_interp_t {
     // other operation drops, and a map gathers its calls' drawings. For the IR as lowered, where shown() still is.
     bool                        draw;
     // Frames in parallel (vial_interp_run): interpreters of the same IR, each with a frame reader and a vial_sys of its
-    // own, which take chunks of a sweep's frames through parallel_for; the static part and what follows a sweep stay
-    // here. None: every frame here, in order. A sweep with a fold runs here too, its frames in order.
+    // own, one per thread_idx of the executor, which take chunks of a sweep's frames; the static part and what follows
+    // a sweep stay here. None: every frame here, in order. A sweep with a fold runs here too, its frames in order.
     struct vial_interp_t*       workers;
     size_t                      num_workers;
-    vial_parallel_for_t         parallel_for;
-    void*                       parallel_user;
-    volatile uint64_t           busy;       // a worker: taken by a chunk
+    const md_executor_t*        executor;
     // Values written out as each frame computes them (vial_interp_run): by ssa, NULL or where frame f's value goes,
     // f * stream_count[v] elements of its dtype in; a missing float as NaN. Disjoint per frame, so any thread writes.
     uint8_t**                   stream;
@@ -237,10 +232,10 @@ bool vial_k_kind(vial_kctx_t* k, uint16_t kind, const vial_val_t* a, vial_val_t*
 bool vial_k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
 
 // A built-in, its arguments by parameter (NULL when not given) and the parameters' names
-bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out);
+bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out);
 // What built-in name draws of its own with these arguments and its value: a drawing into out, false when it draws
 // nothing of its own and is drawn by its type
-bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n,
                          const vial_val_t* result, vial_val_t* out);
 
 // A value as dtype, converted elementwise; the same value when it already is

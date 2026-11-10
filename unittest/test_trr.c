@@ -12,8 +12,8 @@
 
 #include "run_check.h"
 
-#define TRR_RUN   STR_LIT("run/tryptophan")
-#define TRR_FILE  STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr")
+#define TRR_RUN   MD_STR_LIT("run/tryptophan")
+#define TRR_FILE  MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr")
 
 // Recorded from the trajectory reader this replaced
 static const run_ref_t trr_refs[] = {
@@ -32,36 +32,36 @@ static const struct { size_t frame; double sum[3]; double first[3]; } trr_vel_re
 static bool trr_load(md_system_t* sys, md_allocator_i* arena) {
     sys->alloc = arena;
     md_system_state_t sys_state = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")) &&
+    return md_gro_system_init_from_file(sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) &&
         md_trr_system_publish_run(sys, TRR_FILE, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE);
 }
 
 UTEST(trr, run_matches_reference) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(trr_load(&sys, arena));
-    run_check_refs(utest_result, &sys, TRR_RUN, 101, 6495, trr_refs, ARRAY_SIZE(trr_refs));
+    run_check_refs(utest_result, &sys, TRR_RUN, 101, 6495, trr_refs, MD_COUNTOF(trr_refs));
 
     const md_attributes_t* t = &sys.attributes;
-    const md_attribute_t* time = md_attributes_find(t, STR_LIT("run/tryptophan/time"));
-    const md_attribute_t* step = md_attributes_find(t, STR_LIT("run/tryptophan/step"));
-    const md_attribute_t* vel  = md_attributes_find(t, STR_LIT("run/tryptophan/atom/velocity"));
+    const md_attribute_t* time = md_attributes_find(t, MD_STR_LIT("run/tryptophan/time"));
+    const md_attribute_t* step = md_attributes_find(t, MD_STR_LIT("run/tryptophan/step"));
+    const md_attribute_t* vel  = md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/velocity"));
     ASSERT_TRUE(time && step && vel);
     // No forces in the file, and velocities in every frame, so no group of their own
-    EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/tryptophan/atom/force")) == NULL);
-    EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/tryptophan/trr/velocity/time")) == NULL);
+    EXPECT_TRUE(md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/force")) == NULL);
+    EXPECT_TRUE(md_attributes_find(t, MD_STR_LIT("run/tryptophan/trr/velocity/time")) == NULL);
     EXPECT_TRUE(md_unit_equal(time->unit, md_unit_picosecond()));
     EXPECT_EQ(time, md_attributes_axis(t, vel));
     EXPECT_EQ(1.0, ((const double*)time->data)[1]);
 
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, sys.atom.count);
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("atom/velocity") };
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("atom/velocity") };
     md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
-    for (size_t r = 0; r < ARRAY_SIZE(trr_vel_refs); ++r) {
+    for (size_t r = 0; r < MD_COUNTOF(trr_vel_refs); ++r) {
         ASSERT_TRUE(md_system_extract_frame(ex, (int64_t)trr_vel_refs[r].frame, &st));
-        const md_attribute_t* v = md_attributes_find(&st.attributes, STR_LIT("atom/velocity"));
+        const md_attribute_t* v = md_attributes_find(&st.attributes, MD_STR_LIT("atom/velocity"));
         ASSERT_TRUE(v && v->data);
         const float* d = (const float*)v->data;
         double sum[3] = {0};
@@ -78,25 +78,25 @@ UTEST(trr, run_matches_reference) {
     float full[3], one_xyz[3];
     ASSERT_TRUE(run_extract_one(&st, &sys, TRR_RUN, 7));
     full[0] = st.xyz[11].x; full[1] = st.xyz[11].y; full[2] = st.xyz[11].z;
-    const md_attribute_t* pos = md_attributes_find(t, STR_LIT("run/tryptophan/atom/position"));
+    const md_attribute_t* pos = md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/position"));
     md_attribute_slice_t one = md_attribute_slice_2(7, 11);
     ASSERT_EQ(3u, md_attribute_extract_f32(one_xyz, 3, pos, one, md_unit_none()));
-    EXPECT_EQ(0, MEMCMP(full, one_xyz, sizeof(full)));
+    EXPECT_EQ(0, md_memcmp(full, one_xyz, sizeof(full)));
 
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
 }
 
 UTEST(trr, nonexistent_file) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
-    EXPECT_FALSE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.trr"), TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    EXPECT_FALSE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.trr"), TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(0u, run_num_frames(&sys, TRR_RUN));
     md_vm_arena_destroy(arena);
 }
 
 UTEST(trr, frame_boundary_conditions) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {0};
     ASSERT_TRUE(trr_load(&sys, arena));
     const int64_t F = (int64_t)run_num_frames(&sys, TRR_RUN);
@@ -113,10 +113,10 @@ UTEST(trr, frame_boundary_conditions) {
 }
 
 UTEST(trr, run_refuses_a_different_system) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
     EXPECT_FALSE(md_trr_system_publish_run(&sys, TRR_FILE, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(0u, run_num_frames(&sys, TRR_RUN));
     md_system_free(&sys);
@@ -132,7 +132,7 @@ static void trr_put_i32(md_file_t file, int32_t v) {
 
 static void trr_put_f32(md_file_t file, float v) {
     int32_t i;
-    MEMCPY(&i, &v, 4);
+    md_memcpy(&i, &v, 4);
     trr_put_i32(file, i);
 }
 
@@ -157,8 +157,8 @@ static void trr_put_frame(md_file_t file, int natoms, int step, float time, cons
 // leaves it. The run's frames are the complete frames with coordinates; the forces sit beside the
 // positions and the velocities get a group of their own, each at the time it was written.
 UTEST(trr, run_publishes_sections_at_their_own_times) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_INIT("md_unittest_trr_sections.trr");
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
+    const md_str_t path = MD_STR_INIT("md_unittest_trr_sections.trr");
     enum { NA = 5 };
 
     // nm, row i box vector i, tilted as GROMACS writes it: below the diagonal
@@ -193,20 +193,20 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     ASSERT_TRUE(md_trr_system_publish_run(&sys, path, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     const md_attributes_t* t = &sys.attributes;
 
-    const md_attribute_t* time = md_attributes_find(t, STR_LIT("run/tryptophan/time"));
-    const md_attribute_t* step = md_attributes_find(t, STR_LIT("run/tryptophan/step"));
+    const md_attribute_t* time = md_attributes_find(t, MD_STR_LIT("run/tryptophan/time"));
+    const md_attribute_t* step = md_attributes_find(t, MD_STR_LIT("run/tryptophan/step"));
     ASSERT_TRUE(time && step);
     ASSERT_EQ(4u, time->format.shape[0]);
     EXPECT_NEAR(0.6, ((const double*)time->data)[3], 1.0e-6);
     EXPECT_EQ(300, ((const int64_t*)step->data)[3]);
 
-    EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/tryptophan/atom/position")) != NULL);
-    EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/tryptophan/atom/force"))    != NULL);
-    EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/tryptophan/atom/velocity")) == NULL);
+    EXPECT_TRUE(md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/position")) != NULL);
+    EXPECT_TRUE(md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/force"))    != NULL);
+    EXPECT_TRUE(md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/velocity")) == NULL);
 
     // The velocities: frames 0 and 2, and the one without coordinates
-    const md_attribute_t* vtime = md_attributes_find(t, STR_LIT("run/tryptophan/trr/velocity/time"));
-    const md_attribute_t* vel   = md_attributes_find(t, STR_LIT("run/tryptophan/trr/velocity/atom/velocity"));
+    const md_attribute_t* vtime = md_attributes_find(t, MD_STR_LIT("run/tryptophan/trr/velocity/time"));
+    const md_attribute_t* vel   = md_attributes_find(t, MD_STR_LIT("run/tryptophan/trr/velocity/atom/velocity"));
     ASSERT_TRUE(vtime && vel);
     ASSERT_EQ(3u, vtime->format.shape[0]);
     EXPECT_EQ(vtime, md_attributes_axis(t, vel));
@@ -220,8 +220,8 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     ASSERT_EQ((size_t)(NA * 3), md_attribute_extract_f32(vv, NA * 3, vel, s1, md_unit_none()));
     EXPECT_EQ(0.5f * 4 * 10.0f, vv[4]);
 
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell"), STR_INIT("atom/force") };
-    md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell"), MD_STR_INIT("atom/force") };
+    md_system_extract_t* ex = md_system_extract_begin(&sys, TRR_RUN, paths, MD_COUNTOF(paths), md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, NA);
@@ -230,7 +230,7 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
         EXPECT_NEAR((0.3f + 0.01f * (i * 3 + 0)) * 10.0f, st.xyz[i].x, 1.0e-5f);
         EXPECT_NEAR((0.3f + 0.01f * (i * 3 + 2)) * 10.0f, st.xyz[i].z, 1.0e-5f);
     }
-    const md_attribute_t* force = md_attributes_find(&st.attributes, STR_LIT("atom/force"));
+    const md_attribute_t* force = md_attributes_find(&st.attributes, MD_STR_LIT("atom/force"));
     ASSERT_TRUE(force != NULL);
     EXPECT_EQ(-2.0f * 7, ((const float*)force->data)[7]);
 
@@ -245,12 +245,12 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
 
     // Along the run, the velocities are there at the frames that have them and absent at the
     // others: one state reused through all of them never shows the last frame's in their place.
-    const str_t with_velocity[] = { STR_INIT("atom/position"), STR_INIT("trr/velocity/atom/velocity") };
+    const md_str_t with_velocity[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("trr/velocity/atom/velocity") };
     ex = md_system_extract_begin(&sys, TRR_RUN, with_velocity, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (int64_t fr = 0; fr < 4; ++fr) {
         ASSERT_TRUE(md_system_extract_frame(ex, fr, &st));
-        const md_attribute_t* v = md_attributes_find(&st.attributes, STR_LIT("trr/velocity/atom/velocity"));
+        const md_attribute_t* v = md_attributes_find(&st.attributes, MD_STR_LIT("trr/velocity/atom/velocity"));
         if (fr % 2 == 0) {
             ASSERT_TRUE(v != NULL);
             EXPECT_EQ(0.5f * 4 * 10.0f, ((const float*)v->data)[4]);
@@ -267,5 +267,29 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
 
 UTEST(trr, atom_count_from_the_first_frame) {
     EXPECT_EQ(6495u, md_trr_file_atom_count(TRR_FILE));
-    EXPECT_EQ(0u, md_trr_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
+    EXPECT_EQ(0u, md_trr_file_atom_count(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
+}
+
+// A header of no atoms which still promises coordinates: the size of a value is the section's bytes over the atoms,
+// which was a division by zero. Refused instead.
+UTEST(trr, no_atoms_with_coordinates_is_refused) {
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
+    const md_str_t path = MD_STR_INIT("md_unittest_trr_no_atoms.trr");
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+    trr_put_i32(file, 1993);
+    trr_put_i32(file, 13);
+    trr_put_i32(file, 12);
+    md_file_write(file, "GMX_trn_file", 12);
+    const int32_t fields[13] = { 0, 0, 0, 0, 0, 0, 0, 36, 0, 0, 0, 0, 0 };   // x_size 36, natoms 0
+    for (int i = 0; i < 13; ++i) trr_put_i32(file, fields[i]);
+    trr_put_f32(file, 0.0f);
+    trr_put_f32(file, 0.0f);
+    for (int i = 0; i < 9; ++i) trr_put_f32(file, 1.0f);
+    md_file_close(&file);
+
+    md_system_t sys = {.alloc = arena};
+    EXPECT_FALSE(md_trr_system_publish_run(&sys, path, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    remove(path.ptr);
+    md_vm_arena_destroy(arena);
 }

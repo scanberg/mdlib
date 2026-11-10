@@ -10,18 +10,18 @@
 #define MAX_VALIDATION_SAMPLES 100
 
 UTEST(mmcif, 1fez) {
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
 
     if (result) {
         EXPECT_EQ(4097, sys.atom.count);
 
         EXPECT_EQ(7, md_atom_atomic_number(&sys.atom, 0));
-        EXPECT_STREQ("N", str_ptr(md_atom_name(&sys.atom, 0)));
+        EXPECT_STREQ("N", md_str_ptr(md_atom_name(&sys.atom, 0)));
         //EXPECT_STREQ("LYS", mol.atom.resname[0].buf);
         //EXPECT_EQ(1, mol.atom.resid[0]);
         //EXPECT_STREQ("A", mol.atom.chainid[0].buf);
@@ -36,11 +36,11 @@ UTEST(mmcif, 1fez) {
 }
 
 UTEST(mmcif, 2or2) {
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
     //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_INFER_ALL);
 
@@ -48,7 +48,7 @@ UTEST(mmcif, 2or2) {
         EXPECT_EQ(5382, sys.atom.count);
 
         EXPECT_EQ(7, md_atom_atomic_number(&sys.atom, 0));
-        EXPECT_STREQ("N", str_ptr(md_atom_name(&sys.atom, 0)));
+        EXPECT_STREQ("N", md_str_ptr(md_atom_name(&sys.atom, 0)));
         //EXPECT_STREQ("ALA", sys.atom.resname[0].buf);
         //EXPECT_EQ(1, sys.atom.resid[0]);
         //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
@@ -62,19 +62,19 @@ UTEST(mmcif, 2or2) {
 }
 
 UTEST(mmcif, 8g7u) {
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
-    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
 
     if (result) {
         EXPECT_EQ(14229, sys.atom.count);
 
         EXPECT_EQ(7, md_atom_atomic_number(&sys.atom, 0));
-        EXPECT_STREQ("N", str_ptr(md_atom_name(&sys.atom, 0)));
+        EXPECT_STREQ("N", md_str_ptr(md_atom_name(&sys.atom, 0)));
         //EXPECT_STREQ("PHE", sys.atom.resname[0].buf);
         //EXPECT_EQ(241, sys.atom.resid[0]);
         //EXPECT_STREQ("A", sys.atom.chainid[0].buf);
@@ -176,7 +176,7 @@ static bool part_is(const md_assembly_data_t* a, uint32_t part, const md_instanc
 UTEST(mmcif, assemblies) {
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t state = { .alloc = md_get_heap_allocator() };
-    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (str_t){assembly_cif, sizeof(assembly_cif) - 1}));
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (md_str_t){assembly_cif, sizeof(assembly_cif) - 1}, NULL));
     ASSERT_EQ(14, sys.atom.count);
     // A, B, and the waters of C each an instance of their own
     ASSERT_EQ(4, sys.instance.count);
@@ -184,12 +184,12 @@ UTEST(mmcif, assemblies) {
     const md_assembly_data_t* a = &sys.assembly;
     // 5 names an asym which has no atoms: it has nothing to show and is left out
     ASSERT_EQ(4, a->count);
-    EXPECT_STREQ("1", str_ptr(md_assembly_id(a, 0)));
-    EXPECT_STREQ("4", str_ptr(md_assembly_id(a, 3)));
+    EXPECT_STREQ("1", md_str_ptr(md_assembly_id(a, 0)));
+    EXPECT_STREQ("4", md_str_ptr(md_assembly_id(a, 3)));
     // The three operators, and the two of the product (1)(3), (2)(3)
     ASSERT_EQ(5, a->oper_count);
-    EXPECT_STREQ("1x3", str_ptr(LBL_TO_STR(a->oper_id[3])));
-    EXPECT_STREQ("2x3", str_ptr(LBL_TO_STR(a->oper_id[4])));
+    EXPECT_STREQ("1x3", md_str_ptr(LBL_TO_STR(a->oper_id[3])));
+    EXPECT_STREQ("2x3", md_str_ptr(LBL_TO_STR(a->oper_id[4])));
 
     // 1: A and the waters by the identity, B by the other
     {
@@ -242,7 +242,7 @@ UTEST(mmcif, assemblies) {
 UTEST(mmcif, assembly_key_value) {
     md_system_t sys = { .alloc = md_get_heap_allocator() };
     md_system_state_t state = { .alloc = md_get_heap_allocator() };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
     const md_assembly_data_t* a = &sys.assembly;
     ASSERT_EQ(1, a->count);
     ASSERT_EQ(1, a->group_count);
@@ -250,7 +250,7 @@ UTEST(mmcif, assembly_key_value) {
     const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(sys.instance.count, ir.end - ir.beg);
     const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, MEMCMP(&I, &a->oper_transform[0], sizeof(mat4_t)));
+    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[0], sizeof(mat4_t)));
     md_system_free(&sys);
     md_system_state_free(&state);
 }
@@ -262,39 +262,39 @@ UTEST(mmcif, tokenizer) {
     md_allocator_i* alloc = md_temp_allocator(temp);
 
     {
-        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+        md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-        char* buf = md_temp_alloc(temp, MEGABYTES(1));
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+        md_file_reader_t reader;
+        ASSERT_TRUE(md_file_reader_init(&reader, file, MD_MEGABYTES(1), alloc));
 
         mmcif_parse_state_t state = {
-            .reader = &reader,
+            .reader = &reader.r,
             .sb = md_str_writer_create(alloc),
         };
 
-        str_t tok;
+        md_str_t tok;
         
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("data_XXXX")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("data_XXXX")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("loop_")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("loop_")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.name")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_audit_author.name")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.pdbx_ordinal")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_audit_author.pdbx_ordinal")));
 
         ASSERT_TRUE(mmcif_peek_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("Morais, M.C.")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("Morais, M.C.")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("Morais, M.C.")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("Morais, M.C.")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("1")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("1")));
 
         for (size_t i = 0; i < 1000; ++i) {
             ASSERT_TRUE(mmcif_next_token(&tok, &state));
@@ -304,39 +304,39 @@ UTEST(mmcif, tokenizer) {
     }
 
     {
-        str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
+        md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-        char* buf = md_temp_alloc(temp, MEGABYTES(1));
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+        md_file_reader_t reader;
+        ASSERT_TRUE(md_file_reader_init(&reader, file, MD_MEGABYTES(1), alloc));
 
         mmcif_parse_state_t state = {
-            .reader = &reader,
+            .reader = &reader.r,
             .sb = md_str_writer_create(alloc),
         };
 
-        str_t tok;
+        md_str_t tok;
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("data_8G7U")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("data_8G7U")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("_entry.id")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_entry.id")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("8G7U")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("8G7U")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_conform.dict_name")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_audit_conform.dict_name")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("mmcif_pdbx.dic")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("mmcif_pdbx.dic")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_conform.dict_version")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_audit_conform.dict_version")));
 
         ASSERT_TRUE(mmcif_next_token(&tok, &state));
-        EXPECT_TRUE(str_eq(tok, STR_LIT("5.381")));
+        EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("5.381")));
 
         for (size_t i = 0; i < 1000; ++i) {
             ASSERT_TRUE(mmcif_next_token(&tok, &state));
@@ -355,7 +355,7 @@ UTEST(mmcif, parse_section) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    str_t section = STR_INIT(
+    md_str_t section = MD_STR_INIT(
         "_entity_poly.entity_id                      1 \n"
         "_entity_poly.type                           \"polypeptide(L)\" \n"
         "_entity_poly.nstd_linkage                   no \n"
@@ -378,7 +378,7 @@ UTEST(mmcif, parse_section) {
     );
 
     {
-        md_buffered_reader_t reader = md_buffered_reader_from_str(section);
+        md_reader_i reader = md_reader_from_str(section);
         mmcif_parse_state_t state = {
             .reader = &reader,
             .sb = md_str_writer_create(alloc),
@@ -389,42 +389,42 @@ UTEST(mmcif, parse_section) {
         EXPECT_EQ(8, sec.num_fields);
         EXPECT_EQ(1, sec.num_rows);
 
-        EXPECT_STREQ("_entity_poly.entity_id", str_ptr(sec.headers[0]));
-        EXPECT_STREQ("1", str_ptr(sec.values[0]));
+        EXPECT_STREQ("_entity_poly.entity_id", md_str_ptr(sec.headers[0]));
+        EXPECT_STREQ("1", md_str_ptr(sec.values[0]));
 
-        EXPECT_STREQ("_entity_poly.type", str_ptr(sec.headers[1]));
-        EXPECT_STREQ("polypeptide(L)", str_ptr(sec.values[1]));
+        EXPECT_STREQ("_entity_poly.type", md_str_ptr(sec.headers[1]));
+        EXPECT_STREQ("polypeptide(L)", md_str_ptr(sec.values[1]));
 
-        EXPECT_STREQ("_entity_poly.nstd_linkage", str_ptr(sec.headers[2]));
-        EXPECT_STREQ("no", str_ptr(sec.values[2]));
+        EXPECT_STREQ("_entity_poly.nstd_linkage", md_str_ptr(sec.headers[2]));
+        EXPECT_STREQ("no", md_str_ptr(sec.values[2]));
 
-        EXPECT_STREQ("_entity_poly.nstd_monomer", str_ptr(sec.headers[3]));
-        EXPECT_STREQ("no", str_ptr(sec.values[3]));
+        EXPECT_STREQ("_entity_poly.nstd_monomer", md_str_ptr(sec.headers[3]));
+        EXPECT_STREQ("no", md_str_ptr(sec.values[3]));
 
-        EXPECT_STREQ("_entity_poly.pdbx_seq_one_letter_code", str_ptr(sec.headers[4]));
+        EXPECT_STREQ("_entity_poly.pdbx_seq_one_letter_code", md_str_ptr(sec.headers[4]));
         EXPECT_STREQ(
             "KIEAVIFDWAGTTVDYGCFAPLEVFMEIFHKRGVAITAEEARKPMGLLKIDHVRALTEMPRIASEWNRVFRQLPTEADIQ\n"
             "EMYEEFEEILFAILPRYASPINAVKEVIASLRERGIKIGSTTGYTREMMDIVAKEAALQGYKPDFLVTPDDVPAGRPYPW\n"
             "MCYKNAMELGVYPMNHMIKVGDTVSDMKEGRNAGMWTVGVILGSSELGLTEEEVENMDSVELREKIEVVRNRFVENGAHF\n"
             "TIETMQELESVMEHIE",
-            str_ptr(sec.values[4]));
+            md_str_ptr(sec.values[4]));
 
-        EXPECT_STREQ("_entity_poly.pdbx_seq_one_letter_code_can", str_ptr(sec.headers[5]));
+        EXPECT_STREQ("_entity_poly.pdbx_seq_one_letter_code_can", md_str_ptr(sec.headers[5]));
         EXPECT_STREQ(
             "KIEAVIFDWAGTTVDYGCFAPLEVFMEIFHKRGVAITAEEARKPMGLLKIDHVRALTEMPRIASEWNRVFRQLPTEADIQ\n"
             "EMYEEFEEILFAILPRYASPINAVKEVIASLRERGIKIGSTTGYTREMMDIVAKEAALQGYKPDFLVTPDDVPAGRPYPW\n"
             "MCYKNAMELGVYPMNHMIKVGDTVSDMKEGRNAGMWTVGVILGSSELGLTEEEVENMDSVELREKIEVVRNRFVENGAHF\n"
             "TIETMQELESVMEHIE",
-            str_ptr(sec.values[5]));
+            md_str_ptr(sec.values[5]));
 
-        EXPECT_STREQ("_entity_poly.pdbx_strand_id", str_ptr(sec.headers[6]));
-        EXPECT_STREQ("A,B", str_ptr(sec.values[6]));
+        EXPECT_STREQ("_entity_poly.pdbx_strand_id", md_str_ptr(sec.headers[6]));
+        EXPECT_STREQ("A,B", md_str_ptr(sec.values[6]));
 
-        EXPECT_STREQ("_entity_poly.pdbx_target_identifier", str_ptr(sec.headers[7]));
-        EXPECT_STREQ("?", str_ptr(sec.values[7]));
+        EXPECT_STREQ("_entity_poly.pdbx_target_identifier", md_str_ptr(sec.headers[7]));
+        EXPECT_STREQ("?", md_str_ptr(sec.values[7]));
     }
 
-    str_t item_looped = STR_INIT(
+    md_str_t item_looped = MD_STR_INIT(
         "_entity.id \n"
         "_entity.type \n"
         "_entity.src_method \n"
@@ -444,7 +444,7 @@ UTEST(mmcif, parse_section) {
     );
 
     {
-        md_buffered_reader_t reader = md_buffered_reader_from_str(item_looped);
+        md_reader_i reader = md_reader_from_str(item_looped);
         mmcif_parse_state_t state = {
             .reader = &reader,
             .sb = md_str_writer_create(alloc),
@@ -457,47 +457,47 @@ UTEST(mmcif, parse_section) {
         EXPECT_EQ(10, sec.num_fields);
         EXPECT_EQ(5, sec.num_rows);
 
-        EXPECT_STREQ("_entity.id", str_ptr(sec.headers[0]));
-        EXPECT_STREQ("1", str_ptr(mmcif_section_value(&sec, 0, 0)));
-        EXPECT_STREQ("2", str_ptr(mmcif_section_value(&sec, 1, 0)));
-        EXPECT_STREQ("3", str_ptr(mmcif_section_value(&sec, 2, 0)));
-        EXPECT_STREQ("4", str_ptr(mmcif_section_value(&sec, 3, 0)));
-        EXPECT_STREQ("5", str_ptr(mmcif_section_value(&sec, 4, 0)));
+        EXPECT_STREQ("_entity.id", md_str_ptr(sec.headers[0]));
+        EXPECT_STREQ("1", md_str_ptr(mmcif_section_value(&sec, 0, 0)));
+        EXPECT_STREQ("2", md_str_ptr(mmcif_section_value(&sec, 1, 0)));
+        EXPECT_STREQ("3", md_str_ptr(mmcif_section_value(&sec, 2, 0)));
+        EXPECT_STREQ("4", md_str_ptr(mmcif_section_value(&sec, 3, 0)));
+        EXPECT_STREQ("5", md_str_ptr(mmcif_section_value(&sec, 4, 0)));
 
-        EXPECT_STREQ("_entity.type", str_ptr(sec.headers[1]));
-        EXPECT_STREQ("polymer", str_ptr(mmcif_section_value(&sec, 0, 1)));
-        EXPECT_STREQ("polymer", str_ptr(mmcif_section_value(&sec, 1, 1)));
-        EXPECT_STREQ("polymer", str_ptr(mmcif_section_value(&sec, 2, 1)));
-        EXPECT_STREQ("polymer", str_ptr(mmcif_section_value(&sec, 3, 1)));
-        EXPECT_STREQ("non-polymer", str_ptr(mmcif_section_value(&sec, 4, 1)));
+        EXPECT_STREQ("_entity.type", md_str_ptr(sec.headers[1]));
+        EXPECT_STREQ("polymer", md_str_ptr(mmcif_section_value(&sec, 0, 1)));
+        EXPECT_STREQ("polymer", md_str_ptr(mmcif_section_value(&sec, 1, 1)));
+        EXPECT_STREQ("polymer", md_str_ptr(mmcif_section_value(&sec, 2, 1)));
+        EXPECT_STREQ("polymer", md_str_ptr(mmcif_section_value(&sec, 3, 1)));
+        EXPECT_STREQ("non-polymer", md_str_ptr(mmcif_section_value(&sec, 4, 1)));
 
-        EXPECT_STREQ("_entity.src_method", str_ptr(sec.headers[2]));
-        EXPECT_STREQ("man", str_ptr(mmcif_section_value(&sec, 0, 2)));
-        EXPECT_STREQ("man", str_ptr(mmcif_section_value(&sec, 1, 2)));
-        EXPECT_STREQ("man", str_ptr(mmcif_section_value(&sec, 2, 2)));
-        EXPECT_STREQ("man", str_ptr(mmcif_section_value(&sec, 3, 2)));
-        EXPECT_STREQ("syn", str_ptr(mmcif_section_value(&sec, 4, 2)));
+        EXPECT_STREQ("_entity.src_method", md_str_ptr(sec.headers[2]));
+        EXPECT_STREQ("man", md_str_ptr(mmcif_section_value(&sec, 0, 2)));
+        EXPECT_STREQ("man", md_str_ptr(mmcif_section_value(&sec, 1, 2)));
+        EXPECT_STREQ("man", md_str_ptr(mmcif_section_value(&sec, 2, 2)));
+        EXPECT_STREQ("man", md_str_ptr(mmcif_section_value(&sec, 3, 2)));
+        EXPECT_STREQ("syn", md_str_ptr(mmcif_section_value(&sec, 4, 2)));
 
-        EXPECT_STREQ("_entity.pdbx_description", str_ptr(sec.headers[3]));
-        EXPECT_STREQ("Antiviral innate immune response receptor RIG-I", str_ptr(mmcif_section_value(&sec, 0, 3)));
-        EXPECT_STREQ("E3 ubiquitin-protein ligase RNF135", str_ptr(mmcif_section_value(&sec, 1, 3)));
-        EXPECT_STREQ("p3dsRNA24a", str_ptr(mmcif_section_value(&sec, 2, 3)));
-        EXPECT_STREQ("p3dsRNA24b", str_ptr(mmcif_section_value(&sec, 3, 3)));
-        EXPECT_STREQ("ZINC ION", str_ptr(mmcif_section_value(&sec, 4, 3)));
+        EXPECT_STREQ("_entity.pdbx_description", md_str_ptr(sec.headers[3]));
+        EXPECT_STREQ("Antiviral innate immune response receptor RIG-I", md_str_ptr(mmcif_section_value(&sec, 0, 3)));
+        EXPECT_STREQ("E3 ubiquitin-protein ligase RNF135", md_str_ptr(mmcif_section_value(&sec, 1, 3)));
+        EXPECT_STREQ("p3dsRNA24a", md_str_ptr(mmcif_section_value(&sec, 2, 3)));
+        EXPECT_STREQ("p3dsRNA24b", md_str_ptr(mmcif_section_value(&sec, 3, 3)));
+        EXPECT_STREQ("ZINC ION", md_str_ptr(mmcif_section_value(&sec, 4, 3)));
 
-        EXPECT_STREQ("_entity.formula_weight", str_ptr(sec.headers[4]));
-        EXPECT_STREQ("106740.555", str_ptr(mmcif_section_value(&sec, 0, 4)));
-        EXPECT_STREQ("47946.305", str_ptr(mmcif_section_value(&sec, 1, 4)));
-        EXPECT_STREQ("7885.581", str_ptr(mmcif_section_value(&sec, 2, 4)));
-        EXPECT_STREQ("7788.551", str_ptr(mmcif_section_value(&sec, 3, 4)));
-        EXPECT_STREQ("65.409", str_ptr(mmcif_section_value(&sec, 4, 4)));
+        EXPECT_STREQ("_entity.formula_weight", md_str_ptr(sec.headers[4]));
+        EXPECT_STREQ("106740.555", md_str_ptr(mmcif_section_value(&sec, 0, 4)));
+        EXPECT_STREQ("47946.305", md_str_ptr(mmcif_section_value(&sec, 1, 4)));
+        EXPECT_STREQ("7885.581", md_str_ptr(mmcif_section_value(&sec, 2, 4)));
+        EXPECT_STREQ("7788.551", md_str_ptr(mmcif_section_value(&sec, 3, 4)));
+        EXPECT_STREQ("65.409", md_str_ptr(mmcif_section_value(&sec, 4, 4)));
 
-        EXPECT_STREQ("_entity.pdbx_number_of_molecules", str_ptr(sec.headers[5]));
-        EXPECT_STREQ("2", str_ptr(mmcif_section_value(&sec, 0, 5)));
-        EXPECT_STREQ("2", str_ptr(mmcif_section_value(&sec, 1, 5)));
-        EXPECT_STREQ("1", str_ptr(mmcif_section_value(&sec, 2, 5)));
-        EXPECT_STREQ("1", str_ptr(mmcif_section_value(&sec, 3, 5)));
-        EXPECT_STREQ("2", str_ptr(mmcif_section_value(&sec, 4, 5)));
+        EXPECT_STREQ("_entity.pdbx_number_of_molecules", md_str_ptr(sec.headers[5]));
+        EXPECT_STREQ("2", md_str_ptr(mmcif_section_value(&sec, 0, 5)));
+        EXPECT_STREQ("2", md_str_ptr(mmcif_section_value(&sec, 1, 5)));
+        EXPECT_STREQ("1", md_str_ptr(mmcif_section_value(&sec, 2, 5)));
+        EXPECT_STREQ("1", md_str_ptr(mmcif_section_value(&sec, 3, 5)));
+        EXPECT_STREQ("2", md_str_ptr(mmcif_section_value(&sec, 4, 5)));
     }
 
     md_temp_end(temp);
@@ -507,11 +507,11 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
+    bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     ASSERT_TRUE(result);
     
     // Check basic structure properties
@@ -541,11 +541,11 @@ UTEST(mmcif, parse_2or2_comprehensive) {
 UTEST(mmcif, nonexistent_file) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/nonexistent.cif");
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, &sys_state, path));
+    EXPECT_FALSE(md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL));
     
     // Should be safe to free even when init failed
     md_system_free(&sys);
@@ -557,38 +557,38 @@ UTEST(mmcif, advance_to_next_control) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
+    md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-    char* buf = md_temp_alloc(temp, MEGABYTES(1));
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+    md_file_reader_t reader;
+    ASSERT_TRUE(md_file_reader_init(&reader, file, MD_MEGABYTES(1), alloc));
 
     mmcif_parse_state_t state = {
-        .reader = &reader,
+        .reader = &reader.r,
         .sb = md_str_writer_create(alloc),
     };
 
-    str_t tok;
+    md_str_t tok;
 
     EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
     EXPECT_TRUE(mmcif_next_token(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("data_XXXX")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("data_XXXX")));
 
     EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
     EXPECT_TRUE(mmcif_next_token(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("loop_")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("loop_")));
 
     EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
     EXPECT_TRUE(mmcif_next_token(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.name")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_audit_author.name")));
 
     EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
     EXPECT_TRUE(mmcif_next_token(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("_audit_author.pdbx_ordinal")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_audit_author.pdbx_ordinal")));
 
     EXPECT_TRUE(mmcif_advance_to_next_control_token(&state));
     EXPECT_TRUE(mmcif_next_token(&tok, &state));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("_struct.entry_id")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("_struct.entry_id")));
 
     md_temp_end(temp);
 }
@@ -625,7 +625,7 @@ UTEST(mmcif, atom_site_many_columns) {
         "ATOM 2 C CA . ALA A 1 1 ? 4.000 5.000 6.000 1 A\n",
         "ATOM 3 C C  . ALA A 1 1 ? 7.000 8.000 9.000 1 A\n",
     };
-    for (size_t r = 0; r < ARRAY_SIZE(rows); ++r) {
+    for (size_t r = 0; r < MD_COUNTOF(rows); ++r) {
         for (int i = 0; i < num_extra; ++i) {
             md_str_writer_push_cstr(&sb, "x ");
         }
@@ -635,9 +635,9 @@ UTEST(mmcif, atom_site_many_columns) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &sys_state, md_str_writer_to_str(&sb)));
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &sys_state, md_str_writer_to_str(&sb), NULL));
     ASSERT_EQ(3, sys.atom.count);
-    EXPECT_STREQ("CA", str_ptr(md_atom_name(&sys.atom, 1)));
+    EXPECT_STREQ("CA", md_str_ptr(md_atom_name(&sys.atom, 1)));
     EXPECT_NEAR(7.0f, sys_state.xyz[2].x, 1.0e-5f);
     EXPECT_NEAR(8.0f, sys_state.xyz[2].y, 1.0e-5f);
     EXPECT_NEAR(9.0f, sys_state.xyz[2].z, 1.0e-5f);
@@ -649,11 +649,11 @@ UTEST(mmcif, atom_site_many_columns) {
 // 259-260 of chain A, and 62-71 of chain B. Each leaves a break between the residues on either side, whose numbers (the
 // residues of the sequence) count the missing ones exactly. The residues missing at the ends of the chains leave none.
 UTEST(mmcif, chain_breaks) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
 
     const struct {
         const char* chain;
@@ -665,9 +665,9 @@ UTEST(mmcif, chain_breaks) {
     size_t found = 0;
     for (size_t i = 0; i + 1 < sys.residue.count; ++i) {
         if (!(md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER)) continue;
-        if (found < ARRAY_SIZE(expected)) {
+        if (found < MD_COUNTOF(expected)) {
             const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&sys, i);
-            EXPECT_TRUE(str_eq_cstr(md_system_instance_id(&sys, (size_t)inst), expected[found].chain));
+            EXPECT_TRUE(md_str_eq_cstr(md_system_instance_id(&sys, (size_t)inst), expected[found].chain));
             EXPECT_EQ(expected[found].before, md_system_residue_seq_id(&sys, i));
             EXPECT_EQ(expected[found].after,  md_system_residue_seq_id(&sys, i + 1));
             EXPECT_TRUE(md_system_residue_flags(&sys, i + 1) & MD_RESIDUE_FLAG_BREAK_BEFORE);
@@ -677,7 +677,7 @@ UTEST(mmcif, chain_breaks) {
         }
         ++found;
     }
-    EXPECT_EQ(ARRAY_SIZE(expected), found);
+    EXPECT_EQ(MD_COUNTOF(expected), found);
 
     md_vm_arena_destroy(alloc);
 }

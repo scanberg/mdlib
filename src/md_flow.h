@@ -45,8 +45,8 @@ typedef struct md_flow_node_t {
     uint32_t level;     // 0 = coarsest. Purely descriptive; the hierarchy is 'parent'.
     float    weight;    // share of this node's column total, [0,1]
     vec4_t   color;
-    str_t    label;     // NOT owned - must outlive the graph
-    str_t    sublabel;  // optional second line, same ownership rule; {0} for none
+    md_str_t    label;     // NOT owned - must outlive the graph
+    md_str_t    sublabel;  // optional second line, same ownership rule; {0} for none
     uint64_t key;       // stable identity across rebuilds; interaction state keys off this
     uint32_t flags;     // md_flow_node_flag_t
 } md_flow_node_t;

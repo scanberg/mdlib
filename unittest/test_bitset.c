@@ -589,7 +589,7 @@ UTEST(bitset, serialization_matches_former_bitfield) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     const uint32_t bits[] = { 0, 1, 5, 63, 64, 65, 1000, 4095 };
-    md_bitset_t a = md_bitset_from_indices(bits, ARRAY_SIZE(bits), alloc);
+    md_bitset_t a = md_bitset_from_indices(bits, MD_COUNTOF(bits), alloc);
     EXPECT_TRUE(golden_round_trip("KQMAAAABAAcAIwBgAACAQA/gaAAAAeA0cQQAAAAAgA==", a));
 
     EXPECT_TRUE(golden_round_trip("JAEAAAD/IAAAAOAtAAQAAAAAAA==", md_bitset_range(0, 32)));
@@ -630,7 +630,7 @@ UTEST(bitset, serialization_large) {
     static ref_t r;
     const uint32_t bases[] = { (1u << 24) - 100, (1u << 24), 100000000u, 3000000000u, MD_BITSET_MAX_INDEX - 64 - REF_N };
     for (int round = 0; round < 200; ++round) {
-        r.base = bases[round % ARRAY_SIZE(bases)];
+        r.base = bases[round % MD_COUNTOF(bases)];
         gen(r.ref, round % SHAPE_COUNT);
         md_bitset_t s = make(&r, alloc);
         const size_t cap = md_bitset_serialize_size_in_bytes(s);
@@ -659,7 +659,7 @@ UTEST(bitset, serialization_large) {
     // Sparse far out stays small: the blocks between the members are not written
     {
         const uint32_t idx[] = { 5, 20000000, 99999999 };
-        md_bitset_t sp = md_bitset_from_indices(idx, ARRAY_SIZE(idx), alloc);
+        md_bitset_t sp = md_bitset_from_indices(idx, MD_COUNTOF(idx), alloc);
         uint8_t bytes[512];
         ASSERT_LE(md_bitset_serialize_size_in_bytes(sp), sizeof(bytes));
         const size_t n = md_bitset_serialize(bytes, sp);

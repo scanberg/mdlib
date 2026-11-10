@@ -121,7 +121,7 @@ enum {
     F_DKDL, F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED, F_DVDL_RESTRAINT, F_DVDL_TEMPERATURE,
     F_NRE
 };
-STATIC_ASSERT(F_NRE == 95, "The interaction function list must match GROMACS'");
+MD_STATIC_ASSERT(F_NRE == 95, "The interaction function list must match GROMACS'");
 
 // Function types added after the oldest supported version: a file older than 'version' does not
 // have the type, so its interaction list is absent and every type number from 'ftype' up is one
@@ -258,7 +258,7 @@ static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / size) ? md_xdr_take(&r->xdr, count * size) : NULL;
     if (!p) {
         rd_fail(r);
-        MEMSET(dst, 0, count * sizeof(float));
+        md_memset(dst, 0, count * sizeof(float));
         return;
     }
     if (r->dbl) {
@@ -269,8 +269,8 @@ static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {
 }
 
 // The string is a view into the buffer
-static str_t rd_string(tpr_reader_t* r) {
-    str_t str = {0};
+static md_str_t rd_string(tpr_reader_t* r) {
+    md_str_t str = {0};
     if (r->in_memory) {
         uint64_t len;
         md_xdr_read_u64(&r->xdr, &len);
@@ -279,7 +279,7 @@ static str_t rd_string(tpr_reader_t* r) {
             rd_fail(r);
             return str;
         }
-        str = (str_t){ (const char*)p, (size_t)len };
+        str = (md_str_t){ (const char*)p, (size_t)len };
     } else {
         // GROMACS writes the length including the terminating zero, followed by an XDR string
         // (length without it, then the characters padded to a multiple of 4)
@@ -297,20 +297,20 @@ static str_t rd_string(tpr_reader_t* r) {
 
 typedef struct tpr_symtab_t {
     size_t count;
-    str_t* str;
+    md_str_t* str;
 } tpr_symtab_t;
 
-static str_t rd_symstr(tpr_reader_t* r, const tpr_symtab_t* symtab) {
+static md_str_t rd_symstr(tpr_reader_t* r, const tpr_symtab_t* symtab) {
     const int32_t idx = rd_int(r);
     if (idx < 0 || (size_t)idx >= symtab->count) {
         rd_fail(r);
-        return (str_t){0};
+        return (md_str_t){0};
     }
     return symtab->str[idx];
 }
 
 static inline bool ftype_absent(int ftype, int version) {
-    for (size_t k = 0; k < ARRAY_SIZE(ftupd); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(ftupd); ++k) {
         if (version < ftupd[k].version && ftype == ftupd[k].ftype) {
             return true;
         }
@@ -531,7 +531,7 @@ static inline void push_pair(md_array(md_atom_pair_t)* pairs, int32_t a, int32_t
         return;
     }
     if (a == b) return;
-    md_atom_pair_t pair = {{ MIN(a, b), MAX(a, b) }};
+    md_atom_pair_t pair = {{ MD_MIN(a, b), MD_MAX(a, b) }};
     md_array_push(*pairs, pair, alloc);
 }
 
@@ -740,7 +740,7 @@ static void rd_moltype(tpr_reader_t* r, md_tpr_moltype_t* mt, const tpr_symtab_t
     }
 }
 
-static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
+static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_string, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     // ## Symbol table: every name in the topology, referred to by index from here on
     tpr_symtab_t symtab = {0};
     {
@@ -749,7 +749,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
             rd_fail(r);
             return;
         }
-        str_t* views = md_alloc(temp_alloc, (count + 1) * sizeof(str_t));
+        md_str_t* views = md_alloc(temp_alloc, (count + 1) * sizeof(md_str_t));
         size_t total = version_string.len;
         for (size_t i = 0; i < count && rd_ok(r); ++i) {
             views[i] = rd_string(r);
@@ -761,11 +761,11 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         data->str_data = md_alloc(alloc, total + 1);
         data->str_size = total + 1;
         char* dst = data->str_data;
-        MEMCPY(dst, version_string.ptr, version_string.len);
-        data->version_string = (str_t){ dst, version_string.len };
+        md_memcpy(dst, version_string.ptr, version_string.len);
+        data->version_string = (md_str_t){ dst, version_string.len };
         dst += version_string.len;
         for (size_t i = 0; i < count; ++i) {
-            MEMCPY(dst, views[i].ptr, views[i].len);
+            md_memcpy(dst, views[i].ptr, views[i].len);
             views[i].ptr = dst;
             dst += views[i].len;
         }
@@ -806,13 +806,13 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         }
         data->lj = md_array_create(md_tpr_lj_t, num_pairs, alloc);
         data->num_nb_types = num_nb_types;
-        if (num_pairs) MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+        if (num_pairs) md_memset(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         bool all_lj = num_pairs > 0;
 
         for (size_t i = 0; i < num_types && rd_ok(r); ++i) {
             // The type numbers in the file are those of the version that wrote it
             int ftype = functype[i];
-            for (size_t k = 0; k < ARRAY_SIZE(ftupd); ++k) {
+            for (size_t k = 0; k < MD_COUNTOF(ftupd); ++k) {
                 if (r->version < ftupd[k].version && ftype >= ftupd[k].ftype) {
                     ftype += 1;
                 }
@@ -831,7 +831,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         data->nb_is_lj = all_lj;
         if (!all_lj && num_pairs) {
             // A table of mixed or other forms is not Lennard-Jones: leave nothing half filled in
-            MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+            md_memset(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         }
     }
 
@@ -843,7 +843,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
             return;
         }
         data->moltypes = md_array_create(md_tpr_moltype_t, count, alloc);
-        if (count) MEMSET(data->moltypes, 0, count * sizeof(md_tpr_moltype_t));
+        if (count) md_memset(data->moltypes, 0, count * sizeof(md_tpr_moltype_t));
         data->num_moltypes = count;
         for (size_t i = 0; i < count && rd_ok(r); ++i) {
             rd_moltype(r, &data->moltypes[i], &symtab, alloc);
@@ -924,14 +924,60 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
         skip_reals(r, num_grids * extent * extent * 4);
     }
 
-    // Atom groups: the atom index lists of each group type, the group names, and the per atom
-    // group numbers of each group type
-    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES; ++i) {
-        skip_ints(r, rd_count(r));
+    // ## Atom groups (GROMACS' do_groups): the groups of each type as indices into the group names, the group names as
+    // indices into the symbol table, and the group of each atom of each type (none: every atom is in the type's first)
+    MD_STATIC_ASSERT(TPR_NUM_ATOM_GROUP_TYPES == MD_TPR_GROUP_TYPE_COUNT, "The group types of the file");
+    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES && rd_ok(r); ++i) {
+        const size_t count = rd_count(r);
+        if (!rd_ok(r) || count > 256 || count > md_xdr_remaining(&r->xdr) / 4) {
+            rd_fail(r);
+            return;
+        }
+        md_tpr_groups_t* g = &data->groups[i];
+        g->count = count;
+        g->name_idx = count ? md_array_create(int32_t, count, alloc) : NULL;
+        for (size_t k = 0; k < count; ++k) g->name_idx[k] = rd_int(r);
     }
-    skip_ints(r, rd_count(r));
-    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES; ++i) {
-        skip_uchars(r, rd_count(r));
+    {
+        const size_t count = rd_count(r);
+        if (!rd_ok(r) || count > md_xdr_remaining(&r->xdr) / 4) {
+            rd_fail(r);
+            return;
+        }
+        data->num_group_names = count;
+        data->group_names = count ? md_array_create(md_str_t, count, alloc) : NULL;
+        for (size_t k = 0; k < count && rd_ok(r); ++k) data->group_names[k] = rd_symstr(r, &symtab);
+    }
+    for (int i = 0; i < TPR_NUM_ATOM_GROUP_TYPES && rd_ok(r); ++i) {
+        md_tpr_groups_t* g = &data->groups[i];
+        for (size_t k = 0; k < g->count; ++k) {
+            if (g->name_idx[k] < 0 || (size_t)g->name_idx[k] >= data->num_group_names) {
+                MD_LOG_ERROR("TPR: A group of type %d names group %d of %zu", i, g->name_idx[k], data->num_group_names);
+                rd_fail(r);
+                return;
+            }
+        }
+        const size_t count = rd_count(r);
+        if (!rd_ok(r) || (count && count != num_atoms)) {
+            MD_LOG_ERROR("TPR: The groups of type %d are given for %zu atoms of %zu", i, count, num_atoms);
+            rd_fail(r);
+            return;
+        }
+        if (!count) continue;
+        if (count > md_xdr_remaining(&r->xdr) / (r->in_memory ? 1 : 4)) {
+            rd_fail(r);
+            return;
+        }
+        g->atom_group = md_array_create(uint8_t, count, alloc);
+        for (size_t a = 0; a < count; ++a) {
+            const uint8_t v = rd_uchar(r);
+            if (v >= g->count) {
+                MD_LOG_ERROR("TPR: Atom %zu is in group %u of type %d, which has %zu", a, v, i, g->count);
+                rd_fail(r);
+                return;
+            }
+            g->atom_group[a] = v;
+        }
     }
 
     if (r->version >= tpxv_StoreNonBondedInteractionExclusionGroup) {
@@ -1123,9 +1169,9 @@ static void rd_ir_nonbonded(tpr_reader_t* r, md_tpr_nonbonded_t* nb) {
 // ### FILE ###
 
 bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t size, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
-    MEMSET(data, 0, sizeof(md_tpr_data_t));
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
+    md_memset(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
 
     if (!buffer || size == 0) {
@@ -1140,8 +1186,8 @@ bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t si
     // ## Header (always XDR)
     tpr_reader_t hdr = { .xdr = md_xdr_init(buffer, size) };
 
-    const str_t version_string = rd_string(&hdr);
-    if (!rd_ok(&hdr) || !str_begins_with(version_string, STR_LIT("VERSION"))) {
+    const md_str_t version_string = rd_string(&hdr);
+    if (!rd_ok(&hdr) || !md_str_begins_with(version_string, MD_STR_LIT("VERSION"))) {
         MD_LOG_ERROR("TPR: Not a GROMACS run input file");
         goto done;
     }
@@ -1226,7 +1272,7 @@ bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t si
     if (has_box) {
         float box[9];
         rd_reals(&body, box, 9);
-        MEMCPY(data->box, box, sizeof(box));
+        md_memcpy(data->box, box, sizeof(box));
         data->has_box = true;
         if (version >= tpxv_Pre96Version51) skip_reals(&body, 9);  // Relative box
         skip_reals(&body, 9);                                       // Box velocity
@@ -1291,13 +1337,13 @@ done:
     return result;
 }
 
-bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+bool md_tpr_data_parse_file(md_tpr_data_t* data, md_str_t filename, md_allocator_i* alloc) {
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("TPR: Could not open file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("TPR: Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
 
@@ -1308,9 +1354,9 @@ bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i*
 
     void* buffer = size > 0 ? md_alloc(temp_alloc, (size_t)size) : NULL;
     if (!buffer) {
-        MD_LOG_ERROR("TPR: File '" STR_FMT "' is empty or too large", STR_ARG(filename));
+        MD_LOG_ERROR("TPR: File '" MD_STR_FMT "' is empty or too large", MD_STR_ARG(filename));
     } else if (md_file_read(file, buffer, (size_t)size) != (size_t)size) {
-        MD_LOG_ERROR("TPR: Failed to read file '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("TPR: Failed to read file '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         result = md_tpr_data_parse_buffer(data, buffer, (size_t)size, alloc);
     }
@@ -1321,8 +1367,8 @@ bool md_tpr_data_parse_file(md_tpr_data_t* data, str_t filename, md_allocator_i*
 }
 
 void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
+    MD_ASSERT(data);
+    MD_ASSERT(alloc);
     for (size_t i = 0; i < md_array_size(data->moltypes); ++i) {
         md_array_free(data->moltypes[i].atoms, alloc);
         md_array_free(data->moltypes[i].residues, alloc);
@@ -1330,7 +1376,7 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
         md_array_free(data->moltypes[i].elastic_bonds, alloc);
         const md_tpr_moltype_t* mt = &data->moltypes[i];
         if (mt->excl_offset) {
-            md_free(alloc, mt->excl, sizeof(uint32_t) * MAX(mt->excl_offset[mt->num_atoms], 1));
+            md_free(alloc, mt->excl, sizeof(uint32_t) * MD_MAX(mt->excl_offset[mt->num_atoms], 1));
             md_free(alloc, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
         }
     }
@@ -1339,12 +1385,17 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
     md_array_free(data->intermolecular_bonds, alloc);
     md_array_free(data->intermolecular_elastic_bonds, alloc);
     md_array_free(data->lj, alloc);
+    for (int i = 0; i < MD_TPR_GROUP_TYPE_COUNT; ++i) {
+        md_array_free(data->groups[i].name_idx, alloc);
+        md_array_free(data->groups[i].atom_group, alloc);
+    }
+    md_array_free(data->group_names, alloc);
     md_array_free(data->x, alloc);
     md_array_free(data->v, alloc);
     if (data->str_data) {
         md_free(alloc, data->str_data, data->str_size);
     }
-    MEMSET(data, 0, sizeof(md_tpr_data_t));
+    md_memset(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
 }
 
@@ -1419,7 +1470,7 @@ static bool tpr_mass_fits_element(md_atomic_number_t z, float mass) {
 // no at.num, typical of hand written ligand parameters). The name says which element is meant and
 // the mass has to agree with it; failing that, a mass that is exactly an element's. Zero when
 // neither holds, which is what a coarse grained bead gives.
-static md_atomic_number_t tpr_infer_atomic_number(str_t name, str_t res_name, size_t res_size, float mass) {
+static md_atomic_number_t tpr_infer_atomic_number(md_str_t name, md_str_t res_name, size_t res_size, float mass) {
     const md_atomic_number_t z_label = md_atomic_number_infer_from_label(name, res_name, res_size);
     if (tpr_mass_fits_element(z_label, mass)) {
         return z_label;
@@ -1427,10 +1478,66 @@ static md_atomic_number_t tpr_infer_atomic_number(str_t name, str_t res_name, si
     return md_atomic_number_infer_from_mass(mass);
 }
 
+// The groups of every type the simulation used, with their roles. A type which is one group of every atom named 'rest' is
+// one the mdp did not name groups for, and adds nothing.
+static void tpr_system_add_groups(md_system_t* sys, const md_tpr_data_t* data) {
+    MD_STATIC_ASSERT((int)MD_TPR_GROUP_TYPE_COUNT == (int)MD_GROUP_ROLE_COUNT, "A role for each group type, in the same order");
+    const size_t N = data->num_atoms;
+    if (!N || N > UINT32_MAX) return;
+    md_allocator_i* heap = md_get_heap_allocator();
+
+    for (int t = 0; t < MD_TPR_GROUP_TYPE_COUNT; ++t) {
+        const md_tpr_groups_t* g = &data->groups[t];
+        if (g->count == 0) continue;
+        if (g->count == 1 && md_str_eq(data->group_names[g->name_idx[0]], MD_STR_LIT("rest"))) continue;
+
+        // Where each group's atoms begin and end, so each is built over its own span only
+        uint32_t beg[256], end[256];
+        for (size_t k = 0; k < g->count; ++k) { beg[k] = UINT32_MAX; end[k] = 0; }
+        if (g->atom_group) {
+            for (uint32_t a = 0; a < (uint32_t)N; ++a) {
+                const uint8_t k = g->atom_group[a];
+                if (a < beg[k]) beg[k] = a;
+                end[k] = a + 1;
+            }
+        } else {
+            beg[0] = 0;
+            end[0] = (uint32_t)N;
+        }
+
+        uint32_t idx[256];
+        size_t num_idx = 0;
+        for (size_t k = 0; k < g->count; ++k) {
+            md_bitset_t atoms = md_bitset_empty_set();
+            uint64_t* words = NULL;
+            size_t num_words = 0;
+            if (beg[k] < end[k]) {
+                if (!g->atom_group) {
+                    atoms = md_bitset_range(beg[k], end[k]);
+                } else {
+                    const uint32_t base = beg[k] & ~63u;
+                    num_words = ((size_t)end[k] - base + 63) / 64;
+                    words = md_alloc(heap, num_words * sizeof(uint64_t));
+                    md_memset(words, 0, num_words * sizeof(uint64_t));
+                    for (uint32_t a = beg[k]; a < end[k]; ++a) {
+                        if (g->atom_group[a] == k) words[(a - base) >> 6] |= 1ull << ((a - base) & 63);
+                    }
+                    atoms = md_bitset_from_words(words, num_words, base, heap);
+                }
+            }
+            // An empty group is kept: its place in the order is what an energy file names the pairs by
+            idx[num_idx++] = (uint32_t)md_system_group_add(sys, data->group_names[g->name_idx[k]], atoms, 0);
+            md_bitset_free(&atoms, heap);
+            if (words) md_free(heap, words, num_words * sizeof(uint64_t));
+        }
+        md_system_group_set_role(sys, (md_group_role_t)t, idx, num_idx);
+    }
+}
+
 bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(data);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    MD_ASSERT(data);
 
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -1461,7 +1568,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         const md_tpr_moltype_t* mt = &data->moltypes[t];
         if ((int64_t)mt->num_residues > max_renum) {
             for (size_t r = 0; r < mt->num_residues; ++r) {
-                next_renum = MAX(next_renum, mt->residues[r].nr);
+                next_renum = MD_MAX(next_renum, mt->residues[r].nr);
             }
         }
     }
@@ -1476,14 +1583,14 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     //   - Otherwise the particle is a coarse grained bead (or a massless virtual site): no element, and
     //     a radius from the Lennard-Jones parameters of its non-bonded type when it has any.
     // The predefined bead tables then add what they know about the beads (backbone, side chain...).
-    const size_t capacity = ROUND_UP(num_atoms, 16);
+    const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // ### Elements
     // An atom without an atomic number is either a coarse grained bead or an atom whose type was
@@ -1499,16 +1606,22 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         size_t num_inferred = 0;    // ... with one inferred here
         size_t num_types_inferred = 0;
         size_t* mt_counts = md_temp_alloc_array(temp, size_t, 3 * (data->num_moltypes + 1));
-        MEMSET(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
+        md_memset(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
+
+        // What an inference gives, by what it is of: once per molecule type atom is once per atom where every molecule
+        // is a type of its own (as many coarse grained systems are written), and the same few names and masses then make
+        // up millions of atoms. By the names' views of the symbol table (the same name, the same view; the length too, as
+        // an empty name's view is where the next name begins) and the residue's size and the mass.
+        md_hashmap32_t inferred = { .allocator = md_temp_allocator(temp) };
 
         for (size_t t = 0; t < data->num_moltypes; ++t) {
             const md_tpr_moltype_t* mt = &data->moltypes[t];
             moltype_z[t] = md_temp_alloc_array(temp, md_atomic_number_t, mt->num_atoms + 1);
             moltype_inferred[t] = md_temp_alloc_array(temp, bool, mt->num_atoms + 1);
-            MEMSET(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
+            md_memset(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
 
             uint32_t* res_size = md_temp_alloc_array(temp, uint32_t, mt->num_residues + 1);
-            MEMSET(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
+            md_memset(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
             for (size_t i = 0; i < mt->num_atoms; ++i) {
                 res_size[mt->atoms[i].residue] += 1;
             }
@@ -1526,7 +1639,20 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     counts[1] += 1;
                 } else if (atom->ptype == MD_TPR_PTYPE_ATOM) {
                     const md_tpr_residue_t* res = &mt->residues[atom->residue];
-                    z = tpr_infer_atomic_number(atom->name, res->name, res_size[atom->residue], atom->mass);
+                    const struct {
+                        const char* name;
+                        const char* res_name;
+                        uint32_t name_len, res_name_len, res_size;
+                        float mass;
+                    } of = { atom->name.ptr, res->name.ptr, (uint32_t)atom->name.len, (uint32_t)res->name.len, res_size[atom->residue], atom->mass };
+                    const uint64_t key = md_hash64(&of, sizeof(of), 0);
+                    const uint32_t* known = md_hashmap_get(&inferred, key);
+                    if (known) {
+                        z = (md_atomic_number_t)*known;
+                    } else {
+                        z = tpr_infer_atomic_number(atom->name, res->name, res_size[atom->residue], atom->mass);
+                        md_hashmap_add(&inferred, key, (uint32_t)z);
+                    }
                     if (z) {
                         counts[2] += 1;
                         moltype_inferred[t][i] = true;
@@ -1660,7 +1786,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             next_renum += mb->nmol * (int32_t)mt->num_residues;
         }
     }
-    ASSERT(ai == num_atoms);
+    MD_ASSERT(ai == num_atoms);
     md_array_push(sys->residue.atom_offset, (uint32_t)num_atoms, alloc);    // Final sentinel
     if (sys->instance.count) {
         md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);     // Final sentinel
@@ -1727,13 +1853,18 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             sys->bond.pairs[bi] = data->intermolecular_elastic_bonds[k];
             sys->bond.flags[bi] = elastic_flags;
         }
-        ASSERT(bi == count);
+        MD_ASSERT(bi == count);
 
         // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
         // same as when the system is read from coordinates. md_util_system_infer_molecules keeps it with its
         // molecule. Sites that interact (coarse grained beads) keep theirs.
-        size_t kept = 0;
-        for (size_t k = 0; k < count; ++k) {
+        // Of the types first: a system of no charge sites (most) keeps every bond, without a look at each
+        bool any_site = false;
+        for (size_t t = 0; t < sys->atom.type.count && !any_site; ++t) {
+            any_site = md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_VIRTUAL_SITE;
+        }
+        size_t kept = any_site ? 0 : count;
+        for (size_t k = 0; any_site && k < count; ++k) {
             const md_atom_pair_t pair = sys->bond.pairs[k];
             if (md_atom_particle_kind(&sys->atom, pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
                 md_atom_particle_kind(&sys->atom, pair.idx[1]) == MD_PARTICLE_VIRTUAL_SITE) continue;
@@ -1757,14 +1888,17 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     // ## Attributes
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, num_atoms);
+    md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, num_atoms);
     if (data->v) {
-        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), md_unit_div(md_unit_nanometer(), md_unit_picosecond()), 3, data->v, num_atoms);
+        md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/velocity"), md_unit_div(md_unit_nanometer(), md_unit_picosecond()), 3, data->v, num_atoms);
     }
 
-    if (!str_empty(data->name)) {
-        sys->description = str_copy(data->name, alloc);
+    if (!md_str_empty(data->name)) {
+        sys->description = md_str_copy(data->name, alloc);
     }
+
+    // ## Groups
+    tpr_system_add_groups(sys, data);
 
     // ## Non-bonded force field, when its interactions can be evaluated pair by pair
     {
@@ -1780,8 +1914,8 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     return true;
 }
 
-bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
+bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 

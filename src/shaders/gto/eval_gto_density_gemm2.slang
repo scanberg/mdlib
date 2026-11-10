@@ -142,7 +142,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         float rho = 0.0f;
         [ForceUnroll] for (int k = 0; k < TPX; ++k) rho += g2_smem[q * TPX + uint(k)];
         uint  p   = p0 + q;
-        uint3 vox = blk * uint3(8u, 8u, 8u) + uint3(p & 7u, (p >> 3) & 7u, p >> 6);
+        uint3 vox = blk * BLOCK_SHAPE + block_voxel(p);
         if (all(vox < args.grid_dim.xyz)) {
             float prev = gto_op_reads_prev(args.operation) ? args.out_tex[vox] : 0.0f;
             args.out_tex[vox] = gto_apply_op(rho, prev, args.operation);

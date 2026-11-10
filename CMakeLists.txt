@@ -68,11 +68,11 @@ set(CORE_FILES
   src/core/md_base64.h
   src/core/md_bitset.c
   src/core/md_bitset.h
-  src/core/md_bitop.inl
   src/core/md_coord_stream.h
   src/core/md_common.c
   src/core/md_common.h
   src/core/md_compiler.h
+  src/core/md_executor.h
   src/core/md_fifo.c
   src/core/md_fifo.h
   src/core/md_fft.c
@@ -85,7 +85,6 @@ set(CORE_FILES
   src/core/md_handle.c
   src/core/md_handle.h
   src/core/md_hash.h
-  src/core/md_intrinsics.h
   src/core/md_json.c
   src/core/md_json.h
   src/core/md_linear_allocator.c
@@ -104,7 +103,9 @@ set(CORE_FILES
   src/core/md_spatial_acc.c
   src/core/md_spatial_acc.h
   src/core/md_writer.c
+  src/core/md_reader.c
   src/core/md_writer.h
+  src/core/md_reader.h
   src/core/md_str.c
   src/core/md_str.h
   src/core/md_tracking_allocator.c
@@ -153,6 +154,9 @@ set(SRC_FILES
   src/md_gto_iso_gpu.inl
   src/md_itp.c
   src/md_itp.h
+  src/md_ndx.c
+  src/md_gmx_restypes.inl
+  src/md_ndx.h
   src/md_dcd.c
   src/md_dcd.h
   src/md_topology_build.c
@@ -314,12 +318,20 @@ set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
 set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
+  src/shaders/gto/eval_gto_localization.slang
   src/shaders/gto/eval_gto_mo.slang
   src/shaders/gto/eval_gto_density_gemm2_128x32.slang
   src/shaders/gto/eval_gto_density_gemm2_128x64.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32.slang
+  # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
+  src/shaders/gto/eval_gto_localization_2d.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x32_2d.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x64_2d.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
 )
 
 set(GEN_FILES)
@@ -636,7 +648,7 @@ endif()
 
 set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
-    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
+    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
@@ -697,10 +709,13 @@ if (MD_ENABLE_GPU)
   set(GTO_SLANG_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_screen.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
   )
   foreach(GTO_SRC ${GTO_SLANG_FILES})
     get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
@@ -717,6 +732,13 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
+    ENTRIES   count_main phi_main dgather_main
+    DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
+  compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )

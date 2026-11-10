@@ -29,12 +29,12 @@ extern "C" {
 // and nothing is published otherwise: the file belongs to some other run.
 
 // An mdout file: '4.  RESULTS' or an 'NSTEP =' record near its top
-bool md_amber_energy_file_is_mdout(str_t filename);
+bool md_amber_energy_file_is_mdout(md_str_t filename);
 
 // An mden file: it starts with "L0  Nsteps"
-bool md_amber_energy_file_is_mden(str_t filename);
+bool md_amber_energy_file_is_mden(md_str_t filename);
 
-bool md_amber_energy_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run);
+bool md_amber_energy_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run);
 
 #ifdef __cplusplus
 }

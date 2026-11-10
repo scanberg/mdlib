@@ -82,7 +82,7 @@ static inline md_array(ref_pair_t) ref_contacts(const md_contact_desc_t* desc, c
                     p.atom_pairs_hi += 1;
                     if (d < limit - REF_EPS) {
                         p.atom_pairs_lo += 1;
-                        p.d_min = MIN(p.d_min, d);
+                        p.d_min = MD_MIN(p.d_min, d);
                     }
                 }
             }

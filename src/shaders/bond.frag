@@ -5,10 +5,10 @@
 // Bonds raycast within the quads of bond.vert.
 //   Covalent bonds: a capsule (the cylinder of the bond with a half sphere at each end). With bond orders (bond.vert),
 //                   double and triple bonds are two or three thinner capsules and the spheres at the ends; the nearest
-//                   hit counts.
+//                   hit counts. A coordinate bond is a thinner dashed cylinder between the spheres at its ends.
 //   WEAK_BONDS:     weak bonds, a dashed cylinder: the number of dashes bond.vert gives it (DASHED LINES), with flat
-//                   ends, the first starting at pa and the last ending at pb, each dash u_dash_length / (u_dash_length +
-//                   u_gap_length) of the period of the pattern.
+//                   ends, the first starting at the sphere of the atom at pa and the last ending at that at pb, each
+//                   dash the fraction of the period of the pattern bond.vert gives it (dash.y), or a solid one.
 //   BOND_PARTNERS:  the dashed partner of a delocalized bond (or of an aromatic bond in no circle, ring.vert), a dashed
 //                   cylinder as the weak bonds, which colors and picks as the part of its bond it spans.
 //   CHAIN_GAPS:     the gap of a chain over a break, a dashed cylinder as the weak bonds, which picks as the gap.
@@ -37,6 +37,7 @@
 #define KIND_PLAIN      0u
 #define KIND_DOUBLE     1u
 #define KIND_TRIPLE     2u
+#define KIND_COORDINATE 5u
 
 #ifndef GL_ARB_shading_language_packing
 vec4 unpackUnorm4x8(uint p) {
@@ -72,6 +73,11 @@ layout (std140) uniform ubo {
     uint  u_gap_index_base;
     uint  u_bond_kinds;     // u_buf_bond_order is bound: the kind of every bond is known
     uint  u_elastic_bonds;  // Draw the elastic bonds (KIND_ELASTIC), which are left out otherwise
+    float u_end_radius;
+    float u_end_radius_scale;
+    float u_pad0;
+    float u_pad1;
+    vec4  u_dash_style[4];
 };
 
 in Fragment {
@@ -90,9 +96,8 @@ in Fragment {
     flat vec3  side;
     flat vec2  sub;
 #endif
-#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
-    flat uint  dash_count;
-#endif
+    flat uint  dash_count;              // DASHED LINES (bond.vert), 0 for none
+    flat vec4  dash;                    // Radius, fill, the fractions of the bond before and after the dashes
     smooth vec3 view_pos;
 } in_frag;
 
@@ -228,6 +233,18 @@ float sphIntersect(vec3 ro, vec3 rd, vec3 c, float r) {
     return h < 0.0 ? -1.0 : -b - sqrt(h);
 }
 
+// Ray against the dashes of the bond (in_frag.dash, dash_count), (t, normal) with t < 0 for a miss, and in seg_t where
+// along the bond from pa to pb
+vec4 dashes_intersect(vec3 ro, vec3 rd, vec3 pa, vec3 pb, out float seg_t) {
+    seg_t = 0.0;
+    if (in_frag.dash_count == 0u) return vec4(-1.0);
+    vec3 da = mix(pa, pb, in_frag.dash.z);
+    vec3 db = mix(pa, pb, 1.0 - in_frag.dash.w);
+    vec4 hit = dashed_cylinder_intersect(ro, rd, da, db, in_frag.dash.x, in_frag.dash_count, in_frag.dash.y, seg_t);
+    seg_t = mix(in_frag.dash.z, 1.0 - in_frag.dash.w, seg_t);
+    return hit;
+}
+
 // compute normal and segment t value (how far along the)
 vec4 capNormalAndSeg( in vec3 pos, in vec3 a, in vec3 b, in float r )
 {
@@ -252,8 +269,7 @@ void main() {
 
 #if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
     float seg_t;
-    float dash = max(u_dash_length, 1.0e-4);
-    vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, in_frag.dash_count, dash / (dash + max(u_gap_length, 0.0)), seg_t);
+    vec4 hit = dashes_intersect(ro, rd, pa, pb, seg_t);
     float t = hit.x;
     if (t < 0.0) {
         discard;
@@ -267,7 +283,24 @@ void main() {
     float t;
     vec3  view_normal;
     float seg_t;
-    if (in_frag.kind == KIND_DOUBLE || in_frag.kind == KIND_TRIPLE) {
+    if (in_frag.kind == KIND_COORDINATE) {
+        // The dashes, and the spheres at the ends: the joints of a licorice (also of a metal with no other bond), within
+        // the balls of a ball and stick
+        vec4 hit = dashes_intersect(ro, rd, pa, pb, seg_t);
+        t = hit.x;
+        view_normal = hit.yzw;
+        for (int e = 0; e < 2; ++e) {
+            float te = sphIntersect(ro, rd, e == 0 ? pa : pb, r);
+            if (te >= 0.0 && (t < 0.0 || te < t)) {
+                t = te;
+                view_normal = (ro + rd * t - (e == 0 ? pa : pb)) / r;
+                seg_t = float(e);
+            }
+        }
+        if (t < 0.0) {
+            discard;
+        }
+    } else if (in_frag.kind == KIND_DOUBLE || in_frag.kind == KIND_TRIPLE) {
         // Thinner sticks at -offset, +offset (and 0 for a triple bond) along the side
         vec3  o  = in_frag.side * in_frag.sub.x;
         float rs = in_frag.sub.y;

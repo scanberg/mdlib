@@ -21,6 +21,7 @@ typedef enum vial_level_t {
     VIAL_LEVEL_TAIL,            // a tail of a lipid (md_lipid_data_t), with its branches and hydrogens
     VIAL_LEVEL_HEAD,            // a head of a lipid: a connected part of what is not a tail, with its hydrogens
     VIAL_LEVEL_RING,            // a ring of the bonds (md_ring_data_t): 3 to 7 atoms, the smallest rings
+    VIAL_LEVEL_GROUP,           // a group the data gives (md_group_data_t): any particles, overlapping other groups
 } vial_level_t;
 
 // The kinds of a part, as the reference names them. mdlib's non-polymer parts are told apart here: a lipid when its
@@ -70,9 +71,14 @@ typedef struct vial_sys_t {
     uint32_t    num_rings;
     uint32_t*   ring_offset;    // [ring + 1]
     uint32_t*   ring_atoms;
+    // Groups, once needed: the particles of each, ascending
+    bool        have_groups;
+    uint32_t    num_groups;
+    uint32_t*   group_offset;   // [group + 1]
+    uint32_t*   group_atoms;
 } vial_sys_t;
 
-str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
+md_str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
 int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t res);   // -1 for none
 
 // Builds the view of a system; false without one
@@ -144,13 +150,14 @@ typedef enum vial_key_t {
     VIAL_KEY_ID,
     VIAL_KEY_SCOPE,
     VIAL_KEY_SIZE,              // rings: the number of atoms
+    VIAL_KEY_ROLE,              // groups: what the simulation used them for (md_group_role_name)
     VIAL_KEY_COUNT
 } vial_key_t;
 
 // One value a keyword matches: a string (a glob where the keyword takes one), an int, or an inclusive range
 typedef struct vial_match_t {
     uint8_t     kind;           // 0 string, 1 int, 2 range
-    str_t       s;
+    md_str_t       s;
     int64_t     lo, hi;
 } vial_match_t;
 
@@ -171,21 +178,24 @@ typedef struct vial_select_t {
 // The keywords of a selector, in the order the reference lists them; false for a keyword it does not take
 bool        vial_select_takes(uint8_t level, uint8_t key);
 const char* vial_select_keywords(uint8_t level);    // "id" for chains, for E0202's message
-uint8_t     vial_select_key(str_t keyword);         // VIAL_KEY_NONE when it is none of them
+uint8_t     vial_select_key(md_str_t keyword);         // VIAL_KEY_NONE when it is none of them
 const char* vial_select_name(uint8_t level);        // "residues"
 
 // Whether a kind= value is known for the level; the known values for E0206's message
-bool        vial_select_kind_known(uint8_t level, str_t kind);
+bool        vial_select_kind_known(uint8_t level, md_str_t kind);
 const char* vial_select_kinds(uint8_t level);
+
+// Whether a role= value is the name of a role of groups (md_group_role_name)
+bool        vial_select_role_known(md_str_t role);
 
 // Evaluates a selector: one set for particles, one set per unit otherwise, in the system's order
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc);
 
 // The predefined sets: protein, nucleic, water, ion, lipid, backbone, sidechain, system; NULL for another name
-vial_sets_t* vial_select_predefined(vial_sys_t* s, str_t name, md_allocator_i* alloc);
+vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc);
 
 // For W0602: the chains among the residues a resid filter matches within the scope, up to two
 uint32_t vial_select_resid_chains(const vial_sys_t* s, const vial_filter_t* f, const vial_sets_t* scope, int32_t out[2]);
 
 // Glob matching with * and ?, as the name keywords take it
-bool vial_glob(str_t pattern, str_t text);
+bool vial_glob(md_str_t pattern, md_str_t text);

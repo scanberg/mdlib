@@ -21,11 +21,11 @@ static const md_system_t* tubulin(void) {
     static bool loaded, ok;
     if (!loaded) {
         loaded = true;
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t st = {.alloc = alloc};
-        ok = md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) &&
-             md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
+        ok = md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
+             md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL);
     }
     return ok ? &sys : NULL;
 }
@@ -33,7 +33,7 @@ static const md_system_t* tubulin(void) {
 // The heavy atoms of the first residue of a name
 static size_t residue_atoms(int32_t* out, size_t cap, const md_system_t* sys, const char* name) {
     for (size_t r = 0; r < sys->residue.count; ++r) {
-        if (!str_eq_cstr(md_system_residue_name(sys, r), name)) continue;
+        if (!md_str_eq_cstr(md_system_residue_name(sys, r), name)) continue;
         const md_urange_t ra = md_system_residue_atom_range(sys, r);
         size_t n = 0;
         for (uint32_t i = ra.beg; i < ra.end && n < cap; ++i) if (md_atom_atomic_number(&sys->atom, i) != 1) out[n++] = (int32_t)i;
@@ -48,9 +48,9 @@ UTEST(smiles_write, canonical_and_found_again) {
     const md_system_t* sys = tubulin();
     ASSERT_TRUE(sys != NULL);
     const char* names[] = {"GTP", "GDP", "VLB", "PHE", "TRP", "HIS", "ARG", "PRO"};
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     uint32_t seed = 7;
-    for (size_t k = 0; k < ARRAY_SIZE(names); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(names); ++k) {
         int32_t atoms[256];
         const size_t n = residue_atoms(atoms, 256, sys, names[k]);
         ASSERT_GT(n, 2u);
@@ -72,10 +72,10 @@ UTEST(smiles_write, canonical_and_found_again) {
         // Read back, with every atom; and the residue is among what it matches
         md_smiles_t parsed = {0};
         md_smiles_error_t err = {0};
-        EXPECT_TRUE(md_smiles_parse(&parsed, str_from_cstr(ref), alloc, &err));
+        EXPECT_TRUE(md_smiles_parse(&parsed, md_str_from_cstr(ref), alloc, &err));
         EXPECT_EQ(n, parsed.num_atoms);
         md_match_query_t q = {0};
-        ASSERT_TRUE(md_match_query_init_smiles(&q, str_from_cstr(ref), alloc, NULL));
+        ASSERT_TRUE(md_match_query_init_smiles(&q, md_str_from_cstr(ref), alloc, NULL));
         md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ALL};
         md_match_result_t res = {0};
         ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));

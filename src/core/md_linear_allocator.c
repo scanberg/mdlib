@@ -8,9 +8,9 @@
 #define LINEAR_MAGIC 0x8a7ccbba81980234
 #define HEADER_SIZE (sizeof(linear_alloc_t) + sizeof(md_allocator_i))
 #define VALIDATE_AND_EXTRACT_LINEAR(alloc) \
-    ASSERT(alloc); \
+    MD_ASSERT(alloc); \
     linear_alloc_t* linear = (linear_alloc_t*)alloc->inst; \
-    ASSERT(linear && linear->magic == LINEAR_MAGIC);
+    MD_ASSERT(linear && linear->magic == LINEAR_MAGIC);
 
 typedef struct linear_alloc_t {
     size_t pos;
@@ -22,7 +22,7 @@ typedef struct linear_alloc_t {
 static inline void* linear_push(linear_alloc_t* linear, size_t size, size_t alignment) {
     void* mem = 0;
     size_t pos_addr = (size_t)linear->ptr + linear->pos;
-    size_t alignment_size = ALIGN_TO(pos_addr, alignment) - pos_addr;
+    size_t alignment_size = MD_ALIGN_TO(pos_addr, alignment) - pos_addr;
 
     if (linear->pos + alignment_size + size <= linear->cap) {
         mem = (char*)linear->ptr + linear->pos + alignment_size;
@@ -32,7 +32,7 @@ static inline void* linear_push(linear_alloc_t* linear, size_t size, size_t alig
 }
 
 static inline void linear_set_pos(linear_alloc_t* linear, size_t pos) {
-    ASSERT(HEADER_SIZE <= pos && pos <= linear->pos);
+    MD_ASSERT(HEADER_SIZE <= pos && pos <= linear->pos);
     linear->pos = pos;
 }
 
@@ -40,15 +40,15 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_
     (void)file;
     (void)line;
     linear_alloc_t* linear = (linear_alloc_t*)alloc;
-    ASSERT(linear && linear->magic == LINEAR_MAGIC);
+    MD_ASSERT(linear && linear->magic == LINEAR_MAGIC);
 
     // Realloc or Free
     if (old_size) {
-        ASSERT(ptr);
+        MD_ASSERT(ptr);
         if ((char*)linear->ptr + linear->pos == (char*)ptr + old_size) {
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
             const int64_t new_cur = linear->pos + diff;
-            ASSERT(0 <= new_cur && new_cur < (int64_t)linear->cap);
+            MD_ASSERT(0 <= new_cur && new_cur < (int64_t)linear->cap);
             linear->pos = new_cur;
             return ptr;
         }
@@ -61,7 +61,7 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_
         // Realloc
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         void* new_ptr = linear_push(linear, new_size, alignment);
-        MEMCPY(new_ptr, ptr, old_size);
+        md_memcpy(new_ptr, ptr, old_size);
         return new_ptr;
     }
 
@@ -71,7 +71,7 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_
 }
 
 md_allocator_i* md_linear_allocator_create(void* backing_buffer, size_t buffer_capacity) {
-    ASSERT(buffer_capacity > HEADER_SIZE);
+    MD_ASSERT(buffer_capacity > HEADER_SIZE);
     linear_alloc_t* linear = backing_buffer;
     linear->pos = HEADER_SIZE;
     linear->cap = buffer_capacity;
@@ -87,12 +87,12 @@ md_allocator_i* md_linear_allocator_create(void* backing_buffer, size_t buffer_c
 
 size_t md_linear_allocator_avail_bytes(md_allocator_i* alloc) {
     VALIDATE_AND_EXTRACT_LINEAR(alloc)
-        return (size_t)MAX(0, (int64_t)linear->cap - (int64_t)linear->pos);
+        return (size_t)MD_MAX(0, (int64_t)linear->cap - (int64_t)linear->pos);
 }
 
 void* md_linear_allocator_push_aligned(md_allocator_i* alloc, size_t size, size_t align) {
     VALIDATE_AND_EXTRACT_LINEAR(alloc)
-    ASSERT(IS_POW2(align));
+    MD_ASSERT(MD_IS_POW2(align));
     return linear_push(linear, size, align);
 }
 

@@ -76,8 +76,8 @@ static bool trexio_read_f64_attr(double* out, hid_t loc, const char* name) {
 }
 
 // A string attribute, fixed or variable length. Returns a copy in 'alloc', empty when absent.
-static str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* alloc) {
-    str_t result = {0};
+static md_str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* alloc) {
+    md_str_t result = {0};
     if (H5Aexists(loc, name) <= 0) {
         return result;
     }
@@ -95,7 +95,7 @@ static str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* a
     if (H5Tis_variable_str(type)) {
         char* var = NULL;
         if (H5Aread(attr, type, &var) >= 0 && var) {
-            result = str_copy_cstr(var, alloc);
+            result = md_str_copy_cstr(var, alloc);
             H5free_memory(var);
         }
     } else {
@@ -103,9 +103,9 @@ static str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i* a
         if (size > 0) {
             char* buf = md_alloc(alloc, size + 1);
             if (buf) {
-                MEMSET(buf, 0, size + 1);
+                md_memset(buf, 0, size + 1);
                 if (H5Aread(attr, type, buf) >= 0) {
-                    result = str_copy_cstrn(buf, strnlen(buf, size), alloc);
+                    result = md_str_copy_cstrn(buf, strnlen(buf, size), alloc);
                 }
             }
         }
@@ -142,9 +142,16 @@ static size_t trexio_dataset_count(hid_t loc, const char* name) {
     return count;
 }
 
-// Reads a whole numeric dataset into 'dst', which must hold trexio_dataset_count elements.
-static bool trexio_read_dataset(void* dst, hid_t loc, const char* name, hid_t mem_type) {
+// Reads a whole numeric dataset into 'dst', which holds 'count' elements: a dataset of any other size is
+// refused, since the sizes come from the file's own scalars and a file that disagrees with itself would
+// otherwise be read past the end of 'dst'.
+static bool trexio_read_dataset(void* dst, hid_t loc, const char* name, hid_t mem_type, size_t count) {
     if (!trexio_has(loc, name)) {
+        return false;
+    }
+    const size_t stored = trexio_dataset_count(loc, name);
+    if (stored != count) {
+        MD_LOG_ERROR("TREXIO: dataset '%s' holds %zu values where %zu were expected", name, stored, count);
         return false;
     }
     hid_t dset = H5Dopen(loc, name, H5P_DEFAULT);
@@ -160,7 +167,7 @@ static bool trexio_read_dataset(void* dst, hid_t loc, const char* name, hid_t me
 }
 
 // A dataset of strings, one per element. Returns the count written, 0 on absence or failure.
-static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const char* name, md_allocator_i* alloc) {
+static size_t trexio_read_str_dataset(md_str_t dst[], size_t cap, hid_t loc, const char* name, md_allocator_i* alloc) {
     if (!trexio_has(loc, name)) {
         return 0;
     }
@@ -179,10 +186,10 @@ static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const 
             H5Tset_size(mem_type, H5T_VARIABLE);
             char** raw = (char**)md_alloc(alloc, sizeof(char*) * cap);
             if (raw) {
-                MEMSET(raw, 0, sizeof(char*) * cap);
+                md_memset(raw, 0, sizeof(char*) * cap);
                 if (H5Dread(dset, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
-                        dst[i] = raw[i] ? str_copy_cstr(raw[i], alloc) : (str_t){0};
+                        dst[i] = raw[i] ? md_str_copy_cstr(raw[i], alloc) : (md_str_t){0};
                     }
                     written = cap;
                     H5Dvlen_reclaim(mem_type, H5Dget_space(dset), H5P_DEFAULT, raw);
@@ -192,10 +199,10 @@ static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const 
             const size_t size = H5Tget_size(file_type);
             char* raw = (size > 0) ? (char*)md_alloc(alloc, size * cap + 1) : NULL;
             if (raw) {
-                MEMSET(raw, 0, size * cap + 1);
+                md_memset(raw, 0, size * cap + 1);
                 if (H5Dread(dset, file_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
-                        dst[i] = str_copy_cstrn(raw + i * size, strnlen(raw + i * size, size), alloc);
+                        dst[i] = md_str_copy_cstrn(raw + i * size, strnlen(raw + i * size, size), alloc);
                     }
                     written = cap;
                 }
@@ -216,10 +223,10 @@ static size_t trexio_read_str_dataset(str_t dst[], size_t cap, hid_t loc, const 
 typedef struct trexio_t {
     md_allocator_i* alloc;
 
-    str_t code;
-    str_t package_version;
-    str_t basis_type;
-    str_t mo_type;
+    md_str_t code;
+    md_str_t package_version;
+    md_str_t basis_type;
+    md_str_t mo_type;
 
     int64_t electron_num;
     int64_t electron_up_num;
@@ -241,17 +248,18 @@ typedef struct trexio_t {
     md_array(uint32_t) shell_l;
     md_array(uint32_t) shell_prim_offset;
     md_array(uint32_t) shell_prim_count;
+    md_array(double)   shell_norm;  // || N_s sum_k f_k a_k r^l exp(-g_k r^2) || over all space, as the file states it
     md_array(double)   alpha;
     md_array(double)   coeff;
 
     size_t             num_ao;
-    md_array(double)   ao_scale;   // file AO -> md_gto unit normalised AO, per AO
+    md_array(double)   ao_scale;   // ao_normalization, per AO
 
     size_t             num_mo;
     md_array(double)   mo_energy;
     md_array(double)   mo_occupation;
     md_array(int64_t)  mo_spin;
-    md_array(str_t)    mo_symmetry;
+    md_array(md_str_t)    mo_symmetry;
     md_array(double)   mo_coefficient;  // [num_mo][num_ao], in the FILE's AO order
 
 } trexio_t;
@@ -285,22 +293,22 @@ static bool trexio_read_nucleus(trexio_t* trexio, hid_t file) {
 
     double* charge = (double*)md_alloc(trexio->alloc, sizeof(double) * trexio->num_atoms);
     double* coord  = (double*)md_alloc(trexio->alloc, sizeof(double) * trexio->num_atoms * 3);
-    str_t*  label  = (str_t*) md_alloc(trexio->alloc, sizeof(str_t)  * trexio->num_atoms);
+    md_str_t*  label  = (md_str_t*) md_alloc(trexio->alloc, sizeof(md_str_t)  * trexio->num_atoms);
 
     if (charge && coord && label
-        && trexio_read_dataset(charge, group, "nucleus_charge", H5T_NATIVE_DOUBLE)
-        && trexio_read_dataset(coord,  group, "nucleus_coord",  H5T_NATIVE_DOUBLE)) {
+        && trexio_read_dataset(charge, group, "nucleus_charge", H5T_NATIVE_DOUBLE, trexio->num_atoms)
+        && trexio_read_dataset(coord,  group, "nucleus_coord",  H5T_NATIVE_DOUBLE, trexio->num_atoms * 3)) {
 
-        MEMSET(label, 0, sizeof(str_t) * trexio->num_atoms);
+        md_memset(label, 0, sizeof(md_str_t) * trexio->num_atoms);
         trexio_read_str_dataset(label, trexio->num_atoms, group, "nucleus_label", trexio->alloc);
 
         for (size_t i = 0; i < trexio->num_atoms; ++i) {
             // The label is authoritative where there is one: an ECP calculation states the charge
             // the electrons see, which is not the atomic number.
-            md_atomic_number_t z = str_empty(label[i]) ? 0 : md_atomic_number_from_symbol(label[i], true);
+            md_atomic_number_t z = md_str_empty(label[i]) ? 0 : md_atomic_number_from_symbol(label[i], true);
             if (z == 0) {
                 const double rounded = round(charge[i]);
-                z = (md_atomic_number_t)CLAMP((int)rounded, 0, 118);
+                z = (md_atomic_number_t)MD_CLAMP((int)rounded, 0, 118);
             }
             const dvec3_t xyz = {
                 coord[i * 3 + 0] * TREXIO_BOHR_TO_ANGSTROM,
@@ -362,8 +370,8 @@ static bool trexio_read_basis(trexio_t* trexio, hid_t file) {
     int64_t prim_num  = 0;
 
     trexio->basis_type = trexio_read_str_attr(group, "basis_type", trexio->alloc);
-    if (!str_empty(trexio->basis_type) && !str_eq_cstr_ignore_case(trexio->basis_type, "gaussian")) {
-        MD_LOG_ERROR("TREXIO: basis_type is '" STR_FMT "'; this library evaluates Gaussian basis sets only", STR_ARG(trexio->basis_type));
+    if (!md_str_empty(trexio->basis_type) && !md_str_eq_cstr_ignore_case(trexio->basis_type, "gaussian")) {
+        MD_LOG_ERROR("TREXIO: basis_type is '" MD_STR_FMT "'; this library evaluates Gaussian basis sets only", MD_STR_ARG(trexio->basis_type));
         result = false;
         goto done;
     }
@@ -391,18 +399,18 @@ static bool trexio_read_basis(trexio_t* trexio, hid_t file) {
         for (size_t i = 0; i < trexio->num_shells; ++i) { shell_factor[i] = 1.0; r_power[i] = 0; }
         for (size_t i = 0; i < trexio->num_prims;  ++i) { prim_factor[i]  = 1.0; }
 
-        result = trexio_read_dataset(nucleus_index, group, "basis_nucleus_index", H5T_NATIVE_INT64)
-              && trexio_read_dataset(ang_mom,       group, "basis_shell_ang_mom", H5T_NATIVE_INT64)
-              && trexio_read_dataset(shell_index,   group, "basis_shell_index",   H5T_NATIVE_INT64)
-              && trexio_read_dataset(exponent,      group, "basis_exponent",      H5T_NATIVE_DOUBLE)
-              && trexio_read_dataset(coefficient,   group, "basis_coefficient",   H5T_NATIVE_DOUBLE);
+        result = trexio_read_dataset(nucleus_index, group, "basis_nucleus_index", H5T_NATIVE_INT64, trexio->num_shells)
+              && trexio_read_dataset(ang_mom,       group, "basis_shell_ang_mom", H5T_NATIVE_INT64, trexio->num_shells)
+              && trexio_read_dataset(shell_index,   group, "basis_shell_index",   H5T_NATIVE_INT64, trexio->num_prims)
+              && trexio_read_dataset(exponent,      group, "basis_exponent",      H5T_NATIVE_DOUBLE, trexio->num_prims)
+              && trexio_read_dataset(coefficient,   group, "basis_coefficient",   H5T_NATIVE_DOUBLE, trexio->num_prims);
     }
     if (result) {
         if (trexio_has(group, "basis_shell_factor")) {
-            trexio_read_dataset(shell_factor, group, "basis_shell_factor", H5T_NATIVE_DOUBLE);
+            trexio_read_dataset(shell_factor, group, "basis_shell_factor", H5T_NATIVE_DOUBLE, trexio->num_shells);
         }
         if (trexio_has(group, "basis_prim_factor")) {
-            trexio_read_dataset(prim_factor, group, "basis_prim_factor", H5T_NATIVE_DOUBLE);
+            trexio_read_dataset(prim_factor, group, "basis_prim_factor", H5T_NATIVE_DOUBLE, trexio->num_prims);
         } else {
             // TREXIO defines it as 1 when absent, which means the contraction is stated over
             // UNNORMALISED primitives. Every writer this reader has met emits it, so say so rather
@@ -410,7 +418,7 @@ static bool trexio_read_basis(trexio_t* trexio, hid_t file) {
             MD_LOG_INFO("TREXIO: basis_prim_factor is absent; the contraction is read as stated, over unnormalised primitives");
         }
         if (trexio_has(group, "basis_r_power")) {
-            trexio_read_dataset(r_power, group, "basis_r_power", H5T_NATIVE_INT64);
+            trexio_read_dataset(r_power, group, "basis_r_power", H5T_NATIVE_INT64, trexio->num_shells);
             for (size_t s = 0; s < trexio->num_shells; ++s) {
                 if (r_power[s] != 0) {
                     MD_LOG_ERROR("TREXIO: shell %zu has basis_r_power %d; this library evaluates r^l Gaussians only", s, (int)r_power[s]);
@@ -465,7 +473,7 @@ static bool trexio_read_basis(trexio_t* trexio, hid_t file) {
                 offset += trexio->shell_prim_count[s];
             }
             uint32_t* cursor = (uint32_t*)md_alloc(trexio->alloc, sizeof(uint32_t) * trexio->num_shells);
-            MEMSET(cursor, 0, sizeof(uint32_t) * trexio->num_shells);
+            md_memset(cursor, 0, sizeof(uint32_t) * trexio->num_shells);
             for (size_t p = 0; p < trexio->num_prims; ++p) {
                 const size_t s = (size_t)shell_index[p];
                 const size_t k = trexio->shell_prim_offset[s] + cursor[s]++;
@@ -505,7 +513,7 @@ static bool trexio_read_ao(trexio_t* trexio, hid_t file) {
             trexio->ao_scale[i] = 1.0;
         }
         if (trexio_has(group, "ao_normalization") && trexio_dataset_count(group, "ao_normalization") == trexio->num_ao) {
-            trexio_read_dataset(trexio->ao_scale, group, "ao_normalization", H5T_NATIVE_DOUBLE);
+            trexio_read_dataset(trexio->ao_scale, group, "ao_normalization", H5T_NATIVE_DOUBLE, trexio->num_ao);
         }
     }
 
@@ -532,7 +540,7 @@ static void trexio_read_mo(trexio_t* trexio, hid_t file) {
     trexio->num_mo = (size_t)mo_num;
 
     md_array_resize(trexio->mo_coefficient, trexio->num_mo * trexio->num_ao, trexio->alloc);
-    if (!trexio_read_dataset(trexio->mo_coefficient, group, "mo_coefficient", H5T_NATIVE_DOUBLE)) {
+    if (!trexio_read_dataset(trexio->mo_coefficient, group, "mo_coefficient", H5T_NATIVE_DOUBLE, trexio->num_mo * trexio->num_ao)) {
         md_array_free(trexio->mo_coefficient, trexio->alloc);
         trexio->mo_coefficient = NULL;
         trexio->num_mo = 0;
@@ -543,26 +551,26 @@ static void trexio_read_mo(trexio_t* trexio, hid_t file) {
     md_array_resize(trexio->mo_occupation, trexio->num_mo, trexio->alloc);
     md_array_resize(trexio->mo_energy,     trexio->num_mo, trexio->alloc);
     md_array_resize(trexio->mo_spin,       trexio->num_mo, trexio->alloc);
-    MEMSET(trexio->mo_occupation, 0, sizeof(double)  * trexio->num_mo);
-    MEMSET(trexio->mo_energy,     0, sizeof(double)  * trexio->num_mo);
-    MEMSET(trexio->mo_spin,       0, sizeof(int64_t) * trexio->num_mo);
+    md_memset(trexio->mo_occupation, 0, sizeof(double)  * trexio->num_mo);
+    md_memset(trexio->mo_energy,     0, sizeof(double)  * trexio->num_mo);
+    md_memset(trexio->mo_spin,       0, sizeof(int64_t) * trexio->num_mo);
 
-    if (!trexio_has(group, "mo_occupation") || !trexio_read_dataset(trexio->mo_occupation, group, "mo_occupation", H5T_NATIVE_DOUBLE)) {
+    if (!trexio_has(group, "mo_occupation") || !trexio_read_dataset(trexio->mo_occupation, group, "mo_occupation", H5T_NATIVE_DOUBLE, trexio->num_mo)) {
         md_array_free(trexio->mo_occupation, trexio->alloc);
         trexio->mo_occupation = NULL;
     }
-    if (!trexio_has(group, "mo_energy") || !trexio_read_dataset(trexio->mo_energy, group, "mo_energy", H5T_NATIVE_DOUBLE)) {
+    if (!trexio_has(group, "mo_energy") || !trexio_read_dataset(trexio->mo_energy, group, "mo_energy", H5T_NATIVE_DOUBLE, trexio->num_mo)) {
         md_array_free(trexio->mo_energy, trexio->alloc);
         trexio->mo_energy = NULL;
     }
-    if (!trexio_has(group, "mo_spin") || !trexio_read_dataset(trexio->mo_spin, group, "mo_spin", H5T_NATIVE_INT64)) {
+    if (!trexio_has(group, "mo_spin") || !trexio_read_dataset(trexio->mo_spin, group, "mo_spin", H5T_NATIVE_INT64, trexio->num_mo)) {
         md_array_free(trexio->mo_spin, trexio->alloc);
         trexio->mo_spin = NULL;
     }
 
     if (trexio_has(group, "mo_symmetry")) {
         md_array_resize(trexio->mo_symmetry, trexio->num_mo, trexio->alloc);
-        MEMSET(trexio->mo_symmetry, 0, sizeof(str_t) * trexio->num_mo);
+        md_memset(trexio->mo_symmetry, 0, sizeof(md_str_t) * trexio->num_mo);
         if (trexio_read_str_dataset(trexio->mo_symmetry, trexio->num_mo, group, "mo_symmetry", trexio->alloc) != trexio->num_mo) {
             md_array_free(trexio->mo_symmetry, trexio->alloc);
             trexio->mo_symmetry = NULL;
@@ -576,7 +584,21 @@ static void trexio_read_mo(trexio_t* trexio, hid_t file) {
 // Into md_gto's convention
 // ---------------------------------------------------------------------------
 
+// || sum_k c_k r^l exp(-a_k r^2) || over all space: the norm of the radial part TREXIO states, with the r^l its
+// angular polynomials carry, and no angular factor
+static double trexio_radial_norm(uint32_t l, const double* a, const double* c, uint32_t n) {
+    const double g = tgamma(l + 1.5);
+    double sum = 0.0;
+    for (uint32_t p = 0; p < n; ++p) {
+        for (uint32_t q = 0; q < n; ++q) {
+            sum += c[p] * c[q] * g / (2.0 * pow(a[p] + a[q], l + 1.5));
+        }
+    }
+    return sum > 0.0 ? sqrt(4.0 * 3.14159265358979323846 * sum) : 0.0;
+}
+
 static bool trexio_normalise_basis(trexio_t* trexio) {
+    md_array_resize(trexio->shell_norm, trexio->num_shells, trexio->alloc);
     for (size_t s = 0; s < trexio->num_shells; ++s) {
         const uint32_t l = trexio->shell_l[s];
         double* a = trexio->alpha + trexio->shell_prim_offset[s];
@@ -602,6 +624,7 @@ static bool trexio_normalise_basis(trexio_t* trexio) {
             MD_LOG_ERROR("TREXIO: shell %zu has a contraction that does not normalise", s);
             return false;
         }
+        trexio->shell_norm[s] = trexio_radial_norm(l, a, c, n);
         for (uint32_t p = 0; p < n; ++p) {
             c[p] /= norm;
         }
@@ -609,11 +632,23 @@ static bool trexio_normalise_basis(trexio_t* trexio) {
     return true;
 }
 
-// The factor that takes a coefficient stated against the FILE's AO onto md_gto's unit normalised
-// one. ao_normalization is TREXIO's per function factor; the Cartesian part is the ratio between
-// normalising a shell once, against its (l,0,0) monomial, and normalising every monomial in it -
-// see md_qm_cart_coeff_factor. The two compose, and their product is 1 for a file that already
-// normalised each Cartesian function individually, which is exactly what ao_normalization is for.
+static double trexio_double_factorial(int n) {
+    double r = 1.0;
+    for (; n > 1; n -= 2) r *= n;
+    return r;
+}
+
+// The factor that takes a coefficient stated against the FILE's AO onto md_gto's unit normalised one, which is the
+// norm of the file's AO: md_gto's AO times it is the file's (the shapes agree, and so do the signs).
+//
+// TREXIO's AO is N'_i P(r) R_s(r), with R_s = N_s sum_k f_k a_k exp(-g_k r^2) and P either a
+// monomial x^i y^j z^k or a real solid harmonic in Racah's normalisation (the integral of its square over the sphere
+// is 4 pi r^2l / (2l+1)). Its norm is then N'_i ||R_s r^l|| times sqrt((2i-1)!!(2j-1)!!(2k-1)!!/(2l+1)!!), or
+// 1/sqrt(2l+1) for a solid harmonic. Writers put the normalisation in different places and the formula covers them
+// all: PySCF normalises f_k over r alone and puts the angular part, sqrt((2l+1)/(4 pi)), in N'_i (1 for a Cartesian
+// function of l >= 2, which its AOs then are not normalised to); the ORCA converter normalises f_k against the
+// (l,0,0) monomial in all space with N'_i 1, which comes out as unit normalised AOs. Taking the AOs to be unit
+// normalised whatever the numbers said, as this did, read the first wrong by up to sqrt(4 pi).
 static bool trexio_ao_factors(double* dst, const trexio_t* trexio) {
     size_t ao = 0;
     for (size_t s = 0; s < trexio->num_shells; ++s) {
@@ -623,8 +658,18 @@ static bool trexio_ao_factors(double* dst, const trexio_t* trexio) {
             if (ao >= trexio->num_ao) {
                 return false;
             }
+            // The file's AO is ao_normalization x its radial part x its angular one. Its radial part was rescaled to
+            // unit norm above, so what it was before is the shell's norm, which the coefficient takes on: a file
+            // whose radial parts are unit normalised in all space (ORCA) has it at 1, one whose radial parts are
+            // normalised over r alone and whose ao_normalization holds the angular part (PySCF) does not.
             const double scale = md_array_size(trexio->ao_scale) ? trexio->ao_scale[ao] : 1.0;
-            dst[ao] = trexio->cartesian ? scale * md_qm_cart_coeff_factor(l, k) : scale;
+            double angular = 1.0 / sqrt(2.0 * l + 1.0);
+            if (trexio->cartesian) {
+                int i = 0, j = 0, m = 0;
+                md_gto_cart_ijk(&i, &j, &m, l, k);   // TREXIO's canonical Cartesian order is md_gto's
+                angular = sqrt(trexio_double_factorial(2 * i - 1) * trexio_double_factorial(2 * j - 1) * trexio_double_factorial(2 * m - 1) / trexio_double_factorial(2 * (int)l + 1));
+            }
+            dst[ao] = scale * trexio->shell_norm[s] * angular;
             ao += 1;
         }
     }
@@ -640,7 +685,7 @@ static size_t trexio_num_cart_ao(const trexio_t* trexio) {
 }
 
 static bool trexio_gto_basis_extract(md_gto_basis_t* out, const trexio_t* trexio, md_allocator_i* alloc) {
-    MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (trexio->num_shells == 0) {
         return false;
     }
@@ -683,6 +728,20 @@ static bool trexio_ao_permutation(uint32_t* dst, const trexio_t* trexio) {
     return off == trexio->num_ao;
 }
 
+// Orbital i in md_gto's Cartesian convention: num_cart values into dst, through 'scratch' (num_ao)
+static bool trexio_orbital_to_cartesian(double* dst, const trexio_t* trexio, size_t i, const double* factor, const uint32_t* perm,
+                                        const md_gto_basis_t* cart_basis, double* scratch) {
+    const size_t num_ao = trexio->num_ao;
+    for (size_t k = 0; k < num_ao; ++k) {
+        scratch[perm[k]] = trexio->mo_coefficient[i * num_ao + k] * factor[k];
+    }
+    if (trexio->cartesian) {
+        md_memcpy(dst, scratch, sizeof(double) * num_ao);
+        return true;
+    }
+    return md_qm_sph_to_cart_coefficients(dst, scratch, 1, cart_basis) == 1;
+}
+
 // ---------------------------------------------------------------------------
 // Publishing
 // ---------------------------------------------------------------------------
@@ -712,14 +771,28 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
     // beta orbitals and none above 1 is already per channel and is left alone.
     double max_occupation = 0.0;
     for (size_t i = 0; trexio->mo_occupation && i < trexio->num_mo; ++i) {
-        max_occupation = MAX(max_occupation, trexio->mo_occupation[i]);
+        max_occupation = MD_MAX(max_occupation, trexio->mo_occupation[i]);
     }
     const bool restricted = !unrestricted && max_occupation > 1.0;
 
+    // A restricted OPEN shell (ROHF, ROKS: PySCF writes mo_type "ROHF" and mo_spin all zero) holds an alpha electron
+    // in each orbital of occupation 1, not half of one in each channel, which would leave a radical without spin
+    // density. Taken as such when every occupation is 0, 1 or 2; fractional ones (natural orbitals) are halved.
+    bool open_shell = false;
+    if (restricted && trexio->mo_occupation) {
+        bool integral = true;
+        for (size_t i = 0; i < trexio->num_mo; ++i) {
+            const double o = trexio->mo_occupation[i];
+            integral = integral && (o == 0.0 || o == 1.0 || o == 2.0);
+            open_shell = open_shell || o == 1.0;
+        }
+        open_shell = open_shell && integral;
+    }
+
     // The file's own numbers, unaltered, beside the per channel split below.
-    md_qm_publish_series(sys, STR_LIT("trexio/mo/occupation"), STR_LIT("Occupation"), md_unit_none(), trexio->mo_occupation, trexio->mo_occupation ? trexio->num_mo : 0);
+    md_qm_publish_series(sys, MD_STR_LIT("trexio/mo/occupation"), MD_STR_LIT("Occupation"), md_unit_none(), trexio->mo_occupation, trexio->mo_occupation ? trexio->num_mo : 0);
     if (trexio->mo_spin) {
-        md_qm_publish_column(sys, STR_LIT("trexio/mo/spin"), STR_LIT("Spin"), md_unit_none(),
+        md_qm_publish_column(sys, MD_STR_LIT("trexio/mo/spin"), MD_STR_LIT("Spin"), md_unit_none(),
                              MD_ATTRIBUTE_TYPE_I64, trexio->mo_spin, sizeof(int64_t), trexio->num_mo);
     }
 
@@ -738,10 +811,22 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
         if (beta && !unrestricted) {
             // One set of orbitals under two names: no copy, and the densities then come out as
             // twice alpha and zero without a special case anywhere.
-            md_qm_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
-            md_qm_alias(sys, alpha_occ_id,   STR_LIT("orbital/beta/occupation"));
-            md_qm_alias(sys, alpha_ener_id,  STR_LIT("orbital/beta/energy"));
-            md_qm_alias(sys, alpha_sym_id,   STR_LIT("orbital/beta/symmetry"));
+            md_qm_alias(sys, alpha_coeff_id, MD_STR_LIT("orbital/beta/coefficient"));
+            md_qm_alias(sys, alpha_ener_id,  MD_STR_LIT("orbital/beta/energy"));
+            md_qm_alias(sys, alpha_sym_id,   MD_STR_LIT("orbital/beta/symmetry"));
+            if (!open_shell) {
+                md_qm_alias(sys, alpha_occ_id, MD_STR_LIT("orbital/beta/occupation"));
+            } else {
+                // the same orbitals, with what the alpha channel does not hold
+                double* occ = md_alloc(temp, sizeof(double) * trexio->num_mo);
+                if (!occ) {
+                    return false;
+                }
+                for (size_t i = 0; i < trexio->num_mo; ++i) {
+                    occ[i] = trexio->mo_occupation[i] - MD_MIN(trexio->mo_occupation[i], 1.0);
+                }
+                md_qm_publish_series(sys, MD_STR_LIT("orbital/beta/occupation"), MD_STR_LIT("Occupation"), md_unit_none(), occ, trexio->num_mo);
+            }
             break;
         }
 
@@ -756,7 +841,7 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
 
         double* energy = md_alloc(temp, sizeof(double) * count);
         double* occ    = md_alloc(temp, sizeof(double) * count);
-        str_t*  sym    = md_alloc(temp, sizeof(str_t)  * count);
+        md_str_t*  sym    = md_alloc(temp, sizeof(md_str_t)  * count);
         double* coeff  = md_alloc(temp, sizeof(double) * count * num_cart);
         double* mdlib_ao = md_alloc(temp, sizeof(double) * num_ao);
         if (!energy || !occ || !sym || !coeff || !mdlib_ao) {
@@ -773,35 +858,31 @@ static bool trexio_publish_orbitals(md_system_t* sys, const trexio_t* trexio, md
             }
             energy[m] = trexio->mo_energy ? trexio->mo_energy[i] : 0.0;
             // Restricted: the occupation covers both spins, so a channel gets half of it.
-            occ[m] = trexio->mo_occupation ? (restricted ? 0.5 * trexio->mo_occupation[i] : trexio->mo_occupation[i]) : 0.0;
-            sym[m] = trexio->mo_symmetry ? trexio->mo_symmetry[i] : (str_t){0};
-            have_symmetry = have_symmetry || !str_empty(sym[m]);
+            const double o = trexio->mo_occupation ? trexio->mo_occupation[i] : 0.0;
+            occ[m] = !restricted ? o : open_shell ? MD_MIN(o, 1.0) : 0.5 * o;
+            sym[m] = trexio->mo_symmetry ? trexio->mo_symmetry[i] : (md_str_t){0};
+            have_symmetry = have_symmetry || !md_str_empty(sym[m]);
 
-            for (size_t k = 0; k < num_ao; ++k) {
-                mdlib_ao[perm[k]] = trexio->mo_coefficient[i * num_ao + k] * factor[k];
-            }
-            if (trexio->cartesian) {
-                MEMCPY(coeff + m * num_cart, mdlib_ao, sizeof(double) * num_cart);
-            } else if (md_qm_sph_to_cart_coefficients(coeff + m * num_cart, mdlib_ao, 1, &cart_basis) != 1) {
+            if (!trexio_orbital_to_cartesian(coeff + m * num_cart, trexio, i, factor, perm, &cart_basis, mdlib_ao)) {
                 MD_LOG_ERROR("TREXIO: could not expand orbital %zu into the Cartesian basis", i);
                 return false;
             }
             m += 1;
         }
 
-        const str_t energy_path = beta ? STR_LIT("orbital/beta/energy")      : STR_LIT("orbital/alpha/energy");
-        const str_t occ_path    = beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation");
-        const str_t sym_path    = beta ? STR_LIT("orbital/beta/symmetry")    : STR_LIT("orbital/alpha/symmetry");
-        const str_t coeff_path  = beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient");
+        const md_str_t energy_path = beta ? MD_STR_LIT("orbital/beta/energy")      : MD_STR_LIT("orbital/alpha/energy");
+        const md_str_t occ_path    = beta ? MD_STR_LIT("orbital/beta/occupation")  : MD_STR_LIT("orbital/alpha/occupation");
+        const md_str_t sym_path    = beta ? MD_STR_LIT("orbital/beta/symmetry")    : MD_STR_LIT("orbital/alpha/symmetry");
+        const md_str_t coeff_path  = beta ? MD_STR_LIT("orbital/beta/coefficient") : MD_STR_LIT("orbital/alpha/coefficient");
 
         // Only when the file actually stated them: an absent path is how a consumer learns a block
         // is missing, and a column of zeros would read as a legitimate set of orbital energies.
-        md_attribute_id_t ener_id = trexio->mo_energy ? md_qm_publish_series(sys, energy_path, STR_LIT("Energy"), md_unit_hartree(), energy, count) : MD_ATTRIBUTE_INVALID;
-        md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    STR_LIT("Occupation"), md_unit_none(),    occ,    count);
-        md_attribute_id_t sym_id  = have_symmetry ? md_qm_publish_strings(sys, sym_path, STR_LIT("Symmetry"), sym, count) : MD_ATTRIBUTE_INVALID;
+        md_attribute_id_t ener_id = trexio->mo_energy ? md_qm_publish_series(sys, energy_path, MD_STR_LIT("Energy"), md_unit_hartree(), energy, count) : MD_ATTRIBUTE_INVALID;
+        md_attribute_id_t occ_id  = md_qm_publish_series(sys, occ_path,    MD_STR_LIT("Occupation"), md_unit_none(),    occ,    count);
+        md_attribute_id_t sym_id  = have_symmetry ? md_qm_publish_strings(sys, sym_path, MD_STR_LIT("Symmetry"), sym, count) : MD_ATTRIBUTE_INVALID;
 
         md_attribute_id_t coeff_id = md_qm_publish_matrix(sys, coeff_path,
-            beta ? STR_LIT("Beta Coefficient") : STR_LIT("Alpha Coefficient"),
+            beta ? MD_STR_LIT("Beta Coefficient") : MD_STR_LIT("Alpha Coefficient"),
             md_unit_none(), coeff, count, num_cart);
 
         if (!beta) {
@@ -834,13 +915,13 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
     md_system_reset(sys);
     md_system_state_init(state, num_atoms);
 
-    const size_t capacity = ROUND_UP(num_atoms, 16);
+    const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
-    MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
-    MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
+    md_memset(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
+    md_memset(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
         state->xyz[i] = vec3_set((float)trexio->coord[i].x, (float)trexio->coord[i].y, (float)trexio->coord[i].z);
@@ -864,26 +945,26 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
         return false;
     }
 
-    md_qm_publish_str(sys, STR_LIT("trexio/metadata/code"),            STR_LIT("Code"),            trexio->code);
-    md_qm_publish_str(sys, STR_LIT("trexio/metadata/package_version"), STR_LIT("Package Version"), trexio->package_version);
-    md_qm_publish_str(sys, STR_LIT("trexio/basis_type"),               STR_LIT("Basis Type"),      trexio->basis_type);
-    md_qm_publish_str(sys, STR_LIT("trexio/mo_type"),                  STR_LIT("MO Type"),         trexio->mo_type);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/metadata/code"),            MD_STR_LIT("Code"),            trexio->code);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/metadata/package_version"), MD_STR_LIT("Package Version"), trexio->package_version);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/basis_type"),               MD_STR_LIT("Basis Type"),      trexio->basis_type);
+    md_qm_publish_str(sys, MD_STR_LIT("trexio/mo_type"),                  MD_STR_LIT("MO Type"),         trexio->mo_type);
 
     if (trexio->has_electron_count) {
-        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/total"), STR_LIT("Electrons"),       md_unit_none(), (double)trexio->electron_num);
-        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/up"),    STR_LIT("Alpha Electrons"), md_unit_none(), (double)trexio->electron_up_num);
-        md_qm_publish_scalar(sys, STR_LIT("trexio/electron_count/down"),  STR_LIT("Beta Electrons"),  md_unit_none(), (double)trexio->electron_dn_num);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/electron_count/total"), MD_STR_LIT("Electrons"),       md_unit_none(), (double)trexio->electron_num);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/electron_count/up"),    MD_STR_LIT("Alpha Electrons"), md_unit_none(), (double)trexio->electron_up_num);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/electron_count/down"),  MD_STR_LIT("Beta Electrons"),  md_unit_none(), (double)trexio->electron_dn_num);
     }
     if (trexio->has_nuclear_repulsion) {
-        md_qm_publish_scalar(sys, STR_LIT("trexio/nuclear_repulsion_energy"), STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
+        md_qm_publish_scalar(sys, MD_STR_LIT("trexio/nuclear_repulsion_energy"), MD_STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
     }
 
     // nucleus_charge is the charge the electrons were solved against, kept apart from the element
     md_qm_publish_atoms(sys, trexio->atomic_number, trexio->nuclear_charge, trexio->coord, trexio->num_atoms);
 
     if (trexio->num_shells > 0) {
-        md_qm_publish_str(sys, STR_LIT("trexio/ao_convention"), STR_LIT("AO Convention"),
-                           trexio->cartesian ? STR_LIT("cartesian") : STR_LIT("spherical"));
+        md_qm_publish_str(sys, MD_STR_LIT("trexio/ao_convention"), MD_STR_LIT("AO Convention"),
+                           trexio->cartesian ? MD_STR_LIT("cartesian") : MD_STR_LIT("spherical"));
 
         md_gto_basis_t basis = {0};
         if (trexio_gto_basis_extract(&basis, trexio, temp)) {
@@ -903,16 +984,16 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    ASSERT(sys);
+bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+    MD_ASSERT(sys);
 
     char path[2048];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
 
     h5_error_scope_t err = h5_error_scope_begin();
     hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file == H5I_INVALID_HID) {
-        MD_LOG_ERROR("TREXIO: could not open '" STR_FMT "' as an HDF5 file", STR_ARG(filename));
+        MD_LOG_ERROR("TREXIO: could not open '" MD_STR_FMT "' as an HDF5 file", MD_STR_ARG(filename));
         h5_error_scope_end(err);
         return false;
     }
@@ -946,9 +1027,9 @@ bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state,
     return result;
 }
 
-bool md_trexio_file_is_trexio(str_t filename) {
+bool md_trexio_file_is_trexio(md_str_t filename) {
     char path[2048];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
 
     h5_error_scope_t err = h5_error_scope_begin();
     bool result = false;

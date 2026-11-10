@@ -21,9 +21,9 @@ typedef vial_type_t T;
 static T err(void) { return vial_type_error(); }
 
 static inline vial_node_kind_t kind_in(const vial_tree_t* t, vial_node_id id) { return (vial_node_kind_t)t->nodes[id].kind; }
-static inline str_t text_in(const vial_tree_t* t, str_t src, vial_node_id id) {
+static inline md_str_t text_in(const vial_tree_t* t, md_str_t src, vial_node_id id) {
     const md_vial_span_t s = t->nodes[id].span;
-    return (str_t){src.ptr + s.beg, s.end - s.beg};
+    return (md_str_t){src.ptr + s.beg, s.end - s.beg};
 }
 
 // ### FRAMES ###
@@ -110,14 +110,14 @@ static uint64_t hash_value(uint64_t h, const vial_value_t* v) {
 
 // ### CALLS ###
 
-static uint8_t kind_of_annotation(str_t a) {
-    if (str_eq(a, STR_LIT("set")))    return VX_KIND_SET;
-    if (str_eq(a, STR_LIT("group")))  return VX_KIND_GROUP;
-    if (str_eq(a, STR_LIT("point")))  return VX_KIND_POINT;
-    if (str_eq(a, STR_LIT("points"))) return VX_KIND_POINTS;
-    if (str_eq(a, STR_LIT("float")))  return VX_KIND_FLOAT;
-    if (str_eq(a, STR_LIT("int")))    return VX_KIND_INT;
-    if (str_eq(a, STR_LIT("bool")))   return VX_KIND_BOOL;
+static uint8_t kind_of_annotation(md_str_t a) {
+    if (md_str_eq(a, MD_STR_LIT("set")))    return VX_KIND_SET;
+    if (md_str_eq(a, MD_STR_LIT("body")))   return VX_KIND_BODY;
+    if (md_str_eq(a, MD_STR_LIT("point")))  return VX_KIND_POINT;
+    if (md_str_eq(a, MD_STR_LIT("points"))) return VX_KIND_POINTS;
+    if (md_str_eq(a, MD_STR_LIT("float")))  return VX_KIND_FLOAT;
+    if (md_str_eq(a, MD_STR_LIT("int")))    return VX_KIND_INT;
+    if (md_str_eq(a, MD_STR_LIT("bool")))   return VX_KIND_BOOL;
     return VX_KIND_WHOLE;
 }
 
@@ -190,14 +190,14 @@ static bool is_nested(const vial_names_t* n, const vial_tree_t* t, vial_node_id 
 typedef struct def_sig_t {
     uint32_t     np;
     vial_node_id pnode[32];
-    str_t        pname[32];
+    md_str_t        pname[32];
     uint8_t      kind[32];
     char         fname[48];
 } def_sig_t;
 
-static bool signature(const vial_tree_t* t, str_t src, vial_node_id def, def_sig_t* g) {
+static bool signature(const vial_tree_t* t, md_str_t src, vial_node_id def, def_sig_t* g) {
     const vial_node_id name_node = vial_child(t, def, 0);
-    const str_t name = name_node ? text_in(t, src, name_node) : STR_LIT("def");
+    const md_str_t name = name_node ? text_in(t, src, name_node) : MD_STR_LIT("def");
     snprintf(g->fname, sizeof(g->fname), "%.*s", (int)(name.len < 40 ? name.len : 40), name.ptr);
     const vial_node_id params = vial_child(t, def, 1);
     g->np = params ? t->nodes[params].child_count : 0;
@@ -205,7 +205,7 @@ static bool signature(const vial_tree_t* t, str_t src, vial_node_id def, def_sig
     for (uint32_t k = 0; k < g->np; ++k) {
         g->pnode[k] = vial_child(t, params, k);
         const vial_node_id pn = g->pnode[k] ? vial_child(t, g->pnode[k], 0) : 0;
-        g->pname[k] = pn ? text_in(t, src, pn) : STR_LIT("");
+        g->pname[k] = pn ? text_in(t, src, pn) : MD_STR_LIT("");
         const vial_node_id ann = g->pnode[k] ? vial_child(t, g->pnode[k], 1) : 0;
         g->kind[k] = ann ? kind_of_annotation(text_in(t, src, ann)) : VX_KIND_WHOLE;
     }
@@ -222,7 +222,7 @@ typedef struct arg_t {
 } arg_t;
 
 // The call itself, its arguments bound: kinds split and map them, the body is checked once per distinct types
-static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def,
+static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, md_str_t src, bool prelude, vial_node_id def,
                    const def_sig_t* g, const arg_t* args, vial_ssa_t* out_ssa) {
     if (out_ssa) *out_ssa = 0;
     const uint32_t depth = x->frame ? x->frame->depth + 1 : 1;
@@ -332,8 +332,8 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
         // A nested def reads the names around it, so its body is a region of the call instead, applied in place
         if (x->ir) {
             if (memo) {
-                const str_t fname = {g->fname, strlen(g->fname)};
-                fn = vial_ir_func(x->ir, str_copy(fname, x->ir->alloc), vx_span(x, call), cores, g->np);
+                const md_str_t fname = {g->fname, strlen(g->fname)};
+                fn = vial_ir_func(x->ir, md_str_copy(fname, x->ir->alloc), vx_span(x, call), cores, g->np);
                 body = x->ir->funcs[fn].body;
             } else {
                 body = vial_ir_region(x->ir, VIAL_IR_NO_OP, x->ir->regions[x->ir->insert].func, cores, g->np);
@@ -390,7 +390,7 @@ static bool enter(infer_t* x, vial_node_id call, const vial_tree_t* t, vial_node
     return true;
 }
 
-T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def) {
+T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, md_str_t src, bool prelude, vial_node_id def) {
     def_sig_t g;
     if (!enter(x, call, t, def) || !signature(t, src, def, &g)) { infer_all_args(x, call); return err(); }
     arg_t args[32];
@@ -405,9 +405,9 @@ T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_na
         if (vx_kind(x, a) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
             if (vn) vx_infer(x, vn);
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+            const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
             uint32_t k = 0;
-            while (k < g.np && !str_eq(kw, g.pname[k])) ++k;
+            while (k < g.np && !md_str_eq(kw, g.pname[k])) ++k;
             if (k == g.np) {
                 vx_diag_fix(x, "E0202", a, NULL, "`%s` takes no keyword `%.*s`", g.fname, (int)kw.len, kw.ptr);
                 ok = false;
@@ -452,7 +452,7 @@ T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* ty
     const bool prelude = x->t == x->c->prelude;
     const vial_tree_t* t = x->t;
     const vial_names_t* n = x->n;
-    const str_t src = x->src;
+    const md_str_t src = x->src;
     def_sig_t g;
     if (!enter(x, site, t, def) || !signature(t, src, def, &g)) return err();
     if (num > g.np) {
@@ -496,7 +496,7 @@ static T call_primitive(infer_t* x, vial_node_id call, const prim_t* pr) {
     vial_node_id args[4];
     if (!vx_bind(x, call, pr->name, pr->params, pr->np, args)) return err();
     md_unit_t length;
-    vial_unit_name(STR_LIT("angstrom"), &length);
+    vial_unit_name(MD_STR_LIT("angstrom"), &length);
     T loop = vial_type_scalar(VIAL_DT_INT);
     T stage = vial_type_scalar(VIAL_DT_DRAWING);
     bool ok = true;
@@ -506,7 +506,7 @@ static T call_primitive(infer_t* x, vial_node_id call, const prim_t* pr) {
         if (vial_type_is_error(&a)) { ok = false; continue; }
         uint8_t kind = pr->params[k].kind;
         // The text: a number maps with the points, a string is one label
-        const bool is_label = str_eq(str_from_cstr(pr->params[k].name), STR_LIT("text")) || (strcmp(pr->name, "text") == 0 && k == 1);
+        const bool is_label = md_str_eq(md_str_from_cstr(pr->params[k].name), MD_STR_LIT("text")) || (strcmp(pr->name, "text") == 0 && k == 1);
         if (is_label) {
             if (a.dtype == VIAL_DT_STR && a.ndim == 0) { T o = stage; vx_join_stage(&stage, &o, &a); continue; }
             if (a.dtype == VIAL_DT_STR || !(a.dtype == VIAL_DT_INT || a.dtype == VIAL_DT_FLOAT || a.dtype == VIAL_DT_FLOAT64 || a.dtype == VIAL_DT_BOOL)) {
@@ -556,8 +556,8 @@ static T call_primitive(infer_t* x, vial_node_id call, const prim_t* pr) {
 }
 
 bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
-    const str_t name = str_from_cstr(b->name);
-    if (str_eq(name, STR_LIT("shown"))) {
+    const md_str_t name = md_str_from_cstr(b->name);
+    if (md_str_eq(name, MD_STR_LIT("shown"))) {
         // shown(x, d) is x, with d attached for hover. When x failed, d is not checked: one mistake, one diagnostic.
         static const vx_param_t params[] = {{"x", VX_KIND_WHOLE, true}, {"d", VX_KIND_WHOLE, true}};
         vx_record_sig(x, call, params, 2);
@@ -568,9 +568,9 @@ bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
             if (!a) continue;
             if (vx_kind(x, a) == VIAL_N_KWARG) {
                 const vial_node_id kn = vx_child(x, a, 0);
-                const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
-                if (str_eq(kw, STR_LIT("x")) && !first) first = vx_child(x, a, 1);
-                else if (str_eq(kw, STR_LIT("d")) && !second) second = vx_child(x, a, 1);
+                const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
+                if (md_str_eq(kw, MD_STR_LIT("x")) && !first) first = vx_child(x, a, 1);
+                else if (md_str_eq(kw, MD_STR_LIT("d")) && !second) second = vx_child(x, a, 1);
                 else { if (vx_child(x, a, 1)) vx_infer(x, vx_child(x, a, 1)); vx_diag_fix(x, "E0202", a, NULL, "`shown` takes x and d"); *out = err(); return true; }
                 continue;
             }
@@ -596,8 +596,8 @@ bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
         vx_set_value(x, call, vx_value_of(x, first));
         return true;
     }
-    for (size_t i = 0; i < ARRAY_SIZE(prims); ++i) {
-        if (str_eq(name, str_from_cstr(prims[i].name))) { *out = call_primitive(x, call, &prims[i]); return true; }
+    for (size_t i = 0; i < MD_COUNTOF(prims); ++i) {
+        if (md_str_eq(name, md_str_from_cstr(prims[i].name))) { *out = call_primitive(x, call, &prims[i]); return true; }
     }
     return false;
 }

@@ -50,19 +50,20 @@ T vx_sets_type(infer_t* x, const vial_sets_t* s, vial_node_id at) {
 
 // ### SELECTORS ###
 
-static uint8_t selector_level(str_t name, uint8_t* particle_kind) {
+static uint8_t selector_level(md_str_t name, uint8_t* particle_kind) {
     *particle_kind = 0;
-    if (str_eq(name, STR_LIT("particle"))) return VIAL_LEVEL_PARTICLE;
-    if (str_eq(name, STR_LIT("atom"))) { *particle_kind = 1; return VIAL_LEVEL_PARTICLE; }
-    if (str_eq(name, STR_LIT("bead"))) { *particle_kind = 2; return VIAL_LEVEL_PARTICLE; }
-    if (str_eq(name, STR_LIT("residue"))) return VIAL_LEVEL_RESIDUE;
-    if (str_eq(name, STR_LIT("part"))) return VIAL_LEVEL_PART;
-    if (str_eq(name, STR_LIT("polymer"))) { *particle_kind = 1; return VIAL_LEVEL_PART; }  // the strands: parts of a polymer kind
-    if (str_eq(name, STR_LIT("molecule"))) return VIAL_LEVEL_MOLECULE;
-    if (str_eq(name, STR_LIT("chain"))) return VIAL_LEVEL_CHAIN;
-    if (str_eq(name, STR_LIT("tail"))) return VIAL_LEVEL_TAIL;
-    if (str_eq(name, STR_LIT("head"))) return VIAL_LEVEL_HEAD;
-    if (str_eq(name, STR_LIT("ring"))) return VIAL_LEVEL_RING;
+    if (md_str_eq(name, MD_STR_LIT("particle"))) return VIAL_LEVEL_PARTICLE;
+    if (md_str_eq(name, MD_STR_LIT("atom"))) { *particle_kind = 1; return VIAL_LEVEL_PARTICLE; }
+    if (md_str_eq(name, MD_STR_LIT("bead"))) { *particle_kind = 2; return VIAL_LEVEL_PARTICLE; }
+    if (md_str_eq(name, MD_STR_LIT("residue"))) return VIAL_LEVEL_RESIDUE;
+    if (md_str_eq(name, MD_STR_LIT("part"))) return VIAL_LEVEL_PART;
+    if (md_str_eq(name, MD_STR_LIT("polymer"))) { *particle_kind = 1; return VIAL_LEVEL_PART; }  // the strands: parts of a polymer kind
+    if (md_str_eq(name, MD_STR_LIT("molecule"))) return VIAL_LEVEL_MOLECULE;
+    if (md_str_eq(name, MD_STR_LIT("chain"))) return VIAL_LEVEL_CHAIN;
+    if (md_str_eq(name, MD_STR_LIT("tail"))) return VIAL_LEVEL_TAIL;
+    if (md_str_eq(name, MD_STR_LIT("head"))) return VIAL_LEVEL_HEAD;
+    if (md_str_eq(name, MD_STR_LIT("ring"))) return VIAL_LEVEL_RING;
+    if (md_str_eq(name, MD_STR_LIT("group"))) return VIAL_LEVEL_GROUP;
     return VIAL_LEVEL_NONE;
 }
 
@@ -93,15 +94,15 @@ static void report_no_serials(infer_t* x, vial_node_id at) {
 // Whether a keyword takes strings or ints
 static bool key_takes_str(uint8_t level, uint8_t key) {
     switch (key) {
-    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: return true;
+    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: case VIAL_KEY_ROLE: return true;
     case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN;
     default: return false;
     }
 }
 
 static const char* key_word(uint8_t key) {
-    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size"};
-    return key < ARRAY_SIZE(words) ? words[key] : "";
+    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size", "role"};
+    return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
 static bool int_of(const vial_value_t* v, int64_t* out) {
@@ -168,7 +169,7 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
             // A kind that starts the same, such as amino for amino_acid, is offered as the fix
             const char* kinds = vial_select_kinds(level);
             char fix[64] = "";
-            const str_t w = f->any[i].s;
+            const md_str_t w = f->any[i].s;
             for (const char* p = kinds; *p && w.len;) {
                 const char* e = p;
                 while (*e && *e != ',' && *e != ' ') ++e;
@@ -177,9 +178,19 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
                 while (*p == ',' || *p == ' ' || strncmp(p, "and ", 4) == 0) p += *p == 'a' ? 4 : 1;
             }
             char ex[VIAL_EXCERPT_MAX + 4];
-            const str_t e = vial_excerpt(ex, sizeof(ex), w);
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), w);
             vx_diag_fix(x, "E0206", node, fix[0] ? fix : NULL, "'%.*s' is not a %s kind; the kinds are %s", (int)e.len, e.ptr,
                 level == VIAL_LEVEL_PARTICLE ? "particle" : level == VIAL_LEVEL_RESIDUE ? "residue" : level == VIAL_LEVEL_RING ? "ring" : "part", kinds);
+            return -1;
+        }
+    }
+    if (key == VIAL_KEY_ROLE && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->any); ++i) {
+            if (vial_select_role_known(f->any[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->any[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, "
+                "compressed-x, orire-fit and qmmm", (int)e.len, e.ptr);
             return -1;
         }
     }
@@ -200,7 +211,7 @@ static const vial_filter_t* find_filter(const vial_select_t* q, uint8_t key) {
     return NULL;
 }
 
-static T selector_call(infer_t* x, vial_node_id call, str_t name) {
+static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
     uint8_t pkind = 0;
     const uint8_t level = selector_level(name, &pkind);
     vial_select_t q = {.level = level, .particle_kind = pkind};
@@ -221,14 +232,14 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
             const vial_node_id kn = vx_child(x, arg, 0), vn = vx_child(x, arg, 1);
             const T vt = vn ? vx_infer(x, vn) : err();
             if (!kn || !vn || vial_type_is_error(&vt)) { failed = true; continue; }
-            const str_t kw = vx_text(x, kn);
+            const md_str_t kw = vx_text(x, kn);
             const uint8_t key = vial_select_key(kw);
             if (!key || !vial_select_takes(level, key)) {
                 const uint8_t instead = key_instead(level, key);
                 char fix[96] = "";
                 if (instead) {
                     char ex[VIAL_EXCERPT_MAX + 4];
-                    const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, vn));
+                    const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, vn));
                     snprintf(fix, sizeof(fix), "%s=%.*s", key_word(instead), (int)e.len, e.ptr);
                 }
                 vx_diag_fix(x, "E0202", arg, fix[0] ? fix : NULL, "`%s` takes no keyword `%.*s`; it takes %s", sel, (int)kw.len, kw.ptr,
@@ -264,7 +275,7 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
         if (num_pos > 1) {
             char fix[96] = "";
             char ex[VIAL_EXCERPT_MAX + 4];
-            const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
             if (vt.dtype == VIAL_DT_STR && vial_select_takes(level, level == VIAL_LEVEL_CHAIN ? VIAL_KEY_ID : VIAL_KEY_NAME)) {
                 snprintf(fix, sizeof(fix), "%s=%.*s", level == VIAL_LEVEL_CHAIN ? "id" : "name", (int)e.len, e.ptr);
             } else if ((vt.dtype == VIAL_DT_INT || vt.dtype == VIAL_DT_RANGE) && level == VIAL_LEVEL_RESIDUE) {
@@ -311,7 +322,7 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
             // A number alone says neither which count it is in nor where it starts: v1's residue(5) is the fifth
             // residue, by position from 1, and the file's residue 5 is another wherever numbering restarts per chain
             char ex[VIAL_EXCERPT_MAX + 4];
-            const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
             const char* key_name = level == VIAL_LEVEL_RESIDUE ? "id" : "serial";
             char pos[64] = "i";
             int64_t v = 0;
@@ -332,7 +343,7 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
                                level == VIAL_LEVEL_MOLECULE ? "a set or a name" : "a set, a name or an id";
             if (is_int && vt.dtype == VIAL_DT_INT && vx_num_children(x, call) == 2) {
                 char ex[VIAL_EXCERPT_MAX + 4];
-                const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
+                const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
                 snprintf(fix, sizeof(fix), "%.*s[%.*s]", (int)name.len, name.ptr, (int)e.len, e.ptr);
             }
             vx_diag_fix(x, "E0205", fix[0] ? call : arg, fix[0] ? fix : NULL, "`%s` takes %s, not %s%s", sel, what, vx_tstr(&vt),
@@ -354,7 +365,7 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
         for (size_t j = 0; j < md_array_size(f->any); ++j) {
             static const char* strands[] = {"polymer", "peptide", "nucleic", "dna", "rna"};
             bool ok = false;
-            for (size_t k = 0; k < ARRAY_SIZE(strands) && !ok; ++k) ok = str_eq(f->any[j].s, str_from_cstr(strands[k]));
+            for (size_t k = 0; k < MD_COUNTOF(strands) && !ok; ++k) ok = md_str_eq(f->any[j].s, md_str_from_cstr(strands[k]));
             if (ok) continue;
             vx_diag_fix(x, "E0206", call, NULL, "'%.*s' is not a kind of polymer; the kinds are polymer, peptide, nucleic, dna and rna",
                 (int)f->any[j].s.len, f->any[j].s.ptr);
@@ -370,17 +381,17 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
     const bool empty = s->single ? vial_sets_size(s, 0) == 0 : s->count == 0;
     if (empty) {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, call));
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, call));
         vx_diag_fix(x, "W0601", call, NULL, "`%.*s` matches nothing in its scope", (int)e.len, e.ptr);
     } else if (level == VIAL_LEVEL_PARTICLE && resid_arg && !find_filter(&q, VIAL_KEY_CHAIN) && x->sys->num_chains > 1) {
         int32_t chains[2];
         if (vial_select_resid_chains(x->sys, find_filter(&q, VIAL_KEY_RESID), q.scope, chains) == 2) {
-            const str_t a = vial_sys_chain_id(x->sys, chains[0]), b = vial_sys_chain_id(x->sys, chains[1]);
-            const str_t at = vx_text(x, resid_arg);
+            const md_str_t a = vial_sys_chain_id(x->sys, chains[0]), b = vial_sys_chain_id(x->sys, chains[1]);
+            const md_str_t at = vx_text(x, resid_arg);
             char fix[128];
             snprintf(fix, sizeof(fix), "%.*s, chain='%.*s'", (int)at.len, at.ptr, (int)a.len, a.ptr);
             char ex[VIAL_EXCERPT_MAX + 4];
-            const str_t e = vial_excerpt(ex, sizeof(ex), at);
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), at);
             vx_diag_fix(x, "W0602", resid_arg, at.len < 96 ? fix : NULL, "`%.*s` matches residues in chains %.*s and %.*s; the merged set hides which",
                 (int)e.len, e.ptr, (int)a.len, a.ptr, (int)b.len, b.ptr);
         }
@@ -449,7 +460,7 @@ bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, T* out) {
 }
 
 bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) {
-    const str_t name = str_from_cstr(b->name);
+    const md_str_t name = md_str_from_cstr(b->name);
     if (b->flags & VIAL_BUILTIN_SELECTOR) {
         uint8_t pkind = 0;
         const uint8_t level = selector_level(name, &pkind);
@@ -458,19 +469,19 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         // All of a level's units, once per compile, as the predefined sets
         const vial_sets_t* s = NULL;
         size_t k = 0;
-        for (; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
-            if (str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
+        for (; k < MD_COUNTOF(x->predefined) && x->predefined[k].sets; ++k) {
+            if (md_str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
         }
         if (!s) {
             const vial_select_t q = {.level = level, .particle_kind = pkind};
             s = vial_select(x->sys, &q, x->alloc);
-            if (k < ARRAY_SIZE(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
+            if (k < MD_COUNTOF(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
         }
         *out = vx_sets_type(x, s, id);
         vx_set_value(x, id, sets_value(s));
         return true;
     }
-    if (str_eq(name, STR_LIT("pi"))) {
+    if (md_str_eq(name, MD_STR_LIT("pi"))) {
         // A float, as VIAL's numbers are: beside a float64 a bare float is read as one (in_operand_dtype)
         *out = vial_type_scalar(VIAL_DT_FLOAT);
         vx_set_value(x, id, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = 3.14159265358979323846f});
@@ -480,13 +491,13 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         if (!x->sys) { *out = vial_type_scalar(VIAL_DT_SET); return true; }
         const vial_sets_t* s = NULL;
         size_t k = 0;
-        for (; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
-            if (str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
+        for (; k < MD_COUNTOF(x->predefined) && x->predefined[k].sets; ++k) {
+            if (md_str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
         }
         if (!s) {
             s = vial_select_predefined(x->sys, name, x->alloc);
             if (!s) return false;
-            if (k < ARRAY_SIZE(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
+            if (k < MD_COUNTOF(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
         }
         *out = vx_sets_type(x, s, id);
         vx_set_value(x, id, sets_value(s));
@@ -518,11 +529,11 @@ vial_value_t vx_sets_not(infer_t* x, const vial_value_t* a) {
 
 // ### NAMES ###
 
-bool vx_name_is_glob(str_t name) {
+bool vx_name_is_glob(md_str_t name) {
     return name.len && (memchr(name.ptr, '*', name.len) || memchr(name.ptr, '?', name.len));
 }
 
-static vial_sets_t* select_named(infer_t* x, uint8_t level, str_t name) {
+static vial_sets_t* select_named(infer_t* x, uint8_t level, md_str_t name) {
     vial_select_t q = {.level = level};
     vial_filter_t f = {.key = VIAL_KEY_NAME};
     md_array_push(f.any, ((vial_match_t){.kind = 0, .s = name}), x->alloc);
@@ -530,7 +541,7 @@ static vial_sets_t* select_named(infer_t* x, uint8_t level, str_t name) {
     return vial_select(x->sys, &q, x->alloc);
 }
 
-const vial_sets_t* vx_named_particles(infer_t* x, str_t name) {
+const vial_sets_t* vx_named_particles(infer_t* x, md_str_t name) {
     return x->sys ? select_named(x, VIAL_LEVEL_PARTICLE, name) : NULL;
 }
 
@@ -542,7 +553,7 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
         vx_diag_fix(x, "E0319", in, NULL, "a set's particles are named by a constant string");
         return vial_type_error();
     }
-    const str_t name = nv.s;
+    const md_str_t name = nv.s;
     const bool glob = vx_name_is_glob(name);
     const bool said = vial_diag_at(x->diags, x->t->nodes[in].span.beg);    // an f-string, refused already
     T t = *a;
@@ -556,7 +567,7 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
         const vial_sets_t* res = select_named(x, VIAL_LEVEL_RESIDUE, name);
         if (res->count) {
             char fix[96];
-            snprintf(fix, sizeof(fix), "residue('%.*s')", (int)MIN(name.len, 60), name.ptr);
+            snprintf(fix, sizeof(fix), "residue('%.*s')", (int)MD_MIN(name.len, 60), name.ptr);
             vx_diag_fix(x, "W0601", in, fix, "no particle is named '%.*s'; a subscript names particles, and residues of that name are %s",
                 (int)name.len, name.ptr, fix);
         } else {
@@ -608,12 +619,12 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
 
 // ### THE PARTICLES OF EACH SET ###
 
-uint8_t vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, str_t* name) {
+uint8_t vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, md_str_t* name) {
     *particle_kind = 0;
     if (!n || vx_kind(x, n) != VIAL_N_ATTR) return VIAL_LEVEL_NONE;
     const vial_node_id nn = vx_child(x, n, 1);
     if (!nn) return VIAL_LEVEL_NONE;
-    const str_t t = vx_text(x, nn);
+    const md_str_t t = vx_text(x, nn);
     if (name) *name = t;
     return selector_level(t, particle_kind);
 }
@@ -623,22 +634,22 @@ bool vx_is_particles_view(const infer_t* x, vial_node_id n) {
     return vx_view_level(x, n, &pk, NULL) != VIAL_LEVEL_NONE;
 }
 
-const vial_sets_t* vx_view_units(infer_t* x, str_t name) {
+const vial_sets_t* vx_view_units(infer_t* x, md_str_t name) {
     if (!x->sys) return NULL;
-    for (size_t k = 0; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
-        if (str_eq(x->predefined[k].name, name)) return x->predefined[k].sets;
+    for (size_t k = 0; k < MD_COUNTOF(x->predefined) && x->predefined[k].sets; ++k) {
+        if (md_str_eq(x->predefined[k].name, name)) return x->predefined[k].sets;
     }
     uint8_t pkind = 0;
     const uint8_t level = selector_level(name, &pkind);
     const vial_select_t q = {.level = level, .particle_kind = pkind};
     const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
-    for (size_t k = 0; k < ARRAY_SIZE(x->predefined); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(x->predefined); ++k) {
         if (!x->predefined[k].sets) { x->predefined[k].name = name; x->predefined[k].sets = s; break; }
     }
     return s;
 }
 
-static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, str_t what);
+static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, md_str_t what);
 
 // Whether a view stands alone, as a value: not the start of a subscript or a call that picks within each set. On one
 // set a slice slices that value, chain[0].residue[0:2], since within one set there is nothing else it could mean.
@@ -657,7 +668,7 @@ bool vx_view_bare(const infer_t* x, vial_node_id id) {
 // residue(scope=s). On an array of sets the result would be ragged, so that is refused by the caller.
 T vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const T* a) {
     uint8_t pkind = 0;
-    str_t name = {0};
+    md_str_t name = {0};
     const uint8_t level = vx_view_level(x, id, &pkind, &name);
     const vial_value_t av = vx_value_of(x, on);
     T st = vial_type_scalar(VIAL_DT_SET);
@@ -669,7 +680,7 @@ T vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const T* a) {
     const bool empty = s->single ? vial_sets_size(s, 0) == 0 : s->count == 0;
     if (empty) {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, on));
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, on));
         vx_diag_fix(x, "W0601", id, NULL, "`%.*s` holds no %.*s", (int)e.len, e.ptr, (int)name.len, name.ptr);
     }
     T t = vx_sets_type(x, s, id);
@@ -678,12 +689,12 @@ T vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const T* a) {
 }
 
 T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const T* a) {
-    return view_at(x, id, in, a, vx_value_of(x, obj), NULL, STR_LIT("particle"));
+    return view_at(x, id, in, a, vx_value_of(x, obj), NULL, MD_STR_LIT("particle"));
 }
 
 T vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const T* a) {
     uint8_t pkind;
-    str_t name = {0};
+    md_str_t name = {0};
     const uint8_t level = vx_view_level(x, view, &pkind, &name);
     vial_value_t av = vx_value_of(x, vx_child(x, view, 0));
     if (level == VIAL_LEVEL_PARTICLE) {
@@ -706,8 +717,8 @@ T vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, co
     return view_at(x, id, in, a, av, units ? units : NULL, name);
 }
 
-static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, str_t what) {
-    const bool grouping = !str_eq(what, STR_LIT("particle")) && !str_eq(what, STR_LIT("atom")) && !str_eq(what, STR_LIT("bead"));
+static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, md_str_t what) {
+    const bool grouping = !md_str_eq(what, MD_STR_LIT("particle")) && !md_str_eq(what, MD_STR_LIT("atom")) && !md_str_eq(what, MD_STR_LIT("bead"));
     const int wl = (int)what.len;
     if (!in || vx_kind(x, in) == VIAL_N_SLICE || vx_kind(x, in) == VIAL_N_TUPLE) {
         if (in) vx_infer(x, in);
@@ -809,7 +820,7 @@ static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_
 
 T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const T* a) {
     const uint32_t m = vx_num_children(x, in);
-    str_t* names = md_alloc(x->alloc, (m ? m : 1) * sizeof(str_t));
+    md_str_t* names = md_alloc(x->alloc, (m ? m : 1) * sizeof(md_str_t));
     for (uint32_t j = 0; j < m; ++j) {
         const vial_node_id c = vx_child(x, in, j);
         const T ct = vx_infer(x, c);
@@ -857,7 +868,7 @@ T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, c
     }
     if (lacking) {
         t.flags |= VIAL_TYPE_MISSING;
-        const str_t n0 = names[first_bad];
+        const md_str_t n0 = names[first_bad];
         if (s->single) {
             vx_diag_fix(x, "W0609", id, NULL, "the set has no particle named '%.*s', or several, so its point is missing", (int)n0.len, n0.ptr);
         } else {
@@ -871,7 +882,7 @@ T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, c
 
 T vx_particles_call(infer_t* x, vial_node_id call, vial_node_id view, const T* a) {
     uint8_t pkind;
-    str_t vname = STR_LIT("particle");
+    md_str_t vname = MD_STR_LIT("particle");
     vx_view_level(x, view, &pkind, &vname);
     // Its arguments as the selector takes them: residue('HIS') within each set is s.residue('HIS')
     // The selector with these keywords, then each set of a and the particles of what it gives
@@ -967,7 +978,7 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
         if (single) {
             char buf[64];
             const size_t len = vial_unit_label(buf, sizeof(buf), x->sys, a->sets->level, a->sets->unit[pos[0]]);
-            return (vial_value_t){.kind = VIAL_VAL_STR, .s = str_copy((str_t){buf, len}, x->alloc)};
+            return (vial_value_t){.kind = VIAL_VAL_STR, .s = md_str_copy((md_str_t){buf, len}, x->alloc)};
         }
         return (vial_value_t){.kind = VIAL_VAL_LABELS, .sets = vial_sets_pick(a->sets, pos, cnt, x->alloc)};
     }
@@ -976,7 +987,7 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
         const uint32_t* pos = positions(x, item, a->n, &cnt, &single);
         if (!pos) return none;
         if (single) return (vial_value_t){.kind = VIAL_VAL_STR, .s = a->strs[pos[0]]};
-        str_t* strs = md_alloc(x->alloc, (cnt + 1) * sizeof(str_t));
+        md_str_t* strs = md_alloc(x->alloc, (cnt + 1) * sizeof(md_str_t));
         for (uint32_t k = 0; k < cnt; ++k) strs[k] = a->strs[pos[k]];
         return (vial_value_t){.kind = VIAL_VAL_STRS, .strs = strs, .n = cnt};
     }
@@ -1015,8 +1026,8 @@ static vial_node_id only_positional(infer_t* x, vial_node_id call, const char* f
         if (!a) continue;
         if (vx_kind(x, a) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, a, 0);
-            if (kw_axis && kn && str_eq(vx_text(x, kn), STR_LIT("axis"))) { *kw_axis = vx_child(x, a, 1); continue; }
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+            if (kw_axis && kn && md_str_eq(vx_text(x, kn), MD_STR_LIT("axis"))) { *kw_axis = vx_child(x, a, 1); continue; }
+            const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
             if (vx_child(x, a, 1)) vx_infer(x, vx_child(x, a, 1));
             vx_diag_fix(x, "E0202", a, NULL, "`%s` takes no keyword `%.*s`", fname, (int)kw.len, kw.ptr);
             return 0;
@@ -1128,9 +1139,9 @@ static T call_within(infer_t* x, vial_node_id call) {
         if (!a) continue;
         if (vx_kind(x, a) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
-            if (str_eq(kw, STR_LIT("of"))) { of = vn; continue; }
-            if (str_eq(kw, STR_LIT("r")) && !r) { r = vn; continue; }
+            const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
+            if (md_str_eq(kw, MD_STR_LIT("of"))) { of = vn; continue; }
+            if (md_str_eq(kw, MD_STR_LIT("r")) && !r) { r = vn; continue; }
             if (vn) vx_infer(x, vn);
             vx_diag_fix(x, "E0202", a, NULL, "`within` takes no keyword `%.*s`; it takes r and of", (int)kw.len, kw.ptr);
             failed = true;
@@ -1141,7 +1152,7 @@ static T call_within(infer_t* x, vial_node_id call) {
         vx_infer(x, a);
         char fix[96] = "";
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, a));
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, a));
         if (num_pos == 2 && !of) snprintf(fix, sizeof(fix), "of=%.*s", (int)e.len, e.ptr);
         vx_diag_fix(x, "E0203", a, fix[0] ? fix : NULL, "`within` takes the radius as its one positional argument; of= is always written, of=%.*s",
             (int)e.len, e.ptr);
@@ -1156,7 +1167,7 @@ static T call_within(infer_t* x, vial_node_id call) {
     }
     if (vial_type_is_error(&rt) || vial_type_is_error(&ot)) return err();
     md_unit_t length;
-    vial_unit_name(STR_LIT("angstrom"), &length);
+    vial_unit_name(MD_STR_LIT("angstrom"), &length);
     const bool number = rt.dtype == VIAL_DT_INT || rt.dtype == VIAL_DT_FLOAT || rt.dtype == VIAL_DT_FLOAT64;
     if (!number || rt.ndim || (rt.unit_kind == VIAL_UNIT_KNOWN && !md_unit_base_equal(rt.unit, length))) {
         vx_diag_fix(x, "E0313", r, NULL, "`within` takes a radius, one length; this is %s", vx_tstr(&rt));
@@ -1260,7 +1271,7 @@ static T call_spread(infer_t* x, vial_node_id call) {
     bool combine = false;
     if (a[2]) {
         const vial_value_t c = vx_value_of(x, a[2]);
-        if (c.kind != VIAL_VAL_STR || !(str_eq(c.s, STR_LIT("mean")) || str_eq(c.s, STR_LIT("max")) || str_eq(c.s, STR_LIT("first")))) {
+        if (c.kind != VIAL_VAL_STR || !(md_str_eq(c.s, MD_STR_LIT("mean")) || md_str_eq(c.s, MD_STR_LIT("max")) || md_str_eq(c.s, MD_STR_LIT("first")))) {
             vx_diag_fix(x, "E0313", a[2], NULL, "`combine` takes 'mean', 'max' or 'first'");
             return err();
         }
@@ -1359,18 +1370,18 @@ static T call_smiles(infer_t* x, vial_node_id call, bool atoms) {
     md_match_level_t level = MD_MATCH_LEVEL_MOLECULE;
     if (a[2]) {
         const vial_value_t v = vx_value_of(x, a[2]);
-        if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("molecule"))) level = MD_MATCH_LEVEL_MOLECULE;
-        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("residue"))) level = MD_MATCH_LEVEL_RESIDUE;
-        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("part"))) level = MD_MATCH_LEVEL_PART;
+        if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("molecule"))) level = MD_MATCH_LEVEL_MOLECULE;
+        else if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("residue"))) level = MD_MATCH_LEVEL_RESIDUE;
+        else if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("part"))) level = MD_MATCH_LEVEL_PART;
         else { vx_diag_fix(x, "E0206", a[2], NULL, "`level` takes 'molecule', 'residue' or 'part'"); return err(); }
     }
     md_match_mode_t mode = MD_MATCH_MODE_UNIQUE;
     if (a[3]) {
         const vial_value_t v = vx_value_of(x, a[3]);
-        if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("unique"))) mode = MD_MATCH_MODE_UNIQUE;
-        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("all"))) mode = MD_MATCH_MODE_ALL;
-        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("one_per_unit"))) mode = MD_MATCH_MODE_ONE_PER_UNIT;
-        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("disjoint"))) mode = MD_MATCH_MODE_DISJOINT;
+        if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("unique"))) mode = MD_MATCH_MODE_UNIQUE;
+        else if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("all"))) mode = MD_MATCH_MODE_ALL;
+        else if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("one_per_unit"))) mode = MD_MATCH_MODE_ONE_PER_UNIT;
+        else if (v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("disjoint"))) mode = MD_MATCH_MODE_DISJOINT;
         else { vx_diag_fix(x, "E0206", a[3], NULL, "`mode` takes 'unique', 'all', 'one_per_unit' or 'disjoint'"); return err(); }
     }
     T st = a[1] ? x->out->types[(a[1]) - x->out->base] : vial_type_scalar(VIAL_DT_NONE);
@@ -1383,7 +1394,7 @@ static T call_smiles(infer_t* x, vial_node_id call, bool atoms) {
     md_smiles_error_t perr = {0};
     if (!md_match_query_init_smiles(&q, pv.s, x->alloc, &perr)) {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
         vx_diag_fix(x, "E0206", a[0], NULL, "`%.*s` is not a SMILES pattern: %s at character %zu", (int)e.len, e.ptr, perr.message, perr.offset);
         return err();
     }
@@ -1441,7 +1452,7 @@ static T call_smiles(infer_t* x, vial_node_id call, bool atoms) {
     const uint32_t rows = atoms ? (m.width ? r->count / m.width : 0) : r->count;
     if (r->count == 0) {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
         vx_diag_fix(x, "W0601", call, NULL, "`%.*s` matches nothing in its scope", (int)e.len, e.ptr);
     }
     vial_type_push_dim(&t, vial_extent_static(rows));
@@ -1484,17 +1495,17 @@ static T call_attr(infer_t* x, vial_node_id call) {
         vx_diag_fix(x, "E0313", a, NULL, "`attr` takes a path, a string known when compiling");
         return err();
     }
-    const str_t run = x->c->run;
-    if (!x->sys || str_empty(run)) return err();    // no run to read: typed when there is one
+    const md_str_t run = x->c->run;
+    if (!x->sys || md_str_empty(run)) return err();    // no run to read: typed when there is one
     const md_attributes_t* attrs = &x->sys->sys->attributes;
     char full[512];
     snprintf(full, sizeof(full), "%.*s/%.*s", (int)run.len, run.ptr, (int)pv.s.len, pv.s.ptr);
     bool glob = false;
     for (size_t i = 0; i < pv.s.len; ++i) glob = glob || pv.s.ptr[i] == '*' || pv.s.ptr[i] == '?';
     char ex[VIAL_EXCERPT_MAX + 4];
-    const str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
+    const md_str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
     if (!glob) {
-        const md_attribute_t* at = md_attributes_find(attrs, str_from_cstr(full));
+        const md_attribute_t* at = md_attributes_find(attrs, md_str_from_cstr(full));
         T t;
         if (!at || !attribute_type(at, &t)) {
             vx_diag_fix(x, "E0206", a, NULL, "the run has no numeric attribute `%.*s`", (int)e.len, e.ptr);
@@ -1509,9 +1520,9 @@ static T call_attr(infer_t* x, vial_node_id call) {
     uint32_t n = 0;
     T first = err();
     while (md_attributes_next(&it)) {
-        const str_t path = it.attr->path;
+        const md_str_t path = it.attr->path;
         if (path.len <= strlen(prefix) || strncmp(path.ptr, prefix, strlen(prefix)) != 0) continue;
-        const str_t rel = {path.ptr + strlen(prefix), path.len - strlen(prefix)};
+        const md_str_t rel = {path.ptr + strlen(prefix), path.len - strlen(prefix)};
         if (!vial_glob(pv.s, rel)) continue;
         T t;
         if (!attribute_type(it.attr, &t)) continue;
@@ -1534,16 +1545,16 @@ static T call_attr(infer_t* x, vial_node_id call) {
 }
 
 bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
-    const str_t name = str_from_cstr(b->name);
+    const md_str_t name = md_str_from_cstr(b->name);
     if ((b->flags & VIAL_BUILTIN_SELECTOR)) { *out = selector_call(x, call, name); return true; }
-    if (str_eq(name, STR_LIT("len")))    { *out = call_len(x, call); return true; }
-    if (str_eq(name, STR_LIT("count")))  { *out = call_count(x, call); return true; }
-    if (str_eq(name, STR_LIT("label"))) { *out = call_labels(x, call); return true; }
-    if (str_eq(name, STR_LIT("within"))) { *out = call_within(x, call); return true; }
-    if (str_eq(name, STR_LIT("bond")))  { *out = call_bonds(x, call); return true; }
-    if (str_eq(name, STR_LIT("spread"))) { *out = call_spread(x, call); return true; }
-    if (str_eq(name, STR_LIT("smiles")))       { *out = call_smiles(x, call, false); return true; }
-    if (str_eq(name, STR_LIT("attr")))         { *out = call_attr(x, call); return true; }
-    if (str_eq(name, STR_LIT("smiles_atoms"))) { *out = call_smiles(x, call, true); return true; }
+    if (md_str_eq(name, MD_STR_LIT("len")))    { *out = call_len(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("count")))  { *out = call_count(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("label"))) { *out = call_labels(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("within"))) { *out = call_within(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("bond")))  { *out = call_bonds(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("spread"))) { *out = call_spread(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("smiles")))       { *out = call_smiles(x, call, false); return true; }
+    if (md_str_eq(name, MD_STR_LIT("attr")))         { *out = call_attr(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("smiles_atoms"))) { *out = call_smiles(x, call, true); return true; }
     return false;
 }

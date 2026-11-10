@@ -13,15 +13,10 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
-#include <core/md_intrinsics.h>
 
 #include <float.h>
 #include <math.h>
 #include <string.h>
-
-#if defined(_MSC_VER) && !defined(__clang__)
-#include <intrin.h>
-#endif
 
 bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out);
 
@@ -32,7 +27,7 @@ static bool alike_structures(const md_system_t* sys, const uint32_t* a, const ui
     for (uint32_t i = 0; i < n; ++i) {
         if (a[i] >= sys->atom.count || b[i] >= sys->atom.count) return false;
         const md_atomic_number_t za = md_atom_atomic_number(&sys->atom, a[i]), zb = md_atom_atomic_number(&sys->atom, b[i]);
-        if ((za && zb) ? za != zb : !str_eq(md_atom_name(&sys->atom, a[i]), md_atom_name(&sys->atom, b[i]))) return false;
+        if ((za && zb) ? za != zb : !md_str_eq(md_atom_name(&sys->atom, a[i]), md_atom_name(&sys->atom, b[i]))) return false;
     }
     return true;
 }
@@ -116,21 +111,21 @@ bool vial_mcs(vial_mcs_t* out, const md_system_t* sys, const vial_sets_t* st, bo
     return true;
 }
 
-static const vial_val_t* varg_k(const vial_val_t* const* args, const str_t* names, uint32_t n, const char* name, uint32_t pos);
+static const vial_val_t* varg_k(const vial_val_t* const* args, const md_str_t* names, uint32_t n, const char* name, uint32_t pos);
 
-bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const str_t* names, uint32_t n, const float* xyz, vial_val_t* out) {
+bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const md_str_t* names, uint32_t n, const float* xyz, vial_val_t* out) {
     // Every positional argument is structures; match= and least= are named
     const vial_sets_t* parts[64];
     uint32_t np = 0;
     const vial_val_t* by = NULL;
     for (uint32_t i = 0; i < n; ++i) {
-        if (names && names[i].len) { if (str_eq(names[i], STR_LIT("match"))) by = args[i]; continue; }
+        if (names && names[i].len) { if (md_str_eq(names[i], MD_STR_LIT("match"))) by = args[i]; continue; }
         if (!args[i] || args[i]->dtype != VIAL_DT_SET || !args[i]->sets || !args[i]->sets->count) return vial_rt_fail(k, "R0103", "mcs takes sets, or arrays of sets");
         if (np < 64) parts[np++] = args[i]->sets;
     }
     if (!np) return vial_rt_fail(k, "R0103", "mcs takes at least one structure");
     const vial_sets_t* st = np == 1 ? parts[0] : vial_sets_concat(parts, np, k->alloc);
-    const bool by_name = by && by->dtype == VIAL_DT_STR && by->data && str_eq(*(const str_t*)by->data, STR_LIT("name"));
+    const bool by_name = by && by->dtype == VIAL_DT_STR && by->data && md_str_eq(*(const md_str_t*)by->data, MD_STR_LIT("name"));
     vial_mcs_t m;
     if (!vial_mcs(&m, k->in->msys, st, by_name, xyz, k->alloc)) return vial_rt_fail(k, "R0103", "mcs: a structure is too large to search");
     *out = vial_val_sets(m.rows);
@@ -171,7 +166,7 @@ double vial_volume_grid(const double len[3], double samples, uint32_t dims[3], b
 
 typedef struct vargs_t {
     const vial_val_t* const* v;
-    const str_t*      names;
+    const md_str_t*      names;
     uint32_t          n;
 } vargs_t;
 
@@ -180,7 +175,7 @@ static const vial_val_t* varg(const vargs_t* a, const char* name, uint32_t pos) 
     bool bound = false;
     for (uint32_t i = 0; i < a->n; ++i) {
         if (!a->names || !a->names[i].len) continue;
-        if (str_eq(a->names[i], str_from_cstr(name))) return a->v[i];
+        if (md_str_eq(a->names[i], md_str_from_cstr(name))) return a->v[i];
         bound = true;
     }
     if (bound) return NULL;
@@ -194,7 +189,7 @@ static const vial_val_t* varg(const vargs_t* a, const char* name, uint32_t pos) 
 
 static bool is_none(const vial_val_t* v) { return !v || v->dtype == VIAL_DT_NONE; }
 
-static const vial_val_t* varg_k(const vial_val_t* const* args, const str_t* names, uint32_t n, const char* name, uint32_t pos) {
+static const vial_val_t* varg_k(const vial_val_t* const* args, const md_str_t* names, uint32_t n, const char* name, uint32_t pos) {
     const vargs_t a = {args, names, n};
     return varg(&a, name, pos);
 }
@@ -386,7 +381,7 @@ static bool sdf_structures(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t*
     return true;
 }
 
-bool vial_volume_begin(vial_kctx_t* k, vial_volume_t* vol, const char* name, const vial_val_t* const* args, const str_t* names,
+bool vial_volume_begin(vial_kctx_t* k, vial_volume_t* vol, const char* name, const vial_val_t* const* args, const md_str_t* names,
                        uint32_t n, const vial_frame_t* first, bool add, md_allocator_i* alloc) {
     memset(vol, 0, sizeof(*vol));
     vol->alloc = alloc;
@@ -508,7 +503,7 @@ static bool fit_structure(const vial_sdf_kind_t* kind, uint32_t j, const float* 
     if (has_cell(cell)) {
         float ext[3];
         md_unitcell_diag_extract_float(ext, cell);
-        for (int q = 0; q < 3; ++q) if (ext[q] > 0.0f) min_ext = MIN(min_ext, ext[q]);
+        for (int q = 0; q < 3; ++q) if (ext[q] > 0.0f) min_ext = MD_MIN(min_ext, ext[q]);
     }
     return residual <= 0.25f * min_ext;
 }
@@ -583,7 +578,7 @@ static void sdf_cb(const uint32_t* idx, const float* x, const float* y, const fl
     }
 }
 
-bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const* args, const str_t* names, uint32_t n) {
+bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const* args, const md_str_t* names, uint32_t n) {
     const vial_frame_t* fr = k->in->frame;
     if (!fr || !fr->xyz) return vial_rt_fail(k, "R0103", "a volume adds frames");
     const vargs_t a = {args, names, n};
@@ -635,7 +630,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
     if (sdf) {
         vec4_t* scratch = md_alloc(k->alloc, vol->max_n * sizeof(vec4_t));
         double reach = 0.0;
-        for (int q = 0; q < 3; ++q) reach = MAX(reach, vol->extent[q] + sqrt(vol->basis[q][0] * vol->basis[q][0] + vol->basis[q][1] * vol->basis[q][1] + vol->basis[q][2] * vol->basis[q][2]));
+        for (int q = 0; q < 3; ++q) reach = MD_MAX(reach, vol->extent[q] + sqrt(vol->basis[q][0] * vol->basis[q][0] + vol->basis[q][1] * vol->basis[q][1] + vol->basis[q][2] * vol->basis[q][2]));
         md_spatial_acc_t acc = {.alloc = k->alloc};
         md_coord_stream_t pts = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
         // The cell extent of the last frame this interpreter built for, so the spread of the points is estimated once

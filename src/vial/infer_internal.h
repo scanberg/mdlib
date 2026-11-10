@@ -46,7 +46,7 @@ typedef struct vx_frame_t {
 
 typedef struct infer_t {
     const vial_tree_t*  t;
-    str_t               src;
+    md_str_t               src;
     vial_diags_t*       diags;
     const vial_names_t* n;
     vial_types_t*       out;
@@ -54,7 +54,7 @@ typedef struct infer_t {
     vial_desc_t**       descs;      // what dimensions run over, one array for every frame: the top level's
     vial_sys_t*         sys;        // NULL without a system
     vial_sets_t*        all;        // every particle, the scope of a script, once `not` needs it
-    struct { str_t name; const vial_sets_t* sets; } predefined[32];    // predefined sets and bare selectors, once per compile
+    struct { md_str_t name; const vial_sets_t* sets; } predefined[32];    // predefined sets and bare selectors, once per compile
     const vial_check_t* c;          // the script's and the prelude's trees and names
     vx_frame_t*         frame;      // the def being checked, or NULL at top level
     vx_memo_t*          memo;       // a def's result by its arguments' types, shared by every frame
@@ -74,7 +74,7 @@ void            vx_diag_fix(infer_t* x, const char code[6], vial_node_id at, con
 const char*     vx_tstr(const vial_type_t* t);
 void            vx_set_value(infer_t* x, vial_node_id id, vial_value_t v);
 vial_value_t    vx_value_of(const infer_t* x, vial_node_id id);
-str_t           vx_text(const infer_t* x, vial_node_id id);
+md_str_t           vx_text(const infer_t* x, vial_node_id id);
 
 static inline vial_node_kind_t vx_kind(const infer_t* x, vial_node_id id) { return (vial_node_kind_t)x->t->nodes[id].kind; }
 static inline vial_node_id vx_child(const infer_t* x, vial_node_id id, uint32_t i) { return vial_child(x->t, id, i); }
@@ -106,7 +106,7 @@ typedef struct vx_param_t {
     bool        required;
 } vx_param_t;
 
-enum { VX_KIND_WHOLE = 0, VX_KIND_SET, VX_KIND_GROUP, VX_KIND_POINT, VX_KIND_POINTS, VX_KIND_FLOAT, VX_KIND_INT, VX_KIND_BOOL };
+enum { VX_KIND_WHOLE = 0, VX_KIND_SET, VX_KIND_BODY, VX_KIND_POINT, VX_KIND_POINTS, VX_KIND_FLOAT, VX_KIND_INT, VX_KIND_BOOL };
 
 // What one call takes of an argument under a kind (core) and what it maps over (loop's dims); reports E0302, E0313
 bool vx_split(infer_t* x, vial_node_id node, const vial_type_t* a, uint8_t kind, const char* fname, const char* pname,
@@ -122,13 +122,13 @@ bool vx_bind(infer_t* x, vial_node_id call, const char* fname, const vx_param_t*
 bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
 // .xyz, .x, .y, .z on a set, and .com on a set or points; false when it is not one of them
-bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const vial_type_t* a, str_t name, vial_type_t* out);
+bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const vial_type_t* a, md_str_t name, vial_type_t* out);
 
 // infer_defs.c
 
 // A call to a def of the script or the prelude: its arguments bound to its parameters, split by their kinds, and its
 // body checked for those types, once per distinct set of them
-vial_type_t vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def);
+vial_type_t vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, md_str_t src, bool prelude, vial_node_id def);
 
 // A call to a def given as a value, with the types of its first num arguments: fold's step
 vial_type_t vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const vial_type_t* types, const vial_value_t* values, uint32_t num,
@@ -180,15 +180,15 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
 // s['CA']: within each set of s, its particles of that name. A name without * or ? is the one particle of it, so the
 // result is known to hold one particle per set; a set without it, or with two, gives an empty set, a missing point.
 vial_type_t        vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
-bool               vx_name_is_glob(str_t name);
+bool               vx_name_is_glob(md_str_t name);
 
 // s.particle, s.atom, s.residue, ...: a selector within each set, as what a subscript or a call takes. s.particle[i] is
 // the particle at position i within each set, s.residue[i] the i-th residue each set touches, with the particles it
 // shares with the set; s.particle(name='O') and s.residue(name='HIS') the particles of each set that the selector
 // with those keywords gives. Not a value of its own. A view finer than the units of an array of sets only.
 bool               vx_is_particles_view(const infer_t* x, vial_node_id n);     // any view
-uint8_t            vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, str_t* name);  // NONE if no view
-const vial_sets_t* vx_view_units(infer_t* x, str_t name);  // every unit of the selector, or every particle of its kind
+uint8_t            vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, md_str_t* name);  // NONE if no view
+const vial_sets_t* vx_view_units(infer_t* x, md_str_t name);  // every unit of the selector, or every particle of its kind
 vial_type_t        vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const vial_type_t* a);
 vial_type_t        vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const vial_type_t* a);   // s.residue alone, on one set
 bool               vx_view_bare(const infer_t* x, vial_node_id id);
@@ -199,7 +199,7 @@ vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj,
 // s[['N', 'CA', 'C']]: the named particles within each set, stacked along a new last dimension
 vial_type_t        vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
 vial_type_t        vx_particles_call(infer_t* x, vial_node_id call, vial_node_id view, const vial_type_t* a);
-const vial_sets_t* vx_named_particles(infer_t* x, str_t name);     // every particle of the name, NULL without a system
+const vial_sets_t* vx_named_particles(infer_t* x, md_str_t name);     // every particle of the name, NULL without a system
 
 // ### LOWERING (emit.c) ###
 // The check emits the array IR as it goes: each checked node gets its value in the IR, a constant when the check knows

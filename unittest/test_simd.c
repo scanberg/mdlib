@@ -188,7 +188,7 @@ UTEST(simd, sin_cos) {
         0.9316390271097260080275166536120429704729018385275364343082838951,
     };
     
-    for (int i = 0; i < (int)ARRAY_SIZE(values); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(values); ++i) {
         const float x = values[i];
         const float ref_sin = sin(x);
         const float ref_cos = cos(x);
@@ -417,8 +417,8 @@ UTEST(simd, reduce_all_lanes) {
         const md_256 f8 = md_mm256_loadu_ps(f);
         float sum4 = 0, sum8 = 0, min4 = INFINITY, min8 = INFINITY, max4 = -INFINITY, max8 = -INFINITY;
         for (int i = 0; i < 8; ++i) {
-            sum8 += f[i]; min8 = MIN(min8, f[i]); max8 = MAX(max8, f[i]);
-            if ((i & 4) == (k & 4)) { sum4 += f[i]; min4 = MIN(min4, f[i]); max4 = MAX(max4, f[i]); }
+            sum8 += f[i]; min8 = MD_MIN(min8, f[i]); max8 = MD_MAX(max8, f[i]);
+            if ((i & 4) == (k & 4)) { sum4 += f[i]; min4 = MD_MIN(min4, f[i]); max4 = MD_MAX(max4, f[i]); }
         }
         EXPECT_EQ(sum4, md_mm_reduce_add_ps(f4));
         EXPECT_EQ(min4, md_mm_reduce_min_ps(f4));
@@ -431,11 +431,11 @@ UTEST(simd, reduce_all_lanes) {
             const md_128d d2 = md_mm_loadu_pd(d + (k & 2));
             const md_256d d4 = md_mm256_loadu_pd(d);
             EXPECT_EQ(d[k & 2] + d[(k & 2) + 1], md_mm_reduce_add_pd(d2));
-            EXPECT_EQ(MIN(d[k & 2], d[(k & 2) + 1]), md_mm_reduce_min_pd(d2));
-            EXPECT_EQ(MAX(d[k & 2], d[(k & 2) + 1]), md_mm_reduce_max_pd(d2));
+            EXPECT_EQ(MD_MIN(d[k & 2], d[(k & 2) + 1]), md_mm_reduce_min_pd(d2));
+            EXPECT_EQ(MD_MAX(d[k & 2], d[(k & 2) + 1]), md_mm_reduce_max_pd(d2));
             EXPECT_EQ((d[0] + d[2]) + (d[1] + d[3]), md_mm256_reduce_add_pd(d4));
             EXPECT_EQ(-5.0, md_mm256_reduce_min_pd(d4));
-            EXPECT_EQ(MAX(MAX(d[0], d[1]), MAX(d[2], d[3])), md_mm256_reduce_max_pd(d4));
+            EXPECT_EQ(MD_MAX(MD_MAX(d[0], d[1]), MD_MAX(d[2], d[3])), md_mm256_reduce_max_pd(d4));
         }
     }
 }
@@ -453,8 +453,8 @@ UTEST(simd, min_max) {
     v4_t mn = { .vec = md_mm_min_ps(md_mm_loadu_ps(a), md_mm_loadu_ps(b)) };
     v4_t mx = { .vec = md_mm_max_ps(md_mm_loadu_ps(a), md_mm_loadu_ps(b)) };
     for (int i = 0; i < 4; ++i) {
-        EXPECT_EQ(MIN(a[i], b[i]), mn.val[i]);
-        EXPECT_EQ(MAX(a[i], b[i]), mx.val[i]);
+        EXPECT_EQ(MD_MIN(a[i], b[i]), mn.val[i]);
+        EXPECT_EQ(MD_MAX(a[i], b[i]), mx.val[i]);
     }
     // A NaN in the first operand gives the second on every target (what min(x, bound) clamps by)
     v4_t c = { .vec = md_mm_min_ps(md_mm_set1_ps(NAN), md_mm_set1_ps(88.0f)) };
@@ -467,8 +467,8 @@ UTEST(simd, min_max) {
     v8_t mn8 = { .vec = md_mm256_min_ps(md_mm256_loadu_ps(a8), md_mm256_loadu_ps(b8)) };
     v8_t mx8 = { .vec = md_mm256_max_ps(md_mm256_loadu_ps(a8), md_mm256_loadu_ps(b8)) };
     for (int i = 0; i < 8; ++i) {
-        EXPECT_EQ(MIN(a8[i], b8[i]), mn8.val[i]);
-        EXPECT_EQ(MAX(a8[i], b8[i]), mx8.val[i]);
+        EXPECT_EQ(MD_MIN(a8[i], b8[i]), mn8.val[i]);
+        EXPECT_EQ(MD_MAX(a8[i], b8[i]), mx8.val[i]);
     }
 }
 
@@ -539,7 +539,7 @@ UTEST(simd, rsqrt) {
         const float x = ldexpf(1.0f + (float)i / 4096.0f, (i % 40) - 20);
         v4_t r = { .vec = md_mm_rsqrt_ps(md_mm_set1_ps(x)) };
         const double ref = 1.0 / sqrt((double)x);
-        worst = MAX(worst, (float)(fabs(r.val[0] - ref) / ref));
+        worst = MD_MAX(worst, (float)(fabs(r.val[0] - ref) / ref));
     }
     EXPECT_LT(worst, 1.5f / 4096.0f);
 }
@@ -553,8 +553,8 @@ UTEST(simd, sincos_accuracy) {
         v8_t s8, c8;
         md_mm_sincos_ps(md_mm_set1_ps(x), &s4.vec, &c4.vec);
         md_mm256_sincos_ps(md_mm256_set1_ps(x), &s8.vec, &c8.vec);
-        worst = MAX(worst, fabs(s4.val[0] - sin((double)x)));
-        worst = MAX(worst, fabs(c4.val[0] - cos((double)x)));
+        worst = MD_MAX(worst, fabs(s4.val[0] - sin((double)x)));
+        worst = MD_MAX(worst, fabs(c4.val[0] - cos((double)x)));
         EXPECT_EQ(s4.val[0], s8.val[7]);
         EXPECT_EQ(c4.val[0], c8.val[7]);
     }
@@ -568,7 +568,7 @@ UTEST(simd, exp_accuracy) {
         v4_t e4 = { .vec = md_mm_exp_ps(md_mm_set1_ps(x)) };
         v8_t e8 = { .vec = md_mm256_exp_ps(md_mm256_set1_ps(x)) };
         const double ref = exp((double)x);
-        worst = MAX(worst, fabs(e4.val[0] - ref) / ref);
+        worst = MD_MAX(worst, fabs(e4.val[0] - ref) / ref);
         EXPECT_EQ(e4.val[0], e8.val[3]);
     }
     EXPECT_LT(worst, 3.0e-7);

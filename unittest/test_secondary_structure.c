@@ -203,13 +203,13 @@ static const char martini3_ubiquitin_pdb[] =
 static const char ubiquitin_atomistic_ss[] = "EEEEEEECCCCEEEEEECCCCEHHHHHHHHHHHHCCCHHHEEEEECCEECCCCCECHHHCCCCCCEEEEEECCCCC";
 
 static bool load_martini3_ubiquitin(md_system_t* sys, md_system_state_t* state) {
-    if (!md_pdb_system_init_from_str(sys, state, str_from_cstr(martini3_ubiquitin_pdb), MD_PDB_OPTION_NONE)) return false;
-    return md_util_system_infer(sys, state, MD_UTIL_INFER_ALL);
+    if (!md_pdb_system_init_from_str(sys, state, md_str_from_cstr(martini3_ubiquitin_pdb), MD_PDB_OPTION_NONE, NULL)) return false;
+    return md_util_system_infer(sys, state, MD_UTIL_INFER_ALL, NULL);
 }
 
 // The BB beads of a Martini protein make a trace: one segment per residue, the bead in ca and no atoms
 UTEST(secondary_structure, martini_trace_backbone) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&sys, &state));
@@ -221,7 +221,7 @@ UTEST(secondary_structure, martini_trace_backbone) {
     for (size_t i = 0; i < bb->segment.count; ++i) {
         const md_amino_acid_atoms_t a = bb->segment.atoms[i];
         EXPECT_EQ((md_residue_idx_t)i, bb->segment.res_idx[i]);
-        EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.ca), STR_LIT("BB")));
+        EXPECT_TRUE(md_str_eq(md_atom_name(&sys.atom, a.ca), MD_STR_LIT("BB")));
         EXPECT_EQ(-1, a.n);
         EXPECT_EQ(-1, a.c);
         EXPECT_EQ(-1, a.o);
@@ -247,7 +247,7 @@ UTEST(secondary_structure, martini_trace_backbone) {
 // (89 %): the helices, the five strands, and the coil between them; a residue more or less at the ends of strands and
 // helices is all that differs.
 UTEST(secondary_structure, martini_cg_dssp) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&sys, &state));
@@ -275,7 +275,7 @@ UTEST(secondary_structure, martini_cg_dssp) {
 
 // A trace split by the periodic boundary gets the secondary structure it has whole
 UTEST(secondary_structure, martini_cg_dssp_periodic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&sys, &state));
@@ -305,11 +305,11 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
 
 // The atomistic DSSP of 1LAF as it was before traces were added beside it: atomistic ranges keep their bonds and patterns
 UTEST(secondary_structure, atomistic_dssp_unchanged) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
 
     static const char expected[] = "CCCCEEEEEECCCBTTTBBBSTTTSBBSHHHHHHHHHHHHHTTEEEEEESSGGGHHHHHHTTTCCBBCCCCBSSHHHHHHTBBCCCCBCCCEEEEEETTTCCCSSHHHHTTTEEEEETTTHHHHHHIIIIIGGTTEEEEECCHHHHHHHHHTTTCCEEEEEHHHHIIIIITTGGGGGEEECCCCBCSHHHHTCCBCCBBSTTTHHHHHHHHHHHHHHHHHTHHHHHHHGTTSCCTTTC";
     const size_t n = sys.protein_backbone.segment.count;
@@ -329,11 +329,11 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
 // A protein split by the periodic boundary, residues and all (every atom wrapped into the cell on its own), gets the
 // secondary structure it has whole: the bonds between residues in different images are those of the nearest image
 UTEST(secondary_structure, atomistic_dssp_periodic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
     const size_t n = sys.protein_backbone.segment.count;
     ASSERT_GT(n, (size_t)200);
 
@@ -361,14 +361,14 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
 // A trace and an atomistic protein in one backbone, overlapping in space: each gets the secondary structure it has on
 // its own, as the bonds of one kind are never looked for between residues of the other
 UTEST(secondary_structure, mixed_trace_and_atomistic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t cg = { .alloc = alloc };
     md_system_state_t cg_state = { .alloc = alloc };
     ASSERT_TRUE(load_martini3_ubiquitin(&cg, &cg_state));
     md_system_t aa = { .alloc = alloc };
     md_system_state_t aa_state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&aa, &aa_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&aa, &aa_state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&aa, &aa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&aa, &aa_state, MD_UTIL_INFER_ALL, NULL));
 
     const md_protein_backbone_data_t* cg_bb = &cg.protein_backbone;
     const md_protein_backbone_data_t* aa_bb = &aa.protein_backbone;

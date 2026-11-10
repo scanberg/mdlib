@@ -34,15 +34,15 @@ typedef enum md_amber_netcdf_kind_t {
 } md_amber_netcdf_kind_t;
 
 // Tells from the header alone what the file is. Cheap: reads the first block of the file.
-md_amber_netcdf_kind_t md_amber_netcdf_file_kind(str_t filename);
+md_amber_netcdf_kind_t md_amber_netcdf_file_kind(md_str_t filename);
 
 // The atom count of an Amber NetCDF trajectory or restart, 0 when it is neither.
-size_t md_amber_netcdf_file_atom_count(str_t filename);
+size_t md_amber_netcdf_file_atom_count(md_str_t filename);
 
 // Coordinates (Angstrom) and cell of a restart, or of the first frame of a trajectory, into state.
 // num_atoms is what the system expects: the file must hold that many atoms (0 accepts any count).
 // state->alloc must be set.
-bool md_amber_netcdf_state_init_from_file(struct md_system_state_t* state, str_t filename, size_t num_atoms);
+bool md_amber_netcdf_state_init_from_file(struct md_system_state_t* state, md_str_t filename, size_t num_atoms);
 
 // RUN
 // Publishes a trajectory as a run in the system's attribute table (see md_run_publish in md_system.h):
@@ -59,7 +59,7 @@ bool md_amber_netcdf_state_init_from_file(struct md_system_state_t* state, str_t
 //
 // A file still being written, or cut short, publishes the frames that are complete. Providers read
 // through the io they are handed and keep no state of their own; their user_data is sys, borrowed.
-bool md_amber_netcdf_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_amber_netcdf_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

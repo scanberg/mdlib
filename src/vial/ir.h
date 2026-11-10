@@ -119,14 +119,14 @@ typedef struct vial_ir_region_t {
 } vial_ir_region_t;
 
 typedef struct vial_ir_func_t {
-    str_t           name;       // the def's name; empty for the script's top level
+    md_str_t           name;       // the def's name; empty for the script's top level
     uint32_t        body;       // its region, whose parameters are the def's
     md_vial_span_t  span;       // the call that made this specialization
 } vial_ir_func_t;
 
 // A published name: a top-level binding of the script
 typedef struct vial_ir_output_t {
-    str_t           name;
+    md_str_t           name;
     vial_ssa_t      value;
     md_vial_span_t  span;
     bool            hidden;     // not published: a name starting with _, or one __all__ leaves out; hover still shows it
@@ -142,11 +142,11 @@ typedef struct vial_ir_t {
     vial_ir_op_t*       ops;        // md_array
     vial_ir_value_t*    values;     // md_array by ssa; 0 is unused
     vial_ssa_t*         args;       // md_array
-    str_t*              names;      // md_array beside args: a built-in's parameter names
+    md_str_t*              names;      // md_array beside args: a built-in's parameter names
     vial_ir_region_t*   regions;    // md_array; 0 is unused
     vial_ir_func_t*     funcs;      // md_array; 0 is the script's top level
     vial_val_t*         consts;     // md_array
-    str_t*              const_text; // md_array beside consts: the source a constant was written as, or empty
+    md_str_t*              const_text; // md_array beside consts: the source a constant was written as, or empty
     vial_index_item_t*  index_items;// md_array
     uint32_t*           ints;       // md_array: small integer attributes of ops
     vial_ir_output_t*   outputs;    // md_array
@@ -166,7 +166,7 @@ void       vial_ir_attach(vial_ir_t* ir, uint32_t op, uint32_t k, uint32_t regio
 uint32_t   vial_ir_region(vial_ir_t* ir, uint32_t owner, uint32_t func, const vial_type_t* params, uint32_t num_params);
 
 // A new function whose body has parameters of the given types; its body is not entered
-uint32_t   vial_ir_func(vial_ir_t* ir, str_t name, md_vial_span_t span, const vial_type_t* params, uint32_t num_params);
+uint32_t   vial_ir_func(vial_ir_t* ir, md_str_t name, md_vial_span_t span, const vial_type_t* params, uint32_t num_params);
 
 // Appends an op to the insert region; its results have the given types and are numbered from the value returned
 typedef struct vial_ir_emit_t {
@@ -174,7 +174,7 @@ typedef struct vial_ir_emit_t {
     uint16_t            sub;
     uint32_t            aux;
     const vial_ssa_t*   args;
-    const str_t*        names;      // NULL, or one per argument
+    const md_str_t*        names;      // NULL, or one per argument
     uint32_t            num_args;
     const vial_type_t*  types;
     uint32_t            num_results;
@@ -187,7 +187,7 @@ uint32_t   vial_ir_emit(vial_ir_t* ir, const vial_ir_emit_t* e);
 static inline vial_ssa_t vial_ir_result(const vial_ir_t* ir, uint32_t op) { return ir->ops[op].result; }
 
 // Shorthands for one result
-vial_ssa_t vial_ir_const(vial_ir_t* ir, const vial_val_t* v, const vial_type_t* t, str_t text, md_vial_span_t span);
+vial_ssa_t vial_ir_const(vial_ir_t* ir, const vial_val_t* v, const vial_type_t* t, md_str_t text, md_vial_span_t span);
 vial_ssa_t vial_ir_op1(vial_ir_t* ir, uint16_t kind, uint16_t sub, uint32_t aux, const vial_ssa_t* args, uint32_t n,
                        const vial_type_t* t, md_vial_span_t span);
 void       vial_ir_yield(vial_ir_t* ir, const vial_ssa_t* args, uint32_t n, md_vial_span_t span);
@@ -202,7 +202,7 @@ const char* vial_ir_kind_str(vial_ir_kind_t kind);
 bool vial_ir_verify(const vial_ir_t* ir, char* err, size_t cap);
 
 // The IR as text, functions first, one op per line with its span as line:col in src and its stage
-str_t vial_ir_dump(const vial_ir_t* ir, str_t src, md_allocator_i* alloc);
+md_str_t vial_ir_dump(const vial_ir_t* ir, md_str_t src, md_allocator_i* alloc);
 
 // ### PASSES (passes.c) ###
 
@@ -227,4 +227,4 @@ uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc);
 // numbers. Values that hash alike, also of different compilations, are computed alike. memo holds one entry per value
 // of ir, zeroed before the first call, and is shared by calls on the same ir. Never 0.
 struct md_system_t;
-uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const struct md_system_t* sys, str_t run, uint64_t* memo);
+uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const struct md_system_t* sys, md_str_t run, uint64_t* memo);

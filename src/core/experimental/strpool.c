@@ -24,26 +24,26 @@ struct md_strpool_page {
 };
 
 internal inline bool realloc_pages(md_strpool* pool, uint32_t new_len) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     struct md_allocator_i* alloc = pool->alloc;
     if (!alloc) alloc = default_allocator;
 
     pool->page.ptr = md_realloc(alloc, pool->page.ptr, sizeof(md_strpool_page) * pool->page.len, sizeof(md_strpool_page) * new_len);
     pool->page.len = new_len;
 
-    ASSERT(pool->page.ptr);
+    MD_ASSERT(pool->page.ptr);
     return true;
 }
 
 internal inline bool realloc_entries(md_strpool* pool, uint32_t new_cap) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     struct md_allocator_i* alloc = pool->alloc;
     if (!alloc) alloc = default_allocator;
 
     pool->entry.ptr = md_realloc(alloc, pool->entry.ptr, sizeof(md_strpool_entry) * pool->entry.cap, sizeof(md_strpool_entry) * new_cap);
     pool->entry.cap = new_cap;
 
-    ASSERT(pool->entry.ptr);
+    MD_ASSERT(pool->entry.ptr);
     return true;
 }
 
@@ -54,7 +54,7 @@ internal inline const char* lookup_cstr(md_strpool* pool, md_strpool_entry entry
 }
 
 internal inline md_strpool_entry* find_entry(md_strpool* pool, const char* str, uint32_t len) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     for (uint32_t i = 0; i < pool->entry.len; ++i) {
         md_strpool_entry* entry = &pool->entry.ptr[i];
         const char* entry_str = lookup_cstr(pool, *entry);
@@ -67,13 +67,13 @@ internal inline md_strpool_entry* find_entry(md_strpool* pool, const char* str, 
 
 
 void md_strpool_init(md_strpool* pool, struct md_allocator_i* alloc) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     memset(pool, 0, sizeof(*pool));
     md_strpool_clear(pool);
 }
 
 void md_strpool_free(md_strpool* pool) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     struct md_allocator_i* alloc = pool->alloc;
     if (!alloc) alloc = default_allocator;
     md_free(alloc, pool->page.ptr, pool->page.len * sizeof(md_strpool_page));
@@ -81,15 +81,15 @@ void md_strpool_free(md_strpool* pool) {
 }
 
 void md_strpool_clear(md_strpool* pool) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     realloc_pages(pool, 1);
     realloc_entries(pool, MD_STRPOOL_ENTRY_CAP_INIT);
     pool->entry.len = 0;
 }
 
 md_strpool_entry md_strpool_insert(md_strpool* pool, const char* str, int len) {
-    ASSERT(pool);
-    ASSERT(len < MD_STRPOOL_PAGE_SIZE);
+    MD_ASSERT(pool);
+    MD_ASSERT(len < MD_STRPOOL_PAGE_SIZE);
 
     md_strpool_entry* entry = find_entry(pool, str, len);
     if (entry) {
@@ -123,7 +123,7 @@ md_strpool_entry md_strpool_insert(md_strpool* pool, const char* str, int len) {
 }
 
 const char* md_strpool_cstr(md_strpool* pool, md_strpool_entry entry) {
-    ASSERT(pool);
+    MD_ASSERT(pool);
     if (entry.offset > pool->entry.len) return NULL;
     unsigned int page_idx = entry.offset / MD_STRPOOL_PAGE_SIZE;
     unsigned int page_off = entry.offset & (MD_STRPOOL_PAGE_SIZE-1); // fast modulo for power of 2

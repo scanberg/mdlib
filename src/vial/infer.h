@@ -27,9 +27,9 @@ typedef struct vial_value_t {
     bool    b;
     int64_t i;
     double  f;              // in the unit of its type
-    str_t   s;
+    md_str_t   s;
     const vial_sets_t*  sets;
-    const str_t*        strs;
+    const md_str_t*        strs;
     uint32_t            n;
     const struct vial_type_t* type;
 } vial_value_t;
@@ -58,11 +58,11 @@ typedef struct vial_types_t {
     struct vx_sig_t* sigs;      // md_array, from the top level's
     // __all__: when the script binds it, exactly the names it lists are published
     bool            has_all;
-    str_t*          all;        // md_array
+    md_str_t*          all;        // md_array
 } vial_types_t;
 
 // Whether a top-level name is published: listed in __all__ when the script has one, else not starting with _
-bool vial_types_published(const vial_types_t* t, str_t name);
+bool vial_types_published(const vial_types_t* t, md_str_t name);
 
 // Types the top-level statements of c's tree in order. Runs after vial_check_names.
 void vial_check_types(vial_check_t* c, vial_types_t* out);

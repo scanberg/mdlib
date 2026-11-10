@@ -16,7 +16,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
-#include <core/md_intrinsics.h>
 
 #include <math.h>
 #include <stdarg.h>
@@ -128,10 +127,10 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     in->ir = ir;
     in->sys = sys;
     in->msys = msys;
-    in->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+    in->alloc = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
     // A frame's values: a virtual memory arena, reset per frame and keeping what it committed, so a frame allocates
     // no pages and faults none in after the first
-    in->temp = md_vm_arena_create(GIGABYTES(4));
+    in->temp = md_vm_arena_create(MD_GIGABYTES(4));
     if (!in->alloc || !in->temp) return false;
     const size_t nv = md_array_size(ir->values);
     md_array_resize(in->vals, nv, in->alloc);
@@ -295,7 +294,7 @@ static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e
 static md_allocator_i* map_scratch(vial_interp_t* in) {
     if (in->map_depth >= VIAL_MAP_SCRATCH_DEPTH) return NULL;
     md_allocator_i** a = &in->map_scratch[in->map_depth];
-    if (!*a) *a = md_vm_arena_create(GIGABYTES(4));
+    if (!*a) *a = md_vm_arena_create(MD_GIGABYTES(4));
     return *a;
 }
 
@@ -344,12 +343,12 @@ static int eval_map_pairs(vial_interp_t* in, const vial_ir_op_t* op, const vial_
     for (uint32_t a = 0; a < b->num_args; ++a) {
         const vial_ssa_t v = ir->args[b->arg_beg + a];
         if (!v) continue;
-        const str_t nm = ir->names[b->arg_beg + a];
-        const int which = str_eq(nm, STR_LIT("p")) ? 0 : str_eq(nm, STR_LIT("q")) ? 1 : -1;
+        const md_str_t nm = ir->names[b->arg_beg + a];
+        const int which = md_str_eq(nm, MD_STR_LIT("p")) ? 0 : md_str_eq(nm, MD_STR_LIT("q")) ? 1 : -1;
         if (which < 0) return -1;
         const uint32_t ko = ir->values[v].op;
         if (ko == VIAL_IR_NO_OP || ir->ops[ko].kind != VIAL_IR_KIND || (ko != kinds[0] && (nk < 2 || ko != kinds[1]))) return -1;
-        if (ir->ops[ko].sub != VX_KIND_GROUP && ir->ops[ko].sub != VX_KIND_POINTS) return -1;
+        if (ir->ops[ko].sub != VX_KIND_BODY && ir->ops[ko].sub != VX_KIND_POINTS) return -1;
         par[which] = param_of(ir, ri, ir->args[ir->ops[ko].arg_beg]);
     }
     for (int w = 0; w < 2; ++w) {
@@ -1247,26 +1246,22 @@ typedef struct sweep_job_t {
     volatile uint64_t   stop;
 } sweep_job_t;
 
-static void sweep_chunk(void* arg, size_t c) {
+// Chunks [c_beg, c_end) of a sweep's frames, on the worker of the executor's thread_idx (one per thread_idx, and no two
+// pieces at once share one: md_executor.h)
+static void sweep_chunk(void* arg, uint32_t c_beg, uint32_t c_end, uint32_t thread_idx) {
     sweep_job_t* job = arg;
     vial_interp_t* main = job->main;
-    // A free worker: there are as many as calls run at once, so one is always free soon
-    vial_interp_t* w = NULL;
-    while (!w) {
-        for (size_t q = 0; q < main->num_workers && !w; ++q) {
-            vial_interp_t* cand = &main->workers[q];
-            if (md_atomic_fetch_add64(&cand->busy, 1) == 0) w = cand;
-            else md_atomic_fetch_add64(&cand->busy, UINT64_MAX);
+    MD_ASSERT(thread_idx < main->num_workers);
+    vial_interp_t* w = &main->workers[thread_idx];
+    for (uint32_t c = c_beg; c < c_end; ++c) {
+        const int64_t beg = (int64_t)c * job->chunk, end = MD_MIN(beg + job->chunk, job->num_frames);
+        for (int64_t f = beg; f < end && !md_atomic_load64(&job->stop); ++f) {
+            const int r = run_frame(w, main, job->sweep, f);
+            if (r == FRAME_FAILED) md_atomic_fetch_add64(&job->failed, 1);
+            if (r == FRAME_STOP) { md_atomic_fetch_add64(&job->failed, 1); md_atomic_fetch_add64(&job->stop, 1); }
         }
     }
-    const int64_t beg = (int64_t)c * job->chunk, end = MIN(beg + job->chunk, job->num_frames);
-    for (int64_t f = beg; f < end && !md_atomic_load64(&job->stop); ++f) {
-        const int r = run_frame(w, main, job->sweep, f);
-        if (r == FRAME_FAILED) md_atomic_fetch_add64(&job->failed, 1);
-        if (r == FRAME_STOP) { md_atomic_fetch_add64(&job->failed, 1); md_atomic_fetch_add64(&job->stop, 1); }
-    }
     if (w->load_release) w->load_release(w->load_user);
-    md_atomic_fetch_add64(&w->busy, UINT64_MAX);
 }
 
 // A worker ready for a sweep: what main holds that is not per frame, static values and what earlier sweeps finished
@@ -1377,18 +1372,21 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     in->frames_total = (uint64_t)(sweeps_with_frames * num_frames);
     in->interrupted = false;
     bool stopped = false;
+    bool executor_stopped = false;
     for (uint32_t sweep = 1; sweep <= max_sweep && !stopped; ++sweep) {
         in->sweep = (uint8_t)sweep;
         if (has_frames[sweep] && num_frames > 0 && !begin_volumes(in, (uint8_t)sweep)) ok = false;
         if (has_frames[sweep] && num_frames > 0) {
-            if (in->num_workers && in->parallel_for && !has_fold[sweep]) {
+            if (in->num_workers && in->executor && !has_fold[sweep]) {
                 for (size_t w = 0; w < in->num_workers; ++w) worker_sync(&in->workers[w], in);
                 // Chunks of a few frames: enough of them that the workers finish together
-                const int64_t chunk = MAX((int64_t)1, num_frames / (int64_t)(in->num_workers * 8));
+                const int64_t chunk = MD_MAX((int64_t)1, num_frames / (int64_t)(in->num_workers * 8));
                 sweep_job_t job = {.main = in, .sweep = (uint8_t)sweep, .num_frames = num_frames, .chunk = chunk};
-                in->parallel_for(in->parallel_user, (size_t)((num_frames + chunk - 1) / chunk), sweep_chunk, &job);
+                // Not every chunk run (the executor's work was cancelled): stopped, as when interrupted
+                const bool all = md_parallel_for(in->executor, (uint32_t)((num_frames + chunk - 1) / chunk), 1, sweep_chunk, &job);
                 if (md_atomic_load64(&job.failed)) ok = false;
                 if (md_atomic_load64(&job.stop)) stopped = true;
+                if (!all) { ok = false; stopped = true; executor_stopped = true; }
             } else {
                 for (int64_t f = 0; f < num_frames; ++f) {
                     const int r = run_frame(in, in, (uint8_t)sweep, f);
@@ -1434,7 +1432,7 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     in->frame = NULL;
     if (in->load_release) in->load_release(in->load_user);
     merge_errors(in);
-    if (stopped && in->stop && md_atomic_load64(in->stop)) { in->interrupted = true; return false; }
+    if (stopped && (executor_stopped || (in->stop && md_atomic_load64(in->stop)))) { in->interrupted = true; return false; }
     return ok && !stopped;
 }
 

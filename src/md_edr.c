@@ -7,6 +7,7 @@
 #include <core/md_os.h>
 #include <md_xdr.h>
 #include <md_system.h>
+#include <md_ndx.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -82,8 +83,8 @@ typedef struct md_enxframe_t {
 	int				nre;		// Number of energies
 	int				e_size;		// Size in bytes of energies
 	md_energy_t*	ener;		// Energy array
-	str_t*			e_names;
-	str_t*			e_units;
+	md_str_t*			e_names;
+	md_str_t*			e_units;
 
 	int				nblock;		// Number of blocks
 	md_enxblock_t*	block;		// Block array
@@ -135,7 +136,7 @@ static void resize_data_subblock(md_enxsubblock_t* subblock, size_t new_size, md
 	case MD_ENX_DATATYPE_CHAR:   md_array_resize(subblock->value.cval, new_size, alloc); break;
 	case MD_ENX_DATATYPE_STRING: md_array_resize(subblock->value.sval, new_size, alloc); break;
 	default:
-		ASSERT(false);
+		MD_ASSERT(false);
 	}
 }
 
@@ -143,7 +144,7 @@ static void add_subblock_enxblock(md_enxblock_t* block, size_t new_size, md_allo
 	const size_t old_size = md_array_size(block->sub);
 	md_array_resize(block->sub, new_size, alloc);
 	if (new_size > old_size) {
-		MEMSET(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
+		md_memset(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
 	}
 }
 
@@ -151,7 +152,7 @@ static void add_blocks_enxframe(md_enxframe_t* frame, size_t new_size, md_alloca
 	const size_t old_size = md_array_size(frame->block);
 	md_array_resize(frame->block, new_size, alloc);
 	if (new_size > old_size) {
-		MEMSET(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
+		md_memset(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
 	}
 }
 
@@ -226,7 +227,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 				return false;
 			}
 		} else {
-			nsteps = MAX(1, nsum);
+			nsteps = MD_MAX(1, nsum);
 		}
 		if (file_version >= 5) {
 			if (!md_xdr_read_f64(&fp->xdr, &dt)) {
@@ -500,7 +501,7 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 		const size_t new_size = (size_t)frame->nre;
 		const size_t old_size = md_array_size(frame->ener);
 		md_array_resize(frame->ener, (size_t)frame->nre, alloc);
-		MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
+		md_memset(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
 	}
 
 	for (int i = 0; i < frame->nre; ++i) {
@@ -563,11 +564,11 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 				break;
 			case MD_ENX_DATATYPE_STRING:
 				for (int j = 0; j < (int)md_array_size(sub->value.sval) && ok; ++j) {
-					str_t str;
+					md_str_t str;
 					ok = md_xdr_read_string(&fp->xdr, &str, sizeof(buf) - 1);
 					if (ok) {
 						sub->value.sval[j] = md_alloc(alloc, str.len + 1);
-						MEMCPY(sub->value.sval[j], str.ptr, str.len);
+						md_memcpy(sub->value.sval[j], str.ptr, str.len);
 						sub->value.sval[j][str.len] = '\0';
 					}
 				}
@@ -629,26 +630,26 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 
 	for (int i = 0; i < nre; ++i) {
 		// A string ends at its first zero, whatever length the file gives it
-		str_t name, unit;
+		md_str_t name, unit;
 		if (!md_xdr_read_string(&fp->xdr, &name, 1023)) {
 			MD_LOG_ERROR("Failed to read expected number of strings within edr file");
 			goto done;
 		}
-		name = str_from_cstrn(name.ptr, name.len);
+		name = md_str_from_cstrn(name.ptr, name.len);
 
 		if (*file_version > 1) {
 			if (!md_xdr_read_string(&fp->xdr, &unit, 1023)) {
 				MD_LOG_ERROR("Failed to read expected number of strings within edr file");
 				goto done;
 			}
-			unit = str_from_cstrn(unit.ptr, unit.len);
+			unit = md_str_from_cstrn(unit.ptr, unit.len);
 		} else {
-			unit = STR_LIT("kJ/mol");
+			unit = MD_STR_LIT("kJ/mol");
 		}
 
 		if (frame) {
-			md_array_push(frame->e_names, str_copy(name, alloc), alloc);
-			md_array_push(frame->e_units, str_copy(unit, alloc), alloc);
+			md_array_push(frame->e_names, md_str_copy(name, alloc), alloc);
+			md_array_push(frame->e_units, md_str_copy(unit, alloc), alloc);
 		}
 	}
 
@@ -657,10 +658,10 @@ done:
 	return result;
 }
 
-static bool edr_file_open(edr_fp_t* fp, str_t filename) {
+static bool edr_file_open(edr_fp_t* fp, md_str_t filename) {
 	md_temp_scope_t temp_scope = md_temp_begin();
 	md_allocator_i* arena = md_temp_allocator(temp_scope);
-	str_t path = str_copy(filename, arena);
+	md_str_t path = md_str_copy(filename, arena);
 	bool result = false;
 
 	{
@@ -729,14 +730,14 @@ static void edr_file_close(edr_fp_t* fp) {
 	}
 }
 
-static md_unit_t unit_from_str(str_t str) {
+static md_unit_t unit_from_str(md_str_t str) {
 	// Yields 'none' if the string is empty or could not be parsed
 	md_unit_t unit;
 	md_unit_parse(&unit, str);
 	return unit;
 }
 
-bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, struct md_allocator_i* alloc) {
+bool md_edr_energies_parse_file(md_edr_energies_t* energies, md_str_t filename, struct md_allocator_i* alloc) {
 	bool result = false;
 	edr_fp_t fp = {0};
 	if (!edr_file_open(&fp, filename)) {
@@ -756,7 +757,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 		md_log(MD_LOG_TYPE_DEBUG, "Reading energies into non-zero energy structure, potential memory leak here");
 	}
 	*energies = (md_edr_energies_t){0};
-	energies->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+	energies->alloc = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
 
 	energies->num_frames = 0;
 	energies->frame_time = NULL;
@@ -765,8 +766,8 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 	md_array_resize(energies->energy, (size_t)frame.nre, energies->alloc);
 	
 	for (int i = 0; i < frame.nre; ++i) {
-        energies->energy[i].name	 = str_copy(frame.e_names[i], energies->alloc);
-		energies->energy[i].unit_str = str_copy(frame.e_units[i], energies->alloc);
+        energies->energy[i].name	 = md_str_copy(frame.e_names[i], energies->alloc);
+		energies->energy[i].unit_str = md_str_copy(frame.e_units[i], energies->alloc);
         energies->energy[i].unit	 = unit_from_str(frame.e_units[i]);
 		energies->energy[i].values   = NULL;
 	}
@@ -809,7 +810,7 @@ void md_edr_energies_free(md_edr_energies_t* energies) {
 
 // "Kinetic En." -> "kinetic_en". Lowercase ASCII letters and digits are kept, every run of anything
 // else becomes one '_', and none is left at either end. Returns the length, 0 if nothing survived.
-static size_t edr_slug(char* buf, size_t cap, str_t name) {
+static size_t edr_slug(char* buf, size_t cap, md_str_t name) {
 	size_t len = 0;
 	bool pending_sep = false;
 	for (size_t i = 0; i < name.len && len + 2 < cap; ++i) {
@@ -832,7 +833,7 @@ static size_t edr_slug(char* buf, size_t cap, str_t name) {
 
 // One published attribute: a lone term, or a group of terms which are the components of one value.
 typedef struct edr_output_t {
-	str_t       label;        // the GROMACS name, or the prefix the members share
+	md_str_t       label;        // the GROMACS name, or the prefix the members share
 	uint32_t    tensor;       // 1: {R,3,3}, the members row major
 	uint32_t    components;   // 1, or 3 for a vector whose members are x y z
 	uint32_t    count;        // members
@@ -841,12 +842,12 @@ typedef struct edr_output_t {
 } edr_output_t;
 
 // Index of the term called <prefix>-<suffix>, or -1.
-static int edr_find_term(const md_edr_energies_t* e, str_t prefix, const char* suffix) {
+static int edr_find_term(const md_edr_energies_t* e, md_str_t prefix, const char* suffix) {
 	const size_t slen = strlen(suffix);
 	for (size_t i = 0; i < e->num_energies; ++i) {
-		str_t name = e->energy[i].name;
-		if (name.len == prefix.len + 1 + slen && str_begins_with(name, prefix) && name.ptr[prefix.len] == '-' &&
-			MEMCMP(name.ptr + prefix.len + 1, suffix, slen) == 0) {
+		md_str_t name = e->energy[i].name;
+		if (name.len == prefix.len + 1 + slen && md_str_begins_with(name, prefix) && name.ptr[prefix.len] == '-' &&
+			md_memcmp(name.ptr + prefix.len + 1, suffix, slen) == 0) {
 			return (int)i;
 		}
 	}
@@ -856,7 +857,7 @@ static int edr_find_term(const md_edr_energies_t* e, str_t prefix, const char* s
 // Every suffix present under prefix, and all in one unit - or it is not a group and the terms stay
 // single. Units are compared rather than assumed: a group whose members disagree would have to pick
 // one of them, and whichever it picked would be wrong for the rest.
-static bool edr_try_group(uint32_t out_members[], const md_edr_energies_t* e, str_t prefix, const char* const suffixes[], uint32_t count) {
+static bool edr_try_group(uint32_t out_members[], const md_edr_energies_t* e, md_str_t prefix, const char* const suffixes[], uint32_t count) {
 	for (uint32_t k = 0; k < count; ++k) {
 		const int idx = edr_find_term(e, prefix, suffixes[k]);
 		if (idx < 0) {
@@ -883,9 +884,9 @@ static size_t edr_plan(edr_output_t* out, const md_edr_energies_t* e, bool* used
 		edr_output_t o = {0};
 
 		size_t loc;
-		str_t name = e->energy[i].name;
-		if (str_rfind_char(&loc, name, '-') && loc > 0 && loc + 1 < name.len) {
-			str_t prefix = str_substr(name, 0, loc);
+		md_str_t name = e->energy[i].name;
+		if (md_str_rfind_char(&loc, name, '-') && loc > 0 && loc + 1 < name.len) {
+			md_str_t prefix = md_str_substr(name, 0, loc);
 			if (edr_try_group(o.member, e, prefix, edr_tensor_suffix, 9)) {
 				o.tensor = 1; o.components = 1; o.count = 9;
 				o.description = "3x3 tensor, row major, from <name>-XX .. <name>-ZZ";
@@ -919,26 +920,26 @@ static size_t edr_plan(edr_output_t* out, const md_edr_energies_t* e, bool* used
 	return count;
 }
 
-static str_t edr_join(char* buf, size_t cap, str_t a, const char* b, size_t b_len) {
+static md_str_t edr_join(char* buf, size_t cap, md_str_t a, const char* b, size_t b_len) {
 	if (a.len + 1 + b_len + 1 > cap) {
-		return (str_t){0};
+		return (md_str_t){0};
 	}
-	MEMCPY(buf, a.ptr, a.len);
+	md_memcpy(buf, a.ptr, a.len);
 	buf[a.len] = '/';
-	MEMCPY(buf + a.len + 1, b, b_len);
+	md_memcpy(buf + a.len + 1, b, b_len);
 	buf[a.len + 1 + b_len] = '\0';
-	return (str_t){buf, a.len + 1 + b_len};
+	return (md_str_t){buf, a.len + 1 + b_len};
 }
 
-bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energies, str_t run) {
-	ASSERT(sys);
-	ASSERT(energies);
+bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energies, md_str_t run) {
+	MD_ASSERT(sys);
+	MD_ASSERT(energies);
 
 	md_attributes_t* attributes = &sys->attributes;
 	if (!attributes->alloc) {
 		attributes->alloc = sys->alloc;
 	}
-	if (str_empty(run)) {
+	if (md_str_empty(run)) {
 		MD_LOG_ERROR("EDR: no run to publish the energies under");
 		return false;
 	}
@@ -961,9 +962,9 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 
 	char group_buf[512];
 	char path_buf[512];
-	const str_t group = edr_join(group_buf, sizeof(group_buf), run, "edr", 3);
-	if (str_empty(group)) {
-		MD_LOG_ERROR("EDR: run path '" STR_FMT "' is too long", STR_ARG(run));
+	const md_str_t group = edr_join(group_buf, sizeof(group_buf), run, "edr", 3);
+	if (md_str_empty(group)) {
+		MD_LOG_ERROR("EDR: run path '" MD_STR_FMT "' is too long", MD_STR_ARG(run));
 		return false;
 	}
 
@@ -975,11 +976,11 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 	// question about the values and has to be answered before the real table is touched.
 	md_attributes_t probe = { .alloc = temp_alloc };
 	const md_attribute_desc_t time_desc = {
-		.path   = STR_INIT("time"),
+		.path   = MD_STR_INIT("time"),
 		.format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
 		.flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
 		.unit   = md_unit_picosecond(),
-		.label  = STR_INIT("Time"),
+		.label  = MD_STR_INIT("Time"),
 		.data   = energies->frame_time,
 		.byte_size = R * sizeof(double),
 	};
@@ -997,8 +998,8 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 				double t = 0;
 				const md_attribute_slice_t s = md_attribute_slice_1((uint32_t)f);
 				md_attribute_extract_f64(&t, 1, run_axis, s, md_unit_picosecond());
-				MD_LOG_ERROR("EDR: frame %zu of '" STR_FMT "' (%g ps) has no matching time in the energy file (%g - %g ps)",
-					f, STR_ARG(run), t, energies->frame_time[0], energies->frame_time[R - 1]);
+				MD_LOG_ERROR("EDR: frame %zu of '" MD_STR_FMT "' (%g ps) has no matching time in the energy file (%g - %g ps)",
+					f, MD_STR_ARG(run), t, energies->frame_time[0], energies->frame_time[R - 1]);
 				goto done;
 			}
 		}
@@ -1018,15 +1019,15 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 
 	{
 		bool* used = md_temp_alloc_array(temp, bool, energies->num_energies);
-		MEMSET(used, 0, energies->num_energies * sizeof(bool));
+		md_memset(used, 0, energies->num_energies * sizeof(bool));
 		edr_output_t* plan = md_temp_alloc_array(temp, edr_output_t, energies->num_energies);
 		const size_t num_out = edr_plan(plan, energies, used);
 
 		// Slugs already handed out, to keep two terms that fold to the same name apart. 'time' and
 		// 'source' are taken before the first term is looked at.
-		md_array(str_t) taken = 0;
-		md_array_push(taken, STR_LIT("time"), temp_alloc);
-		md_array_push(taken, STR_LIT("source"), temp_alloc);
+		md_array(md_str_t) taken = 0;
+		md_array_push(taken, MD_STR_LIT("time"), temp_alloc);
+		md_array_push(taken, MD_STR_LIT("source"), temp_alloc);
 
 		for (size_t o = 0; o < num_out; ++o) {
 			const edr_output_t* out = &plan[o];
@@ -1040,15 +1041,15 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 			for (int n = 2;; ++n) {
 				bool clash = false;
 				for (size_t k = 0; k < md_array_size(taken); ++k) {
-					if (str_eq(taken[k], (str_t){slug, slug_len})) { clash = true; break; }
+					if (md_str_eq(taken[k], (md_str_t){slug, slug_len})) { clash = true; break; }
 				}
 				if (!clash) break;
 				slug_len = base_len + (size_t)md_snprintf(slug + base_len, sizeof(slug) - base_len, "_%d", n);
 			}
 			if (slug_len != base_len) {
-				MD_LOG_INFO("EDR: '" STR_FMT "' published as '%s', its plain name was taken", STR_ARG(out->label), slug);
+				MD_LOG_INFO("EDR: '" MD_STR_FMT "' published as '%s', its plain name was taken", MD_STR_ARG(out->label), slug);
 			}
-			md_array_push(taken, str_copy((str_t){slug, slug_len}, temp_alloc), temp_alloc);
+			md_array_push(taken, md_str_copy((md_str_t){slug, slug_len}, temp_alloc), temp_alloc);
 
 			const size_t per_row = out->count;
 			double* values = md_temp_alloc_array(temp, double, R * per_row);
@@ -1064,7 +1065,7 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 				.flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
 				.unit   = energies->energy[out->member[0]].unit,
 				.label  = out->label,
-				.description = out->description ? str_from_cstr(out->description) : (str_t){0},
+				.description = out->description ? md_str_from_cstr(out->description) : (md_str_t){0},
 				.data   = values,
 				.byte_size = R * per_row * sizeof(double),
 			};
@@ -1073,19 +1074,26 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 				desc.format.shape[1] = 3;
 				desc.format.shape[2] = 3;
 			}
-			if (str_empty(desc.path) || !md_attributes_create(attributes, &desc)) {
+			if (md_str_empty(desc.path) || !md_attributes_create(attributes, &desc)) {
 				goto fail;
 			}
 		}
 	}
 
 	result = true;
+	{
+		// What the groups of an index file were used for, where no tpr said
+		md_array(md_str_t) names = 0;
+		for (size_t i = 0; i < energies->num_energies; ++i) md_array_push(names, energies->energy[i].name, md_get_heap_allocator());
+		md_edr_system_infer_group_roles(sys, names, md_array_size(names));
+		md_array_free(names, md_get_heap_allocator());
+	}
 	goto done;
 
 fail:
 	// All or nothing: half an energy file is a table that answers some questions with the new file
 	// and the rest with nothing, and nothing says which.
-	MD_LOG_ERROR("EDR: failed to publish the energies under '" STR_FMT "'", STR_ARG(group));
+	MD_LOG_ERROR("EDR: failed to publish the energies under '" MD_STR_FMT "'", MD_STR_ARG(group));
 	md_attributes_remove_prefix(attributes, group);
 
 done:
@@ -1094,8 +1102,8 @@ done:
 	return result;
 }
 
-bool md_edr_system_supplement_from_file(md_system_t* sys, str_t filename, str_t run) {
-	ASSERT(sys);
+bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, md_str_t run) {
+	MD_ASSERT(sys);
 
 	md_edr_energies_t energies = {0};
 	if (!md_edr_energies_parse_file(&energies, filename, md_get_heap_allocator())) {
@@ -1107,16 +1115,238 @@ bool md_edr_system_supplement_from_file(md_system_t* sys, str_t filename, str_t 
 	if (result) {
 		char group_buf[512];
 		char path_buf[512];
-		const str_t group = edr_join(group_buf, sizeof(group_buf), run, "edr", 3);
+		const md_str_t group = edr_join(group_buf, sizeof(group_buf), run, "edr", 3);
 		const md_attribute_desc_t desc = {
 			.path   = edr_join(path_buf, sizeof(path_buf), group, "source", 6),
 			.format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },
 			.unit   = md_unit_none(),
-			.label  = STR_INIT("Source"),
+			.label  = MD_STR_INIT("Source"),
 			.data   = &filename,
-			.byte_size = sizeof(str_t),
+			.byte_size = sizeof(md_str_t),
 		};
 		md_attributes_create(&sys->attributes, &desc);
 	}
 	return result;
+}
+
+// ### THE GROUPS OF A TERM ###
+
+#define EDR_NO_GROUP UINT32_MAX
+
+// The group named name: of the role's (*pos its place in the role's order), else any of the name (*pos EDR_NO_GROUP)
+static uint32_t edr_find_group(uint32_t* pos, const md_group_data_t* g, md_group_role_t role, md_str_t name) {
+    const md_urange_t r = md_system_group_role_range(g, role);
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        if (md_str_eq(g->name[g->role_group[i]], name)) {
+            *pos = i - r.beg;
+            return g->role_group[i];
+        }
+    }
+    *pos = EDR_NO_GROUP;
+    for (size_t i = 0; i < g->count; ++i) {
+        if (md_str_eq(g->name[i], name)) return (uint32_t)i;
+    }
+    return EDR_NO_GROUP;
+}
+
+bool md_edr_term_groups(md_edr_term_groups_t* out, const md_system_t* sys, md_str_t term) {
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
+    const md_group_data_t* g = &sys->group;
+    if (!g->count || md_str_empty(term)) return false;
+
+    size_t colon;
+    if (md_str_find_char(&colon, term, ':')) {
+        if (colon == 0) return false;
+        const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+        bool found = false;
+        md_edr_term_groups_t fallback = {0};
+        for (size_t p = 1; p + 1 < pair.len; ++p) {
+            if (pair.ptr[p] != '-') continue;
+            uint32_t pa, pb;
+            const uint32_t a = edr_find_group(&pa, g, MD_GROUP_ROLE_ENERGY, md_str_substr(pair, 0, p));
+            if (a == EDR_NO_GROUP) continue;
+            const uint32_t b = edr_find_group(&pb, g, MD_GROUP_ROLE_ENERGY, md_str_substr(pair, p + 1, SIZE_MAX));
+            if (b == EDR_NO_GROUP) continue;
+            const md_edr_term_groups_t res = { .role = MD_GROUP_ROLE_ENERGY, .count = 2, .group = { a, b } };
+            if (pa != EDR_NO_GROUP && pb != EDR_NO_GROUP && pa <= pb) {
+                *out = res;
+                return true;
+            }
+            if (!found) {
+                fallback = res;
+                found = true;
+            }
+        }
+        if (found) *out = fallback;
+        return found;
+    }
+
+    md_str_t name = {0};
+    if (md_str_begins_with(term, MD_STR_LIT("T-"))) {
+        name = md_str_substr(term, 2, SIZE_MAX);
+    } else if (md_str_begins_with(term, MD_STR_LIT("Lamb-"))) {
+        name = md_str_substr(term, 5, SIZE_MAX);
+    }
+    if (md_str_empty(name)) return false;
+    uint32_t pos;
+    const uint32_t idx = edr_find_group(&pos, g, MD_GROUP_ROLE_TC, name);
+    if (idx == EDR_NO_GROUP) return false;
+    *out = (md_edr_term_groups_t){ .role = MD_GROUP_ROLE_TC, .count = 1, .group = { idx, idx } };
+    return true;
+}
+
+size_t md_edr_terms_groups(uint32_t out_groups[], size_t cap, const md_system_t* sys, const md_str_t terms[], size_t count) {
+    MD_ASSERT(sys);
+    size_t n = 0;
+    for (size_t i = 0; i < count; ++i) {
+        md_edr_term_groups_t tg;
+        if (!md_edr_term_groups(&tg, sys, terms[i])) continue;
+        for (uint32_t k = 0; k < 2; ++k) {
+            if (k == 1 && tg.group[1] == tg.group[0]) break;
+            bool seen = false;
+            for (size_t j = 0; j < n && j < cap && !seen; ++j) seen = out_groups[j] == tg.group[k];
+            if (seen) continue;
+            if (n < cap) out_groups[n] = tg.group[k];
+            n += 1;
+        }
+    }
+    return n;
+}
+
+bool md_edr_term_is_of_groups(md_str_t term) {
+    size_t colon;
+    if (md_str_find_char(&colon, term, ':')) {
+        const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+        size_t dash;
+        return colon > 0 && md_str_find_char(&dash, pair, '-') && dash > 0 && dash + 1 < pair.len;
+    }
+    return (md_str_begins_with(term, MD_STR_LIT("T-")) && term.len > 2) || (md_str_begins_with(term, MD_STR_LIT("Lamb-")) && term.len > 5);
+}
+
+// ### THE ROLES OF THE GROUPS, FROM THE TERMS ###
+
+#define EDR_MAX_ROLE_GROUPS 256
+
+// The first group of the name; else the first of the name in another case
+static uint32_t edr_group_by_name(const md_group_data_t* g, md_str_t name) {
+    for (size_t i = 0; i < g->count; ++i) if (md_str_eq(g->name[i], name)) return (uint32_t)i;
+    for (size_t i = 0; i < g->count; ++i) if (md_str_eq_ignore_case(g->name[i], name)) return (uint32_t)i;
+    return EDR_NO_GROUP;
+}
+
+static bool edr_names_add(md_str_t* names, size_t* n, md_str_t name) {
+    for (size_t i = 0; i < *n; ++i) if (md_str_eq(names[i], name)) return true;
+    if (*n == EDR_MAX_ROLE_GROUPS) return false;
+    names[(*n)++] = name;
+    return true;
+}
+
+// Sets the role from its names in order: false, and nothing set or added, where a name is not found or the groups
+// overlap. A name the system has no group of is GROMACS' default group of it (md_ndx_default_group), made a group of the
+// system only once the role is known to hold.
+static bool edr_infer_role(md_system_t* sys, md_group_role_t role, const md_str_t* names, size_t n) {
+    const uint32_t N = (uint32_t)sys->atom.count;
+    const char* what = role == MD_GROUP_ROLE_ENERGY ? "energy" : "T-coupling";
+    md_allocator_i* heap = md_get_heap_allocator();
+    uint32_t idx[EDR_MAX_ROLE_GROUPS];
+    md_bitset_t atoms[EDR_MAX_ROLE_GROUPS];     // Of each name; owned (heap) where a default group was made
+    bool owned[EDR_MAX_ROLE_GROUPS] = {0};
+    size_t rest = SIZE_MAX;
+    bool ok = true;
+    for (size_t i = 0; i < n && ok; ++i) {
+        atoms[i] = md_bitset_empty_set();
+        if (md_str_eq(names[i], MD_STR_LIT("rest"))) { rest = i; continue; }
+        idx[i] = edr_group_by_name(&sys->group, names[i]);
+        if (idx[i] != EDR_NO_GROUP) {
+            atoms[i] = sys->group.atoms[idx[i]];
+        } else if (md_ndx_default_group(&atoms[i], sys, names[i], heap)) {
+            // A group of GROMACS' own, which grompp makes of the topology without an index file (Protein, SOL, NA)
+            owned[i] = true;
+        } else {
+            MD_LOG_INFO("EDR: the %s group '" MD_STR_FMT "' of the energy file is no group of the system, nor one GROMACS makes of it; load the index file the run was made with", what, MD_STR_ARG(names[i]));
+            ok = false;
+        }
+    }
+
+    // A role is a partition: no atom in two of its groups, 'rest' the atoms in none
+    md_bitset_t all = md_bitset_empty_set();
+    uint64_t total = 0;
+    for (size_t i = 0; i < n && ok; ++i) {
+        if (i == rest) continue;
+        md_bitset_t a = md_bitset_and(atoms[i], md_bitset_range(0, N), heap);
+        total += md_bitset_count(a);
+        md_bitset_t u = md_bitset_or(all, a, heap);
+        md_bitset_free(&all, heap);
+        md_bitset_free(&a, heap);
+        all = u;
+    }
+    if (ok && total != md_bitset_count(all)) {
+        MD_LOG_ERROR("EDR: the groups named as the %s groups of the energy file overlap, which those of a run never do: the index file is not the one the run was made with, and they are left without the role", what);
+        ok = false;
+    }
+    md_bitset_t rest_atoms = md_bitset_empty_set();
+    if (ok && rest != SIZE_MAX) {
+        rest_atoms = md_bitset_not(all, 0, N, heap);
+        if (md_bitset_empty(rest_atoms)) {
+            MD_LOG_ERROR("EDR: the energy file has %s terms of 'rest', and the other %s groups hold every atom: the index file is not the one the run was made with", what, what);
+            ok = false;
+        }
+    }
+    if (ok) {
+        for (size_t i = 0; i < n; ++i) {
+            if (i == rest)      idx[i] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), rest_atoms, 0);
+            else if (owned[i])  idx[i] = (uint32_t)md_system_group_add(sys, names[i], atoms[i], 0);
+        }
+        md_system_group_set_role(sys, role, idx, n);
+        MD_LOG_INFO("EDR: %zu %s groups of the system, as the energy file names them", n, what);
+    }
+    md_bitset_free(&rest_atoms, heap);
+    md_bitset_free(&all, heap);
+    for (size_t i = 0; i < n; ++i) if (owned[i]) md_bitset_free(&atoms[i], heap);
+    return ok;
+}
+
+size_t md_edr_system_infer_group_roles(md_system_t* sys, const md_str_t* term_names, size_t count) {
+    MD_ASSERT(sys);
+    if (!sys->atom.count || !term_names) return 0;
+    md_str_t energy[EDR_MAX_ROLE_GROUPS], tc[EDR_MAX_ROLE_GROUPS];
+    size_t num_energy = 0, num_tc = 0;
+    bool fits = true;
+    for (size_t i = 0; i < count && fits; ++i) {
+        const md_str_t term = term_names[i];
+        size_t colon;
+        if (md_str_find_char(&colon, term, ':')) {
+            // A group with itself: <a>-<a>, so the dash is in the middle
+            const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+            if (pair.len < 3 || pair.len % 2 == 0 || pair.ptr[pair.len / 2] != '-') continue;
+            const md_str_t a = md_str_substr(pair, 0, pair.len / 2), b = md_str_substr(pair, pair.len / 2 + 1, SIZE_MAX);
+            if (md_str_eq(a, b)) fits = edr_names_add(energy, &num_energy, a);
+        } else if (md_str_begins_with(term, MD_STR_LIT("T-")) && term.len > 2) {
+            fits = edr_names_add(tc, &num_tc, md_str_substr(term, 2, SIZE_MAX));
+        }
+    }
+    if (!fits) return 0;
+    size_t num_set = 0;
+    const md_urange_t er = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_ENERGY);
+    if (num_energy > 1 && er.beg == er.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_ENERGY, energy, num_energy);
+    const md_urange_t tr = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_TC);
+    if (num_tc > 0 && tr.beg == tr.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_TC, tc, num_tc);
+    return num_set;
+}
+
+size_t md_edr_system_infer_group_roles_of_run(md_system_t* sys, md_str_t run) {
+    MD_ASSERT(sys);
+    if (!sys->atom.count || md_str_empty(run)) return 0;
+    char buf[512];
+    const md_str_t group = edr_join(buf, sizeof(buf), run, "edr", 3);
+    if (md_str_empty(group)) return 0;
+    md_array(md_str_t) names = 0;
+    md_allocator_i* heap = md_get_heap_allocator();
+    for (md_attribute_iter_t it = md_attributes_iter(&sys->attributes, group); md_attributes_next(&it);) {
+        if (!md_str_empty(it.attr->label)) md_array_push(names, it.attr->label, heap);
+    }
+    const size_t result = md_edr_system_infer_group_roles(sys, names, md_array_size(names));
+    md_array_free(names, heap);
+    return result;
 }

@@ -17,7 +17,7 @@
 static const vial_builtin_t builtins[] = {
     // Selectors, usable bare for all their units
     {"particle", SEL}, {"atom", SEL}, {"bead", SEL}, {"residue", SEL}, {"part", SEL}, {"polymer", SEL}, {"molecule", SEL},
-    {"chain", SEL}, {"tail", SEL}, {"head", SEL}, {"ring", SEL},
+    {"chain", SEL}, {"tail", SEL}, {"head", SEL}, {"ring", SEL}, {"group", SEL},
     // Predefined sets
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"system", SET | F},
@@ -51,7 +51,7 @@ static const vial_builtin_t builtins[] = {
     // Properties that exist only after a dot
     {"T", P}, {"xyz", P}, {"x", P}, {"y", P}, {"z", P},
     // Kinds, for annotations only
-    {"set", K}, {"group", K}, {"point", K}, {"points", K}, {"bool", K},
+    {"set", K}, {"body", K}, {"point", K}, {"points", K}, {"bool", K},
 };
 
 #undef F
@@ -60,15 +60,15 @@ static const vial_builtin_t builtins[] = {
 #undef P
 #undef K
 
-const vial_builtin_t* vial_builtin_find(str_t name) {
-    for (size_t i = 0; i < ARRAY_SIZE(builtins); ++i) {
-        if (str_eq(name, str_from_cstr(builtins[i].name))) return &builtins[i];
+const vial_builtin_t* vial_builtin_find(md_str_t name) {
+    for (size_t i = 0; i < MD_COUNTOF(builtins); ++i) {
+        if (md_str_eq(name, md_str_from_cstr(builtins[i].name))) return &builtins[i];
     }
     return NULL;
 }
 
-size_t vial_builtin_count(void) { return ARRAY_SIZE(builtins); }
-const vial_builtin_t* vial_builtin_at(size_t i) { return i < ARRAY_SIZE(builtins) ? &builtins[i] : NULL; }
+size_t vial_builtin_count(void) { return MD_COUNTOF(builtins); }
+const vial_builtin_t* vial_builtin_at(size_t i) { return i < MD_COUNTOF(builtins) ? &builtins[i] : NULL; }
 uint32_t vial_builtin_index(const vial_builtin_t* b) { return (uint32_t)(b - builtins); }
 
 // v1's names, with what to write in VIAL
@@ -81,9 +81,9 @@ static const struct { const char* v1; const char* message; const char* fix; } v1
     {"resid",         "`resid` is v1; it is a keyword, particle(resid=...)", "particle"},
 };
 
-bool vial_builtin_v1(str_t name, const char** message, const char** fix) {
-    for (size_t i = 0; i < ARRAY_SIZE(v1_names); ++i) {
-        if (str_eq(name, str_from_cstr(v1_names[i].v1))) {
+bool vial_builtin_v1(md_str_t name, const char** message, const char** fix) {
+    for (size_t i = 0; i < MD_COUNTOF(v1_names); ++i) {
+        if (md_str_eq(name, md_str_from_cstr(v1_names[i].v1))) {
             if (message) *message = v1_names[i].message;
             if (fix) *fix = v1_names[i].fix;
             return true;
@@ -100,12 +100,12 @@ static const struct { const char* word; const char* name; } synonyms[] = {
     // Names are singular, whatever the shape of what they give: the type says that
     {"particles", "particle"}, {"atoms", "atom"}, {"beads", "bead"}, {"residues", "residue"}, {"parts", "part"},
     {"polymers", "polymer"}, {"molecules", "molecule"}, {"chains", "chain"}, {"tails", "tail"}, {"heads", "head"},
-    {"rings", "ring"}, {"bonds", "bond"}, {"labels", "label"},
+    {"rings", "ring"}, {"groups", "group"}, {"bonds", "bond"}, {"labels", "label"},
 };
 
-const char* vial_builtin_synonym(str_t word) {
-    for (size_t i = 0; i < ARRAY_SIZE(synonyms); ++i) {
-        if (str_eq(word, str_from_cstr(synonyms[i].word))) return synonyms[i].name;
+const char* vial_builtin_synonym(md_str_t word) {
+    for (size_t i = 0; i < MD_COUNTOF(synonyms); ++i) {
+        if (md_str_eq(word, md_str_from_cstr(synonyms[i].word))) return synonyms[i].name;
     }
     return NULL;
 }

@@ -33,9 +33,9 @@ extern "C" {
 // handed, so inside an extraction context the file stays open across frames. Their user_data is
 // sys, borrowed: the run goes before the system does. The atom count must match the system's.
 // The atom count the header of the file says, 0 when it is not a DCD file
-size_t md_dcd_file_atom_count(str_t filename);
+size_t md_dcd_file_atom_count(md_str_t filename);
 
-bool md_dcd_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
+bool md_dcd_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
 
 #ifdef __cplusplus
 }

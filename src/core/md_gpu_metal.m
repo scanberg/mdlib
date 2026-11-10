@@ -1473,10 +1473,17 @@ md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream) {
     return t;
 }
 
-md_gpu_mem_t md_gpu_temp_alloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t size) {
+md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size) {
     md_gpu_mem_t out = {0, NULL};
-    if (!s) { md_mtl_fail("md_gpu_temp_alloc: null stream"); return out; }
-    if (s->temp_depth == 0) { md_mtl_fail("md_gpu_temp_alloc: stream '%s' has no open temp scope", s->label); return out; }
+    md_gpu_stream_t s = scope.stream;
+    if (!s) { md_mtl_fail("md_gpu_temp_alloc: null scope"); return out; }
+    /* Chunks belong to the innermost scope, so memory for an outer one would be
+       reclaimed by the inner one's end. */
+    if (scope.depth == 0 || scope.depth != s->temp_depth) {
+        md_mtl_fail("md_gpu_temp_alloc: stream '%s': the scope (depth %u) is not the innermost open one (%u)",
+                    s->label, scope.depth, s->temp_depth);
+        return out;
+    }
     const int ti = md_mtl_temp_index(kind);
     if (ti < 0) { md_mtl_fail("md_gpu_temp_alloc: only MD_GPU_MEM_DEVICE and MD_GPU_MEM_HOST_WRITE memory is temporary"); return out; }
     if (size == 0) return out;
@@ -1494,9 +1501,9 @@ md_gpu_mem_t md_gpu_temp_alloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t
     return out;
 }
 
-void md_gpu_temp_end(md_gpu_stream_t s, md_gpu_temp_t scope) {
-    if (!s) { md_mtl_fail("md_gpu_temp_end: null stream"); return; }
-    if (scope.stream != s) { md_mtl_fail("md_gpu_temp_end: the scope was begun on another stream"); return; }
+void md_gpu_temp_end(md_gpu_temp_t scope) {
+    md_gpu_stream_t s = scope.stream;
+    if (!s) { md_mtl_fail("md_gpu_temp_end: null scope"); return; }
     if (scope.depth == 0 || scope.depth != s->temp_depth) {
         md_mtl_fail("md_gpu_temp_end: scopes must end in reverse order (ending depth %u, innermost open is %u)",
                     scope.depth, s->temp_depth);
@@ -3508,7 +3515,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         NSArray* all = md_mtl_all_devices();
         enum { MD_MTL_MAX_ADAPTERS = 16 };
         md_gpu_adapter_info_t infos[MD_MTL_MAX_ADAPTERS];
-        const uint32_t n_all = (uint32_t)MIN([all count], (NSUInteger)MD_MTL_MAX_ADAPTERS);
+        const uint32_t n_all = (uint32_t)MD_MIN([all count], (NSUInteger)MD_MTL_MAX_ADAPTERS);
         for (uint32_t i = 0; i < n_all; ++i) {
             id<MTLDevice> d = all[i];
             md_mtl_adapter_info(d, &infos[i]);

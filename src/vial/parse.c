@@ -25,7 +25,7 @@ typedef struct parser_t {
     size_t          num;
     size_t          pos;
     uint32_t        last_end;   // where the last consumed token ended
-    str_t           src;
+    md_str_t           src;
     vial_diags_t*   diags;
     md_allocator_i* alloc;
     vial_tree_t     tree;
@@ -85,7 +85,7 @@ static void describe(char* buf, size_t cap, const parser_t* p, const vial_token_
     case MD_VIAL_TOKEN_DEDENT:  snprintf(buf, cap, "end of block"); break;
     default: {
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + t->span.beg, t->span.end - t->span.beg});
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), (md_str_t){p->src.ptr + t->span.beg, t->span.end - t->span.beg});
         snprintf(buf, cap, "`%.*s`", (int)e.len, e.ptr);
         break;
     }
@@ -429,10 +429,10 @@ static vial_node_id parse_number(parser_t* p) {
             const uint32_t q = (u->flags & VIAL_STR_TRIPLE) ? 3 : 1;
             uint32_t b = u->span.beg;
             while (b < u->span.end && p->src.ptr[b] != '\'' && p->src.ptr[b] != '"') ++b;   // past r
-            const str_t text = {p->src.ptr + b + q, (u->span.end - b) >= 2 * q ? u->span.end - b - 2 * q : 0};
+            const md_str_t text = {p->src.ptr + b + q, (u->span.end - b) >= 2 * q ? u->span.end - b - 2 * q : 0};
             if (!vial_unit_string(text, NULL)) {
                 char ex[VIAL_EXCERPT_MAX + 4];
-                const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + u->span.beg, u->span.end - u->span.beg});
+                const md_str_t e = vial_excerpt(ex, sizeof(ex), (md_str_t){p->src.ptr + u->span.beg, u->span.end - u->span.beg});
                 refuse(p, "E0502", tok_span(u), "`%.*s` is not a unit", (int)e.len, e.ptr);
             }
         }
@@ -500,7 +500,7 @@ static void report_v1_keyword_range(parser_t* p, vial_node_id range) {
     const md_vial_span_t s = p->tree.nodes[range].span;
     const size_t before = md_array_size(p->diags->items);
     char ex[VIAL_EXCERPT_MAX + 4];
-    const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + s.beg, s.end - s.beg});
+    const md_str_t e = vial_excerpt(ex, sizeof(ex), (md_str_t){p->src.ptr + s.beg, s.end - s.beg});
     const vial_node_id lo = vial_child(&p->tree, range, 0), hi = vial_child(&p->tree, range, 1);
     int64_t a = 0, b = 0;
     const bool both = lo && hi && int_literal(p, lo, &a) && int_literal(p, hi, &b);
@@ -508,7 +508,7 @@ static void report_v1_keyword_range(parser_t* p, vial_node_id range) {
     if (both) snprintf(fix, sizeof(fix), "%lld..%lld", (long long)a, (long long)b);
     refuse(p, "E0701", s, "`%.*s` is v1's range; a keyword's numbers are the file's, and a range of them is a..b with both ends%s%s",
         (int)e.len, e.ptr, both ? ", as v1's: " : "", fix);
-    if (both && md_array_size(p->diags->items) > before) vial_diag_set_fix(p->diags, before, str_from_cstr(fix));
+    if (both && md_array_size(p->diags->items) > before) vial_diag_set_fix(p->diags, before, md_str_from_cstr(fix));
 }
 
 // The arguments of a call, after its '('. Returns whether a v1 range such as residue(1:4) was among them.
@@ -594,18 +594,18 @@ static vial_node_id parse_subscript(parser_t* p) {
 }
 
 // v1's selectors by 1-based inclusive position, and what VIAL writes for them
-static const char* v1_plural(str_t name) {
+static const char* v1_plural(md_str_t name) {
     static const char* map[][2] = {
         {"residue", "residue"}, {"chain", "chain"}, {"atom", "particle"}, {"molecule", "molecule"},
         {"part", "part"}, {"polymer", "part"}, {"protein", "part"}, {"nucleic", "part"},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(map); ++i) if (str_eq_cstr(name, map[i][0])) return map[i][1];
+    for (size_t i = 0; i < MD_COUNTOF(map); ++i) if (md_str_eq_cstr(name, map[i][0])) return map[i][1];
     return NULL;
 }
 
 static bool int_literal(const parser_t* p, vial_node_id id, int64_t* out) {
     if (!id || node_kind(p, id) != VIAL_N_INT) return false;
-    str_t s = {p->src.ptr + node_beg(p, id), node_end(p, id) - node_beg(p, id)};
+    md_str_t s = {p->src.ptr + node_beg(p, id), node_end(p, id) - node_beg(p, id)};
     int64_t v = 0;
     for (size_t i = 0; i < s.len; ++i) {
         if (s.ptr[i] == '_') continue;
@@ -621,7 +621,7 @@ static void report_v1_call(parser_t* p, vial_node_id call) {
     const md_vial_span_t s = p->tree.nodes[call].span;
     const size_t before = md_array_size(p->diags->items);
     char ex[VIAL_EXCERPT_MAX + 4];
-    const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + s.beg, s.end - s.beg});
+    const md_str_t e = vial_excerpt(ex, sizeof(ex), (md_str_t){p->src.ptr + s.beg, s.end - s.beg});
     refuse(p, "E0701", s, "`%.*s` is v1; positions are subscripts", (int)e.len, e.ptr);
     if (md_array_size(p->diags->items) == before) return;
 
@@ -631,7 +631,7 @@ static void report_v1_call(parser_t* p, vial_node_id call) {
     if (n->child_count != 2 || node_kind(p, callee) != VIAL_N_NAME) return;
     const vial_node_id arg = vial_child(&p->tree, call, 1);
     if (node_kind(p, arg) != VIAL_N_UNSUPPORTED || p->tree.nodes[arg].sub != VIAL_UNSUP_V1_RANGE) return;
-    const char* plural = v1_plural((str_t){p->src.ptr + node_beg(p, callee), node_end(p, callee) - node_beg(p, callee)});
+    const char* plural = v1_plural((md_str_t){p->src.ptr + node_beg(p, callee), node_end(p, callee) - node_beg(p, callee)});
     if (!plural) return;
     const vial_node_id lo = vial_child(&p->tree, arg, 0), hi = vial_child(&p->tree, arg, 1);
     int64_t a = 0, b = 0;
@@ -641,7 +641,7 @@ static void report_v1_call(parser_t* p, vial_node_id call) {
     else if (!hi)      snprintf(fix, sizeof(fix), "%s[%lld:]", plural, (long long)(a - 1));
     else if (!lo)      snprintf(fix, sizeof(fix), "%s[:%lld]", plural, (long long)b);
     else               snprintf(fix, sizeof(fix), "%s[%lld:%lld]", plural, (long long)(a - 1), (long long)b);
-    vial_diag_set_fix(p->diags, before, str_from_cstr(fix));
+    vial_diag_set_fix(p->diags, before, md_str_from_cstr(fix));
 }
 
 static vial_node_id parse_primary(parser_t* p) {
@@ -748,27 +748,27 @@ static vial_node_id parse_binary(parser_t* p, parse_fn next, const vial_op_t* op
 
 static vial_node_id parse_term(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_STAR, VIAL_OP_SLASH, VIAL_OP_DSLASH, VIAL_OP_PERCENT, VIAL_OP_AT};
-    return parse_binary(p, parse_factor, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_factor, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_arith(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_PLUS, VIAL_OP_MINUS};
-    return parse_binary(p, parse_term, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_term, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_shift(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_LSHIFT, VIAL_OP_RSHIFT};
-    return parse_binary(p, parse_arith, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_arith, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_bitand(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_AMP};
-    return parse_binary(p, parse_shift, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_shift, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_bitxor(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_CARET};
-    return parse_binary(p, parse_bitand, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_bitand, ops, MD_COUNTOF(ops));
 }
 static vial_node_id parse_bitor(parser_t* p) {
     static const vial_op_t ops[] = {VIAL_OP_PIPE};
-    return parse_binary(p, parse_bitxor, ops, ARRAY_SIZE(ops));
+    return parse_binary(p, parse_bitxor, ops, MD_COUNTOF(ops));
 }
 
 // a..b, the inclusive range: looser than arithmetic and bits, tighter than comparisons
@@ -1275,7 +1275,7 @@ static void parse_stmt(parser_t* p) {
     synchronize(p);
 }
 
-vial_tree_t vial_parse(const vial_token_t* tokens, str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
+vial_tree_t vial_parse(const vial_token_t* tokens, md_str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
     parser_t p = {.src = src, .diags = diags, .alloc = alloc};
     for (size_t i = 0; i < md_array_size(tokens); ++i) {
         if (tokens[i].kind != MD_VIAL_TOKEN_COMMENT) md_array_push(p.toks, tokens[i], alloc);
@@ -1363,7 +1363,7 @@ static void dump_fmt(char** buf, md_allocator_i* alloc, const char* fmt, ...) {
     md_array_push_array(*buf, tmp, (size_t)len, alloc);
 }
 
-static void dump_node(char** buf, const vial_tree_t* t, vial_node_id id, str_t src, int depth, md_allocator_i* alloc) {
+static void dump_node(char** buf, const vial_tree_t* t, vial_node_id id, md_str_t src, int depth, md_allocator_i* alloc) {
     for (int i = 0; i < depth; ++i) dump_fmt(buf, alloc, "  ");
     if (id == 0) { dump_fmt(buf, alloc, "-\n"); return; }
     const vial_node_t* n = &t->nodes[id];
@@ -1386,8 +1386,8 @@ static void dump_node(char** buf, const vial_tree_t* t, vial_node_id id, str_t s
     }
 }
 
-str_t vial_tree_dump(const vial_tree_t* tree, str_t src, md_allocator_i* alloc) {
+md_str_t vial_tree_dump(const vial_tree_t* tree, md_str_t src, md_allocator_i* alloc) {
     char* buf = NULL;
     dump_node(&buf, tree, tree->root, src, 0, alloc);
-    return (str_t){buf, md_array_size(buf)};
+    return (md_str_t){buf, md_array_size(buf)};
 }

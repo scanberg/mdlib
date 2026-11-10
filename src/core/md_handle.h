@@ -23,6 +23,6 @@ void	 md_handle_pool_free_slot (md_handle_pool_t* pool, uint32_t id);
 
 static inline int md_handle_index(uint32_t id) {
 	int slot_index = (int) (id & MD_HANDLE_SLOT_MASK);
-	ASSERT(slot_index != 0);
+	MD_ASSERT(slot_index != 0);
 	return slot_index;
 }

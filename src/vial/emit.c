@@ -159,7 +159,7 @@ static bool const_of(infer_t* x, const vial_value_t* v, const T* t, vial_val_t* 
     case VIAL_VAL_STRS: {
         const uint32_t n = v->n;
         *out = vial_val_make(VIAL_DT_STR, 1, &n, a);
-        for (uint32_t i = 0; i < n; ++i) ((str_t*)out->data)[i] = str_copy(v->strs[i], a);
+        for (uint32_t i = 0; i < n; ++i) ((md_str_t*)out->data)[i] = md_str_copy(v->strs[i], a);
         return true;
     }
     case VIAL_VAL_LABELS: {
@@ -169,7 +169,7 @@ static bool const_of(infer_t* x, const vial_value_t* v, const T* t, vial_val_t* 
         for (uint32_t i = 0; i < n; ++i) {
             char buf[64];
             const size_t len = vial_unit_label(buf, sizeof(buf), x->sys, v->sets->level, v->sets->unit[i]);
-            ((str_t*)out->data)[i] = str_copy((str_t){buf, len}, a);
+            ((md_str_t*)out->data)[i] = md_str_copy((md_str_t){buf, len}, a);
         }
         return true;
     }
@@ -190,10 +190,10 @@ static bool const_of(infer_t* x, const vial_value_t* v, const T* t, vial_val_t* 
     }
 }
 
-static str_t node_text(const infer_t* x, vial_node_id id) {
+static md_str_t node_text(const infer_t* x, vial_node_id id) {
     const md_vial_span_t s = x->t->nodes[id].span;
-    const str_t src = x->t == x->c->tree ? x->c->src : x->c->prelude_src;
-    return (str_t){src.ptr + s.beg, s.end - s.beg};
+    const md_str_t src = x->t == x->c->tree ? x->c->src : x->c->prelude_src;
+    return (md_str_t){src.ptr + s.beg, s.end - s.beg};
 }
 
 // ### NODES ###
@@ -212,7 +212,7 @@ static vial_ssa_t in_unit_of(infer_t* x, vial_node_id at, const T* a, vial_ssa_t
     if (!md_unit_conversion_factor(&f, b->unit, a->unit) || f == 1.0) return bv;
     T ft = vial_type_scalar(b->dtype == VIAL_DT_FLOAT64 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT);
     vial_val_t fv = ft.dtype == VIAL_DT_FLOAT64 ? vial_val_float64(f, x->ir->alloc) : vial_val_float((float)f, x->ir->alloc);
-    const vial_ssa_t c = vial_ir_const(x->ir, &fv, &ft, (str_t){0}, vx_span(x, at));
+    const vial_ssa_t c = vial_ir_const(x->ir, &fv, &ft, (md_str_t){0}, vx_span(x, at));
     T r = *b;
     if (r.dtype != VIAL_DT_FLOAT64) r.dtype = VIAL_DT_FLOAT;
     r.unit = a->unit;
@@ -231,7 +231,7 @@ static vial_ssa_t in_operand_dtype(infer_t* x, vial_node_id n, vial_ssa_t v, con
     T ft = *self;
     ft.dtype = VIAL_DT_FLOAT64;
     const vial_val_t fv = vial_val_float64(d, x->ir->alloc);
-    return vial_ir_const(x->ir, &fv, &ft, (str_t){0}, vx_span(x, n));
+    return vial_ir_const(x->ir, &fv, &ft, (md_str_t){0}, vx_span(x, n));
 }
 
 static vial_ssa_t emit_binary(infer_t* x, vial_node_id id, const T* t) {
@@ -281,7 +281,7 @@ static vial_ssa_t scope_of(infer_t* x, vial_node_id id) {
     if (!x->all) x->all = vial_sets_all(x->sys->num_atoms, x->alloc);
     const vial_val_t v = vial_val_sets(x->all);
     T t = vial_type_scalar(VIAL_DT_SET);
-    return vial_ir_const(x->ir, &v, &t, STR_LIT("system"), vx_span(x, id));
+    return vial_ir_const(x->ir, &v, &t, MD_STR_LIT("system"), vx_span(x, id));
 }
 
 static vial_ssa_t emit_boolop(infer_t* x, vial_node_id id, const T* t) {
@@ -402,7 +402,7 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
         const vial_ssa_t iv = vx_ssa(x, in);
         if (!iv) return 0;
         uint8_t vpk = 0;
-        str_t vname = {0};
+        md_str_t vname = {0};
         const uint8_t vl = vx_view_level(x, on, &vpk, &vname);
         vial_ssa_t us = 0;
         if (vl != VIAL_LEVEL_NONE && vl != VIAL_LEVEL_PARTICLE) {
@@ -481,8 +481,8 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
                 const vial_val_t dv = vial_val_int(pd, x->ir->alloc);
                 const T dt = vial_type_scalar(VIAL_DT_INT);
                 item.kind = VIAL_INDEX_SET;
-                item.b = vial_ir_const(x->ir, &ov, &ot, (str_t){0}, vx_span(x, it));
-                item.c = vial_ir_const(x->ir, &dv, &dt, (str_t){0}, vx_span(x, it));
+                item.b = vial_ir_const(x->ir, &ov, &ot, (md_str_t){0}, vx_span(x, it));
+                item.c = vial_ir_const(x->ir, &dv, &dt, (md_str_t){0}, vx_span(x, it));
                 item.a = vx_ssa(x, it);
                 if (!item.a) return 0;
                 args[na++] = item.a;
@@ -502,8 +502,8 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
     return x->ir->ops[op].result;
 }
 
-static vial_ssa_t builtin(infer_t* x, vial_node_id id, const char* name, const vial_ssa_t* args, const str_t* names, uint32_t n, const T* t) {
-    const vial_builtin_t* b = vial_builtin_find(str_from_cstr(name));
+static vial_ssa_t builtin(infer_t* x, vial_node_id id, const char* name, const vial_ssa_t* args, const md_str_t* names, uint32_t n, const T* t) {
+    const vial_builtin_t* b = vial_builtin_find(md_str_from_cstr(name));
     if (!b) return 0;
     const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_BUILTIN, .aux = vial_builtin_index(b), .args = args,
                                                               .names = names, .num_args = n, .types = t, .num_results = 1, .span = vx_span(x, id)});
@@ -514,7 +514,7 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     const vial_node_id on = vx_child(x, id, 0), nn = vx_child(x, id, 1);
     const vial_ssa_t a = vx_ssa(x, on);
     if (!a || !nn) return 0;
-    const str_t name = node_text(x, nn);
+    const md_str_t name = node_text(x, nn);
     char buf[16];
     snprintf(buf, sizeof(buf), "%.*s", (int)(name.len < 15 ? name.len : 15), name.ptr);
     // .xyz of a set is its positions; of coordinates, itself
@@ -523,7 +523,7 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     if (at->dtype == VIAL_DT_SET && vx_view_level(x, id, &vpk, NULL) != VIAL_LEVEL_NONE) {
         // s.residue alone, on one set that changes per frame: residue(scope=s), selected when evaluated
         if (vx_view_bare(x, id)) {
-            const str_t scope = STR_LIT("scope");
+            const md_str_t scope = MD_STR_LIT("scope");
             return builtin(x, id, buf, &a, &scope, 1, t);
         }
         // s.particle[i], s.residue[i]: the subscript picks. s.atom[i]: among the particles of the kind
@@ -535,8 +535,8 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
         const vial_ssa_t ks = vial_ir_const(x->ir, &kv, &kt, name, vx_span(x, id));
         return op1(x, id, VIAL_IR_SETOP, VIAL_KW_AND, 0, (vial_ssa_t[]){a, ks}, 2, type_at(x, on));
     }
-    if (str_eq(name, STR_LIT("xyz")) && at->dtype != VIAL_DT_SET) return a;
-    if (str_eq(name, STR_LIT("xyz"))) return builtin(x, id, "xyz", &a, NULL, 1, t);
+    if (md_str_eq(name, MD_STR_LIT("xyz")) && at->dtype != VIAL_DT_SET) return a;
+    if (md_str_eq(name, MD_STR_LIT("xyz"))) return builtin(x, id, "xyz", &a, NULL, 1, t);
     return builtin(x, id, buf, &a, NULL, 1, t);
 }
 
@@ -570,7 +570,7 @@ static vial_ssa_t emit_call(infer_t* x, vial_node_id id, const T* t) {
         if (sv.kind != VIAL_VAL_SETS) { vx_lower_fail(x, id, "a selection within each set that changes per frame"); return 0; }
         const vial_val_t v = vial_val_sets(sv.sets->single ? sv.sets : vial_sets_merge(sv.sets, x->ir->alloc));
         const T st = vial_type_scalar(VIAL_DT_SET);
-        const vial_ssa_t b = vial_ir_const(x->ir, &v, &st, (str_t){0}, vx_span(x, id));
+        const vial_ssa_t b = vial_ir_const(x->ir, &v, &st, (md_str_t){0}, vx_span(x, id));
         return op1(x, id, VIAL_IR_SETOP, VIAL_KW_AND, 0, (vial_ssa_t[]){a, b}, 2, t);
     }
     const vial_symbol_t* sym = callee && vx_kind(x, callee) == VIAL_N_NAME ? vial_names_symbol(x->n, callee) : NULL;
@@ -580,12 +580,12 @@ static vial_ssa_t emit_call(infer_t* x, vial_node_id id, const T* t) {
     }
     const uint32_t bi = x->out->bind_of ? x->out->bind_of[id - x->out->base] : 0;
     vial_ssa_t args[16];
-    str_t names[16];
+    md_str_t names[16];
     uint32_t n = 0;
     if (bi) {
         const vx_bound_t* b = &x->out->binds[bi - 1];
         for (uint32_t k = 0; k < b->np && n < 16; ++k, ++n) {
-            names[n] = str_from_cstr(b->params[k].name);
+            names[n] = md_str_from_cstr(b->params[k].name);
             args[n] = b->args[k] ? vx_ssa(x, b->args[k]) : 0;
             if (b->args[k] && !args[n]) return 0;
         }
@@ -596,10 +596,10 @@ static vial_ssa_t emit_call(infer_t* x, vial_node_id id, const T* t) {
             if (!an) continue;
             if (vx_kind(x, an) == VIAL_N_KWARG) {
                 const vial_node_id kn = vx_child(x, an, 0), vn = vx_child(x, an, 1);
-                names[n] = kn ? node_text(x, kn) : (str_t){0};
+                names[n] = kn ? node_text(x, kn) : (md_str_t){0};
                 args[n] = vx_ssa(x, vn);
             } else {
-                names[n] = (str_t){0};
+                names[n] = (md_str_t){0};
                 args[n] = vx_ssa(x, an);
                 if (!args[n]) args[n] = items_as_tuple(x, an);
             }
@@ -652,7 +652,7 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
     const vial_symbol_t* nsym = k == VIAL_N_NAME ? vial_names_symbol(x->n, id) : NULL;
     const bool user_name = k == VIAL_N_NAME && !(nsym && (nsym->kind == VIAL_SYM_BUILTIN || nsym->kind == VIAL_SYM_STORED));
     if (v.kind != VIAL_VAL_NONE && !user_name && const_of(x, &v, t, &c)) {
-        const str_t text = k == VIAL_N_NAME || k == VIAL_N_CALL || k == VIAL_N_BOOLOP || k == VIAL_N_NOT || k == VIAL_N_SUBSCRIPT ? node_text(x, id) : (str_t){0};
+        const md_str_t text = k == VIAL_N_NAME || k == VIAL_N_CALL || k == VIAL_N_BOOLOP || k == VIAL_N_NOT || k == VIAL_N_SUBSCRIPT ? node_text(x, id) : (md_str_t){0};
         vx_set_ssa(x, id, vial_ir_const(x->ir, &c, t, text, vx_span(x, id)));
         return;
     }
@@ -733,7 +733,7 @@ vial_ssa_t vx_unpack(infer_t* x, vial_node_id target, vial_ssa_t value, const T*
     // a[i] along the first dimension
     T it = vial_type_scalar(VIAL_DT_INT);
     vial_val_t iv = vial_val_int((int32_t)i, x->ir->alloc);
-    const vial_ssa_t c = vial_ir_const(x->ir, &iv, &it, (str_t){0}, vx_span(x, target));
+    const vial_ssa_t c = vial_ir_const(x->ir, &iv, &it, (md_str_t){0}, vx_span(x, target));
     const uint32_t first = (uint32_t)md_array_size(x->ir->index_items);
     md_array_push(x->ir->index_items, ((vial_index_item_t){.kind = VIAL_INDEX_SCALAR, .a = c}), x->ir->alloc);
     const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_INDEX, .sub = 1, .aux = first, .args = (vial_ssa_t[]){value, c},
@@ -765,7 +765,7 @@ void vx_emit_finish(infer_t* x) {
             const uint32_t sym = x->n->ref[nn];
             const vial_ssa_t v = sym ? x->top->sym_ssa[sym] : 0;
             const md_vial_span_t sp = t->nodes[nn].span;
-            const str_t name = {x->c->src.ptr + sp.beg, sp.end - sp.beg};
+            const md_str_t name = {x->c->src.ptr + sp.beg, sp.end - sp.beg};
             if (!v || !name.len) continue;
             const bool hidden = !vial_types_published(x->out, name);
             md_array_push(ir->outputs, ((vial_ir_output_t){.name = name, .value = v, .span = sp, .hidden = hidden}), ir->alloc);
@@ -778,7 +778,7 @@ void vx_emit_return(infer_t* x, vial_node_id value, vial_node_id at) {
     if (!value) {
         const vial_val_t none = vial_val_none();
         const T nt = vial_type_scalar(VIAL_DT_NONE);
-        r = vial_ir_const(x->ir, &none, &nt, (str_t){0}, vx_span(x, at));
+        r = vial_ir_const(x->ir, &none, &nt, (md_str_t){0}, vx_span(x, at));
     }
     if (!r) {
         // The body still ends, so the IR keeps its shape; the function is not called. A value that failed to check
@@ -794,8 +794,8 @@ void vx_emit_return(infer_t* x, vial_node_id value, vial_node_id at) {
 // An argument as the parameter's kind takes it: a set's positions, a set of one particle's position, a point as a
 // group of one. Identity otherwise.
 static vial_ssa_t to_kind(infer_t* x, vial_node_id at, vial_ssa_t v, const T* vt, uint8_t kind, const T* core) {
-    const bool from_set = vt->dtype == VIAL_DT_SET && (kind == VX_KIND_POINT || kind == VX_KIND_POINTS || kind == VX_KIND_GROUP);
-    const bool one_point = vt->dtype != VIAL_DT_SET && (kind == VX_KIND_POINTS || kind == VX_KIND_GROUP) && vt->ndim == 1;
+    const bool from_set = vt->dtype == VIAL_DT_SET && (kind == VX_KIND_POINT || kind == VX_KIND_POINTS || kind == VX_KIND_BODY);
+    const bool one_point = vt->dtype != VIAL_DT_SET && (kind == VX_KIND_POINTS || kind == VX_KIND_BODY) && vt->ndim == 1;
     if (!from_set && !one_point) return v;
     return op1(x, at, VIAL_IR_KIND, kind, 0, &v, 1, core);
 }

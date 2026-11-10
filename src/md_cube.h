@@ -12,8 +12,8 @@ typedef float md_cube_v3[3];
 
 typedef struct md_cube_t {
     // Gaussian files supports two lines for comments. with maximum length of 80 characters per line
-    str_t title;
-	str_t comment;
+    md_str_t title;
+	md_str_t comment;
 	
 	md_cube_v3 origin;
 	md_cube_v3 xaxis;
@@ -41,14 +41,14 @@ typedef struct md_cube_t {
 extern "C" {
 #endif
 
-// The cube in the cube file format: written to w, or as a string allocated with alloc (freed with str_free).
+// The cube in the cube file format: written to w, or as a string allocated with alloc (freed with md_str_free).
 // False (and nothing written) if the cube is not valid.
 bool  md_cube_write(struct md_writer_i* w, const md_cube_t* cube);
-str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc);
-bool  md_cube_deserialize(md_cube_t* cube, str_t data, struct md_allocator_i* alloc);
+md_str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc);
+bool  md_cube_deserialize(md_cube_t* cube, md_str_t data, struct md_allocator_i* alloc);
 	
-bool md_cube_file_store(const md_cube_t* cube, str_t path_to_file);
-bool md_cube_file_load(md_cube_t* cube, str_t path_to_file, struct md_allocator_i* alloc);
+bool md_cube_file_store(const md_cube_t* cube, md_str_t path_to_file);
+bool md_cube_file_load(md_cube_t* cube, md_str_t path_to_file, struct md_allocator_i* alloc);
 
 bool md_cube_valid(const md_cube_t* cube);
 

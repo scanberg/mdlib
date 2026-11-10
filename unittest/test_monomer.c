@@ -17,9 +17,9 @@
 UTEST(monomer, table) {
     for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
         const md_monomer_t monomer = (md_monomer_t)m;
-        const str_t id = md_monomer_id(monomer);
-        EXPECT_FALSE(str_empty(id));
-        EXPECT_FALSE(str_empty(md_monomer_name(monomer)));
+        const md_str_t id = md_monomer_id(monomer);
+        EXPECT_FALSE(md_str_empty(id));
+        EXPECT_FALSE(md_str_empty(md_monomer_name(monomer)));
         EXPECT_NE(0, md_monomer_letter(monomer));
         EXPECT_NE(0u, md_monomer_color(monomer) >> 24);    // Opaque
         const md_residue_kind_t kind = md_monomer_kind(monomer);
@@ -29,13 +29,13 @@ UTEST(monomer, table) {
         EXPECT_EQ(monomer, md_monomer_from_residue_name(id, kind));
     }
 
-    EXPECT_TRUE(str_empty(md_monomer_id(MD_MONOMER_NONE)));
-    EXPECT_TRUE(str_empty(md_monomer_id(MD_MONOMER_COUNT)));
+    EXPECT_TRUE(md_str_empty(md_monomer_id(MD_MONOMER_NONE)));
+    EXPECT_TRUE(md_str_empty(md_monomer_id(MD_MONOMER_COUNT)));
     EXPECT_EQ(0, md_monomer_letter(MD_MONOMER_NONE));
     EXPECT_EQ(0u, md_monomer_color(MD_MONOMER_NONE));
-    EXPECT_EQ(MD_MONOMER_NONE, md_monomer_from_id(STR_LIT("")));
-    EXPECT_EQ(MD_MONOMER_NONE, md_monomer_from_id(STR_LIT("HIE")));   // An alias is not an id
-    EXPECT_EQ(MD_MONOMER_HIS, md_monomer_from_id(STR_LIT("his")));
+    EXPECT_EQ(MD_MONOMER_NONE, md_monomer_from_id(MD_STR_LIT("")));
+    EXPECT_EQ(MD_MONOMER_NONE, md_monomer_from_id(MD_STR_LIT("HIE")));   // An alias is not an id
+    EXPECT_EQ(MD_MONOMER_HIS, md_monomer_from_id(MD_STR_LIT("his")));
 
     EXPECT_EQ('A', md_monomer_letter(MD_MONOMER_ALA));
     EXPECT_EQ('W', md_monomer_letter(MD_MONOMER_TRP));
@@ -89,11 +89,11 @@ UTEST(monomer, from_res_name) {
         {"LIG", MD_RESIDUE_KIND_OTHER, MD_MONOMER_NONE},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
-        const md_monomer_t m = md_monomer_from_residue_name(str_from_cstr(cases[i].name), cases[i].kind);
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
+        const md_monomer_t m = md_monomer_from_residue_name(md_str_from_cstr(cases[i].name), cases[i].kind);
         if (m != cases[i].expected) {
-            printf("'%s' (kind %d): expected " STR_FMT ", got " STR_FMT "\n", cases[i].name, (int)cases[i].kind,
-                   STR_ARG(md_monomer_id(cases[i].expected)), STR_ARG(md_monomer_id(m)));
+            printf("'%s' (kind %d): expected " MD_STR_FMT ", got " MD_STR_FMT "\n", cases[i].name, (int)cases[i].kind,
+                   MD_STR_ARG(md_monomer_id(cases[i].expected)), MD_STR_ARG(md_monomer_id(m)));
         }
         EXPECT_EQ(cases[i].expected, m);
     }
@@ -103,7 +103,7 @@ UTEST(monomer, from_res_name) {
 static md_residue_type_idx_t type_of_name(const md_system_t* sys, const char* name) {
     md_residue_type_idx_t t = -1;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        if (!str_eq_cstr(md_system_residue_name(sys, i), name)) continue;
+        if (!md_str_eq_cstr(md_system_residue_name(sys, i), name)) continue;
         const md_residue_type_idx_t ti = md_system_residue_type_idx(sys, i);
         if (t >= 0 && ti != t) return -1;
         t = ti;
@@ -112,11 +112,11 @@ static md_residue_type_idx_t type_of_name(const md_system_t* sys, const char* na
 }
 
 UTEST(monomer, residue_types_nucleosome) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
     const md_residue_type_data_t* type = &sys.residue.type;
@@ -127,7 +127,7 @@ UTEST(monomer, residue_types_nucleosome) {
     // Each name and kind once
     for (size_t a = 0; a < type->count; ++a) {
         for (size_t b = a + 1; b < type->count; ++b) {
-            EXPECT_FALSE(type->kind[a] == type->kind[b] && str_eq(LBL_TO_STR(type->name[a]), LBL_TO_STR(type->name[b])));
+            EXPECT_FALSE(type->kind[a] == type->kind[b] && md_str_eq(LBL_TO_STR(type->name[a]), LBL_TO_STR(type->name[b])));
         }
     }
 
@@ -135,7 +135,7 @@ UTEST(monomer, residue_types_nucleosome) {
         {"DA", MD_MONOMER_DA}, {"DT", MD_MONOMER_DT}, {"DG", MD_MONOMER_DG}, {"DC", MD_MONOMER_DC},
         {"ARG", MD_MONOMER_ARG}, {"LYS", MD_MONOMER_LYS}, {"ALA", MD_MONOMER_ALA},
     };
-    for (size_t i = 0; i < ARRAY_SIZE(expected); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(expected); ++i) {
         const md_residue_type_idx_t t = type_of_name(&sys, expected[i].name);
         ASSERT_GE(t, 0);
         EXPECT_EQ(expected[i].monomer, md_residue_type_monomer(type, t));
@@ -169,11 +169,11 @@ static const char* ligand_water_ion_pdb =
     "END\n";
 
 UTEST(monomer, residue_types_without_monomer) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
     const md_residue_type_data_t* type = &sys.residue.type;
@@ -202,8 +202,8 @@ UTEST(monomer, residue_types_without_monomer) {
 
     md_system_t sys2 = { .alloc = alloc };
     md_system_state_t state2 = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    ASSERT_TRUE(md_util_system_infer(&sys2, &state2, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys2, &state2, MD_UTIL_INFER_ALL, NULL));
     EXPECT_EQ(md_residue_type_color(type, lig), md_residue_type_color(&sys2.residue.type, type_of_name(&sys2, "LIG")));
 
     md_vm_arena_destroy(alloc);

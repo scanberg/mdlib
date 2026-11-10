@@ -1,7 +1,7 @@
 #pragma once
 
 #include <core/md_compiler.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 
@@ -77,7 +77,7 @@ static inline uint64_t md_hash64_combine(uint64_t a, uint64_t b) {
     return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2));
 }
 
-static inline uint64_t md_hash64_str(str_t str, uint64_t seed) { return XXH64(str.ptr, str.len, seed); }
+static inline uint64_t md_hash64_str(md_str_t str, uint64_t seed) { return XXH64(str.ptr, str.len, seed); }
 
 
 // This is very inspired by the Ourmachinery hash API
@@ -136,7 +136,7 @@ typedef struct {
 #define md_hashmap_add(h, key, value)                                                                                                                                           \
 do {                                                                                                                                                                            \
     uint32_t _slot_idx = md_hashmap__add(&(h)->keys, &(h)->num_used, &(h)->num_buckets, key, (void **)&(h)->values, sizeof(*(h)->values), (h)->allocator, __FILE__, __LINE__);  \
-    ASSERT(_slot_idx < (h)->num_buckets);                                                                                                                                       \
+    MD_ASSERT(_slot_idx < (h)->num_buckets);                                                                                                                                       \
     (h)->values[_slot_idx] = value;                                                                                                                                             \
 } while(0);
 
@@ -149,7 +149,7 @@ do {                                                                            
 
 // Clears the hash table. This does not free any memory. The array will keep the same number of
 // buckets, but all the keys and values will be erased.
-#define md_hashmap_clear(h) (MEMSET((h)->keys, 0xFF, (h)->num_buckets * sizeof(*(h)->keys)), (h)->num_used = 0)
+#define md_hashmap_clear(h) (md_memset((h)->keys, 0xFF, (h)->num_buckets * sizeof(*(h)->keys)), (h)->num_used = 0)
 
 #define md_hashmap_free(h) (md_hashmap__free((uint64_t **)&(h)->keys, &(h)->num_used, &(h)->num_buckets, (void **)&(h)->values, sizeof(*(h)->values), (h)->allocator, __FILE__, __LINE__))
 #define md_hashset_free(h) (md_hashmap__free((uint64_t **)&(h)->keys, &(h)->num_used, &(h)->num_buckets, NULL, 0, (h)->allocator, __FILE__, __LINE__))
@@ -167,7 +167,7 @@ do {                                                                            
 
 // Compute the number of buckets required to accommodate `n` elements.
 static inline uint32_t md_hashmap__buckets_for_elements(uint32_t n) {
-    return next_power_of_two32(MAX(16, (uint32_t)(n / 0.7f + 1)));
+    return md_next_power_of_two32(MD_MAX(16, (uint32_t)(n / 0.7f + 1)));
 }
 
 // Reserves space in the hash table for `num_elements` new elements. The hash table will be resized
@@ -284,10 +284,10 @@ static inline uint32_t md_hashmap__add(uint64_t **keys_ptr, uint32_t *num_used_p
     if ((!*num_buckets_ptr || (float)*num_used_ptr / (float)*num_buckets_ptr > 0.7f) && allocator)
         md_hashmap__grow(keys_ptr, num_used_ptr, num_buckets_ptr, values_ptr, value_bytes, allocator, file, line);
 
-    ASSERT(key < MD_HASH_TOMBSTONE && "Invalid Key");
+    MD_ASSERT(key < MD_HASH_TOMBSTONE && "Invalid Key");
 
     i = md_hashmap__add_no_grow(*keys_ptr, *num_buckets_ptr, key);
-    ASSERT(i != UINT32_MAX && "Hash table is full!");
+    MD_ASSERT(i != UINT32_MAX && "Hash table is full!");
 
     uint64_t *keys = *keys_ptr;
     keys[i] = key;
@@ -307,7 +307,7 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
     // (new_buckets + 1) for the default value and key which is stored at [-1]
     const size_t to_alloc = new_buckets * (sizeof(uint64_t) + value_bytes);
     uint64_t *new_keys = (uint64_t*)allocator->realloc(allocator->inst, 0, 0, to_alloc, file, line);
-    MEMSET(new_keys, 0xFF, new_buckets * sizeof(uint64_t));
+    md_memset(new_keys, 0xFF, new_buckets * sizeof(uint64_t));
     void *new_values = new_keys + new_buckets;
     uint32_t new_elements = 0;
 
@@ -316,7 +316,7 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
             const uint32_t new_i = md_hashmap__add_no_grow(new_keys, new_buckets, keys[i]);
             new_keys[new_i] = keys[i];
             if (value_bytes) {
-                MEMCPY((char *)new_values + new_i * value_bytes, (char *)values + i * value_bytes, value_bytes);
+                md_memcpy((char *)new_values + new_i * value_bytes, (char *)values + i * value_bytes, value_bytes);
             }
             ++new_elements;
         }
@@ -335,7 +335,7 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
 // Grows the hash table.
 static inline void md_hashmap__grow(uint64_t **keys_ptr, uint32_t *num_used_ptr, uint32_t *num_buckets_ptr, void **values_ptr, size_t value_bytes, md_allocator_i *alloc, const char *file, uint32_t line) {
     const uint32_t num_used = *num_used_ptr;
-    const uint32_t new_buckets = MAX(16, next_power_of_two32(num_used * 2));
+    const uint32_t new_buckets = MD_MAX(16, md_next_power_of_two32(num_used * 2));
     md_hashmap__grow_to(keys_ptr, num_used_ptr, num_buckets_ptr, values_ptr, value_bytes, alloc, file, line, new_buckets);
 }
 
@@ -349,7 +349,7 @@ static inline void md_hashmap__copy(uint64_t **keys_ptr, uint32_t num_buckets, v
         *values_ptr = *keys_ptr + num_buckets;
     }
 
-    MEMCPY(*keys_ptr, old_keys, size);
+    md_memcpy(*keys_ptr, old_keys, size);
 }
 
 #ifdef __cplusplus

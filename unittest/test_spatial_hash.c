@@ -5,7 +5,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_str.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
 #include <md_pdb.h>
@@ -43,7 +43,7 @@ static void spatial_acc_neighbor_callback(const uint32_t* i_idx, const uint32_t*
     for (size_t k = 0; k < vec_count; k += 8) {
         md_256 v_d2 = md_mm256_loadu_ps(ij_dist2 + k);
         md_256 v_mask = md_mm256_cmplt_ps(v_d2, v_r2);
-        *count += popcnt32(md_mm256_movemask_ps(v_mask));
+        *count += md_popcnt32(md_mm256_movemask_ps(v_mask));
     }
 
     for (size_t k = vec_count; k < num_pairs; ++k) {
@@ -267,7 +267,7 @@ UTEST(spatial_hash, aabb_periodic_ortho) {
     float z[] = {5.00f, 5.00f, 5.00f, 5.00f};
 
     md_unitcell_t cell = md_unitcell_from_extent(10.0, 10.0, 10.0);
-    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, ARRAY_SIZE(x));
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, MD_COUNTOF(x));
 
     md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &cell });
@@ -282,7 +282,7 @@ UTEST(spatial_hash, aabb_periodic_ortho) {
     md_spatial_acc_for_each_point_in_aabb(&acc, aabb_cen, aabb_rad, spatial_acc_point_collect_callback, &data);
 
     const uint32_t exp[] = {0, 1};
-    EXPECT_U32_SET_EQ(data.idx, exp, ARRAY_SIZE(exp));
+    EXPECT_U32_SET_EQ(data.idx, exp, MD_COUNTOF(exp));
 
     md_array_free(data.idx, data.alloc);
     md_spatial_acc_free(&acc);
@@ -330,7 +330,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic) {
     md_spatial_acc_for_each_point_in_aabb(&acc, aabb_cen, aabb_rad, spatial_acc_point_collect_callback, &data);
 
     const uint32_t exp[] = {0, 1};
-    EXPECT_U32_SET_EQ(data.idx, exp, ARRAY_SIZE(exp));
+    EXPECT_U32_SET_EQ(data.idx, exp, MD_COUNTOF(exp));
 
     md_array_free(data.idx, data.alloc);
     md_spatial_acc_free(&acc);
@@ -376,7 +376,7 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
         // Keep radii < 0.5 box length to ensure MIC reference is sufficient.
         const double rad[3] = { rnd_rng(0.0, 0.45 * Lx), rnd_rng(0.0, 0.45 * Ly), rnd_rng(0.0, 0.45 * Lz) };
 
-        const double eps = MAX(1.0e-6, 128.0 * (double)FLT_EPSILON * (Lx + Ly + Lz + rad[0] + rad[1] + rad[2] + 1.0));
+        const double eps = MD_MAX(1.0e-6, 128.0 * (double)FLT_EPSILON * (Lx + Ly + Lz + rad[0] + rad[1] + rad[2] + 1.0));
 
         md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
 
@@ -398,7 +398,7 @@ UTEST(spatial_hash, aabb_periodic_ortho_randomized_reference) {
             const double mx = fabs(dx) - rad[0];
             const double my = fabs(dy) - rad[1];
             const double mz = fabs(dz) - rad[2];
-            const double margin = MAX(mx, MAX(my, mz));
+            const double margin = MD_MAX(mx, MD_MAX(my, mz));
 
             if (margin < -eps) {
                 EXPECT_EQ(1, seen[i]);
@@ -465,7 +465,7 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
         // Keep radii small enough that checking 27 images is sufficient.
         const double rad[3] = { rnd_rng(0.0, 6.0), rnd_rng(0.0, 6.0), rnd_rng(0.0, 6.0) };
 
-        const double eps = MAX(1.0e-6, 256.0 * (double)FLT_EPSILON * (fabs(cen[0]) + fabs(cen[1]) + fabs(cen[2]) + rad[0] + rad[1] + rad[2] + 1.0));
+        const double eps = MD_MAX(1.0e-6, 256.0 * (double)FLT_EPSILON * (fabs(cen[0]) + fabs(cen[1]) + fabs(cen[2]) + rad[0] + rad[1] + rad[2] + 1.0));
 
         md_spatial_acc_for_each_point_in_aabb(&acc, cen, rad, spatial_acc_point_collect_callback, &got);
 
@@ -494,8 +494,8 @@ UTEST(spatial_hash, aabb_periodic_triclinic_randomized_reference) {
                         const double mx = fabs(p[0] - cen[0]) - rad[0];
                         const double my = fabs(p[1] - cen[1]) - rad[1];
                         const double mz = fabs(p[2] - cen[2]) - rad[2];
-                        const double margin = MAX(mx, MAX(my, mz));
-                        best_margin = MIN(best_margin, margin);
+                        const double margin = MD_MAX(mx, MD_MAX(my, mz));
+                        best_margin = MD_MIN(best_margin, margin);
                     }
                 }
             }
@@ -679,7 +679,7 @@ UTEST(spatial_hash, n2) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
 
     {
 
@@ -782,8 +782,8 @@ UTEST(spatial_hash, n2) {
                 }
 
                 for (size_t idx = 0; idx < sa_count; ++idx) {
-                    uint32_t i = MIN(sa_pairs[idx].i, sa_pairs[idx].j);
-                    uint32_t j = MAX(sa_pairs[idx].i, sa_pairs[idx].j);
+                    uint32_t i = MD_MIN(sa_pairs[idx].i, sa_pairs[idx].j);
+                    uint32_t j = MD_MAX(sa_pairs[idx].i, sa_pairs[idx].j);
                     uint64_t key = ((uint64_t)i << 32) | j;
                     md_hashmap_add(&map_sa, key, 1);
 
@@ -875,7 +875,7 @@ struct spatial_hash {
 };
 
 UTEST_F_SETUP(spatial_hash) {
-    utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
+    utest_fixture->arena = md_vm_arena_create(MD_GIGABYTES(4));
 }
 
 UTEST_F_TEARDOWN(spatial_hash) {
@@ -891,7 +891,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
 
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
@@ -912,11 +912,10 @@ UTEST_F(spatial_hash, test_correctness_centered) {
         double radius = rnd() * 20;
 
         int ref_count = 0;
-        // NOT 'rad2': something in the ARM64-only include chain (md_intrinsics.h pulls in
-        // <intrin.h>, which on ARM64 drags in the NEON/intrinsic headers) defines rad2 as an
+        // NOT 'rad2': on Windows ARM64, <intrin.h> drags in headers which define rad2 as an
         // object-like macro expanding to an integer constant, so the declaration becomes
-        // 'const double <literal> = ...'. x64 never sees that header, which is why this only
-        // breaks on the arm64 build.
+        // 'const double <literal> = ...'. md_common.h no longer includes <intrin.h>, but a
+        // translation unit that includes the Windows headers itself still gets the macro.
         const double radius_sq = radius * radius;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             double xi[3] = { sys_state.xyz[i].x, sys_state.xyz[i].y, sys_state.xyz[i].z };
@@ -951,7 +950,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
 
     srand(31);
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(vec3_t), NULL, sys.atom.count);
@@ -1004,7 +1003,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
 
     srand(31);
 
@@ -1061,7 +1060,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), atom_format));
+    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), atom_format));
 
     srand(31);
 
@@ -1126,7 +1125,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
 
     srand(31);
 
@@ -1263,7 +1262,7 @@ static void cell_pairs_push(cell_pairs_t* p, uint32_t i, uint32_t j) {
         p->cap  = p->cap ? p->cap * 2 : 1024;
         p->keys = (uint64_t*)realloc(p->keys, p->cap * sizeof(uint64_t));
     }
-    p->keys[p->count++] = ((uint64_t)MIN(i, j) << 32) | MAX(i, j);
+    p->keys[p->count++] = ((uint64_t)MD_MIN(i, j) << 32) | MD_MAX(i, j);
 }
 
 static void cell_pairs_callback(const uint32_t* i, const uint32_t* j, const float* d2, size_t n, void* user) {
@@ -1307,7 +1306,7 @@ static double cell_ref_d2(const float* a, const float* b, const md_unitcell_t* c
         double t[3] = { s[0] + o[0], s[1] + o[1], s[2] + o[2] };
         double c[3];
         for (int r = 0; r < 3; ++r) c[r] = A[0][r] * t[0] + A[1][r] * t[1] + A[2][r] * t[2];
-        best = MIN(best, c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+        best = MD_MIN(best, c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
     }
     return best;
 }
@@ -1329,7 +1328,7 @@ static bool cell_matches_reference(const md_coord_stream_t* stream, const md_spa
             if (d2 >= r_out) continue;
             const uint32_t ka = stream_idx ? (uint32_t)ia : (uint32_t)a;
             const uint32_t kb = stream_idx ? (uint32_t)ib : (uint32_t)b;
-            const uint64_t key = ((uint64_t)MIN(ka, kb) << 32) | MAX(ka, kb);
+            const uint64_t key = ((uint64_t)MD_MIN(ka, kb) << 32) | MD_MAX(ka, kb);
             const bool has = cell_has_pair(&got, key);
             if (has) found += 1;
             else if (d2 < r_in) missing += 1;
@@ -1625,15 +1624,20 @@ UTEST(spatial_acc_bench, occupancy) {
     for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", MD_UNITTEST_DATA_DIR, files[f]);
-        md_gro_data_t gro = {0};
-        if (!md_gro_data_parse_file(&gro, str_from_cstr(path), md_get_heap_allocator())) continue;
-        vec3_t* xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), gro.num_atoms * sizeof(vec3_t));
-        for (size_t i = 0; i < gro.num_atoms; ++i) xyz[i] = (vec3_t){{gro.atom_data[i].x * 10.0f, gro.atom_data[i].y * 10.0f, gro.atom_data[i].z * 10.0f}};
-        const md_unitcell_t cell = md_unitcell_from_extent(gro.box[0][0] * 10.0, gro.box[1][1] * 10.0, gro.box[2][2] * 10.0);
-        bench_system(files[f], xyz, gro.num_atoms, &cell, 5.0, reps);
-        bench_system(files[f], xyz, gro.num_atoms, &cell, 10.0, reps);
-        md_free(md_get_heap_allocator(), xyz, gro.num_atoms * sizeof(vec3_t));
-        md_gro_data_free(&gro, md_get_heap_allocator());
+        md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = { .alloc = arena };
+        md_system_state_t st = { .alloc = arena };
+        if (!md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL)) {
+            md_vm_arena_destroy(arena);
+            continue;
+        }
+        // The box as its extent (its diagonal, in Angstrom)
+        float A[3][3];
+        md_unitcell_A_extract_float(A, &st.unitcell);
+        const md_unitcell_t cell = md_unitcell_from_extent(A[0][0], A[1][1], A[2][2]);
+        bench_system(files[f], st.xyz, sys.atom.count, &cell, 5.0, reps);
+        bench_system(files[f], st.xyz, sys.atom.count, &cell, 10.0, reps);
+        md_vm_arena_destroy(arena);
     }
     // Uniform random, dense (0.1 per A^3) and sparse (0.001 per A^3)
     const size_t sizes[] = {1000, 4000, 16000, 64000};

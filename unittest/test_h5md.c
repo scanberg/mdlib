@@ -13,6 +13,8 @@
 #include <core/md_str.h>
 
 #include "run_check.h"
+#include <hdf5.h>
+#include <stdio.h>
 
 // See test_data/h5md/README.md for where the files come from. The GROMACS ones are mdrun's own
 // output beside the run input it was given, so a system read from the trajectory can be held
@@ -33,11 +35,11 @@ typedef struct h5md_test_t {
 } h5md_test_t;
 
 static bool h5md_test_load(h5md_test_t* t, const char* path) {
-    MEMSET(t, 0, sizeof(*t));
-    t->arena = md_vm_arena_create(GIGABYTES(1));
+    md_memset(t, 0, sizeof(*t));
+    t->arena = md_vm_arena_create(MD_GIGABYTES(1));
     t->sys.alloc = t->arena;
     t->state.alloc = t->arena;
-    return md_h5md_system_init_from_file(&t->sys, &t->state, str_from_cstr(path));
+    return md_h5md_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
 }
 
 static void h5md_test_free(h5md_test_t* t) {
@@ -45,7 +47,7 @@ static void h5md_test_free(h5md_test_t* t) {
 }
 
 static const md_attribute_t* attr(const md_system_t* sys, const char* path) {
-    return md_attributes_find(&sys->attributes, str_from_cstr(path));
+    return md_attributes_find(&sys->attributes, md_str_from_cstr(path));
 }
 
 // The values of a resident or virtual attribute's slice as doubles, in its own unit
@@ -83,13 +85,13 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     md_system_t tpr = { .alloc = h.arena };
     md_system_state_t tpr_state = { .alloc = h.arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&tpr, &tpr_state, str_from_cstr(tpr_path)));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&tpr, &tpr_state, md_str_from_cstr(tpr_path)));
 
     ASSERT_EQ(tpr.atom.count, h.sys.atom.count);
-    EXPECT_TRUE(str_eq(tpr.description, h.sys.description));
+    EXPECT_TRUE(md_str_eq(tpr.description, h.sys.description));
     size_t num_sites = 0;
     for (size_t i = 0; i < tpr.atom.count; ++i) {
-        EXPECT_TRUE(str_eq(md_atom_name(&tpr.atom, i), md_atom_name(&h.sys.atom, i)));
+        EXPECT_TRUE(md_str_eq(md_atom_name(&tpr.atom, i), md_atom_name(&h.sys.atom, i)));
         EXPECT_EQ(md_atom_atomic_number(&tpr.atom, i), md_atom_atomic_number(&h.sys.atom, i));
         EXPECT_EQ(md_atom_mass(&tpr.atom, i), md_atom_mass(&h.sys.atom, i));
         EXPECT_EQ(md_atom_particle_kind(&tpr.atom, i), md_atom_particle_kind(&h.sys.atom, i));
@@ -99,7 +101,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     // The molecules are the topology's, the same as the tpr's
     ASSERT_EQ(md_system_molecule_type_count(&tpr), md_system_molecule_type_count(&h.sys));
     for (size_t t = 0; t < md_system_molecule_type_count(&tpr); ++t) {
-        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&tpr, t), md_system_molecule_type_name(&h.sys, t)));
+        EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&tpr, t), md_system_molecule_type_name(&h.sys, t)));
     }
     ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
     for (size_t k = 0; k < tpr.instance.count; ++k) {
@@ -114,7 +116,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     ASSERT_EQ(tpr.residue.count, h.sys.residue.count);
     for (size_t c = 0; c < tpr.residue.count; ++c) {
-        EXPECT_TRUE(str_eq(md_system_residue_name(&tpr, c), md_system_residue_name(&h.sys, c)));
+        EXPECT_TRUE(md_str_eq(md_system_residue_name(&tpr, c), md_system_residue_name(&h.sys, c)));
         EXPECT_EQ(md_system_residue_seq_id(&tpr, c), md_system_residue_seq_id(&h.sys, c));
         EXPECT_EQ(md_system_residue_atom_range(&tpr, c).beg, md_system_residue_atom_range(&h.sys, c).beg);
     }
@@ -153,7 +155,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     for (size_t i = 0; i < h.state.num_atoms; ++i) {
         const vec3_t d = vec3_sub(tpr_state.xyz[i], h.state.xyz[i]);
         const double dx = d.x - L * round(d.x / L), dy = d.y - L * round(d.y / L), dz = d.z - L * round(d.z / L);
-        max_diff = MAX(max_diff, sqrt(dx * dx + dy * dy + dz * dz));
+        max_diff = MD_MAX(max_diff, sqrt(dx * dx + dy * dy + dz * dz));
     }
     EXPECT_LT(max_diff, 0.05);
     EXPECT_NEAR(tpr_state.unitcell.x, h.state.unitcell.x, 1.0e-4);
@@ -161,7 +163,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     const md_attribute_t* creator = attr(&h.sys, "h5md/creator/name");
     ASSERT_TRUE(creator != NULL);
-    EXPECT_TRUE(str_eq(md_attribute_str(&h.sys.attributes, creator, 0), STR_LIT("GROMACS")));
+    EXPECT_TRUE(md_str_eq(md_attribute_str(&h.sys.attributes, creator, 0), MD_STR_LIT("GROMACS")));
 
     h5md_test_free(&h);
 }
@@ -180,8 +182,8 @@ UTEST(h5md, gromacs_tip4p_system_matches_tpr) {
 static void check_gromacs_run(int* utest_result, const char* path, const run_ref_t* refs, size_t num_refs, size_t num_atoms, const double vel_sum[3][3]) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
-    const str_t run = STR_LIT("run/gmx");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/gmx");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_NONE));
     run_check_refs(utest_result, &t.sys, run, 5, num_atoms, refs, num_refs);
 
     const md_attribute_t* time = attr(&t.sys, "run/gmx/time");
@@ -210,12 +212,12 @@ static void check_gromacs_run(int* utest_result, const char* path, const run_ref
     // Through extraction: velocities at frames 0 and 2 (steps 0 and 10), none at frame 1 (step 5)
     md_system_state_t st = { .alloc = t.arena };
     md_system_state_init(&st, num_atoms);
-    const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("h5md/particles/velocity/atom/velocity") };
+    const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("h5md/particles/velocity/atom/velocity") };
     md_system_extract_t* ex = md_system_extract_begin(&t.sys, run, paths, 2, md_get_heap_allocator());
     ASSERT_TRUE(ex != NULL);
     for (int64_t f = 0; f < 5; ++f) {
         ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
-        const md_attribute_t* v = md_attributes_find(&st.attributes, STR_LIT("h5md/particles/velocity/atom/velocity"));
+        const md_attribute_t* v = md_attributes_find(&st.attributes, MD_STR_LIT("h5md/particles/velocity/atom/velocity"));
         if (f % 2) {
             EXPECT_TRUE(v == NULL);
             continue;
@@ -240,7 +242,7 @@ UTEST(h5md, gromacs_tip3p_run) {
         { 29.34552022, -21.48351553, 26.86924008},
         { -2.28961452,   8.71451763, 13.51708333},
     };
-    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip3p.h5md", tip3p_refs, ARRAY_SIZE(tip3p_refs), 1577, vel_sum);
+    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip3p.h5md", tip3p_refs, MD_COUNTOF(tip3p_refs), 1577, vel_sum);
 }
 
 UTEST(h5md, gromacs_tip4p_run) {
@@ -249,7 +251,7 @@ UTEST(h5md, gromacs_tip4p_run) {
         { 39.64799054, -14.61398636,  6.68716171},
         { -2.16551102, -26.56838597,  4.46162295},
     };
-    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip4p.h5md", tip4p_refs, ARRAY_SIZE(tip4p_refs), 2074, vel_sum);
+    check_gromacs_run(utest_result, H5MD_DIR "peptide_tip4p.h5md", tip4p_refs, MD_COUNTOF(tip4p_refs), 2074, vel_sum);
 }
 
 // ### THE SPECIFICATION ###
@@ -267,7 +269,7 @@ UTEST(h5md, spec_system) {
     const md_atomic_number_t z[] = { 6, 8, 1, 1 };
     const float mass[] = { 12.011f, 15.999f, 1.008f, 1.008f };
     for (size_t i = 0; i < 4; ++i) {
-        EXPECT_TRUE(str_eq_cstr(md_atom_name(&t.sys.atom, i), names[i]));
+        EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&t.sys.atom, i), names[i]));
         EXPECT_EQ(z[i], md_atom_atomic_number(&t.sys.atom, i));
         EXPECT_NEAR(mass[i], md_atom_mass(&t.sys.atom, i), 1.0e-5);
     }
@@ -299,15 +301,15 @@ UTEST(h5md, spec_system) {
     const md_attribute_t* version = attr(&t.sys, "h5md/version");
     ASSERT_TRUE(version != NULL);
     EXPECT_EQ(1, ((const int32_t*)version->data)[0]);
-    EXPECT_TRUE(str_eq(md_attribute_str(&t.sys.attributes, attr(&t.sys, "h5md/author/name"), 0), STR_LIT("mdlib unittest")));
+    EXPECT_TRUE(md_str_eq(md_attribute_str(&t.sys.attributes, attr(&t.sys, "h5md/author/name"), 0), MD_STR_LIT("mdlib unittest")));
     h5md_test_free(&t);
 }
 
 UTEST(h5md, spec_run) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, H5MD_DIR "spec_fixed.h5md"));
-    const str_t run = STR_LIT("run/spec");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, STR_LIT(H5MD_DIR "spec_fixed.h5md"), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/spec");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, MD_STR_LIT(H5MD_DIR "spec_fixed.h5md"), run, MD_RUN_FLAG_NONE));
 
     // A fixed step and time: an increment and an offset
     const md_attribute_t* time = attr(&t.sys, "run/spec/time");
@@ -395,7 +397,7 @@ UTEST(h5md, spec_bare) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, H5MD_DIR "spec_bare.h5md"));
     ASSERT_EQ(4u, t.sys.atom.count);
-    EXPECT_TRUE(str_eq_cstr(md_atom_name(&t.sys.atom, 2), "8"));
+    EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&t.sys.atom, 2), "8"));
     EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, 2));    // from its mass
     EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, 3));
     EXPECT_EQ(0u, t.sys.bond.count);
@@ -404,8 +406,8 @@ UTEST(h5md, spec_bare) {
     EXPECT_TRUE(md_unitcell_is_triclinic(&t.state.unitcell));
     EXPECT_NEAR(5.0, t.state.unitcell.xy, 1.0e-6);
 
-    const str_t run = STR_LIT("run/bare");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, STR_LIT(H5MD_DIR "spec_bare.h5md"), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/bare");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, MD_STR_LIT(H5MD_DIR "spec_bare.h5md"), run, MD_RUN_FLAG_NONE));
     const md_attribute_t* time = attr(&t.sys, "run/bare/time");
     ASSERT_TRUE(time != NULL);
     EXPECT_TRUE(md_unit_is_none(time->unit));
@@ -449,8 +451,8 @@ UTEST(h5md, declines) {
 
     // A run for another system leaves nothing behind
     ASSERT_TRUE(h5md_test_load(&t, H5MD_DIR "spec_fixed.h5md"));
-    EXPECT_FALSE(md_h5md_system_publish_run(&t.sys, STR_LIT(H5MD_DIR "peptide_tip3p.h5md"), STR_LIT("run/x"), MD_RUN_FLAG_NONE));
-    EXPECT_EQ(0u, md_attributes_query(NULL, 0, &t.sys.attributes, STR_LIT("run/x")));
+    EXPECT_FALSE(md_h5md_system_publish_run(&t.sys, MD_STR_LIT(H5MD_DIR "peptide_tip3p.h5md"), MD_STR_LIT("run/x"), MD_RUN_FLAG_NONE));
+    EXPECT_EQ(0u, md_attributes_query(NULL, 0, &t.sys.attributes, MD_STR_LIT("run/x")));
     h5md_test_free(&t);
 }
 
@@ -459,7 +461,7 @@ UTEST(h5md, declines) {
 // under the reader's lock (the compressed positions of spec_bare).
 typedef struct h5md_thread_job_t {
     const md_system_t* sys;
-    str_t   run;
+    md_str_t   run;
     size_t  num_atoms;
     size_t  num_frames;
     size_t  rounds;
@@ -470,10 +472,10 @@ typedef struct h5md_thread_job_t {
 
 static void h5md_thread_extract(void* data) {
     h5md_thread_job_t* job = (h5md_thread_job_t*)data;
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_state_t st = { .alloc = arena };
     md_system_state_init(&st, job->num_atoms);
-    const str_t paths[] = { STR_INIT("atom/position") };
+    const md_str_t paths[] = { MD_STR_INIT("atom/position") };
     md_system_extract_t* ex = md_system_extract_begin(job->sys, job->run, paths, 1, arena);
     job->ok = ex != NULL;
     for (size_t r = 0; job->ok && r < job->rounds; ++r) {
@@ -492,8 +494,8 @@ static void h5md_thread_extract(void* data) {
 static void check_threads(int* utest_result, const char* path) {
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
-    const str_t run = STR_LIT("run/threads");
-    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_NONE));
+    const md_str_t run = MD_STR_LIT("run/threads");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_NONE));
 
     h5md_thread_job_t one = { .sys = &t.sys, .run = run, .num_atoms = t.sys.atom.count, .num_frames = run_num_frames(&t.sys, run), .rounds = 1 };
     h5md_thread_extract(&one);
@@ -523,4 +525,189 @@ UTEST(h5md, threads_read_from_the_file) {
 
 UTEST(h5md, threads_read_through_hdf5) {
     check_threads(utest_result, H5MD_DIR "spec_bare.h5md");
+}
+
+// ---------------------------------------------------------------------------
+// Files written here
+// ---------------------------------------------------------------------------
+
+static void h5_dset(hid_t loc, const char* name, hid_t file_type, hid_t mem_type, int rank, const hsize_t* dims, const void* data) {
+    const hid_t space = H5Screate_simple(rank, dims, NULL);
+    const hid_t d = H5Dcreate2(loc, name, file_type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(d, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    H5Dclose(d);
+    H5Sclose(space);
+}
+
+// The value dataset 'name' under loc, and its unit
+static void h5_dset_unit(hid_t loc, const char* name, hid_t file_type, hid_t mem_type, int rank, const hsize_t* dims, const void* data, const char* unit) {
+    h5_dset(loc, name, file_type, mem_type, rank, dims, data);
+    const hid_t d = H5Dopen2(loc, name, H5P_DEFAULT);
+    const hid_t str = H5Tcopy(H5T_C_S1);
+    H5Tset_size(str, strlen(unit));
+    const hid_t space = H5Screate(H5S_SCALAR);
+    const hid_t a = H5Acreate2(d, "unit", str, space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(a, str, unit);
+    H5Aclose(a);
+    H5Sclose(space);
+    H5Tclose(str);
+    H5Dclose(d);
+}
+
+static void h5_attr_i32(hid_t loc, const char* name, const int32_t* v, hsize_t n) {
+    const hid_t space = n ? H5Screate_simple(1, &n, NULL) : H5Screate(H5S_SCALAR);
+    const hid_t a = H5Acreate2(loc, name, H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(a, H5T_NATIVE_INT32, v);
+    H5Aclose(a);
+    H5Sclose(space);
+}
+
+// A file of one group of N carbons and oxygens over F frames, nm, periodic in all three: positions x (F x N x 3) at
+// 'steps', the box 'edges' (F x 3 x 3, vectors as rows) at the same steps, and velocities v (may be NULL) with them
+static bool h5md_test_write(const char* path, int F, int N, const int64_t* steps, const double* edges, const float* x, const float* v) {
+    const hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file < 0) return false;
+    const hid_t h5md = H5Gcreate2(file, "h5md", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const int32_t version[2] = { 1, 1 };
+    h5_attr_i32(h5md, "version", version, 2);
+    H5Gclose(h5md);
+    const hid_t particles = H5Gcreate2(file, "particles", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const hid_t atoms = H5Gcreate2(particles, "atoms", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const hid_t box = H5Gcreate2(atoms, "box", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const int32_t dim = 3;
+    h5_attr_i32(box, "dimension", &dim, 0);
+    {
+        const char boundary[3][8] = { "periodic", "periodic", "periodic" };
+        const hid_t str = H5Tcopy(H5T_C_S1);
+        H5Tset_size(str, 8);
+        const hsize_t three = 3;
+        const hid_t space = H5Screate_simple(1, &three, NULL);
+        const hid_t b = H5Acreate2(box, "boundary", str, space, H5P_DEFAULT, H5P_DEFAULT);
+        H5Awrite(b, str, boundary);
+        H5Aclose(b);
+        H5Sclose(space);
+        H5Tclose(str);
+    }
+    const hsize_t dim_f = (hsize_t)F;
+    const hsize_t dim_e[3] = { (hsize_t)F, 3, 3 };
+    const hsize_t dim_x[3] = { (hsize_t)F, (hsize_t)N, 3 };
+    const hsize_t dim_n = (hsize_t)N;
+    const hid_t g_edges = H5Gcreate2(box, "edges", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    h5_dset(g_edges, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
+    h5_dset_unit(g_edges, "value", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, 3, dim_e, edges, "nm");
+    H5Gclose(g_edges);
+    H5Gclose(box);
+    const char* names[2] = { "position", "velocity" };
+    const char* units[2] = { "nm", "nm ps-1" };
+    const float* values[2] = { x, v };
+    for (int k = 0; k < 2; ++k) {
+        if (!values[k]) continue;
+        const hid_t g = H5Gcreate2(atoms, names[k], H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        h5_dset(g, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
+        h5_dset_unit(g, "value", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, 3, dim_x, values[k], units[k]);
+        H5Gclose(g);
+    }
+    int32_t species[16];
+    for (int i = 0; i < N && i < 16; ++i) species[i] = (i % 2) ? 8 : 6;
+    h5_dset(atoms, "species", H5T_STD_I32LE, H5T_NATIVE_INT32, 1, &dim_n, species);
+    H5Gclose(atoms);
+    H5Gclose(particles);
+    H5Fclose(file);
+    return true;
+}
+
+// A box with every frame and every step 0, as MDAnalysis writes a trajectory that has no steps of its own. The box
+// was matched to the positions by step, which gave every frame the first box; written with every frame, the boxes
+// go with the frames row by row.
+UTEST(h5md, box_per_frame_with_steps_all_zero) {
+    const char* path = "md_unittest_h5md_steps_zero.h5md";
+    enum { F = 3, N = 2 };
+    const int64_t steps[F] = { 0, 0, 0 };
+    double edges[F][3][3] = {0};
+    for (int f = 0; f < F; ++f) for (int k = 0; k < 3; ++k) edges[f][k][k] = 2.0 + 0.5 * f;   // nm
+    float x[F][N][3];
+    for (int f = 0; f < F; ++f) for (int i = 0; i < N; ++i) for (int k = 0; k < 3; ++k) x[f][i][k] = 0.1f * f + 0.01f * i + 0.001f * k;
+    ASSERT_TRUE(h5md_test_write(path, F, N, steps, &edges[0][0][0], &x[0][0][0], NULL));
+
+    h5md_test_t t = {0};
+    ASSERT_TRUE(h5md_test_load(&t, path));
+    const md_str_t run = MD_STR_LIT("run/zero");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_system_state_t st = {.alloc = t.arena};
+    md_system_state_init(&st, N);
+    for (int f = 0; f < F; ++f) {
+        ASSERT_TRUE(run_extract_one(&st, &t.sys, run, f));
+        EXPECT_NEAR(10.0 * (2.0 + 0.5 * f), st.unitcell.x, 1.0e-5);
+        EXPECT_NEAR(10.0 * (2.0 + 0.5 * f), st.unitcell.z, 1.0e-5);
+        EXPECT_NEAR(10.0 * (0.1 * f + 0.01), st.xyz[1].x, 1.0e-5);
+    }
+    h5md_test_free(&t);
+    remove(path);
+}
+
+// Box vectors in any orientation, which H5MD allows (here a triclinic box turned about z and x): an md_unitcell_t
+// holds them with a along x and b in the xy plane, so the box is turned into that orientation and the positions and
+// velocities of its frame with it. Read as written, the components above the diagonal were dropped - a cell of
+// another shape, the atoms outside it.
+UTEST(h5md, box_in_any_orientation) {
+    const char* path = "md_unittest_h5md_turned_box.h5md";
+    enum { F = 2, N = 3 };
+    const int64_t steps[F] = { 0, 10 };
+    // The cell, lower triangular, nm; and a rotation Q = Rx(20 deg) Rz(30 deg)
+    const double L[3][3] = { { 3.0, 0.0, 0.0 }, { 0.8, 2.5, 0.0 }, { 0.4, 0.6, 2.2 } };
+    const double cz = cos(MD_DEG_TO_RAD(30.0)), sz = sin(MD_DEG_TO_RAD(30.0)), cx = cos(MD_DEG_TO_RAD(20.0)), sx = sin(MD_DEG_TO_RAD(20.0));
+    const double Rz[3][3] = { { cz, -sz, 0 }, { sz, cz, 0 }, { 0, 0, 1 } };
+    const double Rx[3][3] = { { 1, 0, 0 }, { 0, cx, -sx }, { 0, sx, cx } };
+    double Q[3][3] = {0};
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) for (int k = 0; k < 3; ++k) Q[i][j] += Rx[i][k] * Rz[k][j];
+    const double frac[N][3] = { { 0.1, 0.2, 0.3 }, { 0.5, 0.5, 0.5 }, { 0.9, 0.05, 0.7 } };
+    double edges[F][3][3] = {0};
+    float x[F][N][3], v[F][N][3];
+    for (int f = 0; f < F; ++f) {
+        const double s = 1.0 + 0.1 * f;
+        for (int r = 0; r < 3; ++r) for (int j = 0; j < 3; ++j) for (int k = 0; k < 3; ++k) edges[f][r][j] += s * L[r][k] * Q[j][k];   // row r of L, turned
+        for (int i = 0; i < N; ++i) for (int j = 0; j < 3; ++j) {
+            double p = 0.0;
+            for (int r = 0; r < 3; ++r) p += frac[i][r] * edges[f][r][j];
+            x[f][i][j] = (float)p;
+            v[f][i][j] = (float)p;
+        }
+    }
+    ASSERT_TRUE(h5md_test_write(path, F, N, steps, &edges[0][0][0], &x[0][0][0], &v[0][0][0]));
+
+    h5md_test_t t = {0};
+    ASSERT_TRUE(h5md_test_load(&t, path));
+    const md_str_t run = MD_STR_LIT("run/turned");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, md_str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_system_state_t st = {.alloc = t.arena};
+    md_system_state_init(&st, N);
+    for (int f = 0; f < F; ++f) {
+        ASSERT_TRUE(run_extract_one(&st, &t.sys, run, f));
+        const double s = 10.0 * (1.0 + 0.1 * f);   // Angstrom
+        // The cell is L itself: the rotation undone
+        EXPECT_NEAR(s * 3.0, st.unitcell.x,  1.0e-4);
+        EXPECT_NEAR(s * 0.8, st.unitcell.xy, 1.0e-4);
+        EXPECT_NEAR(s * 2.5, st.unitcell.y,  1.0e-4);
+        EXPECT_NEAR(s * 0.4, st.unitcell.xz, 1.0e-4);
+        EXPECT_NEAR(s * 0.6, st.unitcell.yz, 1.0e-4);
+        EXPECT_NEAR(s * 2.2, st.unitcell.z,  1.0e-4);
+        // And the atoms where they were in it
+        for (int i = 0; i < N; ++i) {
+            EXPECT_NEAR(s * (frac[i][0] * 3.0 + frac[i][1] * 0.8 + frac[i][2] * 0.4), st.xyz[i].x, 1.0e-3);
+            EXPECT_NEAR(s * (frac[i][1] * 2.5 + frac[i][2] * 0.6), st.xyz[i].y, 1.0e-3);
+            EXPECT_NEAR(s * (frac[i][2] * 2.2), st.xyz[i].z, 1.0e-3);
+        }
+        // The velocities, the same numbers without a unit, turn the same way
+        double vel[N * 3];
+        ASSERT_EQ((size_t)(N * 3), slice_f64(vel, N * 3, attr(&t.sys, "run/turned/atom/velocity"), md_attribute_slice_1((uint32_t)f)));
+        for (int i = 0; i < N; ++i) {
+            EXPECT_NEAR(st.xyz[i].x, 10.0 * vel[i * 3 + 0], 1.0e-3);
+            EXPECT_NEAR(st.xyz[i].z, 10.0 * vel[i * 3 + 2], 1.0e-3);
+        }
+    }
+    // The structure of the file: the first frame, turned as well
+    EXPECT_NEAR(10.0 * 3.0, t.state.unitcell.x, 1.0e-4);
+    EXPECT_NEAR(10.0 * (frac[1][0] * 3.0 + frac[1][1] * 0.8 + frac[1][2] * 0.4), t.state.xyz[1].x, 1.0e-3);
+    h5md_test_free(&t);
+    remove(path);
 }

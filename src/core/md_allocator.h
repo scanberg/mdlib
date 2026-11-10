@@ -53,6 +53,16 @@ md_temp_scope_t md_temp_begin_in(struct md_allocator_i* arena);
 // End a temporary allocation scope and rewind the arena.
 void md_temp_end(md_temp_scope_t temp);
 
+// A point of a scope to come back to: md_temp_reset gives back what was allocated after it, and the scope stays open.
+// For a phase whose scratch the next phase can use again (the spatial structure of bond inference, then the bonds),
+// without a scope of its own around it. Only the innermost scope (on its thread) is reset, to a mark of its own.
+typedef struct md_temp_mark_t {
+    size_t pos;
+} md_temp_mark_t;
+
+md_temp_mark_t md_temp_mark(md_temp_scope_t temp);
+void md_temp_reset(md_temp_scope_t temp, md_temp_mark_t mark);
+
 // Gives back to the OS what the calling thread's temp arenas hold committed above what is in use. An arena
 // keeps what it once grew to (ending a scope frees nothing), so a thread that ran something large once - a
 // pool worker given a protein's orbitals - holds that much until it exits. For such a thread after such work.

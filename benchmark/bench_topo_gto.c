@@ -52,6 +52,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../unittest/test_executor.h"   // the benchmark's own threads: mdlib owns none
 #include "bench_rev.h"     // MD_BENCH_SOURCE_REV, generated at build time by bench_version.cmake
 
 #ifndef MD_BENCHMARK_DATA_DIR
@@ -133,17 +134,17 @@ static bool file_exists(const char* path) {
 
 static bool input_load(input_t* in, const char* path) {
     memset(in, 0, sizeof(*in));
-    in->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    in->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     in->sys = (md_system_t){ .alloc = in->alloc };
     in->state = (md_system_state_t){ .alloc = in->alloc };
-    const str_t file = str_from_cstr(path);
+    const md_str_t file = md_str_from_cstr(path);
     bool ok = false;
     if (ends_with(path, ".molden")) {
         ok = md_molden_system_init_from_file(&in->sys, &in->state, file);
     }
 #if defined(MD_HDF5)
     else if (ends_with(path, ".h5")) {
-        ok = md_vlx_system_init_from_file(&in->sys, &in->state, file);
+        ok = md_vlx_system_init_from_file(&in->sys, &in->state, file, NULL);
     }
 #endif
     else {
@@ -160,9 +161,9 @@ static bool input_load(input_t* in, const char* path) {
     in->num_atoms = md_gto_basis_num_atoms(&in->basis);
 
     // QTAIM is defined on the total density; a file with one spin channel publishes only alpha, which is then the total.
-    str_t dpath = STR_LIT("orbital/total/density");
+    md_str_t dpath = MD_STR_LIT("orbital/total/density");
     const md_attribute_t* d = md_attributes_find(&in->sys.attributes, dpath);
-    if (!d) { dpath = STR_LIT("orbital/alpha/density"); d = md_attributes_find(&in->sys.attributes, dpath); }
+    if (!d) { dpath = MD_STR_LIT("orbital/alpha/density"); d = md_attributes_find(&in->sys.attributes, dpath); }
     if (!d || d->format.rank != 2 || d->format.shape[0] != in->num_ao || d->format.shape[1] != in->num_ao) {
         fprintf(stderr, "%s: no density matrix matching the basis (%zu AOs)\n", path, in->num_ao);
         return false;
@@ -173,13 +174,13 @@ static bool input_load(input_t* in, const char* path) {
         return false;
     }
 
-    const md_attribute_t* c = md_attributes_find(&in->sys.attributes, STR_LIT("qm/atom/coordinate"));   // Angstrom
-    double* xyz = (double*)md_alloc(in->alloc, sizeof(double) * 3 * MAX(in->num_atoms, 1));
+    const md_attribute_t* c = md_attributes_find(&in->sys.attributes, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom
+    double* xyz = (double*)md_alloc(in->alloc, sizeof(double) * 3 * MD_MAX(in->num_atoms, 1));
     if (!c || md_attribute_extract_f64(xyz, 3 * in->num_atoms, c, md_attribute_slice_all(), md_unit_none()) < 3 * in->num_atoms) {
         fprintf(stderr, "%s: no coordinates for the %zu basis atoms\n", path, in->num_atoms);
         return false;
     }
-    in->xyz = (float*)md_alloc(in->alloc, sizeof(float) * 3 * MAX(in->num_atoms, 1));
+    in->xyz = (float*)md_alloc(in->alloc, sizeof(float) * 3 * MD_MAX(in->num_atoms, 1));
     for (size_t i = 0; i < 3 * in->num_atoms; ++i) in->xyz[i] = (float)(xyz[i] * ANGSTROM_TO_BOHR);
     return true;
 }
@@ -252,7 +253,7 @@ static uint64_t fnv64(uint64_t h, const void* p, size_t n) {
 static bool same_cps(const md_topo_extremum_graph_t* a, const md_topo_extremum_graph_t* b, double tol, double* out_max_d, uint32_t* map) {
     *out_max_d = 0.0;
     if (a->num_vertices != b->num_vertices) return false;
-    bool* used = (bool*)calloc(MAX(b->num_vertices, 1), 1);
+    bool* used = (bool*)calloc(MD_MAX(b->num_vertices, 1), 1);
     bool ok = true;
     for (uint32_t i = 0; i < a->num_vertices && ok; ++i) {
         double best = HUGE_VAL; uint32_t bj = 0;
@@ -276,7 +277,7 @@ static const char* cp_type_name(int t) {
 // Prints the critical points of a that have no partner in b (same type, within tol Bohr; one to one),
 // at most 'limit' of them. Returns how many there are.
 static uint32_t list_unmatched(const char* label, const md_topo_extremum_graph_t* a, const md_topo_extremum_graph_t* b, double tol, uint32_t limit) {
-    bool* used = (bool*)calloc(MAX(b->num_vertices, 1), 1);
+    bool* used = (bool*)calloc(MD_MAX(b->num_vertices, 1), 1);
     uint32_t n = 0;
     for (uint32_t i = 0; i < a->num_vertices; ++i) {
         double best = HUGE_VAL; uint32_t bj = 0;
@@ -331,8 +332,8 @@ static int u64_cmp(const void* pa, const void* pb) {
 
 // Edges of a (its vertices mapped into b's numbering) that b has too.
 static uint32_t common_edges(const md_topo_extremum_graph_t* a, const md_topo_extremum_graph_t* b, const uint32_t* map) {
-    uint64_t* ka = (uint64_t*)malloc(sizeof(uint64_t) * MAX(a->num_edges, 1));
-    uint64_t* kb = (uint64_t*)malloc(sizeof(uint64_t) * MAX(b->num_edges, 1));
+    uint64_t* ka = (uint64_t*)malloc(sizeof(uint64_t) * MD_MAX(a->num_edges, 1));
+    uint64_t* kb = (uint64_t*)malloc(sizeof(uint64_t) * MD_MAX(b->num_edges, 1));
     for (uint32_t i = 0; i < a->num_edges; ++i) ka[i] = ((uint64_t)map[a->edges[i].from] << 32) | map[a->edges[i].to];
     for (uint32_t i = 0; i < b->num_edges; ++i) kb[i] = ((uint64_t)b->edges[i].from << 32) | b->edges[i].to;
     qsort(ka, a->num_edges, sizeof(uint64_t), u64_cmp);
@@ -528,8 +529,9 @@ int main(int argc, char** argv) {
             .rho_min = rho_min,
             .h_min = 1.0e-4,
             .trace_separatrices = true,
-            .num_threads = (uint32_t)threads,
         };
+        test_executor_t exec = test_executor_threads((uint32_t)(threads > 0 ? threads : (si.num_virtual_cores > 0 ? si.num_virtual_cores : 1)));
+        desc.executor = test_executor(&exec);
 
         result_t res = { names[di], -1.0, -1.0 };
         run_t cpu_ref;  memset(&cpu_ref, 0, sizeof(cpu_ref));
@@ -628,7 +630,7 @@ int main(int argc, char** argv) {
                 have_cpu = true;
             } else if (have_cpu) {
                 double dmax = 0.0;
-                uint32_t* map = (uint32_t*)calloc(MAX(cpu_ref.graph.num_vertices, 1), sizeof(uint32_t));
+                uint32_t* map = (uint32_t*)calloc(MD_MAX(cpu_ref.graph.num_vertices, 1), sizeof(uint32_t));
                 const bool same = same_cps(&cpu_ref.graph, &runs[0].graph, 1.0e-5, &dmax, map);
                 if (!same) {
                     printf("       GPU vs CPU: critical points MISMATCH (%u vs %u)\n", runs[0].graph.num_vertices, cpu_ref.graph.num_vertices);

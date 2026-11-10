@@ -27,7 +27,7 @@ UTEST(writer, str_writer) {
 
     md_str_writer_push_cstr(&sw, "Hej");
     md_str_writer_fmt(&sw, " %d Cool", 2);
-    md_str_writer_push_str(&sw, STR_LIT(" 4 School."));
+    md_str_writer_push_str(&sw, MD_STR_LIT(" 4 School."));
     EXPECT_STREQ("Hej 2 Cool 4 School.", md_str_writer_to_cstr(&sw));
     EXPECT_STREQ("Hej 2 Cool 4 School.", md_str_writer_to_str(&sw).ptr);
     EXPECT_EQ((size_t)20, md_str_writer_len(&sw));
@@ -39,8 +39,8 @@ UTEST(writer, str_writer) {
     EXPECT_TRUE(md_writer_ok(&sw.w));
 
     md_str_writer_pop(&sw, 1);
-    str_t str = md_str_writer_to_str(&sw);
-    EXPECT_TRUE(str_eq(str_substr(str, str.len - 6, 6), STR_LIT("x=1.50")));
+    md_str_t str = md_str_writer_to_str(&sw);
+    EXPECT_TRUE(md_str_eq(md_str_substr(str, str.len - 6, 6), MD_STR_LIT("x=1.50")));
     md_str_writer_pop(&sw, 1000);
     EXPECT_TRUE(md_str_writer_empty(&sw));
 
@@ -69,7 +69,7 @@ UTEST(writer, str_writer_growth) {
     for (int i = 0; i < count; ++i) {
         md_str_writer_fmt(&sw, "%d,", i);
     }
-    str_t str = md_str_writer_to_str(&sw);
+    md_str_t str = md_str_writer_to_str(&sw);
     int expected = 0;
     bool in_order = true;
     for (size_t i = 0; i < str.len;) {
@@ -84,7 +84,7 @@ UTEST(writer, str_writer_growth) {
     // A format larger than anything buffered so far
     md_str_writer_reset(&sw);
     char big[5000];
-    MEMSET(big, 'a', sizeof(big) - 1);
+    md_memset(big, 'a', sizeof(big) - 1);
     big[sizeof(big) - 1] = '\0';
     md_str_writer_fmt(&sw, "<%s>", big);
     str = md_str_writer_to_str(&sw);
@@ -98,11 +98,11 @@ UTEST(writer, str_writer_growth) {
 
 UTEST(writer, str_writer_release) {
     md_allocator_i* heap  = md_get_heap_allocator();
-    md_allocator_i* arena = md_arena_allocator_create(heap, KILOBYTES(64));
+    md_allocator_i* arena = md_arena_allocator_create(heap, MD_KILOBYTES(64));
 
     md_str_writer_t sw = md_str_writer_create(arena);
     md_str_writer_push_cstr(&sw, "released");
-    str_t released = md_str_writer_release(&sw);
+    md_str_t released = md_str_writer_release(&sw);
     EXPECT_EQ((size_t)8, released.len);
     EXPECT_STREQ("released", released.ptr);    // terminated
 
@@ -112,14 +112,14 @@ UTEST(writer, str_writer_release) {
     EXPECT_STREQ("again", md_str_writer_to_cstr(&sw));
     md_str_writer_free(&sw);
     EXPECT_STREQ("released", released.ptr);    // the released string is its own
-    str_free(released, arena);
+    md_str_free(released, arena);
 
     md_str_writer_t hw = md_str_writer_create(heap);
     EXPECT_EQ((size_t)0, md_str_writer_release(&hw).len);
     md_str_writer_push_cstr(&hw, "x");
-    str_t x = md_str_writer_release(&hw);
-    EXPECT_TRUE(str_eq(x, STR_LIT("x")));
-    str_free(x, heap);
+    md_str_t x = md_str_writer_release(&hw);
+    EXPECT_TRUE(md_str_eq(x, MD_STR_LIT("x")));
+    md_str_free(x, heap);
     md_str_writer_free(&hw);
 
     md_arena_allocator_destroy(arena);
@@ -147,7 +147,7 @@ UTEST(writer, str_writer_temp_arena) {
     md_str_writer_t expected = md_str_writer_create(md_get_heap_allocator());
     md_str_writer_push_cstr(&expected, "start;");
     for (int i = 0; i < 200; ++i) md_str_writer_fmt(&expected, "line %d;", i);
-    EXPECT_TRUE(str_eq(md_str_writer_to_str(&expected), md_str_writer_to_str(&sw)));
+    EXPECT_TRUE(md_str_eq(md_str_writer_to_str(&expected), md_str_writer_to_str(&sw)));
 
     md_str_writer_free(&expected);
     md_temp_end(temp);
@@ -208,7 +208,7 @@ UTEST(writer, numbers) {
     // As printf writes them, whatever its rounding of halfway cases
     const double values[] = { 3.14159, -2.71828, 1.0e6, 0.0, -0.001 };
     const int decimals[]  = { 2, 3, 0, 4, 1 };
-    for (size_t i = 0; i < ARRAY_SIZE(values); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(values); ++i) {
         char expected[64];
         snprintf(expected, sizeof(expected), "%.*f", decimals[i], values[i]);
         md_buf_writer_reset(&bw);
@@ -220,18 +220,18 @@ UTEST(writer, numbers) {
 UTEST(writer, fill_and_reserve) {
     md_str_writer_t sw = md_str_writer_create(md_get_heap_allocator());
     md_write_fill(&sw.w, '~', 1000);
-    str_t str = md_str_writer_to_str(&sw);
+    md_str_t str = md_str_writer_to_str(&sw);
     EXPECT_EQ((size_t)1000, str.len);
     EXPECT_EQ('~', str.ptr[0]);
     EXPECT_EQ('~', str.ptr[999]);
 
     char* p = md_writer_reserve(&sw.w, 4096);
     ASSERT_TRUE(p != NULL);
-    MEMCPY(p, "0123456789", 10);
+    md_memcpy(p, "0123456789", 10);
     md_writer_commit(&sw.w, 10);
     str = md_str_writer_to_str(&sw);
     EXPECT_EQ((size_t)1010, str.len);
-    EXPECT_TRUE(str_eq(str_substr(str, 1000, 10), STR_LIT("0123456789")));
+    EXPECT_TRUE(md_str_eq(md_str_substr(str, 1000, 10), MD_STR_LIT("0123456789")));
     md_str_writer_free(&sw);
 
     // A writer without a buffer cannot reserve
@@ -241,7 +241,7 @@ UTEST(writer, fill_and_reserve) {
 // Everything the file test writes, to whichever writer
 static void produce_file_content(md_writer_i* w) {
     char block[100];
-    MEMSET(block, '#', sizeof(block));
+    md_memset(block, '#', sizeof(block));
     for (int i = 0; i < 300; ++i) {
         if (i % 7 == 0) {
             md_writef(w, "%d:%s\n", i, "a line which is longer than the staging buffer of sixteen bytes");
@@ -255,7 +255,7 @@ static void produce_file_content(md_writer_i* w) {
 
 UTEST(writer, file_writer) {
     md_allocator_i* heap = md_get_heap_allocator();
-    const str_t path = STR_LIT("md_writer_test.tmp");
+    const md_str_t path = MD_STR_LIT("md_writer_test.tmp");
 
     md_str_writer_t expected = md_str_writer_create(heap);
     produce_file_content(&expected.w);
@@ -263,7 +263,7 @@ UTEST(writer, file_writer) {
     // A staging buffer smaller than many of the writes, and one the writer allocates
     const size_t caps[] = { 16, 0 };
     char stage[16];
-    for (size_t c = 0; c < ARRAY_SIZE(caps); ++c) {
+    for (size_t c = 0; c < MD_COUNTOF(caps); ++c) {
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
         md_file_writer_t fw = md_file_writer_create(file, caps[c] ? stage : NULL, caps[c]);
@@ -272,9 +272,9 @@ UTEST(writer, file_writer) {
         EXPECT_TRUE(md_file_writer_close(&fw));
         md_file_close(&file);
 
-        str_t written = load_textfile(path, heap);
-        EXPECT_TRUE(str_eq(md_str_writer_to_str(&expected), written));
-        str_free(written, heap);
+        md_str_t written = md_load_textfile(path, heap);
+        EXPECT_TRUE(md_str_eq(md_str_writer_to_str(&expected), written));
+        md_str_free(written, heap);
     }
 
     md_str_writer_free(&expected);
@@ -289,14 +289,14 @@ static struct {
 static void capture_log(struct md_logger_o* inst, md_log_type_t type, const char* msg) {
     (void)inst;
     (void)type;
-    if (log_capture.count < (int)ARRAY_SIZE(log_capture.lines)) {
+    if (log_capture.count < (int)MD_COUNTOF(log_capture.lines)) {
         snprintf(log_capture.lines[log_capture.count++], sizeof(log_capture.lines[0]), "%s", msg);
     }
 }
 
 UTEST(writer, log_writer) {
     md_logger_i logger = { NULL, capture_log };
-    MEMSET(&log_capture, 0, sizeof(log_capture));
+    md_memset(&log_capture, 0, sizeof(log_capture));
     md_log_register(&logger);
 
     // 15 bytes of buffer: lines are logged as they complete, a longer one in pieces, the last one when closed
@@ -311,8 +311,8 @@ UTEST(writer, log_writer) {
     md_log_unregister(&logger);
 
     const char* expected[] = { "first line", "second part", "a line longer t", "han the staging", " buffer", "tail" };
-    EXPECT_EQ((int)ARRAY_SIZE(expected), log_capture.count);
-    for (int i = 0; i < (int)ARRAY_SIZE(expected) && i < log_capture.count; ++i) {
+    EXPECT_EQ((int)MD_COUNTOF(expected), log_capture.count);
+    for (int i = 0; i < (int)MD_COUNTOF(expected) && i < log_capture.count; ++i) {
         EXPECT_STREQ(expected[i], log_capture.lines[i]);
     }
 }

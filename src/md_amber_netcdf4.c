@@ -40,7 +40,7 @@ typedef struct nc4_source_t {
     double scale;               // what a stored value is multiplied by: scale_factor / icompressfac
 } nc4_source_t;
 
-STATIC_ASSERT(sizeof(nc4_source_t) % 8 == 0, "the storage after it must be aligned");
+MD_STATIC_ASSERT(sizeof(nc4_source_t) % 8 == 0, "the storage after it must be aligned");
 
 static const md_hdf5_direct_t* nc4_source_direct(const nc4_source_t* src) {
     return (const md_hdf5_direct_t*)(src + 1);
@@ -61,8 +61,8 @@ static size_t h5_attr_text(hid_t obj, const char* name, char* buf, size_t cap) {
             H5Tset_size(mt, H5T_VARIABLE);
             char* s = NULL;
             if (H5Aread(a, mt, &s) >= 0 && s) {
-                len = MIN(strlen(s), cap - 1);
-                MEMCPY(buf, s, len);
+                len = MD_MIN(strlen(s), cap - 1);
+                md_memcpy(buf, s, len);
                 H5free_memory(s);
             }
             H5Tclose(mt);
@@ -70,7 +70,7 @@ static size_t h5_attr_text(hid_t obj, const char* name, char* buf, size_t cap) {
             const hid_t space = H5Aget_space(a);
             const hssize_t n = H5Sget_simple_extent_npoints(space);
             H5Sclose(space);
-            const size_t size = H5Tget_size(t) * (size_t)MAX(n, 1);
+            const size_t size = H5Tget_size(t) * (size_t)MD_MAX(n, 1);
             if (size < cap && H5Aread(a, t, buf) >= 0) len = size;
         }
     }
@@ -169,13 +169,13 @@ static bool h5_read_frame(hid_t file, const char* name, int rank, size_t frame, 
 // ## The Amber convention
 
 static bool nc4_has_convention(const char* conventions, const char* name) {
-    const str_t c = str_from_cstr(conventions);
+    const md_str_t c = md_str_from_cstr(conventions);
     size_t i = 0;
     while (i < c.len) {
         while (i < c.len && (c.ptr[i] == ',' || c.ptr[i] == ' ')) ++i;
         size_t j = i;
         while (j < c.len && c.ptr[j] != ',' && c.ptr[j] != ' ') ++j;
-        if (j > i && str_eq_cstr((str_t){c.ptr + i, j - i}, name)) return true;
+        if (j > i && md_str_eq_cstr((md_str_t){c.ptr + i, j - i}, name)) return true;
         i = j;
     }
     return false;
@@ -230,9 +230,9 @@ static size_t nc4_provider(void* dst, size_t cap, const md_attribute_t* attr, co
         count = 1;
     }
     if (cap != count * 3) return 0;
-    const str_t path = str_from_cstr(src->path);
+    const md_str_t path = md_str_from_cstr(src->path);
     if (!md_hdf5_direct_read_f32((float*)dst, nc4_source_direct(src), path, src->dataset, frame, first * 3, count * 3, src->scale, io)) {
-        MD_LOG_ERROR("Amber NetCDF-4: failed to read frame %zu of '%s' from '" STR_FMT "'", frame, src->dataset, STR_ARG(path));
+        MD_LOG_ERROR("Amber NetCDF-4: failed to read frame %zu of '%s' from '" MD_STR_FMT "'", frame, src->dataset, MD_STR_ARG(path));
         return 0;
     }
     return cap;
@@ -246,12 +246,12 @@ static bool nc4_is_angstrom(hid_t file, const char* name) {
     char units[64];
     const size_t len = h5_attr_text(d, "units", units, sizeof(units));
     H5Dclose(d);
-    return len == 0 || str_eq_cstr_ignore_case(str_from_cstr(units), "angstrom") || str_eq_cstr_ignore_case(str_from_cstr(units), "angstroms");
+    return len == 0 || md_str_eq_cstr_ignore_case(md_str_from_cstr(units), "angstrom") || md_str_eq_cstr_ignore_case(md_str_from_cstr(units), "angstroms");
 }
 
-md_amber_netcdf_kind_t md_amber_nc4_file_kind(str_t filename, size_t* out_num_atoms) {
+md_amber_netcdf_kind_t md_amber_nc4_file_kind(md_str_t filename, size_t* out_num_atoms) {
     char path[NC4_PATH_MAX];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
     if (out_num_atoms) *out_num_atoms = 0;
     const md_hdf5_lock_t lock = md_hdf5_lock();
     md_amber_netcdf_kind_t kind = MD_AMBER_NETCDF_NONE;
@@ -280,10 +280,10 @@ static md_unitcell_t nc4_cell(const double lengths[3], const double* angles) {
     return md_unitcell_from_extent_and_angles(lengths[0], lengths[1], lengths[2], a[0], a[1], a[2]);
 }
 
-bool md_amber_nc4_state_init_from_file(md_system_state_t* state, str_t filename, size_t num_atoms) {
-    ASSERT(state && state->alloc);
+bool md_amber_nc4_state_init_from_file(md_system_state_t* state, md_str_t filename, size_t num_atoms) {
+    MD_ASSERT(state && state->alloc);
     char path[NC4_PATH_MAX];
-    str_copy_to_char_buf(path, sizeof(path), filename);
+    md_str_copy_to_char_buf(path, sizeof(path), filename);
 
     md_temp_scope_t temp = md_temp_begin_avoid(state->alloc);
     bool ok = false;
@@ -300,13 +300,13 @@ bool md_amber_nc4_state_init_from_file(md_system_state_t* state, str_t filename,
         const int rank = name ? h5_dims(file, name, dims) : 0;
         N = rank == 3 ? (size_t)dims[1] : rank == 2 ? (size_t)dims[0] : 0;
         if (kind != MD_AMBER_NETCDF_TRAJECTORY && kind != MD_AMBER_NETCDF_RESTART) {
-            MD_LOG_ERROR("Amber NetCDF-4: '" STR_FMT "' does not follow the Amber convention", STR_ARG(filename));
+            MD_LOG_ERROR("Amber NetCDF-4: '" MD_STR_FMT "' does not follow the Amber convention", MD_STR_ARG(filename));
         } else if (!N || dims[rank - 1] != 3 || (rank == 3 && dims[0] == 0)) {
-            MD_LOG_ERROR("Amber NetCDF-4: '" STR_FMT "' has no coordinates", STR_ARG(filename));
+            MD_LOG_ERROR("Amber NetCDF-4: '" MD_STR_FMT "' has no coordinates", MD_STR_ARG(filename));
         } else if (num_atoms && N != num_atoms) {
-            MD_LOG_ERROR("Amber NetCDF-4: '" STR_FMT "' holds %zu atoms, the system %zu", STR_ARG(filename), N, num_atoms);
+            MD_LOG_ERROR("Amber NetCDF-4: '" MD_STR_FMT "' holds %zu atoms, the system %zu", MD_STR_ARG(filename), N, num_atoms);
         } else if (!nc4_is_angstrom(file, name)) {
-            MD_LOG_ERROR("Amber NetCDF-4: the coordinates of '" STR_FMT "' are not in angstrom", STR_ARG(filename));
+            MD_LOG_ERROR("Amber NetCDF-4: the coordinates of '" MD_STR_FMT "' are not in angstrom", MD_STR_ARG(filename));
         } else {
             xyz = md_temp_alloc_array(temp, float, N * 3);
             ok = h5_read_frame(file, name, rank, 0, 0, N, xyz);
@@ -317,17 +317,17 @@ bool md_amber_nc4_state_init_from_file(md_system_state_t* state, str_t filename,
                 const bool has_angles = h5_has(file, "cell_angles") && h5_read_doubles(file, "cell_angles", angles, 3);
                 if (h5_read_doubles(file, "cell_lengths", lengths, 3)) cell = nc4_cell(lengths, has_angles ? angles : NULL);
             }
-            if (!ok) MD_LOG_ERROR("Amber NetCDF-4: failed to read the coordinates of '" STR_FMT "'", STR_ARG(filename));
+            if (!ok) MD_LOG_ERROR("Amber NetCDF-4: failed to read the coordinates of '" MD_STR_FMT "'", MD_STR_ARG(filename));
         }
         H5Fclose(file);
     } else {
-        MD_LOG_ERROR("Amber NetCDF-4: cannot open '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Amber NetCDF-4: cannot open '" MD_STR_FMT "'", MD_STR_ARG(filename));
     }
     md_hdf5_unlock(lock);
 
     if (ok) ok = md_system_state_init(state, N);
     if (ok) {
-        MEMCPY(state->xyz, xyz, N * 3 * sizeof(float));
+        md_memcpy(state->xyz, xyz, N * 3 * sizeof(float));
         state->num_atoms = N;
         state->unitcell = cell;
     }
@@ -336,27 +336,27 @@ bool md_amber_nc4_state_init_from_file(md_system_state_t* state, str_t filename,
 }
 
 static md_unit_t nc4_time_unit(const char* units, bool* known) {
-    const str_t u = str_from_cstr(units);
+    const md_str_t u = md_str_from_cstr(units);
     *known = true;
-    if (str_empty(u) || str_eq_cstr_ignore_case(u, "picosecond") || str_eq_cstr_ignore_case(u, "picoseconds") || str_eq_cstr_ignore_case(u, "ps")) return md_unit_picosecond();
-    if (str_eq_cstr_ignore_case(u, "nanosecond") || str_eq_cstr_ignore_case(u, "nanoseconds") || str_eq_cstr_ignore_case(u, "ns")) return md_unit_nanosecond();
-    if (str_eq_cstr_ignore_case(u, "femtosecond") || str_eq_cstr_ignore_case(u, "femtoseconds") || str_eq_cstr_ignore_case(u, "fs")) return md_unit_femtosecond();
+    if (md_str_empty(u) || md_str_eq_cstr_ignore_case(u, "picosecond") || md_str_eq_cstr_ignore_case(u, "picoseconds") || md_str_eq_cstr_ignore_case(u, "ps")) return md_unit_picosecond();
+    if (md_str_eq_cstr_ignore_case(u, "nanosecond") || md_str_eq_cstr_ignore_case(u, "nanoseconds") || md_str_eq_cstr_ignore_case(u, "ns")) return md_unit_nanosecond();
+    if (md_str_eq_cstr_ignore_case(u, "femtosecond") || md_str_eq_cstr_ignore_case(u, "femtoseconds") || md_str_eq_cstr_ignore_case(u, "fs")) return md_unit_femtosecond();
     *known = false;
     return md_unit_none();
 }
 
-bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
+bool md_amber_nc4_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
+    MD_ASSERT(sys);
     (void)flags;
     char path[NC4_PATH_MAX];
     const size_t path_len = md_path_write_canonical(path, sizeof(path), filename);
     if (!path_len) {
-        MD_LOG_ERROR("Amber NetCDF-4: cannot resolve '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("Amber NetCDF-4: cannot resolve '" MD_STR_FMT "'", MD_STR_ARG(filename));
         return false;
     }
-    const str_t spath = {path, path_len};
+    const md_str_t spath = {path, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     // ## Everything the run needs from HDF5, at once and under the lock
@@ -376,20 +376,20 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
         const md_hdf5_lock_t lock = md_hdf5_lock();
         const hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
         if (file < 0) {
-            MD_LOG_ERROR("Amber NetCDF-4: cannot open '" STR_FMT "'", STR_ARG(spath));
+            MD_LOG_ERROR("Amber NetCDF-4: cannot open '" MD_STR_FMT "'", MD_STR_ARG(spath));
         } else {
             const md_amber_netcdf_kind_t kind = nc4_kind(file);
             hsize_t dims[3] = {0};
             names[0] = nc4_section_name(file, 0);
             const int rank = names[0] ? h5_dims(file, names[0], dims) : 0;
             if (kind == MD_AMBER_NETCDF_RESTART) {
-                MD_LOG_ERROR("Amber NetCDF-4: '" STR_FMT "' is a restart, a single set of coordinates rather than a trajectory", STR_ARG(spath));
+                MD_LOG_ERROR("Amber NetCDF-4: '" MD_STR_FMT "' is a restart, a single set of coordinates rather than a trajectory", MD_STR_ARG(spath));
             } else if (kind != MD_AMBER_NETCDF_TRAJECTORY) {
-                MD_LOG_ERROR("Amber NetCDF-4: '" STR_FMT "' does not follow the Amber convention (no Conventions \"AMBER\")", STR_ARG(spath));
+                MD_LOG_ERROR("Amber NetCDF-4: '" MD_STR_FMT "' does not follow the Amber convention (no Conventions \"AMBER\")", MD_STR_ARG(spath));
             } else if (rank != 3 || dims[0] == 0 || dims[1] == 0 || dims[2] != 3 || dims[0] > UINT32_MAX || dims[1] > UINT32_MAX) {
-                MD_LOG_ERROR("Amber NetCDF-4: '" STR_FMT "' has no coordinates of {frame, atom, spatial}", STR_ARG(spath));
+                MD_LOG_ERROR("Amber NetCDF-4: '" MD_STR_FMT "' has no coordinates of {frame, atom, spatial}", MD_STR_ARG(spath));
             } else if (!nc4_is_angstrom(file, names[0])) {
-                MD_LOG_ERROR("Amber NetCDF-4: the coordinates of '" STR_FMT "' are not in angstrom", STR_ARG(spath));
+                MD_LOG_ERROR("Amber NetCDF-4: the coordinates of '" MD_STR_FMT "' are not in angstrom", MD_STR_ARG(spath));
             } else {
                 F = (size_t)dims[0];
                 N = (size_t)dims[1];
@@ -399,7 +399,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
                         names[k] = nc4_section_name(file, k);
                         hsize_t vd[3] = {0};
                         if (names[k] && (h5_dims(file, names[k], vd) != 3 || vd[0] != F || vd[1] != N || vd[2] != 3)) {
-                            MD_LOG_INFO("Amber NetCDF-4: '%s' of '" STR_FMT "' is not of the frames and atoms of the coordinates, and is left out", names[k], STR_ARG(spath));
+                            MD_LOG_INFO("Amber NetCDF-4: '%s' of '" MD_STR_FMT "' is not of the frames and atoms of the coordinates, and is left out", names[k], MD_STR_ARG(spath));
                             names[k] = NULL;
                         }
                     }
@@ -451,7 +451,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
         for (size_t f = 0; use_time && f < F; ++f) {
             if (!isfinite(times[f]) || (f > 0 && times[f] <= times[f - 1])) use_time = false;
         }
-        if (!use_time) MD_LOG_INFO("Amber NetCDF-4: the time of '" STR_FMT "' does not increase from frame to frame, or is in units not known here; the frames are numbered instead", STR_ARG(spath));
+        if (!use_time) MD_LOG_INFO("Amber NetCDF-4: the time of '" MD_STR_FMT "' does not increase from frame to frame, or is in units not known here; the frames are numbered instead", MD_STR_ARG(spath));
     }
     if (!use_time) {
         times = md_alloc(arena, F * sizeof(double));
@@ -461,7 +461,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
 
     // ## Cells, zero without a box
     float* boxes = md_alloc(arena, F * 9 * sizeof(float));
-    MEMSET(boxes, 0, F * 9 * sizeof(float));
+    md_memset(boxes, 0, F * 9 * sizeof(float));
     for (size_t f = 0; lengths && f < F; ++f) {
         const md_unitcell_t cell = nc4_cell(lengths + f * 3, angles ? angles + f * 3 : NULL);
         md_unitcell_A_extract_float((float(*)[3])(boxes + f * 9), &cell);
@@ -475,11 +475,11 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
         const size_t size = sizeof(nc4_source_t) + (size_t)direct[k]->size;
         nc4_source_t* src = md_attributes_alloc_user_data(&sys->attributes, size);
         if (!src) goto done;
-        MEMSET(src, 0, size);
+        md_memset(src, 0, size);
         src->scale = scale[k];
-        str_copy_to_char_buf(src->dataset, sizeof(src->dataset), str_from_cstr(names[k]));
-        str_copy_to_char_buf(src->path, sizeof(src->path), spath);
-        MEMCPY(src + 1, direct[k], (size_t)direct[k]->size);
+        md_str_copy_to_char_buf(src->dataset, sizeof(src->dataset), md_str_from_cstr(names[k]));
+        md_str_copy_to_char_buf(src->path, sizeof(src->path), spath);
+        md_memcpy(src + 1, direct[k], (size_t)direct[k]->size);
         virt[k] = (md_attribute_virtual_t){ .provider = nc4_provider, .user_data = src, .user_data_size = size };
     }
 
@@ -507,48 +507,48 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, str_t filename, str_t run
     md_attributes_t* attributes = &sys->attributes;
     char buf[512];
     const md_unit_t kcal_per_mol = md_unit_div(md_unit_scl(md_unit_calorie(), 1.0e3), md_unit_mole());
-    const struct { int k; const char* leaf; md_unit_t unit; str_t label; } per_atom[] = {
-        { 1, "atom/velocity", md_unit_div(md_unit_angstrom(), md_unit_picosecond()), STR_INIT("Velocity") },
-        { 2, "atom/force",    md_unit_div(kcal_per_mol, md_unit_angstrom()),         STR_INIT("Force") },
+    const struct { int k; const char* leaf; md_unit_t unit; md_str_t label; } per_atom[] = {
+        { 1, "atom/velocity", md_unit_div(md_unit_angstrom(), md_unit_picosecond()), MD_STR_INIT("Velocity") },
+        { 2, "atom/force",    md_unit_div(kcal_per_mol, md_unit_angstrom()),         MD_STR_INIT("Force") },
     };
     bool published = true;
-    for (size_t i = 0; published && i < ARRAY_SIZE(per_atom); ++i) {
+    for (size_t i = 0; published && i < MD_COUNTOF(per_atom); ++i) {
         const int k = per_atom[i].k;
         if (!names[k]) continue;
         published = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, str_from_cstr(per_atom[i].leaf)),
+            .path = md_run_path(buf, sizeof(buf), run, md_str_from_cstr(per_atom[i].leaf)),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 2, .shape = { (uint32_t)F, (uint32_t)N } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = per_atom[i].unit, .label = per_atom[i].label,
             .virt = &virt[k]}) != MD_ATTRIBUTE_INVALID;
     }
     if (published && temp0) {
         published = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("remd/temp0")),
+            .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("remd/temp0")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)F } },
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_kelvin(), .label = STR_INIT("Target temperature"),
+            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_kelvin(), .label = MD_STR_INIT("Target temperature"),
             .data = temp0, .byte_size = F * sizeof(double)}) != MD_ATTRIBUTE_INVALID;
     }
-    const struct { const double* v; const char* leaf; str_t label; } indices[] = {
-        { repidx, "remd/repidx", STR_INIT("Replica index") },
-        { crdidx, "remd/crdidx", STR_INIT("Coordinate index") },
+    const struct { const double* v; const char* leaf; md_str_t label; } indices[] = {
+        { repidx, "remd/repidx", MD_STR_INIT("Replica index") },
+        { crdidx, "remd/crdidx", MD_STR_INIT("Coordinate index") },
     };
-    for (size_t i = 0; published && i < ARRAY_SIZE(indices); ++i) {
+    for (size_t i = 0; published && i < MD_COUNTOF(indices); ++i) {
         if (!indices[i].v) continue;
         int32_t* ints = md_alloc(arena, F * sizeof(int32_t));
         for (size_t f = 0; f < F; ++f) ints[f] = (int32_t)indices[i].v[f];
         published = md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = md_run_path(buf, sizeof(buf), run, str_from_cstr(indices[i].leaf)),
+            .path = md_run_path(buf, sizeof(buf), run, md_str_from_cstr(indices[i].leaf)),
             .format = { .type = MD_ATTRIBUTE_TYPE_I32, .components = 1, .rank = 1, .shape = { (uint32_t)F } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .label = indices[i].label,
             .data = ints, .byte_size = F * sizeof(int32_t)}) != MD_ATTRIBUTE_INVALID;
     }
     if (!published) {
-        MD_LOG_ERROR("Amber NetCDF-4: failed to publish '" STR_FMT "' as '" STR_FMT "'", STR_ARG(spath), STR_ARG(run));
+        MD_LOG_ERROR("Amber NetCDF-4: failed to publish '" MD_STR_FMT "' as '" MD_STR_FMT "'", MD_STR_ARG(spath), MD_STR_ARG(run));
         md_attributes_remove_prefix(attributes, run);
         goto done;
     }
     if (!md_hdf5_direct_is_direct(direct[0])) {
-        MD_LOG_INFO("Amber NetCDF-4: the coordinates of '" STR_FMT "' are encoded in a way read through HDF5, one frame at a time", STR_ARG(spath));
+        MD_LOG_INFO("Amber NetCDF-4: the coordinates of '" MD_STR_FMT "' are encoded in a way read through HDF5, one frame at a time", MD_STR_ARG(spath));
     }
     result = true;
 

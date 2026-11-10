@@ -22,6 +22,24 @@
 #define MD_XTC_CACHE_VERSION 6   // 6: the shared run cache header; 5: the step and box of every frame
 
 #define XTC_MAGIC 1995
+// GROMACS 2023 and later: the same frame, with the byte count of the compressed coordinates as a 64 bit integer (XDR's
+// hyper: the high 32 bits first). Written for systems above 298261617 atoms (XTC_1995_MAX_NATOMS), where the
+// compressed bytes of a frame no longer fit the 32 bit count, and by GROMACS's own tests at any size.
+#define XTC_NEW_MAGIC 2023
+
+static inline bool xtc_magic_ok(int32_t magic) {
+    return magic == XTC_MAGIC || magic == XTC_NEW_MAGIC;
+}
+
+// The size of the byte count which follows the header of a compressed frame (natoms >= 10)
+static inline size_t xtc_count_size(const uint8_t* frame_ptr) {
+    return md_xdr_load_i32(frame_ptr) == XTC_NEW_MAGIC ? 8 : 4;
+}
+
+// The byte count of a compressed frame, at the end of its header
+static inline uint64_t xtc_count(const uint8_t* count_ptr, size_t count_size) {
+    return count_size == 8 ? md_xdr_load_u64(count_ptr) : (uint64_t)md_xdr_load_u32(count_ptr);
+}
 
 /* XTC small header size (natoms<=9).
 *  > int(4) magic
@@ -182,7 +200,7 @@ static const xtc_small_t small_params[XTC_SMALL_FAST_MAX - FIRSTIDX + 1] = {
 // logical end of the bitstream are readable.
 // =====================================================================
 
-static FORCE_INLINE int sizeofint(int size) {
+static MD_FORCE_INLINE int sizeofint(int size) {
     unsigned int num = 1;
     int num_of_bits = 0;
 
@@ -193,7 +211,7 @@ static FORCE_INLINE int sizeofint(int size) {
     return num_of_bits;
 }
 
-static FORCE_INLINE int sizeofints(int num_of_ints, unsigned int sizes[]) {
+static MD_FORCE_INLINE int sizeofints(int num_of_ints, unsigned int sizes[]) {
     unsigned int num_of_bytes, num_of_bits, bytes[32], bytecnt, tmp, num;
     num_of_bytes = 1;
     bytes[0] = 1;
@@ -221,11 +239,11 @@ static FORCE_INLINE int sizeofints(int num_of_ints, unsigned int sizes[]) {
 }
 
 // The whole vector, fourth lane included: the caller guarantees 16 writable bytes at dst.
-static FORCE_INLINE void write_coord16(float* dst, v4i_t coord, md_128 invp) {
+static MD_FORCE_INLINE void write_coord16(float* dst, v4i_t coord, md_128 invp) {
     md_mm_storeu_ps(dst, md_mm_mul_ps(md_mm_cvtepi32_ps(coord), invp));
 }
 
-static FORCE_INLINE void init_unpack_bit_data(bit_data_t* data, uint32_t num_of_bits) {
+static MD_FORCE_INLINE void init_unpack_bit_data(bit_data_t* data, uint32_t num_of_bits) {
     uint32_t partbits = num_of_bits & 7;
     data->num_of_bits = num_of_bits;
     data->big_shift   = 64 - ((num_of_bits + 7) & ~7);  // Align to next multiple of 8
@@ -235,95 +253,77 @@ static FORCE_INLINE void init_unpack_bit_data(bit_data_t* data, uint32_t num_of_
 
 // Fast path: extracts up to 57 bits via a single unaligned 8-byte read.
 // Works because (bit_in_byte <= 7) + bit_length <= 64.
-static FORCE_INLINE uint64_t extract_bits_be_raw_57(const uint8_t* base, size_t bit_offset, size_t bit_length) {
+static MD_FORCE_INLINE uint64_t extract_bits_be_raw_57(const uint8_t* base, size_t bit_offset, size_t bit_length) {
     size_t byte_offset = bit_offset >> 3;
     size_t bit_in_byte = bit_offset & 7;
 
     uint64_t raw;
-    MEMCPY(&raw, base + byte_offset, sizeof(raw));
+    md_memcpy(&raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw = BSWAP64(raw);
+    raw = md_bswap64(raw);
 #endif
     return (raw << bit_in_byte) >> (64 - bit_length);
 }
 
 // Extracts 1..64 bits using a 16-byte unaligned read so that any bit
 // alignment is handled correctly.
-static FORCE_INLINE uint64_t extract_bits_be_raw_64(const uint8_t* base, size_t bit_offset, size_t bit_length) {
+static MD_FORCE_INLINE uint64_t extract_bits_be_raw_64(const uint8_t* base, size_t bit_offset, size_t bit_length) {
     size_t byte_offset = bit_offset >> 3;
     size_t bit_in_byte = bit_offset & 7;
 
     uint64_t raw[2];
-    MEMCPY(raw, base + byte_offset, sizeof(raw));
+    md_memcpy(raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw[0] = BSWAP64(raw[0]);
-    raw[1] = BSWAP64(raw[1]);
+    raw[0] = md_bswap64(raw[0]);
+    raw[1] = md_bswap64(raw[1]);
 #endif
-    uint64_t nz_mask  = -(uint64_t)(bit_in_byte != 0);
-    uint64_t combined = (raw[0] << bit_in_byte) | ((raw[1] >> (64 - bit_in_byte)) & nz_mask);
+    // raw[1] >> (64 - bit_in_byte) in two steps, as a shift by 64 (bit_in_byte 0) is undefined
+    uint64_t combined = (raw[0] << bit_in_byte) | ((raw[1] >> 1) >> (63 - bit_in_byte));
     return combined >> (64 - bit_length);
 }
 
 // Extracts 65..121 bits. Output: out[0] = upper portion (still byte-shifted),
 // out[1] = lower 64 bits (right-justified). Designed to feed unpack_coord128.
-static FORCE_INLINE void extract_bits_be_raw_121(uint64_t out[2], const uint8_t* base, size_t bit_offset, size_t bit_length) {
-    ASSERT(64 < bit_length && bit_length <= 121);
+static MD_FORCE_INLINE void extract_bits_be_raw_121(uint64_t out[2], const uint8_t* base, size_t bit_offset, size_t bit_length) {
+    MD_ASSERT(64 < bit_length && bit_length <= 121);
 
     size_t byte_offset = bit_offset >> 3;
     size_t bit_in_byte = bit_offset & 7;
     int    shift_right = (int)(128 - bit_length);
 
     uint64_t raw[2];
-    MEMCPY(raw, base + byte_offset, sizeof(raw));
+    md_memcpy(raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw[0] = BSWAP64(raw[0]);
-    raw[1] = BSWAP64(raw[1]);
+    raw[0] = md_bswap64(raw[0]);
+    raw[1] = md_bswap64(raw[1]);
 #endif
-    uint64_t nz_mask = -(uint64_t)(bit_in_byte != 0);
     uint64_t hi = (raw[0] << bit_in_byte);
-    uint64_t lo = (raw[1] << bit_in_byte) | ((raw[0] >> (64 - bit_in_byte)) & nz_mask);
+    // raw[0] >> (64 - bit_in_byte) in two steps, as a shift by 64 (bit_in_byte 0) is undefined
+    uint64_t lo = (raw[1] << bit_in_byte) | ((raw[0] >> 1) >> (63 - bit_in_byte));
     out[0] = hi;
     out[1] = lo >> shift_right;
 }
 
-// Extracts 1..32 bits via a single unaligned 8-byte read.
-static FORCE_INLINE uint32_t extract_bits_be_raw_32(const uint8_t* base, size_t bit_offset, size_t bit_length) {
-    size_t byte_offset = bit_offset >> 3;
-    size_t bit_in_byte = bit_offset & 7;
-
-    uint64_t raw;
-    MEMCPY(&raw, base + byte_offset, sizeof(raw));
-#if __LITTLE_ENDIAN__
-    raw = BSWAP64(raw);
-#endif
-    return (uint32_t)((raw << bit_in_byte) >> (64 - bit_length));
-}
-
 // Peek-style helper for the run-length 6-bit field. Reads up to 32 bits.
-static FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size_t bit_offset, size_t bit_length) {
+static MD_FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size_t bit_offset, size_t bit_length) {
     size_t byte_offset = bit_offset >> 3;
     size_t bit_in_byte = bit_offset & 7;
 
     uint32_t raw;
-    MEMCPY(&raw, base + byte_offset, sizeof(raw));
+    md_memcpy(&raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw = BSWAP32(raw);
+    raw = md_bswap32(raw);
 #endif
     return (raw << bit_in_byte) >> (32 - bit_length);
-}
-
-static FORCE_INLINE uint32_t unpack_uint32(uint32_t w, const bit_data_t* bits) {
-    uint32_t t = ((w << bits->sml_shift) & (~0xFFu)) | (w & bits->part_mask);
-    return BSWAP32(t) >> bits->big_shift;
 }
 
 // Combine a 64-bit packed word into (x, y, z) via two parallel divisions.
 // The two libdivide ops are issued from the same source `v`, which shortens
 // the critical dependency chain compared to a serial (x = v/zy, q = v - x*zy,
 // y = q/z) formulation.
-static FORCE_INLINE v4i_t unpack_coord64(uint64_t w, const unpack_data_t* unpack) {
+static MD_FORCE_INLINE v4i_t unpack_coord64(uint64_t w, const unpack_data_t* unpack) {
     uint64_t t = ((w << unpack->bit.sml_shift) & (~0xFFull)) | (w & unpack->bit.part_mask);
-    uint64_t v = BSWAP64(t) >> unpack->bit.big_shift;
+    uint64_t v = md_bswap64(t) >> unpack->bit.big_shift;
 
     uint32_t x  = (uint32_t)DIV(v, &unpack->div_zy);
     uint64_t yz = (uint64_t)DIV(v, &unpack->div_z);
@@ -334,14 +334,14 @@ static FORCE_INLINE v4i_t unpack_coord64(uint64_t w, const unpack_data_t* unpack
     return v4i_set(x, y, z, 0);
 }
 
-static FORCE_INLINE v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* unpack) {
+static MD_FORCE_INLINE v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* unpack) {
     const uint64_t zy = (uint64_t)unpack->size_z * unpack->size_y;
 
     // w[0] is the still-shifted upper portion (see extract_bits_be_raw_121),
     // w[1] is the right-justified lower 64 bits but stored big-endian.
     uint64_t hi = ((w[1] << unpack->bit.sml_shift) & (~0xFFull)) | (w[1] & unpack->bit.part_mask);
-    hi = BSWAP64(hi) >> unpack->bit.big_shift;
-    uint64_t lo = BSWAP64(w[0]);
+    hi = md_bswap64(hi) >> unpack->bit.big_shift;
+    uint64_t lo = md_bswap64(w[0]);
 
 #ifdef HAS_INT128_T
     __uint128_t v = (__uint128_t)lo | ((__uint128_t)hi << 64);
@@ -365,8 +365,8 @@ static FORCE_INLINE v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* un
     uint32_t nums[4]  = {0};
     uint32_t limbs[4] = {0};
 
-    MEMCPY(limbs + 0, &lo, sizeof(uint32_t) * 2);
-    MEMCPY(limbs + 2, &hi, sizeof(uint32_t) * 2);
+    md_memcpy(limbs + 0, &lo, sizeof(uint32_t) * 2);
+    md_memcpy(limbs + 2, &hi, sizeof(uint32_t) * 2);
 
     const int num_limbs = (num_of_bytes + 3) / 4;
     for (int i = 2; i > 0; --i) {
@@ -387,7 +387,7 @@ static FORCE_INLINE v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t* un
 // Picks the cheapest extraction kernel for `bit_length` and feeds unpack_coord*.
 // `bit_length` may exceed 64 (rare). The <= 57 path is the hot one and is
 // inlined first so the compiler can favor it.
-static FORCE_INLINE v4i_t extract_and_unpack(const uint8_t* base, size_t bit_offset, size_t bit_length, const unpack_data_t* unpack) {
+static MD_FORCE_INLINE v4i_t extract_and_unpack(const uint8_t* base, size_t bit_offset, size_t bit_length, const unpack_data_t* unpack) {
     if (bit_length <= 57) {
         uint64_t w = extract_bits_be_raw_57(base, bit_offset, bit_length);
         return unpack_coord64(w, unpack);
@@ -401,18 +401,42 @@ static FORCE_INLINE v4i_t extract_and_unpack(const uint8_t* base, size_t bit_off
     }
 }
 
-// Reads three independently bit-packed integers (one per axis). Used only
-// when sizeints exceed the 24-bit combined limit.
-static FORCE_INLINE v4i_t extract_ints3(const uint8_t* base, size_t bit_offset, const bit_data_t bits[3]) {
+// As extract_and_unpack, with plain divisions: for a range of a single value along y or z (all atoms in
+// one plane, or in one point), a divisor of 1, which libdivide's branchfree dividers cannot take.
+static v4i_t extract_and_unpack_plain(const uint8_t* base, size_t bit_offset, size_t bit_length, const unpack_data_t* unpack) {
+    if (bit_length > 64) {
+        uint64_t w[2];
+        extract_bits_be_raw_121(w, base, bit_offset, bit_length);
+        return unpack_coord128(w, unpack);
+    }
+    const uint64_t w = bit_length <= 57 ? extract_bits_be_raw_57(base, bit_offset, bit_length) : extract_bits_be_raw_64(base, bit_offset, bit_length);
+    const uint64_t t = ((w << unpack->bit.sml_shift) & (~0xFFull)) | (w & unpack->bit.part_mask);
+    const uint64_t v = md_bswap64(t) >> unpack->bit.big_shift;
+    const uint64_t zy = (uint64_t)unpack->size_y * unpack->size_z;
+    const uint64_t x  = v / zy;
+    const uint64_t q  = v - x * zy;
+    return v4i_set((uint32_t)x, (uint32_t)(q / unpack->size_z), (uint32_t)(q % unpack->size_z), 0);
+}
+
+// Reads three independently bit-packed integers (one per axis). Used only when a range exceeds
+// 0xffffff, where the writer sends each with sendbits rather than the three with sendints: the next
+// bits of the stream as they are, most significant first (receivebits), with none of the byte
+// reordering of receiveints. Each is at most 32 bits.
+static MD_FORCE_INLINE v4i_t extract_ints3(const uint8_t* base, size_t bit_offset, const bit_data_t bits[3]) {
     uint32_t v[4] = {0};
     for (int i = 0; i < 3; ++i) {
-        uint32_t num_bits = bits[i].num_of_bits;
-        uint32_t w = extract_bits_be_raw_32(base, bit_offset, num_bits);
-        v[i] = unpack_uint32(w, &bits[i]);
+        const uint32_t num_bits = bits[i].num_of_bits;
+        v[i] = num_bits ? (uint32_t)extract_bits_be_raw_64(base, bit_offset, num_bits) : 0;
         bit_offset += num_bits;
     }
     return v4i_load(v);
 }
+
+#if defined(_MSC_VER)
+#define XTC_NOINLINE __declspec(noinline)
+#else
+#define XTC_NOINLINE __attribute__((noinline))
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define XTC_UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -423,10 +447,10 @@ static FORCE_INLINE v4i_t extract_ints3(const uint8_t* base, size_t bit_offset, 
 // One small coordinate, see small_params. Takes the parameters by value: held in locals by the
 // caller, they stay in registers, where through a pointer the compiler reloads every field for
 // every atom (the coordinate stores might alias the table as far as it can tell).
-static FORCE_INLINE v4i_t extract_small(const uint8_t* base, size_t bit_offset, xtc_small_t p) {
+static MD_FORCE_INLINE v4i_t extract_small(const uint8_t* base, size_t bit_offset, xtc_small_t p) {
     const uint64_t w  = extract_bits_be_raw_57(base, bit_offset, p.num_of_bits);
     const uint64_t t  = ((w << p.sml_shift) & ~0xFFull) | (w & p.part_mask);
-    const uint64_t v  = BSWAP64(t) >> p.big_shift;
+    const uint64_t v  = md_bswap64(t) >> p.big_shift;
     const uint64_t x  = libdivide_mullhi_u64(v, p.m2);
     const uint64_t yz = libdivide_mullhi_u64(v, p.m1);
     return v4i_set((uint32_t)x, (uint32_t)(yz - x * p.size), (uint32_t)(v - yz * p.size), 0);
@@ -451,10 +475,10 @@ static bool xtc_big_magic(uint64_t* m, uint32_t* sh, uint64_t d) {
     return true;
 }
 
-static FORCE_INLINE v4i_t extract_big(const uint8_t* base, size_t bit_offset, const unpack_data_t* unpack, const xtc_big_div_t* div) {
+static MD_FORCE_INLINE v4i_t extract_big(const uint8_t* base, size_t bit_offset, const unpack_data_t* unpack, const xtc_big_div_t* div) {
     const uint64_t w  = extract_bits_be_raw_57(base, bit_offset, unpack->bit.num_of_bits);
     const uint64_t t  = ((w << unpack->bit.sml_shift) & ~0xFFull) | (w & unpack->bit.part_mask);
-    const uint64_t v  = BSWAP64(t) >> unpack->bit.big_shift;
+    const uint64_t v  = md_bswap64(t) >> unpack->bit.big_shift;
     const uint64_t x  = libdivide_mullhi_u64(v, div->m_zy) >> div->sh_zy;
     const uint64_t yz = libdivide_mullhi_u64(v, div->m_z)  >> div->sh_z;
     return v4i_set((uint32_t)x, (uint32_t)(yz - x * unpack->size_y), (uint32_t)(v - yz * unpack->size_z), 0);
@@ -464,7 +488,7 @@ static inline bool decode_header(const uint8_t* frame_ptr, md_xtc_header_t* out_
     // Extract header
     int magic;
     magic = md_xdr_load_i32(frame_ptr);
-    if (magic != XTC_MAGIC) {
+    if (!xtc_magic_ok(magic)) {
         MD_LOG_ERROR("XTC: Magic number did not match");
         return false;
 	}
@@ -569,13 +593,19 @@ static size_t xtc_scan(md_file_t xdr, md_array(int64_t)* frame_offsets, md_array
         // Every frame is its header, the byte count of its compressed coordinates and those bytes,
         // padded to 4. One positioned read per frame, at an offset kept here: no tell or seek, and
         // nothing that can step past the end of the file.
-        uint8_t raw[XTC_HEADER_SIZE + 4];
+        uint8_t raw[XTC_HEADER_SIZE + 8];
 
-        if (md_file_read_at(xdr, XTC_HEADER_SIZE, raw, 4) != 4) {
+        const size_t first_count = xtc_count_size(frame_header_data);
+        if (md_file_read_at(xdr, XTC_HEADER_SIZE, raw, first_count) != first_count) {
             MD_LOG_ERROR("XTC: Failed to read framebytes");
             return 0;
         }
-        int64_t offset = XTC_HEADER_SIZE + 4 + (int64_t)md_xdr_padded_size((size_t)md_xdr_load_u32(raw));
+        const uint64_t first_bytes = xtc_count(raw, first_count);
+        if (first_bytes > filesize) {
+            MD_LOG_ERROR("XTC: The first frame is cut short");
+            return 0;
+        }
+        int64_t offset = XTC_HEADER_SIZE + (int64_t)first_count + (int64_t)md_xdr_padded_size((size_t)first_bytes);
         if (offset > (int64_t)filesize) {
             MD_LOG_ERROR("XTC: The first frame is cut short");
             return 0;
@@ -589,11 +619,19 @@ static size_t xtc_scan(md_file_t xdr, md_array(int64_t)* frame_offsets, md_array
         md_array_ensure(*frame_times,   est_nframes, alloc);
 
         while (offset < (int64_t)filesize) {
-            if (md_file_read_at(xdr, offset, raw, sizeof(raw)) != sizeof(raw) || !decode_header(raw, &xtc_header)) {
+            // The header and a 32 bit count: what every frame has, and all a frame of the old magic has at the end of a file
+            if (md_file_read_at(xdr, offset, raw, XTC_HEADER_SIZE + 4) != XTC_HEADER_SIZE + 4 || !decode_header(raw, &xtc_header)) {
                 MD_LOG_DEBUG("XTC: encountered corrupted frame header");
                 break;
             }
-            const int64_t next = offset + XTC_HEADER_SIZE + 4 + (int64_t)md_xdr_padded_size((size_t)md_xdr_load_u32(raw + XTC_HEADER_SIZE));
+            const size_t count_size = xtc_count_size(raw);
+            if (count_size == 8 && md_file_read_at(xdr, offset + XTC_HEADER_SIZE + 4, raw + XTC_HEADER_SIZE + 4, 4) != 4) {
+                MD_LOG_INFO("XTC: The last frame is cut short and is left out");
+                break;
+            }
+            const uint64_t bytes = xtc_count(raw + XTC_HEADER_SIZE, count_size);
+            const int64_t next = bytes > filesize ? (int64_t)filesize + 1 :
+                offset + XTC_HEADER_SIZE + (int64_t)count_size + (int64_t)md_xdr_padded_size((size_t)bytes);
             if (next > (int64_t)filesize) {
                 // A run killed mid write leaves its last frame incomplete; it is not a frame.
                 MD_LOG_INFO("XTC: The last frame is cut short and is left out");
@@ -614,116 +652,20 @@ static size_t xtc_scan(md_file_t xdr, md_array(int64_t)* frame_offsets, md_array
 
 // xyz packed, the layout the file holds them in, scaled on the way out: scale 10 turns the file's
 // nm into Angstrom with no second pass over the coordinates.
-static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms, float scale) {
-    if (frame_ptr == NULL || frame_bytes == 0) {
-        return false;
-    }
-
-    if (frame_bytes < XTC_SMALL_HEADER_SIZE) {
-        MD_LOG_ERROR("XTC: Frame size is too small to contain header");
-        return false;
-	}
-
-    if (out_header) {
-        if (!decode_header(frame_ptr, out_header)) {
-            return false;
-        }
-        float* box = &out_header->box[0][0];
-        for (int i = 0; i < 9; ++i) {
-            box[i] *= scale;
-        }
-	}
-
-    if (!out_coords) {
-        return true;
-    }
-
-    int natoms;
-	natoms = md_xdr_load_i32(frame_ptr + XTC_SMALL_HEADER_SIZE - 4);
-
-    if (natoms != (int)num_atoms) {
-        MD_LOG_ERROR("XTC: Number of atoms in frame header does not match expected number of atoms");
-        return false;
-    }
-
-    size_t offset = XTC_SMALL_HEADER_SIZE;
-    if (natoms <= 9) {
-        if (frame_bytes < offset + (size_t)natoms * XTC_SMALL_COORDS_SIZE) {
-            MD_LOG_ERROR("XTC: Frame size is too small to contain its coordinates");
-            return false;
-        }
-		// No compression for 9 atoms or less, just read the coordinates directly
-		md_xdr_load_f32_array(out_coords, frame_ptr + offset, (size_t)natoms * 3);
-        for (size_t i = 0; i < (size_t)natoms * 3; ++i) {
-            out_coords[i] *= scale;
-        }
-        return true;
-    }
-
-    if (frame_bytes < XTC_HEADER_SIZE + 4) {
-        MD_LOG_ERROR("XTC: Frame size is too small to contain header");
-        return false;
-    }
-
-    float precision;
-    int32_t minint[3], maxint[3], smallidx;
-    uint32_t num_bytes;
-	precision = md_xdr_load_f32(frame_ptr + offset); offset += 4;
-	md_xdr_load_i32_array(minint, frame_ptr + offset, 3); offset += 12;
-	md_xdr_load_i32_array(maxint, frame_ptr + offset, 3); offset += 12;
-	smallidx  = md_xdr_load_i32(frame_ptr + offset); offset += 4;
-    num_bytes = md_xdr_load_u32(frame_ptr + offset); offset += 4;
-
-    // A corrupt header fails here rather than indexing past the tables, handing libdivide a zero
-    // divisor (which aborts) or sending the decoder past the end of the frame.
-    if (smallidx < FIRSTIDX || smallidx >= (int)LASTIDX) {
-        MD_LOG_ERROR("XTC: Invalid small index in frame header");
-        return false;
-    }
-    if (num_bytes > frame_bytes - offset) {
-        MD_LOG_ERROR("XTC: Frame holds fewer bytes than its header states");
-        return false;
-    }
-
-    uint32_t sizeint[3];
-    for (int i = 0; i < 3; ++i) {
-        const int64_t range = (int64_t)maxint[i] - (int64_t)minint[i] + 1;
-        if (range < 1 || range > (int64_t)UINT32_MAX) {
-            MD_LOG_ERROR("XTC: Invalid coordinate range in frame header");
-            return false;
-        }
-        sizeint[i] = (uint32_t)range;
-    }
-
-    uint32_t bitsize = 0;
-    bit_data_t bitsizeint[3] = {0};
-    unpack_data_t big_unpack = {0};
-    xtc_big_div_t big_div = {0};
-    bool big_fast = false;
-
-    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
-        init_unpack_bit_data(&bitsizeint[0], sizeofint(sizeint[0]));
-        init_unpack_bit_data(&bitsizeint[1], sizeofint(sizeint[1]));
-        init_unpack_bit_data(&bitsizeint[2], sizeofint(sizeint[2]));
-    } else {
-        bitsize = sizeofints(3, sizeint);
-        big_unpack.size_y = sizeint[1];
-        big_unpack.size_z = sizeint[2];
-        big_unpack.div_zy = DIV_INIT((uint64_t)sizeint[1] * sizeint[2]);
-        big_unpack.div_z  = DIV_INIT(sizeint[2]);
-        init_unpack_bit_data(&big_unpack.bit, bitsize);
-        big_fast = bitsize <= 57 &&
-            xtc_big_magic(&big_div.m_zy, &big_div.sh_zy, (uint64_t)sizeint[1] * sizeint[2]) &&
-            xtc_big_magic(&big_div.m_z,  &big_div.sh_z,  sizeint[2]);
-    }
-
-    int idx = MAX(smallidx - 1, FIRSTIDX);
+// The coordinates of a compressed frame, from its stream of bits. Force inlined into its two callers below, with
+// 'rare' a constant in each: the loop that decodes the frames of every ordinary trajectory is then compiled with no
+// trace of the two kinds of frame none of them has - ranges beyond 24 bits (bitsize 0: three plain fields per atom)
+// and a range of one value along y or z (plain divisions, see extract_and_unpack_plain) - which have a loop of their own.
+static MD_FORCE_INLINE bool xtc_decode_coords(const uint8_t* stream, uint64_t num_bytes, int natoms, int smallidx, const int32_t minint[3],
+                                           float scale, float precision, uint32_t bitsize, const bit_data_t bitsizeint[3],
+                                           const unpack_data_t* big_unpack, const xtc_big_div_t* big_div, bool big_fast,
+                                           float* out_coords, const bool rare) {
+    int idx = MD_MAX(smallidx - 1, FIRSTIDX);
     int smaller = magicints[idx] / 2;
     int smallnum = magicints[smallidx] / 2;
     // A copy, not a pointer, see extract_small. Only meaningful while smallidx <= XTC_SMALL_FAST_MAX.
-    xtc_small_t sml = small_params[MIN(smallidx, XTC_SMALL_FAST_MAX) - FIRSTIDX];
+    xtc_small_t sml = small_params[MD_MIN(smallidx, XTC_SMALL_FAST_MAX) - FIRSTIDX];
 
-    const uint8_t* stream = frame_ptr + offset;
     const size_t max_bits = (size_t)num_bytes * 8;
     size_t bit_offset = 0;
 
@@ -749,11 +691,16 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
         }
         while (atom_idx < limit) {
             v4i_t thiscoord;
-            if (bitsize == 0) {
-                thiscoord = extract_ints3(stream, bit_offset, bitsizeint);
-                bit_offset += (size_t)bitsizeint[0].num_of_bits + bitsizeint[1].num_of_bits + bitsizeint[2].num_of_bits;
+            if (rare) {
+                if (bitsize == 0) {
+                    thiscoord = extract_ints3(stream, bit_offset, bitsizeint);
+                    bit_offset += (size_t)bitsizeint[0].num_of_bits + bitsizeint[1].num_of_bits + bitsizeint[2].num_of_bits;
+                } else {
+                    thiscoord = extract_and_unpack_plain(stream, bit_offset, bitsize, big_unpack);
+                    bit_offset += bitsize;
+                }
             } else {
-                thiscoord = big_fast ? extract_big(stream, bit_offset, &big_unpack, &big_div) : extract_and_unpack(stream, bit_offset, bitsize, &big_unpack);
+                thiscoord = big_fast ? extract_big(stream, bit_offset, big_unpack, big_div) : extract_and_unpack(stream, bit_offset, bitsize, big_unpack);
                 bit_offset += bitsize;
             }
 
@@ -830,7 +777,7 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
                     MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
                     goto done;
                 }
-                sml = small_params[MIN(smallidx, XTC_SMALL_FAST_MAX) - FIRSTIDX];
+                sml = small_params[MD_MIN(smallidx, XTC_SMALL_FAST_MAX) - FIRSTIDX];
             }
 
             if (bit_offset > max_bits) {
@@ -842,9 +789,136 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
 
 done:
     if (atom_idx > tail_beg) {
-        MEMCPY(out_coords + (size_t)tail_beg * 3, tail, (size_t)(atom_idx - tail_beg) * 3 * sizeof(float));
+        md_memcpy(out_coords + (size_t)tail_beg * 3, tail, (size_t)(atom_idx - tail_beg) * 3 * sizeof(float));
     }
     return atom_idx == natoms;
+}
+
+static XTC_NOINLINE bool xtc_decode_coords_rare(const uint8_t* stream, uint64_t num_bytes, int natoms, int smallidx, const int32_t minint[3],
+                                            float scale, float precision, uint32_t bitsize, const bit_data_t bitsizeint[3],
+                                            const unpack_data_t* big_unpack, const xtc_big_div_t* big_div, float* out_coords) {
+    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, bitsize, bitsizeint, big_unpack, big_div, false, out_coords, true);
+}
+
+static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms, float scale) {
+    if (frame_ptr == NULL || frame_bytes == 0) {
+        return false;
+    }
+
+    if (frame_bytes < XTC_SMALL_HEADER_SIZE) {
+        MD_LOG_ERROR("XTC: Frame size is too small to contain header");
+        return false;
+	}
+
+    if (out_header) {
+        if (!decode_header(frame_ptr, out_header)) {
+            return false;
+        }
+        float* box = &out_header->box[0][0];
+        for (int i = 0; i < 9; ++i) {
+            box[i] *= scale;
+        }
+	}
+
+    if (!out_coords) {
+        return true;
+    }
+
+    int natoms;
+	natoms = md_xdr_load_i32(frame_ptr + XTC_SMALL_HEADER_SIZE - 4);
+
+    if (natoms != (int)num_atoms) {
+        MD_LOG_ERROR("XTC: Number of atoms in frame header does not match expected number of atoms");
+        return false;
+    }
+
+    size_t offset = XTC_SMALL_HEADER_SIZE;
+    if (natoms <= 9) {
+        if (frame_bytes < offset + (size_t)natoms * XTC_SMALL_COORDS_SIZE) {
+            MD_LOG_ERROR("XTC: Frame size is too small to contain its coordinates");
+            return false;
+        }
+		// No compression for 9 atoms or less, just read the coordinates directly
+		md_xdr_load_f32_array(out_coords, frame_ptr + offset, (size_t)natoms * 3);
+        for (size_t i = 0; i < (size_t)natoms * 3; ++i) {
+            out_coords[i] *= scale;
+        }
+        return true;
+    }
+
+    const size_t count_size = xtc_count_size(frame_ptr);
+    if (frame_bytes < XTC_HEADER_SIZE + count_size) {
+        MD_LOG_ERROR("XTC: Frame size is too small to contain header");
+        return false;
+    }
+
+    float precision;
+    int32_t minint[3], maxint[3], smallidx;
+    uint64_t num_bytes;
+	precision = md_xdr_load_f32(frame_ptr + offset); offset += 4;
+	md_xdr_load_i32_array(minint, frame_ptr + offset, 3); offset += 12;
+	md_xdr_load_i32_array(maxint, frame_ptr + offset, 3); offset += 12;
+	smallidx  = md_xdr_load_i32(frame_ptr + offset); offset += 4;
+    num_bytes = xtc_count(frame_ptr + offset, count_size); offset += count_size;
+
+    // A corrupt header fails here rather than indexing past the tables, handing libdivide a zero
+    // divisor (which aborts) or sending the decoder past the end of the frame.
+    if (smallidx < FIRSTIDX || smallidx >= (int)LASTIDX) {
+        MD_LOG_ERROR("XTC: Invalid small index in frame header");
+        return false;
+    }
+    if (!(precision > 0.0f) || !isfinite(precision)) {
+        MD_LOG_ERROR("XTC: Invalid precision in frame header");
+        return false;
+    }
+    if (num_bytes > frame_bytes - offset) {
+        MD_LOG_ERROR("XTC: Frame holds fewer bytes than its header states");
+        return false;
+    }
+
+    uint32_t sizeint[3];
+    for (int i = 0; i < 3; ++i) {
+        const int64_t range = (int64_t)maxint[i] - (int64_t)minint[i] + 1;
+        if (range < 1 || range > (int64_t)UINT32_MAX) {
+            MD_LOG_ERROR("XTC: Invalid coordinate range in frame header");
+            return false;
+        }
+        sizeint[i] = (uint32_t)range;
+    }
+
+    uint32_t bitsize = 0;
+    bit_data_t bitsizeint[3] = {0};
+    unpack_data_t big_unpack = {0};
+    xtc_big_div_t big_div = {0};
+    bool big_fast = false;
+    bool big_plain = false;
+
+    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
+        init_unpack_bit_data(&bitsizeint[0], sizeofint(sizeint[0]));
+        init_unpack_bit_data(&bitsizeint[1], sizeofint(sizeint[1]));
+        init_unpack_bit_data(&bitsizeint[2], sizeofint(sizeint[2]));
+    } else {
+        bitsize = sizeofints(3, sizeint);
+        big_unpack.size_y = sizeint[1];
+        big_unpack.size_z = sizeint[2];
+        // A range of one value along y and z (atoms in a plane: a 2D material, a slab, a single atom
+        // repeated) divides by 1, which libdivide's branchfree dividers refuse (they abort)
+        big_plain = sizeint[2] < 2 || sizeint[1] < 2;
+        if (!big_plain) {
+            big_unpack.div_zy = DIV_INIT((uint64_t)sizeint[1] * sizeint[2]);
+            big_unpack.div_z  = DIV_INIT(sizeint[2]);
+        }
+        init_unpack_bit_data(&big_unpack.bit, bitsize);
+        big_fast = !big_plain && bitsize <= 57 &&
+            xtc_big_magic(&big_div.m_zy, &big_div.sh_zy, (uint64_t)sizeint[1] * sizeint[2]) &&
+            xtc_big_magic(&big_div.m_z,  &big_div.sh_z,  sizeint[2]);
+    }
+
+    const uint8_t* stream = frame_ptr + offset;
+    if (XTC_UNLIKELY(bitsize == 0 || big_plain)) {
+        return xtc_decode_coords_rare(stream, num_bytes, natoms, smallidx, minint, scale, precision, bitsize, bitsizeint, &big_unpack, &big_div, out_coords);
+    }
+    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, bitsize, bitsizeint, &big_unpack, &big_div, big_fast, out_coords, false);
 }
 
 bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms) {
@@ -869,7 +943,7 @@ static bool cache_read_block(md_file_t file, void** dst, size_t bytes, md_alloca
 
 // On failure nothing is freed here: alloc is always an arena owned by the caller, which goes as a
 // whole, so there is no partial state to unwind.
-static bool try_read_cache(xtc_cache_t* cache, str_t path, md_allocator_i* alloc) {
+static bool try_read_cache(xtc_cache_t* cache, md_str_t path, md_allocator_i* alloc) {
     md_file_t file = {0};
     if (!md_run_cache_open(&file, &cache->header, path, MD_XTC_CACHE_MAGIC, MD_XTC_CACHE_VERSION)) {
         return false;
@@ -882,13 +956,13 @@ static bool try_read_cache(xtc_cache_t* cache, str_t path, md_allocator_i* alloc
         cache_read_block(file, (void**)&cache->frame_boxes,   n * 9 * sizeof(float),     alloc) &&
         md_file_tell(file) == (int64_t)md_file_size(file);
     if (!ok) {
-        MD_LOG_ERROR("XTC: the cache of '" STR_FMT "' is incomplete", STR_ARG(path));
+        MD_LOG_ERROR("XTC: the cache of '" MD_STR_FMT "' is incomplete", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
 }
 
-static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info_t* scanned) {
+static bool write_cache(const xtc_cache_t* cache, md_str_t path, const md_file_info_t* scanned) {
     md_file_t file = {0};
     const size_t n = cache->header.num_frames;
     if (!md_run_cache_create(&file, path, scanned, MD_XTC_CACHE_MAGIC, MD_XTC_CACHE_VERSION, cache->header.num_atoms, n)) {
@@ -900,7 +974,7 @@ static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info
         md_file_write(file, cache->frame_steps,   n * sizeof(int64_t))       == n * sizeof(int64_t) &&
         md_file_write(file, cache->frame_boxes,   n * 9 * sizeof(float))     == n * 9 * sizeof(float);
     if (!ok) {
-        MD_LOG_ERROR("XTC: failed to write the cache of '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("XTC: failed to write the cache of '" MD_STR_FMT "'", MD_STR_ARG(path));
     }
     md_file_close(&file);
     return ok;
@@ -908,12 +982,12 @@ static bool write_cache(const xtc_cache_t* cache, str_t path, const md_file_info
 
 // What the file is, from its cache when that is current and from a scan otherwise (writing the
 // cache unless told not to). path must be canonical; every array is allocated from alloc.
-static bool xtc_index_load(xtc_cache_t* cache, str_t path, uint32_t flags, md_allocator_i* alloc) {
-    MEMSET(cache, 0, sizeof(*cache));
+static bool xtc_index_load(xtc_cache_t* cache, md_str_t path, uint32_t flags, md_allocator_i* alloc) {
+    md_memset(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("XTC: Failed to open file '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("XTC: Failed to open file '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
 
@@ -937,7 +1011,7 @@ static bool xtc_index_load(xtc_cache_t* cache, str_t path, uint32_t flags, md_al
         goto done;
     }
 
-    MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
     cache->header.num_atoms = xtc_header.natoms;
 
     md_array(int64_t) offsets = 0;
@@ -957,7 +1031,7 @@ static bool xtc_index_load(xtc_cache_t* cache, str_t path, uint32_t flags, md_al
     if (!(flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         // If we fail to write the cache, that's ok, we can inform about it, but do not halt
         if (write_cache(cache, path, &scanned)) {
-            MD_LOG_INFO("XTC: Successfully created cache file for '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_INFO("XTC: Successfully created cache file for '" MD_STR_FMT "'", MD_STR_ARG(path));
         }
     }
     result = true;
@@ -973,7 +1047,7 @@ done:
 // minus "/atom/position", and the file, offset and size of the frame are its source attributes.
 static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     const md_system_t* sys = (const md_system_t*)user_data;
-    ASSERT(sys);
+    MD_ASSERT(sys);
     const md_attributes_t* attributes = &sys->attributes;
 
     // A whole temporal virtual attribute is refused before it gets here, so the frame is fixed.
@@ -982,7 +1056,7 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     }
 
     md_run_source_t src;
-    if (!md_run_source(&src, attributes, attr, STR_LIT("atom/position"))) {
+    if (!md_run_source(&src, attributes, attr, MD_STR_LIT("atom/position"))) {
         return 0;
     }
     const int64_t* offsets = src.offset;
@@ -996,16 +1070,16 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     size_t written = 0;
 
     // The decoder reads the bit stream a word at a time and may look past the end of the frame.
-    uint8_t* frame_data = md_temp_alloc(temp, ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES);
+    uint8_t* frame_data = md_temp_alloc(temp, MD_ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES);
     if (frame_data) {
-        MEMSET(frame_data + frame_size, 0, ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES - frame_size);
+        md_memset(frame_data + frame_size, 0, MD_ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES - frame_size);
     }
     // Through io: inside an extraction context the file stays open from frame to frame, which is
     // what makes streaming from a cluster's file server bearable. Without one it is opened here.
-    const str_t file_path = src.path;
+    const md_str_t file_path = src.path;
     const size_t read = frame_data ? md_attribute_io_read_at(io, file_path, offsets[frame], frame_data, frame_size) : 0;
     if (frame_data && read != frame_size) {
-        MD_LOG_ERROR("XTC: Failed to read frame %u from '" STR_FMT "', expected %zu bytes, got %zu", frame, STR_ARG(file_path), frame_size, read);
+        MD_LOG_ERROR("XTC: Failed to read frame %u from '" MD_STR_FMT "', expected %zu bytes, got %zu", frame, MD_STR_ARG(file_path), frame_size, read);
     }
     if (frame_data && read == frame_size) {
         if (slice->num_idx == 1 && cap == num_atoms * 3) {
@@ -1017,7 +1091,7 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
             // One atom: the stream is not seekable, so the frame is decoded and one value kept.
             float* xyz = md_temp_alloc(temp, num_atoms * 3 * sizeof(float));
             if (xyz && xtc_decode_frame_data_scaled(frame_data, frame_size, NULL, xyz, num_atoms, 10.0f)) {
-                MEMCPY(dst, xyz + (size_t)slice->idx[1] * 3, 3 * sizeof(float));
+                md_memcpy(dst, xyz + (size_t)slice->idx[1] * 3, 3 * sizeof(float));
                 written = cap;
             }
         }
@@ -1027,17 +1101,17 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     return written;
 }
 
-bool md_xtc_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
-    ASSERT(sys);
-    if (str_empty(run)) {
+bool md_xtc_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags) {
+    MD_ASSERT(sys);
+    if (md_str_empty(run)) {
         MD_LOG_ERROR("XTC: no run to publish into");
         return false;
     }
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);
-    const str_t path = {path_buf, path_len};
+    const md_str_t path = {path_buf, path_len};
 
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool result = false;
 
     xtc_cache_t index;
@@ -1077,13 +1151,13 @@ done:
     return result;
 }
 
-size_t md_xtc_file_atom_count(str_t filename) {
+size_t md_xtc_file_atom_count(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
     uint8_t head[8];
     const bool ok = md_file_read(file, head, sizeof(head)) == sizeof(head);
     md_file_close(&file);
-    if (!ok || md_xdr_load_i32(head) != XTC_MAGIC) return 0;
+    if (!ok || !xtc_magic_ok(md_xdr_load_i32(head))) return 0;
     const int32_t natoms = md_xdr_load_i32(head + 4);
     return natoms > 0 ? (size_t)natoms : 0;
 }

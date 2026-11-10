@@ -19,11 +19,11 @@ void spatial_acc_pair_count_callback(const uint32_t* i_idx, const uint32_t* j_id
 // This makes little sense logically
 // There are specialized routines for internal pair checks within a radius which should be favored over this.
 UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t sys_state = { .alloc = arena };
-    if (!md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"))) {
+    if (!md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), NULL)) {
         fprintf(stderr, "Failed to load system for spatial acc benchmark\n");
         md_vm_arena_destroy(arena);
         return;

@@ -76,7 +76,7 @@ md_hdf5_direct_t* md_hdf5_direct_describe(hid_t file, hid_t dset, struct md_allo
 // Elements [first, first + count) of frame 'frame' - index 'frame' along the first axis, the axes after it flattened in
 // row major order - as floats, each multiplied by scale. Without the lock unless the storage is read through HDF5, from
 // the file at path and its dataset 'dataset'. io may be NULL; without it nothing is kept between calls.
-bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale, struct md_attribute_io_t* io);
+bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, md_str_t path, const char* dataset, size_t frame, size_t first, size_t count, double scale, struct md_attribute_io_t* io);
 
 // Where the stored bytes of each frame are, for a run's frame table (md_run_desc_t): the frame's own bytes when they are
 // stored as they are (contiguous, or in a chunk of whole frames without a filter), the chunk holding the frame when it

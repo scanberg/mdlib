@@ -132,10 +132,12 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 // ring CP (3,+1), MINIMUM = cage CP (3,+3)). Edges run from a saddle to the extremum its separatrix ends in
 // (bond paths for BCPs, RCP attractor paths for RCPs), as in the volume pipeline.
 // out_graph->alloc must be set (as for md_topo_simplify).
-// Multithreaded and deterministic: the output is bit-identical for any thread count. Blocking; run it
-// from a worker thread for interactive use and cancel through 'cancel' (returns false, info.cancelled).
+// Parallel through the caller's executor, and deterministic: the output is bit-identical for any executor and
+// thread count. Blocking; run it from a worker thread for interactive use and cancel through 'cancel', or through
+// the executor (returns false, info.cancelled).
 
 struct md_gto_basis_t;
+struct md_executor_t;
 
 typedef struct md_topo_gto_desc_t {
     const struct md_gto_basis_t* basis;  // Cartesian basis, md_gto conventions
@@ -146,7 +148,7 @@ typedef struct md_topo_gto_desc_t {
     double        h_min;                 // smallest cube half-width before a cube is reported unresolved (0 -> 1e-4 Bohr)
     double        h_root;                // root cube half-width (0 -> 1 Bohr)
     bool          trace_separatrices;    // trace separatrices to produce the graph edges
-    uint32_t      num_threads;           // worker threads including the caller (0 -> all logical cores)
+    const struct md_executor_t* executor; // what its loops run on (md_executor.h); NULL: on the calling thread
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
     volatile float*   progress;          // optional: how far the search is, 0 to 1, for a progress display. An
                                          // estimate (the sweep's work is known only as it unfolds) that never

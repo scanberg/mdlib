@@ -62,7 +62,7 @@ static void put(sw_t* w, const char* s) {
         if (w->len + 1 < w->cap) w->buf[w->len] = *s;
         w->len += 1;
     }
-    if (w->cap) w->buf[MIN(w->len, w->cap - 1)] = '\0';
+    if (w->cap) w->buf[MD_MIN(w->len, w->cap - 1)] = '\0';
 }
 
 // ### RANKS ###
@@ -152,7 +152,7 @@ static void rank_atoms(sw_t* w) {
     }
     // Each key's list holds as many as any atom has: the keys are sorted, and so change atoms, every round
     uint32_t max_nbr = 1;
-    for (uint32_t i = 0; i < w->n; ++i) max_nbr = MAX(max_nbr, w->atoms[i].num_nbr);
+    for (uint32_t i = 0; i < w->n; ++i) max_nbr = MD_MAX(max_nbr, w->atoms[i].num_nbr);
     sw_key_t* keys = md_alloc(w->alloc, w->n * sizeof(sw_key_t));
     for (uint32_t i = 0; i < w->n; ++i) keys[i].nbr = md_alloc(w->alloc, max_nbr * sizeof(uint64_t));
     uint32_t classes = refine(w, keys);
@@ -186,8 +186,8 @@ static void put_atom(sw_t* w, const sw_atom_t* a) {
     char sym[8];
     if (a->z == 0) snprintf(sym, sizeof(sym), "*");
     else {
-        const str_t s = md_util_element_symbol((md_element_t)a->z);
-        snprintf(sym, sizeof(sym), "%.*s", (int)MIN(s.len, 3), s.ptr);
+        const md_str_t s = md_util_element_symbol((md_element_t)a->z);
+        snprintf(sym, sizeof(sym), "%.*s", (int)MD_MIN(s.len, 3), s.ptr);
         if (a->aromatic && sym[0]) {
             sym[0] = (char)(sym[0] - 'A' + 'a');
         }
@@ -250,7 +250,7 @@ static void find_rings(sw_t* w, uint32_t a, uint32_t from, sw_ring_t** rings) {
     w->visited[a] = true;
     w->parent[a] = from;
     uint32_t nb[64];
-    const uint32_t nn = MIN(w->atoms[a].num_nbr, 64u);
+    const uint32_t nn = MD_MIN(w->atoms[a].num_nbr, 64u);
     sorted_nbrs(w, a, nb);
     for (uint32_t j = 0; j < nn; ++j) {
         const uint32_t o = nb[j];
@@ -308,7 +308,7 @@ static void write_from(sw_t* w, uint32_t a, uint32_t from, const sw_ring_t* ring
     // The children of the tree: all but the last as branches
     uint32_t nb[64], kids[64];
     uint32_t nk = 0;
-    const uint32_t nn = MIN(w->atoms[a].num_nbr, 64u);
+    const uint32_t nn = MD_MIN(w->atoms[a].num_nbr, 64u);
     sorted_nbrs(w, a, nb);
     for (uint32_t j = 0; j < nn; ++j) {
         const uint32_t o = nb[j];
@@ -327,7 +327,7 @@ static void write_from(sw_t* w, uint32_t a, uint32_t from, const sw_ring_t* ring
 size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int32_t* atoms, size_t count, const uint32_t* classes) {
     if (buf && cap) buf[0] = '\0';
     if (!sys || !atoms || count == 0 || count > MD_SMILES_WRITE_MAX) return 0;
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     sw_t w = {.buf = buf, .cap = buf ? cap : 0, .alloc = alloc};
     w.n = (uint32_t)count;
     w.atoms = md_alloc(alloc, count * sizeof(sw_atom_t));
@@ -386,7 +386,7 @@ size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int3
             bonded_h += 1;
             for (uint32_t k = 0; k < w.n; ++k) if (atoms[k] == o) { written_h += 1; break; }
         }
-        const uint32_t total_h = sys->atom.hydrogen_count ? MAX((uint32_t)sys->atom.hydrogen_count[a->idx], bonded_h) : bonded_h;
+        const uint32_t total_h = sys->atom.hydrogen_count ? MD_MAX((uint32_t)sys->atom.hydrogen_count[a->idx], bonded_h) : bonded_h;
         a->h = total_h > written_h ? total_h - written_h : 0;
     }
     w.nbr = nbr;

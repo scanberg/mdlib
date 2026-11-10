@@ -96,11 +96,11 @@ typedef struct vial_volume_t {
 // structure at frame `first` (the run's frame 0, which the caller reads; also the cell a density over the cell takes
 // its grid from). With add, the sum frames are added to, zeroed, from the heap; without, only what places the volume, as
 // drawing needs. False with an R diagnostic through k.
-bool vial_volume_begin(vial_kctx_t* k, vial_volume_t* vol, const char* name, const vial_val_t* const* args, const str_t* names,
+bool vial_volume_begin(vial_kctx_t* k, vial_volume_t* vol, const char* name, const vial_val_t* const* args, const md_str_t* names,
                        uint32_t n, const vial_frame_t* first, bool add, md_allocator_i* alloc);
 
 // Adds the frame k->in->frame holds, from the op's arguments at that frame. Any thread, any order.
-bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const* args, const str_t* names, uint32_t n);
+bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const* args, const md_str_t* names, uint32_t n);
 
 // The volume over what was added: float[nx][ny][nz], smoothed by sigma, made in place of the sum, which out points at:
 // it lives as long as vol. Once.
@@ -143,4 +143,4 @@ bool vial_mcs(vial_mcs_t* out, const struct md_system_t* sys, const vial_sets_t*
 
 // The built-in, from its arguments: every positional one a set or an array of sets, match= and least= by name.
 // xyz as for vial_mcs, NULL for none.
-bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const str_t* names, uint32_t n, const float* xyz, vial_val_t* out);
+bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const md_str_t* names, uint32_t n, const float* xyz, vial_val_t* out);

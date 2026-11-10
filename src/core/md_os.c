@@ -47,7 +47,7 @@ typedef struct _SEMAPHORE_BASIC_INFORMATION {
     ULONG MaximumCount;
 } SEMAPHORE_BASIC_INFORMATION;
 
-STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
+MD_STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
 
 #elif MD_PLATFORM_UNIX
 
@@ -67,7 +67,7 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 
 #if MD_PLATFORM_LINUX
 #include <semaphore.h>
-STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit into md_semaphore_t!");
+MD_STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit into md_semaphore_t!");
 #endif
 
 #if MD_PLATFORM_OSX
@@ -80,12 +80,13 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 #include <mach-o/dyld.h>
 #include <xlocale.h>
 
-STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
+MD_STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 #endif
 
 #include <string.h>
+#include <stdlib.h>   // getenv, setenv, unsetenv, _putenv_s
 
-#define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MIN(sizeof(buf)-1, str.len))
+#define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MD_MIN(sizeof(buf)-1, str.len))
 
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
@@ -109,13 +110,13 @@ static void print_windows_error(void) {
 #endif
 
 #if MD_PLATFORM_WINDOWS
-// The Win32 path API comes in an ANSI and a wide flavour. mdlib treats str_t as UTF-8
+// The Win32 path API comes in an ANSI and a wide flavour. mdlib treats md_str_t as UTF-8
 // everywhere, and the ANSI flavour would reinterpret every non-ASCII byte in the process
 // code page (and cap paths at MAX_PATH), so the path layer speaks UTF-16 exclusively,
 // just like the file layer further down.
-static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
-    ASSERT(dst);
-    ASSERT(cap > 0);
+static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, md_str_t src) {
+    MD_ASSERT(dst);
+    MD_ASSERT(cap > 0);
 
     if (!src.ptr || src.len == 0) {
         return false;
@@ -131,8 +132,8 @@ static bool utf8_to_utf16_path(wchar_t* dst, size_t cap, str_t src) {
 }
 
 static size_t utf16_to_utf8_path(char* dst, size_t cap, const wchar_t* src, int src_len) {
-    ASSERT(dst);
-    ASSERT(cap > 0);
+    MD_ASSERT(dst);
+    MD_ASSERT(cap > 0);
 
     if (!src || src_len <= 0) {
         return 0;
@@ -155,7 +156,7 @@ static size_t utf16_to_utf8_path(char* dst, size_t cap, const wchar_t* src, int 
 
 // Length of the leading part of an absolute path which cannot be expressed relative to
 // anything else: '/' on unix, 'X:/' or '//server/share/' on windows.
-static size_t path_root_len(str_t path) {
+static size_t path_root_len(md_str_t path) {
 #if MD_PLATFORM_WINDOWS
     if (path.len >= 2 && path.ptr[0] == '/' && path.ptr[1] == '/') {
         // UNC path: //server/share/
@@ -191,8 +192,8 @@ static bool path_char_equal(char a, char b) {
 // Length of the longest common prefix of a and b which ends on a folder boundary.
 // Whole components are compared: '/data/foo/' and '/data/foobar/' share '/data/', not
 // '/data/foo'.
-static size_t common_folder_len(str_t a, str_t b) {
-    const size_t len = MIN(a.len, b.len);
+static size_t common_folder_len(md_str_t a, md_str_t b) {
+    const size_t len = MD_MIN(a.len, b.len);
     size_t common = 0;
     for (size_t i = 0; i < len; ++i) {
         if (!path_char_equal(a.ptr[i], b.ptr[i])) {
@@ -209,11 +210,11 @@ static size_t common_folder_len(str_t a, str_t b) {
 // Resolves '.' and '..' components and collapses repeated separators, purely lexically.
 // A trailing separator is preserved. Returns the new length.
 static size_t normalize_path(char* buf, size_t cap, size_t len) {
-    ASSERT(buf);
-    ASSERT(len < cap);
+    MD_ASSERT(buf);
+    MD_ASSERT(len < cap);
     (void)cap;
 
-    const size_t root = path_root_len((str_t){buf, len});
+    const size_t root = path_root_len((md_str_t){buf, len});
     const bool trailing_sep = (len > 0 && buf[len - 1] == '/');
 
     size_t w = root;
@@ -237,7 +238,7 @@ static size_t normalize_path(char* buf, size_t cap, size_t len) {
             }
         } else {
             // The write cursor never overtakes the read cursor, so this stays in bounds
-            MEMMOVE(buf + w, buf + r, comp_len);
+            md_memmove(buf + w, buf + r, comp_len);
             w += comp_len;
             buf[w++] = '/';
         }
@@ -263,7 +264,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
     if (len + 1 > sizeof(tmp)) {
         return len;
     }
-    MEMCPY(tmp, buf, len);
+    md_memcpy(tmp, buf, len);
     tmp[len] = '\0';
 
     size_t split = len;
@@ -280,7 +281,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
                 free(res);
                 return len;
             }
-            MEMCPY(buf, res, res_len);
+            md_memcpy(buf, res, res_len);
             free(res);
 
             size_t w = res_len;
@@ -288,7 +289,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
                 if (w > 0 && buf[w - 1] != '/') {
                     buf[w++] = '/';
                 }
-                MEMCPY(buf + w, tmp + split, tail_len);
+                md_memcpy(buf + w, tmp + split, tail_len);
                 w += tail_len;
             }
             buf[w] = '\0';
@@ -311,14 +312,14 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
 
 // Resolves path into its canonical form (see above). Returns the number of characters
 // written, or 0 on failure. The path does not need to exist.
-static size_t fullpath(char* buf, size_t cap, str_t path) {
-    ASSERT(buf);
+static size_t fullpath(char* buf, size_t cap, md_str_t path) {
+    MD_ASSERT(buf);
     if (cap == 0) {
         return 0;
     }
     buf[0] = '\0';
 
-    if (str_empty(path)) {
+    if (md_str_empty(path)) {
         return 0;
     }
 
@@ -328,31 +329,31 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
     wchar_t w_path[MD_MAX_PATH];
     wchar_t w_full[MD_MAX_PATH];
 
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
-        MD_LOG_ERROR("Failed to convert path to UTF-16: '" STR_FMT "'", STR_ARG(path));
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
+        MD_LOG_ERROR("Failed to convert path to UTF-16: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
 
-    const DWORD w_len = GetFullPathNameW(w_path, (DWORD)ARRAY_SIZE(w_full), w_full, NULL);
+    const DWORD w_len = GetFullPathNameW(w_path, (DWORD)MD_COUNTOF(w_full), w_full, NULL);
     if (w_len == 0) {
         print_windows_error();
         return 0;
     }
-    if (w_len >= (DWORD)ARRAY_SIZE(w_full)) {
-        MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+    if (w_len >= (DWORD)MD_COUNTOF(w_full)) {
+        MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
 
     len = utf16_to_utf8_path(buf, cap, w_full, (int)w_len);
     if (len == 0) {
-        MD_LOG_ERROR("Failed to convert path to UTF-8: '" STR_FMT "'", STR_ARG(path));
+        MD_LOG_ERROR("Failed to convert path to UTF-8: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
 
 #elif MD_PLATFORM_UNIX
     char zbuf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(zbuf, sizeof(zbuf), path) == 0) {
+    if (md_str_copy_to_char_buf(zbuf, sizeof(zbuf), path) == 0) {
         return 0;
     }
 
@@ -360,11 +361,11 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
     if (res) {
         len = strlen(res);
         if (len + 1 > cap) {
-            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
             free(res);
             return 0;
         }
-        MEMCPY(buf, res, len);
+        md_memcpy(buf, res, len);
         buf[len] = '\0';
         free(res);
     } else if (errno == ENOENT || errno == ENOTDIR) {
@@ -383,7 +384,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
             written = md_snprintf(buf, cap, "%s", zbuf);
         }
         if (written < 0 || (size_t)written >= cap) {
-            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
             buf[0] = '\0';
             return 0;
         }
@@ -402,15 +403,15 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
         return 0;
     }
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 
     // Directories are given an explicit trailing separator so that they can be told apart
     // from files further down without hitting the filesystem again.
-    if (len > 0 && buf[len - 1] != '/' && md_path_is_directory((str_t){buf, len})) {
+    if (len > 0 && buf[len - 1] != '/' && md_path_is_directory((md_str_t){buf, len})) {
         if (len + 2 > cap) {
-            MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
+            MD_LOG_ERROR("Failed to resolve path, it is too long: '" MD_STR_FMT "'", MD_STR_ARG(path));
             buf[0] = '\0';
             return 0;
         }
@@ -422,7 +423,7 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
 }
 
 size_t md_path_write_cwd(char* buf, size_t cap) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (cap == 0) {
         return 0;
     }
@@ -431,8 +432,8 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
     size_t len = 0;
 #if MD_PLATFORM_WINDOWS
     wchar_t w_buf[MD_MAX_PATH];
-    const DWORD w_len = GetCurrentDirectoryW((DWORD)ARRAY_SIZE(w_buf), w_buf);
-    if (w_len == 0 || w_len >= (DWORD)ARRAY_SIZE(w_buf)) {
+    const DWORD w_len = GetCurrentDirectoryW((DWORD)MD_COUNTOF(w_buf), w_buf);
+    if (w_len == 0 || w_len >= (DWORD)MD_COUNTOF(w_buf)) {
         MD_LOG_ERROR("Failed to get current working directory");
         return 0;
     }
@@ -441,7 +442,7 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
         MD_LOG_ERROR("Failed to get current working directory");
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
 #elif MD_PLATFORM_UNIX
     if (getcwd(buf, cap) == NULL) {
         MD_LOG_ERROR("Failed to get current working directory");
@@ -449,13 +450,13 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
     }
     len = strnlen(buf, cap);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
     return len;
 }
 
 size_t md_path_write_exe(char* buf, size_t buf_cap) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (buf_cap == 0) {
         return 0;
     }
@@ -463,8 +464,8 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
 
 #if MD_PLATFORM_WINDOWS
     wchar_t w_buf[MD_MAX_PATH];
-    const DWORD w_len = GetModuleFileNameW(NULL, w_buf, (DWORD)ARRAY_SIZE(w_buf));
-    if (w_len == 0 || w_len >= (DWORD)ARRAY_SIZE(w_buf)) {
+    const DWORD w_len = GetModuleFileNameW(NULL, w_buf, (DWORD)MD_COUNTOF(w_buf));
+    if (w_len == 0 || w_len >= (DWORD)MD_COUNTOF(w_buf)) {
         MD_LOG_ERROR("Failed to get path to executable");
         return 0;
     }
@@ -473,7 +474,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to get path to executable");
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
     return len;
 #elif MD_PLATFORM_LINUX
     const ssize_t res = readlink("/proc/self/exe", buf, buf_cap - 1);
@@ -488,7 +489,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         return strnlen(buf, buf_cap);
     }
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
     MD_LOG_ERROR("Failed to get path to executable");
     return 0;
@@ -496,8 +497,30 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
 
 // https://stackoverflow.com/questions/2899013/how-do-i-get-the-application-data-path-in-windows-using-c
 // https://stackoverflow.com/questions/2910377/get-home-directory-in-linux
+const char* md_os_env_get(const char* name) {
+    if (!name || !name[0]) return NULL;
+    return getenv(name);
+}
+
+bool md_os_env_set(const char* name, const char* value) {
+    if (!name || !name[0] || strchr(name, '=')) return false;
+#if MD_PLATFORM_WINDOWS
+    // _putenv_s removes the variable when given an empty value; an empty value to keep is not representable
+    if (value && !value[0]) {
+        MD_LOG_ERROR("md_os_env_set: an empty value cannot be set on Windows (it removes '%s')", name);
+        return false;
+    }
+    return _putenv_s(name, value ? value : "") == 0;
+#elif MD_PLATFORM_UNIX
+    return (value ? setenv(name, value, 1) : unsetenv(name)) == 0;
+#else
+    (void)value;
+    return false;
+#endif
+}
+
 size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
-    ASSERT(buf);
+    MD_ASSERT(buf);
     if (buf_cap == 0) {
         return 0;
     }
@@ -516,7 +539,7 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to convert home directory to UTF8");
         return 0;
     }
-    replace_char(buf, len, '\\', '/');
+    md_replace_char(buf, len, '\\', '/');
     return len;
 #elif MD_PLATFORM_UNIX
     const char *homedir = NULL;
@@ -538,20 +561,20 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
     }
     return (size_t)written;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 }
 
-bool md_path_set_cwd(str_t path) {
-    if (str_empty(path)) {
+bool md_path_set_cwd(md_str_t path) {
+    if (md_str_empty(path)) {
         MD_LOG_ERROR("CWD: The supplied path is empty");
         return false;
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
-        MD_LOG_ERROR("CWD: Failed to convert path to UTF-16 '" STR_FMT "'", STR_ARG(path));
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
+        MD_LOG_ERROR("CWD: Failed to convert path to UTF-16 '" MD_STR_FMT "'", MD_STR_ARG(path));
         return false;
     }
     if (SetCurrentDirectoryW(w_path)) {
@@ -561,7 +584,7 @@ bool md_path_set_cwd(str_t path) {
 #elif MD_PLATFORM_UNIX
     // Ensure zero termination of path
     char buf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+    if (md_str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
         return false;
     }
     if (chdir(buf) == 0) {
@@ -579,32 +602,32 @@ bool md_path_set_cwd(str_t path) {
     default:            MD_LOG_ERROR("CWD: Undefined error"); break;
     }
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
     return false;
 }
 
-size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
+size_t md_path_write_canonical(char* buf, size_t cap, md_str_t path) {
     return fullpath(buf, cap, path);
 }
 
-str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+md_str_t md_path_make_canonical(md_str_t path, struct md_allocator_i* alloc) {
+    MD_ASSERT(alloc);
     char buf[MD_MAX_PATH];
     const size_t len = fullpath(buf, sizeof(buf), path);
 
     if (len == 0) {
-        if (!str_empty(path)) {
-            MD_LOG_ERROR("Failed to create canonical path from '" STR_FMT "'", STR_ARG(path));
+        if (!md_str_empty(path)) {
+            MD_LOG_ERROR("Failed to create canonical path from '" MD_STR_FMT "'", MD_STR_ARG(path));
         }
-        return (str_t){0};
+        return (md_str_t){0};
     }
 
-    return str_copy_cstrn(buf, len, alloc);
+    return md_str_copy_cstrn(buf, len, alloc);
 }
 
-size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t to) {
-    ASSERT(out_buf);
+size_t md_path_write_relative(char* out_buf, size_t out_cap, md_str_t from, md_str_t to) {
+    MD_ASSERT(out_buf);
     if (out_cap == 0) {
         return 0;
     }
@@ -612,7 +635,7 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     // length of whatever happened to be on the caller's stack.
     out_buf[0] = '\0';
 
-    if (str_empty(from) || str_empty(to)) {
+    if (md_str_empty(from) || md_str_empty(to)) {
         MD_LOG_ERROR("Failed to extract relative path: one of the supplied paths is empty.");
         return 0;
     }
@@ -625,30 +648,30 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     const size_t   to_len = fullpath(to_buf,   sizeof(to_buf),   to);
 
     if (from_len == 0 || to_len == 0) {
-        MD_LOG_ERROR("Failed to extract relative path: could not resolve '" STR_FMT "' or '" STR_FMT "'", STR_ARG(from), STR_ARG(to));
+        MD_LOG_ERROR("Failed to extract relative path: could not resolve '" MD_STR_FMT "' or '" MD_STR_FMT "'", MD_STR_ARG(from), MD_STR_ARG(to));
         return 0;
     }
 
     // 'from' anchors the result: if it identifies a file, the folder holding it is the base
-    str_t base = {from_buf, from_len};
-    if (from_buf[from_len - 1] != '/' && !extract_folder_path(&base, base)) {
-        MD_LOG_ERROR("Failed to extract folder path from '" STR_FMT "'", STR_ARG(from));
+    md_str_t base = {from_buf, from_len};
+    if (from_buf[from_len - 1] != '/' && !md_extract_folder_path(&base, base)) {
+        MD_LOG_ERROR("Failed to extract folder path from '" MD_STR_FMT "'", MD_STR_ARG(from));
         return 0;
     }
-    const str_t target = {to_buf, to_len};
+    const md_str_t target = {to_buf, to_len};
 
     const size_t common = common_folder_len(base, target);
     if (common == 0 || common < path_root_len(base) || common < path_root_len(target)) {
         // Separate windows drives or UNC shares: no relative path between them exists
-        MD_LOG_ERROR("Failed to extract relative path: '" STR_FMT "' and '" STR_FMT "' share no common root.", STR_ARG(base), STR_ARG(target));
+        MD_LOG_ERROR("Failed to extract relative path: '" MD_STR_FMT "' and '" MD_STR_FMT "' share no common root.", MD_STR_ARG(base), MD_STR_ARG(target));
         return 0;
     }
 
-    const str_t rel_from = str_substr(base,   common, SIZE_MAX);
-    const str_t rel_to   = str_substr(target, common, SIZE_MAX);
+    const md_str_t rel_from = md_str_substr(base,   common, SIZE_MAX);
+    const md_str_t rel_to   = md_str_substr(target, common, SIZE_MAX);
 
     // One step up for each folder left in from, or './' if it is already the common base
-    const size_t up_count   = str_count_occur_char(rel_from, '/');
+    const size_t up_count   = md_str_count_occur_char(rel_from, '/');
     const size_t prefix_len = up_count ? up_count * 3 : 2;
     const size_t len        = prefix_len + rel_to.len;
 
@@ -660,15 +683,15 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     char* dst = out_buf;
     if (up_count) {
         for (size_t i = 0; i < up_count; ++i) {
-            MEMCPY(dst, "../", 3);
+            md_memcpy(dst, "../", 3);
             dst += 3;
         }
     } else {
-        MEMCPY(dst, "./", 2);
+        md_memcpy(dst, "./", 2);
         dst += 2;
     }
     if (rel_to.len) {
-        MEMCPY(dst, rel_to.ptr, rel_to.len);
+        md_memcpy(dst, rel_to.ptr, rel_to.len);
         dst += rel_to.len;
     }
     *dst = '\0';
@@ -676,18 +699,18 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     return len;
 }
 
-str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
+md_str_t md_path_make_relative(md_str_t from, md_str_t to, struct md_allocator_i* alloc) {
+    MD_ASSERT(alloc);
     char  rel_buf[MD_MAX_PATH];
     const size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
     if (len == 0) {
-        return (str_t){0};
+        return (md_str_t){0};
     }
-    return str_copy_cstrn(rel_buf, len, alloc);
+    return md_str_copy_cstrn(rel_buf, len, alloc);
 }
 
-bool md_path_is_absolute(str_t path) {
-    if (str_empty(path)) {
+bool md_path_is_absolute(md_str_t path) {
+    if (md_str_empty(path)) {
         return false;
     }
     const bool sep0 = (path.ptr[0] == '/' || path.ptr[0] == '\\');
@@ -702,44 +725,44 @@ bool md_path_is_absolute(str_t path) {
     return sep0;
 }
 
-bool md_path_is_valid(str_t path) {
-    if (str_empty(path)) {
+bool md_path_is_valid(md_str_t path) {
+    if (md_str_empty(path)) {
         return false;
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
         return false;
     }
     return GetFileAttributesW(w_path) != INVALID_FILE_ATTRIBUTES;
 #elif MD_PLATFORM_UNIX
-    // str_t is not guaranteed to be zero terminated
+    // md_str_t is not guaranteed to be zero terminated
     char buf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+    if (md_str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
         return false;
     }
     return access(buf, F_OK) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }
 
-bool md_path_is_directory(str_t path) {
-    if (str_empty(path)) {
+bool md_path_is_directory(md_str_t path) {
+    if (md_str_empty(path)) {
         return false;
     }
 #if MD_PLATFORM_WINDOWS
     wchar_t w_path[MD_MAX_PATH];
-    if (!utf8_to_utf16_path(w_path, ARRAY_SIZE(w_path), path)) {
+    if (!utf8_to_utf16_path(w_path, MD_COUNTOF(w_path), path)) {
         return false;
     }
     const DWORD attr = GetFileAttributesW(w_path);
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #elif MD_PLATFORM_UNIX
-    // str_t is not guaranteed to be zero terminated
+    // md_str_t is not guaranteed to be zero terminated
     char buf[MD_MAX_PATH];
-    if (str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
+    if (md_str_copy_to_char_buf(buf, sizeof(buf), path) == 0) {
         return false;
     }
     struct stat s;
@@ -747,7 +770,7 @@ bool md_path_is_directory(str_t path) {
     // sockets and block devices, so use the S_ISDIR predicate instead.
     return stat(buf, &s) == 0 && S_ISDIR(s.st_mode);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }
@@ -834,6 +857,10 @@ static bool file_has_write_access(md_file_t file) {
     return (file.flags & (MD_FILE_WRITE | MD_FILE_APPEND)) != 0;
 }
 
+static bool file_is_concurrent(md_file_t file) {
+    return (file.flags & MD_FILE_CONCURRENT) != 0;
+}
+
 static bool file_is_append_only(md_file_t file) {
     return (file.flags & MD_FILE_APPEND) != 0;
 }
@@ -856,7 +883,7 @@ static md_file_time_t filetime_to_unix_ns(FILETIME ft) {
 }
 
 static void fill_file_info_from_win32_data(md_file_info_t* info, DWORD attrs, uint64_t size, FILETIME access_time, FILETIME write_time) {
-    ASSERT(info);
+    MD_ASSERT(info);
 
     info->size = (md_file_offset_t)size;
     info->modified_time = filetime_to_unix_ns(write_time);
@@ -879,8 +906,8 @@ static md_file_time_t timespec_to_unix_ns(time_t sec, long nsec) {
 }
 
 static void fill_file_info_from_stat(md_file_info_t* info, const struct stat* st) {
-    ASSERT(info);
-    ASSERT(st);
+    MD_ASSERT(info);
+    MD_ASSERT(st);
 
     info->size = (md_file_offset_t)st->st_size;
 
@@ -910,7 +937,7 @@ bool md_file_info_extract(md_file_t file, md_file_info_t* out_info) {
         return false;
     }
 
-    MEMSET(out_info, 0, sizeof(md_file_info_t));
+    md_memset(out_info, 0, sizeof(md_file_info_t));
 
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_info_extract: file was invalid");
@@ -944,13 +971,13 @@ bool md_file_info_extract(md_file_t file, md_file_info_t* out_info) {
 #endif
 }
 
-bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
+bool md_file_info_extract_from_path(md_str_t filename, md_file_info_t* out_info) {
     if (!out_info) {
         MD_LOG_ERROR("md_file_info_extract_from_path: output info was NULL");
         return false;
     }
 
-    MEMSET(out_info, 0, sizeof(md_file_info_t));
+    md_memset(out_info, 0, sizeof(md_file_info_t));
 
     if (!filename.ptr || filename.len == 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: filename was empty");
@@ -959,7 +986,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
-    if (!utf8_to_utf16_path(w_file, ARRAY_SIZE(w_file), filename)) {
+    if (!utf8_to_utf16_path(w_file, MD_COUNTOF(w_file), filename)) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to convert path to UTF-16");
         return false;
     }
@@ -977,7 +1004,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 
 #elif MD_PLATFORM_UNIX
     md_temp_scope_t temp_scope = md_temp_begin();
-    str_t path = str_copy(filename, md_temp_allocator(temp_scope));
+    md_str_t path = md_str_copy(filename, md_temp_allocator(temp_scope));
     struct stat st = {0};
     if (stat(path.ptr, &st) != 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
@@ -994,7 +1021,7 @@ bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info) {
 #endif
 }
 
-bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
+bool md_file_open(md_file_t* out_file, md_str_t filename, md_file_flags_t flags) {
     if (!out_file) {
         MD_LOG_ERROR("md_file_open: output file was NULL");
         return false;
@@ -1031,10 +1058,20 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
         return false;
     }
 
+    const bool want_concurrent = (flags & MD_FILE_CONCURRENT) != 0;
+    if (want_concurrent && want_append) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_CONCURRENT and MD_FILE_APPEND are mutually exclusive");
+        return false;
+    }
+    if ((flags & MD_FILE_SEQUENTIAL) && (flags & MD_FILE_RANDOM)) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_SEQUENTIAL and MD_FILE_RANDOM are mutually exclusive");
+        return false;
+    }
+
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
-    const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
-    if (w_file_len <= 0 || w_file_len >= (int)ARRAY_SIZE(w_file)) {
+    const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, MD_COUNTOF(w_file));
+    if (w_file_len <= 0 || w_file_len >= (int)MD_COUNTOF(w_file)) {
         MD_LOG_ERROR("md_file_open: failed to convert path to UTF-16");
         return false;
     }
@@ -1060,13 +1097,20 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
         creation_disposition = OPEN_ALWAYS;
     }
 
+    // A concurrent handle is overlapped: the I/O manager serializes every request on a synchronous handle, and an
+    // overlapped one has no file pointer for them to share
+    DWORD attributes = FILE_ATTRIBUTE_NORMAL;
+    if (want_concurrent)           attributes |= FILE_FLAG_OVERLAPPED;
+    if (flags & MD_FILE_SEQUENTIAL) attributes |= FILE_FLAG_SEQUENTIAL_SCAN;
+    if (flags & MD_FILE_RANDOM)     attributes |= FILE_FLAG_RANDOM_ACCESS;
+
     HANDLE handle = CreateFileW(
         w_file,
         desired_access,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
         creation_disposition,
-        FILE_ATTRIBUTE_NORMAL,
+        attributes,
         NULL);
 
     if (handle == INVALID_HANDLE_VALUE) {
@@ -1103,7 +1147,7 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     open_flags |= O_CLOEXEC;
 #endif
 
-    str_t path = str_copy(filename, md_temp_allocator(temp_scope));
+    md_str_t path = md_str_copy(filename, md_temp_allocator(temp_scope));
     const mode_t create_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
     int fd = -1;
@@ -1114,6 +1158,15 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
     if (fd == -1) {
         md_temp_end(temp_scope);
         return false;
+    }
+
+    // The hints. MD_FILE_CONCURRENT needs nothing here: pread and pwrite take no position and run concurrently.
+    if (flags & (MD_FILE_SEQUENTIAL | MD_FILE_RANDOM)) {
+#if defined(__APPLE__)
+        fcntl(fd, F_RDAHEAD, (flags & MD_FILE_SEQUENTIAL) ? 1 : 0);
+#elif defined(POSIX_FADV_SEQUENTIAL)
+        posix_fadvise(fd, 0, 0, (flags & MD_FILE_SEQUENTIAL) ? POSIX_FADV_SEQUENTIAL : POSIX_FADV_RANDOM);
+#endif
     }
 
     *out_file = (md_file_t){.fd = fd, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
@@ -1151,13 +1204,17 @@ bool md_file_close(md_file_t* file) {
         return false;
     }
 #endif
-	MEMSET(file, 0, sizeof(md_file_t));
+	md_memset(file, 0, sizeof(md_file_t));
     return true;
 }
 
 md_file_offset_t md_file_tell(md_file_t file) {
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_tell: file was invalid");
+        return -1;
+    }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_tell: a handle opened with MD_FILE_CONCURRENT has no position");
         return -1;
     }
 
@@ -1217,6 +1274,10 @@ bool md_file_seek(md_file_t file, md_file_offset_t offset, md_file_seek_origin_t
         MD_LOG_ERROR("md_file_seek: file was invalid");
         return false;
     }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_seek: a handle opened with MD_FILE_CONCURRENT has no position");
+        return false;
+    }
 
 #if MD_PLATFORM_WINDOWS
     DWORD move_method = 0;
@@ -1269,6 +1330,10 @@ size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
         MD_LOG_ERROR("md_file_read: file was not opened for reading");
         return 0;
     }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_read: a handle opened with MD_FILE_CONCURRENT is read at offsets only (md_file_read_at)");
+        return 0;
+    }
     if (!ptr && num_bytes > 0) {
         MD_LOG_ERROR("md_file_read: buffer was NULL");
         return 0;
@@ -1280,7 +1345,7 @@ size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         DWORD transferred = 0;
 
         if (!ReadFile((HANDLE)file.handle, out + total, chunk, &transferred, NULL)) {
@@ -1303,7 +1368,7 @@ size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = read(file.fd, out + total, chunk);
 
         if (transferred < 0) {
@@ -1336,6 +1401,10 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
         MD_LOG_ERROR("md_file_write: file was not opened for writing");
         return 0;
     }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_write: a handle opened with MD_FILE_CONCURRENT is written at offsets only (md_file_write_at)");
+        return 0;
+    }
     if (!ptr && num_bytes > 0) {
         MD_LOG_ERROR("md_file_write: buffer was NULL");
         return 0;
@@ -1347,7 +1416,7 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         DWORD transferred = 0;
 
         if (!WriteFile((HANDLE)file.handle, in + total, chunk, &transferred, NULL)) {
@@ -1371,7 +1440,7 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = write(file.fd, in + total, chunk);
 
         if (transferred < 0) {
@@ -1396,6 +1465,43 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
 #endif
 }
 
+#if MD_PLATFORM_WINDOWS
+// One read or write of up to 4 GB at pos. On an overlapped (concurrent) handle with an event of its own, so that calls
+// from several threads each wait for theirs. On a synchronous handle the OVERLAPPED gives the offset, and the call moves
+// the file pointer, which the caller puts back. False on failure, with the error in *err (ERROR_HANDLE_EOF at the end).
+static bool win_positional_io(HANDLE h, bool concurrent, bool write, uint64_t pos, void* buf, DWORD bytes, DWORD* transferred, DWORD* err) {
+    OVERLAPPED ov = {0};
+    ov.Offset     = (DWORD)(pos & 0xffffffffu);
+    ov.OffsetHigh = (DWORD)(pos >> 32);
+    *transferred = 0;
+    *err = 0;
+    if (concurrent) {
+        ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!ov.hEvent) {
+            *err = GetLastError();
+            return false;
+        }
+    }
+    BOOL ok = write ? WriteFile(h, buf, bytes, transferred, &ov) : ReadFile(h, buf, bytes, transferred, &ov);
+    if (!ok) {
+        *err = GetLastError();
+        if (concurrent && *err == ERROR_IO_PENDING) {
+            ok = GetOverlappedResult(h, &ov, transferred, TRUE);
+            *err = ok ? 0 : GetLastError();
+        }
+    }
+    if (concurrent) CloseHandle(ov.hEvent);
+    return ok != 0;
+}
+
+// The file pointer of a synchronous handle, which a positional call moves: kept and put back, so that positional calls
+// leave it where it was, as pread and pwrite do
+static bool win_get_pointer(HANDLE h, LARGE_INTEGER* pos) {
+    LARGE_INTEGER zero = {0};
+    return SetFilePointerEx(h, zero, pos, FILE_CURRENT) != 0;
+}
+#endif
+
 size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_t num_bytes) {
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_read_at: file was invalid");
@@ -1415,24 +1521,25 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
     }
 
 #if MD_PLATFORM_WINDOWS
+    HANDLE h = (HANDLE)file.handle;
+    const bool concurrent = file_is_concurrent(file);
+    LARGE_INTEGER kept = {0};
+    const bool restore = !concurrent && win_get_pointer(h, &kept);
     char* out = (char*)ptr;
     size_t total = 0;
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
-        OVERLAPPED overlapped = {0};
-        overlapped.Offset = (DWORD)(pos & 0xffffffffu);
-        overlapped.OffsetHigh = (DWORD)(pos >> 32);
 
-        DWORD transferred = 0;
-        if (!ReadFile((HANDLE)file.handle, out + total, chunk, &transferred, &overlapped)) {
-            DWORD err = GetLastError();
+        DWORD transferred = 0, err = 0;
+        if (!win_positional_io(h, concurrent, false, pos, out + total, chunk, &transferred, &err)) {
             if (err == ERROR_HANDLE_EOF) {
                 break;
             }
             MD_LOG_ERROR("md_file_read_at: failed to read file");
+            SetLastError(err);
             print_windows_error();
             break;
         }
@@ -1443,6 +1550,7 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
         total += (size_t)transferred;
     }
 
+    if (restore) SetFilePointerEx(h, kept, NULL, FILE_BEGIN);
     return total;
 
 #elif MD_PLATFORM_UNIX
@@ -1451,7 +1559,7 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = pread(file.fd, out + total, chunk, (off_t)(offset + (md_file_offset_t)total));
 
         if (transferred < 0) {
@@ -1498,20 +1606,22 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
     }
 
 #if MD_PLATFORM_WINDOWS
+    HANDLE h = (HANDLE)file.handle;
+    const bool concurrent = file_is_concurrent(file);
+    LARGE_INTEGER kept = {0};
+    const bool restore = !concurrent && win_get_pointer(h, &kept);
     const char* in = (const char*)ptr;
     size_t total = 0;
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
+        const DWORD chunk = (DWORD)MD_MIN(remaining, (size_t)UINT32_MAX);
         const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
-        OVERLAPPED overlapped = {0};
-        overlapped.Offset = (DWORD)(pos & 0xffffffffu);
-        overlapped.OffsetHigh = (DWORD)(pos >> 32);
 
-        DWORD transferred = 0;
-        if (!WriteFile((HANDLE)file.handle, in + total, chunk, &transferred, &overlapped)) {
+        DWORD transferred = 0, err = 0;
+        if (!win_positional_io(h, concurrent, true, pos, (void*)(in + total), chunk, &transferred, &err)) {
             MD_LOG_ERROR("md_file_write_at: failed to write file");
+            SetLastError(err);
             print_windows_error();
             break;
         }
@@ -1523,6 +1633,7 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
         total += (size_t)transferred;
     }
 
+    if (restore) SetFilePointerEx(h, kept, NULL, FILE_BEGIN);
     return total;
 
 #elif MD_PLATFORM_UNIX
@@ -1531,7 +1642,7 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
 
     while (total < num_bytes) {
         const size_t remaining = num_bytes - total;
-        const size_t chunk = MIN(remaining, (size_t)0x7ffff000);
+        const size_t chunk = MD_MIN(remaining, (size_t)0x7ffff000);
         ssize_t transferred = pwrite(file.fd, in + total, chunk, (off_t)(offset + (md_file_offset_t)total));
 
         if (transferred < 0) {
@@ -1622,7 +1733,7 @@ md_tick_t md_tick_now(void) {
     clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec * 1000000000 + t.tv_nsec;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1637,7 +1748,7 @@ double md_tick_to_nanoseconds(md_tick_t ticks) {
 #elif MD_PLATFORM_UNIX
     return (double)ticks;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1649,7 +1760,7 @@ double md_tick_to_milliseconds(md_tick_t ticks) {
 #elif MD_PLATFORM_UNIX
     return ticks * 1.0e-6;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1661,7 +1772,7 @@ double md_tick_to_seconds(md_tick_t ticks) {
 #elif MD_PLATFORM_UNIX
     return ticks * 1.0e-9;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1681,7 +1792,7 @@ size_t md_os_physical_ram(void) {
     long page_size = sysconf(_SC_PAGE_SIZE);
     return (size_t)(pages * page_size);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 }
@@ -1696,7 +1807,7 @@ size_t md_os_num_processors(void) {
     int num_cpu = sysconf(_SC_NPROCESSORS_ONLN);
     return (size_t)num_cpu;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return 0;
 #endif
 }
@@ -1712,22 +1823,22 @@ size_t md_vm_page_size(void) {
 #elif MD_PLATFORM_UNIX
         page_size = sysconf(_SC_PAGE_SIZE);
 #else
-        ASSERT(false);
+        MD_ASSERT(false);
 #endif
     }
     return page_size;
 }
 
 void* md_vm_reserve(size_t size) {
-    const size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    const size_t gb_snapped_size = MD_ALIGN_TO(size, MD_GIGABYTES(1));
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
     void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    ASSERT(result != MAP_FAILED);
+    MD_ASSERT(result != MAP_FAILED);
     return result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1736,30 +1847,30 @@ void md_vm_release(void* ptr, size_t size) {
     (void)size;
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif MD_PLATFORM_UNIX
-    size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    size_t gb_snapped_size = MD_ALIGN_TO(size, MD_GIGABYTES(1));
     int result;
     //result = madvise(ptr, -1, MADV_DONTNEED);
-    //ASSERT(result == 0);
+    //MD_ASSERT(result == 0);
     result = munmap(ptr, gb_snapped_size);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
     (void)result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
 void md_vm_commit(void* ptr, size_t size) {
-    const size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    const size_t page_snapped_size = MD_ALIGN_TO(size, md_vm_page_size());
 #if MD_PLATFORM_WINDOWS
     void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
     (void)result;
-    ASSERT(result != NULL);
+    MD_ASSERT(result != NULL);
 #elif MD_PLATFORM_UNIX
     int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
     (void)result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1771,22 +1882,22 @@ void md_vm_decommit(void* ptr, size_t size) {
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int result;
-    size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    size_t page_snapped_size = MD_ALIGN_TO(size, md_vm_page_size());
 #if defined(__APPLE__)
     // MADV_DONTNEED does not free the pages on macOS (they stay resident with their contents).
     // Remapping the range as fresh anonymous memory is what actually returns them to the system.
     void* mapped = mmap(ptr, page_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
     result = (mapped == MAP_FAILED) ? -1 : 0;
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
 #else
     result = mprotect(ptr, page_snapped_size, PROT_NONE);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
     result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
-    ASSERT(result == 0);
+    MD_ASSERT(result == 0);
 #endif
     (void)result;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1817,7 +1928,7 @@ md_thread_t* md_thread_create(md_thread_entry func, void* user_data) {
 #pragma clang diagnostic pop
 #endif
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1827,7 +1938,7 @@ void md_thread_detach(md_thread_t* thread) {
 #elif MD_PLATFORM_UNIX
     pthread_detach((pthread_t)thread);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1838,7 +1949,7 @@ bool md_thread_join(md_thread_t* thread) {
 #elif MD_PLATFORM_UNIX
     return pthread_join((pthread_t)thread, NULL) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1848,7 +1959,7 @@ md_thread_id_t md_thread_get_id(md_thread_t* thread) {
 #elif MD_PLATFORM_UNIX
     return (md_thread_id_t)thread;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1858,12 +1969,12 @@ md_thread_id_t md_thread_id(void) {
 #elif MD_PLATFORM_UNIX
     return (md_thread_id_t)pthread_self();
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
 bool md_thread_key_create(md_thread_key_t* key, md_thread_exit callback) {
-    ASSERT(key);
+    MD_ASSERT(key);
     if (!callback) {
         MD_LOG_ERROR("OS: callback was NULL");
         return false;
@@ -1881,7 +1992,7 @@ bool md_thread_key_create(md_thread_key_t* key, md_thread_exit callback) {
     int ret = pthread_key_create(key, callback);
     return ret == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }
@@ -1892,7 +2003,7 @@ void md_thread_key_delete(md_thread_key_t key) {
 #elif MD_PLATFORM_UNIX
 	pthread_key_delete(key);
 #else
-	ASSERT(false);
+	MD_ASSERT(false);
 #endif
 }
 
@@ -1902,7 +2013,7 @@ void md_thread_key_set_value(md_thread_key_t key, void* value) {
     #elif MD_PLATFORM_UNIX
     pthread_setspecific(key, value);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1912,7 +2023,7 @@ void md_thread_sleep(size_t milliseconds) {
 #elif MD_PLATFORM_UNIX
     usleep(milliseconds * 1000);
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1924,7 +2035,7 @@ bool md_mutex_init(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_init((pthread_mutex_t*)mutex, NULL) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1938,7 +2049,7 @@ md_mutex_t md_mutex_create(void) {
     md_mutex_init(&mutex);
     return mutex;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1949,7 +2060,7 @@ bool md_mutex_destroy(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_destroy((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1960,7 +2071,7 @@ bool md_mutex_lock(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_lock((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1970,7 +2081,7 @@ bool md_mutex_try_lock(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_trylock((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1981,7 +2092,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 #elif MD_PLATFORM_UNIX
     return pthread_mutex_unlock((pthread_mutex_t*)mutex) == 0;
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
 #endif
 }
 
@@ -1990,7 +2101,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 // ### SEMAPHORE ###
 
 bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
-    ASSERT(initial_count < INT32_MAX);
+    MD_ASSERT(initial_count < INT32_MAX);
 #if MD_PLATFORM_WINDOWS
     semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
     return semaphore != NULL;
@@ -2003,7 +2114,7 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
     if (ret != KERN_SUCCESS) {
         MD_LOG_ERROR("Failed to initialize semaphore");
     }
-    MEMCPY(semaphore, &sema, sizeof(semaphore_t));
+    md_memcpy(semaphore, &sema, sizeof(semaphore_t));
     return ret == KERN_SUCCESS;
 #endif
 }
@@ -2015,7 +2126,7 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
     return sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     mach_port_t self = mach_task_self();
     return semaphore_destroy(self, sema) == KERN_SUCCESS;
 #endif
@@ -2028,7 +2139,7 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     return semaphore_wait(sema) == KERN_SUCCESS;
 #endif
 }
@@ -2040,7 +2151,7 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
     return sem_trywait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     mach_timespec_t mts;
     mts.tv_sec = 0;
     mts.tv_nsec = 0;
@@ -2049,8 +2160,8 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 }
 
 bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count) {
-    ASSERT(semaphore);
-    ASSERT(count);
+    MD_ASSERT(semaphore);
+    MD_ASSERT(count);
 #if MD_PLATFORM_WINDOWS
     HMODULE hntdll = GetModuleHandle("ntdll.dll");
     if (hntdll) {
@@ -2088,7 +2199,7 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
     return sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     return semaphore_signal(sema) == KERN_SUCCESS;
 #endif
 }
@@ -2102,7 +2213,7 @@ md_semaphore_t md_semaphore_create(size_t initial_count) {
 }
 
 bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
-    ASSERT(count > 0);
+    MD_ASSERT(count > 0);
     size_t aquired_count = 0;
     for (size_t i = 0; i < count; ++i) {
         if (!md_semaphore_try_aquire(semaphore)) {
@@ -2134,7 +2245,7 @@ bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
 // Returns system information such as core counts and RAM. See md_os_info_t in header.
 bool md_os_sys_info_query(md_os_sys_info_t* info) {
     if (!info) return false;
-    MEMSET(info, 0, sizeof(md_os_sys_info_t));
+    md_memset(info, 0, sizeof(md_os_sys_info_t));
 
 #if MD_PLATFORM_WINDOWS
 
@@ -2246,7 +2357,7 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
                         }
                     }
 
-                    if (!found && core_count < (int)ARRAY_SIZE(cores)) {
+                    if (!found && core_count < (int)MD_COUNTOF(cores)) {
                         cores[core_count++] = (core_pair_t){phys_id, core_id};
                     }
                 }
@@ -2269,7 +2380,7 @@ bool md_os_sys_info_query(md_os_sys_info_t* info) {
     return true;
 
 #else
-    ASSERT(false);
+    MD_ASSERT(false);
     return false;
 #endif
 }

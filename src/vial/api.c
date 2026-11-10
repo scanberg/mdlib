@@ -11,7 +11,6 @@
 
 #include <md_util.h>
 #include <core/md_array.h>
-#include <core/md_intrinsics.h>
 #include <core/md_os.h>
 #include <stdlib.h>
 
@@ -23,7 +22,7 @@
 
 struct md_vial_program_t {
     md_allocator_i*  arena;
-    str_t            src;
+    md_str_t            src;
     vial_token_t*    tokens;
     md_vial_token_t* pub_tokens;
     vial_diags_t     diags;
@@ -37,7 +36,7 @@ struct md_vial_program_t {
     md_vial_output_t* outputs;  // md_array
     md_vial_mark_t*  marks;     // md_array, made when compiling
     // The prelude, compiled with every script
-    str_t            prelude_src;
+    md_str_t            prelude_src;
     vial_diags_t     prelude_diags;
     vial_tree_t      prelude;
 };
@@ -58,10 +57,10 @@ static void target_names(const vial_tree_t* t, vial_node_id target, vial_node_id
 static void make_marks(md_vial_program_t* prog);
 
 // A name's value in the inlined IR, 0 when it has none
-static vial_ssa_t run_output(const md_vial_program_t* prog, str_t name) {
+static vial_ssa_t run_output(const md_vial_program_t* prog, md_str_t name) {
     if (!prog->has_run_ir) return 0;
     for (size_t i = 0; i < md_array_size(prog->run_ir.outputs); ++i) {
-        if (str_eq(prog->run_ir.outputs[i].name, name)) return prog->run_ir.outputs[i].value;
+        if (md_str_eq(prog->run_ir.outputs[i].name, name)) return prog->run_ir.outputs[i].value;
     }
     return 0;
 }
@@ -116,7 +115,7 @@ static void collect_outputs(md_vial_program_t* prog) {
         for (size_t k = 0; k < md_array_size(names); ++k) {
             const vial_node_id nn = names[k];
             const md_vial_span_t sp = t->nodes[nn].span;
-            const str_t name = {prog->src.ptr + sp.beg, sp.end - sp.beg};
+            const md_str_t name = {prog->src.ptr + sp.beg, sp.end - sp.beg};
             if (!vial_types_published(&prog->types, name)) continue;
             const vial_type_t* ty = &prog->types.types[nn];
             const bool number = ty->dtype == VIAL_DT_BOOL || ty->dtype == VIAL_DT_INT || ty->dtype == VIAL_DT_FLOAT || ty->dtype == VIAL_DT_FLOAT64;
@@ -150,8 +149,8 @@ static struct {
 } shared_prelude;
 
 static void prelude_build(void) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
-    const str_t src = {(const char*)prelude_vial, prelude_vial_size - 1};
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
+    const md_str_t src = {(const char*)prelude_vial, prelude_vial_size - 1};
     vial_diags_init(&shared_prelude.diags, src, arena);
     vial_token_t* tokens = vial_lex(src, &shared_prelude.diags, arena);
     shared_prelude.tree = vial_parse(tokens, src, &shared_prelude.diags, arena);
@@ -169,14 +168,14 @@ static void prelude_ensure(void) {
     while (!md_atomic_load64(&shared_prelude.ready)) md_thread_sleep(0);
 }
 
-md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, md_allocator_i* alloc) {
+md_vial_program_t* md_vial_compile(md_str_t src, const md_vial_compile_desc_t* desc, md_allocator_i* alloc) {
     (void)desc;
-    md_allocator_i* arena = md_arena_allocator_create(alloc, KILOBYTES(64));
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MD_KILOBYTES(64));
     if (!arena) return NULL;
     md_vial_program_t* prog = md_alloc(arena, sizeof(md_vial_program_t));
     memset(prog, 0, sizeof(*prog));
     prog->arena = arena;
-    prog->src = str_copy(src, arena);
+    prog->src = md_str_copy(src, arena);
 
     vial_diags_init(&prog->diags, prog->src, arena);
     prog->tokens = vial_lex(prog->src, &prog->diags, arena);
@@ -185,7 +184,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
     const bool with_prelude = !(desc && (desc->flags & MD_VIAL_COMPILE_NO_PRELUDE));
     if (with_prelude) {
         prelude_ensure();
-        prog->prelude_src = (str_t){(const char*)prelude_vial, prelude_vial_size - 1};
+        prog->prelude_src = (md_str_t){(const char*)prelude_vial, prelude_vial_size - 1};
         prog->prelude_diags = shared_prelude.diags;     // read only: what the prelude itself says, normally nothing
         prog->prelude = shared_prelude.tree;
     }
@@ -194,7 +193,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_resolved = with_prelude ? &shared_prelude.names : NULL,
         .prelude_src = prog->prelude_src,
         .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL,
-        .num_frames = desc ? desc->num_frames : 0, .run = desc ? str_copy(desc->run, arena) : (str_t){0}, .alloc = arena};
+        .num_frames = desc ? desc->num_frames : 0, .run = desc ? md_str_copy(desc->run, arena) : (md_str_t){0}, .alloc = arena};
     if (desc && desc->num_sets && desc->sets) {
         // The stored selections, copied: those with a name a script may bind
         md_vial_named_set_t* st = md_alloc(arena, desc->num_sets * sizeof(md_vial_named_set_t));
@@ -205,7 +204,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
             if (s->ndim > 2 || (s->ndim && !s->offsets)) continue;
             uint32_t* at = md_alloc(arena, (s->num_atoms ? s->num_atoms : 1) * sizeof(uint32_t));
             if (s->num_atoms) memcpy(at, s->atoms, s->num_atoms * sizeof(uint32_t));
-            md_vial_named_set_t c = {.name = str_copy(s->name, arena), .atoms = at, .num_atoms = s->num_atoms, .ndim = s->ndim};
+            md_vial_named_set_t c = {.name = md_str_copy(s->name, arena), .atoms = at, .num_atoms = s->num_atoms, .ndim = s->ndim};
             if (s->ndim) {
                 const size_t count = (size_t)s->dims[0] * (s->ndim > 1 ? s->dims[1] : 1);
                 if (s->offsets[count] > s->num_atoms) continue;
@@ -220,11 +219,11 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
         prog->check.stored = st;
         prog->check.num_stored = n;
     }
-    if (!prog->check.num_frames && prog->check.sys && !str_empty(prog->check.run)) {
+    if (!prog->check.num_frames && prog->check.sys && !md_str_empty(prog->check.run)) {
         // The run's frame axis
         char path[256];
         snprintf(path, sizeof(path), "%.*s/time", (int)prog->check.run.len, prog->check.run.ptr);
-        const md_attribute_t* time = md_attributes_find(&prog->check.sys->attributes, str_from_cstr(path));
+        const md_attribute_t* time = md_attributes_find(&prog->check.sys->attributes, md_str_from_cstr(path));
         if (time && time->format.rank >= 1) prog->check.num_frames = time->format.shape[0];
     }
     vial_ir_init(&prog->ir, arena);
@@ -432,10 +431,10 @@ const struct vial_ir_t* md_vial__run_ir(const md_vial_program_t* prog) { return 
 
 // ### EDITOR ###
 
-size_t md_vial_keywords(str_t* out, size_t cap) {
+size_t md_vial_keywords(md_str_t* out, size_t cap) {
     size_t n = 0;
     for (int k = VIAL_KW_NONE + 1; k < VIAL_KW_COUNT; ++k, ++n) {
-        if (out && n < cap) out[n] = str_from_cstr(vial_kw_str((vial_kw_t)k));
+        if (out && n < cap) out[n] = md_str_from_cstr(vial_kw_str((vial_kw_t)k));
     }
     return n;
 }
@@ -443,37 +442,37 @@ size_t md_vial_keywords(str_t* out, size_t cap) {
 static bool ident_char(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
 
 // The prelude's top-level defs a script calls: those not starting with _, read from its source
-static size_t prelude_defs(str_t* out, size_t cap) {
-    const str_t src = {(const char*)prelude_vial, prelude_vial_size - 1};
+static size_t prelude_defs(md_str_t* out, size_t cap) {
+    const md_str_t src = {(const char*)prelude_vial, prelude_vial_size - 1};
     size_t n = 0;
     for (size_t i = 0; i + 4 < src.len; ++i) {
         if ((i && src.ptr[i - 1] != '\n') || strncmp(src.ptr + i, "def ", 4)) continue;
         size_t e = i + 4;
         while (e < src.len && ident_char(src.ptr[e])) ++e;
         if (e == i + 4 || src.ptr[i + 4] == '_') continue;
-        if (out && n < cap) out[n] = (str_t){src.ptr + i + 4, e - i - 4};
+        if (out && n < cap) out[n] = (md_str_t){src.ptr + i + 4, e - i - 4};
         ++n;
     }
     return n;
 }
 
-static bool is_prelude_def(str_t name) {
-    str_t defs[64];
-    const size_t n = MIN(prelude_defs(defs, 64), 64);
-    for (size_t i = 0; i < n; ++i) if (str_eq(defs[i], name)) return true;
+static bool is_prelude_def(md_str_t name) {
+    md_str_t defs[64];
+    const size_t n = MD_MIN(prelude_defs(defs, 64), 64);
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(defs[i], name)) return true;
     return false;
 }
 
-size_t md_vial_builtin_names(str_t* out, size_t cap) {
+size_t md_vial_builtin_names(md_str_t* out, size_t cap) {
     size_t n = 0;
     for (size_t i = 0; i < vial_builtin_count(); ++i) {
         const char* nm = vial_builtin_at(i)->name;
         if (nm[0] == '_') continue;
-        if (out && n < cap) out[n] = str_from_cstr(nm);
+        if (out && n < cap) out[n] = md_str_from_cstr(nm);
         ++n;
     }
-    str_t defs[64];
-    const size_t nd = MIN(prelude_defs(defs, 64), 64);
+    md_str_t defs[64];
+    const size_t nd = MD_MIN(prelude_defs(defs, 64), 64);
     for (size_t i = 0; i < nd; ++i) {
         if (vial_builtin_find(defs[i])) continue;
         if (out && n < cap) out[n] = defs[i];
@@ -482,34 +481,34 @@ size_t md_vial_builtin_names(str_t* out, size_t cap) {
     return n;
 }
 
-static bool is_keyword(str_t name) {
-    for (int k = VIAL_KW_NONE + 1; k < VIAL_KW_COUNT; ++k) if (str_eq(name, str_from_cstr(vial_kw_str((vial_kw_t)k)))) return true;
+static bool is_keyword(md_str_t name) {
+    for (int k = VIAL_KW_NONE + 1; k < VIAL_KW_COUNT; ++k) if (md_str_eq(name, md_str_from_cstr(vial_kw_str((vial_kw_t)k)))) return true;
     return false;
 }
 
-bool md_vial_name_valid(str_t name) {
+bool md_vial_name_valid(md_str_t name) {
     if (!name.len || (name.ptr[0] >= '0' && name.ptr[0] <= '9')) return false;
     for (size_t i = 0; i < name.len; ++i) if (!ident_char(name.ptr[i])) return false;
     return !is_keyword(name) && !vial_builtin_find(name) && !is_prelude_def(name);
 }
 
-str_t md_vial_attr_path(str_t run, str_t name) {
-    if (!run.len || name.len <= run.len + 1 || strncmp(name.ptr, run.ptr, run.len) || name.ptr[run.len] != '/') return (str_t){0};
-    return (str_t){name.ptr + run.len + 1, name.len - run.len - 1};
+md_str_t md_vial_attr_path(md_str_t run, md_str_t name) {
+    if (!run.len || name.len <= run.len + 1 || strncmp(name.ptr, run.ptr, run.len) || name.ptr[run.len] != '/') return (md_str_t){0};
+    return (md_str_t){name.ptr + run.len + 1, name.len - run.len - 1};
 }
 
 // Completion
 
 typedef struct cmpl_t {
     md_vial_completion_t*   items;  // md_array
-    str_t                   prefix;
+    md_str_t                   prefix;
     md_allocator_i*         alloc;
 } cmpl_t;
 
-static void cmpl_add(cmpl_t* c, str_t label, str_t text, md_vial_completion_kind_t kind) {
+static void cmpl_add(cmpl_t* c, md_str_t label, md_str_t text, md_vial_completion_kind_t kind) {
     if (!label.len || label.len < c->prefix.len || (c->prefix.len && strncmp(label.ptr, c->prefix.ptr, c->prefix.len))) return;
-    for (size_t i = 0; i < md_array_size(c->items); ++i) if (str_eq(c->items[i].label, label)) return;
-    md_vial_completion_t it = {.label = str_copy(label, c->alloc), .text = str_copy(text, c->alloc), .kind = kind};
+    for (size_t i = 0; i < md_array_size(c->items); ++i) if (md_str_eq(c->items[i].label, label)) return;
+    md_vial_completion_t it = {.label = md_str_copy(label, c->alloc), .text = md_str_copy(text, c->alloc), .kind = kind};
     md_array_push(c->items, it, c->alloc);
 }
 
@@ -517,12 +516,12 @@ static bool tok_op(const vial_token_t* t, vial_op_t op) {
     return (t->kind == MD_VIAL_TOKEN_OPERATOR || t->kind == MD_VIAL_TOKEN_PUNCT) && t->sub == op;
 }
 
-static str_t tok_text(const md_vial_program_t* prog, const vial_token_t* t) {
-    return (str_t){prog->src.ptr + t->span.beg, t->span.end - t->span.beg};
+static md_str_t tok_text(const md_vial_program_t* prog, const vial_token_t* t) {
+    return (md_str_t){prog->src.ptr + t->span.beg, t->span.end - t->span.beg};
 }
 
 // The innermost call whose parentheses hold offset, and the name it calls; 0 when none
-static vial_node_id call_at(const md_vial_program_t* prog, uint32_t offset, str_t callee) {
+static vial_node_id call_at(const md_vial_program_t* prog, uint32_t offset, md_str_t callee) {
     const vial_tree_t* t = &prog->tree;
     vial_node_id best = 0;
     uint32_t best_len = UINT32_MAX;
@@ -536,7 +535,7 @@ static vial_node_id call_at(const md_vial_program_t* prog, uint32_t offset, str_
         if (t->nodes[f].kind == VIAL_N_ATTR) nm = vial_child(t, f, 1);
         if (!nm || t->nodes[nm].kind != VIAL_N_NAME) continue;
         const md_vial_span_t sp = t->nodes[nm].span;
-        if (!str_eq((str_t){prog->src.ptr + sp.beg, sp.end - sp.beg}, callee) || offset <= t->nodes[f].span.end) continue;
+        if (!md_str_eq((md_str_t){prog->src.ptr + sp.beg, sp.end - sp.beg}, callee) || offset <= t->nodes[f].span.end) continue;
         const uint32_t len = n->span.end - n->span.beg;
         if (len < best_len) { best = i; best_len = len; }
     }
@@ -544,43 +543,43 @@ static vial_node_id call_at(const md_vial_program_t* prog, uint32_t offset, str_
 }
 
 // A parameter as name=, unless the call gives it already
-static void param_add(cmpl_t* c, str_t name, const str_t* given, size_t num_given) {
+static void param_add(cmpl_t* c, md_str_t name, const md_str_t* given, size_t num_given) {
     if (!name.len || name.ptr[0] == '_') return;
-    for (size_t g = 0; g < num_given; ++g) if (str_eq(given[g], name)) return;
+    for (size_t g = 0; g < num_given; ++g) if (md_str_eq(given[g], name)) return;
     char buf[128];
     const int len = snprintf(buf, sizeof(buf), "%.*s=", (int)name.len, name.ptr);
-    if (len > 0 && len < (int)sizeof(buf)) cmpl_add(c, name, (str_t){buf, (size_t)len}, MD_VIAL_COMPLETION_PARAMETER);
+    if (len > 0 && len < (int)sizeof(buf)) cmpl_add(c, name, (md_str_t){buf, (size_t)len}, MD_VIAL_COMPLETION_PARAMETER);
 }
 
 // The parameters of the call around the cursor: a built-in's as the checker bound it, a def's from its PARAM nodes
 static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id call) {
     const vial_tree_t* t = &prog->tree;
-    str_t given[32];
+    md_str_t given[32];
     size_t ng = 0;
     for (uint32_t i = 1; i < t->nodes[call].child_count && ng < 32; ++i) {
         const vial_node_id a = vial_child(t, call, i);
         if (!a || t->nodes[a].kind != VIAL_N_KWARG) continue;
         const vial_node_id kn = vial_child(t, a, 0);
-        if (kn) given[ng++] = (str_t){prog->src.ptr + t->nodes[kn].span.beg, t->nodes[kn].span.end - t->nodes[kn].span.beg};
+        if (kn) given[ng++] = (md_str_t){prog->src.ptr + t->nodes[kn].span.beg, t->nodes[kn].span.end - t->nodes[kn].span.beg};
     }
     if (call < md_array_size(prog->types.sigs) && prog->types.sigs[call].params) {
         const vx_sig_t* sg = &prog->types.sigs[call];
-        for (uint32_t k = 0; k < sg->np; ++k) param_add(c, str_from_cstr(sg->params[k].name), given, ng);
+        for (uint32_t k = 0; k < sg->np; ++k) param_add(c, md_str_from_cstr(sg->params[k].name), given, ng);
         return;
     }
     vial_node_id f = vial_child(t, call, 0);
     if (f && t->nodes[f].kind == VIAL_N_ATTR) f = vial_child(t, f, 1);
     // A selector: the keywords of its level
     if (f && t->nodes[f].kind == VIAL_N_NAME) {
-        const str_t fname = {prog->src.ptr + t->nodes[f].span.beg, t->nodes[f].span.end - t->nodes[f].span.beg};
-        for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_RING; ++lv) {
-            const bool alias = (lv == VIAL_LEVEL_PARTICLE && (str_eq(fname, STR_LIT("atom")) || str_eq(fname, STR_LIT("bead")))) ||
-                               (lv == VIAL_LEVEL_PART && str_eq(fname, STR_LIT("polymer")));
-            if (!alias && !str_eq(fname, str_from_cstr(vial_select_name(lv)))) continue;
-            static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "scope"};  // not serial, until it is supported
-            for (size_t w = 0; w < ARRAY_SIZE(words); ++w) {
-                if (alias && lv == VIAL_LEVEL_PARTICLE && str_eq(str_from_cstr(words[w]), STR_LIT("kind"))) continue;    // atom() and bead() are a kind
-                if (vial_select_takes(lv, vial_select_key(str_from_cstr(words[w])))) param_add(c, str_from_cstr(words[w]), given, ng);
+        const md_str_t fname = {prog->src.ptr + t->nodes[f].span.beg, t->nodes[f].span.end - t->nodes[f].span.beg};
+        for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_GROUP; ++lv) {
+            const bool alias = (lv == VIAL_LEVEL_PARTICLE && (md_str_eq(fname, MD_STR_LIT("atom")) || md_str_eq(fname, MD_STR_LIT("bead")))) ||
+                               (lv == VIAL_LEVEL_PART && md_str_eq(fname, MD_STR_LIT("polymer")));
+            if (!alias && !md_str_eq(fname, md_str_from_cstr(vial_select_name(lv)))) continue;
+            static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "role", "scope"};  // not serial, until it is supported
+            for (size_t w = 0; w < MD_COUNTOF(words); ++w) {
+                if (alias && lv == VIAL_LEVEL_PARTICLE && md_str_eq(md_str_from_cstr(words[w]), MD_STR_LIT("kind"))) continue;    // atom() and bead() are a kind
+                if (vial_select_takes(lv, vial_select_key(md_str_from_cstr(words[w])))) param_add(c, md_str_from_cstr(words[w]), given, ng);
             }
             return;
         }
@@ -589,7 +588,7 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
     const vial_symbol_t* sym = f ? vial_names_symbol(&prog->check.names, f) : NULL;
     if (!sym || (sym->kind != VIAL_SYM_DEF && sym->kind != VIAL_SYM_PRELUDE)) return;
     const vial_tree_t* dt = sym->in_prelude || sym->kind == VIAL_SYM_PRELUDE ? &prog->prelude : t;
-    const str_t dsrc = dt == t ? prog->src : prog->prelude_src;
+    const md_str_t dsrc = dt == t ? prog->src : prog->prelude_src;
     // The symbol's node is the def's, or its name's
     const vial_names_t* dn = dt == t ? &prog->check.names : &prog->check.prelude_names;
     vial_node_id def = sym->node;
@@ -599,7 +598,7 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
     for (uint32_t i = 0; ps && i < dt->nodes[ps].child_count; ++i) {
         const vial_node_id pn = vial_child(dt, ps, i);
         const vial_node_id nm = pn ? vial_child(dt, pn, 0) : 0;
-        if (nm) param_add(c, (str_t){dsrc.ptr + dt->nodes[nm].span.beg, dt->nodes[nm].span.end - dt->nodes[nm].span.beg}, given, ng);
+        if (nm) param_add(c, (md_str_t){dsrc.ptr + dt->nodes[nm].span.beg, dt->nodes[nm].span.end - dt->nodes[nm].span.beg}, given, ng);
     }
 }
 
@@ -618,49 +617,60 @@ static bool scope_holds(const md_vial_program_t* prog, uint32_t scope, uint32_t 
 }
 
 // The values a selector keyword matches, in the system
-static void system_values(cmpl_t* c, const md_system_t* sys, str_t callee, str_t kw) {
-    #define IS(a, b) (str_eq(a, STR_LIT(b)))
+static void system_values(cmpl_t* c, const md_system_t* sys, md_str_t callee, md_str_t kw) {
+    #define IS(a, b) (md_str_eq(a, MD_STR_LIT(b)))
     const bool particles = IS(callee, "particle") || IS(callee, "atom") || IS(callee, "bead");
     const bool residues = IS(callee, "residue");
     if (particles && IS(kw, "kind")) {
         static const char* k[] = {"atom", "bead", "virtual"};
-        for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, md_str_from_cstr(k[i]), md_str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
     if (residues && IS(kw, "kind")) {
         static const char* k[] = {"amino_acid", "nucleotide", "water", "ion", "lipid", "other"};
-        for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, md_str_from_cstr(k[i]), md_str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
     if (IS(callee, "part") && IS(kw, "kind")) {
         static const char* k[] = {"polymer", "peptide", "nucleic", "dna", "rna", "glycan", "ligand", "lipid", "ion", "water"};
-        for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        for (size_t i = 0; i < MD_COUNTOF(k); ++i) cmpl_add(c, md_str_from_cstr(k[i]), md_str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
+        return;
+    }
+    if (IS(callee, "group") && IS(kw, "role")) {
+        for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
+            const md_str_t n = md_str_from_cstr(md_group_role_name((md_group_role_t)r));
+            cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
+        }
         return;
     }
     if (!sys) return;
+    if (IS(callee, "group") && (IS(kw, "name") || !kw.len)) {
+        for (size_t i = 0; i < sys->group.count; ++i) cmpl_add(c, sys->group.name[i], sys->group.name[i], MD_VIAL_COMPLETION_VALUE);
+        return;
+    }
     if (particles && (IS(kw, "name") || !kw.len)) {
         for (size_t t = 0; t < sys->atom.type.count; ++t) {
-            const str_t n = md_particle_type_name(&sys->atom.type, t);
+            const md_str_t n = md_particle_type_name(&sys->atom.type, t);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     } else if (particles && IS(kw, "element")) {
         for (size_t t = 0; t < sys->atom.type.count && sys->atom.type.z; ++t) {
-            const str_t n = md_util_element_symbol(sys->atom.type.z[t]);
+            const md_str_t n = md_util_element_symbol(sys->atom.type.z[t]);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     } else if ((particles && IS(kw, "resname")) || (residues && (IS(kw, "name") || !kw.len))) {
         for (size_t r = 0; r < md_system_residue_count(sys); ++r) {
-            const str_t n = md_system_residue_name(sys, r);
+            const md_str_t n = md_system_residue_name(sys, r);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     } else if (IS(kw, "chain") || (IS(callee, "chain") && (IS(kw, "id") || !kw.len))) {
         for (size_t i = 0; i < md_system_chain_count(sys); ++i) {
-            const str_t n = md_system_chain_id(sys, i);
+            const md_str_t n = md_system_chain_id(sys, i);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     } else if (IS(callee, "molecule") && (IS(kw, "name") || !kw.len)) {
         for (size_t i = 0; i < md_system_molecule_type_count(sys); ++i) {
-            const str_t n = md_system_molecule_type_name(sys, i);
+            const md_str_t n = md_system_molecule_type_name(sys, i);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     }
@@ -684,7 +694,7 @@ static int cmpl_cmp(const void* a, const void* b) {
     const md_vial_completion_t* y = b;
     const int r = cmpl_rank(x->kind) - cmpl_rank(y->kind);
     if (r) return r;
-    const size_t n = MIN(x->label.len, y->label.len);
+    const size_t n = MD_MIN(x->label.len, y->label.len);
     const int c = strncmp(x->label.ptr, y->label.ptr, n);
     return c ? c : (int)x->label.len - (int)y->label.len;
 }
@@ -710,7 +720,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
     if (ti != SIZE_MAX && toks[ti].kind == MD_VIAL_TOKEN_STRING) {
         // Inside the quotes: the string's contents are replaced
         const vial_token_t* t = &toks[ti];
-        const str_t text = tok_text(prog, t);
+        const md_str_t text = tok_text(prog, t);
         size_t q = 0;
         while (q < text.len && text.ptr[q] != '\'' && text.ptr[q] != '"') ++q;
         const size_t ql = (t->flags & VIAL_STR_TRIPLE) ? 3 : 1;
@@ -723,7 +733,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
     } else if (ti != SIZE_MAX) {
         span = toks[ti].span;
     }
-    c.prefix = prog->src.ptr ? (str_t){prog->src.ptr + span.beg, cursor - span.beg} : (str_t){0};
+    c.prefix = prog->src.ptr ? (md_str_t){prog->src.ptr + span.beg, cursor - span.beg} : (md_str_t){0};
     // The tokens before what is replaced, back to the call around it
     size_t prev = SIZE_MAX;
     for (size_t i = 0; i < nt && toks[i].span.end <= span.beg && toks[i].kind != MD_VIAL_TOKEN_EOF; ++i) {
@@ -731,7 +741,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         if (ti != SIZE_MAX && i == ti) break;
         prev = i;
     }
-    str_t kw = {0}, callee = {0};
+    md_str_t kw = {0}, callee = {0};
     bool subscript = false;     // inside a subscript's brackets, s['|']: a particle's name
     bool after_dot = prev != SIZE_MAX && tok_op(&toks[prev], VIAL_OP_DOT);
     if (prev != SIZE_MAX && prev >= 1 && tok_op(&toks[prev], VIAL_OP_ASSIGN) && toks[prev - 1].kind == MD_VIAL_TOKEN_NAME) {
@@ -754,30 +764,30 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         }
     }
     // A kwarg's value is not the call's own argument when an inner bracket opened since
-    if (kw.len && !callee.len) kw = (str_t){0};
+    if (kw.len && !callee.len) kw = (md_str_t){0};
 
     if (in_string) {
-        if (str_eq(callee, STR_LIT("attr")) && prog->check.sys && prog->check.run.len) {
+        if (md_str_eq(callee, MD_STR_LIT("attr")) && prog->check.sys && prog->check.run.len) {
             // attr()'s paths: the run's attributes
             const md_attributes_t* at = &prog->check.sys->attributes;
             for (size_t i = 0; i < md_array_size(at->attr); ++i) {
-                const str_t path = md_vial_attr_path(prog->check.run, at->attr[i].path);
+                const md_str_t path = md_vial_attr_path(prog->check.run, at->attr[i].path);
                 cmpl_add(&c, path, path, MD_VIAL_COMPLETION_VALUE);
             }
         } else if (callee.len) {
             system_values(&c, prog->check.sys, callee, kw);
         } else if (subscript) {
-            system_values(&c, prog->check.sys, STR_LIT("particle"), STR_LIT("name"));
+            system_values(&c, prog->check.sys, MD_STR_LIT("particle"), MD_STR_LIT("name"));
         }
     } else if (after_dot) {
         for (size_t i = 0; i < vial_builtin_count(); ++i) {
             const vial_builtin_t* b = vial_builtin_at(i);
             if (b->name[0] == '_') continue;
-            if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
+            if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, md_str_from_cstr(b->name), md_str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
         // The selectors within each set, for .residue[i] and .particle(...)
-        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail"};
-        for (size_t i = 0; i < ARRAY_SIZE(views); ++i) cmpl_add(&c, str_from_cstr(views[i]), str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
+        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail", "group"};
+        for (size_t i = 0; i < MD_COUNTOF(views); ++i) cmpl_add(&c, md_str_from_cstr(views[i]), md_str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first
         if (callee.len && !kw.len) {
@@ -817,24 +827,24 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         for (size_t i = 0; i < vial_builtin_count(); ++i) {
             const vial_builtin_t* b = vial_builtin_at(i);
             if (b->name[0] == '_') continue;
-            if (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_SELECTOR)) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_FUNCTION);
-            else if (b->flags & VIAL_BUILTIN_VALUE) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_CONSTANT);
+            if (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_SELECTOR)) cmpl_add(&c, md_str_from_cstr(b->name), md_str_from_cstr(b->name), MD_VIAL_COMPLETION_FUNCTION);
+            else if (b->flags & VIAL_BUILTIN_VALUE) cmpl_add(&c, md_str_from_cstr(b->name), md_str_from_cstr(b->name), MD_VIAL_COMPLETION_CONSTANT);
         }
         // Stored selections
         for (size_t i = 0; i < prog->check.num_stored; ++i) cmpl_add(&c, prog->check.stored[i].name, prog->check.stored[i].name, MD_VIAL_COMPLETION_CONSTANT);
-        str_t defs[64];
-        const size_t nd = MIN(prelude_defs(defs, 64), 64);
+        md_str_t defs[64];
+        const size_t nd = MD_MIN(prelude_defs(defs, 64), 64);
         for (size_t i = 0; i < nd; ++i) cmpl_add(&c, defs[i], defs[i], MD_VIAL_COMPLETION_FUNCTION);
         // The keywords a script writes; the others are reserved and E08xx
         static const vial_kw_t kws[] = {VIAL_KW_FALSE, VIAL_KW_NONE_, VIAL_KW_TRUE, VIAL_KW_AND, VIAL_KW_ASSERT, VIAL_KW_DEF, VIAL_KW_ELIF,
                                         VIAL_KW_ELSE, VIAL_KW_FOR, VIAL_KW_IF, VIAL_KW_IN, VIAL_KW_IS, VIAL_KW_NOT, VIAL_KW_OR, VIAL_KW_RETURN};
-        for (size_t i = 0; i < ARRAY_SIZE(kws); ++i) {
-            const str_t w = str_from_cstr(vial_kw_str(kws[i]));
+        for (size_t i = 0; i < MD_COUNTOF(kws); ++i) {
+            const md_str_t w = md_str_from_cstr(vial_kw_str(kws[i]));
             cmpl_add(&c, w, w, MD_VIAL_COMPLETION_KEYWORD);
         }
     }
     out->span = span;
-    out->prefix = str_copy(c.prefix, alloc);
+    out->prefix = md_str_copy(c.prefix, alloc);
     out->count = md_array_size(c.items);
     if (out->count) qsort(c.items, out->count, sizeof(*c.items), cmpl_cmp);
     out->items = c.items;

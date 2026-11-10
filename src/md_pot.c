@@ -19,40 +19,40 @@ typedef enum {
 
 // Unique strings only. The count of distinct fragment/atom names in a .pot is small
 // (a handful of fragment types times their atom count), so a linear scan is fine and
-// keeps the returned str_t:s pointer-comparable.
-static str_t pot_intern(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
-    str_t empty = {0};
-    if (str_empty(str)) return empty;
+// keeps the returned md_str_t:s pointer-comparable.
+static md_str_t pot_intern(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
+    md_str_t empty = {0};
+    if (md_str_empty(str)) return empty;
     for (size_t i = 0; i < md_array_size(pot->strings); ++i) {
-        if (str_eq(pot->strings[i], str)) {
+        if (md_str_eq(pot->strings[i], str)) {
             return pot->strings[i];
         }
     }
-    str_t cpy = str_copy(str, alloc);
+    md_str_t cpy = md_str_copy(str, alloc);
     md_array_push(pot->strings, cpy, alloc);
     return cpy;
 }
 
-static void pot_copy_symbol(char dst[4], str_t tok, int line) {
-    size_t len = MIN(tok.len, (size_t)3);
+static void pot_copy_symbol(char dst[4], md_str_t tok, int line) {
+    size_t len = MD_MIN(tok.len, (size_t)3);
     if (tok.len > 3) {
         MD_LOG_INFO("POT: line %i: element symbol '%.*s' is longer than 3 characters and was truncated", line, (int)tok.len, tok.ptr);
     }
-    MEMCPY(dst, tok.ptr, len);
+    md_memcpy(dst, tok.ptr, len);
     dst[len] = '\0';
 }
 
-static md_pot_unit_t pot_parse_unit(str_t str) {
-    if (str_eq_cstr_ignore_case(str, "angstrom") ||
-        str_eq_cstr_ignore_case(str, "angstroms") ||
-        str_eq_cstr_ignore_case(str, "aa") ||
-        str_eq_cstr_ignore_case(str, "a")) {
+static md_pot_unit_t pot_parse_unit(md_str_t str) {
+    if (md_str_eq_cstr_ignore_case(str, "angstrom") ||
+        md_str_eq_cstr_ignore_case(str, "angstroms") ||
+        md_str_eq_cstr_ignore_case(str, "aa") ||
+        md_str_eq_cstr_ignore_case(str, "a")) {
         return MD_POT_UNIT_ANGSTROM;
     }
-    if (str_eq_cstr_ignore_case(str, "au") ||
-        str_eq_cstr_ignore_case(str, "bohr") ||
-        str_eq_cstr_ignore_case(str, "bohrs") ||
-        str_eq_cstr_ignore_case(str, "atomic")) {
+    if (md_str_eq_cstr_ignore_case(str, "au") ||
+        md_str_eq_cstr_ignore_case(str, "bohr") ||
+        md_str_eq_cstr_ignore_case(str, "bohrs") ||
+        md_str_eq_cstr_ignore_case(str, "atomic")) {
         return MD_POT_UNIT_BOHR;
     }
     return MD_POT_UNIT_UNKNOWN;
@@ -63,7 +63,7 @@ double md_pot_unit_to_angstrom(md_pot_unit_t unit) {
     return (unit == MD_POT_UNIT_BOHR) ? BOHR_TO_ANGSTROM : 1.0;
 }
 
-bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
+bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
     if (!pot) {
         MD_LOG_ERROR("POT: pot object was NULL");
         return false;
@@ -73,37 +73,37 @@ bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
         return false;
     }
 
-    MEMSET(pot, 0, sizeof(md_pot_t));
+    md_memset(pot, 0, sizeof(md_pot_t));
 
     section_t section = SECTION_NONE;
     bool in_xyz = false;    // Set once the 'xyz:' directive has been seen within @environment
     int  line_num = 0;
-    str_t line;
+    md_str_t line;
 
-    while (str_extract_line(&line, &str)) {
+    while (md_str_extract_line(&line, &str)) {
         line_num += 1;
 
-        str_t l = str_trim(line);
-        if (str_empty(l))  continue;
+        md_str_t l = md_str_trim(line);
+        if (md_str_empty(l))  continue;
         if (l.ptr[0] == '#' || l.ptr[0] == '!') continue;
 
         if (l.ptr[0] == '@') {
-            str_t kw  = {0};
-            str_t rem = str_substr(l, 1, SIZE_MAX);
+            md_str_t kw  = {0};
+            md_str_t rem = md_str_substr(l, 1, SIZE_MAX);
             extract_token(&kw, &rem);
 
-            if (str_eq_cstr_ignore_case(kw, "end")) {
+            if (md_str_eq_cstr_ignore_case(kw, "end")) {
                 if (section == SECTION_NONE) {
                     MD_LOG_INFO("POT: line %i: '@end' without an open section", line_num);
                 }
                 section = SECTION_NONE;
                 in_xyz  = false;
-            } else if (str_eq_cstr_ignore_case(kw, "environment")) {
+            } else if (md_str_eq_cstr_ignore_case(kw, "environment")) {
                 section = SECTION_ENVIRONMENT;
                 in_xyz  = false;
-            } else if (str_eq_cstr_ignore_case(kw, "charges")) {
+            } else if (md_str_eq_cstr_ignore_case(kw, "charges")) {
                 section = SECTION_CHARGES;
-            } else if (str_eq_cstr_ignore_case(kw, "polarizabilities")) {
+            } else if (md_str_eq_cstr_ignore_case(kw, "polarizabilities")) {
                 section = SECTION_POLARIZABILITIES;
             } else {
                 MD_LOG_INFO("POT: line %i: skipping unsupported section '@%.*s'", line_num, (int)kw.len, kw.ptr);
@@ -121,27 +121,27 @@ bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
             goto fail;
         }
 
-        str_t  tok[10];
-        str_t  rem = l;
-        size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &rem);
+        md_str_t  tok[10];
+        md_str_t  rem = l;
+        size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rem);
 
         if (section == SECTION_ENVIRONMENT && !in_xyz) {
             // Directives of the form 'key: value'. Coordinate rows never contain a colon.
             size_t loc;
-            if (!str_find_char(&loc, l, ':')) {
+            if (!md_str_find_char(&loc, l, ':')) {
                 MD_LOG_ERROR("POT: line %i: expected a directive ('units:' or 'xyz:') within @environment, got '%.*s'", line_num, (int)l.len, l.ptr);
                 goto fail;
             }
-            str_t key = str_trim(str_substr(l, 0, loc));
-            str_t val = str_trim(str_substr(l, loc + 1, SIZE_MAX));
+            md_str_t key = md_str_trim(md_str_substr(l, 0, loc));
+            md_str_t val = md_str_trim(md_str_substr(l, loc + 1, SIZE_MAX));
 
-            if (str_eq_cstr_ignore_case(key, "xyz")) {
+            if (md_str_eq_cstr_ignore_case(key, "xyz")) {
                 in_xyz = true;
-                if (!str_empty(val)) {
+                if (!md_str_empty(val)) {
                     MD_LOG_ERROR("POT: line %i: unexpected trailing content after 'xyz:': '%.*s'", line_num, (int)val.len, val.ptr);
                     goto fail;
                 }
-            } else if (str_eq_cstr_ignore_case(key, "units")) {
+            } else if (md_str_eq_cstr_ignore_case(key, "units")) {
                 md_pot_unit_t unit = pot_parse_unit(val);
                 if (unit == MD_POT_UNIT_UNKNOWN) {
                     MD_LOG_ERROR("POT: line %i: unrecognized unit '%.*s'", line_num, (int)val.len, val.ptr);
@@ -248,7 +248,7 @@ bool md_pot_parse_str(md_pot_t* pot, str_t str, md_allocator_i* alloc) {
             break;
         }
         default:
-            ASSERT(false);
+            MD_ASSERT(false);
             break;
         }
     }
@@ -274,7 +274,7 @@ fail:
     return false;
 }
 
-bool md_pot_parse_file(md_pot_t* pot, str_t filename, md_allocator_i* alloc) {
+bool md_pot_parse_file(md_pot_t* pot, md_str_t filename, md_allocator_i* alloc) {
     if (!pot) {
         MD_LOG_ERROR("POT: pot object was NULL");
         return false;
@@ -288,8 +288,8 @@ bool md_pot_parse_file(md_pot_t* pot, str_t filename, md_allocator_i* alloc) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
-    str_t str = load_textfile(filename, temp_alloc);
-    if (str_empty(str)) {
+    md_str_t str = md_load_textfile(filename, temp_alloc);
+    if (md_str_empty(str)) {
         MD_LOG_ERROR("POT: failed to load file '%.*s'", (int)filename.len, filename.ptr);
     } else {
         success = md_pot_parse_str(pot, str, alloc);
@@ -300,17 +300,17 @@ bool md_pot_parse_file(md_pot_t* pot, str_t filename, md_allocator_i* alloc) {
 }
 
 void md_pot_free(md_pot_t* pot, md_allocator_i* alloc) {
-    ASSERT(pot);
-    ASSERT(alloc);
+    MD_ASSERT(pot);
+    MD_ASSERT(alloc);
 
     md_array_free(pot->sites, alloc);
     md_array_free(pot->charges, alloc);
     md_array_free(pot->polarizabilities, alloc);
 
     for (size_t i = 0; i < md_array_size(pot->strings); ++i) {
-        str_free(pot->strings[i], alloc);
+        md_str_free(pot->strings[i], alloc);
     }
     md_array_free(pot->strings, alloc);
 
-    MEMSET(pot, 0, sizeof(md_pot_t));
+    md_memset(pot, 0, sizeof(md_pot_t));
 }

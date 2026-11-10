@@ -97,7 +97,7 @@ static bool parse_uint(uint32_t* out, parser_t* p, int max_digits) {
 }
 
 static md_atomic_number_t element_from_symbol(const char* sym, size_t len) {
-    str_t s = {sym, len};
+    md_str_t s = {sym, len};
     return md_atomic_number_from_symbol(s, false);
 }
 
@@ -141,7 +141,7 @@ static bool parse_organic(parser_t* p, md_smiles_atom_t* atom) {
 
 static bool parse_bracket(parser_t* p, md_smiles_atom_t* atom) {
     const char* open = p->cur;
-    ASSERT(peek(p) == '[');
+    MD_ASSERT(peek(p) == '[');
     p->cur++;
 
     atom->flags = MD_SMILES_ATOM_BRACKET;
@@ -301,7 +301,7 @@ static bool parse_ring_bond(parser_t* p) {
     } else {
         parse_uint(&num, p, 1);
     }
-    ASSERT(num < NUM_RING_NUMBERS);
+    MD_ASSERT(num < NUM_RING_NUMBERS);
 
     if (p->prev < 0) return fail(p, at, "Ring bond without an atom before it");
 
@@ -441,11 +441,11 @@ static size_t count_components(size_t num_atoms, const md_smiles_bond_t* bonds, 
     return count;
 }
 
-bool md_smiles_parse(md_smiles_t* out, str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err) {
-    ASSERT(out);
-    ASSERT(alloc);
-    MEMSET(out, 0, sizeof(md_smiles_t));
-    if (err) MEMSET(err, 0, sizeof(md_smiles_error_t));
+bool md_smiles_parse(md_smiles_t* out, md_str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err) {
+    MD_ASSERT(out);
+    MD_ASSERT(alloc);
+    md_memset(out, 0, sizeof(md_smiles_t));
+    if (err) md_memset(err, 0, sizeof(md_smiles_error_t));
 
     parser_t p = {
         .str   = str.ptr,
@@ -493,10 +493,10 @@ bool md_smiles_parse(md_smiles_t* out, str_t str, struct md_allocator_i* alloc, 
 }
 
 void md_smiles_free(md_smiles_t* smiles) {
-    ASSERT(smiles);
+    MD_ASSERT(smiles);
     if (smiles->alloc) {
         md_array_free(smiles->atoms, smiles->alloc);
         md_array_free(smiles->bonds, smiles->alloc);
     }
-    MEMSET(smiles, 0, sizeof(md_smiles_t));
+    md_memset(smiles, 0, sizeof(md_smiles_t));
 }

@@ -32,14 +32,14 @@ static vial_node_id provenance(const infer_t* x, vial_node_id id) {
     return sym ? vx_frame_prov(x, sym) : 0;
 }
 
-static inline str_t text(const infer_t* x, vial_node_id id) {
+static inline md_str_t text(const infer_t* x, vial_node_id id) {
     const vial_node_id p = provenance(x, id);
     if (p) {
         const md_vial_span_t s = x->c->tree->nodes[p].span;
-        return (str_t){x->c->src.ptr + s.beg, s.end - s.beg};
+        return (md_str_t){x->c->src.ptr + s.beg, s.end - s.beg};
     }
     const md_vial_span_t s = x->t->nodes[id].span;
-    return (str_t){x->src.ptr + s.beg, s.end - s.beg};
+    return (md_str_t){x->src.ptr + s.beg, s.end - s.beg};
 }
 
 // A diagnostic, once. In the prelude it is reported in the script: at the argument a parameter stands for, or else at
@@ -64,7 +64,7 @@ static void diag_fix(infer_t* x, const char code[6], vial_node_id at, const char
         }
     }
     vial_diag(x->diags, code, span, "%s", buf);
-    if (fix) vial_diag_set_fix(x->diags, md_array_size(x->diags->items) - 1, str_from_cstr(fix));
+    if (fix) vial_diag_set_fix(x->diags, md_array_size(x->diags->items) - 1, md_str_from_cstr(fix));
 }
 #define diag(x, code, at, ...) diag_fix(x, code, at, NULL, __VA_ARGS__)
 
@@ -95,7 +95,7 @@ void vx_diag_fix(infer_t* x, const char code[6], vial_node_id at, const char* fi
     diag_fix(x, code, at, fix, "%s", buf);
 }
 const char* vx_tstr(const vial_type_t* t) { return tstr(t); }
-str_t vx_text(const infer_t* x, vial_node_id id) { return text(x, id); }
+md_str_t vx_text(const infer_t* x, vial_node_id id) { return text(x, id); }
 
 uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets) {
     if (level == VIAL_LEVEL_NONE) return 0;
@@ -196,7 +196,7 @@ static void fix_new_axis(infer_t* x, char* fix, size_t cap, vial_node_id short_n
         vial_extent_t e;
         if (!extent_join(s->dims[k], l->dims[k], &e)) return;
     }
-    const str_t txt = text(x, short_node);
+    const md_str_t txt = text(x, short_node);
     int n = snprintf(fix, cap, "%.*s[", (int)txt.len, txt.ptr);
     for (uint8_t k = 0; k < l->ndim && n > 0 && (size_t)n < cap; ++k) {
         n += snprintf(fix + n, cap - n, "%s%s", k ? ", " : "", k < s->ndim ? ":" : "None");
@@ -312,7 +312,7 @@ size_t vial_value_print(char* buf, size_t cap, const vial_value_t* v) {
     return n > 0 ? (size_t)n : 0;
 }
 
-static int64_t parse_int(str_t s) {
+static int64_t parse_int(md_str_t s) {
     char buf[64];
     size_t n = 0;
     for (size_t i = 0; i < s.len && n + 1 < sizeof(buf); ++i) if (s.ptr[i] != '_') buf[n++] = s.ptr[i];
@@ -325,7 +325,7 @@ static int64_t parse_int(str_t s) {
     return strtoll(p, NULL, base);
 }
 
-static double parse_float(str_t s) {
+static double parse_float(md_str_t s) {
     char buf[64];
     size_t n = 0;
     for (size_t i = 0; i < s.len && n + 1 < sizeof(buf); ++i) if (s.ptr[i] != '_') buf[n++] = s.ptr[i];
@@ -334,8 +334,8 @@ static double parse_float(str_t s) {
 }
 
 // The text of string literals, adjacent ones joined; escapes other than \\, \' and \" are kept as written
-static str_t string_value(infer_t* x, vial_node_id id) {
-    const str_t s = text(x, id);
+static md_str_t string_value(infer_t* x, vial_node_id id) {
+    const md_str_t s = text(x, id);
     char* out = NULL;
     for (size_t i = 0; i < s.len;) {
         while (i < s.len && s.ptr[i] != '\'' && s.ptr[i] != '"') ++i;
@@ -350,7 +350,7 @@ static str_t string_value(infer_t* x, vial_node_id id) {
             ++i;
         }
     }
-    return (str_t){out, md_array_size(out)};
+    return (md_str_t){out, md_array_size(out)};
 }
 
 // ### EXPRESSIONS ###
@@ -400,14 +400,14 @@ static T infer_quantity(infer_t* x, vial_node_id id) {
     T t = infer(x, num);
     if (vial_type_is_error(&t)) return t;
     md_unit_t u;
-    const str_t ut = text(x, unit);
+    const md_str_t ut = text(x, unit);
     bool ok;
     if (sub_of(x, unit) == 1) {
         // The text between the quotes, past a prefix
         size_t b = 0;
         while (b < ut.len && ut.ptr[b] != '\'' && ut.ptr[b] != '"') ++b;
         const size_t q = (b + 2 < ut.len && ut.ptr[b + 1] == ut.ptr[b] && ut.ptr[b + 2] == ut.ptr[b]) ? 3 : 1;
-        ok = ut.len >= b + 2 * q && vial_unit_string(str_substr(ut, b + q, ut.len - b - 2 * q), &u);
+        ok = ut.len >= b + 2 * q && vial_unit_string(md_str_substr(ut, b + q, ut.len - b - 2 * q), &u);
     } else {
         ok = vial_unit_written(ut, &u);
     }
@@ -667,7 +667,7 @@ static T infer_binary(infer_t* x, vial_node_id id) {
 static bool compare_values(uint16_t cmp, const vial_value_t* a, const vial_value_t* b, bool* out) {
     double fa, fb;
     if (a->kind == VIAL_VAL_STR && b->kind == VIAL_VAL_STR) {
-        const bool eq = str_eq(a->s, b->s);
+        const bool eq = md_str_eq(a->s, b->s);
         if (cmp == VIAL_CMP_EQ) { *out = eq; return true; }
         if (cmp == VIAL_CMP_NE) { *out = !eq; return true; }
         return false;
@@ -1057,8 +1057,8 @@ static void outside_of_array(infer_t* x, vial_node_id id, vial_node_id on, vial_
                         (k >= 0 ? k < (int64_t)vial_sets_size(av.sets, 0) : -k <= (int64_t)vial_sets_size(av.sets, 0));
     if (a->dtype == VIAL_DT_SET && d == 1 && !(a->flags & VIAL_TYPE_ONE_PARTICLE) && within) {
         char eo[VIAL_EXCERPT_MAX + 4], ei[VIAL_EXCERPT_MAX + 4];
-        const str_t so = vial_excerpt(eo, sizeof(eo), text(x, on));
-        const str_t si = vial_excerpt(ei, sizeof(ei), text(x, it));
+        const md_str_t so = vial_excerpt(eo, sizeof(eo), text(x, on));
+        const md_str_t si = vial_excerpt(ei, sizeof(ei), text(x, it));
         char fix[2 * VIAL_EXCERPT_MAX + 32];
         snprintf(fix, sizeof(fix), "%.*s.particle[%.*s]", (int)so.len, so.ptr, (int)si.len, si.ptr);
         const bool exact = so.len == text(x, on).len && si.len == text(x, it).len;
@@ -1143,8 +1143,8 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
                     if (memcmp(dg->code, "E0304", 5) == 0 && dg->span.beg >= ls.beg && dg->span.beg < ls.end) return err();
                 }
                 char ex[VIAL_EXCERPT_MAX + 4];
-                const str_t e = vial_excerpt(ex, sizeof(ex), text(x, iter));
-                const str_t nm = text(x, on);
+                const md_str_t e = vial_excerpt(ex, sizeof(ex), text(x, iter));
+                const md_str_t nm = text(x, on);
                 diag(x, "E0304", in, "position %lld is outside `%.*s`, one particle: a for over one set, `%.*s`, takes its particles one at a "
                     "time. Over one unit as an array of one, slice it, as residue[2:3]; or take the positions in it at once, "
                     "%.*s[[...]]", (long long)k, (int)nm.len, nm.ptr, (int)e.len, e.ptr, (int)e.len, e.ptr);
@@ -1362,9 +1362,9 @@ too_many:
 
 // x.f and x.f(...): VIAL calls functions, f(x, ...). The name was resolved as a built-in or a def, so it exists.
 static void method_refused(infer_t* x, vial_node_id at, vial_node_id on, vial_node_id nn, bool call) {
-    const str_t o = text(x, on), f = text(x, nn);
+    const md_str_t o = text(x, on), f = text(x, nn);
     char fix[192];
-    snprintf(fix, sizeof(fix), "%.*s(%.*s%s)", (int)MIN(f.len, 40), f.ptr, (int)MIN(o.len, 120), o.ptr, call ? ", ..." : "");
+    snprintf(fix, sizeof(fix), "%.*s(%.*s%s)", (int)MD_MIN(f.len, 40), f.ptr, (int)MD_MIN(o.len, 120), o.ptr, call ? ", ..." : "");
     diag_fix(x, "E0319", at, call ? NULL : fix, "`.%.*s` is no property: VIAL calls functions, %s", (int)f.len, f.ptr, fix);
 }
 
@@ -1372,8 +1372,8 @@ static T infer_attr(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), nn = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a) || !nn) return err();
-    const str_t name = text(x, nn);
-    if (str_eq(name, STR_LIT("T"))) {
+    const md_str_t name = text(x, nn);
+    if (md_str_eq(name, MD_STR_LIT("T"))) {
         if (a.dtype == VIAL_DT_TUPLE || a.dtype == VIAL_DT_DEF) { diag(x, "E0319", id, "`.T` takes an array; this is %s", dtype_word(&a)); return err(); }
         T t = a;
         for (uint8_t k = 0; k < a.ndim; ++k) t.dims[k] = a.dims[a.ndim - 1 - k];
@@ -1384,16 +1384,16 @@ static T infer_attr(infer_t* x, vial_node_id id) {
     if (vlevel != VIAL_LEVEL_NONE) {
         // A selector within each set, for the subscript or call it is the start of
         char ex[VIAL_EXCERPT_MAX + 4];
-        const str_t o = vial_excerpt(ex, sizeof(ex), text(x, on));
+        const md_str_t o = vial_excerpt(ex, sizeof(ex), text(x, on));
         const int nl = (int)name.len;
         char fix[160];
-        snprintf(fix, sizeof(fix), "%.*s(%.*s)", nl, name.ptr, (int)MIN(o.len, 120), o.ptr);
+        snprintf(fix, sizeof(fix), "%.*s(%.*s)", nl, name.ptr, (int)MD_MIN(o.len, 120), o.ptr);
         // Only what a unit can hold: a residue holds rings but no chains
         static const uint8_t rank[] = {[VIAL_LEVEL_PARTICLE] = 1, [VIAL_LEVEL_RING] = 2, [VIAL_LEVEL_HEAD] = 2, [VIAL_LEVEL_TAIL] = 2,
                                        [VIAL_LEVEL_RESIDUE] = 3, [VIAL_LEVEL_PART] = 4, [VIAL_LEVEL_MOLECULE] = 5, [VIAL_LEVEL_CHAIN] = 6};
         const vial_value_t av = value_of(x, on);
-        if (av.kind == VIAL_VAL_SETS && !av.sets->single && av.sets->level < ARRAY_SIZE(rank) && rank[av.sets->level] &&
-            vlevel < ARRAY_SIZE(rank) && rank[vlevel] >= rank[av.sets->level]) {
+        if (av.kind == VIAL_VAL_SETS && !av.sets->single && av.sets->level < MD_COUNTOF(rank) && rank[av.sets->level] &&
+            vlevel < MD_COUNTOF(rank) && rank[vlevel] >= rank[av.sets->level]) {
             const char* unit = vial_select_name(av.sets->level);
             diag_fix(x, "E0319", id, fix, "a %s holds no %.*s of its own; the %.*ss that hold them are %s", unit, nl, name.ptr, nl, name.ptr, fix);
             return err();
@@ -1410,14 +1410,14 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         }
         return err();
     }
-    if (a.dtype == VIAL_DT_SET || str_eq(name, STR_LIT("com"))) {
+    if (a.dtype == VIAL_DT_SET || md_str_eq(name, MD_STR_LIT("com"))) {
         T t;
         if (vx_attr_geom(x, id, on, &a, name, &t)) return t;
         if (!vial_diag_at(x->diags, x->t->nodes[nn].span.beg)) method_refused(x, id, on, nn, false);
         return err();
     }
-    const bool comp = str_eq(name, STR_LIT("x")) || str_eq(name, STR_LIT("y")) || str_eq(name, STR_LIT("z"));
-    if (comp || str_eq(name, STR_LIT("xyz"))) {
+    const bool comp = md_str_eq(name, MD_STR_LIT("x")) || md_str_eq(name, MD_STR_LIT("y")) || md_str_eq(name, MD_STR_LIT("z"));
+    if (comp || md_str_eq(name, MD_STR_LIT("xyz"))) {
         const bool coords = is_float(a.dtype) && a.ndim >= 1 && a.dims[a.ndim - 1].kind == VIAL_EXT_STATIC && a.dims[a.ndim - 1].n == 3;
         if (!coords) {
             diag(x, "E0319", id, "`.%.*s` takes coordinates, a last dimension of 3, or a set; this is `%s`", (int)name.len, name.ptr, tstr(&a));
@@ -1823,7 +1823,7 @@ void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
 // take more than 64 MB over the run (W0404)
 static void check_published(infer_t* x, vial_node_id target, const T* t) {
     if (x->frame || kind_of(x, target) != VIAL_N_NAME || vial_type_is_error(t)) return;
-    const str_t name = text(x, target);
+    const md_str_t name = text(x, target);
     if (!vial_types_published(x->out, name)) return;
     const bool publishable = t->dtype == VIAL_DT_BOOL || t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_FLOAT ||
                              t->dtype == VIAL_DT_FLOAT64 || t->dtype == VIAL_DT_SET;
@@ -1973,14 +1973,14 @@ static void read_all(infer_t* x, bool before) {
         const vial_node_id s = child(x, root, i);
         if (kind_of(x, s) != VIAL_N_ASSIGN || num_children(x, s) != 2) continue;
         const vial_node_id target = child(x, s, 0), value = child(x, s, 1);
-        if (kind_of(x, target) != VIAL_N_NAME || !str_eq(text(x, target), STR_LIT("__all__"))) continue;
+        if (kind_of(x, target) != VIAL_N_NAME || !md_str_eq(text(x, target), MD_STR_LIT("__all__"))) continue;
         const vial_node_kind_t vk = kind_of(x, value);
         if (vk != VIAL_N_LIST && vk != VIAL_N_TUPLE) {
             if (before) diag(x, "E0313", value, "`__all__` is a list of the published names, as strings: __all__ = ['d', 'rg']");
             return;
         }
         bool ok = true;
-        str_t* all = NULL;
+        md_str_t* all = NULL;
         for (uint32_t k = 0; k < num_children(x, value); ++k) {
             const vial_node_id item = child(x, value, k);
             if (kind_of(x, item) != VIAL_N_STRING) {
@@ -1988,7 +1988,7 @@ static void read_all(infer_t* x, bool before) {
                 ok = false;
                 continue;
             }
-            const str_t name = string_value(x, item);
+            const md_str_t name = string_value(x, item);
             if (!before) {
                 const uint32_t sym = vial_names_lookup_top(x->n, name);
                 if (!sym || x->n->symbols[sym].kind != VIAL_SYM_GLOBAL) {
@@ -2038,9 +2038,9 @@ void vial_check_types(vial_check_t* c, vial_types_t* out) {
     vial_diags_sort(c->diags);
 }
 
-bool vial_types_published(const vial_types_t* t, str_t name) {
+bool vial_types_published(const vial_types_t* t, md_str_t name) {
     if (!name.len) return false;
     if (!t->has_all) return name.ptr[0] != '_';
-    for (size_t i = 0; i < md_array_size(t->all); ++i) if (str_eq(t->all[i], name)) return true;
+    for (size_t i = 0; i < md_array_size(t->all); ++i) if (md_str_eq(t->all[i], name)) return true;
     return false;
 }

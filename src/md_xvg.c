@@ -9,11 +9,12 @@
 #include "core/md_writer.h"
 #include "core/md_array.h"
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 
 #include <time.h>
 
-str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
-	ASSERT(str_alloc);
+md_str_t md_xvg_format_header(md_str_t title, md_str_t xaxis_label, md_str_t yaxis_label, size_t num_legends, const md_str_t* legends, struct md_allocator_i* str_alloc) {
+	MD_ASSERT(str_alloc);
 	
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(str_alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
@@ -28,7 +29,7 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 	md_str_writer_fmt(&sb, "# Created by:\n");
 	md_str_writer_fmt(&sb, "# VIAMD \n");
 
-	if (!str_empty(title)) {
+	if (!md_str_empty(title)) {
 		md_str_writer_fmt(&sb, "@    title \"%.*s\"\n", (int)title.len, title.ptr);
 	} else {
 		md_str_writer_fmt(&sb, "@    title \"VIAMD export\"\n");
@@ -47,15 +48,15 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 		md_str_writer_fmt(&sb, "@ s%d legend \"%.*s\"\n", (int)i, (int)legends[i].len, legends[i].ptr);
 	}
 
-	str_t result = str_copy(md_str_writer_to_str(&sb), str_alloc);
+	md_str_t result = md_str_copy(md_str_writer_to_str(&sb), str_alloc);
 
 	md_temp_end(temp_scope);
 	return result;
 }
 
-str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc) {
-	ASSERT(str_alloc);
-	str_t str = {0};
+md_str_t md_xvg_format(md_str_t header, size_t num_fields, size_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc) {
+	MD_ASSERT(str_alloc);
+	md_str_t str = {0};
 
 	if (num_fields == 0) {
         MD_LOG_ERROR("XVG: num_fields is zero");
@@ -86,22 +87,22 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 		}
 	}
 
-	str = str_copy(md_str_writer_to_str(&sb), str_alloc);
+	str = md_str_copy(md_str_writer_to_str(&sb), str_alloc);
 	md_temp_end(temp_scope);
 	return str;
 }
 
-str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
-	ASSERT(alloc);
+md_str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
+	MD_ASSERT(alloc);
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, temp_alloc);
-	str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, (const float* const*)xvg->fields, alloc);
+	md_str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, temp_alloc);
+	md_str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, (const float* const*)xvg->fields, alloc);
 	md_temp_end(temp_scope);
 	return result;
 }
 
-str_t remove_quotes(str_t str) {
+md_str_t remove_quotes(md_str_t str) {
 	const char* c = str.ptr;
 	const char* beg = str.ptr;
 	const char* end = str.ptr + str.len;
@@ -120,26 +121,29 @@ str_t remove_quotes(str_t str) {
 		}
 		++c;
 	}
-	return (str_t) {beg, end-beg};
+	return (md_str_t) {beg, end-beg};
 }
 
-str_t concat_tokens(str_t first, str_t last) {
-	str_t str = {first.ptr, (last.ptr + last.len) - first.ptr};
+md_str_t concat_tokens(md_str_t first, md_str_t last) {
+	md_str_t str = {first.ptr, (last.ptr + last.len) - first.ptr};
 	return str;
 }
 
-bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* reader, md_allocator_i* alloc) {
-	str_t line;
+bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, md_allocator_i* alloc) {
+	md_str_t line;
 
 	bool result = false;
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
-	while (md_buffered_reader_peek_line(&line, reader)) {
-		if (line.ptr[0] != '#' && line.ptr[0] != '@') break;
-		md_buffered_reader_skip_line(reader);
-		md_str_writer_push_str(&sb, line);
+	// Comments and meta lines, and the blank lines between them
+	while (md_reader_peek_line(reader, &line)) {
+		const md_str_t t = md_str_trim(line);
+		if (t.len && t.ptr[0] != '#' && t.ptr[0] != '@') break;
+		md_reader_skip_line(reader);
+		if (!t.len) continue;
+		md_str_writer_push_str(&sb, t);
 		md_str_writer_push_char(&sb, '\n');
 	}
 
@@ -149,30 +153,30 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	}
 
 	// Extract string from reader
-	str_t header = str_copy(md_str_writer_to_str(&sb), alloc);
+	md_str_t header = md_str_copy(md_str_writer_to_str(&sb), alloc);
 	header_info->header = header;
 
 	// read comment
-	while (str_peek_line(&line, &header)) {
+	while (md_str_peek_line(&line, &header)) {
 		if (line.ptr[0] != '#') break;
-		str_skip_line(&header);
+		md_str_skip_line(&header);
 	}
 	
-	header_info->comment = (str_t){header_info->header.ptr, line.ptr - header_info->header.ptr};
+	header_info->comment = (md_str_t){header_info->header.ptr, line.ptr - header_info->header.ptr};
 	
-	str_t tok[16];
+	md_str_t tok[16];
 	
 	// Read meta
-	while (str_extract_line(&line, &header)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok && str_eq(tok[0], STR_LIT("@"))) {
-			if		  (str_eq(tok[1], STR_LIT("title"))) {
+	while (md_str_extract_line(&line, &header)) {
+		int64_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
+		if (num_tok >= 3 && md_str_eq(tok[0], MD_STR_LIT("@"))) {
+			if		  (md_str_eq(tok[1], MD_STR_LIT("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
-			} else if (str_eq(tok[1], STR_LIT("xaxis"))) {
+			} else if (md_str_eq(tok[1], MD_STR_LIT("xaxis"))) {
 				header_info->xaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_eq(tok[1], STR_LIT("yaxis"))) {
+			} else if (md_str_eq(tok[1], MD_STR_LIT("yaxis"))) {
 				header_info->yaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_eq(tok[2], STR_LIT("legend"))) {
+			} else if (md_str_eq(tok[2], MD_STR_LIT("legend"))) {
 				md_array_push(header_info->legends, remove_quotes(concat_tokens(tok[3], tok[num_tok - 1])), alloc);
 			}
 		}
@@ -185,43 +189,47 @@ done:
 	return result;
 }
 
-bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 	if (!parse_header_info(&xvg->header_info, reader, alloc)) {
 		return false;
 	}
 
-	str_t line;
-	if (!md_buffered_reader_extract_line(&line, reader)) {
-		MD_LOG_ERROR("XVG: Expected field values");
-		return false;
-	}
-
+	// The values of the first set: lines of numbers, the first of which says how many columns there are. Blank
+	// lines, comments ('#', also after the values of a line) and meta lines ('@', which GROMACS may write between
+	// sets) are passed over; a '&' ends the set, and what follows it, another set, is not read.
 	md_array(md_array(float)) fields = 0;
+	size_t num_fields = 0;
+	md_str_t line;
+	while (md_reader_extract_line(reader, &line)) {
+		size_t hash = 0;
+		if (md_str_find_char(&hash, line, '#')) line = md_str_substr(line, 0, hash);
+		line = md_str_trim(line);
+		if (!line.len || line.ptr[0] == '@') continue;
+		if (line.ptr[0] == '&') break;
 
-	// Go over the first line and make this our reference field line.
-	// Every following line is expected to contain as many values as this line.
-	str_t tok = {0};
-	while (extract_token(&tok, &line)) {
-		if (!is_float(tok)) {
-			MD_LOG_ERROR("XVG: Invalid float among field values: '"STR_FMT"'", STR_ARG(tok));
-			return false;
+		md_str_t tok = {0};
+		if (!fields) {
+			// The first line of values makes the fields: every following one is expected to have as many
+			while (extract_token(&tok, &line)) {
+				if (!is_float(tok)) {
+					MD_LOG_ERROR("XVG: Invalid float among field values: '"MD_STR_FMT"'", MD_STR_ARG(tok));
+					return false;
+				}
+				md_array(float) values = 0;
+				md_array_push(values, (float)parse_float(tok), alloc);
+				md_array_push(fields, values, alloc);
+			}
+			num_fields = md_array_size(fields);
+			continue;
 		}
-		md_array(float) values = 0;
-		md_array_push(values, (float)parse_float(tok), alloc);
-		md_array_push(fields, values, alloc);
-	}
-
-	const size_t num_fields = md_array_size(fields);
-	
-	while (md_buffered_reader_extract_line(&line, reader)) {
 		for (size_t i = 0; i < num_fields; ++i) {
 			if (!extract_token(&tok, &line)) {
-				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, i);
+				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, (int)i);
 				return false;
 			}
 
 			if (!is_float(tok)) {
-				MD_LOG_ERROR("XVG: Invalid float: '"STR_FMT"'", STR_ARG(tok));
+				MD_LOG_ERROR("XVG: Invalid float: '"MD_STR_FMT"'", MD_STR_ARG(tok));
 				return false;
 			}
 
@@ -241,39 +249,40 @@ bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 	return true;
 }
 
-bool md_xvg_parse_str(md_xvg_t* xvg, str_t str, md_allocator_i* alloc) {
-	ASSERT(alloc);
+bool md_xvg_parse_str(md_xvg_t* xvg, md_str_t str, md_allocator_i* alloc) {
+	MD_ASSERT(alloc);
 
-	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+	md_reader_i reader = md_reader_from_str(str);
 	return parse(xvg, &reader, alloc);
 }
 
-bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
-	ASSERT(alloc);
+bool md_xvg_parse_file(md_xvg_t* xvg, md_str_t path, md_allocator_i* alloc) {
+	MD_ASSERT(alloc);
 
 	md_file_t file = {0};
 
 	if (!md_file_open(&file, path, MD_FILE_READ)) {
-		MD_LOG_ERROR("XVG: Failed to deserialize file, file could not be opened '"STR_FMT"'", STR_ARG(path));
+		MD_LOG_ERROR("XVG: Failed to deserialize file, file could not be opened '"MD_STR_FMT"'", MD_STR_ARG(path));
 		return false;
 	}
 
-	const size_t cap = MEGABYTES(1);
+	const size_t cap = MD_MEGABYTES(1);
 	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-	char* buf = md_temp_alloc_array(temp, char, cap);
-	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+	md_file_reader_t reader;
+	md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));
 
-	bool result = parse(xvg, &reader, alloc);
+	bool result = parse(xvg, &reader.r, alloc);
+	md_file_reader_close(&reader);
 	md_temp_end(temp);
 	md_file_close(&file);
 	return result;
 }
 
 void md_xvg_free(md_xvg_t* xvg, md_allocator_i* alloc) {
-	ASSERT(xvg);
-	ASSERT(alloc);
-	if (!str_empty(xvg->header_info.header)) {
-		str_free(xvg->header_info.header, alloc);
+	MD_ASSERT(xvg);
+	MD_ASSERT(alloc);
+	if (!md_str_empty(xvg->header_info.header)) {
+		md_str_free(xvg->header_info.header, alloc);
 	}
 	md_array_free(xvg->header_info.legends, alloc);
 	for (size_t i = 0; i < md_array_size(xvg->fields); ++i) {
@@ -285,12 +294,12 @@ void md_xvg_free(md_xvg_t* xvg, md_allocator_i* alloc) {
 // ### RUN ###
 
 // The unit in parentheses in a label - "Time (ps)", "Energy (kJ/mol)" - or none
-static md_unit_t xvg_label_unit(str_t label) {
+static md_unit_t xvg_label_unit(md_str_t label) {
     size_t beg, end;
     md_unit_t unit = md_unit_none();
-    if (str_find_char(&beg, label, '(') && str_find_char(&end, label, ')') && end > beg) {
+    if (md_str_find_char(&beg, label, '(') && md_str_find_char(&end, label, ')') && end > beg) {
         md_unit_t parsed;
-        if (md_unit_parse(&parsed, str_substr(label, beg + 1, end - beg - 1))) {
+        if (md_unit_parse(&parsed, md_str_substr(label, beg + 1, end - beg - 1))) {
             unit = parsed;
         }
     }
@@ -298,12 +307,12 @@ static md_unit_t xvg_label_unit(str_t label) {
 }
 
 // "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
-static str_t xvg_group(char* buf, size_t cap, const char* kind, str_t filename) {
-    str_t file = filename;
-    extract_file(&file, filename);
+static md_str_t xvg_group(char* buf, size_t cap, const char* kind, md_str_t filename) {
+    md_str_t file = filename;
+    md_extract_file(&file, filename);
     size_t dot;
-    if (str_rfind_char(&dot, file, '.') && dot > 0) {
-        file = str_substr(file, 0, dot);
+    if (md_str_rfind_char(&dot, file, '.') && dot > 0) {
+        file = md_str_substr(file, 0, dot);
     }
     size_t len = (size_t)md_snprintf(buf, cap, "%s/", kind);
     const size_t base = len;
@@ -317,33 +326,33 @@ static str_t xvg_group(char* buf, size_t cap, const char* kind, str_t filename) 
     }
     if (len == base) len += (size_t)md_snprintf(buf + len, cap - len, "data");
     buf[len] = '\0';
-    return (str_t){ buf, len };
+    return (md_str_t){ buf, len };
 }
 
-bool md_xvg_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run) {
-    ASSERT(sys);
+bool md_xvg_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run) {
+    MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     bool result = false;
 
     md_xvg_t xvg = {0};
     if (!md_xvg_parse_file(&xvg, filename, alloc) || xvg.num_fields == 0 || xvg.num_values == 0) {
-        MD_LOG_ERROR("XVG: failed to read '" STR_FMT "'", STR_ARG(filename));
+        MD_LOG_ERROR("XVG: failed to read '" MD_STR_FMT "'", MD_STR_ARG(filename));
         goto done;
     }
 
     {
         // The first column is time when the x axis says so; every other column shares the y axis unit.
-        const bool has_time = str_eq_cstr_n_ignore_case(str_trim(xvg.header_info.xaxis_label), "time", 4);
+        const bool has_time = md_str_eq_cstr_n_ignore_case(md_str_trim(xvg.header_info.xaxis_label), "time", 4);
         const size_t first = has_time ? 1 : 0;
         const size_t C = xvg.num_fields - first;
         if (C == 0) {
-            MD_LOG_ERROR("XVG: '" STR_FMT "' holds a time column and nothing else", STR_ARG(filename));
+            MD_LOG_ERROR("XVG: '" MD_STR_FMT "' holds a time column and nothing else", MD_STR_ARG(filename));
             goto done;
         }
         const md_unit_t y_unit = xvg_label_unit(xvg.header_info.yaxis_label);
 
-        str_t*       names   = md_temp_alloc(temp, C * sizeof(str_t));
+        md_str_t*       names   = md_temp_alloc(temp, C * sizeof(md_str_t));
         md_unit_t*   units   = md_temp_alloc(temp, C * sizeof(md_unit_t));
         const float** columns = md_temp_alloc(temp, C * sizeof(float*));
         for (size_t k = 0; k < C; ++k) {
@@ -356,7 +365,7 @@ bool md_xvg_system_supplement_from_file(struct md_system_t* sys, str_t filename,
             }
             const size_t legend = field - 1;
             names[k] = (legend < md_array_size(xvg.header_info.legends)) ? xvg.header_info.legends[legend] :
-                       (C == 1 ? xvg.header_info.yaxis_label : (str_t){0});
+                       (C == 1 ? xvg.header_info.yaxis_label : (md_str_t){0});
             units[k] = y_unit;
         }
 
@@ -378,7 +387,7 @@ bool md_xvg_system_supplement_from_file(struct md_system_t* sys, str_t filename,
             .names       = names,
             .units       = units,
             .columns     = columns,
-            .source_path = (str_t){ path_buf, path_len },
+            .source_path = (md_str_t){ path_buf, path_len },
         };
         result = md_run_publish_series(sys, run, &desc);
     }

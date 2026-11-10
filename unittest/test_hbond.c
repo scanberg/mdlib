@@ -24,9 +24,9 @@
 static bool load_xyz(md_system_t* sys, md_system_state_t* st, const char* text, const md_unitcell_t* cell, md_allocator_i* alloc) {
     *sys = (md_system_t){ .alloc = alloc };
     *st  = (md_system_state_t){ .alloc = alloc };
-    if (!md_xyz_system_init_from_str(sys, st, str_from_cstr(text), MD_XYZ_OPTION_NONE)) return false;
+    if (!md_xyz_system_init_from_str(sys, st, md_str_from_cstr(text), MD_XYZ_OPTION_NONE)) return false;
     if (cell) st->unitcell = *cell;
-    return md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
+    return md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
 }
 
 static inline uint64_t hb_key(uint32_t h, uint32_t a) { return ((uint64_t)h << 32) | a; }
@@ -51,8 +51,8 @@ static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size
     md_bitmask_t bf = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
     size_t n = 0;
     for (size_t c = 0; c < sys->residue.count && n < max_count; ++c) {
-        str_t name = str_trim(md_system_residue_name(sys, c));
-        if (resname && !str_eq_cstr(name, resname)) continue;
+        md_str_t name = md_str_trim(md_system_residue_name(sys, c));
+        if (resname && !md_str_eq_cstr(name, resname)) continue;
         md_urange_t r = md_system_residue_atom_range(sys, c);
         md_bitmask_set_range(&bf, r.beg, r.end);
         n += 1;
@@ -172,18 +172,18 @@ struct hbond {
 };
 
 UTEST_F_SETUP(hbond) {
-    utest_fixture->alloc = md_vm_arena_create(GIGABYTES(8));
+    utest_fixture->alloc = md_vm_arena_create(MD_GIGABYTES(8));
     md_allocator_i* alloc = utest_fixture->alloc;
 
     utest_fixture->npt = (md_system_t){ .alloc = alloc };
     utest_fixture->npt_state = (md_system_state_t){ .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &utest_fixture->npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
-    ASSERT_TRUE(md_util_system_infer(&utest_fixture->npt, &utest_fixture->npt_state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &utest_fixture->npt_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&utest_fixture->npt, &utest_fixture->npt_state, MD_UTIL_INFER_ALL, NULL));
 
     utest_fixture->centered = (md_system_t){ .alloc = alloc };
     utest_fixture->centered_state = (md_system_state_t){ .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->centered, &utest_fixture->centered_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
-    ASSERT_TRUE(md_util_system_infer(&utest_fixture->centered, &utest_fixture->centered_state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->centered, &utest_fixture->centered_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&utest_fixture->centered, &utest_fixture->centered_state, MD_UTIL_INFER_ALL, NULL));
 }
 
 UTEST_F_TEARDOWN(hbond) {
@@ -204,7 +204,7 @@ static const char* water_dimer =
     "H  3.140 -0.464  0.803\n";
 
 UTEST(hbond, water_dimer) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys;
     md_system_state_t st;
     ASSERT_TRUE(load_xyz(&sys, &st, water_dimer, NULL, alloc));
@@ -233,7 +233,7 @@ UTEST(hbond, water_dimer) {
 
 // The same dimer straddling the boundary of a periodic cell: the donor's own O-H is split, and so is H...A.
 UTEST(hbond, water_dimer_periodic) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* shifted =
         "6\n"
         "water dimer across the boundary at x = 10\n"
@@ -263,7 +263,7 @@ UTEST(hbond, water_dimer_periodic) {
 // One hydrogen between two acceptors: a bifurcated bond. One bond per hydrogen keeps the stronger, two keep both, and
 // the tolerance drops the second when it is much weaker.
 UTEST(hbond, bifurcation) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* text =
         "9\n"
         "water donating to two waters\n"
@@ -294,13 +294,13 @@ UTEST(hbond, bifurcation) {
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
     ASSERT_EQ(2, (int)set.count);
     const float s0 = set.strength[0], s1 = set.strength[1];
-    const float ratio = MIN(s0, s1) / MAX(s0, s1);
+    const float ratio = MD_MIN(s0, s1) / MD_MAX(s0, s1);
 
-    p.bifurcation_tol = MIN(1.0f, ratio + 0.05f);
+    p.bifurcation_tol = MD_MIN(1.0f, ratio + 0.05f);
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
     EXPECT_EQ(1, (int)set.count);
 
-    p.bifurcation_tol = MAX(0.0f, ratio - 0.05f);
+    p.bifurcation_tol = MD_MAX(0.0f, ratio - 0.05f);
     ASSERT_TRUE(md_hbond_compute(&set, &desc, &sys, &st, alloc));
     EXPECT_EQ(2, (int)set.count);
     md_vm_arena_destroy(alloc);
@@ -308,7 +308,7 @@ UTEST(hbond, bifurcation) {
 
 // A pyramidal NH3 has a free lone pair, a flattened one does not
 UTEST(hbond, roles_planarity) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* text =
         "8\n"
         "pyramidal and planar NH3\n"
@@ -345,7 +345,7 @@ UTEST(hbond, roles_planarity) {
 
 // Without coordinates the N of an amide is sp2 by the perceived chemistry and does not accept, that of an amine does
 UTEST(hbond, roles_from_chemistry) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     const char* text =
         "13\n"
         "formamide and methylamine\n"
@@ -383,11 +383,11 @@ UTEST(hbond, roles_from_chemistry) {
 }
 
 UTEST(hbond, no_hydrogens) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     md_hbond_query_t q;
     ASSERT_TRUE(md_hbond_query_init(&q, NULL, &sys, alloc));
     EXPECT_EQ(0, (int)q.num_donors);
@@ -401,14 +401,14 @@ UTEST(hbond, no_hydrogens) {
     for (size_t k = 0; k < q.num_acceptors; ++k) {
         const uint32_t a = q.acceptor[k];
         if (md_system_atom_residue_kind(&sys, a) == MD_RESIDUE_KIND_AMINO_ACID) {
-            EXPECT_FALSE(str_eq_cstr(str_trim(md_atom_name(&sys.atom, a)), "N"));
+            EXPECT_FALSE(md_str_eq_cstr(md_str_trim(md_atom_name(&sys.atom, a)), "N"));
         }
     }
     md_vm_arena_destroy(alloc);
 }
 
 UTEST(hbond, invalid_params) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys;
     md_system_state_t st;
     ASSERT_TRUE(load_xyz(&sys, &st, water_dimer, NULL, alloc));
@@ -437,27 +437,27 @@ UTEST_F(hbond, roles_protein) {
 
     size_t his_free_n = 0, his_acc = 0, lys_nz_donor = 0, bb_o = 0, bb_o_acc = 0;
     for (size_t c = 0; c < sys->residue.count; ++c) {
-        const str_t res = str_trim(md_system_residue_name(sys, c));
+        const md_str_t res = md_str_trim(md_system_residue_name(sys, c));
         const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
-            const str_t name = str_trim(md_atom_name(&sys->atom, i));
+            const md_str_t name = md_str_trim(md_atom_name(&sys->atom, i));
             const bool amino = md_system_residue_kind(sys, c) == MD_RESIDUE_KIND_AMINO_ACID;
             if (amino && z == MD_Z_N) {
                 int nh = 0;
                 md_bond_iter_t it = md_bond_iter(&sys->bond, i);
                 while (md_bond_iter_has_next(&it)) { nh += md_atom_atomic_number(&sys->atom, md_bond_iter_atom_index(&it)) == MD_Z_H; md_bond_iter_next(&it); }
-                const bool his_ring = str_eq_cstr(res, "HIS") && (str_eq_cstr(name, "ND1") || str_eq_cstr(name, "NE2"));
+                const bool his_ring = md_str_eq_cstr(res, "HIS") && (md_str_eq_cstr(name, "ND1") || md_str_eq_cstr(name, "NE2"));
                 if (role[i] & MD_HBOND_ROLE_ACCEPTOR) {
                     // The only protein N with a free lone pair is the unprotonated ring N of histidine
                     EXPECT_TRUE(his_ring && nh == 0);
                     his_acc += 1;
                 }
                 if (his_ring && nh == 0) his_free_n += 1;
-                if (str_eq_cstr(res, "LYS") && str_eq_cstr(name, "NZ") && (role[i] & MD_HBOND_ROLE_DONOR)) lys_nz_donor += 1;
+                if (md_str_eq_cstr(res, "LYS") && md_str_eq_cstr(name, "NZ") && (role[i] & MD_HBOND_ROLE_DONOR)) lys_nz_donor += 1;
                 EXPECT_EQ(nh > 0, (role[i] & MD_HBOND_ROLE_DONOR) != 0);
             }
-            if (amino && z == MD_Z_O && str_eq_cstr(name, "O")) {
+            if (amino && z == MD_Z_O && md_str_eq_cstr(name, "O")) {
                 bb_o += 1;
                 if ((role[i] & MD_HBOND_ROLE_ACCEPTOR) && cap[i] == 2) bb_o_acc += 1;
             }
@@ -478,7 +478,7 @@ UTEST_F(hbond, roles_water) {
     ASSERT_TRUE(md_hbond_perceive_roles(role, cap, sys, &utest_fixture->npt_state, MD_HBOND_ROLES_DEFAULT));
     size_t water_o = 0;
     for (size_t c = 0; c < sys->residue.count; ++c) {
-        if (!str_eq_cstr(str_trim(md_system_residue_name(sys, c)), "SOL")) continue;
+        if (!md_str_eq_cstr(md_str_trim(md_system_residue_name(sys, c)), "SOL")) continue;
         const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             if (md_atom_atomic_number(&sys->atom, i) != MD_Z_O) continue;
@@ -491,11 +491,11 @@ UTEST_F(hbond, roles_water) {
 }
 
 UTEST(hbond, roles_nucleic) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     const size_t N = sys.atom.count;
     uint8_t* role = md_alloc(alloc, N);
     ASSERT_TRUE(md_hbond_perceive_roles(role, NULL, &sys, &st, MD_HBOND_ROLES_DEFAULT));
@@ -503,18 +503,18 @@ UTEST(hbond, roles_nucleic) {
     // The N acceptors of each base and nothing else: A N1 N3 N7, G N3 N7, C N3, T none
     size_t checked = 0;
     for (size_t c = 0; c < sys.residue.count; ++c) {
-        const str_t res = str_trim(md_system_residue_name(&sys, c));
+        const md_str_t res = md_str_trim(md_system_residue_name(&sys, c));
         if (res.len < 2 || res.ptr[0] != 'D') continue;
         const char base = res.ptr[1];
         const md_urange_t r = md_system_residue_atom_range(&sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             if (md_atom_atomic_number(&sys.atom, i) != MD_Z_N) continue;
-            const str_t name = str_trim(md_atom_name(&sys.atom, i));
+            const md_str_t name = md_str_trim(md_atom_name(&sys.atom, i));
             bool expect = false;
             switch (base) {
-            case 'A': expect = str_eq_cstr(name, "N1") || str_eq_cstr(name, "N3") || str_eq_cstr(name, "N7"); break;
-            case 'G': expect = str_eq_cstr(name, "N3") || str_eq_cstr(name, "N7"); break;
-            case 'C': expect = str_eq_cstr(name, "N3"); break;
+            case 'A': expect = md_str_eq_cstr(name, "N1") || md_str_eq_cstr(name, "N3") || md_str_eq_cstr(name, "N7"); break;
+            case 'G': expect = md_str_eq_cstr(name, "N3") || md_str_eq_cstr(name, "N7"); break;
+            case 'C': expect = md_str_eq_cstr(name, "N3"); break;
             default:  expect = false; break;
             }
             EXPECT_EQ(expect, (role[i] & MD_HBOND_ROLE_ACCEPTOR) != 0);
@@ -546,7 +546,7 @@ UTEST_F(hbond, roles_halide) {
         size_t n = 0;
         const uint32_t a = set.acceptor[k];
         for (size_t m = 0; m < set.count; ++m) n += set.acceptor[m] == a;
-        if (md_atom_atomic_number(&sys->atom, a) == MD_Z_Cl) max_per_cl = MAX(max_per_cl, (int)n);
+        if (md_atom_atomic_number(&sys->atom, a) == MD_Z_Cl) max_per_cl = MD_MAX(max_per_cl, (int)n);
         ++k;
     }
     EXPECT_GE(max_per_cl, 3);
@@ -717,7 +717,7 @@ UTEST_F(hbond, selection_ligand) {
 // weaker bond that would win if the competitor were ignored. Distant waters make the selection a small part of the
 // system, which is when the shell of competitors is built rather than the whole system taken.
 UTEST(hbond, selection_competitor_outside) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     char text[8192];
     int len = 0;
     const int num_far = 20;
@@ -761,7 +761,7 @@ UTEST(hbond, selection_competitor_outside) {
 // bond only and a third hydrogen H3, further than one search radius from the selection, bonds to it more strongly.
 // So in the full system H1 bonds to A1. Getting that right for the selection needs H3, a competitor's competitor.
 UTEST(hbond, selection_competitor_chain) {
-    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     char text[8192];
     int len = 0;
     const int num_far = 20;

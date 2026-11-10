@@ -59,25 +59,25 @@ typedef struct md_filter_result_t {
 
 // The atoms that expr picks, or those of the bonds it picks, all in one set, written to dst. Its previous payload is released with alloc, so it must
 // have been produced with alloc (or be empty), and the new one is allocated with it. Empty when it fails.
-md_filter_result_t md_filter(struct md_bitset_t* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
+md_filter_result_t md_filter(struct md_bitset_t* dst, md_str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // The same, one set for each structure the expression gives rather than all in one: 'residue(within(5, residue(1)))'
 // gives a set per residue, 'bond(residue(:))' the atoms of the bonds within each residue. The sets are pushed to dst, the array and their payloads allocated with alloc.
-md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
+md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, md_str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // The bonds that expr picks, all in one set, pushed to dst (cleared first, allocated with alloc): those of a bond set,
 // or the persistent bonds (of both ranges of md_bond_data_t, of every kind) with both atoms among those of a set of
 // atoms, so that every atom ("all", nothing written) is every bond, as bond() is. The bonds
 // of the system come in its order, then those a bond set has for the frame (bonds formed), sorted. Both atoms of each
 // bond are within ctx->atoms when there is a context. Empty when it fails.
-md_filter_result_t md_filter_bonds(md_array(struct md_atom_pair_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
+md_filter_result_t md_filter_bonds(md_array(struct md_atom_pair_t)* dst, md_str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // What can be written at the byte offset cursor of expr, while it is typed (see md_script_complete). The variables
 // are the names of ctx->ir. Outside of a call only what can be a selection or a bond set is offered (and the keywords that combine
 // them); in the argument of a call everything is, and what has the type of the parameter is marked (fits). The
 // system gives the values that selectors take, such as the residue names in resname('|'), those within ctx->atoms
 // when there is a context: a name that is not there would not match. ctx->state is not read.
-md_script_completions_t md_filter_complete(str_t expr, int cursor, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
+md_script_completions_t md_filter_complete(md_str_t expr, int cursor, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

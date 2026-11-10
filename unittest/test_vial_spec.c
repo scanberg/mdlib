@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <core/md_common.h>
 #include <core/md_arena_allocator.h>
@@ -16,14 +17,14 @@
 
 struct vial_spec {
     md_allocator_i* alloc;
-    str_t text;
+    md_str_t text;
     vial_spec_t spec;
 };
 
 UTEST_F_SETUP(vial_spec) {
-    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    utest_fixture->text  = load_textfile(STR_LIT(VIAL_REFERENCE_PATH), utest_fixture->alloc);
-    ASSERT_FALSE(str_empty(utest_fixture->text));
+    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    utest_fixture->text  = md_load_textfile(MD_STR_LIT(VIAL_REFERENCE_PATH), utest_fixture->alloc);
+    ASSERT_FALSE(md_str_empty(utest_fixture->text));
     vial_spec_read(&utest_fixture->spec, utest_fixture->text, utest_fixture->alloc);
 }
 
@@ -100,12 +101,12 @@ UTEST_F(vial_spec, prelude_matches) {
     const vial_spec_t* spec = &utest_fixture->spec;
     const vial_block_t* prelude = NULL;
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
-        if (str_eq(spec->blocks[i].section, STR_LIT("The prelude"))) { prelude = &spec->blocks[i]; break; }
+        if (md_str_eq(spec->blocks[i].section, MD_STR_LIT("The prelude"))) { prelude = &spec->blocks[i]; break; }
     }
     ASSERT_TRUE(prelude != NULL);
-    str_t file = load_textfile(STR_LIT(VIAL_PRELUDE_PATH), utest_fixture->alloc);
-    ASSERT_FALSE(str_empty(file));
-    const bool same = str_eq(str_trim(file), str_trim(prelude->src));
+    md_str_t file = md_load_textfile(MD_STR_LIT(VIAL_PRELUDE_PATH), utest_fixture->alloc);
+    ASSERT_FALSE(md_str_empty(file));
+    const bool same = md_str_eq(md_str_trim(file), md_str_trim(prelude->src));
     if (!same) printf("src/vial/prelude.vial differs from the prelude in the reference (line %d)\n", prelude->line);
     EXPECT_TRUE(same);
 }
@@ -115,41 +116,41 @@ UTEST(vial_spec, grammar) {
     vial_expect_t e;
 
     e = (vial_expect_t){0};
-    EXPECT_TRUE(vial_spec__parse_expect(&e, STR_LIT("-> float[433][3] Å, frame: a comment")));
+    EXPECT_TRUE(vial_spec__parse_expect(&e, MD_STR_LIT("-> float[433][3] Å, frame: a comment")));
     EXPECT_EQ(VIAL_EXPECT_RESULT, e.kind);
-    EXPECT_TRUE(str_eq(e.result, STR_LIT("float[433][3] Å")));
-    EXPECT_TRUE(str_eq(e.note, STR_LIT("frame: a comment")));
+    EXPECT_TRUE(md_str_eq(e.result, MD_STR_LIT("float[433][3] Å")));
+    EXPECT_TRUE(md_str_eq(e.note, MD_STR_LIT("frame: a comment")));
 
     e = (vial_expect_t){0};
-    EXPECT_TRUE(vial_spec__parse_expect(&e, STR_LIT("-> 'MET1/A'")));
-    EXPECT_TRUE(str_eq(e.result, STR_LIT("'MET1/A'")));
+    EXPECT_TRUE(vial_spec__parse_expect(&e, MD_STR_LIT("-> 'MET1/A'")));
+    EXPECT_TRUE(md_str_eq(e.result, MD_STR_LIT("'MET1/A'")));
 
     e = (vial_expect_t){0};
-    EXPECT_TRUE(vial_spec__parse_expect(&e, STR_LIT("error E0301: [?] and [433] do not broadcast")));
+    EXPECT_TRUE(vial_spec__parse_expect(&e, MD_STR_LIT("error E0301: [?] and [433] do not broadcast")));
     EXPECT_EQ(VIAL_EXPECT_ERROR, e.kind);
     EXPECT_EQ(1, e.num_codes);
     EXPECT_STREQ("E0301", e.codes[0]);
 
     e = (vial_expect_t){0};
-    EXPECT_TRUE(vial_spec__parse_expect(&e, STR_LIT("warning W0601, W0405 -> float Å | missing: empty on T")));
+    EXPECT_TRUE(vial_spec__parse_expect(&e, MD_STR_LIT("warning W0601, W0405 -> float Å | missing: empty on T")));
     EXPECT_EQ(VIAL_EXPECT_WARNING, e.kind);
     EXPECT_EQ(2, e.num_codes);
     EXPECT_STREQ("W0405", e.codes[1]);
-    EXPECT_TRUE(str_eq(e.result, STR_LIT("float Å | missing")));
+    EXPECT_TRUE(md_str_eq(e.result, MD_STR_LIT("float Å | missing")));
 
     e = (vial_expect_t){0};
-    EXPECT_TRUE(vial_spec__parse_expect(&e, STR_LIT("warning W0405; R0101 and a missing value")));
+    EXPECT_TRUE(vial_spec__parse_expect(&e, MD_STR_LIT("warning W0405; R0101 and a missing value")));
     EXPECT_EQ(1, e.num_codes);
-    EXPECT_TRUE(str_eq(e.note, STR_LIT("R0101 and a missing value")));
+    EXPECT_TRUE(md_str_eq(e.note, MD_STR_LIT("R0101 and a missing value")));
 
     e = (vial_expect_t){0};
-    EXPECT_TRUE(vial_spec__parse_expect(&e, STR_LIT("the CAs of the group's twenty amino acids")));
+    EXPECT_TRUE(vial_spec__parse_expect(&e, MD_STR_LIT("the CAs of the group's twenty amino acids")));
     EXPECT_EQ(VIAL_EXPECT_NONE, e.kind);
 
     e = (vial_expect_t){0};
-    EXPECT_FALSE(vial_spec__parse_expect(&e, STR_LIT("error: no code")));
+    EXPECT_FALSE(vial_spec__parse_expect(&e, MD_STR_LIT("error: no code")));
     e = (vial_expect_t){0};
-    EXPECT_FALSE(vial_spec__parse_expect(&e, STR_LIT("error E0301 -> float")));
+    EXPECT_FALSE(vial_spec__parse_expect(&e, MD_STR_LIT("error E0301 -> float")));
 }
 
 // ### PHASE 1 ###
@@ -159,7 +160,7 @@ UTEST(vial_spec, grammar) {
 // Whether a code is one the front end reports
 static bool vial_spec__is_syntax_code(const char* code) {
     static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803"};
-    for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
+    for (size_t i = 0; i < MD_COUNTOF(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }
 
@@ -241,7 +242,7 @@ UTEST_F(vial_spec, parses) {
     }
 
     // The prelude, as the compiler will read it
-    str_t prelude = load_textfile(STR_LIT(VIAL_PRELUDE_PATH), utest_fixture->alloc);
+    md_str_t prelude = md_load_textfile(MD_STR_LIT(VIAL_PRELUDE_PATH), utest_fixture->alloc);
     vial_diags_t diags;
     vial_diags_init(&diags, prelude, utest_fixture->alloc);
     vial_token_t* tokens = vial_lex(prelude, &diags, utest_fixture->alloc);
@@ -267,7 +268,7 @@ static bool vial_spec__is_checked_code(const char* code) {
                                   "E0301", "W0405", "W0607", "E0315",
                                   "E0317", "E0401", "E0403", "E0404", "E0405", "W0404", "W0406", "E0303", "W0605", "E0306",
                                   "E0320", "E0406", "W0407", "E0321", "W0408", "E0503", "W0609"};
-    for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
+    for (size_t i = 0; i < MD_COUNTOF(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }
 
@@ -280,7 +281,7 @@ UTEST_F(vial_spec, checks) {
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
         // The script: the blocks this one continues, then this one
-        str_t src = b->src;
+        md_str_t src = b->src;
         int first_line = 1;     // the line of this block's first line in src
         if (b->continues && i > 0) {
             const vial_block_t* prev = &spec->blocks[i - 1];
@@ -288,14 +289,14 @@ UTEST_F(vial_spec, checks) {
             md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
             md_array_push(buf, '\n', alloc);
             md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
-            src = (str_t){buf, md_array_size(buf)};
+            src = (md_str_t){buf, md_array_size(buf)};
             for (size_t k = 0; k < prev->src.len; ++k) first_line += prev->src.ptr[k] == '\n';
             first_line += 1;
         }
         // The reference's prelude block is the prelude: it compiles without another one. Filters are evaluated within
         // a group, which the harness cannot give yet: they compile without a system, so W0601 there is not checked.
         const bool filters = b->mode == VIAL_BLOCK_FILTERS;
-        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
+        const md_vial_compile_desc_t desc = {.flags = md_str_eq(b->section, MD_STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
             .sys = filters ? NULL : vial_test_system(b->structure)};
         md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
         ASSERT_TRUE(prog != NULL);
@@ -350,7 +351,7 @@ UTEST_F(vial_spec, types) {
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
         if (b->mode == VIAL_BLOCK_FILTERS) continue;
-        str_t src = b->src;
+        md_str_t src = b->src;
         int first_line = 1;
         if (b->continues && i > 0) {
             const vial_block_t* prev = &spec->blocks[i - 1];
@@ -358,17 +359,17 @@ UTEST_F(vial_spec, types) {
             md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
             md_array_push(buf, '\n', alloc);
             md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
-            src = (str_t){buf, md_array_size(buf)};
+            src = (md_str_t){buf, md_array_size(buf)};
             for (size_t k = 0; k < prev->src.len; ++k) first_line += prev->src.ptr[k] == '\n';
             first_line += 1;
         }
-        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
+        const md_vial_compile_desc_t desc = {.flags = md_str_eq(b->section, MD_STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
             .sys = vial_test_system(b->structure)};
         md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
         for (size_t j = 0; j < md_array_size(b->expects); ++j) {
             const vial_expect_t* e = &b->expects[j];
             vial_result_t want;
-            if (str_empty(e->result) || !vial_spec_read_result(&want, e)) continue;
+            if (md_str_empty(e->result) || !vial_spec_read_result(&want, e)) continue;
             md_vial__result_t got;
             if (!md_vial__line_result(prog, (uint32_t)(e->line_in_block + first_line - 1), &got) || !got.typed) {
                 if (verbose) printf("reference line %d: not typed yet: '%.*s'\n", e->line, (int)e->result.len, e->result.ptr);
@@ -382,11 +383,11 @@ UTEST_F(vial_spec, types) {
                     num_untyped += 1;
                     continue;
                 }
-                ok = str_eq(want.value, str_from_cstr(got.value));
+                ok = md_str_eq(want.value, md_str_from_cstr(got.value));
                 num_values += ok;
             } else {
                 ok = want.num_types == got.num_types;
-                for (int k = 0; ok && k < want.num_types; ++k) ok = vial_spec_type_matches(want.types[k], str_from_cstr(got.types[k]));
+                for (int k = 0; ok && k < want.num_types; ++k) ok = vial_spec_type_matches(want.types[k], md_str_from_cstr(got.types[k]));
             }
             if (ok && want.has_stage) ok = strcmp(want.stage, got.stage) == 0;
             if (ok && want.pass) ok = want.pass == got.pass;
@@ -416,16 +417,16 @@ UTEST_F(vial_spec, lowers) {
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
         if (b->mode == VIAL_BLOCK_FILTERS) continue;
-        str_t src = b->src;
+        md_str_t src = b->src;
         if (b->continues && i > 0) {
             const vial_block_t* prev = &spec->blocks[i - 1];
             char* buf = NULL;
             md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
             md_array_push(buf, '\n', alloc);
             md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
-            src = (str_t){buf, md_array_size(buf)};
+            src = (md_str_t){buf, md_array_size(buf)};
         }
-        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
+        const md_vial_compile_desc_t desc = {.flags = md_str_eq(b->section, MD_STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
             .sys = vial_test_system(b->structure)};
         md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
         const vial_ir_t* ir = md_vial__ir(prog);
@@ -444,11 +445,11 @@ UTEST_F(vial_spec, lowers) {
         num_failures += (int)nf;
         for (size_t k = 0; verbose && k < nf; ++k) {
             const md_vial_span_t sp = ir->failures[k].span;
-            const str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
+            const md_str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
             printf("reference block at line %d: not lowered: %s: '%.*s'\n", b->line, ir->failures[k].what, (int)(text.len < 60 ? text.len : 60), text.ptr);
         }
         if (getenv("VIAL_IR_DUMP")) {
-            const str_t d = vial_ir_dump(ir, src, alloc);
+            const md_str_t d = vial_ir_dump(ir, src, alloc);
             printf("---- block at line %d\n%.*s", b->line, (int)d.len, d.ptr);
         }
         md_vial_program_free(prog);
@@ -461,7 +462,6 @@ UTEST_F(vial_spec, lowers) {
 // counted, not failed, until the interpreter is complete.
 #include "../src/vial/interp.h"
 #include <core/md_os.h>
-#include <core/md_intrinsics.h>
 
 // Frames for at(): the run's, or the structure's own coordinates for T
 typedef struct vial_spec__frames_t {
@@ -480,8 +480,8 @@ static bool vial_spec__load(void* user, int64_t index, vial_frame_t* out) {
         return true;
     }
     if (index < 0 || index >= f->num_frames) return false;
-    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-    md_system_extract_t* ex = md_system_extract_begin(f->sys, STR_LIT("run"), paths, 2, md_get_heap_allocator());
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(f->sys, MD_STR_LIT("run"), paths, 2, md_get_heap_allocator());
     const bool ok = ex && md_system_extract_frame(ex, index, &f->state);
     if (ex) md_system_extract_end(ex);
     *out = (vial_frame_t){.xyz = (const float*)f->state.xyz, .num_atoms = f->state.num_atoms, .cell = f->state.unitcell, .index = index, .time = (double)index};
@@ -489,7 +489,7 @@ static bool vial_spec__load(void* user, int64_t index, vial_frame_t* out) {
 }
 
 // A block's source: with the block before it when it continues that one
-static str_t vial_spec__block_src(const vial_spec_t* spec, size_t i, md_allocator_i* alloc) {
+static md_str_t vial_spec__block_src(const vial_spec_t* spec, size_t i, md_allocator_i* alloc) {
     const vial_block_t* b = &spec->blocks[i];
     if (!b->continues || i == 0) return b->src;
     const vial_block_t* prev = &spec->blocks[i - 1];
@@ -497,7 +497,7 @@ static str_t vial_spec__block_src(const vial_spec_t* spec, size_t i, md_allocato
     md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
     md_array_push(buf, '\n', alloc);
     md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
-    return (str_t){buf, md_array_size(buf)};
+    return (md_str_t){buf, md_array_size(buf)};
 }
 
 // A block compiled and evaluated over every frame of its structure's run, on threads workers when more than 0
@@ -516,30 +516,8 @@ typedef struct vial_spec__eval_t {
     int                 num_workers;
 } vial_spec__eval_t;
 
-// Threads of its own for each sweep, taking chunks in turn
-typedef struct vial_spec__pool_t {
-    size_t              count;
-    void              (*fn)(void* arg, size_t i);
-    void*               arg;
-    volatile uint64_t   next;
-} vial_spec__pool_t;
-
-static void vial_spec__pool_work(void* data) {
-    vial_spec__pool_t* p = data;
-    for (uint64_t i; (i = md_atomic_fetch_add64(&p->next, 1)) < p->count;) p->fn(p->arg, (size_t)i);
-}
-
-static void vial_spec__parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    const int n = *(const int*)user;
-    vial_spec__pool_t pool = {.count = count, .fn = fn, .arg = arg};
-    md_thread_t* th[VIAL_SPEC_MAX_WORKERS];
-    for (int t = 0; t < n - 1; ++t) th[t] = md_thread_create(vial_spec__pool_work, &pool);
-    vial_spec__pool_work(&pool);
-    for (int t = 0; t < n - 1; ++t) if (th[t]) md_thread_join(th[t]);
-}
-
 // False when the block's structure has no system or the block does not inline (ir is then NULL, prog kept)
-static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_allocator_i* compile_alloc, md_allocator_i* eval_alloc, int threads) {
+static bool vial_spec__eval(vial_spec__eval_t* e, md_str_t src, char structure, md_allocator_i* compile_alloc, md_allocator_i* eval_alloc, int threads) {
     memset(e, 0, sizeof(*e));
     const md_system_t* sys = vial_test_system(structure);
     if (!sys) return false;
@@ -556,7 +534,7 @@ static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_
     e->in.load_user = &e->frames;
     e->num_workers = threads < VIAL_SPEC_MAX_WORKERS ? threads : VIAL_SPEC_MAX_WORKERS;
     for (int w = 0; w < e->num_workers; ++w) {
-        e->worker_arena[w] = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        e->worker_arena[w] = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
         vial_sys_init(&e->worker_vs[w], sys, e->worker_arena[w]);
         vial_interp_init(&e->workers[w], e->ir, &e->worker_vs[w], sys, md_get_heap_allocator());
         e->worker_frames[w] = (vial_spec__frames_t){.structure = structure, .sys = sys, .num_frames = e->num_frames, .state = {.alloc = e->worker_arena[w]}};
@@ -567,8 +545,7 @@ static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_
     if (e->num_workers) {
         e->in.workers = e->workers;
         e->in.num_workers = (size_t)e->num_workers;
-        e->in.parallel_for = vial_spec__parallel_for;
-        e->in.parallel_user = &e->num_workers;
+        e->in.executor = test_executor_of_threads((uint32_t)e->num_workers);
     }
     vial_interp_run(&e->in, e->num_frames ? e->num_frames : 1);
     return true;
@@ -598,7 +575,7 @@ UTEST_F(vial_spec, evaluates) {
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
         if (!vial_spec__evaluable(b)) continue;
-        const str_t src = vial_spec__block_src(spec, i, alloc);
+        const md_str_t src = vial_spec__block_src(spec, i, alloc);
         vial_spec__eval_t e;
         if (!vial_spec__eval(&e, src, b->structure, alloc, md_get_heap_allocator(), 0)) {
             if (e.prog) { printf("reference block at line %d: does not inline\n", b->line); num_blocks += 1; }
@@ -634,7 +611,7 @@ UTEST_F(vial_spec, evaluates) {
         num_errors += (int)ne;
         for (size_t k = 0; verbose && k < ne; ++k) {
             const md_vial_span_t sp = e.in.errors[k].span;
-            const str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
+            const md_str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
             printf("reference block at line %d: %s %s: '%.*s'\n", b->line, e.in.errors[k].code, e.in.errors[k].message, (int)(text.len < 60 ? text.len : 60), text.ptr);
         }
         vial_spec__eval_free(&e);
@@ -655,12 +632,12 @@ UTEST_F(vial_spec, deterministic) {
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
         if (!vial_spec__evaluable(b)) continue;
-        const str_t src = vial_spec__block_src(spec, i, alloc);
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        const md_str_t src = vial_spec__block_src(spec, i, alloc);
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
         // Dirty the arena's first page, so memory it hands out is not zero
-        uint8_t* junk = md_alloc(arena, KILOBYTES(32));
-        memset(junk, 0xA5, KILOBYTES(32));
-        md_free(arena, junk, KILOBYTES(32));
+        uint8_t* junk = md_alloc(arena, MD_KILOBYTES(32));
+        memset(junk, 0xA5, MD_KILOBYTES(32));
+        md_free(arena, junk, MD_KILOBYTES(32));
         vial_spec__eval_t e[2];
         const bool ok0 = vial_spec__eval(&e[0], src, b->structure, alloc, md_get_heap_allocator(), 0);
         // The second on four threads, frames in chunks across them

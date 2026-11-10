@@ -146,7 +146,7 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     if (energy > energy_cutoff)
 		return 0.0f;
 
-    energy = MAX(energy, min_bond_energy);
+    energy = MD_MAX(energy, min_bond_energy);
     dssp_hbond_insert(res_hbonds, don_idx, acc_idx, energy);
     return energy;
 }
@@ -252,8 +252,8 @@ typedef struct dssp_hbond_energy_user_param_t {
 static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     dssp_hbond_energy_user_param_t* param = (dssp_hbond_energy_user_param_t*)user_param;
     for (size_t idx = 0; idx < num_pairs; ++idx) {
-        uint32_t i = MIN(i_idx[idx], j_idx[idx]);
-        uint32_t j = MAX(i_idx[idx], j_idx[idx]);
+        uint32_t i = MD_MIN(i_idx[idx], j_idx[idx]);
+        uint32_t j = MD_MAX(i_idx[idx], j_idx[idx]);
 
 		const uint32_t ki = param->res_key[i];
 		const uint32_t kj = param->res_key[j];
@@ -415,7 +415,7 @@ static inline void cg_dssp_dihedral_cs(float* out_cos, float* out_sin, vec3_t p0
 static inline float cg_dssp_angle_cos(vec3_t a, vec3_t b, vec3_t c) {
     const vec3_t u = vec3_sub(a, b);
     const vec3_t v = vec3_sub(c, b);
-    return CLAMP(vec3_dot(u, v) / sqrtf(vec3_dot(u, u) * vec3_dot(v, v)), -1.0f, 1.0f);
+    return MD_CLAMP(vec3_dot(u, v) / sqrtf(vec3_dot(u, u) * vec3_dot(v, v)), -1.0f, 1.0f);
 }
 
 // The direction of the C=O of residue i of the chain x[beg, end) (beads in one image): the virtual C and O of the residue,
@@ -460,17 +460,17 @@ static bool cg_dssp_dipole(vec3_t* out_dipole, const vec3_t* x, int beg, int end
         for (int j = 0; j < 4; ++j) f[k++] = ct * da[j];
         for (int j = 0; j < 4; ++j) f[k++] = ct * db[j];
         w = cg_dssp_carbonyl_w1;
-        ASSERT(k == (int)ARRAY_SIZE(cg_dssp_carbonyl_w1));
+        MD_ASSERT(k == (int)MD_COUNTOF(cg_dssp_carbonyl_w1));
     } else if (has_b) {
         for (int j = 0; j < 4; ++j) f[k++] = db[j];
         for (int j = 0; j < 4; ++j) f[k++] = ct * db[j];
         w = cg_dssp_carbonyl_w2;
-        ASSERT(k == (int)ARRAY_SIZE(cg_dssp_carbonyl_w2));
+        MD_ASSERT(k == (int)MD_COUNTOF(cg_dssp_carbonyl_w2));
     } else {
         for (int j = 0; j < 4; ++j) f[k++] = da[j];
         for (int j = 0; j < 4; ++j) f[k++] = ct * da[j];
         w = cg_dssp_carbonyl_w3;
-        ASSERT(k == (int)ARRAY_SIZE(cg_dssp_carbonyl_w3));
+        MD_ASSERT(k == (int)MD_COUNTOF(cg_dssp_carbonyl_w3));
     }
 
     // {C, O} in (t, n, b), and O - C in the world
@@ -503,8 +503,8 @@ static inline void cg_dssp_bond(cg_dssp_param_t* p, uint32_t acc, uint32_t don, 
     const int64_t a = acc, d = don;
     const int64_t cand[4][2] = { {a + 1, d}, {d, a + 1}, {a, d}, {a + 1, d - 1} };
     for (int c = 0; c < 4; ++c) {
-        const int64_t i = MIN(cand[c][0], cand[c][1]);
-        const int64_t j = MAX(cand[c][0], cand[c][1]);
+        const int64_t i = MD_MIN(cand[c][0], cand[c][1]);
+        const int64_t j = MD_MAX(cand[c][0], cand[c][1]);
         // In range: a bond is never to the last segment's successor, and acc + 1 is a segment as acc holds a peptide
         if (i < 0 || (p->res_range_id[i] == p->res_range_id[j] && j - i <= 2)) continue;
         residue_pair_t pair = { (uint32_t)i, (uint32_t)j };
@@ -583,7 +583,7 @@ static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pa
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)site, sizeof(vec3_t), NULL, num_peptides);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
-    const double cutoff = MAX(CG_DSSP_TURN_DISTANCE, CG_DSSP_SHEET_DISTANCE);
+    const double cutoff = MD_MAX(CG_DSSP_TURN_DISTANCE, CG_DSSP_SHEET_DISTANCE);
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell });
 
     cg_dssp_param_t param = {
@@ -643,7 +643,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
             // 3_10 helix (G)
             if ((a & 1) && (b & 1)) {
                 const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + 3, range.end - 1);
+                const uint32_t end = MD_MIN(i + 3, range.end - 1);
                 for (uint32_t r = beg; r <= end; ++r) {
                     ss_flags[r] |= SS_FLAG_HELIX_310;
                 }
@@ -652,7 +652,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
             // alpha helix (H)
             if ((a & 2) && (b & 2)) {
                 const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + 4, range.end - 1);
+                const uint32_t end = MD_MIN(i + 4, range.end - 1);
                 for (uint32_t r = beg; r <= end; ++r) {
                     ss_flags[r] |= SS_FLAG_HELIX_ALPHA;
                 }
@@ -661,7 +661,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
             // pi helix (I)
             if ((a & 4) && (b & 4)) {
                 const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + 5, range.end - 1);
+                const uint32_t end = MD_MIN(i + 5, range.end - 1);
                 for (uint32_t r = beg; r <= end; ++r) {
                     ss_flags[r] |= SS_FLAG_HELIX_PI;
                 }
@@ -671,7 +671,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
             if (a) {
 				const int len = (a & 4) ? 5 : (a & 2) ? 4 : 3;
                 const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + len, range.end - 1);
+                const uint32_t end = MD_MIN(i + len, range.end - 1);
                 for (uint32_t r = beg; r <= end; ++r) {
                     ss_flags[r] |= SS_FLAG_TURN;
                 }
@@ -697,7 +697,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
     } dssp_bridge_t;
 
     // At most one bridge per candidate
-    dssp_bridge_t* bridges = md_temp_alloc_array(temp, dssp_bridge_t, MAX(num_sheet_candidates, 1));
+    dssp_bridge_t* bridges = md_temp_alloc_array(temp, dssp_bridge_t, MD_MAX(num_sheet_candidates, 1));
     size_t num_bridges = 0;
 
     // Helper lambdas are not allowed in C; keep as local inline-ish macros
@@ -752,7 +752,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
 		uint32_t ri = res_range_id[i];
 		uint32_t rj = res_range_id[j];
 
-		uint64_t res_range_packed = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
+		uint64_t res_range_packed = (uint64_t)MD_MIN(ri, rj) << 32 | MD_MAX(ri, rj);
 
         uint32_t idx = (uint32_t)(num_bridges++);
 
@@ -778,7 +778,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
 
 	// ---- Build ladders by directly looking up bridges in hashmaps ----
     // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_temp_alloc_zero_array(temp, bool, MAX(num_bridges, 1));
+    bool* used = md_temp_alloc_zero_array(temp, bool, MD_MAX(num_bridges, 1));
     for (size_t b = 0; b < num_bridges; ++b) {
         if (used[b]) continue;
         const dssp_bridge_t seed = bridges[b];
@@ -820,18 +820,18 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
             if (found_idx_1) {
                 const dssp_bridge_t next_bridge = bridges[*found_idx_1];
                 used[*found_idx_1] = true;
-                i_min = MIN(i_min, next_bridge.i);
-                i_max = MAX(i_max, next_bridge.i);
-                j_min = MIN(j_min, next_bridge.j);
-                j_max = MAX(j_max, next_bridge.j);
+                i_min = MD_MIN(i_min, next_bridge.i);
+                i_max = MD_MAX(i_max, next_bridge.i);
+                j_min = MD_MIN(j_min, next_bridge.j);
+                j_max = MD_MAX(j_max, next_bridge.j);
                 grew = true;
             } else if (found_idx_2) {
                 const dssp_bridge_t next_bridge = bridges[*found_idx_2];
                 used[*found_idx_2] = true;
-                i_min = MIN(i_min, next_bridge.i);
-                i_max = MAX(i_max, next_bridge.i);
-                j_min = MIN(j_min, next_bridge.j);
-                j_max = MAX(j_max, next_bridge.j);
+                i_min = MD_MIN(i_min, next_bridge.i);
+                i_max = MD_MAX(i_max, next_bridge.i);
+                j_min = MD_MIN(j_min, next_bridge.j);
+                j_max = MD_MAX(j_max, next_bridge.j);
                 grew = true;
             }
         }
@@ -845,7 +845,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
 
     // ---- Final resolution: convert flags to enum with priority ----
     // Priority: HELIX (PI > 310 > ALPHA) > SHEET > BRIDGE > TURN > BEND > COIL
-    MEMSET(out_secondary_structure, 0, sizeof(md_secondary_structure_t) * backbone_segment_count);
+    md_memset(out_secondary_structure, 0, sizeof(md_secondary_structure_t) * backbone_segment_count);
 
     for (size_t i = 0; i < backbone_segment_count; ++i) {
         uint32_t f = ss_flags[i];
@@ -871,10 +871,10 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
 }
 
 static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
-    ASSERT(out_secondary_structure);
-    ASSERT(xyz);
-    ASSERT(cell);
-    ASSERT(backbone);
+    MD_ASSERT(out_secondary_structure);
+    MD_ASSERT(xyz);
+    MD_ASSERT(cell);
+    MD_ASSERT(backbone);
 
     const size_t backbone_segment_count = backbone->segment.count;
     const size_t backbone_range_count   = backbone->range.count;
@@ -905,7 +905,7 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
     }
 
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
-	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+	md_memset(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
     if (num_trace < backbone_segment_count) {
         dssp_atomistic_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, num_trace, temp);

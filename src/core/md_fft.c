@@ -68,14 +68,14 @@ size_t md_fft_2d_scratch_size(const md_fft_2d_t* fft) {
     // col: COL_BLOCK * 2*ny (gathered columns) + 2*ny (tmp) + 2*ny (work)
     const size_t row = 2 * nx;
     const size_t col = (COL_BLOCK + 2) * 2 * ny;
-    return MAX(row, col) + 16;
+    return MD_MAX(row, col) + 16;
 }
 
 void md_fft_2d_r2c(const md_fft_2d_t* fft, const float* in, float* out, int kx_count, float* scratch) {
-    ASSERT(fft);
-    ASSERT(in);
-    ASSERT(out);
-    ASSERT(scratch);
+    MD_ASSERT(fft);
+    MD_ASSERT(in);
+    MD_ASSERT(out);
+    MD_ASSERT(scratch);
 
     const int nx = fft->nx;
     const int ny = fft->ny;
@@ -90,10 +90,10 @@ void md_fft_2d_r2c(const md_fft_2d_t* fft, const float* in, float* out, int kx_c
             pffft_transform_ordered(fft->row, in + (size_t)y * nx, tmp, work, PFFFT_FORWARD);
             float* dst = out + (size_t)y * nkx * 2;
             // Unpack PFFFT's packed format: tmp[0] = DC, tmp[1] = Nyquist, then (re,im) for k = 1 .. nx/2-1
-            const int n = MIN(kx_count, nkx);
+            const int n = MD_MIN(kx_count, nkx);
             dst[0] = tmp[0];
             dst[1] = 0.0f;
-            const int k_end = MIN(n, nx / 2);
+            const int k_end = MD_MIN(n, nx / 2);
             if (k_end > 1) {
                 memcpy(dst + 2, tmp + 2, sizeof(float) * 2 * (size_t)(k_end - 1));
             }
@@ -112,7 +112,7 @@ void md_fft_2d_r2c(const md_fft_2d_t* fft, const float* in, float* out, int kx_c
         const size_t stride = (size_t)nkx * 2;
 
         for (int kx0 = 0; kx0 < kx_count; kx0 += COL_BLOCK) {
-            const int nb = MIN(COL_BLOCK, kx_count - kx0);
+            const int nb = MD_MIN(COL_BLOCK, kx_count - kx0);
             // Gather
             for (int y = 0; y < ny; ++y) {
                 const float* src = out + y * stride + (size_t)kx0 * 2;

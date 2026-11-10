@@ -9,6 +9,7 @@
 
 #include <md_cube.h>
 #include <md_gto.h>
+#include "test_executor.h"
 
 #include <float.h>
 #include <math.h>
@@ -19,11 +20,11 @@
 #define BOHR_TO_ANGSTROM 0.529177210903
 #define VALUE_CUTOFF 1.0E-5
 
-static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, str_t filename, md_allocator_i* arena) {
+static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, md_str_t filename, md_allocator_i* arena) {
     md_temp_scope_t temp = md_temp_begin_avoid(arena);
 
     vlx_test_t t = {0};
-    if (!vlx_test_load(&t, filename, MEGABYTES(64))) {
+    if (!vlx_test_load(&t, filename, MD_MEGABYTES(64))) {
         md_temp_end(temp);
         return;
     }
@@ -61,7 +62,7 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
 
     const size_t num_ao = md_gto_basis_num_ao(&basis);
     double* mo_coeffs = md_temp_alloc_array(temp, double, num_ao);
-    qm_test_row(mo_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), 120);
+    qm_test_row(mo_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), 120);
 
     *num_gtos = md_gto_pgto_count(&basis);
     *gtos = md_alloc(arena, sizeof(md_gto_t) * (*num_gtos));
@@ -191,7 +192,7 @@ UTEST(gto, sph_to_cart_matrix_matches_dense) {
     double* e   = md_temp_alloc_zero_array(temp, double, n_sph);
     double* col = md_temp_alloc_zero_array(temp, double, n_cart);
     for (size_t r = 0; r < n_sph; ++r) {
-        MEMSET(e, 0, sizeof(double) * n_sph);
+        md_memset(e, 0, sizeof(double) * n_sph);
         e[r] = 1.0;
         md_gto_sph_to_cart_vector(col, e, &basis);
         for (size_t c = 0; c < n_cart; ++c) T[r * n_cart + c] = col[c];
@@ -275,7 +276,23 @@ UTEST(gto, sph_to_cart_orbitals_matches_vector) {
             const size_t ao_stride = layout == 0 ? nm : 1;
             const int*   p         = layout == 0 ? perm : NULL;
             for (size_t i = 0; i < nm * n_cart; ++i) out[i] = NAN;
-            ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(out, in, mo_stride, ao_stride, p, nm, &basis));
+            ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(out, in, mo_stride, ao_stride, p, nm, &basis, NULL));
+            // the same, bit for bit, over threads and out of order (the large case is past the threshold)
+            {
+                test_executor_t threads = test_executor_threads(4), shuffled = test_executor_shuffled(3);
+                const md_executor_t* exs[2] = { test_executor(&threads), test_executor(&shuffled) };
+                double* other = (double*)malloc(sizeof(double) * nm * n_cart);
+                ASSERT_TRUE(other != NULL);
+                for (int e = 0; e < 2; ++e) {
+                    ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(other, in, mo_stride, ao_stride, p, nm, &basis, exs[e]));
+                    EXPECT_EQ(0, memcmp(out, other, sizeof(double) * nm * n_cart));
+                }
+                if (nm * n_cart > 4000000) {
+                    EXPECT_GT((uint32_t)threads.pieces, 1u);
+                    EXPECT_GT((uint32_t)shuffled.pieces, 1u);
+                }
+                free(other);
+            }
             double max_diff = 0.0, peak = 0.0;
             for (size_t k = 0; k < nm; ++k) {
                 for (size_t a = 0; a < n_sph; ++a) sph[a] = in[k * mo_stride + (size_t)(p ? p[a] : (int)a) * ao_stride];
@@ -323,23 +340,56 @@ UTEST(gto, density_from_orbitals_matches_definition) {
         }
         for (int layout = 0; layout < 2; ++layout) {
             for (size_t i = 0; i < na * na; ++i) D[i] = NAN;
-            const bool ok = layout == 0 ? md_gto_density_from_orbitals(D, C, na, 1, w, nm, na)
-                                        : md_gto_density_from_orbitals(D, Ct, 1, nm, w, nm, na);
+            const bool ok = layout == 0 ? md_gto_density_from_orbitals(D, C, na, 1, w, nm, na, NULL)
+                                        : md_gto_density_from_orbitals(D, Ct, 1, nm, w, nm, na, NULL);
             ASSERT_TRUE(ok);
+            // the same, bit for bit, over threads and out of order (the large case is past the threshold)
+            {
+                test_executor_t threads = test_executor_threads(4), shuffled = test_executor_shuffled(3);
+                const md_executor_t* exs[2] = { test_executor(&threads), test_executor(&shuffled) };
+                double* other = (double*)malloc(sizeof(double) * na * na);
+                ASSERT_TRUE(other != NULL);
+                for (int e = 0; e < 2; ++e) {
+                    for (size_t i = 0; i < na * na; ++i) other[i] = NAN;
+                    ASSERT_TRUE(layout == 0 ? md_gto_density_from_orbitals(other, C, na, 1, w, nm, na, exs[e])
+                                            : md_gto_density_from_orbitals(other, Ct, 1, nm, w, nm, na, exs[e]));
+                    EXPECT_EQ(0, memcmp(D, other, sizeof(double) * na * na));
+                }
+                if (nm == 2100) {
+                    EXPECT_GT((uint32_t)threads.pieces, 1u);
+                    EXPECT_GT((uint32_t)shuffled.pieces, 1u);
+                }
+                free(other);
+            }
             double err = 0.0, asym = 0.0, mag = 0.0;
             for (size_t i = 0; i < na; ++i) {
                 for (size_t j = 0; j < na; ++j) {
                     const double d = D[i * na + j];
-                    err  = (d == d) ? MAX(err, fabs(d - ref[i * na + j])) : INFINITY;
-                    asym = MAX(asym, fabs(d - D[j * na + i]));
-                    mag  = MAX(mag, fabs(ref[i * na + j]));
+                    err  = (d == d) ? MD_MAX(err, fabs(d - ref[i * na + j])) : INFINITY;
+                    asym = MD_MAX(asym, fabs(d - D[j * na + i]));
+                    mag  = MD_MAX(mag, fabs(ref[i * na + j]));
                 }
             }
-            EXPECT_LE(err, 1.0e-13 * (double)nm * MAX(mag, 1.0));
+            EXPECT_LE(err, 1.0e-13 * (double)nm * MD_MAX(mag, 1.0));
             EXPECT_EQ(0.0, asym);   // exactly symmetric
         }
         free(ref); free(D); free(w); free(Ct); free(C);
     }
+}
+
+// A cancel through the executor: the loops stop, and the kernels say they did not finish
+UTEST(gto, kernels_cancelled_through_the_executor) {
+    const size_t nm = 2100, na = 500;   // past the density's threshold
+    double* C = (double*)calloc(nm * na, sizeof(double));
+    double* w = (double*)malloc(sizeof(double) * nm);
+    double* D = (double*)malloc(sizeof(double) * na * na);
+    ASSERT_TRUE(C && w && D);
+    for (size_t k = 0; k < nm; ++k) { w[k] = 1.0; C[k * na + k % na] = 1.0; }
+    test_executor_t threads = test_executor_threads(4);
+    threads.cancel = 1;
+    EXPECT_FALSE(md_gto_density_from_orbitals(D, C, na, 1, w, nm, na, test_executor(&threads)));
+    EXPECT_EQ(0u, (uint32_t)threads.pieces);
+    free(D); free(w); free(C);
 }
 
 UTEST(gto, evaluate_grid) {
@@ -352,7 +402,7 @@ UTEST(gto, evaluate_grid) {
     size_t num_gtos;
 
     int vol_dim = 64;
-    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), temp_arena);
+    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), temp_arena);
     size_t num_points = md_grid_num_points(&grid);
 
     md_grid_t ref_grid = grid;
@@ -361,8 +411,8 @@ UTEST(gto, evaluate_grid) {
 
     md_grid_extract_points((float*)ref_points, &ref_grid);
 
-    MEMSET(grid_data, 0, sizeof(float) * num_points);
-    MEMSET(ref_data,  0, sizeof(float) * num_points);
+    md_memset(grid_data, 0, sizeof(float) * num_points);
+    md_memset(ref_data,  0, sizeof(float) * num_points);
 
     md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
     md_gto_xyz_evaluate(ref_data, (float*)ref_points, num_points, 0, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
@@ -414,13 +464,13 @@ static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis
     mat4_t M = md_grid_index_to_world(&grid);
 
     float* psi  = md_temp_alloc_array(temp, float, count);
-    MEMSET(psi, 0, sizeof(float) * count);
+    md_memset(psi, 0, sizeof(float) * count);
     vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, count);
     md_grid_extract_points((float*)xyz, &grid);
 
     md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(vec3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
-    MEMSET(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
+    md_memset(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
 
     md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
@@ -469,12 +519,12 @@ UTEST(gto, h2o_lumo_cpu) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     md_cube_t cube_lumo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
+    ASSERT_TRUE(md_cube_file_load(&cube_lumo, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
 
     // Loaded as a SYSTEM: the geometry, the basis and the coefficients all come out of the
     // attribute table, which is the only way anything reaches a consumer now.
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
 
     size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
@@ -485,10 +535,10 @@ UTEST(gto, h2o_lumo_cpu) {
 
     // The LUMO, derived from the published occupations by the rule the reader used: the first
     // orbital with zero occupancy.
-    const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo_idx = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
     const size_t num_ao   = md_gto_basis_num_ao(&basis);
     double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
-    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
+    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_cpu(atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);  
@@ -649,12 +699,12 @@ UTEST(gto, h2o_lumo_gpu) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     md_cube_t cube_lumo = {0};
-    ASSERT_TRUE(md_cube_file_load(&cube_lumo, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
+    ASSERT_TRUE(md_cube_file_load(&cube_lumo, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), temp.arena));
 
     // Loaded as a SYSTEM: the geometry, the basis and the coefficients all come out of the
     // attribute table, which is the only way anything reaches a consumer now.
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
 
     size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
@@ -665,10 +715,10 @@ UTEST(gto, h2o_lumo_gpu) {
 
     // The LUMO, derived from the published occupations by the rule the reader used: the first
     // orbital with zero occupancy.
-    const size_t lumo_idx = vlx_test_lumo_idx(&t, STR_LIT("orbital/alpha/occupation"));
+    const size_t lumo_idx = vlx_test_lumo_idx(&t, MD_STR_LIT("orbital/alpha/occupation"));
     const size_t num_ao   = md_gto_basis_num_ao(&basis);
     double* ao_coeffs = (double*)md_temp_alloc_array(temp, double, num_ao);
-    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
+    ASSERT_EQ(qm_test_row(ao_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), lumo_idx), num_ao);
 
     double max_delta_lumo = compare_vlx_and_cube_gpu(device, atom_xyz, &basis, ao_coeffs, &cube_lumo);
     EXPECT_LT(max_delta_lumo, 1.0E-4);
@@ -685,7 +735,7 @@ UTEST(gto, h2o_lumo_gpu) {
 // where isfinite() may be folded to true and comparisons with NaN never fail.
 static bool gto_test_is_finite(float x) {
     uint32_t u;
-    MEMCPY(&u, &x, sizeof(u));
+    md_memcpy(&u, &x, sizeof(u));
     return (u & 0x7F800000u) != 0x7F800000u;
 }
 
@@ -693,7 +743,7 @@ static bool gto_test_is_finite(float x) {
 // correct values left over from an earlier launch.
 static void gto_test_poison(md_gpu_stream_t stream, md_gpu_texture_t tex, float* host_nan, size_t num_vox) {
     const uint32_t qnan = 0x7FC00000u;
-    for (size_t v = 0; v < num_vox; ++v) MEMCPY(&host_nan[v], &qnan, sizeof(qnan));
+    for (size_t v = 0; v < num_vox; ++v) md_memcpy(&host_nan[v], &qnan, sizeof(qnan));
     md_gpu_upload_texture(stream, tex, NULL, host_nan, sizeof(float) * num_vox);
 }
 
@@ -702,7 +752,7 @@ static double gto_test_rel_diff(const float* a, const float* ref, size_t n, doub
     double max_diff = 0.0;
     for (size_t v = 0; v < n; ++v) {
         if (!gto_test_is_finite(a[v])) return DBL_MAX;
-        max_diff = MAX(max_diff, fabs((double)a[v] - (double)ref[v]));
+        max_diff = MD_MAX(max_diff, fabs((double)a[v] - (double)ref[v]));
     }
     return max_diff / ref_max;
 }
@@ -716,7 +766,7 @@ UTEST(gto, density_gpu_algorithms_agree) {
     md_temp_scope_t temp = md_temp_begin();
 
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
     const size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
     ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
@@ -725,8 +775,8 @@ UTEST(gto, density_gpu_algorithms_agree) {
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
     size_t dim = 0;
-    double* D = qm_test_matrix(&t, STR_LIT("orbital/total/density"), &dim);
-    if (!D) D = qm_test_matrix(&t, STR_LIT("orbital/alpha/density"), &dim);
+    double* D = qm_test_matrix(&t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!D) D = qm_test_matrix(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
     ASSERT_TRUE(D != NULL);
     ASSERT_EQ(dim, num_ao);
 
@@ -776,10 +826,10 @@ UTEST(gto, density_gpu_algorithms_agree) {
         md_gpu_stream_sync(stream);
         const float* g = (const float*)rb.cpu;
         if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
-            MEMCPY(ref, g, sizeof(float) * num_vox);
+            md_memcpy(ref, g, sizeof(float) * num_vox);
             for (size_t v = 0; v < num_vox; ++v) {
                 ASSERT_TRUE(gto_test_is_finite(ref[v]));
-                ref_max = MAX(ref_max, fabs(ref[v]));
+                ref_max = MD_MAX(ref_max, fabs(ref[v]));
             }
             EXPECT_GT(ref_max, 1.0);
             continue;
@@ -833,7 +883,7 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     md_temp_scope_t temp = md_temp_begin();
 
     vlx_test_t t = {0};
-    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
     const size_t num_atoms = t.sys.atom.count;
     float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
     ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
@@ -841,14 +891,14 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
-    const md_attribute_t* c_attr = md_attributes_find(&t.sys.attributes, STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* c_attr = md_attributes_find(&t.sys.attributes, MD_STR_LIT("orbital/alpha/coefficient"));
     ASSERT_TRUE(c_attr != NULL);
     const size_t num_mo = md_attribute_element_count(&c_attr->format) / num_ao;
     ASSERT_GE(num_mo, (size_t)12);
     double** mo = (double**)md_temp_alloc_array(temp, double*, num_mo);
     for (size_t m = 0; m < num_mo; ++m) {
         mo[m] = (double*)md_temp_alloc_array(temp, double, num_ao);
-        ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, STR_LIT("orbital/alpha/coefficient"), m), num_ao);
+        ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), m), num_ao);
     }
 
     md_gto_gpu_initialize(device);
@@ -901,7 +951,7 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
             md_gto_gpu_orbital_launch(stream, &od);                                                    \
             md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);                                       \
             md_gpu_stream_sync(stream);                                                                \
-            MEMCPY((dst), rb.cpu, sizeof(float) * num_vox);                                            \
+            md_memcpy((dst), rb.cpu, sizeof(float) * num_vox);                                            \
         } while (0)
 
     typedef struct { md_gto_gpu_orbital_algo_t algo; bool exact; const char* name; } cfg_t;
@@ -918,16 +968,16 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
         { 0, 12, MD_GTO_EVAL_MODE_PSI_SQUARED, "12 orbitals, psi^2" },
         { 0, num_mo, MD_GTO_EVAL_MODE_PSI,    "all orbitals, psi" },
     };
-    for (size_t si = 0; si < ARRAY_SIZE(sets); ++si) {
+    for (size_t si = 0; si < MD_COUNTOF(sets); ++si) {
         const set_t* S = &sets[si];
         RUN_ORBITALS(ref, S->first, S->count, S->mode, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
         double ref_max = 0.0;
         for (size_t v = 0; v < num_vox; ++v) {
             ASSERT_TRUE(gto_test_is_finite(ref[v]));
-            ref_max = MAX(ref_max, fabs(ref[v]));
+            ref_max = MD_MAX(ref_max, fabs(ref[v]));
         }
         EXPECT_GT(ref_max, 1.0e-3);
-        for (size_t ci = 0; ci < ARRAY_SIZE(cfgs); ++ci) {
+        for (size_t ci = 0; ci < MD_COUNTOF(cfgs); ++ci) {
             RUN_ORBITALS(acc, S->first, S->count, S->mode, cfgs[ci].algo, cfgs[ci].exact, 0);
             const double rel = gto_test_rel_diff(acc, ref, num_vox, ref_max);
             printf("orbitals [%s] %s: max |diff| / max |ref| = %.3e\n", S->name, cfgs[ci].name, rel);
@@ -939,14 +989,14 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     {
         const size_t count = 10;
         float* one = (float*)md_temp_alloc_array(temp, float, num_vox);
-        MEMSET(ref, 0, sizeof(float) * num_vox);
+        md_memset(ref, 0, sizeof(float) * num_vox);
         for (size_t m = 0; m < count; ++m) {
             RUN_ORBITALS(one, m, 1, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
             for (size_t v = 0; v < num_vox; ++v) ref[v] += w[m] * one[v];
         }
         double ref_max = 0.0;
-        for (size_t v = 0; v < num_vox; ++v) ref_max = MAX(ref_max, fabs(ref[v]));
-        for (size_t ci = 1; ci < ARRAY_SIZE(cfgs); ++ci) {
+        for (size_t v = 0; v < num_vox; ++v) ref_max = MD_MAX(ref_max, fabs(ref[v]));
+        for (size_t ci = 1; ci < MD_COUNTOF(cfgs); ++ci) {
             RUN_ORBITALS(acc, 0, count, MD_GTO_EVAL_MODE_PSI_SQUARED, cfgs[ci].algo, cfgs[ci].exact, weights);
             const double rel = gto_test_rel_diff(acc, ref, num_vox, ref_max);
             printf("orbitals [10, signed weights] %s: max |diff| / max |ref| = %.3e\n", cfgs[ci].name, rel);

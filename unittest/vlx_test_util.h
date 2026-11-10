@@ -19,15 +19,15 @@
 typedef qm_test_t vlx_test_t;
 
 // Parses 'filename' into a fresh system. Returns false exactly when the reader declines the file.
-static inline bool vlx_test_load(vlx_test_t* out, str_t filename, size_t arena_bytes) {
+static inline bool vlx_test_load(vlx_test_t* out, md_str_t filename, size_t arena_bytes) {
     qm_test_init(out, arena_bytes);
-    return md_vlx_system_init_from_file(&out->sys, &out->state, filename);
+    return md_vlx_system_init_from_file(&out->sys, &out->state, filename, NULL);
 }
 
 // The frontier orbital, derived from the published occupations by the SAME rule the reader used
 // before the occupations were the only thing published: the first orbital with zero occupancy is
 // the LUMO. Returns the molecular orbital count when every orbital is occupied.
-static inline size_t vlx_test_lumo_idx(const vlx_test_t* t, str_t occupation_path) {
+static inline size_t vlx_test_lumo_idx(const vlx_test_t* t, md_str_t occupation_path) {
     const md_attribute_t* a = md_attributes_find(&t->sys.attributes, occupation_path);
     if (!a) {
         return 0;
@@ -49,7 +49,7 @@ static inline size_t vlx_test_lumo_idx(const vlx_test_t* t, str_t occupation_pat
 
 // The QM atom geometry, converted to the bohr the GTO evaluator works in. Returns the atom count.
 static inline size_t vlx_test_atom_xyz_bohr(float* dst, size_t cap, const vlx_test_t* t) {
-    const md_attribute_t* a = md_attributes_find(&t->sys.attributes, STR_LIT("qm/atom/coordinate"));
+    const md_attribute_t* a = md_attributes_find(&t->sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
     if (!a) {
         return 0;
     }

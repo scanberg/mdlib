@@ -15,7 +15,7 @@ typedef enum {
     MD_UNITCELL_PBC_ALL       = 4 | 8 | 16,
 } md_unitcell_flags_t;
 
-ENUM_FLAGS(md_unitcell_flags_t)
+MD_ENUM_FLAGS(md_unitcell_flags_t)
 
 typedef struct md_unitcell_t {
     double x, xy, xz;
@@ -55,6 +55,14 @@ static inline md_unitcell_t md_unitcell_from_matrix_float(const float A[3][3]) {
 static inline md_unitcell_t md_unitcell_from_matrix_double(const double A[3][3]) {
     return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[1][0], A[2][0], A[2][1]);
 }
+
+// The cell of three basis vectors in any orientation (basis[0] a, basis[1] b, basis[2] c), turned so that a lies
+// along x and b in the xy plane: the only orientation an md_unitcell_t holds. True when the vectors are not in that
+// orientation already, with out_R (which may be NULL) the rotation that turns them into it, which is what the
+// coordinates of the atoms within the cell are turned by as well: p' = R p. False otherwise, and out_R the identity:
+// components which ought to be zero but are no more than 1e-4 of the longest vector (a writer's round off) are taken
+// as zero rather than turned away.
+bool md_unitcell_from_basis_vectors(md_unitcell_t* out_cell, double out_R[3][3], const double basis[3][3]);
 
 // --- Parameter extraction ---
 
@@ -115,8 +123,8 @@ void md_unitcell_G_extract_float (float  out_G[3][3], const md_unitcell_t* cell)
 // Create a mask which represents the periodic dimensions from a unit cell.
 // I.e. [0,-1,-1] -> periodic in y and z, but not x
 static inline void md_unitcell_pbc_mask_extract(int out_mask[3], const md_unitcell_t* cell) {
-    ASSERT(out_mask);
-    ASSERT(cell);
+    MD_ASSERT(out_mask);
+    MD_ASSERT(cell);
 
     out_mask[0] = (cell->flags & MD_UNITCELL_PBC_X) ? -1 : 0;
     out_mask[1] = (cell->flags & MD_UNITCELL_PBC_Y) ? -1 : 0;

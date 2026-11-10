@@ -1,11 +1,13 @@
 #include "utest.h"
 
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 
 #include "comma_locale.h"
+#include "test_executor.h"
 
 #include <float.h>
 #include <math.h>
@@ -28,8 +30,8 @@ static bool is_nan_bits(double d) {
     return (bits_of(d) & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull;
 }
 
-static str_t str_of(const char* cstr) {
-    str_t s = { cstr, strlen(cstr) };
+static md_str_t str_of(const char* cstr) {
+    md_str_t s = { cstr, strlen(cstr) };
     return s;
 }
 
@@ -98,7 +100,7 @@ UTEST(parse, f64_grammar) {
         { "info",       3,  HUGE_VAL },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         const double sentinel = 12345.0;
         double v = sentinel;
         const size_t n = md_parse_f64(&v, str_of(cases[i].in));
@@ -119,19 +121,19 @@ UTEST(parse, f64_grammar) {
 
     // The sign of zero survives
     double v = 0.0;
-    EXPECT_EQ(2u, md_parse_f64(&v, STR_LIT("-0")));
+    EXPECT_EQ(2u, md_parse_f64(&v, MD_STR_LIT("-0")));
     EXPECT_EQ(bits_of(-0.0), bits_of(v));
-    EXPECT_EQ(7u, md_parse_f64(&v, STR_LIT("-1e-400")));
+    EXPECT_EQ(7u, md_parse_f64(&v, MD_STR_LIT("-1e-400")));
     EXPECT_EQ(bits_of(-0.0), bits_of(v));
 
-    EXPECT_EQ(3u, md_parse_f64(&v, STR_LIT("NaN")));
+    EXPECT_EQ(3u, md_parse_f64(&v, MD_STR_LIT("NaN")));
     EXPECT_TRUE(is_nan_bits(v));
-    EXPECT_EQ(4u, md_parse_f64(&v, STR_LIT("-nan(ind)")));   // The payload MSVC prints is not read
+    EXPECT_EQ(4u, md_parse_f64(&v, MD_STR_LIT("-nan(ind)")));   // The payload MSVC prints is not read
     EXPECT_TRUE(is_nan_bits(v));
 
     // A null view is no number
     v = 1.0;
-    EXPECT_EQ(0u, md_parse_f64(&v, (str_t){0}));
+    EXPECT_EQ(0u, md_parse_f64(&v, (md_str_t){0}));
     EXPECT_EQ(bits_of(1.0), bits_of(v));
 }
 
@@ -140,26 +142,26 @@ UTEST(parse, f64_reads_only_its_view) {
     const char text[] = "123.456e7";
     double v = 0.0;
 
-    EXPECT_EQ(3u, md_parse_f64(&v, (str_t){ text, 3 }));
+    EXPECT_EQ(3u, md_parse_f64(&v, (md_str_t){ text, 3 }));
     EXPECT_EQ(123.0, v);
-    EXPECT_EQ(4u, md_parse_f64(&v, (str_t){ text, 4 }));
+    EXPECT_EQ(4u, md_parse_f64(&v, (md_str_t){ text, 4 }));
     EXPECT_EQ(123.0, v);
-    EXPECT_EQ(6u, md_parse_f64(&v, (str_t){ text, 6 }));
+    EXPECT_EQ(6u, md_parse_f64(&v, (md_str_t){ text, 6 }));
     EXPECT_EQ(bits_of(123.45), bits_of(v));
-    EXPECT_EQ(7u, md_parse_f64(&v, (str_t){ text, 8 }));    // "123.456e": the 'e' has no digits in view
+    EXPECT_EQ(7u, md_parse_f64(&v, (md_str_t){ text, 8 }));    // "123.456e": the 'e' has no digits in view
     EXPECT_EQ(bits_of(123.456), bits_of(v));
-    EXPECT_EQ(9u, md_parse_f64(&v, (str_t){ text, 9 }));
+    EXPECT_EQ(9u, md_parse_f64(&v, (md_str_t){ text, 9 }));
     EXPECT_EQ(bits_of(123.456e7), bits_of(v));
 
     const char inf[] = "infinity";
-    EXPECT_EQ(3u, md_parse_f64(&v, (str_t){ inf, 5 }));     // "infin" reads as "inf"
-    EXPECT_EQ(0u, md_parse_f64(&v, (str_t){ inf, 2 }));
+    EXPECT_EQ(3u, md_parse_f64(&v, (md_str_t){ inf, 5 }));     // "infin" reads as "inf"
+    EXPECT_EQ(0u, md_parse_f64(&v, (md_str_t){ inf, 2 }));
 
-    EXPECT_TRUE(is_float((str_t){ text, 3 }));
-    EXPECT_TRUE(is_float((str_t){ text, 4 }));
-    EXPECT_FALSE(is_float((str_t){ text, 8 }));
-    EXPECT_TRUE(is_int((str_t){ text, 3 }));
-    EXPECT_FALSE(is_int((str_t){ text, 4 }));
+    EXPECT_TRUE(is_float((md_str_t){ text, 3 }));
+    EXPECT_TRUE(is_float((md_str_t){ text, 4 }));
+    EXPECT_FALSE(is_float((md_str_t){ text, 8 }));
+    EXPECT_TRUE(is_int((md_str_t){ text, 3 }));
+    EXPECT_FALSE(is_int((md_str_t){ text, 4 }));
 }
 
 // Inputs where a parser that is merely close gets the last bit wrong: half way cases, the subnormal
@@ -192,7 +194,7 @@ UTEST(parse, f64_hard_cases) {
         "4503599627370497.5",
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(inputs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
         const double ref = strtod(inputs[i], NULL);
         double v = 0.0;
         const size_t n = md_parse_f64(&v, str_of(inputs[i]));
@@ -240,6 +242,37 @@ UTEST(parse, f64_matches_strtod) {
     EXPECT_EQ(0u, mismatches);
 }
 
+// The seams between the inline part of md_parse_f64 (md_parse.h), md_parse_f64_slow and md_parse_f64_special: each
+// input on both sides of a limit one of them checks, read to the same value and length as strtod reads it
+UTEST(parse, f64_inline_boundaries) {
+    static const char* inputs[] = {
+        // 19 digits (the most the scan accumulates) and 20
+        "1234567890123456789", "12345678901234567890", "0.1234567890123456789", "1.234567890123456789",
+        // The mantissa at 2^53, one past it and far past it
+        "9007199254740992", "9007199254740993", "-9007199254740993e-3", "18446744073709551615",
+        // Powers of ten at the ends of the exact range, and past them
+        "1e-22", "1e-23", "1.5e-22", "123456789e-22", "1e22", "1e23", "1.5E+03", "1.23456789E+02",
+        // Exponents of 1 to 4 digits, with and without a sign, and markers without digits
+        "1e5", "1e05", "1e+005", "1e-0005", "1e999", "-1e-999", "1e0400", "1e", "1e+", "1E-", "1ex", "1.e5",
+        // Zeros of both signs, with exponents the exact path takes and ones it does not
+        "0", "-0", "-0.000", "0e0", "-0e-5", "-0e30", "0e9999", "-.0",
+        // %E as prmtop and cube files print it
+        " 1.23456789E+00", "-1.23456789E-05", "6.02214076E+23", "-4.21000E-12",
+    };
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
+        const char* in = inputs[i];
+        char* ref_end = NULL;
+        const double ref = strtod(in, &ref_end);
+        const size_t ref_len = in[0] == ' ' ? 0 : (size_t)(ref_end - in);   // md_parse_f64 does not skip whitespace
+        double v = 42.0;
+        const size_t n = md_parse_f64(&v, str_of(in));
+        EXPECT_EQ_MSG(ref_len, n, in);
+        if (ref_len) {
+            EXPECT_EQ_MSG(bits_of(ref), bits_of(v), in);
+        }
+    }
+}
+
 // The value of "1.5" does not depend on the locale, which a GTK file dialog (among others) may switch
 // to one with a decimal comma
 UTEST(parse, f64_ignores_the_locale) {
@@ -249,8 +282,8 @@ UTEST(parse, f64_ignores_the_locale) {
         "3.14159265358979323846264338327950288",    // Past 19 digits, down the slow path
         "123456789012345678901234567890.5e-10",
     };
-    double ref[ARRAY_SIZE(inputs)];
-    for (size_t i = 0; i < ARRAY_SIZE(inputs); ++i) {
+    double ref[MD_COUNTOF(inputs)];
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
         ref[i] = strtod(inputs[i], NULL);
     }
 
@@ -259,7 +292,7 @@ UTEST(parse, f64_ignores_the_locale) {
         return;
     }
 
-    for (size_t i = 0; i < ARRAY_SIZE(inputs); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
         double v = 0.0;
         EXPECT_EQ(strlen(inputs[i]), md_parse_f64(&v, str_of(inputs[i])));
         EXPECT_EQ(bits_of(ref[i]), bits_of(v));
@@ -294,14 +327,14 @@ UTEST(parse, i64) {
         { "99999999999999999999999",    23, INT64_MAX },
         { "-99999999999999999999999",   24, INT64_MIN },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         int64_t v = 7;
         EXPECT_EQ(cases[i].consumed, md_parse_i64(&v, str_of(cases[i].in)));
         EXPECT_EQ(cases[i].value, v);
     }
 
     static const char* not_ints[] = { "", "-", "+", " 1", "x1", "--1", ".5" };
-    for (size_t i = 0; i < ARRAY_SIZE(not_ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(not_ints); ++i) {
         int64_t v = 7;
         EXPECT_EQ(0u, md_parse_i64(&v, str_of(not_ints[i])));
         EXPECT_EQ(7, v);
@@ -309,7 +342,7 @@ UTEST(parse, i64) {
 
     const char text[] = "12345";
     int64_t v = 0;
-    EXPECT_EQ(2u, md_parse_i64(&v, (str_t){ text, 2 }));
+    EXPECT_EQ(2u, md_parse_i64(&v, (md_str_t){ text, 2 }));
     EXPECT_EQ(12, v);
 }
 
@@ -330,46 +363,46 @@ UTEST(parse, i64_matches_strtoll) {
 // ---------------------------------------------------------------------------
 
 UTEST(parse, parse_float_and_parse_int) {
-    EXPECT_EQ(-125.0, parse_float(STR_LIT("  -12.5e1  ")));
-    EXPECT_EQ(1.5, parse_float(STR_LIT("\t+1.5")));
-    EXPECT_EQ(0.0, parse_float(STR_LIT("abc")));
-    EXPECT_EQ(0.0, parse_float(STR_LIT("")));
-    EXPECT_EQ(0.0, parse_float((str_t){0}));
-    EXPECT_EQ(1023.2231128379817, parse_float(STR_LIT("1023.22311283798172389718923789172389")));
-    EXPECT_EQ(1232326745e10, parse_float(STR_LIT("1232326745e10")));
-    EXPECT_EQ(1.0e-29, parse_float(STR_LIT("1.0e-29")));
-    EXPECT_EQ(0.02e+10, parse_float(STR_LIT("0.02e+10")));
-    EXPECT_EQ(0.273, parse_float(STR_LIT("0000000000000.273")));
+    EXPECT_EQ(-125.0, parse_float(MD_STR_LIT("  -12.5e1  ")));
+    EXPECT_EQ(1.5, parse_float(MD_STR_LIT("\t+1.5")));
+    EXPECT_EQ(0.0, parse_float(MD_STR_LIT("abc")));
+    EXPECT_EQ(0.0, parse_float(MD_STR_LIT("")));
+    EXPECT_EQ(0.0, parse_float((md_str_t){0}));
+    EXPECT_EQ(1023.2231128379817, parse_float(MD_STR_LIT("1023.22311283798172389718923789172389")));
+    EXPECT_EQ(1232326745e10, parse_float(MD_STR_LIT("1232326745e10")));
+    EXPECT_EQ(1.0e-29, parse_float(MD_STR_LIT("1.0e-29")));
+    EXPECT_EQ(0.02e+10, parse_float(MD_STR_LIT("0.02e+10")));
+    EXPECT_EQ(0.273, parse_float(MD_STR_LIT("0000000000000.273")));
 
-    EXPECT_EQ(42, parse_int(STR_LIT(" 42")));
-    EXPECT_EQ(42, parse_int(STR_LIT("+42")));
-    EXPECT_EQ(-1, parse_int(STR_LIT("-1.9")));
-    EXPECT_EQ(0, parse_int(STR_LIT("abc")));
-    EXPECT_EQ(0, parse_int(STR_LIT("")));
-    EXPECT_EQ(1232326745, parse_int(STR_LIT("1232326745")));
+    EXPECT_EQ(42, parse_int(MD_STR_LIT(" 42")));
+    EXPECT_EQ(42, parse_int(MD_STR_LIT("+42")));
+    EXPECT_EQ(-1, parse_int(MD_STR_LIT("-1.9")));
+    EXPECT_EQ(0, parse_int(MD_STR_LIT("abc")));
+    EXPECT_EQ(0, parse_int(MD_STR_LIT("")));
+    EXPECT_EQ(1232326745, parse_int(MD_STR_LIT("1232326745")));
 }
 
 UTEST(parse, is_float_and_is_int) {
     static const char* floats[] = { "1", "-1", "+1", "1.", ".5", "-.5", "1e5", "1.5E-3", "007", "0.0", "1e+05" };
     static const char* not_floats[] = { "", "-", "+", ".", "e5", "1e", "1e+", "1.5x", " 1", "1 ", "inf", "nan", "Infinity", "1,5", "--1", "1.2.3", "0x10", "1e5.5" };
-    for (size_t i = 0; i < ARRAY_SIZE(floats); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(floats); ++i) {
         EXPECT_TRUE(is_float(str_of(floats[i])));
     }
-    for (size_t i = 0; i < ARRAY_SIZE(not_floats); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(not_floats); ++i) {
         EXPECT_FALSE(is_float(str_of(not_floats[i])));
         if (is_float(str_of(not_floats[i]))) printf("  is_float('%s')\n", not_floats[i]);
     }
-    EXPECT_FALSE(is_float((str_t){0}));
+    EXPECT_FALSE(is_float((md_str_t){0}));
 
     static const char* ints[] = { "0", "-0", "+42", "123456789012345678901234567890" };
     static const char* not_ints[] = { "", "-", "+", "1.0", "1e5", " 1", "1 ", "1-" };
-    for (size_t i = 0; i < ARRAY_SIZE(ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(ints); ++i) {
         EXPECT_TRUE(is_int(str_of(ints[i])));
     }
-    for (size_t i = 0; i < ARRAY_SIZE(not_ints); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(not_ints); ++i) {
         EXPECT_FALSE(is_int(str_of(not_ints[i])));
     }
-    EXPECT_FALSE(is_int((str_t){0}));
+    EXPECT_FALSE(is_int((md_str_t){0}));
 }
 
 // ---------------------------------------------------------------------------
@@ -377,45 +410,45 @@ UTEST(parse, is_float_and_is_int) {
 // ---------------------------------------------------------------------------
 
 UTEST(parse, extract_token) {
-    str_t str = STR_LIT("  a bb\tccc\r\n  ");
-    str_t tok;
+    md_str_t str = MD_STR_LIT("  a bb\tccc\r\n  ");
+    md_str_t tok;
     EXPECT_TRUE(extract_token(&tok, &str));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("a")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("a")));
     EXPECT_TRUE(extract_token(&tok, &str));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("bb")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("bb")));
     EXPECT_TRUE(extract_token(&tok, &str));
-    EXPECT_TRUE(str_eq(tok, STR_LIT("ccc")));
+    EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("ccc")));
     EXPECT_FALSE(extract_token(&tok, &str));
 
-    str_t toks[2];
-    str = STR_LIT("1 2 3");
-    EXPECT_EQ(2u, extract_tokens(toks, ARRAY_SIZE(toks), &str));
-    EXPECT_TRUE(str_eq(toks[1], STR_LIT("2")));
-    EXPECT_TRUE(str_eq(str, STR_LIT("3")));
+    md_str_t toks[2];
+    str = MD_STR_LIT("1 2 3");
+    EXPECT_EQ(2u, extract_tokens(toks, MD_COUNTOF(toks), &str));
+    EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT("2")));
+    EXPECT_TRUE(md_str_eq(str, MD_STR_LIT("3")));
 }
 
 UTEST(parse, extract_token_delim) {
-    str_t toks[8];
-    str_t str = STR_LIT("a,,b");
-    EXPECT_EQ(3u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
-    EXPECT_TRUE(str_eq(toks[0], STR_LIT("a")));
-    EXPECT_TRUE(str_eq(toks[1], STR_LIT("")));
-    EXPECT_TRUE(str_eq(toks[2], STR_LIT("b")));
+    md_str_t toks[8];
+    md_str_t str = MD_STR_LIT("a,,b");
+    EXPECT_EQ(3u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_TRUE(md_str_eq(toks[0], MD_STR_LIT("a")));
+    EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT("")));
+    EXPECT_TRUE(md_str_eq(toks[2], MD_STR_LIT("b")));
 
     // Whitespace is part of a field
-    str = STR_LIT(" a , b");
-    EXPECT_EQ(2u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
-    EXPECT_TRUE(str_eq(toks[0], STR_LIT(" a ")));
-    EXPECT_TRUE(str_eq(toks[1], STR_LIT(" b")));
+    str = MD_STR_LIT(" a , b");
+    EXPECT_EQ(2u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_TRUE(md_str_eq(toks[0], MD_STR_LIT(" a ")));
+    EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT(" b")));
 
     // A leading delimiter gives an empty first field; a trailing one no empty last field
-    str = STR_LIT(",a,");
-    EXPECT_EQ(2u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
-    EXPECT_TRUE(str_eq(toks[0], STR_LIT("")));
-    EXPECT_TRUE(str_eq(toks[1], STR_LIT("a")));
+    str = MD_STR_LIT(",a,");
+    EXPECT_EQ(2u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_TRUE(md_str_eq(toks[0], MD_STR_LIT("")));
+    EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT("a")));
 
-    str = STR_LIT("");
-    EXPECT_EQ(0u, extract_tokens_delim(toks, ARRAY_SIZE(toks), &str, ','));
+    str = MD_STR_LIT("");
+    EXPECT_EQ(0u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
 }
 
 // ---------------------------------------------------------------------------
@@ -423,30 +456,30 @@ UTEST(parse, extract_token_delim) {
 // ---------------------------------------------------------------------------
 
 UTEST(parse, peek_and_skip_agree_with_extract) {
-    str_t str = STR_LIT("one\r\ntwo\nlast");
-    str_t line;
+    md_str_t str = MD_STR_LIT("one\r\ntwo\nlast");
+    md_str_t line;
 
-    EXPECT_TRUE(str_peek_line(&line, &str));
-    EXPECT_TRUE(str_eq(line, STR_LIT("one")));
-    EXPECT_TRUE(str_skip_line(&str));
-    EXPECT_TRUE(str_peek_line(&line, &str));
-    EXPECT_TRUE(str_eq(line, STR_LIT("two")));
-    EXPECT_TRUE(str_extract_line(&line, &str));
-    EXPECT_TRUE(str_eq(line, STR_LIT("two")));
+    EXPECT_TRUE(md_str_peek_line(&line, &str));
+    EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("one")));
+    EXPECT_TRUE(md_str_skip_line(&str));
+    EXPECT_TRUE(md_str_peek_line(&line, &str));
+    EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("two")));
+    EXPECT_TRUE(md_str_extract_line(&line, &str));
+    EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("two")));
 
     // A last line without a newline is still a line, to all three
-    EXPECT_TRUE(str_peek_line(&line, &str));
-    EXPECT_TRUE(str_eq(line, STR_LIT("last")));
-    EXPECT_TRUE(str_skip_line(&str));
-    EXPECT_FALSE(str_peek_line(&line, &str));
-    EXPECT_FALSE(str_skip_line(&str));
-    EXPECT_FALSE(str_extract_line(&line, &str));
+    EXPECT_TRUE(md_str_peek_line(&line, &str));
+    EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("last")));
+    EXPECT_TRUE(md_str_skip_line(&str));
+    EXPECT_FALSE(md_str_peek_line(&line, &str));
+    EXPECT_FALSE(md_str_skip_line(&str));
+    EXPECT_FALSE(md_str_extract_line(&line, &str));
 }
 
 // The same lines, through a file buffer that holds only a few of them at a time and through a string
-UTEST(parse, buffered_reader) {
+UTEST(parse, reader) {
     md_allocator_i* heap = md_get_heap_allocator();
-    const str_t path = STR_LIT("md_unittest_parse_lines.txt");
+    const md_str_t path = MD_STR_LIT("md_unittest_parse_lines.txt");
 
     // Lines of varied length, some CRLF terminated, the last one unterminated
     char* text = md_alloc(heap, 64 * 1024);
@@ -467,47 +500,131 @@ UTEST(parse, buffered_reader) {
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
     ASSERT_EQ(len, md_file_write(file, text, len));
     md_file_close(&file);
-    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
-    char buf[64];   // Fits a few lines at a time, and never all of them
-    md_buffered_reader_t fr = md_buffered_reader_from_file(buf, sizeof(buf), file);
-    md_buffered_reader_t sr = md_buffered_reader_from_str((str_t){ text, len });
+    // A buffer which fits a few lines at a time, and never all of them
+    md_file_reader_t frd;
+    ASSERT_TRUE(md_file_reader_open(&frd, path, 64, heap));
+    md_reader_i* fr = &frd.r;
+    md_reader_i sr = md_reader_from_str((md_str_t){ text, len });
+    EXPECT_EQ((int64_t)len, md_reader_size(fr));
+    EXPECT_EQ((int64_t)len, md_reader_size(&sr));
 
+    int64_t offset[500];
     for (int pass = 0; pass < 2; ++pass) {
         int count = 0;
-        str_t a, b, peek;
+        md_str_t a, b, peek;
         while (true) {
-            const int64_t pos_f = md_buffered_reader_tellg(&fr);
-            const int64_t pos_s = md_buffered_reader_tellg(&sr);
+            const int64_t pos_f = md_reader_tell(fr);
+            const int64_t pos_s = md_reader_tell(&sr);
             EXPECT_EQ(pos_s, pos_f);
 
-            const bool peeked = md_buffered_reader_peek_line(&peek, &fr);
-            const bool got_f = md_buffered_reader_extract_line(&a, &fr);
-            const bool got_s = md_buffered_reader_extract_line(&b, &sr);
+            const bool peeked = md_reader_peek_line(fr, &peek);
+            const bool got_f = md_reader_extract_line(fr, &a);
+            const bool got_s = md_reader_extract_line(&sr, &b);
             EXPECT_EQ(got_s, got_f);
             EXPECT_EQ(got_f, peeked);
             if (!got_f || !got_s) break;
-            EXPECT_TRUE(str_eq(a, b));
-            EXPECT_TRUE(str_eq(a, peek));
+            EXPECT_TRUE(md_str_eq(a, b));
+            EXPECT_TRUE(md_str_eq(a, peek));
 
             int64_t idx = -1;
             EXPECT_TRUE(md_parse_i64(&idx, a) > 0);
             EXPECT_EQ(count, idx);
+            if (count < num_lines) offset[count] = pos_f;
             count += 1;
         }
         EXPECT_EQ(num_lines, count);
+        EXPECT_TRUE(md_reader_end(fr));
+        EXPECT_TRUE(md_reader_end(&sr));
 
-        md_buffered_reader_reset(&fr);
-        md_buffered_reader_reset(&sr);
+        EXPECT_TRUE(md_reader_rewind(fr));
+        EXPECT_TRUE(md_reader_rewind(&sr));
     }
 
     // Skipping goes past a line without handing it out
-    EXPECT_TRUE(md_buffered_reader_skip_line(&fr));
-    str_t line;
-    EXPECT_TRUE(md_buffered_reader_extract_line(&line, &fr));
+    EXPECT_TRUE(md_reader_skip_line(fr));
+    md_str_t line;
+    EXPECT_TRUE(md_reader_extract_line(fr, &line));
     EXPECT_EQ(0, strncmp(line.ptr, "1:", 2));
 
-    md_file_close(&file);
+    // An offset taken before a line is the line's: back to it, in either direction, outside what is buffered
+    for (int i = num_lines - 1; i >= 0; i -= 37) {
+        EXPECT_TRUE(md_reader_seek(fr, offset[i]));
+        EXPECT_TRUE(md_reader_seek(&sr, offset[i]));
+        md_str_t a, b;
+        EXPECT_TRUE(md_reader_extract_line(fr, &a));
+        EXPECT_TRUE(md_reader_extract_line(&sr, &b));
+        EXPECT_TRUE(md_str_eq(a, b));
+        int64_t idx = -1;
+        EXPECT_TRUE(md_parse_i64(&idx, a) > 0);
+        EXPECT_EQ(i, idx);
+    }
+    EXPECT_FALSE(md_reader_seek(fr, (int64_t)len + 1));
+
+    // The blocks are whole lines, which put together are the text
+    EXPECT_TRUE(md_reader_rewind(fr));
+    size_t at = 0;
+    bool same = true;
+    for (md_str_t block; (block = md_reader_block(fr)).len > 0; ) {
+        if (at + block.len < len) {     // all but the last, which is the text's unterminated last line
+            same &= block.ptr[block.len - 1] == '\n';
+        }
+        same &= at + block.len <= len && memcmp(text + at, block.ptr, block.len) == 0;
+        at += block.len;
+        md_reader_advance(fr, block.len);
+    }
+    EXPECT_TRUE(same);
+    EXPECT_EQ(len, at);
+
+    // And read over threads, at offsets: the same text, also where a block is taken in part (what is left is read again)
+    {
+        test_executor_t threads = test_executor_threads(3);
+        EXPECT_TRUE(md_reader_rewind(fr));
+        at = 0;
+        same = true;
+        size_t num_blocks = 0;
+        for (md_str_t block; (block = md_reader_block_parallel(fr, test_executor(&threads))).len > 0; ++num_blocks) {
+            // Every other block in part: up to a line in its middle
+            size_t take = block.len;
+            if (num_blocks % 2 == 0 && block.len > 2) {
+                const char* nl = memchr(block.ptr + block.len / 2, '\n', block.len - block.len / 2);
+                if (nl) take = (size_t)(nl - block.ptr) + 1;
+            }
+            same &= at + take <= len && memcmp(text + at, block.ptr, take) == 0;
+            at += take;
+            md_reader_advance(fr, take);
+        }
+        EXPECT_TRUE(same);
+        EXPECT_EQ(len, at);
+        EXPECT_TRUE(md_reader_end(fr));
+        EXPECT_FALSE(md_reader_failed(fr));
+        // Where the next sequential read begins is where the parallel reads ended
+        EXPECT_TRUE(md_reader_rewind(fr));
+        md_str_t block = md_reader_block_parallel(fr, test_executor(&threads));
+        md_reader_advance(fr, block.len);
+        md_str_t line;
+        if (md_reader_extract_line(fr, &line)) {
+            EXPECT_EQ(0, memcmp(text + block.len, line.ptr, line.len));
+        }
+    }
+    md_file_reader_close(&frd);
+
+    // A line longer than the buffer comes in pieces of it, which put together are the line
+    {
+        ASSERT_TRUE(md_file_reader_open(&frd, path, 8, heap));
+        size_t got = 0;
+        bool match = true;
+        for (md_str_t piece; md_reader_extract_line(&frd.r, &piece); ) {
+            match &= piece.len <= 8;
+            // what comes back is the text without its line ends: find it in order
+            while (got < len && (text[got] == '\n' || text[got] == '\r')) ++got;
+            match &= got + piece.len <= len && memcmp(text + got, piece.ptr, piece.len) == 0;
+            got += piece.len;
+        }
+        EXPECT_TRUE(match);
+        md_file_reader_close(&frd);
+    }
+
     remove(path.ptr);
     md_free(heap, text, 64 * 1024);
 }
@@ -527,7 +644,7 @@ static uint32_t bits_of_f32(float f) {
 }
 
 // What the fixed width path must agree with: the float of the correctly rounded double
-static float general_f32(str_t field) {
+static float general_f32(md_str_t field) {
     return (float)parse_float(field);
 }
 
@@ -560,7 +677,7 @@ UTEST(parse, fixed_f32_every_8_3_field) {
     size_t mismatches = 0, checked = 0;
     for (int64_t m = -999999; m <= 9999999; ++m) {
         ASSERT_TRUE(format_fixed(field, 8, m, 3));
-        const str_t s = { field, 8 };
+        const md_str_t s = { field, 8 };
         float v = -1.0f;
         if (!md_parse_fixed_f32(&v, s, 3) || (bits_of_f32(v) != bits_of_f32(general_f32(s)) && m != 0)) {
             if (mismatches++ < 5) printf("  '%.8s'\n", field);
@@ -590,7 +707,7 @@ UTEST(parse, fixed_f32_layouts) {
 
                 char* field = malloc(width);
                 memcpy(field, tmp, width);
-                const str_t s = { field, width };
+                const md_str_t s = { field, width };
                 float v = -1.0f;
                 const bool ok = md_parse_fixed_f32(&v, s, decimals);
                 if (!ok || (bits_of_f32(v) != bits_of_f32(general_f32(s)) && m != 0)) {
@@ -657,15 +774,15 @@ UTEST(parse, fixed_f32_other_layouts) {
         { "1.5",      0, false, 0 },
         { ".5",       1, false, 0 },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         const size_t len = strlen(cases[i].field);
         char* field = malloc(len ? len : 1);
         memcpy(field, cases[i].field, len);
         float v = 42.0f;
-        const bool ok = md_parse_fixed_f32(&v, (str_t){ field, len }, cases[i].decimals);
+        const bool ok = md_parse_fixed_f32(&v, (md_str_t){ field, len }, cases[i].decimals);
         EXPECT_EQ_MSG(cases[i].ok, ok, cases[i].field);
         if (cases[i].ok) {
-            EXPECT_EQ_MSG(bits_of_f32(general_f32((str_t){ field, len })), bits_of_f32(v), cases[i].field);
+            EXPECT_EQ_MSG(bits_of_f32(general_f32((md_str_t){ field, len })), bits_of_f32(v), cases[i].field);
             EXPECT_EQ_MSG(cases[i].value, v, cases[i].field);
         } else {
             EXPECT_EQ_MSG(bits_of_f32(42.0f), bits_of_f32(v), cases[i].field);
@@ -682,18 +799,143 @@ UTEST(parse, perf) {
     int64_t iacc = 0;
 
     md_tick_t t0 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(floats); ++k) facc += strtod(floats[k], NULL);
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(floats); ++k) facc += strtod(floats[k], NULL);
     md_tick_t t1 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(floats); ++k) { double v; md_parse_f64(&v, str_of(floats[k])); facc += v; }
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(floats); ++k) { double v; md_parse_f64(&v, str_of(floats[k])); facc += v; }
     md_tick_t t2 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(ints); ++k) iacc += strtoll(ints[k], NULL, 10);
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(ints); ++k) iacc += strtoll(ints[k], NULL, 10);
     md_tick_t t3 = md_tick_now();
-    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < ARRAY_SIZE(ints); ++k) { int64_t v; md_parse_i64(&v, str_of(ints[k])); iacc += v; }
+    for (int i = 0; i < num_iter; ++i) for (size_t k = 0; k < MD_COUNTOF(ints); ++k) { int64_t v; md_parse_i64(&v, str_of(ints[k])); iacc += v; }
     md_tick_t t4 = md_tick_now();
 
-    const double nf = (double)num_iter * ARRAY_SIZE(floats);
-    const double ni = (double)num_iter * ARRAY_SIZE(ints);
+    const double nf = (double)num_iter * MD_COUNTOF(floats);
+    const double ni = (double)num_iter * MD_COUNTOF(ints);
     printf("  per number: strtod %.1f ns, md_parse_f64 %.1f ns | strtoll %.1f ns, md_parse_i64 %.1f ns (%g %lld)\n",
         md_tick_to_milliseconds(t1 - t0) * 1e6 / nf, md_tick_to_milliseconds(t2 - t1) * 1e6 / nf,
         md_tick_to_milliseconds(t3 - t2) * 1e6 / ni, md_tick_to_milliseconds(t4 - t3) * 1e6 / ni, facc, (long long)iacc);
+}
+
+// The lines of a range in bulk (md_text_lines_t) are those of a plain split, for every start and end in a text of
+// empty lines, CRLF ends, long lines, and none at its end: the masks of the chunks before the start and past the end
+// see bytes of the text which are not of the range.
+static size_t text_lines_reference(md_str_t* out, size_t cap, const char* c, const char* e) {
+    size_t n = 0;
+    while (c < e && n < cap) {
+        const char* nl = c;
+        while (nl < e && *nl != '\n') ++nl;
+        const char* le = nl;
+        if (le > c && le[-1] == '\r') --le;
+        out[n++] = (md_str_t){ c, (size_t)(le - c) };
+        c = nl < e ? nl + 1 : e;
+    }
+    return n;
+}
+
+UTEST(parse, text_lines) {
+    char text[512 + 64];
+    uint64_t state = 7;
+    for (size_t i = 0; i < 512; ++i) {
+        const uint64_t r = rng_next(&state) % 23;
+        text[i] = r == 0 ? '\n' : r == 1 ? '\r' : (char)('a' + r);
+    }
+    // A long line, and runs of empty lines
+    for (size_t i = 100; i < 230; ++i) text[i] = 'x';
+    for (size_t i = 300; i < 310; ++i) text[i] = '\n';
+    md_str_t want[600], got[600];
+    size_t mismatches = 0;
+    for (size_t beg = 0; beg < 200; beg += 1) {
+        for (size_t end = beg; end <= 512; end += 7) {
+            const size_t n = text_lines_reference(want, MD_COUNTOF(want), text + beg, text + end);
+            md_text_lines_t it = md_text_lines(text + beg, text + end);
+            size_t m = 0;
+            md_str_t line;
+            while (m < MD_COUNTOF(got) && md_text_lines_next(&it, &line)) got[m++] = line;
+            if (m != n) { mismatches += 1; continue; }
+            for (size_t k = 0; k < n; ++k) {
+                if (got[k].ptr != want[k].ptr || got[k].len != want[k].len) { mismatches += 1; break; }
+            }
+        }
+    }
+    EXPECT_EQ((size_t)0, mismatches);
+}
+
+// Skipping lines lands where extracting them would: by the chunks of what is read, through a buffer that holds a few
+// lines at a time and through a string, of any count, the last line without its newline, past the end
+UTEST(parse, reader_skip_lines) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const md_str_t path = MD_STR_LIT("md_unittest_skip_lines.txt");
+
+    char* text = md_alloc(heap, 256 * 1024);
+    size_t len = 0;
+    uint64_t state = 7;
+    const int num_lines = 3000;
+    for (int i = 0; i < num_lines; ++i) {
+        const int n = (int)(rng_next(&state) % 150);
+        len += snprintf(text + len, 256 * 1024 - len, "%d:", i);
+        for (int k = 0; k < n; ++k) text[len++] = (char)('a' + k % 26);
+        if (i + 1 < num_lines) {
+            if (i % 5 == 0) text[len++] = '\r';
+            text[len++] = '\n';
+        }
+    }
+
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+    ASSERT_EQ(len, md_file_write(file, text, len));
+    md_file_close(&file);
+
+    // The newlines of the text directly, from every start, against memchr
+    {
+        bool same = true;
+        for (size_t beg = 0; beg < 300; ++beg) {
+            for (size_t n = 0; n < 40; n += 3) {
+                size_t left = n;
+                const char* got = md_text_skip_newlines(text + beg, text + len, &left);
+                const char* ref = text + beg;
+                size_t ref_left = n;
+                while (ref_left) {
+                    const char* nl = memchr(ref, '\n', (size_t)(text + len - ref));
+                    if (!nl) { ref = text + len; break; }
+                    ref = nl + 1;
+                    ref_left -= 1;
+                }
+                same &= got == ref && left == ref_left;
+            }
+        }
+        EXPECT_TRUE(same);
+    }
+
+    const size_t caps[] = { 256, 4096, MD_MEGABYTES(1) };
+    for (size_t c = 0; c < MD_COUNTOF(caps); ++c) {
+        md_file_reader_t frd;
+        ASSERT_TRUE(md_file_reader_open(&frd, path, caps[c], heap));
+        md_reader_i sr = md_reader_from_str((md_str_t){ text, len });
+        md_reader_i* readers[2] = { &frd.r, &sr };
+        for (int r = 0; r < 2; ++r) {
+            uint64_t st = 11;
+            int at = 0;
+            bool same = true;
+            while (at < num_lines) {
+                const size_t k = (size_t)(rng_next(&st) % 64);
+                const size_t skipped = md_reader_skip_lines(readers[r], k);
+                same &= skipped == MD_MIN(k, (size_t)(num_lines - at));
+                at += (int)skipped;
+                md_str_t line;
+                if (at < num_lines) {
+                    same &= md_reader_extract_line(readers[r], &line);
+                    int idx = -1;
+                    sscanf(line.ptr, "%d:", &idx);
+                    same &= idx == at;
+                    at += 1;
+                }
+            }
+            EXPECT_TRUE(same);
+            EXPECT_EQ(0u, md_reader_skip_lines(readers[r], 5));
+            EXPECT_TRUE(md_reader_end(readers[r]));
+        }
+        md_file_reader_close(&frd);
+    }
+
+    remove(path.ptr);
+    md_free(heap, text, 256 * 1024);
 }

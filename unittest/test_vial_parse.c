@@ -14,12 +14,12 @@
 typedef struct lexed_t {
     vial_token_t* tokens;
     vial_diags_t  diags;
-    str_t         dump;
+    md_str_t         dump;
 } lexed_t;
 
 static lexed_t lex(const char* src, md_allocator_i* alloc) {
     lexed_t r = {0};
-    const str_t s = str_from_cstr(src);
+    const md_str_t s = md_str_from_cstr(src);
     vial_diags_init(&r.diags, s, alloc);
     r.tokens = vial_lex(s, &r.diags, alloc);
     r.dump = vial_tokens_dump(r.tokens, s, alloc);
@@ -27,7 +27,7 @@ static lexed_t lex(const char* src, md_allocator_i* alloc) {
 }
 
 // The token kinds in order, space separated, with operators and keywords as their text
-static str_t kinds(const lexed_t* r, const char* src, md_allocator_i* alloc) {
+static md_str_t kinds(const lexed_t* r, const char* src, md_allocator_i* alloc) {
     char buf[2048] = {0};
     size_t len = 0;
     for (size_t i = 0; i < md_array_size(r->tokens); ++i) {
@@ -45,14 +45,14 @@ static str_t kinds(const lexed_t* r, const char* src, md_allocator_i* alloc) {
         }
         len += snprintf(buf + len, sizeof(buf) - len, "%s%s", len ? " " : "", item);
     }
-    return str_copy_cstrn(buf, len, alloc);
+    return md_str_copy_cstrn(buf, len, alloc);
 }
 
 #define EXPECT_KINDS(src, expected) do { \
     lexed_t r_ = lex(src, alloc); \
-    str_t k_ = kinds(&r_, src, alloc); \
-    if (!str_eq_cstr(k_, expected)) printf("got:      %.*s\nexpected: %s\n", (int)k_.len, k_.ptr, expected); \
-    EXPECT_TRUE(str_eq_cstr(k_, expected)); \
+    md_str_t k_ = kinds(&r_, src, alloc); \
+    if (!md_str_eq_cstr(k_, expected)) printf("got:      %.*s\nexpected: %s\n", (int)k_.len, k_.ptr, expected); \
+    EXPECT_TRUE(md_str_eq_cstr(k_, expected)); \
     EXPECT_EQ(0, md_array_size(r_.diags.items)); \
 } while (0)
 
@@ -72,7 +72,7 @@ struct vial_lex {
 };
 
 UTEST_F_SETUP(vial_lex) {
-    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 }
 
 UTEST_F_TEARDOWN(vial_lex) {
@@ -126,8 +126,8 @@ UTEST_F(vial_lex, operators) {
     md_allocator_i* alloc = utest_fixture->alloc;
     EXPECT_KINDS("a @ b ** c // d", "NAME:a @ NAME:b ** NAME:c // NAME:d NEWLINE EOF");
     EXPECT_KINDS("x += 1", "NAME:x += INT:1 NEWLINE EOF");
-    EXPECT_KINDS("def f(a: group) -> float: pass",
-        "def NAME:f ( NAME:a : NAME:group ) -> NAME:float : pass NEWLINE EOF");
+    EXPECT_KINDS("def f(a: body) -> float: pass",
+        "def NAME:f ( NAME:a : NAME:body ) -> NAME:float : pass NEWLINE EOF");
     EXPECT_KINDS("2 < n <= 500 != m", "INT:2 < NAME:n <= INT:500 != NAME:m NEWLINE EOF");
 }
 
@@ -177,12 +177,12 @@ UTEST_F(vial_lex, errors) {
     // A message names the line the bracket was opened on
     lexed_t r = lex("a = 1\nx = f(1,\n", alloc);
     ASSERT_EQ(1, md_array_size(r.diags.items));
-    EXPECT_TRUE(str_eq_cstr(r.diags.items[0].message, "`(` opened on line 2 is never closed"));
+    EXPECT_TRUE(md_str_eq_cstr(r.diags.items[0].message, "`(` opened on line 2 is never closed"));
 
     // E0103 says how far the line is indented and what the block uses
     r = lex("if a:\n    b\n   c\n", alloc);
     ASSERT_EQ(1, md_array_size(r.diags.items));
-    EXPECT_TRUE(str_eq_cstr(r.diags.items[0].message, "this line is indented by 3 spaces; the block uses 4"));
+    EXPECT_TRUE(md_str_eq_cstr(r.diags.items[0].message, "this line is indented by 3 spaces; the block uses 4"));
 }
 
 // A missing `)` does not swallow the statements after it
@@ -190,8 +190,8 @@ UTEST_F(vial_lex, recovery) {
     md_allocator_i* alloc = utest_fixture->alloc;
     lexed_t r = lex("a = f(1, 2\nb = 3\n", alloc);
     EXPECT_EQ(1, vial_diag_count(&r.diags, "E0102"));
-    str_t k = kinds(&r, "a = f(1, 2\nb = 3\n", alloc);
-    EXPECT_TRUE(str_eq_cstr(k, "NAME:a = NAME:f ( INT:1 , INT:2 NEWLINE NAME:b = INT:3 NEWLINE EOF"));
+    md_str_t k = kinds(&r, "a = f(1, 2\nb = 3\n", alloc);
+    EXPECT_TRUE(md_str_eq_cstr(k, "NAME:a = NAME:f ( INT:1 , INT:2 NEWLINE NAME:b = INT:3 NEWLINE EOF"));
 
     // but a continued argument list on the next line stays joined
     EXPECT_KINDS("a = f(1,\n    b=2)\n", "NAME:a = NAME:f ( INT:1 , NAME:b = INT:2 ) NEWLINE EOF");
@@ -200,7 +200,7 @@ UTEST_F(vial_lex, recovery) {
 // Every byte of the text is covered by a token or is whitespace, and spans never go backwards
 UTEST_F(vial_lex, spans) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    const char* src = "def f(a: group, b=None):\n    \"\"\"Doc.\"\"\"\n    return a.com - b  # c\n";
+    const char* src = "def f(a: body, b=None):\n    \"\"\"Doc.\"\"\"\n    return a.com - b  # c\n";
     lexed_t r = lex(src, alloc);
     EXPECT_EQ(0, md_array_size(r.diags.items));
     uint32_t prev = 0;
@@ -224,11 +224,11 @@ UTEST_F(vial_lex, spans) {
 typedef struct parsed_t {
     vial_tree_t  tree;
     vial_diags_t diags;
-    str_t        src;
+    md_str_t        src;
 } parsed_t;
 
 static parsed_t parse(const char* src, md_allocator_i* alloc) {
-    parsed_t r = {.src = str_from_cstr(src)};
+    parsed_t r = {.src = md_str_from_cstr(src)};
     vial_diags_init(&r.diags, r.src, alloc);
     vial_token_t* tokens = vial_lex(r.src, &r.diags, alloc);
     r.tree = vial_parse(tokens, r.src, &r.diags, alloc);
@@ -257,7 +257,7 @@ static void sexpr(char* buf, size_t cap, size_t* len, const parsed_t* r, vial_no
 #undef OUT
 }
 
-static str_t tree_str(const parsed_t* r, md_allocator_i* alloc) {
+static md_str_t tree_str(const parsed_t* r, md_allocator_i* alloc) {
     char buf[4096];
     size_t len = 0;
     buf[0] = 0;
@@ -267,14 +267,14 @@ static str_t tree_str(const parsed_t* r, md_allocator_i* alloc) {
         if (i) len += (size_t)snprintf(buf + len, sizeof(buf) - len, " ");
         sexpr(buf, sizeof(buf), &len, r, r->tree.children[m->child_beg + i]);
     }
-    return str_copy_cstrn(buf, len, alloc);
+    return md_str_copy_cstrn(buf, len, alloc);
 }
 
 #define EXPECT_TREE(src, expected) do { \
     parsed_t r_ = parse(src, alloc); \
-    str_t t_ = tree_str(&r_, alloc); \
-    if (!str_eq_cstr(t_, expected)) printf("source:   %s\ngot:      %.*s\nexpected: %s\n", src, (int)t_.len, t_.ptr, expected); \
-    EXPECT_TRUE(str_eq_cstr(t_, expected)); \
+    md_str_t t_ = tree_str(&r_, alloc); \
+    if (!md_str_eq_cstr(t_, expected)) printf("source:   %s\ngot:      %.*s\nexpected: %s\n", src, (int)t_.len, t_.ptr, expected); \
+    EXPECT_TRUE(md_str_eq_cstr(t_, expected)); \
     for (size_t i_ = 0; i_ < md_array_size(r_.diags.items); ++i_) \
         printf("unexpected %s %.*s\n", r_.diags.items[i_].code, (int)r_.diags.items[i_].message.len, r_.diags.items[i_].message.ptr); \
     EXPECT_EQ(0, md_array_size(r_.diags.items)); \
@@ -299,7 +299,7 @@ struct vial_parse {
 };
 
 UTEST_F_SETUP(vial_parse) {
-    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 }
 
 UTEST_F_TEARDOWN(vial_parse) {
@@ -352,8 +352,8 @@ UTEST_F(vial_parse, statements) {
     EXPECT_TREE("a = b = 1", "(assign (name a) (name b) (int 1))");
     EXPECT_TREE("x += 1", "(augassign += (name x) (int 1))");
     EXPECT_TREE("a = 1; b = 2", "(assign (name a) (int 1)) (assign (name b) (int 2))");
-    EXPECT_TREE("def f(a: group, b, op='x') -> float:\n    return a\n",
-        "(def (name f) (params (param (name a) (name group) -) (param (name b) - -) (param (name op) - (string 'x'))) "
+    EXPECT_TREE("def f(a: body, b, op='x') -> float:\n    return a\n",
+        "(def (name f) (params (param (name a) (name body) -) (param (name b) - -) (param (name op) - (string 'x'))) "
         "(name float) (block (return (name a))))");
     EXPECT_TREE("if a:\n    pass\nelif b:\n    pass\nelse:\n    x = 1\n",
         "(if (name a) (block (pass)) (if (name b) (block (pass)) (block (assign (name x) (int 1)))))");
@@ -430,7 +430,7 @@ UTEST_F(vial_parse, errors_and_recovery) {
 // The tree's spans nest: every child lies within its parent
 UTEST_F(vial_parse, spans_nest) {
     md_allocator_i* alloc = utest_fixture->alloc;
-    const char* src = "def f(a: group, b=None):\n    d = norm(displacement(positions(a)[:, None], positions(b)))\n"
+    const char* src = "def f(a: body, b=None):\n    d = norm(displacement(positions(a)[:, None], positions(b)))\n"
                       "    return min(d) if b is None else max(d)\nx = [r.com for r in residue(id=1..4) if r]\n";
     parsed_t r = parse(src, alloc);
     EXPECT_EQ(0, md_array_size(r.diags.items));
@@ -454,12 +454,12 @@ UTEST_F(vial_parse, spans_nest) {
 
 #define VIAL_GOLDEN_DIR MD_UNITTEST_SOURCE_DIR "/vial_golden/"
 
-static str_t golden_output(str_t src, md_allocator_i* alloc) {
+static md_str_t golden_output(md_str_t src, md_allocator_i* alloc) {
     vial_diags_t diags;
     vial_diags_init(&diags, src, alloc);
     vial_token_t* tokens = vial_lex(src, &diags, alloc);
     vial_tree_t tree = vial_parse(tokens, src, &diags, alloc);
-    str_t dump = vial_tree_dump(&tree, src, alloc);
+    md_str_t dump = vial_tree_dump(&tree, src, alloc);
 
     char* buf = NULL;
     md_array_push_array(buf, dump.ptr, dump.len, alloc);
@@ -474,20 +474,20 @@ static str_t golden_output(str_t src, md_allocator_i* alloc) {
             d->fix.len ? " | fix: " : "", (int)d->fix.len, d->fix.ptr);
         if (n > 0) md_array_push_array(buf, tmp, (size_t)(n < (int)sizeof(tmp) ? n : (int)sizeof(tmp) - 1), alloc);
     }
-    return (str_t){buf, md_array_size(buf)};
+    return (md_str_t){buf, md_array_size(buf)};
 }
 
 UTEST_F(vial_parse, golden) {
     md_allocator_i* alloc = utest_fixture->alloc;
     static const char* names[] = {"expressions", "statements", "refused", "errors"};
     const bool update = getenv("VIAL_UPDATE_GOLDEN") != NULL;
-    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(names); ++i) {
         char in_path[512], out_path[512];
         snprintf(in_path, sizeof(in_path), VIAL_GOLDEN_DIR "%s.vial", names[i]);
         snprintf(out_path, sizeof(out_path), VIAL_GOLDEN_DIR "%s.out", names[i]);
-        str_t src = load_textfile(str_from_cstr(in_path), alloc);
-        ASSERT_FALSE(str_empty(src));
-        str_t got = golden_output(src, alloc);
+        md_str_t src = md_load_textfile(md_str_from_cstr(in_path), alloc);
+        ASSERT_FALSE(md_str_empty(src));
+        md_str_t got = golden_output(src, alloc);
         if (update) {
             FILE* f = fopen(out_path, "wb");
             ASSERT_TRUE(f != NULL);
@@ -495,8 +495,8 @@ UTEST_F(vial_parse, golden) {
             fclose(f);
             continue;
         }
-        str_t want = load_textfile(str_from_cstr(out_path), alloc);
-        const bool same = str_eq(got, want);
+        md_str_t want = md_load_textfile(md_str_from_cstr(out_path), alloc);
+        const bool same = md_str_eq(got, want);
         if (!same) printf("%s differs from its golden dump; run with VIAL_UPDATE_GOLDEN=1 and review the diff\n", out_path);
         EXPECT_TRUE(same);
     }

@@ -44,8 +44,8 @@ typedef struct md_vial_diagnostic_t {
     char                code[6];    // "E0301"
     md_vial_severity_t  severity;
     md_vial_span_t      span;
-    str_t               message;
-    str_t               fix;        // text to put in place of span, the table's "Fix offered"; empty when there is none
+    md_str_t               message;
+    md_str_t               fix;        // text to put in place of span, the table's "Fix offered"; empty when there is none
 } md_vial_diagnostic_t;
 
 typedef enum md_vial_token_kind_t {
@@ -76,7 +76,7 @@ typedef struct md_vial_program_t md_vial_program_t;
 // array of them, such as a program's published residue(chain='A'): then offsets gives where each set's particles are
 // in atoms, [count + 1] for the count of sets dims make, row-major. Zeroed, ndim and offsets give one set.
 typedef struct md_vial_named_set_t {
-    str_t           name;
+    md_str_t           name;
     const uint32_t* atoms;
     size_t          num_atoms;
     uint8_t         ndim;       // 0 for one set, else 1 or 2 (bonds are [n][2])
@@ -105,7 +105,7 @@ typedef struct md_vial_compile_desc_t {
     // The run the script is evaluated over: its prefix in sys->attributes, such as "run/md". attr(path) reads
     // <run>/<path>, with its unit and shape, and the run's frame axis, <run>/time, gives the number of frames when
     // num_frames is 0. Empty for none: attr() is then typed only when called, and its paths are not checked.
-    str_t run;
+    md_str_t run;
 
     // Stored selections the script may read by name: a static set each, as a predefined set is. A name the script
     // binds hides one; a name that is not valid (md_vial_name_valid) is not read. Copied when compiling.
@@ -120,7 +120,7 @@ typedef struct md_vial_compile_desc_t {
 // (E0104) rather than followed, so compiling fits the 1 MB of stack of Windows' main thread (the worst inputs take under
 // 768 KB in a debug build, 640 KB optimized; vial_fuzz.extremes compiles them on a thread of 1 MB), and time and memory
 // grow linearly with the length of src.
-md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, struct md_allocator_i* alloc);
+md_vial_program_t* md_vial_compile(md_str_t src, const md_vial_compile_desc_t* desc, struct md_allocator_i* alloc);
 void               md_vial_program_free(md_vial_program_t* prog);
 
 // Every diagnostic, in source order
@@ -152,7 +152,7 @@ enum {
 };
 
 typedef struct md_vial_output_t {
-    str_t           name;
+    md_str_t           name;
     md_vial_span_t  span;           // the name, where it is bound
     char            type[128];      // as the reference prints it: float[433] Å
     md_vial_stage_t stage;
@@ -204,18 +204,18 @@ size_t md_vial_marks(const md_vial_program_t* prog, const md_vial_mark_t** out);
 
 // The words the language reserves, every keyword of Python, for highlighting: how many there are, and up to cap of
 // them into out, which may be NULL
-size_t md_vial_keywords(str_t* out, size_t cap);
+size_t md_vial_keywords(md_str_t* out, size_t cap);
 
 // Every name a script reads without binding it, for highlighting: the built-ins, the predefined sets and the prelude's
 // defs, not those starting with _. How many there are, and up to cap of them into out, which may be NULL.
-size_t md_vial_builtin_names(str_t* out, size_t cap);
+size_t md_vial_builtin_names(md_str_t* out, size_t cap);
 
 // Whether a script, or a stored selection it reads, may bind name: an identifier that is no keyword and no built-in name
-bool md_vial_name_valid(str_t name);
+bool md_vial_name_valid(md_str_t name);
 
 // The path attr() reads an attribute by, in a script evaluated over run: its name past "<run>/", empty when the
 // attribute is not one of the run's
-str_t md_vial_attr_path(str_t run, str_t attribute_name);
+md_str_t md_vial_attr_path(md_str_t run, md_str_t attribute_name);
 
 typedef enum md_vial_completion_kind_t {
     MD_VIAL_COMPLETION_KEYWORD = 0,
@@ -228,14 +228,14 @@ typedef enum md_vial_completion_kind_t {
 } md_vial_completion_kind_t;
 
 typedef struct md_vial_completion_t {
-    str_t                       label;  // what to show, and match what has been typed against
-    str_t                       text;   // what replaces the span
+    md_str_t                       label;  // what to show, and match what has been typed against
+    md_str_t                       text;   // what replaces the span
     md_vial_completion_kind_t   kind;
 } md_vial_completion_t;
 
 typedef struct md_vial_completions_t {
     md_vial_span_t          span;       // the bytes a completion replaces
-    str_t                   prefix;     // what has been typed of it
+    md_str_t                   prefix;     // what has been typed of it
     md_vial_completion_t*   items;      // those that start with prefix: parameters, names, then keywords; each once
     size_t                  count;
 } md_vial_completions_t;
@@ -257,19 +257,14 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
 
 typedef struct md_vial_eval_t md_vial_eval_t;
 
-// The caller's thread pool: calls fn(arg, i) for every i in [0, count), on up to num_threads threads at once, and
-// returns when every call has returned. viamd passes its task system.
-typedef void (*md_vial_parallel_for_t)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
 
 typedef struct md_vial_eval_desc_t {
     const struct md_system_t* sys;  // the system the program was compiled against
-    str_t       run;                // the run whose frames are evaluated: its prefix in sys->attributes, as "run/ala"
+    md_str_t       run;                // the run whose frames are evaluated: its prefix in sys->attributes, as "run/ala"
     size_t      max_elements;       // the most elements one value may have (R0105); 0 for 2^28
-    // Threads for the frames: 0 or 1 evaluates them on the calling thread. With parallel_for NULL, md_vial_eval_run
-    // starts num_threads - 1 threads of its own for each sweep over the frames and works on the calling one.
-    size_t                  num_threads;
-    md_vial_parallel_for_t  parallel_for;
-    void*                   parallel_user;
+    // What the frames run on (md_executor.h): an interpreter and a frame reader per thread_idx. NULL, or an
+    // executor of one thread, evaluates them on the calling thread. It must outlive the evaluation.
+    const struct md_executor_t* executor;
 } md_vial_eval_desc_t;
 
 // NULL when the program cannot be evaluated: it has errors, or something in it is not evaluated yet
@@ -292,7 +287,7 @@ typedef enum md_vial_plan_status_t {
 
 typedef struct md_vial_plan_t {
     md_vial_plan_status_t status;
-    str_t    from;              // HELD: the output it is taken over from, which is named otherwise when it was renamed
+    md_str_t    from;              // HELD: the output it is taken over from, which is named otherwise when it was renamed
     uint32_t num_frames;        // the frames it would hold
     uint32_t num_pending;       // the frames that would be evaluated for it
 } md_vial_plan_t;
@@ -324,7 +319,7 @@ const struct md_attributes_t* md_vial_eval_attributes(const md_vial_eval_t* eval
 // Which frames an output holds, from any thread while md_vial_eval_run runs: out[f] is 1 where it is computed. Every
 // frame once the run has finished, and for an output taken over. Returns the number of frames; writes nothing when cap
 // is less.
-size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, str_t name, uint8_t* out, size_t cap);
+size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, md_str_t name, uint8_t* out, size_t cap);
 
 // An output over the trajectory, such as a histogram over the frames, computed again over chosen frames: those where
 // frames[f] is nonzero, from the per-frame values the evaluation kept, so nothing is evaluated again. What a plot
@@ -333,7 +328,7 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, str_t name, uint8_
 // stops it (0 is returned). Into out as floats, NaN where missing; returns how many values it has, and writes
 // them only when cap holds them all. 0 when the run has not finished, or the output is not computed over the frames
 // from per-frame values. Safe from any thread once md_vial_eval_run has returned.
-size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, str_t name, const uint8_t* frames, float* out, size_t cap);
+size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, md_str_t name, const uint8_t* frames, float* out, size_t cap);
 
 // The value of the expression md_vial_hover shows at offset, at a frame of the run, as the reference prints values,
 // cut at cap. It is computed for that value alone, at most 16 million entries, with a reader and an interpreter of its
@@ -368,7 +363,7 @@ typedef struct md_vial_prim_t {
 typedef struct md_vial_label_t {
     float       pos[3];
     uint32_t    element;
-    str_t       text;       // always set: the number with two decimals and its unit, or the string
+    md_str_t       text;       // always set: the number with two decimals and its unit, or the string
     double      value;
     md_unit_t   unit;
 } md_vial_label_t;
@@ -406,7 +401,7 @@ typedef struct md_vial_drawing_t {
 typedef struct md_vial_draw_desc_t {
     const md_vial_program_t*        prog;
     const struct md_system_t*       sys;    // the system prog was compiled against
-    str_t                           run;    // the run: at() reads its frames, and the frame drawn when state is NULL
+    md_str_t                           run;    // the run: at() reads its frames, and the frame drawn when state is NULL
     int64_t                         frame;  // the frame shown: frame(), time(), and a value over the trajectory
     // The coordinates shown, which may be interpolated or recentred: values per frame are computed from them. NULL
     // reads frame from the run.
@@ -437,7 +432,7 @@ typedef struct md_vial_filter_desc_t {
     const struct md_system_t*       sys;        // required
     // The coordinates, for an expression that depends on them, such as within(): it is then dynamic. NULL fails one.
     const struct md_system_state_t* state;
-    str_t                           run;        // for attr(); may be empty
+    md_str_t                           run;        // for attr(); may be empty
     const md_vial_named_set_t*      sets;       // stored selections it may read by name
     size_t                          num_sets;
     // A program whose published selections it may read by name, below the stored ones: a static one as it is, and a
@@ -461,10 +456,10 @@ typedef struct md_vial_filter_t {
     md_vial_diagnostic_t    error;
 } md_vial_filter_t;
 
-bool md_vial_filter(md_vial_filter_t* out, str_t expr, const md_vial_filter_desc_t* desc, struct md_allocator_i* alloc);
+bool md_vial_filter(md_vial_filter_t* out, md_str_t expr, const md_vial_filter_desc_t* desc, struct md_allocator_i* alloc);
 
 // What may be written at a byte offset of expr, as md_vial_complete; the span is in expr
-bool md_vial_filter_complete(md_vial_completions_t* out, str_t expr, uint32_t cursor, const md_vial_filter_desc_t* desc,
+bool md_vial_filter_complete(md_vial_completions_t* out, md_str_t expr, uint32_t cursor, const md_vial_filter_desc_t* desc,
                              struct md_allocator_i* alloc);
 
 #ifdef __cplusplus

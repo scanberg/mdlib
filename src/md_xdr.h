@@ -32,18 +32,18 @@ extern "C" {
 
 static inline uint32_t md_xdr_load_u32(const void* ptr) {
     uint32_t v;
-    MEMCPY(&v, ptr, sizeof(v));
+    md_memcpy(&v, ptr, sizeof(v));
 #if __LITTLE_ENDIAN__
-    v = BSWAP32(v);
+    v = md_bswap32(v);
 #endif
     return v;
 }
 
 static inline uint64_t md_xdr_load_u64(const void* ptr) {
     uint64_t v;
-    MEMCPY(&v, ptr, sizeof(v));
+    md_memcpy(&v, ptr, sizeof(v));
 #if __LITTLE_ENDIAN__
-    v = BSWAP64(v);
+    v = md_bswap64(v);
 #endif
     return v;
 }
@@ -51,28 +51,28 @@ static inline uint64_t md_xdr_load_u64(const void* ptr) {
 static inline int32_t md_xdr_load_i32(const void* ptr) {
     const uint32_t u = md_xdr_load_u32(ptr);
     int32_t v;
-    MEMCPY(&v, &u, sizeof(v));
+    md_memcpy(&v, &u, sizeof(v));
     return v;
 }
 
 static inline int64_t md_xdr_load_i64(const void* ptr) {
     const uint64_t u = md_xdr_load_u64(ptr);
     int64_t v;
-    MEMCPY(&v, &u, sizeof(v));
+    md_memcpy(&v, &u, sizeof(v));
     return v;
 }
 
 static inline float md_xdr_load_f32(const void* ptr) {
     const uint32_t u = md_xdr_load_u32(ptr);
     float v;
-    MEMCPY(&v, &u, sizeof(v));
+    md_memcpy(&v, &u, sizeof(v));
     return v;
 }
 
 static inline double md_xdr_load_f64(const void* ptr) {
     const uint64_t u = md_xdr_load_u64(ptr);
     double v;
-    MEMCPY(&v, &u, sizeof(v));
+    md_memcpy(&v, &u, sizeof(v));
     return v;
 }
 
@@ -176,7 +176,7 @@ static inline bool md_xdr_read_f64(md_xdr_t* xdr, double* out) {
 static inline bool md_xdr_read_i32_array(md_xdr_t* xdr, int32_t* out, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / 4) ? md_xdr_take(xdr, count * 4) : md_xdr_take(xdr, SIZE_MAX);
     if (!p) {
-        MEMSET(out, 0, count * sizeof(int32_t));
+        md_memset(out, 0, count * sizeof(int32_t));
         return false;
     }
     md_xdr_load_i32_array(out, p, count);
@@ -186,7 +186,7 @@ static inline bool md_xdr_read_i32_array(md_xdr_t* xdr, int32_t* out, size_t cou
 static inline bool md_xdr_read_f32_array(md_xdr_t* xdr, float* out, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / 4) ? md_xdr_take(xdr, count * 4) : md_xdr_take(xdr, SIZE_MAX);
     if (!p) {
-        MEMSET(out, 0, count * sizeof(float));
+        md_memset(out, 0, count * sizeof(float));
         return false;
     }
     md_xdr_load_f32_array(out, p, count);
@@ -196,7 +196,7 @@ static inline bool md_xdr_read_f32_array(md_xdr_t* xdr, float* out, size_t count
 static inline bool md_xdr_read_f64_array(md_xdr_t* xdr, double* out, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / 8) ? md_xdr_take(xdr, count * 8) : md_xdr_take(xdr, SIZE_MAX);
     if (!p) {
-        MEMSET(out, 0, count * sizeof(double));
+        md_memset(out, 0, count * sizeof(double));
         return false;
     }
     md_xdr_load_f64_array(out, p, count);
@@ -214,7 +214,7 @@ static inline bool md_xdr_read_opaque(md_xdr_t* xdr, const uint8_t** out, size_t
 // Variable length opaque data / string: a u32 byte count, the bytes, then padding. The result is a
 // view into the buffer and is NOT zero terminated. max_len guards against a corrupt count asking
 // for more than a sane string could hold; pass SIZE_MAX to accept anything that fits in the buffer.
-static inline bool md_xdr_read_string(md_xdr_t* xdr, str_t* out, size_t max_len) {
+static inline bool md_xdr_read_string(md_xdr_t* xdr, md_str_t* out, size_t max_len) {
     const size_t pos = xdr->pos;
     uint32_t len = 0;
     const uint8_t* p = NULL;
@@ -227,10 +227,10 @@ static inline bool md_xdr_read_string(md_xdr_t* xdr, str_t* out, size_t max_len)
     }
     if (!p) {
         xdr->pos = pos;
-        *out = (str_t){0};
+        *out = (md_str_t){0};
         return false;
     }
-    *out = (str_t){ (const char*)p, len };
+    *out = (md_str_t){ (const char*)p, len };
     return true;
 }
 

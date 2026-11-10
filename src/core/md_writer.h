@@ -30,7 +30,7 @@ its caller decides where it ends up by which writer it hands over:
     md_str_writer_t sw = md_str_writer_create(alloc);
     md_str_writer_fmt(&sw, "%d atoms\n", n);        // the string writer's own API
     md_script_ir_write_diagnostics(&sw.w, ir);      // handed over as the interface
-    str_t s = md_str_writer_to_str(&sw);            // always current: there is nothing to flush
+    md_str_t s = md_str_writer_to_str(&sw);            // always current: there is nothing to flush
     ...
     md_str_writer_free(&sw);
 
@@ -113,11 +113,11 @@ struct md_writer_i {
 typedef struct md_str_writer_t {
     md_writer_i w;
 #ifdef __cplusplus
-    // Appending, and reading what is written as a str_t
-    md_str_writer_t& operator+=(str_t str);
+    // Appending, and reading what is written as a md_str_t
+    md_str_writer_t& operator+=(md_str_t str);
     md_str_writer_t& operator+=(const char* cstr);
     md_str_writer_t& operator+=(char c);
-    operator str_t() const;
+    operator md_str_t() const;
     operator md_writer_i&() { return w; }
 #endif
 } md_str_writer_t;
@@ -151,9 +151,9 @@ void  md_writer_write_slow(md_writer_i* w, const void* data, size_t len);
 char* md_writer_reserve_slow(md_writer_i* w, size_t n);
 
 static inline void md_write(md_writer_i* w, const void* data, size_t len) {
-    ASSERT(w);
+    MD_ASSERT(w);
     if (len <= (size_t)(w->end - w->cur)) {
-        if (len) MEMCPY(w->cur, data, len);
+        if (len) md_memcpy(w->cur, data, len);
         w->cur += len;
     } else {
         md_writer_write_slow(w, data, len);
@@ -161,7 +161,7 @@ static inline void md_write(md_writer_i* w, const void* data, size_t len) {
 }
 
 static inline void md_write_char(md_writer_i* w, char c) {
-    ASSERT(w);
+    MD_ASSERT(w);
     if (w->cur < w->end) {
         *w->cur++ = c;
     } else {
@@ -169,7 +169,7 @@ static inline void md_write_char(md_writer_i* w, char c) {
     }
 }
 
-static inline void md_write_str(md_writer_i* w, str_t str) {
+static inline void md_write_str(md_writer_i* w, md_str_t str) {
     md_write(w, str.ptr, str.len);
 }
 
@@ -195,13 +195,13 @@ void md_write_f64(md_writer_i* w, double x, int decimals);
 // many. NULL if the writer cannot make that much room (n is more than its buffer holds, or it has none): write the
 // same through md_write then.
 static inline char* md_writer_reserve(md_writer_i* w, size_t n) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return n <= (size_t)(w->end - w->cur) ? w->cur : md_writer_reserve_slow(w, n);
 }
 
 static inline void md_writer_commit(md_writer_i* w, size_t n) {
-    ASSERT(w);
-    ASSERT(n <= (size_t)(w->end - w->cur));
+    MD_ASSERT(w);
+    MD_ASSERT(n <= (size_t)(w->end - w->cur));
     w->cur += n;
 }
 
@@ -211,19 +211,19 @@ void md_writer_flush(md_writer_i* w);
 
 // How many bytes have been written in all. For a fixed array writer this counts what was dropped as well.
 static inline size_t md_writer_tell(const md_writer_i* w) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return w->drained + (size_t)(w->cur - w->buf);
 }
 
 // False once the sink has failed
 static inline bool md_writer_ok(const md_writer_i* w) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return !(w->flags & MD_WRITER_FLAG_ERROR);
 }
 
 // The allocator the writer allocated its buffer with, NULL if it was given one: for md_temp_begin_avoid (see above)
 static inline struct md_allocator_i* md_writer_allocator(const md_writer_i* w) {
-    ASSERT(w);
+    MD_ASSERT(w);
     return w->alloc;
 }
 
@@ -246,7 +246,7 @@ static inline md_str_writer_t md_str_writer_create(struct md_allocator_i* alloc)
 }
 
 static inline void md_str_writer_push_char (md_str_writer_t* sw, char c)                     { md_write_char(&sw->w, c); }
-static inline void md_str_writer_push_str  (md_str_writer_t* sw, str_t str)                  { md_write_str(&sw->w, str); }
+static inline void md_str_writer_push_str  (md_str_writer_t* sw, md_str_t str)                  { md_write_str(&sw->w, str); }
 static inline void md_str_writer_push_cstr (md_str_writer_t* sw, const char* cstr)           { md_write_cstr(&sw->w, cstr); }
 static inline void md_str_writer_push_cstrl(md_str_writer_t* sw, const char* cstr, size_t n) { md_write(&sw->w, cstr, n); }
 void md_str_writer_fmt (md_str_writer_t* sw, const char* format, ...) MD_WRITER_PRINTF(2, 3);
@@ -262,14 +262,14 @@ static inline bool md_str_writer_empty(const md_str_writer_t* sw) {
 
 // What is written, terminated (in a byte kept for it after what is written), so that its ptr is a C string as well.
 // Valid until the next write, which can move the buffer as it grows.
-static inline str_t md_str_writer_to_str(const md_str_writer_t* sw) {
+static inline md_str_t md_str_writer_to_str(const md_str_writer_t* sw) {
     if (sw->w.end == sw->w.buf) {
         // Nothing allocated yet (a buffer, once allocated, always has room beyond the terminator)
-        str_t empty = { "", 0 };
+        md_str_t empty = { "", 0 };
         return empty;
     }
     *sw->w.cur = '\0';
-    str_t str = { sw->w.buf, (size_t)(sw->w.cur - sw->w.buf) };
+    md_str_t str = { sw->w.buf, (size_t)(sw->w.cur - sw->w.buf) };
     return str;
 }
 
@@ -284,8 +284,8 @@ void md_str_writer_pop(md_str_writer_t* sw, size_t n);
 void md_str_writer_reset(md_str_writer_t* sw);
 
 // Hands over what is written as a string of its own: allocated with the writer's allocator, terminated, and freed with
-// str_free. The writer is left empty and can be written to again, or freed (which then has nothing to free).
-str_t md_str_writer_release(md_str_writer_t* sw);
+// md_str_free. The writer is left empty and can be written to again, or freed (which then has nothing to free).
+md_str_t md_str_writer_release(md_str_writer_t* sw);
 
 // ### FIXED ARRAY WRITER ###
 // The caller's array buf of cap bytes (at least 1), of which one is kept for the terminator. What does not fit is
@@ -301,7 +301,7 @@ static inline md_buf_writer_t md_buf_writer_create(char* buf, size_t cap) {
 }
 
 // What is kept, terminated in the array
-str_t md_buf_writer_to_str(const md_buf_writer_t* bw);
+md_str_t md_buf_writer_to_str(const md_buf_writer_t* bw);
 
 static inline bool md_buf_writer_truncated(const md_buf_writer_t* bw) {
     return (bw->w.flags & MD_WRITER_FLAG_TRUNCATED) != 0;
@@ -345,7 +345,7 @@ void md_log_writer_close(md_log_writer_t* lw);
 
 // Appending with operators: on the interface, and through it on any writer which converts to it.
 // The integer overloads are exact matches for each type, so that w << 42 is not ambiguous; a char is a character.
-inline md_writer_i& operator<<(md_writer_i& w, str_t str)            { md_write_str(&w, str);   return w; }
+inline md_writer_i& operator<<(md_writer_i& w, md_str_t str)            { md_write_str(&w, str);   return w; }
 inline md_writer_i& operator<<(md_writer_i& w, const char* cstr)     { md_write_cstr(&w, cstr); return w; }
 inline md_writer_i& operator<<(md_writer_i& w, char c)               { md_write_char(&w, c);    return w; }
 inline md_writer_i& operator<<(md_writer_i& w, int x)                { md_write_i64(&w, x);     return w; }
@@ -355,8 +355,8 @@ inline md_writer_i& operator<<(md_writer_i& w, unsigned x)           { md_write_
 inline md_writer_i& operator<<(md_writer_i& w, unsigned long x)      { md_write_u64(&w, x);     return w; }
 inline md_writer_i& operator<<(md_writer_i& w, unsigned long long x) { md_write_u64(&w, x);     return w; }
 
-inline md_str_writer_t& md_str_writer_t::operator+=(str_t str)        { md_write_str(&w, str);   return *this; }
+inline md_str_writer_t& md_str_writer_t::operator+=(md_str_t str)        { md_write_str(&w, str);   return *this; }
 inline md_str_writer_t& md_str_writer_t::operator+=(const char* cstr) { md_write_cstr(&w, cstr); return *this; }
 inline md_str_writer_t& md_str_writer_t::operator+=(char c)           { md_write_char(&w, c);    return *this; }
-inline md_str_writer_t::operator str_t() const                        { return md_str_writer_to_str(this); }
+inline md_str_writer_t::operator md_str_t() const                        { return md_str_writer_to_str(this); }
 #endif

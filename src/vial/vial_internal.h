@@ -15,24 +15,24 @@
 
 typedef struct vial_diags_t {
     md_vial_diagnostic_t* items;    // md_array
-    str_t                 src;      // the source the spans point into
+    md_str_t                 src;      // the source the spans point into
     uint32_t*             line_beg; // md_array: byte offset of each line's start, for line numbers in messages
     uint64_t*             at;       // a bit per byte of src: does a diagnostic start there
     md_allocator_i*       alloc;
 } vial_diags_t;
 
-void     vial_diags_init(vial_diags_t* d, str_t src, md_allocator_i* alloc);
+void     vial_diags_init(vial_diags_t* d, md_str_t src, md_allocator_i* alloc);
 void     vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, const char* fmt, ...);
 uint32_t vial_line_of(const vial_diags_t* d, uint32_t offset);   // 1-based
 size_t   vial_diag_count(const vial_diags_t* d, const char code[6]);
 void     vial_diags_sort(vial_diags_t* d);   // into source order, stable
 bool     vial_diag_at(const vial_diags_t* d, uint32_t offset);   // does a diagnostic start at offset
-void     vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix);   // copies fix
+void     vial_diag_set_fix(vial_diags_t* d, size_t index, md_str_t fix);   // copies fix
 
 // Source text as a message quotes it: its first line, at most VIAL_EXCERPT_MAX bytes, cut on a character and ending in
 // "…" when cut. Messages are one line, and a string literal or a bracketed expression may span many.
 #define VIAL_EXCERPT_MAX 32
-str_t    vial_excerpt(char* buf, size_t cap, str_t text);   // cap of at least VIAL_EXCERPT_MAX + 4
+md_str_t    vial_excerpt(char* buf, size_t cap, md_str_t text);   // cap of at least VIAL_EXCERPT_MAX + 4
 
 // ### TOKENS ###
 
@@ -96,7 +96,7 @@ typedef struct vial_token_t {
 } vial_token_t;
 
 // Splits src into tokens, ending with MD_VIAL_TOKEN_EOF. Reports E0101, E0102 and E0103.
-vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc);
+vial_token_t* vial_lex(md_str_t src, vial_diags_t* diags, md_allocator_i* alloc);
 
 const char* vial_kw_str(vial_kw_t kw);
 
@@ -104,17 +104,17 @@ const char* vial_kw_str(vial_kw_t kw);
 // The names that may follow a number, `10 ns`, and the strings, `1.5 'kJ/mol'`. Both fill unit when it is not NULL.
 
 struct md_unit_t;
-bool vial_unit_name(str_t name, struct md_unit_t* unit);
-bool vial_unit_string(str_t text, struct md_unit_t* unit);
+bool vial_unit_name(md_str_t name, struct md_unit_t* unit);
+bool vial_unit_string(md_str_t text, struct md_unit_t* unit);
 // A name that may follow the slash of a compound unit, `1.5 kJ/mol`: a unit name, or one name md_unit knows
-bool vial_unit_divisor(str_t name, struct md_unit_t* unit);
+bool vial_unit_divisor(md_str_t name, struct md_unit_t* unit);
 // The unit of a quantity literal as written, a unit name and any divisors, `kJ/mol/nm`
-bool vial_unit_written(str_t text, struct md_unit_t* unit);
+bool vial_unit_written(md_str_t text, struct md_unit_t* unit);
 const char* vial_op_str(vial_op_t op);
 const char* vial_token_kind_str(md_vial_token_kind_t kind);
 
 // One line per token, "KIND beg..end text", for golden tests
-str_t vial_tokens_dump(const vial_token_t* tokens, str_t src, md_allocator_i* alloc);
+md_str_t vial_tokens_dump(const vial_token_t* tokens, md_str_t src, md_allocator_i* alloc);
 
 // The diagnostics of the prelude compiled with a program: none, unless the prelude has a mistake. For the tests.
 size_t md_vial__prelude_diagnostics(const md_vial_program_t* prog, const md_vial_diagnostic_t** out);

@@ -18,12 +18,12 @@ extern "C" {
 // NAMD's .vel restarts have the same layout; they are not coordinates, but nothing in the file says so.
 
 // True when the size of the file is that of the atom count it starts with, in either byte order.
-bool md_namdbin_file_is_coor(str_t filename);
+bool md_namdbin_file_is_coor(md_str_t filename);
 
-size_t md_namdbin_file_atom_count(str_t filename);
+size_t md_namdbin_file_atom_count(md_str_t filename);
 
 // The coordinates into state; num_atoms 0 accepts any count. state->alloc must be set.
-bool md_namdbin_state_init_from_file(struct md_system_state_t* state, str_t filename, size_t num_atoms);
+bool md_namdbin_state_init_from_file(struct md_system_state_t* state, md_str_t filename, size_t num_atoms);
 
 #ifdef __cplusplus
 }

@@ -21,7 +21,7 @@ static const T* type_of(const infer_t* x, vial_node_id n) { return &x->out->type
 
 static md_unit_t angstrom(void) {
     md_unit_t u;
-    vial_unit_name(STR_LIT("angstrom"), &u);
+    vial_unit_name(MD_STR_LIT("angstrom"), &u);
     return u;
 }
 
@@ -92,7 +92,7 @@ static bool weights_ok(infer_t* x, vial_node_id n, const char* fname, md_unit_t*
     if (!vx_weights_ok(x, n, fname, NULL)) return false;
     const T* t = type_of(x, n);
     const vial_value_t w = vx_value_of(x, n);
-    if (w.kind == VIAL_VAL_STR) { vial_unit_name(STR_LIT("u"), unit); return true; }
+    if (w.kind == VIAL_VAL_STR) { vial_unit_name(MD_STR_LIT("u"), unit); return true; }
     if (t->unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(t->unit)) *unit = t->unit;
     return true;
 }
@@ -147,9 +147,9 @@ static bool structures_alike(infer_t* x, vial_node_id n, const vial_sets_t* s, c
             const uint32_t p = ai[k], q = a0[k];
             if (p >= sys->atom.count || q >= sys->atom.count) continue;
             const md_atomic_number_t zp = md_atom_atomic_number(&sys->atom, p), zq = md_atom_atomic_number(&sys->atom, q);
-            const bool same = (zp && zq) ? zp == zq : str_eq(md_atom_name(&sys->atom, p), md_atom_name(&sys->atom, q));
+            const bool same = (zp && zq) ? zp == zq : md_str_eq(md_atom_name(&sys->atom, p), md_atom_name(&sys->atom, q));
             if (same) continue;
-            const str_t np = md_atom_name(&sys->atom, p), nq = md_atom_name(&sys->atom, q);
+            const md_str_t np = md_atom_name(&sys->atom, p), nq = md_atom_name(&sys->atom, q);
             vx_diag_fix(x, "E0320", n, NULL, "the structures of `%s` are %s particle by particle; particle %u of structure %u is %.*s, and of the first %.*s",
                 fname, how, k, i, (int)np.len, np.ptr, (int)nq.len, nq.ptr);
             return false;
@@ -162,7 +162,7 @@ static bool structures_alike(infer_t* x, vial_node_id n, const vial_sets_t* s, c
 static bool alike(const md_system_t* sys, uint32_t p, uint32_t q) {
     if (!sys || p >= sys->atom.count || q >= sys->atom.count) return true;
     const md_atomic_number_t zp = md_atom_atomic_number(&sys->atom, p), zq = md_atom_atomic_number(&sys->atom, q);
-    return (zp && zq) ? zp == zq : str_eq(md_atom_name(&sys->atom, p), md_atom_name(&sys->atom, q));
+    return (zp && zq) ? zp == zq : md_str_eq(md_atom_name(&sys->atom, p), md_atom_name(&sys->atom, q));
 }
 
 // An sdf's structures: a set, an array of sets alike, or set[k][w] whose columns are alike, static
@@ -188,7 +188,7 @@ static bool structures_ok(infer_t* x, vial_node_id at, const T* t, const vial_va
         for (uint32_t j = 0; j < w; ++j) {
             const uint32_t p = vial_sets_items(s, i * w + j)[0], q = vial_sets_items(s, j)[0];
             if (alike(sys, p, q)) continue;
-            const str_t np = md_atom_name(&sys->atom, p), nq = md_atom_name(&sys->atom, q);
+            const md_str_t np = md_atom_name(&sys->atom, p), nq = md_atom_name(&sys->atom, q);
             vx_diag_fix(x, "E0320", at, NULL, "the structures of `sdf` are fitted column by column; column %u of structure %u is %.*s, and of the first %.*s",
                 j, i, (int)np.len, np.ptr, (int)nq.len, nq.ptr);
             return false;
@@ -305,13 +305,13 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
         if (vx_kind(x, a) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
             if (vn) vx_infer(x, vn);
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
-            if (str_eq(kw, STR_LIT("match"))) mn = vn;
-            else if (str_eq(kw, STR_LIT("least"))) ln = vn;
+            const md_str_t kw = kn ? vx_text(x, kn) : MD_STR_LIT("");
+            if (md_str_eq(kw, MD_STR_LIT("match"))) mn = vn;
+            else if (md_str_eq(kw, MD_STR_LIT("least"))) ln = vn;
             else {
                 char fix[160] = "";
-                if (str_eq(kw, STR_LIT("by")) && vn) {
-                    const str_t vt = vx_text(x, vn);
+                if (md_str_eq(kw, MD_STR_LIT("by")) && vn) {
+                    const md_str_t vt = vx_text(x, vn);
                     if (vt.len < 140) snprintf(fix, sizeof(fix), "match=%.*s", (int)vt.len, vt.ptr);
                 }
                 vx_diag_fix(x, "E0202", a, fix[0] ? fix : NULL, "`mcs` takes no keyword `%.*s`; it takes structures, match and least", (int)kw.len, kw.ptr);
@@ -337,11 +337,11 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
     bool by_name = false;
     if (mn) {
         const vial_value_t v = vx_value_of(x, mn);
-        if (v.kind != VIAL_VAL_STR || !(str_eq(v.s, STR_LIT("element")) || str_eq(v.s, STR_LIT("name")))) {
+        if (v.kind != VIAL_VAL_STR || !(md_str_eq(v.s, MD_STR_LIT("element")) || md_str_eq(v.s, MD_STR_LIT("name")))) {
             vx_diag_fix(x, "E0313", mn, NULL, "match= takes 'element' or 'name'");
             ok = false;
         }
-        by_name = v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("name"));
+        by_name = v.kind == VIAL_VAL_STR && md_str_eq(v.s, MD_STR_LIT("name"));
     }
     double least = 0.5;
     if (ln && (!known_number(x, ln, &least) || !(least >= 0.0 && least <= 1.0))) {

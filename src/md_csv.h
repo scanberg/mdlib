@@ -16,21 +16,21 @@ typedef struct md_csv_t {
     size_t num_fields;
     size_t num_values;
     
-    str_t*  field_names;    // optional, if not NULL, then should have length num_fields
+    md_str_t*  field_names;    // optional, if not NULL, then should have length num_fields
     float** field_values;   // length num_fields
 } md_csv_t;
 
 // The result is an array of fields each containing the values
-bool md_csv_parse_str (md_csv_t* csv, str_t in_str,  struct md_allocator_i* alloc);
-bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* alloc);
+bool md_csv_parse_str (md_csv_t* csv, md_str_t in_str,  struct md_allocator_i* alloc);
+bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc);
 
 // Writes the fields as columns, a row per value, with field_names (if not NULL) as the first row.
 // Values are written as "%f" writes them.
-void  md_csv_write(struct md_writer_i* w, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values);
+void  md_csv_write(struct md_writer_i* w, const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values);
 
-// The same, as a string allocated with str_alloc (freed with str_free), and to a file which is created or truncated
-str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* str_alloc);
-bool  md_csv_write_to_file(const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path_to_file);
+// The same, as a string allocated with md_str_alloc (freed with md_str_free), and to a file which is created or truncated
+md_str_t md_csv_write_to_str (const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* str_alloc);
+bool  md_csv_write_to_file(const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values, md_str_t path_to_file);
 
 // Free csv structures created from the csv_parse functions
 void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc);
@@ -40,7 +40,7 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc);
 // group's own time axis and every run frame must find its time there; otherwise the rows are the
 // run's frames. A column's unit is the one in parentheses in its name, "Distance (nm)". Read in the
 // script with attr("csv/<stem>/<column>").
-bool md_csv_system_supplement_from_file(struct md_system_t* sys, str_t filename, str_t run);
+bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run);
 
 #ifdef __cplusplus
 }

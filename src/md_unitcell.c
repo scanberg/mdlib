@@ -42,9 +42,9 @@ md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, d
         return md_unitcell_from_basis_parameters(a, b, c, 0, 0, 0);
     }
 
-    alpha = DEG_TO_RAD(alpha);
-    beta  = DEG_TO_RAD(beta);
-    gamma = DEG_TO_RAD(gamma);
+    alpha = MD_DEG_TO_RAD(alpha);
+    beta  = MD_DEG_TO_RAD(beta);
+    gamma = MD_DEG_TO_RAD(gamma);
 
     // https://docs.lammps.org/Howto_triclinic.html
     double x  = a;
@@ -55,6 +55,51 @@ md_unitcell_t md_unitcell_from_extent_and_angles(double a, double b, double c, d
     double z  = sqrt(c * c - xz * xz - yz * yz);
 
     return md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+}
+
+bool md_unitcell_from_basis_vectors(md_unitcell_t* out_cell, double out_R[3][3], const double basis[3][3]) {
+    MD_ASSERT(out_cell);
+    const double* a = basis[0];
+    const double* b = basis[1];
+    const double* c = basis[2];
+    double R[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+    bool rotate = false;
+
+    const double la = sqrt(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+    const double lb = sqrt(b[0]*b[0] + b[1]*b[1] + b[2]*b[2]);
+    const double lc = sqrt(c[0]*c[0] + c[1]*c[1] + c[2]*c[2]);
+    const double tol = 1.0e-4 * MD_MAX(la, MD_MAX(lb, lc));
+
+    if (fabs(a[1]) <= tol && fabs(a[2]) <= tol && fabs(b[2]) <= tol) {
+        *out_cell = md_unitcell_from_basis_parameters(a[0], b[1], c[2], b[0], c[0], c[1]);
+    } else {
+        // Gram-Schmidt: x along a, y along what of b is not along a, z the two crossed (right handed)
+        const double e1[3] = { a[0] / la, a[1] / la, a[2] / la };
+        const double bx = b[0]*e1[0] + b[1]*e1[1] + b[2]*e1[2];
+        const double t[3] = { b[0] - bx*e1[0], b[1] - bx*e1[1], b[2] - bx*e1[2] };
+        const double by = sqrt(t[0]*t[0] + t[1]*t[1] + t[2]*t[2]);
+        if (la == 0.0 || by == 0.0) {
+            // a or b of no length, or the two parallel: no cell
+            *out_cell = md_unitcell_none();
+        } else {
+            const double e2[3] = { t[0] / by, t[1] / by, t[2] / by };
+            const double e3[3] = { e1[1]*e2[2] - e1[2]*e2[1], e1[2]*e2[0] - e1[0]*e2[2], e1[0]*e2[1] - e1[1]*e2[0] };
+            const double cx = c[0]*e1[0] + c[1]*e1[1] + c[2]*e1[2];
+            const double cy = c[0]*e2[0] + c[1]*e2[1] + c[2]*e2[2];
+            const double cz = c[0]*e3[0] + c[1]*e3[1] + c[2]*e3[2];
+            for (int k = 0; k < 3; ++k) {
+                R[0][k] = e1[k];
+                R[1][k] = e2[k];
+                R[2][k] = e3[k];
+            }
+            *out_cell = md_unitcell_from_basis_parameters(la, by, cz, bx, cx, cy);
+            rotate = true;
+        }
+    }
+    if (out_R) {
+        memcpy(out_R, R, sizeof(R));
+    }
+    return rotate;
 }
 
 void md_unitcell_extract_extent_angles(double* out_a, double* out_b, double* out_c, double* out_alpha, double* out_beta, double* out_gamma, const md_unitcell_t* cell) {
@@ -83,9 +128,9 @@ void md_unitcell_extract_extent_angles(double* out_a, double* out_b, double* out
     }
 
     // The vectors are a = (x, 0, 0), b = (xy, y, 0), c = (xz, yz, z): alpha is between b and c
-    double alpha = RAD_TO_DEG(acos((cell->xy * cell->xz + cell->y * cell->yz) / (b * c)));
-    double beta  = RAD_TO_DEG(acos((cell->xz) / c));
-    double gamma = RAD_TO_DEG(acos((cell->xy) / b));
+    double alpha = MD_RAD_TO_DEG(acos((cell->xy * cell->xz + cell->y * cell->yz) / (b * c)));
+    double beta  = MD_RAD_TO_DEG(acos((cell->xz) / c));
+    double gamma = MD_RAD_TO_DEG(acos((cell->xy) / b));
 
     if (out_a) *out_a = a;
     if (out_b) *out_b = b;
@@ -116,7 +161,7 @@ void md_unitcell_extract_basis_parameters(double* out_x, double* out_y, double* 
 void md_unitcell_I_extract_double(double out_I[3][3], const md_unitcell_t* cell) {
     if (cell) {
         if (!cell->flags) {
-            MEMSET(out_I, 0, sizeof(double) * 9);
+            md_memset(out_I, 0, sizeof(double) * 9);
             return;
         }
 

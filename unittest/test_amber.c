@@ -50,11 +50,11 @@ static void put(buf_t* b, const void* p, size_t n) {
         b->cap = (b->size + n) * 2 + 1024;
         b->data = realloc(b->data, b->cap);
     }
-    MEMCPY(b->data + b->size, p, n);
+    md_memcpy(b->data + b->size, p, n);
     b->size += n;
 }
-static void put_u32(buf_t* b, uint32_t v) { v = BSWAP32(v); put(b, &v, 4); }
-static void put_u64(buf_t* b, uint64_t v) { v = BSWAP64(v); put(b, &v, 8); }
+static void put_u32(buf_t* b, uint32_t v) { v = md_bswap32(v); put(b, &v, 4); }
+static void put_u64(buf_t* b, uint64_t v) { v = md_bswap64(v); put(b, &v, 8); }
 static void put_name(buf_t* b, const char* s) {
     const size_t n = strlen(s);
     put_u32(b, (uint32_t)n);
@@ -63,8 +63,8 @@ static void put_name(buf_t* b, const char* s) {
     put(b, zero, (4 - n % 4) % 4);
 }
 static void put_value(buf_t* b, int type, double v) {
-    if (type == NC_FLOAT_) { float f = (float)v; uint32_t u; MEMCPY(&u, &f, 4); put_u32(b, u); }
-    else if (type == NC_DOUBLE_) { uint64_t u; MEMCPY(&u, &v, 8); put_u64(b, u); }
+    if (type == NC_FLOAT_) { float f = (float)v; uint32_t u; md_memcpy(&u, &f, 4); put_u32(b, u); }
+    else if (type == NC_DOUBLE_) { uint64_t u; md_memcpy(&u, &v, 8); put_u64(b, u); }
     else { put_u32(b, (uint32_t)(int32_t)v); }
 }
 static size_t type_size(int type) { return type == NC_DOUBLE_ ? 8 : type == NC_CHAR_ ? 1 : 4; }
@@ -97,7 +97,7 @@ static size_t var_slab(const ncw_t* w, const ncw_var_t* v, bool* record) {
 }
 
 // Writes the file; cut, when not 0, is how many bytes to leave off its end
-static bool ncw_write(const ncw_t* w, str_t path, size_t cut) {
+static bool ncw_write(const ncw_t* w, md_str_t path, size_t cut) {
     // The header twice: once to know its size (and so where the data begins), once for real
     uint64_t begin[10] = {0};
     buf_t h = {0};
@@ -226,8 +226,8 @@ static ncw_t amber_trajectory(int version, uint32_t frames) {
     return w;
 }
 
-static void check_positions(int* utest_result, md_system_t* sys, str_t run, uint32_t frames, md_allocator_i* arena) {
-    const str_t paths[] = { STR_LIT("atom/position") };
+static void check_positions(int* utest_result, md_system_t* sys, md_str_t run, uint32_t frames, md_allocator_i* arena) {
+    const md_str_t paths[] = { MD_STR_LIT("atom/position") };
     md_system_extract_t* ex = md_system_extract_begin(sys, run, paths, 1, arena);
     ASSERT_TRUE(ex != NULL);
     md_system_state_t s = { .alloc = arena };
@@ -244,8 +244,8 @@ static void check_positions(int* utest_result, md_system_t* sys, str_t run, uint
 }
 
 UTEST(amber_netcdf, trajectory_with_records) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber.nc");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber.nc");
     for (int version = 1; version <= 2; ++version) {
         ncw_t w = amber_trajectory(version, 4);
         ASSERT_TRUE(ncw_write(&w, path, 0));
@@ -253,17 +253,17 @@ UTEST(amber_netcdf, trajectory_with_records) {
         EXPECT_EQ((size_t)NATOMS, md_amber_netcdf_file_atom_count(path));
 
         md_system_t sys = { .alloc = arena };
-        ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
-        const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/a/time"));
+        ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
+        const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/time"));
         ASSERT_TRUE(time != NULL);
         ASSERT_EQ(4u, time->format.shape[0]);
         EXPECT_TRUE(md_unit_equal(time->unit, md_unit_picosecond()));
         EXPECT_EQ(2.0, ((const double*)time->data)[0]);
         EXPECT_EQ(8.0, ((const double*)time->data)[3]);
-        check_positions(utest_result, &sys, STR_LIT("run/a"), 4, arena);
+        check_positions(utest_result, &sys, MD_STR_LIT("run/a"), 4, arena);
 
         // The cell of frame 2: lengths 32, 33, 34
-        const md_attribute_t* cell = md_attributes_find(&sys.attributes, STR_LIT("run/a/unitcell"));
+        const md_attribute_t* cell = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/unitcell"));
         ASSERT_TRUE(cell != NULL);
         const float* box = (const float*)cell->data + 2 * 9;
         EXPECT_NEAR(32.0f, box[0], 1e-4f);
@@ -271,8 +271,8 @@ UTEST(amber_netcdf, trajectory_with_records) {
         EXPECT_NEAR(34.0f, box[8], 1e-4f);
 
         // Velocities with their scale factor, in Angstrom/ps; forces as they are
-        const md_attribute_t* vel = md_attributes_find(&sys.attributes, STR_LIT("run/a/atom/velocity"));
-        const md_attribute_t* frc = md_attributes_find(&sys.attributes, STR_LIT("run/a/atom/force"));
+        const md_attribute_t* vel = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/atom/velocity"));
+        const md_attribute_t* frc = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/atom/force"));
         ASSERT_TRUE(vel && frc);
         float v[3];
         ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_2(1, 2), md_unit_none()));
@@ -281,7 +281,7 @@ UTEST(amber_netcdf, trajectory_with_records) {
         ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, frc, md_attribute_slice_2(3, 1), md_unit_none()));
         EXPECT_EQ(-3.0f, v[0]);
 
-        const md_attribute_t* temp0 = md_attributes_find(&sys.attributes, STR_LIT("run/a/remd/temp0"));
+        const md_attribute_t* temp0 = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/remd/temp0"));
         ASSERT_TRUE(temp0 != NULL);
         EXPECT_EQ(330.0, ((const double*)temp0->data)[3]);
 
@@ -299,18 +299,18 @@ UTEST(amber_netcdf, trajectory_with_records) {
 
 // A file still being written: the last record is incomplete, and with the header's record count unknown
 UTEST(amber_netcdf, trajectory_cut_short) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber_cut.nc");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber_cut.nc");
     for (int streaming = 0; streaming < 2; ++streaming) {
         ncw_t w = amber_trajectory(2, 5);
         if (streaming) w.numrecs = 0xFFFFFFFFu;
         ASSERT_TRUE(ncw_write(&w, path, 20));
         md_system_t sys = { .alloc = arena };
-        ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
-        const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/a/time"));
+        ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
+        const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/time"));
         ASSERT_TRUE(time != NULL);
         EXPECT_EQ(4u, time->format.shape[0]);
-        check_positions(utest_result, &sys, STR_LIT("run/a"), 4, arena);
+        check_positions(utest_result, &sys, MD_STR_LIT("run/a"), 4, arena);
         md_system_free(&sys);
     }
     remove(path.ptr);
@@ -319,8 +319,8 @@ UTEST(amber_netcdf, trajectory_cut_short) {
 
 // Frames along a fixed dimension rather than records, no time, no cell: CDF-1 as some converters write it
 UTEST(amber_netcdf, trajectory_fixed_frames) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber_fixed.nc");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber_fixed.nc");
     ncw_t w = { .version = 1, .numrecs = 0, .records = 0, .value = fixed_value };
     w.dim[w.num_dim++] = (ncw_dim_t){ "frame", 3 };
     w.dim[w.num_dim++] = (ncw_dim_t){ "atom", NATOMS };
@@ -330,17 +330,17 @@ UTEST(amber_netcdf, trajectory_fixed_frames) {
     ASSERT_TRUE(ncw_write(&w, path, 0));
 
     md_system_t sys = { .alloc = arena };
-    ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
-    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/a/time"));
+    ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/time"));
     ASSERT_TRUE(time != NULL);
     EXPECT_EQ(3u, time->format.shape[0]);
     EXPECT_TRUE(md_unit_equal(time->unit, md_unit_none()));
     EXPECT_EQ(2.0, ((const double*)time->data)[2]);
     // No box: a cell of zeros, which every run has
-    const md_attribute_t* cell = md_attributes_find(&sys.attributes, STR_LIT("run/a/unitcell"));
+    const md_attribute_t* cell = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/unitcell"));
     ASSERT_TRUE(cell != NULL);
     EXPECT_EQ(0.0f, ((const float*)cell->data)[0]);
-    check_positions(utest_result, &sys, STR_LIT("run/a"), 3, arena);
+    check_positions(utest_result, &sys, MD_STR_LIT("run/a"), 3, arena);
     md_system_free(&sys);
     remove(path.ptr);
     md_arena_allocator_destroy(arena);
@@ -356,8 +356,8 @@ static double restart_value(const char* var, uint32_t r, size_t k) {
 }
 
 UTEST(amber_netcdf, restart_and_what_is_not_amber) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber.ncrst");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber.ncrst");
     ncw_t w = { .version = 2, .value = restart_value };
     w.dim[w.num_dim++] = (ncw_dim_t){ "spatial", 3 };
     w.dim[w.num_dim++] = (ncw_dim_t){ "atom", NATOMS };
@@ -378,7 +378,7 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
     EXPECT_TRUE(md_system_state_has_unitcell(&s));
     // A restart is not a run
     md_system_t sys = { .alloc = arena };
-    EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
+    EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
 
     // NetCDF without the convention, NetCDF-4 and something else altogether
     w.gatt[0].text = "CF-1.6";
@@ -396,7 +396,7 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
 #else
     EXPECT_EQ(MD_AMBER_NETCDF_HDF5, md_amber_netcdf_file_kind(path));
 #endif
-    EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
+    EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
 
     md_system_free(&sys);
     remove(path.ptr);
@@ -405,7 +405,7 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
 
 // ## Topology
 
-static bool write_text(str_t path, const char* text) {
+static bool write_text(md_str_t path, const char* text) {
     md_file_t f = {0};
     if (!md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
     md_file_write(f, text, strlen(text));
@@ -464,8 +464,8 @@ static const char* prmtop_text =
     "  9.00000000E+01  2.00000000E+01  2.10000000E+01  2.20000000E+01\n";
 
 UTEST(amber_prmtop, builds_a_system_without_coordinates) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber.prmtop");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber.prmtop");
     ASSERT_TRUE(write_text(path, prmtop_text));
     EXPECT_TRUE(md_amber_prmtop_file_is_topology(path));
     EXPECT_EQ(10u, md_amber_prmtop_file_atom_count(path));
@@ -484,13 +484,13 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
     EXPECT_EQ(8, sys.atom.type.z[sys.atom.type_idx[6]]);
     EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&sys.atom, 9));
     EXPECT_EQ(8u, sys.bond.count);
-    EXPECT_TRUE(str_eq_cstr(md_label16_str(&sys.atom.type.ff_type[sys.atom.type_idx[0]]), "CT"));
+    EXPECT_TRUE(md_str_eq_cstr(md_label16_str(&sys.atom.type.ff_type[sys.atom.type_idx[0]]), "CT"));
 
-    const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+    const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
     ASSERT_TRUE(charge != NULL);
     EXPECT_NEAR(0.11975f, ((const float*)charge->data)[0], 1e-4f);
     EXPECT_NEAR(-1.05804f, ((const float*)charge->data)[9], 1e-4f);
-    EXPECT_TRUE(str_eq_cstr(md_system_residue_name(&sys, 1), "WAT"));
+    EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 1), "WAT"));
 
     // CHAMBER: the same blocks, and CHARMM terms that are not read
     char chamber[8192];
@@ -507,8 +507,8 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
 }
 
 UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber_supp.prmtop");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber_supp.prmtop");
     ASSERT_TRUE(write_text(path, prmtop_text));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
@@ -523,7 +523,7 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
     char other[8192];
     snprintf(other, sizeof(other), "%s", prmtop_text);
     char* name = strstr(other, "HO1 ");
-    MEMCPY(name, "XX1 ", 4);
+    md_memcpy(name, "XX1 ", 4);
     ASSERT_TRUE(write_text(path, other));
     EXPECT_FALSE(md_amber_prmtop_system_supplement_from_file(&sys, path));
     EXPECT_EQ(8u, sys.bond.count);
@@ -536,8 +536,8 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
 // ## ASCII restart
 
 UTEST(amber_rst7, coordinates_velocities_and_box) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t path = STR_LIT("md_unittest_amber.rst7");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t path = MD_STR_LIT("md_unittest_amber.rst7");
     // 3 atoms: two lines of coordinates, two of velocities, a box
     const char* text =
         "default_name\n"
@@ -618,9 +618,9 @@ static double two_frames(const char* var, uint32_t r, size_t k) {
 }
 
 UTEST(amber_energy, mdout_and_mden_along_the_run) {
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    const str_t nc = STR_LIT("md_unittest_amber_energy.nc");
-    const str_t out = STR_LIT("md_unittest_amber.mdout");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t nc = MD_STR_LIT("md_unittest_amber_energy.nc");
+    const md_str_t out = MD_STR_LIT("md_unittest_amber.mdout");
     ncw_t w = amber_trajectory(2, 2);
     w.value = two_frames;
     ASSERT_TRUE(ncw_write(&w, nc, 0));
@@ -629,16 +629,16 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
     EXPECT_FALSE(md_amber_energy_file_is_mden(out));
 
     md_system_t sys = { .alloc = arena };
-    ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, nc, STR_LIT("run/a"), 0));
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, STR_LIT("run/a")));
-    const md_attribute_t* ep = md_attributes_find(&sys.attributes, STR_LIT("run/a/amber_energy/eptot"));
-    const md_attribute_t* nb = md_attributes_find(&sys.attributes, STR_LIT("run/a/amber_energy/1_4_nb"));
-    const md_attribute_t* tk = md_attributes_find(&sys.attributes, STR_LIT("run/a/amber_energy/temp_k"));
+    ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, nc, MD_STR_LIT("run/a"), 0));
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, MD_STR_LIT("run/a")));
+    const md_attribute_t* ep = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/eptot"));
+    const md_attribute_t* nb = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/1_4_nb"));
+    const md_attribute_t* tk = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/temp_k"));
     ASSERT_TRUE(ep && nb && tk);
     EXPECT_EQ(2u, ep->format.shape[0]);     // the averages are not a record
     EXPECT_EQ(-1102.0, ((const double*)ep->data)[1]);
     EXPECT_TRUE(md_unit_equal(tk->unit, md_unit_kelvin()));
-    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/a/amber_energy/ke_trans")) == NULL);
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/ke_trans")) == NULL);
 
     // mden, of the same records: under the same names
     const char* mden =
@@ -653,23 +653,109 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
         "L2 -.1102000000E+04  -.2550000000E+00  -.1127330000E+02\n";
     ASSERT_TRUE(write_text(out, mden));
     EXPECT_TRUE(md_amber_energy_file_is_mden(out));
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, STR_LIT("run/a")));
-    ep = md_attributes_find(&sys.attributes, STR_LIT("run/a/amber_energy/eptot"));
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, MD_STR_LIT("run/a")));
+    ep = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/eptot"));
     ASSERT_TRUE(ep != NULL);
     EXPECT_EQ(-1102.0, ((const double*)ep->data)[1]);
-    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/a/amber_energy/vdwaals")) != NULL);
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/vdwaals")) != NULL);
 
     // A run the file does not cover: refused, nothing changed
     md_system_t other = { .alloc = arena };
     ncw_t w3 = amber_trajectory(2, 3);
     ASSERT_TRUE(ncw_write(&w3, nc, 0));
-    ASSERT_TRUE(md_amber_netcdf_system_publish_run(&other, nc, STR_LIT("run/b"), 0));
-    EXPECT_FALSE(md_amber_energy_system_supplement_from_file(&other, out, STR_LIT("run/b")));
-    EXPECT_TRUE(md_attributes_find(&other.attributes, STR_LIT("run/b/amber_energy/time")) == NULL);
+    ASSERT_TRUE(md_amber_netcdf_system_publish_run(&other, nc, MD_STR_LIT("run/b"), 0));
+    EXPECT_FALSE(md_amber_energy_system_supplement_from_file(&other, out, MD_STR_LIT("run/b")));
+    EXPECT_TRUE(md_attributes_find(&other.attributes, MD_STR_LIT("run/b/amber_energy/time")) == NULL);
 
     md_system_free(&sys);
     md_system_free(&other);
     remove(nc.ptr);
+    remove(out.ptr);
+    md_arena_allocator_destroy(arena);
+}
+
+// A thermodynamic integration run (pmemd, as alchemlyb's test files): each record once per TI region, the same step
+// and time with energies of each region's own, then per region averages, and the averages of DV/DL as one more
+// record of the last step. One row per step: region 1 under the terms' own names, region 2 as "(TI region 2)". Read
+// as records of their own, every time was on the axis twice, and the DV/DL averages overwrote the last step.
+UTEST(amber_energy, ti_regions_are_one_record) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t out = MD_STR_LIT("md_unittest_amber_ti.mdout");
+    const char* text =
+        "          PMEMD implementation of SANDER, Release 22\n"
+        "|  MDIN: ti.in\n"
+        "   4.  RESULTS\n"
+        "\n"
+        "| TI region  1\n"
+        "\n"
+        " NSTEP =      500   TIME(PS) =       1.000  TEMP(K) =   300.00  PRESS =     0.0\n"
+        " Etot   =      -100.0000  EKtot   =        50.0000  EPtot      =      -150.0000\n"
+        " DV/DL  =         1.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  2\n"
+        "\n"
+        " NSTEP =      500   TIME(PS) =       1.000  TEMP(K) =   300.10  PRESS =     0.0\n"
+        " Etot   =      -101.0000  EKtot   =        49.0000  EPtot      =      -150.0000\n"
+        " DV/DL  =         1.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  1\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   301.00  PRESS =     0.0\n"
+        " Etot   =      -102.0000  EKtot   =        51.0000  EPtot      =      -153.0000\n"
+        " DV/DL  =         2.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  2\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   301.10  PRESS =     0.0\n"
+        " Etot   =      -103.0000  EKtot   =        50.0000  EPtot      =      -153.0000\n"
+        " DV/DL  =         2.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  1\n"
+        "\n"
+        "      A V E R A G E S   O V E R       2 S T E P S\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   300.50  PRESS =     0.0\n"
+        " Etot   =      -101.0000  EKtot   =        50.5000  EPtot      =      -151.5000\n"
+        " DV/DL  =         2.0000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  2\n"
+        "\n"
+        "      A V E R A G E S   O V E R       2 S T E P S\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   300.60  PRESS =     0.0\n"
+        " Etot   =      -102.0000  EKtot   =        49.5000  EPtot      =      -151.5000\n"
+        " DV/DL  =         2.0000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "      DV/DL, AVERAGES OVER       2 STEPS\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =     0.00  PRESS =     0.0\n"
+        " Etot   =         0.0000  EKtot   =         0.0000  EPtot      =         2.0000\n"
+        " DV/DL  =         2.0000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "   5.  TIMINGS\n";
+    ASSERT_TRUE(write_text(out, text));
+    md_system_t sys = { .alloc = arena };
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, MD_STR_LIT("run/ti")));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/time"));
+    const md_attribute_t* e1   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/etot"));
+    const md_attribute_t* e2   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/etot_ti_region_2"));
+    const md_attribute_t* t2   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/temp_k_ti_region_2"));
+    ASSERT_TRUE(time && e1 && e2 && t2);
+    ASSERT_EQ(2u, time->format.shape[0]);
+    EXPECT_EQ(1.0, ((const double*)time->data)[0]);
+    EXPECT_EQ(2.0, ((const double*)time->data)[1]);
+    EXPECT_EQ(-102.0, ((const double*)e1->data)[1]);
+    EXPECT_EQ(-101.0, ((const double*)e2->data)[0]);
+    EXPECT_EQ(-103.0, ((const double*)e2->data)[1]);
+    EXPECT_EQ(301.1, ((const double*)t2->data)[1]);
+    md_system_free(&sys);
     remove(out.ptr);
     md_arena_allocator_destroy(arena);
 }

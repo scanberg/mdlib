@@ -124,7 +124,7 @@ typedef struct chem_t {
 static inline void mark_begin(chem_t* c) {
     c->mark_gen += 1;
     if (c->mark_gen == 0) {
-        MEMSET(c->mark, 0, sizeof(uint32_t) * c->N);
+        md_memset(c->mark, 0, sizeof(uint32_t) * c->N);
         c->mark_gen = 1;
     }
 }
@@ -132,7 +132,7 @@ static inline void mark_begin(chem_t* c) {
 // Built with fast math: NAN is told by its bits, not by v != v
 static inline bool float_bits_nan(float v) {
     uint32_t u;
-    MEMCPY(&u, &v, sizeof(u));
+    md_memcpy(&u, &v, sizeof(u));
     return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0;
 }
 
@@ -174,17 +174,17 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
     const int total = (int)(c->off[i + 1] - c->off[i]) + (int)c->h_imp[i];
     if (total >= 4) return 3;
     if (n == 3) {
-        const float sum = (float)RAD_TO_DEG(vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]));
+        const float sum = (float)MD_RAD_TO_DEG(vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]));
         return sum >= 350.0f ? 2 : 3;
     }
     if (n == 2) {
-        const float a = (float)RAD_TO_DEG(vec3_angle(v[0], v[1]));
+        const float a = (float)MD_RAD_TO_DEG(vec3_angle(v[0], v[1]));
         if (a > 165.0f) return 1;
         // sp2 has a short bond (a double or aromatic one), whatever the angle: about 108 in a five membered ring.
         // Without one only a wide angle says sp2: a CH2 in a ring is often opened to 117.
         float rmin = FLT_MAX;
         for (uint32_t k = c->off[i]; k < c->off[i + 1]; ++k) {
-            if (c->z[c->nbr[k]] != MD_Z_H) rmin = MIN(rmin, c->ratio[c->nbr_bond[k]]);
+            if (c->z[c->nbr[k]] != MD_Z_H) rmin = MD_MIN(rmin, c->ratio[c->nbr_bond[k]]);
         }
         if (rmin < 0.83f) return 1;     // A triple bond, also bent (in a strained ring)
         if (rmin < 0.94f) return 2;
@@ -204,7 +204,7 @@ static float planar_angle_sum(const chem_t* c, uint32_t i) {
     if (!c->xyz || c->off[i + 1] - c->off[i] != 3) return 0.0f;
     vec3_t v[3];
     for (int k = 0; k < 3; ++k) v[k] = bond_vec(c, i, c->nbr[c->off[i] + k]);
-    return (float)RAD_TO_DEG(vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]));
+    return (float)MD_RAD_TO_DEG(vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]));
 }
 
 // ### SETUP ###
@@ -224,8 +224,8 @@ static void setup_system(chem_t* c, const md_system_t* sys) {
     c->pairs     = sys->bond.pairs;
     c->bflags    = sys->bond.flags;
     c->rings     = &sys->ring;
-    c->metal_bound = md_alloc(c->alloc, MAX(N, 1));
-    MEMSET(c->metal_bound, 0, MAX(N, 1));
+    c->metal_bound = md_alloc(c->alloc, MD_MAX(N, 1));
+    md_memset(c->metal_bound, 0, MD_MAX(N, 1));
     for (size_t b = 0; b < c->num_bonds; ++b) {
         const md_atom_pair_t p = sys->bond.pairs[b];
         if (p.idx[0] < 0 || p.idx[1] < 0 || (size_t)p.idx[0] >= N || (size_t)p.idx[1] >= N) continue;
@@ -240,9 +240,9 @@ static void setup_system(chem_t* c, const md_system_t* sys) {
 // The covalent graph of the atoms that take part (c->z, c->part, c->pairs and c->bflags set), and the lengths of its bonds
 static void build_graph(chem_t* c) {
     const size_t N = c->N;
-    c->bond_part = md_alloc(c->alloc, MAX(c->num_bonds, 1));
+    c->bond_part = md_alloc(c->alloc, MD_MAX(c->num_bonds, 1));
     uint32_t* deg = md_alloc(c->alloc, sizeof(uint32_t) * (N + 1));
-    MEMSET(deg, 0, sizeof(uint32_t) * (N + 1));
+    md_memset(deg, 0, sizeof(uint32_t) * (N + 1));
     for (size_t b = 0; b < c->num_bonds; ++b) {
         const md_atom_pair_t p = c->pairs[b];
         const md_bond_flags_t f = c->bflags[b];
@@ -258,9 +258,9 @@ static void build_graph(chem_t* c) {
     c->off[0] = 0;
     for (size_t i = 0; i < N; ++i) c->off[i + 1] = c->off[i] + deg[i];
     const uint32_t total = c->off[N];
-    c->nbr      = md_alloc(c->alloc, sizeof(uint32_t) * MAX(total, 1));
-    c->nbr_bond = md_alloc(c->alloc, sizeof(uint32_t) * MAX(total, 1));
-    MEMSET(deg, 0, sizeof(uint32_t) * (N + 1));
+    c->nbr      = md_alloc(c->alloc, sizeof(uint32_t) * MD_MAX(total, 1));
+    c->nbr_bond = md_alloc(c->alloc, sizeof(uint32_t) * MD_MAX(total, 1));
+    md_memset(deg, 0, sizeof(uint32_t) * (N + 1));
     for (size_t b = 0; b < c->num_bonds; ++b) {
         if (!c->bond_part[b]) continue;
         const uint32_t x = (uint32_t)c->pairs[b].idx[0];
@@ -269,7 +269,7 @@ static void build_graph(chem_t* c) {
         c->nbr[c->off[y] + deg[y]] = x; c->nbr_bond[c->off[y] + deg[y]] = (uint32_t)b; deg[y] += 1;
     }
 
-    c->ratio = md_alloc(c->alloc, sizeof(float) * MAX(c->num_bonds, 1));
+    c->ratio = md_alloc(c->alloc, sizeof(float) * MD_MAX(c->num_bonds, 1));
     for (size_t b = 0; b < c->num_bonds; ++b) {
         c->ratio[b] = 1.0f;
         if (!c->bond_part[b] || !c->xyz) continue;
@@ -291,7 +291,7 @@ static uint32_t uf_find(uint32_t* p, uint32_t x) {
 static void assign_modes(chem_t* c, const md_system_t* sys) {
     const size_t N = c->N;
     c->mode = md_alloc(c->alloc, N);
-    uint32_t* group = md_alloc(c->alloc, sizeof(uint32_t) * MAX(N, 1));
+    uint32_t* group = md_alloc(c->alloc, sizeof(uint32_t) * MD_MAX(N, 1));
 
     if (sys->residue.count && sys->residue.atom_offset) {
         for (size_t i = 0; i < N; ++i) group[i] = UINT32_MAX;
@@ -307,7 +307,7 @@ static void assign_modes(chem_t* c, const md_system_t* sys) {
             for (uint32_t k = c->off[i]; k < c->off[i + 1]; ++k) {
                 const uint32_t a = uf_find(group, (uint32_t)i);
                 const uint32_t b = uf_find(group, c->nbr[k]);
-                if (a != b) group[MAX(a, b)] = MIN(a, b);
+                if (a != b) group[MD_MAX(a, b)] = MD_MIN(a, b);
             }
         }
         for (size_t i = 0; i < N; ++i) group[i] = uf_find(group, (uint32_t)i);
@@ -315,8 +315,8 @@ static void assign_modes(chem_t* c, const md_system_t* sys) {
 
     // Per group: any hydrogen, any hydrogen on a carbon
     const size_t num_groups = sys->residue.count + N;
-    uint8_t* has = md_alloc(c->alloc, MAX(num_groups, 1));
-    MEMSET(has, 0, num_groups);
+    uint8_t* has = md_alloc(c->alloc, MD_MAX(num_groups, 1));
+    md_memset(has, 0, num_groups);
     for (size_t i = 0; i < N; ++i) {
         if (c->z[i] != MD_Z_H) continue;
         has[group[i]] |= 1;
@@ -337,9 +337,9 @@ static int find_bond(const chem_t* c, uint32_t a, uint32_t b) {
 
 static void mark_rings(chem_t* c) {
     c->in_ring = md_alloc(c->alloc, c->N);
-    MEMSET(c->in_ring, 0, c->N);
-    c->ring_bond = md_alloc(c->alloc, MAX(c->num_bonds, 1));
-    MEMSET(c->ring_bond, 0, MAX(c->num_bonds, 1));
+    md_memset(c->in_ring, 0, c->N);
+    c->ring_bond = md_alloc(c->alloc, MD_MAX(c->num_bonds, 1));
+    md_memset(c->ring_bond, 0, MD_MAX(c->num_bonds, 1));
     const md_ring_data_t* rings = c->rings;
     const size_t num = rings ? md_ring_data_count(rings) : 0;
     for (size_t r = 0; r < num; ++r) {
@@ -424,17 +424,17 @@ static void implicit_hydrogens(chem_t* c) {
             if (z == MD_Z_C || z == MD_Z_Si) v = 4 - abs(q);
             else if (z == MD_Z_B) v = 3 - q;
             else if (is_pnictogen(z) || is_chalcogen(z)) v = base_valence(z) + q;
-            c->h_imp[i] = (uint8_t)MAX(0, v - n - pi);
+            c->h_imp[i] = (uint8_t)MD_MAX(0, v - n - pi);
             continue;
         }
         if (z == MD_Z_C || z == MD_Z_Si) {
-            c->h_imp[i] = (uint8_t)MAX(0, 4 - n - pi);
+            c->h_imp[i] = (uint8_t)MD_MAX(0, 4 - n - pi);
         } else if (z == MD_Z_B) {
-            c->h_imp[i] = (uint8_t)MAX(0, 3 - n);
+            c->h_imp[i] = (uint8_t)MD_MAX(0, 3 - n);
         } else if (z == MD_Z_N) {
             // An sp3 amine. A flat terminal N has at least one (=NH, or -NH2 conjugated: the matching decides), a
             // linear one none (nitrile); anything else flat waits for the matching.
-            if (hyb == 3 && c->hyb[i]) c->h_imp[i] = (uint8_t)MAX(0, 3 - n);
+            if (hyb == 3 && c->hyb[i]) c->h_imp[i] = (uint8_t)MD_MAX(0, 3 - n);
             else if (n == 1 && c->hyb[i] == 2) c->h_imp[i] = 1;
             if (n == 0) c->h_imp[i] = 3;
         } else if (z == MD_Z_O) {
@@ -508,7 +508,7 @@ typedef struct matcher_t {
 } matcher_t;
 
 static int mt_lca(matcher_t* m, int a, int b) {
-    MEMSET(m->lca_used, 0, (size_t)m->n);
+    md_memset(m->lca_used, 0, (size_t)m->n);
     for (;;) {
         a = m->base[a];
         m->lca_used[a] = 1;
@@ -533,7 +533,7 @@ static void mt_mark_path(matcher_t* m, int v, int b, int children) {
 
 static int mt_find_path(matcher_t* m, int root) {
     const int n = m->n;
-    MEMSET(m->used, 0, (size_t)n);
+    md_memset(m->used, 0, (size_t)n);
     for (int i = 0; i < n; ++i) { m->p[i] = -1; m->base[i] = i; }
     m->used[root] = 1;
     int qh = 0, qt = 0;
@@ -545,7 +545,7 @@ static int mt_find_path(matcher_t* m, int root) {
             if (m->base[v] == m->base[to] || m->match[v] == to) continue;
             if (to == root || (m->match[to] != -1 && m->p[m->match[to]] != -1)) {
                 const int curbase = mt_lca(m, v, to);
-                MEMSET(m->blossom, 0, (size_t)n);
+                md_memset(m->blossom, 0, (size_t)n);
                 mt_mark_path(m, v, curbase, to);
                 mt_mark_path(m, to, curbase, v);
                 for (int i = 0; i < n; ++i) {
@@ -680,23 +680,23 @@ static int match_component(chem_t* c, const uint32_t* atoms, size_t num, int32_t
 
     matcher_t m = { .n = nv };
     m.adj_off = md_alloc(arena, sizeof(int) * (nv + 1));
-    m.adj     = md_alloc(arena, sizeof(int) * MAX(2 * ne, 1));
-    float* adj_key = md_alloc(arena, sizeof(float) * MAX(2 * ne, 1));
-    m.match   = md_alloc(arena, sizeof(int) * MAX(nv, 1));
-    m.p       = md_alloc(arena, sizeof(int) * MAX(nv, 1));
-    m.base    = md_alloc(arena, sizeof(int) * MAX(nv, 1));
-    m.q       = md_alloc(arena, sizeof(int) * MAX(nv, 1));
-    m.used    = md_alloc(arena, MAX(nv, 1));
-    m.blossom = md_alloc(arena, MAX(nv, 1));
-    m.lca_used = md_alloc(arena, MAX(nv, 1));
+    m.adj     = md_alloc(arena, sizeof(int) * MD_MAX(2 * ne, 1));
+    float* adj_key = md_alloc(arena, sizeof(float) * MD_MAX(2 * ne, 1));
+    m.match   = md_alloc(arena, sizeof(int) * MD_MAX(nv, 1));
+    m.p       = md_alloc(arena, sizeof(int) * MD_MAX(nv, 1));
+    m.base    = md_alloc(arena, sizeof(int) * MD_MAX(nv, 1));
+    m.q       = md_alloc(arena, sizeof(int) * MD_MAX(nv, 1));
+    m.used    = md_alloc(arena, MD_MAX(nv, 1));
+    m.blossom = md_alloc(arena, MD_MAX(nv, 1));
+    m.lca_used = md_alloc(arena, MD_MAX(nv, 1));
 
     if (ne) qsort(edges, ne, sizeof(vedge_t), compare_vedge);
     int* deg = md_alloc(arena, sizeof(int) * (nv + 1));
-    MEMSET(deg, 0, sizeof(int) * (nv + 1));
+    md_memset(deg, 0, sizeof(int) * (nv + 1));
     for (size_t e = 0; e < ne; ++e) { deg[edges[e].a] += 1; deg[edges[e].b] += 1; }
     m.adj_off[0] = 0;
     for (int v = 0; v < nv; ++v) m.adj_off[v + 1] = m.adj_off[v] + deg[v];
-    MEMSET(deg, 0, sizeof(int) * (nv + 1));
+    md_memset(deg, 0, sizeof(int) * (nv + 1));
     for (size_t e = 0; e < ne; ++e) {
         const int a = edges[e].a, b = edges[e].b;
         adj_key[m.adj_off[a] + deg[a]] = edges[e].key;
@@ -715,7 +715,7 @@ static int match_component(chem_t* c, const uint32_t* atoms, size_t num, int32_t
         }
     }
     // Vertex back to atom
-    uint32_t* vatom = md_alloc(arena, sizeof(uint32_t) * MAX(nv, 1));
+    uint32_t* vatom = md_alloc(arena, sizeof(uint32_t) * MD_MAX(nv, 1));
     for (size_t k = 0; k < num; ++k) {
         for (int x = 0; x < c->cap[atoms[k]]; ++x) vatom[vbase[atoms[k]] + x] = atoms[k];
     }
@@ -742,13 +742,13 @@ static int match_component(chem_t* c, const uint32_t* atoms, size_t num, int32_t
     // match u and free yk: to an atom that resolves the missing pi bond better (RELOCATE_SCORE: a terminal O becomes
     // an anion, an N is protonated or charged; a carbon is avoided), or, as well, where the double bonds come out
     // shorter (RELOCATE_GEOMETRY: the C=O of an amide rather than a quinoid C=N).
-    int*   via   = md_alloc(arena, sizeof(int) * MAX(nv, 1));
-    int*   from  = md_alloc(arena, sizeof(int) * MAX(nv, 1));
-    float* delta = md_alloc(arena, sizeof(float) * MAX(nv, 1));
+    int*   via   = md_alloc(arena, sizeof(int) * MD_MAX(nv, 1));
+    int*   from  = md_alloc(arena, sizeof(int) * MD_MAX(nv, 1));
+    float* delta = md_alloc(arena, sizeof(float) * MD_MAX(nv, 1));
     for (int u = 0; u < nv && relocate; ++u) {
         if (m.match[u] != -1) continue;
         const int su = free_score(c, vatom[u]);
-        MEMSET(m.used, 0, (size_t)nv);
+        md_memset(m.used, 0, (size_t)nv);
         int qh = 0, qt = 0;
         m.q[qt++] = u;
         m.used[u] = 1;
@@ -1063,9 +1063,9 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
     const size_t num = rings ? md_ring_data_count(rings) : 0;
     if (!num) return;
     uint8_t* member = md_alloc(c->alloc, c->N);
-    MEMSET(member, 0, c->N);
+    md_memset(member, 0, c->N);
     uint8_t* aromatic_ring = md_alloc(c->alloc, num);
-    MEMSET(aromatic_ring, 0, num);
+    md_memset(aromatic_ring, 0, num);
 
     // The rings which can be aromatic, alone or fused: of 4 atoms or more, all of them taking part. Huckel rejects the
     // others anyway, but the search for fused pairs below would still visit every ring sharing an atom with them.
@@ -1087,16 +1087,16 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
     // Fused pairs: rings that are not aromatic alone but are as a system with a neighbour sharing a bond. The
     // neighbours are found through the rings of each atom.
     uint32_t* ring_off = md_alloc(c->alloc, sizeof(uint32_t) * (c->N + 1));
-    MEMSET(ring_off, 0, sizeof(uint32_t) * (c->N + 1));
+    md_memset(ring_off, 0, sizeof(uint32_t) * (c->N + 1));
     for (size_t r = 0; r < num; ++r) {
         const int32_t* ring = md_ring_atoms(rings, r);
         const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) if (ring[k] >= 0 && (size_t)ring[k] < c->N) ring_off[ring[k] + 1] += 1;
     }
     for (size_t i = 0; i < c->N; ++i) ring_off[i + 1] += ring_off[i];
-    uint32_t* ring_idx = md_alloc(c->alloc, sizeof(uint32_t) * MAX(ring_off[c->N], 1));
-    uint32_t* fill = md_alloc(c->alloc, sizeof(uint32_t) * MAX(c->N, 1));
-    MEMCPY(fill, ring_off, sizeof(uint32_t) * c->N);
+    uint32_t* ring_idx = md_alloc(c->alloc, sizeof(uint32_t) * MD_MAX(ring_off[c->N], 1));
+    uint32_t* fill = md_alloc(c->alloc, sizeof(uint32_t) * MD_MAX(c->N, 1));
+    md_memcpy(fill, ring_off, sizeof(uint32_t) * c->N);
     for (size_t r = 0; r < num; ++r) {
         const int32_t* ring = md_ring_atoms(rings, r);
         const size_t n = md_ring_size(rings, r);
@@ -1116,7 +1116,7 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
                 if (s == r || !candidate[s]) continue;
                 const int32_t* rb = md_ring_atoms(rings, s);
                 const size_t nb = md_ring_size(rings, s);
-                if (na + nb > ARRAY_SIZE(buf)) continue;
+                if (na + nb > MD_COUNTOF(buf)) continue;
                 bool earlier = false;
                 for (size_t j = 0; j < i && !earlier; ++j) for (size_t l = 0; l < nb; ++l) earlier |= ra[j] == rb[l];
                 if (earlier) continue;
@@ -1258,9 +1258,9 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
     c->hyb          = md_alloc(c->alloc, N);
     c->cap          = md_alloc(c->alloc, N);
     c->left         = md_alloc(c->alloc, N);
-    MEMSET(c->h_imp, 0, N);
-    MEMSET(c->cap, 0, N);
-    MEMSET(c->left, 0, N);
+    md_memset(c->h_imp, 0, N);
+    md_memset(c->cap, 0, N);
+    md_memset(c->left, 0, N);
     for (size_t i = 0; i < N; ++i) {
         uint8_t nh = 0, nx = 0;
         for (uint32_t k = c->off[i]; k < c->off[i + 1]; ++k) {
@@ -1277,22 +1277,22 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
             c->charge_fixed[i] = 1;
         } else if (q_given && !float_bits_nan(q_given[i])) {
             const long q = lroundf(q_given[i]);
-            c->charge[i] = (int8_t)CLAMP(q, -8, 8);
+            c->charge[i] = (int8_t)MD_CLAMP(q, -8, 8);
             c->charge_fixed[i] = q != 0;
         }
     }
 
     const size_t nb = c->num_bonds;
-    c->pi_fixed    = md_alloc(c->alloc, MAX(nb, 1));
-    c->pi_match    = md_alloc(c->alloc, MAX(nb, 1));
-    c->given       = md_alloc(c->alloc, MAX(nb, 1));
-    MEMSET(c->given, 0, MAX(nb, 1));
-    c->aromatic    = md_alloc(c->alloc, MAX(nb, 1));
-    c->delocalized = md_alloc(c->alloc, MAX(nb, 1));
-    MEMSET(c->pi_fixed, 0, MAX(nb, 1));
-    MEMSET(c->pi_match, 0, MAX(nb, 1));
-    MEMSET(c->aromatic, 0, MAX(nb, 1));
-    MEMSET(c->delocalized, 0, MAX(nb, 1));
+    c->pi_fixed    = md_alloc(c->alloc, MD_MAX(nb, 1));
+    c->pi_match    = md_alloc(c->alloc, MD_MAX(nb, 1));
+    c->given       = md_alloc(c->alloc, MD_MAX(nb, 1));
+    md_memset(c->given, 0, MD_MAX(nb, 1));
+    c->aromatic    = md_alloc(c->alloc, MD_MAX(nb, 1));
+    c->delocalized = md_alloc(c->alloc, MD_MAX(nb, 1));
+    md_memset(c->pi_fixed, 0, MD_MAX(nb, 1));
+    md_memset(c->pi_match, 0, MD_MAX(nb, 1));
+    md_memset(c->aromatic, 0, MD_MAX(nb, 1));
+    md_memset(c->delocalized, 0, MD_MAX(nb, 1));
 
     // Orders the file gives are kept
     for (size_t b = 0; b < nb; ++b) {
@@ -1325,7 +1325,7 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
         const int v = target_valence(c, (uint32_t)i);
         int fixed = 0;
         for (uint32_t k = c->off[i]; k < c->off[i + 1]; ++k) fixed += c->pi_fixed[c->nbr_bond[k]];
-        c->cap[i] = (uint8_t)CLAMP(v - sigma(c, (uint32_t)i) - fixed, 0, 3);
+        c->cap[i] = (uint8_t)MD_CLAMP(v - sigma(c, (uint32_t)i) - fixed, 0, 3);
     }
 
     // Triple bonds first: two atoms that each want two, joined by a short bond
@@ -1343,7 +1343,7 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
     uint32_t* buf  = md_alloc(c->alloc, sizeof(uint32_t) * N);
     uint32_t* buf2 = md_alloc(c->alloc, sizeof(uint32_t) * N);
     c->mark = md_alloc(c->alloc, sizeof(uint32_t) * N);
-    MEMSET(c->mark, 0, sizeof(uint32_t) * N);
+    md_memset(c->mark, 0, sizeof(uint32_t) * N);
     c->mark_gen = 0;
     int32_t*  vbase = md_alloc(c->alloc, sizeof(int32_t) * N);
     for (size_t i = 0; i < N; ++i) vbase[i] = -1;
@@ -1400,7 +1400,7 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
     }
 
     uint8_t* atom_aromatic = md_alloc(c->alloc, N);
-    MEMSET(atom_aromatic, 0, N);
+    md_memset(atom_aromatic, 0, N);
     perceive_aromaticity(c, atom_aromatic);
     if (c->flags & MD_CHEM_FLAG_PROTONATE_PH7) protonate_ph7(c, atom_aromatic);
     perceive_delocalized(c, atom_aromatic);
@@ -1456,7 +1456,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
 
     if (!sys->atom.flags) {
         md_array_resize(sys->atom.flags, N, sys->alloc);
-        MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+        md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
@@ -1476,7 +1476,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     // The formal charges a file gives: the atom/formal_charge column its loader publishes, NAN where it gives none.
     // The charges in md_atom_data_t are this function's output and are not read back, so running it again starts
     // from the same place.
-    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
     const float* q_given = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
     if (q_given && md_attribute_slice_count(q_attr, md_attribute_slice_all()) != N) q_given = NULL;
 
@@ -1600,7 +1600,7 @@ static bool delta_conjugable(const md_system_t* sys, const uint8_t* state, uint3
         if (md_bond_order(f) >= 2 || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) return true;
         if (md_atom_atomic_number(&sys->atom, o) == MD_Z_H) h_exp += 1; else heavy += 1;
     }
-    const int s = heavy + MAX(h_exp, md_atom_hydrogen_count(&sys->atom, a));
+    const int s = heavy + MD_MAX(h_exp, md_atom_hydrogen_count(&sys->atom, a));
     if (is_halogen_z(z)) return s >= 2;
     if (s < base_valence(z)) return true;
     if (z == MD_Z_N && s == 3) return true;
@@ -1677,7 +1677,7 @@ static inline int64_t find_u32(const uint32_t* arr, size_t n, uint32_t x) {
 
 // Position of the key of the bond between x and y in the ascending keys (lower atom << 32 | higher atom), n if absent
 static inline size_t find_pair_key(const uint64_t* keys, size_t n, uint32_t x, uint32_t y) {
-    const uint64_t key = (uint64_t)MIN(x, y) << 32 | MAX(x, y);
+    const uint64_t key = (uint64_t)MD_MIN(x, y) << 32 | MD_MAX(x, y);
     size_t lo = 0, hi = n;
     while (lo < hi) {
         const size_t mid = (lo + hi) / 2;
@@ -1745,7 +1745,7 @@ static void delta_rings(md_ring_data_t* out, const delta_graph_t* g, const uint3
 }
 
 void md_chem_delta_free(md_chem_delta_t* chem, md_allocator_i* alloc) {
-    ASSERT(chem);
+    MD_ASSERT(chem);
     if (chem->atom_idx)       md_array_free(chem->atom_idx, alloc);
     if (chem->atom_flags)     md_array_free(chem->atom_flags, alloc);
     if (chem->formal_charge)  md_array_free(chem->formal_charge, alloc);
@@ -1753,12 +1753,12 @@ void md_chem_delta_free(md_chem_delta_t* chem, md_allocator_i* alloc) {
     if (chem->bond_idx)       md_array_free(chem->bond_idx, alloc);
     if (chem->bond_flags)     md_array_free(chem->bond_flags, alloc);
     md_ring_data_free(&chem->ring, alloc);
-    MEMSET(chem, 0, sizeof(md_chem_delta_t));
+    md_memset(chem, 0, sizeof(md_chem_delta_t));
 }
 
 bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const md_system_state_t* state, const md_bond_delta_t* delta, uint32_t flags, md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(alloc);
+    MD_ASSERT(out);
+    MD_ASSERT(alloc);
     md_chem_delta_free(out, alloc);
     if (!sys || !delta) {
         MD_LOG_ERROR("Chemistry of a frame: missing system or bond delta");
@@ -1775,7 +1775,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     bool result = false;
 
     delta_graph_t g = { .sys = sys, .delta = delta, .num_ends = 2 * delta->num_formed };
-    g.ends = md_alloc(temp, sizeof(uint64_t) * MAX(g.num_ends, 1));
+    g.ends = md_alloc(temp, sizeof(uint64_t) * MD_MAX(g.num_ends, 1));
     for (size_t j = 0; j < delta->num_formed; ++j) {
         g.ends[2 * j + 0] = (uint64_t)(uint32_t)delta->formed_pair[j].idx[0] << 32 | j;
         g.ends[2 * j + 1] = (uint64_t)(uint32_t)delta->formed_pair[j].idx[1] << 32 | j;
@@ -1783,7 +1783,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     if (g.num_ends) qsort(g.ends, g.num_ends, sizeof(uint64_t), compare_u64);
 
     uint8_t* st = md_alloc(temp, N);
-    MEMSET(st, 0, N);
+    md_memset(st, 0, N);
     uint8_t* mode = md_alloc(temp, N);
     for (size_t r = 0; r < md_ring_data_count(&sys->ring); ++r) {
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
@@ -1893,7 +1893,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     uint8_t* ext_h         = md_alloc(temp, NL);
     uint8_t* lone          = md_alloc(temp, NL);   // No bond at all in the state
     float*   q_given       = NULL;
-    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
     const float* q_sys = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
     if (q_sys && md_attribute_slice_count(q_attr, md_attribute_slice_all()) == N) q_given = md_alloc(temp, sizeof(float) * NL);
 
@@ -1935,7 +1935,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
             md_array_push(bflags, nbr[j].flags, temp);
             md_array_push(bond_id, nbr[j].bond, temp);
         }
-        frozen_h_imp[l] = (uint8_t)MAX(0, md_atom_hydrogen_count(&sys->atom, a) - h_exp);
+        frozen_h_imp[l] = (uint8_t)MD_MAX(0, md_atom_hydrogen_count(&sys->atom, a) - h_exp);
     }
     c.num_bonds = md_array_size(pairs);
     c.pairs  = pairs;
@@ -1951,9 +1951,9 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     // The rings: those within the atoms perceived for their aromaticity, all of them for the atoms and bonds in rings
     md_ring_data_t local_rings = {0};
     c.in_ring   = md_alloc(temp, NL);
-    c.ring_bond = md_alloc(temp, MAX(c.num_bonds, 1));
-    MEMSET(c.in_ring, 0, NL);
-    MEMSET(c.ring_bond, 0, MAX(c.num_bonds, 1));
+    c.ring_bond = md_alloc(temp, MD_MAX(c.num_bonds, 1));
+    md_memset(c.in_ring, 0, NL);
+    md_memset(c.ring_bond, 0, MD_MAX(c.num_bonds, 1));
     {
         int32_t lr[MD_RING_MAX_SIZE];
         for (size_t r = 0; r < md_ring_data_count(&rings); ++r) {
@@ -2030,18 +2030,18 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
             const size_t n = md_ring_size(&rings, r);
             for (size_t k = 0; k < n; ++k) {
                 const uint32_t x = (uint32_t)ring[k], y = (uint32_t)ring[(k + 1) % n];
-                md_array_push(ring_bonds, (uint64_t)MIN(x, y) << 32 | MAX(x, y), temp);
+                md_array_push(ring_bonds, (uint64_t)MD_MIN(x, y) << 32 | MD_MAX(x, y), temp);
             }
         }
         const size_t num_rb = md_array_size(ring_bonds);
         if (num_rb) qsort(ring_bonds, num_rb, sizeof(uint64_t), compare_u64);
-        uint8_t* rb_count    = md_alloc(temp, MAX(num_rb, 1));
-        uint8_t* rb_aromatic = md_alloc(temp, MAX(num_rb, 1));
-        MEMSET(rb_count, 0, MAX(num_rb, 1));
-        MEMSET(rb_aromatic, 0, MAX(num_rb, 1));
+        uint8_t* rb_count    = md_alloc(temp, MD_MAX(num_rb, 1));
+        uint8_t* rb_aromatic = md_alloc(temp, MD_MAX(num_rb, 1));
+        md_memset(rb_count, 0, MD_MAX(num_rb, 1));
+        md_memset(rb_aromatic, 0, MD_MAX(num_rb, 1));
 
         // Whether the bond between two atoms of a ring is aromatic in the state
-        uint8_t* ring_aromatic = md_alloc(temp, MAX(num_rings, 1));
+        uint8_t* ring_aromatic = md_alloc(temp, MD_MAX(num_rings, 1));
         for (size_t r = 0; r < num_rings; ++r) {
             const int32_t* ring = md_ring_atoms(&rings, r);
             const size_t n = md_ring_size(&rings, r);

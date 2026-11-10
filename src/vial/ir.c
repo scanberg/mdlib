@@ -14,7 +14,7 @@ void vial_ir_init(vial_ir_t* ir, md_allocator_i* alloc) {
     ir->alloc = alloc;
     md_array_push(ir->values, (vial_ir_value_t){0}, alloc);
     md_array_push(ir->regions, (vial_ir_region_t){0}, alloc);
-    const uint32_t f = vial_ir_func(ir, STR_LIT(""), (md_vial_span_t){0}, NULL, 0);
+    const uint32_t f = vial_ir_func(ir, MD_STR_LIT(""), (md_vial_span_t){0}, NULL, 0);
     ir->insert = ir->funcs[f].body;
 }
 
@@ -33,7 +33,7 @@ void vial_ir_attach(vial_ir_t* ir, uint32_t op, uint32_t k, uint32_t region) {
     ir->regions[region].owner = op;
 }
 
-uint32_t vial_ir_func(vial_ir_t* ir, str_t name, md_vial_span_t span, const vial_type_t* params, uint32_t num_params) {
+uint32_t vial_ir_func(vial_ir_t* ir, md_str_t name, md_vial_span_t span, const vial_type_t* params, uint32_t num_params) {
     const uint32_t f = (uint32_t)md_array_size(ir->funcs);
     md_array_push(ir->funcs, ((vial_ir_func_t){.name = name, .span = span}), ir->alloc);
     ir->funcs[f].body = vial_ir_region(ir, VIAL_IR_NO_OP, f, params, num_params);
@@ -51,7 +51,7 @@ uint32_t vial_ir_emit(vial_ir_t* ir, const vial_ir_emit_t* e) {
     for (uint32_t i = 0; i < e->num_attr; ++i) md_array_push(ir->ints, e->attr[i], ir->alloc);
     for (uint32_t i = 0; i < e->num_args; ++i) {
         md_array_push(ir->args, e->args[i], ir->alloc);
-        md_array_push(ir->names, e->names ? e->names[i] : (str_t){0}, ir->alloc);
+        md_array_push(ir->names, e->names ? e->names[i] : (md_str_t){0}, ir->alloc);
     }
     for (uint32_t i = 0; i < e->num_results; ++i) {
         md_array_push(ir->values, ((vial_ir_value_t){.type = e->types[i], .op = op, .region = ir->insert, .index = i}), ir->alloc);
@@ -62,7 +62,7 @@ uint32_t vial_ir_emit(vial_ir_t* ir, const vial_ir_emit_t* e) {
     return op;
 }
 
-vial_ssa_t vial_ir_const(vial_ir_t* ir, const vial_val_t* v, const vial_type_t* t, str_t text, md_vial_span_t span) {
+vial_ssa_t vial_ir_const(vial_ir_t* ir, const vial_val_t* v, const vial_type_t* t, md_str_t text, md_vial_span_t span) {
     const uint32_t c = (uint32_t)md_array_size(ir->consts);
     md_array_push(ir->consts, *v, ir->alloc);
     md_array_push(ir->const_text, text, ir->alloc);
@@ -218,7 +218,7 @@ bool vial_ir_verify(const vial_ir_t* ir, char* err, size_t cap) {
 
 typedef struct dumper_t {
     const vial_ir_t* ir;
-    str_t            src;
+    md_str_t            src;
     char*            buf;   // md_array
     md_allocator_i*  alloc;
 } dumper_t;
@@ -236,7 +236,7 @@ static void sb_fmt(dumper_t* d, const char* fmt, ...) {
 static void sb_cstr(dumper_t* d, const char* s) { md_array_push_array(d->buf, s, strlen(s), d->alloc); }
 static void sb_char(dumper_t* d, char c) { md_array_push(d->buf, c, d->alloc); }
 
-static void line_col(str_t src, uint32_t off, uint32_t* line, uint32_t* col) {
+static void line_col(md_str_t src, uint32_t off, uint32_t* line, uint32_t* col) {
     uint32_t l = 1, c = 1;
     for (uint32_t i = 0; i < off && i < src.len; ++i) {
         if (src.ptr[i] == '\n') { ++l; c = 1; } else if (((uint8_t)src.ptr[i] & 0xC0) != 0x80) ++c;
@@ -289,7 +289,7 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
     switch (op->kind) {
     case VIAL_IR_CONST: {
         char vbuf[96];
-        const str_t text = ir->const_text[op->aux];
+        const md_str_t text = ir->const_text[op->aux];
         if (text.len) sb_fmt(d, "const %.*s", (int)(text.len < 60 ? text.len : 60), text.ptr);
         else { vial_val_print(vbuf, sizeof(vbuf), &ir->consts[op->aux], 8); sb_fmt(d, "const %s", vbuf); }
         break;
@@ -335,7 +335,7 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
         sb_fmt(d, ".%u", op->aux);
         break;
     case VIAL_IR_KIND: {
-        static const char* kinds[] = {"whole", "set", "group", "point", "points", "float", "int", "bool"};
+        static const char* kinds[] = {"whole", "set", "body", "point", "points", "float", "int", "bool"};
         sb_fmt(d, "as %s ", op->sub == VIAL_KIND_EACH ? "each" : op->sub < 8 ? kinds[op->sub] : "?");
         dump_ssa(d, args[0]);
         break;
@@ -354,7 +354,7 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
             if (!args[i] && op->kind == VIAL_IR_BUILTIN) continue;
             if (!first) sb_cstr(d, ", ");
             first = false;
-            const str_t nm = ir->names[op->arg_beg + i];
+            const md_str_t nm = ir->names[op->arg_beg + i];
             if (nm.len && op->kind == VIAL_IR_BUILTIN && i) sb_fmt(d, "%.*s=", (int)nm.len, nm.ptr);
             dump_ssa(d, args[i]);
         }
@@ -394,7 +394,7 @@ static void dump_region(dumper_t* d, uint32_t region, int indent) {
     for (size_t i = 0; i < md_array_size(r->ops); ++i) dump_op(d, r->ops[i], indent);
 }
 
-str_t vial_ir_dump(const vial_ir_t* ir, str_t src, md_allocator_i* alloc) {
+md_str_t vial_ir_dump(const vial_ir_t* ir, md_str_t src, md_allocator_i* alloc) {
     dumper_t d = {.ir = ir, .src = src, .alloc = alloc};
     for (size_t f = 1; f < md_array_size(ir->funcs); ++f) {
         const vial_ir_func_t* fn = &ir->funcs[f];
@@ -413,5 +413,5 @@ str_t vial_ir_dump(const vial_ir_t* ir, str_t src, md_allocator_i* alloc) {
         const vial_ir_output_t* o = &ir->outputs[i];
         sb_fmt(&d, "out %.*s = %%%u\n", (int)o->name.len, o->name.ptr, o->value);
     }
-    return (str_t){d.buf, md_array_size(d.buf)};
+    return (md_str_t){d.buf, md_array_size(d.buf)};
 }

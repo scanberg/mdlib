@@ -51,7 +51,7 @@ int  md_fifo_pop(md_fifo_t* fifo);
 // Notes:
 // - The RAW operations are strongly typed through 'data' (T*).
 // - Use TRY variants when allocation failure should be handled gracefully.
-// - Non-TRY variants ASSERT on allocation failure.
+// - Non-TRY variants MD_ASSERT on allocation failure.
 //
 // Example:
 //   MD_FIFO_RAW_DEFINE_TYPE(int_fifo_t, int);
@@ -111,7 +111,7 @@ int  md_fifo_pop(md_fifo_t* fifo);
 #define MD_FIFO_RAW_ENSURE(capacity, size, head, tail, data, min_capacity, alloc) \
     do {                                                                            \
         const bool _md_fifo_ok = MD_FIFO_RAW_TRY_ENSURE((capacity), (size), (head), (tail), (data), (min_capacity), (alloc)); \
-        ASSERT(_md_fifo_ok); (void)_md_fifo_ok;                                      \
+        MD_ASSERT(_md_fifo_ok); (void)_md_fifo_ok;                                      \
     } while (0)
 
 // RAW element operations
@@ -121,7 +121,7 @@ int  md_fifo_pop(md_fifo_t* fifo);
 #define MD_FIFO_RAW_PUSH(capacity, size, head, tail, data, item, alloc) \
     do {                                                                  \
         const bool _md_fifo_ok = MD_FIFO_RAW_TRY_PUSH((capacity), (size), (head), (tail), (data), (item), (alloc)); \
-        ASSERT(_md_fifo_ok); (void)_md_fifo_ok;                            \
+        MD_ASSERT(_md_fifo_ok); (void)_md_fifo_ok;                            \
     } while (0)
 
 #define MD_FIFO_RAW_FRONT(data, tail) ((data)[(tail)])
@@ -138,7 +138,7 @@ int  md_fifo_pop(md_fifo_t* fifo);
 #define MD_FIFO_RAW_FREE(capacity, size, head, tail, data, alloc) \
     do {                                                            \
         const bool _md_fifo_ok = MD_FIFO_RAW_TRY_FREE((capacity), (size), (head), (tail), (data), (alloc)); \
-        ASSERT(_md_fifo_ok); (void)_md_fifo_ok;                      \
+        MD_ASSERT(_md_fifo_ok); (void)_md_fifo_ok;                      \
     } while (0)
 
 // STRUCT convenience wrappers (expects fields: capacity, size, head, tail, data, alloc)
@@ -194,12 +194,12 @@ static inline size_t md_fifo_raw_grow_cap(size_t capacity, size_t min_capacity) 
 // Reallocates the backing buffer to new_capacity, linearizing any wrapped content so that
 // tail becomes 0 and head becomes the (unwrapped) size. Shrinking below size is not supported.
 static inline bool md_fifo_raw_set_capacity_impl(void* data_addr, size_t* capacity, size_t* head, size_t* tail, size_t* size, size_t new_capacity, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(data_addr);
-    ASSERT(capacity);
-    ASSERT(head);
-    ASSERT(tail);
-    ASSERT(size);
-    ASSERT(alloc);
+    MD_ASSERT(data_addr);
+    MD_ASSERT(capacity);
+    MD_ASSERT(head);
+    MD_ASSERT(tail);
+    MD_ASSERT(size);
+    MD_ASSERT(alloc);
 
     if (item_size == 0) {
         return false;
@@ -222,12 +222,12 @@ static inline bool md_fifo_raw_set_capacity_impl(void* data_addr, size_t* capaci
 
         if (*size) {
             if (*tail < *head) {
-                MEMCPY(new_data, (uint8_t*)(*data) + (*tail) * item_size, (*size) * item_size);
+                md_memcpy(new_data, (uint8_t*)(*data) + (*tail) * item_size, (*size) * item_size);
             } else {
                 const size_t old_capacity = *capacity;
                 const size_t right_count = old_capacity - *tail;
-                MEMCPY(new_data, (uint8_t*)(*data) + (*tail) * item_size, right_count * item_size);
-                MEMCPY((uint8_t*)new_data + right_count * item_size, *data, (*head) * item_size);
+                md_memcpy(new_data, (uint8_t*)(*data) + (*tail) * item_size, right_count * item_size);
+                md_memcpy((uint8_t*)new_data + right_count * item_size, *data, (*head) * item_size);
             }
         }
     }
@@ -245,8 +245,8 @@ static inline bool md_fifo_raw_set_capacity_impl(void* data_addr, size_t* capaci
 }
 
 static inline bool md_fifo_raw_ensure_impl(void* data_addr, size_t* capacity, size_t* head, size_t* tail, size_t size, size_t min_capacity, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(capacity);
-    ASSERT(size <= *capacity);
+    MD_ASSERT(capacity);
+    MD_ASSERT(size <= *capacity);
 
     if (*capacity >= min_capacity) {
         return true;
@@ -258,8 +258,8 @@ static inline bool md_fifo_raw_ensure_impl(void* data_addr, size_t* capacity, si
 }
 
 static inline bool md_fifo_raw_push_impl(void* data_addr, size_t* capacity, size_t* head, size_t* tail, size_t* size, size_t item_size, const void* item, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(size);
-    ASSERT(item);
+    MD_ASSERT(size);
+    MD_ASSERT(item);
 
     if (*size >= *capacity) {
         if (!md_fifo_raw_ensure_impl(data_addr, capacity, head, tail, *size, *size + 1, item_size, alloc, file, line)) {
@@ -268,7 +268,7 @@ static inline bool md_fifo_raw_push_impl(void* data_addr, size_t* capacity, size
     }
 
     void** data = (void**)data_addr;
-    MEMCPY((uint8_t*)(*data) + (*head) * item_size, item, item_size);
+    md_memcpy((uint8_t*)(*data) + (*head) * item_size, item, item_size);
     *head = (*head + 1) & (*capacity - 1);
     *size += 1;
     return true;
