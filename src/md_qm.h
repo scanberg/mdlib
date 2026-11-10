@@ -367,6 +367,22 @@ double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b);
 double md_qm_lol(double rho_a, double tau_a, double rho_b, double tau_b, double rho_min);
 double md_qm_lol_closed_shell(double rho, double tau, double rho_min);
 
+// The DENSITY SCALE LENGTH L = rho / |grad rho| = 1 / |grad ln rho| (bohr), from the total density and the square of its
+// gradient g2: the distance over which the density would change by a factor e at its rate of change there (the density
+// gradient scale length of plasma physics). On an isodensity surface rho = c it is c / |grad rho|, and it is how far
+// the surface moves along its normal per relative change of the density there: a change d rho / rho moves the surface
+// by L d rho / rho. So mapped onto the surface it shows where the electron cloud's boundary is soft (large L: the
+// surface moves far for a given compression or expansion of the density) and where it is stiff (small L, close to
+// the nuclei). Of the exact density it goes to 1 / (2 sqrt(2 I)) in the far tails, for the first ionization energy I;
+// of a gaussian basis' density it shrinks there instead, as 1 / (4 alpha r) of the most diffuse function. Infinite
+// where the gradient vanishes (the critical points: on a surface only where it passes through one): capped at
+// length_max (0: FLT_MAX). 0 where rho is below rho_min.
+double md_qm_density_scale_length(double rho, double g2, double rho_min, double length_max);
+
+// Whether the ground state density can be made of orbitals (md_qm_density_orbitals): the alpha orbitals and their
+// occupations are there. Cheap: the attributes are looked up.
+bool md_qm_density_available(const struct md_system_t* sys);
+
 // ELF and LOL at points, in double, on the CPU, from the system's orbitals (md_qm_density_orbitals and
 // md_qm_kinetic_orbitals of each spin, once for a closed shell): the reference the faster paths are checked
 // against, and what a consumer without them takes. On the GPU nothing of ELF's own is needed: rho and its

@@ -2136,6 +2136,79 @@ UTEST(qm_alie, orbitals_and_limits) {
     }
 }
 
+// The density scale length (md_qm_density_scale_length): its limits, and on the 0.001 au isodensity surface what it
+// is there - how far the surface moves along its normal per relative change of the density: a step of eps L outward
+// from a vertex lands where rho is c (1 - eps), to second order in eps. With the total density's field and its
+// gradient in double (md_gto_iso_field_evaluate), as the CPU path of viamd's surface field takes them.
+UTEST(qm_density_scale_length, limits_and_surface) {
+    // limits: a single exponential e^(-2 r) has |grad rho| = 2 rho, L = 1/2 everywhere; the cap, the floor
+    EXPECT_NEAR(md_qm_density_scale_length(1.0e-3, 4.0e-6, 0.0, 0.0), 0.5, 1e-12);
+    EXPECT_EQ(md_qm_density_scale_length(1.0e-3, 0.0, 0.0, 100.0), 100.0);
+    EXPECT_EQ(md_qm_density_scale_length(1.0e-3, 1.0e-12, 0.0, 100.0), 100.0);
+    EXPECT_EQ(md_qm_density_scale_length(1.0e-3, 0.0, 0.0, 0.0), (double)FLT_MAX);
+    EXPECT_EQ(md_qm_density_scale_length(1.0e-5, 1.0, 1.0e-4, 0.0), 0.0);
+    EXPECT_EQ(md_qm_density_scale_length(0.0, 1.0, 0.0, 0.0), 0.0);
+
+    static const char* files[] = {"h2o.h5", "amide.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        ASSERT_TRUE(md_qm_density_available(&s.t.sys));
+        double *rows = NULL, *w = NULL;
+        size_t na = 0;
+        const size_t count = md_qm_density_orbitals(&rows, &w, &na, &s.t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        ASSERT_GT(count, 0u);
+        md_gto_iso_field_t* rho = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, rows, NULL, w, count, md_get_heap_allocator());
+        md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+        md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+        ASSERT_TRUE(rho != NULL);
+
+        const double c = 0.001;
+        md_gto_iso_cache_t* cache = md_gto_iso_cache_create(rho, &(md_gto_iso_cache_desc_t){.cell_size = 0.3, .iso_min = c}, md_get_heap_allocator());
+        ASSERT_TRUE(cache != NULL);
+        md_gto_iso_mesh_t m;
+        ASSERT_TRUE(md_gto_iso_mesh_extract(&m, cache, &(md_gto_iso_mesh_desc_t){.iso = c, .project_iterations = 8, .relax_iterations = 2}, md_get_heap_allocator()));
+        const size_t nv = m.sheet_vertex_count[0];
+        ASSERT_GT(nv, 100u);
+        const float* sp = m.position + 3 * (size_t)m.sheet_vertex_offset[0];
+        double* r = (double*)malloc(sizeof(double) * nv);
+        double* g = (double*)malloc(sizeof(double) * 3 * nv);
+        double* L = (double*)malloc(sizeof(double) * nv);
+        float* step = (float*)malloc(sizeof(float) * 3 * nv);
+        double* rs = (double*)malloc(sizeof(double) * nv);
+        md_gto_iso_field_evaluate(rho, sp, nv, 0, r, g);
+        const double eps = 0.02;
+        double lmin = DBL_MAX, lmax = 0.0, lsum = 0.0;
+        for (size_t i = 0; i < nv; ++i) {
+            const double* gi = g + 3 * i;
+            const double gn = sqrt(gi[0] * gi[0] + gi[1] * gi[1] + gi[2] * gi[2]);
+            L[i] = md_qm_density_scale_length(r[i], gn * gn, 0.0, 100.0);
+            lmin = fmin(lmin, L[i]); lmax = fmax(lmax, L[i]); lsum += L[i];
+            // outward: down the gradient, by eps L
+            for (int k = 0; k < 3; ++k) step[3 * i + k] = (float)((double)sp[3 * i + k] - gi[k] / gn * eps * L[i]);
+        }
+        md_gto_iso_field_evaluate(rho, step, nv, 0, rs, NULL);
+        double worst = 0.0;
+        for (size_t i = 0; i < nv; ++i) {
+            // rho(x + eps L n) / rho(x) = 1 - eps + O(eps^2): the second order term over eps
+            const double rel = (rs[i] / r[i] - (1.0 - eps)) / eps;
+            worst = fmax(worst, fabs(rel));
+        }
+        printf("  %-9s rho/|grad rho| on rho = %.3f (%zu vertices): %.3f .. %.3f bohr, mean %.3f; a step of %.2f L outward changes rho by -%.2f within %.1e of it\n",
+               files[fi], c, nv, lmin, lmax, lsum / (double)nv, eps, eps, worst * eps);
+        // where the surface is, the density falls by e over about half a bohr to a bohr
+        EXPECT_GT(lmin, 0.2);
+        EXPECT_LT(lmax, 2.0);
+        // the first order relation holds to the second order term (curvature of ln rho times eps L^2), a few percent
+        EXPECT_LT(worst, 0.05);
+        free(r); free(g); free(L); free(step); free(rs);
+        md_gto_iso_mesh_free(&m);
+        md_gto_iso_cache_destroy(cache);
+        md_gto_iso_field_destroy(rho);
+        iso_dens_src_free(&s);
+    }
+}
+
 // Local electron attachment energy (md_qm_attachment_orbitals): the bound virtuals, each closed shell spatial
 // orbital twice (Brinck et al. 2016, eq. 10 and Table S1), E(r) <= 0, nothing when no virtual is bound. Checked
 // against the paper's Table S4 (CH3Cl -0.28, CH2FCl -0.54, CHF2Cl -1.14, CF3Cl -2.45 eV at the chlorine sigma

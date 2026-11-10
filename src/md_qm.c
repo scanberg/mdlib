@@ -13,6 +13,7 @@
 #include <core/md_parse.h>
 
 #include <math.h>
+#include <float.h>
 #include <string.h>
 
 // ---------------------------------------------------------------------------
@@ -1245,6 +1246,20 @@ double md_qm_lol(double rho_a, double tau_a, double rho_b, double tau_b, double 
 
 double md_qm_lol_closed_shell(double rho, double tau, double rho_min) {
     return md_qm_lol(0.5 * rho, 0.5 * tau, 0.5 * rho, 0.5 * tau, rho_min);
+}
+
+double md_qm_density_scale_length(double rho, double g2, double rho_min, double length_max) {
+    if (!(rho > 0.0) || rho < rho_min) return 0.0;
+    const double cap = length_max > 0.0 ? MD_MIN(length_max, (double)FLT_MAX) : (double)FLT_MAX;
+    const double g = sqrt(g2 > 0.0 ? g2 : 0.0);
+    return g * cap > rho ? rho / g : cap;
+}
+
+bool md_qm_density_available(const md_system_t* sys) {
+    if (!sys) return false;
+    const md_attribute_t *ca = NULL, *oa = NULL;
+    size_t nm = 0, na = 0;
+    return qm_spin_orbital_attrs(&ca, &oa, &nm, &na, sys, false);
 }
 
 // One spin's (or a closed shell's total) density and kinetic energy density at the points: rho, |grad rho|^2, tau
