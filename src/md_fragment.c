@@ -10,6 +10,7 @@
 #include <core/md_common.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -68,11 +69,6 @@ static int frag_cmp_u64(const void* a, const void* b) {
 
 static int frag_cmp_u32(const void* a, const void* b) {
     const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
-    return (x > y) - (x < y);
-}
-
-static int frag_cmp_i32(const void* a, const void* b) {
-    const int32_t x = *(const int32_t*)a, y = *(const int32_t*)b;
     return (x > y) - (x < y);
 }
 
@@ -350,35 +346,49 @@ static void uf_union(uint32_t* p, uint32_t a, uint32_t b) {
 
 // Composition of a set of atoms without hydrogens, carbon first and the rest alphabetically (Hill)
 static void frag_formula(char* buf, size_t cap, const frag_mol_t* c, const uint32_t* atoms, size_t count) {
-    uint32_t num[128] = {0};
+    // The elements present and their counts: a handful, in a short list kept in the order written
+    md_atomic_number_t el[16];
+    uint32_t num[16];
+    size_t num_el = 0;
     for (size_t i = 0; i < count; ++i) {
         const md_atomic_number_t z = c->z[atoms[i]];
-        if (z < 128) num[z]++;
+        if (z == MD_Z_H || z == 0) continue;
+        size_t k = 0;
+        while (k < num_el && el[k] != z) ++k;
+        if (k == num_el) {
+            if (num_el == MD_COUNTOF(el)) continue;
+            el[num_el] = z;
+            num[num_el++] = 0;
+        }
+        num[k]++;
+    }
+    // carbon first, the rest by symbol
+    for (size_t i = 1; i < num_el; ++i) {
+        const md_atomic_number_t z = el[i];
+        const uint32_t v = num[i];
+        size_t j = i;
+        for (; j > 0; --j) {
+            const md_atomic_number_t y = el[j - 1];
+            const bool before = z == MD_Z_C ? y != MD_Z_C : (y != MD_Z_C && md_str_cmp_lex(md_util_element_symbol((md_element_t)z), md_util_element_symbol((md_element_t)y)) < 0);
+            if (!before) break;
+            el[j] = el[j - 1];
+            num[j] = num[j - 1];
+        }
+        el[j] = z;
+        num[j] = v;
     }
     size_t len = 0;
-    buf[0] = '\0';
-    #define FRAG_APPEND(Z) do { \
-        const md_str_t sym = md_util_element_symbol((md_element_t)(Z)); \
-        int w = (num[Z] > 1) ? snprintf(buf + len, cap - len, "%.*s%u", (int)sym.len, sym.ptr, num[Z]) \
-                             : snprintf(buf + len, cap - len, "%.*s", (int)sym.len, sym.ptr); \
-        if (w > 0) len = MD_MIN(cap - 1, len + (size_t)w); \
-    } while (0)
-    if (num[MD_Z_C]) FRAG_APPEND(MD_Z_C);
-    bool done[128] = {0};
-    done[MD_Z_C] = done[MD_Z_H] = done[0] = true;
-    for (;;) {
-        int best = -1;
-        md_str_t best_sym = {0};
-        for (int z = 1; z < 128; ++z) {
-            if (done[z] || !num[z]) continue;
-            const md_str_t sym = md_util_element_symbol((md_element_t)z);
-            if (best < 0 || md_str_cmp_lex(sym, best_sym) < 0) { best = z; best_sym = sym; }
+    for (size_t k = 0; k < num_el; ++k) {
+        const md_str_t sym = md_util_element_symbol((md_element_t)el[k]);
+        for (size_t s_ = 0; s_ < sym.len && len + 1 < cap; ++s_) buf[len++] = sym.ptr[s_];
+        if (num[k] > 1) {
+            char digits[12];
+            int nd = 0;
+            for (uint32_t v = num[k]; v; v /= 10) digits[nd++] = (char)('0' + v % 10);
+            while (nd && len + 1 < cap) buf[len++] = digits[--nd];
         }
-        if (best < 0) break;
-        done[best] = true;
-        FRAG_APPEND(best);
     }
-    #undef FRAG_APPEND
+    buf[len] = '\0';
 }
 
 // Hydrogens on an atom: the system's count where it has one, the bonded hydrogen atoms otherwise
@@ -573,10 +583,16 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
         {
             bool* bridge = md_alloc(temp, sizeof(bool) * (c->nb_off[n] ? c->nb_off[n] : 1));
             frag_find_bridges(bridge, c, temp);
+            // The ring systems joined, as a union-find over the units so far: a framework of thousands of bridges
+            // costs a pass, not a pass per bridge
+            const uint32_t num_units = (uint32_t)md_array_size(c->unit_kind);
+            uint32_t* join = md_alloc(temp, sizeof(uint32_t) * (num_units ? num_units : 1));
+            for (uint32_t u = 0; u < num_units; ++u) join[u] = u;
+            bool joined = false;
             for (uint32_t i = 0; i < n; ++i) {
                 if (c->unit_of[i] >= 0 || in_ring[i] || !frag_heavy(c, i)) continue;
                 bool conjugated = false;
-                int32_t sys_a = -1, sys_b = -1;
+                int32_t sys_a = -1;
                 uint32_t num_ring_nb = 0;
                 for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) {
                     conjugated |= frag_bond_multiple(c->nb_flags[k]);
@@ -586,20 +602,19 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                     if (u < 0 || c->unit_kind[u] != MD_FRAGMENT_RING_SYSTEM) continue;
                     num_ring_nb++;
                     if (sys_a < 0) sys_a = u;
-                    else if (u != sys_a) sys_b = u;
+                    else uf_union(join, (uint32_t)sys_a, (uint32_t)u);
                 }
                 if (!conjugated || num_ring_nb < 2) continue;
                 frag_assign(c, i, sys_a, true);
                 in_ring[i] = true;
-                if (sys_b >= 0) {
-                    for (uint32_t a = 0; a < n; ++a) {
-                        if (c->unit_of[a] == sys_b) c->unit_of[a] = sys_a;
-                        if (c->core_of[a] == sys_b) c->core_of[a] = sys_a;
-                    }
+                joined = true;
+            }
+            if (joined) {
+                for (uint32_t a = 0; a < n; ++a) {
+                    if (c->unit_of[a] >= 0 && (uint32_t)c->unit_of[a] < num_units) c->unit_of[a] = (int32_t)uf_find(join, (uint32_t)c->unit_of[a]);
+                    if (c->core_of[a] >= 0 && (uint32_t)c->core_of[a] < num_units) c->core_of[a] = (int32_t)uf_find(join, (uint32_t)c->core_of[a]);
                 }
             }
-            // A bridge atom found before the ring systems it joins were joined by a later one is in a ring system
-            // still: one pass suffices, as each joins its own neighbours' systems
         }
         // Terminal atoms double bonded to a ring atom: the O of a quinone or a lactam
         for (uint32_t i = 0; i < n; ++i) {
@@ -771,8 +786,10 @@ static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t 
         }
         md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40), temp);
     }
-    const size_t atoms_end = md_array_size(*enc);
     for (size_t i = 0; i < n; ++i) {
+        // The bonds of slot i to later slots, in order of those: made in slot order, and each atom's few sorted
+        // in place, which orders them all, whatever the order of the connectivity
+        const size_t beg = md_array_size(*enc);
         for (md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)mol->atom_idx[off + i]); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
             const md_bond_flags_t bf = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
             if (md_bond_kind(bf) != MD_BOND_KIND_COVALENT) continue;
@@ -781,9 +798,14 @@ static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t 
             const uint64_t b = (uint64_t)md_bond_order(bf) | ((bf & MD_BOND_FLAG_AROMATIC) ? 4u : 0u) | ((bf & MD_BOND_FLAG_DELOCALIZED) ? 8u : 0u);
             md_array_push(*enc, ((uint64_t)i << 40) | ((uint64_t)j << 16) | b, temp);
         }
+        uint64_t* e = *enc;
+        for (size_t k = beg + 1; k < md_array_size(*enc); ++k) {
+            const uint64_t v = e[k];
+            size_t q = k;
+            for (; q > beg && e[q - 1] > v; --q) e[q] = e[q - 1];
+            e[q] = v;
+        }
     }
-    // the bonds in order, whatever the order of the connectivity
-    qsort(*enc + atoms_end, md_array_size(*enc) - atoms_end, sizeof(uint64_t), frag_cmp_u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +870,8 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
     // no third arena to go to.
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* talloc = md_temp_allocator(temp);
+    md_tick_t tick = md_tick_now();
+    double ms_encode = 0, ms_analyse = 0, ms_library = 0;
 
     // The colours of the types there were, by kind and name
 
@@ -911,6 +935,8 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
     }
     const size_t num_tmpl = md_array_size(out->template_molecule);
     out->template_count = num_tmpl;
+    ms_encode = md_tick_to_milliseconds(md_tick_now() - tick);
+    tick = md_tick_now();
 
     // The rings of each template's molecule, by the molecule of their first atom
     const size_t num_rings = md_ring_data_count(&sys->ring);
@@ -936,7 +962,17 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
     md_array(char) names = 0;                   // FRAG_NAME_CAP per template fragment
     md_array(uint8_t) kinds = 0;
     md_array(md_bitset_t) queries = 0;
-    md_array(uint32_t) query_frag = 0;          // the template fragment of each query
+    md_array(uint32_t) query_frag = 0;          // the template fragment of each query (the first of its cores)
+    // Cores alike are identified once: a core by its atoms (element, charge, hydrogens, aromaticity) in slot order
+    // and its bonds, compared in full where the hashes agree. Alike is exact, so equal cores are equal graphs and
+    // name alike; the same core in another order is only identified again.
+    md_array(uint32_t) frag_query = 0;          // the query of each template fragment, UINT32_MAX for none
+    md_array(uint64_t) core_pool = 0;           // the encodings of the queries
+    md_array(uint32_t) core_off = 0;            // [query + 1]
+    md_array(uint32_t) core_next = 0;           // the next query of the same hash
+    md_array(uint64_t) core_enc = 0;
+    md_hashmap32_t core_by_hash = { .allocator = talloc };
+    md_array_push(core_off, 0, talloc);
 
     md_array_push(out->template_slot_offset, 0, alloc);
     md_array_push(out->template_frag_offset, 0, alloc);
@@ -962,7 +998,13 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         }
 
         const uint32_t frag_base = (uint32_t)md_array_size(kinds);
+        // Grown by doubling (md_array_resize alone would grow them to the size asked, a copy per template)
+        md_array_ensure(kinds, frag_base + num_frags, talloc);
         md_array_resize(kinds, frag_base + num_frags, talloc);
+        md_array_ensure(frag_query, frag_base + num_frags, talloc);
+        md_array_resize(frag_query, frag_base + num_frags, talloc);
+        for (uint32_t f = frag_base; f < frag_base + num_frags; ++f) frag_query[f] = UINT32_MAX;
+        md_array_ensure(names, (size_t)(frag_base + num_frags) * FRAG_NAME_CAP, talloc);
         md_array_resize(names, (size_t)(frag_base + num_frags) * FRAG_NAME_CAP, talloc);
         for (size_t u = 0; u < num_units; ++u) if (order[u] >= 0) kinds[frag_base + order[u]] = c.unit_kind[u];
 
@@ -979,6 +1021,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         for (size_t i = 0; i < n; ++i) if (c.unit_of[i] >= 0) cnt[order[c.unit_of[i]] + 1]++;
         for (uint32_t f = 0; f < num_frags; ++f) cnt[f + 1] += cnt[f];
         const uint32_t slot_base = (uint32_t)md_array_size(out->frag_slot);
+        md_array_ensure(out->frag_slot, slot_base + cnt[num_frags], alloc);
         md_array_resize(out->frag_slot, slot_base + cnt[num_frags], alloc);
         for (uint32_t f = 0; f < num_frags; ++f) md_array_push(out->frag_slot_offset, slot_base + cnt[f + 1], alloc);
         {
@@ -1000,12 +1043,14 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
             const uint32_t f = frag_base + (uint32_t)order[u];
             char* name = names + (size_t)f * FRAG_NAME_CAP;
             const md_fragment_kind_t kind = (md_fragment_kind_t)c.unit_kind[u];
+            // its slots, ascending, from the fragment -> slots table above
             size_t num_core = 0;
-            uint32_t first = UINT32_MAX;
-            for (size_t i = 0; i < n; ++i) {
-                if (c.unit_of[i] != (int32_t)u) continue;
-                if (first == UINT32_MAX) first = (uint32_t)i;
-                if (c.core_of[i] == (int32_t)u && frag_heavy(&c, (uint32_t)i)) core[num_core++] = (uint32_t)i;
+            const uint32_t* fs = out->frag_slot + slot_base + cnt[order[u]];
+            const uint32_t num_fs = cnt[order[u] + 1] - cnt[order[u]];
+            const uint32_t first = num_fs ? fs[0] : UINT32_MAX;
+            for (uint32_t q = 0; q < num_fs; ++q) {
+                const uint32_t i = fs[q];
+                if (c.core_of[i] == (int32_t)u && frag_heavy(&c, i)) core[num_core++] = i;
             }
             const frag_role_t role = (frag_role_t)c.unit_role[u];
             if (role == FRAG_ROLE_ALPHA_CARBON) {
@@ -1115,11 +1160,49 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                         snprintf(name, FRAG_NAME_CAP, "%s %s", kind != MD_FRAGMENT_RING_SYSTEM ? "group" : aromatic ? "aryl" : "ring", formula);
                     }
                     if (carbonyl && num_core == 2) break;   // named: not to the library, whose "carbonyl" would win
-                    // identified as a whole against the library, below; global atoms, ascending
-                    for (size_t k = 0; k < num_core; ++k) core_global[k] = (uint32_t)c.atom[core[k]];
-                    qsort(core_global, num_core, sizeof(uint32_t), frag_cmp_u32);
-                    md_array_push(queries, md_bitset_from_indices(core_global, num_core, talloc), talloc);
-                    md_array_push(query_frag, f, talloc);
+                    // identified as a whole against the library, below, once per core alike
+                    md_array_shrink(core_enc, 0);
+                    for (size_t k = 0; k < num_core; ++k) {
+                        const uint32_t i = core[k];
+                        const size_t a = (size_t)c.atom[i];
+                        const uint64_t q = sys->atom.formal_charge ? (uint8_t)(int8_t)md_atom_formal_charge(&sys->atom, a) : 0;
+                        const uint64_t ar = (frag_aflags(&c, i) & MD_ATOM_FLAG_AROMATIC) ? 1 : 0;
+                        md_array_push(core_enc, (uint64_t)c.z[i] | (q << 8) | ((uint64_t)frag_hydrogens(&c, i) << 16) | (ar << 24), talloc);
+                    }
+                    for (size_t k = 0; k < num_core; ++k) {
+                        const uint32_t i = core[k];
+                        for (uint32_t e = c.nb_off[i]; e < c.nb_off[i + 1]; ++e) {
+                            const uint32_t j = c.nb[e];
+                            if (j <= i || c.core_of[j] != (int32_t)u || !frag_heavy(&c, j)) continue;
+                            // j's position among the core, which is in ascending slot order
+                            size_t lo = k + 1, hi = num_core;
+                            while (lo < hi) { const size_t mid = (lo + hi) / 2; if (core[mid] < j) lo = mid + 1; else hi = mid; }
+                            const md_bond_flags_t bf = c.nb_flags[e];
+                            const uint64_t b = (uint64_t)md_bond_order(bf) | ((bf & MD_BOND_FLAG_AROMATIC) ? 4u : 0u) | ((bf & MD_BOND_FLAG_DELOCALIZED) ? 8u : 0u);
+                            md_array_push(core_enc, ((uint64_t)1 << 63) | ((uint64_t)k << 40) | ((uint64_t)lo << 16) | b, talloc);
+                        }
+                    }
+                    const size_t len = md_array_size(core_enc);
+                    uint64_t h = md_hash64(core_enc, len * sizeof(uint64_t), 0);
+                    if (h >= MD_HASH_TOMBSTONE) h -= 2;
+                    const uint32_t* first_q = md_hashmap_get(&core_by_hash, h);
+                    uint32_t qi = UINT32_MAX;
+                    for (uint32_t cq = first_q ? *first_q : UINT32_MAX; cq != UINT32_MAX; cq = core_next[cq]) {
+                        if (core_off[cq + 1] - core_off[cq] == len && memcmp(core_pool + core_off[cq], core_enc, len * sizeof(uint64_t)) == 0) { qi = cq; break; }
+                    }
+                    if (qi == UINT32_MAX) {
+                        qi = (uint32_t)md_array_size(queries);
+                        for (size_t k = 0; k < num_core; ++k) core_global[k] = (uint32_t)c.atom[core[k]];
+                        qsort(core_global, num_core, sizeof(uint32_t), frag_cmp_u32);
+                        md_array_push(queries, md_bitset_from_indices(core_global, num_core, talloc), talloc);
+                        md_array_push(query_frag, f, talloc);
+                        md_array_push_array(core_pool, core_enc, len, talloc);
+                        md_array_push(core_off, (uint32_t)md_array_size(core_pool), talloc);
+                        md_array_push(core_next, first_q ? *first_q : UINT32_MAX, talloc);
+                        if (first_q) *(uint32_t*)md_hashmap_get(&core_by_hash, h) = qi;
+                        else         md_hashmap_add(&core_by_hash, h, qi);
+                    }
+                    frag_query[f] = qi;
                 }
                 break;
             default:
@@ -1130,6 +1213,9 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         md_array_free(c.unit_kind, salloc);
         md_array_free(c.unit_role, salloc);
     }
+
+    ms_analyse = md_tick_to_milliseconds(md_tick_now() - tick);
+    tick = md_tick_now();
 
     // ---- the library ----
     if (md_array_size(queries) > 0) {
@@ -1156,12 +1242,21 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
             md_match_identify_result_free(&res);
         }
         md_match_library_destroy(lib);
+        // and the cores alike named as theirs was
+        for (size_t f = 0; f < md_array_size(frag_query); ++f) {
+            const uint32_t q = frag_query[f];
+            if (q == UINT32_MAX || query_frag[q] == (uint32_t)f) continue;
+            memcpy(names + f * FRAG_NAME_CAP, names + (size_t)query_frag[q] * FRAG_NAME_CAP, FRAG_NAME_CAP);
+        }
     }
     // The amide of a backbone is the peptide group, apart from the amides of side chains (Asn, Gln)
     for (size_t f = 0; f < md_array_size(kinds); ++f) {
         char* name = names + f * FRAG_NAME_CAP;
         if (kinds[f] == MD_FRAGMENT_BACKBONE && strcmp(name, "amide") == 0) snprintf(name, FRAG_NAME_CAP, "peptide");
     }
+
+    ms_library = md_tick_to_milliseconds(md_tick_now() - tick);
+    tick = md_tick_now();
 
     // ---- types ----
     const size_t num_tfrags = md_array_size(kinds);
@@ -1194,6 +1289,9 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
     }
     out->count = out->frag_offset[num_mols];
 
+    MD_LOG_DEBUG("Fragments: %zu molecules, %zu templates, %zu fragments, %zu cores identified, in ms: templates %.1f | analysis %.1f | "
+        "library %.1f | types %.1f", num_mols, num_tmpl, out->count, md_array_size(queries), ms_encode, ms_analyse, ms_library,
+        md_tick_to_milliseconds(md_tick_now() - tick));
     md_temp_end(temp);
     md_system_topology_changed(sys);
     return true;
@@ -1281,46 +1379,61 @@ bool md_fragment_atom_iter_next(md_fragment_atom_iter_t* it) {
 }
 
 // Sorts and removes repeats of a small list, returns the new count
-static size_t frag_unique_u32(uint32_t* v, size_t n) {
-    qsort(v, n, sizeof(uint32_t), frag_cmp_u32);
-    size_t k = 0;
-    for (size_t i = 0; i < n; ++i) if (k == 0 || v[k - 1] != v[i]) v[k++] = v[i];
-    return k;
+// A few distinct values, ascending: inserted into a short list, which is all a residue's fragments or a fragment's
+// residues ever are; to a sorted array past it
+typedef struct frag_set_t {
+    uint32_t  local[32];
+    uint32_t* v;
+    size_t    n;
+    size_t    cap;
+    md_array(uint32_t) spill;
+    md_allocator_i* alloc;
+} frag_set_t;
+
+static void frag_set_add(frag_set_t* s, uint32_t x) {
+    size_t lo = 0, hi = s->n;
+    while (lo < hi) { const size_t mid = (lo + hi) / 2; if (s->v[mid] < x) lo = mid + 1; else hi = mid; }
+    if (lo < s->n && s->v[lo] == x) return;
+    if (s->n == s->cap) {
+        md_array_resize(s->spill, s->cap * 2, s->alloc);
+        if (s->v == s->local) md_memcpy(s->spill, s->local, sizeof(uint32_t) * s->n);
+        s->v = s->spill;
+        s->cap *= 2;
+    }
+    md_memmove(s->v + lo + 1, s->v + lo, sizeof(uint32_t) * (s->n - lo));
+    s->v[lo] = x;
+    s->n++;
 }
 
 size_t md_system_residue_fragments(md_fragment_idx_t* out, size_t cap, const md_system_t* sys, size_t res_idx) {
     if (!sys || res_idx >= sys->residue.count) return 0;
     const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    uint32_t* f = md_temp_alloc_array(temp, uint32_t, range.end > range.beg ? range.end - range.beg : 1);
-    size_t n = 0;
+    frag_set_t set = { .cap = 32, .alloc = md_get_heap_allocator() };
+    set.v = set.local;
+    md_fragment_idx_t last = MD_FRAGMENT_NONE;
     for (uint32_t a = range.beg; a < range.end; ++a) {
         const md_fragment_idx_t x = md_system_fragment_find_by_atom_idx(sys, a);
-        if (x != MD_FRAGMENT_NONE) f[n++] = x;
+        if (x != MD_FRAGMENT_NONE && x != last) frag_set_add(&set, x);
+        last = x;
     }
-    n = frag_unique_u32(f, n);
-    if (out) md_memcpy(out, f, sizeof(uint32_t) * MD_MIN(n, cap));
-    md_temp_end(temp);
-    return n;
+    if (out) md_memcpy(out, set.v, sizeof(uint32_t) * MD_MIN(set.n, cap));
+    md_array_free(set.spill, set.alloc);
+    return set.n;
 }
 
 size_t md_system_fragment_residues(md_residue_idx_t* out, size_t cap, const md_system_t* sys, md_fragment_idx_t frag) {
     if (!sys || !sys->residue.count) return 0;
-    const size_t num = md_system_fragment_atom_count(sys, frag);
-    if (!num) return 0;
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    int32_t* r = md_temp_alloc_array(temp, int32_t, num);
-    size_t n = 0;
+    frag_set_t set = { .cap = 32, .alloc = md_get_heap_allocator() };
+    set.v = set.local;
+    md_residue_idx_t last = -1;
     for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, frag); md_fragment_atom_iter_next(&it);) {
         const md_residue_idx_t x = md_system_residue_find_by_atom_idx(sys, (size_t)it.atom);
-        if (x >= 0) r[n++] = x;
+        if (x >= 0 && x != last) frag_set_add(&set, (uint32_t)x);
+        last = x;
     }
-    qsort(r, n, sizeof(int32_t), frag_cmp_i32);
-    size_t k = 0;
-    for (size_t i = 0; i < n; ++i) if (k == 0 || r[k - 1] != r[i]) r[k++] = r[i];
-    if (out) md_memcpy(out, r, sizeof(int32_t) * MD_MIN(k, cap));
-    md_temp_end(temp);
-    return k;
+    if (out) md_memcpy(out, set.v, sizeof(uint32_t) * MD_MIN(set.n, cap));
+    md_array_free(set.spill, set.alloc);
+    return set.n;
 }
 
 size_t md_system_fragment_find_by_type(md_fragment_idx_t* out, size_t cap, const md_system_t* sys, md_fragment_type_idx_t type) {
