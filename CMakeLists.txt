@@ -87,6 +87,8 @@ set(CORE_FILES
   src/core/md_hash.h
   src/core/md_json.c
   src/core/md_json.h
+  src/core/md_linalg.c
+  src/core/md_linalg.h
   src/core/md_linear_allocator.c
   src/core/md_linear_allocator.h
   src/core/md_log.c
@@ -136,6 +138,8 @@ set(SRC_FILES
   src/md_edr.h
   src/md_filter.h
   src/md_flow.c
+  src/md_fragment.c
+  src/md_fragment.h
   src/md_flow.h
   src/md_gisaxs.c
   src/md_gisaxs.h
@@ -197,6 +201,8 @@ set(SRC_FILES
   src/md_pdb.c
   src/md_pdb.h
   src/md_qm.c
+  src/md_qm_ct.c
+  src/md_qm_ct.h
   src/md_qm.h
   src/md_pot.c
   src/md_pot.h

@@ -506,6 +506,7 @@ typedef enum value_domain_t {
     DOMAIN_BOND_KIND,       // What a bond is: 'covalent', 'hydrogen', ... (md_bond_kind_names)
     DOMAIN_BOND_RESONANCE,  // 'aromatic', 'delocalized', 'localized'
     DOMAIN_BOND_ORIGIN,     // Where a bond came from: 'file', 'user', ... (md_bond_origin_name)
+    DOMAIN_FRAGMENT_NAME,   // The names of the fragment types, and their kinds: fragment()
 } value_domain_t;
 
 typedef struct param_domain_t {

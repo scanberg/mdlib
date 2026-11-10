@@ -228,10 +228,18 @@ UTEST(flow, threshold_folds_into_others_without_losing_weight) {
     md_flow_cut_t cut = {0};
     md_flow_cut_init(&cut, alloc);
     md_flow_cut_expand_all(&cut, &t.graph);
-    cut.threshold = 0.25f;      // folds a1 (.20), b0 (.10), o2 (.20), d1 (.10) and more
+    // Folding is per parent and never a single node: folds a0+a1 inside A, o1+o2 among the roots, c0+c1
+    // inside C, and leaves b0 and d1, each alone below it in their group
+    cut.threshold = 0.35f;
     md_flow_cut_resolve(&cut, &t.graph);
 
-    EXPECT_TRUE(md_array_size(cut.other) > 0);
+    EXPECT_EQ(md_array_size(cut.other), (size_t)3);
+    for (size_t i = 0; i < md_array_size(cut.other); ++i) {
+        // inside its parent's slot: an "Others" of atoms has the group as its parent
+        if (cut.other[i].column == 0) EXPECT_EQ(cut.other[i].parent, t.A);
+        if (cut.other[i].column == 1) EXPECT_EQ(cut.other[i].parent, MD_FLOW_INVALID_INDEX);
+        if (cut.other[i].column == 2) EXPECT_EQ(cut.other[i].parent, t.C);
+    }
     // Conservation is what makes "Others" safe rather than a rounding hole.
     EXPECT_EQ(md_flow_cut_validate(&cut, &t.graph, EPS), MD_FLOW_OK);
 
@@ -697,6 +705,228 @@ UTEST(flow, threshold_is_honest_and_others_opens) {
     md_flow_cut_set_other_expanded(&cut, 0, false);
     md_flow_cut_resolve(&cut, &g);
     EXPECT_EQ(md_array_size(cut.other), 1u);
+
+    md_flow_cut_free(&cut);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Two mirrored columns of the same three fragments, added in the same order: GRAPH order keeps that
+// order on both sides, and a flow from a fragment to itself is reported as a self flow - including
+// after a collapse merges two leaves of one group, whose flow between them becomes the group's own.
+UTEST(flow, graph_order_mirrors_and_marks_self_flow) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_flow_graph_t g = {0};
+    md_flow_graph_init(&g, 2, alloc);
+
+    // hole: X{x0 .3, x1 .2} Y .3 Z .2 ; particle: X{x0 .1, x1 .1} Y .1 Z .7
+    uint32_t n[2][5];
+    const float w[2][5] = { { 0.5f, 0.3f, 0.2f, 0.3f, 0.2f }, { 0.2f, 0.1f, 0.1f, 0.1f, 0.7f } };
+    for (uint32_t c = 0; c < 2; ++c) {
+        md_flow_node_t X  = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = w[c][0], .key = 10 + c, .entity = 1 };
+        n[c][0] = md_flow_graph_add_node(&g, &X);
+        md_flow_node_t x0 = { .column = c, .parent = n[c][0], .level = 1, .weight = w[c][1], .key = 20 + c, .entity = 11 };
+        n[c][1] = md_flow_graph_add_node(&g, &x0);
+        md_flow_node_t x1 = { .column = c, .parent = n[c][0], .level = 1, .weight = w[c][2], .key = 30 + c, .entity = 12 };
+        n[c][2] = md_flow_graph_add_node(&g, &x1);
+        md_flow_node_t Y  = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = w[c][3], .key = 40 + c, .entity = 2 };
+        n[c][3] = md_flow_graph_add_node(&g, &Y);
+        md_flow_node_t Z  = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = w[c][4], .key = 50 + c, .entity = 3 };
+        n[c][4] = md_flow_graph_add_node(&g, &Z);
+    }
+    md_flow_graph_add_link(&g, n[0][1], n[1][2], 0.1f);   // x0 -> x1: inside X
+    md_flow_graph_add_link(&g, n[0][1], n[1][4], 0.2f);   // x0 -> Z
+    md_flow_graph_add_link(&g, n[0][2], n[1][1], 0.1f);   // x1 -> x0: inside X
+    md_flow_graph_add_link(&g, n[0][2], n[1][4], 0.1f);   // x1 -> Z
+    md_flow_graph_add_link(&g, n[0][3], n[1][3], 0.1f);   // Y -> Y
+    md_flow_graph_add_link(&g, n[0][3], n[1][4], 0.2f);   // Y -> Z
+    md_flow_graph_add_link(&g, n[0][4], n[1][4], 0.2f);   // Z -> Z
+    ASSERT_EQ(md_flow_graph_validate(&g, 1.0e-5f), MD_FLOW_OK);
+
+    md_flow_cut_t cut = {0};
+    md_flow_cut_init(&cut, alloc);
+    md_flow_cut_resolve(&cut, &g);   // X collapsed
+
+    md_flow_layout_params_t params = md_flow_layout_params_default();
+    params.order = MD_FLOW_ORDER_GRAPH;
+    md_flow_layout_t layout = {0};
+    md_flow_layout_init(&layout, alloc);
+    md_flow_layout_compute(&layout, &g, &cut, &params);
+
+    // X, Y, Z top to bottom in both columns, despite Z being the heaviest on the right
+    for (uint32_t c = 0; c < 2; ++c) {
+        float y[3] = {0};
+        const uint32_t want[3] = { n[c][0], n[c][3], n[c][4] };
+        for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
+            for (int k = 0; k < 3; ++k) if (layout.nodes[i].cut_idx == want[k]) y[k] = layout.nodes[i].min.y;
+        }
+        EXPECT_LT(y[0], y[1]);
+        EXPECT_LT(y[1], y[2]);
+    }
+
+    // self flows: X -> X (0.2, the two cross links merged), Y -> Y, Z -> Z; the rest is transfer
+    double self = 0.0, transfer = 0.0;
+    for (size_t i = 0; i < md_array_size(layout.ribbons); ++i) {
+        const md_flow_link_t* l = cut.links + layout.ribbons[i].link_idx;
+        if (layout.ribbons[i].flags & MD_FLOW_RIBBON_FLAG_SELF) {
+            self += l->weight;
+            EXPECT_EQ(md_flow_cut_node(&cut, &g, l->src)->entity, md_flow_cut_node(&cut, &g, l->dst)->entity);
+        } else {
+            transfer += l->weight;
+        }
+    }
+    EXPECT_NEAR(self, 0.5, 1.0e-6);
+    EXPECT_NEAR(transfer, 0.5, 1.0e-6);
+
+    // expanded, x0 -> x1 is a transfer between atoms, not a self flow
+    md_flow_cut_set_expanded(&cut, n[0][0], true);
+    md_flow_cut_set_expanded(&cut, n[1][0], true);
+    md_flow_cut_resolve(&cut, &g);
+    md_flow_layout_compute(&layout, &g, &cut, &params);
+    self = 0.0;
+    for (size_t i = 0; i < md_array_size(layout.ribbons); ++i) {
+        if (layout.ribbons[i].flags & MD_FLOW_RIBBON_FLAG_SELF) self += cut.links[layout.ribbons[i].link_idx].weight;
+    }
+    EXPECT_NEAR(self, 0.3, 1.0e-6);
+
+    md_flow_layout_free(&layout);
+    md_flow_cut_free(&cut);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Three groups of 4, 3 and 2 atoms, mirrored in two columns, every atom flowing to itself. 'hole' and
+// 'part' are the atom weights of the two columns.
+typedef struct mirror_graph_t {
+    md_flow_graph_t graph;
+    uint32_t group[2][3];
+    uint32_t atom[2][9];
+} mirror_graph_t;
+
+static void build_mirror(mirror_graph_t* m, md_allocator_i* alloc, const float hole[9], const float part[9]) {
+    md_flow_graph_t* g = &m->graph;
+    md_flow_graph_init(g, 2, alloc);
+    const uint32_t size[3] = { 4, 3, 2 };
+    for (uint32_t c = 0; c < 2; ++c) {
+        const float* w = c == 0 ? hole : part;
+        uint32_t a = 0;
+        for (uint32_t k = 0; k < 3; ++k) {
+            float gw = 0.0f;
+            for (uint32_t j = 0; j < size[k]; ++j) gw += w[a + j];
+            md_flow_node_t gn = { .column = c, .parent = MD_FLOW_INVALID_INDEX, .weight = gw, .key = 100 * c + k, .entity = 1000 + k };
+            m->group[c][k] = md_flow_graph_add_node(g, &gn);
+            for (uint32_t j = 0; j < size[k]; ++j, ++a) {
+                md_flow_node_t an = { .column = c, .parent = m->group[c][k], .level = 1, .weight = w[a], .key = 100 * c + 10 + a, .entity = 2000 + a };
+                m->atom[c][a] = md_flow_graph_add_node(g, &an);
+            }
+        }
+    }
+}
+
+static uint32_t visible_in_column(const md_flow_cut_t* cut, const md_flow_graph_t* g, uint32_t column) {
+    uint32_t n = 0;
+    for (size_t i = 0; i < md_array_size(cut->visible); ++i) n += md_flow_cut_node(cut, g, cut->visible[i])->column == column ? 1 : 0;
+    return n;
+}
+
+UTEST(flow, budget_opens_the_heaviest_within_the_rows) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const float w[9] = { 0.15f, 0.15f, 0.15f, 0.15f, 0.1f, 0.1f, 0.1f, 0.05f, 0.05f };
+    mirror_graph_t m = {0};
+    build_mirror(&m, alloc, w, w);
+    for (uint32_t a = 0; a < 9; ++a) md_flow_graph_add_link(&m.graph, m.atom[0][a], m.atom[1][a], w[a]);
+    ASSERT_EQ(md_flow_graph_validate(&m.graph, EPS), MD_FLOW_OK);
+
+    md_flow_cut_t cut = {0};
+    md_flow_cut_init(&cut, alloc);
+    cut.mirror = true;
+
+    // No budget: nothing opens by itself
+    md_flow_cut_resolve(&cut, &m.graph);
+    EXPECT_EQ(visible_in_column(&cut, &m.graph, 0), 3u);
+
+    // 6 rows: the heaviest group opens (3 + 3), on both sides; neither of the others fits after it
+    cut.max_rows = 6;
+    md_flow_cut_resolve(&cut, &m.graph);
+    for (uint32_t c = 0; c < 2; ++c) {
+        EXPECT_TRUE (md_flow_cut_is_open(&cut, m.group[c][0]));
+        EXPECT_FALSE(md_flow_cut_is_open(&cut, m.group[c][1]));
+        EXPECT_FALSE(md_flow_cut_is_open(&cut, m.group[c][2]));
+        EXPECT_EQ(visible_in_column(&cut, &m.graph, c), 6u);
+    }
+    EXPECT_EQ(md_flow_cut_validate(&cut, &m.graph, EPS), MD_FLOW_OK);
+
+    // The user closes the heaviest: the budget goes to the next ones, and the pin holds on both sides
+    md_flow_cut_pin(&cut, &m.graph, m.group[0][0], false);
+    md_flow_cut_resolve(&cut, &m.graph);
+    for (uint32_t c = 0; c < 2; ++c) {
+        EXPECT_FALSE(md_flow_cut_is_open(&cut, m.group[c][0]));
+        EXPECT_TRUE (md_flow_cut_is_open(&cut, m.group[c][1]));
+        EXPECT_TRUE (md_flow_cut_is_open(&cut, m.group[c][2]));
+        EXPECT_EQ(visible_in_column(&cut, &m.graph, c), 6u);
+    }
+
+    // A pin open wins over the budget
+    md_flow_cut_clear_pins(&cut);
+    cut.max_rows = 3;
+    md_flow_cut_pin(&cut, &m.graph, m.group[1][2], true);
+    md_flow_cut_resolve(&cut, &m.graph);
+    for (uint32_t c = 0; c < 2; ++c) {
+        EXPECT_TRUE (md_flow_cut_is_open(&cut, m.group[c][2]));
+        EXPECT_FALSE(md_flow_cut_is_open(&cut, m.group[c][0]));
+    }
+    EXPECT_EQ(md_flow_cut_validate(&cut, &m.graph, EPS), MD_FLOW_OK);
+
+    md_flow_cut_free(&cut);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(flow, others_fold_per_parent_and_mirrored) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    // atom 1 is small as a hole and large as a particle: mirrored, it must not fold on either side
+    const float hole[9] = { 0.20f, 0.04f, 0.04f, 0.04f, 0.2f, 0.2f, 0.1f, 0.1f, 0.08f };
+    const float part[9] = { 0.04f, 0.20f, 0.04f, 0.04f, 0.2f, 0.2f, 0.1f, 0.1f, 0.08f };
+    mirror_graph_t m = {0};
+    build_mirror(&m, alloc, hole, part);
+    // atom 0 -> atom 1 carries 0.16, the rest goes to itself
+    md_flow_graph_add_link(&m.graph, m.atom[0][0], m.atom[1][0], 0.04f);
+    md_flow_graph_add_link(&m.graph, m.atom[0][0], m.atom[1][1], 0.16f);
+    md_flow_graph_add_link(&m.graph, m.atom[0][1], m.atom[1][1], 0.04f);
+    for (uint32_t a = 2; a < 9; ++a) md_flow_graph_add_link(&m.graph, m.atom[0][a], m.atom[1][a], hole[a]);
+    ASSERT_EQ(md_flow_graph_validate(&m.graph, EPS), MD_FLOW_OK);
+
+    md_flow_cut_t cut = {0};
+    md_flow_cut_init(&cut, alloc);
+    cut.mirror = true;
+    cut.threshold = 0.05f;
+    md_flow_cut_pin(&cut, &m.graph, m.group[0][0], true);
+    md_flow_cut_resolve(&cut, &m.graph);
+
+    // In each column: atoms 2 and 3 fold into an Others inside group 0. Atom 1 stays (0.2 as a particle).
+    ASSERT_EQ(md_array_size(cut.other), (size_t)2);
+    for (size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(cut.other[i].parent, m.group[cut.other[i].column][0]);
+        EXPECT_EQ(cut.other_count[i], 2u);
+    }
+    for (uint32_t c = 0; c < 2; ++c) {
+        bool atom1 = false;
+        for (size_t v = 0; v < md_array_size(cut.visible); ++v) atom1 |= cut.visible[v] == m.atom[c][1];
+        EXPECT_TRUE(atom1);
+    }
+    EXPECT_EQ(md_flow_cut_validate(&cut, &m.graph, EPS), MD_FLOW_OK);
+
+    // It sits inside its parent's slot: right after the last visible sibling
+    for (size_t v = 0; v + 1 < md_array_size(cut.visible); ++v) {
+        const md_flow_node_t* n = md_flow_cut_node(&cut, &m.graph, cut.visible[v + 1]);
+        if (n->flags & MD_FLOW_NODE_FLAG_OTHER) {
+            EXPECT_EQ(md_flow_cut_node(&cut, &m.graph, cut.visible[v])->parent, n->parent);
+        }
+    }
+
+    // Opening one opens its mirror image too
+    md_flow_cut_open_other(&cut, &m.graph, cut.other + 0, true);
+    md_flow_cut_resolve(&cut, &m.graph);
+    EXPECT_EQ(md_array_size(cut.other), (size_t)0);
+    EXPECT_TRUE(md_flow_cut_is_other_open_for(&cut, m.graph.nodes + m.atom[1][2]));
+    EXPECT_EQ(md_flow_cut_validate(&cut, &m.graph, EPS), MD_FLOW_OK);
 
     md_flow_cut_free(&cut);
     md_arena_allocator_destroy(alloc);

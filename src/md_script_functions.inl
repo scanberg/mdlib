@@ -584,6 +584,9 @@ static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) ->
 static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> atomset
 static int _molecule_irng(data_t*, data_t[], eval_context_t*);  // (irange[]) -> atomset[]
 static int _fill_molecule(data_t*, data_t[], eval_context_t*);  // (atomset[]) -> atomset[]
+static int _fragment_all(data_t*, data_t[], eval_context_t*);   // () -> atomset[]
+static int _fragment_name(data_t*, data_t[], eval_context_t*);  // (str[]) -> atomset[]
+static int _fill_fragment(data_t*, data_t[], eval_context_t*);  // (atomset[]) -> atomset[]
 static int _part_irng(data_t*, data_t[], eval_context_t*);      // (irange[]) -> atomset[]
 static int _fill_part(data_t*, data_t[], eval_context_t*);      // (atomset[]) -> atomset[]
 static int _glycan(data_t*, data_t[], eval_context_t*);         // -> atomset[]
@@ -965,6 +968,10 @@ static procedure_t procedures[] = {
     {MD_STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     // Molecules (md_molecule_data_t): by position, one set each
     {MD_STR_INIT("molecule"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _molecule_irng,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    // Fragments (md_fragment.h): ring systems, functional groups, backbones; one set each. All of them, or those of a
+    // name or a kind ("amide", "phen*", "ring system"), in the context and cut to it
+    {MD_STR_INIT("fragment"),     TI_ATOMSET_ARR,  0,  {0},                _fragment_all,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {MD_STR_INIT("fragment"),     TI_ATOMSET_ARR,  1,  {TI_STRING_ARR},    _fragment_name,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     // Parts (md_part_data_t): a strand, a glycan tree, a ligand, an ion, a water; by position, one set each
     {MD_STR_INIT("part"),         TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _part_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
@@ -1056,6 +1063,8 @@ static procedure_t procedures[] = {
     {MD_STR_INIT("residue"),   TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_res,   FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {MD_STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_chain, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {MD_STR_INIT("molecule"),  TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_molecule, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    // fragment(sel): the fragments the selection has an atom of, whole - of a residue, those which reach out of it too
+    {MD_STR_INIT("fragment"),  TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_fragment, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {MD_STR_INIT("part"),      TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_part,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
     // --- BONDS ---
@@ -1169,6 +1178,7 @@ static const param_domain_t param_domains[] = {
     {MD_STR_INIT("match"),     2, DOMAIN_MATCH_LEVEL},
     {MD_STR_INIT("match"),     3, DOMAIN_MATCH_MODE},
     {MD_STR_INIT("ring"),      0, DOMAIN_SMILES},
+    {MD_STR_INIT("fragment"),  0, DOMAIN_FRAGMENT_NAME},
     {MD_STR_INIT("ring"),      1, DOMAIN_RING_KIND},
     {MD_STR_INIT("bond"),      2, DOMAIN_BOND_KIND},
     {MD_STR_INIT("bond"),      4, DOMAIN_BOND_RESONANCE},
@@ -4679,6 +4689,136 @@ static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
         ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
     }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
+}
+
+// ### FRAGMENTS ###
+// The fragments of the system (md_fragment.h): ring systems, functional groups, backbones, of the molecules. One set each,
+// in the order of the fragments (of their molecules); their atoms are not one range.
+
+static inline void fragment_set_bits(md_bitmask_t* b, const md_system_t* sys, md_fragment_idx_t f) {
+    for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, f); md_fragment_atom_iter_next(&it);) md_bitmask_set_bit(b, (uint32_t)it.atom);
+}
+
+static inline bool fragment_in_context(const md_system_t* sys, md_fragment_idx_t f, const md_bitset_t* bitfield) {
+    if (!bitfield) return true;
+    for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, f); md_fragment_atom_iter_next(&it);) {
+        if (md_bitset_test(*bitfield, (uint32_t)it.atom)) return true;
+    }
+    return false;
+}
+
+// Whether a fragment answers a query: by the name of its type ("amide", "phen*") or by its kind ("ring system")
+static bool fragment_matches(const md_system_t* sys, md_fragment_idx_t f, md_str_t query) {
+    const md_fragment_type_idx_t t = md_system_fragment_type(sys, f);
+    return match_query(query, md_fragment_type_name(sys, t)) ||
+           match_query(query, md_str_from_cstr(md_fragment_kind_str(md_fragment_type_kind(sys, t))));
+}
+
+// The fragments in the context answering one of the queries (all of them for none)
+static md_array(int32_t) fragments_selected(const md_system_t* sys, const md_bitset_t* bitfield, const md_str_t* queries, size_t num_queries, md_allocator_i* alloc) {
+    md_array(int32_t) arr = 0;
+    for (size_t f = 0; f < md_system_fragment_count(sys); ++f) {
+        if (!fragment_in_context(sys, (md_fragment_idx_t)f, bitfield)) continue;
+        bool hit = num_queries == 0;
+        for (size_t q = 0; q < num_queries && !hit; ++q) hit = fragment_matches(sys, (md_fragment_idx_t)f, queries[q]);
+        if (hit) md_array_push(arr, (int32_t)f, alloc);
+    }
+    return arr;
+}
+
+static int fragments_write(data_t* dst, const md_array(int32_t) frags, bool restrict_ctx, eval_context_t* ctx) {
+    if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+    set_writer_t w = set_writer_begin(dst, ctx, restrict_ctx);
+    for (size_t i = 0; i < md_array_size(frags); ++i) {
+        md_bitmask_t b = result_mask(ctx);
+        fragment_set_bits(&b, ctx->sys, (md_fragment_idx_t)frags[i]);
+        set_writer_push(&w, md_bitmask_view(&b));
+        md_bitmask_free(&b);
+    }
+    set_writer_end(&w);
+    return 0;
+}
+
+// fragment(): every fragment with an atom in the context, cut to it
+static int _fragment_all(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)arg;
+    MD_ASSERT(ctx && ctx->sys);
+    md_array(int32_t) frags = fragments_selected(ctx->sys, ctx->mol_ctx, NULL, 0, ctx->temp_alloc);
+    if (dst) return fragments_write(dst, frags, true, ctx);
+    const int count = (int)md_array_size(frags);
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
+}
+
+// fragment("amide", "ring system"): the fragments of those names or kinds in the context, cut to it
+static int _fragment_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    MD_ASSERT(ctx && ctx->sys);
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+    const md_system_t* sys = ctx->sys;
+    const size_t num_queries = element_count(arg[0]);
+    const md_str_t* queries = as_string_arr(arg[0]);
+
+    if (dst) {
+        md_array(int32_t) frags = fragments_selected(sys, ctx->mol_ctx, queries, num_queries, ctx->temp_alloc);
+        return fragments_write(dst, frags, true, ctx);
+    }
+
+    if (md_system_fragment_count(sys) == 0) {
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The system has no fragments");
+        return -1;
+    }
+    int count = 0;
+    for (size_t q = 0; q < num_queries; ++q) {
+        if (!validate_query(queries[q])) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", (int)queries[q].len, queries[q].ptr);
+            return -1;
+        }
+        md_array(int32_t) frags = fragments_selected(sys, ctx->mol_ctx, queries + q, 1, ctx->temp_alloc);
+        if (md_array_size(frags) == 0) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '%.*s' did not match any fragment within the context", (int)queries[q].len, queries[q].ptr);
+            return -1;
+        }
+    }
+    count = (int)md_array_size(fragments_selected(sys, ctx->mol_ctx, queries, num_queries, ctx->temp_alloc));
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
+}
+
+// fragment(sel): the fragments the selection has an atom of, whole, one set each
+static int _fill_fragment(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    MD_ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+
+    const int64_t num_bf = element_count(arg[0]);
+    const md_bitset_t* src_bf = as_bitset(arg[0]);
+    md_bitset_t tmp_bf = {0};
+    if (num_bf != 1) {
+        tmp_bf = _internal_flatten_bf(src_bf, (size_t)num_bf, ctx->temp_alloc);
+        src_bf = &tmp_bf;
+    }
+
+    // The fragment of each selected atom, ascending and distinct
+    md_array(int32_t) frags = 0;
+    const size_t num_frags = md_system_fragment_count(sys);
+    if (num_frags) {
+        uint8_t* taken = (uint8_t*)md_alloc(ctx->temp_alloc, num_frags);
+        md_memset(taken, 0, num_frags);
+        md_bitset_iter_t it = md_bitset_iter(*src_bf);
+        while (md_bitset_iter_next(&it)) {
+            if (it.idx >= sys->atom.count) break;
+            const md_fragment_idx_t f = md_system_fragment_find_by_atom_idx(sys, it.idx);
+            if (f != MD_FRAGMENT_NONE) taken[f] = 1;
+        }
+        for (size_t f = 0; f < num_frags; ++f) {
+            if (taken[f]) md_array_push(frags, (int32_t)f, ctx->temp_alloc);
+        }
+    }
+
+    if (dst) return fragments_write(dst, frags, false, ctx);
+    if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
+        ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+    }
+    const int count = (int)md_array_size(frags);
     return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MD_MIN(1, count) : count;
 }
 

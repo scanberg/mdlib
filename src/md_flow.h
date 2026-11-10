@@ -49,6 +49,13 @@ typedef struct md_flow_node_t {
     md_str_t    sublabel;  // optional second line, same ownership rule; {0} for none
     uint64_t key;       // stable identity across rebuilds; interaction state keys off this
     uint32_t flags;     // md_flow_node_flag_t
+
+    // What the node stands for REGARDLESS of its column; 0 for nothing in particular. Two nodes in
+    // adjacent columns with the same non-zero entity are one thing seen from two sides - a fragment
+    // as the donor and as the acceptor - and a link between them is a SELF flow: it does not go
+    // anywhere. The layout marks those ribbons (MD_FLOW_RIBBON_FLAG_SELF) so that a drawing backend
+    // can show them as part of the nodes rather than as a band crossing the diagram.
+    uint64_t entity;
 } md_flow_node_t;
 
 typedef struct md_flow_link_t {
@@ -113,7 +120,19 @@ md_flow_result_t md_flow_graph_validate(const md_flow_graph_t* graph, float eps)
 // than indexing either array directly.
 
 typedef struct md_flow_cut_t {
-    md_bitmask_t expanded;                  // graph node index -> is expanded
+    // What the USER opened and closed, by graph node index. A pinned node stays as pinned whatever the
+    // budget below decides. md_flow_cut_set_expanded sets the first directly; md_flow_cut_pin both.
+    md_bitmask_t expanded;                  // pinned open
+    md_bitmask_t collapsed;                 // pinned closed
+
+    // Row budget per column, 0 for none. Resolving then opens nodes on its own, the heaviest first, as long
+    // as no column would show more rows than this (before "Others" folding, which only removes rows): the
+    // detail goes where the weight is, and the diagram stays readable however large the graph. Pins win.
+    uint32_t max_rows;
+
+    // Treat nodes of the same entity (md_flow_node_t.entity) in different columns as one: they open, close
+    // and fold together, so mirrored columns stay mirrored.
+    bool mirror;
     float threshold;                        // fold nodes below this share of their COLUMN, [0,1)
 
     // An "Others" never grows past this share of its column: folding proceeds from the smallest
@@ -130,6 +149,14 @@ typedef struct md_flow_cut_t {
     // the threshold be honest - hide everything below it, and let the reader look anyway.
     uint32_t other_expanded;
 
+    // Folding is per PARENT: the small children of a node fold into an "Others" inside it, which sits in
+    // its parent's slot and band, and the small roots into one of their own. This opens the "Others" of
+    // the children of one node (graph index), leaving the rest folded. See md_flow_cut_open_other.
+    md_bitmask_t other_open;
+
+    // Output of md_flow_cut_resolve, graph node index: open as resolved, by a pin or by the budget.
+    md_bitmask_t open;
+
     // Outputs of md_flow_cut_resolve()
     md_array(uint32_t)       visible;       // cut index space, grouped by column
     md_array(md_flow_link_t) links;         // aggregated, endpoints in cut index space
@@ -143,6 +170,21 @@ void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc);
 void md_flow_cut_free(md_flow_cut_t* cut);
 
 void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expanded);
+
+// What a user's open or close of a node means: pin it (and, with 'mirror', the nodes of its entity) open
+// or closed.
+void md_flow_cut_pin(md_flow_cut_t* cut, const md_flow_graph_t* graph, uint32_t node_idx, bool open);
+void md_flow_cut_clear_pins(md_flow_cut_t* cut);
+
+// Open after md_flow_cut_resolve, whichever way it came to be
+bool md_flow_cut_is_open(const md_flow_cut_t* cut, uint32_t node_idx);
+
+// Open or close an "Others" (a node of cut->other): its siblings are then drawn individually. With
+// 'mirror' the "Others" of the same parent entity in the other columns go with it.
+void md_flow_cut_open_other(md_flow_cut_t* cut, const md_flow_graph_t* graph, const md_flow_node_t* other, bool open);
+// Whether a node's siblings are shown individually because their "Others" was opened (a column's, or its
+// parent's)
+bool md_flow_cut_is_other_open_for(const md_flow_cut_t* cut, const md_flow_node_t* node);
 
 // Open or close a column's "Others". An open one folds nothing, so its members are drawn
 // individually however small they are.
@@ -176,6 +218,10 @@ typedef enum md_flow_order_t {
     // Barycentre sweeps: order by the mean position of the neighbours a node connects to. Fewer
     // crossings, but the rows are in no order the reader can name.
     MD_FLOW_ORDER_BARYCENTRE,
+    // The order the nodes were added to the graph in. A caller that adds the same entities to two
+    // columns in the same order gets two MIRRORED columns, where a flow from a row to itself runs
+    // straight across and every slanted band is a genuine transfer. "Others" go last.
+    MD_FLOW_ORDER_GRAPH,
 } md_flow_order_t;
 
 typedef struct md_flow_layout_params_t {
@@ -208,8 +254,16 @@ typedef struct md_flow_layout_node_t {
 // A ribbon is a quad with two curved edges. p0/p1 are the near and far edge of the band where it
 // leaves the source; q0/q1 where it arrives at the destination. The curve between them is the
 // drawing backend's business.
+typedef enum md_flow_ribbon_flag_t {
+    MD_FLOW_RIBBON_FLAG_NONE = 0,
+    // Source and destination are the same entity (md_flow_node_t.entity): the stubs say how much of
+    // each node stays where it is, and there is nothing to connect.
+    MD_FLOW_RIBBON_FLAG_SELF = 1,
+} md_flow_ribbon_flag_t;
+
 typedef struct md_flow_layout_ribbon_t {
     uint32_t link_idx;          // index into cut->links
+    uint32_t flags;             // md_flow_ribbon_flag_t
     vec2_t   p0, p1;
     vec2_t   q0, q1;
 } md_flow_layout_ribbon_t;

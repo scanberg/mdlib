@@ -288,6 +288,32 @@ static md_array(md_str_t) completion_domain_values(value_domain_t domain, const 
     case DOMAIN_RING_KIND:
         for (size_t i = 0; i < MD_COUNTOF(ring_kinds); ++i) completion_add_value(&values, &seen, ring_kinds[i].name, alloc);
         break;
+    case DOMAIN_FRAGMENT_NAME:
+        if (sys) {
+            // the types of the fragments with an atom in the context
+            const size_t num_types = md_system_fragment_type_count(sys);
+            bool* present = (bool*)md_alloc(alloc, num_types + 1);
+            md_memset(present, 0, num_types + 1);
+            for (size_t f = 0; f < md_system_fragment_count(sys); ++f) {
+                const md_fragment_type_idx_t t = md_system_fragment_type(sys, (md_fragment_idx_t)f);
+                if (t >= num_types || present[t]) continue;
+                if (atoms) {
+                    bool in = false;
+                    for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, (md_fragment_idx_t)f); !in && md_fragment_atom_iter_next(&it);) {
+                        in = md_bitset_test(*atoms, (uint32_t)it.atom);
+                    }
+                    if (!in) continue;
+                }
+                present[t] = true;
+            }
+            for (size_t t = 0; t < num_types; ++t) {
+                if (present[t]) completion_add_value(&values, &seen, md_fragment_type_name(sys, (md_fragment_type_idx_t)t), alloc);
+            }
+            for (int k = 0; k < MD_FRAGMENT_KIND_COUNT; ++k) {
+                completion_add_value(&values, &seen, md_str_from_cstr(md_fragment_kind_str((md_fragment_kind_t)k)), alloc);
+            }
+        }
+        break;
     case DOMAIN_BOND_KIND: {
         size_t count = 0;
         const md_bond_kind_name_t* names = md_bond_kind_names(&count);

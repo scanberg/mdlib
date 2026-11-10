@@ -6,7 +6,7 @@
 //   CORE       What the data gives: the atoms, their types, the residues, the instances and the assemblies. Inference
 //              reads it and never writes it, so a system inferred on another thread can share it
 //              (md_util_system_infer_prepare).
-//   DERIVED    What inference writes: what it finds (the bonds, chains, parts, backbones, molecules, rings, lipids, the
+//   DERIVED    What inference writes: what it finds (the bonds, chains, parts, backbones, molecules, rings, lipids, fragments, the
 //              chemistry, the kinds of the residues and the roles of their atoms), and what the data may give of it
 //              which inference adds to or replaces (the bonds of a file, the part types of an mmCIF file).
 //   DERIVED_STRINGS  Arrays of strings of DERIVED, each string allocated of its own
@@ -37,13 +37,16 @@
     X(lipid.tail.anchor_beg) X(lipid.tail.anchor_end) X(lipid.tail.head_beg) X(lipid.tail.head_end) X(lipid.tail.kind) \
     X(bond.pairs) X(bond.flags) X(bond.conn.atom_idx) X(bond.conn.bond_idx) X(bond.conn.offset) \
     X(ring.rings) \
-    X(molecule.offset) X(molecule.atom_idx) X(molecule.parent_idx) X(molecule.atom_slot) X(molecule.type_idx) X(molecule.type.flags)
+    X(molecule.offset) X(molecule.atom_idx) X(molecule.parent_idx) X(molecule.atom_slot) X(molecule.type_idx) X(molecule.type.flags) \
+    X(fragment.mol_template) X(fragment.frag_offset) X(fragment.template_molecule) X(fragment.template_slot_offset) \
+    X(fragment.slot_frag) X(fragment.template_frag_offset) X(fragment.frag_type) X(fragment.frag_slot_offset) \
+    X(fragment.frag_slot) X(fragment.type.kind) X(fragment.type.color)
 
 #define MD_SYSTEM_DERIVED_STRINGS(X) \
-    X(part.type.description) X(molecule.type.name)
+    X(part.type.description) X(molecule.type.name) X(fragment.type.name)
 
 // The structs of DERIVED whole, with their counts: what md_util_system_infer_publish moves into the system. Of the atoms
 // and the residues, which are CORE and DERIVED both, the DERIVED arrays one by one (MD_SYSTEM_DERIVED_ARRAYS) and these
 // counts and structs.
 #define MD_SYSTEM_DERIVED_STRUCTS(X) \
-    X(residue.type) X(chain) X(part) X(protein_backbone) X(nucleic_backbone) X(lipid) X(bond) X(ring) X(molecule)
+    X(residue.type) X(chain) X(part) X(protein_backbone) X(nucleic_backbone) X(lipid) X(bond) X(ring) X(molecule) X(fragment)

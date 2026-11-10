@@ -8,9 +8,10 @@
 #include <core/md_unit.h>
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
+#include <core/md_bitset.h>
 
 #include <md_attributes.h>
-#include <core/md_bitset.h>
+#include <md_fragment.h>
 
 typedef struct md_particle_type_data_t {
     size_t count;
@@ -547,6 +548,7 @@ typedef struct md_system_t {
     
     md_ring_data_t              ring;               // Rings formed by persistent bonds: 3 to 7 ordered atoms and their flags
     md_molecule_data_t          molecule;           // The molecules: connected by persistent bonds, within residues and along polymer chains (md_molecule_t)
+    md_fragment_data_t          fragment;           // What the molecules are made of: ring systems, functional groups, backbones (md_fragment.h)
 
     md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
     md_group_data_t             group;              // Named sets of atoms the data gives (GROMACS index groups), see md_group_data_t

@@ -1928,7 +1928,7 @@ static md_gto_iso_field_t* iso_dens_field_eigen(const iso_dens_src_t* s, const i
     double* V = (double*)malloc(sizeof(double) * n * n);
     for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) V[i * n + j] = 0.5 * (D[i * n + j] + D[j * n + i]);
     double* ev = (double*)malloc(sizeof(double) * n);
-    iso_eigen_sym(V, ev, n);
+    if (!md_linalg_sym_eigen(V, ev, (size_t)n)) memset(ev, 0, sizeof(double) * n);   // no terms rather than wrong ones
     double emax = 0.0;
     for (int k = 0; k < n; ++k) emax = fmax(emax, fabs(ev[k]));
     double* rows = (double*)malloc(sizeof(double) * n * n);
@@ -1936,7 +1936,7 @@ static md_gto_iso_field_t* iso_dens_field_eigen(const iso_dens_src_t* s, const i
     int r = 0;
     for (int k = 0; k < n; ++k) {
         if (fabs(ev[k]) <= 1.0e-12 * emax) continue;
-        for (int i = 0; i < n; ++i) rows[r * n + i] = V[i * n + k];
+        memcpy(rows + (size_t)r * n, V + (size_t)k * n, sizeof(double) * n);   // eigenvector k is contiguous
         terms[r] = (iso_term_t){ev[k], r, r};
         r++;
     }
