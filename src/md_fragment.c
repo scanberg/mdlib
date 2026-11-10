@@ -724,12 +724,13 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
                     num_touch++;
                 }
             }
-            // A piece of one or two carbons on one functional group is of it, as a chemist names them together: the
-            // methyls of a dimethylamino, the methyl of a methoxy or an acetyl, the CH2 of a hydroxymethyl or of a
-            // serine's hydroxyl, whatever ring or backbone it also touches. With no group it is a substituent or a
-            // linker of its own: a ring or the backbone takes none (toluene is a phenyl and a methyl, the CB of an
-            // alanine a methyl, that of a phenylalanine the methylene between its alpha carbon and phenyl).
-            if (num <= 2 && num_group == 1) {
+            // A methyl or ethyl on a functional group and on nothing else is of it, as a chemist names them
+            // together: the methyls of a dimethylamino, the methyl of a methoxy or an acetyl, the ethyl of an ethyl
+            // ester. A piece between the group and something else (a ring, the backbone, another group) is a linker:
+            // the carboxylate of a glutamate is its COO-, the CH2CH2 between it and the alpha carbon a linker, as the
+            // longer ones of a lysine or an arginine are. Nor does a ring or the backbone take a piece (toluene is a
+            // phenyl and a methyl, the CB of an alanine a methyl).
+            if (num <= 2 && num_group == 1 && num_touch == 1 && num_backbone == 0) {
                 for (size_t m = 0; m < num; ++m) frag_assign(c, members[m], group[0], false);
             } else {
                 const int32_t u = frag_new_unit(c, num_touch + num_backbone >= 2 ? MD_FRAGMENT_LINKER : MD_FRAGMENT_ALKYL);
@@ -1116,9 +1117,21 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                 break;
             }
             case MD_FRAGMENT_LINKER:
-                if      (num_core == 1) snprintf(name, FRAG_NAME_CAP, "methylene");
-                else if (num_core == 2) snprintf(name, FRAG_NAME_CAP, "ethylene");
-                else                    snprintf(name, FRAG_NAME_CAP, "C%zu linker", num_core);
+                if (num_core == 1) {
+                    snprintf(name, FRAG_NAME_CAP, "methylene");
+                } else if (num_core == 2) {
+                    // -CH2CH2- between its ends, or -CH(CH3)- with both ends on one carbon (threonine, ibuprofen)
+                    uint32_t ends[2] = { 0, 0 };
+                    for (size_t q = 0; q < 2; ++q) {
+                        for (uint32_t e = c.nb_off[core[q]]; e < c.nb_off[core[q] + 1]; ++e) {
+                            const uint32_t j = c.nb[e];
+                            if (frag_heavy(&c, j) && c.unit_of[j] != (int32_t)u) ends[q]++;
+                        }
+                    }
+                    snprintf(name, FRAG_NAME_CAP, "%s", (ends[0] == 0 || ends[1] == 0) ? "ethylidene" : "ethylene");
+                } else {
+                    snprintf(name, FRAG_NAME_CAP, "C%zu linker", num_core);
+                }
                 break;
             case MD_FRAGMENT_BACKBONE:     // a group of the backbone: a peptide group, a phosphate, a terminus
             case MD_FRAGMENT_GROUP:

@@ -614,12 +614,12 @@ One selection per fragment: the chemically meaningful pieces each molecule is cu
 - `"ring system"`: rings sharing an atom, with the atoms double bonded to them.
 - `"functional group"`: by Ertl's algorithm, the heteroatoms and the carbons bonded to them by double or triple
   bonds, joined.
-- `"linker"` and `"alkyl"`: the carbon skeleton left over, between fragments or at an end. A piece of one or two carbons
-  on a functional group goes with it, whatever ring it also touches: the methyls of a dimethylamino, the CH2 of a
-  hydroxymethyl, the CB of a serine with its hydroxyl. A ring or the backbone takes none: a methyl on a ring is a
-  `"methyl"`, as is the CB of an alanine, and the CB of a phenylalanine is the `"methylene"` between its alpha carbon
-  and its ring. Alkyls are named by their shape: the `"isopropyl"` of a valine, the `"isobutyl"` of a leucine, the
-  `"sec-butyl"` of an isoleucine.
+- `"linker"` and `"alkyl"`: the carbon skeleton left over, between fragments or at an end. A methyl or ethyl on a
+  functional group and on nothing else goes with it: the methyls of a dimethylamino, the methyl of a methoxy. A piece
+  that leads on is a linker of its own: the `"ethylene"` between a glutamate's alpha carbon and its carboxylate, the
+  `"methylene"` between a phenylalanine's and its ring, the `"ethylidene"` (-CH(CH3)-) of a threonine. A ring or the
+  backbone takes no piece: a methyl on a ring is a `"methyl"`, as is the CB of an alanine. Alkyls are named by their
+  shape: the `"isopropyl"` of a valine, the `"isobutyl"` of a leucine, the `"sec-butyl"` of an isoleucine.
 - `"atom"`: a metal, an ion, a lone atom.
 
 Hydrogens go with their heavy atom. Each fragment is named from a library of SMILES (`"phenyl"`, `"pyridyl"`,

@@ -41,14 +41,15 @@
 //   functional      Ertl's algorithm (J. Cheminform. 9:36, 2017): the heteroatoms, the carbons double or triple
 //   group           bonded to a heteroatom, the carbons of C=C and C#C outside of rings, the acetal carbons and the
 //                   carbons carrying two or more halogens are marked; each connected set of marked atoms is a group.
-//   alkyl, linker   What is left of the carbon skeleton, as connected pieces. A piece of one or two carbons on one
-//                   functional group (whatever ring or backbone it also touches) is part of the group, as a chemist
-//                   names them together: the methyls of a dimethylamino, the methyl of a methoxy, the CH2 of a
-//                   hydroxymethyl, the CB of a serine's hydroxyl.
-//                   Any other piece is an ALKYL (a methyl on a ring; the methyl, isopropyl, isobutyl and sec-butyl of
-//                   alanine, valine, leucine, isoleucine) or a LINKER between two or more fragments (the methylene
-//                   between a phenylalanine's alpha carbon and its ring). Neither a ring system nor the backbone takes
-//                   a piece of the skeleton: what is drawn as a phenyl is the six carbons of its ring.
+//   alkyl, linker   What is left of the carbon skeleton, as connected pieces. A methyl or ethyl on a functional
+//                   group and on nothing else is part of the group, as a chemist names them together (the methyls of a
+//                   dimethylamino, the methyl of a methoxy or an acetyl, the ethyl of an ethyl ester). Any other piece
+//                   is an ALKYL (a methyl on a ring; the methyl, isopropyl, isobutyl and sec-butyl of alanine, valine,
+//                   leucine, isoleucine) or a LINKER between two or more fragments: methylene, ethylene, ethylidene
+//                   (-CH(CH3)-), "C3 linker", ... (the CH2CH2 between a glutamate's alpha carbon and its carboxylate,
+//                   the CH2 between a phenylalanine's and its ring). So a group is its own atoms and its terminal
+//                   methyls, never a carbon that leads on, and neither a ring system nor the backbone takes a piece of
+//                   the skeleton: what is drawn as a phenyl is the six carbons of its ring.
 //   atom            Anything else on its own: a metal, an ion, a lone atom.
 //
 // A single halogen belongs to the fragment of the atom it is bonded to, every hydrogen to that of its heavy atom.

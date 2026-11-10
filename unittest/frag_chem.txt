@@ -1242,8 +1242,9 @@ B 9 29 1 0
 B 12 30 1 0
 B 13 31 1 0
 B 14 32 1 0
+F 2 linker ethylidene
+F 3 group carboxylic acid
 F 4 alkyl isobutyl
-F 5 group carboxylic acid
 F 6 ring phenyl
 END
 COMP CAFFEIN 24 25
@@ -1859,8 +1860,9 @@ B 19 39 1 0
 B 22 40 1 0
 F 1 alkyl methyl
 F 1 alkyl methyl
+F 1 linker methylene
+F 3 group amide
 F 3 group carboxylic acid
-F 4 group amide
 F 6 ring phenyl
 F 8 ring penam
 END
@@ -3494,7 +3496,8 @@ F 1 group hydroxyl
 F 1 group hydroxyl
 F 1 group hydroxyl
 F 1 group hydroxyl
-F 2 group hydroxyl
+F 1 group hydroxyl
+F 1 linker methylene
 F 6 ring oxanyl
 END
 COMP DECANOI 32 31
@@ -3589,7 +3592,7 @@ END
 # The components of ccd_chem.txt (no residue names here: a free amino acid is an amine, a linker and an acid)
 FRAG ALA
 F 1 group amine
-F 2 linker ethylene
+F 2 linker ethylidene
 F 3 group carboxylic acid
 END
 FRAG ARG
@@ -3735,66 +3738,75 @@ FRAG A
 F 1 group amine
 F 1 group hydroxyl
 F 1 group hydroxyl
+F 1 linker methylene
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 F 9 ring purinyl
 END
 FRAG C
 F 1 group amine
 F 1 group hydroxyl
 F 1 group hydroxyl
+F 1 linker methylene
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 F 7 ring pyrimidinone
 END
 FRAG G
 F 1 group amine
 F 1 group hydroxyl
 F 1 group hydroxyl
+F 1 linker methylene
 F 10 ring purinone
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 END
 FRAG U
 F 1 group hydroxyl
 F 1 group hydroxyl
+F 1 linker methylene
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 F 8 ring pyrimidinedione
 END
 FRAG DA
 F 1 group amine
 F 1 group hydroxyl
+F 1 linker methylene
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 F 9 ring purinyl
 END
 FRAG DC
 F 1 group amine
 F 1 group hydroxyl
+F 1 linker methylene
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 F 7 ring pyrimidinone
 END
 FRAG DG
 F 1 group amine
 F 1 group hydroxyl
+F 1 linker methylene
 F 10 ring purinone
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 END
 FRAG DT
 F 1 alkyl methyl
 F 1 group hydroxyl
+F 1 linker methylene
+F 5 group phosphate
 F 5 ring oxolanyl
-F 6 group phosphate
 F 8 ring pyrimidinedione
 END
 FRAG ATP
 F 1 group amine
 F 1 group hydroxyl
 F 1 group hydroxyl
-F 14 group triphosphate
+F 1 linker methylene
+F 13 group triphosphate
 F 5 ring oxolanyl
 F 9 ring purinyl
 END
@@ -3802,8 +3814,9 @@ FRAG GTP
 F 1 group amine
 F 1 group hydroxyl
 F 1 group hydroxyl
+F 1 linker methylene
 F 10 ring purinone
-F 14 group triphosphate
+F 13 group triphosphate
 F 5 ring oxolanyl
 END
 FRAG NAD
@@ -3812,11 +3825,13 @@ F 1 group hydroxyl
 F 1 group hydroxyl
 F 1 group hydroxyl
 F 1 group hydroxyl
-F 11 group diphosphate
+F 1 linker methylene
+F 1 linker methylene
 F 3 group amide
 F 5 ring oxolanyl
 F 5 ring oxolanyl
 F 6 ring pyridyl
+F 9 group diphosphate
 F 9 ring purinyl
 END
 FRAG SAM
@@ -3824,8 +3839,9 @@ F 1 group amine
 F 1 group amine
 F 1 group hydroxyl
 F 1 group hydroxyl
+F 1 linker methylene
+F 2 group thioether
 F 3 group carboxylate
-F 3 group thioether
 F 3 linker C3 linker
 F 5 ring oxolanyl
 F 9 ring purinyl
@@ -3833,15 +3849,17 @@ END
 FRAG PLP
 F 1 alkyl methyl
 F 1 group hydroxyl
+F 1 linker methylene
 F 2 group aldehyde
-F 6 group phosphate
+F 5 group phosphate
 F 6 ring pyridyl
 END
 FRAG NAG
 F 1 group hydroxyl
 F 1 group hydroxyl
 F 1 group hydroxyl
-F 2 group hydroxyl
+F 1 group hydroxyl
+F 1 linker methylene
 F 4 group amide
 F 6 ring oxanyl
 END
@@ -3863,7 +3881,8 @@ F 1 group hydroxyl
 F 4 linker C4 linker
 END
 FRAG MES
-F 6 group sulfonate
+F 2 linker ethylene
+F 4 group sulfonate
 F 6 ring morpholinyl
 END
 FRAG C2H
@@ -4195,7 +4214,8 @@ F 1 group amine
 F 7 ring pyridyl
 END
 FRAG JOJ
-F 4 group thioamide
+F 1 linker methylene
+F 3 group thioamide
 F 7 ring imidazolyl
 END
 FRAG TZZ
@@ -4276,7 +4296,8 @@ F 3 alkyl propyl
 F 3 alkyl propyl
 END
 FRAG 6J5
-F 2 group ether
+F 1 group ether
+F 1 linker methylene
 F 5 ring tetrazolyl
 F 7 ring phenyl
 END
@@ -4331,8 +4352,9 @@ F 3 group azide
 F 3 linker C3 linker
 END
 FRAG FHQ
+F 1 linker methylene
+F 5 group group C2N2O
 F 5 ring tetrazolyl
-F 6 group group C2N2O
 F 7 ring phenyl
 END
 FRAG VI2
@@ -4344,9 +4366,10 @@ F 6 ring phenyl
 END
 FRAG UQ1
 F 1 alkyl methyl
+F 1 linker methylene
 F 2 group ether
 F 2 group ether
-F 5 group alkene
+F 4 group alkene
 F 8 ring benzoquinone
 END
 FRAG BZR
@@ -4375,8 +4398,9 @@ FRAG NJX
 F 1 alkyl methyl
 F 1 alkyl methyl
 F 1 group hydroxyl
+F 1 linker methylene
 F 12 ring aryl C8N2O2
 F 2 group ketone
-F 7 group group C2Si
+F 6 group group C2Si
 F 7 ring ring C6O
 END
