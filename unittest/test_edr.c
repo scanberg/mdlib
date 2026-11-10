@@ -366,7 +366,12 @@ UTEST(edr, infer_group_roles) {
     ASSERT_TRUE(md_edr_energies_parse_file(&energies, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), alloc));
     md_str_t* names = (md_str_t*)md_alloc(alloc, energies.num_energies * sizeof(md_str_t));
     for (size_t i = 0; i < energies.num_energies; ++i) names[i] = energies.energy[i].name;
-    EXPECT_EQ(1u, md_edr_system_infer_group_roles(&sys, names, energies.num_energies));
+    // The energy groups, and from T-System the T-coupling group: GROMACS' System, every atom, which the system had no group of
+    EXPECT_EQ(2u, md_edr_system_infer_group_roles(&sys, names, energies.num_energies));
+    const md_urange_t tr = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_TC);
+    ASSERT_EQ(1u, tr.end - tr.beg);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("System"), sys.group.name[sys.group.role_group[tr.beg]]));
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(0, 100), sys.group.atoms[sys.group.role_group[tr.beg]]));
 
     const md_urange_t r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
     ASSERT_EQ(5u, r.end - r.beg);
@@ -382,7 +387,7 @@ UTEST(edr, infer_group_roles) {
     EXPECT_EQ(rest, tg.group[1]);
     // Once set, it is left as it is
     EXPECT_EQ(0u, md_edr_system_infer_group_roles(&sys, names, energies.num_energies));
-    EXPECT_EQ(6u, sys.group.count);
+    EXPECT_EQ(7u, sys.group.count);
 
     md_free(alloc, names, energies.num_energies * sizeof(md_str_t));
     md_edr_energies_free(&energies);

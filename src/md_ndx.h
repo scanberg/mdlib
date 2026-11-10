@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <core/md_bitset.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +49,23 @@ void md_ndx_data_free(md_ndx_data_t* data, struct md_allocator_i* alloc);
 // does not have: it is of another system.
 bool md_ndx_system_supplement(struct md_system_t* sys, const md_ndx_data_t* data);
 bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
+
+// GROMACS' DEFAULT GROUPS. Without an index file, grompp (and gmx make_ndx, which starts from them) makes groups of the
+// topology by its residue types (share/top/residuetypes.dat) and atom names, and an mdp names those: tc-grps = Protein
+// non-Protein, comm-grps = System. In GROMACS' order:
+//
+//     System                     every atom
+//     Protein, Protein-H, C-alpha, Backbone, MainChain, MainChain+Cb, MainChain+H, SideChain, SideChain-H, Prot-Masses,
+//     non-Protein                where there are residues of protein
+//     Water, SOL, non-Water      where there is water
+//     Ion                        where there are ions
+//     Other (or DNA, RNA)        the first other residue type there is, and then a group for each residue name that is
+//                                not of protein, DNA, RNA or water, in the order they first appear (ions too: CA, NA)
+//     Water_and_ions             where there are both
+//
+// The atoms of the default group of a name, matched without regard to case, as grompp matches the names of an mdp: false,
+// and out untouched, when there is no such group. The words of out are allocated with alloc.
+bool md_ndx_default_group(md_bitset_t* out, const struct md_system_t* sys, md_str_t name, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

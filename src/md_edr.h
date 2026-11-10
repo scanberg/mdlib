@@ -86,12 +86,19 @@ bool md_edr_term_groups(md_edr_term_groups_t* out, const struct md_system_t* sys
 // Writes at most cap group indices and returns how many there are.
 size_t md_edr_terms_groups(uint32_t out_groups[], size_t cap, const struct md_system_t* sys, const md_str_t terms[], size_t count);
 
+// Whether a term is of groups by its name alone (Coul-SR:<a>-<b>, T-<a>, Lamb-<a>), whatever groups the system has: for
+// saying that a term names groups the system does not have.
+bool md_edr_term_is_of_groups(md_str_t term);
+
 // THE ROLES OF THE GROUPS, FROM THE TERMS. A tpr says which groups were the energy groups and which the T-coupling groups
 // (md_group_data_t); an index file only what groups there are. Of a system without the role, an energy file tells it by
 // its terms: every pair of energy groups has its terms, each group with itself too (Coul-SR:SOL-SOL), in the order of
 // energygrps, so those of a group with itself give the names in order, whatever '-' they hold. The T-coupling groups
 // likewise, from T-<name>. Each name is found among the groups of the system (the first of the name, as grompp takes
-// it, else the first of the name in another case), and 'rest', the role's own, is the atoms in none of the others.
+// it, else the first of the name in another case), else among the groups GROMACS makes of the topology itself when it is
+// given no index file (md_ndx_default_group: System, Protein, non-Protein, SOL, ...), which become groups of the system;
+// and 'rest', the role's own, is the atoms in none of the others. So an energy file names the groups of its run also when
+// only the structure is loaded, and T-System is every atom.
 //
 // A role is set only where every name is found and the groups found do not overlap: a role is a partition, which grompp
 // makes sure of, so overlapping groups are of another index file than the one grompp was given, and nothing is set

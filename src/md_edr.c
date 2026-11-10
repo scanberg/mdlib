@@ -7,6 +7,7 @@
 #include <core/md_os.h>
 #include <md_xdr.h>
 #include <md_system.h>
+#include <md_ndx.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -1213,6 +1214,16 @@ size_t md_edr_terms_groups(uint32_t out_groups[], size_t cap, const md_system_t*
     return n;
 }
 
+bool md_edr_term_is_of_groups(md_str_t term) {
+    size_t colon;
+    if (md_str_find_char(&colon, term, ':')) {
+        const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+        size_t dash;
+        return colon > 0 && md_str_find_char(&dash, pair, '-') && dash > 0 && dash + 1 < pair.len;
+    }
+    return (md_str_begins_with(term, MD_STR_LIT("T-")) && term.len > 2) || (md_str_begins_with(term, MD_STR_LIT("Lamb-")) && term.len > 5);
+}
+
 // ### THE ROLES OF THE GROUPS, FROM THE TERMS ###
 
 #define EDR_MAX_ROLE_GROUPS 256
@@ -1231,58 +1242,74 @@ static bool edr_names_add(md_str_t* names, size_t* n, md_str_t name) {
     return true;
 }
 
-// Sets the role from its names in order: false, and nothing set, where a name is not found or the groups overlap
+// Sets the role from its names in order: false, and nothing set or added, where a name is not found or the groups
+// overlap. A name the system has no group of is GROMACS' default group of it (md_ndx_default_group), made a group of the
+// system only once the role is known to hold.
 static bool edr_infer_role(md_system_t* sys, md_group_role_t role, const md_str_t* names, size_t n) {
-    const md_group_data_t* g = &sys->group;
     const uint32_t N = (uint32_t)sys->atom.count;
     const char* what = role == MD_GROUP_ROLE_ENERGY ? "energy" : "T-coupling";
+    md_allocator_i* heap = md_get_heap_allocator();
     uint32_t idx[EDR_MAX_ROLE_GROUPS];
+    md_bitset_t atoms[EDR_MAX_ROLE_GROUPS];     // Of each name; owned (heap) where a default group was made
+    bool owned[EDR_MAX_ROLE_GROUPS] = {0};
     size_t rest = SIZE_MAX;
-    for (size_t i = 0; i < n; ++i) {
+    bool ok = true;
+    for (size_t i = 0; i < n && ok; ++i) {
+        atoms[i] = md_bitset_empty_set();
         if (md_str_eq(names[i], MD_STR_LIT("rest"))) { rest = i; continue; }
-        idx[i] = edr_group_by_name(g, names[i]);
-        if (idx[i] == EDR_NO_GROUP) {
-            MD_LOG_INFO("EDR: the %s group '" MD_STR_FMT "' of the energy file is no group of the system; load the index file the run was made with", what, MD_STR_ARG(names[i]));
-            return false;
+        idx[i] = edr_group_by_name(&sys->group, names[i]);
+        if (idx[i] != EDR_NO_GROUP) {
+            atoms[i] = sys->group.atoms[idx[i]];
+        } else if (md_ndx_default_group(&atoms[i], sys, names[i], heap)) {
+            // A group of GROMACS' own, which grompp makes of the topology without an index file (Protein, SOL, NA)
+            owned[i] = true;
+        } else {
+            MD_LOG_INFO("EDR: the %s group '" MD_STR_FMT "' of the energy file is no group of the system, nor one GROMACS makes of it; load the index file the run was made with", what, MD_STR_ARG(names[i]));
+            ok = false;
         }
     }
 
-    md_allocator_i* heap = md_get_heap_allocator();
+    // A role is a partition: no atom in two of its groups, 'rest' the atoms in none
     md_bitset_t all = md_bitset_empty_set();
     uint64_t total = 0;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n && ok; ++i) {
         if (i == rest) continue;
-        md_bitset_t a = md_bitset_and(g->atoms[idx[i]], md_bitset_range(0, N), heap);
+        md_bitset_t a = md_bitset_and(atoms[i], md_bitset_range(0, N), heap);
         total += md_bitset_count(a);
         md_bitset_t u = md_bitset_or(all, a, heap);
         md_bitset_free(&all, heap);
         md_bitset_free(&a, heap);
         all = u;
     }
-    bool ok = total == md_bitset_count(all);
-    if (!ok) {
-        MD_LOG_ERROR("EDR: the groups of the system named as the %s groups of the energy file overlap, which those of a run never do: the index file is not the one the run was made with, and they are left without the role", what);
+    if (ok && total != md_bitset_count(all)) {
+        MD_LOG_ERROR("EDR: the groups named as the %s groups of the energy file overlap, which those of a run never do: the index file is not the one the run was made with, and they are left without the role", what);
+        ok = false;
     }
+    md_bitset_t rest_atoms = md_bitset_empty_set();
     if (ok && rest != SIZE_MAX) {
-        md_bitset_t r = md_bitset_not(all, 0, N, heap);
-        if (md_bitset_empty(r)) {
+        rest_atoms = md_bitset_not(all, 0, N, heap);
+        if (md_bitset_empty(rest_atoms)) {
             MD_LOG_ERROR("EDR: the energy file has %s terms of 'rest', and the other %s groups hold every atom: the index file is not the one the run was made with", what, what);
             ok = false;
-        } else {
-            idx[rest] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), r, 0);
         }
-        md_bitset_free(&r, heap);
     }
+    if (ok) {
+        for (size_t i = 0; i < n; ++i) {
+            if (i == rest)      idx[i] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), rest_atoms, 0);
+            else if (owned[i])  idx[i] = (uint32_t)md_system_group_add(sys, names[i], atoms[i], 0);
+        }
+        md_system_group_set_role(sys, role, idx, n);
+        MD_LOG_INFO("EDR: %zu %s groups of the system, as the energy file names them", n, what);
+    }
+    md_bitset_free(&rest_atoms, heap);
     md_bitset_free(&all, heap);
-    if (!ok) return false;
-    md_system_group_set_role(sys, role, idx, n);
-    MD_LOG_INFO("EDR: %zu %s groups of the system, as the energy file names them", n, what);
-    return true;
+    for (size_t i = 0; i < n; ++i) if (owned[i]) md_bitset_free(&atoms[i], heap);
+    return ok;
 }
 
 size_t md_edr_system_infer_group_roles(md_system_t* sys, const md_str_t* term_names, size_t count) {
     MD_ASSERT(sys);
-    if (!sys->group.count || !term_names) return 0;
+    if (!sys->atom.count || !term_names) return 0;
     md_str_t energy[EDR_MAX_ROLE_GROUPS], tc[EDR_MAX_ROLE_GROUPS];
     size_t num_energy = 0, num_tc = 0;
     bool fits = true;
@@ -1304,13 +1331,13 @@ size_t md_edr_system_infer_group_roles(md_system_t* sys, const md_str_t* term_na
     const md_urange_t er = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_ENERGY);
     if (num_energy > 1 && er.beg == er.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_ENERGY, energy, num_energy);
     const md_urange_t tr = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_TC);
-    if (num_tc > 1 && tr.beg == tr.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_TC, tc, num_tc);
+    if (num_tc > 0 && tr.beg == tr.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_TC, tc, num_tc);
     return num_set;
 }
 
 size_t md_edr_system_infer_group_roles_of_run(md_system_t* sys, md_str_t run) {
     MD_ASSERT(sys);
-    if (!sys->group.count || md_str_empty(run)) return 0;
+    if (!sys->atom.count || md_str_empty(run)) return 0;
     char buf[512];
     const md_str_t group = edr_join(buf, sizeof(buf), run, "edr", 3);
     if (md_str_empty(group)) return 0;

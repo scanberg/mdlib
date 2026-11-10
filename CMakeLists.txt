@@ -155,6 +155,7 @@ set(SRC_FILES
   src/md_itp.c
   src/md_itp.h
   src/md_ndx.c
+  src/md_gmx_restypes.inl
   src/md_ndx.h
   src/md_dcd.c
   src/md_dcd.h
