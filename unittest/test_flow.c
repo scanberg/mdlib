@@ -483,53 +483,6 @@ UTEST(flow, bands_bracket_their_expanded_ancestors) {
     md_arena_allocator_destroy(alloc);
 }
 
-// A container - a node whose children have children, a molecule of fragments - keeps its band when it is
-// collapsed, spanning its own row and flagged so, at the depth it has open: the level stays where it is. A
-// node of leaves (a fragment of atoms) has none while collapsed.
-UTEST(flow, a_collapsed_container_keeps_its_band) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    md_flow_graph_t g = {0};
-    md_flow_graph_init(&g, 2, alloc);
-    const uint32_t M  = add(&g, 0, MD_FLOW_INVALID_INDEX, 0, 1.0f, 1);
-    const uint32_t F0 = add(&g, 0, M,  1, 0.6f, 2);
-    const uint32_t a0 = add(&g, 0, F0, 2, 0.6f, 3);
-    const uint32_t F1 = add(&g, 0, M,  1, 0.4f, 4);
-    const uint32_t a1 = add(&g, 0, F1, 2, 0.4f, 5);
-    const uint32_t P  = add(&g, 1, MD_FLOW_INVALID_INDEX, 0, 1.0f, 6);
-    md_flow_graph_add_link(&g, a0, P, 0.6f);
-    md_flow_graph_add_link(&g, a1, P, 0.4f);
-
-    md_flow_cut_t cut = {0};
-    md_flow_cut_init(&cut, alloc);
-    md_flow_cut_collapse_all(&cut);
-    md_flow_cut_resolve(&cut, &g);
-    md_flow_layout_t layout = {0};
-    md_flow_layout_init(&layout, alloc);
-    md_flow_layout_compute(&layout, &g, &cut, NULL);
-
-    ASSERT_EQ(md_array_size(layout.bands), 1u);
-    EXPECT_EQ(layout.bands[0].node, M);
-    EXPECT_EQ(layout.bands[0].depth, 0u);
-    EXPECT_EQ(layout.bands[0].flags, (uint32_t)MD_FLOW_BAND_FLAG_COLLAPSED);
-    const md_flow_layout_node_t* m = NULL;
-    for (size_t i = 0; i < md_array_size(layout.nodes); ++i) if (layout.nodes[i].cut_idx == M) m = layout.nodes + i;
-    ASSERT_TRUE(m);
-    EXPECT_NEAR((double)layout.bands[0].min.y, (double)m->min.y, 1.0e-5);
-    EXPECT_NEAR((double)layout.bands[0].max.y, (double)m->max.y, 1.0e-5);
-
-    // Open: the band brackets the fragments, which are of leaves and have none of their own
-    md_flow_cut_set_expanded(&cut, M, true);
-    md_flow_cut_resolve(&cut, &g);
-    md_flow_layout_compute(&layout, &g, &cut, NULL);
-    ASSERT_EQ(md_array_size(layout.bands), 1u);
-    EXPECT_EQ(layout.bands[0].node, M);
-    EXPECT_EQ(layout.bands[0].flags, 0u);
-
-    md_flow_layout_free(&layout);
-    md_flow_cut_free(&cut);
-    md_arena_allocator_destroy(alloc);
-}
-
 // Ordering by contribution has to hold at EVERY level of expansion, not just the top one: within
 // a column, families are ranked by the ancestor's weight and members by their own.
 UTEST(flow, weight_order_ranks_within_families) {

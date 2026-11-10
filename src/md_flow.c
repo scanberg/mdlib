@@ -1134,24 +1134,6 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
             }
         }
 
-        // Collapsed containers: a band of their own row (MD_FLOW_BAND_FLAG_COLLAPSED)
-        bool* has_children = md_temp_alloc_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
-        bool* container    = md_temp_alloc_zero_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
-        bool* collapsed    = md_temp_alloc_zero_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
-        flow_mark_internal(has_children, graph);
-        for (uint32_t i = 0; i < num_graph_nodes; ++i) {
-            const uint32_t p = graph->nodes[i].parent;
-            if (p != MD_FLOW_INVALID_INDEX && has_children[i]) container[p] = true;
-        }
-        for (size_t i = 0; i < num_visible; ++i) {
-            const uint32_t n = cut->visible[i];
-            if (n >= num_graph_nodes || col_of[n] == MD_FLOW_INVALID_INDEX || !container[n] || band_any[n]) continue;
-            band_any[n]  = true;
-            collapsed[n] = true;
-            band_min[n]  = y_min[n];
-            band_max[n]  = y_max[n];
-        }
-
         for (uint32_t i = 0; i < num_graph_nodes; ++i) {
             if (!band_any[i]) continue;
 
@@ -1167,7 +1149,6 @@ void md_flow_layout_compute(md_flow_layout_t* layout, const md_flow_graph_t* gra
                 .node   = i,
                 .column = c,
                 .depth  = depth,
-                .flags  = collapsed[i] ? (uint32_t)MD_FLOW_BAND_FLAG_COLLAPSED : 0u,
                 .min    = { x0, band_min[i] },
                 .max    = { x0 + thickness, band_max[i] },
             };
