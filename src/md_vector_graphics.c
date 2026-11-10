@@ -346,6 +346,10 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
                 font_family);
             if (cmd->data.text.anchor == MD_VG_TEXT_ANCHOR_MIDDLE)   md_write_cstr(w, " text-anchor=\"middle\"");
             else if (cmd->data.text.anchor == MD_VG_TEXT_ANCHOR_END) md_write_cstr(w, " text-anchor=\"end\"");
+            if (cmd->data.text.rotation != 0.0f) {
+                md_writef(w, " transform=\"rotate(%.9g %.9g %.9g)\"", cmd->data.text.rotation, cmd->data.text.pos.x,
+                    cmd->data.text.pos.y + cmd->data.text.font_size * 0.5f);
+            }
             emit_style(w, &cmd->style, i);
             md_write_cstr(w, ">");
             emit_xml_escaped(w, text);
@@ -741,6 +745,12 @@ void md_vg_add_text_anchored(md_vg_scene_t* scene, vec2_t pos, float font_size, 
     const size_t before = md_array_size(scene->commands);
     md_vg_add_text(scene, pos, font_size, color, text);
     if (md_array_size(scene->commands) > before) scene->commands[before].data.text.anchor = (uint32_t)anchor;
+}
+
+void md_vg_add_text_rotated(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, float rotation, md_str_t text) {
+    const size_t before = md_array_size(scene->commands);
+    md_vg_add_text_anchored(scene, pos, font_size, color, anchor, text);
+    if (md_array_size(scene->commands) > before) scene->commands[before].data.text.rotation = rotation;
 }
 
 void md_vg_path_clear(md_vg_scene_t* scene) {

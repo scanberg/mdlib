@@ -146,6 +146,7 @@ typedef struct md_vg_cmd_t {
             uint32_t text_offset;
             uint32_t text_len;
             uint32_t anchor;    // md_vg_text_anchor_t
+            float rotation;     // degrees, clockwise, about the middle of the line at pos.x
         } text;
     } data;
 } md_vg_cmd_t;
@@ -274,6 +275,9 @@ void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_col
 void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, md_str_t text);
 // pos.y is the top of the text, as for md_vg_add_text; pos.x is the point the anchor names
 void md_vg_add_text_anchored(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, md_str_t text);
+// As md_vg_add_text_anchored, turned by 'rotation' degrees (clockwise, -90 reads upwards) about the middle of the line
+// at pos.x: (pos.x, pos.y + font_size / 2)
+void md_vg_add_text_rotated(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, float rotation, md_str_t text);
 
 void md_vg_path_clear(md_vg_scene_t* scene);
 void md_vg_path_move_to(md_vg_scene_t* scene, vec2_t pos);
