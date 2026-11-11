@@ -96,11 +96,16 @@ bool md_util_system_infer_chains(md_system_t* sys);
 bool md_util_system_infer_parts(md_system_t* sys);
 
 // The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
-// md_nucleic_backbone_data_t), found anew: consecutive ranges of at least 3 residues along each strand of a polymer
-// (the peptide and nucleic acid parts), atomistic or coarse grained, ending where the chain breaks (CHAIN BREAKS), whose
-// residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first). A system without residues has its
-// backbones found from the covalent bonds alone. state gives the coordinates the links over a gap are measured by (NULL, or none: by consecutive sequence numbers).
-// Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the parts); requires the parts, and the bonds.
+// md_nucleic_backbone_data_t), found anew: ranges of at least 3 residues along each chain of a polymer, ending where the
+// chain breaks (CHAIN BREAKS), whose residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first).
+//   ATOMS  From the covalent bonds alone, whatever the atoms and residues are called (BACKBONES FROM THE BONDS in
+//          md_util.c): an atomistic system without bonds has no backbones. A segment is of the residue of its CA (C4')
+//          where the system has residues, a range of the part of its residues.
+//   BEADS  The traces of a coarse grained model by the backbone beads its residues were given (Martini's BB, BB1 to
+//          BB3), along each strand of a polymer (the peptide and nucleic acid parts). Linked by their bonds, else by
+//          consecutive sequence numbers (state unused).
+// The ranges come in the order of their first atom. Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the
+// parts); requires the bonds, and the parts for the beads.
 bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
 
 // The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
@@ -123,9 +128,8 @@ bool md_util_system_infer_residue_types(md_system_t* sys);
 // the terminal flags it gave them (MD_RESIDUE_FLAG_TERMINAL_BEG, _END, and those of their atoms).
 // The bonds decide, not the sequence numbers: an insertion code (52, 52A) or numbering that skips (antibodies, the
 // chymotrypsin numbering of proteases) does not break a chain whose backbone is bonded, and numbering that runs on
-// does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) are
-// linked by their distance, the shortest way round a periodic cell, and without coordinates by consecutive sequence
-// numbers. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT) marks the residues on either side of each break,
+// does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) have no
+// backbones to break; beads without bonds are linked by consecutive sequence numbers. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT) marks the residues on either side of each break,
 // MD_RESIDUE_FLAG_BREAK_AFTER the one before it and MD_RESIDUE_FLAG_BREAK_BEFORE the one after it, and ends the
 // backbone ranges there (md_protein_backbone_data_t, md_nucleic_backbone_data_t).
 

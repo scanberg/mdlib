@@ -4828,6 +4828,51 @@ UTEST(util, backbones_from_bonds_by_element) {
     expect_backbones_from_bonds(utest_result, MD_UNITTEST_DATA_DIR "/1k4r.pdb", true, true);
 }
 
+// Residues whose atoms are not named as the standard ones: the atoms of a LAMMPS data file are named by their types, its
+// residues "MOL". The backbones are found from the bonds all the same, each segment of the residue of its CA.
+UTEST(util, backbones_from_bonds_with_residues) {
+    const char* files[] = {
+        MD_UNITTEST_DATA_DIR "/1k4r.pdb",
+        MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb",
+        MD_UNITTEST_DATA_DIR "/nucl-dna.gro",
+    };
+    for (size_t i = 0; i < MD_COUNTOF(files); ++i) {
+        for (int rename_residues = 0; rename_residues < 2; ++rename_residues) {
+            md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+            md_system_t ref = { .alloc = alloc }, sys = { .alloc = alloc };
+            md_system_state_t ref_state = { .alloc = alloc }, state = { .alloc = alloc };
+            const md_str_t file = md_str_from_cstr(files[i]);
+            const bool gro = md_str_ends_with(file, MD_STR_LIT(".gro"));
+            ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL));
+            ASSERT_TRUE(gro ? md_gro_system_init_from_file(&sys, &state, file, NULL) : md_pdb_system_init_from_file(&sys, &state, file, MD_PDB_OPTION_NONE, NULL));
+            for (size_t t = 0; t < sys.atom.type.count; ++t) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), "%u", (unsigned)(t + 1));
+                sys.atom.type.name[t] = md_label_make(md_str_from_cstr(buf));
+            }
+            if (rename_residues) {
+                for (size_t r = 0; r < sys.residue.count; ++r) sys.residue.name[r] = md_label_make(MD_STR_LIT("MOL"));
+            }
+            ASSERT_TRUE(md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_ALL, NULL));
+            ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+
+            const md_protein_backbone_data_t* ra = &ref.protein_backbone;
+            const md_protein_backbone_data_t* pa = &sys.protein_backbone;
+            ASSERT_TRUE(ra->segment.count > 0);
+            ASSERT_EQ(ra->range.count, pa->range.count);
+            ASSERT_EQ(ra->segment.count, pa->segment.count);
+            size_t same = 0;
+            for (size_t s = 0; s < pa->segment.count; ++s) {
+                const md_amino_acid_atoms_t a = ra->segment.atoms[s], b = pa->segment.atoms[s];
+                same += a.n == b.n && a.ca == b.ca && a.c == b.c && a.o == b.o && a.cb == b.cb && ra->segment.res_idx[s] == pa->segment.res_idx[s];
+            }
+            EXPECT_EQ(ra->segment.count, same);
+            EXPECT_EQ(ref.nucleic_backbone.segment.count, sys.nucleic_backbone.segment.count);
+            md_vm_arena_destroy(alloc);
+        }
+    }
+}
+
 // Nothing which is no polymer: fullerenes, and a tryptophan alone (one residue is no chain)
 UTEST(util, backbones_from_bonds_none) {
     const char* files[] = {

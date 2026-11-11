@@ -670,13 +670,17 @@ UTEST(pdb, chain_break_numbering_runs_on) {
     ASSERT_TRUE(load_peptide(&sys, &state, pick, MD_COUNTOF(pick), alloc));
     expect_break_after_fourth(utest_result, &sys);
 
-    // Without bonds the distance of the C and the N tells the same
+    // The backbones of atoms are found from their bonds alone: without bonds there are none, and no breaks
     sys.bond.count = 0;
     md_array_shrink(sys.bond.pairs, 0);
     md_array_shrink(sys.bond.flags, 0);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_BACKBONE_BIT, NULL));
-    expect_break_after_fourth(utest_result, &sys);
+    EXPECT_EQ(0u, sys.protein_backbone.range.count);
+    EXPECT_EQ(0u, sys.protein_backbone.segment.count);
+    for (size_t i = 0; i < sys.residue.count; ++i) {
+        EXPECT_EQ(0u, (unsigned)(md_system_residue_flags(&sys, i) & (MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER)));
+    }
 
     md_vm_arena_destroy(alloc);
 }
