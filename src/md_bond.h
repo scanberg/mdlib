@@ -463,7 +463,7 @@ size_t md_system_infer_coordination(struct md_system_t* sys);
 // backbone bead of one to the first of the next (BB to BB, BB3 to BB1, and BB2 to BB1 as well in Martini 3 RNA), a
 // disulfide (the SC1 of two cysteines), and the bond which closes a cyclic chain; every other bond between beads of
 // two residues of a chain is elastic. Bonds within a residue, and to anything other than amino acids and nucleotides,
-// are left as they are. Needs the kinds of the residues and the backbone beads (md_util_system_infer_residue_flags),
+// are left as they are. Needs the kinds of the residues and the backbone beads (md_system_infer_residue_flags),
 // and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
 size_t md_system_infer_elastic_bonds(struct md_system_t* sys);
 

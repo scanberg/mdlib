@@ -233,9 +233,9 @@ UTEST(secondary_structure, martini_trace_backbone) {
 
     // A trace has no phi and psi, and so no Ramachandran type
     md_backbone_angles_t angles[76];
-    EXPECT_TRUE(md_util_backbone_angles_compute(angles, 76, state.xyz, &state.unitcell, bb));
+    EXPECT_TRUE(md_backbone_angles_compute(angles, 76, state.xyz, &state.unitcell, bb));
     md_ramachandran_type_t types[76];
-    EXPECT_TRUE(md_util_backbone_ramachandran_classify(types, 76, &sys));
+    EXPECT_TRUE(md_backbone_ramachandran_classify(types, 76, &sys));
     for (size_t i = 0; i < 76; ++i) {
         EXPECT_EQ(0.0f, angles[i].phi);
         EXPECT_EQ(0.0f, angles[i].psi);

@@ -626,7 +626,7 @@ UTEST(pdb, numbering_jump_is_no_break) {
 
     md_atom_idx_t atoms[2];
     for (size_t i = 0; i < sys.residue.count; ++i) {
-        EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, i));
+        EXPECT_FALSE(md_system_chain_break_atoms(atoms, &sys, i));
         EXPECT_EQ(-1, atoms[0]);
         EXPECT_EQ(-1, atoms[1]);
     }
@@ -654,10 +654,10 @@ static void expect_break_after_fourth(int* utest_result, const md_system_t* sys)
 
     // The C of the fourth residue and the N of the fifth
     md_atom_idx_t atoms[2];
-    ASSERT_TRUE(md_util_chain_break_atoms(atoms, sys, 3));
+    ASSERT_TRUE(md_system_chain_break_atoms(atoms, sys, 3));
     EXPECT_EQ(3 * 4 + 2, atoms[0]);
     EXPECT_EQ(4 * 4 + 0, atoms[1]);
-    EXPECT_FALSE(md_util_chain_break_atoms(atoms, sys, 4));
+    EXPECT_FALSE(md_system_chain_break_atoms(atoms, sys, 4));
 }
 
 UTEST(pdb, chain_break_numbering_runs_on) {
@@ -904,7 +904,7 @@ UTEST(pdb, ter_ends_the_unit) {
         ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
         md_atom_idx_t atoms[2];
-        EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, 1));
+        EXPECT_FALSE(md_system_chain_break_atoms(atoms, &sys, 1));
     }
     md_vm_arena_destroy(alloc);
 }

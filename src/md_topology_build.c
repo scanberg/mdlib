@@ -159,7 +159,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     }
 
     md_system_augment_particle_types(sys);
-    md_util_system_infer_residue_flags(sys, state);
+    md_system_infer_residue_flags(sys, state);
 
     // ## Chains, as ParmEd keeps them from the structure the topology was made from
     if (d.res_chain) {

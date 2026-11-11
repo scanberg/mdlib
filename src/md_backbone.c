@@ -3,7 +3,7 @@
 // Polymer inference: the roles of the atoms of amino acids and nucleotides, the classification of residues, the
 // protein and nucleic acid backbones and their chain breaks, and the backbone of a state (md_util.h).
 
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
 
@@ -90,34 +90,34 @@ static void* state_backbone_write(md_system_state_t* state, const md_system_t* s
     return md_attributes_data(&state->attributes, id, type);
 }
 
-const md_backbone_angles_t* md_util_state_backbone_angles(const md_system_state_t* state, const md_system_t* sys) {
+const md_backbone_angles_t* md_system_state_backbone_angles(const md_system_state_t* state, const md_system_t* sys) {
     if (!sys) return NULL;
     const md_attribute_t* attr = state_backbone_attr(state, MD_STR_LIT(MD_BACKBONE_ANGLE_PATH), MD_ATTRIBUTE_TYPE_F32, 2, sys->protein_backbone.segment.count);
     return attr ? (const md_backbone_angles_t*)attr->data : NULL;
 }
 
-const md_secondary_structure_t* md_util_state_secondary_structure(const md_system_state_t* state, const md_system_t* sys) {
+const md_secondary_structure_t* md_system_state_secondary_structure(const md_system_state_t* state, const md_system_t* sys) {
     if (!sys) return NULL;
     const md_attribute_t* attr = state_backbone_attr(state, MD_STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH), MD_ATTRIBUTE_TYPE_I32, 1, sys->protein_backbone.segment.count);
     return attr ? (const md_secondary_structure_t*)attr->data : NULL;
 }
 
-md_backbone_angles_t* md_util_state_backbone_angles_write(md_system_state_t* state, const md_system_t* sys) {
+md_backbone_angles_t* md_system_state_backbone_angles_write(md_system_state_t* state, const md_system_t* sys) {
     return (md_backbone_angles_t*)state_backbone_write(state, sys, MD_STR_LIT(MD_BACKBONE_ANGLE_PATH), MD_ATTRIBUTE_TYPE_F32, 2, md_unit_radian(), MD_STR_LIT("Backbone Angles"));
 }
 
-md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_state_t* state, const md_system_t* sys) {
+md_secondary_structure_t* md_system_state_secondary_structure_write(md_system_state_t* state, const md_system_t* sys) {
     return (md_secondary_structure_t*)state_backbone_write(state, sys, MD_STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH), MD_ATTRIBUTE_TYPE_I32, 1, md_unit_none(), MD_STR_LIT("Secondary Structure"));
 }
 
-bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t* sys) {
+bool md_system_state_backbone_compute(md_system_state_t* state, const md_system_t* sys) {
     if (!state || !sys || !md_system_state_has_coords(state)) return false;
     const size_t num_segments = sys->protein_backbone.segment.count;
     if (num_segments == 0) return false;
-    md_backbone_angles_t*     angle = md_util_state_backbone_angles_write(state, sys);
-    md_secondary_structure_t* ss    = md_util_state_secondary_structure_write(state, sys);
+    md_backbone_angles_t*     angle = md_system_state_backbone_angles_write(state, sys);
+    md_secondary_structure_t* ss    = md_system_state_secondary_structure_write(state, sys);
     if (!angle || !ss) return false;
-    const bool ok_angle = md_util_backbone_angles_compute(angle, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
+    const bool ok_angle = md_backbone_angles_compute(angle, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
     const bool ok_ss    = md_dssp_compute(ss, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
     return ok_angle && ok_ss;
 }
@@ -150,7 +150,7 @@ static char ramachandran_residue(const md_system_t* sys, const md_protein_backbo
     return 0;
 }
 
-bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const md_system_t* sys) {
+bool md_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const md_system_t* sys) {
     MD_ASSERT(ramachandran_types);
     md_memset(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
@@ -666,7 +666,7 @@ static bool atom_bonded_outside(const md_system_t* sys, int atom, md_urange_t ra
 // backbone: without residues the glycan on an asparagine is of its side chain.
 //
 // The roles are what everything after reads the atoms of a residue of a chain by, rather than their names: the kinds of
-// the residues (md_util_system_infer_residue_flags), the ends of a chain (mdi_polymer_chain_ends_between), the links over a
+// the residues (md_system_infer_residue_flags), the ends of a chain (mdi_polymer_chain_ends_between), the links over a
 // gap (chain_gap_link), the backbones (md_backbone_infer). Beads keep the roles their model gave them.
 
 static inline bool atom_has_flags(const md_system_t* sys, md_atom_idx_t a, md_atom_flags_t flags) {
@@ -1055,7 +1055,7 @@ static void infer_coarse_grained_chain_ends(md_system_t* sys) {
 
 // Classifies the residues (amino acid, nucleotide, water, ion, lipid) from their names, atoms and bonds, and gives the
 // atoms of the amino acids and nucleotides whose backbone could be verified their roles.
-// What residue res_idx is (md_util_system_infer_residue_flags), fallback where nothing tells. The flags it has besides
+// What residue res_idx is (md_system_infer_residue_flags), fallback where nothing tells. The flags it has besides
 // (RESOLVED, the terminal flags) go to out_flags; ambiguous is 1 (2) for an amino acid (nucleotide) by name alone.
 static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx, md_residue_kind_t fallback, md_residue_flags_t* out_flags, int* ambiguous) {
     const md_str_t res_name = md_system_residue_name(sys, res_idx);
@@ -1121,7 +1121,7 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
     return fallback;
 }
 
-bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state) {
+bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
         return false;
@@ -1341,7 +1341,7 @@ static bool nucleic_chain_ends_between(const md_system_t* sys, const md_nucleic_
 }
 
 // Whether a polymer chain ends between the consecutive residues a and b = a + 1, rather than going on over a break, by
-// what their atoms or beads tell (CHAIN BREAKS in md_util.h): the amino acids by protein_chain_ends_between, the
+// what their atoms or beads tell (CHAIN BREAKS in md_backbone.h): the amino acids by protein_chain_ends_between, the
 // nucleotides of atoms or of beads by nucleic_chain_ends_between. Whether their backbones are linked is not asked.
 bool mdi_polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b) {
     const md_urange_t range_a = md_system_residue_atom_range(sys, a);
@@ -1364,7 +1364,7 @@ bool mdi_polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b) 
 // neither residue ends it: what the classification took for a terminus there (the carboxyl group of a residue whose
 // successor is missing, the amino group of one whose predecessor is, a hydroxyl on either side of a nucleic acid
 // break) is not one, and loses its terminal flags.
-// A break of the chain between the residues a and b = a + 1 (CHAIN BREAKS in md_util.h)
+// A break of the chain between the residues a and b = a + 1 (CHAIN BREAKS in md_backbone.h)
 static int cmp_residue_idx(const void* a, const void* b) {
     const md_residue_idx_t x = *(const md_residue_idx_t*)a, y = *(const md_residue_idx_t*)b;
     return (x > y) - (x < y);
@@ -1376,7 +1376,7 @@ static void mark_chain_break(md_backbone_data_t* out, size_t a, size_t b, md_all
     md_array_push(out->breaks, (md_residue_idx_t)a, alloc);
 }
 
-size_t md_util_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_system_t* sys, size_t seg_idx) {
+size_t md_system_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_system_t* sys, size_t seg_idx) {
     MD_ASSERT(sys);
     const md_protein_backbone_data_t* bb = &sys->protein_backbone;
     if (seg_idx >= bb->segment.count || !bb->segment.atoms) return 0;
@@ -1416,7 +1416,7 @@ size_t md_util_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_s
     return num;
 }
 
-bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t res_idx) {
+bool md_system_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(out_atoms);
     out_atoms[0] = -1;
     out_atoms[1] = -1;
@@ -1543,7 +1543,7 @@ static void commit_backbone_chains(md_backbone_data_t* out, const md_system_t* s
 }
 
 // Marks the chain breaks between consecutive residues of a part which are not linked, unless the chain ends there
-// (CHAIN BREAKS in md_util.h). Both are residues of the chains which are of the polymer: in a part of its kind (a
+// (CHAIN BREAKS in md_backbone.h). Both are residues of the chains which are of the polymer: in a part of its kind (a
 // peptide, a nucleic acid), or on a chain of at least min_length residues where the residues are not classified (a
 // LAMMPS molecule of residues named "MOL"). The groups which match without being residues (N7-C5-C6=O6 of a guanine)
 // are neither.

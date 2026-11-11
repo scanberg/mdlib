@@ -1941,10 +1941,10 @@ UTEST(util, martini_nucleic_break) {
     EXPECT_TRUE(md_system_residue_flags(&sys, 2) & MD_RESIDUE_FLAG_BREAK_AFTER);
     EXPECT_TRUE(md_system_residue_flags(&sys, 3) & MD_RESIDUE_FLAG_BREAK_BEFORE);
     md_atom_idx_t link[2];
-    ASSERT_TRUE(md_util_chain_break_atoms(link, &sys, 2));
+    ASSERT_TRUE(md_system_chain_break_atoms(link, &sys, 2));
     EXPECT_EQ(14, link[0]);
     EXPECT_EQ(18, link[1]);
-    EXPECT_FALSE(md_util_chain_break_atoms(link, &sys, 1));
+    EXPECT_FALSE(md_system_chain_break_atoms(link, &sys, 1));
     md_vm_arena_destroy(alloc);
 }
 
@@ -3220,7 +3220,7 @@ UTEST(util, part_and_part_type) {
     {
         // One chain, the arginine bound to it and its 106 waters, each water a part of its own. The arginine is numbered
         // on after the chain under its id, but is a free amino acid with a carboxyl group of its own: the chain ends
-        // before it (CHAIN BREAKS in md_util.h)
+        // before it (CHAIN BREAKS in md_backbone.h)
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
@@ -3965,19 +3965,19 @@ UTEST(util, state_backbone) {
     ASSERT_GT(n, 0);
 
     // Nothing until computed
-    EXPECT_TRUE(md_util_state_backbone_angles(&st, &sys) == NULL);
-    EXPECT_TRUE(md_util_state_secondary_structure(&st, &sys) == NULL);
+    EXPECT_TRUE(md_system_state_backbone_angles(&st, &sys) == NULL);
+    EXPECT_TRUE(md_system_state_secondary_structure(&st, &sys) == NULL);
 
-    ASSERT_TRUE(md_util_state_backbone_compute(&st, &sys));
-    const md_backbone_angles_t*     angle = md_util_state_backbone_angles(&st, &sys);
-    const md_secondary_structure_t* ss    = md_util_state_secondary_structure(&st, &sys);
+    ASSERT_TRUE(md_system_state_backbone_compute(&st, &sys));
+    const md_backbone_angles_t*     angle = md_system_state_backbone_angles(&st, &sys);
+    const md_secondary_structure_t* ss    = md_system_state_secondary_structure(&st, &sys);
     ASSERT_TRUE(angle != NULL);
     ASSERT_TRUE(ss != NULL);
 
     // The same as computing them by hand
     md_backbone_angles_t*     ref_angle = md_alloc(alloc, n * sizeof(md_backbone_angles_t));
     md_secondary_structure_t* ref_ss    = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
-    md_util_backbone_angles_compute(ref_angle, n, st.xyz, &st.unitcell, &sys.protein_backbone);
+    md_backbone_angles_compute(ref_angle, n, st.xyz, &st.unitcell, &sys.protein_backbone);
     md_dssp_compute(ref_ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
     size_t structured = 0;
     for (size_t i = 0; i < n; ++i) {
@@ -3992,14 +3992,14 @@ UTEST(util, state_backbone) {
     const md_attribute_t* attr = md_attributes_find(&st.attributes, MD_STR_LIT(MD_BACKBONE_SECONDARY_STRUCTURE_PATH));
     ASSERT_TRUE(attr != NULL);
     const uint64_t version = attr->version;
-    md_secondary_structure_t* dst = md_util_state_secondary_structure_write(&st, &sys);
+    md_secondary_structure_t* dst = md_system_state_secondary_structure_write(&st, &sys);
     EXPECT_TRUE(dst == ss);
     EXPECT_GT(md_attributes_version(&st.attributes, attr->id), version);
 
     // A view has no table to write into
     md_system_state_t view = { .num_atoms = st.num_atoms, .xyz = st.xyz, .unitcell = st.unitcell };
-    EXPECT_TRUE(md_util_state_secondary_structure_write(&view, &sys) == NULL);
-    EXPECT_FALSE(md_util_state_backbone_compute(&view, &sys));
+    EXPECT_TRUE(md_system_state_secondary_structure_write(&view, &sys) == NULL);
+    EXPECT_FALSE(md_system_state_backbone_compute(&view, &sys));
 
     // What a state carries for another backbone does not fit this one
     md_system_t other = {.alloc = alloc};
@@ -4007,7 +4007,7 @@ UTEST(util, state_backbone) {
     ASSERT_TRUE(md_gro_system_init_from_file(&other, &other_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&other, &other_st));
     ASSERT_TRUE(md_util_system_infer(&other, &other_st, MD_UTIL_INFER_ALL, NULL));
-    EXPECT_TRUE(md_util_state_secondary_structure(&st, &other) == NULL);
+    EXPECT_TRUE(md_system_state_secondary_structure(&st, &other) == NULL);
 
     md_vm_arena_destroy(alloc);
 }
@@ -4679,14 +4679,14 @@ UTEST(util, ramachandran_classify) {
     // A guard on each side of the buffer catches a write outside it
     md_ramachandran_type_t buf[1 + 9 + 1];
     md_memset(buf, 0xAB, sizeof(buf));
-    EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 9, &sys));
+    EXPECT_TRUE(md_backbone_ramachandran_classify(buf + 1, 9, &sys));
     EXPECT_EQ(0xAB, buf[0]);
     EXPECT_EQ(0xAB, buf[10]);
     for (int i = 0; i < 9; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
 
     // A capacity short of the segments: the last type written is still decided by the segment after it
     md_memset(buf, 0xAB, sizeof(buf));
-    EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 4, &sys));
+    EXPECT_TRUE(md_backbone_ramachandran_classify(buf + 1, 4, &sys));
     EXPECT_EQ(0xAB, buf[0]);
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
     EXPECT_EQ(0xAB, buf[5]);
@@ -4783,8 +4783,8 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
         if (rb->segment.count && rb->segment.count == bb->segment.count) {
             md_ramachandran_type_t* rama_ref = md_alloc(alloc, sizeof(md_ramachandran_type_t) * rb->segment.count);
             md_ramachandran_type_t* rama = md_alloc(alloc, sizeof(md_ramachandran_type_t) * bb->segment.count);
-            EXPECT_TRUE(md_util_backbone_ramachandran_classify(rama_ref, rb->segment.count, &ref));
-            EXPECT_TRUE(md_util_backbone_ramachandran_classify(rama, bb->segment.count, &sys));
+            EXPECT_TRUE(md_backbone_ramachandran_classify(rama_ref, rb->segment.count, &ref));
+            EXPECT_TRUE(md_backbone_ramachandran_classify(rama, bb->segment.count, &sys));
             md_secondary_structure_t* ss_ref = md_alloc(alloc, sizeof(md_secondary_structure_t) * rb->segment.count);
             md_secondary_structure_t* ss = md_alloc(alloc, sizeof(md_secondary_structure_t) * bb->segment.count);
             if (compare_secondary_structure) {
@@ -4938,10 +4938,10 @@ static void expect_segment_atoms_by_roles(int* utest_result, const char* path, b
     size_t same = 0;
     for (size_t s = 0; s < sys.protein_backbone.segment.count; ++s) {
         md_atom_idx_t atoms[512], ref_atoms[512];
-        const size_t n = md_util_protein_segment_atoms(atoms, 512, &sys, s);
+        const size_t n = md_system_protein_segment_atoms(atoms, 512, &sys, s);
         const int32_t rs = ref_seg[xyz_to_ref[sys.protein_backbone.segment.atoms[s].ca]];
         if (rs < 0) continue;
-        const size_t m = md_util_protein_segment_atoms(ref_atoms, 512, &ref, (size_t)rs);
+        const size_t m = md_system_protein_segment_atoms(ref_atoms, 512, &ref, (size_t)rs);
         md_memset(in_ref, 0, ref.atom.count);
         for (size_t k = 0; k < m; ++k) in_ref[ref_atoms[k]] = 1;
         bool equal = n == m;
@@ -5060,7 +5060,7 @@ UTEST(util, lone_atom_ion_only_without_covalent_bonds) {
     ASSERT_EQ(10u, sys.residue.count);
     ASSERT_EQ(0u, sys.bond.count);
 
-    ASSERT_TRUE(md_util_system_infer_residue_flags(&sys, &state));
+    ASSERT_TRUE(md_system_infer_residue_flags(&sys, &state));
     for (size_t r = 1; r < 10; ++r) EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&sys, r));
 
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));

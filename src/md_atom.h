@@ -46,7 +46,7 @@ typedef enum {
     MD_ATOM_FLAG_NONE                   = 0,
 
     // The atom's role in an amino acid or nucleotide of a chain, found from the covalent bonds whatever the atoms are
-    // called, also without residues (POLYMER ATOMS in md_util.c, md_util_system_infer_residue_flags), and for the
+    // called, also without residues (POLYMER ATOMS in md_util.c, md_system_infer_residue_flags), and for the
     // beads of the predefined coarse grained types. A match which is no residue of a chain (a ligand which holds the
     // atoms of one) gets no roles.
     MD_ATOM_FLAG_BACKBONE               = 0x1,      // N, CA, C of an amino acid; P, O5', C5', C4', C3', O3' of a nucleotide

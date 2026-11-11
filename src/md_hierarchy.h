@@ -40,7 +40,7 @@ struct md_system_t;
 
 // ### RESIDUE ###
 
-// What a residue is: the kind of its residue type (md_system_residue_kind), see md_util_system_infer_residue_flags.
+// What a residue is: the kind of its residue type (md_system_residue_kind), see md_system_infer_residue_flags.
 typedef enum md_residue_kind_t {
     MD_RESIDUE_KIND_OTHER           = 0,    // Unclassified, or none of the below: a ligand, a sugar, ...
     MD_RESIDUE_KIND_AMINO_ACID      = 1,
@@ -63,7 +63,7 @@ typedef enum {
 
     // The chain is broken next to it: its backbone is not linked to that of the residue before (after) it in its chain,
     // which carries BREAK_AFTER (BREAK_BEFORE) in turn. Residues missing in a crystal structure leave such a break. See
-    // CHAIN BREAKS in md_util.h.
+    // CHAIN BREAKS in md_backbone.h.
     MD_RESIDUE_FLAG_BREAK_BEFORE        = 0x80,
     MD_RESIDUE_FLAG_BREAK_AFTER         = 0x100,
 } md_residue_flags_t;
@@ -223,7 +223,7 @@ typedef struct md_part_type_data_t {
 // glycoprotein, a strand and its glycans; the two strands of a duplex a topology gives as one molecule type), a
 // chain likewise (a strand and the ligands and waters filed under its id). Every part is within one molecule.
 //   - A polymer strand goes on over a gap (residues missing from a crystal structure) and ends where the chemistry says
-//     the chain does (CHAIN BREAKS in md_util.h). A residue of no polymer bonded to it in the run (a cap, a modified
+//     the chain does (CHAIN BREAKS in md_backbone.h). A residue of no polymer bonded to it in the run (a cap, a modified
 //     residue) is of it. A bond from a side chain (a disulfide, a glycosylation) joins no parts.
 //   - Residues of no polymer are one part while each is bonded to one of it: a glycan tree, a lipid of several residues.
 //     A coordination bond between residues joins none: a metal is a part of its own, as each ion and water is.

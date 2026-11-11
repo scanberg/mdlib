@@ -1207,7 +1207,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	}
 
 	// The atoms have no names to classify the molecules by, but water and monatomic ions are told by their atoms
-	md_util_system_infer_residue_flags(sys, state);
+	md_system_infer_residue_flags(sys, state);
 
 	md_temp_end(temp_scope);
 

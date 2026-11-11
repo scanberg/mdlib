@@ -14,7 +14,7 @@
 // A molecule whose residues are lipids by name is a lipid with the tails found. One of no lipid is a lipid by its
 // structure: a polar head (an atom other than carbon outside of the tails) and a chain without rings of at least
 // LIPID_MIN_CHAIN_UNNAMED carbons, or the skeleton of a sterol. Coarse grained molecules are lipids by the force field
-// only: by their names, by their beads where the name is not Martini's (md_util_system_infer_residue_flags), or by beads
+// only: by their names, by their beads where the name is not Martini's (md_system_infer_residue_flags), or by beads
 // named as those of the tails of the Martini lipidomes where the molecule is none of the force field's.
 //
 // The lipid of a molecule of several residues is the part of it which holds the tails, with what is bonded to that
@@ -301,7 +301,7 @@ static void infer_lipid_molecule(md_lipid_data_t* lipid, const md_system_t* sys,
         }
     }
     // Lipids by name. A coarse grained lipid is one of the force field, by its name or, where that is not Martini's, by
-    // its beads (the kind md_util_system_infer_residue_flags gave it), or one whose beads are named as those of the
+    // its beads (the kind md_system_infer_residue_flags gave it), or one whose beads are named as those of the
     // lipids of the force field (below): never by its structure alone. A residue which is a lipid by its structure alone
     // (the kind an earlier inference gave it) is none by name: it is a lipid again only if it is found to be one
     // (md_system_infer_lipid_kinds), so that inferring again gives what inferring once did.

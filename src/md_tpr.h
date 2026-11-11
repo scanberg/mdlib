@@ -311,7 +311,7 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 //
 // Each molecule type is a molecule type of the system (md_molecule_type_data_t, by its name) and each molecule an
 // instance of it (md_instance_data_t), one molecule whatever its bonds. The residues are classified
-// (md_util_system_infer_residue_flags); what the parts of the molecules are is inferred from them
+// (md_system_infer_residue_flags); what the parts of the molecules are is inferred from them
 // (md_part_infer). A topology names no chains: the instances have no ids.
 //
 // The atom groups the simulation used are groups of the system (md_group_data_t) with their roles: those of every type

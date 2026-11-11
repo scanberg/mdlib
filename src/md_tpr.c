@@ -1880,7 +1880,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_bond_build_connectivity(&sys->bond, num_atoms, alloc);
     }
 
-    md_util_system_infer_residue_flags(sys, state);
+    md_system_infer_residue_flags(sys, state);
 
     // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues
     // know what they are

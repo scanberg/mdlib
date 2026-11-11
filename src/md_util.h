@@ -24,7 +24,7 @@ typedef enum {
     MD_UTIL_INFER_PART_BIT            = 1u << 3,     // The chains and the parts with their types (md_chain_infer, _parts)
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_MOLECULE_BIT        = 1u << 5,
-    MD_UTIL_INFER_RESIDUE_BIT         = 1u << 6,     // The kinds of the residues and the roles of their atoms (md_util_system_infer_residue_flags), after the bonds which tell them
+    MD_UTIL_INFER_RESIDUE_BIT         = 1u << 6,     // The kinds of the residues and the roles of their atoms (md_system_infer_residue_flags), after the bonds which tell them
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
 	MD_UTIL_INFER_UNWRAP_MOLECULE_BIT = 1u << 7,
     MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
@@ -49,89 +49,6 @@ bool md_util_resname_amino_acid(md_str_t str);
 bool md_util_resname_nucleotide(md_str_t str);
 
 void md_util_system_extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
-
-// Gives the atoms of the amino acids and nucleotides of an atomistic system their roles (MD_ATOM_FLAG_BACKBONE,
-// _SIDE_CHAIN, _NUCLEOSIDE, _NUCLEOBASE, _TERMINAL_BEG, _END), found from the covalent bonds alone, whatever the atoms
-// are called (POLYMER ATOMS in md_util.c), also in a system without residues. Then classifies the residues
-// (md_residue_kind_t: amino acid, nucleotide, water, ion, lipid). A residue which holds the backbone of one amino
-// acid or nucleotide of a chain (a standard residue by name, or linked to another residue by its backbone) is one,
-// MD_RESIDUE_FLAG_RESOLVED, with its terminal groups marked: the link keeps out the ligands which hold the atoms of
-// one (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A residue which is only named like an
-// amino acid or nucleotide gets the kind alone. A residue of coarse grained beads which is a molecule of the Martini
-// force fields by its name and all its bead names (a lipid, water, an ion, a sugar, ...) is of the kind of that
-// molecule; residues a predefined coarse grained type already classified as water, ion or lipid are left alone.
-// Requires the bonds. state (optional) gives the coordinates which tell the carbonyl of a C terminus without its OXT
-// from a hydroxyl.
-bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state);
-
-// CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose
-// backbones are not linked: no peptide bond from the C of the one to the N of the next, no phosphodiester bond from the
-// O3' of the one to the P of the next, no bond between the backbone beads of a coarse grained chain. The residues a
-// crystal structure could not resolve leave such breaks, as does a model built in pieces.
-// Where the chemistry says so unambiguously the chain ends there instead: a free carboxyl group (O and OXT) before it,
-// a free amino group (two or three hydrogens on the N) after it, a free amino acid after it (a lone residue with a free
-// carboxyl group of its own, which a PDB file can number on after the chain, as 1LAF does its bound arginine), a
-// nucleotide without its P (or phosphate bead) after it (a 5' end), or a free hydroxyl (with its hydrogen) on either
-// side. A crystal structure rarely has the hydrogens and often leaves out the OXT, so the ends of the pieces of a
-// broken chain look like termini to the classification of the residues: the residues on either side of a break lose
-// the terminal flags it gave them (MD_RESIDUE_FLAG_TERMINAL_BEG, _END, and those of their atoms).
-// The bonds decide, not the sequence numbers: an insertion code (52, 52A) or numbering that skips (antibodies, the
-// chymotrypsin numbering of proteases) does not break a chain whose backbone is bonded, and numbering that runs on
-// does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) have no
-// backbones to break; beads without bonds are linked by consecutive sequence numbers. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT) marks the residues on either side of each break,
-// MD_RESIDUE_FLAG_BREAK_AFTER the one before it and MD_RESIDUE_FLAG_BREAK_BEFORE the one after it, and ends the
-// backbone ranges there (md_protein_backbone_data_t, md_nucleic_backbone_data_t).
-
-// The atoms a link over the break after the residue res_idx (MD_RESIDUE_FLAG_BREAK_AFTER) would join: the C and
-// the N of a peptide bond, the O3' and the P of a phosphodiester bond, the backbone beads of coarse grained residues.
-// False, and out_atoms -1, when there is no break after it.
-bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t res_idx);
-
-// The atoms segment seg_idx of the protein backbone stands for: those of its residue; for a segment of none (a system
-// without residues, a residue which is a whole chain) those of its amino acid by the roles of the atoms: from its CA,
-// everything bonded to it short of the backbone of another segment, a disulfide bond and a coordination bond, which is
-// its N, C and O, its side chain, and the hydrogens and terminal groups on these. Writes at most cap of them to out and
-// returns how many there are (at most 512 for a segment of no residue).
-size_t md_util_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_system_t* sys, size_t seg_idx);
-
-// The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
-// of one entry per segment (capacity at least backbone->segment.count). They do not allocate. The secondary structure
-// has its own header, md_dssp.h.
-
-// Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
-
-// Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
-// sys->protein_backbone, or for segments without a residue (res_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
-// segments of traces, which have no phi and psi.
-bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
-
-// THE BACKBONE OF A STATE. The angles and the secondary structure depend on the coordinates, so they belong to the
-// state they were computed from and live in its attributes (md_system_state_t.attributes), one value per segment of
-// sys->protein_backbone:
-//   MD_BACKBONE_ANGLE_PATH                 F32 x 2 (phi, psi), radians
-//   MD_BACKBONE_SECONDARY_STRUCTURE_PATH   I32, md_secondary_structure_t
-// The same paths below a run (in the system's attributes) hold them for every frame of the run, with the frame as
-// the first axis, and md_system_extract_frame slices a frame of them into a state when asked for them.
-// A state carries them when its producer computed them, like the velocities of a TRR frame: a consumer handles their
-// absence.
-#define MD_BACKBONE_ANGLE_PATH                  "backbone/angle"
-#define MD_BACKBONE_SECONDARY_STRUCTURE_PATH    "backbone/secondary_structure"
-
-// The backbone of a state, NULL when it carries none or what it carries does not fit the backbone of sys
-const md_backbone_angles_t*     md_util_state_backbone_angles(const md_system_state_t* state, const struct md_system_t* sys);
-const md_secondary_structure_t* md_util_state_secondary_structure(const md_system_state_t* state, const struct md_system_t* sys);
-
-// Storage in the state to write the backbone into, created when missing (or of another size) and reused otherwise,
-// so that a producer which writes every frame does not allocate every frame. Each call marks the attribute as
-// changed (md_attributes_touch): call it when about to write. NULL for a state without an allocator (a view) or a
-// system without a protein backbone.
-md_backbone_angles_t*     md_util_state_backbone_angles_write(md_system_state_t* state, const struct md_system_t* sys);
-md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_state_t* state, const struct md_system_t* sys);
-
-// Computes the backbone angles and secondary structure from the state's own coordinates and stores them in it.
-// False when the state has no coordinates, or the system no protein backbone.
-bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_system_t* sys);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask

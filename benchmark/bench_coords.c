@@ -213,7 +213,7 @@ UBENCH_EX(coords, protein_backbone) {
         md_backbone_angles_t* ang = md_alloc(arena, n * sizeof(md_backbone_angles_t));
         UBENCH_DO_BENCHMARK() {
             md_dssp_compute(ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
-            md_util_backbone_angles_compute(ang, n, st.xyz, &st.unitcell, &sys.protein_backbone);
+            md_backbone_angles_compute(ang, n, st.xyz, &st.unitcell, &sys.protein_backbone);
             UBENCH_DO_NOTHING(ss);
         }
     } else {

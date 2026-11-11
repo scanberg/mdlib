@@ -26,7 +26,7 @@
 // (alloc NULL) has no table - the same ownership rule the coordinates follow.
 //
 // What is computed from a frame's coordinates belongs there too: the backbone angles and the secondary structure of
-// the frame (md_util_state_backbone_compute and the accessors beside it in md_util.h).
+// the frame (md_system_state_backbone_compute and the accessors beside it in md_util.h).
 //
 // Two presence bits, both self describing:
 //   num_atoms == 0        -> no coordinates

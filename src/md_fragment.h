@@ -165,7 +165,7 @@ extern "C" {
 // Infers sys->fragment anew (replacing what it held, keeping the colours of the types it had) and bumps the topology
 // version. Needs the molecules (md_molecule_infer, which clears the fragments: infer them again after
 // it); without them the system has no fragments. Reads the bond orders and aromaticity (md_chem_perceive), without
-// which every C=O reads as single, the rings, the residue flags and atom roles (md_util_system_infer_residue_flags)
+// which every C=O reads as single, the rings, the residue flags and atom roles (md_system_infer_residue_flags)
 // and the lipid tails. Done by md_util_system_infer with MD_UTIL_INFER_FRAGMENT_BIT.
 bool md_util_system_infer_fragments(struct md_system_t* sys);
 void md_fragment_data_free(md_fragment_data_t* data, struct md_allocator_i* alloc);

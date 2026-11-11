@@ -579,7 +579,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
     // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.
     if (flags & MD_UTIL_INFER_RESIDUE_BIT) {
-        md_util_system_infer_residue_flags(sys, state);
+        md_system_infer_residue_flags(sys, state);
     }
 
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are

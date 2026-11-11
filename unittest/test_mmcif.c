@@ -675,7 +675,7 @@ UTEST(mmcif, chain_breaks) {
             EXPECT_TRUE(md_system_residue_flags(&sys, i + 1) & MD_RESIDUE_FLAG_BREAK_BEFORE);
             EXPECT_EQ(inst, md_system_instance_find_by_residue_idx(&sys, i + 1));
             md_atom_idx_t atoms[2];
-            EXPECT_TRUE(md_util_chain_break_atoms(atoms, &sys, i));
+            EXPECT_TRUE(md_system_chain_break_atoms(atoms, &sys, i));
         }
         ++found;
     }
