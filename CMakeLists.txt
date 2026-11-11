@@ -360,10 +360,11 @@ file(MAKE_DIRECTORY ${GEN_DIR})
 if (MD_ENABLE_GPU)
   if (APPLE)
     set(MD_GPU_BACKEND "METAL")
-    find_library(METAL_FRAMEWORK Metal)
-    find_library(FOUNDATION_FRAMEWORK Foundation)
-    find_library(QUARTZCORE_FRAMEWORK QuartzCore)   # CAMetalLayer, for surfaces
-    list(APPEND MD_LIBS ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${QUARTZCORE_FRAMEWORK})
+    # The frameworks are linked by name, not found with find_library: a full path into the SDK makes CMake add its
+    # directory as a -F search path, and headers found through -F are not system headers, so every SDK header warns
+    # under -Wall -Wextra -Wpedantic. The path can also point into a different SDK than the one the compiler uses.
+    # By name, the compiler and linker take them from the active SDK, as system frameworks.
+    list(APPEND MD_LIBS "-framework Metal" "-framework Foundation" "-framework QuartzCore")   # QuartzCore: CAMetalLayer, for surfaces
     list(APPEND CORE_FILES src/core/md_gpu_metal.m)
     set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
