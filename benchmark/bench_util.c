@@ -1,13 +1,13 @@
 #include "ubench.h"
 
-#include <core/md_os.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
 #include <md_gro.h>
 #include <md_util.h>
 
 #include <stdlib.h>
 
-static const vec3_t pbc_ext = {100, 100, 100};
+static const md_f32x3_t pbc_ext = {100, 100, 100};
 static const int size = 1024 * 1024;
 
 #define SETUP_XYZW \
@@ -24,10 +24,10 @@ static const int size = 1024 * 1024;
 	}
 
 #define SETUP_XYZW_VEC4 \
-	vec4_t* xyzw = md_alloc(alloc, size * sizeof(vec4_t)); \
+	md_f32x4_t* xyzw = md_alloc(alloc, size * sizeof(md_f32x4_t)); \
 	srand(0); \
 	for (int i = 0; i < size; ++i) { \
-		xyzw[i] = vec4_set( \
+		xyzw[i] = md_f32x4_set( \
 			(float)rand() / (float)RAND_MAX * pbc_ext.x, \
 			(float)rand() / (float)RAND_MAX * pbc_ext.y, \
 			(float)rand() / (float)RAND_MAX * pbc_ext.z, \
@@ -82,7 +82,7 @@ static double com_min_image_ref(const float* in_x, const float* in_w, int64_t co
         double r = acc_x / acc_w;
         double x = in_x[i];
         double w = in_w[i];
-        x = deperiodize_ortho2(x, r, ext, r_ext);
+        x = md_f64_deperiodize_ortho2(x, r, ext, r_ext);
         acc_x += x * w;
         acc_w += w;
     }

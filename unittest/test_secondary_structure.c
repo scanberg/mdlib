@@ -8,6 +8,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
 
 // Secondary structure, atomistic (DSSP) and of coarse grained traces (CG-DSSP), see md_dssp.c
 
@@ -287,10 +288,10 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
     ASSERT_TRUE(md_dssp_compute(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
 
     // Centered on a corner of a 60 A box, and wrapped into it: every axis cuts the protein in two
-    vec3_t com = {0};
-    for (size_t i = 0; i < state.num_atoms; ++i) com = vec3_add(com, state.xyz[i]);
-    com = vec3_mul1(com, 1.0f / (float)state.num_atoms);
-    for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = vec3_sub(state.xyz[i], com);
+    md_f32x3_t com = {0};
+    for (size_t i = 0; i < state.num_atoms; ++i) com = md_f32x3_add(com, state.xyz[i]);
+    com = md_f32x3_mul1(com, 1.0f / (float)state.num_atoms);
+    for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = md_f32x3_sub(state.xyz[i], com);
     const md_unitcell_t cell = md_unitcell_from_extent(60.0, 60.0, 60.0);
     ASSERT_TRUE(md_util_pbc(state.xyz, NULL, state.num_atoms, &cell));
 
@@ -343,10 +344,10 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     ASSERT_TRUE(md_dssp_compute(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
 
     // Centered on a corner of a cell wider than the protein and the reach of the bonds: every axis cuts it in two
-    vec3_t com = {0};
-    for (size_t i = 0; i < state.num_atoms; ++i) com = vec3_add(com, state.xyz[i]);
-    com = vec3_mul1(com, 1.0f / (float)state.num_atoms);
-    for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = vec3_sub(state.xyz[i], com);
+    md_f32x3_t com = {0};
+    for (size_t i = 0; i < state.num_atoms; ++i) com = md_f32x3_add(com, state.xyz[i]);
+    com = md_f32x3_mul1(com, 1.0f / (float)state.num_atoms);
+    for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = md_f32x3_sub(state.xyz[i], com);
     const md_unitcell_t cell = md_unitcell_from_extent(120.0, 120.0, 120.0);
     ASSERT_TRUE(md_util_pbc(state.xyz, NULL, state.num_atoms, &cell));
 
@@ -383,14 +384,14 @@ UTEST(secondary_structure, mixed_trace_and_atomistic) {
 
     // The beads first, then the atoms, both centered on the origin
     const size_t num_atoms = cg_state.num_atoms + aa_state.num_atoms;
-    vec3_t* xyz = md_alloc(alloc, num_atoms * sizeof(vec3_t));
-    vec3_t c_cg = {0}, c_aa = {0};
-    for (size_t i = 0; i < cg_state.num_atoms; ++i) c_cg = vec3_add(c_cg, cg_state.xyz[i]);
-    for (size_t i = 0; i < aa_state.num_atoms; ++i) c_aa = vec3_add(c_aa, aa_state.xyz[i]);
-    c_cg = vec3_mul1(c_cg, 1.0f / (float)cg_state.num_atoms);
-    c_aa = vec3_mul1(c_aa, 1.0f / (float)aa_state.num_atoms);
-    for (size_t i = 0; i < cg_state.num_atoms; ++i) xyz[i] = vec3_sub(cg_state.xyz[i], c_cg);
-    for (size_t i = 0; i < aa_state.num_atoms; ++i) xyz[cg_state.num_atoms + i] = vec3_sub(aa_state.xyz[i], c_aa);
+    md_f32x3_t* xyz = md_alloc(alloc, num_atoms * sizeof(md_f32x3_t));
+    md_f32x3_t c_cg = {0}, c_aa = {0};
+    for (size_t i = 0; i < cg_state.num_atoms; ++i) c_cg = md_f32x3_add(c_cg, cg_state.xyz[i]);
+    for (size_t i = 0; i < aa_state.num_atoms; ++i) c_aa = md_f32x3_add(c_aa, aa_state.xyz[i]);
+    c_cg = md_f32x3_mul1(c_cg, 1.0f / (float)cg_state.num_atoms);
+    c_aa = md_f32x3_mul1(c_aa, 1.0f / (float)aa_state.num_atoms);
+    for (size_t i = 0; i < cg_state.num_atoms; ++i) xyz[i] = md_f32x3_sub(cg_state.xyz[i], c_cg);
+    for (size_t i = 0; i < aa_state.num_atoms; ++i) xyz[cg_state.num_atoms + i] = md_f32x3_sub(aa_state.xyz[i], c_aa);
 
     const size_t num_ranges = cg_bb->range.count + aa_bb->range.count;
     uint32_t* offset = md_alloc(alloc, (num_ranges + 1) * sizeof(uint32_t));

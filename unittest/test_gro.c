@@ -4,7 +4,7 @@
 #include <md_gro.h>
 #include <md_system.h>
 #include <core/md_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_array.h>
 #include <core/md_arena_allocator.h>
 #include <md_attributes.h>
@@ -176,7 +176,7 @@ UTEST(gro, coordinate_columns) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, text, NULL));
     ASSERT_EQ((size_t)7, sys.atom.count);
-    const vec3_t* x = st.xyz;
+    const md_f32x3_t* x = st.xyz;
     const float* v = gro_test_velocities(&sys);
     ASSERT_TRUE(v != NULL);
 
@@ -227,7 +227,7 @@ UTEST(gro, coordinate_columns_with_more_decimals) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, text, NULL));
     ASSERT_EQ((size_t)2, sys.atom.count);
-    const vec3_t* x = st.xyz;
+    const md_f32x3_t* x = st.xyz;
     const float* v = gro_test_velocities(&sys);
     ASSERT_TRUE(v != NULL);
     EXPECT_TRUE(gro_test_same(x[0].x, nm(0.126f)));

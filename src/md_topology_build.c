@@ -192,7 +192,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
 // form of the topology's.
 static bool topology_name_matches(md_str_t structure, md_str_t topology) {
     if (md_str_eq_ignore_case(structure, topology)) return true;
-    return structure.len >= 3 && topology.len > structure.len && md_str_eq_n_ignore_case(structure, topology, structure.len);
+    return structure.len >= 3 && topology.len > structure.len && md_str_begins_with_ignore_case(topology, structure);
 }
 
 bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* desc, md_str_t filename) {

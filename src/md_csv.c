@@ -1,11 +1,12 @@
 #include <md_csv.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <core/md_unit.h>
 #include <stdio.h>
 #include <math.h>
 
 #include "core/md_allocator.h"
-#include "core/md_os.h"
+#include "core/md_file.h"
 #include "core/md_path.h"
 #include "core/md_format.h"
 #include "core/md_log.h"
@@ -245,10 +246,7 @@ static md_unit_t csv_label_unit(md_str_t label) {
 
 // "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
 static md_str_t csv_group(char* buf, size_t cap, const char* kind, md_str_t filename) {
-    md_str_t file = filename;
-    md_path_filename(&file, filename);
-    const size_t dot = md_str_rfind_char(file, '.');
-    if (dot > 0) file = md_str_substr(file, 0, dot);   // MD_STR_NPOS keeps all of it
+    md_str_t file = md_path_stem(filename);
     size_t len = (size_t)md_snprintf(buf, cap, "%s/", kind);
     const size_t base = len;
     bool sep = false;
@@ -278,7 +276,7 @@ bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filena
 
     {
         // The first column is time when its name says so; each column's unit is in its name.
-        const bool has_time = csv.field_names && md_str_eq_cstr_n_ignore_case(md_str_trim(csv.field_names[0]), "time", 4);
+        const bool has_time = csv.field_names && md_str_begins_with_ignore_case(md_str_trim(csv.field_names[0]), MD_STR_LIT("time"));
         const size_t first = has_time ? 1 : 0;
         const size_t C = csv.num_fields - first;
         if (C == 0) {

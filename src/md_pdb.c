@@ -2,6 +2,7 @@
 #include <math.h>
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_util.h>
 
 #include <core/md_common.h>
@@ -12,6 +13,8 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
 #include <core/md_vec_math.h>
 #include <core/md_parse_simd.h>
 #include <core/md_hash.h>
@@ -192,7 +195,7 @@ typedef struct pdb_extras_t {
     int32_t biomolecule;        // REMARK 350: the one whose groups of chains follow
     md_array(pdb_group_t) groups;
     md_array(char)   chains;
-    md_array(mat4_t) transforms;
+    md_array(md_f32x4x4_t) transforms;
     md_allocator_i*  alloc;
 } pdb_extras_t;
 
@@ -231,12 +234,12 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
     case PDB_LINE_REMARK_350: {
         // A biomolecule is one or more groups of chains, each followed by the BIOMT transforms which copy them
         const md_str_t rest = md_str_substr(line, 11, SIZE_MAX);
-        if (md_str_eq_cstr_n(rest, "BIOMOLECULE:", 12)) {
+        if (md_str_begins_with(rest, MD_STR_LIT("BIOMOLECULE:"))) {
             x->biomolecule = (int32_t)parse_int(md_str_trim(md_str_substr(rest, 12, SIZE_MAX)));
         }
-        else if (md_str_eq_cstr_n(rest, "APPLY THE FOLLOWING TO CHAINS:", 30) || md_str_eq_cstr_n(md_str_trim(rest), "AND CHAINS:", 11)) {
+        else if (md_str_begins_with(rest, MD_STR_LIT("APPLY THE FOLLOWING TO CHAINS:")) || md_str_begins_with(md_str_trim(rest), MD_STR_LIT("AND CHAINS:"))) {
             // A group begins with the chains to apply to, which AND CHAINS lines continue
-            if (md_str_eq_cstr_n(rest, "APPLY", 5)) {
+            if (md_str_begins_with(rest, MD_STR_LIT("APPLY"))) {
                 const pdb_group_t group = {
                     .id = x->biomolecule,
                     .chain_offset = (uint32_t)md_array_size(x->chains),
@@ -259,7 +262,7 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
                 MD_LOG_DEBUG("REMARK 350: chains of no biomolecule");
             }
         }
-        else if (md_str_eq_cstr_n(md_str_trim(rest), "BIOMT", 5) && line.len > 18) {
+        else if (md_str_begins_with(md_str_trim(rest), MD_STR_LIT("BIOMT")) && line.len > 18) {
             // REMARK 350   BIOMTr   n  m[r][1] m[r][2] m[r][3]  t[r], the rows of transform n of the group
             pdb_group_t* group = md_array_last(x->groups);
             const int32_t row = md_ascii_char_to_digit(line.ptr[18]) - 1;
@@ -270,10 +273,10 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
                 MD_LOG_DEBUG("REMARK 350: a malformed BIOMT record");
             } else {
                 if (row == 0) {
-                    md_array_push(x->transforms, mat4_ident(), alloc);
+                    md_array_push(x->transforms, md_f32x4x4_ident(), alloc);
                     group->transform_count += 1;
                 }
-                mat4_t* transform = md_array_last(x->transforms);
+                md_f32x4x4_t* transform = md_array_last(x->transforms);
                 for (int c = 0; c < 3; ++c) {
                     transform->elem[c][row] = (float)parse_float(tok[1 + c]);
                 }
@@ -296,7 +299,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
     const size_t num_transforms = md_array_size(x->transforms);
     if (num_groups == 0 || num_transforms == 0) return;
 
-    md_array(mat4_t)     transform = 0;
+    md_array(md_f32x4x4_t)     transform = 0;
     md_array(md_label_t) oper_id = 0;
     md_array(md_assembly_gen_t) gen = 0;
 
@@ -325,10 +328,10 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
 
         md_array(uint32_t) oper = 0;
         for (uint32_t t = 0; t < group->transform_count; ++t) {
-            const mat4_t M = x->transforms[group->transform_offset + t];
+            const md_f32x4x4_t M = x->transforms[group->transform_offset + t];
             size_t k = 0;
             for (; k < md_array_size(transform); ++k) {
-                if (md_memcmp(&transform[k], &M, sizeof(mat4_t)) == 0) break;
+                if (md_memcmp(&transform[k], &M, sizeof(md_f32x4x4_t)) == 0) break;
             }
             if (k == md_array_size(transform)) {
                 char buf[16];
@@ -801,7 +804,7 @@ static MD_FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, md_str_t
 static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
     (void)thread_idx;
     const pdb_load_t* L = (const pdb_load_t*)arg;
-    vec3_t* xyz = L->state->xyz;
+    md_f32x3_t* xyz = L->state->xyz;
     md_particle_type_idx_t* type_idx = L->sys->atom.type_idx;
     md_atom_flags_t* flags = L->sys->atom.flags;
     for (uint32_t p = beg; p < end; ++p) {
@@ -1144,7 +1147,7 @@ static int64_t pdb_tail(md_reader_i* src, int64_t from) {
 static void pdb_first_model(pdb_load_t* L) {
     const size_t beg = L->model_beg;
     const size_t n = L->num_atoms - beg;
-    md_memmove(L->state->xyz,         L->state->xyz + beg,         n * sizeof(vec3_t));
+    md_memmove(L->state->xyz,         L->state->xyz + beg,         n * sizeof(md_f32x3_t));
     md_memmove(L->sys->atom.type_idx, L->sys->atom.type_idx + beg, n * sizeof(md_particle_type_idx_t));
     md_memmove(L->sys->atom.flags,    L->sys->atom.flags + beg,    n * sizeof(md_atom_flags_t));
     md_memmove(L->serial,             L->serial + beg,             n * sizeof(int32_t));

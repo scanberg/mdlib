@@ -18,6 +18,7 @@
 #include <md_vial.h>
 #include <md_script.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_attributes.h>
 #include <md_gro.h>
 #include <md_pdb.h>

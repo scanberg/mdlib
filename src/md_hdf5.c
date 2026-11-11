@@ -1,6 +1,7 @@
 #include "md_hdf5.h"
 
 #include <core/md_platform.h>
+#include <core/md_os.h>
 
 // Statically initialised rather than created on first use: two readers taking the lock for the first
 // time on two threads would otherwise race to initialise it.

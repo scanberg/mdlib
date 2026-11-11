@@ -1,7 +1,7 @@
 ﻿#include "utest.h"
 #include <md_util.h>
 #include <md_system.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
@@ -45,7 +45,7 @@ UTEST(element_guess_compat, all_pdb_validation) {
         files_processed++;
         md_str_t rest = text, line;
         while (md_parse_next_line(&line, &rest)) {
-            if (!(md_str_eq_cstr_n(line, "ATOM", 4) || md_str_eq_cstr_n(line, "HETATM", 6)) || line.len < 78) continue;
+            if (!(md_str_begins_with(line, MD_STR_LIT("ATOM")) || md_str_begins_with(line, MD_STR_LIT("HETATM"))) || line.len < 78) continue;
             md_str_t explicit_symbol = md_str_trim(md_str_substr(line, 76, 2));
             if (md_str_empty(explicit_symbol)) {
                 continue;

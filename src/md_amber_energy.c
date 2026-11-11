@@ -6,7 +6,8 @@
 #include <core/md_array.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>

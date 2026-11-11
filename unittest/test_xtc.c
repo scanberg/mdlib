@@ -6,10 +6,11 @@
 #include <md_gro.h>
 #include <md_script.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_log.h>
 
 #include <xdrfile_xtc.h>

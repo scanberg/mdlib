@@ -5,6 +5,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_common.h>
+#include <core/md_vec_math.h>
 #include <md_util.h>
 #include <md_types.h>
 
@@ -44,13 +45,13 @@ static inline ivec4_t ivec4_clamp(ivec4_t v, ivec4_t min, ivec4_t max) {
     return ivec4_max(ivec4_min(v, max), min);
 }
 
-static inline ivec4_t ivec4_from_vec4(vec4_t v) {
-    return simde_mm_cvtps_epi32(v.m128);
+static inline ivec4_t ivec4_from_vec4(md_f32x4_t v) {
+    return simde_mm_cvtps_epi32(md_mm_load_ps(v.elem));
 }
 
-static inline vec4_t vec4_from_ivec4(ivec4_t v) {
-    vec4_t r;
-    r.m128 = md_mm_cvtepi32_ps(v);
+static inline md_f32x4_t vec4_from_ivec4(ivec4_t v) {
+    md_f32x4_t r;
+    md_mm_store_ps(r.elem, md_mm_cvtepi32_ps(v));
     return r;
 }
 
@@ -98,14 +99,14 @@ typedef struct {
     uint32_t idx;
 } elem_t;
 
-static inline vec4_t md_coord_stream_load_vec4(const md_coord_stream_t* s, size_t i) {
+static inline md_f32x4_t md_coord_stream_load_vec4(const md_coord_stream_t* s, size_t i) {
     const size_t src = s->idx ? (size_t)s->idx[i] : i;
 
     if (s->layout == MD_COORD_STREAM_LAYOUT_SOA) {
-        return vec4_set(s->soa.x[src], s->soa.y[src], s->soa.z[src], 0.0f);
+        return md_f32x4_set(s->soa.x[src], s->soa.y[src], s->soa.z[src], 0.0f);
     } else {
         const char* p = (const char*)s->aos.base + src * s->aos.stride;
-        vec4_t v = {0};
+        md_f32x4_t v = {0};
         md_memcpy(&v, p, sizeof(float) * 3);
         return v;
     }
@@ -228,9 +229,9 @@ static inline uint32_t cell_lookup(const md_spatial_acc_t* acc, const uint32_t c
 }
 
 // Cell coordinates of a fractional coordinate, exactly as the elements were binned
-static inline void bin_cell(uint32_t out[3], float sx, float sy, float sz, vec4_t fcell_dim, ivec4_t icell_max) {
-    const vec4_t s = vec4_set(sx, sy, sz, 0);
-    ivec4_t ic = ivec4_from_vec4(vec4_floor(vec4_mul(s, fcell_dim)));
+static inline void bin_cell(uint32_t out[3], float sx, float sy, float sz, md_f32x4_t fcell_dim, ivec4_t icell_max) {
+    const md_f32x4_t s = md_f32x4_set(sx, sy, sz, 0);
+    ivec4_t ic = ivec4_from_vec4(md_f32x4_floor(md_f32x4_mul(s, fcell_dim)));
     ic = ivec4_clamp(ic, ivec4_set1(0), icell_max);
     uint32_t tmp[4];
     md_mm_storeu_epi32(tmp, ic);
@@ -270,25 +271,25 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     const size_t num_hist = MD_MAX(num_top, 4096) + 1;
     uint32_t* hist = (uint32_t*)md_temp_alloc(temp_scope, num_hist * sizeof(uint32_t));
 
-    const vec4_t  fcell_dim = vec4_set((float)cell_dim[0], (float)cell_dim[1], (float)cell_dim[2], 0);
+    const md_f32x4_t  fcell_dim = md_f32x4_set((float)cell_dim[0], (float)cell_dim[1], (float)cell_dim[2], 0);
     const ivec4_t icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
 
     float val;
     md_memset(&val, 0xFF, sizeof(val));
     const uint32_t flags = acc->flags;
-    const vec4_t pbc_mask = vec4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
-    const vec4_t origin = vec4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
-    const vec4_t vI[3] = {
-        vec4_set(acc->I[0][0], acc->I[0][1], acc->I[0][2], 0),
-        vec4_set(acc->I[1][0], acc->I[1][1], acc->I[1][2], 0),
-        vec4_set(acc->I[2][0], acc->I[2][1], acc->I[2][2], 0),
+    const md_f32x4_t pbc_mask = md_f32x4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
+    const md_f32x4_t origin = md_f32x4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
+    const md_f32x4_t vI[3] = {
+        md_f32x4_set(acc->I[0][0], acc->I[0][1], acc->I[0][2], 0),
+        md_f32x4_set(acc->I[1][0], acc->I[1][1], acc->I[1][2], 0),
+        md_f32x4_set(acc->I[2][0], acc->I[2][1], acc->I[2][2], 0),
     };
 
     // 1) Fractional coordinates, periodic axes wrapped into [0,1). The record keeps the position in the stream.
     for (size_t i = 0; i < N; ++i) {
-        const vec4_t r = md_coord_stream_load_vec4(coords, i);
-        vec4_t s = vec4_linear_combine_3(vec4_sub(r, origin), vI);
-        s = vec4_blend(s, vec4_fract(s), pbc_mask);
+        const md_f32x4_t r = md_coord_stream_load_vec4(coords, i);
+        md_f32x4_t s = md_f32x4_linear_combine_3(md_f32x4_sub(r, origin), vI);
+        s = md_f32x4_blend(s, md_f32x4_fract(s), pbc_mask);
         buf[0][i] = (elem_t){ s.x, s.y, s.z, (uint32_t)i };
     }
 
@@ -444,12 +445,12 @@ static inline uint64_t occupancy_hash(uint64_t x) {
 // The mean number of points a point of the subset sees in its own cell of extent ext, the whole set's: a point
 // sharing its cell with k - 1 others of the subset sees about 1 + (k - 1) / f. The cells are counted in an
 // open-addressing table of cap slots (a power of two, at least twice m): one pass over the points, not a sort.
-static double occupancy_at(const vec4_t* pos, size_t m, vec4_t lo, double ext, double f, uint64_t* slot_key, uint32_t* slot_count, size_t cap) {
+static double occupancy_at(const md_f32x4_t* pos, size_t m, md_f32x4_t lo, double ext, double f, uint64_t* slot_key, uint32_t* slot_count, size_t cap) {
     md_memset(slot_key, 0, cap * sizeof(uint64_t));
     const float inv = (float)(1.0 / ext);
     const size_t mask = cap - 1;
     for (size_t i = 0; i < m; ++i) {
-        const vec4_t c = vec4_mul1(vec4_sub(pos[i], lo), inv);
+        const md_f32x4_t c = md_f32x4_mul1(md_f32x4_sub(pos[i], lo), inv);
         const uint64_t cx = (uint64_t)MD_MIN(c.x, 2097151.0f);
         const uint64_t cy = (uint64_t)MD_MIN(c.y, 2097151.0f);
         const uint64_t cz = (uint64_t)MD_MIN(c.z, 2097151.0f);
@@ -476,7 +477,7 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
     const size_t max_m = MD_MIN(N, (size_t)SPATIAL_ACC_OCCUPANCY_SAMPLES * 2);
     size_t cap = 16;
     while (cap < 2 * max_m) cap *= 2;
-    vec4_t*   pos        = md_temp_alloc_array(temp, vec4_t, max_m);
+    md_f32x4_t*   pos        = md_temp_alloc_array(temp, md_f32x4_t, max_m);
     uint64_t* slot_key   = md_temp_alloc_array(temp, uint64_t, cap);
     uint32_t* slot_count = md_temp_alloc_array(temp, uint32_t, cap);
 
@@ -485,12 +486,12 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
     const double f = N <= SPATIAL_ACC_OCCUPANCY_SAMPLES ? 1.0 : (double)SPATIAL_ACC_OCCUPANCY_SAMPLES / (double)N;
     const uint64_t threshold = f >= 1.0 ? UINT64_MAX : (uint64_t)(f * 18446744073709551616.0);
     size_t m = 0;
-    vec4_t lo = vec4_set1(FLT_MAX);
+    md_f32x4_t lo = md_f32x4_set1(FLT_MAX);
     for (size_t i = 0; i < N && m < max_m; ++i) {
         if (f < 1.0 && occupancy_hash(i) >= threshold) continue;
-        const vec4_t p = md_coord_stream_load_vec4(coords, i);
+        const md_f32x4_t p = md_coord_stream_load_vec4(coords, i);
         pos[m++] = p;
-        lo = vec4_min(lo, p);
+        lo = md_f32x4_min(lo, p);
     }
 
     // The ladder: cutoff * 2^(k/4) for k = 0..8, up to SPATIAL_ACC_MAX_CELL_SCALE. Occupancy grows with the cells, so the
@@ -519,7 +520,7 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
 
 // The frame of the structure: grid dimensions, metric, basis and origin
 // A and I are not const: C does not convert double (*)[3] to const double (*)[3] implicitly
-static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], vec4_t origin, uint32_t flags,
+static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], md_f32x4_t origin, uint32_t flags,
                         const uint32_t cell_dim[3], const float inv_cell_ext[3],
                         double G00, double G11, double G22, double H01, double H02, double H12) {
     md_memcpy(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
@@ -608,7 +609,7 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
         flags = md_unitcell_flags(in_unitcell);
     }
 
-    vec4_t origin = vec4_zero();
+    md_f32x4_t origin = md_f32x4_zero();
 
     if ((flags & MD_UNITCELL_PBC_ALL) != MD_UNITCELL_PBC_ALL) {
         MD_ASSERT((flags & MD_UNITCELL_TRICLINIC) == 0);
@@ -616,24 +617,24 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
         // Seed from the first point, not from the origin. A system which sits far from the origin would otherwise
         // get a grid spanning all the way back to it, and the cell count grows with that distance: two points at
         // 6700 A with an 8 A cell extent produce 840 cells per axis instead of 2.
-        vec4_t aabb_min = md_coord_stream_load_vec4(coords, 0);
-        vec4_t aabb_max = aabb_min;
+        md_f32x4_t aabb_min = md_coord_stream_load_vec4(coords, 0);
+        md_f32x4_t aabb_max = aabb_min;
         for (size_t i = 1; i < coords->count; i++) {
-            vec4_t v = md_coord_stream_load_vec4(coords, i);
-            aabb_min = vec4_min(aabb_min, v);
-            aabb_max = vec4_max(aabb_max, v);
+            md_f32x4_t v = md_coord_stream_load_vec4(coords, i);
+            aabb_min = md_f32x4_min(aabb_min, v);
+            aabb_max = md_f32x4_max(aabb_max, v);
         }
 
         // Construct A and I from aabb extent
-        vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
+        md_f32x4_t aabb_ext = md_f32x4_sub(aabb_max, aabb_min);
 
         // Round up to nearest N * CELL_EXT
-        aabb_ext = vec4_mul1(vec4_ceil(vec4_div1(aabb_ext, (float)CELL_EXT)), (float)CELL_EXT);
+        aabb_ext = md_f32x4_mul1(md_f32x4_ceil(md_f32x4_div1(aabb_ext, (float)CELL_EXT)), (float)CELL_EXT);
 
         // Set min as center - half extent
-        vec4_t aabb_center = vec4_mul1(vec4_add(aabb_min, aabb_max), 0.5f);
-        aabb_min = vec4_sub(aabb_center, vec4_mul1(aabb_ext, 0.5f));
-        aabb_max = vec4_add(aabb_center, vec4_mul1(aabb_ext, 0.5f));
+        md_f32x4_t aabb_center = md_f32x4_mul1(md_f32x4_add(aabb_min, aabb_max), 0.5f);
+        aabb_min = md_f32x4_sub(aabb_center, md_f32x4_mul1(aabb_ext, 0.5f));
+        aabb_max = md_f32x4_add(aabb_center, md_f32x4_mul1(aabb_ext, 0.5f));
 
         if ((flags & MD_UNITCELL_PBC_X) == 0) {
             origin.x = aabb_min.x;
@@ -842,14 +843,14 @@ static float calc_r2(double cutoff) {
     return nextafterf(r2, r2 + 1.0f); // Round up to ensure we don't miss neighbors due to floating point precision
 }
 
-static inline vec4_t vec4_cart_to_fract(vec4_t in_c, const md_spatial_acc_t* acc) {
-    const vec4_t t = vec4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
-    const vec4_t I[3] = {
-        vec4_set(acc->I[0][0], acc->I[0][1], acc->I[0][2], 0),
-        vec4_set(acc->I[1][0], acc->I[1][1], acc->I[1][2], 0),
-        vec4_set(acc->I[2][0], acc->I[2][1], acc->I[2][2], 0),
+static inline md_f32x4_t vec4_cart_to_fract(md_f32x4_t in_c, const md_spatial_acc_t* acc) {
+    const md_f32x4_t t = md_f32x4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
+    const md_f32x4_t I[3] = {
+        md_f32x4_set(acc->I[0][0], acc->I[0][1], acc->I[0][2], 0),
+        md_f32x4_set(acc->I[1][0], acc->I[1][1], acc->I[1][2], 0),
+        md_f32x4_set(acc->I[2][0], acc->I[2][1], acc->I[2][2], 0),
     };
-    return vec4_linear_combine_3(vec4_sub(in_c, t), I);
+    return md_f32x4_linear_combine_3(md_f32x4_sub(in_c, t), I);
 }
 
 static inline void cart_to_fract(double out_s[3], const double in_c[3], const md_spatial_acc_t* acc) {
@@ -922,9 +923,9 @@ static inline void aabb_query_center(double out_frac[3], double out_cart[3], con
     double s[3];
     cart_to_fract(s, center, acc);
 
-    if (acc->flags & MD_UNITCELL_PBC_X) s[0] = fract(s[0]);
-    if (acc->flags & MD_UNITCELL_PBC_Y) s[1] = fract(s[1]);
-    if (acc->flags & MD_UNITCELL_PBC_Z) s[2] = fract(s[2]);
+    if (acc->flags & MD_UNITCELL_PBC_X) s[0] = md_f64_fract(s[0]);
+    if (acc->flags & MD_UNITCELL_PBC_Y) s[1] = md_f64_fract(s[1]);
+    if (acc->flags & MD_UNITCELL_PBC_Z) s[2] = md_f64_fract(s[2]);
 
     if (out_frac) {
         out_frac[0] = s[0];
@@ -1142,7 +1143,7 @@ static MD_FORCE_INLINE size_t cell_self(pair_out_t* out, size_t count, const met
 }
 
 // The elements of cell i, moved by shift (in periods), against those of cell j
-static MD_FORCE_INLINE size_t cell_vs_cell(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off_i, uint32_t len_i, uint32_t off_j, uint32_t len_j, vec4_t shift, const bool tri) {
+static MD_FORCE_INLINE size_t cell_vs_cell(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off_i, uint32_t len_i, uint32_t off_j, uint32_t len_j, md_f32x4_t shift, const bool tri) {
     const md_256 sx = md_mm256_set1_ps(shift.x);
     const md_256 sy = md_mm256_set1_ps(shift.y);
     const md_256 sz = md_mm256_set1_ps(shift.z);
@@ -1472,17 +1473,17 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
     node_cache_t cache;
     node_cache_init(&cache);
 
-    vec4_t fract_mask;
+    md_f32x4_t fract_mask;
     md_memcpy(&fract_mask, &g.pbc, sizeof(fract_mask));
-    const vec4_t fcell_dim = vec4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
+    const md_f32x4_t fcell_dim = md_f32x4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
 
     for (size_t pt = 0; pt < ext->count; ++pt) {
         const uint32_t idx = (flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) ? (uint32_t)md_coord_stream_load_idx(ext, pt) : (uint32_t)pt;
         // Into the cell along the periodic axes. Along the others a point outside the grid has no cells to visit
         // beyond the edge, which the wrapping rejects.
-        vec4_t f = vec4_cart_to_fract(md_coord_stream_load_vec4(ext, pt), acc);
-        f = vec4_blend(f, vec4_fract(f), fract_mask);
-        const ivec4_t c_v = ivec4_from_vec4(vec4_floor(vec4_mul(f, fcell_dim)));
+        md_f32x4_t f = vec4_cart_to_fract(md_coord_stream_load_vec4(ext, pt), acc);
+        f = md_f32x4_blend(f, md_f32x4_fract(f), fract_mask);
+        const ivec4_t c_v = ivec4_from_vec4(md_f32x4_floor(md_f32x4_mul(f, fcell_dim)));
         const md_256i v_idx = md_mm256_set1_epi32((int)idx);
 
         for (size_t n = 0; n < num_nbr; ++n) {
@@ -1491,7 +1492,7 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
             if (!grid_wrap(&g, ivec4_add(c_v, ivec4_load(nbr[n])), nc, &shift)) continue;
             const cell_range_t r = cell_at(acc, &cache, nc);
             if (!r.len) continue;
-            const vec4_t fs = vec4_add(f, vec4_from_ivec4(shift));
+            const md_f32x4_t fs = md_f32x4_add(f, vec4_from_ivec4(shift));
             count = point_vs_range(&out, count, &m, e, md_mm256_set1_ps(fs.x), md_mm256_set1_ps(fs.y), md_mm256_set1_ps(fs.z), v_idx, r.off, r.len, tri);
         }
     }

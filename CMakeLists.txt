@@ -75,6 +75,7 @@ set(CORE_FILES
   src/core/md_executor.h
   src/core/md_fifo.c
   src/core/md_fifo.h
+  src/core/md_file.h
   src/core/md_format.h
   src/core/md_fft.c
   src/core/md_fft.h
@@ -116,6 +117,7 @@ set(CORE_FILES
   src/core/md_tracking_allocator.h
   src/core/md_unit.c
   src/core/md_unit.h
+  src/core/md_vec.h
   src/core/md_vec_math.c
   src/core/md_vec_math.h
   src/core/md_virtual_allocator.c
@@ -200,6 +202,15 @@ set(SRC_FILES
   src/md_attributes_internal.h
   src/md_system.c
   src/md_system.h
+  src/md_atom.h
+  src/md_hierarchy.h
+  src/md_backbone.h
+  src/md_lipid.h
+  src/md_bond.h
+  src/md_assembly.h
+  src/md_group.h
+  src/md_system_state.h
+  src/md_run.h
   src/md_pdb.c
   src/md_pdb.h
   src/md_qm.c

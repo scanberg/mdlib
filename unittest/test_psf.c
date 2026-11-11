@@ -8,7 +8,7 @@
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 
 static bool psf_write_text(md_str_t path, const char* text) {

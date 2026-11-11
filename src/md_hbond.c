@@ -141,18 +141,18 @@ static inline int neighbour_degree(const md_system_t* sys, size_t i) {
 
 // Sum of the three bond angles around a three connected atom, in degrees. 360 is planar, 328.4 tetrahedral.
 static float angle_sum(const md_system_t* sys, const md_system_state_t* ref, size_t i) {
-    vec3_t v[3];
+    md_f32x3_t v[3];
     int n = 0;
     md_bond_iter_t it = md_bond_iter(&sys->bond, i);
     while (md_bond_iter_has_next(&it) && n < 3) {
         if (counts_as_neighbour(sys, &it)) {
-            v[n++] = vec3_sub(ref->xyz[md_bond_iter_atom_index(&it)], ref->xyz[i]);
+            v[n++] = md_f32x3_sub(ref->xyz[md_bond_iter_atom_index(&it)], ref->xyz[i]);
         }
         md_bond_iter_next(&it);
     }
     if (n < 3) return 360.0f;
     md_util_min_image_vec3(v, 3, &ref->unitcell);
-    const float a = vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]);
+    const float a = md_f32x3_angle(v[0], v[1]) + md_f32x3_angle(v[1], v[2]) + md_f32x3_angle(v[0], v[2]);
     return (float)MD_RAD_TO_DEG(a);
 }
 
@@ -566,15 +566,15 @@ typedef struct hb_edge_t {
 typedef struct hb_eval_t {
     const md_hbond_query_t* q;
     const md_unitcell_t* cell;
-    const vec3_t* xyz;
+    const md_f32x3_t* xyz;
 
     // Active donors and acceptors, in the order of the search streams
     const uint32_t* act_don;    // -> donor index
-    const vec3_t*   don_vdh;    // Minimum image H - D
+    const md_f32x3_t*   don_vdh;    // Minimum image H - D
     const float*    don_ldh;
-    const vec3_t*   don_pt;     // Search point of the donor: H (unwrapped next to D) or D
+    const md_f32x3_t*   don_pt;     // Search point of the donor: H (unwrapped next to D) or D
     const uint32_t* act_acc;    // -> acceptor index
-    const vec3_t*   acc_pt;
+    const md_f32x3_t*   acc_pt;
 
     bool  search_from_h;
     float cos_min_dha, cos_max_hda, cos_min_xah;
@@ -608,9 +608,9 @@ static inline float smoothstep01(float x) {
 
 // The difference vector b - a by minimum image. dist2 is the minimum image distance squared when known (from the
 // spatial structure), negative otherwise; only vectors which are longer than it pay for the general minimum image.
-static inline vec3_t min_image_diff(vec3_t a, vec3_t b, float dist2, float max_len, const md_unitcell_t* cell) {
-    vec3_t d = vec3_sub(b, a);
-    const float l2 = vec3_dot(d, d);
+static inline md_f32x3_t min_image_diff(md_f32x3_t a, md_f32x3_t b, float dist2, float max_len, const md_unitcell_t* cell) {
+    md_f32x3_t d = md_f32x3_sub(b, a);
+    const float l2 = md_f32x3_dot(d, d);
     const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
     if (l2 > ref2) md_util_min_image_vec3(&d, 1, cell);
     return d;
@@ -650,43 +650,43 @@ static void pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const fl
         if (a_atom == d_atom || a_atom == h_atom) continue;
         if (is_excluded(q, donor, a_atom)) continue;
 
-        const vec3_t v_dh = e->don_vdh[i];
+        const md_f32x3_t v_dh = e->don_vdh[i];
         const float  l_dh = e->don_ldh[i];
-        const vec3_t v = min_image_diff(e->don_pt[i], e->acc_pt[j], ij_dist2[k], 0, e->cell);
-        vec3_t v_ha, v_da;
+        const md_f32x3_t v = min_image_diff(e->don_pt[i], e->acc_pt[j], ij_dist2[k], 0, e->cell);
+        md_f32x3_t v_ha, v_da;
         if (e->search_from_h) {
             v_ha = v;
-            v_da = vec3_add(v_dh, v_ha);
+            v_da = md_f32x3_add(v_dh, v_ha);
         } else {
             v_da = v;
-            v_ha = vec3_sub(v_da, v_dh);
+            v_ha = md_f32x3_sub(v_da, v_dh);
         }
-        const float r_ha = vec3_length(v_ha);
-        const float r_da = vec3_length(v_da);
+        const float r_ha = md_f32x3_length(v_ha);
+        const float r_da = md_f32x3_length(v_da);
         if (p->max_ha > 0 && r_ha > p->max_ha) continue;
         if (p->max_da > 0 && r_da > p->max_da) continue;
         if (r_ha <= 0.0f || r_da <= 0.0f || l_dh <= 0.0f) continue;
 
         // D-H...A at H: between H->D and H->A
-        const float cos_dha = -vec3_dot(v_dh, v_ha) / (l_dh * r_ha);
+        const float cos_dha = -md_f32x3_dot(v_dh, v_ha) / (l_dh * r_ha);
         if (p->min_dha > 0 && cos_dha > e->cos_min_dha) continue;
 
         // H-D...A at D: between D->H and D->A
-        const float cos_hda = vec3_dot(v_dh, v_da) / (l_dh * r_da);
+        const float cos_hda = md_f32x3_dot(v_dh, v_da) / (l_dh * r_da);
         if (p->max_hda > 0 && cos_hda < e->cos_max_hda) continue;
 
         // X-A...H at A, for every atom X bonded to A
         if (p->min_xah > 0) {
-            const vec3_t a_pos = e->acc_pt[j];
-            const vec3_t v_ah = vec3_mul1(v_ha, -1.0f);
+            const md_f32x3_t a_pos = e->acc_pt[j];
+            const md_f32x3_t v_ah = md_f32x3_mul1(v_ha, -1.0f);
             bool ok = true;
             for (uint32_t n = q->acc_nbr_off[acc]; n < q->acc_nbr_off[acc + 1]; ++n) {
                 const uint32_t x = q->acc_nbr[n];
                 if (x == h_atom) continue;
-                const vec3_t v_ax = min_image_diff(a_pos, e->xyz[x], -1.0f, 3.0f, e->cell);
-                const float l_ax = vec3_length(v_ax);
+                const md_f32x3_t v_ax = min_image_diff(a_pos, e->xyz[x], -1.0f, 3.0f, e->cell);
+                const float l_ax = md_f32x3_length(v_ax);
                 if (l_ax <= 0.0f) continue;
-                if (vec3_dot(v_ax, v_ah) / (l_ax * r_ha) > e->cos_min_xah) { ok = false; break; }
+                if (md_f32x3_dot(v_ax, v_ah) / (l_ax * r_ha) > e->cos_min_xah) { ok = false; break; }
             }
             if (!ok) continue;
         }
@@ -713,7 +713,7 @@ static void pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const fl
 // competition needs (more competitors never change its outcome, fewer can). A coarse grid of planes parallel to the
 // faces of the cell, spaced at least 'radius' apart, puts two points within 'radius' of each other in neighbouring
 // cells, across the periodic boundary too. One cell lookup per point rather than a neighbourhood search.
-static void mark_near_seeds(uint8_t* out_hit, const vec3_t* pts, size_t num_pts, const uint8_t* is_seed, float radius, const md_unitcell_t* cell, md_allocator_i* arena) {
+static void mark_near_seeds(uint8_t* out_hit, const md_f32x3_t* pts, size_t num_pts, const uint8_t* is_seed, float radius, const md_unitcell_t* cell, md_allocator_i* arena) {
     const bool has_cell = (md_unitcell_flags(cell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) != 0;
     float I[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };   // Cartesian to fractional, I[col][row]
     float width[3] = { 1, 1, 1 };                           // Perpendicular width of one fractional unit
@@ -723,20 +723,20 @@ static void mark_near_seeds(uint8_t* out_hit, const vec3_t* pts, size_t num_pts,
         md_unitcell_pbc_mask_extract(pbc, cell);
         float A[3][3];
         md_unitcell_A_extract_float(A, cell);
-        const vec3_t a = { A[0][0], A[0][1], A[0][2] };
-        const vec3_t b = { A[1][0], A[1][1], A[1][2] };
-        const vec3_t c = { A[2][0], A[2][1], A[2][2] };
-        const float vol = fabsf(vec3_dot(a, vec3_cross(b, c)));
-        width[0] = vol / vec3_length(vec3_cross(b, c));
-        width[1] = vol / vec3_length(vec3_cross(a, c));
-        width[2] = vol / vec3_length(vec3_cross(a, b));
+        const md_f32x3_t a = { A[0][0], A[0][1], A[0][2] };
+        const md_f32x3_t b = { A[1][0], A[1][1], A[1][2] };
+        const md_f32x3_t c = { A[2][0], A[2][1], A[2][2] };
+        const float vol = fabsf(md_f32x3_dot(a, md_f32x3_cross(b, c)));
+        width[0] = vol / md_f32x3_length(md_f32x3_cross(b, c));
+        width[1] = vol / md_f32x3_length(md_f32x3_cross(a, c));
+        width[2] = vol / md_f32x3_length(md_f32x3_cross(a, b));
     }
 
     float* frac = md_alloc(arena, sizeof(float) * 3 * num_pts);
     float fmin[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
     float fmax[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
     for (size_t k = 0; k < num_pts; ++k) {
-        const vec3_t x = pts[k];
+        const md_f32x3_t x = pts[k];
         for (int r = 0; r < 3; ++r) {
             float f = I[0][r] * x.x + I[1][r] * x.y + I[2][r] * x.z;
             if (pbc[r]) f -= floorf(f);
@@ -866,7 +866,7 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
     // Scratch in an arena of its own, sized by the system rather than by what a temp scope has room for
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
 
-    const vec3_t* xyz = state->xyz;
+    const md_f32x3_t* xyz = state->xyz;
     const md_unitcell_t* cell = &state->unitcell;
     const bool search_from_h = p->max_ha > 0;
     const float radius = search_from_h ? p->max_ha : p->max_da;
@@ -876,7 +876,7 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
 
     // Every donor's hydrogen next to its heavy atom, which keeps D-H whole across the periodic boundary. A covalent
     // D-H is far shorter than 2 Å; only the few longer ones are split by the boundary and pay for the minimum image.
-    vec3_t* vdh = md_alloc(arena, sizeof(vec3_t) * nd);
+    md_f32x3_t* vdh = md_alloc(arena, sizeof(md_f32x3_t) * nd);
     for (size_t k = 0; k < nd; ++k) {
         vdh[k] = min_image_diff(xyz[q->donor_d[k]], xyz[q->donor_h[k]], -1.0f, 2.0f, cell);
     }
@@ -909,10 +909,10 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
             md_memset(acc_active, 1, na);
         } else {
             // The search points of every candidate, donors first
-            vec3_t* pts = md_alloc(arena, sizeof(vec3_t) * (nd + na));
+            md_f32x3_t* pts = md_alloc(arena, sizeof(md_f32x3_t) * (nd + na));
             for (size_t k = 0; k < nd; ++k) {
-                const vec3_t d = xyz[q->donor_d[k]];
-                pts[k] = search_from_h ? vec3_add(d, vdh[k]) : d;
+                const md_f32x3_t d = xyz[q->donor_d[k]];
+                pts[k] = search_from_h ? md_f32x3_add(d, vdh[k]) : d;
             }
             for (size_t k = 0; k < na; ++k) pts[nd + k] = xyz[q->acceptor[k]];
 
@@ -929,21 +929,21 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
 
     // Gather the active donors and acceptors
     uint32_t* act_don = md_alloc(arena, sizeof(uint32_t) * nd);
-    vec3_t*   don_vdh = md_alloc(arena, sizeof(vec3_t) * nd);
+    md_f32x3_t*   don_vdh = md_alloc(arena, sizeof(md_f32x3_t) * nd);
     float*    don_ldh = md_alloc(arena, sizeof(float) * nd);
-    vec3_t*   don_pt  = md_alloc(arena, sizeof(vec3_t) * nd);
+    md_f32x3_t*   don_pt  = md_alloc(arena, sizeof(md_f32x3_t) * nd);
     size_t n_don = 0;
     for (size_t k = 0; k < nd; ++k) {
         if (!don_active[k]) continue;
-        const vec3_t d = xyz[q->donor_d[k]];
+        const md_f32x3_t d = xyz[q->donor_d[k]];
         act_don[n_don] = (uint32_t)k;
         don_vdh[n_don] = vdh[k];
-        don_ldh[n_don] = vec3_length(vdh[k]);
-        don_pt[n_don]  = search_from_h ? vec3_add(d, vdh[k]) : d;
+        don_ldh[n_don] = md_f32x3_length(vdh[k]);
+        don_pt[n_don]  = search_from_h ? md_f32x3_add(d, vdh[k]) : d;
         n_don += 1;
     }
     uint32_t* act_acc = md_alloc(arena, sizeof(uint32_t) * na);
-    vec3_t*   acc_pt  = md_alloc(arena, sizeof(vec3_t) * na);
+    md_f32x3_t*   acc_pt  = md_alloc(arena, sizeof(md_f32x3_t) * na);
     size_t n_acc = 0;
     for (size_t k = 0; k < na; ++k) {
         if (!acc_active[k]) continue;
@@ -972,8 +972,8 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
     };
 
     if (n_don && n_acc) {
-        md_coord_stream_t acc_stream = md_coord_stream_from_aos((const float*)acc_pt, sizeof(vec3_t), NULL, n_acc);
-        md_coord_stream_t don_stream = md_coord_stream_from_aos((const float*)don_pt, sizeof(vec3_t), NULL, n_don);
+        md_coord_stream_t acc_stream = md_coord_stream_from_aos((const float*)acc_pt, sizeof(md_f32x3_t), NULL, n_acc);
+        md_coord_stream_t don_stream = md_coord_stream_from_aos((const float*)don_pt, sizeof(md_f32x3_t), NULL, n_don);
         md_spatial_acc_t sa = { .alloc = arena };
         md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .coords = &acc_stream, .cutoff = radius, .unitcell = cell });
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, &don_stream, radius, pair_callback, &e, 0);

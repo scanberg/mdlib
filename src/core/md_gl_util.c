@@ -23,7 +23,7 @@ bool md_gl_shader_compile(uint32_t shader, md_str_t src, const md_gl_shader_src_
 
     bool result = false;
 
-    if (!md_str_eq_cstr_n(src, "#version ", 9)) {
+    if (!md_str_begins_with(src, MD_STR_LIT("#version "))) {
         MD_LOG_ERROR("Missing version string as first line in shader!");
         goto done;
     }

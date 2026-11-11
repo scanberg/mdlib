@@ -9,6 +9,7 @@
 #include <core/md_parse.h>
 #include <core/md_reader.h>
 #include <core/md_str.h>
+#include <core/md_file.h>
 
 static bool ndx_parse(md_ndx_data_t* data, md_reader_i* r, md_allocator_i* alloc) {
     md_memset(data, 0, sizeof(md_ndx_data_t));

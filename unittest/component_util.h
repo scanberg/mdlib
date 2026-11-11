@@ -9,7 +9,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 #include <core/md_parse.h>
 #include <core/md_vec_math.h>
@@ -21,7 +21,7 @@ typedef struct ref_atom_t {
     char  name[8];
     int   z;
     int   q;
-    vec3_t x;
+    md_f32x3_t x;
 } ref_atom_t;
 
 typedef struct ref_bond_t {

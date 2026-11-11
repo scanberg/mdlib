@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include <core/md_str.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 
 #include <stdint.h>
 #include <stdbool.h>

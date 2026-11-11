@@ -1,9 +1,11 @@
 #include "utest.h"
 
 #include <core/md_allocator.h>
+#include <core/md_os.h>
 #include <core/md_arena_allocator.h>
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
+#include <core/md_vec_math.h>
 #endif
 
 #include "qm_test_util.h"
@@ -568,8 +570,8 @@ UTEST(gto_int, grid_matches_points) {
     const float c = cosf(0.4f), s = sinf(0.4f);
     md_grid_t grid = {
         .orientation = { .elem = { {c, s, 0}, {-s, c, 0}, {0, 0, 1} } },
-        .origin  = vec3_set(5.0f, 9.0f, 10.5f),
-        .spacing = vec3_set(0.7f, 0.6f, 0.8f),
+        .origin  = md_f32x3_set(5.0f, 9.0f, 10.5f),
+        .spacing = md_f32x3_set(0.7f, 0.6f, 0.8f),
         .dim     = { 7, 9, 6 },
     };
     const float so[3] = { 0.5f, 0.5f, 0.5f };
@@ -764,9 +766,9 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
 
     // Around the molecule, not a multiple of the 4x4x4 group on any axis.
     md_grid_t grid = {
-        .orientation = mat3_ident(),
-        .origin  = vec3_set(4.0f, 8.5f, 8.0f),
-        .spacing = vec3_set(0.37f, 0.41f, 0.43f),
+        .orientation = md_f32x3x3_ident(),
+        .origin  = md_f32x3_set(4.0f, 8.5f, 8.0f),
+        .spacing = md_f32x3_set(0.37f, 0.41f, 0.43f),
         .dim     = { 30, 27, 31 },
     };
     const float so[3] = { 0.5f, 0.5f, 0.5f };
@@ -990,9 +992,9 @@ UTEST(gto_int, all_orders_gpu_match_cpu) {
     for (uint32_t L = 0; L <= 8; ++L) EXPECT_GT(q.order_offset[L + 1], q.order_offset[L]);
 
     md_grid_t grid = {
-        .orientation = mat3_ident(),
-        .origin  = vec3_set(-4.0f, -3.5f, -3.8f),
-        .spacing = vec3_set(0.31f, 0.33f, 0.29f),
+        .orientation = md_f32x3x3_ident(),
+        .origin  = md_f32x3_set(-4.0f, -3.5f, -3.8f),
+        .spacing = md_f32x3_set(0.31f, 0.33f, 0.29f),
         .dim     = { 26, 25, 27 },
     };
     const float so[3] = { 0.5f, 0.5f, 0.5f };
@@ -1039,9 +1041,9 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     ASSERT_TRUE(md_gto_int_charges_init(&far, &cd, t.alloc));
 
     md_grid_t grid = {
-        .orientation = mat3_ident(),
-        .origin  = vec3_set(-4.0f, -3.7f, -3.9f),
-        .spacing = vec3_set(0.71f, 0.69f, 0.73f),
+        .orientation = md_f32x3x3_ident(),
+        .origin  = md_f32x3_set(-4.0f, -3.7f, -3.9f),
+        .spacing = md_f32x3_set(0.71f, 0.69f, 0.73f),
         .dim     = { 22, 21, 23 },   // not a multiple of the 4x4x4 brick on any axis
     };
     const float so[3] = { 0.5f, 0.5f, 0.5f };
@@ -1269,7 +1271,7 @@ UTEST(gto_int, benchmark) {
     float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
     for (size_t i = 0; i < na; ++i) for (int k = 0; k < 3; ++k) { lo[k] = MD_MIN(lo[k], xyz[3 * i + k]); hi[k] = MD_MAX(hi[k], xyz[3 * i + k]); }
     const float h = 0.4f;
-    md_grid_t grid = { .orientation = mat3_ident(), .origin = vec3_set(lo[0] - 6.0f, lo[1] - 6.0f, lo[2] - 6.0f), .spacing = vec3_set(h, h, h) };
+    md_grid_t grid = { .orientation = md_f32x3x3_ident(), .origin = md_f32x3_set(lo[0] - 6.0f, lo[1] - 6.0f, lo[2] - 6.0f), .spacing = md_f32x3_set(h, h, h) };
     for (int k = 0; k < 3; ++k) grid.dim[k] = (int)ceilf((hi[k] - lo[k] + 12.0f) / h);
     const size_t nv = md_grid_num_points(&grid);
     float* dmin = (float*)malloc(sizeof(float) * nv);

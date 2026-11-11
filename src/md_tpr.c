@@ -11,9 +11,10 @@
 #include <core/md_array.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
+#include <core/md_vec_math.h>
 
 #include <stdlib.h>
 #include <math.h>
@@ -1798,7 +1799,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // ## Coordinates, nm -> Ångström
     if (data->x) {
         for (size_t i = 0; i < num_atoms; ++i) {
-            state->xyz[i] = vec3_set(data->x[i * 3 + 0] * 10.0f, data->x[i * 3 + 1] * 10.0f, data->x[i * 3 + 2] * 10.0f);
+            state->xyz[i] = md_f32x3_set(data->x[i * 3 + 0] * 10.0f, data->x[i * 3 + 1] * 10.0f, data->x[i * 3 + 2] * 10.0f);
         }
     } else {
         MD_LOG_INFO("TPR: The file has no coordinates");

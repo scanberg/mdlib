@@ -7,7 +7,7 @@
 #include <md_system.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 // Shared conventions for QUANTUM CHEMISTRY READERS.
 //
@@ -69,7 +69,7 @@ md_attribute_id_t md_qm_publish_virtual(struct md_system_t* sys, md_str_t path, 
 
 md_attribute_id_t md_qm_publish_scalar     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, double value);                                  // rank 0
 md_attribute_id_t md_qm_publish_series     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count);            // rank 1 {N}
-md_attribute_id_t md_qm_publish_vec3_series(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const dvec3_t* values, size_t count);           // rank 1 {N} x 3
+md_attribute_id_t md_qm_publish_vec3_series(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const md_f64x3_t* values, size_t count);           // rank 1 {N} x 3
 md_attribute_id_t md_qm_publish_matrix     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols); // rank 2 {R,C}
 md_attribute_id_t md_qm_publish_str        (struct md_system_t* sys, md_str_t path, md_str_t label, md_str_t value);                                                   // rank 1 {1} string
 md_attribute_id_t md_qm_publish_strings    (struct md_system_t* sys, md_str_t path, md_str_t label, const md_str_t* values, size_t count);                             // rank 1 {N} strings
@@ -83,7 +83,7 @@ md_attribute_id_t md_qm_publish_column(struct md_system_t* sys, md_str_t path, m
 // The anchor of a vector group: rank 0, one 3 component value, constant over whatever index space
 // the group's vector has. Angstrom, because it is a point in system space. NOT replicated to match
 // the vector's shape - group members share an index space, not a shape.
-md_attribute_id_t md_qm_publish_origin(struct md_system_t* sys, md_str_t path, dvec3_t origin);
+md_attribute_id_t md_qm_publish_origin(struct md_system_t* sys, md_str_t path, md_f64x3_t origin);
 
 // A second name for an attribute already published. Both names then read one datum - no copy, and a
 // consumer of either is unaffected when the other appears or goes.
@@ -176,7 +176,7 @@ bool md_qm_publish_basis(struct md_system_t* sys, const struct md_gto_basis_t* b
 // n_core / r. Optional: NULL publishes the atomic numbers, which is right for an all electron
 // calculation and the most a reader can say when its format does not state the charges. The
 // attribute is published either way, so a consumer reads it and never chooses.
-bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const dvec3_t coord_angstrom[], size_t count);
+bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const md_f64x3_t coord_angstrom[], size_t count);
 
 // basis/overlap - the AO overlap S[a][b] = <phi_a|phi_b> over the Cartesian AOs md_gto evaluates, as
 // a VIRTUAL attribute computed from basis/shell/*, basis/primitive/* and qm/atom/coordinate, which
@@ -214,7 +214,7 @@ size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attr
 // 'atom_coord_bohr' holds one position per atom the shell list indexes, in BOHR - the unit the
 // exponents are stated in, not the Angstrom the system's own coordinates use.
 // Returns the dimension written, 0 on failure.
-size_t md_qm_compute_overlap(double* out, const struct md_gto_basis_t* basis, const dvec3_t atom_coord_bohr[], size_t num_atoms);
+size_t md_qm_compute_overlap(double* out, const struct md_gto_basis_t* basis, const md_f64x3_t atom_coord_bohr[], size_t num_atoms);
 
 // orbital/{alpha,beta}/density, and orbital/{total,difference}/density when both spins are present,
 // as VIRTUAL attributes computed from orbital/{alpha,beta}/{coefficient,occupation} - which must

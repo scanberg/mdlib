@@ -7,6 +7,7 @@
 
 #include <core/md_arena_allocator.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_pdb.h>
 #include <md_util.h>
 

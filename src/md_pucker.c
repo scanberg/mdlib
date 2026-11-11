@@ -6,6 +6,7 @@
 
 #include <core/md_common.h>
 #include <core/md_format.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -96,7 +97,7 @@ static inline double wrap360(double a) {
     return a < 0.0 ? a + 360.0 : a;
 }
 
-bool md_pucker_cremer_pople(md_pucker_t* out, const vec3_t* xyz, size_t count) {
+bool md_pucker_cremer_pople(md_pucker_t* out, const md_f32x3_t* xyz, size_t count) {
     MD_ASSERT(out);
     md_memset(out, 0, sizeof(md_pucker_t));
     if (!xyz || count < 5 || count > 7) return false;
@@ -167,7 +168,7 @@ bool md_pucker_cremer_pople(md_pucker_t* out, const vec3_t* xyz, size_t count) {
     return true;
 }
 
-static double torsion(const vec3_t a, const vec3_t b, const vec3_t c, const vec3_t d) {
+static double torsion(const md_f32x3_t a, const md_f32x3_t b, const md_f32x3_t c, const md_f32x3_t d) {
     const double b0[3] = {a.x - b.x, a.y - b.y, a.z - b.z};
     const double b1[3] = {c.x - b.x, c.y - b.y, c.z - b.z};
     const double b2[3] = {d.x - c.x, d.y - c.y, d.z - c.z};
@@ -183,9 +184,9 @@ static double torsion(const vec3_t a, const vec3_t b, const vec3_t c, const vec3
     return deg(atan2(y, x));
 }
 
-bool md_pucker_pseudorotation(float* out_phase, float* out_amplitude, const vec3_t xyz[5]) {
+bool md_pucker_pseudorotation(float* out_phase, float* out_amplitude, const md_f32x3_t xyz[5]) {
     if (!xyz) return false;
-    const vec3_t O = xyz[0], C1 = xyz[1], C2 = xyz[2], C3 = xyz[3], C4 = xyz[4];
+    const md_f32x3_t O = xyz[0], C1 = xyz[1], C2 = xyz[2], C3 = xyz[3], C4 = xyz[4];
     const double nu0 = torsion(C4, O, C1, C2);
     const double nu1 = torsion(O, C1, C2, C3);
     const double nu2 = torsion(C1, C2, C3, C4);
@@ -430,7 +431,7 @@ static void atom_label(char* out, size_t cap, const md_system_t* sys, int32_t at
     md_snprintf(out, cap, "%.*s", (int)MD_MIN(s.len, cap - 1), s.ptr);
 }
 
-static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state, const vec3_t* xyz, vec3_t c) {
+static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state, const md_f32x3_t* xyz, md_f32x3_t c) {
     const md_pucker_conformer_t conf = md_pucker_conformer(&r->cp);
     char* buf = r->name;
     const size_t cap = sizeof(r->name);
@@ -464,11 +465,11 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
         }
         if (ref < 0) return;
         // Above: the side from which the ring is numbered clockwise, against the normal of the polygon
-        vec3_t nw = {0};
-        for (size_t k = 0; k < n; ++k) nw = vec3_add(nw, vec3_cross(vec3_sub(xyz[k], c), vec3_sub(xyz[(k + 1) % n], c)));
-        vec3_t d = vec3_sub(state->xyz[ref], xyz[4]);
+        md_f32x3_t nw = {0};
+        for (size_t k = 0; k < n; ++k) nw = md_f32x3_add(nw, md_f32x3_cross(md_f32x3_sub(xyz[k], c), md_f32x3_sub(xyz[(k + 1) % n], c)));
+        md_f32x3_t d = md_f32x3_sub(state->xyz[ref], xyz[4]);
         md_util_min_image_vec3(&d, 1, &state->unitcell);
-        const bool ref_above = vec3_dot(vec3_add(vec3_sub(xyz[4], c), d), nw) < 0.0f;
+        const bool ref_above = md_f32x3_dot(md_f32x3_add(md_f32x3_sub(xyz[4], c), d), nw) < 0.0f;
         char an[16] = "", bn[16] = "";
         if (conf.above[0] >= 0) atom_label(an, sizeof(an), sys, r->atoms[conf.above[0]]);
         if (conf.below[0] >= 0) atom_label(bn, sizeof(bn), sys, r->atoms[conf.below[0]]);
@@ -495,20 +496,20 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
 
 static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state) {
     const size_t n = r->size;
-    vec4_t xyzw[7];
+    md_f32x4_t xyzw[7];
     for (size_t k = 0; k < n; ++k) {
-        const vec3_t x = state->xyz[r->atoms[k]];
-        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
+        const md_f32x3_t x = state->xyz[r->atoms[k]];
+        xyzw[k] = md_f32x4_set(x.x, x.y, x.z, 1.0f);
     }
-    vec3_t com = {0};
+    md_f32x3_t com = {0};
     md_util_deperiodize_self_vec4(xyzw, n, &state->unitcell, &com);
-    vec3_t xyz[7];
-    vec3_t c = {0};
+    md_f32x3_t xyz[7];
+    md_f32x3_t c = {0};
     for (size_t k = 0; k < n; ++k) {
-        xyz[k] = vec3_from_vec4(xyzw[k]);
-        c = vec3_add(c, xyz[k]);
+        xyz[k] = md_f32x3_from_f32x4(xyzw[k]);
+        c = md_f32x3_add(c, xyz[k]);
     }
-    c = vec3_mul1(c, 1.0f / (float)n);
+    c = md_f32x3_mul1(c, 1.0f / (float)n);
     if (!md_pucker_cremer_pople(&r->cp, xyz, n)) {
         r->cp.size = (uint32_t)n;
         return false;

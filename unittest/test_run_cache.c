@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_gro.h>
 #include <md_pdb.h>
 #include <md_xyz.h>
@@ -9,7 +10,7 @@
 #include <md_lammps.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 
 #include <stdio.h>
 #include <stddef.h>

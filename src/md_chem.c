@@ -68,7 +68,7 @@ enum {
 // What the perception works on: N atoms and their bonds, in indices of their own (those of the system for
 // md_chem_perceive, of the region for md_chem_perceive_delta)
 typedef struct chem_t {
-    const vec3_t* xyz;              // NULL without coordinates
+    const md_f32x3_t* xyz;              // NULL without coordinates
     const md_unitcell_t* cell;
     size_t N;
     uint32_t flags;
@@ -150,10 +150,10 @@ static inline int pi_sum(const chem_t* c, uint32_t i) {
     return s;
 }
 
-static inline vec3_t bond_vec(const chem_t* c, uint32_t from, uint32_t to) {
-    vec3_t d = vec3_sub(c->xyz[to], c->xyz[from]);
+static inline md_f32x3_t bond_vec(const chem_t* c, uint32_t from, uint32_t to) {
+    md_f32x3_t d = md_f32x3_sub(c->xyz[to], c->xyz[from]);
     // A bond is far shorter than 3 Å: only one split by the periodic boundary pays for the minimum image
-    if (vec3_dot(d, d) > 9.0f) md_util_min_image_vec3(&d, 1, c->cell);
+    if (md_f32x3_dot(d, d) > 9.0f) md_util_min_image_vec3(&d, 1, c->cell);
     return d;
 }
 
@@ -163,7 +163,7 @@ static inline vec3_t bond_vec(const chem_t* c, uint32_t from, uint32_t to) {
 // length of its bond. 1 sp, 2 sp2, 3 sp3, 0 unknown.
 static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
     if (!c->xyz) return 0;
-    vec3_t v[4];
+    md_f32x3_t v[4];
     uint32_t nb[4];
     int n = 0;
     for (uint32_t k = c->off[i]; k < c->off[i + 1] && n < 4; ++k) {
@@ -174,11 +174,11 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
     const int total = (int)(c->off[i + 1] - c->off[i]) + (int)c->h_imp[i];
     if (total >= 4) return 3;
     if (n == 3) {
-        const float sum = (float)MD_RAD_TO_DEG(vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]));
+        const float sum = (float)MD_RAD_TO_DEG(md_f32x3_angle(v[0], v[1]) + md_f32x3_angle(v[1], v[2]) + md_f32x3_angle(v[0], v[2]));
         return sum >= 350.0f ? 2 : 3;
     }
     if (n == 2) {
-        const float a = (float)MD_RAD_TO_DEG(vec3_angle(v[0], v[1]));
+        const float a = (float)MD_RAD_TO_DEG(md_f32x3_angle(v[0], v[1]));
         if (a > 165.0f) return 1;
         // sp2 has a short bond (a double or aromatic one), whatever the angle: about 108 in a five membered ring.
         // Without one only a wide angle says sp2: a CH2 in a ring is often opened to 117.
@@ -202,9 +202,9 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
 
 static float planar_angle_sum(const chem_t* c, uint32_t i) {
     if (!c->xyz || c->off[i + 1] - c->off[i] != 3) return 0.0f;
-    vec3_t v[3];
+    md_f32x3_t v[3];
     for (int k = 0; k < 3; ++k) v[k] = bond_vec(c, i, c->nbr[c->off[i] + k]);
-    return (float)MD_RAD_TO_DEG(vec3_angle(v[0], v[1]) + vec3_angle(v[1], v[2]) + vec3_angle(v[0], v[2]));
+    return (float)MD_RAD_TO_DEG(md_f32x3_angle(v[0], v[1]) + md_f32x3_angle(v[1], v[2]) + md_f32x3_angle(v[0], v[2]));
 }
 
 // ### SETUP ###
@@ -278,7 +278,7 @@ static void build_graph(chem_t* c) {
         const uint32_t x = (uint32_t)c->pairs[b].idx[0];
         const uint32_t y = (uint32_t)c->pairs[b].idx[1];
         const float sum = md_util_element_covalent_radius(c->z[x]) + md_util_element_covalent_radius(c->z[y]);
-        if (sum > 0) c->ratio[b] = vec3_length(bond_vec(c, x, y)) / sum;
+        if (sum > 0) c->ratio[b] = md_f32x3_length(bond_vec(c, x, y)) / sum;
     }
 }
 
@@ -1869,9 +1869,9 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     const size_t NL = md_array_size(atoms);
     qsort(atoms, NL, sizeof(uint32_t), compare_u32);
 
-    vec3_t* xyz = NULL;
+    md_f32x3_t* xyz = NULL;
     if (state && md_system_state_has_coords(state) && state->num_atoms == N) {
-        xyz = md_alloc(temp, sizeof(vec3_t) * NL);
+        xyz = md_alloc(temp, sizeof(md_f32x3_t) * NL);
         for (size_t l = 0; l < NL; ++l) xyz[l] = state->xyz[atoms[l]];
     }
     chem_t c = {

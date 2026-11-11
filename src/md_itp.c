@@ -8,7 +8,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_path.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
@@ -341,8 +341,7 @@ static void parse_include(itp_parser_t* p, md_str_t arg, md_str_t folder) {
         MD_LOG_INFO("itp: #include '" MD_STR_FMT "' is empty or unreadable", MD_STR_ARG(resolved));
         return;
     }
-    md_str_t sub_folder = {0};
-    md_path_folder(&sub_folder, resolved);
+    md_str_t sub_folder = md_path_folder(resolved);
     // The included file's sections do not leak into the including one's position, but its current
     // moleculetype does: a molecule .itp is commonly followed by position restraints in the parent.
     p->include_depth += 1;
@@ -536,8 +535,7 @@ bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, md_allocator
     if (md_str_empty(text)) {
         MD_LOG_ERROR("Could not open topology file '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
-        md_str_t folder = {0};
-        md_path_folder(&folder, filename);
+        md_str_t folder = md_path_folder(filename);
         ok = md_itp_data_parse_str(data, text, folder, alloc);
     }
     md_temp_end(temp);

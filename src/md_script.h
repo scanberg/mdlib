@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 #include <core/md_unit.h>
 #include <core/md_bitset.h>
 #include <core/md_array.h>
@@ -76,14 +76,14 @@ typedef struct md_script_ir_t md_script_ir_t;
 typedef struct md_script_eval_t md_script_eval_t;
 
 typedef struct md_script_vis_vertex_t {
-    vec3_t pos;
+    md_f32x3_t pos;
 	uint32_t color;
-    vec3_t normal;
+    md_f32x3_t normal;
     uint32_t picking_idx;
 } md_script_vis_vertex_t;
 
 typedef struct md_script_vis_sphere_t {
-    vec3_t pos;
+    md_f32x3_t pos;
     float radius;
     uint32_t color;
 } md_script_vis_sphere_t;
@@ -93,7 +93,7 @@ typedef struct md_script_vis_sphere_t {
 // which shows values in units of its own choosing can format it rather than take the default
 // spelling in 'str'. A label which is not a quantity leaves 'unit' as none.
 typedef struct md_script_vis_text_t {
-    vec3_t pos;
+    md_f32x3_t pos;
     md_str_t  str;
     double value;
     md_unit_t unit;
@@ -112,7 +112,7 @@ typedef struct md_script_vis_t {
     // This is a bit of a shoe-horn case where we want to visualize the superimposed structures and the atoms involved
     // in computing an SDF, therefore this requires transformation matrices as well as the involved structures
     struct {
-        md_array(mat4_t) matrices;
+        md_array(md_f32x4x4_t) matrices;
         md_array(md_bitset_t) structures;   // payloads in alloc
         float extent;
     } sdf;

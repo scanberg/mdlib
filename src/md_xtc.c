@@ -2,13 +2,15 @@
 #include <md_xdr.h>
 
 #include <md_system.h>
+#include <md_run.h>
 
 #include <core/md_common.h>
 #include <core/md_array.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
 #include <core/md_vec_math.h>
 
 #include <libdivide.h>

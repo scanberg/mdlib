@@ -124,23 +124,6 @@ static inline bool md_str_eq_ignore_case(md_str_t str_a, md_str_t str_b) {
     return true;
 }
 
-// Equal in their first n characters: the prefixes of length MD_MIN(len, n) are the same string.
-// With n = prefix.len this is md_str_begins_with(str, prefix).
-static inline bool md_str_eq_n(md_str_t str_a, md_str_t str_b, size_t n) {
-    const size_t len = MD_MIN(str_a.len, n);
-    if (len != MD_MIN(str_b.len, n)) return false;
-    return len == 0 || md_memcmp(str_a.ptr, str_b.ptr, len) == 0;
-}
-
-static inline bool md_str_eq_n_ignore_case(md_str_t str_a, md_str_t str_b, size_t n) {
-    const size_t len = MD_MIN(str_a.len, n);
-    if (len != MD_MIN(str_b.len, n)) return false;
-    for (size_t i = 0; i < len; ++i) {
-        if (md_ascii_to_lower(str_a.ptr[i]) != md_ascii_to_lower(str_b.ptr[i])) return false;
-    }
-    return true;
-}
-
 static inline bool md_str_eq_cstr(md_str_t str, const char* cstr) {
     if (!cstr) return str.len == 0;
     for (size_t i = 0; i < str.len; ++i) {
@@ -157,26 +140,6 @@ static inline bool md_str_eq_cstr_ignore_case(md_str_t str, const char* cstr) {
     return cstr[str.len] == '\0';
 }
 
-// md_str_eq_n with cstr as a str. With n = strlen(cstr) it tells whether str begins with cstr: a str shorter than
-// cstr does not ("END" is not "ENDMDL").
-static inline bool md_str_eq_cstr_n(md_str_t str, const char* cstr, size_t n) {
-    const size_t len = MD_MIN(str.len, n);
-    if (!cstr) return len == 0;
-    for (size_t i = 0; i < len; ++i) {
-        if (cstr[i] == '\0' || cstr[i] != str.ptr[i]) return false;
-    }
-    return len == n || cstr[len] == '\0';
-}
-
-static inline bool md_str_eq_cstr_n_ignore_case(md_str_t str, const char* cstr, size_t n) {
-    const size_t len = MD_MIN(str.len, n);
-    if (!cstr) return len == 0;
-    for (size_t i = 0; i < len; ++i) {
-        if (cstr[i] == '\0' || md_ascii_to_lower(str.ptr[i]) != md_ascii_to_lower(cstr[i])) return false;
-    }
-    return len == n || cstr[len] == '\0';
-}
-
 // Lexicographical order of the characters as unsigned bytes (as memcmp, strcmp and std::string_view::compare),
 // with a prefix ordered before what it is a prefix of. Returns -1, 0 or 1.
 // A byte loop rather than memcmp: what is ordered is mostly short (names, labels), where the call costs more than it saves.
@@ -190,8 +153,17 @@ static inline int md_str_cmp_lex(md_str_t a, md_str_t b) {
     return (a.len > b.len) - (a.len < b.len);
 }
 
+// Prefix and suffix tests. A literal one is measured by MD_STR_LIT: md_str_begins_with(line, MD_STR_LIT("ATOM")).
 static inline bool md_str_begins_with(md_str_t str, md_str_t prefix) {
     return str.len >= prefix.len && (prefix.len == 0 || md_memcmp(str.ptr, prefix.ptr, prefix.len) == 0);
+}
+
+static inline bool md_str_begins_with_ignore_case(md_str_t str, md_str_t prefix) {
+    if (str.len < prefix.len) return false;
+    for (size_t i = 0; i < prefix.len; ++i) {
+        if (md_ascii_to_lower(str.ptr[i]) != md_ascii_to_lower(prefix.ptr[i])) return false;
+    }
+    return true;
 }
 
 static inline bool md_str_ends_with(md_str_t str, md_str_t suffix) {

@@ -12,6 +12,7 @@
 #include <core/md_common.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
 
 #include <limits.h>
 #include <math.h>
@@ -243,21 +244,21 @@ static int graph_mcs(vpair_t* out, const mcs_graph_t* g0, const mcs_graph_t* g1,
 // ### SUPERPOSITION ###
 
 // RMSD of b's positions superposed onto a's, equal weights
-static double pairs_rmsd(const vec3_t* xa, const int32_t* a, const vec3_t* xb, const int32_t* b, size_t n, md_allocator_i* alloc) {
+static double pairs_rmsd(const md_f32x3_t* xa, const int32_t* a, const md_f32x3_t* xb, const int32_t* b, size_t n, md_allocator_i* alloc) {
     if (n < 3) return NAN;
-    vec4_t* pa = md_alloc(alloc, n * sizeof(vec4_t));
-    vec4_t* pb = md_alloc(alloc, n * sizeof(vec4_t));
+    md_f32x4_t* pa = md_alloc(alloc, n * sizeof(md_f32x4_t));
+    md_f32x4_t* pb = md_alloc(alloc, n * sizeof(md_f32x4_t));
     double ca[3] = {0}, cb[3] = {0};
     for (size_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { ca[k] += xa[a[i]].elem[k]; cb[k] += xb[b[i]].elem[k]; }
     for (int k = 0; k < 3; ++k) { ca[k] /= n; cb[k] /= n; }
     for (size_t i = 0; i < n; ++i) {
-        pa[i] = vec4_set((float)(xa[a[i]].x - ca[0]), (float)(xa[a[i]].y - ca[1]), (float)(xa[a[i]].z - ca[2]), 1.0f);
-        pb[i] = vec4_set((float)(xb[b[i]].x - cb[0]), (float)(xb[b[i]].y - cb[1]), (float)(xb[b[i]].z - cb[2]), 1.0f);
+        pa[i] = md_f32x4_set((float)(xa[a[i]].x - ca[0]), (float)(xa[a[i]].y - ca[1]), (float)(xa[a[i]].z - ca[2]), 1.0f);
+        pb[i] = md_f32x4_set((float)(xb[b[i]].x - cb[0]), (float)(xb[b[i]].y - cb[1]), (float)(xb[b[i]].z - cb[2]), 1.0f);
     }
-    const mat3_t R = md_util_optimal_rotation_rel_vec4(pa, pb, n);
+    const md_f32x3x3_t R = md_util_optimal_rotation_rel_vec4(pa, pb, n);
     double ss = 0.0;
     for (size_t i = 0; i < n; ++i) {
-        const vec3_t q = mat3_mul_vec3(R, vec3_from_vec4(pb[i]));
+        const md_f32x3_t q = md_f32x3x3_mul_f32x3(R, md_f32x3_from_f32x4(pb[i]));
         for (int k = 0; k < 3; ++k) { const double d = (double)q.elem[k] - pa[i].elem[k]; ss += d * d; }
     }
     return sqrt(ss / n);
@@ -265,8 +266,8 @@ static double pairs_rmsd(const vec3_t* xa, const int32_t* a, const vec3_t* xb, c
 
 // Among the mappings of a's common atoms onto b's atoms that the bonds allow, the one of the least RMSD
 typedef struct sym_t {
-    const vec3_t* xa;
-    const vec3_t* xb;
+    const md_f32x3_t* xa;
+    const md_f32x3_t* xb;
     const int32_t* a;
     int32_t* best;
     size_t n;

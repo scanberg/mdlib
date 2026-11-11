@@ -1,6 +1,7 @@
 ﻿#include "md_mmcif.h"
 
 #include <core/md_str.h>
+#include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_parse.h>
 #include <core/md_parse_simd.h>
@@ -10,6 +11,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
 #include <core/md_executor.h>
+#include <core/md_vec_math.h>
 #include <md_util.h>
 #include <md_system.h>
 
@@ -404,8 +406,8 @@ static inline bool mmcif_advance_to_next_control_token(mmcif_parse_state_t* s) {
             // Category and control keywords:
             if (c0 == '_' || 
                 md_str_eq(tok, MD_STR_LIT("loop_")) ||
-                md_str_eq_cstr_n(tok, "data_", 5) ||
-                md_str_eq_cstr_n(tok, "save_", 5)) 
+                md_str_begins_with(tok, MD_STR_LIT("data_")) ||
+                md_str_begins_with(tok, MD_STR_LIT("save_"))) 
             {
                 return true;
             }
@@ -695,7 +697,7 @@ typedef struct {
 // An operator of _pdbx_struct_oper_list
 typedef struct {
     md_str_t  id;
-    mat4_t transform;
+    md_f32x4x4_t transform;
 } mmcif_oper_t;
 
 static bool mmcif_parse_assembly_gen(md_array(mmcif_assembly_gen_t)* rows, mmcif_parse_state_t* state, md_allocator_i* alloc) {
@@ -760,8 +762,8 @@ static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_sta
         }
     }
     for (size_t i = 0; i < sec.num_rows; ++i) {
-        // Row r column c of the matrix, column major as mat4_t: elem[c][r]
-        mmcif_oper_t op = {.id = md_alloc_str(alloc, mmcif_section_value(&sec, i, id_col)), .transform = mat4_ident()};
+        // Row r column c of the matrix, column major as md_f32x4x4_t: elem[c][r]
+        mmcif_oper_t op = {.id = md_alloc_str(alloc, mmcif_section_value(&sec, i, id_col)), .transform = md_f32x4x4_ident()};
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
                 op.transform.elem[c][r] = (float)parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
@@ -863,12 +865,12 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_arr
         }
         size_t* idx = md_temp_alloc_zero(temp, group_count * sizeof(size_t));
         for (size_t n = 0; n < total; ++n) {
-            mmcif_oper_t op = {.transform = mat4_ident()};
+            mmcif_oper_t op = {.transform = md_f32x4x4_ident()};
             char name[64];
             int len = 0;
             for (size_t g = 0; g < group_count; ++g) {
                 const mmcif_oper_t* f = *opers + group_ops[g][idx[g]];
-                op.transform = mat4_mul(op.transform, f->transform);
+                op.transform = md_f32x4x4_mul(op.transform, f->transform);
                 len += snprintf(name + len, sizeof(name) - len, "%s" MD_STR_FMT, g ? "x" : "", MD_STR_ARG(f->id));
                 len = MD_MIN(len, (int)sizeof(name) - 1);
             }
@@ -946,7 +948,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
     }
 
     const size_t oper_count = md_array_size(opers);
-    mat4_t*     transform = md_alloc(temp_alloc, oper_count * sizeof(mat4_t));
+    md_f32x4x4_t*     transform = md_alloc(temp_alloc, oper_count * sizeof(md_f32x4x4_t));
     md_label_t* id        = md_alloc(temp_alloc, oper_count * sizeof(md_label_t));
     for (size_t i = 0; i < oper_count; ++i) {
         transform[i] = opers[i].transform;
@@ -1235,7 +1237,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
     // Read category headers
     md_str_t item;
-    while (mmcif_peek_token(&item, state) && mmcif_is_item(item) && md_str_eq_cstr_n(item, "_atom_site.", 11)) {
+    while (mmcif_peek_token(&item, state) && mmcif_is_item(item) && md_str_begins_with(item, MD_STR_LIT("_atom_site."))) {
         if (!mmcif_next_token(&item, state)) {
             MD_LOG_ERROR("Unexpected tokenizer failure while reading _atom_site headers");
             return false;
@@ -1352,7 +1354,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
             return false;
         }
 
-        if (md_str_eq_cstr_n(tok, "_cell.", 6)) {
+        if (md_str_begins_with(tok, MD_STR_LIT("_cell."))) {
             if (!mmcif_next_token(&tok, state)) {
                 MD_LOG_ERROR("Unexpected tokenizer failure consuming _cell token");
                 return false;
@@ -1432,37 +1434,37 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             continue;
         }
 
-        if (md_str_eq_cstr_n(tok, "_atom_site.", 11)) {
+        if (md_str_begins_with(tok, MD_STR_LIT("_atom_site."))) {
             if (!mmcif_parse_atom_site(&atom_entries, &state, temp_arena, ex)) {
                 MD_LOG_ERROR("Failed to parse _atom_site section");
                 goto done;
             }
             atom_site_parsed = true;
-        } else if (md_str_eq_cstr_n(tok, "_cell.", 6)) {
+        } else if (md_str_begins_with(tok, MD_STR_LIT("_cell."))) {
             if (!mmcif_parse_cell(&cell, &state)) {
                 MD_LOG_ERROR("Failed to parse _cell section");
                 goto done;
             }
             cell_parsed = true;
-        } else if (md_str_eq_cstr_n(tok, "_entity.", 8)) {
+        } else if (md_str_begins_with(tok, MD_STR_LIT("_entity."))) {
             if (!mmcif_parse_entity(&entities, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _entity section");
                 goto done;
             }
             entity_parsed = true;
-        } else if (md_str_eq_cstr_n(tok, "_entity_poly.", 13)) {
+        } else if (md_str_begins_with(tok, MD_STR_LIT("_entity_poly."))) {
             if (!mmcif_parse_entity_poly(&entities, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _entity_poly section");
                 goto done;
             }
             entity_poly_parsed = true;
-        } else if (md_str_eq_cstr_n(tok, "_pdbx_struct_assembly_gen.", 26)) {
+        } else if (md_str_begins_with(tok, MD_STR_LIT("_pdbx_struct_assembly_gen."))) {
             // The assemblies are read as far as they can be: without them the structure is still the structure
             if (!mmcif_parse_assembly_gen(&assembly_gen, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _pdbx_struct_assembly_gen section");
             }
             assembly_gen_parsed = true;
-        } else if (md_str_eq_cstr_n(tok, "_pdbx_struct_oper_list.", 23)) {
+        } else if (md_str_begins_with(tok, MD_STR_LIT("_pdbx_struct_oper_list."))) {
             if (!mmcif_parse_oper_list(&opers, &state, temp_arena)) {
                 MD_LOG_ERROR("Failed to parse _pdbx_struct_oper_list section");
             }
@@ -1604,7 +1606,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             prev_entity = entity;
             prev_seq = seq_id;
  
-            md_array_push_no_grow(out_state->xyz, vec3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
+            md_array_push_no_grow(out_state->xyz, md_f32x3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
             md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
             if (occupancy && b_iso && formal_charge) {

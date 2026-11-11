@@ -5,6 +5,7 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_path.h>
 #include <core/md_platform.h>
 
@@ -105,8 +106,8 @@ UTEST(os, path_relative) {
         md_str_t from = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
         md_str_t to   = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         md_str_t rel  = md_path_make_relative(from, to, temp_arena);
-        md_str_t folder = {0};
-        EXPECT_TRUE(md_path_folder(&folder, from));
+        md_str_t folder = md_path_folder(from);
+        EXPECT_FALSE(md_str_empty(folder));
         md_str_t joined = md_alloc_printf(temp_arena, MD_STR_FMT MD_STR_FMT, MD_STR_ARG(folder), MD_STR_ARG(rel));
         EXPECT_TRUE(md_str_eq(md_path_make_canonical(joined, temp_arena), md_path_make_canonical(to, temp_arena)));
     }

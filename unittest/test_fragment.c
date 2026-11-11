@@ -8,7 +8,7 @@
 #include <md_util.h>
 #include <core/md_allocator.h>
 #include <core/md_parse.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 

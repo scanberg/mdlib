@@ -2,6 +2,7 @@
 #include "test_executor.h"
 
 #include <core/md_common.h>
+#include <md_run.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
@@ -461,7 +462,7 @@ UTEST_F(vial_spec, lowers) {
 // Phase 3: every block is evaluated, its static part and its first frames, on its structure's run. What fails is
 // counted, not failed, until the interpreter is complete.
 #include "../src/vial/interp.h"
-#include <core/md_os.h>
+#include <core/md_file.h>
 
 // Frames for at(): the run's, or the structure's own coordinates for T
 typedef struct vial_spec__frames_t {

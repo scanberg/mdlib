@@ -2,6 +2,7 @@
 
 #include <md_ase_traj.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <core/md_allocator.h>
 #include <math.h>
 

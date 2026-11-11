@@ -4,6 +4,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_str.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <float.h>
@@ -171,25 +172,25 @@ UTEST(vlx, minimal_example) {
 	md_gto_expand_with_ao_coeffs(gtos, &basis, atom_xyz, sizeof(float) * 3, mo_coeffs, 1.0e-6);
 
 	// Calculate bounding box (AABB)
-	vec3_t min_aabb = vec3_set1( FLT_MAX);
-	vec3_t max_aabb = vec3_set1(-FLT_MAX);
+	md_f32x3_t min_aabb = md_f32x3_set1( FLT_MAX);
+	md_f32x3_t max_aabb = md_f32x3_set1(-FLT_MAX);
 
 	for (size_t i = 0; i < num_gtos; ++i) {
-		vec3_t coord = vec3_set(gtos[i].x, gtos[i].y, gtos[i].z);
-		min_aabb = vec3_min(min_aabb, coord);
-		max_aabb = vec3_max(max_aabb, coord);
+		md_f32x3_t coord = md_f32x3_set(gtos[i].x, gtos[i].y, gtos[i].z);
+		min_aabb = md_f32x3_min(min_aabb, coord);
+		max_aabb = md_f32x3_max(max_aabb, coord);
 	}
 
 	// Add some padding
 	const float pad = 6.0f;
-	min_aabb = vec3_sub1(min_aabb, pad);
-	max_aabb = vec3_add1(max_aabb, pad);
+	min_aabb = md_f32x3_sub1(min_aabb, pad);
+	max_aabb = md_f32x3_add1(max_aabb, pad);
 
-	vec3_t ext_aabb = vec3_sub(max_aabb, min_aabb);
-	vec3_t step_size = vec3_div1(ext_aabb, (float)vol_dim);
+	md_f32x3_t ext_aabb = md_f32x3_sub(max_aabb, min_aabb);
+	md_f32x3_t step_size = md_f32x3_div1(ext_aabb, (float)vol_dim);
 
 	// Shift origin by half a voxel such that the samples are constructed from the center of each voxel
-	vec3_t origin = vec3_add(min_aabb, vec3_mul1(step_size, 0.5f));
+	md_f32x3_t origin = md_f32x3_add(min_aabb, md_f32x3_mul1(step_size, 0.5f));
 
 	// Allocate data for storing the result
 	float* vol_data = (float*)md_alloc(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
@@ -197,7 +198,7 @@ UTEST(vlx, minimal_example) {
 
 	// Setup the grid structure that control how we aim to sample over space
 	md_grid_t grid = (md_grid_t) {
-		.orientation = mat3_ident(),
+		.orientation = md_f32x3x3_ident(),
 		.origin = origin,
 		.spacing = step_size,
 		.dim = {vol_dim, vol_dim, vol_dim},
@@ -642,7 +643,7 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 
 #include <hdf5.h>
 #include <stdio.h>	// remove
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <md_util.h>
 #include <md_filter.h>
 #include <md_script.h>

@@ -11,7 +11,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 
 #define TPR_DIR MD_UNITTEST_DATA_DIR "/tpr/"

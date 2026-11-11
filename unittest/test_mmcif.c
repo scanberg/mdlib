@@ -5,7 +5,9 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
+#include <core/md_file.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
 
 #define MAX_VALIDATION_SAMPLES 100
 
@@ -211,8 +213,8 @@ UTEST(mmcif, assemblies) {
         const md_instance_idx_t i0[] = {0};
         const uint32_t o0[] = {3, 4};
         EXPECT_TRUE(part_is(a, parts.beg, i0, 1, o0, 2));
-        const vec4_t p = {1, 2, 3, 1};
-        const vec4_t q = mat4_mul_vec4(a->oper_transform[4], p);
+        const md_f32x4_t p = {1, 2, 3, 1};
+        const md_f32x4_t q = md_f32x4x4_mul_f32x4(a->oper_transform[4], p);
         EXPECT_NEAR(12.0f, q.x, 1e-5f);
         EXPECT_NEAR(-1.0f, q.y, 1e-5f);
         EXPECT_NEAR(8.0f, q.z, 1e-5f);
@@ -249,8 +251,8 @@ UTEST(mmcif, assembly_key_value) {
     ASSERT_EQ(1, a->oper_count);
     const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(sys.instance.count, ir.end - ir.beg);
-    const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[0], sizeof(mat4_t)));
+    const md_f32x4x4_t I = md_f32x4x4_ident();
+    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[0], sizeof(md_f32x4x4_t)));
     md_system_free(&sys);
     md_system_state_free(&state);
 }

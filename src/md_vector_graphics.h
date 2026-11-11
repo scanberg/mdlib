@@ -2,7 +2,7 @@
 
 #include <core/md_array.h>
 #include <core/md_str.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -22,8 +22,8 @@ typedef enum md_vg_paint_type_t {
 } md_vg_paint_type_t;
 
 typedef struct md_vg_linear_gradient_t {
-    vec2_t p0;
-    vec2_t p1;
+    md_f32x2_t p0;
+    md_f32x2_t p1;
     md_vg_color_t col0;
     md_vg_color_t col1;
 } md_vg_linear_gradient_t;
@@ -97,21 +97,21 @@ typedef struct md_vg_cmd_t {
     md_vg_style_t style;
     union {
         struct {
-            vec2_t p0;
-            vec2_t p1;
+            md_f32x2_t p0;
+            md_f32x2_t p1;
         } line;
         struct {
-            vec2_t min;
-            vec2_t max;
+            md_f32x2_t min;
+            md_f32x2_t max;
             float rounding;
         } rect;
         struct {
-            vec2_t center;
+            md_f32x2_t center;
             float radius;
         } circle;
         struct {
-            vec2_t center;
-            vec2_t radius;
+            md_f32x2_t center;
+            md_f32x2_t radius;
             float rotation;
         } ellipse;
         struct {
@@ -124,15 +124,15 @@ typedef struct md_vg_cmd_t {
             uint32_t point_count;
         } polygon;
         struct {
-            vec2_t p1;
-            vec2_t p2;
-            vec2_t p3;
+            md_f32x2_t p1;
+            md_f32x2_t p2;
+            md_f32x2_t p3;
         } bezier_quadratic;
         struct {
-            vec2_t p1;
-            vec2_t p2;
-            vec2_t p3;
-            vec2_t p4;
+            md_f32x2_t p1;
+            md_f32x2_t p2;
+            md_f32x2_t p3;
+            md_f32x2_t p4;
         } bezier_cubic;
         struct {
             uint32_t verb_offset;
@@ -141,7 +141,7 @@ typedef struct md_vg_cmd_t {
             uint32_t point_count;
         } path;
         struct {
-            vec2_t pos;
+            md_f32x2_t pos;
             float font_size;
             uint32_t text_offset;
             uint32_t text_len;
@@ -153,13 +153,13 @@ typedef struct md_vg_cmd_t {
 
 typedef struct md_vg_scene_t {
     struct md_allocator_i* alloc;
-    vec2_t size;
+    md_f32x2_t size;
     md_str_t default_font_family;
     md_array(md_vg_cmd_t) commands;
-    md_array(vec2_t) points;
+    md_array(md_f32x2_t) points;
     md_array(md_vg_path_verb_t) verbs;
     md_array(char) strings;
-    md_array(vec2_t) path_points;
+    md_array(md_f32x2_t) path_points;
     md_array(md_vg_path_verb_t) path_verbs;
 } md_vg_scene_t;
 
@@ -182,7 +182,7 @@ static inline md_vg_paint_t md_vg_paint_color(md_vg_color_t color) {
     return paint;
 }
 
-static inline md_vg_paint_t md_vg_paint_linear_gradient(vec2_t p0, vec2_t p1, md_vg_color_t col0, md_vg_color_t col1) {
+static inline md_vg_paint_t md_vg_paint_linear_gradient(md_f32x2_t p0, md_f32x2_t p1, md_vg_color_t col0, md_vg_color_t col1) {
     md_vg_paint_t paint;
     md_memset(&paint, 0, sizeof(paint));
     paint.type = MD_VG_PAINT_LINEAR_GRADIENT;
@@ -227,13 +227,13 @@ static inline md_vg_style_t md_vg_style_fill_and_stroke(md_vg_color_t fill, md_v
     return style;
 }
 
-md_vg_color_t md_vg_color_from_vec4(vec4_t color);
-vec4_t md_vg_color_to_vec4(md_vg_color_t color);
+md_vg_color_t md_vg_color_from_vec4(md_f32x4_t color);
+md_f32x4_t md_vg_color_to_vec4(md_vg_color_t color);
 
-void md_vg_scene_init(md_vg_scene_t* scene, vec2_t size, struct md_allocator_i* alloc);
+void md_vg_scene_init(md_vg_scene_t* scene, md_f32x2_t size, struct md_allocator_i* alloc);
 void md_vg_scene_free(md_vg_scene_t* scene);
 void md_vg_scene_clear(md_vg_scene_t* scene);
-void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size);
+void md_vg_scene_set_size(md_vg_scene_t* scene, md_f32x2_t size);
 void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, md_str_t font_family);
 
 // The scene as an SVG document: written to w, as a string allocated from alloc (see md_alloc_str), or to a file
@@ -241,49 +241,49 @@ void  md_vg_scene_write_svg(struct md_writer_i* w, const md_vg_scene_t* scene);
 md_str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, struct md_allocator_i* alloc);
 bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, md_str_t path);
 
-void md_vg_add_line(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, md_vg_color_t color, float thickness);
-void md_vg_add_line_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, const md_vg_style_t* style);
+void md_vg_add_line(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_vg_color_t color, float thickness);
+void md_vg_add_line_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, const md_vg_style_t* style);
 
-void md_vg_add_rect(md_vg_scene_t* scene, vec2_t min, vec2_t max, md_vg_color_t color, float rounding, float thickness);
-void md_vg_add_rect_filled(md_vg_scene_t* scene, vec2_t min, vec2_t max, md_vg_color_t color, float rounding);
-void md_vg_add_rect_styled(md_vg_scene_t* scene, vec2_t min, vec2_t max, float rounding, const md_vg_style_t* style);
+void md_vg_add_rect(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, md_vg_color_t color, float rounding, float thickness);
+void md_vg_add_rect_filled(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, md_vg_color_t color, float rounding);
+void md_vg_add_rect_styled(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, float rounding, const md_vg_style_t* style);
 
-void md_vg_add_circle(md_vg_scene_t* scene, vec2_t center, float radius, md_vg_color_t color, int num_segments, float thickness);
-void md_vg_add_circle_filled(md_vg_scene_t* scene, vec2_t center, float radius, md_vg_color_t color, int num_segments);
-void md_vg_add_circle_styled(md_vg_scene_t* scene, vec2_t center, float radius, int num_segments, const md_vg_style_t* style);
+void md_vg_add_circle(md_vg_scene_t* scene, md_f32x2_t center, float radius, md_vg_color_t color, int num_segments, float thickness);
+void md_vg_add_circle_filled(md_vg_scene_t* scene, md_f32x2_t center, float radius, md_vg_color_t color, int num_segments);
+void md_vg_add_circle_styled(md_vg_scene_t* scene, md_f32x2_t center, float radius, int num_segments, const md_vg_style_t* style);
 
-void md_vg_add_ellipse(md_vg_scene_t* scene, vec2_t center, vec2_t radius, md_vg_color_t color, float rotation, int num_segments, float thickness);
-void md_vg_add_ellipse_filled(md_vg_scene_t* scene, vec2_t center, vec2_t radius, md_vg_color_t color, float rotation, int num_segments);
-void md_vg_add_ellipse_styled(md_vg_scene_t* scene, vec2_t center, vec2_t radius, float rotation, int num_segments, const md_vg_style_t* style);
+void md_vg_add_ellipse(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radius, md_vg_color_t color, float rotation, int num_segments, float thickness);
+void md_vg_add_ellipse_filled(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radius, md_vg_color_t color, float rotation, int num_segments);
+void md_vg_add_ellipse_styled(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radius, float rotation, int num_segments, const md_vg_style_t* style);
 
-void md_vg_add_triangle(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, md_vg_color_t color, float thickness);
-void md_vg_add_triangle_filled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, md_vg_color_t color);
-void md_vg_add_triangle_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, const md_vg_style_t* style);
+void md_vg_add_triangle(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_vg_color_t color, float thickness);
+void md_vg_add_triangle_filled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_vg_color_t color);
+void md_vg_add_triangle_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, const md_vg_style_t* style);
 
-void md_vg_add_polyline(md_vg_scene_t* scene, const vec2_t* points, size_t count, md_vg_color_t color, bool closed, float thickness);
-void md_vg_add_polyline_styled(md_vg_scene_t* scene, const vec2_t* points, size_t count, bool closed, const md_vg_style_t* style);
-void md_vg_add_convex_poly_filled(md_vg_scene_t* scene, const vec2_t* points, size_t count, md_vg_color_t color);
-void md_vg_add_polygon_styled(md_vg_scene_t* scene, const vec2_t* points, size_t count, const md_vg_style_t* style);
+void md_vg_add_polyline(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, md_vg_color_t color, bool closed, float thickness);
+void md_vg_add_polyline_styled(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, bool closed, const md_vg_style_t* style);
+void md_vg_add_convex_poly_filled(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, md_vg_color_t color);
+void md_vg_add_polygon_styled(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, const md_vg_style_t* style);
 
-void md_vg_add_bezier_quadratic(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, md_vg_color_t color, float thickness);
-void md_vg_add_bezier_quadratic_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, const md_vg_style_t* style);
+void md_vg_add_bezier_quadratic(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_vg_color_t color, float thickness);
+void md_vg_add_bezier_quadratic_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, const md_vg_style_t* style);
 
-void md_vg_add_bezier_cubic(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, vec2_t p3, md_vg_color_t color, float thickness);
-void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, vec2_t p2, vec2_t p3, const md_vg_style_t* style);
+void md_vg_add_bezier_cubic(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_f32x2_t p3, md_vg_color_t color, float thickness);
+void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_f32x2_t p3, const md_vg_style_t* style);
 
-void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_str_t text);
-void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, md_str_t text);
+void md_vg_add_text(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg_color_t color, md_str_t text);
+void md_vg_add_text_styled(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, const md_vg_style_t* style, md_str_t text);
 // pos.y is the top of the text, as for md_vg_add_text; pos.x is the point the anchor names
-void md_vg_add_text_anchored(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, md_str_t text);
+void md_vg_add_text_anchored(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, md_str_t text);
 // As md_vg_add_text_anchored, turned by 'rotation' degrees (clockwise, -90 reads upwards) about the middle of the line
 // at pos.x: (pos.x, pos.y + font_size / 2)
-void md_vg_add_text_rotated(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, float rotation, md_str_t text);
+void md_vg_add_text_rotated(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, float rotation, md_str_t text);
 
 void md_vg_path_clear(md_vg_scene_t* scene);
-void md_vg_path_move_to(md_vg_scene_t* scene, vec2_t pos);
-void md_vg_path_line_to(md_vg_scene_t* scene, vec2_t pos);
-void md_vg_path_bezier_quadratic_curve_to(md_vg_scene_t* scene, vec2_t p1, vec2_t p2);
-void md_vg_path_bezier_cubic_curve_to(md_vg_scene_t* scene, vec2_t p1, vec2_t p2, vec2_t p3);
+void md_vg_path_move_to(md_vg_scene_t* scene, md_f32x2_t pos);
+void md_vg_path_line_to(md_vg_scene_t* scene, md_f32x2_t pos);
+void md_vg_path_bezier_quadratic_curve_to(md_vg_scene_t* scene, md_f32x2_t p1, md_f32x2_t p2);
+void md_vg_path_bezier_cubic_curve_to(md_vg_scene_t* scene, md_f32x2_t p1, md_f32x2_t p2, md_f32x2_t p3);
 void md_vg_path_close(md_vg_scene_t* scene);
 void md_vg_path_stroke(md_vg_scene_t* scene, md_vg_color_t color, float thickness);
 void md_vg_path_stroke_styled(md_vg_scene_t* scene, const md_vg_style_t* style);

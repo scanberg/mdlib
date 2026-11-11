@@ -27,7 +27,7 @@
 #include "interp.h"
 
 #include <core/md_os.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 #define VIAL_VOLUME_MAX_VOXELS      ((uint64_t)512 * 512 * 512)
 #define VIAL_VOLUME_SAMPLES         4.0     // per Å, by default
@@ -48,10 +48,10 @@ typedef struct vial_sdf_kind_t {
     uint32_t    n;
     uint32_t*   atoms;          // [count][n], in the order they pair
     uint32_t*   own;            // [count][n], each structure's ascending: not its own target
-    vec4_t*     ref_xyzw;       // [n]
-    vec3_t      ref_com;
-    mat3_t      R;              // the kind's reference about its centre to the first kind's about its centre
-    vec3_t      t;
+    md_f32x4_t*     ref_xyzw;       // [n]
+    md_f32x3_t      ref_com;
+    md_f32x3x3_t      R;              // the kind's reference about its centre to the first kind's about its centre
+    md_f32x3_t      t;
 } vial_sdf_kind_t;
 
 typedef enum vial_volume_kind_t {
@@ -73,7 +73,7 @@ typedef struct vial_volume_t {
     uint32_t            num_kinds;
     uint32_t            num_structures; // over every kind, kind by kind
     uint32_t            max_n;
-    mat3_t              axes;
+    md_f32x3x3_t              axes;
     const struct md_system_t* sys;
     double              extent[3];      // the box's half extents
     // A box: its corner and lengths in the run's frame
@@ -113,9 +113,9 @@ bool vial_volume_like(vial_volume_t* out, const vial_volume_t* vol, md_allocator
 const uint32_t* vial_volume_structure(const vial_volume_t* vol, uint32_t s, uint32_t* n);
 
 // Structure s of an sdf at positions xyz in cell: the matrix from the run's frame to the volume's, column-major as
-// mat4_t is, the structure placed where it is drawn. False when it is not fitted at this frame, as when it spans too
+// md_f32x4x4_t is, the structure placed where it is drawn. False when it is not fitted at this frame, as when it spans too
 // much of the cell to place.
-bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, size_t num_atoms, const md_unitcell_t* cell, mat4_t* out);
+bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, size_t num_atoms, const md_unitcell_t* cell, md_f32x4x4_t* out);
 
 // The bulk density over the frames that had a cell, NaN when none had one
 double vial_volume_bulk(const vial_volume_t* vol);

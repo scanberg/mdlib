@@ -4,6 +4,7 @@
 #include <core/md_reader.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_allocator.h>
 
 #include "comma_locale.h"

@@ -35,6 +35,7 @@
 #include <md_qm.h>
 #include <md_molden.h>
 #include <core/md_os.h>
+#include <core/md_vec_math.h>
 
 #include <float.h>
 #include <math.h>
@@ -164,9 +165,9 @@ static md_grid_t dm_grid(const dm_src_t* s, int dim, float h) {
     for (int k = 0; k < 3; ++k) c[k] /= (double)s->num_atoms;
     const float half = 0.5f * h * (float)dim;
     md_grid_t grid = {
-        .orientation = mat3_ident(),
-        .origin  = vec3_set((float)c[0] - half, (float)c[1] - half, (float)c[2] - half),
-        .spacing = vec3_set(h, h, h),
+        .orientation = md_f32x3x3_ident(),
+        .origin  = md_f32x3_set((float)c[0] - half, (float)c[1] - half, (float)c[2] - half),
+        .spacing = md_f32x3_set(h, h, h),
         .dim     = { dim, dim, dim },
     };
     return grid;
@@ -595,9 +596,9 @@ UTEST(gto_localization, pieces_match_one_launch) {
     const int dim = 28;
     const float h = 0.35f;
     const md_grid_t grid = {
-        .orientation = mat3_ident(),
-        .origin  = vec3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
-        .spacing = vec3_set(h, h, h),
+        .orientation = md_f32x3x3_ident(),
+        .origin  = md_f32x3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
+        .spacing = md_f32x3_set(h, h, h),
         .dim     = { dim, dim, dim },
     };
     const size_t n = (size_t)dim * dim * dim;
@@ -643,9 +644,9 @@ UTEST(gto_localization, matches_cpu) {
         const int dim = 28;
         const float h = 0.35f;
         const md_grid_t grid = {
-            .orientation = mat3_ident(),
-            .origin  = vec3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
-            .spacing = vec3_set(h, h, h),
+            .orientation = md_f32x3x3_ident(),
+            .origin  = md_f32x3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
+            .spacing = md_f32x3_set(h, h, h),
             .dim     = { dim, dim, dim },
         };
         const size_t n = (size_t)dim * dim * dim;
@@ -710,7 +711,7 @@ static md_grid_t plane_grid(const float* xyz, size_t num_atoms, int layers) {
     for (size_t a = 0; a < num_atoms; ++a) for (int k = 0; k < 3; ++k) c[k] += xyz[3 * a + k] / (double)num_atoms;
     // turned by 0.5 rad about (1, 2, 3) / |(1, 2, 3)|
     const double ax[3] = {1.0 / sqrt(14.0), 2.0 / sqrt(14.0), 3.0 / sqrt(14.0)}, an = 0.5, co = cos(an), si = sin(an);
-    mat3_t R;
+    md_f32x3x3_t R;
     for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
         const double k[3][3] = {{0, -ax[2], ax[1]}, {ax[2], 0, -ax[0]}, {-ax[1], ax[0], 0}};
         double kk = 0; for (int m = 0; m < 3; ++m) kk += k[i][m] * k[m][j];
@@ -721,8 +722,8 @@ static md_grid_t plane_grid(const float* xyz, size_t num_atoms, int layers) {
     const int w  = getenv("GTO_PLANE_W") ? atoi(getenv("GTO_PLANE_W")) : 96;
     const int hh = getenv("GTO_PLANE_HH") ? atoi(getenv("GTO_PLANE_HH")) : 80;
     // the corner: the centre less half the extent along the first two axes, the first layer through the centre
-    md_grid_t g = { .orientation = R, .spacing = vec3_set(h, h, h), .dim = { w, hh, layers } };
-    vec3_t o = vec3_set((float)c[0], (float)c[1], (float)c[2]);
+    md_grid_t g = { .orientation = R, .spacing = md_f32x3_set(h, h, h), .dim = { w, hh, layers } };
+    md_f32x3_t o = md_f32x3_set((float)c[0], (float)c[1], (float)c[2]);
     for (int k = 0; k < 3; ++k) o.elem[k] -= 0.5f * h * (float)w * R.elem[0][k] + 0.5f * h * (float)hh * R.elem[1][k];
     g.origin = o;
     return g;
@@ -943,7 +944,7 @@ UTEST(gto_localization, matches_independent) {
             const double l1 = sqrt(e1[0]*e1[0] + e1[1]*e1[1] + e1[2]*e1[2]);
             for (int k = 0; k < 3; ++k) e1[k] /= l1;
             const double e2[3] = { d[1]*e1[2] - d[2]*e1[1], d[2]*e1[0] - d[0]*e1[2], d[0]*e1[1] - d[1]*e1[0] };
-            md_grid_t grid = { .spacing = vec3_set((float)h, (float)h, (float)h), .dim = { PER_LINE, 1, 1 } };
+            md_grid_t grid = { .spacing = md_f32x3_set((float)h, (float)h, (float)h), .dim = { PER_LINE, 1, 1 } };
             for (int k = 0; k < 3; ++k) {
                 grid.orientation.elem[0][k] = (float)d[k];
                 grid.orientation.elem[1][k] = (float)e1[k];
@@ -1075,9 +1076,9 @@ UTEST(gto_localization, tails) {
         const int dim = 32;
         const float h = (float)(2.0 * (ext + 9.0) / dim);
         const md_grid_t grid = {
-            .orientation = mat3_ident(),
-            .origin  = vec3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
-            .spacing = vec3_set(h, h, h),
+            .orientation = md_f32x3x3_ident(),
+            .origin  = md_f32x3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
+            .spacing = md_f32x3_set(h, h, h),
             .dim     = { dim, dim, dim },
         };
         const size_t n = (size_t)dim * dim * dim;

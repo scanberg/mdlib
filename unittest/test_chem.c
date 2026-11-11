@@ -24,7 +24,7 @@
 #include <core/md_array.h>
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
-#include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_bitset.h>
 
 #include <stdio.h>
@@ -1183,7 +1183,7 @@ UTEST(chem, delta_metal_contact) {
         md_system_state_init(&fs, n);
         for (size_t i = 0; i < n; ++i) {
             const md_xyz_coordinate_t c = data.coordinates[data.models[f].beg_coord_index + i];
-            fs.xyz[i] = vec3_set(c.x, c.y, c.z);
+            fs.xyz[i] = md_f32x3_set(c.x, c.y, c.z);
         }
         md_bond_delta_t d = {0};
         ASSERT_TRUE(md_util_bond_delta(&d, &sys, &fs, &desc, alloc));

@@ -2,7 +2,6 @@
 
 #include <core/md_str.h>
 #include <core/md_format.h>
-#include <core/md_os.h>
 #include <core/md_allocator.h>
 #include <core/md_writer.h>
 #include <md_types.h>
@@ -189,8 +188,8 @@ UTEST(str, eq_empty) {
     EXPECT_FALSE(md_str_eq(null_str, MD_STR_LIT("a")));
 
     EXPECT_TRUE(md_str_eq_ignore_case(null_str, lit));
-    EXPECT_TRUE(md_str_eq_n(null_str, lit, 4));
-    EXPECT_TRUE(md_str_eq_n_ignore_case(slice, null_str, 4));
+    EXPECT_TRUE(md_str_begins_with(null_str, lit));
+    EXPECT_TRUE(md_str_begins_with_ignore_case(slice, null_str));
 
     EXPECT_TRUE(md_str_eq_cstr(null_str, ""));
     EXPECT_TRUE(md_str_eq_cstr(lit, ""));
@@ -198,7 +197,7 @@ UTEST(str, eq_empty) {
     EXPECT_FALSE(md_str_eq_cstr(MD_STR_LIT("a"), NULL));
     EXPECT_FALSE(md_str_eq_cstr(null_str, "a"));
     EXPECT_TRUE(md_str_eq_cstr_ignore_case(slice, ""));
-    EXPECT_TRUE(md_str_eq_cstr_n(null_str, "", 3));
+    EXPECT_TRUE(md_str_begins_with(null_str, MD_STR_LIT("")));
 
     // A copy of an empty string is equal to it ({0} comes back from md_alloc_str)
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -224,30 +223,6 @@ UTEST(str, eq) {
     EXPECT_FALSE(md_str_eq_cstr_ignore_case(MD_STR_LIT("ATOM"), "atoms"));
 }
 
-// The _n variants compare the first n characters of both: with n = strlen(prefix) they test for a prefix,
-// which a string shorter than the prefix does not have
-UTEST(str, eq_n) {
-    EXPECT_TRUE(md_str_eq_n(MD_STR_LIT("ATOM      1"), MD_STR_LIT("ATOM"), 4));
-    EXPECT_TRUE(md_str_eq_n(MD_STR_LIT("abcdef"), MD_STR_LIT("abcxyz"), 3));
-    EXPECT_FALSE(md_str_eq_n(MD_STR_LIT("abcdef"), MD_STR_LIT("abcxyz"), 4));
-    EXPECT_FALSE(md_str_eq_n(MD_STR_LIT("ab"), MD_STR_LIT("abc"), 3));
-    EXPECT_TRUE(md_str_eq_n(MD_STR_LIT("ab"), MD_STR_LIT("ab"), 3));       // both end within n, and are equal
-    EXPECT_TRUE(md_str_eq_n(MD_STR_LIT("abc"), MD_STR_LIT("xyz"), 0));
-
-    EXPECT_TRUE(md_str_eq_cstr_n(MD_STR_LIT("ENDMDL"), "ENDMDL", 6));
-    EXPECT_TRUE(md_str_eq_cstr_n(MD_STR_LIT("ENDMDL      2"), "ENDMDL", 6));
-    EXPECT_FALSE(md_str_eq_cstr_n(MD_STR_LIT("END"), "ENDMDL", 6));
-    EXPECT_FALSE(md_str_eq_cstr_n(MD_STR_LIT("C"), "C3", 2));
-    EXPECT_TRUE(md_str_eq_cstr_n(MD_STR_LIT("C3'"), "C3", 2));
-    EXPECT_TRUE(md_str_eq_cstr_n(MD_STR_LIT("lj/cut"), "lj", 2));
-    EXPECT_FALSE(md_str_eq_cstr_n(MD_STR_LIT("REMARK"), "REMARK 350", 10));
-    EXPECT_TRUE(md_str_eq_cstr_n(MD_STR_LIT("ab"), "ab", 5));             // both end within n
-
-    EXPECT_TRUE(md_str_eq_n_ignore_case(MD_STR_LIT("Vibration 1"), MD_STR_LIT("VIBRATION"), 9));
-    EXPECT_TRUE(md_str_eq_cstr_n_ignore_case(MD_STR_LIT("Time (ps)"), "time", 4));
-    EXPECT_FALSE(md_str_eq_cstr_n_ignore_case(MD_STR_LIT("Tim"), "time", 4));
-}
-
 UTEST(str, cmp_lex) {
     EXPECT_EQ(md_str_cmp_lex(MD_STR_LIT("abc"), MD_STR_LIT("abc")), 0);
     EXPECT_EQ(md_str_cmp_lex(MD_STR_LIT("abc"), MD_STR_LIT("abd")), -1);
@@ -268,6 +243,19 @@ UTEST(str, begins_ends_with) {
     EXPECT_TRUE(md_str_ends_with(MD_STR_LIT("file.xtc"), MD_STR_LIT(".xtc")));
     EXPECT_FALSE(md_str_ends_with(MD_STR_LIT("xtc"), MD_STR_LIT(".xtc")));
     EXPECT_TRUE(md_str_ends_with(MD_STR_LIT("file"), (md_str_t){0}));
+
+    // What the prefix tests of the readers rely on: a string shorter than the prefix does not have it
+    EXPECT_TRUE (md_str_begins_with(MD_STR_LIT("ENDMDL      2"), MD_STR_LIT("ENDMDL")));
+    EXPECT_FALSE(md_str_begins_with(MD_STR_LIT("END"), MD_STR_LIT("ENDMDL")));
+    EXPECT_FALSE(md_str_begins_with(MD_STR_LIT("REMARK"), MD_STR_LIT("REMARK 350")));
+    EXPECT_FALSE(md_str_begins_with(MD_STR_LIT("C"), MD_STR_LIT("C3")));
+    EXPECT_FALSE(md_str_begins_with(MD_STR_LIT("abcdef"), MD_STR_LIT("abcx")));
+
+    EXPECT_TRUE (md_str_begins_with_ignore_case(MD_STR_LIT("Vibration 1"), MD_STR_LIT("VIBRATION")));
+    EXPECT_TRUE (md_str_begins_with_ignore_case(MD_STR_LIT("Time (ps)"), MD_STR_LIT("time")));
+    EXPECT_FALSE(md_str_begins_with_ignore_case(MD_STR_LIT("Tim"), MD_STR_LIT("time")));
+    EXPECT_FALSE(md_str_begins_with_ignore_case(MD_STR_LIT("Tame"), MD_STR_LIT("time")));
+    EXPECT_TRUE (md_str_begins_with_ignore_case(MD_STR_LIT("abc"), (md_str_t){0}));
 }
 
 UTEST(str, find_char) {

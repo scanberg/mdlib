@@ -15,10 +15,10 @@
 static md_grid_t test_grid(void) {
     /* 30 degrees about an axis that is not one of the basis vectors, so no row or column of the
      * orientation is trivial. */
-    const vec3_t axis = vec3_normalize(vec3_set(1.0f, 2.0f, -0.5f));
+    const md_f32x3_t axis = md_f32x3_normalize(md_f32x3_set(1.0f, 2.0f, -0.5f));
 
     md_grid_t grid = {
-        .orientation = mat3_angle_axis(0.5235987756f, axis),
+        .orientation = md_f32x3x3_angle_axis(0.5235987756f, axis),
         .origin      = {{ -3.25f, 7.5f, 0.125f }},
         .spacing     = {{ 0.5f, 0.25f, 1.5f }},
         .dim         = { 4, 3, 2 },
@@ -26,7 +26,7 @@ static md_grid_t test_grid(void) {
     return grid;
 }
 
-static float max_abs_diff(mat4_t A, mat4_t B) {
+static float max_abs_diff(md_f32x4x4_t A, md_f32x4x4_t B) {
     float m = 0;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
@@ -53,7 +53,7 @@ UTEST(grid, num_points_is_the_product_of_the_dimensions) {
 UTEST(grid, extent_and_center_follow_spacing_and_dimensions) {
     const md_grid_t grid = test_grid();
 
-    const vec3_t extent = md_grid_extent(&grid);
+    const md_f32x3_t extent = md_grid_extent(&grid);
     EXPECT_NEAR(4 * 0.5f,  extent.x, 1.0e-6f);
     EXPECT_NEAR(3 * 0.25f, extent.y, 1.0e-6f);
     EXPECT_NEAR(2 * 1.5f,  extent.z, 1.0e-6f);
@@ -61,12 +61,12 @@ UTEST(grid, extent_and_center_follow_spacing_and_dimensions) {
     /* The centre is the origin plus half the extent, in world units and without the orientation
      * applied - worth pinning, because reading it as the centre of the rotated box is a natural
      * mistake and the two only agree for an axis-aligned grid. */
-    const vec3_t center = md_grid_center(&grid);
+    const md_f32x3_t center = md_grid_center(&grid);
     EXPECT_NEAR(-3.25f  + 1.0f,   center.x, 1.0e-6f);
     EXPECT_NEAR( 7.5f   + 0.375f, center.y, 1.0e-6f);
     EXPECT_NEAR( 0.125f + 1.5f,   center.z, 1.0e-6f);
 
-    const vec3_t origin = md_grid_origin(&grid);
+    const md_f32x3_t origin = md_grid_origin(&grid);
     EXPECT_NEAR(grid.origin.x, origin.x, 0.0f);
     EXPECT_NEAR(grid.origin.y, origin.y, 0.0f);
     EXPECT_NEAR(grid.origin.z, origin.z, 0.0f);
@@ -75,42 +75,42 @@ UTEST(grid, extent_and_center_follow_spacing_and_dimensions) {
 UTEST(grid, model_and_world_transforms_are_inverses) {
     const md_grid_t grid = test_grid();
 
-    const mat4_t to_world = md_grid_model_to_world(&grid);
-    const mat4_t to_model = md_grid_world_to_model(&grid);
+    const md_f32x4x4_t to_world = md_grid_model_to_world(&grid);
+    const md_f32x4x4_t to_model = md_grid_world_to_model(&grid);
 
-    EXPECT_LT(max_abs_diff(mat4_mul(to_world, to_model), mat4_ident()), 1.0e-5f);
-    EXPECT_LT(max_abs_diff(mat4_mul(to_model, to_world), mat4_ident()), 1.0e-5f);
+    EXPECT_LT(max_abs_diff(md_f32x4x4_mul(to_world, to_model), md_f32x4x4_ident()), 1.0e-5f);
+    EXPECT_LT(max_abs_diff(md_f32x4x4_mul(to_model, to_world), md_f32x4x4_ident()), 1.0e-5f);
 
     /* The hand-written inverse must also agree with a computed one. */
-    EXPECT_LT(max_abs_diff(to_model, mat4_inverse(to_world)), 1.0e-5f);
+    EXPECT_LT(max_abs_diff(to_model, md_f32x4x4_inverse(to_world)), 1.0e-5f);
 
     /* Model space carries no scaling, so a unit step in model space is a unit step in world space
      * however the grid is spaced. */
-    const vec4_t a = mat4_mul_vec4(to_world, vec4_set(0, 0, 0, 1));
-    const vec4_t b = mat4_mul_vec4(to_world, vec4_set(1, 0, 0, 1));
-    EXPECT_NEAR(1.0f, vec3_length(vec3_sub(vec3_from_vec4(b), vec3_from_vec4(a))), 1.0e-5f);
+    const md_f32x4_t a = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set(0, 0, 0, 1));
+    const md_f32x4_t b = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set(1, 0, 0, 1));
+    EXPECT_NEAR(1.0f, md_f32x3_length(md_f32x3_sub(md_f32x3_from_f32x4(b), md_f32x3_from_f32x4(a))), 1.0e-5f);
 }
 
 UTEST(grid, index_and_world_transforms_are_inverses) {
     const md_grid_t grid = test_grid();
 
-    const mat4_t to_world = md_grid_index_to_world(&grid);
-    const mat4_t to_index = md_grid_world_to_index(&grid);
+    const md_f32x4x4_t to_world = md_grid_index_to_world(&grid);
+    const md_f32x4x4_t to_index = md_grid_world_to_index(&grid);
 
-    EXPECT_LT(max_abs_diff(mat4_mul(to_world, to_index), mat4_ident()), 1.0e-5f);
-    EXPECT_LT(max_abs_diff(mat4_mul(to_index, to_world), mat4_ident()), 1.0e-5f);
-    EXPECT_LT(max_abs_diff(to_index, mat4_inverse(to_world)), 1.0e-5f);
+    EXPECT_LT(max_abs_diff(md_f32x4x4_mul(to_world, to_index), md_f32x4x4_ident()), 1.0e-5f);
+    EXPECT_LT(max_abs_diff(md_f32x4x4_mul(to_index, to_world), md_f32x4x4_ident()), 1.0e-5f);
+    EXPECT_LT(max_abs_diff(to_index, md_f32x4x4_inverse(to_world)), 1.0e-5f);
 
     /* Index space does carry the spacing, and per axis: one voxel along x is spacing.x of world
      * distance, not the length of the spacing vector. Anisotropic spacing is what separates a
      * correct implementation from one that scales uniformly. */
-    const vec4_t o  = mat4_mul_vec4(to_world, vec4_set(0, 0, 0, 1));
-    const vec4_t dx = mat4_mul_vec4(to_world, vec4_set(1, 0, 0, 1));
-    const vec4_t dy = mat4_mul_vec4(to_world, vec4_set(0, 1, 0, 1));
-    const vec4_t dz = mat4_mul_vec4(to_world, vec4_set(0, 0, 1, 1));
-    EXPECT_NEAR(0.50f, vec3_length(vec3_sub(vec3_from_vec4(dx), vec3_from_vec4(o))), 1.0e-5f);
-    EXPECT_NEAR(0.25f, vec3_length(vec3_sub(vec3_from_vec4(dy), vec3_from_vec4(o))), 1.0e-5f);
-    EXPECT_NEAR(1.50f, vec3_length(vec3_sub(vec3_from_vec4(dz), vec3_from_vec4(o))), 1.0e-5f);
+    const md_f32x4_t o  = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set(0, 0, 0, 1));
+    const md_f32x4_t dx = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set(1, 0, 0, 1));
+    const md_f32x4_t dy = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set(0, 1, 0, 1));
+    const md_f32x4_t dz = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set(0, 0, 1, 1));
+    EXPECT_NEAR(0.50f, md_f32x3_length(md_f32x3_sub(md_f32x3_from_f32x4(dx), md_f32x3_from_f32x4(o))), 1.0e-5f);
+    EXPECT_NEAR(0.25f, md_f32x3_length(md_f32x3_sub(md_f32x3_from_f32x4(dy), md_f32x3_from_f32x4(o))), 1.0e-5f);
+    EXPECT_NEAR(1.50f, md_f32x3_length(md_f32x3_sub(md_f32x3_from_f32x4(dz), md_f32x3_from_f32x4(o))), 1.0e-5f);
 
     /* Index (0,0,0) is the origin. */
     EXPECT_NEAR(grid.origin.x, o.x, 1.0e-5f);
@@ -129,12 +129,12 @@ UTEST(grid, extracted_points_match_the_index_transform) {
     /* The extraction is just index_to_world applied over the lattice, and x varies fastest. The
      * ordering matters to every consumer that indexes the volume alongside the points, so it is
      * asserted rather than assumed. */
-    const mat4_t to_world = md_grid_index_to_world(&grid);
+    const md_f32x4x4_t to_world = md_grid_index_to_world(&grid);
     for (int z = 0; z < grid.dim[2]; ++z) {
         for (int y = 0; y < grid.dim[1]; ++y) {
             for (int x = 0; x < grid.dim[0]; ++x) {
                 const int i = (z * grid.dim[1] + y) * grid.dim[0] + x;
-                const vec4_t w = mat4_mul_vec4(to_world, vec4_set((float)x, (float)y, (float)z, 1.0f));
+                const md_f32x4_t w = md_f32x4x4_mul_f32x4(to_world, md_f32x4_set((float)x, (float)y, (float)z, 1.0f));
                 EXPECT_NEAR(w.x, xyz[i * 3 + 0], 1.0e-5f);
                 EXPECT_NEAR(w.y, xyz[i * 3 + 1], 1.0e-5f);
                 EXPECT_NEAR(w.z, xyz[i * 3 + 2], 1.0e-5f);
@@ -143,9 +143,9 @@ UTEST(grid, extracted_points_match_the_index_transform) {
     }
 
     /* And the round trip closes: every extracted point maps back to the integer index it came from. */
-    const mat4_t to_index = md_grid_world_to_index(&grid);
+    const md_f32x4x4_t to_index = md_grid_world_to_index(&grid);
     for (size_t i = 0; i < num; ++i) {
-        const vec4_t idx = mat4_mul_vec4(to_index, vec4_set(xyz[i*3+0], xyz[i*3+1], xyz[i*3+2], 1.0f));
+        const md_f32x4_t idx = md_f32x4x4_mul_f32x4(to_index, md_f32x4_set(xyz[i*3+0], xyz[i*3+1], xyz[i*3+2], 1.0f));
         EXPECT_NEAR(roundf(idx.x), idx.x, 1.0e-3f);
         EXPECT_NEAR(roundf(idx.y), idx.y, 1.0e-3f);
         EXPECT_NEAR(roundf(idx.z), idx.z, 1.0e-3f);

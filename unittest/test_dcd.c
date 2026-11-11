@@ -6,10 +6,11 @@
 
 #include <md_dcd.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 
 // DCD files written by hand, so that what the format allows - a cell per frame, fixed atoms, the
 // other byte order - is each exercised without a sample file for every combination.

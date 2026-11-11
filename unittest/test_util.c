@@ -11,6 +11,7 @@
 #include <md_tpr.h>
 #include <md_lammps.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_util.h>
 #include <md_dssp.h>
 #include <md_itp.h>
@@ -22,6 +23,7 @@
 #include <core/md_path.h>
 #include <core/md_bitset.h>
 #include <core/md_hash.h>
+#include <core/md_vec_math.h>
 
 #include "rmsd.h"
 #include "system_invariants.h"
@@ -34,28 +36,28 @@ static bool test_infer_as_loaded(md_system_t* sys, md_system_state_t* state) {
     return md_util_system_infer(sys, state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT, NULL) && md_util_system_infer_chains(sys);
 }
 
-static vec3_t* pack_xyz(vec3_t* dst, const float* x, const float* y, const float* z, size_t n) {
-    for (size_t i = 0; i < n; ++i) dst[i] = vec3_set(x[i], y[i], z[i]);
+static md_f32x3_t* pack_xyz(md_f32x3_t* dst, const float* x, const float* y, const float* z, size_t n) {
+    for (size_t i = 0; i < n; ++i) dst[i] = md_f32x3_set(x[i], y[i], z[i]);
     return dst;
 }
 
 // md_util_com_compute over planar inputs: packed first. With indices the source is as long as the
 // largest index reaches.
-static vec3_t com_planar(const float* x, const float* y, const float* z, const float* w, const int32_t* idx, size_t n, const md_unitcell_t* cell) {
+static md_f32x3_t com_planar(const float* x, const float* y, const float* z, const float* w, const int32_t* idx, size_t n, const md_unitcell_t* cell) {
     size_t len = n;
     if (idx) {
         len = 0;
         for (size_t i = 0; i < n; ++i) len = MD_MAX(len, (size_t)idx[i] + 1);
     }
     md_temp_scope_t temp = md_temp_begin();
-    vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, MD_ALIGN_TO(len, 16));
+    md_f32x3_t* xyz = md_temp_alloc_array(temp, md_f32x3_t, MD_ALIGN_TO(len, 16));
     pack_xyz(xyz, x, y, z, len);
-    const vec3_t com = md_util_com_compute(xyz, w, idx, n, cell);
+    const md_f32x3_t com = md_util_com_compute(xyz, w, idx, n, cell);
     md_temp_end(temp);
     return com;
 }
 
-static void unpack_xyz(float* x, float* y, float* z, const vec3_t* src, size_t n) {
+static void unpack_xyz(float* x, float* y, float* z, const md_f32x3_t* src, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         x[i] = src[i].x;
         y[i] = src[i].y;
@@ -197,9 +199,9 @@ UTEST_F(util, rmsd) {
 
     const size_t N = mol->atom.count;
     const size_t cap = MD_ALIGN_TO(N, 16);
-    vec3_t* xyz[2] = {
-        md_alloc(alloc, cap * sizeof(vec3_t)),
-        md_alloc(alloc, cap * sizeof(vec3_t)),
+    md_f32x3_t* xyz[2] = {
+        md_alloc(alloc, cap * sizeof(md_f32x3_t)),
+        md_alloc(alloc, cap * sizeof(md_f32x3_t)),
     };
     double* xyz0 = md_alloc(alloc, N * 3 * sizeof(double));
     double* xyz1 = md_alloc(alloc, N * 3 * sizeof(double));
@@ -231,10 +233,10 @@ UTEST_F(util, rmsd) {
     fast_rmsd((double(*)[3])xyz0, (double(*)[3])xyz1, (int)N, &ref_rmsd);
 
     // Our implementation
-    const vec3_t* const cxyz[2] = { xyz[0], xyz[1] };
+    const md_f32x3_t* const cxyz[2] = { xyz[0], xyz[1] };
     const float* const cw[2] = { w, w };
 
-    vec3_t com[2] = {
+    md_f32x3_t com[2] = {
         md_util_com_compute(xyz[0], w, 0, N, 0),
         md_util_com_compute(xyz[1], w, 0, N, 0),
     };
@@ -242,8 +244,8 @@ UTEST_F(util, rmsd) {
 
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
-    md_free(alloc, xyz[0], cap * sizeof(vec3_t));
-    md_free(alloc, xyz[1], cap * sizeof(vec3_t));
+    md_free(alloc, xyz[0], cap * sizeof(md_f32x3_t));
+    md_free(alloc, xyz[1], cap * sizeof(md_f32x3_t));
     md_free(alloc, xyz0, N * 3 * sizeof(double));
     md_free(alloc, xyz1, N * 3 * sizeof(double));
     md_free(alloc, w, N * sizeof(float));
@@ -259,37 +261,37 @@ UTEST(util, com) {
         In this case, we have settled on the trigonometric approach presented in:
         Bai, Linge, and David Breen. "Calculating center of mass in an unbounded 2D environment." Journal of Graphics Tools 13.4 (2008): 53-60.
     */
-    vec3_t pbc_ext = {5,0,0};
+    md_f32x3_t pbc_ext = {5,0,0};
     md_unitcell_t cell = md_unitcell_from_extent(5,0,0);
     {
-        const vec4_t xyzw[] = {
+        const md_f32x4_t xyzw[] = {
             {1,0,0,1},
             {2,0,0,1},
             {3,0,0,1},
             {4,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
+        md_f32x3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
     }
     
     {
-        const vec4_t xyzw[] = {
+        const md_f32x4_t xyzw[] = {
             {0,0,0,1},
             {5,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
-		com = vec3_deperiodize_ortho(com, (vec3_t){ 0,0,0 }, pbc_ext);
+        md_f32x3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
+		com = md_f32x3_deperiodize_ortho(com, (md_f32x3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
     }
 
     {
-        const vec4_t xyzw[] = {
+        const md_f32x4_t xyzw[] = {
             {0,0,0,1},
             {4,0,0,1},
         };
@@ -300,44 +302,44 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
-        com = vec3_deperiodize_ortho(com, vec3_mul1(pbc_ext, 0.5f), pbc_ext);
+        md_f32x3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
+        com = md_f32x3_deperiodize_ortho(com, md_f32x3_mul1(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
     }
 
     {
-        const vec3_t pbc_ext = { 5,0,0 };
+        const md_f32x3_t pbc_ext = { 5,0,0 };
 
-        const vec4_t pos0[] = {
+        const md_f32x4_t pos0[] = {
             {4,0,0, 1},
             {5,0,0, 1},
             {6,0,0, 1},
             {7,0,0, 1},
         };
 
-        const vec4_t pos1[] = {
+        const md_f32x4_t pos1[] = {
             {4,0,0, 1},
             {0,0,0, 1},
             {1,0,0, 1},
             {2,0,0, 1},
         };
 
-        const vec4_t pos2[] = {
+        const md_f32x4_t pos2[] = {
             {-1,0, 0, 1},
             {0 ,0, 0, 1},
             {1 ,0, 0, 1},
             {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, MD_COUNTOF(pos0), &cell);
-        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, MD_COUNTOF(pos1), &cell);
-        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, MD_COUNTOF(pos2), &cell);
+        md_f32x3_t com0 = md_util_com_compute_vec4(pos0, 0, MD_COUNTOF(pos0), &cell);
+        md_f32x3_t com1 = md_util_com_compute_vec4(pos1, 0, MD_COUNTOF(pos1), &cell);
+        md_f32x3_t com2 = md_util_com_compute_vec4(pos2, 0, MD_COUNTOF(pos2), &cell);
 
-        com0 = vec3_deperiodize_ortho(com0, (vec3_t){ 0,0,0 }, pbc_ext);
-        com1 = vec3_deperiodize_ortho(com1, (vec3_t){ 0,0,0 }, pbc_ext);
-        com2 = vec3_deperiodize_ortho(com2, (vec3_t){ 0,0,0 }, pbc_ext);
+        com0 = md_f32x3_deperiodize_ortho(com0, (md_f32x3_t){ 0,0,0 }, pbc_ext);
+        com1 = md_f32x3_deperiodize_ortho(com1, (md_f32x3_t){ 0,0,0 }, pbc_ext);
+        com2 = md_f32x3_deperiodize_ortho(com2, (md_f32x3_t){ 0,0,0 }, pbc_ext);
         
         EXPECT_NEAR(0.5f, com0.x, 1.0E-5F);
         EXPECT_NEAR(0.5f, com1.x, 1.0E-5F);
@@ -778,7 +780,7 @@ UTEST(util, unwrap_molecule_coarse_grained_without_bonds) {
         y[2 * i + 1] = fmodf(8.5f + 3.0f, 10.0f); // 3A up, wrapped to the bottom of the cell
         z[2 * i + 1] = 5.0f;
     }
-    vec3_t xyz[2 * N];
+    md_f32x3_t xyz[2 * N];
     md_system_state_t state = { .num_atoms = 2 * N, .xyz = pack_xyz(xyz, x, y, z, 2 * N), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
     md_util_unwrap_system(&state, &sys);
@@ -810,7 +812,7 @@ UTEST(util, infer_bonds_coarse_grained) {
     float x[] = {0, 0, 0,   3.8f, 3.8f, 3.8f};
     float y[] = {0, 3, 6,   0,    3,    6};
     float z[] = {0, 0, 0,   0,    0,    0};
-    vec3_t xyz[6];
+    md_f32x3_t xyz[6];
     md_system_state_t state = { .num_atoms = 6, .xyz = pack_xyz(xyz, x, y, z, 6) };
 
     md_bond_data_t bond = {0};
@@ -1935,7 +1937,7 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
     float x[] = {0.0f, 1.5f, 3.0f, 4.5f, 20.0f};
     float y[] = {0, 0, 0, 0, 0};
     float z[] = {0, 0, 0, 0, 0};
-    vec3_t xyz[5];
+    md_f32x3_t xyz[5];
     md_system_state_t state = { .num_atoms = 5, .xyz = pack_xyz(xyz, x, y, z, 5) };
 
     md_util_infer_covalent_bonds(&sys.bond, &state, &sys, alloc, NULL);
@@ -2006,7 +2008,7 @@ UTEST(util, unwrap_molecule_ortho) {
     for (int i = 0; i < 9; ++i) {
         x[i] = fmodf(1.0f + 2.0f * i, 10.0f);
     }
-    vec3_t xyz[9];
+    md_f32x3_t xyz[9];
     md_system_state_t state = { .num_atoms = 9, .xyz = pack_xyz(xyz, x, y, z, 9), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
     const md_molecule_t mol = md_system_molecule(&sys, 0);
@@ -2050,7 +2052,7 @@ UTEST(util, unwrap_molecule_triclinic) {
         y[i] = ty[i] + na * A[0][1] + nb * A[1][1];
         z[i] = tz[i] + na * A[0][2] + nb * A[1][2];
     }
-    vec3_t xyz[9];
+    md_f32x3_t xyz[9];
     md_system_state_t state = { .num_atoms = 9, .xyz = pack_xyz(xyz, x, y, z, 9), .unitcell = cell };
 
     const md_molecule_t mol = md_system_molecule(&sys, 0);
@@ -2077,13 +2079,13 @@ UTEST(util, min_image) {
     const float e = 10.0f;
     md_unitcell_t cell = md_unitcell_from_extent(e, e, e);
 
-    vec3_t dx3[4] = {
+    md_f32x3_t dx3[4] = {
         { 1.0f, -2.0f,  3.0f},      // already minimal, must be left alone
         {12.0f,  0.0f,  0.0f},
         {-27.0f, 41.0f, -8.0f},
         { 4.9f, -4.9f,  4.9f},      // just inside the half box
     };
-    const vec3_t in3[4] = { dx3[0], dx3[1], dx3[2], dx3[3] };
+    const md_f32x3_t in3[4] = { dx3[0], dx3[1], dx3[2], dx3[3] };
 
     md_util_min_image_vec3(dx3, 4, &cell);
 
@@ -2101,7 +2103,7 @@ UTEST(util, min_image) {
     EXPECT_NEAR(dx3[1].x,  2.0f, 1.0e-4f);
     EXPECT_NEAR(dx3[3].x,  4.9f, 1.0e-4f);
 
-    vec4_t dx4[2] = { {12.0f, 0.0f, 0.0f, 7.0f}, {-27.0f, 41.0f, -8.0f, 8.0f} };
+    md_f32x4_t dx4[2] = { {12.0f, 0.0f, 0.0f, 7.0f}, {-27.0f, 41.0f, -8.0f, 8.0f} };
     md_util_min_image_vec4(dx4, 2, &cell);
     EXPECT_NEAR(dx4[0].x, 2.0f, 1.0e-4f);
     EXPECT_NEAR(dx4[1].x, 3.0f, 1.0e-4f);
@@ -2117,21 +2119,21 @@ UTEST(util, min_image) {
 #define PBC_NP 12
 
 // A lumpy, chiral-ish shape so no two points are interchangeable and the fit is well determined.
-static void pbc_make_shape(vec4_t out[PBC_NP], float radius) {
+static void pbc_make_shape(md_f32x4_t out[PBC_NP], float radius) {
     for (int i = 0; i < PBC_NP; ++i) {
         const float t = (float)i / PBC_NP * 6.2831853f;
         const float u = (float)(i % 5) / 5.0f;
-        out[i] = vec4_set(radius * cosf(t) * (0.4f + u),
+        out[i] = md_f32x4_set(radius * cosf(t) * (0.4f + u),
                           radius * sinf(t) * (0.5f + 0.5f * u),
                           radius * (u - 0.5f),
                           1.0f + 0.05f * i);
     }
 }
 
-static mat3_t pbc_rot(float angle) {
+static md_f32x3x3_t pbc_rot(float angle) {
     const float c = cosf(angle), s = sinf(angle);
-    const vec3_t k = vec3_normalize(vec3_set(0.3f, 0.6f, 0.74f));
-    mat3_t m;
+    const md_f32x3_t k = md_f32x3_normalize(md_f32x3_set(0.3f, 0.6f, 0.74f));
+    md_f32x3x3_t m;
     m.elem[0][0]=c+k.x*k.x*(1-c);     m.elem[1][0]=k.x*k.y*(1-c)-k.z*s; m.elem[2][0]=k.x*k.z*(1-c)+k.y*s;
     m.elem[0][1]=k.y*k.x*(1-c)+k.z*s; m.elem[1][1]=c+k.y*k.y*(1-c);     m.elem[2][1]=k.y*k.z*(1-c)-k.x*s;
     m.elem[0][2]=k.z*k.x*(1-c)-k.y*s; m.elem[1][2]=k.z*k.y*(1-c)+k.x*s; m.elem[2][2]=c+k.z*k.z*(1-c);
@@ -2141,8 +2143,8 @@ static mat3_t pbc_rot(float angle) {
 static float pbc_wrap(float v, float L) { v = fmodf(v, L); return v < 0.0f ? v + L : v; }
 
 // Angle between R and the inverse of R_true, in degrees. Zero when R undoes R_true.
-static float pbc_angle_err(mat3_t R, mat3_t R_true) {
-    const mat3_t E = mat3_mul(R, R_true);
+static float pbc_angle_err(md_f32x3x3_t R, md_f32x3x3_t R_true) {
+    const md_f32x3x3_t E = md_f32x3x3_mul(R, R_true);
     const float tr = E.elem[0][0] + E.elem[1][1] + E.elem[2][2];
     return acosf(MD_CLAMP((tr - 1.0f) * 0.5f, -1.0f, 1.0f)) * 180.0f / 3.14159265f;
 }
@@ -2153,42 +2155,42 @@ UTEST(util, pbc_deperiodize_self) {
     const float L = 20.0f;
     md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
 
-    vec4_t shape[PBC_NP];
+    md_f32x4_t shape[PBC_NP];
     pbc_make_shape(shape, 3.0f);
 
     // Place it straddling the origin corner, then wrap every point independently
-    vec4_t pts[PBC_NP];
+    md_f32x4_t pts[PBC_NP];
     for (int i = 0; i < PBC_NP; ++i) {
-        const vec3_t v = vec3_from_vec4(shape[i]);
-        pts[i] = vec4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), shape[i].w);
+        const md_f32x3_t v = md_f32x3_from_f32x4(shape[i]);
+        pts[i] = md_f32x4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), shape[i].w);
     }
 
-    vec3_t com = {0};
+    md_f32x3_t com = {0};
     ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
 
     // Every pairwise separation must match the original shape: the set is whole again
     for (int i = 0; i < PBC_NP; ++i) {
         for (int j = i + 1; j < PBC_NP; ++j) {
-            const float got = vec3_distance(vec3_from_vec4(pts[i]), vec3_from_vec4(pts[j]));
-            const float ref = vec3_distance(vec3_from_vec4(shape[i]), vec3_from_vec4(shape[j]));
+            const float got = md_f32x3_distance(md_f32x3_from_f32x4(pts[i]), md_f32x3_from_f32x4(pts[j]));
+            const float ref = md_f32x3_distance(md_f32x3_from_f32x4(shape[i]), md_f32x3_from_f32x4(shape[j]));
             EXPECT_NEAR(got, ref, 1.0e-3f);
         }
     }
 
     // The centre must sit inside the reassembled set, not at some average of scattered images
-    const vec3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const md_f32x3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
     for (int i = 0; i < PBC_NP; ++i) {
-        const vec3_t d = vec3_sub(vec3_from_vec4(pts[i]), com);
-        const vec3_t r = vec3_sub(vec3_from_vec4(shape[i]), shape_com);
+        const md_f32x3_t d = md_f32x3_sub(md_f32x3_from_f32x4(pts[i]), com);
+        const md_f32x3_t r = md_f32x3_sub(md_f32x3_from_f32x4(shape[i]), shape_com);
         EXPECT_NEAR(d.x, r.x, 1.0e-3f);
         EXPECT_NEAR(d.y, r.y, 1.0e-3f);
         EXPECT_NEAR(d.z, r.z, 1.0e-3f);
     }
 
     // Already consistent input must be left alone
-    vec4_t again[PBC_NP];
+    md_f32x4_t again[PBC_NP];
     md_memcpy(again, pts, sizeof(pts));
-    vec3_t com2 = {0};
+    md_f32x3_t com2 = {0};
     ASSERT_TRUE(md_util_deperiodize_self_vec4(again, PBC_NP, &cell, &com2));
     for (int i = 0; i < PBC_NP; ++i) {
         EXPECT_NEAR(again[i].x, pts[i].x, 1.0e-4f);
@@ -2207,32 +2209,32 @@ UTEST(util, pbc_deperiodize_self_keeps_image) {
     const float L = 20.0f;
     md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
 
-    vec4_t shape[PBC_NP];
+    md_f32x4_t shape[PBC_NP];
     pbc_make_shape(shape, 3.0f);
-    const vec3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const md_f32x3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
 
     for (int nx = -2; nx <= 2; ++nx) {
         for (int nz = -1; nz <= 1; ++nz) {
-            const vec3_t off = vec3_set(nx * L, 10.0f, 10.0f + nz * L);
+            const md_f32x3_t off = md_f32x3_set(nx * L, 10.0f, 10.0f + nz * L);
 
-            vec4_t pts[PBC_NP];
+            md_f32x4_t pts[PBC_NP];
             for (int i = 0; i < PBC_NP; ++i) {
-                pts[i] = vec4_from_vec3(vec3_add(vec3_from_vec4(shape[i]), off), shape[i].w);
+                pts[i] = md_f32x4_from_f32x3(md_f32x3_add(md_f32x3_from_f32x4(shape[i]), off), shape[i].w);
             }
 
-            vec3_t com = {0};
+            md_f32x3_t com = {0};
             ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
 
             // Nothing was broken to begin with, so nothing may move
             for (int i = 0; i < PBC_NP; ++i) {
-                const vec3_t want = vec3_add(vec3_from_vec4(shape[i]), off);
+                const md_f32x3_t want = md_f32x3_add(md_f32x3_from_f32x4(shape[i]), off);
                 EXPECT_NEAR(pts[i].x, want.x, 1.0e-3f);
                 EXPECT_NEAR(pts[i].y, want.y, 1.0e-3f);
                 EXPECT_NEAR(pts[i].z, want.z, 1.0e-3f);
             }
 
             // and the centre must be reported in the image the points actually occupy
-            const vec3_t want_com = vec3_add(shape_com, off);
+            const md_f32x3_t want_com = md_f32x3_add(shape_com, off);
             EXPECT_NEAR(com.x, want_com.x, 1.0e-3f);
             EXPECT_NEAR(com.y, want_com.y, 1.0e-3f);
             EXPECT_NEAR(com.z, want_com.z, 1.0e-3f);
@@ -2248,24 +2250,24 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
     const float L = 20.0f;
     md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
 
-    vec4_t ref[PBC_NP];
+    md_f32x4_t ref[PBC_NP];
     pbc_make_shape(ref, 3.0f);
-    const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+    const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
 
-    const mat3_t R_true = pbc_rot(40.0f * 3.14159265f / 180.0f);
+    const md_f32x3x3_t R_true = pbc_rot(40.0f * 3.14159265f / 180.0f);
 
     for (int nx = -1; nx <= 2; ++nx) {
-        const vec3_t c_true = vec3_set(9.0f + nx * L, 11.0f, 8.0f - nx * L);
+        const md_f32x3_t c_true = md_f32x3_set(9.0f + nx * L, 11.0f, 8.0f - nx * L);
 
-        vec4_t trg[PBC_NP];
+        md_f32x4_t trg[PBC_NP];
         for (int i = 0; i < PBC_NP; ++i) {
-            const vec3_t v = vec3_add(mat3_mul_vec3(R_true, vec3_sub(vec3_from_vec4(ref[i]), ref_com)), c_true);
-            trg[i] = vec4_from_vec3(v, ref[i].w);
+            const md_f32x3_t v = md_f32x3_add(md_f32x3x3_mul_f32x3(R_true, md_f32x3_sub(md_f32x3_from_f32x4(ref[i]), ref_com)), c_true);
+            trg[i] = md_f32x4_from_f32x3(v, ref[i].w);
         }
 
-        mat3_t R = {0};
-        vec3_t com = {0};
-        vec4_t placed[PBC_NP];
+        md_f32x3x3_t R = {0};
+        md_f32x3_t com = {0};
+        md_f32x4_t placed[PBC_NP];
         const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
@@ -2281,15 +2283,15 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
         }
 
         // The recentering transform viamd builds must land the set on the cell centre, in image 0.
-        const vec3_t centre = vec3_set(0.5f * L, 0.5f * L, 0.5f * L);
-        vec3_t sum = vec3_zero();
+        const md_f32x3_t centre = md_f32x3_set(0.5f * L, 0.5f * L, 0.5f * L);
+        md_f32x3_t sum = md_f32x3_zero();
         float  wsum = 0.0f;
         for (int i = 0; i < PBC_NP; ++i) {
-            const vec3_t q = vec3_add(centre, mat3_mul_vec3(R, vec3_sub(vec3_from_vec4(trg[i]), com)));
-            sum = vec3_add(sum, vec3_mul1(q, trg[i].w));
+            const md_f32x3_t q = md_f32x3_add(centre, md_f32x3x3_mul_f32x3(R, md_f32x3_sub(md_f32x3_from_f32x4(trg[i]), com)));
+            sum = md_f32x3_add(sum, md_f32x3_mul1(q, trg[i].w));
             wsum += trg[i].w;
         }
-        sum = vec3_div1(sum, wsum);
+        sum = md_f32x3_div1(sum, wsum);
         EXPECT_NEAR(sum.x, centre.x, 1.0e-2f);
         EXPECT_NEAR(sum.y, centre.y, 1.0e-2f);
         EXPECT_NEAR(sum.z, centre.z, 1.0e-2f);
@@ -2304,27 +2306,27 @@ UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
     md_unitcell_t cell = md_unitcell_from_basis_parameters(a, a, c, 0.0, a * 0.5f, a * 0.5f);
     ASSERT_TRUE(md_unitcell_is_triclinic(&cell));
 
-    mat3_t A = {0};
+    md_f32x3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
 
-    vec4_t shape[PBC_NP];
+    md_f32x4_t shape[PBC_NP];
     pbc_make_shape(shape, 5.0f);
-    const vec3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
-    const vec3_t base = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
+    const md_f32x3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const md_f32x3_t base = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.5f, 0.5f, 0.5f));
 
     for (int nx = -1; nx <= 1; ++nx) {
         for (int ny = -1; ny <= 1; ++ny) {
-            const vec3_t off = vec3_add(base, mat3_mul_vec3(A, vec3_set((float)nx, (float)ny, 0.0f)));
+            const md_f32x3_t off = md_f32x3_add(base, md_f32x3x3_mul_f32x3(A, md_f32x3_set((float)nx, (float)ny, 0.0f)));
 
-            vec4_t pts[PBC_NP];
+            md_f32x4_t pts[PBC_NP];
             for (int i = 0; i < PBC_NP; ++i) {
-                pts[i] = vec4_from_vec3(vec3_add(vec3_from_vec4(shape[i]), off), shape[i].w);
+                pts[i] = md_f32x4_from_f32x3(md_f32x3_add(md_f32x3_from_f32x4(shape[i]), off), shape[i].w);
             }
 
-            vec3_t com = {0};
+            md_f32x3_t com = {0};
             ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
 
-            const vec3_t want_com = vec3_add(shape_com, off);
+            const md_f32x3_t want_com = md_f32x3_add(shape_com, off);
             EXPECT_NEAR(com.x, want_com.x, 1.0e-2f);
             EXPECT_NEAR(com.y, want_com.y, 1.0e-2f);
             EXPECT_NEAR(com.z, want_com.z, 1.0e-2f);
@@ -2347,39 +2349,39 @@ UTEST(util, pbc_com_triclinic) {
     md_unitcell_t cell = md_unitcell_from_basis_parameters(a, a, c, 0.0, a * 0.5f, a * 0.5f);
     ASSERT_TRUE(md_unitcell_is_triclinic(&cell));
 
-    mat3_t A = {0};
+    md_f32x3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    mat3_t I = {0};
+    md_f32x3x3_t I = {0};
     md_unitcell_I_extract_float(I.elem, &cell);
 
     // A compact blob sitting well inside the cell, nowhere near a boundary.
-    vec4_t pts[PBC_NP];
-    const vec3_t centre = mat3_mul_vec3(A, vec3_set(0.41f, 0.63f, 0.48f));
+    md_f32x4_t pts[PBC_NP];
+    const md_f32x3_t centre = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.41f, 0.63f, 0.48f));
     for (int i = 0; i < PBC_NP; ++i) {
         const float t = (float)i / PBC_NP * 6.2831853f;
-        pts[i] = vec4_set(centre.x + 6.0f * cosf(t), centre.y + 6.0f * sinf(t), centre.z + 3.0f * cosf(t * 2.0f), 1.0f + (float)(i % 3));
+        pts[i] = md_f32x4_set(centre.x + 6.0f * cosf(t), centre.y + 6.0f * sinf(t), centre.z + 3.0f * cosf(t * 2.0f), 1.0f + (float)(i % 3));
     }
 
     // Nothing is wrapped, so the periodic mean must agree with the plain mean. It is the same set
     // of points either way.
-    const vec3_t com_plain = md_util_com_compute_vec4(pts, 0, PBC_NP, 0);
-    const vec3_t com_pbc   = md_util_com_compute_vec4(pts, 0, PBC_NP, &cell);
+    const md_f32x3_t com_plain = md_util_com_compute_vec4(pts, 0, PBC_NP, 0);
+    const md_f32x3_t com_pbc   = md_util_com_compute_vec4(pts, 0, PBC_NP, &cell);
     EXPECT_NEAR(com_pbc.x, com_plain.x, 0.2f);
     EXPECT_NEAR(com_pbc.y, com_plain.y, 0.2f);
     EXPECT_NEAR(com_pbc.z, com_plain.z, 0.2f);
 
     // Same blob, every point folded into the primary cell the way a trajectory stores it. The
     // recovered centre must be the same one, in the same image - not a lattice vector away.
-    vec4_t wrapped[PBC_NP];
+    md_f32x4_t wrapped[PBC_NP];
     for (int i = 0; i < PBC_NP; ++i) {
-        vec3_t f = mat3_mul_vec3(I, vec3_from_vec4(pts[i]));
+        md_f32x3_t f = md_f32x3x3_mul_f32x3(I, md_f32x3_from_f32x4(pts[i]));
         f.x -= floorf(f.x);
         f.y -= floorf(f.y);
         f.z -= floorf(f.z);
-        wrapped[i] = vec4_from_vec3(mat3_mul_vec3(A, f), pts[i].w);
+        wrapped[i] = md_f32x4_from_f32x3(md_f32x3x3_mul_f32x3(A, f), pts[i].w);
     }
 
-    vec3_t com_wrapped = {0};
+    md_f32x3_t com_wrapped = {0};
     ASSERT_TRUE(md_util_deperiodize_self_vec4(wrapped, PBC_NP, &cell, &com_wrapped));
     EXPECT_NEAR(com_wrapped.x, com_plain.x, 0.05f);
     EXPECT_NEAR(com_wrapped.y, com_plain.y, 0.05f);
@@ -2422,9 +2424,9 @@ static md_unitcell_t com_cell_triclinic(void) {
 // A compact blob sitting well inside the cell, nowhere near a boundary, so the periodic mean has an
 // unambiguous answer: the ordinary arithmetic mean of the very same points.
 static void com_make_blob(float* x, float* y, float* z, float* w, size_t count, const md_unitcell_t* cell) {
-    mat3_t A = {0};
+    md_f32x3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, cell);
-    const vec3_t centre = mat3_mul_vec3(A, vec3_set(0.41f, 0.63f, 0.48f));
+    const md_f32x3_t centre = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.41f, 0.63f, 0.48f));
     for (size_t i = 0; i < count; ++i) {
         const float t = (float)i * 0.7913f;
         x[i] = centre.x + 3.0f * cosf(t);
@@ -2450,25 +2452,25 @@ UTEST(util, com_pbc_matches_plain_mean) {
             const size_t n = COM_COUNTS[k];
             float x[COM_MAX_PTS], y[COM_MAX_PTS], z[COM_MAX_PTS], w[COM_MAX_PTS];
             int32_t idx[COM_MAX_PTS];
-            vec4_t xyzw[COM_MAX_PTS];
+            md_f32x4_t xyzw[COM_MAX_PTS];
             com_make_blob(x, y, z, w, n, &cells[ci]);
             for (size_t i = 0; i < n; ++i) {
                 idx[i]  = (int32_t)i;
-                xyzw[i] = vec4_set(x[i], y[i], z[i], w[i]);
+                xyzw[i] = md_f32x4_set(x[i], y[i], z[i], w[i]);
             }
 
-            const vec3_t plain_u = com_planar(x, y, z, NULL, NULL, n, NULL);
-            const vec3_t plain_w = com_planar(x, y, z, w,    NULL, n, NULL);
+            const md_f32x3_t plain_u = com_planar(x, y, z, NULL, NULL, n, NULL);
+            const md_f32x3_t plain_w = com_planar(x, y, z, w,    NULL, n, NULL);
 
             // the four internal variants, in order: _com_pbc, _com_pbc_w, _com_pbc_i, _com_pbc_iw
-            const vec3_t pbc    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
-            const vec3_t pbc_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
-            const vec3_t pbc_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
-            const vec3_t pbc_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
+            const md_f32x3_t pbc    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
+            const md_f32x3_t pbc_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
+            const md_f32x3_t pbc_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
+            const md_f32x3_t pbc_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             // and the vec4 entry point, which carries its weight in w
-            const vec3_t pbc_v4 = md_util_com_compute_vec4(xyzw, NULL, n, &cells[ci]);
-            const vec3_t pbc_v4i = md_util_com_compute_vec4(xyzw, idx, n, &cells[ci]);
+            const md_f32x3_t pbc_v4 = md_util_com_compute_vec4(xyzw, NULL, n, &cells[ci]);
+            const md_f32x3_t pbc_v4i = md_util_com_compute_vec4(xyzw, idx, n, &cells[ci]);
 
             for (int e = 0; e < 3; ++e) {
                 EXPECT_NEAR(pbc.elem[e],     plain_u.elem[e], 0.1f);
@@ -2499,7 +2501,7 @@ UTEST(util, com_pbc_invariant_under_lattice_shift) {
     cells[1] = com_cell_triclinic();
 
     for (int ci = 0; ci < 2; ++ci) {
-        mat3_t A = {0};
+        md_f32x3x3_t A = {0};
         md_unitcell_A_extract_float(A.elem, &cells[ci]);
 
         for (size_t k = 0; k < MD_COUNTOF(COM_COUNTS); ++k) {
@@ -2509,26 +2511,26 @@ UTEST(util, com_pbc_invariant_under_lattice_shift) {
             com_make_blob(x, y, z, w, n, &cells[ci]);
             for (size_t i = 0; i < n; ++i) idx[i] = (int32_t)i;
 
-            const vec3_t before    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
-            const vec3_t before_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
-            const vec3_t before_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
-            const vec3_t before_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
+            const md_f32x3_t before    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
+            const md_f32x3_t before_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
+            const md_f32x3_t before_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
+            const md_f32x3_t before_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             // scatter the points across images - a different lattice vector for every third one
             for (size_t i = 0; i < n; ++i) {
                 if (i % 3 != 0) continue;
                 // NOTE: cast before subtracting - i is size_t and the subtraction would wrap
-                const vec3_t nvec = vec3_set((float)((int)(i % 5) - 2), (float)((int)(i % 3) - 1), (float)((int)(i % 7) - 3));
-                const vec3_t shift = mat3_mul_vec3(A, nvec);
+                const md_f32x3_t nvec = md_f32x3_set((float)((int)(i % 5) - 2), (float)((int)(i % 3) - 1), (float)((int)(i % 7) - 3));
+                const md_f32x3_t shift = md_f32x3x3_mul_f32x3(A, nvec);
                 x[i] += shift.x;
                 y[i] += shift.y;
                 z[i] += shift.z;
             }
 
-            const vec3_t after    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
-            const vec3_t after_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
-            const vec3_t after_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
-            const vec3_t after_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
+            const md_f32x3_t after    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
+            const md_f32x3_t after_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
+            const md_f32x3_t after_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
+            const md_f32x3_t after_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             for (int e = 0; e < 3; ++e) {
                 EXPECT_NEAR(after.elem[e],    before.elem[e],    0.02f);
@@ -2552,8 +2554,8 @@ UTEST(util, com_pbc_indices_select) {
         float xs[COM_MAX_PTS], ys[COM_MAX_PTS], zs[COM_MAX_PTS], ws[COM_MAX_PTS];
         com_make_blob(xs, ys, zs, ws, n, &cells[ci]);
 
-        const vec3_t want   = com_planar(xs, ys, zs, NULL, NULL, n, &cells[ci]);
-        const vec3_t want_w = com_planar(xs, ys, zs, ws,   NULL, n, &cells[ci]);
+        const md_f32x3_t want   = com_planar(xs, ys, zs, NULL, NULL, n, &cells[ci]);
+        const md_f32x3_t want_w = com_planar(xs, ys, zs, ws,   NULL, n, &cells[ci]);
 
         // stride the real points through a 3x larger array, junk in between
         float bx[COM_MAX_PTS * 3], by[COM_MAX_PTS * 3], bz[COM_MAX_PTS * 3], bw[COM_MAX_PTS * 3];
@@ -2570,8 +2572,8 @@ UTEST(util, com_pbc_indices_select) {
             idx[i] = (int32_t)slot;
         }
 
-        const vec3_t got   = com_planar(bx, by, bz, NULL, idx, n, &cells[ci]);
-        const vec3_t got_w = com_planar(bx, by, bz, bw,   idx, n, &cells[ci]);
+        const md_f32x3_t got   = com_planar(bx, by, bz, NULL, idx, n, &cells[ci]);
+        const md_f32x3_t got_w = com_planar(bx, by, bz, bw,   idx, n, &cells[ci]);
 
         for (int e = 0; e < 3; ++e) {
             EXPECT_NEAR(got.elem[e],   want.elem[e],   1.0e-4f);
@@ -2584,19 +2586,19 @@ UTEST(util, com_pbc_indices_select) {
 // centre belongs near the heavy one, and nowhere near the midpoint.
 UTEST(util, com_pbc_weights_apply) {
     md_unitcell_t cell = com_cell_triclinic();
-    mat3_t A = {0};
+    md_f32x3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
 
-    const vec3_t p0 = mat3_mul_vec3(A, vec3_set(0.30f, 0.30f, 0.30f));
-    const vec3_t p1 = mat3_mul_vec3(A, vec3_set(0.34f, 0.36f, 0.38f));
+    const md_f32x3_t p0 = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.30f, 0.30f, 0.30f));
+    const md_f32x3_t p1 = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.34f, 0.36f, 0.38f));
 
     float x[2] = { p0.x, p1.x };
     float y[2] = { p0.y, p1.y };
     float z[2] = { p0.z, p1.z };
     float w[2] = { 10.0f, 1.0f };
 
-    const vec3_t expect = vec3_div1(vec3_add(vec3_mul1(p0, 10.0f), p1), 11.0f);
-    const vec3_t got    = com_planar(x, y, z, w, NULL, 2, &cell);
+    const md_f32x3_t expect = md_f32x3_div1(md_f32x3_add(md_f32x3_mul1(p0, 10.0f), p1), 11.0f);
+    const md_f32x3_t got    = com_planar(x, y, z, w, NULL, 2, &cell);
 
     EXPECT_NEAR(got.x, expect.x, 0.05f);
     EXPECT_NEAR(got.y, expect.y, 0.05f);
@@ -2610,22 +2612,22 @@ UTEST(util, pbc_optimal_rotation) {
     md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
 
     for (int deg = 0; deg <= 180; deg += 20) {
-        vec4_t ref[PBC_NP];
+        md_f32x4_t ref[PBC_NP];
         pbc_make_shape(ref, 3.0f);
-        const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+        const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
 
-        const mat3_t R_true = pbc_rot(deg * 3.14159265f / 180.0f);
-        const vec3_t c_true = { 3.0f, 17.0f, 9.0f };   // deliberately near two boundaries
+        const md_f32x3x3_t R_true = pbc_rot(deg * 3.14159265f / 180.0f);
+        const md_f32x3_t c_true = { 3.0f, 17.0f, 9.0f };   // deliberately near two boundaries
 
-        vec4_t trg[PBC_NP];
+        md_f32x4_t trg[PBC_NP];
         for (int i = 0; i < PBC_NP; ++i) {
-            const vec3_t v = vec3_add(mat3_mul_vec3(R_true, vec3_sub(vec3_from_vec4(ref[i]), ref_com)), c_true);
-            trg[i] = vec4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), ref[i].w);
+            const md_f32x3_t v = md_f32x3_add(md_f32x3x3_mul_f32x3(R_true, md_f32x3_sub(md_f32x3_from_f32x4(ref[i]), ref_com)), c_true);
+            trg[i] = md_f32x4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), ref[i].w);
         }
 
-        mat3_t R = {0};
-        vec3_t com = {0};
-        vec4_t placed[PBC_NP];
+        md_f32x3x3_t R = {0};
+        md_f32x3_t com = {0};
+        md_f32x4_t placed[PBC_NP];
         const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
@@ -2633,8 +2635,8 @@ UTEST(util, pbc_optimal_rotation) {
 
         // The placed points must satisfy the transform the call reported
         for (int i = 0; i < PBC_NP; ++i) {
-            const vec3_t p = vec3_sub(vec3_from_vec4(ref[i]), ref_com);
-            const vec3_t q = mat3_mul_vec3(R, vec3_sub(vec3_from_vec4(placed[i]), com));
+            const md_f32x3_t p = md_f32x3_sub(md_f32x3_from_f32x4(ref[i]), ref_com);
+            const md_f32x3_t q = md_f32x3x3_mul_f32x3(R, md_f32x3_sub(md_f32x3_from_f32x4(placed[i]), com));
             EXPECT_NEAR(q.x, p.x, 1.0e-2f);
             EXPECT_NEAR(q.y, p.y, 1.0e-2f);
             EXPECT_NEAR(q.z, p.z, 1.0e-2f);
@@ -2649,21 +2651,21 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
     const float L = 20.0f;
     md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
 
-    vec4_t ref[PBC_NP];
+    md_f32x4_t ref[PBC_NP];
     pbc_make_shape(ref, 8.5f);
-    const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+    const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
 
-    const mat3_t R_true = pbc_rot(3.14159265f);
-    const vec3_t c_true = { 3.0f, 17.0f, 9.0f };
+    const md_f32x3x3_t R_true = pbc_rot(3.14159265f);
+    const md_f32x3_t c_true = { 3.0f, 17.0f, 9.0f };
 
-    vec4_t trg[PBC_NP];
+    md_f32x4_t trg[PBC_NP];
     for (int i = 0; i < PBC_NP; ++i) {
-        const vec3_t v = vec3_add(mat3_mul_vec3(R_true, vec3_sub(vec3_from_vec4(ref[i]), ref_com)), c_true);
-        trg[i] = vec4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), ref[i].w);
+        const md_f32x3_t v = md_f32x3_add(md_f32x3x3_mul_f32x3(R_true, md_f32x3_sub(md_f32x3_from_f32x4(ref[i]), ref_com)), c_true);
+        trg[i] = md_f32x4_set(pbc_wrap(v.x, L), pbc_wrap(v.y, L), pbc_wrap(v.z, L), ref[i].w);
     }
 
-    mat3_t R = {0};
-    vec3_t com = {0};
+    md_f32x3x3_t R = {0};
+    md_f32x3_t com = {0};
     const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
     // The certificate is the whole point: a residual on the order of half a cell means do not trust it
@@ -2673,12 +2675,12 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
 // Degenerate inputs must not misbehave
 UTEST(util, pbc_optimal_rotation_degenerate) {
     md_unitcell_t cell = md_unitcell_from_extent(20, 20, 20);
-    vec4_t ref[PBC_NP];
+    md_f32x4_t ref[PBC_NP];
     pbc_make_shape(ref, 3.0f);
-    const vec3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+    const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
 
-    mat3_t R = {0};
-    vec3_t com = {0};
+    md_f32x3x3_t R = {0};
+    md_f32x3_t com = {0};
 
     // Empty set
     EXPECT_NEAR(md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, ref, 0, &cell, 8, 1.0e-6f), 0.0f, 1.0e-6f);
@@ -2686,10 +2688,10 @@ UTEST(util, pbc_optimal_rotation_degenerate) {
     // No cell at all: still a plain Kabsch fit, identity here since target == reference
     const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL, 8, 1.0e-6f);
     EXPECT_LT(residual, 1.0e-3f);
-    EXPECT_LT(pbc_angle_err(R, mat3_ident()), 0.5f);
+    EXPECT_LT(pbc_angle_err(R, md_f32x3x3_ident()), 0.5f);
 
     // A set with no coordinates to speak of
-    vec3_t c = {0};
+    md_f32x3_t c = {0};
     EXPECT_TRUE(md_util_deperiodize_self_vec4(ref, 0, &cell, &c));
 }
 
@@ -3102,8 +3104,8 @@ UTEST(util, radix_sort) {
 }
 
 static inline bool init_system(md_system_t* sys, md_system_state_t* sys_state, md_str_t path) {
-    md_str_t ext;
-    if (!md_path_ext(&ext, path)) {
+    md_str_t ext = md_path_ext(path);
+    if (md_str_empty(ext)) {
         return false;
     }
 
@@ -4037,12 +4039,12 @@ UTEST_F(util, mask_grow_by_bonds_dirty_temp) {
 // minimum image and so did exactly that.
 UTEST(util, interpolate_linear_across_boundary) {
     const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
-    vec3_t a[16] = {0}, b[16] = {0}, out[16] = {0};
+    md_f32x3_t a[16] = {0}, b[16] = {0}, out[16] = {0};
     for (int i = 0; i < 16; ++i) {
-        a[i] = vec3_set(9.5f, 5.0f, 0.25f);
-        b[i] = vec3_set(0.5f, 5.0f, 9.75f);
+        a[i] = md_f32x3_set(9.5f, 5.0f, 0.25f);
+        b[i] = md_f32x3_set(0.5f, 5.0f, 9.75f);
     }
-    const vec3_t* const in[2] = { a, b };
+    const md_f32x3_t* const in[2] = { a, b };
     ASSERT_TRUE(md_util_interpolate_linear(out, in, 16, &cell, 0.5f));
     for (int i = 0; i < 16; ++i) {
         // Halfway is on the boundary: 10 or its image 0, never 5
@@ -4060,8 +4062,8 @@ UTEST(util, interpolate_linear_across_boundary) {
 // to the i:th atom instead of the one indexed.
 UTEST(util, pbc_indexed) {
     const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
-    vec3_t xyz[20];
-    for (int i = 0; i < 20; ++i) xyz[i] = vec3_set(12.0f + i, -3.0f, 5.0f);
+    md_f32x3_t xyz[20];
+    for (int i = 0; i < 20; ++i) xyz[i] = md_f32x3_set(12.0f + i, -3.0f, 5.0f);
     const int32_t idx[3] = { 17, 4, 11 };
     ASSERT_TRUE(md_util_pbc(xyz, idx, 3, &cell));
     for (int i = 0; i < 20; ++i) {
@@ -4084,12 +4086,12 @@ UTEST(util, pbc_indexed) {
 
     // Triclinic: every wrapped atom lands inside the cell
     const md_unitcell_t tri = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
-    for (int i = 0; i < 20; ++i) xyz[i] = vec3_set(12.0f + i, -3.0f - i, 25.0f);
+    for (int i = 0; i < 20; ++i) xyz[i] = md_f32x3_set(12.0f + i, -3.0f - i, 25.0f);
     ASSERT_TRUE(md_util_pbc(xyz, NULL, 20, &tri));
-    mat3_t I = {0};
+    md_f32x3x3_t I = {0};
     md_unitcell_I_extract_float(I.elem, &tri);
     for (int i = 0; i < 20; ++i) {
-        const vec3_t f = mat3_mul_vec3(I, xyz[i]);
+        const md_f32x3_t f = md_f32x3x3_mul_f32x3(I, xyz[i]);
         for (int k = 0; k < 3; ++k) {
             EXPECT_GE(f.elem[k], -1.0e-4f);
             EXPECT_LE(f.elem[k], 1.0f + 1.0e-4f);
@@ -4101,12 +4103,12 @@ UTEST(util, pbc_indexed) {
 // leaves a tail after the eight wide part.
 UTEST(util, aabb_paths) {
     enum { N = 37 };
-    vec3_t xyz[N];
+    md_f32x3_t xyz[N];
     float r[N];
     int32_t idx[N];
     for (int i = 0; i < N; ++i) {
         const float s = (float)((i * 2654435761u) % 1000) / 100.0f - 5.0f;
-        xyz[i] = vec3_set(s, -2.0f * s + i, 0.5f * i - s);
+        xyz[i] = md_f32x3_set(s, -2.0f * s + i, 0.5f * i - s);
         r[i]   = 0.1f * (i % 7);
         idx[i] = (i * 11) % N;
     }
@@ -4136,13 +4138,13 @@ UTEST(util, aabb_paths) {
 // The spline passes through the two middle frames at t = 0 and t = 1, and across a boundary it
 // takes the neighbouring frames' images rather than their wrapped positions.
 UTEST(util, interpolate_cubic) {
-    vec3_t f[4][16], out[16];
+    md_f32x3_t f[4][16], out[16];
     for (int i = 0; i < 16; ++i) {
         for (int k = 0; k < 4; ++k) {
-            f[k][i] = vec3_set(1.0f * k + i, 2.0f * k, -0.5f * k * k);
+            f[k][i] = md_f32x3_set(1.0f * k + i, 2.0f * k, -0.5f * k * k);
         }
     }
-    const vec3_t* const in[4] = { f[0], f[1], f[2], f[3] };
+    const md_f32x3_t* const in[4] = { f[0], f[1], f[2], f[3] };
     ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, NULL, 0.0f, 0.5f));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[1][i].x, out[i].x, 1.0e-4f);
@@ -4157,7 +4159,7 @@ UTEST(util, interpolate_cubic) {
     const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
     for (int i = 0; i < 16; ++i) {
         for (int k = 0; k < 4; ++k) {
-            f[k][i] = vec3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);   // 8, 9, 0, 1
+            f[k][i] = md_f32x3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);   // 8, 9, 0, 1
         }
     }
     ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, &cell, 0.5f, 0.5f));
@@ -4199,13 +4201,13 @@ UTEST(util, interpolate_cubic_weights) {
     EXPECT_NEAR(1.0f / 6.0f, w[2], 1.0e-7f);
     EXPECT_NEAR(0.0f,        w[3], 1.0e-7f);
 
-    vec3_t f[4][16], out[16];
+    md_f32x3_t f[4][16], out[16];
     for (int i = 0; i < 16; ++i) {
         for (int k = 0; k < 4; ++k) {
-            f[k][i] = vec3_set(1.0f * k + i, 2.0f * k * k, -0.5f * k + 0.1f * i);
+            f[k][i] = md_f32x3_set(1.0f * k + i, 2.0f * k * k, -0.5f * k + 0.1f * i);
         }
     }
-    const vec3_t* const in[4] = { f[0], f[1], f[2], f[3] };
+    const md_f32x3_t* const in[4] = { f[0], f[1], f[2], f[3] };
 
     md_util_cubic_spline_weights(w, 0.0f, 0.5f);
     ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
@@ -4227,7 +4229,7 @@ UTEST(util, interpolate_cubic_weights) {
     // Moving +1 per frame along x, wrapped into a box of 10: 8, 9, 0, 1
     for (int i = 0; i < 16; ++i) {
         for (int k = 0; k < 4; ++k) {
-            f[k][i] = vec3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);
+            f[k][i] = md_f32x3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);
         }
     }
     const md_unitcell_t cells[2] = {
@@ -4247,10 +4249,10 @@ UTEST(util, interpolate_cubic_weights) {
 // The order is a permutation of the atoms, and atoms that share a position end up together.
 UTEST(util, sort_spatial) {
     enum { N = 64 };
-    vec3_t xyz[N];
+    md_f32x3_t xyz[N];
     for (int i = 0; i < N; ++i) {
         const int cluster = i % 4;
-        xyz[i] = vec3_set(cluster * 20.0f, cluster * 20.0f, 0.0f);
+        xyz[i] = md_f32x3_set(cluster * 20.0f, cluster * 20.0f, 0.0f);
     }
     uint32_t order[N];
     md_util_sort_spatial(order, xyz, N);
@@ -4272,18 +4274,18 @@ UTEST(util, sort_spatial) {
 UTEST(util, packed_kernels_any_alignment) {
     enum { N = 37, PAD = 64 };
     const md_unitcell_t cell = md_unitcell_from_extent(10, 12, 14);
-    const vec3_t ext = {10, 12, 14};
-    vec3_t base_a[N + PAD], base_b[N + PAD], base_o[N + PAD];
+    const md_f32x3_t ext = {10, 12, 14};
+    md_f32x3_t base_a[N + PAD], base_b[N + PAD], base_o[N + PAD];
     float  base_w[N + PAD];
     for (int off = 0; off < 8; ++off) {
-        vec3_t* a = base_a + off;
-        vec3_t* b = base_b + off;
-        vec3_t* o = base_o + off;
+        md_f32x3_t* a = base_a + off;
+        md_f32x3_t* b = base_b + off;
+        md_f32x3_t* o = base_o + off;
         float*  w = base_w + off;
         for (int i = 0; i < N; ++i) {
             const float s = (float)((i * 2654435761u + off) % 1000) / 1000.0f;
-            a[i] = vec3_set(9.0f * s + 0.5f, 11.0f * (1.0f - s) + 0.5f, 13.0f * s * s + 0.5f);
-            b[i] = vec3_add(a[i], vec3_set(3.0f - 6.0f * s, 5.0f * s - 2.5f, 1.5f));
+            a[i] = md_f32x3_set(9.0f * s + 0.5f, 11.0f * (1.0f - s) + 0.5f, 13.0f * s * s + 0.5f);
+            b[i] = md_f32x3_add(a[i], md_f32x3_set(3.0f - 6.0f * s, 5.0f * s - 2.5f, 1.5f));
             w[i] = 0.5f + s;
         }
 
@@ -4296,21 +4298,21 @@ UTEST(util, packed_kernels_any_alignment) {
             }
             sw += w[i];
         }
-        const vec3_t c  = md_util_com_compute(a, NULL, NULL, N, NULL);
-        const vec3_t cw = md_util_com_compute(a, w,    NULL, N, NULL);
+        const md_f32x3_t c  = md_util_com_compute(a, NULL, NULL, N, NULL);
+        const md_f32x3_t cw = md_util_com_compute(a, w,    NULL, N, NULL);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(ref[k] / N, c.elem[k], 1.0e-4);
             EXPECT_NEAR(ref_w[k] / sw, cw.elem[k], 1.0e-4);
         }
 
         // Periodic COM of a cloud well inside the cell is its plain mean, weighted or not
-        vec3_t near_center[N];
-        for (int i = 0; i < N; ++i) near_center[i] = vec3_add(vec3_set(5, 6, 7), vec3_mul1(vec3_sub(a[i], vec3_set(5, 6, 7)), 0.1f));
+        md_f32x3_t near_center[N];
+        for (int i = 0; i < N; ++i) near_center[i] = md_f32x3_add(md_f32x3_set(5, 6, 7), md_f32x3_mul1(md_f32x3_sub(a[i], md_f32x3_set(5, 6, 7)), 0.1f));
         md_memcpy(o, near_center, sizeof(near_center));
-        const vec3_t pc  = md_util_com_compute(o, NULL, NULL, N, &cell);
-        const vec3_t pcw = md_util_com_compute(o, w,    NULL, N, &cell);
-        const vec3_t mc  = md_util_com_compute(o, NULL, NULL, N, NULL);
-        const vec3_t mcw = md_util_com_compute(o, w,    NULL, N, NULL);
+        const md_f32x3_t pc  = md_util_com_compute(o, NULL, NULL, N, &cell);
+        const md_f32x3_t pcw = md_util_com_compute(o, w,    NULL, N, &cell);
+        const md_f32x3_t mc  = md_util_com_compute(o, NULL, NULL, N, NULL);
+        const md_f32x3_t mcw = md_util_com_compute(o, w,    NULL, N, NULL);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(mc.elem[k],  pc.elem[k],  2.0e-2);
             EXPECT_NEAR(mcw.elem[k], pcw.elem[k], 2.0e-2);
@@ -4327,8 +4329,8 @@ UTEST(util, packed_kernels_any_alignment) {
         }
 
         // Linear interpolation, no cell and orthorhombic, and nothing written past the end
-        base_o[off + N] = vec3_set(-1, -1, -1);
-        const vec3_t* const in[2] = { a, b };
+        base_o[off + N] = md_f32x3_set(-1, -1, -1);
+        const md_f32x3_t* const in[2] = { a, b };
         ASSERT_TRUE(md_util_interpolate_linear(o, in, N, NULL, 0.25f));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
@@ -4346,7 +4348,7 @@ UTEST(util, packed_kernels_any_alignment) {
         EXPECT_EQ(-1.0f, base_o[off + N].x);
 
         // Cubic through the middle frames at the ends of the interval
-        const vec3_t* const in4[4] = { a, a, b, b };
+        const md_f32x3_t* const in4[4] = { a, a, b, b };
         ASSERT_TRUE(md_util_interpolate_cubic_spline(o, in4, N, NULL, 1.0f, 0.5f));
         for (int i = 0; i < N; ++i) {
             EXPECT_NEAR(b[i].y, o[i].y, 1.0e-4f);
@@ -4354,7 +4356,7 @@ UTEST(util, packed_kernels_any_alignment) {
         EXPECT_EQ(-1.0f, base_o[off + N].x);
 
         // Wrapping
-        md_memcpy(o, b, N * sizeof(vec3_t));
+        md_memcpy(o, b, N * sizeof(md_f32x3_t));
         ASSERT_TRUE(md_util_pbc(o, NULL, N, &cell));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
@@ -4371,7 +4373,7 @@ UTEST(util, packed_kernels_any_alignment) {
 // The minimum image by exhaustion, in double: reduced into the brick, then every combination of up to three lattice
 // vectors either way along the periodic axes. Three is more than any of the cells below needs: a vector A n which
 // shortens a reduced d has |n_i| <= 2 |d| |r_i| (r_i a row of the inverse basis), at most 2 for these.
-static double dist_ref(vec3_t a, vec3_t b, const md_unitcell_t* cell) {
+static double dist_ref(md_f32x3_t a, md_f32x3_t b, const md_unitcell_t* cell) {
     double d[3] = { (double)a.x - b.x, (double)a.y - b.y, (double)a.z - b.z };
     double A[3][3] = {{0}};
     md_unitcell_A_extract_double(A, cell);
@@ -4409,7 +4411,7 @@ static double dist_rand(void) {
 
 // A point at fractional coordinates in [lo, hi) along the periodic axes - several images of the cell, as in an
 // unwrapped trajectory - and within span along the others
-static vec3_t dist_rand_point(const md_unitcell_t* cell, double span, double lo, double hi) {
+static md_f32x3_t dist_rand_point(const md_unitcell_t* cell, double span, double lo, double hi) {
     double A[3][3] = {{0}};
     md_unitcell_A_extract_double(A, cell);
     double p[3] = {0};
@@ -4421,7 +4423,7 @@ static vec3_t dist_rand_point(const md_unitcell_t* cell, double span, double lo,
             p[i] += f * span;
         }
     }
-    return vec3_set((float)p[0], (float)p[1], (float)p[2]);
+    return md_f32x3_set((float)p[0], (float)p[1], (float)p[2]);
 }
 
 // Groups which are empty, compact, spread over several images, or share points with b, in every kind of cell -
@@ -4443,8 +4445,8 @@ UTEST(util, min_max_distance_groups) {
     };
 
     dist_rng_state = 0x243F6A8885A308D3ULL;
-    vec3_t  a[6 * 12];
-    vec3_t  b[60];
+    md_f32x3_t  a[6 * 12];
+    md_f32x3_t  b[60];
     size_t  off[7];
     float   dist[6];
     int64_t ia[6], ib[6];
@@ -4454,9 +4456,9 @@ UTEST(util, min_max_distance_groups) {
         for (int trial = 0; trial < 25; ++trial) {
             const size_t nb = trial == 0 ? 0 : (trial % 5 == 0 ? 1 + (size_t)(dist_rand() * 3) : 1 + (size_t)(dist_rand() * 59));
             const bool blob = trial % 3 == 0;
-            const vec3_t bc = dist_rand_point(cell, 40, 0, 1);
+            const md_f32x3_t bc = dist_rand_point(cell, 40, 0, 1);
             for (size_t j = 0; j < nb; ++j) {
-                b[j] = blob ? vec3_add(bc, vec3_set((float)(dist_rand() * 8 - 4), (float)(dist_rand() * 8 - 4), (float)(dist_rand() * 8 - 4)))
+                b[j] = blob ? md_f32x3_add(bc, md_f32x3_set((float)(dist_rand() * 8 - 4), (float)(dist_rand() * 8 - 4), (float)(dist_rand() * 8 - 4)))
                             : dist_rand_point(cell, 40, -1.5, 2.5);
             }
 
@@ -4466,14 +4468,14 @@ UTEST(util, min_max_distance_groups) {
                 off[g] = na;
                 const size_t n    = dist_rand() < 0.2 ? 0 : 1 + (size_t)(dist_rand() * 12);
                 const int    kind = (int)(dist_rand() * 4);
-                const vec3_t cen  = dist_rand_point(cell, 40, -1, 2);
+                const md_f32x3_t cen  = dist_rand_point(cell, 40, -1, 2);
                 for (size_t k = 0; k < n; ++k) {
                     if (kind == 0) {
                         a[na++] = dist_rand_point(cell, 40, -1.5, 2.5);
                     } else if (kind == 1 && nb > 0) {
                         a[na++] = b[(size_t)(dist_rand() * nb)];
                     } else {
-                        a[na++] = vec3_add(cen, vec3_set((float)(dist_rand() * 5 - 2.5), (float)(dist_rand() * 5 - 2.5), (float)(dist_rand() * 5 - 2.5)));
+                        a[na++] = md_f32x3_add(cen, md_f32x3_set((float)(dist_rand() * 5 - 2.5), (float)(dist_rand() * 5 - 2.5), (float)(dist_rand() * 5 - 2.5)));
                     }
                 }
             }
@@ -4512,14 +4514,14 @@ UTEST(util, min_max_distance_groups) {
     }
 
     // The single set versions: FLT_MAX and 0 for an empty set, the indices untouched then
-    const vec3_t p = vec3_set(1, 2, 3);
+    const md_f32x3_t p = md_f32x3_set(1, 2, 3);
     const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
     int64_t i0 = 7, i1 = 7;
     EXPECT_EQ(FLT_MAX, md_util_min_distance(&i0, &i1, &p, 0, &p, 1, &cell));
     EXPECT_EQ(0.0f,    md_util_max_distance(&i0, &i1, &p, 1, &p, 0, &cell));
     EXPECT_EQ(7, i0);
     EXPECT_EQ(7, i1);
-    const vec3_t q = vec3_set(9.5f, 2, 3);
+    const md_f32x3_t q = md_f32x3_set(9.5f, 2, 3);
     EXPECT_NEAR(1.5f, md_util_min_distance(&i0, &i1, &p, 1, &q, 1, &cell), 1.0e-5f);
     EXPECT_NEAR(8.5f, md_util_min_distance(&i0, &i1, &p, 1, &q, 1, NULL), 1.0e-5f);
     EXPECT_EQ(0, i0);
@@ -4541,7 +4543,7 @@ UTEST(util, min_max_distance_near) {
     };
     dist_rng_state = 0x13198A2E03707344ULL;
     enum { NA = 70, NB = 90, CAP = NA * NB };
-    vec3_t a[NA], b[NB];
+    md_f32x3_t a[NA], b[NB];
     int64_t* na_idx = malloc(CAP * sizeof(int64_t));
     int64_t* nb_idx = malloc(CAP * sizeof(int64_t));
     uint8_t* in_set = malloc(CAP);
@@ -4669,7 +4671,7 @@ static size_t xyz_text_of(md_str_t* out, int32_t* xyz_to_sys, const md_system_t*
     size_t len = (size_t)snprintf(buf, 64, "%zu\nxyz\n", num);
     for (size_t k = 0; k < num; ++k) {
         const md_str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&sys->atom, (size_t)xyz_to_sys[k]));
-        const vec3_t p = md_state_coord(state, (size_t)xyz_to_sys[k]);
+        const md_f32x3_t p = md_state_coord(state, (size_t)xyz_to_sys[k]);
         len += (size_t)snprintf(buf + len, 64, "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, p.x, p.y, p.z);
     }
     *out = (md_str_t){ buf, len };
@@ -4872,10 +4874,10 @@ static double addr_rnd(double lo, double hi) { return lo + (hi - lo) * (double)r
 UTEST(util, packed_kernels_independent_of_address) {
     enum { N = 103, OFFSETS = 16 };
     srand(4711);
-    vec3_t src[N];
+    md_f32x3_t src[N];
     float w[N];
     for (int i = 0; i < N; ++i) {
-        src[i] = (vec3_t){{(float)addr_rnd(-5.0, 45.0), (float)addr_rnd(-5.0, 45.0), (float)addr_rnd(-5.0, 45.0)}};
+        src[i] = (md_f32x3_t){{(float)addr_rnd(-5.0, 45.0), (float)addr_rnd(-5.0, 45.0), (float)addr_rnd(-5.0, 45.0)}};
         w[i] = (float)addr_rnd(1.0, 16.0);
     }
     const md_unitcell_t cell = md_unitcell_from_extent(40.0, 41.0, 42.0);
@@ -4884,13 +4886,13 @@ UTEST(util, packed_kernels_independent_of_address) {
     float* raw = (float*)md_alloc(md_get_heap_allocator(), (6 * N + 64) * sizeof(float) + 64);
     float* base = (float*)(((uintptr_t)raw + 63) & ~(uintptr_t)63);
 
-    vec3_t ref_com[4] = {0};
+    md_f32x3_t ref_com[4] = {0};
     float ref_min[3], ref_max[3];
-    vec3_t ref_pbc[N], ref_lin[N];
+    md_f32x3_t ref_pbc[N], ref_lin[N];
     for (int o = 0; o < OFFSETS; ++o) {
-        vec3_t* p = (vec3_t*)(base + o);
+        md_f32x3_t* p = (md_f32x3_t*)(base + o);
         memcpy(p, src, sizeof(src));
-        const vec3_t com[4] = {
+        const md_f32x3_t com[4] = {
             md_util_com_compute(p, NULL, NULL, N, &none),
             md_util_com_compute(p, w, NULL, N, &none),
             md_util_com_compute(p, NULL, NULL, N, &cell),
@@ -4901,13 +4903,13 @@ UTEST(util, packed_kernels_independent_of_address) {
         // pbc and interpolation write in place or to out: the result at this offset against the first offset's
         memcpy(p, src, sizeof(src));
         md_util_pbc(p, NULL, N, &cell);
-        vec3_t pbc[N];
+        md_f32x3_t pbc[N];
         memcpy(pbc, p, sizeof(pbc));
         memcpy(p, src, sizeof(src));
-        vec3_t* q = (vec3_t*)(base + 3 * N + 32 - o);   // a second frame, at another alignment
-        for (int i = 0; i < N; ++i) q[i] = vec3_add(src[i], (vec3_t){{0.5f, -0.25f, 0.125f}});
-        const vec3_t* frames[2] = {p, q};
-        vec3_t lin[N];
+        md_f32x3_t* q = (md_f32x3_t*)(base + 3 * N + 32 - o);   // a second frame, at another alignment
+        for (int i = 0; i < N; ++i) q[i] = md_f32x3_add(src[i], (md_f32x3_t){{0.5f, -0.25f, 0.125f}});
+        const md_f32x3_t* frames[2] = {p, q};
+        md_f32x3_t lin[N];
         md_util_interpolate_linear(lin, frames, N, &cell, 0.37f);
         if (o == 0) {
             memcpy(ref_com, com, sizeof(com));
@@ -4918,9 +4920,9 @@ UTEST(util, packed_kernels_independent_of_address) {
             continue;
         }
         for (int k = 0; k < 4; ++k) {
-            if (memcmp(&ref_com[k], &com[k], sizeof(vec3_t))) printf("com %d differs at offset %d bytes: %.9g %.9g %.9g against %.9g %.9g %.9g\n",
+            if (memcmp(&ref_com[k], &com[k], sizeof(md_f32x3_t))) printf("com %d differs at offset %d bytes: %.9g %.9g %.9g against %.9g %.9g %.9g\n",
                 k, 4 * o, com[k].x, com[k].y, com[k].z, ref_com[k].x, ref_com[k].y, ref_com[k].z);
-            EXPECT_EQ(0, memcmp(&ref_com[k], &com[k], sizeof(vec3_t)));
+            EXPECT_EQ(0, memcmp(&ref_com[k], &com[k], sizeof(md_f32x3_t)));
         }
         EXPECT_EQ(0, memcmp(ref_min, mn, sizeof(mn)));
         EXPECT_EQ(0, memcmp(ref_max, mx, sizeof(mx)));

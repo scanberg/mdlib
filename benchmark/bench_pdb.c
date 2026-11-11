@@ -4,7 +4,7 @@
 #include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_log.h>
 
 UBENCH_EX(pdb, dppc64) {

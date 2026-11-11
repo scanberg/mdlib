@@ -5,12 +5,14 @@
 #include <md_h5md.h>
 #include <md_tpr.h>
 #include <md_system.h>
+#include <md_run.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_os.h>
 #include <core/md_str.h>
+#include <core/md_vec_math.h>
 
 #include "run_check.h"
 #include <hdf5.h>
@@ -153,7 +155,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     const double L = tpr_state.unitcell.x;
     double max_diff = 0;
     for (size_t i = 0; i < h.state.num_atoms; ++i) {
-        const vec3_t d = vec3_sub(tpr_state.xyz[i], h.state.xyz[i]);
+        const md_f32x3_t d = md_f32x3_sub(tpr_state.xyz[i], h.state.xyz[i]);
         const double dx = d.x - L * round(d.x / L), dy = d.y - L * round(d.y / L), dz = d.z - L * round(d.z / L);
         max_diff = MD_MAX(max_diff, sqrt(dx * dx + dy * dy + dz * dz));
     }

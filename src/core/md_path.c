@@ -14,10 +14,11 @@ static size_t filename_beg(md_str_t path) {
     return 0;
 }
 
-// Offset of the '.' which starts the extension. Only the file name is searched
+// Offset of the '.' which starts the extension: searched for in the file name only, and not at its first
+// character, as a leading '.' marks a hidden file
 static bool ext_dot(size_t* loc, md_str_t path) {
     const size_t beg = filename_beg(path);
-    for (size_t i = path.len; i > beg; --i) {
+    for (size_t i = path.len; i > beg + 1; --i) {
         if (path.ptr[i - 1] == '.') {
             *loc = i - 1;
             return true;
@@ -26,52 +27,46 @@ static bool ext_dot(size_t* loc, md_str_t path) {
     return false;
 }
 
-bool md_path_ext(md_str_t* ext, md_str_t path) {
-    size_t dot;
-    if (!ext_dot(&dot, path)) {
-        return false;
+md_str_t md_path_filename(md_str_t path) {
+    md_str_t result = {0};
+    if (!md_str_empty(path)) {
+        const size_t beg = filename_beg(path);
+        result.ptr = path.ptr + beg;
+        result.len = path.len - beg;
     }
-    if (ext) {
-        ext->ptr = path.ptr + dot + 1;
-        ext->len = path.len - dot - 1;
-    }
-    return true;
+    return result;
 }
 
-bool md_path_filename(md_str_t* filename, md_str_t path) {
-    if (md_str_empty(path)) {
-        return false;
-    }
+md_str_t md_path_folder(md_str_t path) {
+    md_str_t result = {0};
     const size_t beg = filename_beg(path);
-    if (filename) {
-        filename->ptr = path.ptr + beg;
-        filename->len = path.len - beg;
+    if (beg > 0) {
+        result.ptr = path.ptr;
+        result.len = beg;
     }
-    return true;
+    return result;
 }
 
-bool md_path_without_ext(md_str_t* path_without_ext, md_str_t path) {
+md_str_t md_path_ext(md_str_t path) {
+    md_str_t result = {0};
     size_t dot;
-    if (!ext_dot(&dot, path)) {
-        return false;
+    if (ext_dot(&dot, path)) {
+        result.ptr = path.ptr + dot + 1;
+        result.len = path.len - dot - 1;
     }
-    if (path_without_ext) {
-        path_without_ext->ptr = path.ptr;
-        path_without_ext->len = dot;
-    }
-    return true;
+    return result;
 }
 
-bool md_path_folder(md_str_t* folder, md_str_t path) {
-    const size_t beg = filename_beg(path);
-    if (beg == 0) {
-        return false;
+md_str_t md_path_without_ext(md_str_t path) {
+    size_t dot;
+    if (ext_dot(&dot, path)) {
+        path.len = dot;
     }
-    if (folder) {
-        folder->ptr = path.ptr;
-        folder->len = beg;
-    }
-    return true;
+    return path;
+}
+
+md_str_t md_path_stem(md_str_t path) {
+    return md_path_without_ext(md_path_filename(path));
 }
 
 bool md_path_is_absolute(md_str_t path) {

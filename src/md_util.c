@@ -19,7 +19,6 @@
 #include <core/md_spatial_acc.h>
 #include <core/md_executor.h>
 #include <core/md_bitset.h>
-#include <core/md_os.h>
 #include <core/md_hash.h>
 #include <core/md_fifo.h>
 
@@ -1217,7 +1216,7 @@ bool md_util_resname_nucleotide(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna)) || find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
 }
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state) {
+void md_util_system_extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state) {
     MD_ASSERT(out_xyzw);
     MD_ASSERT(mask);
     MD_ASSERT(sys);
@@ -1226,9 +1225,9 @@ void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const md_bitset_t* 
     size_t count = 0;
     while (md_bitset_iter_next(&it)) {
         size_t i = it.idx;
-        vec3_t xyz = md_state_coord(state, i);
+        md_f32x3_t xyz = md_state_coord(state, i);
         float mass = md_atom_mass(&sys->atom, i);
-        out_xyzw[count] = vec4_from_vec3(xyz, mass);
+        out_xyzw[count] = md_f32x4_from_f32x3(xyz, mass);
         count++;
     }
 }
@@ -1422,7 +1421,7 @@ static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, c
 // There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3). How the name matches: 0 not
 // at all, 1 the bare name (C3), 2 the primed name (C3' or C3*).
 static int cmp_nuc_atom(md_str_t id, const char* base, size_t len) {
-    if (id.len < len || !md_str_eq_cstr_n(id, base, len)) return 0;
+    if (!md_str_begins_with(id, (md_str_t){base, len})) return 0;
     if (id.len == len) return 1;
     const char next = md_str_ptr(id)[len];
     return (id.len == len + 1 && (next == '\'' || next == '*')) ? 2 : 0;
@@ -1706,7 +1705,7 @@ static inline void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], c
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
 }
 
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
 
@@ -1732,23 +1731,23 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 			int  n_idx     = backbone->segment.atoms[i].n;
 			int n_next_idx = backbone->segment.atoms[i + 1].n;
 
-			vec3_t c_prev = xyz[c_prev_idx];
-            vec3_t n      = xyz[n_idx];
-            vec3_t ca     = xyz[ca_idx];
-            vec3_t c      = xyz[c_idx];
-            vec3_t n_next = xyz[n_next_idx];
+			md_f32x3_t c_prev = xyz[c_prev_idx];
+            md_f32x3_t n      = xyz[n_idx];
+            md_f32x3_t ca     = xyz[ca_idx];
+            md_f32x3_t c      = xyz[c_idx];
+            md_f32x3_t n_next = xyz[n_next_idx];
 
-            vec3_t d[4] = {
-                vec3_sub(n, c_prev),
-                vec3_sub(ca, n),
-                vec3_sub(c, ca),
-                vec3_sub(n_next, c),
+            md_f32x3_t d[4] = {
+                md_f32x3_sub(n, c_prev),
+                md_f32x3_sub(ca, n),
+                md_f32x3_sub(c, ca),
+                md_f32x3_sub(n_next, c),
             };
 
             md_util_min_image_vec3(d, MD_COUNTOF(d), cell);
 
-            backbone_angles[i].phi = vec3_dihedral_angle(d[0], d[1], d[2]);
-            backbone_angles[i].psi = vec3_dihedral_angle(d[1], d[2], d[3]);
+            backbone_angles[i].phi = md_f32x3_dihedral_angle(d[0], d[1], d[2]);
+            backbone_angles[i].psi = md_f32x3_dihedral_angle(d[1], d[2], d[3]);
         }
     }
 
@@ -2043,10 +2042,10 @@ static inline int max_neighbors_element(md_element_t elem) {
     return 0;
 }
 
-static inline float angle(vec3_t a, vec3_t b, vec3_t c) {
-    vec3_t v0 = vec3_normalize(vec3_sub(a, b));
-    vec3_t v1 = vec3_normalize(vec3_sub(c, b));
-    return (float)MD_RAD_TO_DEG(acosf(vec3_dot(v0, v1)));
+static inline float angle(md_f32x3_t a, md_f32x3_t b, md_f32x3_t c) {
+    md_f32x3_t v0 = md_f32x3_normalize(md_f32x3_sub(a, b));
+    md_f32x3_t v1 = md_f32x3_normalize(md_f32x3_sub(c, b));
+    return (float)MD_RAD_TO_DEG(acosf(md_f32x3_dot(v0, v1)));
 }
 
 static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_cap, const md_bond_data_t* bond, size_t atom_idx, size_t depth) {
@@ -2469,7 +2468,7 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
 
     // The histogram of the pairs, then the pairs within the first shell
     uint32_t hist[METALLIC_HIST_BINS] = {0};
-    md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), metals, num_metals);
+    md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), metals, num_metals);
     {
         const double cutoff = 2.0 * max_rad * METALLIC_HIST_HI;
         md_spatial_acc_t acc = { .alloc = temp_arena };
@@ -2874,9 +2873,9 @@ static md_particle_type_idx_t find_or_add_particle_type(md_particle_type_data_t*
 // and 3 (their .tpr): no bond which the topologies do not have, besides elastic networks and the restraints of
 // secondary structure, which are not chemical bonds.
 static inline float cg_bead_distance(const md_system_state_t* state, int i, int j) {
-    vec3_t d = vec3_sub(state->xyz[i], state->xyz[j]);
+    md_f32x3_t d = md_f32x3_sub(state->xyz[i], state->xyz[j]);
     md_util_min_image_vec3(&d, 1, &state->unitcell);
-    return vec3_length(d);
+    return md_f32x3_length(d);
 }
 
 static inline void cg_push_bond(md_array(bond_pair_t)* candidates, int i, int j, float dist, md_allocator_i* alloc) {
@@ -3226,7 +3225,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
 
             // Build candidate list
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
-            md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
+            md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
             cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
@@ -3640,9 +3639,9 @@ static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, f
 }
 
 static inline float delta_distance(const md_system_state_t* state, uint32_t i, uint32_t j) {
-    vec3_t dx = vec3_sub(state->xyz[j], state->xyz[i]);
+    md_f32x3_t dx = md_f32x3_sub(state->xyz[j], state->xyz[i]);
     md_util_min_image_vec3(&dx, 1, &state->unitcell);
-    return vec3_length(dx);
+    return md_f32x3_length(dx);
 }
 
 static int compare_u64(const void* a, const void* b) {
@@ -3755,7 +3754,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
         const double cutoff = MD_MAX(1.0, (double)(max_rad_scope + max_rad_all) * bond_k_coord);
 
         delta_search_t search = { .scope = scope, .alloc = temp_alloc };
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, num_atoms);
+        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), NULL, num_atoms);
         md_spatial_acc_t acc = { .alloc = temp_alloc };
         md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
         if (!scope) {
@@ -3769,7 +3768,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
                 while (md_bitset_iter_next(&it) && n < num_scope) {
                     if (it.idx < num_atoms) idx[n++] = (int)it.idx;
                 }
-                md_coord_stream_t ext = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), idx, n);
+                md_coord_stream_t ext = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), idx, n);
                 md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, cutoff, delta_pair_callback, &search, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
             }
         }
@@ -6800,10 +6799,10 @@ void md_util_mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* st
 
         if (viable_count > 0) {
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_coord_stream_t stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), viable_indices, viable_count);
+            md_coord_stream_t stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), viable_indices, viable_count);
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = radius, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
 
-            md_coord_stream_t ext_stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), indices, num_indices);
+            md_coord_stream_t ext_stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), indices, num_indices);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, spatial_acc_pair_set_bits_callback, mask, 0);
         }
     }
@@ -6811,14 +6810,14 @@ void md_util_mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* st
     md_temp_end(temp);
 }
 
-void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count) {
+void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const md_f32x3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count) {
     MD_ASSERT(out_aabb_min);
     MD_ASSERT(out_aabb_max);
     MD_ASSERT(in_xyz);
 
     const float* xyz = (const float*)in_xyz;
-    vec4_t aabb_min = vec4_set1( FLT_MAX);
-    vec4_t aabb_max = vec4_set1(-FLT_MAX);
+    md_f32x4_t aabb_min = md_f32x4_set1( FLT_MAX);
+    md_f32x4_t aabb_max = md_f32x4_set1(-FLT_MAX);
     size_t i = 0;
 
     if (!in_idx && !in_r) {
@@ -6826,9 +6825,9 @@ void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const ve
         // Scalar up to 32 byte alignment
         const size_t head = xyz_align_peel(xyz, count);
         for (; i < head; ++i) {
-            const vec4_t c = vec4_from_vec3(in_xyz[i], 0);
-            aabb_min = vec4_min(aabb_min, c);
-            aabb_max = vec4_max(aabb_max, c);
+            const md_f32x4_t c = md_f32x4_from_f32x3(in_xyz[i], 0);
+            aabb_min = md_f32x4_min(aabb_min, c);
+            aabb_max = md_f32x4_max(aabb_max, c);
         }
         md_xv v_min[XYZ_GROUP_VECS], v_max[XYZ_GROUP_VECS];
         for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
@@ -6876,17 +6875,17 @@ void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const ve
             vy_max = md_mm256_max_ps(vy_max, md_mm256_add_ps(y, r));
             vz_max = md_mm256_max_ps(vz_max, md_mm256_add_ps(z, r));
         }
-        aabb_min = vec4_min(aabb_min, vec4_set(md_mm256_reduce_min_ps(vx_min), md_mm256_reduce_min_ps(vy_min), md_mm256_reduce_min_ps(vz_min), 0));
-        aabb_max = vec4_max(aabb_max, vec4_set(md_mm256_reduce_max_ps(vx_max), md_mm256_reduce_max_ps(vy_max), md_mm256_reduce_max_ps(vz_max), 0));
+        aabb_min = md_f32x4_min(aabb_min, md_f32x4_set(md_mm256_reduce_min_ps(vx_min), md_mm256_reduce_min_ps(vy_min), md_mm256_reduce_min_ps(vz_min), 0));
+        aabb_max = md_f32x4_max(aabb_max, md_f32x4_set(md_mm256_reduce_max_ps(vx_max), md_mm256_reduce_max_ps(vy_max), md_mm256_reduce_max_ps(vz_max), 0));
     }
 
     // Remainder
     for (; i < count; ++i) {
         const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-        const vec4_t c = vec4_from_vec3(in_xyz[idx], 0);
-        const vec4_t r = vec4_set1(in_r ? in_r[idx] : 0.0f);
-        aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
-        aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+        const md_f32x4_t c = md_f32x4_from_f32x3(in_xyz[idx], 0);
+        const md_f32x4_t r = md_f32x4_set1(in_r ? in_r[idx] : 0.0f);
+        aabb_min = md_f32x4_min(aabb_min, md_f32x4_sub(c, r));
+        aabb_max = md_f32x4_max(aabb_max, md_f32x4_add(c, r));
     }
 
     md_memcpy(out_aabb_min, &aabb_min, sizeof(float) * 3);
@@ -6894,23 +6893,23 @@ void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const ve
 }
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
-void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count) {
-    vec4_t aabb_min = vec4_set1( FLT_MAX);
-    vec4_t aabb_max = vec4_set1(-FLT_MAX);
+void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], const md_f32x4_t* in_xyzr, const int32_t* in_idx, size_t count) {
+    md_f32x4_t aabb_min = md_f32x4_set1( FLT_MAX);
+    md_f32x4_t aabb_max = md_f32x4_set1(-FLT_MAX);
     if (in_idx) {
         for (size_t i = 0; i < count; ++i) {
             int32_t idx = in_idx[i];
-            vec4_t xyzr = in_xyzr[idx];
-            vec4_t r = vec4_splat_w(xyzr);
-            aabb_min = vec4_min(aabb_min, vec4_sub(xyzr, r));
-            aabb_max = vec4_max(aabb_max, vec4_add(xyzr, r));
+            md_f32x4_t xyzr = in_xyzr[idx];
+            md_f32x4_t r = md_f32x4_splat_w(xyzr);
+            aabb_min = md_f32x4_min(aabb_min, md_f32x4_sub(xyzr, r));
+            aabb_max = md_f32x4_max(aabb_max, md_f32x4_add(xyzr, r));
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            vec4_t xyzr = in_xyzr[i];
-            vec4_t r = vec4_splat_w(xyzr);
-            aabb_min = vec4_min(aabb_min, vec4_sub(xyzr, r));
-            aabb_max = vec4_max(aabb_max, vec4_add(xyzr, r));
+            md_f32x4_t xyzr = in_xyzr[i];
+            md_f32x4_t r = md_f32x4_splat_w(xyzr);
+            aabb_min = md_f32x4_min(aabb_min, md_f32x4_sub(xyzr, r));
+            aabb_max = md_f32x4_max(aabb_max, md_f32x4_add(xyzr, r));
         }
     }
     md_memcpy(out_aabb_min, &aabb_min, sizeof(float) * 3);
@@ -6918,24 +6917,24 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 }
 
 
-void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const md_f32x3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     MD_ASSERT(out_basis);
     MD_ASSERT(out_ext_min);
     MD_ASSERT(out_ext_max);
 
     if (count == 0) return;
 
-    vec3_t com = md_util_com_compute(in_xyz, NULL, in_idx, count, cell);
+    md_f32x3_t com = md_util_com_compute(in_xyz, NULL, in_idx, count, cell);
     double cov[3][3] = {0};
     if (cell) {
-        vec4_t ref = vec4_from_vec3(com, 0);
+        md_f32x4_t ref = md_f32x4_from_f32x3(com, 0);
         if (cell->flags & MD_UNITCELL_ORTHO) {
-            vec4_t ext = { 0 };
+            md_f32x4_t ext = { 0 };
             md_unitcell_diag_extract_float(ext.elem, cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-                const vec4_t c = vec4_deperiodize_ortho(vec4_from_vec3(in_xyz[idx], 0.0f), ref, ext);
+                const md_f32x4_t c = md_f32x4_deperiodize_ortho(md_f32x4_from_f32x3(in_xyz[idx], 0.0f), ref, ext);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -6952,7 +6951,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
             md_unitcell_A_extract_float(A, cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-                vec4_t c = vec4_from_vec3(in_xyz[idx], 0.0f);
+                md_f32x4_t c = md_f32x4_from_f32x3(in_xyz[idx], 0.0f);
                 deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
@@ -6968,7 +6967,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
         }
     }
 
-    mat3_t cov_mat;
+    md_f32x3x3_t cov_mat;
     const double scl = 1.0 / count;
     for (size_t i = 0; i < 3; i++) {
         for (size_t j = 0; j < 3; j++) {
@@ -6976,49 +6975,49 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
         }
     }
 
-    mat3_eigen_t eigen = mat3_eigen(cov_mat);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    mat4_t Ri  = mat4_from_mat3(PCA);
+    md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(cov_mat);
+    md_f32x3x3_t PCA = md_f32x3x3_orthonormalize(md_f32x3x3_extract_rotation(eigen.vectors));
+    md_f32x4x4_t Ri  = md_f32x4x4_from_f32x3x3(PCA);
 
     // Compute min and maximum extent along the PCA axes
-    vec4_t min_ext = vec4_set1( FLT_MAX);
-    vec4_t max_ext = vec4_set1(-FLT_MAX);
-    mat3_t basis = mat3_transpose(PCA);
+    md_f32x4_t min_ext = md_f32x4_set1( FLT_MAX);
+    md_f32x4_t max_ext = md_f32x4_set1(-FLT_MAX);
+    md_f32x3x3_t basis = md_f32x3x3_transpose(PCA);
 
     // Transform the gto (x,y,z,radius) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
         int32_t idx = in_idx ? in_idx[i] : (int)i;
         float  r = in_r ? in_r[idx] : 0.0f;
-        vec4_t c = vec4_from_vec3(in_xyz[idx], 1.0f);
+        md_f32x4_t c = md_f32x4_from_f32x3(in_xyz[idx], 1.0f);
 
-        vec4_t p = mat4_mul_vec4(Ri, c);
-        min_ext = vec4_min(min_ext, vec4_sub1(p, r));
-        max_ext = vec4_max(max_ext, vec4_add1(p, r));
+        md_f32x4_t p = md_f32x4x4_mul_f32x4(Ri, c);
+        min_ext = md_f32x4_min(min_ext, md_f32x4_sub1(p, r));
+        max_ext = md_f32x4_max(max_ext, md_f32x4_add1(p, r));
     }
 
-    md_memcpy(out_basis,   &basis,   sizeof(mat3_t));
-    md_memcpy(out_ext_min, &min_ext, sizeof(vec3_t));
-    md_memcpy(out_ext_max, &max_ext, sizeof(vec3_t));
+    md_memcpy(out_basis,   &basis,   sizeof(md_f32x3x3_t));
+    md_memcpy(out_ext_min, &min_ext, sizeof(md_f32x3_t));
+    md_memcpy(out_ext_max, &max_ext, sizeof(md_f32x3_t));
 }
 
-void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const md_f32x4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     MD_ASSERT(out_basis);
     MD_ASSERT(out_ext_min);
     MD_ASSERT(out_ext_max);
 
     if (count == 0) return;
 
-    vec3_t com = md_util_com_compute_vec4(in_xyzr, in_idx, count, cell);
+    md_f32x3_t com = md_util_com_compute_vec4(in_xyzr, in_idx, count, cell);
     double cov[3][3] = {0};
     if (cell) {
-        vec4_t ref = vec4_from_vec3(com, 0);
+        md_f32x4_t ref = md_f32x4_from_f32x3(com, 0);
         if (cell->flags & MD_UNITCELL_ORTHO) {
-            vec4_t ext = { 0 };
+            md_f32x4_t ext = { 0 };
             md_unitcell_diag_extract_float(ext.elem, cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-                const vec4_t c = vec4_deperiodize_ortho(in_xyzr[idx], ref, ext);
+                const md_f32x4_t c = md_f32x4_deperiodize_ortho(in_xyzr[idx], ref, ext);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -7035,7 +7034,7 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
             md_unitcell_A_extract_float(A, cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-                vec4_t c = in_xyzr[idx];
+                md_f32x4_t c = in_xyzr[idx];
                 deperiodize_triclinic(c.elem, ref.elem, MD_AS_CONST_MAT3(A));
 
                 cov[0][0] += c.x * c.x;
@@ -7051,7 +7050,7 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
         }
     }
 
-    mat3_t cov_mat;
+    md_f32x3x3_t cov_mat;
     const double scl = 1.0 / count;
     for (size_t i = 0; i < 3; i++) {
         for (size_t j = 0; j < 3; j++) {
@@ -7059,35 +7058,35 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
         }
     }
 
-    mat3_eigen_t eigen = mat3_eigen(cov_mat);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    mat4_t Ri  = mat4_from_mat3(PCA);
+    md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(cov_mat);
+    md_f32x3x3_t PCA = md_f32x3x3_orthonormalize(md_f32x3x3_extract_rotation(eigen.vectors));
+    md_f32x4x4_t Ri  = md_f32x4x4_from_f32x3x3(PCA);
 
     // Compute min and maximum extent along the PCA axes
-    vec4_t min_ext = vec4_set1( FLT_MAX);
-    vec4_t max_ext = vec4_set1(-FLT_MAX);
-    mat3_t basis = mat3_transpose(PCA);
+    md_f32x4_t min_ext = md_f32x4_set1( FLT_MAX);
+    md_f32x4_t max_ext = md_f32x4_set1(-FLT_MAX);
+    md_f32x3x3_t basis = md_f32x3x3_transpose(PCA);
 
     // Transform the gto (x,y,z,radius) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
         int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
-        vec4_t xyzr = in_xyzr[idx];
-        vec4_t c = vec4_blend_mask(xyzr, vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-        vec4_t r = vec4_splat_w(xyzr);
+        md_f32x4_t xyzr = in_xyzr[idx];
+        md_f32x4_t c = md_f32x4_blend_mask(xyzr, md_f32x4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+        md_f32x4_t r = md_f32x4_splat_w(xyzr);
 
-        vec4_t p = mat4_mul_vec4(Ri, c);
-        min_ext = vec4_min(min_ext, vec4_sub(p, r));
-        max_ext = vec4_max(max_ext, vec4_add(p, r));
+        md_f32x4_t p = md_f32x4x4_mul_f32x4(Ri, c);
+        min_ext = md_f32x4_min(min_ext, md_f32x4_sub(p, r));
+        max_ext = md_f32x4_max(max_ext, md_f32x4_add(p, r));
     }
 
-    md_memcpy(out_basis,   &basis,   sizeof(mat3_t));
-    md_memcpy(out_ext_min, &min_ext, sizeof(vec3_t));
-    md_memcpy(out_ext_max, &max_ext, sizeof(vec3_t));
+    md_memcpy(out_basis,   &basis,   sizeof(md_f32x3x3_t));
+    md_memcpy(out_ext_min, &min_ext, sizeof(md_f32x3_t));
+    md_memcpy(out_ext_max, &max_ext, sizeof(md_f32x3_t));
 }
 
 #define TRIG_ATAN2_R2_THRESHOLD 1.0e-8
 
-static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, vec3_t xyz_max) {
+static md_f32x3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, md_f32x3_t xyz_max) {
     double acc_cx = 0;
     double acc_sx = 0;
     double acc_cy = 0;
@@ -7618,7 +7617,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
         }
     }
 
-    return vec3_set(
+    return md_f32x3_set(
         (float)((theta_prim_x / MD_TWO_PI) * xyz_max.x),
         (float)((theta_prim_y / MD_TWO_PI) * xyz_max.y),
         (float)((theta_prim_z / MD_TWO_PI) * xyz_max.z));
@@ -8062,14 +8061,14 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
             double r = acc_x / acc_w;
             double x = in_x[idx];
             double w = in_w[idx];
-            double dx = deperiodize_ortho(x, r, d_x_max);
+            double dx = md_f64_deperiodize_ortho(x, r, d_x_max);
             acc_x += dx * w;
             acc_w += w;
         } else {
             int64_t idx = in_idx[i];
             double r = acc_x / acc_w;
             double x = in_x[idx];
-            double dx = deperiodize_ortho(x, r, d_x_max);
+            double dx = md_f64_deperiodize_ortho(x, r, d_x_max);
             acc_x += dx;
             acc_w += 1.0;
         }
@@ -8078,13 +8077,13 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
             double r = acc_x / acc_w;
             double x = in_x[i];
             double w = in_w[i];
-            double dx = deperiodize_ortho(x, r, d_x_max);
+            double dx = md_f64_deperiodize_ortho(x, r, d_x_max);
             acc_x += dx * w;
             acc_w += w;
         } else {
             double r = acc_x / acc_w;
             double x = in_x[i];
-            double dx = deperiodize_ortho(x, r, d_x_max);
+            double dx = md_f64_deperiodize_ortho(x, r, d_x_max);
             acc_x += dx;
             acc_w += 1.0;
         }
@@ -8257,7 +8256,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
 // lanes of their atoms' three components. Groups of eight atoms from the first, and the last few as
 // one more group padded with zeros, so how the sums group follows the atoms' indices and count alone,
 // never where in memory they lie: the same positions give the same bits from any buffer.
-static void com_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count) {
+static void com_packed(float out_com[3], const md_f32x3_t* in_xyz, const float* in_w, size_t count) {
     const float* f = (const float*)in_xyz;
     double acc[3] = {0};
     double acc_w = 0;
@@ -8304,7 +8303,7 @@ static void com_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w
 // The periodic mean in an orthorhombic cell, contiguous atoms without an index. The angle of each
 // coordinate is its own axis scaled (M is diagonal), so the sines and cosines are taken on the
 // packed floats as they lie and summed per lane; the same angles and the same epilogue as _com_pbc.
-static void com_pbc_ortho_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
+static void com_pbc_ortho_packed(float out_com[3], const md_f32x3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
     const float* f = (const float*)in_xyz;
     double acc_c[3] = {0};
     double acc_s[3] = {0};
@@ -8440,7 +8439,7 @@ static void com_pbc_ortho_packed(float out_com[3], const vec3_t* in_xyz, const f
     }
 }
 
-static void com(float* out_com, const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count) {
+static void com(float* out_com, const md_f32x3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count) {
     if (!in_idx) {
         com_packed(out_com, in_xyz, in_w, count);
         return;
@@ -8677,7 +8676,7 @@ static void com(float* out_com, const vec3_t* in_xyz, const float* in_w, const i
 }
 
 // Internal versions for COM computation supporting triclinic and ortho PBC
-static void _com_pbc_w(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc_w(float out_com[3], const md_f32x3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
     MD_ASSERT(out_com);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_w);
@@ -8844,7 +8843,7 @@ static void _com_pbc_w(float out_com[3], const vec3_t* in_xyz, const float* in_w
 }
 
 // Internal versions for COM computation supporting triclinic and ortho PBC
-static void _com_pbc(float out_com[3], const vec3_t* in_xyz, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc(float out_com[3], const md_f32x3_t* in_xyz, size_t count, const float M[3][3], const float I[3][3]) {
     MD_ASSERT(out_com);
     MD_ASSERT(in_xyz);
     MD_ASSERT(M);
@@ -8995,7 +8994,7 @@ static void _com_pbc(float out_com[3], const vec3_t* in_xyz, size_t count, const
 }
 
 
-static void _com_pbc_i(float out_com[3], const vec3_t* in_xyz, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc_i(float out_com[3], const md_f32x3_t* in_xyz, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
     MD_ASSERT(out_com);
     MD_ASSERT(in_xyz);
     MD_ASSERT(M);
@@ -9149,7 +9148,7 @@ static void _com_pbc_i(float out_com[3], const vec3_t* in_xyz, const int32_t* in
     }
 }
 
-static void _com_pbc_iw(float out_com[3], const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
+static void _com_pbc_iw(float out_com[3], const md_f32x3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
     MD_ASSERT(out_com);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_w);
@@ -9320,18 +9319,18 @@ static void _com_pbc_iw(float out_com[3], const vec3_t* in_xyz, const float* in_
 }
 
 // This is uses the trigonometric com algorithm presented in: INSERT REF HERE
-static void com_pbc(float out_com[3], const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+static void com_pbc(float out_com[3], const md_f32x3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
 
-    mat3_t A = { 0 };
+    md_f32x3x3_t A = { 0 };
     md_unitcell_A_extract_float(A.elem, cell);
 
-    mat3_t Ai = { 0 };
+    md_f32x3x3_t Ai = { 0 };
     md_unitcell_I_extract_float(Ai.elem, cell);
 
     // Should transform cartesian coordinates to fractional coordinates and scale by 2 pi
-    mat3_t M = mat3_mul(mat3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai);
+    md_f32x3x3_t M = md_f32x3x3_mul(md_f32x3x3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai);
     // Inverse transform
-    mat3_t I = mat3_mul(A, mat3_scale(1.0/MD_TWO_PI, 1.0/MD_TWO_PI, 1.0/MD_TWO_PI));
+    md_f32x3x3_t I = md_f32x3x3_mul(A, md_f32x3x3_scale(1.0/MD_TWO_PI, 1.0/MD_TWO_PI, 1.0/MD_TWO_PI));
 
     if (!in_idx && md_unitcell_is_orthorhombic(cell)) {
         com_pbc_ortho_packed(out_com, in_xyz, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
@@ -9354,58 +9353,58 @@ static void com_pbc(float out_com[3], const vec3_t* in_xyz, const float* in_w, c
     }
 }
 
-static void com_vec4(float out_com[3], const vec4_t* in_xyzw, const int32_t* in_idx, size_t count) {
+static void com_vec4(float out_com[3], const md_f32x4_t* in_xyzw, const int32_t* in_idx, size_t count) {
     // Use vec4 here so we can utilize SSE vectorization if applicable
     // @TODO: Vectorize with full register width
-    vec4_t acc = {0,0,0,0};
+    md_f32x4_t acc = {0,0,0,0};
     for (size_t i = 0; i < count; ++i) {
         int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
-        vec4_t xyzw = in_xyzw[idx];
-        vec4_t www1 = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-        acc = vec4_add(acc, vec4_mul(xyzw, www1));
+        md_f32x4_t xyzw = in_xyzw[idx];
+        md_f32x4_t www1 = md_f32x4_blend_mask(md_f32x4_splat_w(xyzw), md_f32x4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+        acc = md_f32x4_add(acc, md_f32x4_mul(xyzw, www1));
     }
 
-    acc = vec4_div(acc, vec4_splat_w(acc));
+    acc = md_f32x4_div(acc, md_f32x4_splat_w(acc));
     md_memcpy(out_com, &acc, sizeof(float) * 3);
 }
 
-static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+static void com_pbc_vec4(float* out_com, const md_f32x4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     MD_ASSERT(out_com);
     MD_ASSERT(in_xyzw);
     MD_ASSERT(cell);
 
-    vec4_t acc_c = {0};
-    vec4_t acc_s = {0};
-    vec4_t acc_xyzw = {0};
+    md_f32x4_t acc_c = {0};
+    md_f32x4_t acc_s = {0};
+    md_f32x4_t acc_xyzw = {0};
 
     uint32_t flags = md_unitcell_flags(cell);
     if (flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = { 0 };
+        md_f32x3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
-        const vec4_t scl = vec4_div(vec4_set1(MD_TWO_PI), vec4_from_vec3(ext, MD_TWO_PI));
+        const md_f32x4_t scl = md_f32x4_div(md_f32x4_set1(MD_TWO_PI), md_f32x4_from_f32x3(ext, MD_TWO_PI));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
                 int32_t idx  = in_idx[i];
-                vec4_t xyzw  = in_xyzw[idx];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = vec4_mul(xyzw, scl);
-                vec4_t s,c;
-                vec4_sincos(theta, &s, &c);
-                acc_s = vec4_add(acc_s, vec4_mul(s, www1));
-                acc_c = vec4_add(acc_c, vec4_mul(c, www1));
-                acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+                md_f32x4_t xyzw  = in_xyzw[idx];
+                md_f32x4_t www1  = md_f32x4_blend_mask(md_f32x4_splat_w(xyzw), md_f32x4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+                md_f32x4_t theta = md_f32x4_mul(xyzw, scl);
+                md_f32x4_t s,c;
+                md_f32x4_sincos(theta, &s, &c);
+                acc_s = md_f32x4_add(acc_s, md_f32x4_mul(s, www1));
+                acc_c = md_f32x4_add(acc_c, md_f32x4_mul(c, www1));
+                acc_xyzw = md_f32x4_add(acc_xyzw, md_f32x4_mul(xyzw, www1));
             }
         } else {
             for (size_t i = 0; i < count; ++i) {
-                vec4_t xyzw  = in_xyzw[i];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = vec4_mul(xyzw, scl);
-                vec4_t s,c;
-                vec4_sincos(theta, &s, &c);
-                acc_s = vec4_add(acc_s, vec4_mul(s, www1));
-                acc_c = vec4_add(acc_c, vec4_mul(c, www1));
-                acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+                md_f32x4_t xyzw  = in_xyzw[i];
+                md_f32x4_t www1  = md_f32x4_blend_mask(md_f32x4_splat_w(xyzw), md_f32x4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+                md_f32x4_t theta = md_f32x4_mul(xyzw, scl);
+                md_f32x4_t s,c;
+                md_f32x4_sincos(theta, &s, &c);
+                acc_s = md_f32x4_add(acc_s, md_f32x4_mul(s, www1));
+                acc_c = md_f32x4_add(acc_c, md_f32x4_mul(c, www1));
+                acc_xyzw = md_f32x4_add(acc_xyzw, md_f32x4_mul(xyzw, www1));
             }
         }
 
@@ -9422,10 +9421,10 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         }
     } else {
         MD_ASSERT(flags & MD_UNITCELL_TRICLINIC);
-        mat3_t Ai = { 0 };
+        md_f32x3x3_t Ai = { 0 };
         md_unitcell_I_extract_float(Ai.elem, cell);
 
-        mat3_t A = { 0 };
+        md_f32x3x3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
 
         // Cartesian -> fractional, scaled into angle space, and the inverse which takes the mean
@@ -9433,35 +9432,35 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         // directions have to be full matrix products: resolving an axis on its own is only valid
         // when the basis is diagonal, which is why the orthorhombic branch above can get away with
         // per component scalars and this one cannot.
-        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai));
-        const mat3_t   I = mat3_mul(A, mat3_scale(1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI));
+        const md_f32x4x3_t M = md_f32x4x3_from_f32x3x3(md_f32x3x3_mul(md_f32x3x3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai));
+        const md_f32x3x3_t   I = md_f32x3x3_mul(A, md_f32x3x3_scale(1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
                 int32_t idx  = in_idx[i];
-                vec4_t xyzw  = in_xyzw[idx];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4x3_mul_vec4(M, xyzw);
-                vec4_t s,c;
-                vec4_sincos(theta, &s, &c);
-                acc_s = vec4_add(acc_s, vec4_mul(s, www1));
-                acc_c = vec4_add(acc_c, vec4_mul(c, www1));
-                acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+                md_f32x4_t xyzw  = in_xyzw[idx];
+                md_f32x4_t www1  = md_f32x4_blend_mask(md_f32x4_splat_w(xyzw), md_f32x4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+                md_f32x4_t theta = md_f32x4x3_mul_f32x4(M, xyzw);
+                md_f32x4_t s,c;
+                md_f32x4_sincos(theta, &s, &c);
+                acc_s = md_f32x4_add(acc_s, md_f32x4_mul(s, www1));
+                acc_c = md_f32x4_add(acc_c, md_f32x4_mul(c, www1));
+                acc_xyzw = md_f32x4_add(acc_xyzw, md_f32x4_mul(xyzw, www1));
             }
         } else {
             for (size_t i = 0; i < count; ++i) {
-                vec4_t xyzw  = in_xyzw[i];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4x3_mul_vec4(M, xyzw);
-                vec4_t s,c;
-                vec4_sincos(theta, &s, &c);
-                acc_s = vec4_add(acc_s, vec4_mul(s, www1));
-                acc_c = vec4_add(acc_c, vec4_mul(c, www1));
-                acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+                md_f32x4_t xyzw  = in_xyzw[i];
+                md_f32x4_t www1  = md_f32x4_blend_mask(md_f32x4_splat_w(xyzw), md_f32x4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+                md_f32x4_t theta = md_f32x4x3_mul_f32x4(M, xyzw);
+                md_f32x4_t s,c;
+                md_f32x4_sincos(theta, &s, &c);
+                acc_s = md_f32x4_add(acc_s, md_f32x4_mul(s, www1));
+                acc_c = md_f32x4_add(acc_c, md_f32x4_mul(c, www1));
+                acc_xyzw = md_f32x4_add(acc_xyzw, md_f32x4_mul(xyzw, www1));
             }
         }
 
-        vec3_t theta_vec = { 0 };
+        md_f32x3_t theta_vec = { 0 };
         for (int i = 0; i < 3; ++i) {
             const double y = acc_s.elem[i] / acc_xyzw.w;
             const double x = acc_c.elem[i] / acc_xyzw.w;
@@ -9475,21 +9474,21 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
 
         // The three mean angles ARE a fractional coordinate (times two pi). Carry it back to
         // Cartesian as one vector - component i of the result draws on all three angles.
-        const vec3_t com = mat3_mul_vec3(I, theta_vec);
+        const md_f32x3_t com = md_f32x3x3_mul_f32x3(I, theta_vec);
         out_com[0] = com.x;
         out_com[1] = com.y;
         out_com[2] = com.z;
     }
 }
 
-vec3_t md_util_com_compute(const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
+md_f32x3_t md_util_com_compute(const md_f32x3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
     MD_ASSERT(in_xyz);
 
     if (count == 0) {
-        return (vec3_t) {0,0,0};
+        return (md_f32x3_t) {0,0,0};
     }
 
-    vec3_t xyz = {0};
+    md_f32x3_t xyz = {0};
     if (!unit_cell || unit_cell->flags == MD_UNITCELL_NONE) {
         com(xyz.elem, in_xyz, in_w, in_idx, count);
         return xyz;
@@ -9505,14 +9504,14 @@ vec3_t md_util_com_compute(const vec3_t* in_xyz, const float* in_w, const int32_
     return xyz;
 }
 
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
+md_f32x3_t md_util_com_compute_vec4(const md_f32x4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
     MD_ASSERT(in_xyzw);
 
     if (count == 0) {
-        return (vec3_t) {0,0,0};
+        return (md_f32x3_t) {0,0,0};
     }
 
-    vec3_t xyz = {0};
+    md_f32x3_t xyz = {0};
     if (unit_cell && (unit_cell->flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC))) {
         com_pbc_vec4(xyz.elem, in_xyzw, in_idx, count, unit_cell);
     } else {
@@ -9527,22 +9526,22 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 #   pragma warning( disable : 4244 )
 #endif
 
-void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a, const vec3_t* coord_b, size_t len_b, const md_unitcell_t* cell) {
+void md_util_distance_array(float* out_dist, const md_f32x3_t* coord_a, size_t len_a, const md_f32x3_t* coord_b, size_t len_b, const md_unitcell_t* cell) {
     if (cell->flags == 0) {
         for (size_t i = 0; i < len_a; ++i) {
             for (size_t j = 0; j < len_b; ++j) {
-                out_dist[i * len_b + j] = vec3_distance(coord_a[i], coord_b[j]);
+                out_dist[i * len_b + j] = md_f32x3_distance(coord_a[i], coord_b[j]);
             }
         }
     }
     else if (cell->flags & MD_UNITCELL_ORTHO) {
-		vec4_t ext = { 0 };
+		md_f32x4_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
         for (size_t i = 0; i < len_a; ++i) {
-            vec4_t a = vec4_from_vec3(coord_a[i], 0);
+            md_f32x4_t a = md_f32x4_from_f32x3(coord_a[i], 0);
             for (size_t j = 0; j < len_b; ++j) {
-                vec4_t b = vec4_from_vec3(coord_b[j], 0);
-                out_dist[i * len_b + j] = vec4_periodic_distance(a, b, ext);
+                md_f32x4_t b = md_f32x4_from_f32x3(coord_b[j], 0);
+                out_dist[i * len_b + j] = md_f32x4_periodic_distance(a, b, ext);
             }
         }
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
@@ -9551,9 +9550,9 @@ void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t len_a
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (size_t i = 0; i < len_a; ++i) {
             for (size_t j = 0; j < len_b; ++j) {
-                vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
+                md_f32x3_t dx = md_f32x3_sub(coord_a[i], coord_b[j]);
                 minimum_image_triclinic(dx.elem, MD_AS_CONST_MAT3(A));
-                out_dist[i * len_b + j] = vec3_length(dx);
+                out_dist[i * len_b + j] = md_f32x3_length(dx);
             }
         }
     }
@@ -9742,8 +9741,8 @@ typedef struct dist_cluster_t {
     int64_t idx[8];
 } dist_cluster_t;
 
-static MD_FORCE_INLINE void dist_cluster_init(dist_cluster_t* cl, const vec3_t* a, size_t beg, size_t n, const dist_cell_t* c, const int mode) {
-    const vec3_t p0 = a[beg];
+static MD_FORCE_INLINE void dist_cluster_init(dist_cluster_t* cl, const md_f32x3_t* a, size_t beg, size_t n, const dist_cell_t* c, const int mode) {
+    const md_f32x3_t p0 = a[beg];
     float x[8], y[8], z[8];
     for (size_t i = 0; i < 8; ++i) {
         const size_t k = beg + (i < n ? i : 0);
@@ -9909,7 +9908,7 @@ static MD_FORCE_INLINE float dist_threshold2(float best2, const dist_cluster_t* 
 
 // Given nr, which takes one group, the culling leaves room for its tolerance and the pairs near the extreme are
 // recorded in it
-static MD_FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* a, const size_t* a_offsets, size_t num_groups,
+static MD_FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* a, const size_t* a_offsets, size_t num_groups,
                                      const dist_set_t* b, const dist_cell_t* c, const int mode, const bool largest, dist_near_t* nr) {
     int64_t prev = -1;
     // In locals: what the near pairs' stores could alias as far as the compiler knows, it reloads every iteration.
@@ -9988,20 +9987,20 @@ static MD_FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int
 }
 
 // One function per kind of cell and extreme, so each loop is compiled for it; the plain ones without near pairs
-static void dist_groups_none_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, false, NULL); }
-static void dist_groups_ortho_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, false, NULL); }
-static void dist_groups_tri_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false, NULL); }
-static void dist_groups_none_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, true, NULL); }
-static void dist_groups_ortho_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, true, NULL); }
-static void dist_groups_tri_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true, NULL); }
-static void dist_near_none_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, false, nr); }
-static void dist_near_ortho_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, false, nr); }
-static void dist_near_tri_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false, nr); }
-static void dist_near_none_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, true, nr); }
-static void dist_near_ortho_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, true, nr); }
-static void dist_near_tri_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true, nr); }
+static void dist_groups_none_min(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, false, NULL); }
+static void dist_groups_ortho_min(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, false, NULL); }
+static void dist_groups_tri_min(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false, NULL); }
+static void dist_groups_none_max(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, true, NULL); }
+static void dist_groups_ortho_max(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, true, NULL); }
+static void dist_groups_tri_max(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true, NULL); }
+static void dist_near_none_min(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, false, nr); }
+static void dist_near_ortho_min(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, false, nr); }
+static void dist_near_tri_min(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false, nr); }
+static void dist_near_none_max(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, true, nr); }
+static void dist_near_ortho_max(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, true, nr); }
+static void dist_near_tri_max(float* d, int64_t* ia, int64_t* ib, const md_f32x3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true, nr); }
 
-static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest, dist_near_t* nr) {
+static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest, dist_near_t* nr) {
     MD_ASSERT(out_dist);
     MD_ASSERT(a_offsets || num_groups == 0);
     if (num_groups == 0) return;
@@ -10025,7 +10024,7 @@ static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t*
     float* bz = md_temp_alloc_array(temp, float, cap);
     float scale = 0.0f;
     for (size_t i = 0; i < cap; ++i) {
-        const vec3_t p = coord_b[MD_MIN(i, num_b - 1)];
+        const md_f32x3_t p = coord_b[MD_MIN(i, num_b - 1)];
         bx[i] = p.x;
         by[i] = p.y;
         bz[i] = p.z;
@@ -10033,7 +10032,7 @@ static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t*
     }
     for (size_t g = 0; g < num_groups; ++g) {
         for (size_t i = a_offsets[g]; i < a_offsets[g + 1]; ++i) {
-            const vec3_t p = coord_a[i];
+            const md_f32x3_t p = coord_a[i];
             scale = MD_MAX(scale, MD_MAX(fabsf(p.x), MD_MAX(fabsf(p.y), fabsf(p.z))));
         }
     }
@@ -10042,7 +10041,7 @@ static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t*
     dist_cell_init(&c, cell, scale);
     const dist_set_t b = { bx, by, bz, num_b };
 
-    typedef void (*dist_fn)(float*, int64_t*, int64_t*, const vec3_t*, const size_t*, size_t, const dist_set_t*, const dist_cell_t*, dist_near_t*);
+    typedef void (*dist_fn)(float*, int64_t*, int64_t*, const md_f32x3_t*, const size_t*, size_t, const dist_set_t*, const dist_cell_t*, dist_near_t*);
     static const dist_fn fns[2][2][3] = {
         { { dist_groups_none_min, dist_groups_ortho_min, dist_groups_tri_min }, { dist_groups_none_max, dist_groups_ortho_max, dist_groups_tri_max } },
         { { dist_near_none_min,   dist_near_ortho_min,   dist_near_tri_min   }, { dist_near_none_max,   dist_near_ortho_max,   dist_near_tri_max   } },
@@ -10053,15 +10052,15 @@ static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t*
     md_temp_end(temp);
 }
 
-void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, false, NULL);
 }
 
-void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, true, NULL);
 }
 
-float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     if (num_a == 0 || num_b == 0) return FLT_MAX;
     const size_t offsets[2] = { 0, num_a };
     float   dist = 0.0f;
@@ -10073,7 +10072,7 @@ float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
     return dist;
 }
 
-float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     if (num_a == 0 || num_b == 0) return 0.0f;
     const size_t offsets[2] = { 0, num_a };
     float   dist = 0.0f;
@@ -10087,7 +10086,7 @@ float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
     return dist;
 }
 
-static size_t distance_extent_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest) {
+static size_t distance_extent_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest) {
     if (num_a == 0 || num_b == 0) return 0;
     MD_ASSERT(out_idx_a && out_idx_b);
     md_temp_scope_t temp = md_temp_begin();
@@ -10107,11 +10106,11 @@ static size_t distance_extent_near(int64_t* out_idx_a, int64_t* out_idx_b, size_
     return nr.overflow ? cap + 1 : nr.count;
 }
 
-size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     return distance_extent_near(out_idx_a, out_idx_b, cap, tol, coord_a, num_a, coord_b, num_b, cell, false);
 }
 
-size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     return distance_extent_near(out_idx_a, out_idx_b, cap, tol, coord_a, num_a, coord_b, num_b, cell, true);
 }
 
@@ -10201,20 +10200,20 @@ static inline void min_image_inv_ext(float out_inv_ext[3], const float ext[3]) {
     out_inv_ext[2] = ext[2] != 0.0f ? 1.0f / ext[2] : 0.0f;
 }
 
-void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
+void md_util_min_image_vec3(md_f32x3_t dx[], size_t count, const md_unitcell_t* cell) {
     if (cell) {
-        vec3_t diag = { 0 };
+        md_f32x3_t diag = { 0 };
         md_unitcell_diag_extract_float(diag.elem, cell);
-        vec3_t half_diag = vec3_mul1(diag, 0.5f);
+        md_f32x3_t half_diag = md_f32x3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
-            vec3_t inv_diag = { 0 };
+            md_f32x3_t inv_diag = { 0 };
             min_image_inv_ext(inv_diag.elem, diag.elem);
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, inv_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
-            mat3_t A = { 0 };
+            md_f32x3x3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
                 min_image_triclinic(dx[i].elem, MD_AS_CONST_MAT3(A.elem), half_diag.elem);
@@ -10223,20 +10222,20 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell
     }
 }
 
-void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell) {
+void md_util_min_image_vec4(md_f32x4_t dx[], size_t count, const md_unitcell_t* cell) {
     if (cell) {
-        vec3_t diag = { 0 };
+        md_f32x3_t diag = { 0 };
         md_unitcell_diag_extract_float(diag.elem, cell);
-        vec3_t half_diag = vec3_mul1(diag, 0.5f);
+        md_f32x3_t half_diag = md_f32x3_mul1(diag, 0.5f);
         uint32_t flags = md_unitcell_flags(cell);
         if (flags & MD_UNITCELL_ORTHO) {
-            vec3_t inv_diag = { 0 };
+            md_f32x3_t inv_diag = { 0 };
             min_image_inv_ext(inv_diag.elem, diag.elem);
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, inv_diag.elem);
             }
         } else if (flags & MD_UNITCELL_TRICLINIC) {
-            mat3_t A = { 0 };
+            md_f32x3x3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, cell);
             for (size_t i = 0; i < count; ++i) {
                 min_image_triclinic(dx[i].elem, MD_AS_CONST_MAT3(A.elem), half_diag.elem);
@@ -10247,11 +10246,11 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell
 
 // Wraps into [0, ext) along each axis with a period; an axis without one (ext zero) is left alone.
 // Without an index the axes are independent and it runs on the packed floats directly.
-static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t box_ext) {
+static void pbc_ortho(md_f32x3_t* xyz, const int32_t* indices, size_t count, md_f32x3_t box_ext) {
     MD_ASSERT(xyz);
 
-    const vec4_t ext = vec4_from_vec3(box_ext, 0);
-    const vec4_t ref = vec4_mul1(ext, 0.5f);
+    const md_f32x4_t ext = md_f32x4_from_f32x3(box_ext, 0);
+    const md_f32x4_t ref = md_f32x4_mul1(ext, 0.5f);
 
     size_t i = 0;
     if (!indices) {
@@ -10267,7 +10266,7 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
         // Scalar up to alignment, then eight atoms at a time
         const size_t head = xyz_align_peel(xyz, count);
         for (; i < head; ++i) {
-            xyz[i] = vec3_from_vec4(vec4_deperiodize_ortho(vec4_from_vec3(xyz[i], 0), ref, ext));
+            xyz[i] = md_f32x3_from_f32x4(md_f32x4_deperiodize_ortho(md_f32x4_from_f32x3(xyz[i], 0), ref, ext));
         }
         float* f = (float*)xyz;
         for (; i + 8 <= count; i += 8) {
@@ -10283,27 +10282,27 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
     }
     for (; i < count; ++i) {
         const int32_t idx = indices ? indices[i] : (int32_t)i;
-        const vec4_t pos = vec4_deperiodize_ortho(vec4_from_vec3(xyz[idx], 0), ref, ext);
-        xyz[idx] = vec3_from_vec4(pos);
+        const md_f32x4_t pos = md_f32x4_deperiodize_ortho(md_f32x4_from_f32x3(xyz[idx], 0), ref, ext);
+        xyz[idx] = md_f32x3_from_f32x4(pos);
     }
 }
 
-static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
-    const vec4_t ext = vec4_from_vec3(box_ext, 0);
-    const vec4_t ref = vec4_mul1(ext, 0.5f);
+static void pbc_ortho_vec4(md_f32x4_t* xyzw, size_t count, md_f32x3_t box_ext) {
+    const md_f32x4_t ext = md_f32x4_from_f32x3(box_ext, 0);
+    const md_f32x4_t ref = md_f32x4_mul1(ext, 0.5f);
     for (size_t i = 0; i < count; ++i) {
-        xyzw[i] = vec4_deperiodize_ortho(xyzw[i], ref, ext);
+        xyzw[i] = md_f32x4_deperiodize_ortho(xyzw[i], ref, ext);
     }
 }
 
 // Into the cell: to fractional coordinates, the fraction of each, and back.
-static void pbc_triclinic(vec3_t* xyz, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+static void pbc_triclinic(md_f32x3_t* xyz, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     MD_ASSERT(xyz);
 
-    mat3_t A = { 0 };
+    md_f32x3x3_t A = { 0 };
     md_unitcell_A_extract_float(A.elem, cell);
 
-    mat3_t I = { 0 };
+    md_f32x3x3_t I = { 0 };
     md_unitcell_I_extract_float(I.elem, cell);
 
     size_t i = 0;
@@ -10331,40 +10330,40 @@ static void pbc_triclinic(vec3_t* xyz, const int32_t* indices, size_t count, con
         }
     }
 
-    const mat4x3_t I4x3 = mat4x3_from_mat3(I);
-    const mat4x3_t A4x3 = mat4x3_from_mat3(A);
+    const md_f32x4x3_t I4x3 = md_f32x4x3_from_f32x3x3(I);
+    const md_f32x4x3_t A4x3 = md_f32x4x3_from_f32x3x3(A);
     for (; i < count; ++i) {
         const int32_t idx = indices ? indices[i] : (int32_t)i;
-        vec4_t c = mat4x3_mul_vec4(I4x3, vec4_from_vec3(xyz[idx], 0));
-        c = vec4_fract(c);
-        c = mat4x3_mul_vec4(A4x3, c);
-        xyz[idx] = vec3_from_vec4(c);
+        md_f32x4_t c = md_f32x4x3_mul_f32x4(I4x3, md_f32x4_from_f32x3(xyz[idx], 0));
+        c = md_f32x4_fract(c);
+        c = md_f32x4x3_mul_f32x4(A4x3, c);
+        xyz[idx] = md_f32x3_from_f32x4(c);
     }
 }
 
-static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
-    vec4_t mask = { 0 };
+static void pbc_triclinic_vec4(md_f32x4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+    md_f32x4_t mask = { 0 };
     md_unitcell_pbc_mask_extract((int*)mask.elem, cell);
 
-	mat3_t A = { 0 };
+	md_f32x3x3_t A = { 0 };
 	md_unitcell_A_extract_float(A.elem, cell);
 
-	mat3_t I = { 0 };
+	md_f32x3x3_t I = { 0 };
 	md_unitcell_I_extract_float(I.elem, cell);
 
-    mat4x3_t A4x3 = mat4x3_from_mat3(A);
-    mat4x3_t I4x3 = mat4x3_from_mat3(I);
+    md_f32x4x3_t A4x3 = md_f32x4x3_from_f32x3x3(A);
+    md_f32x4x3_t I4x3 = md_f32x4x3_from_f32x3x3(I);
 
     for (size_t i = 0; i < count; ++i) {
-        vec4_t c = xyzw[i];
-        c = mat4x3_mul_vec4(I4x3, c);
-        c = vec4_fract(c);
-        c = mat4x3_mul_vec4(A4x3, c);
-        xyzw[i] = vec4_blend(xyzw[i], c, mask);
+        md_f32x4_t c = xyzw[i];
+        c = md_f32x4x3_mul_f32x4(I4x3, c);
+        c = md_f32x4_fract(c);
+        c = md_f32x4x3_mul_f32x4(A4x3, c);
+        xyzw[i] = md_f32x4_blend(xyzw[i], c, mask);
     }
 }
 
-bool md_util_pbc(vec3_t* xyz, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+bool md_util_pbc(md_f32x3_t* xyz, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     if (!xyz) {
         MD_LOG_ERROR("Missing required input: xyz");
         return false;
@@ -10377,7 +10376,7 @@ bool md_util_pbc(vec3_t* xyz, const int32_t* indices, size_t count, const md_uni
 
     uint32_t flags = md_unitcell_flags(cell);
     if (flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = { 0 };
+        md_f32x3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
         pbc_ortho(xyz, indices, count, ext);
         return true;
@@ -10391,7 +10390,7 @@ bool md_util_pbc(vec3_t* xyz, const int32_t* indices, size_t count, const md_uni
     return false;
 }
 
-bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell) {
+bool md_util_pbc_vec4(md_f32x4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell) {
     if (!in_out_xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
@@ -10404,7 +10403,7 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 
     uint32_t flags = md_unitcell_flags(cell);
     if (flags & MD_UNITCELL_ORTHO) {
-        vec3_t ext = { 0 };
+        md_f32x3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
         pbc_ortho_vec4(in_out_xyzw, count, ext);
         return true;
@@ -10422,7 +10421,7 @@ bool md_util_system_pbc(md_system_state_t* state) {
     MD_ASSERT(state);
 
     if (md_unitcell_is_orthorhombic(&state->unitcell)) {
-        vec3_t ext = { 0 };
+        md_f32x3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, &state->unitcell);
         pbc_ortho(state->xyz, 0, state->num_atoms, ext);
     } else if (md_unitcell_is_triclinic(&state->unitcell)) {
@@ -10457,9 +10456,9 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
         min_image_inv_ext(inv_ext, ext);
     } else {
         md_unitcell_A_extract_float(box, &state->unitcell);
-		half_ext[0] = 0.5f * vec3_length((vec3_t) { box[0][0], box[1][0], box[2][0] });
-		half_ext[1] = 0.5f * vec3_length((vec3_t) { box[0][1], box[1][1], box[2][1] });
-		half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
+		half_ext[0] = 0.5f * md_f32x3_length((md_f32x3_t) { box[0][0], box[1][0], box[2][0] });
+		half_ext[1] = 0.5f * md_f32x3_length((md_f32x3_t) { box[0][1], box[1][1], box[2][1] });
+		half_ext[2] = 0.5f * md_f32x3_length((md_f32x3_t) { box[0][2], box[1][2], box[2][2] });
     }
 
     // md_molecule_data_t stores each molecule in BFS order, so a single forward pass places every
@@ -10470,9 +10469,9 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
         const int32_t a = mol->atom_idx[i];
         const int32_t p = mol->parent_idx[i];
 
-        const vec3_t x = state->xyz[a];
-        const vec3_t r = state->xyz[p];
-	    vec3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
+        const md_f32x3_t x = state->xyz[a];
+        const md_f32x3_t r = state->xyz[p];
+	    md_f32x3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
 
         if (is_ortho) {
             min_image_ortho(dx.elem, ext, inv_ext);
@@ -10483,7 +10482,7 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
         // The atom is placed relative to its PARENT, not relative to where it happened to sit:
         // dx is already the minimum image of (x - r), so the unwrapped position is r + dx.
         // Adding dx to x instead yields 2x - r, which is wrong even when no image correction applies.
-        state->xyz[a] = vec3_add(r, dx);
+        state->xyz[a] = md_f32x3_add(r, dx);
     }
 }
 
@@ -10497,7 +10496,7 @@ void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
     }
 }
 
-bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell) {
+bool md_util_deperiodize_vec4(md_f32x4_t* xyzw, size_t count, md_f32x3_t ref_xyz, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
@@ -10509,20 +10508,20 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
     }
 
     if (cell->flags & MD_UNITCELL_ORTHO) {
-        vec4_t ref_pos = vec4_from_vec3(ref_xyz, 0);
-        vec4_t ext = { 0 };
+        md_f32x4_t ref_pos = md_f32x4_from_f32x3(ref_xyz, 0);
+        md_f32x4_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
         for (size_t i = 0; i < count; ++i) {
-            const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
+            const md_f32x4_t pos = md_f32x4_deperiodize_ortho(xyzw[i], ref_pos, ext);
             xyzw[i] = pos;
         }
         return true;
     } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
-        mat3_t A = { 0 };
+        md_f32x3x3_t A = { 0 };
         md_unitcell_A_extract_float(A.elem, cell);
 
         for (size_t i = 0; i < count; ++i) {
-            vec4_t pos = xyzw[i];
+            md_f32x4_t pos = xyzw[i];
             deperiodize_triclinic(pos.elem, ref_xyz.elem, MD_AS_CONST_MAT3(A.elem));
             xyzw[i] = pos;
         }
@@ -10551,9 +10550,9 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
 typedef struct pbc_image_t {
     bool   periodic;
     bool   ortho;
-    vec4_t ext;   // orthorhombic extent, w = 0 so the weight lane is carried through untouched
-    mat3_t A;     // triclinic basis
-    mat3_t I;     // triclinic inverse basis, Cartesian -> fractional
+    md_f32x4_t ext;   // orthorhombic extent, w = 0 so the weight lane is carried through untouched
+    md_f32x3x3_t A;     // triclinic basis
+    md_f32x3x3_t I;     // triclinic inverse basis, Cartesian -> fractional
 } pbc_image_t;
 
 static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
@@ -10562,11 +10561,11 @@ static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
         return im;
     }
     if (md_unitcell_is_orthorhombic(cell)) {
-        vec3_t ext = {0};
+        md_f32x3_t ext = {0};
         md_unitcell_diag_extract_float(ext.elem, cell);
         im.periodic = true;
         im.ortho    = true;
-        im.ext      = vec4_from_vec3(ext, 0);
+        im.ext      = md_f32x4_from_f32x3(ext, 0);
     } else if (md_unitcell_is_triclinic(cell)) {
         md_unitcell_A_extract_float(im.A.elem, cell);
         md_unitcell_I_extract_float(im.I.elem, cell);
@@ -10576,32 +10575,32 @@ static pbc_image_t pbc_image_init(const md_unitcell_t* cell) {
 }
 
 // The image of 'pos' nearest to 'ref'. The weight in w is carried through untouched.
-static inline vec4_t pbc_image_nearest(const pbc_image_t* im, vec4_t pos, vec3_t ref) {
+static inline md_f32x4_t pbc_image_nearest(const pbc_image_t* im, md_f32x4_t pos, md_f32x3_t ref) {
     if (!im->periodic) {
         return pos;
     }
     if (im->ortho) {
-        return vec4_deperiodize_ortho(pos, vec4_from_vec3(ref, 0), im->ext);
+        return md_f32x4_deperiodize_ortho(pos, md_f32x4_from_f32x3(ref, 0), im->ext);
     }
-    vec4_t out = pos;
+    md_f32x4_t out = pos;
     deperiodize_triclinic(out.elem, ref.elem, im->A.elem);
     return out;
 }
 
 // The lattice vector nearest to 'delta'. An axis with no extent is not periodic and contributes
 // nothing.
-static inline vec3_t pbc_image_lattice_round(const pbc_image_t* im, vec3_t delta) {
+static inline md_f32x3_t pbc_image_lattice_round(const pbc_image_t* im, md_f32x3_t delta) {
     if (!im->periodic) {
-        return vec3_zero();
+        return md_f32x3_zero();
     }
     if (im->ortho) {
-        const vec3_t ext = vec3_from_vec4(im->ext);
-        return vec3_set(ext.x != 0.0f ? roundf(delta.x / ext.x) * ext.x : 0.0f,
+        const md_f32x3_t ext = md_f32x3_from_f32x4(im->ext);
+        return md_f32x3_set(ext.x != 0.0f ? roundf(delta.x / ext.x) * ext.x : 0.0f,
                         ext.y != 0.0f ? roundf(delta.y / ext.y) * ext.y : 0.0f,
                         ext.z != 0.0f ? roundf(delta.z / ext.z) * ext.z : 0.0f);
     }
-    const vec3_t f = mat3_mul_vec3(im->I, delta);
-    return mat3_mul_vec3(im->A, vec3_set(roundf(f.x), roundf(f.y), roundf(f.z)));
+    const md_f32x3_t f = md_f32x3x3_mul_f32x3(im->I, delta);
+    return md_f32x3x3_mul_f32x3(im->A, md_f32x3_set(roundf(f.x), roundf(f.y), roundf(f.z)));
 }
 
 // KEEPING THE SET IN ITS OWN IMAGE
@@ -10622,16 +10621,16 @@ static inline vec3_t pbc_image_lattice_round(const pbc_image_t* im, vec3_t delta
 // one that moves the input least. A set that genuinely straddles a boundary has no image to
 // preserve - the two candidates are one lattice vector apart and equally good - and a caller that
 // needs the set inside the cell wraps afterwards, explicitly.
-static void pbc_image_restore(const pbc_image_t* im, vec4_t* xyzw, size_t count, vec3_t input_com, vec3_t* in_out_com) {
-    const vec3_t off = pbc_image_lattice_round(im, vec3_sub(input_com, *in_out_com));
-    if (vec3_dot(off, off) == 0.0f) {
+static void pbc_image_restore(const pbc_image_t* im, md_f32x4_t* xyzw, size_t count, md_f32x3_t input_com, md_f32x3_t* in_out_com) {
+    const md_f32x3_t off = pbc_image_lattice_round(im, md_f32x3_sub(input_com, *in_out_com));
+    if (md_f32x3_dot(off, off) == 0.0f) {
         return;
     }
-    const vec4_t off4 = vec4_from_vec3(off, 0);
+    const md_f32x4_t off4 = md_f32x4_from_f32x3(off, 0);
     for (size_t i = 0; i < count; ++i) {
-        xyzw[i] = vec4_add(xyzw[i], off4);
+        xyzw[i] = md_f32x4_add(xyzw[i], off4);
     }
-    *in_out_com = vec3_add(*in_out_com, off);
+    *in_out_com = md_f32x3_add(*in_out_com, off);
 }
 
 // Squared distance below which two placements count as the same image. Generous: a genuine image
@@ -10642,14 +10641,14 @@ static void pbc_image_restore(const pbc_image_t* im, vec4_t* xyzw, size_t count,
 // stable on the second pass. The cap only bounds pathological input.
 #define PBC_MAX_ITER 8
 
-bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com) {
+bool md_util_deperiodize_self_vec4(md_f32x4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_f32x3_t* out_com) {
     if (!in_out_xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
     }
 
     if (count == 0) {
-        if (out_com) *out_com = vec3_zero();
+        if (out_com) *out_com = md_f32x3_zero();
         return true;
     }
 
@@ -10662,18 +10661,18 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
 
     // Where the input sits, before anything is moved. Only the image it implies is used - see
     // pbc_image_restore.
-    const vec3_t input_com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
+    const md_f32x3_t input_com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, NULL);
 
     // Seed with the circular mean. It needs no image assignment to compute, so unlike an arbitrary
     // reference point it cannot be biased by whichever images the coordinates happened to arrive in.
-    vec3_t com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, cell);
+    md_f32x3_t com = md_util_com_compute_vec4(in_out_xyzw, NULL, count, cell);
 
     for (int iter = 0; iter < PBC_MAX_ITER; ++iter) {
         bool stable = true;
         for (size_t i = 0; i < count; ++i) {
-            const vec4_t before = in_out_xyzw[i];
-            const vec4_t after  = pbc_image_nearest(&im, before, com);
-            if (vec3_distance_squared(vec3_from_vec4(before), vec3_from_vec4(after)) > PBC_IMAGE_EPS_SQ) {
+            const md_f32x4_t before = in_out_xyzw[i];
+            const md_f32x4_t after  = pbc_image_nearest(&im, before, com);
+            if (md_f32x3_distance_squared(md_f32x3_from_f32x4(before), md_f32x3_from_f32x4(after)) > PBC_IMAGE_EPS_SQ) {
                 stable = false;
             }
             in_out_xyzw[i] = after;
@@ -10694,15 +10693,15 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
     return true;
 }
 
-float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
-                                             const vec4_t* ref_xyzw, vec3_t ref_com,
-                                             const vec4_t* trg_xyzw, size_t count,
+float md_util_optimal_rotation_pbc_vec4_iter(md_f32x3x3_t* out_rot, md_f32x3_t* out_com, md_f32x4_t* out_trg_xyzw,
+                                             const md_f32x4_t* ref_xyzw, md_f32x3_t ref_com,
+                                             const md_f32x4_t* trg_xyzw, size_t count,
                                              const md_unitcell_t* cell, int max_iter, float tol) {
     MD_ASSERT(ref_xyzw);
     MD_ASSERT(trg_xyzw);
 
-    if (out_rot) *out_rot = mat3_ident();
-    if (out_com) *out_com = vec3_zero();
+    if (out_rot) *out_rot = md_f32x3x3_ident();
+    if (out_com) *out_com = md_f32x3_zero();
 
     if (count == 0) {
         return 0.0f;
@@ -10713,15 +10712,15 @@ float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, v
     md_temp_scope_t temp = md_temp_begin();
 
     // The caller can have the placed points if it wants them (rmsd does); otherwise they are scratch.
-    vec4_t* cur = out_trg_xyzw ? out_trg_xyzw : md_temp_alloc_array(temp, vec4_t, count);
+    md_f32x4_t* cur = out_trg_xyzw ? out_trg_xyzw : md_temp_alloc_array(temp, md_f32x4_t, count);
 
     // Where the target sits before anything is moved. Read now: 'cur' is allowed to alias trg_xyzw
     // and the loop below writes through it.
-    const vec3_t input_com = md_util_com_compute_vec4(trg_xyzw, NULL, count, NULL);
+    const md_f32x3_t input_com = md_util_com_compute_vec4(trg_xyzw, NULL, count, NULL);
 
     // Image free seed, safe to compute before any assignment exists.
-    vec3_t com = md_util_com_compute_vec4(trg_xyzw, NULL, count, im.periodic ? cell : NULL);
-    mat3_t rot = mat3_ident();
+    md_f32x3_t com = md_util_com_compute_vec4(trg_xyzw, NULL, count, im.periodic ? cell : NULL);
+    md_f32x3x3_t rot = md_f32x3x3_ident();
 
     // Alternating minimisation of  sum_k w_k |R (q_k + A n_k - c) - p_k|^2  over R, c and n_k.
     // Each block has a closed form optimum given the other, so the objective decreases monotonically
@@ -10730,15 +10729,15 @@ float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, v
     for (int iter = 0; iter < max_iter && !stable; ++iter) {
         // rot maps the target frame onto the reference frame, so its transpose carries the reference
         // template back out into the target's frame, which is where the prediction has to live.
-        const mat3_t rot_inv = mat3_transpose(rot);
+        const md_f32x3x3_t rot_inv = md_f32x3x3_transpose(rot);
 
         stable = (iter > 0);
         for (size_t i = 0; i < count; ++i) {
-            const vec3_t p    = vec3_sub(vec3_from_vec4(ref_xyzw[i]), ref_com);
-            const vec3_t pred = vec3_add(com, mat3_mul_vec3(rot_inv, p));
-            const vec4_t placed = pbc_image_nearest(&im, trg_xyzw[i], pred);
+            const md_f32x3_t p    = md_f32x3_sub(md_f32x3_from_f32x4(ref_xyzw[i]), ref_com);
+            const md_f32x3_t pred = md_f32x3_add(com, md_f32x3x3_mul_f32x3(rot_inv, p));
+            const md_f32x4_t placed = pbc_image_nearest(&im, trg_xyzw[i], pred);
 
-            if (iter > 0 && vec3_distance_squared(vec3_from_vec4(cur[i]), vec3_from_vec4(placed)) > tol) {
+            if (iter > 0 && md_f32x3_distance_squared(md_f32x3_from_f32x4(cur[i]), md_f32x3_from_f32x4(placed)) > tol) {
                 stable = false;
             }
             cur[i] = placed;
@@ -10747,9 +10746,9 @@ float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, v
         // Refit. Both are the exact optimum for this assignment.
         com = md_util_com_compute_vec4(cur, NULL, count, NULL);
 
-        const vec4_t* const sets[2] = { ref_xyzw, cur };
-        const vec3_t        coms[2] = { ref_com,  com };
-        rot = mat3_extract_rotation(mat3_cross_covariance_matrix_vec4(sets, NULL, count, coms));
+        const md_f32x4_t* const sets[2] = { ref_xyzw, cur };
+        const md_f32x3_t        coms[2] = { ref_com,  com };
+        rot = md_f32x3x3_extract_rotation(md_f32x3x3_cross_covariance_matrix_f32x4(sets, NULL, count, coms));
     }
 
     // Back in the image the target arrived in. The rotation and the residual below are measured
@@ -10760,9 +10759,9 @@ float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, v
     // half a cell means the assignment above is not close to flipping.
     float max_dist_sq = 0.0f;
     for (size_t i = 0; i < count; ++i) {
-        const vec3_t p = vec3_sub(vec3_from_vec4(ref_xyzw[i]), ref_com);
-        const vec3_t q = mat3_mul_vec3(rot, vec3_sub(vec3_from_vec4(cur[i]), com));
-        const float  d = vec3_distance_squared(p, q);
+        const md_f32x3_t p = md_f32x3_sub(md_f32x3_from_f32x4(ref_xyzw[i]), ref_com);
+        const md_f32x3_t q = md_f32x3x3_mul_f32x3(rot, md_f32x3_sub(md_f32x3_from_f32x4(cur[i]), com));
+        const float  d = md_f32x3_distance_squared(p, q);
         max_dist_sq = MD_MAX(max_dist_sq, d);
     }
 
@@ -10774,31 +10773,31 @@ float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, v
     return sqrtf(max_dist_sq);
 }
 
-void md_util_convert_to_relative_coordinates_vec4(vec4_t in_out_xyzw[], vec3_t ref_xyz, size_t count, const md_unitcell_t* cell) {
+void md_util_convert_to_relative_coordinates_vec4(md_f32x4_t in_out_xyzw[], md_f32x3_t ref_xyz, size_t count, const md_unitcell_t* cell) {
 	MD_ASSERT(in_out_xyzw);
-	vec4_t com = vec4_from_vec3(ref_xyz, 0);
+	md_f32x4_t com = md_f32x4_from_f32x3(ref_xyz, 0);
 	for (size_t i = 0; i < count; ++i) {
-		in_out_xyzw[i] = vec4_sub(in_out_xyzw[i], com);
+		in_out_xyzw[i] = md_f32x4_sub(in_out_xyzw[i], com);
 	}
 	if (cell) {
 		md_util_min_image_vec4(in_out_xyzw, count, cell);
 	}
 }
 
-mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_t* trg_rel_xyzw, size_t count) {
+md_f32x3x3_t md_util_optimal_rotation_rel_vec4(const md_f32x4_t* ref_rel_xyzw, const md_f32x4_t* trg_rel_xyzw, size_t count) {
     MD_ASSERT(ref_rel_xyzw);
     MD_ASSERT(trg_rel_xyzw);
 
     if (count == 0) {
-        return mat3_ident();
+        return md_f32x3x3_ident();
     }
 
     double A[3][3] = { 0 };
     double w_sum = 0.0;
 
     for (size_t i = 0; i < count; ++i) {
-		const vec4_t p = ref_rel_xyzw[i];
-		const vec4_t q = trg_rel_xyzw[i];
+		const md_f32x4_t p = ref_rel_xyzw[i];
+		const md_f32x4_t q = trg_rel_xyzw[i];
 
         // The question here is how to combine the weights.
         // For now we just take the average.
@@ -10818,10 +10817,10 @@ mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_
     }
 
 	if (w_sum == 0.0) {
-		return mat3_ident();
+		return md_f32x3x3_ident();
 	}
 
-    mat3_t C;
+    md_f32x3x3_t C;
 	C.elem[0][0] = (float)(A[0][0] / w_sum);
     C.elem[0][1] = (float)(A[0][1] / w_sum);
 	C.elem[0][2] = (float)(A[0][2] / w_sum);
@@ -10832,23 +10831,23 @@ mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_
 	C.elem[2][1] = (float)(A[2][1] / w_sum);
 	C.elem[2][2] = (float)(A[2][2] / w_sum);
 
-    return mat3_extract_rotation(C);
+    return md_f32x3x3_extract_rotation(C);
 }
 
-double md_util_rmsd_compute(const vec3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation(in_xyz, in_w, in_idx, count, in_com);
+double md_util_rmsd_compute(const md_f32x3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const md_f32x3_t in_com[2]) {
+    const md_f32x3x3_t R = md_f32x3x3_optimal_rotation(in_xyz, in_w, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
         for (size_t i = 0; i < count; ++i) {
             int32_t idx0 = in_idx[0][i];
             int32_t idx1 = in_idx[1][i];
-            vec3_t u = {in_xyz[0][idx0].x - in_com[0].x, in_xyz[0][idx0].y - in_com[0].y, in_xyz[0][idx0].z - in_com[0].z};
-            vec3_t v = {in_xyz[1][idx1].x - in_com[1].x, in_xyz[1][idx1].y - in_com[1].y, in_xyz[1][idx1].z - in_com[1].z};
-            vec3_t vp = mat3_mul_vec3(R, v);
-            vec3_t d = vec3_sub(u, vp);
+            md_f32x3_t u = {in_xyz[0][idx0].x - in_com[0].x, in_xyz[0][idx0].y - in_com[0].y, in_xyz[0][idx0].z - in_com[0].z};
+            md_f32x3_t v = {in_xyz[1][idx1].x - in_com[1].x, in_xyz[1][idx1].y - in_com[1].y, in_xyz[1][idx1].z - in_com[1].z};
+            md_f32x3_t vp = md_f32x3x3_mul_f32x3(R, v);
+            md_f32x3_t d = md_f32x3_sub(u, vp);
             float weight = in_w ? (in_w[0][idx0] + in_w[1][idx1]) * 0.5f : 1.0f;
-            d_sum += weight * vec3_dot(d, d);
+            d_sum += weight * md_f32x3_dot(d, d);
             w_sum += weight;
         }
     } else {
@@ -10886,12 +10885,12 @@ double md_util_rmsd_compute(const vec3_t* const in_xyz[2], const float* const in
         w_sum += md_xv_reduce_add_ps(vw);
 
         for (; i < count; ++i) {
-            vec3_t u = {in_xyz[0][i].x - in_com[0].x, in_xyz[0][i].y - in_com[0].y, in_xyz[0][i].z - in_com[0].z};
-            vec3_t v = {in_xyz[1][i].x - in_com[1].x, in_xyz[1][i].y - in_com[1].y, in_xyz[1][i].z - in_com[1].z};
-            vec3_t vp = mat3_mul_vec3(R, v);
-            vec3_t d = vec3_sub(u, vp);
+            md_f32x3_t u = {in_xyz[0][i].x - in_com[0].x, in_xyz[0][i].y - in_com[0].y, in_xyz[0][i].z - in_com[0].z};
+            md_f32x3_t v = {in_xyz[1][i].x - in_com[1].x, in_xyz[1][i].y - in_com[1].y, in_xyz[1][i].z - in_com[1].z};
+            md_f32x3_t vp = md_f32x3x3_mul_f32x3(R, v);
+            md_f32x3_t d = md_f32x3_sub(u, vp);
             float weight = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f : 1.0f;
-            d_sum += weight * vec3_dot(d, d);
+            d_sum += weight * md_f32x3_dot(d, d);
             w_sum += weight;
         }
     }
@@ -10899,30 +10898,30 @@ double md_util_rmsd_compute(const vec3_t* const in_xyz[2], const float* const in
     return sqrt(d_sum / w_sum);
 }
 
-double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw, in_idx, count, in_com);
+double md_util_rmsd_compute_vec4(const md_f32x4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t in_com[2]) {
+    const md_f32x3x3_t R = md_f32x3x3_optimal_rotation_f32x4(in_xyzw, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
         for (size_t i = 0; i < count; ++i) {
             int32_t idx0 = in_idx[0][i];
             int32_t idx1 = in_idx[1][i];
-            vec3_t u = {in_xyzw[0][idx0].x - in_com[0].x, in_xyzw[0][idx0].y - in_com[0].y, in_xyzw[0][idx0].z - in_com[0].z};
-            vec3_t v = {in_xyzw[1][idx1].x - in_com[1].x, in_xyzw[1][idx1].y - in_com[1].y, in_xyzw[1][idx1].z - in_com[1].z};
-            vec3_t vp = mat3_mul_vec3(R, v);
-            vec3_t d = vec3_sub(u, vp);
+            md_f32x3_t u = {in_xyzw[0][idx0].x - in_com[0].x, in_xyzw[0][idx0].y - in_com[0].y, in_xyzw[0][idx0].z - in_com[0].z};
+            md_f32x3_t v = {in_xyzw[1][idx1].x - in_com[1].x, in_xyzw[1][idx1].y - in_com[1].y, in_xyzw[1][idx1].z - in_com[1].z};
+            md_f32x3_t vp = md_f32x3x3_mul_f32x3(R, v);
+            md_f32x3_t d = md_f32x3_sub(u, vp);
             float w = (in_xyzw[0][idx0].w + in_xyzw[1][idx1].w) * 0.5f;
-            d_sum += w * vec3_dot(d, d);
+            d_sum += w * md_f32x3_dot(d, d);
             w_sum += w;
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            vec3_t u = {in_xyzw[0][i].x - in_com[0].x, in_xyzw[0][i].y - in_com[0].y, in_xyzw[0][i].z - in_com[0].z};
-            vec3_t v = {in_xyzw[1][i].x - in_com[1].x, in_xyzw[1][i].y - in_com[1].y, in_xyzw[1][i].z - in_com[1].z};
-            vec3_t vp = mat3_mul_vec3(R, v);
-            vec3_t d = vec3_sub(u, vp);
+            md_f32x3_t u = {in_xyzw[0][i].x - in_com[0].x, in_xyzw[0][i].y - in_com[0].y, in_xyzw[0][i].z - in_com[0].z};
+            md_f32x3_t v = {in_xyzw[1][i].x - in_com[1].x, in_xyzw[1][i].y - in_com[1].y, in_xyzw[1][i].z - in_com[1].z};
+            md_f32x3_t vp = md_f32x3x3_mul_f32x3(R, v);
+            md_f32x3_t d = md_f32x3_sub(u, vp);
             float w = (in_xyzw[0][i].w + in_xyzw[1][i].w) * 0.5f;
-            d_sum += w * vec3_dot(d, d);
+            d_sum += w * md_f32x3_dot(d, d);
             w_sum += w;
         }
     }
@@ -10930,11 +10929,11 @@ double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* 
     return sqrt(d_sum / w_sum);
 }
 
-vec3_t md_util_shape_weights(const mat3_t* covariance_matrix) {
+md_f32x3_t md_util_shape_weights(const md_f32x3x3_t* covariance_matrix) {
     MD_ASSERT(covariance_matrix);
-    mat3_eigen_t eigen = mat3_eigen(*covariance_matrix);
+    md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(*covariance_matrix);
     float scl = 1.0f / (eigen.values.x + eigen.values.y + eigen.values.z);
-    vec3_t weights = {(eigen.values.x - eigen.values.y) * scl, 2.0f * (eigen.values.y - eigen.values.z) * scl, 3.0f * eigen.values.z * scl};
+    md_f32x3_t weights = {(eigen.values.x - eigen.values.y) * scl, 2.0f * (eigen.values.y - eigen.values.z) * scl, 3.0f * eigen.values.z * scl};
     return weights;
 }
 
@@ -10976,7 +10975,7 @@ static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv
 // atoms first so the loads are aligned and a partial group last, each through a small staging copy;
 // any count works. A triclinic cell couples the axes: that path splits eight atoms into x, y and z
 // and relies on the arrays being padded to a multiple of eight atoms.
-bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
+bool md_util_interpolate_linear(md_f32x3_t* out_xyz, const md_f32x3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
     MD_ASSERT(out_xyz);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_xyz[0]);
@@ -10987,8 +10986,8 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
     const bool ortho = cell && md_unitcell_is_orthorhombic(cell);
     const bool tricl = cell && md_unitcell_is_triclinic(cell);
 
-    mat3_t A = { 0 };
-    mat3_t I = { 0 };
+    md_f32x3x3_t A = { 0 };
+    md_f32x3x3_t I = { 0 };
     if (ortho | tricl) {
         md_unitcell_A_extract_float(A.elem, cell);
         md_unitcell_I_extract_float(I.elem, cell);
@@ -11011,10 +11010,10 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
                 lerp_xyz8(dst + i * 3, src0 + i * 3, src1 + i * 3, ext, inv, ortho, t);
             } else {
                 float a[24] = {0}, b[24] = {0}, r[24];
-                md_memcpy(a, src0 + i * 3, n * sizeof(vec3_t));
-                md_memcpy(b, src1 + i * 3, n * sizeof(vec3_t));
+                md_memcpy(a, src0 + i * 3, n * sizeof(md_f32x3_t));
+                md_memcpy(b, src1 + i * 3, n * sizeof(md_f32x3_t));
                 lerp_xyz8(r, a, b, ext, inv, ortho, t);
-                md_memcpy(dst + i * 3, r, n * sizeof(vec3_t));
+                md_memcpy(dst + i * 3, r, n * sizeof(md_f32x3_t));
             }
             i += n;
         }
@@ -11064,7 +11063,7 @@ void md_util_cubic_bspline_weights(float w[4], float t) {
     w[3] = t3 * (1.0f / 6.0f);
 }
 
-bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
+bool md_util_interpolate_cubic_spline(md_f32x3_t* out_xyz, const md_f32x3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
     float w[4];
     md_util_cubic_spline_weights(w, MD_CLAMP(t, 0.0f, 1.0f), MD_CLAMP(s, 0.0f, 1.0f));
     return md_util_interpolate_cubic_weighted(out_xyz, in_xyz, count, cell, w);
@@ -11072,7 +11071,7 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
 
 // As md_util_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
 // split into x, y and z (and padded) in a triclinic one.
-bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
+bool md_util_interpolate_cubic_weighted(md_f32x3_t* out_xyz, const md_f32x3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
     MD_ASSERT(out_xyz);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_xyz[0]);
@@ -11083,8 +11082,8 @@ bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_
 
     const bool ortho = cell && md_unitcell_is_orthorhombic(cell);
     const bool tricl = cell && md_unitcell_is_triclinic(cell);
-    mat3_t A = { 0 };
-    mat3_t I = { 0 };
+    md_f32x3x3_t A = { 0 };
+    md_f32x3x3_t I = { 0 };
     if (ortho | tricl) {
         md_unitcell_A_extract_float(A.elem, cell);
         md_unitcell_I_extract_float(I.elem, cell);
@@ -11111,11 +11110,11 @@ bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_
             } else {
                 float stage[4][24] = {0}, r[24];
                 for (int k = 0; k < 4; ++k) {
-                    md_memcpy(stage[k], src[k] + i * 3, n * sizeof(vec3_t));
+                    md_memcpy(stage[k], src[k] + i * 3, n * sizeof(md_f32x3_t));
                 }
                 const float* const g[4] = { stage[0], stage[1], stage[2], stage[3] };
                 cubic_xyz8(r, g, ext, inv, ortho, xw);
-                md_memcpy(dst + i * 3, r, n * sizeof(vec3_t));
+                md_memcpy(dst + i * 3, r, n * sizeof(md_f32x3_t));
             }
             i += n;
         }
@@ -11219,9 +11218,9 @@ static bool chain_atoms_linked(const md_system_t* sys, const md_system_state_t* 
         return md_bond_find(&sys->bond, a, b) >= 0;
     }
     if (max_dist > 0.0f && md_system_state_has_coords(state) && (size_t)a < state->num_atoms && (size_t)b < state->num_atoms) {
-        vec3_t d = vec3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
+        md_f32x3_t d = md_f32x3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
         md_util_min_image_vec3(&d, 1, &state->unitcell);
-        return vec3_dot(d, d) <= max_dist * max_dist;
+        return md_f32x3_dot(d, d) <= max_dist * max_dist;
     }
     return seq_next;
 }
@@ -11436,9 +11435,9 @@ static inline void flush_nucleic_backbone_segment(md_nucleic_acid_atoms_t* backb
 
 static inline bool atoms_closer_than(const md_system_state_t* state, md_atom_idx_t a, md_atom_idx_t b, float max_dist) {
     if (!md_system_state_has_coords(state) || (size_t)a >= state->num_atoms || (size_t)b >= state->num_atoms) return false;
-    vec3_t d = vec3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
+    md_f32x3_t d = md_f32x3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
     md_util_min_image_vec3(&d, 1, &state->unitcell);
-    return vec3_dot(d, d) < max_dist * max_dist;
+    return md_f32x3_dot(d, d) < max_dist * max_dist;
 }
 
 // The first neighbour of atom a of element z, which is neither x nor y (z 0: any element but hydrogen)
@@ -11660,7 +11659,7 @@ static void nucleic_backbones_from_bonds(md_system_t* sys, size_t min_length, md
     }
 }
 
-static inline vec3_t hcl_to_rgb(float h, float c, float l) {
+static inline md_f32x3_t hcl_to_rgb(float h, float c, float l) {
     float r = 0, g = 0, b = 0;
 
     if (c == 0) {
@@ -11689,7 +11688,7 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
         b += m;
     }
 
-    return (vec3_t){r, g, b};
+    return (md_f32x3_t){r, g, b};
 }
 
 // ### LIPIDS ###
@@ -12467,7 +12466,7 @@ static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_id
     // The golden ratio spreads the hues of names which hash alike
     const uint32_t h = (uint32_t)md_hash64_str(name, 0) * 0x9E3779B9u;
     const float hue = (float)(h >> 8) * (1.0f / 16777216.0f);
-    const vec3_t rgb = hcl_to_rgb(hue, 0.5f, 0.7f);    // Channels within [0.45, 0.95]
+    const md_f32x3_t rgb = hcl_to_rgb(hue, 0.5f, 0.7f);    // Channels within [0.45, 0.95]
     const uint32_t r = (uint32_t)(MD_CLAMP(rgb.x, 0.0f, 1.0f) * 255.0f + 0.5f);
     const uint32_t g = (uint32_t)(MD_CLAMP(rgb.y, 0.0f, 1.0f) * 255.0f + 0.5f);
     const uint32_t b = (uint32_t)(MD_CLAMP(rgb.z, 0.0f, 1.0f) * 255.0f + 0.5f);
@@ -12774,7 +12773,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         float chroma = 0.8f;
                         float light  = 1.0f;
                         float alpha  = 1.0f;
-                        vec3_t rgb = hcl_to_rgb(hue, chroma, light);
+                        md_f32x3_t rgb = hcl_to_rgb(hue, chroma, light);
                         // Pack into 0xAARRGGBB
                         color = (uint32_t)(uint8_t)(alpha * 255) << 24 | (uint32_t)(uint8_t)(rgb.x * 255) << 16 | (uint32_t)(uint8_t)(rgb.y * 255) << 8 | (uint32_t)(uint8_t)(rgb.z * 255);
                         sys->atom.type.color[i] = color;
@@ -13059,7 +13058,7 @@ static void radixPass10(uint32_t* destination, const uint32_t* source, const uin
 
 // Packed coordinates: the bounds come from the packed AABB, which reads them as they lie, and the
 // keys from each atom in turn.
-void md_util_sort_spatial(uint32_t* source, const vec3_t* xyz, size_t count) {
+void md_util_sort_spatial(uint32_t* source, const md_f32x3_t* xyz, size_t count) {
     if (!source || !xyz || count == 0) return;
 
     md_temp_scope_t temp_scope = md_temp_begin();

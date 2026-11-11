@@ -11,7 +11,7 @@
 #include "../src/md_attributes_internal.h"
 #include <core/md_common.h>
 #include <core/md_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 
 // Datasets stored every way md_hdf5_direct decodes, and some it leaves to HDF5, each read back frame by frame and in

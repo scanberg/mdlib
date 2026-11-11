@@ -6,8 +6,9 @@
 
 #include <md_xyz.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <md_unitcell.h>
@@ -556,7 +557,7 @@ static void xyz_run_check(int* utest_result, md_str_t path, const run_ref_t* ref
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     EXPECT_TRUE(run_extract_one(&got, &sys, XYZ_RUN, 0));
-    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(md_f32x3_t)));
 
 done:
     md_system_free(&sys);

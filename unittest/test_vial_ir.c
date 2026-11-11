@@ -2,6 +2,7 @@
 #include "test_executor.h"
 
 #include <core/md_common.h>
+#include <md_run.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
@@ -10,6 +11,7 @@
 #include "../src/vial/ir.h"
 #include "../src/vial/interp.h"
 #include <core/md_os.h>
+#include <core/md_file.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -258,7 +260,7 @@ UTEST(vial_ir, evaluates_frames) {
     ASSERT_EQ(4u, k);
     for (int64_t f = 0; f < nf; ++f) {
         md_system_extract_frame(ex, f, &state);
-        vec3_t dx = vec3_sub(state.xyz[ca[3]], state.xyz[ca[0]]);
+        md_f32x3_t dx = md_f32x3_sub(state.xyz[ca[3]], state.xyz[ca[0]]);
         md_util_min_image_vec3(&dx, 1, &state.unitcell);
         const double want = sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
         EXPECT_NEAR(want, d[f], 1e-5);

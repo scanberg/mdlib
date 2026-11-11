@@ -7,7 +7,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_array.h>
 #include <core/md_parse.h>
 #include <core/md_parse_simd.h>
@@ -15,6 +15,7 @@
 #include <core/md_executor.h>
 
 #include <core/md_reader.h>
+#include <core/md_vec_math.h>
 
 #include <string.h>
 
@@ -291,7 +292,7 @@ typedef struct gro_load_t {
     gro_residue_start_t*  res;              // of the load
     bool                  columns;
     size_t                width, decimals;
-    vec3_t*               xyz;
+    md_f32x3_t*               xyz;
     float*                velocity;         // NULL when the file has none
     md_label_t*           atom_names;
     md_particle_type_idx_t* type_idx;       // none yet: typed by the names once all are read
@@ -340,7 +341,7 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             float xyz[3], vel[3];
             if (!(L->columns_w8 && gro_parse_coordinates_w8(xyz, vel, line)) &&
                 !gro_parse_coordinates(xyz, vel, line, L->columns, L->width, L->decimals)) piece->loose = true;
-            L->xyz[atom] = vec3_set(xyz[0] * NM_TO_ANGSTROM, xyz[1] * NM_TO_ANGSTROM, xyz[2] * NM_TO_ANGSTROM);
+            L->xyz[atom] = md_f32x3_set(xyz[0] * NM_TO_ANGSTROM, xyz[1] * NM_TO_ANGSTROM, xyz[2] * NM_TO_ANGSTROM);
             if (L->velocity) {
                 L->velocity[atom * 3 + 0] = vel[0];
                 L->velocity[atom * 3 + 1] = vel[1];

@@ -1,5 +1,6 @@
 ﻿#include <md_system.h>
 #include "md_attributes_internal.h"
+#include "md_run.h"
 #include <md_nonbonded.h>
 #include "md_system_fields.h"
 
@@ -15,6 +16,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -169,7 +171,7 @@ typedef struct {
     md_array(md_instance_idx_t) inst;   // Ascending, unique
 } assembly_group_t;
 
-bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count) {
+bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const md_f32x4x4_t* oper_transform, const md_label_t* oper_id, size_t oper_count) {
     MD_ASSERT(sys);
     md_system_assemblies_free(sys);
     if (gen_count == 0 || oper_count == 0) {
@@ -202,7 +204,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         }
         md_array_push(A->oper_id, id, alloc);
 
-        const mat4_t M = oper_transform[i];
+        const md_f32x4x4_t M = oper_transform[i];
         float dev = 0.0f;
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
@@ -650,7 +652,7 @@ bool md_system_state_init(md_system_state_t* state, size_t num_atoms) {
 
     // Zero the padding past num_atoms. The capacity is rounded up so vectorised code may load whole
     // groups of atoms; an uninitialised tail puts garbage floats into those lanes.
-    const size_t tail_bytes = (capacity - num_atoms) * sizeof(vec3_t);
+    const size_t tail_bytes = (capacity - num_atoms) * sizeof(md_f32x3_t);
     if (tail_bytes > 0) {
         md_memset(state->xyz + num_atoms, 0, tail_bytes);
     }
@@ -684,7 +686,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
         return false;
     }
     if (src->num_atoms > 0 && src->xyz) {
-        md_memcpy(dst->xyz, src->xyz, src->num_atoms * sizeof(vec3_t));
+        md_memcpy(dst->xyz, src->xyz, src->num_atoms * sizeof(md_f32x3_t));
     }
     dst->unitcell = src->unitcell;
     dst->frame    = src->frame;

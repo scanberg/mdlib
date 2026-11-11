@@ -26,6 +26,7 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_str.h>
 
 #include <core/md_executor.h>
@@ -162,7 +163,7 @@ static uint64_t system_hash(const md_system_t* sys, const md_system_state_t* st)
     uint64_t h = 1469598103934665603ull;
     const size_t na = sys->atom.count, nr = sys->residue.count;
     h = fnv(h, &na, sizeof(na));
-    h = fnv(h, st->xyz, na * sizeof(vec3_t));
+    h = fnv(h, st->xyz, na * sizeof(md_f32x3_t));
     h = fnv(h, sys->atom.type_idx, na * sizeof(md_particle_type_idx_t));
     for (size_t t = 0; t < sys->atom.type.count; ++t) {
         const md_str_t name = md_particle_type_name(&sys->atom.type, t);

@@ -2,7 +2,7 @@
 
 #include <core/md_common.h>
 #include <core/md_str.h>
-#include <core/md_os.h>     // md_file_t
+#include <core/md_file.h>
 #include <core/md_executor.h>
 
 #include <stdbool.h>

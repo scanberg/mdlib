@@ -4,7 +4,7 @@
 // Not part of the public API.
 
 #include <md_attributes.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 
 #define MD_ATTRIBUTE_IO_MAX_FILES 16
 #define MD_ATTRIBUTE_IO_MAX_BLOCKS 4

@@ -1,6 +1,7 @@
 #include <md_h5md.h>
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_tpr.h>
 #include <md_types.h>
 
@@ -10,7 +11,7 @@
 #include <core/md_common.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
 #include <core/md_format.h>
@@ -1178,7 +1179,7 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, m
 
     if (xyz) {
         for (size_t i = 0; i < N; ++i) {
-            state->xyz[i] = vec3_set(xyz[i * 3 + 0], xyz[i * 3 + 1], xyz[i * 3 + 2]);
+            state->xyz[i] = md_f32x3_set(xyz[i * 3 + 0], xyz[i * 3 + 1], xyz[i * 3 + 2]);
         }
         state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(cell));
     }

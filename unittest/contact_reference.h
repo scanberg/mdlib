@@ -29,7 +29,7 @@ typedef struct ref_pair_t {
 } ref_pair_t;
 
 static inline float ref_distance(const md_system_state_t* state, uint32_t a, uint32_t b) {
-    vec3_t dx = vec3_sub(state->xyz[b], state->xyz[a]);
+    md_f32x3_t dx = md_f32x3_sub(state->xyz[b], state->xyz[a]);
     md_util_min_image_vec3(&dx, 1, &state->unitcell);
     return sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
 }

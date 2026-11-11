@@ -3,105 +3,97 @@
 #include <core/md_path.h>
 
 #define STR(lit) MD_STR_LIT(lit)
+#define EXPECT_STR(str, cstr) EXPECT_TRUE(md_str_eq_cstr((str), (cstr)))
 
 UTEST(path, ext) {
-    md_str_t ext = {0};
-    EXPECT_TRUE(md_path_ext(&ext, STR("/data/run.1/traj.nc")));
-    EXPECT_TRUE(md_str_eq_cstr(ext, "nc"));
-    // A dot in a folder is not an extension of a file without one (Amber's mdout, prmtop)
-    EXPECT_FALSE(md_path_ext(&ext, STR("/data/run.1/mdout")));
-    EXPECT_FALSE(md_path_ext(&ext, STR("C:\\runs\\v1.2\\prmtop")));
-    EXPECT_TRUE(md_path_ext(&ext, STR("C:\\runs\\v1.2\\sys.parm7")));
-    EXPECT_TRUE(md_str_eq_cstr(ext, "parm7"));
+    EXPECT_STR(md_path_ext(STR("/data/run.1/traj.nc")), "nc");
+    EXPECT_STR(md_path_ext(STR("C:\\runs\\v1.2\\sys.parm7")), "parm7");
+    EXPECT_STR(md_path_ext(STR("file.tar.gz")), "gz");
 
-    EXPECT_TRUE(md_path_ext(&ext, STR("file.tar.gz")));
-    EXPECT_TRUE(md_str_eq_cstr(ext, "gz"));
-    EXPECT_TRUE(md_path_ext(&ext, STR("file.")));
-    EXPECT_TRUE(md_str_eq_cstr(ext, ""));
-    EXPECT_TRUE(md_path_ext(NULL, STR("file.pdb")));
-    EXPECT_FALSE(md_path_ext(&ext, (md_str_t){0}));
+    // Only in the file name: a dot in a folder is not an extension of a file without one (Amber's mdout, prmtop)
+    EXPECT_STR(md_path_ext(STR("/data/run.1/mdout")), "");
+    EXPECT_STR(md_path_ext(STR("C:\\runs\\v1.2\\prmtop")), "");
+
+    // A leading '.' marks a hidden file, not an extension
+    EXPECT_STR(md_path_ext(STR(".bashrc")), "");
+    EXPECT_STR(md_path_ext(STR("/home/user/.bashrc")), "");
+    EXPECT_STR(md_path_ext(STR(".config.json")), "json");
+    EXPECT_STR(md_path_ext(STR("..x")), "x");
+
+    EXPECT_STR(md_path_ext(STR("file.")), "");
+    EXPECT_STR(md_path_ext(STR("Makefile")), "");
+    EXPECT_STR(md_path_ext((md_str_t){0}), "");
 }
 
 UTEST(path, filename) {
-    md_str_t name = {0};
-    EXPECT_TRUE(md_path_filename(&name, STR("c:/folder/file.ext")));
-    EXPECT_TRUE(md_str_eq_cstr(name, "file.ext"));
-    EXPECT_TRUE(md_path_filename(&name, STR("c:\\folder\\file.ext")));
-    EXPECT_TRUE(md_str_eq_cstr(name, "file.ext"));
+    EXPECT_STR(md_path_filename(STR("c:/folder/file.ext")), "file.ext");
+    EXPECT_STR(md_path_filename(STR("c:\\folder\\file.ext")), "file.ext");
 
     // The last separator of either kind ends the folder
-    EXPECT_TRUE(md_path_filename(&name, STR("C:/data\\run\\x.pdb")));
-    EXPECT_TRUE(md_str_eq_cstr(name, "x.pdb"));
-    EXPECT_TRUE(md_path_filename(&name, STR("C:\\data/run/x.pdb")));
-    EXPECT_TRUE(md_str_eq_cstr(name, "x.pdb"));
+    EXPECT_STR(md_path_filename(STR("C:/data\\run\\x.pdb")), "x.pdb");
+    EXPECT_STR(md_path_filename(STR("C:\\data/run/x.pdb")), "x.pdb");
 
     // No folder: the whole path is the file name
-    EXPECT_TRUE(md_path_filename(&name, STR("x.pdb")));
-    EXPECT_TRUE(md_str_eq_cstr(name, "x.pdb"));
+    EXPECT_STR(md_path_filename(STR("x.pdb")), "x.pdb");
 
-    EXPECT_TRUE(md_path_filename(&name, STR("c:/folder/")));
-    EXPECT_TRUE(md_str_eq_cstr(name, ""));
-
-    EXPECT_FALSE(md_path_filename(&name, (md_str_t){0}));
+    EXPECT_STR(md_path_filename(STR("c:/folder/")), "");
+    EXPECT_STR(md_path_filename((md_str_t){0}), "");
 }
 
 UTEST(path, without_ext) {
-    md_str_t out = {0};
-    EXPECT_TRUE(md_path_without_ext(&out, STR("c:/folder/file.ext")));
-    EXPECT_TRUE(md_str_eq_cstr(out, "c:/folder/file"));
-    EXPECT_TRUE(md_path_without_ext(&out, STR("file.tar.gz")));
-    EXPECT_TRUE(md_str_eq_cstr(out, "file.tar"));
+    EXPECT_STR(md_path_without_ext(STR("c:/folder/file.ext")), "c:/folder/file");
+    EXPECT_STR(md_path_without_ext(STR("file.tar.gz")), "file.tar");
+    EXPECT_STR(md_path_without_ext(STR("/data/run.1/traj.nc")), "/data/run.1/traj");
 
-    // A dot in a folder is not an extension: the path must not be cut inside the folder
-    out = STR("untouched");
-    EXPECT_FALSE(md_path_without_ext(&out, STR("/data/run.1/mdout")));
-    EXPECT_FALSE(md_path_without_ext(&out, STR("C:\\runs\\v1.2\\prmtop")));
-    EXPECT_FALSE(md_path_without_ext(&out, STR("./file")));
-    EXPECT_FALSE(md_path_without_ext(&out, STR("../file")));
-    EXPECT_TRUE(md_str_eq_cstr(out, "untouched"));
+    // No extension: all of it, the folder never cut
+    EXPECT_STR(md_path_without_ext(STR("/data/run.1/mdout")), "/data/run.1/mdout");
+    EXPECT_STR(md_path_without_ext(STR("C:\\runs\\v1.2\\prmtop")), "C:\\runs\\v1.2\\prmtop");
+    EXPECT_STR(md_path_without_ext(STR("./file")), "./file");
+    EXPECT_STR(md_path_without_ext(STR("../file")), "../file");
+    EXPECT_STR(md_path_without_ext(STR(".bashrc")), ".bashrc");
+    EXPECT_STR(md_path_without_ext(STR("file.")), "file");
 
-    EXPECT_TRUE(md_path_without_ext(&out, STR("/data/run.1/traj.nc")));
-    EXPECT_TRUE(md_str_eq_cstr(out, "/data/run.1/traj"));
-
-    // Agrees with md_path_ext: path == without_ext + '.' + ext
-    const md_str_t paths[] = { STR("a.b"), STR("dir.x/a.b.c"), STR("C:\\v1.2\\sys.parm7"), STR(".hidden") };
+    // path is without_ext + '.' + ext, whenever there is an extension
+    const md_str_t paths[] = { STR("a.b"), STR("dir.x/a.b.c"), STR("C:\\v1.2\\sys.parm7"), STR(".config.json") };
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
-        md_str_t ext, stem;
-        EXPECT_TRUE(md_path_ext(&ext, paths[i]));
-        EXPECT_TRUE(md_path_without_ext(&stem, paths[i]));
+        const md_str_t ext  = md_path_ext(paths[i]);
+        const md_str_t stem = md_path_without_ext(paths[i]);
+        EXPECT_GT(ext.len, (size_t)0);
         EXPECT_EQ(stem.len + 1 + ext.len, paths[i].len);
+        EXPECT_EQ(stem.ptr, paths[i].ptr);
     }
 }
 
-UTEST(path, folder) {
-    md_str_t folder = {0};
-    EXPECT_TRUE(md_path_folder(&folder, STR("c:/folder/file.ext")));
-    EXPECT_TRUE(md_str_eq_cstr(folder, "c:/folder/"));
-    EXPECT_TRUE(md_path_folder(&folder, STR("c:\\folder\\file.ext")));
-    EXPECT_TRUE(md_str_eq_cstr(folder, "c:\\folder\\"));
-
-    // The last separator of either kind ends the folder
-    EXPECT_TRUE(md_path_folder(&folder, STR("C:/data\\run\\x.pdb")));
-    EXPECT_TRUE(md_str_eq_cstr(folder, "C:/data\\run\\"));
-    EXPECT_TRUE(md_path_folder(&folder, STR("C:\\data/run/x.pdb")));
-    EXPECT_TRUE(md_str_eq_cstr(folder, "C:\\data/run/"));
-
-    EXPECT_TRUE(md_path_folder(&folder, STR("/")));
-    EXPECT_TRUE(md_str_eq_cstr(folder, "/"));
-
-    // A bare file name has no folder, and the output is left as it was
-    folder = STR("untouched");
-    EXPECT_FALSE(md_path_folder(&folder, STR("x.pdb")));
-    EXPECT_FALSE(md_path_folder(&folder, (md_str_t){0}));
-    EXPECT_TRUE(md_str_eq_cstr(folder, "untouched"));
+UTEST(path, stem) {
+    EXPECT_STR(md_path_stem(STR("c:/folder/file.tar.gz")), "file.tar");
+    EXPECT_STR(md_path_stem(STR("/data/run.1/mdout")), "mdout");
+    EXPECT_STR(md_path_stem(STR("traj.xtc")), "traj");
+    EXPECT_STR(md_path_stem(STR("/home/user/.bashrc")), ".bashrc");
+    EXPECT_STR(md_path_stem(STR("file.")), "file");
+    EXPECT_STR(md_path_stem(STR("c:/folder/")), "");
 }
 
+UTEST(path, folder) {
+    EXPECT_STR(md_path_folder(STR("c:/folder/file.ext")), "c:/folder/");
+    EXPECT_STR(md_path_folder(STR("c:\\folder\\file.ext")), "c:\\folder\\");
+
+    // The last separator of either kind ends the folder
+    EXPECT_STR(md_path_folder(STR("C:/data\\run\\x.pdb")), "C:/data\\run\\");
+    EXPECT_STR(md_path_folder(STR("C:\\data/run/x.pdb")), "C:\\data/run/");
+
+    EXPECT_STR(md_path_folder(STR("/")), "/");
+
+    // A bare file name has no folder
+    EXPECT_STR(md_path_folder(STR("x.pdb")), "");
+    EXPECT_STR(md_path_folder((md_str_t){0}), "");
+}
+
+// path is folder + filename
 UTEST(path, folder_and_filename_partition_the_path) {
     const md_str_t paths[] = { STR("a/b/c.d"), STR("a\\b/c"), STR("c"), STR("/"), STR("a/"), STR("C:\\x\\y.z") };
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
-        md_str_t folder = {0}, name = {0};
-        md_path_folder(&folder, paths[i]);
-        EXPECT_TRUE(md_path_filename(&name, paths[i]));
+        const md_str_t folder = md_path_folder(paths[i]);
+        const md_str_t name   = md_path_filename(paths[i]);
         EXPECT_EQ(folder.len + name.len, paths[i].len);
         EXPECT_EQ(name.ptr, paths[i].ptr + folder.len);
     }

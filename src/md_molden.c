@@ -10,7 +10,7 @@
 #include <core/md_array.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_parse.h>
 #include <core/md_reader.h>
 #include <core/md_str.h>
@@ -60,7 +60,7 @@ typedef struct molden_t {
     bool pure[MD_GTO_MAX_ANGULAR_MOMENTUM + 1];
 
     md_array(uint8_t)          atomic_number;
-    md_array(dvec3_t)          coord;       // Angstrom
+    md_array(md_f64x3_t)          coord;       // Angstrom
     md_array(md_str_t)            atom_label;
 
     md_array(molden_shell_t)   shell;
@@ -72,12 +72,12 @@ typedef struct molden_t {
     // [FR-COORD]: the geometry of a vibrational file, in bohr, which is all a file written for its
     // vibrations alone (CP2K, Psi4, Q-Chem) has: it has no [Atoms]
     md_array(uint8_t)          fr_atomic_number;
-    md_array(dvec3_t)          fr_coord;      // Angstrom, converted on read
+    md_array(md_f64x3_t)          fr_coord;      // Angstrom, converted on read
     md_array(md_str_t)            fr_label;
 
     md_array(double)           frequency;     // cm^-1
     md_array(double)           ir_intensity;  // km/mol
-    md_array(dvec3_t)          normal_mode;   // [num_modes * num_atoms]
+    md_array(md_f64x3_t)          normal_mode;   // [num_modes * num_atoms]
     size_t                     num_modes;
 
     bool has_gto;
@@ -248,13 +248,13 @@ static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, md_str_t a
         if (z == 0) {
             z = md_atomic_number_from_symbol(tok[0], true);
         }
-        dvec3_t xyz = {
+        md_f64x3_t xyz = {
             molden_parse_float(tok[3]),
             molden_parse_float(tok[4]),
             molden_parse_float(tok[5]),
         };
         if (bohr) {
-            xyz = dvec3_mul1(xyz, MOLDEN_BOHR_TO_ANGSTROM);
+            xyz = md_f64x3_mul1(xyz, MOLDEN_BOHR_TO_ANGSTROM);
         }
         md_array_push(molden->atomic_number, (uint8_t)z, molden->alloc);
         md_array_push(molden->coord, xyz, molden->alloc);
@@ -465,7 +465,7 @@ static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
             continue;
         }
         const md_atomic_number_t z = md_atomic_number_from_symbol(tok[0], true);
-        dvec3_t xyz = {
+        md_f64x3_t xyz = {
             molden_parse_float(tok[1]) * MOLDEN_BOHR_TO_ANGSTROM,
             molden_parse_float(tok[2]) * MOLDEN_BOHR_TO_ANGSTROM,
             molden_parse_float(tok[3]) * MOLDEN_BOHR_TO_ANGSTROM,
@@ -491,7 +491,7 @@ static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
         if (md_str_empty(s)) {
             continue;
         }
-        if (!md_str_eq_cstr_n_ignore_case(s, "vibration", 9)) {
+        if (!md_str_begins_with_ignore_case(s, MD_STR_LIT("vibration"))) {
             continue;
         }
         for (size_t a = 0; a < num_atoms; ++a) {
@@ -501,7 +501,7 @@ static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
             }
             md_str_t tok[4];
             md_str_t scan = disp_line;
-            dvec3_t d = {0};
+            md_f64x3_t d = {0};
             if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan) >= 3) {
                 d.x = molden_parse_float(tok[0]);
                 d.y = molden_parse_float(tok[1]);
@@ -847,7 +847,7 @@ static void molden_cartesian_convention(molden_t* molden, const md_gto_basis_t* 
     const size_t num_file_ao = molden_num_file_ao(molden);
     double* C = md_temp_alloc_array(scope, double, num_orb * num_ao);
     double* S = md_temp_alloc_array(scope, double, num_ao * num_ao);
-    dvec3_t* xyz = md_temp_alloc_array(scope, dvec3_t, md_array_size(molden->coord));
+    md_f64x3_t* xyz = md_temp_alloc_array(scope, md_f64x3_t, md_array_size(molden->coord));
     if (!C || !S || !xyz) {
         md_temp_end(scope);
         return;
@@ -873,7 +873,7 @@ static void molden_cartesian_convention(molden_t* molden, const md_gto_basis_t* 
         pick[at] = i;
     }
     for (size_t a = 0; a < md_array_size(molden->coord); ++a) {
-        xyz[a] = (dvec3_t){ molden->coord[a].x * 1.8897261246257702, molden->coord[a].y * 1.8897261246257702, molden->coord[a].z * 1.8897261246257702 };
+        xyz[a] = (md_f64x3_t){ molden->coord[a].x * 1.8897261246257702, molden->coord[a].y * 1.8897261246257702, molden->coord[a].z * 1.8897261246257702 };
     }
     if (num_pick == 0 || weight[0] == 0.0 || md_qm_compute_overlap(S, basis, xyz, md_array_size(molden->coord)) != num_ao) {
         md_temp_end(scope);
@@ -1097,7 +1097,7 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
-        state->xyz[i] = vec3_set((float)molden->coord[i].x, (float)molden->coord[i].y, (float)molden->coord[i].z);
+        state->xyz[i] = md_f32x3_set((float)molden->coord[i].x, (float)molden->coord[i].y, (float)molden->coord[i].z);
 
         const md_atomic_number_t z = molden->atomic_number[i];
         sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,

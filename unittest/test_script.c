@@ -11,9 +11,12 @@
 #include <core/md_parse.h>
 #include <core/md_bitset.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_vec_math.h>
 #include <md_script.h>
 #include <md_filter.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_gro.h>
 #include <md_pdb.h>
 #include <md_trr.h>
@@ -32,7 +35,7 @@ static float mol_x[] = {1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8};
 static float mol_y[] = {4,3,2,1,4,3,2,1,1,1,1,1,1,1,1,1};
 static float mol_z[] = {3,2,1,4,3,2,1,2,2,2,2,2,2,2,2,2};
 // The same coordinates packed, as a state holds them
-static vec3_t mol_xyz[] = {
+static md_f32x3_t mol_xyz[] = {
     {1,4,3}, {2,3,2}, {3,2,1}, {4,1,4}, {5,4,3}, {6,3,2}, {7,2,1}, {8,1,2},
     {1,1,2}, {2,1,2}, {3,1,2}, {4,1,2}, {5,1,2}, {6,1,2}, {7,1,2}, {8,1,2},
 };
@@ -1075,7 +1078,7 @@ UTEST(script, dim_op) {
             data_t data = {0};
             allocate_data(&data, xyz->data->type, arena);
             evaluate_node(&data, xyz->node, &ctx);
-            const vec3_t* coord = (const vec3_t*)data.ptr;
+            const md_f32x3_t* coord = (const md_f32x3_t*)data.ptr;
             for (int i = 0; i < xyz->data->type.dim[0]; ++i) {
                 EXPECT_NEAR(mol_x[i], coord[i].x, 1.0e-6f);
                 EXPECT_NEAR(mol_y[i], coord[i].y, 1.0e-6f);
@@ -4067,9 +4070,9 @@ typedef struct pbc_probe_t {
     float       tol;    // absolute for scalars, relative L1 for volumes
 } pbc_probe_t;
 
-static void pbc_translate(md_system_state_t* dst, const md_system_state_t* src, vec3_t shift, bool wrap) {
+static void pbc_translate(md_system_state_t* dst, const md_system_state_t* src, md_f32x3_t shift, bool wrap) {
     for (size_t i = 0; i < src->num_atoms; ++i) {
-        dst->xyz[i] = vec3_add(src->xyz[i], shift);
+        dst->xyz[i] = md_f32x3_add(src->xyz[i], shift);
     }
     if (wrap) {
         md_util_pbc(dst->xyz, NULL, dst->num_atoms, &dst->unitcell);
@@ -4104,20 +4107,20 @@ static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src,
     // The structure the translations are placed around: its plain centroid in the reference state
     md_bitset_t anchor_bf = {0};
     ASSERT_TRUE(eval_selection(&anchor_bf, md_str_from_cstr(anchor), sys, alloc));
-    vec3_t c = {0};
+    md_f32x3_t c = {0};
     size_t n = 0;
     md_bitset_iter_t it = md_bitset_iter(anchor_bf);
     while (md_bitset_iter_next(&it)) {
-        c = vec3_add(c, ref->xyz[it.idx]);
+        c = md_f32x3_add(c, ref->xyz[it.idx]);
         n += 1;
     }
     ASSERT_GT(n, (size_t)0);
-    c = vec3_div1(c, (float)n);
+    c = md_f32x3_div1(c, (float)n);
 
-    mat3_t A = {0}, I = {0};
+    md_f32x3x3_t A = {0}, I = {0};
     md_unitcell_A_extract_float(A.elem, &ref->unitcell);
     md_unitcell_I_extract_float(I.elem, &ref->unitcell);
-    const vec3_t fc = mat3_mul_vec3(I, c);
+    const md_f32x3_t fc = md_f32x3x3_mul_f32x3(I, c);
 
     // Values in the reference state
     data_t* want = md_alloc(alloc, sizeof(data_t) * num_probes);
@@ -4126,12 +4129,12 @@ static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src,
     }
 
     md_system_state_t state = *ref;
-    state.xyz = md_alloc(alloc, sizeof(vec3_t) * ref->num_atoms);
+    state.xyz = md_alloc(alloc, sizeof(md_f32x3_t) * ref->num_atoms);
 
     // Wrapped per atom: the centroid onto each face (fractional 0 along one axis), onto a corner,
     // and a generic offset. Not wrapped: the whole system carried out of the cell, as a trajectory
     // with whole molecules or without jumps has it.
-    const struct { vec3_t f; bool wrap; } targets[] = {
+    const struct { md_f32x3_t f; bool wrap; } targets[] = {
         { { 0.0f,   fc.y,  fc.z }, true },
         { { fc.x,   0.0f,  fc.z }, true },
         { { fc.x,   fc.y,  0.0f }, true },
@@ -4144,7 +4147,7 @@ static void pbc_invariance(int* utest_result, md_system_t* sys, const char* src,
     };
 
     for (size_t t = 0; t < MD_COUNTOF(targets); ++t) {
-        const vec3_t shift = mat3_mul_vec3(A, vec3_sub(targets[t].f, fc));
+        const md_f32x3_t shift = md_f32x3x3_mul_f32x3(A, md_f32x3_sub(targets[t].f, fc));
         pbc_translate(&state, ref, shift, targets[t].wrap);
 
         for (size_t p = 0; p < num_probes; ++p) {
@@ -4240,12 +4243,12 @@ UTEST_F(script, rmsd_per_structure) {
     // Every atom displaced by a pseudo random amount, so that each residue deviates by something different
     const md_system_state_t* ref = &sys->reference;
     md_system_state_t state = *ref;
-    state.xyz = md_alloc(alloc, sizeof(vec3_t) * ref->num_atoms);
+    state.xyz = md_alloc(alloc, sizeof(md_f32x3_t) * ref->num_atoms);
     srand(1234);
     for (size_t i = 0; i < ref->num_atoms; ++i) {
         const float s = 0.2f + 0.05f * (float)(i % 13);
-        const vec3_t d = { s * ((float)rand() / RAND_MAX - 0.5f), s * ((float)rand() / RAND_MAX - 0.5f), s * ((float)rand() / RAND_MAX - 0.5f) };
-        state.xyz[i] = vec3_add(ref->xyz[i], d);
+        const md_f32x3_t d = { s * ((float)rand() / RAND_MAX - 0.5f), s * ((float)rand() / RAND_MAX - 0.5f), s * ((float)rand() / RAND_MAX - 0.5f) };
+        state.xyz[i] = md_f32x3_add(ref->xyz[i], d);
     }
 
     data_t rr = {0}, rf = {0}, r1 = {0}, r3 = {0}, r8 = {0}, rc = {0}, rx = {0};
@@ -4321,9 +4324,9 @@ static float extent_reference(md_system_t* sys, const md_system_state_t* state, 
     while (md_bitset_iter_next(&it_a)) {
         md_bitset_iter_t it_b = md_bitset_iter(bf[1]);
         while (md_bitset_iter_next(&it_b)) {
-            vec3_t dx = vec3_sub(state->xyz[it_a.idx], state->xyz[it_b.idx]);
+            md_f32x3_t dx = md_f32x3_sub(state->xyz[it_a.idx], state->xyz[it_b.idx]);
             md_util_min_image_vec3(&dx, 1, &state->unitcell);
-            const float d = vec3_length(dx);
+            const float d = md_f32x3_length(dx);
             ext = largest ? MD_MAX(ext, d) : MD_MIN(ext, d);
         }
     }
@@ -6039,29 +6042,29 @@ UTEST(script, plane) {
         const int32_t* ring = md_ring_atoms(&sys->ring, i);
         const int nr = (int)md_ring_size(&sys->ring, i);
         EXPECT_EQ(nr, pl->count);
-        vec3_t mean = {0};
-        for (int k = 0; k < nr; ++k) mean = vec3_add(mean, trp.st.xyz[ring[k]]);
-        mean = vec3_mul1(mean, 1.0f / nr);
-        const vec3_t ci = ((const vec3_t*)c.ptr)[i];
-        const vec3_t ni = ((const vec3_t*)n.ptr)[i];
+        md_f32x3_t mean = {0};
+        for (int k = 0; k < nr; ++k) mean = md_f32x3_add(mean, trp.st.xyz[ring[k]]);
+        mean = md_f32x3_mul1(mean, 1.0f / nr);
+        const md_f32x3_t ci = ((const md_f32x3_t*)c.ptr)[i];
+        const md_f32x3_t ni = ((const md_f32x3_t*)n.ptr)[i];
         EXPECT_NEAR(mean.x, ci.x, 1e-4f);
         EXPECT_NEAR(mean.y, ci.y, 1e-4f);
         EXPECT_NEAR(mean.z, ci.z, 1e-4f);
-        EXPECT_NEAR(1.0f, vec3_length(ni), 1e-4f);
+        EXPECT_NEAR(1.0f, md_f32x3_length(ni), 1e-4f);
 
         float rad = 0, dev = 0;
-        vec3_t newell = {0};
+        md_f32x3_t newell = {0};
         for (int k = 0; k < nr; ++k) {
-            const vec3_t d = vec3_sub(trp.st.xyz[ring[k]], mean);
-            rad += vec3_length(d);
-            dev += vec3_dot(d, ni) * vec3_dot(d, ni);
-            newell = vec3_add(newell, vec3_cross(d, vec3_sub(trp.st.xyz[ring[(k + 1) % nr]], mean)));
+            const md_f32x3_t d = md_f32x3_sub(trp.st.xyz[ring[k]], mean);
+            rad += md_f32x3_length(d);
+            dev += md_f32x3_dot(d, ni) * md_f32x3_dot(d, ni);
+            newell = md_f32x3_add(newell, md_f32x3_cross(d, md_f32x3_sub(trp.st.xyz[ring[(k + 1) % nr]], mean)));
         }
         EXPECT_NEAR(rad / nr, ((const float*)r.ptr)[i], 1e-4f);
         EXPECT_NEAR(sqrtf(dev / nr), ((const float*)dv.ptr)[i], 1e-4f);
         // Aromatic rings are flat: the normal is that of the polygon, on the side the ring goes around anticlockwise
         EXPECT_LT(((const float*)dv.ptr)[i], 0.02f);
-        EXPECT_GT(vec3_dot(ni, vec3_normalize(newell)), 0.999f);
+        EXPECT_GT(md_f32x3_dot(ni, md_f32x3_normalize(newell)), 0.999f);
     }
     // The two rings of indole lie in one plane
     EXPECT_LT(MD_RAD_TO_DEG(((const float*)a.ptr)[0]), 3.0f);
@@ -6072,21 +6075,21 @@ UTEST(script, plane) {
     ASSERT_TRUE(plane_eval(&s0, ir, "s", &trp, &trp.st));
     const plane_t ring0 = ((const plane_t*)p.ptr)[0];
     const plane_t res0  = ((const plane_t*)s0.ptr)[0];
-    const vec3_t axis = ring0.axis;
+    const md_f32x3_t axis = ring0.axis;
     md_system_state_t rot = { .alloc = trp.alloc };
     md_system_state_init(&rot, trp.st.num_atoms);
     rot.num_atoms = trp.st.num_atoms;
     for (size_t k = 0; k < trp.st.num_atoms; ++k) {
-        const vec3_t x = trp.st.xyz[k];
+        const md_f32x3_t x = trp.st.xyz[k];
         // 180 degrees about axis through the origin: 2 (x.a) a - x
-        rot.xyz[k] = vec3_sub(vec3_mul1(axis, 2.0f * vec3_dot(x, axis)), x);
+        rot.xyz[k] = md_f32x3_sub(md_f32x3_mul1(axis, 2.0f * md_f32x3_dot(x, axis)), x);
     }
     ASSERT_TRUE(plane_eval(&p1, ir, "p", &trp, &rot));
     ASSERT_TRUE(plane_eval(&s1, ir, "s", &trp, &rot));
-    const vec3_t want_ring = vec3_sub(vec3_mul1(axis, 2.0f * vec3_dot(ring0.normal, axis)), ring0.normal);
-    const vec3_t want_res  = vec3_sub(vec3_mul1(axis, 2.0f * vec3_dot(res0.normal, axis)), res0.normal);
-    EXPECT_GT(vec3_dot(((const plane_t*)p1.ptr)[0].normal, want_ring), 0.999f);
-    EXPECT_GT(vec3_dot(((const plane_t*)s1.ptr)[0].normal, want_res), 0.999f);
+    const md_f32x3_t want_ring = md_f32x3_sub(md_f32x3_mul1(axis, 2.0f * md_f32x3_dot(ring0.normal, axis)), ring0.normal);
+    const md_f32x3_t want_res  = md_f32x3_sub(md_f32x3_mul1(axis, 2.0f * md_f32x3_dot(res0.normal, axis)), res0.normal);
+    EXPECT_GT(md_f32x3_dot(((const plane_t*)p1.ptr)[0].normal, want_ring), 0.999f);
+    EXPECT_GT(md_f32x3_dot(((const plane_t*)s1.ptr)[0].normal, want_res), 0.999f);
 
     // Errors before evaluation
     EXPECT_TRUE(plane_compile_fails_with(&trp, "x = plane(element('N'));", "a plane needs at least 3"));
@@ -6143,7 +6146,7 @@ UTEST(script, plane_union_positions) {
     const plane_t* pu = (const plane_t*)u.ptr;
     const plane_t* p0 = (const plane_t*)p.ptr;
     EXPECT_EQ(9, pu->count);
-    EXPECT_GT(fabsf(vec3_dot(pu->normal, p0->normal)), 0.999f);
+    EXPECT_GT(fabsf(md_f32x3_dot(pu->normal, p0->normal)), 0.999f);
     EXPECT_LT(pu->deviation, 0.05f);
 
     // Three atoms in order, and the other way around: the normal is on the side they go around anticlockwise. The
@@ -6152,13 +6155,13 @@ UTEST(script, plane_union_positions) {
     const plane_t* pb = (const plane_t*)b.ptr;
     const plane_t* pf = (const plane_t*)f.ptr;
     EXPECT_EQ(3, pt->count);
-    const vec3_t x0 = trp.st.xyz[0], x1 = trp.st.xyz[1], x2 = trp.st.xyz[2];
-    const vec3_t turn = vec3_normalize(vec3_cross(vec3_sub(x1, x0), vec3_sub(x2, x0)));
-    EXPECT_GT(vec3_dot(pt->normal, turn), 0.999f);
-    EXPECT_GT(vec3_dot(pb->normal, turn), -1.001f);
-    EXPECT_LT(vec3_dot(pb->normal, turn), -0.999f);
-    EXPECT_GT(vec3_dot(pf->normal, pt->normal), 0.999f);
-    const vec3_t c3 = vec3_mul1(vec3_add(vec3_add(x0, x1), x2), 1.0f / 3.0f);
+    const md_f32x3_t x0 = trp.st.xyz[0], x1 = trp.st.xyz[1], x2 = trp.st.xyz[2];
+    const md_f32x3_t turn = md_f32x3_normalize(md_f32x3_cross(md_f32x3_sub(x1, x0), md_f32x3_sub(x2, x0)));
+    EXPECT_GT(md_f32x3_dot(pt->normal, turn), 0.999f);
+    EXPECT_GT(md_f32x3_dot(pb->normal, turn), -1.001f);
+    EXPECT_LT(md_f32x3_dot(pb->normal, turn), -0.999f);
+    EXPECT_GT(md_f32x3_dot(pf->normal, pt->normal), 0.999f);
+    const md_f32x3_t c3 = md_f32x3_mul1(md_f32x3_add(md_f32x3_add(x0, x1), x2), 1.0f / 3.0f);
     EXPECT_NEAR(c3.x, pt->centroid.x, 1e-4f);
     EXPECT_NEAR(c3.y, pt->centroid.y, 1e-4f);
     EXPECT_NEAR(c3.z, pt->centroid.z, 1e-4f);
@@ -6173,9 +6176,9 @@ UTEST(script, plane_union_positions) {
     // Atom indices: the atoms
     const plane_t* pi = (const plane_t*)i.ptr;
     EXPECT_EQ(4, pi->count);
-    vec3_t mean = {0};
-    for (int k = 0; k < 4; ++k) mean = vec3_add(mean, trp.st.xyz[k]);
-    mean = vec3_mul1(mean, 0.25f);
+    md_f32x3_t mean = {0};
+    for (int k = 0; k < 4; ++k) mean = md_f32x3_add(mean, trp.st.xyz[k]);
+    mean = md_f32x3_mul1(mean, 0.25f);
     EXPECT_NEAR(mean.x, pi->centroid.x, 1e-4f);
     EXPECT_NEAR(mean.y, pi->centroid.y, 1e-4f);
     EXPECT_NEAR(mean.z, pi->centroid.z, 1e-4f);
@@ -6215,11 +6218,11 @@ UTEST(script, plane_sugar) {
     ASSERT_GE(r, 0);
     const int32_t* ring = md_ring_atoms(&ade.sys.ring, (size_t)r);
     EXPECT_TRUE(md_str_eq(md_atom_name(&ade.sys.atom, ring[0]), MD_STR_LIT("O4'")));
-    vec3_t newell = {0};
+    md_f32x3_t newell = {0};
     for (int k = 0; k < 5; ++k) {
-        newell = vec3_add(newell, vec3_cross(vec3_sub(ade.st.xyz[ring[k]], pl->centroid), vec3_sub(ade.st.xyz[ring[(k + 1) % 5]], pl->centroid)));
+        newell = md_f32x3_add(newell, md_f32x3_cross(md_f32x3_sub(ade.st.xyz[ring[k]], pl->centroid), md_f32x3_sub(ade.st.xyz[ring[(k + 1) % 5]], pl->centroid)));
     }
-    EXPECT_GT(vec3_dot(pl->normal, vec3_normalize(newell)), 0.99f);
+    EXPECT_GT(md_f32x3_dot(pl->normal, md_f32x3_normalize(newell)), 0.99f);
     // A furanose is puckered: some atoms out of the plane
     EXPECT_GT(pl->deviation, 0.05f);
     md_script_ir_free(ir);
@@ -6282,7 +6285,7 @@ UTEST(script, hover_text) {
     EXPECT_TRUE(strstr(buf, "plane 2 of 2") != NULL && strstr(buf, "normal") != NULL);
     t = hover_token(ir, src, "distance(1, 2)");
     EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, -1, &ctx), 0);
-    const float d = vec3_distance(trp.st.xyz[0], trp.st.xyz[1]);
+    const float d = md_f32x3_distance(trp.st.xyz[0], trp.st.xyz[1]);
     char want[32];
     snprintf(want, sizeof(want), "%.2f", d);
     EXPECT_TRUE(strstr(buf, want) != NULL);
@@ -6375,7 +6378,7 @@ UTEST(script, pucker_furanose) {
     md_system_state_t mir = { .alloc = ade.alloc };
     md_system_state_init(&mir, ade.st.num_atoms);
     mir.num_atoms = ade.st.num_atoms;
-    for (size_t k = 0; k < ade.st.num_atoms; ++k) mir.xyz[k] = vec3_set(-ade.st.xyz[k].x, ade.st.xyz[k].y, ade.st.xyz[k].z);
+    for (size_t k = 0; k < ade.st.num_atoms; ++k) mir.xyz[k] = md_f32x3_set(-ade.st.xyz[k].x, ade.st.xyz[k].y, ade.st.xyz[k].z);
     data_t pm = {0};
     ASSERT_TRUE(pucker_eval(&pm, ir, "p", &ade, &mir));
     const pucker_rec_t* rm = (const pucker_rec_t*)pm.ptr;
@@ -7318,9 +7321,9 @@ UTEST(script, bond_delta) {
 
     // The proton moved to the second water
     md_system_state_t st = ref;
-    st.xyz = md_alloc(alloc, sizeof(vec3_t) * ref.num_atoms);
-    md_memcpy(st.xyz, ref.xyz, sizeof(vec3_t) * ref.num_atoms);
-    st.xyz[1] = vec3_set(1.80f, 0.0f, 0.0f);
+    st.xyz = md_alloc(alloc, sizeof(md_f32x3_t) * ref.num_atoms);
+    md_memcpy(st.xyz, ref.xyz, sizeof(md_f32x3_t) * ref.num_atoms);
+    st.xyz[1] = md_f32x3_set(1.80f, 0.0f, 0.0f);
     EXPECT_EQ(1, bondset_count_of(ir, "f", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "b", &sys, &st, alloc));
     EXPECT_EQ(4, bondset_count_of(ir, "e", &sys, &st, alloc));

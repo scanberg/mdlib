@@ -7,6 +7,7 @@
 
 #include "utest.h"
 #include <md_system.h>
+#include <md_run.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <math.h>

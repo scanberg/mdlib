@@ -1,6 +1,7 @@
 #include <md_amber_netcdf.h>
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_unitcell.h>
 #include <md_xdr.h>
 #if MD_HDF5
@@ -11,7 +12,8 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
 

@@ -212,7 +212,7 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
         expect_same_derived(utest_result, __FILE__, __LINE__, name, &sys, &ref);
         EXPECT_EQ(sys.reference.num_atoms, state.num_atoms);
         if (state.xyz) {
-            EXPECT_EQ(0, memcmp(sys.reference.xyz, state.xyz, state.num_atoms * sizeof(vec3_t)));
+            EXPECT_EQ(0, memcmp(sys.reference.xyz, state.xyz, state.num_atoms * sizeof(md_f32x3_t)));
         }
 
         // Of a system whose topology changed meanwhile, the work is not published

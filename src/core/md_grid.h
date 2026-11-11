@@ -4,9 +4,9 @@
 #include <stddef.h>
 
 typedef struct md_grid_t {
-    mat3_t orientation;     // Orientation of the grid in world space
-    vec3_t origin;          // Origin of the grid in world units
-    vec3_t spacing;         // Voxel spacing of the grid in world units
+    md_f32x3x3_t orientation;     // Orientation of the grid in world space
+    md_f32x3_t origin;          // Origin of the grid in world units
+    md_f32x3_t spacing;         // Voxel spacing of the grid in world units
     int    dim[3];			// Dimensions of the grid in number of voxels
 } md_grid_t;
 
@@ -28,32 +28,32 @@ static inline size_t md_grid_num_points(const md_grid_t* grid) {
 void md_grid_extract_points(float* out_xyz, const md_grid_t* grid);
 
 // The convention used is that the model space does not include any scaling, only rotation and translation
-mat4_t md_grid_model_to_world(const md_grid_t* grid);
-mat4_t md_grid_world_to_model(const md_grid_t* grid);
+md_f32x4x4_t md_grid_model_to_world(const md_grid_t* grid);
+md_f32x4x4_t md_grid_world_to_model(const md_grid_t* grid);
 
 // These includes scaling as well (by spacing)
-mat4_t md_grid_index_to_world(const md_grid_t* grid);
-mat4_t md_grid_world_to_index(const md_grid_t* grid);
+md_f32x4x4_t md_grid_index_to_world(const md_grid_t* grid);
+md_f32x4x4_t md_grid_world_to_index(const md_grid_t* grid);
 
-static inline vec3_t md_grid_origin(const md_grid_t* grid) {
+static inline md_f32x3_t md_grid_origin(const md_grid_t* grid) {
     MD_ASSERT(grid);
     return grid->origin;
 }
 
-static inline mat3_t md_grid_orientation(const md_grid_t* grid) {
+static inline md_f32x3x3_t md_grid_orientation(const md_grid_t* grid) {
     MD_ASSERT(grid);
     return grid->orientation;
 }
 
-static inline vec3_t md_grid_extent(const md_grid_t* grid) {
+static inline md_f32x3_t md_grid_extent(const md_grid_t* grid) {
     MD_ASSERT(grid);
-    vec3_t extent = vec3_mul(grid->spacing, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
+    md_f32x3_t extent = md_f32x3_mul(grid->spacing, md_f32x3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
     return extent;
 }
 
-static inline vec3_t md_grid_center(const md_grid_t* grid) {
+static inline md_f32x3_t md_grid_center(const md_grid_t* grid) {
     MD_ASSERT(grid);
-    vec3_t center = vec3_add(grid->origin, vec3_mul1(md_grid_extent(grid), 0.5f));
+    md_f32x3_t center = md_f32x3_add(grid->origin, md_f32x3_mul1(md_grid_extent(grid), 0.5f));
     return center;
 }
 

@@ -1,6 +1,7 @@
 ﻿#include <core/md_os.h>
 
 #include <core/md_path.h>
+#include <core/md_file.h>
 #include <core/md_format.h>
 #include <core/md_common.h>
 #include <core/md_platform.h>
@@ -656,7 +657,8 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, md_str_t from, md_s
 
     // 'from' anchors the result: if it identifies a file, the folder holding it is the base
     md_str_t base = {from_buf, from_len};
-    if (from_buf[from_len - 1] != '/' && !md_path_folder(&base, base)) {
+    if (from_buf[from_len - 1] != '/') base = md_path_folder(base);
+    if (md_str_empty(base)) {
         MD_LOG_ERROR("Failed to extract folder path from '" MD_STR_FMT "'", MD_STR_ARG(from));
         return 0;
     }

@@ -3,7 +3,7 @@
 #include <md_system.h>
 
 #include <core/md_str.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 #include <core/md_bitset.h>
 #include <core/md_hash.h>
 
@@ -61,7 +61,7 @@ bool md_util_resname_hydrophobic(md_str_t str);
 bool md_util_resname_amino_acid(md_str_t str);
 bool md_util_resname_nucleotide(md_str_t str);
 
-void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
+void md_util_system_extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
 // Classifies the residues (md_residue_kind_t: amino acid, nucleotide, water, ion, lipid) from their names, atoms
 // and bonds. A residue of coarse grained beads which is a molecule of the Martini force fields by its name and all
@@ -155,7 +155,7 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
 // has its own header, md_dssp.h.
 
 // Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
 // sys->protein_backbone, or for segments without a residue (res_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
@@ -375,7 +375,7 @@ bool md_util_system_infer_publish(struct md_system_t* sys, md_util_infer_work_t*
 // coord_b:   Array of coordinates (b)
 // num_b:     Length of coord_b
 // cell:      Periodic boundary cell
-void md_util_distance_array(float* out_dist_arr, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_util_distance_array(float* out_dist_arr, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
 // The minimum (maximum) distance between each group of points of a and the points of b, under the minimum image
 // convention of cell (NULL, or a cell without periodic axes: plain euclidean). The minimum image is exact in triclinic
@@ -385,28 +385,28 @@ void md_util_distance_array(float* out_dist_arr, const vec3_t* coord_a, size_t n
 // out_idx_a:  (optional) Per group, the index into coord_a of the nearest (farthest) pair, -1 where there is none
 // out_idx_b:  (optional) Per group, the index into coord_b of the pair, -1 where there is none
 // Each group starts from the pair of the one before, so groups which follow each other in space are cheaper.
-void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
-void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
 // The same for a single group. The minimum is FLT_MAX and the maximum 0 when a or b is empty, and the indices are then
 // left unwritten (for the maximum also when it is 0).
-float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
-float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
 // Every pair whose distance is within tol of the minimum (maximum), in one pass with the same culling: for a caller
 // which computes the distances another way, where they may differ from these by some ulps, and wants the extreme by
 // its own. Up to cap pairs are written, as indices into coord_a and coord_b, in no particular order. Returns how many
 // there are, or more than cap when they do not all fit (the ones written are then only some of them); 0 when a or b
 // is empty.
-size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
-size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_f32x3_t* coord_a, size_t num_a, const md_f32x3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
-void md_util_min_image_vec3(vec3_t* in_out_dx, size_t count, const md_unitcell_t* cell);
-void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unitcell_t* cell);
+void md_util_min_image_vec3(md_f32x3_t* in_out_dx, size_t count, const md_unitcell_t* cell);
+void md_util_min_image_vec4(md_f32x4_t* in_out_dx, size_t count, const md_unitcell_t* cell);
 
 // Applies periodic boundary conditions to coordinates
-bool md_util_pbc(vec3_t* in_out_xyz, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
-bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell);
+bool md_util_pbc(md_f32x3_t* in_out_xyz, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+bool md_util_pbc_vec4(md_f32x4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell);
 
 // Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
 bool md_util_system_pbc(md_system_state_t* state);
@@ -419,10 +419,10 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
 void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
-bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell);
+bool md_util_deperiodize_vec4(md_f32x4_t* xyzw, size_t count, md_f32x3_t ref_xyz, const md_unitcell_t* cell);
 
 // Converts absolute coordinates (in unitcell) to relative coordinates (with respect to given reference point)
-void md_util_convert_to_relative_coordinates_vec4(vec4_t* in_out_rel_xyzw, vec3_t ref_xyz, size_t count, const md_unitcell_t* cell);
+void md_util_convert_to_relative_coordinates_vec4(md_f32x4_t* in_out_rel_xyzw, md_f32x3_t ref_xyz, size_t count, const md_unitcell_t* cell);
 
 // PERIODIC IMAGE SELECTION
 //
@@ -449,7 +449,7 @@ void md_util_convert_to_relative_coordinates_vec4(vec4_t* in_out_rel_xyzw, vec3_
 //
 // Correct while the set spans less than half a cell. Beyond that no per point image choice can
 // represent it and the structure has to be unwrapped topologically instead.
-bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, vec3_t* out_com);
+bool md_util_deperiodize_self_vec4(md_f32x4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_f32x3_t* out_com);
 
 // Optimal rigid rotation between a reference set and a target set under periodic boundaries.
 //
@@ -470,21 +470,21 @@ bool md_util_deperiodize_self_vec4(vec4_t* in_out_xyzw, size_t count, const md_u
 // Returns the largest per point residual, which is the margin to an ambiguous image choice. Small
 // against half a cell means the assignment is nowhere near flipping; approaching it means this
 // frame's alignment should not be trusted.
-float md_util_optimal_rotation_pbc_vec4_iter(mat3_t* out_rot, vec3_t* out_com, vec4_t* out_trg_xyzw,
-                                             const vec4_t* ref_xyzw, vec3_t ref_com,
-                                             const vec4_t* trg_xyzw, size_t count,
+float md_util_optimal_rotation_pbc_vec4_iter(md_f32x3x3_t* out_rot, md_f32x3_t* out_com, md_f32x4_t* out_trg_xyzw,
+                                             const md_f32x4_t* ref_xyzw, md_f32x3_t ref_com,
+                                             const md_f32x4_t* trg_xyzw, size_t count,
                                              const md_unitcell_t* cell, int max_iter, float tol);
 
-mat3_t md_util_optimal_rotation_rel_vec4(const vec4_t* ref_rel_xyzw, const vec4_t* trg_rel_xyzw, size_t count);
+md_f32x3x3_t md_util_optimal_rotation_rel_vec4(const md_f32x4_t* ref_rel_xyzw, const md_f32x4_t* trg_rel_xyzw, size_t count);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
-void md_util_aabb_compute     (float out_ext_min[3], float out_ext_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count);
-void md_util_aabb_compute_vec4(float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count);
+void md_util_aabb_compute     (float out_ext_min[3], float out_ext_max[3], const md_f32x3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count);
+void md_util_aabb_compute_vec4(float out_ext_min[3], float out_ext_max[3], const md_f32x4_t* in_xyzr, const int32_t* in_idx, size_t count);
 
 // Computes an object oriented bounding box based on the PCA of the provided points (with optional radius)
-void md_util_oobb_compute     (float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const vec3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
-void md_util_oobb_compute_vec4(float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+void md_util_oobb_compute     (float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const md_f32x3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+void md_util_oobb_compute_vec4(float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const md_f32x4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 
 // Computes the center of mass for a set of points with a given weight
 // xyz:         Packed coordinates
@@ -492,8 +492,8 @@ void md_util_oobb_compute_vec4(float out_rotation[3][3], float out_ext_min[3], f
 // indices:     Array of indices (optional): indices into the arrays (xyz,w)
 // count:       Length of all arrays
 // unit_cell:   The unit_cell of the system [Optional]
-vec3_t md_util_com_compute(const vec3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+md_f32x3_t md_util_com_compute(const md_f32x3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+md_f32x3_t md_util_com_compute_vec4(const md_f32x4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
@@ -502,11 +502,11 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (xyz0, xyz1, w)
-double md_util_rmsd_compute(const vec3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
-double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute(const md_f32x3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t in_com[2]);
+double md_util_rmsd_compute_vec4(const md_f32x4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t in_com[2]);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
-vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
+md_f32x3_t md_util_shape_weights(const md_f32x3x3_t* covariance_matrix);
 
 // Perform linear interpolation of supplied coordinates
 // out_xyz:     Destination, packed
@@ -515,7 +515,7 @@ vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
 // unit_cell:   The unit_cell of the system [Optional]
 // t: interpolation factor (0..1)
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t);
+bool md_util_interpolate_linear(md_f32x3_t* out_xyz, const md_f32x3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t);
 
 // Perform cubic interpolation of supplied coordinates
 // out_xyz:     Destination, packed
@@ -525,7 +525,7 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
 // t:           Interpolation factor (0..1)
 // s:           Scaling factor (0..1), 0 is jerky, 0.5 is catmul rom, 1.0 is silky smooth
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s);
+bool md_util_interpolate_cubic_spline(md_f32x3_t* out_xyz, const md_f32x3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s);
 
 // The weights of four consecutive frames at t (0..1) for a cubic scheme over them, on the interval between the
 // two middle ones: out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]. They sum to one.
@@ -539,12 +539,12 @@ void md_util_cubic_bspline_weights(float out_w[4], float t);
 // any cubic scheme over them at a given t (see the weights above). In a periodic cell in[0] and in[2] are taken at
 // the minimum image of in[1], and in[3] at that of in[2].
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]);
+bool md_util_interpolate_cubic_weighted(md_f32x3_t* out_xyz, const md_f32x3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_sort_spatial(uint32_t* source_indices, const vec3_t* xyz, size_t count);
+void md_util_sort_spatial(uint32_t* source_indices, const md_f32x3_t* xyz, size_t count);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.

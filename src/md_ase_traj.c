@@ -1,12 +1,14 @@
 #include <md_ase_traj.h>
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_unitcell.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_json.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
 
 #include <math.h>
 
@@ -423,7 +425,7 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
     if (result) {
         const size_t N = idx.num_atoms;
         ase_rotate(xyz, N, idx.rotation);
-        md_memcpy(state->xyz, xyz, N * sizeof(vec3_t));
+        md_memcpy(state->xyz, xyz, N * sizeof(md_f32x3_t));
         state->unitcell = md_unitcell_from_matrix_float((const float (*)[3])idx.cell);
 
         md_array_ensure(sys->atom.type_idx, N, sys->alloc);

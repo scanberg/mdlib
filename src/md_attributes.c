@@ -8,7 +8,7 @@
 #include <core/md_array.h>
 #include <core/md_hash.h>
 #include <core/md_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 
 static const size_t attr_type_size[MD_ATTRIBUTE_TYPE_COUNT] = {
     [MD_ATTRIBUTE_TYPE_NONE] = 0,

@@ -1,6 +1,7 @@
 ﻿#include <md_xyz.h>
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_util.h>
 #include <md_unitcell.h>
 
@@ -12,7 +13,9 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
+#include <core/md_vec_math.h>
 
 #include <stdio.h>
 
@@ -536,8 +539,8 @@ static bool xyz_model_cell(md_unitcell_t* out_cell, double R[3][3], const double
     return md_unitcell_from_basis_vectors(out_cell, R, basis);
 }
 
-static inline vec3_t xyz_rotate(double R[3][3], float x, float y, float z) {
-    return vec3_set(
+static inline md_f32x3_t xyz_rotate(double R[3][3], float x, float y, float z) {
+    return md_f32x3_set(
         (float)(R[0][0] * x + R[0][1] * y + R[0][2] * z),
         (float)(R[1][0] * x + R[1][1] * y + R[1][2] * z),
         (float)(R[2][0] * x + R[2][1] * y + R[2][2] * z));
@@ -752,7 +755,7 @@ static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
     }
 
     sys->atom.count += 1;
-    md_array_push_no_grow(b->state->xyz, b->rotate ? xyz_rotate(b->R, c->x, c->y, c->z) : vec3_set(c->x, c->y, c->z));
+    md_array_push_no_grow(b->state->xyz, b->rotate ? xyz_rotate(b->R, c->x, c->y, c->z) : md_f32x3_set(c->x, c->y, c->z));
     md_array_push_no_grow(sys->atom.flags, 0);
     md_array_push_no_grow(sys->atom.type_idx, type);
 }
@@ -1070,7 +1073,7 @@ static size_t xyz_parse_frame_coords(float* xyz, md_str_t text, uint32_t flags, 
             MD_LOG_ERROR("Error when decoding coordinate");
             return written;
         }
-        const vec3_t p = rotate ? xyz_rotate(R, coord.x, coord.y, coord.z) : vec3_set(coord.x, coord.y, coord.z);
+        const md_f32x3_t p = rotate ? xyz_rotate(R, coord.x, coord.y, coord.z) : md_f32x3_set(coord.x, coord.y, coord.z);
         xyz[written * 3 + 0] = p.x;
         xyz[written * 3 + 1] = p.y;
         xyz[written * 3 + 2] = p.z;

@@ -6,10 +6,12 @@
 #include <stdio.h>
 #include <math.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_util.h>
 #include <md_attributes.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_vec_math.h>
 
 #include "run_check.h"
 
@@ -89,8 +91,8 @@ UTEST(pdb, assemblies) {
     const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(3, ir.end - ir.beg);
     EXPECT_EQ(60, md_assembly_copy_count(a, 0));
-    const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[a->oper[0]], sizeof(mat4_t)));
+    const md_f32x4x4_t I = md_f32x4x4_ident();
+    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[a->oper[0]], sizeof(md_f32x4x4_t)));
     md_vm_arena_destroy(alloc);
 }
 
@@ -139,7 +141,7 @@ UTEST(pdb, assembly_groups) {
     EXPECT_EQ(1, orr.end - orr.beg);
     EXPECT_EQ(1, a->oper[orr.beg]);
     // A quarter turn about z, by rows as the records give it: x' = -y + 10, y' = x
-    const vec4_t q = mat4_mul_vec4(a->oper_transform[1], (vec4_t){1, 2, 3, 1});
+    const md_f32x4_t q = md_f32x4x4_mul_f32x4(a->oper_transform[1], (md_f32x4_t){1, 2, 3, 1});
     EXPECT_NEAR(8.0f, q.x, 1e-6f);
     EXPECT_NEAR(1.0f, q.y, 1e-6f);
     EXPECT_NEAR(3.0f, q.z, 1e-6f);
@@ -412,7 +414,7 @@ UTEST(pdb, run_matches_reference) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 0));
-    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(md_f32x3_t)));
 
     // One atom of one model: the text is read up to that atom and no further.
     float xyz[3];
@@ -460,7 +462,7 @@ UTEST(pdb, run_alternate_locations) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, MD_STR_LIT("run/alt"), 0));
-    EXPECT_EQ(0, md_memcmp(st.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, md_memcmp(st.xyz, got.xyz, sys.atom.count * sizeof(md_f32x3_t)));
     ASSERT_TRUE(run_extract_one(&got, &sys, MD_STR_LIT("run/alt"), 1));
     EXPECT_EQ(1.5f, got.xyz[0].x);
     EXPECT_EQ(2.5f, got.xyz[1].x);     // the A location of the CA
@@ -501,7 +503,7 @@ static size_t pdb_test_compare_with_columns(md_str_t path) {
     static const size_t cols[5][2] = { {30, 8}, {38, 8}, {46, 8}, {54, 6}, {60, 6} };
     // The atoms of the first model, of the first alternate location
     while (md_parse_next_line(&line, &rest) && i < sys.atom.count) {
-        if (!(md_str_eq_cstr_n(line, "ATOM", 4) || md_str_eq_cstr_n(line, "HETATM", 6))) continue;
+        if (!(md_str_begins_with(line, MD_STR_LIT("ATOM")) || md_str_begins_with(line, MD_STR_LIT("HETATM")))) continue;
         if (line.len > 16 && line.ptr[16] != ' ' && line.ptr[16] != 'A') continue;
         const float got[5] = { st.xyz[i].x, st.xyz[i].y, st.xyz[i].z, occupancy ? occupancy[i] : 0.0f, b_factor ? b_factor[i] : 0.0f };
         i += 1;

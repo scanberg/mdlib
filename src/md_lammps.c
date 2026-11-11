@@ -1,9 +1,12 @@
 ﻿#include "md_lammps.h"
 
 #include <md_system.h>
+#include <md_run.h>
 #include <md_util.h>
 
 #include <core/md_common.h>
+#include <core/md_path.h>
+#include <core/md_file.h>
 #include <core/md_format.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -12,6 +15,7 @@
 #include <core/md_parse.h>
 #include <core/md_reader.h>
 #include <core/md_hash.h>
+#include <core/md_vec_math.h>
 
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
 #define MD_LAMMPS_TRAJ_READER_MAGIC 0x2312ad7b78a9bc21
@@ -537,15 +541,15 @@ static double buckingham_radius(double A, double rho, double C) {
 }
 
 static double estimate_radius(md_str_t style, const double* params, int nparams) {
-	if (md_str_eq_cstr_n(style, "lj", 2) && nparams >= 2) {
+	if (md_str_begins_with(style, MD_STR_LIT("lj")) && nparams >= 2) {
 		double sigma = params[1];
 		return lj_radius(sigma);
 	}
-	if (md_str_eq_cstr_n(style, "morse", 5) && nparams >= 3) {
+	if (md_str_begins_with(style, MD_STR_LIT("morse")) && nparams >= 3) {
 		double r0 = params[2];
 		return morse_radius(r0);
 	}
-	if (md_str_eq_cstr_n(style, "buck", 4) && nparams >= 3) {
+	if (md_str_begins_with(style, MD_STR_LIT("buck")) && nparams >= 3) {
 		double A   = params[0];
 		double rho = params[1];
 		double C   = params[2];
@@ -561,7 +565,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_types, m
 	double params[8];
 
 	md_str_t style = hint;
-	const bool hybrid = md_str_eq_cstr_n(hint, "hybrid", 6) && (hint.len == 6 || md_ascii_is_whitespace(hint.ptr[6]));
+	const bool hybrid = md_str_begins_with(hint, MD_STR_LIT("hybrid")) && (hint.len == 6 || md_ascii_is_whitespace(hint.ptr[6]));
 
 	md_str_t line;
 	for (size_t i = 0; i < num_types; ++i) {
@@ -662,7 +666,7 @@ static bool lammps_header_line(md_lammps_data_t* data, md_str_t content) {
 		else if (md_str_eq(tok[1], MD_STR_LIT("improper")))	data->num_improper_types = n;
 	} else if (num_tok == 4 && (md_str_eq(tok[2], MD_STR_LIT("xlo")) || md_str_eq(tok[2], MD_STR_LIT("ylo")) || md_str_eq(tok[2], MD_STR_LIT("zlo")))) {
 		const char axis = tok[2].ptr[0];
-		if (tok[3].len != 3 || tok[3].ptr[0] != axis || !md_str_eq_cstr_n(md_str_substr(tok[3], 1, 2), "hi", 2)) return true;
+		if (tok[3].len != 3 || tok[3].ptr[0] != axis || !md_str_begins_with(md_str_substr(tok[3], 1, 2), MD_STR_LIT("hi"))) return true;
 		if (!is_float(tok[0]) || !is_float(tok[1])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
@@ -1125,9 +1129,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 		}
 
 		const double p[3] = { data->atoms[i].x - origin[0], data->atoms[i].y - origin[1], data->atoms[i].z - origin[2] };
-		const vec3_t xyz = rotate ?
-			vec3_set((float)(R[0][0]*p[0] + R[0][1]*p[1] + R[0][2]*p[2]), (float)(R[1][0]*p[0] + R[1][1]*p[1] + R[1][2]*p[2]), (float)(R[2][0]*p[0] + R[2][1]*p[1] + R[2][2]*p[2])) :
-			vec3_set((float)p[0], (float)p[1], (float)p[2]);
+		const md_f32x3_t xyz = rotate ?
+			md_f32x3_set((float)(R[0][0]*p[0] + R[0][1]*p[1] + R[0][2]*p[2]), (float)(R[1][0]*p[0] + R[1][1]*p[1] + R[1][2]*p[2]), (float)(R[2][0]*p[0] + R[2][1]*p[1] + R[2][2]*p[2])) :
+			md_f32x3_set((float)p[0], (float)p[1], (float)p[2]);
 
 		md_array_push_no_grow(sys->atom.type_idx, type_idx);
 		md_array_push_no_grow(state->xyz, xyz);
@@ -1295,7 +1299,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 		return false;
 	}
 
-	if (!md_str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16)) {
+	if (!md_str_begins_with(line, MD_STR_LIT("ITEM: BOX BOUNDS"))) {
 		MD_LOG_ERROR("Unexpected beginning of line: '" MD_STR_FMT "' expected ITEM: BOX BOUNDS", MD_STR_ARG(line));
 		return false;
 	}
@@ -1362,7 +1366,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 
 	for (;;) {
 		if (!md_reader_peek_line(reader, &line)) return false;
-		if (md_str_eq_cstr_n(line, "ITEM: UNITS", 11) || (md_str_eq_cstr_n(line, "ITEM: TIME", 10) && !md_str_eq_cstr_n(line, "ITEM: TIMESTEP", 14))) {
+		if (md_str_begins_with(line, MD_STR_LIT("ITEM: UNITS")) || (md_str_begins_with(line, MD_STR_LIT("ITEM: TIME")) && !md_str_begins_with(line, MD_STR_LIT("ITEM: TIMESTEP")))) {
 			md_reader_skip_line(reader);
 			md_reader_skip_line(reader);
 			continue;
@@ -1370,7 +1374,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 		break;
 	}
 
-	if (!md_str_eq_cstr_n(line, "ITEM: TIMESTEP", 14)) {
+	if (!md_str_begins_with(line, MD_STR_LIT("ITEM: TIMESTEP"))) {
 		return false;
 	}
 
@@ -1388,7 +1392,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 	}
 
 	if (md_reader_peek_line(reader, &line) &&
-		md_str_eq_cstr_n(line, "ITEM: NUMBER OF ATOMS", 21) &&
+		md_str_begins_with(line, MD_STR_LIT("ITEM: NUMBER OF ATOMS")) &&
 		md_reader_skip_line(reader) &&
 		md_reader_extract_line(reader, &line))
 	{
@@ -1404,7 +1408,7 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 	}
 
 	if (md_reader_peek_line(reader, &line) &&
-		md_str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16))
+		md_str_begins_with(line, MD_STR_LIT("ITEM: BOX BOUNDS")))
 	{
 		if (!parse_box_bounds(header ? &header->box_bounds : NULL, reader)) {
 			return false;
@@ -1561,7 +1565,7 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, md_str_t 
 	md_unitcell_A_extract_double(A, &cell);
 
 	if (output_coords) {
-		if (!md_reader_extract_line(&reader, &line) || !md_str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
+		if (!md_reader_extract_line(&reader, &line) || !md_str_begins_with(line, MD_STR_LIT("ITEM: ATOMS"))) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			goto done;
 		}
@@ -1670,7 +1674,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_reader_i* reader, 
 		}
 
 		if (!md_reader_peek_line(reader, &line) ||
-			!md_str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
+			!md_str_begins_with(line, MD_STR_LIT("ITEM: ATOMS"))) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			return false;
 		}
