@@ -1,4 +1,4 @@
-#include <md_types.h>
+#include <md_hierarchy.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>

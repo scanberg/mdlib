@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <md_types.h>
 #include <core/md_bitset.h>
+#include <core/md_str.h>
 
 // Named groups of atoms the data gives (GROMACS index groups) and the roles they had.
 

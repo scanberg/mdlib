@@ -3,10 +3,127 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <md_types.h>
+#include <md_monomer.h>
+#include <core/md_common.h>
+#include <core/md_str.h>
 #include <core/md_array.h>
 #include <core/md_label.h>
 
 // The levels a system is built of above its atoms: residues, instances, chains, parts and molecules, and their types.
+
+// CLASSIFICATION
+//
+// What a part of a system is, is stored at the level of the hierarchy it describes, and only there:
+//
+//   particle type md_particle_type_flags_t what the particle is: an atom, a coarse grained bead or a virtual site
+//   atom       md_atom_flags_t       the atom's role in its residue (backbone, side chain, ...) and its chemistry
+//   residue    md_residue_flags_t    where the residue is in its chain, and whether its backbone was found
+//   residue type md_residue_kind_t   what the residue is (amino acid, nucleotide, water, ion, lipid)
+//   part type  md_part_type_flags_t  what the part is (peptide, DNA, water, ...)
+//
+// Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share a particle
+// type: the kind of a residue is that of its type (md_system_residue_kind), and a residue which is classified is made
+// of the type of its name and kind (md_util_system_set_residue_kind). What a particle type is a form of is its element
+// (md_element.h), what a residue type is a form of is its standard monomer (md_monomer.h): HIE, HSD and MSE are forms
+// of HIS, HIS and MET. Both are where the defaults of the type come from.
+//
+// A part has no flags of its own: what it is is the kind of its type (md_system_part_kind).
+// Nothing is copied from one level to another. A property of an atom's particle type or of its residue is read through
+// the type or the residue (md_atom_particle_kind, md_system_atom_residue_kind), so there is one copy and it cannot go
+// stale when the type or the residue is reclassified.
+//
+// Options which exclude each other are a VALUE, packed into a few bits and read and written through accessors
+// (md_atom_flags_hybridization in md_atom.h, md_part_type_flags_kind below, ...). Independent properties are single bits. No
+// meaning is carried by a combination of bits.
+
+// ### RESIDUE ###
+
+// What a residue is: the kind of its residue type (md_system_residue_kind), see md_util_system_infer_residue_flags.
+typedef enum md_residue_kind_t {
+    MD_RESIDUE_KIND_OTHER           = 0,    // Unclassified, or none of the below: a ligand, a sugar, ...
+    MD_RESIDUE_KIND_AMINO_ACID      = 1,
+    MD_RESIDUE_KIND_NUCLEOTIDE      = 2,
+    MD_RESIDUE_KIND_WATER           = 3,
+    MD_RESIDUE_KIND_ION             = 4,    // A monatomic ion
+    MD_RESIDUE_KIND_LIPID           = 5,    // A lipid, sterols included: by name (md_util_resname_lipid), or by its structure
+                                            // (a polar head with hydrocarbon tails, see md_util_system_infer_lipids)
+} md_residue_kind_t;
+
+typedef enum {
+    MD_RESIDUE_FLAG_NONE                = 0,
+
+    // The residue holds the backbone of one amino acid or nucleotide of a chain, found from its bonds, and its atoms
+    // have their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the residue is one by name only: missing atoms, no
+    // bonds, or a coarse grained model.
+    MD_RESIDUE_FLAG_RESOLVED            = 0x10,
+    MD_RESIDUE_FLAG_TERMINAL_BEG        = 0x20,     // Begins its chain: a free amino group (N-terminus), a free 5' end
+    MD_RESIDUE_FLAG_TERMINAL_END        = 0x40,     // Ends its chain: a free carboxyl group (C-terminus), a free 3' end
+
+    // The chain is broken next to it: its backbone is not linked to that of the residue before (after) it in its chain,
+    // which carries BREAK_AFTER (BREAK_BEFORE) in turn. Residues missing in a crystal structure leave such a break. See
+    // CHAIN BREAKS in md_util.h.
+    MD_RESIDUE_FLAG_BREAK_BEFORE        = 0x80,
+    MD_RESIDUE_FLAG_BREAK_AFTER         = 0x100,
+} md_residue_flags_t;
+
+MD_ENUM_FLAGS(md_residue_flags_t)
+
+// ### PART TYPE, MOLECULE TYPE ###
+
+// What a part is (md_part_data_t): the kind of its type. A part is one polymer strand, one glycan tree, one small
+// molecule (a ligand, an ion, a lipid) or one water.
+typedef enum md_part_kind_t {
+    MD_PART_KIND_UNKNOWN      = 0,    // Not classified yet: a type the data names without saying what it is.
+                                      // md_util_system_infer_parts classifies these from their residues.
+    MD_PART_KIND_NON_POLYMER  = 1,    // A small molecule: a ligand, an ion, a lipid, a single residue
+    MD_PART_KIND_WATER        = 2,
+    MD_PART_KIND_BRANCHED     = 3,    // A branched oligosaccharide (mmCIF 'branched')
+    // Polymers from here on, see md_part_kind_is_polymer
+    MD_PART_KIND_PEPTIDE      = 4,    // A polypeptide chain (protein)
+    MD_PART_KIND_DNA          = 5,
+    MD_PART_KIND_RNA          = 6,
+    MD_PART_KIND_NUCLEIC      = 7,    // A nucleic acid which is both (a DNA/RNA hybrid), or which could not be told apart
+    MD_PART_KIND_POLYMER      = 8,    // Any other polymer
+} md_part_kind_t;
+
+typedef enum {
+    MD_PART_TYPE_FLAG_NONE         = 0,
+    MD_PART_TYPE_FLAG_KIND_MASK    = 0xF,      // md_part_kind_t, see md_part_type_flags_kind
+
+    // Not given by the data (an mmCIF entity is): the type was inferred with the parts (md_util_system_infer_parts),
+    // and is inferred anew with them
+    MD_PART_TYPE_FLAG_INFERRED     = 0x10,
+} md_part_type_flags_t;
+
+MD_ENUM_FLAGS(md_part_type_flags_t)
+
+typedef enum {
+    MD_MOLECULE_TYPE_FLAG_NONE     = 0,
+
+    // Not given by the data (a molecule type of a topology is): the type was inferred with the molecules
+    // (md_util_system_infer_molecules), and is inferred anew with them
+    MD_MOLECULE_TYPE_FLAG_INFERRED = 0x1,
+} md_molecule_type_flags_t;
+
+MD_ENUM_FLAGS(md_molecule_type_flags_t)
+
+static inline bool md_part_kind_is_polymer(md_part_kind_t kind) {
+    return kind >= MD_PART_KIND_PEPTIDE;
+}
+
+static inline bool md_part_kind_is_nucleic_acid(md_part_kind_t kind) {
+    return kind == MD_PART_KIND_DNA || kind == MD_PART_KIND_RNA || kind == MD_PART_KIND_NUCLEIC;
+}
+
+static inline md_part_kind_t md_part_type_flags_kind(md_part_type_flags_t flags) {
+    return (md_part_kind_t)((unsigned int)flags & (unsigned int)MD_PART_TYPE_FLAG_KIND_MASK);
+}
+
+static inline md_part_type_flags_t md_part_type_flags_set_kind(md_part_type_flags_t flags, md_part_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_PART_TYPE_FLAG_KIND_MASK;
+    return (md_part_type_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+}
+
 
 // Residue type: the residues of the system of one name and kind. The ALA of every chain is one type, the HIE and
 // the HID of a protein are two, which are both forms of the standard monomer HIS. The kind of a residue is that of its
@@ -197,6 +314,19 @@ typedef struct md_molecule_data_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+const char* md_residue_kind_name(md_residue_kind_t kind);   // "" for a value out of range
+const char* md_part_kind_name(md_part_kind_t kind);
+
+// The kind of residue a standard monomer is: MD_RESIDUE_KIND_AMINO_ACID or _NUCLEOTIDE, OTHER for MD_MONOMER_NONE
+md_residue_kind_t md_monomer_kind(md_monomer_t monomer);
+
+// The standard monomer a residue of the given name and kind is a form of. Only amino acids and nucleotides are forms
+// of one: the variants of the force fields (HID, HIE, HSP, HISH, CYX, ASH, LYN, the Martini ARG0, ...), the termini of
+// Amber (NALA, CALA, DA5, RA3), the names of CHARMM (ADE, CYT, ...) and the common modified residues (MSE, SEP, PSU,
+// 5MC, ...). An amino acid or nucleotide which is not known is MD_MONOMER_UNK or MD_MONOMER_N, any other kind
+// MD_MONOMER_NONE, except the caps of a peptide chain (ACE, NME, ...) which are MD_MONOMER_UNK.
+md_monomer_t md_monomer_from_residue_name(md_str_t res_name, md_residue_kind_t kind);
 
 // The index i of the range [offset[i], offset[i + 1]) which holds value, -1 when there is none.
 // offset is non decreasing and count + 1 long. A binary search.

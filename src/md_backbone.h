@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <md_types.h>
+#include <core/md_common.h>
 
 // The protein and nucleic acid backbones of a system.
 
