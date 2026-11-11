@@ -5032,6 +5032,36 @@ UTEST(util, lone_atom_ion_only_without_covalent_bonds) {
     md_vm_arena_destroy(alloc);
 }
 
+// Inferring again classifies the residues of atoms anew, from what the system is now: nothing found before is kept.
+// The free tryptophan of tryptophan-md.gro (atoms named C15, N4, ...) is an amino acid by its bonds and its name;
+// renamed LIG it is a ligand which holds the atoms of one, linked to nothing: no amino acid, its flags gone.
+UTEST(util, residue_classified_anew) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    size_t trp = SIZE_MAX;
+    for (size_t r = 0; r < sys.residue.count && trp == SIZE_MAX; ++r) {
+        if (md_str_eq_cstr(md_system_residue_name(&sys, r), "TRP")) trp = r;
+    }
+    ASSERT_NE(SIZE_MAX, trp);
+    EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(&sys, trp));
+    EXPECT_EQ((unsigned)(MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END),
+              (unsigned)md_system_residue_flags(&sys, trp) & (MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END));
+
+    sys.residue.name[trp] = md_label_make(MD_STR_LIT("LIG"));
+    md_system_topology_changed(&sys);
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    EXPECT_EQ(MD_RESIDUE_KIND_OTHER, md_system_residue_kind(&sys, trp));
+    EXPECT_EQ(0u, (unsigned)md_system_residue_flags(&sys, trp) & (MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END));
+    // The waters are classified anew too, the same
+    size_t num_water = 0;
+    for (size_t r = 0; r < sys.residue.count; ++r) num_water += md_system_residue_kind(&sys, r) == MD_RESIDUE_KIND_WATER;
+    EXPECT_EQ(sys.residue.count - 1, num_water);
+    md_vm_arena_destroy(alloc);
+}
+
 // Nothing which is no polymer: fullerenes, and a tryptophan alone (one residue is no chain)
 UTEST(util, backbones_from_bonds_none) {
     const char* files[] = {

@@ -4734,6 +4734,72 @@ static void infer_coarse_grained_chain_ends(md_system_t* sys) {
 
 // Classifies the residues (amino acid, nucleotide, water, ion, lipid) from their names, atoms and bonds, and gives the
 // atoms of the amino acids and nucleotides whose backbone could be verified their roles.
+// What residue res_idx is (md_util_system_infer_residue_flags), fallback where nothing tells. The flags it has besides
+// (RESOLVED, the terminal flags) go to out_flags; ambiguous is 1 (2) for an amino acid (nucleotide) by name alone.
+static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx, md_residue_kind_t fallback, md_residue_flags_t* out_flags, int* ambiguous) {
+    const md_str_t res_name = md_system_residue_name(sys, res_idx);
+    const md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
+    const size_t len = (size_t)(res_range.end - res_range.beg);
+
+    // A molecule of the Martini force fields (a lipid, water, an ion, a sugar, ...): the kind of its topology. Its
+    // name alone may say something else: PCA, a lipid of Martini 2, is pyroglutamic acid in the PDB.
+    if (len <= 255 && atoms_are_beads(sys, res_range)) {
+        md_str_t labels[256];
+        uint8_t map[256];
+        for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, res_range.beg + i);
+        const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, res_name, labels, len, map);
+        // Renamed (CHL for CHOL): by its beads, unless it is named as a residue of a chain
+        if (!mol && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name)) {
+            mol = martini_db_match_beads(MARTINI_ANY, labels, NULL, len, map);
+        }
+        if (mol) return mol->kind;
+    }
+
+    // Amino acids and nucleotides are classified whatever their kind, as a predefined coarse grained type may have
+    // given the kind but the atoms of an atomistic one still have their roles: a residue which holds the backbone of
+    // one amino acid (nucleotide) of a chain is one (POLYMER ATOMS)
+    md_amino_acid_atoms_t prot_atoms;
+    if (residue_amino_acid_atoms(&prot_atoms, sys, res_range)) {
+        *out_flags |= MD_RESIDUE_FLAG_RESOLVED;
+        if (md_atom_flags(&sys->atom, (size_t)prot_atoms.n) & MD_ATOM_FLAG_TERMINAL_BEG) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_BEG;
+        if (md_atom_flags(&sys->atom, (size_t)prot_atoms.c) & MD_ATOM_FLAG_TERMINAL_END) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_END;
+        return MD_RESIDUE_KIND_AMINO_ACID;
+    }
+    if (md_util_resname_amino_acid(res_name)) {
+        *ambiguous = 1;
+        return MD_RESIDUE_KIND_AMINO_ACID;
+    }
+
+    md_nucleic_acid_atoms_t nucl_atoms;
+    if (residue_nucleotide_atoms(&nucl_atoms, sys, res_range)) {
+        *out_flags |= MD_RESIDUE_FLAG_RESOLVED;
+        if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o5) & MD_ATOM_FLAG_TERMINAL_BEG) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_BEG;
+        if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o3) & MD_ATOM_FLAG_TERMINAL_END) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_END;
+        return MD_RESIDUE_KIND_NUCLEOTIDE;
+    }
+    if (md_util_resname_nucleotide(res_name)) {
+        *ambiguous = 2;
+        return MD_RESIDUE_KIND_NUCLEOTIDE;
+    }
+
+    // Water by its atoms, or by name when its hydrogens are left out (united atom, coarse grained)
+    if (atoms_are_water(sys, res_range) ||
+       ((len == 1 || len == 3) && md_util_resname_water(res_name)) ||
+       (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, res_range.beg)))) {
+        return MD_RESIDUE_KIND_WATER;
+    }
+    // An ion by its name, or by its element where it is bonded to nothing but by coordination: a lone O, S or N
+    // covalently bonded (the O between two Si of a silica network, a residue to an atom) is no ion
+    if (len == 1 && (md_util_resname_ion(res_name) ||
+        (monatomic_ion_element(md_atom_atomic_number(&sys->atom, res_range.beg)) && !atom_bonded_covalently(sys, (md_atom_idx_t)res_range.beg)))) {
+        return MD_RESIDUE_KIND_ION;
+    }
+    if (md_util_resname_lipid(res_name)) {
+        return MD_RESIDUE_KIND_LIPID;
+    }
+    return fallback;
+}
+
 bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
@@ -4766,84 +4832,30 @@ bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_
     md_array(int) ambigous_amino_acid_indices = 0;
     md_array(int) ambigous_nucleotide_indices = 0;
 
+    // What the classification finds is found anew: the flags it sets are cleared first (the breaks are the backbones')
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END));
+    }
+
     for (size_t residue_idx = 0; residue_idx < sys->residue.count; ++residue_idx) {
-        md_str_t res_name = md_system_residue_name(sys, residue_idx);
-        md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
-        size_t len = (size_t)(res_range.end - res_range.beg);
+        const md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
+        const bool beads = atoms_are_beads(sys, res_range);
 
-        // A residue of beads a predefined coarse grained type classified keeps its kind. One of atoms is classified anew
-        // each time, from what the system is now: an atom a loader classified before the bonds were inferred (a lone O
-        // of a LAMMPS data file without bonds, which the bonds then join into a silica network) is not kept an ion.
+        // A residue of beads a predefined coarse grained type classified keeps its kind (what the model says it is,
+        // whatever it is named). One of atoms is classified anew each time from what the system is now, and is OTHER
+        // where nothing tells what it is: a kind found before (an ion before the bonds joined it to a network, an
+        // amino acid before its bonds were edited) is not kept.
         const md_residue_kind_t kind = md_system_residue_kind(sys, residue_idx);
-        if ((kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID) && atoms_are_beads(sys, res_range)) {
-            continue;
-		}
-
-        // A molecule of the Martini force fields (a lipid, water, an ion, a sugar, ...): the kind of its topology. Its
-        // name alone may say something else: PCA, a lipid of Martini 2, is pyroglutamic acid in the PDB.
-        if (len <= 255 && atoms_are_beads(sys, res_range)) {
-            md_str_t labels[256];
-            uint8_t map[256];
-            for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, res_range.beg + i);
-            const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, res_name, labels, len, map);
-            // Renamed (CHL for CHOL): by its beads, unless it is named as a residue of a chain
-            if (!mol && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name)) {
-                mol = martini_db_match_beads(MARTINI_ANY, labels, NULL, len, map);
-            }
-            if (mol) {
-                set_residue_kind(sys, residue_idx, mol->kind);
-                continue;
-            }
-        }
-
-        // Amino acids and nucleotides are classified whatever their kind, as a predefined coarse grained type may
-        // have given the kind but the atoms of an atomistic one still have their roles: a residue which holds the
-        // backbone of one amino acid (nucleotide) of a chain is one (POLYMER ATOMS)
-        md_amino_acid_atoms_t prot_atoms;
-        if (residue_amino_acid_atoms(&prot_atoms, sys, res_range)) {
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_AMINO_ACID);
-            sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_RESOLVED;
-            if (md_atom_flags(&sys->atom, (size_t)prot_atoms.n) & MD_ATOM_FLAG_TERMINAL_BEG) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_BEG;
-            if (md_atom_flags(&sys->atom, (size_t)prot_atoms.c) & MD_ATOM_FLAG_TERMINAL_END) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_END;
+        if (beads && (kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID)) {
             continue;
         }
-        if (md_util_resname_amino_acid(res_name)) {
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_AMINO_ACID);
-            md_array_push(ambigous_amino_acid_indices, (int)residue_idx, temp_alloc);
-            continue;
-        }
-
-        md_nucleic_acid_atoms_t nucl_atoms;
-        if (residue_nucleotide_atoms(&nucl_atoms, sys, res_range)) {
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_NUCLEOTIDE);
-            sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_RESOLVED;
-            if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o5) & MD_ATOM_FLAG_TERMINAL_BEG) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_BEG;
-            if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o3) & MD_ATOM_FLAG_TERMINAL_END) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_END;
-            continue;
-        }
-        if (md_util_resname_nucleotide(res_name)) {
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_NUCLEOTIDE);
-            md_array_push(ambigous_nucleotide_indices, (int)residue_idx, temp_alloc);
-            continue;
-        }
-
-        // Water by its atoms, or by name when its hydrogens are left out (united atom, coarse grained)
-        if (atoms_are_water(sys, res_range) ||
-           ((len == 1 || len == 3) && md_util_resname_water(res_name)) ||
-           (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, res_range.beg))))
-        {
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_WATER);
-        } else if (len == 1 && (md_util_resname_ion(res_name) ||
-                   (monatomic_ion_element(md_atom_atomic_number(&sys->atom, res_range.beg)) && !atom_bonded_covalently(sys, (md_atom_idx_t)res_range.beg)))) {
-            // An ion by its name, or by its element where it is bonded to nothing but by coordination: a lone O, S or N
-            // covalently bonded (the O between two Si of a silica network, a residue to an atom) is no ion
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_ION);
-        } else if (md_util_resname_lipid(res_name)) {
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_LIPID);
-        } else if (len == 1 && kind == MD_RESIDUE_KIND_ION) {
-            // An ion no more: its bonds tell otherwise now
-            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_OTHER);
-        }
+        md_residue_flags_t flags = MD_RESIDUE_FLAG_NONE;
+        int ambiguous = 0;
+        const md_residue_kind_t found = classify_residue(sys, residue_idx, beads ? kind : MD_RESIDUE_KIND_OTHER, &flags, &ambiguous);
+        set_residue_kind(sys, residue_idx, found);
+        sys->residue.flags[residue_idx] |= flags;
+        if (ambiguous == 1) md_array_push(ambigous_amino_acid_indices, (int)residue_idx, temp_alloc);
+        if (ambiguous == 2) md_array_push(ambigous_nucleotide_indices, (int)residue_idx, temp_alloc);
     }
 
     infer_coarse_grained_chain_ends(sys);
