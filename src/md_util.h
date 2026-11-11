@@ -49,16 +49,19 @@ bool md_util_resname_nucleotide(md_str_t str);
 
 void md_util_system_extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
-// Classifies the residues (md_residue_kind_t: amino acid, nucleotide, water, ion, lipid) from their names, atoms
-// and bonds. A residue of coarse grained beads which is a molecule of the Martini force fields by its name and all
-// its bead names (a lipid, water, an ion, a sugar, ...) is of the kind of that molecule. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
-// is either a standard residue by name or linked into a chain (a peptide or phosphodiester bond to another
-// residue), is MD_RESIDUE_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
-// ...) and its terminal groups are marked. The link keeps out the ligands which name their atoms like a residue
-// (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A residue which is only named like an
-// amino acid or nucleotide gets the kind alone. Residues a predefined coarse grained type already classified as
-// water, ion or lipid are left alone. Requires the bonds.
-bool md_util_system_infer_residue_flags(md_system_t* sys);
+// Gives the atoms of the amino acids and nucleotides of an atomistic system their roles (MD_ATOM_FLAG_BACKBONE,
+// _SIDE_CHAIN, _NUCLEOSIDE, _NUCLEOBASE, _TERMINAL_BEG, _END), found from the covalent bonds alone, whatever the atoms
+// are called (POLYMER ATOMS in md_util.c), also in a system without residues. Then classifies the residues
+// (md_residue_kind_t: amino acid, nucleotide, water, ion, lipid). A residue which holds the backbone of one amino
+// acid or nucleotide of a chain (a standard residue by name, or linked to another residue by its backbone) is one,
+// MD_RESIDUE_FLAG_RESOLVED, with its terminal groups marked: the link keeps out the ligands which hold the atoms of
+// one (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A residue which is only named like an
+// amino acid or nucleotide gets the kind alone. A residue of coarse grained beads which is a molecule of the Martini
+// force fields by its name and all its bead names (a lipid, water, an ion, a sugar, ...) is of the kind of that
+// molecule; residues a predefined coarse grained type already classified as water, ion or lipid are left alone.
+// Requires the bonds. state (optional) gives the coordinates which tell the carbonyl of a C terminus without its OXT
+// from a hydroxyl.
+bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state);
 
 // The lipids of the system (sys->lipid, see md_lipid_data_t): every lipid molecule, its heads and tails, and the atoms
 // of the tails (MD_ATOM_FLAG_LIPID_TAIL). A molecule (a run of consecutive residues bonded to each other, none of them an amino

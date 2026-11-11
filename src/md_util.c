@@ -1376,106 +1376,6 @@ static bool water_heuristic(const md_atomic_number_t elements[], size_t size) {
     return false;
 }
 
-static inline bool cmp(md_str_t str, const char* ref, int len) {
-    // We compare against len + 1 to include the zero terminator character
-    return md_memcmp(str.ptr, ref, len + 1) == 0;
-}
-
-static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
-    MD_ASSERT(atom_data);
-    int len = atom_range.end - atom_range.beg;
-    if (len < 4) return false;
-
-    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
-    uint32_t bits = 0;
-    md_amino_acid_atoms_t aa;
-	md_memset(&aa, -1, sizeof(md_amino_acid_atoms_t));
-    for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
-        md_str_t id = md_atom_name(atom_data, i);
-        if (md_str_empty(id)) continue;
-
-        if (!(bits & 1)  && cmp(id, "N",  1)) { aa.n  = (md_atom_idx_t)i; bits |= 1;  continue; }
-        if (!(bits & 16) && cmp(id, "HN", 2)) { aa.hn = (md_atom_idx_t)i; bits |= 16; continue; }
-        if (!(bits & 2)  && cmp(id, "CA", 2)) { aa.ca = (md_atom_idx_t)i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp(id, "C",  1)) { aa.c  = (md_atom_idx_t)i; bits |= 4;  continue; }
-        if (!(bits & 32) && cmp(id, "CB", 2)) { aa.cb = (md_atom_idx_t)i; bits |= 32; continue; }
-        if (!(bits & 8)) {
-            if (cmp(id, "O", 1)     ||
-                cmp(id, "O1", 2)    ||
-                cmp(id, "OT1", 3)   ||
-                cmp(id, "OC1", 3))
-            {
-                aa.o = (md_atom_idx_t)i; bits |= 8; continue;
-            }
-        }
-
-        // Check if done
-        if (bits == all_bits) break;
-    }
-
-    // HN is optional
-    static const uint32_t backbone_bits = 1 | 2 | 4 | 8;
-
-    if (out_atoms) *out_atoms = aa;
-    return (bits & backbone_bits) == backbone_bits;
-}
-
-// There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3). How the name matches: 0 not
-// at all, 1 the bare name (C3), 2 the primed name (C3' or C3*).
-static int cmp_nuc_atom(md_str_t id, const char* base, size_t len) {
-    if (!md_str_begins_with(id, (md_str_t){base, len})) return 0;
-    if (id.len == len) return 1;
-    const char next = md_str_ptr(id)[len];
-    return (id.len == len + 1 && (next == '\'' || next == '*')) ? 2 : 0;
-}
-
-// Whether the atom whose name matches (cmp_nuc_atom) takes the slot (bit) of the sugar or backbone: a free slot takes any
-// match, and a primed name takes the slot from a bare one. A residue which primes the atoms of its sugar has base atoms
-// of the bare names (C2, C4, C5, O4 of a pyrimidine), and some list the base first: OMU and PSU of the PDB (3G71).
-static inline bool nuc_atom_take_slot(uint32_t* bits, uint32_t* primed, uint32_t bit, int match) {
-    if (!match || (*primed & bit) || (match == 1 && (*bits & bit))) return false;
-    *bits |= bit;
-    if (match == 2) *primed |= bit;
-    return true;
-}
-
-static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
-    MD_ASSERT(atom_data);
-    int len = atom_range.end - atom_range.beg;
-    if (len < 6) return false;
-
-    static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256;
-
-    uint32_t bits = 0;
-    uint32_t primed = 0; // The slots taken by a primed name, which no other atom takes back
-    md_nucleic_acid_atoms_t na;
-	md_memset(&na, -1, sizeof(md_nucleic_acid_atoms_t));
-    for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
-        md_str_t id = md_atom_name(atom_data, i);
-        if (md_str_empty(id)) continue;
-
-        if (!(bits & 1)  && cmp(id, "P",   1))               { na.p  = i; bits |= 1;  continue; }
-        if (nuc_atom_take_slot(&bits, &primed, 2,  cmp_nuc_atom(id, "O5", 2))) { na.o5 = i; continue; }
-        if (nuc_atom_take_slot(&bits, &primed, 4,  cmp_nuc_atom(id, "C5", 2))) { na.c5 = i; continue; }
-        if (nuc_atom_take_slot(&bits, &primed, 8,  cmp_nuc_atom(id, "C4", 2))) { na.c4 = i; continue; }
-        if (nuc_atom_take_slot(&bits, &primed, 16, cmp_nuc_atom(id, "C3", 2))) { na.c3 = i; continue; }
-        // O3P (exact) counts as a bare O3
-        if (nuc_atom_take_slot(&bits, &primed, 32, cmp(id, "O3P", 3) ? 1 : cmp_nuc_atom(id, "O3", 2))) { na.o3 = i; continue; }
-
-        if (nuc_atom_take_slot(&bits, &primed, 64,  cmp_nuc_atom(id, "C1", 2))) { na.c1 = i; continue; }
-        if (nuc_atom_take_slot(&bits, &primed, 128, cmp_nuc_atom(id, "C2", 2))) { na.c2 = i; continue; }
-        if (nuc_atom_take_slot(&bits, &primed, 256, cmp_nuc_atom(id, "O4", 2))) { na.o4 = i; continue; }
-
-        // Done when the P is found and every other slot holds a primed name: a bare name could still be taken back
-        if ((bits & 1) && primed == (all_bits & ~1u)) break;
-    }
-
-    static const uint32_t req_bits = 2 | 4 | 8 | 16 | 32; // No phosphor in first terminal residue (starts with O5)
-
-    if (out_atoms) *out_atoms = na;
-    return (bits & req_bits) == req_bits;
-}
-
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t element[], const float mass[], size_t count) {
     if (!element) {
         MD_LOG_ERROR("element is null");
@@ -3969,15 +3869,6 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
     return true;
 }
 
-// No upper bound for an amino acid either: a modified one is larger than any standard one (a palmitoylated cysteine is
-// 58 atoms with its hydrogens), and classify_amino_acid tells ligands named like amino acids by their bonds
-#define MIN_RES_LEN 4
-
-// Nor for a nucleotide: a hypermodified one is larger than any standard one (wybutosine, 39 heavy atoms), as
-// is a modified one with its hydrogens, and classify_nucleotide tells nucleotide ligands (NAD, FAD, CoA, ...) by their
-// bonds rather than their size. The nucleic backbone (MD_UTIL_INFER_BACKBONE_BIT) takes any size, and the two agree.
-#define MIN_NUC_LEN 6
-
 #define MIN_POLYMER_RES_LEN 2
 
 // @TODO: Convert to a table
@@ -4037,10 +3928,281 @@ static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_
     return true;
 }
 
+// ### BACKBONES FROM THE BONDS ###
+//
+// The backbones of an atomistic system are found from its covalent bonds alone (md_match within each structure),
+// whatever its atoms and residues are called: an XYZ file or the geometry of a QM calculation has no residues, a LAMMPS
+// data file names its atoms by their types and its residues "MOL". The names play no part. What is found is what a
+// cartoon and the secondary structure need: the atoms of each segment, in order along each chain.
+//
+//   AMINO ACIDS  N-CA-C-O, the bond orders not tested: they are md_chem's perception of bonds which were themselves
+//                inferred from distances, and one wrong bond (a clash between two chains taken for a bond) moves the
+//                double bond of a carbonyl onto its C-N and loses the residue. Without orders N-CA-CB-OG of a serine or a
+//                threonine matches too, as does N-CD-CG-OD1 of a hydroxyproline. The matches are taken best first, each
+//                where its N, CA and C are not taken yet: one whose C is bonded to the N of another match (a peptide
+//                bond), then one whose C has two oxygens (the carboxylate of a C terminus), then one whose C-O is as short
+//                as a double bond (which tells the carbonyl of a C terminus without its OXT from a hydroxyl). CB is the
+//                heavy atom on CA besides N and C (none for a glycine), HN the hydrogen of an N which has one.
+//   NUCLEOTIDES  The sugar with its backbone, O5'-C5'-C4'(-O4'-C1'-C2'-C3'-)C3'-O3', and the P bonded to the O5'. A
+//                sugar matches in one way only.
+//   CHAINS       A residue follows the one whose C (O3') is bonded to its N (P). A chain runs from a residue which follows
+//                none; what is left are rings (a cyclic peptide), cut before their first residue. A chain shorter than
+//                min_length is no backbone: that leaves out the free amino acids and nucleotides (ATP, GTP) and the
+//                groups which match without being residues (N7-C5-C6=O6 of a guanine, the ethanolamine of a lipid).
+//   RESIDUES     A segment is of the residue which holds its CA (C4'), where that residue holds the CA of no other
+//                segment; else of none (-1): a system without residues, or a residue which is a whole chain (a LAMMPS
+//                molecule). A range is within one part, the part of its residues, and is cut where that changes; one of
+//                residues of none is of no part (-1). Two consecutive residues of a part whose segments are not linked
+//                are a CHAIN BREAK (md_util.h), unless the chain ends there.
+//
+// The ranges come in the order of their first atom (CA or C4'), with the traces of the coarse grained residues.
+
+// Ångström below which a bond from C to O is double: C=O is 1.23 long, C-O 1.43
+#define CARBONYL_MAX_DIST 1.33f
+
+static inline bool atoms_closer_than(const md_system_state_t* state, md_atom_idx_t a, md_atom_idx_t b, float max_dist) {
+    if (!md_system_state_has_coords(state) || (size_t)a >= state->num_atoms || (size_t)b >= state->num_atoms) return false;
+    md_f32x3_t d = md_f32x3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
+    md_util_min_image_vec3(&d, 1, &state->unitcell);
+    return md_f32x3_dot(d, d) < max_dist * max_dist;
+}
+
+// The first neighbour of atom a of element z, which is neither x nor y (z 0: any element but hydrogen)
+static md_atom_idx_t bonded_atom_other(const md_system_t* sys, md_atom_idx_t a, md_atomic_number_t z, md_atom_idx_t x, md_atom_idx_t y) {
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)a);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+        if (b == x || b == y) continue;
+        const md_atomic_number_t zb = md_atom_atomic_number(&sys->atom, (size_t)b);
+        if (z ? zb == z : zb != MD_Z_H) return b;
+    }
+    return -1;
+}
+
+// The matches of a query of the backbone atoms in the system, at the structure level, bonds of any order
+static bool backbone_matches(md_match_result_t* out, md_str_t smiles, const md_system_t* sys, md_allocator_i* alloc) {
+    md_match_query_t query = {0};
+    if (!md_match_query_init_smiles(&query, smiles, alloc, NULL)) return false;
+    const md_match_desc_t desc = {
+        .query       = &query,
+        .level       = MD_MATCH_LEVEL_MOLECULE,
+        .mode        = MD_MATCH_MODE_UNIQUE,
+        .hydrogens   = MD_MATCH_RESOLVE_NEVER,
+        .bond_orders = MD_MATCH_RESOLVE_NEVER,
+        .charges     = MD_MATCH_RESOLVE_NEVER,
+    };
+    return md_match_find(out, &desc, sys, alloc) && out->count > 0;
+}
+
+static int cmp_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a;
+    const uint64_t y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+// The order of the chains of num residues, from the residue each follows (prev, -1 for none) and is followed by (next):
+// out_order lists the residues chain by chain, a chain beginning at each residue of out_begin (num + 1 entries each).
+// Returns the number of chains.
+static size_t backbone_chains(uint32_t* out_order, uint32_t* out_begin, const int32_t* prev, const int32_t* next, size_t num, md_temp_scope_t temp) {
+    uint8_t* done = md_temp_alloc_zero_array(temp, uint8_t, num);
+    size_t num_order = 0;
+    size_t num_chains = 0;
+    // Open chains from their first residue, then the rings that are left
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t u = 0; u < num; ++u) {
+            if (done[u] || (pass == 0 && prev[u] >= 0)) continue;
+            out_begin[num_chains++] = (uint32_t)num_order;
+            for (int32_t v = (int32_t)u; v >= 0 && !done[v]; v = next[v]) {
+                done[v] = 1;
+                out_order[num_order++] = (uint32_t)v;
+            }
+        }
+    }
+    out_begin[num_chains] = (uint32_t)num_order;
+    return num_chains;
+}
+
+// The residues of the polymer chains found from the bonds: the backbone atoms of each (aa of a protein, na of a nucleic
+// acid), the residue each follows (prev) and is followed by (next), -1 for none, and the chains they form, every one
+// whatever its length: chain c is the residues order[begin[c] .. begin[c + 1]).
+typedef struct backbone_chains_t {
+    size_t num;
+    md_amino_acid_atoms_t*   aa;
+    md_nucleic_acid_atoms_t* na;
+    int32_t*  prev;                 // [num]
+    int32_t*  next;                 // [num]
+    uint32_t* order;                // [num]
+    uint32_t* begin;                // [num_chains + 1]
+    size_t num_chains;
+} backbone_chains_t;
+
+static bool protein_chains_from_bonds(backbone_chains_t* out, const md_system_t* sys, const md_system_state_t* state, md_temp_scope_t temp) {
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_match_result_t res = {0};
+    // Columns: N CA C O
+    if (!backbone_matches(&res, MD_STR_LIT("NCCO"), sys, temp_alloc)) return false;
+    MD_ASSERT(res.width == 4);
+
+    const size_t num_atoms = sys->atom.count;
+    const size_t num_matches = res.count;
+
+    // The score of each match, its key: score descending, then the order found
+    uint8_t* is_n = md_temp_alloc_zero_array(temp, uint8_t, num_atoms);
+    for (size_t i = 0; i < num_matches; ++i) {
+        is_n[res.atom_idx[i * 4 + 0]] = 1;
+    }
+    uint64_t* key = md_temp_alloc_array(temp, uint64_t, num_matches);
+    for (size_t i = 0; i < num_matches; ++i) {
+        const int32_t* m = res.atom_idx + i * 4;
+        uint32_t score = 0;
+        uint32_t num_o = 0;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)m[2]);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, (size_t)b);
+            if (z == MD_Z_N && b != m[0] && is_n[b]) score |= 4;
+            if (z == MD_Z_O) num_o += 1;
+        }
+        if (num_o >= 2) score |= 2;
+        if (atoms_closer_than(state, m[2], m[3], CARBONYL_MAX_DIST)) score |= 1;
+        key[i] = (uint64_t)(7 - score) << 32 | i;
+    }
+    qsort(key, num_matches, sizeof(uint64_t), cmp_u64);
+
+    // Taken best first where N, CA and C are free; the residue whose N, CA or C an atom is, -1 for none
+    int32_t* residue_of = md_temp_alloc_array(temp, int32_t, num_atoms);
+    md_memset(residue_of, -1, sizeof(int32_t) * num_atoms);
+    uint64_t* by_ca = md_temp_alloc_array(temp, uint64_t, num_matches);
+    size_t num = 0;
+    for (size_t k = 0; k < num_matches; ++k) {
+        const uint32_t i = (uint32_t)key[k];
+        const int32_t* m = res.atom_idx + i * 4;
+        if (residue_of[m[0]] >= 0 || residue_of[m[1]] >= 0 || residue_of[m[2]] >= 0) continue;
+        residue_of[m[0]] = residue_of[m[1]] = residue_of[m[2]] = 0;
+        by_ca[num++] = (uint64_t)m[1] << 32 | i;
+    }
+    qsort(by_ca, num, sizeof(uint64_t), cmp_u64);
+
+    md_amino_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_amino_acid_atoms_t, num);
+    for (size_t u = 0; u < num; ++u) {
+        const int32_t* m = res.atom_idx + (uint32_t)by_ca[u] * 4;
+        md_amino_acid_atoms_t* a = &res_atoms[u];
+        a->n  = m[0];
+        a->ca = m[1];
+        a->c  = m[2];
+        a->o  = m[3];
+        a->cb = bonded_atom_other(sys, a->ca, 0, a->n, a->c);
+        a->hn = bonded_atom_other(sys, a->n, MD_Z_H, -1, -1);
+        if (a->hn >= 0 && bonded_atom_other(sys, a->n, MD_Z_H, a->hn, -1) >= 0) a->hn = -1;
+        residue_of[a->n] = residue_of[a->ca] = residue_of[a->c] = (int32_t)u;
+    }
+
+    // Residue v follows u when the C of u is bonded to the N of v
+    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
+    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
+    md_memset(prev, -1, sizeof(int32_t) * num);
+    md_memset(next, -1, sizeof(int32_t) * num);
+    for (size_t u = 0; u < num; ++u) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].c);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+            const int32_t v = residue_of[b];
+            if (v >= 0 && v != (int32_t)u && res_atoms[v].n == b && prev[v] < 0) {
+                next[u] = v;
+                prev[v] = (int32_t)u;
+                break;
+            }
+        }
+    }
+
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
+    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
+    const size_t num_chains = backbone_chains(order, begin, prev, next, num, temp);
+
+    out->num = num;
+    out->aa = res_atoms;
+    out->prev = prev;
+    out->next = next;
+    out->order = order;
+    out->begin = begin;
+    out->num_chains = num_chains;
+    return num > 0;
+}
+
+static bool nucleic_chains_from_bonds(backbone_chains_t* out, const md_system_t* sys, md_temp_scope_t temp) {
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_match_result_t res = {0};
+    // Columns: O5' C5' C4' O4' C1' C2' C3' O3'
+    if (!backbone_matches(&res, MD_STR_LIT("OCC1OCCC1O"), sys, temp_alloc)) return false;
+    MD_ASSERT(res.width == 8);
+
+    const size_t num_atoms = sys->atom.count;
+
+    // A sugar matches in one way only; the sugars by their C4'
+    uint64_t* by_c4 = md_temp_alloc_array(temp, uint64_t, res.count);
+    for (size_t i = 0; i < res.count; ++i) {
+        by_c4[i] = (uint64_t)res.atom_idx[i * 8 + 2] << 32 | i;
+    }
+    qsort(by_c4, res.count, sizeof(uint64_t), cmp_u64);
+
+    // The residue whose P an atom is, -1 for none
+    int32_t* residue_of_p = md_temp_alloc_array(temp, int32_t, num_atoms);
+    md_memset(residue_of_p, -1, sizeof(int32_t) * num_atoms);
+    md_nucleic_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, res.count);
+    size_t num = 0;
+    for (size_t k = 0; k < res.count; ++k) {
+        if (k > 0 && by_c4[k] >> 32 == by_c4[k - 1] >> 32) continue;
+        const int32_t* m = res.atom_idx + (uint32_t)by_c4[k] * 8;
+        md_nucleic_acid_atoms_t* a = &res_atoms[num];
+        a->o5 = m[0];
+        a->c5 = m[1];
+        a->c4 = m[2];
+        a->o4 = m[3];
+        a->c1 = m[4];
+        a->c2 = m[5];
+        a->c3 = m[6];
+        a->o3 = m[7];
+        a->p  = bonded_atom_other(sys, a->o5, MD_Z_P, -1, -1);
+        if (a->p >= 0 && residue_of_p[a->p] < 0) residue_of_p[a->p] = (int32_t)num;
+        num += 1;
+    }
+
+    // Residue v follows u when the O3' of u is bonded to the P of v
+    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
+    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
+    md_memset(prev, -1, sizeof(int32_t) * num);
+    md_memset(next, -1, sizeof(int32_t) * num);
+    for (size_t u = 0; u < num; ++u) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].o3);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int32_t v = residue_of_p[md_bond_iter_atom_index(&it)];
+            if (v >= 0 && v != (int32_t)u && prev[v] < 0) {
+                next[u] = v;
+                prev[v] = (int32_t)u;
+                break;
+            }
+        }
+    }
+
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
+    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
+    const size_t num_chains = backbone_chains(order, begin, prev, next, num, temp);
+
+    out->num = num;
+    out->na = res_atoms;
+    out->prev = prev;
+    out->next = next;
+    out->order = order;
+    out->begin = begin;
+    out->num_chains = num_chains;
+    return num > 0;
+}
+
 // Gives the flag to start_atom and to what its bonds reach from it within the residue (range): not past exclude_atom,
 // nor into an atom with any of stop_flags (the backbone, for a side chain). A bond leaving the residue is not followed:
-// the peptide bond (which a proline side chain reaches through its N), a disulfide, a metal coordinated to it.
-static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exclude_atom, md_atom_flags_t flag, md_urange_t range, md_atom_flags_t stop_flags) {
+// the peptide bond (which a proline side chain reaches through its N), a disulfide, a metal coordinated to it. Nor is a
+// coordination bond, where the range is not a residue's (POLYMER ATOMS).
+static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exclude_atom, md_atom_flags_t flag, md_urange_t range, md_atom_flags_t stop_flags, bool covalent_only) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_array(int) stack = 0;
@@ -4053,7 +4215,8 @@ static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exc
             md_bond_iter_t iter = md_bond_iter(&sys->bond, atom_idx);
             while (md_bond_iter_has_next(&iter)) {
                 int nbr = md_bond_iter_atom_index(&iter);
-                if (nbr != exclude_atom && range.beg <= (uint32_t)nbr && (uint32_t)nbr < range.end &&
+                const bool follow = !covalent_only || md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&iter)) == MD_BOND_KIND_COVALENT;
+                if (follow && nbr != exclude_atom && range.beg <= (uint32_t)nbr && (uint32_t)nbr < range.end &&
                     (sys->atom.flags[nbr] & flag) == 0 && (sys->atom.flags[nbr] & stop_flags) == 0) {
                     md_array_push(stack, nbr, alloc);
                 }
@@ -4103,109 +4266,368 @@ static bool atom_bonded_outside(const md_system_t* sys, int atom, md_urange_t ra
     return false;
 }
 
-// Amino acid whose backbone atoms were found by name: verify them by their bonds and give the atoms their roles.
-// It must also be a standard residue by name or be linked into a chain by a peptide bond: plenty of ligands name
-// their atoms N, CA, C and O without being amino acids.
-static bool classify_amino_acid(md_system_t* sys, size_t res_idx, const md_amino_acid_atoms_t* aa) {
-    // Ensure that there are bonds between the backbone atoms, otherwise it might be a false posititive
-    if (md_bond_find(&sys->bond, aa->n,  aa->ca) == -1 ||
-        md_bond_find(&sys->bond, aa->ca, aa->c)  == -1 ||
-        md_bond_find(&sys->bond, aa->c,  aa->o)  == -1) {
-        return false;
-    }
-    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
-    if (!md_util_resname_amino_acid(md_system_residue_name(sys, res_idx)) &&
-        !atom_bonded_outside(sys, aa->n, range, MD_Z_C) && !atom_bonded_outside(sys, aa->c, range, MD_Z_N)) {
-        return false;
-    }
+// ### POLYMER ATOMS ###
+//
+// The amino acids and nucleotides of an atomistic system are found once, from its covalent bonds (BACKBONES FROM THE
+// BONDS), and their atoms given their roles:
+//   MD_ATOM_FLAG_BACKBONE      the N, CA and C of an amino acid; the P, O5', C5', C4', C3' and O3' of a nucleotide
+//   MD_ATOM_FLAG_SIDE_CHAIN    what hangs off the CA, from the CB on
+//   MD_ATOM_FLAG_NUCLEOSIDE    the sugar (C1', C2', C3', C4', O4') and the base
+//   MD_ATOM_FLAG_NUCLEOBASE    the base
+//   MD_ATOM_FLAG_TERMINAL_BEG  a free amino group, a free 5' hydroxyl
+//   MD_ATOM_FLAG_TERMINAL_END  a free carboxyl group, a free 3' hydroxyl
+// Not every match is a residue of a chain. One which is all of a residue of its own (a residue which holds no other)
+// is one where the system names it a standard residue, or where it is linked to another residue by its backbone (a
+// peptide bond from its N or C, a phosphodiester bond from its P or O3'): that keeps out the ligands which hold the
+// atoms of one (GTP, ATP, NAD; an amide next to an alpha carbon) while modified residues in a chain (MSE, PSU) and caps
+// (ACE, NME) come in. Any other (a system without residues, a residue which is a whole chain as a LAMMPS molecule is)
+// is one where it is linked to another match: the N7-C5-C6=O6 of a guanine is not. A side chain, a base or a terminal
+// group reaches as far as the residue where the match is all of one, else as far as the covalent bonds go up to a
+// backbone: without residues the glycan on an asparagine is of its side chain.
+//
+// The roles are what everything after reads the atoms of a residue of a chain by, rather than their names: the kinds of
+// the residues (md_util_system_infer_residue_flags), the ends of a chain (polymer_chain_ends_between), the links over a
+// gap (chain_gap_link), the backbones (md_util_system_infer_backbones). Beads keep the roles their model gave them.
 
-    set_residue_kind(sys, res_idx, MD_RESIDUE_KIND_AMINO_ACID);
-    sys->residue.flags[res_idx] |= MD_RESIDUE_FLAG_RESOLVED;
+static inline bool atom_has_flags(const md_system_t* sys, md_atom_idx_t a, md_atom_flags_t flags) {
+    return ((uint32_t)md_atom_flags(&sys->atom, (size_t)a) & (uint32_t)flags) == (uint32_t)flags;
+}
 
-    // O and H are not part of the backbone proper
-    sys->atom.flags[aa->n]  |= MD_ATOM_FLAG_BACKBONE;
-    sys->atom.flags[aa->ca] |= MD_ATOM_FLAG_BACKBONE;
-    sys->atom.flags[aa->c]  |= MD_ATOM_FLAG_BACKBONE;
+// The first neighbour of atom a of element z (0: any element but hydrogen) with all of the flags with and none of
+// without, which is neither x nor y; -1 for none
+static md_atom_idx_t bonded_atom_with(const md_system_t* sys, md_atom_idx_t a, md_atomic_number_t z, md_atom_flags_t with, md_atom_flags_t without, md_atom_idx_t x, md_atom_idx_t y) {
+    if (a < 0) return -1;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)a);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+        if (b == x || b == y) continue;
+        const md_atomic_number_t zb = md_atom_atomic_number(&sys->atom, (size_t)b);
+        if (z ? zb != z : zb == MD_Z_H) continue;
+        const uint32_t f = (uint32_t)md_atom_flags(&sys->atom, (size_t)b);
+        if ((f & (uint32_t)with) == (uint32_t)with && (f & (uint32_t)without) == 0) return b;
+    }
+    return -1;
+}
 
-    if (aa->cb != -1) {
-        // Flood fill sidechain from CB, this will mark all connected atoms as sidechain
-        topo_floodfill_flag(sys, aa->cb, aa->ca, MD_ATOM_FLAG_SIDE_CHAIN, range, MD_ATOM_FLAG_BACKBONE);
+// The oxygen of the carbonyl of C: the one without a hydrogen where there are two (a carboxylic acid), else the first
+static md_atom_idx_t carbonyl_oxygen(const md_system_t* sys, md_atom_idx_t c) {
+    md_atom_idx_t first = -1;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)c);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t o = md_bond_iter_atom_index(&it);
+        if (md_atom_atomic_number(&sys->atom, (size_t)o) != MD_Z_O) continue;
+        if (bonded_atom_with(sys, o, MD_Z_H, 0, 0, -1, -1) < 0) return o;
+        if (first < 0) first = o;
     }
+    return first;
+}
 
-    // A free amino group (only hydrogens besides CA) begins the chain, a free carboxyl group (only oxygens besides CA) ends it
-    if (atom_is_chain_end(sys, aa->n, aa->ca, MD_Z_H)) {
-        topo_floodfill_flag(sys, aa->n, aa->ca, MD_ATOM_FLAG_TERMINAL_BEG, range, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN);
-        sys->residue.flags[res_idx] |= MD_RESIDUE_FLAG_TERMINAL_BEG;
+// The atoms of the amino acid whose alpha carbon is ca, by their roles: CA is the backbone carbon bonded to a backbone
+// N and to the backbone C of a carbonyl (which tells it from the C, whose backbone carbon is the CA). CB is the heavy
+// atom on CA besides N and C (none for a glycine), HN the hydrogen of an N which has one. False where ca is no CA.
+static bool amino_acid_atoms_of_ca(md_amino_acid_atoms_t* out, const md_system_t* sys, md_atom_idx_t ca) {
+    if (md_atom_atomic_number(&sys->atom, (size_t)ca) != MD_Z_C || !atom_has_flags(sys, ca, MD_ATOM_FLAG_BACKBONE)) return false;
+    const md_atom_idx_t n = bonded_atom_with(sys, ca, MD_Z_N, MD_ATOM_FLAG_BACKBONE, 0, -1, -1);
+    if (n < 0) return false;
+    md_atom_idx_t c = -1;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)ca);
+    for (; md_bond_iter_has_next(&it) && c < 0; md_bond_iter_next(&it)) {
+        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+        if (md_atom_atomic_number(&sys->atom, (size_t)b) == MD_Z_C && atom_has_flags(sys, b, MD_ATOM_FLAG_BACKBONE) &&
+            bonded_atom_with(sys, b, MD_Z_O, 0, 0, -1, -1) >= 0) {
+            c = b;
+        }
     }
-    if (atom_is_chain_end(sys, aa->c, aa->ca, MD_Z_O)) {
-        topo_floodfill_flag(sys, aa->c, aa->ca, MD_ATOM_FLAG_TERMINAL_END, range, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN);
-        sys->residue.flags[res_idx] |= MD_RESIDUE_FLAG_TERMINAL_END;
-    }
+    if (c < 0) return false;
+    md_amino_acid_atoms_t a;
+    a.n  = n;
+    a.ca = ca;
+    a.c  = c;
+    a.o  = carbonyl_oxygen(sys, c);
+    a.cb = bonded_atom_with(sys, ca, 0, 0, 0, n, c);
+    a.hn = bonded_atom_with(sys, n, MD_Z_H, 0, 0, -1, -1);
+    if (a.hn >= 0 && bonded_atom_with(sys, n, MD_Z_H, 0, 0, a.hn, -1) >= 0) a.hn = -1;
+    if (out) *out = a;
     return true;
 }
 
-// Nucleotide whose backbone atoms were found by name: verify them by their bonds and give the atoms their roles.
-// It must also be a standard residue by name or be linked into a chain by a phosphodiester bond: the nucleotide
-// ligands (GTP, ATP, NAD, FAD, SAM, ...) are named like nucleotides atom by atom.
-static bool classify_nucleotide(md_system_t* sys, size_t res_idx, const md_nucleic_acid_atoms_t* na) {
-    // O3 - C3 - C4 - C5 - O5  (and P for nucleotides if not terminal)
-    if (md_bond_find(&sys->bond, na->o3, na->c3) == -1 ||
-        md_bond_find(&sys->bond, na->c3, na->c4) == -1 ||
-        md_bond_find(&sys->bond, na->c4, na->c5) == -1 ||
-        md_bond_find(&sys->bond, na->c5, na->o5) == -1 ||
-        (na->p != -1 && md_bond_find(&sys->bond, na->o5, na->p) == -1)) {
-        return false;
+// The atoms of the nucleotide whose C4' is c4, by their roles: C4' is the carbon of the backbone and of the sugar bonded
+// to a carbon of the backbone alone (C5'). P is -1 where the O5' has none. False where c4 is no C4'.
+static bool nucleotide_atoms_of_c4(md_nucleic_acid_atoms_t* out, const md_system_t* sys, md_atom_idx_t c4) {
+    const md_atom_flags_t BB = MD_ATOM_FLAG_BACKBONE, NS = MD_ATOM_FLAG_NUCLEOSIDE, NB = MD_ATOM_FLAG_NUCLEOBASE;
+    if (md_atom_atomic_number(&sys->atom, (size_t)c4) != MD_Z_C || !atom_has_flags(sys, c4, BB | NS)) return false;
+    md_nucleic_acid_atoms_t a;
+    a.c4 = c4;
+    a.c5 = bonded_atom_with(sys, c4, MD_Z_C, BB, NS, -1, -1);
+    a.c3 = bonded_atom_with(sys, c4, MD_Z_C, BB | NS, 0, -1, -1);
+    a.o4 = bonded_atom_with(sys, c4, MD_Z_O, NS, BB, -1, -1);
+    a.o5 = bonded_atom_with(sys, a.c5, MD_Z_O, BB, 0, -1, -1);
+    a.o3 = bonded_atom_with(sys, a.c3, MD_Z_O, BB, 0, -1, -1);
+    a.c1 = bonded_atom_with(sys, a.o4, MD_Z_C, NS, BB, c4, -1);
+    a.c2 = bonded_atom_with(sys, a.c3, MD_Z_C, NS, BB | NB, c4, -1);
+    a.p  = bonded_atom_with(sys, a.o5, MD_Z_P, BB, 0, -1, -1);
+    if (a.c5 < 0 || a.c3 < 0 || a.o4 < 0 || a.o5 < 0 || a.o3 < 0 || a.c1 < 0 || a.c2 < 0) return false;
+    if (out) *out = a;
+    return true;
+}
+
+static inline bool atom_in_range(md_atom_idx_t a, md_urange_t range) {
+    return a >= 0 && range.beg <= (uint32_t)a && (uint32_t)a < range.end;
+}
+
+// The atoms of the one amino acid of a chain the residue (its atoms range) is: false where it holds the backbone of
+// none, or of more than one (a residue which is a whole chain)
+static bool residue_amino_acid_atoms(md_amino_acid_atoms_t* out, const md_system_t* sys, md_urange_t range) {
+    if (out) md_memset(out, -1, sizeof(*out));
+    size_t count = 0;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        md_amino_acid_atoms_t a;
+        if (amino_acid_atoms_of_ca(&a, sys, (md_atom_idx_t)i) && atom_in_range(a.n, range) && atom_in_range(a.c, range)) {
+            if (count++ == 0 && out) *out = a;
+        }
     }
-    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
-    if (!md_util_resname_nucleotide(md_system_residue_name(sys, res_idx)) &&
-        !(na->p != -1 && atom_bonded_outside(sys, na->p, range, MD_Z_O)) && !atom_bonded_outside(sys, na->o3, range, MD_Z_P)) {
-        return false;
+    return count == 1;
+}
+
+// As residue_amino_acid_atoms, of a nucleotide
+static bool residue_nucleotide_atoms(md_nucleic_acid_atoms_t* out, const md_system_t* sys, md_urange_t range) {
+    if (out) md_memset(out, -1, sizeof(*out));
+    size_t count = 0;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        md_nucleic_acid_atoms_t a;
+        if (nucleotide_atoms_of_c4(&a, sys, (md_atom_idx_t)i) && atom_in_range(a.o5, range) && atom_in_range(a.o3, range)) {
+            if (count++ == 0 && out) *out = a;
+        }
+    }
+    return count == 1;
+}
+
+// The residue each match of the chains is all of, where it is the only match the residue holds; -1 for none
+static int32_t* chain_units_own_residue(const md_system_t* sys, const backbone_chains_t* ch, md_temp_scope_t temp) {
+    int32_t* res = md_temp_alloc_array(temp, int32_t, MD_MAX(1, ch->num));
+    md_memset(res, -1, sizeof(int32_t) * MD_MAX(1, ch->num));
+    if (sys->residue.count == 0) return res;
+    uint32_t* count = md_temp_alloc_zero_array(temp, uint32_t, sys->residue.count);
+    for (size_t u = 0; u < ch->num; ++u) {
+        const md_atom_idx_t key = ch->aa ? ch->aa[u].ca : ch->na[u].c4;
+        const md_residue_idx_t r = md_system_residue_find_by_atom_idx(sys, (size_t)key);
+        if (r < 0) continue;
+        const md_urange_t range = md_system_residue_atom_range(sys, (size_t)r);
+        const bool whole = ch->aa ? (atom_in_range(ch->aa[u].n, range) && atom_in_range(ch->aa[u].c, range))
+                                  : (atom_in_range(ch->na[u].o5, range) && atom_in_range(ch->na[u].o3, range));
+        if (!whole) continue;
+        res[u] = r;
+        count[r] += 1;
+    }
+    for (size_t u = 0; u < ch->num; ++u) {
+        if (res[u] >= 0 && count[res[u]] != 1) res[u] = -1;
+    }
+    return res;
+}
+
+static void perceive_polymer_atoms(md_system_t* sys, const md_system_state_t* state) {
+    const size_t num_atoms = sys->atom.count;
+    if (num_atoms == 0 || !sys->atom.type_idx) return;
+    if (md_array_size(sys->atom.flags) < num_atoms) {
+        const size_t size = md_array_size(sys->atom.flags);
+        md_array_resize(sys->atom.flags, num_atoms, sys->alloc);
+        md_memset(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
     }
 
-    set_residue_kind(sys, res_idx, MD_RESIDUE_KIND_NUCLEOTIDE);
-    sys->residue.flags[res_idx] |= MD_RESIDUE_FLAG_RESOLVED;
-
-    if (na->p != -1) {
-        sys->atom.flags[na->p] |= MD_ATOM_FLAG_BACKBONE;
+    // Found anew: the roles of atoms are this step's alone (those of beads their model's)
+    const uint32_t roles = MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END;
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_ATOM) {
+            sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~roles);
+        }
     }
-    sys->atom.flags[na->o5] |= MD_ATOM_FLAG_BACKBONE;
-    sys->atom.flags[na->c5] |= MD_ATOM_FLAG_BACKBONE;
-    sys->atom.flags[na->c4] |= MD_ATOM_FLAG_BACKBONE;
-    sys->atom.flags[na->c3] |= MD_ATOM_FLAG_BACKBONE;
-    sys->atom.flags[na->o3] |= MD_ATOM_FLAG_BACKBONE;
+    if (sys->bond.count == 0) return;
 
-    if (na->c1 != -1 && na->c2 != -1 && na->o4 != -1) {
-        sys->atom.flags[na->c1] |= MD_ATOM_FLAG_NUCLEOSIDE;
-        sys->atom.flags[na->c2] |= MD_ATOM_FLAG_NUCLEOSIDE;
-        sys->atom.flags[na->c3] |= MD_ATOM_FLAG_NUCLEOSIDE;
-        sys->atom.flags[na->c4] |= MD_ATOM_FLAG_NUCLEOSIDE;
-        sys->atom.flags[na->o4] |= MD_ATOM_FLAG_NUCLEOSIDE;
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    const md_urange_t all = { 0, (uint32_t)num_atoms };
 
-        // The atom of the base bonded to the sugar (C1'), from which the base is flood filled
-        int base_start_atom = -1;
-        md_bond_iter_t it = md_bond_iter(&sys->bond, na->c1);
-        while (md_bond_iter_has_next(&it)) {
-            int n = md_bond_iter_atom_index(&it);
-            if (n != na->c2 && n != na->o4 && md_atom_atomic_number(&sys->atom, n) != MD_Z_H) {
-                base_start_atom = n;
+    backbone_chains_t prot = {0};
+    if (protein_chains_from_bonds(&prot, sys, state, temp)) {
+        const int32_t* own = chain_units_own_residue(sys, &prot, temp);
+        uint8_t* take = md_temp_alloc_zero_array(temp, uint8_t, prot.num);
+        for (size_t u = 0; u < prot.num; ++u) {
+            const md_amino_acid_atoms_t* a = &prot.aa[u];
+            if (own[u] >= 0) {
+                const md_urange_t range = md_system_residue_atom_range(sys, (size_t)own[u]);
+                take[u] = md_util_resname_amino_acid(md_system_residue_name(sys, (size_t)own[u])) ||
+                          atom_bonded_outside(sys, a->n, range, MD_Z_C) || atom_bonded_outside(sys, a->c, range, MD_Z_N);
+            } else {
+                take[u] = prot.prev[u] >= 0 || prot.next[u] >= 0;
+            }
+        }
+        // The backbones of all first, so no side chain reaches into another's backbone over a disulfide
+        for (size_t u = 0; u < prot.num; ++u) {
+            if (!take[u]) continue;
+            sys->atom.flags[prot.aa[u].n]  |= MD_ATOM_FLAG_BACKBONE;
+            sys->atom.flags[prot.aa[u].ca] |= MD_ATOM_FLAG_BACKBONE;
+            sys->atom.flags[prot.aa[u].c]  |= MD_ATOM_FLAG_BACKBONE;
+        }
+        for (size_t u = 0; u < prot.num; ++u) {
+            if (!take[u]) continue;
+            const md_amino_acid_atoms_t* a = &prot.aa[u];
+            const bool in_residue = own[u] >= 0;
+            const md_urange_t range = in_residue ? md_system_residue_atom_range(sys, (size_t)own[u]) : all;
+            if (a->cb >= 0) {
+                topo_floodfill_flag(sys, a->cb, a->ca, MD_ATOM_FLAG_SIDE_CHAIN, range, MD_ATOM_FLAG_BACKBONE, !in_residue);
+            }
+            // A free amino group (only hydrogens besides CA) begins the chain, a free carboxyl group (only oxygens
+            // besides CA) ends it
+            if (atom_is_chain_end(sys, a->n, a->ca, MD_Z_H)) {
+                topo_floodfill_flag(sys, a->n, a->ca, MD_ATOM_FLAG_TERMINAL_BEG, range, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN, !in_residue);
+            }
+            if (atom_is_chain_end(sys, a->c, a->ca, MD_Z_O)) {
+                topo_floodfill_flag(sys, a->c, a->ca, MD_ATOM_FLAG_TERMINAL_END, range, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN, !in_residue);
+            }
+        }
+    }
+
+    backbone_chains_t nucl = {0};
+    if (nucleic_chains_from_bonds(&nucl, sys, temp)) {
+        const int32_t* own = chain_units_own_residue(sys, &nucl, temp);
+        uint8_t* take = md_temp_alloc_zero_array(temp, uint8_t, nucl.num);
+        for (size_t u = 0; u < nucl.num; ++u) {
+            const md_nucleic_acid_atoms_t* a = &nucl.na[u];
+            if (own[u] >= 0) {
+                const md_urange_t range = md_system_residue_atom_range(sys, (size_t)own[u]);
+                take[u] = md_util_resname_nucleotide(md_system_residue_name(sys, (size_t)own[u])) ||
+                          (a->p >= 0 && atom_bonded_outside(sys, a->p, range, MD_Z_O)) || atom_bonded_outside(sys, a->o3, range, MD_Z_P);
+            } else {
+                take[u] = nucl.prev[u] >= 0 || nucl.next[u] >= 0;
+            }
+        }
+        for (size_t u = 0; u < nucl.num; ++u) {
+            if (!take[u]) continue;
+            const md_nucleic_acid_atoms_t* a = &nucl.na[u];
+            if (a->p >= 0) sys->atom.flags[a->p] |= MD_ATOM_FLAG_BACKBONE;
+            sys->atom.flags[a->o5] |= MD_ATOM_FLAG_BACKBONE;
+            sys->atom.flags[a->c5] |= MD_ATOM_FLAG_BACKBONE;
+            sys->atom.flags[a->c4] |= MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE;
+            sys->atom.flags[a->c3] |= MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE;
+            sys->atom.flags[a->o3] |= MD_ATOM_FLAG_BACKBONE;
+            sys->atom.flags[a->c1] |= MD_ATOM_FLAG_NUCLEOSIDE;
+            sys->atom.flags[a->c2] |= MD_ATOM_FLAG_NUCLEOSIDE;
+            sys->atom.flags[a->o4] |= MD_ATOM_FLAG_NUCLEOSIDE;
+        }
+        for (size_t u = 0; u < nucl.num; ++u) {
+            if (!take[u]) continue;
+            const md_nucleic_acid_atoms_t* a = &nucl.na[u];
+            const bool in_residue = own[u] >= 0;
+            const md_urange_t range = in_residue ? md_system_residue_atom_range(sys, (size_t)own[u]) : all;
+            // The base, from the atom of it bonded to the C1'
+            const md_atom_idx_t base = bonded_atom_with(sys, a->c1, 0, 0, 0, a->c2, a->o4);
+            if (base >= 0) {
+                topo_floodfill_flag(sys, base, a->c1, MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE, range, MD_ATOM_FLAG_BACKBONE, !in_residue);
+            }
+            // A free 3' hydroxyl ends the chain, a free 5' hydroxyl begins it
+            if (atom_is_chain_end(sys, a->o3, a->c3, MD_Z_H)) {
+                topo_floodfill_flag(sys, a->o3, a->c3, MD_ATOM_FLAG_TERMINAL_END, range, 0, !in_residue);
+            }
+            if (atom_is_chain_end(sys, a->o5, a->c5, MD_Z_H)) {
+                topo_floodfill_flag(sys, a->o5, a->c5, MD_ATOM_FLAG_TERMINAL_BEG, range, 0, !in_residue);
+            }
+        }
+    }
+
+    md_temp_end(temp);
+}
+
+// The residues of the chains by the roles of their atoms (POLYMER ATOMS), as protein_chains_from_bonds: in the order of
+// their CA, a residue following the one whose C is bonded to its N
+static bool protein_chains_from_roles(backbone_chains_t* out, const md_system_t* sys, md_temp_scope_t temp) {
+    const size_t num_atoms = sys->atom.count;
+    if (!sys->atom.flags || num_atoms == 0) return false;
+    md_amino_acid_atoms_t* units = NULL;
+    size_t num = 0;
+    for (size_t i = 0; i < num_atoms; ++i) {
+        num += amino_acid_atoms_of_ca(NULL, sys, (md_atom_idx_t)i);
+    }
+    if (num == 0) return false;
+    units = md_temp_alloc_array(temp, md_amino_acid_atoms_t, num);
+    int32_t* unit_of_n = md_temp_alloc_array(temp, int32_t, num_atoms);
+    md_memset(unit_of_n, -1, sizeof(int32_t) * num_atoms);
+    size_t k = 0;
+    for (size_t i = 0; i < num_atoms && k < num; ++i) {
+        if (amino_acid_atoms_of_ca(&units[k], sys, (md_atom_idx_t)i)) {
+            unit_of_n[units[k].n] = (int32_t)k;
+            k += 1;
+        }
+    }
+    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
+    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
+    md_memset(prev, -1, sizeof(int32_t) * num);
+    md_memset(next, -1, sizeof(int32_t) * num);
+    for (size_t u = 0; u < num; ++u) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)units[u].c);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int32_t v = unit_of_n[md_bond_iter_atom_index(&it)];
+            if (v >= 0 && v != (int32_t)u && prev[v] < 0) {
+                next[u] = v;
+                prev[v] = (int32_t)u;
                 break;
             }
-            md_bond_iter_next(&it);
-        }
-        if (base_start_atom != -1) {
-            topo_floodfill_flag(sys, base_start_atom, na->c1, MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE, range, MD_ATOM_FLAG_BACKBONE);
-        }
-
-        // A free 3' hydroxyl ends the chain, a free 5' hydroxyl begins it
-        if (atom_is_chain_end(sys, na->o3, na->c3, MD_Z_H)) {
-            topo_floodfill_flag(sys, na->o3, na->c3, MD_ATOM_FLAG_TERMINAL_END, range, 0);
-            sys->residue.flags[res_idx] |= MD_RESIDUE_FLAG_TERMINAL_END;
-        }
-        if (atom_is_chain_end(sys, na->o5, na->c5, MD_Z_H)) {
-            topo_floodfill_flag(sys, na->o5, na->c5, MD_ATOM_FLAG_TERMINAL_BEG, range, 0);
-            sys->residue.flags[res_idx] |= MD_RESIDUE_FLAG_TERMINAL_BEG;
         }
     }
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
+    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
+    out->num = num;
+    out->aa = units;
+    out->prev = prev;
+    out->next = next;
+    out->order = order;
+    out->begin = begin;
+    out->num_chains = backbone_chains(order, begin, prev, next, num, temp);
+    return true;
+}
+
+// As protein_chains_from_roles, of the nucleotides: in the order of their C4', one following that whose O3' is bonded to
+// its P
+static bool nucleic_chains_from_roles(backbone_chains_t* out, const md_system_t* sys, md_temp_scope_t temp) {
+    const size_t num_atoms = sys->atom.count;
+    if (!sys->atom.flags || num_atoms == 0) return false;
+    size_t num = 0;
+    for (size_t i = 0; i < num_atoms; ++i) {
+        num += nucleotide_atoms_of_c4(NULL, sys, (md_atom_idx_t)i);
+    }
+    if (num == 0) return false;
+    md_nucleic_acid_atoms_t* units = md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, num);
+    int32_t* unit_of_p = md_temp_alloc_array(temp, int32_t, num_atoms);
+    md_memset(unit_of_p, -1, sizeof(int32_t) * num_atoms);
+    size_t k = 0;
+    for (size_t i = 0; i < num_atoms && k < num; ++i) {
+        if (nucleotide_atoms_of_c4(&units[k], sys, (md_atom_idx_t)i)) {
+            if (units[k].p >= 0) unit_of_p[units[k].p] = (int32_t)k;
+            k += 1;
+        }
+    }
+    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
+    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
+    md_memset(prev, -1, sizeof(int32_t) * num);
+    md_memset(next, -1, sizeof(int32_t) * num);
+    for (size_t u = 0; u < num; ++u) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)units[u].o3);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int32_t v = unit_of_p[md_bond_iter_atom_index(&it)];
+            if (v >= 0 && v != (int32_t)u && prev[v] < 0) {
+                next[u] = v;
+                prev[v] = (int32_t)u;
+                break;
+            }
+        }
+    }
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
+    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
+    out->num = num;
+    out->na = units;
+    out->prev = prev;
+    out->next = next;
+    out->order = order;
+    out->begin = begin;
+    out->num_chains = backbone_chains(order, begin, prev, next, num, temp);
     return true;
 }
 
@@ -4253,10 +4675,15 @@ static void infer_coarse_grained_chain_ends(md_system_t* sys) {
 
 // Classifies the residues (amino acid, nucleotide, water, ion, lipid) from their names, atoms and bonds, and gives the
 // atoms of the amino acids and nucleotides whose backbone could be verified their roles.
-bool md_util_system_infer_residue_flags(md_system_t* sys) {
+bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
         return false;
+    }
+    // The atoms of the chains first: what follows reads them (POLYMER ATOMS)
+    if (sys->atom.count) {
+        MD_ASSERT(sys->alloc);
+        perceive_polymer_atoms(sys, state);
     }
     if (sys->residue.count == 0) {
         return true;
@@ -4309,12 +4736,14 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
         }
 
         // Amino acids and nucleotides are classified whatever their kind, as a predefined coarse grained type may
-        // have given the kind but the atoms of an atomistic one still want their roles
-        md_amino_acid_atoms_t prot_atoms = {0};
-        if (MIN_RES_LEN <= len && md_util_amino_acid_atoms_extract(&prot_atoms, &sys->atom, res_range)) {
-            // Atoms named like an amino acid's backbone but not bonded like one, or a ligand which is neither a standard
-            // residue nor linked into a chain: not an amino acid
-            classify_amino_acid(sys, residue_idx, &prot_atoms);
+        // have given the kind but the atoms of an atomistic one still have their roles: a residue which holds the
+        // backbone of one amino acid (nucleotide) of a chain is one (POLYMER ATOMS)
+        md_amino_acid_atoms_t prot_atoms;
+        if (residue_amino_acid_atoms(&prot_atoms, sys, res_range)) {
+            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_AMINO_ACID);
+            sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_RESOLVED;
+            if (md_atom_flags(&sys->atom, (size_t)prot_atoms.n) & MD_ATOM_FLAG_TERMINAL_BEG) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_BEG;
+            if (md_atom_flags(&sys->atom, (size_t)prot_atoms.c) & MD_ATOM_FLAG_TERMINAL_END) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_END;
             continue;
         }
         if (md_util_resname_amino_acid(res_name)) {
@@ -4323,9 +4752,12 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
             continue;
         }
 
-        md_nucleic_acid_atoms_t nucl_atoms = {0};
-        if (MIN_NUC_LEN <= len && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, res_range)) {
-            classify_nucleotide(sys, residue_idx, &nucl_atoms);
+        md_nucleic_acid_atoms_t nucl_atoms;
+        if (residue_nucleotide_atoms(&nucl_atoms, sys, res_range)) {
+            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_NUCLEOTIDE);
+            sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_RESOLVED;
+            if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o5) & MD_ATOM_FLAG_TERMINAL_BEG) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_BEG;
+            if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o3) & MD_ATOM_FLAG_TERMINAL_END) sys->residue.flags[residue_idx] |= MD_RESIDUE_FLAG_TERMINAL_END;
             continue;
         }
         if (md_util_resname_nucleotide(res_name)) {
@@ -4536,13 +4968,9 @@ static int nucleotide_type(const md_system_t* sys, size_t res_idx) {
     const md_str_t name = md_system_residue_name(sys, res_idx);
     if (md_util_resname_dna(name)) return 1;
     if (md_util_resname_rna(name)) return 2;
-    if (md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_RESOLVED) {
-        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            const md_str_t atom = md_atom_name(&sys->atom, i);
-            if (md_str_eq(atom, MD_STR_LIT("O2'")) || md_str_eq(atom, MD_STR_LIT("O2*"))) return 2;
-        }
-        return 1;
+    md_nucleic_acid_atoms_t na;
+    if ((md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_RESOLVED) && residue_nucleotide_atoms(&na, sys, md_system_residue_atom_range(sys, res_idx))) {
+        return bonded_atom_with(sys, na.c2, MD_Z_O, 0, 0, -1, -1) >= 0 ? 2 : 1;
     }
     return 0;
 }
@@ -5658,10 +6086,10 @@ static md_atom_pair_t chain_gap_link(const md_system_t* sys, size_t res_idx) {
     md_atom_pair_t pair = {{ (int32_t)range_a.end - 1, (int32_t)range_b.beg }};
     md_amino_acid_atoms_t aa_a, aa_b;
     md_nucleic_acid_atoms_t na_a, na_b;
-    if (md_util_amino_acid_atoms_extract(&aa_a, &sys->atom, range_a) && md_util_amino_acid_atoms_extract(&aa_b, &sys->atom, range_b)) {
+    if (residue_amino_acid_atoms(&aa_a, sys, range_a) && residue_amino_acid_atoms(&aa_b, sys, range_b)) {
         if (aa_a.c >= 0) pair.idx[0] = aa_a.c;
         if (aa_b.n >= 0) pair.idx[1] = aa_b.n;
-    } else if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
+    } else if (residue_nucleotide_atoms(&na_a, sys, range_a) && residue_nucleotide_atoms(&na_b, sys, range_b)) {
         if (na_a.o3 >= 0) pair.idx[0] = na_a.o3;
         if (na_b.p >= 0) pair.idx[1] = na_b.p;
         else if (na_b.o5 >= 0) pair.idx[1] = na_b.o5;
@@ -11169,7 +11597,7 @@ static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t res
 // RNA, Uusitalo et al. 2015, 2017; Martini 3 RNA of reForge): the phosphate bead BB1 in p, the sugar bead BB2 which
 // holds the C4' in c4 and the sugar bead BB3 which holds the C1' in c1, the other fields -1. A 5' end has no BB1. False
 // for a residue which is no nucleotide, or lacks BB2 or BB3. Their o5 is -1, which that of atoms never is
-// (md_util_nucleic_acid_atoms_extract requires it): that tells beads from atoms (nucleic_atoms_are_beads).
+// (nucleotide_atoms_of_c4 requires it): that tells beads from atoms (nucleic_atoms_are_beads).
 static bool nucleotide_backbone_beads(md_nucleic_acid_atoms_t* out, const md_system_t* sys, size_t res_idx) {
     if (md_system_residue_kind(sys, res_idx) != MD_RESIDUE_KIND_NUCLEOTIDE) return false;
     md_nucleic_acid_atoms_t na;
@@ -11235,15 +11663,9 @@ static size_t bonded_count_of_element(const md_system_t* sys, md_atom_idx_t atom
 // Whether the carboxyl group of an amino acid (its C) is free: its C bonded to two oxygens, O and OXT. Without bonds, by
 // the name of the second oxygen.
 static bool amino_acid_carboxyl_free(const md_system_t* sys, size_t res_idx, md_atom_idx_t c) {
+    (void)res_idx;
     bool has_bonds;
-    const size_t num_o = bonded_count_of_element(sys, c, MD_Z_O, &has_bonds);
-    if (has_bonds) return num_o >= 2;
-    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
-    for (uint32_t i = range.beg; i < range.end; ++i) {
-        const md_str_t name = md_atom_name(&sys->atom, i);
-        if (md_str_eq_cstr(name, "OXT") || md_str_eq_cstr(name, "OT2") || md_str_eq_cstr(name, "OC2") || md_str_eq_cstr(name, "O2")) return true;
-    }
-    return false;
+    return bonded_count_of_element(sys, c, MD_Z_O, &has_bonds) >= 2;
 }
 
 // Whether the chain ends between the consecutive residues a and b of a protein chain whose backbones are not linked,
@@ -11278,10 +11700,10 @@ static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t 
     const md_urange_t range_b = md_system_residue_atom_range(sys, b);
     md_amino_acid_atoms_t aa_a, aa_b;
     md_nucleic_acid_atoms_t na_a, na_b;
-    if (md_util_amino_acid_atoms_extract(&aa_a, &sys->atom, range_a) && md_util_amino_acid_atoms_extract(&aa_b, &sys->atom, range_b)) {
+    if (residue_amino_acid_atoms(&aa_a, sys, range_a) && residue_amino_acid_atoms(&aa_b, sys, range_b)) {
         return protein_chain_ends_between(sys, a, b, &aa_a, &aa_b);
     }
-    if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
+    if (residue_nucleotide_atoms(&na_a, sys, range_a) && residue_nucleotide_atoms(&na_b, sys, range_b)) {
         return nucleic_chain_ends_between(sys, &na_a, &na_b);
     }
     if (nucleotide_backbone_beads(&na_a, sys, a) && nucleotide_backbone_beads(&na_b, sys, b)) {
@@ -11383,276 +11805,6 @@ static inline void flush_nucleic_backbone_segment(md_nucleic_acid_atoms_t* backb
     }
     md_array_shrink(backbone_atoms, 0);
     *res_base = -1;
-}
-
-// ### BACKBONES FROM THE BONDS ###
-//
-// The backbones of an atomistic system are found from its covalent bonds alone (md_match within each structure),
-// whatever its atoms and residues are called: an XYZ file or the geometry of a QM calculation has no residues, a LAMMPS
-// data file names its atoms by their types and its residues "MOL". The names play no part. What is found is what a
-// cartoon and the secondary structure need: the atoms of each segment, in order along each chain.
-//
-//   AMINO ACIDS  N-CA-C-O, the bond orders not tested: they are md_chem's perception of bonds which were themselves
-//                inferred from distances, and one wrong bond (a clash between two chains taken for a bond) moves the
-//                double bond of a carbonyl onto its C-N and loses the residue. Without orders N-CA-CB-OG of a serine or a
-//                threonine matches too, as does N-CD-CG-OD1 of a hydroxyproline. The matches are taken best first, each
-//                where its N, CA and C are not taken yet: one whose C is bonded to the N of another match (a peptide
-//                bond), then one whose C has two oxygens (the carboxylate of a C terminus), then one whose C-O is as short
-//                as a double bond (which tells the carbonyl of a C terminus without its OXT from a hydroxyl). CB is the
-//                heavy atom on CA besides N and C (none for a glycine), HN the hydrogen of an N which has one.
-//   NUCLEOTIDES  The sugar with its backbone, O5'-C5'-C4'(-O4'-C1'-C2'-C3'-)C3'-O3', and the P bonded to the O5'. A
-//                sugar matches in one way only.
-//   CHAINS       A residue follows the one whose C (O3') is bonded to its N (P). A chain runs from a residue which follows
-//                none; what is left are rings (a cyclic peptide), cut before their first residue. A chain shorter than
-//                min_length is no backbone: that leaves out the free amino acids and nucleotides (ATP, GTP) and the
-//                groups which match without being residues (N7-C5-C6=O6 of a guanine, the ethanolamine of a lipid).
-//   RESIDUES     A segment is of the residue which holds its CA (C4'), where that residue holds the CA of no other
-//                segment; else of none (-1): a system without residues, or a residue which is a whole chain (a LAMMPS
-//                molecule). A range is within one part, the part of its residues, and is cut where that changes; one of
-//                residues of none is of no part (-1). Two consecutive residues of a part whose segments are not linked
-//                are a CHAIN BREAK (md_util.h), unless the chain ends there.
-//
-// The ranges come in the order of their first atom (CA or C4'), with the traces of the coarse grained residues.
-
-// Ångström below which a bond from C to O is double: C=O is 1.23 long, C-O 1.43
-#define CARBONYL_MAX_DIST 1.33f
-
-static inline bool atoms_closer_than(const md_system_state_t* state, md_atom_idx_t a, md_atom_idx_t b, float max_dist) {
-    if (!md_system_state_has_coords(state) || (size_t)a >= state->num_atoms || (size_t)b >= state->num_atoms) return false;
-    md_f32x3_t d = md_f32x3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
-    md_util_min_image_vec3(&d, 1, &state->unitcell);
-    return md_f32x3_dot(d, d) < max_dist * max_dist;
-}
-
-// The first neighbour of atom a of element z, which is neither x nor y (z 0: any element but hydrogen)
-static md_atom_idx_t bonded_atom_other(const md_system_t* sys, md_atom_idx_t a, md_atomic_number_t z, md_atom_idx_t x, md_atom_idx_t y) {
-    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)a);
-    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
-        if (b == x || b == y) continue;
-        const md_atomic_number_t zb = md_atom_atomic_number(&sys->atom, (size_t)b);
-        if (z ? zb == z : zb != MD_Z_H) return b;
-    }
-    return -1;
-}
-
-// The matches of a query of the backbone atoms in the system, at the structure level, bonds of any order
-static bool backbone_matches(md_match_result_t* out, md_str_t smiles, const md_system_t* sys, md_allocator_i* alloc) {
-    md_match_query_t query = {0};
-    if (!md_match_query_init_smiles(&query, smiles, alloc, NULL)) return false;
-    const md_match_desc_t desc = {
-        .query       = &query,
-        .level       = MD_MATCH_LEVEL_MOLECULE,
-        .mode        = MD_MATCH_MODE_UNIQUE,
-        .hydrogens   = MD_MATCH_RESOLVE_NEVER,
-        .bond_orders = MD_MATCH_RESOLVE_NEVER,
-        .charges     = MD_MATCH_RESOLVE_NEVER,
-    };
-    return md_match_find(out, &desc, sys, alloc) && out->count > 0;
-}
-
-static int cmp_u64(const void* a, const void* b) {
-    const uint64_t x = *(const uint64_t*)a;
-    const uint64_t y = *(const uint64_t*)b;
-    return (x > y) - (x < y);
-}
-
-// The order of the chains of num residues, from the residue each follows (prev, -1 for none) and is followed by (next):
-// out_order lists the residues chain by chain, a chain beginning at each residue of out_begin (num + 1 entries each).
-// Returns the number of chains.
-static size_t backbone_chains(uint32_t* out_order, uint32_t* out_begin, const int32_t* prev, const int32_t* next, size_t num, md_temp_scope_t temp) {
-    uint8_t* done = md_temp_alloc_zero_array(temp, uint8_t, num);
-    size_t num_order = 0;
-    size_t num_chains = 0;
-    // Open chains from their first residue, then the rings that are left
-    for (int pass = 0; pass < 2; ++pass) {
-        for (size_t u = 0; u < num; ++u) {
-            if (done[u] || (pass == 0 && prev[u] >= 0)) continue;
-            out_begin[num_chains++] = (uint32_t)num_order;
-            for (int32_t v = (int32_t)u; v >= 0 && !done[v]; v = next[v]) {
-                done[v] = 1;
-                out_order[num_order++] = (uint32_t)v;
-            }
-        }
-    }
-    out_begin[num_chains] = (uint32_t)num_order;
-    return num_chains;
-}
-
-// The residues of the polymer chains found from the bonds: the backbone atoms of each (aa of a protein, na of a nucleic
-// acid), the residue each follows (prev) and is followed by (next), -1 for none, and the chains they form, every one
-// whatever its length: chain c is the residues order[begin[c] .. begin[c + 1]).
-typedef struct backbone_chains_t {
-    size_t num;
-    md_amino_acid_atoms_t*   aa;
-    md_nucleic_acid_atoms_t* na;
-    int32_t*  prev;                 // [num]
-    int32_t*  next;                 // [num]
-    uint32_t* order;                // [num]
-    uint32_t* begin;                // [num_chains + 1]
-    size_t num_chains;
-} backbone_chains_t;
-
-static bool protein_chains_from_bonds(backbone_chains_t* out, const md_system_t* sys, const md_system_state_t* state, md_temp_scope_t temp) {
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_match_result_t res = {0};
-    // Columns: N CA C O
-    if (!backbone_matches(&res, MD_STR_LIT("NCCO"), sys, temp_alloc)) return false;
-    MD_ASSERT(res.width == 4);
-
-    const size_t num_atoms = sys->atom.count;
-    const size_t num_matches = res.count;
-
-    // The score of each match, its key: score descending, then the order found
-    uint8_t* is_n = md_temp_alloc_zero_array(temp, uint8_t, num_atoms);
-    for (size_t i = 0; i < num_matches; ++i) {
-        is_n[res.atom_idx[i * 4 + 0]] = 1;
-    }
-    uint64_t* key = md_temp_alloc_array(temp, uint64_t, num_matches);
-    for (size_t i = 0; i < num_matches; ++i) {
-        const int32_t* m = res.atom_idx + i * 4;
-        uint32_t score = 0;
-        uint32_t num_o = 0;
-        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)m[2]);
-        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
-            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, (size_t)b);
-            if (z == MD_Z_N && b != m[0] && is_n[b]) score |= 4;
-            if (z == MD_Z_O) num_o += 1;
-        }
-        if (num_o >= 2) score |= 2;
-        if (atoms_closer_than(state, m[2], m[3], CARBONYL_MAX_DIST)) score |= 1;
-        key[i] = (uint64_t)(7 - score) << 32 | i;
-    }
-    qsort(key, num_matches, sizeof(uint64_t), cmp_u64);
-
-    // Taken best first where N, CA and C are free; the residue whose N, CA or C an atom is, -1 for none
-    int32_t* residue_of = md_temp_alloc_array(temp, int32_t, num_atoms);
-    md_memset(residue_of, -1, sizeof(int32_t) * num_atoms);
-    uint64_t* by_ca = md_temp_alloc_array(temp, uint64_t, num_matches);
-    size_t num = 0;
-    for (size_t k = 0; k < num_matches; ++k) {
-        const uint32_t i = (uint32_t)key[k];
-        const int32_t* m = res.atom_idx + i * 4;
-        if (residue_of[m[0]] >= 0 || residue_of[m[1]] >= 0 || residue_of[m[2]] >= 0) continue;
-        residue_of[m[0]] = residue_of[m[1]] = residue_of[m[2]] = 0;
-        by_ca[num++] = (uint64_t)m[1] << 32 | i;
-    }
-    qsort(by_ca, num, sizeof(uint64_t), cmp_u64);
-
-    md_amino_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_amino_acid_atoms_t, num);
-    for (size_t u = 0; u < num; ++u) {
-        const int32_t* m = res.atom_idx + (uint32_t)by_ca[u] * 4;
-        md_amino_acid_atoms_t* a = &res_atoms[u];
-        a->n  = m[0];
-        a->ca = m[1];
-        a->c  = m[2];
-        a->o  = m[3];
-        a->cb = bonded_atom_other(sys, a->ca, 0, a->n, a->c);
-        a->hn = bonded_atom_other(sys, a->n, MD_Z_H, -1, -1);
-        if (a->hn >= 0 && bonded_atom_other(sys, a->n, MD_Z_H, a->hn, -1) >= 0) a->hn = -1;
-        residue_of[a->n] = residue_of[a->ca] = residue_of[a->c] = (int32_t)u;
-    }
-
-    // Residue v follows u when the C of u is bonded to the N of v
-    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
-    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
-    md_memset(prev, -1, sizeof(int32_t) * num);
-    md_memset(next, -1, sizeof(int32_t) * num);
-    for (size_t u = 0; u < num; ++u) {
-        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].c);
-        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
-            const int32_t v = residue_of[b];
-            if (v >= 0 && v != (int32_t)u && res_atoms[v].n == b && prev[v] < 0) {
-                next[u] = v;
-                prev[v] = (int32_t)u;
-                break;
-            }
-        }
-    }
-
-    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
-    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
-    const size_t num_chains = backbone_chains(order, begin, prev, next, num, temp);
-
-    out->num = num;
-    out->aa = res_atoms;
-    out->prev = prev;
-    out->next = next;
-    out->order = order;
-    out->begin = begin;
-    out->num_chains = num_chains;
-    return num > 0;
-}
-
-static bool nucleic_chains_from_bonds(backbone_chains_t* out, const md_system_t* sys, md_temp_scope_t temp) {
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_match_result_t res = {0};
-    // Columns: O5' C5' C4' O4' C1' C2' C3' O3'
-    if (!backbone_matches(&res, MD_STR_LIT("OCC1OCCC1O"), sys, temp_alloc)) return false;
-    MD_ASSERT(res.width == 8);
-
-    const size_t num_atoms = sys->atom.count;
-
-    // A sugar matches in one way only; the sugars by their C4'
-    uint64_t* by_c4 = md_temp_alloc_array(temp, uint64_t, res.count);
-    for (size_t i = 0; i < res.count; ++i) {
-        by_c4[i] = (uint64_t)res.atom_idx[i * 8 + 2] << 32 | i;
-    }
-    qsort(by_c4, res.count, sizeof(uint64_t), cmp_u64);
-
-    // The residue whose P an atom is, -1 for none
-    int32_t* residue_of_p = md_temp_alloc_array(temp, int32_t, num_atoms);
-    md_memset(residue_of_p, -1, sizeof(int32_t) * num_atoms);
-    md_nucleic_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, res.count);
-    size_t num = 0;
-    for (size_t k = 0; k < res.count; ++k) {
-        if (k > 0 && by_c4[k] >> 32 == by_c4[k - 1] >> 32) continue;
-        const int32_t* m = res.atom_idx + (uint32_t)by_c4[k] * 8;
-        md_nucleic_acid_atoms_t* a = &res_atoms[num];
-        a->o5 = m[0];
-        a->c5 = m[1];
-        a->c4 = m[2];
-        a->o4 = m[3];
-        a->c1 = m[4];
-        a->c2 = m[5];
-        a->c3 = m[6];
-        a->o3 = m[7];
-        a->p  = bonded_atom_other(sys, a->o5, MD_Z_P, -1, -1);
-        if (a->p >= 0 && residue_of_p[a->p] < 0) residue_of_p[a->p] = (int32_t)num;
-        num += 1;
-    }
-
-    // Residue v follows u when the O3' of u is bonded to the P of v
-    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
-    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
-    md_memset(prev, -1, sizeof(int32_t) * num);
-    md_memset(next, -1, sizeof(int32_t) * num);
-    for (size_t u = 0; u < num; ++u) {
-        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].o3);
-        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-            const int32_t v = residue_of_p[md_bond_iter_atom_index(&it)];
-            if (v >= 0 && v != (int32_t)u && prev[v] < 0) {
-                next[u] = v;
-                prev[v] = (int32_t)u;
-                break;
-            }
-        }
-    }
-
-    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
-    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
-    const size_t num_chains = backbone_chains(order, begin, prev, next, num, temp);
-
-    out->num = num;
-    out->na = res_atoms;
-    out->prev = prev;
-    out->next = next;
-    out->order = order;
-    out->begin = begin;
-    out->num_chains = num_chains;
-    return num > 0;
 }
 
 // The residue of each residue of the chains (RESIDUES above): of its CA (C4'), -1 where that residue holds the CA (C4')
@@ -12682,16 +12834,16 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
     }
 
     if (sys->bond.count && sys->atom.type_idx) {
-        // Atoms: from the bonds, whatever the atoms and residues are called (BACKBONES FROM THE BONDS)
+        // Atoms: by the roles the bonds gave them, whatever the atoms and residues are called (POLYMER ATOMS)
         const size_t temp_pos = md_vm_arena_get_pos(temp_arena);
         backbone_chains_t prot = {0};
-        if (protein_chains_from_bonds(&prot, sys, state, temp_scope)) {
+        if (protein_chains_from_roles(&prot, sys, temp_scope)) {
             const int32_t* unit_res = chain_units_residue(sys, &prot, temp_scope);
             commit_backbone_chains(sys, &prot, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
             mark_backbone_chain_breaks(sys, &prot, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
         }
         backbone_chains_t nucl = {0};
-        if (nucleic_chains_from_bonds(&nucl, sys, temp_scope)) {
+        if (nucleic_chains_from_roles(&nucl, sys, temp_scope)) {
             const int32_t* unit_res = chain_units_residue(sys, &nucl, temp_scope);
             commit_backbone_chains(sys, &nucl, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
             mark_backbone_chain_breaks(sys, &nucl, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
@@ -12886,7 +13038,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
     // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.
     if (flags & MD_UTIL_INFER_RESIDUE_BIT) {
-        md_util_system_infer_residue_flags(sys);
+        md_util_system_infer_residue_flags(sys, state);
     }
 
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are

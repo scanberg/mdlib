@@ -79,9 +79,9 @@ typedef enum {
     MD_RESIDUE_FLAG_NONE                = 0,
     MD_RESIDUE_FLAG_KIND_MASK           = 0x7,      // md_residue_kind_t, see md_residue_flags_kind
 
-    // The backbone of the amino acid or nucleotide was found by atom names and verified by its bonds, and its atoms
-    // were given their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the residue is one by name only: an unusual
-    // naming scheme, missing atoms, or a coarse grained model.
+    // The residue holds the backbone of one amino acid or nucleotide of a chain, found from its bonds, and its atoms
+    // have their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the residue is one by name only: missing atoms, no
+    // bonds, or a coarse grained model.
     MD_RESIDUE_FLAG_RESOLVED            = 0x10,
     MD_RESIDUE_FLAG_TERMINAL_BEG        = 0x20,     // Begins its chain: a free amino group (N-terminus), a free 5' end
     MD_RESIDUE_FLAG_TERMINAL_END        = 0x40,     // Ends its chain: a free carboxyl group (C-terminus), a free 3' end
