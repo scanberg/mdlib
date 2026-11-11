@@ -629,7 +629,7 @@ UTEST(json, strings) {
         if (s.len) {
             EXPECT_TRUE(memcmp(s.ptr, want.ptr, want.len) == 0);
             EXPECT_EQ('\0', s.ptr[s.len]);
-            md_str_free(s, heap);
+            md_free_str(heap, s);
         }
     }
 
@@ -875,7 +875,7 @@ static bool check_string(const gen_t* g, const expect_t* e, md_json_val_t v) {
     if (n != want.len || (n && memcmp(buf, want.ptr, n) != 0)) return false;
     const md_str_t s = md_json_string(v, md_get_heap_allocator());
     const bool ok = s.len == want.len && (s.len == 0 || memcmp(s.ptr, want.ptr, s.len) == 0);
-    if (s.len) md_str_free(s, md_get_heap_allocator());
+    if (s.len) md_free_str(md_get_heap_allocator(), s);
     return ok;
 }
 

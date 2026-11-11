@@ -29,15 +29,8 @@ typedef struct amber_table_t {
 } amber_table_t;
 
 static md_str_t amber_next_line(md_str_t* text) {
-    size_t nl = 0;
     md_str_t line;
-    if (!md_str_find_char(&nl, *text, '\n')) {
-        line = *text;
-        *text = (md_str_t){0};
-    } else {
-        line = md_str_substr(*text, 0, nl);
-        *text = md_str_substr(*text, nl + 1, SIZE_MAX);
-    }
+    md_str_cut(&line, text, *text, md_str_find_char(*text, '\n'));
     if (line.len && line.ptr[line.len - 1] == '\r') line.len -= 1;
     return line;
 }
@@ -68,7 +61,7 @@ static size_t amber_term(amber_table_t* t, md_str_t name) {
     for (size_t i = 0; i < md_array_size(t->terms); ++i) {
         if (strcmp(t->terms[i].slug, slug) == 0) return i;
     }
-    amber_term_t term = { .name = md_str_copy(name, t->alloc) };
+    amber_term_t term = { .name = md_alloc_str(t->alloc, name) };
     md_memcpy(term.slug, slug, sizeof(slug));
     // Rows recorded before the term appeared lack it
     for (size_t r = 0; r < md_array_size(t->time); ++r) md_array_push(term.values, NAN, t->alloc);
@@ -104,7 +97,7 @@ static void amber_parse_pairs(amber_table_t* t, md_str_t line, bool first_line, 
     size_t pos = 0;
     while (pos < line.len) {
         size_t eq = 0;
-        if (!md_str_find_char(&eq, md_str_substr(line, pos, SIZE_MAX), '=')) break;
+        if ((eq = md_str_find_char(md_str_substr(line, pos, SIZE_MAX), '=')) == MD_STR_NPOS) break;
         eq += pos;
         const md_str_t name = md_str_trim(md_str_substr(line, pos, eq - pos));
         size_t v = eq + 1;
@@ -154,8 +147,8 @@ static bool amber_parse_mdout(amber_table_t* t, md_str_t text, md_str_t path) {
         }
         // The averages and fluctuations at the end of the results, and between the stages of a run of several; and in a
         // TI run the averages of DV/DL ("DV/DL, AVERAGES OVER 50000 STEPS"), which are a record of the last step to look at
-        if (md_str_find_str(NULL, trimmed, MD_STR_LIT("A V E R A G E S")) || md_str_find_str(NULL, trimmed, MD_STR_LIT("F L U C T U A T I O N S")) ||
-            md_str_find_str(NULL, trimmed, MD_STR_LIT("AVERAGES OVER"))) {
+        if (md_str_contains_str(trimmed, MD_STR_LIT("A V E R A G E S")) || md_str_contains_str(trimmed, MD_STR_LIT("F L U C T U A T I O N S")) ||
+            md_str_contains_str(trimmed, MD_STR_LIT("AVERAGES OVER"))) {
             ti_region = 0;
             // Skip their record, up to its dashes
             while (text.len) {
@@ -165,7 +158,7 @@ static bool amber_parse_mdout(amber_table_t* t, md_str_t text, md_str_t path) {
             continue;
         }
         if (any_section && !in_results) continue;
-        if (!md_str_begins_with(trimmed, MD_STR_LIT("NSTEP")) || !md_str_find_char(NULL, trimmed, '=')) continue;
+        if (!md_str_begins_with(trimmed, MD_STR_LIT("NSTEP")) || !md_str_contains_char(trimmed, '=')) continue;
 
         // A record
         const int region = ti_region;
@@ -346,8 +339,8 @@ bool md_amber_energy_file_is_mdout(md_str_t filename) {
     md_file_close(&file);
     const md_str_t head = {buf, len};
     // The file assignments at the top of every mdout ("|  MDIN: mdin"), and the program that wrote it
-    return (md_str_find_str(NULL, head, MD_STR_LIT("MDIN:")) || md_str_find_str(NULL, head, MD_STR_LIT("MDOUT:"))) &&
-           (md_str_find_str(NULL, head, MD_STR_LIT("PMEMD")) || md_str_find_str(NULL, head, MD_STR_LIT("SANDER")) || md_str_find_str(NULL, head, MD_STR_LIT("Amber")));
+    return (md_str_contains_str(head, MD_STR_LIT("MDIN:")) || md_str_contains_str(head, MD_STR_LIT("MDOUT:"))) &&
+           (md_str_contains_str(head, MD_STR_LIT("PMEMD")) || md_str_contains_str(head, MD_STR_LIT("SANDER")) || md_str_contains_str(head, MD_STR_LIT("Amber")));
 }
 
 bool md_amber_energy_file_is_mden(md_str_t filename) {
@@ -465,7 +458,7 @@ bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t file
     {
         char canonical[4096];
         const size_t len = md_path_write_canonical(canonical, sizeof(canonical), filename);
-        const md_str_t source = len ? md_str_copy((md_str_t){canonical, len}, attributes->alloc) : md_str_copy(filename, attributes->alloc);
+        const md_str_t source = len ? md_alloc_str(attributes->alloc, (md_str_t){canonical, len}) : md_alloc_str(attributes->alloc, filename);
         const md_attribute_desc_t desc = {
             .path   = amber_join(path_buf, sizeof(path_buf), group, "source"),
             .format = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 0 },

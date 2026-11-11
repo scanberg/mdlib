@@ -1,6 +1,7 @@
 #include <md_edr.h>
 
 #include <core/md_allocator.h>
+#include <core/md_format.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
@@ -648,8 +649,8 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 		}
 
 		if (frame) {
-			md_array_push(frame->e_names, md_str_copy(name, alloc), alloc);
-			md_array_push(frame->e_units, md_str_copy(unit, alloc), alloc);
+			md_array_push(frame->e_names, md_alloc_str(alloc, name), alloc);
+			md_array_push(frame->e_units, md_alloc_str(alloc, unit), alloc);
 		}
 	}
 
@@ -661,7 +662,7 @@ done:
 static bool edr_file_open(edr_fp_t* fp, md_str_t filename) {
 	md_temp_scope_t temp_scope = md_temp_begin();
 	md_allocator_i* arena = md_temp_allocator(temp_scope);
-	md_str_t path = md_str_copy(filename, arena);
+	md_str_t path = md_alloc_str(arena, filename);
 	bool result = false;
 
 	{
@@ -766,8 +767,8 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, md_str_t filename, 
 	md_array_resize(energies->energy, (size_t)frame.nre, energies->alloc);
 	
 	for (int i = 0; i < frame.nre; ++i) {
-        energies->energy[i].name	 = md_str_copy(frame.e_names[i], energies->alloc);
-		energies->energy[i].unit_str = md_str_copy(frame.e_units[i], energies->alloc);
+        energies->energy[i].name	 = md_alloc_str(energies->alloc, frame.e_names[i]);
+		energies->energy[i].unit_str = md_alloc_str(energies->alloc, frame.e_units[i]);
         energies->energy[i].unit	 = unit_from_str(frame.e_units[i]);
 		energies->energy[i].values   = NULL;
 	}
@@ -885,7 +886,7 @@ static size_t edr_plan(edr_output_t* out, const md_edr_energies_t* e, bool* used
 
 		size_t loc;
 		md_str_t name = e->energy[i].name;
-		if (md_str_rfind_char(&loc, name, '-') && loc > 0 && loc + 1 < name.len) {
+		if (((loc = md_str_rfind_char(name, '-')) != MD_STR_NPOS) && loc > 0 && loc + 1 < name.len) {
 			md_str_t prefix = md_str_substr(name, 0, loc);
 			if (edr_try_group(o.member, e, prefix, edr_tensor_suffix, 9)) {
 				o.tensor = 1; o.components = 1; o.count = 9;
@@ -1049,7 +1050,7 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 			if (slug_len != base_len) {
 				MD_LOG_INFO("EDR: '" MD_STR_FMT "' published as '%s', its plain name was taken", MD_STR_ARG(out->label), slug);
 			}
-			md_array_push(taken, md_str_copy((md_str_t){slug, slug_len}, temp_alloc), temp_alloc);
+			md_array_push(taken, md_alloc_str(temp_alloc, (md_str_t){slug, slug_len}), temp_alloc);
 
 			const size_t per_row = out->count;
 			double* values = md_temp_alloc_array(temp, double, R * per_row);
@@ -1155,10 +1156,9 @@ bool md_edr_term_groups(md_edr_term_groups_t* out, const md_system_t* sys, md_st
     const md_group_data_t* g = &sys->group;
     if (!g->count || md_str_empty(term)) return false;
 
-    size_t colon;
-    if (md_str_find_char(&colon, term, ':')) {
-        if (colon == 0) return false;
-        const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
+    md_str_t head, pair;
+    if (md_str_cut(&head, &pair, term, md_str_find_char(term, ':'))) {
+        if (head.len == 0) return false;
         bool found = false;
         md_edr_term_groups_t fallback = {0};
         for (size_t p = 1; p + 1 < pair.len; ++p) {
@@ -1215,11 +1215,10 @@ size_t md_edr_terms_groups(uint32_t out_groups[], size_t cap, const md_system_t*
 }
 
 bool md_edr_term_is_of_groups(md_str_t term) {
-    size_t colon;
-    if (md_str_find_char(&colon, term, ':')) {
-        const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
-        size_t dash;
-        return colon > 0 && md_str_find_char(&dash, pair, '-') && dash > 0 && dash + 1 < pair.len;
+    md_str_t head, pair;
+    if (md_str_cut(&head, &pair, term, md_str_find_char(term, ':'))) {
+        const size_t dash = md_str_find_char(pair, '-');
+        return head.len > 0 && dash != MD_STR_NPOS && dash > 0 && dash + 1 < pair.len;
     }
     return (md_str_begins_with(term, MD_STR_LIT("T-")) && term.len > 2) || (md_str_begins_with(term, MD_STR_LIT("Lamb-")) && term.len > 5);
 }
@@ -1315,10 +1314,9 @@ size_t md_edr_system_infer_group_roles(md_system_t* sys, const md_str_t* term_na
     bool fits = true;
     for (size_t i = 0; i < count && fits; ++i) {
         const md_str_t term = term_names[i];
-        size_t colon;
-        if (md_str_find_char(&colon, term, ':')) {
+        md_str_t pair;
+        if (md_str_cut(NULL, &pair, term, md_str_find_char(term, ':'))) {
             // A group with itself: <a>-<a>, so the dash is in the middle
-            const md_str_t pair = md_str_substr(term, colon + 1, SIZE_MAX);
             if (pair.len < 3 || pair.len % 2 == 0 || pair.ptr[pair.len / 2] != '-') continue;
             const md_str_t a = md_str_substr(pair, 0, pair.len / 2), b = md_str_substr(pair, pair.len / 2 + 1, SIZE_MAX);
             if (md_str_eq(a, b)) fits = edr_names_add(energy, &num_energy, a);

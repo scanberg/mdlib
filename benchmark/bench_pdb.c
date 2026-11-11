@@ -27,5 +27,5 @@ UBENCH_EX(pdb, dppc64) {
     }
 
     md_arena_allocator_destroy(alloc);
-    md_str_free(text, md_get_heap_allocator());
+    md_free_str(md_get_heap_allocator(), text);
 }

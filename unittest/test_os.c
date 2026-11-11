@@ -5,6 +5,7 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_platform.h>
 
 UTEST(os, path_canonical) {
@@ -13,7 +14,7 @@ UTEST(os, path_canonical) {
     {
         char buf[1024];
         md_path_write_cwd(buf, sizeof(buf));
-        md_str_t path = md_str_printf(temp_arena, "%s/../../", buf);
+        md_str_t path = md_alloc_printf(temp_arena, "%s/../../", buf);
         md_str_t result = md_path_make_canonical(path, temp_arena);
         printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }
@@ -105,8 +106,8 @@ UTEST(os, path_relative) {
         md_str_t to   = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         md_str_t rel  = md_path_make_relative(from, to, temp_arena);
         md_str_t folder = {0};
-        EXPECT_TRUE(md_extract_folder_path(&folder, from));
-        md_str_t joined = md_str_printf(temp_arena, MD_STR_FMT MD_STR_FMT, MD_STR_ARG(folder), MD_STR_ARG(rel));
+        EXPECT_TRUE(md_path_folder(&folder, from));
+        md_str_t joined = md_alloc_printf(temp_arena, MD_STR_FMT MD_STR_FMT, MD_STR_ARG(folder), MD_STR_ARG(rel));
         EXPECT_TRUE(md_str_eq(md_path_make_canonical(joined, temp_arena), md_path_make_canonical(to, temp_arena)));
     }
     {
@@ -265,16 +266,6 @@ UTEST(os, path_validity) {
     // An empty path is never valid and never a directory (and must not read past the str)
     EXPECT_FALSE(md_path_is_valid((md_str_t){0}));
     EXPECT_FALSE(md_path_is_directory((md_str_t){0}));
-
-    // Absolute paths are recognized the same way on every platform
-    EXPECT_TRUE(md_path_is_absolute(MD_STR_LIT("/home/user/file.txt")));
-    EXPECT_TRUE(md_path_is_absolute(MD_STR_LIT("C:/Users/user/file.txt")));
-    EXPECT_TRUE(md_path_is_absolute(MD_STR_LIT("C:\\Users\\user\\file.txt")));
-    EXPECT_TRUE(md_path_is_absolute(MD_STR_LIT("//server/share/file.txt")));
-    EXPECT_FALSE(md_path_is_absolute(MD_STR_LIT("./file.txt")));
-    EXPECT_FALSE(md_path_is_absolute(MD_STR_LIT("../dir/file.txt")));
-    EXPECT_FALSE(md_path_is_absolute(MD_STR_LIT("dir/file.txt")));
-    EXPECT_FALSE(md_path_is_absolute((md_str_t){0}));
 }
 
 UTEST(os, file_info_extract) {

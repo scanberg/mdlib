@@ -500,7 +500,7 @@ static size_t pdb_test_compare_with_columns(md_str_t path) {
     size_t i = 0, mismatches = 0;
     static const size_t cols[5][2] = { {30, 8}, {38, 8}, {46, 8}, {54, 6}, {60, 6} };
     // The atoms of the first model, of the first alternate location
-    while (md_str_extract_line(&line, &rest) && i < sys.atom.count) {
+    while (md_parse_next_line(&line, &rest) && i < sys.atom.count) {
         if (!(md_str_eq_cstr_n(line, "ATOM", 4) || md_str_eq_cstr_n(line, "HETATM", 6))) continue;
         if (line.len > 16 && line.ptr[16] != ' ' && line.ptr[16] != 'A') continue;
         const float got[5] = { st.xyz[i].x, st.xyz[i].y, st.xyz[i].z, occupancy ? occupancy[i] : 0.0f, b_factor ? b_factor[i] : 0.0f };

@@ -13,6 +13,7 @@
 #include <core/md_os.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
 #include <core/md_unit.h>
 #include <core/md_vec_math.h>
 
@@ -211,7 +212,7 @@ static size_t h5_read_strs(md_str_t* dst, size_t cap, hid_t obj, bool is_attr, m
                 if (err >= 0) {
                     count = (size_t)n;
                     for (size_t i = 0; i < (size_t)n; ++i) {
-                        if (i < cap) dst[i] = buf[i] ? md_str_copy(md_str_from_cstr(buf[i]), alloc) : (md_str_t){0};
+                        if (i < cap) dst[i] = buf[i] ? md_alloc_str(alloc, md_str_from_cstr(buf[i])) : (md_str_t){0};
                         if (buf[i]) H5free_memory(buf[i]);
                     }
                 }
@@ -227,7 +228,7 @@ static size_t h5_read_strs(md_str_t* dst, size_t cap, hid_t obj, bool is_attr, m
                         size_t len = 0;
                         while (len < size && s[len] != '\0') ++len;
                         while (len > 0 && s[len - 1] == ' ') --len;
-                        dst[i] = md_str_copy((md_str_t){s, len}, alloc);
+                        dst[i] = md_alloc_str(alloc, (md_str_t){s, len});
                     }
                 }
             }
@@ -270,7 +271,7 @@ static size_t h5_children(md_array(md_str_t)* out, hid_t loc, const char* path, 
             char name[H5MD_PATH_MAX];
             const ssize_t len = H5Lget_name_by_idx(group, ".", H5_INDEX_NAME, H5_ITER_INC, i, name, sizeof(name), H5P_DEFAULT);
             if (len > 0 && (size_t)len < sizeof(name)) {
-                md_array_push(*out, md_str_copy((md_str_t){name, (size_t)len}, alloc), alloc);
+                md_array_push(*out, md_alloc_str(alloc, (md_str_t){name, (size_t)len}), alloc);
             }
         }
     }
@@ -299,7 +300,7 @@ static bool h5md_unit_parse(md_unit_t* out, md_str_t str) {
 
         int power = 1;
         size_t k = tok.len;
-        while (k > 0 && is_digit(tok.ptr[k - 1])) --k;
+        while (k > 0 && md_ascii_is_digit(tok.ptr[k - 1])) --k;
         if (k > 1 && k < tok.len && (tok.ptr[k - 1] == '+' || tok.ptr[k - 1] == '-')) {
             power = 0;
             for (size_t i = k; i < tok.len; ++i) power = power * 10 + (tok.ptr[i] - '0');
@@ -308,7 +309,7 @@ static bool h5md_unit_parse(md_unit_t* out, md_str_t str) {
         }
 
         md_unit_t factor;
-        if (is_digit(tok.ptr[0]) || tok.ptr[0] == '.') {
+        if (md_ascii_is_digit(tok.ptr[0]) || tok.ptr[0] == '.') {
             // Not strtod: it reads "0.1" as 0 in a decimal comma locale
             double value = 0.0;
             if (md_parse_f64(&value, tok) != tok.len || value == 0.0) {
@@ -1025,7 +1026,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
                     }
                     char name[64] = "";
                     if (H5Tenum_nameof(mem, raw + i * size, name, sizeof(name)) < 0) name[0] = '\0';
-                    names[i] = md_str_copy(md_str_from_cstr(name), scratch);
+                    names[i] = md_alloc_str(scratch, md_str_from_cstr(name));
                 }
             }
             H5Tclose(mem);
@@ -1033,7 +1034,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
             int64_t* species = md_alloc(scratch, N * sizeof(int64_t));
             if (h5_read_rows(species, dset, H5T_NATIVE_INT64, e.temporal ? 0 : -1, N)) {
                 for (size_t i = 0; i < N; ++i) {
-                    names[i] = (i > 0 && species[i] == species[i - 1]) ? names[i - 1] : md_str_printf(scratch, "%" PRId64, species[i]);
+                    names[i] = (i > 0 && species[i] == species[i - 1]) ? names[i - 1] : md_alloc_printf(scratch, "%" PRId64, species[i]);
                 }
             }
         }

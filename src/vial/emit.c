@@ -159,7 +159,7 @@ static bool const_of(infer_t* x, const vial_value_t* v, const T* t, vial_val_t* 
     case VIAL_VAL_STRS: {
         const uint32_t n = v->n;
         *out = vial_val_make(VIAL_DT_STR, 1, &n, a);
-        for (uint32_t i = 0; i < n; ++i) ((md_str_t*)out->data)[i] = md_str_copy(v->strs[i], a);
+        for (uint32_t i = 0; i < n; ++i) ((md_str_t*)out->data)[i] = md_alloc_str(a, v->strs[i]);
         return true;
     }
     case VIAL_VAL_LABELS: {
@@ -169,7 +169,7 @@ static bool const_of(infer_t* x, const vial_value_t* v, const T* t, vial_val_t* 
         for (uint32_t i = 0; i < n; ++i) {
             char buf[64];
             const size_t len = vial_unit_label(buf, sizeof(buf), x->sys, v->sets->level, v->sets->unit[i]);
-            ((md_str_t*)out->data)[i] = md_str_copy((md_str_t){buf, len}, a);
+            ((md_str_t*)out->data)[i] = md_alloc_str(a, (md_str_t){buf, len});
         }
         return true;
     }

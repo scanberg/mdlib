@@ -1,5 +1,6 @@
 #include "md_gl_util.h"
 #include <core/md_gl_util.h>
+#include <core/md_parse.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
@@ -30,7 +31,7 @@ bool md_gl_shader_compile(uint32_t shader, md_str_t src, const md_gl_shader_src_
     if (injections && num_injections > 0) {
         // Insert potential empty markers, they go after #version line
         md_str_t version_line;
-        md_str_extract_line(&version_line, &src);
+        md_parse_next_line(&version_line, &src);
         md_str_writer_push_str(&sb, version_line);
         md_str_writer_push_char(&sb, '\n');
         for (size_t i = 0; i < num_injections; ++i) {
@@ -41,7 +42,7 @@ bool md_gl_shader_compile(uint32_t shader, md_str_t src, const md_gl_shader_src_
         }
 
         md_str_t line;
-        while (md_str_extract_line(&line, &src)) {
+        while (md_parse_next_line(&line, &src)) {
             if (md_str_begins_with(line, MD_STR_LIT("#pragma"))) {
                 md_str_t marker = md_str_trim(md_str_substr(line, sizeof("#pragma"), SIZE_MAX));
                 for (size_t i = 0; i < num_injections; ++i) {

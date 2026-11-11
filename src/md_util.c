@@ -7,6 +7,7 @@
 #include <md_match.h>
 
 #include <core/md_coord_stream.h>
+#include <core/md_format.h>
 #include <core/md_compiler.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -1074,7 +1075,7 @@ static inline md_str_t nucleotide_resname(md_str_t name) {
     name = md_str_trim(name);
     const char* p = md_str_ptr(name);
     size_t n = 0;
-    while (n < name.len && is_alpha(p[n])) ++n;
+    while (n < name.len && md_ascii_is_alpha(p[n])) ++n;
     if (n == name.len) return name;
     if (n > 0 && n + 1 == name.len && (p[n] == '5' || p[n] == '3')) return md_str_substr(name, 0, n);
     return (md_str_t){0};
@@ -6211,7 +6212,7 @@ static inline bool pattern_match(const char* pattern, const char* str) {
             pattern++;
             str++;
         } else if (*pattern == '#') {
-            if (!is_digit((unsigned char)*str)) return false;
+            if (!md_ascii_is_digit((unsigned char)*str)) return false;
             pattern++;
             str++;
         } else {
@@ -11742,15 +11743,15 @@ static lipid_bead_t lipid_bead_kind(md_str_t name, bool sterol) {
     if (c == 'V' && sterol) return LIPID_BEAD_CHAIN;
     if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return LIPID_BEAD_POLAR;
     size_t i = 1;
-    if (!is_digit(name.ptr[i])) return LIPID_BEAD_POLAR;
-    while (i < name.len && is_digit(name.ptr[i])) ++i;
+    if (!md_ascii_is_digit(name.ptr[i])) return LIPID_BEAD_POLAR;
+    while (i < name.len && md_ascii_is_digit(name.ptr[i])) ++i;
     if (i == name.len) {
         if (c == 'R' || (c == 'C' && sterol)) return LIPID_BEAD_CHAIN;
         return LIPID_BEAD_LETTERLESS;
     }
     if (name.ptr[i] < 'A' || name.ptr[i] > 'H') return LIPID_BEAD_POLAR;
     ++i;
-    while (i < name.len && is_digit(name.ptr[i])) ++i;
+    while (i < name.len && md_ascii_is_digit(name.ptr[i])) ++i;
     return i == name.len ? LIPID_BEAD_CHAIN : LIPID_BEAD_POLAR;
 }
 
@@ -11765,7 +11766,7 @@ static inline bool lipid_atom_is_heavy(const md_system_t* sys, size_t i) {
 
 // A ring bead of a coarse grained sterol (R1 .. R6)
 static inline bool lipid_bead_sterol_ring(md_str_t name) {
-    return name.len >= 2 && name.ptr[0] == 'R' && is_digit(name.ptr[1]);
+    return name.len >= 2 && name.ptr[0] == 'R' && md_ascii_is_digit(name.ptr[1]);
 }
 
 // What an atom is to the tails: a bead by its name, an atom a CHAIN when it is a carbon bonded to carbons and hydrogens only
@@ -12866,7 +12867,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         const size_t n = md_array_size(sys->f); \
         if (n) { \
             md_array_resize(work->sys.f, n, alloc); \
-            for (size_t i = 0; i < n; ++i) work->sys.f[i] = md_str_empty(sys->f[i]) ? (md_str_t){0} : md_str_copy(sys->f[i], alloc); \
+            for (size_t i = 0; i < n; ++i) work->sys.f[i] = md_str_empty(sys->f[i]) ? (md_str_t){0} : md_alloc_str(alloc, sys->f[i]); \
         } \
     } while (0);
 
@@ -12941,7 +12942,7 @@ bool md_util_system_infer_publish(md_system_t* sys, md_util_infer_work_t* work) 
     md_allocator_i* alloc = sys->alloc;
     // What the system had of the derived: given back (to an arena, which frees nothing, this is nothing)
 #define FREE_ARRAY(f) md_array_free(sys->f, alloc);
-#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_str_free(sys->f[i], alloc); } md_array_free(sys->f, alloc);
+#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_free_str(alloc, sys->f[i]); } md_array_free(sys->f, alloc);
     MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
     MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
 #undef FREE_ARRAY

@@ -1,4 +1,5 @@
 #include <core/md_log.h>
+#include <core/md_format.h>
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_platform.h>

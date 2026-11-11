@@ -2238,7 +2238,7 @@ static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, con
         buf[len++] = ' ';
         len += (int)md_unit_print(buf + len, sizeof(buf) - (size_t)len, p->unit);
     }
-    p->text = md_str_copy((md_str_t){buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
+    p->text = md_alloc_str(k->alloc, (md_str_t){buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1)});
 }
 
 static bool core_prim(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {

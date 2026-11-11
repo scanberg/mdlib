@@ -12,6 +12,7 @@
 #include <md_attributes.h>
 #include <md_smiles.h>
 #include <core/md_bitset.h>
+#include <core/md_allocator.h>
 #include <core/md_hash.h>
 
 #include <core/md_common.h>
@@ -978,7 +979,7 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
         if (single) {
             char buf[64];
             const size_t len = vial_unit_label(buf, sizeof(buf), x->sys, a->sets->level, a->sets->unit[pos[0]]);
-            return (vial_value_t){.kind = VIAL_VAL_STR, .s = md_str_copy((md_str_t){buf, len}, x->alloc)};
+            return (vial_value_t){.kind = VIAL_VAL_STR, .s = md_alloc_str(x->alloc, (md_str_t){buf, len})};
         }
         return (vial_value_t){.kind = VIAL_VAL_LABELS, .sets = vial_sets_pick(a->sets, pos, cnt, x->alloc)};
     }

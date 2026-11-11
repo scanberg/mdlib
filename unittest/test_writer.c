@@ -112,14 +112,14 @@ UTEST(writer, str_writer_release) {
     EXPECT_STREQ("again", md_str_writer_to_cstr(&sw));
     md_str_writer_free(&sw);
     EXPECT_STREQ("released", released.ptr);    // the released string is its own
-    md_str_free(released, arena);
+    md_free_str(arena, released);
 
     md_str_writer_t hw = md_str_writer_create(heap);
     EXPECT_EQ((size_t)0, md_str_writer_release(&hw).len);
     md_str_writer_push_cstr(&hw, "x");
     md_str_t x = md_str_writer_release(&hw);
     EXPECT_TRUE(md_str_eq(x, MD_STR_LIT("x")));
-    md_str_free(x, heap);
+    md_free_str(heap, x);
     md_str_writer_free(&hw);
 
     md_arena_allocator_destroy(arena);
@@ -274,7 +274,7 @@ UTEST(writer, file_writer) {
 
         md_str_t written = md_load_textfile(path, heap);
         EXPECT_TRUE(md_str_eq(md_str_writer_to_str(&expected), written));
-        md_str_free(written, heap);
+        md_free_str(heap, written);
     }
 
     md_str_writer_free(&expected);

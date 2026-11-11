@@ -65,7 +65,7 @@ vial_val_t vial_val_float64(double f, md_allocator_i* alloc) {
 
 vial_val_t vial_val_str(md_str_t s, md_allocator_i* alloc) {
     vial_val_t v = vial_val_make(VIAL_DT_STR, 0, NULL, alloc);
-    *(md_str_t*)v.data = md_str_copy(s, alloc);
+    *(md_str_t*)v.data = md_alloc_str(alloc, s);
     return v;
 }
 
@@ -259,7 +259,7 @@ static vial_sets_t* sets_copy(const vial_sets_t* s, md_allocator_i* alloc) {
 static vial_prim_t* prims_copy(vial_prim_t* dst, const vial_prim_t* src, uint32_t n, md_allocator_i* alloc) {
     for (uint32_t i = 0; i < n; ++i) {
         dst[i] = src[i];
-        dst[i].text = src[i].text.len ? md_str_copy(src[i].text, alloc) : (md_str_t){0};
+        dst[i].text = src[i].text.len ? md_alloc_str(alloc, src[i].text) : (md_str_t){0};
         if (src[i].num_atoms) {
             uint32_t* at = md_alloc(alloc, src[i].num_atoms * sizeof(uint32_t));
             memcpy(at, src[i].atoms, src[i].num_atoms * sizeof(uint32_t));
@@ -310,7 +310,7 @@ vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc) {
     if (v->data && bytes) {
         c.data = md_alloc(alloc, bytes);
         memcpy(c.data, v->data, bytes);
-        if (v->dtype == VIAL_DT_STR) for (size_t i = 0; i < n; ++i) ((md_str_t*)c.data)[i] = md_str_copy(((const md_str_t*)v->data)[i], alloc);
+        if (v->dtype == VIAL_DT_STR) for (size_t i = 0; i < n; ++i) ((md_str_t*)c.data)[i] = md_alloc_str(alloc, ((const md_str_t*)v->data)[i]);
         if (v->dtype == VIAL_DT_DRAWING) {
             for (size_t i = 0; i < n; ++i) {
                 const vial_drawing_t* d = ((const vial_drawing_t**)v->data)[i];

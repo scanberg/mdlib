@@ -120,7 +120,7 @@ UTEST(cube, serialize_deserialize) {
         EXPECT_TRUE(cmp_cube_v3(cube_a.atom.coord[i], cube_b.atom.coord[i]));
 	}
 
-	md_str_free(str, md_get_heap_allocator());
+	md_free_str(md_get_heap_allocator(), str);
 	md_cube_free(&cube_a, md_get_heap_allocator());
 	md_cube_free(&cube_b, md_get_heap_allocator());
 }
@@ -193,7 +193,7 @@ UTEST(cube, no_atoms_and_values_per_point) {
     for (int i = 0; i < 8; ++i) {
         EXPECT_EQ(a.data.val[i], b.data.val[i]);
     }
-    md_str_free(str, alloc);
+    md_free_str(alloc, str);
     md_cube_free(&a, alloc);
     md_cube_free(&b, alloc);
 }

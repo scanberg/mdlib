@@ -58,7 +58,7 @@ typedef struct prmtop_t {
 static bool prmtop_parse_format(prmtop_block_t* b, md_str_t line) {
     // %FORMAT(20a4) %FORMAT(5E16.8) %FORMAT(10I8) %FORMAT(1a80)
     size_t open = 0;
-    if (!md_str_find_char(&open, line, '(')) return false;
+    if ((open = md_str_find_char(line, '(')) == MD_STR_NPOS) return false;
     md_str_t s = md_str_substr(line, open + 1, SIZE_MAX);
     int64_t count = 0, width = 0;
     const size_t n = md_parse_i64(&count, s);
@@ -81,15 +81,8 @@ static bool prmtop_parse_format(prmtop_block_t* b, md_str_t line) {
 }
 
 static md_str_t prmtop_next_line(md_str_t* text) {
-    size_t nl = 0;
     md_str_t line;
-    if (!md_str_find_char(&nl, *text, '\n')) {
-        line = *text;
-        *text = (md_str_t){0};
-    } else {
-        line = md_str_substr(*text, 0, nl);
-        *text = md_str_substr(*text, nl + 1, SIZE_MAX);
-    }
+    md_str_cut(&line, text, *text, md_str_find_char(*text, '\n'));
     if (line.len && line.ptr[line.len - 1] == '\r') line.len -= 1;
     return line;
 }

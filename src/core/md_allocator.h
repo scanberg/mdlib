@@ -1,7 +1,9 @@
 #pragma once
 
 #include <core/md_common.h>
+#include <core/md_str.h>
 #include <stddef.h>
+#include <stdarg.h>
 
 // THIS IS MASSIVELY INSPIRED BY THE API WHICH IS USED AT OURMACHINERY (https://ourmachinery.com/) 
 
@@ -78,6 +80,24 @@ void* md_temp_alloc_aligned(md_temp_scope_t temp, size_t size, size_t alignment)
 
 #define md_temp_alloc_array(temp, type, count) ((type*)md_temp_alloc(temp, sizeof(type) * (count)))
 #define md_temp_alloc_zero_array(temp, type, count) ((type*)md_temp_alloc_zero(temp, sizeof(type) * (count)))
+
+// ### STRINGS ###
+// md_str_t is a view and never owns what it points at: these copy into memory from alloc, which owns the
+// result. There is no freeing one string on its own; pass an arena (or a temp scope's allocator) that lives as
+// long as the strings do, and free that as a whole.
+
+// A zero terminated copy of str (the terminator is not counted in len). An empty str gives an empty result and
+// allocates nothing.
+md_str_t md_alloc_str(md_allocator_i* alloc, md_str_t str);
+
+// Formats with md_vsnprintf (the "C" locale) into memory from alloc. Empty, and nothing allocated, when nothing
+// is written.
+md_str_t md_alloc_printf (md_allocator_i* alloc, const char* format, ...) MD_PRINTF_FORMAT(2, 3);
+md_str_t md_alloc_vprintf(md_allocator_i* alloc, const char* format, va_list args);
+
+// TRANSITIONAL: frees a string from the functions above, made with an allocator that frees (the heap). It is
+// only here for the owners which still free their strings one by one; it goes once they have an arena.
+void md_free_str(md_allocator_i* alloc, md_str_t str);
 
 #ifdef __cplusplus
 }

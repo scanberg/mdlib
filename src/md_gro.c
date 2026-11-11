@@ -29,7 +29,7 @@ static size_t extract_float_tokens(md_str_t* tok_arr, size_t tok_cap, md_str_t s
     
     while (n < tok_cap && c < end) {
         // Find beg of float token
-        while (c < end && !(is_digit(*c) || *c == '-'))
+        while (c < end && !(md_ascii_is_digit(*c) || *c == '-'))
             ++c;
 
         if (c == end) {
@@ -39,7 +39,7 @@ static size_t extract_float_tokens(md_str_t* tok_arr, size_t tok_cap, md_str_t s
         ++c; // Skip the first found character (may be -, then we don't have to check against that again).
         
         // Find end of float token
-        while (c < end && (is_digit(*c) || *c == '.'))
+        while (c < end && (md_ascii_is_digit(*c) || *c == '.'))
             ++c;
         if (beg != c) {
             tok_arr[n++] = (md_str_t) {beg, c-beg};
@@ -61,7 +61,7 @@ static bool gro_coordinate_columns(size_t* width, size_t* decimals, md_str_t lin
     size_t from = 0;
     for (int i = 0; i < 3; ++i) {
         size_t loc;
-        if (!md_str_find_char(&loc, md_str_substr(coords, from, SIZE_MAX), '.')) return false;
+        if ((loc = md_str_find_char(md_str_substr(coords, from, SIZE_MAX), '.')) == MD_STR_NPOS) return false;
         dot[i] = from + loc;
         from = dot[i] + 1;
     }
@@ -219,7 +219,7 @@ static MD_FORCE_INLINE int64_t gro_res_number(md_str_t line) {
         while (i < 5 && c[i] == ' ') ++i;
         int64_t value = 0;
         uint32_t j = i;
-        while (j < 5 && is_digit(c[j])) value = value * 10 + (c[j++] - '0');
+        while (j < 5 && md_ascii_is_digit(c[j])) value = value * 10 + (c[j++] - '0');
         if (j == 5) return value;
     }
     return parse_int(md_str_trim(md_str_substr(line, 0, 5)));

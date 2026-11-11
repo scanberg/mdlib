@@ -14,6 +14,7 @@
 #include <core/md_parse.h>
 #include <core/md_reader.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
 #include <core/md_unit.h>
 #include <core/md_vec_math.h>
 
@@ -182,12 +183,12 @@ static bool molden_section_header(md_str_t* out_name, md_str_t* out_arg, md_str_
     if (line.len < 2 || line.ptr[0] != '[') {
         return false;
     }
-    size_t close;
-    if (!md_str_find_char(&close, line, ']')) {
+    md_str_t name, arg;
+    if (!md_str_cut(&name, &arg, line, md_str_find_char(line, ']'))) {
         return false;
     }
-    *out_name = md_str_trim(md_str_substr(line, 1, close - 1));
-    *out_arg  = md_str_trim(md_str_substr(line, close + 1, SIZE_MAX));
+    *out_name = md_str_trim(md_str_substr(name, 1, SIZE_MAX));   // after the '['
+    *out_arg  = md_str_trim(arg);
     return true;
 }
 
@@ -238,7 +239,7 @@ static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, md_str_t a
 
         md_str_t tok[8];
         md_str_t rest = line;
-        const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
+        const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &rest);
         if (num_tok < 6) {
             continue;
         }
@@ -257,7 +258,7 @@ static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, md_str_t a
         }
         md_array_push(molden->atomic_number, (uint8_t)z, molden->alloc);
         md_array_push(molden->coord, xyz, molden->alloc);
-        md_array_push(molden->atom_label, md_str_copy(tok[0], molden->alloc), molden->alloc);
+        md_array_push(molden->atom_label, md_alloc_str(molden->alloc, tok[0]), molden->alloc);
     }
     return md_array_size(molden->atomic_number) > 0;
 }
@@ -297,7 +298,7 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
 
         md_str_t tok[4];
         md_str_t scan = rest;
-        const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &scan);
+        const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan);
         if (num_tok == 0) {
             continue;
         }
@@ -346,7 +347,7 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
             }
             md_str_t ptok[4];
             md_str_t pscan = prim_line;
-            const size_t n = extract_tokens(ptok, MD_COUNTOF(ptok), &pscan);
+            const size_t n = md_parse_next_tokens(ptok, MD_COUNTOF(ptok), &pscan);
             if (n < 2) {
                 MD_LOG_ERROR("MOLDEN: malformed primitive line '" MD_STR_FMT "'", MD_STR_ARG(md_str_trim(prim_line)));
                 return false;
@@ -395,7 +396,7 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
         }
 
         size_t eq;
-        const bool is_key = md_str_find_char(&eq, s, '=') && eq <= 8;
+        const bool is_key = ((eq = md_str_find_char(s, '=')) != MD_STR_NPOS) && eq <= 8;
         if (is_key) {
             if (have_orb && num_coeff > 0) {
                 md_array_push(molden->orbital, orb, molden->alloc);
@@ -419,7 +420,7 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
             } else if (md_str_eq_cstr_ignore_case(key, "occup")) {
                 orb.occupation = molden_parse_float(val);
             } else if (md_str_eq_cstr_ignore_case(key, "sym")) {
-                orb.symmetry = md_str_copy(val, molden->alloc);
+                orb.symmetry = md_alloc_str(molden->alloc, val);
             }
             continue;
         }
@@ -430,7 +431,7 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
 
         md_str_t tok[2];
         md_str_t scan = s;
-        if (extract_tokens(tok, MD_COUNTOF(tok), &scan) < 2) {
+        if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan) < 2) {
             continue;
         }
         const int64_t ao = parse_int(tok[0]) - 1;
@@ -460,7 +461,7 @@ static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
 
         md_str_t tok[5];
         md_str_t scan = line;
-        if (extract_tokens(tok, MD_COUNTOF(tok), &scan) < 4) {
+        if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan) < 4) {
             continue;
         }
         const md_atomic_number_t z = md_atomic_number_from_symbol(tok[0], true);
@@ -471,7 +472,7 @@ static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
         };
         md_array_push(molden->fr_atomic_number, (uint8_t)z, molden->alloc);
         md_array_push(molden->fr_coord, xyz, molden->alloc);
-        md_array_push(molden->fr_label, md_str_copy(tok[0], molden->alloc), molden->alloc);
+        md_array_push(molden->fr_label, md_alloc_str(molden->alloc, tok[0]), molden->alloc);
     }
 }
 
@@ -501,7 +502,7 @@ static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
             md_str_t tok[4];
             md_str_t scan = disp_line;
             dvec3_t d = {0};
-            if (extract_tokens(tok, MD_COUNTOF(tok), &scan) >= 3) {
+            if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan) >= 3) {
                 d.x = molden_parse_float(tok[0]);
                 d.y = molden_parse_float(tok[1]);
                 d.z = molden_parse_float(tok[2]);
@@ -526,7 +527,7 @@ static void molden_parse_number_series(md_array(double)* out, md_reader_i* reade
         }
         md_str_t tok[2];
         md_str_t scan = s;
-        if (extract_tokens(tok, MD_COUNTOF(tok), &scan) >= 1) {
+        if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan) >= 1) {
             md_array_push(*out, molden_parse_float(tok[0]), alloc);
         }
     }
@@ -566,12 +567,12 @@ static bool molden_parse(molden_t* molden, md_str_t str) {
             if (md_reader_peek_line(&reader, &title_line)) {
                 md_str_t n, a;
                 if (!molden_section_header(&n, &a, title_line)) {
-                    molden->title = md_str_copy(md_str_trim(title_line), molden->alloc);
+                    molden->title = md_alloc_str(molden->alloc, md_str_trim(title_line));
                 }
             }
             molden_skip_section(&reader);
         } else if (md_str_eq_cstr_ignore_case(name, "program")) {
-            molden->program = md_str_copy(arg, molden->alloc);
+            molden->program = md_alloc_str(molden->alloc, arg);
             molden_skip_section(&reader);
         } else if (md_str_eq_cstr_ignore_case(name, "atoms")) {
             if (!molden_parse_atoms(molden, &reader, arg)) {
@@ -1210,7 +1211,7 @@ bool md_molden_file_is_molden(md_str_t filename) {
 
     md_str_t str = { buf, n };
     md_str_t line;
-    while (md_str_extract_line(&line, &str)) {
+    while (md_parse_next_line(&line, &str)) {
         line = md_str_trim(line);
         if (md_str_empty(line)) {
             continue;

@@ -700,7 +700,7 @@ md_str_t md_json_string(md_json_val_t v, md_allocator_i* alloc) {
     const tok_t* t = val_tok(v);
     if (t->type != MD_JSON_TYPE_STRING) return result;
     const md_str_t raw = tok_text(v.doc, t);
-    if (!(t->flags & TOK_ESCAPED)) return md_str_copy(raw, alloc);
+    if (!(t->flags & TOK_ESCAPED)) return md_alloc_str(alloc, raw);
 
     // Escapes only ever shrink, so the raw length is enough
     char* buf = md_alloc(alloc, raw.len + 1);

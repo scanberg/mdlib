@@ -149,7 +149,7 @@ static inline size_t md_parse_i64(int64_t* out_value, md_str_t str) {
 
     // 18 digits cannot overflow, so they go in without a check
     const char* unchecked_end = (size_t)(end - c) > 18 ? c + 18 : end;
-    while (c < unchecked_end && is_digit(*c)) {
+    while (c < unchecked_end && md_ascii_is_digit(*c)) {
         value = value * 10 + (unsigned)(*c - '0');
         ++c;
     }
@@ -158,7 +158,7 @@ static inline size_t md_parse_i64(int64_t* out_value, md_str_t str) {
     }
 
     bool overflow = false;
-    for (; c < end && is_digit(*c); ++c) {
+    for (; c < end && md_ascii_is_digit(*c); ++c) {
         const unsigned d = (unsigned)(*c - '0');
         if (value > UINT64_MAX / 10 || (value == UINT64_MAX / 10 && d > UINT64_MAX % 10)) {
             overflow = true;
@@ -200,7 +200,7 @@ static inline bool is_int(md_str_t str) {
     const char* end = str.ptr + str.len;
     if (c < end && (*c == '-' || *c == '+')) ++c;
     if (c >= end) return false;
-    while (c < end && is_digit(*c)) ++c;
+    while (c < end && md_ascii_is_digit(*c)) ++c;
     return c == end;
 }
 
@@ -298,24 +298,62 @@ static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, md_str_t field, size_
     return true;
 }
 
-// LINES: a reader of a file or a string (md_reader.h)
+// LINES
+// Of a string in memory. For a file, or a string read in pieces, see md_reader.h.
+
+// Next, peek and skip agree on what a line is: the text up to a '\n' or the end, without the '\r' of a CRLF,
+// and a last line counts whether or not a newline ends it. Inlined, as parsers call them for every line.
+static inline bool md_parse_next_line(md_str_t* out_line, md_str_t* in_out_str) {
+    MD_ASSERT(out_line);
+    MD_ASSERT(in_out_str);
+    if (in_out_str->len == 0) return false;
+
+    const char* beg = in_out_str->ptr;
+    const char* end = beg + in_out_str->len;
+    const char* nl  = (const char*)memchr(beg, '\n', in_out_str->len);
+    const char* line_end = nl ? nl     : end;
+    const char* next     = nl ? nl + 1 : end;
+    if (nl && line_end > beg && line_end[-1] == '\r') --line_end;
+
+    out_line->ptr = beg;
+    out_line->len = (size_t)(line_end - beg);
+    in_out_str->ptr = next;
+    in_out_str->len = (size_t)(end - next);
+    return true;
+}
+
+static inline bool md_parse_peek_line(md_str_t* out_line, const md_str_t* in_str) {
+    MD_ASSERT(in_str);
+    md_str_t rest = *in_str;
+    return md_parse_next_line(out_line, &rest);
+}
+
+static inline bool md_parse_skip_line(md_str_t* in_out_str) {
+    MD_ASSERT(in_out_str);
+    if (in_out_str->len == 0) return false;
+    const char* nl   = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
+    const char* next = nl ? nl + 1 : in_out_str->ptr + in_out_str->len;
+    in_out_str->len -= (size_t)(next - in_out_str->ptr);
+    in_out_str->ptr  = next;
+    return true;
+}
 
 // TOKENS
 
 // Extracts the next token delimited by whitespace, skipping any whitespace in front of it, and
 // consumes the one delimiter character after it. False when only whitespace is left.
-static inline bool extract_token(md_str_t* tok, md_str_t* str) {
+static inline bool md_parse_next_token(md_str_t* tok, md_str_t* str) {
     MD_ASSERT(tok);
     MD_ASSERT(str);
     if (md_str_empty(*str)) return false;
 
     const char* end = str->ptr + str->len;
     const char* c = str->ptr;
-    while (c < end && is_whitespace(*c)) ++c;
+    while (c < end && md_ascii_is_whitespace(*c)) ++c;
     if (c >= end) return false;
 
     const char* tok_beg = c;
-    while (c < end && !is_whitespace(*c)) ++c;
+    while (c < end && !md_ascii_is_whitespace(*c)) ++c;
 
     tok->ptr = tok_beg;
     tok->len = c - tok_beg;
@@ -327,12 +365,12 @@ static inline bool extract_token(md_str_t* tok, md_str_t* str) {
 }
 
 // Up to tok_cap whitespace delimited tokens
-static inline size_t extract_tokens(md_str_t tok_arr[], size_t tok_cap, md_str_t* str) {
+static inline size_t md_parse_next_tokens(md_str_t tok_arr[], size_t tok_cap, md_str_t* str) {
     MD_ASSERT(tok_arr);
     MD_ASSERT(str);
 
     size_t num_tokens = 0;
-    while (num_tokens < tok_cap && extract_token(&tok_arr[num_tokens], str)) {
+    while (num_tokens < tok_cap && md_parse_next_token(&tok_arr[num_tokens], str)) {
         num_tokens += 1;
     }
     return num_tokens;
@@ -341,7 +379,7 @@ static inline size_t extract_tokens(md_str_t tok_arr[], size_t tok_cap, md_str_t
 // Extracts the field up to the next 'delim' (or the end) and consumes the delimiter. No whitespace is
 // skipped and empty fields are returned as such: "a,,b" is "a", "" and "b". A delimiter at the very
 // end does NOT give a trailing empty field - "a," is the one field "a" - as the input is used up.
-static inline bool extract_token_delim(md_str_t* tok, md_str_t* str, char delim) {
+static inline bool md_parse_next_token_delim(md_str_t* tok, md_str_t* str, char delim) {
     MD_ASSERT(tok);
     MD_ASSERT(str);
     if (!str->ptr || str->len == 0) return false;
@@ -361,14 +399,30 @@ static inline bool extract_token_delim(md_str_t* tok, md_str_t* str, char delim)
     return true;
 }
 
-// Up to tok_cap fields, see extract_token_delim
-static inline size_t extract_tokens_delim(md_str_t tok_arr[], size_t tok_cap, md_str_t* str, char delim) {
+// Up to tok_cap fields, see md_parse_next_token_delim
+static inline size_t md_parse_next_tokens_delim(md_str_t tok_arr[], size_t tok_cap, md_str_t* str, char delim) {
     MD_ASSERT(tok_arr);
     MD_ASSERT(str);
 
     size_t num_tokens = 0;
-    while (num_tokens < tok_cap && extract_token_delim(&tok_arr[num_tokens], str, delim)) {
+    while (num_tokens < tok_cap && md_parse_next_token_delim(&tok_arr[num_tokens], str, delim)) {
         num_tokens += 1;
     }
     return num_tokens;
 }
+
+// NUMBERS FROM TOKENS
+// The next whitespace delimited token (md_parse_next_token), read as an integer or a float. False, when there
+// is no token or it is not a number of that kind; the token is consumed either way.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+bool md_parse_next_i32(int32_t* val, md_str_t* in_out_str);
+bool md_parse_next_i64(int64_t* val, md_str_t* in_out_str);
+bool md_parse_next_f32(float*   val, md_str_t* in_out_str);
+bool md_parse_next_f64(double*  val, md_str_t* in_out_str);
+
+#ifdef __cplusplus
+}
+#endif

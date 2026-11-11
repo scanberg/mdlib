@@ -1,5 +1,7 @@
 ﻿#include <core/md_os.h>
 
+#include <core/md_path.h>
+#include <core/md_format.h>
 #include <core/md_common.h>
 #include <core/md_platform.h>
 #include <core/md_log.h>
@@ -170,7 +172,7 @@ static size_t path_root_len(md_str_t path) {
         }
         return (num_sep == 2) ? loc : path.len;
     }
-    if (path.len >= 3 && is_alpha(path.ptr[0]) && path.ptr[1] == ':' && path.ptr[2] == '/') {
+    if (path.len >= 3 && md_ascii_is_alpha(path.ptr[0]) && path.ptr[1] == ':' && path.ptr[2] == '/') {
         return 3;
     }
     return 0;
@@ -183,7 +185,7 @@ static bool path_char_equal(char a, char b) {
 #if MD_PLATFORM_WINDOWS
     // Windows paths are case insensitive. Only ASCII is folded here, which is enough to
     // keep the result correct: a missed match merely yields a longer relative path.
-    return to_lower(a) == to_lower(b);
+    return md_ascii_to_lower(a) == md_ascii_to_lower(b);
 #else
     return a == b;
 #endif
@@ -349,7 +351,7 @@ static size_t fullpath(char* buf, size_t cap, md_str_t path) {
         MD_LOG_ERROR("Failed to convert path to UTF-8: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return 0;
     }
-    md_replace_char(buf, len, '\\', '/');
+    md_chars_replace(buf, len, '\\', '/');
 
 #elif MD_PLATFORM_UNIX
     char zbuf[MD_MAX_PATH];
@@ -442,7 +444,7 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
         MD_LOG_ERROR("Failed to get current working directory");
         return 0;
     }
-    md_replace_char(buf, len, '\\', '/');
+    md_chars_replace(buf, len, '\\', '/');
 #elif MD_PLATFORM_UNIX
     if (getcwd(buf, cap) == NULL) {
         MD_LOG_ERROR("Failed to get current working directory");
@@ -474,7 +476,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to get path to executable");
         return 0;
     }
-    md_replace_char(buf, len, '\\', '/');
+    md_chars_replace(buf, len, '\\', '/');
     return len;
 #elif MD_PLATFORM_LINUX
     const ssize_t res = readlink("/proc/self/exe", buf, buf_cap - 1);
@@ -539,7 +541,7 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to convert home directory to UTF8");
         return 0;
     }
-    md_replace_char(buf, len, '\\', '/');
+    md_chars_replace(buf, len, '\\', '/');
     return len;
 #elif MD_PLATFORM_UNIX
     const char *homedir = NULL;
@@ -623,7 +625,7 @@ md_str_t md_path_make_canonical(md_str_t path, struct md_allocator_i* alloc) {
         return (md_str_t){0};
     }
 
-    return md_str_copy_cstrn(buf, len, alloc);
+    return md_alloc_str(alloc, md_str_from_cstrn(buf, len));
 }
 
 size_t md_path_write_relative(char* out_buf, size_t out_cap, md_str_t from, md_str_t to) {
@@ -654,7 +656,7 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, md_str_t from, md_s
 
     // 'from' anchors the result: if it identifies a file, the folder holding it is the base
     md_str_t base = {from_buf, from_len};
-    if (from_buf[from_len - 1] != '/' && !md_extract_folder_path(&base, base)) {
+    if (from_buf[from_len - 1] != '/' && !md_path_folder(&base, base)) {
         MD_LOG_ERROR("Failed to extract folder path from '" MD_STR_FMT "'", MD_STR_ARG(from));
         return 0;
     }
@@ -706,23 +708,7 @@ md_str_t md_path_make_relative(md_str_t from, md_str_t to, struct md_allocator_i
     if (len == 0) {
         return (md_str_t){0};
     }
-    return md_str_copy_cstrn(rel_buf, len, alloc);
-}
-
-bool md_path_is_absolute(md_str_t path) {
-    if (md_str_empty(path)) {
-        return false;
-    }
-    const bool sep0 = (path.ptr[0] == '/' || path.ptr[0] == '\\');
-    if (path.len >= 2 && sep0 && (path.ptr[1] == '/' || path.ptr[1] == '\\')) {
-        // UNC share
-        return true;
-    }
-    if (path.len >= 3 && is_alpha(path.ptr[0]) && path.ptr[1] == ':' && (path.ptr[2] == '/' || path.ptr[2] == '\\')) {
-        // Windows drive
-        return true;
-    }
-    return sep0;
+    return md_alloc_str(alloc, md_str_from_cstrn(rel_buf, len));
 }
 
 bool md_path_is_valid(md_str_t path) {
@@ -1004,7 +990,7 @@ bool md_file_info_extract_from_path(md_str_t filename, md_file_info_t* out_info)
 
 #elif MD_PLATFORM_UNIX
     md_temp_scope_t temp_scope = md_temp_begin();
-    md_str_t path = md_str_copy(filename, md_temp_allocator(temp_scope));
+    md_str_t path = md_alloc_str(md_temp_allocator(temp_scope), filename);
     struct stat st = {0};
     if (stat(path.ptr, &st) != 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: failed to query file info");
@@ -1147,7 +1133,7 @@ bool md_file_open(md_file_t* out_file, md_str_t filename, md_file_flags_t flags)
     open_flags |= O_CLOEXEC;
 #endif
 
-    md_str_t path = md_str_copy(filename, md_temp_allocator(temp_scope));
+    md_str_t path = md_alloc_str(md_temp_allocator(temp_scope), filename);
     const mode_t create_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
     int fd = -1;
@@ -1718,6 +1704,32 @@ size_t md_file_printf(md_file_t file, const char* format, ...) {
 done:
     if (args_active) va_end(args);
     md_temp_end(temp);
+    return result;
+}
+
+md_str_t md_load_textfile(md_str_t filename, struct md_allocator_i* alloc) {
+    MD_ASSERT(alloc);
+    md_file_t file = {0};
+    md_str_t result = {0};
+    if (md_file_open(&file, filename, MD_FILE_READ)) {
+        size_t file_size = md_file_size(file);
+        char* mem = md_alloc(alloc, file_size + 1);
+        if (mem) {
+            size_t read_size = md_file_read(file, mem, file_size);
+            if (read_size == file_size) {
+                mem[file_size] = '\0'; // Zero terminate as a nice guy
+                result.ptr = mem;
+                result.len = file_size;
+            }
+            else {
+                MD_LOG_ERROR("Failed to read full textfile '" MD_STR_FMT "'", MD_STR_ARG(filename));
+                md_free(alloc, mem, file_size + 1);
+            }
+        } else {
+            MD_LOG_ERROR("Could not allocate %zu bytes for file '" MD_STR_FMT "'", file_size + 1, MD_STR_ARG(filename));
+        }
+        md_file_close(&file);
+    }
     return result;
 }
 

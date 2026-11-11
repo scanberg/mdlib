@@ -1299,7 +1299,7 @@ static inline void push_sphere(vec3_t xyz, float r, uint32_t color, md_script_vi
 static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis) {
     MD_ASSERT(vis);
     MD_ASSERT(vis->alloc);
-    md_script_vis_text_t text = {xyz, md_str_copy_cstr(cstr, vis->alloc) };
+    md_script_vis_text_t text = {xyz, md_alloc_str(vis->alloc, md_str_from_cstr(cstr)) };
     md_array_push(vis->text, text, vis->alloc);
 } 
 
@@ -1325,7 +1325,7 @@ static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, 
 
     md_script_vis_text_t text = {
         .pos   = xyz,
-        .str   = md_str_copy((md_str_t){buf, len}, vis->alloc),
+        .str   = md_alloc_str(vis->alloc, (md_str_t){buf, len}),
         .value = value,
         .unit  = unit,
     };

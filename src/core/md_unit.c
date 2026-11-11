@@ -3,6 +3,7 @@
 #include <core/md_log.h>
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
 #include <core/md_parse.h>
 
 #include <float.h>
@@ -627,7 +628,7 @@ static bool parse_unit(md_unit_t* unit, md_str_t str);
 
 static bool parse_term(md_unit_t* unit, md_str_t str) {
     // A numeric factor, either as the numerator of an inverse unit ('1/s') or as an explicit scale ('1e-10*m')
-    if (is_digit(str.ptr[0]) || str.ptr[0] == '.') {
+    if (md_ascii_is_digit(str.ptr[0]) || str.ptr[0] == '.') {
         if (!is_float(str)) {
             return false;
         }
@@ -645,11 +646,11 @@ static bool parse_term(md_unit_t* unit, md_str_t str) {
     md_str_t exp  = {0};
     md_str_t rest = {0};
     size_t loc;
-    if (md_str_find_char(&loc, str, '^')) {
+    if ((loc = md_str_find_char(str, '^')) != MD_STR_NPOS) {
         base = md_str_substr(str, 0, loc);
         size_t i = loc + 1;
         if (i < str.len && (str.ptr[i] == '-' || str.ptr[i] == '+')) ++i;
-        while (i < str.len && is_digit(str.ptr[i])) ++i;
+        while (i < str.len && md_ascii_is_digit(str.ptr[i])) ++i;
         exp  = md_str_substr(str, loc + 1, i - (loc + 1));
         rest = md_str_substr(str, i, str.len);
     }
@@ -681,7 +682,7 @@ static bool parse_term(md_unit_t* unit, md_str_t str) {
 
     if (!md_str_empty(exp)) {
         int32_t exponent;
-        if (!md_str_extract_i32(&exponent, &exp)) {
+        if (!md_parse_next_i32(&exponent, &exp)) {
             return false;
         }
         result = md_unit_pow(result, exponent);

@@ -20,14 +20,13 @@ static bool ndx_parse(md_ndx_data_t* data, md_reader_i* r, md_allocator_i* alloc
     md_str_t line;
     while (ok && md_reader_extract_line(r, &line)) {
         ++line_num;
-        size_t semi;
-        if (md_str_find_char(&semi, line, ';')) line = md_str_substr(line, 0, semi);
+        line = md_str_substr(line, 0, md_str_find_char(line, ';'));
         line = md_str_trim(line);
         if (md_str_empty(line)) continue;
 
         if (line.ptr[0] == '[') {
             size_t close;
-            if (!md_str_find_char(&close, line, ']')) {
+            if ((close = md_str_find_char(line, ']')) == MD_STR_NPOS) {
                 MD_LOG_ERROR("NDX: Line %zu: a group header without ']'", line_num);
                 ok = false;
                 break;
@@ -40,7 +39,7 @@ static bool ndx_parse(md_ndx_data_t* data, md_reader_i* r, md_allocator_i* alloc
                 md_array_shrink(atoms, 0);
             }
             const md_str_t name = md_str_trim(md_str_substr(line, 1, close - 1));
-            md_ndx_group_t g = { .name = md_str_empty(name) ? (md_str_t){0} : md_str_copy(name, alloc) };
+            md_ndx_group_t g = { .name = md_str_empty(name) ? (md_str_t){0} : md_alloc_str(alloc, name) };
             md_array_push(groups, g, alloc);
             continue;
         }
@@ -51,7 +50,7 @@ static bool ndx_parse(md_ndx_data_t* data, md_reader_i* r, md_allocator_i* alloc
             break;
         }
         md_str_t tok;
-        while (extract_token(&tok, &line)) {
+        while (md_parse_next_token(&tok, &line)) {
             int64_t v = 0;
             if (md_parse_i64(&v, tok) != tok.len || v < 1 || v > (int64_t)MD_BITSET_MAX_INDEX) {
                 MD_LOG_ERROR("NDX: Line %zu: '" MD_STR_FMT "' is not an atom number", line_num, MD_STR_ARG(tok));
@@ -111,7 +110,7 @@ void md_ndx_data_free(md_ndx_data_t* data, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
     for (size_t i = 0; i < md_array_size(data->groups); ++i) {
-        if (!md_str_empty(data->groups[i].name)) md_str_free(data->groups[i].name, alloc);
+        if (!md_str_empty(data->groups[i].name)) md_free_str(alloc, data->groups[i].name);
         md_array_free(data->groups[i].atom_idx, alloc);
     }
     md_array_free(data->groups, alloc);

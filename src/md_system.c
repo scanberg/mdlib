@@ -7,6 +7,7 @@
 #include <stdio.h>
 
 #include <core/md_log.h>
+#include <core/md_format.h>
 #include <core/md_simd.h>
 #include <core/md_array.h>
 #include <core/md_hash.h>
@@ -68,7 +69,7 @@ void md_system_groups_free(md_system_t* sys) {
     md_allocator_i* alloc = sys->alloc;
     md_group_data_t* g = &sys->group;
     for (size_t i = 0; i < g->count; ++i) {
-        if (!md_str_empty(g->name[i])) md_str_free(g->name[i], alloc);
+        if (!md_str_empty(g->name[i])) md_free_str(alloc, g->name[i]);
         md_bitset_free(&g->atoms[i], alloc);
     }
     md_array_free(g->name, alloc);
@@ -86,7 +87,7 @@ static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_all
     md_array_resize(dst->atoms, src->count, alloc);
     md_array_push_array(dst->roles, src->roles, src->count, alloc);
     for (size_t i = 0; i < src->count; ++i) {
-        dst->name[i]  = md_str_empty(src->name[i]) ? (md_str_t){0} : md_str_copy(src->name[i], alloc);
+        dst->name[i]  = md_str_empty(src->name[i]) ? (md_str_t){0} : md_alloc_str(alloc, src->name[i]);
         dst->atoms[i] = md_bitset_copy(src->atoms[i], alloc);
     }
     md_memcpy(dst->role_offset, src->role_offset, sizeof(dst->role_offset));
@@ -110,7 +111,7 @@ size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, u
         }
     }
     if (idx == g->count) {
-        md_array_push(g->name, md_str_empty(name) ? (md_str_t){0} : md_str_copy(name, sys->alloc), sys->alloc);
+        md_array_push(g->name, md_str_empty(name) ? (md_str_t){0} : md_alloc_str(sys->alloc, name), sys->alloc);
         md_array_push(g->atoms, md_bitset_copy(atoms, sys->alloc), sys->alloc);
         md_array_push(g->roles, 0, sys->alloc);
         g->count += 1;
@@ -377,7 +378,7 @@ const char* md_residue_kind_name(md_residue_kind_t kind) {
 void md_part_type_data_free(md_part_type_data_t* type, md_allocator_i* alloc) {
     MD_ASSERT(type);
     for (size_t i = 0; i < md_array_size(type->description); ++i) {
-        if (!md_str_empty(type->description[i])) md_str_free(type->description[i], alloc);
+        if (!md_str_empty(type->description[i])) md_free_str(alloc, type->description[i]);
     }
     md_array_free(type->id, alloc);
     md_array_free(type->flags, alloc);
@@ -389,7 +390,7 @@ void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_alloca
     MD_ASSERT(type);
     if (count >= type->count) return;
     for (size_t i = count; i < md_array_size(type->description); ++i) {
-        if (!md_str_empty(type->description[i])) md_str_free(type->description[i], alloc);
+        if (!md_str_empty(type->description[i])) md_free_str(alloc, type->description[i]);
     }
     md_array_shrink(type->id, count);
     md_array_shrink(type->flags, count);
@@ -413,14 +414,14 @@ md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, md_str_t id
     }
     md_array_push(type->id, lbl, alloc);
     md_array_push(type->flags, flags, alloc);
-    md_array_push(type->description, md_str_copy(description, alloc), alloc);
+    md_array_push(type->description, md_alloc_str(alloc, description), alloc);
     return (md_part_type_idx_t)(type->count++);
 }
 
 void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc) {
     MD_ASSERT(type);
     for (size_t i = 0; i < md_array_size(type->name); ++i) {
-        if (!md_str_empty(type->name[i])) md_str_free(type->name[i], alloc);
+        if (!md_str_empty(type->name[i])) md_free_str(alloc, type->name[i]);
     }
     md_array_free(type->name, alloc);
     md_array_free(type->flags, alloc);
@@ -431,7 +432,7 @@ void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, m
     MD_ASSERT(type);
     if (count >= type->count) return;
     for (size_t i = count; i < md_array_size(type->name); ++i) {
-        if (!md_str_empty(type->name[i])) md_str_free(type->name[i], alloc);
+        if (!md_str_empty(type->name[i])) md_free_str(alloc, type->name[i]);
     }
     md_array_shrink(type->name, count);
     md_array_shrink(type->flags, count);
@@ -440,7 +441,7 @@ void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, m
 
 md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, md_str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc) {
     MD_ASSERT(type);
-    md_array_push(type->name, md_str_copy(name, alloc), alloc);
+    md_array_push(type->name, md_alloc_str(alloc, name), alloc);
     md_array_push(type->flags, flags, alloc);
     return (md_molecule_type_idx_t)(type->count++);
 }
@@ -607,7 +608,7 @@ void md_system_free(md_system_t* sys) {
     md_system_groups_free(sys);
 
     if (!md_str_empty(sys->description)) {
-        md_str_free(sys->description, alloc);
+        md_free_str(alloc, sys->description);
     }
 
     // REFERENCE STATE
@@ -725,7 +726,7 @@ static void copy_strings(md_str_t** dst, const md_str_t* src, md_allocator_i* al
     const size_t n = md_array_size(src);
     if (!n) return;
     md_array_resize(*dst, n, alloc);
-    for (size_t i = 0; i < n; ++i) (*dst)[i] = md_str_empty(src[i]) ? (md_str_t){0} : md_str_copy(src[i], alloc);
+    for (size_t i = 0; i < n; ++i) (*dst)[i] = md_str_empty(src[i]) ? (md_str_t){0} : md_alloc_str(alloc, src[i]);
 }
 
 bool md_system_copy(md_system_t* dst, const md_system_t* src) {
@@ -745,7 +746,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     dst->nonbonded = NULL;
     md_memset(&dst->attributes, 0, sizeof(dst->attributes));
     dst->attributes.alloc = alloc;
-    dst->description = md_str_empty(src->description) ? (md_str_t){0} : md_str_copy(src->description, alloc);
+    dst->description = md_str_empty(src->description) ? (md_str_t){0} : md_alloc_str(alloc, src->description);
 
     // Every array, CORE and DERIVED (md_system_fields.h)
 #define COPY_FIELD(f) COPY_ARRAY(dst->f, src->f, alloc);
@@ -955,7 +956,7 @@ md_system_extract_t* md_system_extract_begin(const md_system_t* sys, md_str_t ru
     for (size_t i = 0; i < num_paths; ++i) {
         extract_entry_t* e = &ex->entries[ex->num_entries];
         md_memset(e, 0, sizeof(*e));
-        e->path = md_str_copy(paths[i], arena);
+        e->path = md_alloc_str(arena, paths[i]);
         e->kind = md_str_eq(paths[i], MD_STR_LIT("atom/position")) ? EXTRACT_POSITION :
                   md_str_eq(paths[i], MD_STR_LIT("unitcell"))      ? EXTRACT_CELL : EXTRACT_OTHER;
 
@@ -1422,7 +1423,7 @@ bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_d
             if (!clash) break;
             len = base + (size_t)md_snprintf(slug + base, sizeof(slug) - base, "_%d", n);
         }
-        md_array_push(taken, md_str_copy((md_str_t){slug, len}, temp_alloc), temp_alloc);
+        md_array_push(taken, md_alloc_str(temp_alloc, (md_str_t){slug, len}), temp_alloc);
 
         ok = md_attributes_create(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), group, (md_str_t){slug, len}),

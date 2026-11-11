@@ -409,46 +409,46 @@ UTEST(parse, is_float_and_is_int) {
 // Tokens
 // ---------------------------------------------------------------------------
 
-UTEST(parse, extract_token) {
+UTEST(parse, next_token) {
     md_str_t str = MD_STR_LIT("  a bb\tccc\r\n  ");
     md_str_t tok;
-    EXPECT_TRUE(extract_token(&tok, &str));
+    EXPECT_TRUE(md_parse_next_token(&tok, &str));
     EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("a")));
-    EXPECT_TRUE(extract_token(&tok, &str));
+    EXPECT_TRUE(md_parse_next_token(&tok, &str));
     EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("bb")));
-    EXPECT_TRUE(extract_token(&tok, &str));
+    EXPECT_TRUE(md_parse_next_token(&tok, &str));
     EXPECT_TRUE(md_str_eq(tok, MD_STR_LIT("ccc")));
-    EXPECT_FALSE(extract_token(&tok, &str));
+    EXPECT_FALSE(md_parse_next_token(&tok, &str));
 
     md_str_t toks[2];
     str = MD_STR_LIT("1 2 3");
-    EXPECT_EQ(2u, extract_tokens(toks, MD_COUNTOF(toks), &str));
+    EXPECT_EQ(2u, md_parse_next_tokens(toks, MD_COUNTOF(toks), &str));
     EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT("2")));
     EXPECT_TRUE(md_str_eq(str, MD_STR_LIT("3")));
 }
 
-UTEST(parse, extract_token_delim) {
+UTEST(parse, next_token_delim) {
     md_str_t toks[8];
     md_str_t str = MD_STR_LIT("a,,b");
-    EXPECT_EQ(3u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_EQ(3u, md_parse_next_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
     EXPECT_TRUE(md_str_eq(toks[0], MD_STR_LIT("a")));
     EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT("")));
     EXPECT_TRUE(md_str_eq(toks[2], MD_STR_LIT("b")));
 
     // Whitespace is part of a field
     str = MD_STR_LIT(" a , b");
-    EXPECT_EQ(2u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_EQ(2u, md_parse_next_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
     EXPECT_TRUE(md_str_eq(toks[0], MD_STR_LIT(" a ")));
     EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT(" b")));
 
     // A leading delimiter gives an empty first field; a trailing one no empty last field
     str = MD_STR_LIT(",a,");
-    EXPECT_EQ(2u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_EQ(2u, md_parse_next_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
     EXPECT_TRUE(md_str_eq(toks[0], MD_STR_LIT("")));
     EXPECT_TRUE(md_str_eq(toks[1], MD_STR_LIT("a")));
 
     str = MD_STR_LIT("");
-    EXPECT_EQ(0u, extract_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
+    EXPECT_EQ(0u, md_parse_next_tokens_delim(toks, MD_COUNTOF(toks), &str, ','));
 }
 
 // ---------------------------------------------------------------------------
@@ -459,21 +459,21 @@ UTEST(parse, peek_and_skip_agree_with_extract) {
     md_str_t str = MD_STR_LIT("one\r\ntwo\nlast");
     md_str_t line;
 
-    EXPECT_TRUE(md_str_peek_line(&line, &str));
+    EXPECT_TRUE(md_parse_peek_line(&line, &str));
     EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("one")));
-    EXPECT_TRUE(md_str_skip_line(&str));
-    EXPECT_TRUE(md_str_peek_line(&line, &str));
+    EXPECT_TRUE(md_parse_skip_line(&str));
+    EXPECT_TRUE(md_parse_peek_line(&line, &str));
     EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("two")));
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
     EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("two")));
 
     // A last line without a newline is still a line, to all three
-    EXPECT_TRUE(md_str_peek_line(&line, &str));
+    EXPECT_TRUE(md_parse_peek_line(&line, &str));
     EXPECT_TRUE(md_str_eq(line, MD_STR_LIT("last")));
-    EXPECT_TRUE(md_str_skip_line(&str));
-    EXPECT_FALSE(md_str_peek_line(&line, &str));
-    EXPECT_FALSE(md_str_skip_line(&str));
-    EXPECT_FALSE(md_str_extract_line(&line, &str));
+    EXPECT_TRUE(md_parse_skip_line(&str));
+    EXPECT_FALSE(md_parse_peek_line(&line, &str));
+    EXPECT_FALSE(md_parse_skip_line(&str));
+    EXPECT_FALSE(md_parse_next_line(&line, &str));
 }
 
 // The same lines, through a file buffer that holds only a few of them at a time and through a string
@@ -938,4 +938,58 @@ UTEST(parse, reader_skip_lines) {
 
     remove(path.ptr);
     md_free(heap, text, 256 * 1024);
+}
+
+UTEST(parse, next_line) {
+    md_str_t str = MD_STR_INIT(
+        "this is some text\n"
+        "this is line 2\n"
+        "\n"
+        "\r\n"
+        "}\n"
+        "this is the end"
+    );
+
+    md_str_t line;
+    
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_STRNEQ("this is some text", line.ptr, line.len);
+    
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_STRNEQ("this is line 2", line.ptr, line.len);
+    
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_STRNEQ("", line.ptr, line.len);
+    
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_STRNEQ("", line.ptr, line.len);
+
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_STRNEQ("}", line.ptr, line.len);
+
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_STRNEQ("this is the end", line.ptr, line.len);
+
+    EXPECT_FALSE(md_parse_next_line(&line, &str));
+}
+
+UTEST(parse, skip_peek_line) {
+    md_str_t str = MD_STR_LIT("first\r\nsecond\nthird");
+    md_str_t line;
+
+    EXPECT_TRUE(md_parse_peek_line(&line, &str));
+    EXPECT_TRUE(md_str_eq_cstr(line, "first"));
+    EXPECT_TRUE(md_parse_skip_line(&str));
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_TRUE(md_str_eq_cstr(line, "second"));
+    EXPECT_TRUE(md_parse_peek_line(&line, &str));
+    EXPECT_TRUE(md_str_eq_cstr(line, "third"));
+    EXPECT_TRUE(md_parse_skip_line(&str));
+    EXPECT_FALSE(md_parse_skip_line(&str));
+    EXPECT_FALSE(md_parse_peek_line(&line, &str));
+
+    // A '\r' is only taken off together with a '\n'
+    str = MD_STR_LIT("end\r");
+    EXPECT_TRUE(md_parse_next_line(&line, &str));
+    EXPECT_TRUE(md_str_eq_cstr(line, "end\r"));
 }

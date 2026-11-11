@@ -1,6 +1,7 @@
 #include "md_unitcell.h"
 
 #include <core/md_str.h>
+#include <core/md_format.h>
 
 #include <math.h>
 #include <stdio.h>

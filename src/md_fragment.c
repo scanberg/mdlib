@@ -851,7 +851,7 @@ void md_fragment_data_free(md_fragment_data_t* d, md_allocator_i* alloc) {
     md_array_free(d->frag_slot, alloc);
     md_array_free(d->type.kind, alloc);
     for (size_t i = 0; i < md_array_size(d->type.name); ++i) {
-        if (!md_str_empty(d->type.name[i])) md_str_free(d->type.name[i], alloc);
+        if (!md_str_empty(d->type.name[i])) md_free_str(alloc, d->type.name[i]);
     }
     md_array_free(d->type.name, alloc);
     md_array_free(d->type.color, alloc);
@@ -1286,7 +1286,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         }
         const uint32_t t = (uint32_t)out->type.count++;
         md_array_push(out->type.kind, (uint8_t)kind, alloc);
-        md_array_push(out->type.name, md_str_copy(name, alloc), alloc);
+        md_array_push(out->type.name, md_alloc_str(alloc, name), alloc);
         const uint32_t* old = md_hashmap_get(&old_color, key);
         md_array_push(out->type.color, old ? *old : frag_default_color(name), alloc);
         md_hashmap_add(&type_of, key, t);

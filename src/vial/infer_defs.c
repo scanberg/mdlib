@@ -10,6 +10,7 @@
 #include "ir.h"
 
 #include <core/md_common.h>
+#include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_hash.h>
 
@@ -333,7 +334,7 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
         if (x->ir) {
             if (memo) {
                 const md_str_t fname = {g->fname, strlen(g->fname)};
-                fn = vial_ir_func(x->ir, md_str_copy(fname, x->ir->alloc), vx_span(x, call), cores, g->np);
+                fn = vial_ir_func(x->ir, md_alloc_str(x->ir->alloc, fname), vx_span(x, call), cores, g->np);
                 body = x->ir->funcs[fn].body;
             } else {
                 body = vial_ir_region(x->ir, VIAL_IR_NO_OP, x->ir->regions[x->ir->insert].func, cores, g->np);

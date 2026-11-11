@@ -2836,7 +2836,7 @@ void md_match_library_destroy(md_match_library_t* lib) {
     md_allocator_i* alloc = lib->alloc;
     for (size_t i = 0; i < md_array_size(lib->entries); ++i) {
         md_match_query_free(&lib->entries[i].query);
-        if (lib->entries[i].name.ptr) md_str_free(lib->entries[i].name, alloc);
+        if (lib->entries[i].name.ptr) md_free_str(alloc, lib->entries[i].name);
     }
     md_array_free(lib->entries, alloc);
     md_array_free(lib->comp, alloc);
@@ -2847,7 +2847,7 @@ void md_match_library_destroy(md_match_library_t* lib) {
 static int32_t library_push(md_match_library_t* lib, md_match_query_t query, md_str_t name) {
     lib_entry_t e = {0};
     e.query = query;
-    e.name  = md_str_empty(name) ? (md_str_t){0} : md_str_copy(name, lib->alloc);
+    e.name  = md_str_empty(name) ? (md_str_t){0} : md_alloc_str(lib->alloc, name);
 
     const size_t n = query.num_atoms;
     md_temp_scope_t temp = md_temp_begin_avoid(lib->alloc);

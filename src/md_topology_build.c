@@ -179,7 +179,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/mass"), md_unit_dalton(), 1, column, N);
     }
     if (!md_str_empty(d.title)) {
-        sys->description = md_str_copy(d.title, alloc);
+        sys->description = md_alloc_str(alloc, d.title);
     }
 
     state->unitcell = d.cell;

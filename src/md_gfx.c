@@ -4,6 +4,8 @@
 #include <md_util.h>
 
 #include <core/md_common.h>
+#include <core/md_parse.h>
+#include <core/md_os.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_allocator.h>
@@ -385,7 +387,7 @@ typedef struct include_file_t {
 #define APPEND_STR(a, str, alloc)   md_array_push_array(a, str.ptr, str.len, alloc)
 #define APPEND_CSTR(a, cstr, alloc) md_array_push_array(a, cstr, (int64_t)strlen(cstr), alloc)
 #define APPEND_CHAR(a, ch, alloc) md_array_push(a, ch, alloc);
-#define APPEND_LINE(a, line, alloc) APPEND_STR(a, md_str_printf(alloc, "#line %u\n", line), alloc)
+#define APPEND_LINE(a, line, alloc) APPEND_STR(a, md_alloc_printf(alloc, "#line %u\n", line), alloc)
 
 static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     if (!source) {
@@ -400,7 +402,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     md_str_t str = md_str_from_cstr(source);
 
     md_str_t version_str;
-    if (!md_str_extract_line(&version_str, &str) || !md_str_eq_cstr_n(version_str, "#version", 8)) {
+    if (!md_parse_next_line(&version_str, &str) || !md_str_eq_cstr_n(version_str, "#version", 8)) {
         MD_LOG_ERROR("Missing version as first line in shader!");
         goto done;
     }
@@ -423,7 +425,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     }
 
     md_str_t line;
-    while (md_str_extract_line(&line, &str)) {
+    while (md_parse_next_line(&line, &str)) {
         if (md_str_eq_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
                 MD_LOG_ERROR("Failed to parse include in shader file: no include files have been supplied");
@@ -711,7 +713,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* temp_arena = md_temp_allocator(temp);
 
-#define CONCAT_STR(STR_A, STR_B) (md_str_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (md_alloc_printf(temp_arena, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
         md_str_t common_src = md_load_textfile(md_str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), temp_arena);

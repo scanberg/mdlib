@@ -15,15 +15,8 @@
 #include <string.h>
 
 static md_str_t psf_next_line(md_str_t* text) {
-    size_t nl = 0;
     md_str_t line;
-    if (!md_str_find_char(&nl, *text, '\n')) {
-        line = *text;
-        *text = (md_str_t){0};
-    } else {
-        line = md_str_substr(*text, 0, nl);
-        *text = md_str_substr(*text, nl + 1, SIZE_MAX);
-    }
+    md_str_cut(&line, text, *text, md_str_find_char(*text, '\n'));
     if (line.len && line.ptr[line.len - 1] == '\r') line.len -= 1;
     return line;
 }
@@ -43,12 +36,12 @@ static size_t psf_tokens(md_str_t* out, size_t cap, md_str_t line) {
 // A section header: "    3341 !NATOM", "    3365 !NBOND: bonds", "       2       0 !NGRP NST2". The first count, and
 // the name after the '!' up to a ':' or a space.
 static bool psf_section(md_str_t line, int64_t* out_count, md_str_t* out_name) {
-    size_t bang = 0;
-    if (!md_str_find_char(&bang, line, '!')) return false;
-    const md_str_t head = md_str_trim(md_str_substr(line, 0, bang));
+    md_str_t head, name;
+    if (!md_str_cut(&head, &name, line, md_str_find_char(line, '!'))) return false;
+    head = md_str_trim(head);
     int64_t n = 0;
     if (head.len == 0 || md_parse_i64(&n, head) == 0 || n < 0) return false;
-    md_str_t name = md_str_substr(line, bang + 1, SIZE_MAX);
+    
     size_t end = 0;
     while (end < name.len && name.ptr[end] != ':' && name.ptr[end] != ' ') ++end;
     *out_count = n;

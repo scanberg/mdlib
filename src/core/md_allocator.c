@@ -1,4 +1,5 @@
 ﻿#include <core/md_allocator.h>
+#include <core/md_format.h>
 
 #include <core/md_arena_allocator.h>
 #include <core/md_common.h>
@@ -309,4 +310,51 @@ void* md_temp_alloc_zero(md_temp_scope_t temp, size_t size) {
 void* md_temp_alloc_aligned(md_temp_scope_t temp, size_t size, size_t alignment) {
     MD_ASSERT(temp.arena);
     return md_vm_arena_push_aligned(temp.arena, size, alignment);
+}
+
+// ### STRINGS ###
+
+md_str_t md_alloc_str(md_allocator_i* alloc, md_str_t str) {
+    MD_ASSERT(alloc);
+    md_str_t result = {0};
+    if (str.ptr && str.len > 0) {
+        char* data = md_alloc(alloc, str.len + 1);
+        md_memcpy(data, str.ptr, str.len);
+        data[str.len] = '\0';
+        result.ptr = data;
+        result.len = str.len;
+    }
+    return result;
+}
+
+md_str_t md_alloc_vprintf(md_allocator_i* alloc, const char* format, va_list args) {
+    MD_ASSERT(alloc);
+    MD_ASSERT(format);
+    va_list measure;
+    va_copy(measure, args);
+    const int len = md_vsnprintf(NULL, 0, format, measure);
+    va_end(measure);
+
+    if (len <= 0) {
+        return (md_str_t){0};
+    }
+
+    char* buf = md_alloc(alloc, (size_t)len + 1);
+    md_vsnprintf(buf, (size_t)len + 1, format, args);
+    return (md_str_t){buf, (size_t)len};
+}
+
+md_str_t md_alloc_printf(md_allocator_i* alloc, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    const md_str_t result = md_alloc_vprintf(alloc, format, args);
+    va_end(args);
+    return result;
+}
+
+void md_free_str(md_allocator_i* alloc, md_str_t str) {
+    MD_ASSERT(alloc);
+    if (str.ptr) {
+        md_free(alloc, (void*)str.ptr, str.len + 1);
+    }
 }

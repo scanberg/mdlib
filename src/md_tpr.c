@@ -1894,7 +1894,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     if (!md_str_empty(data->name)) {
-        sys->description = md_str_copy(data->name, alloc);
+        sys->description = md_alloc_str(alloc, data->name);
     }
 
     // ## Groups

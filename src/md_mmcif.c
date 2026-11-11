@@ -1,6 +1,7 @@
 ﻿#include "md_mmcif.h"
 
 #include <core/md_str.h>
+#include <core/md_allocator.h>
 #include <core/md_parse.h>
 #include <core/md_parse_simd.h>
 #include <core/md_reader.h>
@@ -234,7 +235,7 @@ static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_
     if (it) return it;
 
     mmcif_entity_t ent = {
-        .id = md_str_copy(id, alloc),
+        .id = md_alloc_str(alloc, id),
     };
     md_array_push(*entities, ent, alloc);
     return md_array_last(*entities);
@@ -294,7 +295,7 @@ static bool mmcif_fetch_token(md_str_t* out_tok, mmcif_parse_state_t* s) {
             }
             s->line_start = true;
         }
-        if (!extract_token(&tok, &s->line) || md_str_len(tok) == 0 || (tok.len > 0 && tok.ptr[0] == '#')) {
+        if (!md_parse_next_token(&tok, &s->line) || md_str_len(tok) == 0 || (tok.len > 0 && tok.ptr[0] == '#')) {
             s->line = (md_str_t){0};
             continue;
         }
@@ -308,7 +309,7 @@ static bool mmcif_fetch_token(md_str_t* out_tok, mmcif_parse_state_t* s) {
                 tok.len -=2;
             } else {
                 size_t loc = 0;
-                if (!md_str_find_char(&loc, s->line, delim)) {
+                if ((loc = md_str_find_char(s->line, delim)) == MD_STR_NPOS) {
                     MD_LOG_ERROR("Unmatched string");
                     return false;
                 }
@@ -449,7 +450,7 @@ static md_str_t mmcif_category(md_str_t item) {
     if (!mmcif_is_item(item)) return (md_str_t){0};
     md_str_t tail = md_str_substr(item,1,SIZE_MAX);
     size_t dot;
-    if (md_str_find_char(&dot, tail, '.')) return (md_str_t){tail.ptr, dot};
+    if ((dot = md_str_find_char(tail, '.')) != MD_STR_NPOS) return (md_str_t){tail.ptr, dot};
     return (md_str_t){0};
 }
 
@@ -468,7 +469,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
                 MD_LOG_ERROR("Unexpected tokenizer failure while reading loop headers");
                 return false;
             }
-            md_array_push(sec->headers, md_str_copy(t, alloc), alloc);
+            md_array_push(sec->headers, md_alloc_str(alloc, t), alloc);
         }
         size_t ncols = md_array_size(sec->headers);
         if (ncols == 0) {
@@ -501,7 +502,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
                     MD_LOG_ERROR("Premature loop termination inside row (got %zu/%zu values)", got, ncols);
                     return false;
                 }
-                md_array_push(sec->values, md_str_copy(v, alloc), alloc);
+                md_array_push(sec->values, md_alloc_str(alloc, v), alloc);
             }
             if (got != ncols) {
                 // Should not happen due to logic above, but guard anyway
@@ -550,7 +551,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
                 MD_LOG_ERROR("Unexpected tokenizer failure consuming item key");
                 return false;
             }
-            md_array_push(sec->headers, md_str_copy(key, alloc), alloc);
+            md_array_push(sec->headers, md_alloc_str(alloc, key), alloc);
 
             // Value (optional)
             md_str_t val;
@@ -562,7 +563,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
                 MD_LOG_ERROR("Unexpected tokenizer failure consuming item value");
                 return false;
             }
-            md_array_push(sec->values, md_str_copy(val, alloc), alloc);
+            md_array_push(sec->values, md_alloc_str(alloc, val), alloc);
         }
 
         sec->num_fields = md_array_size(sec->headers);
@@ -630,7 +631,7 @@ static bool mmcif_parse_entity(md_array(mmcif_entity_t)* entities, mmcif_parse_s
             mmcif_entity_t* ent = mmcif_entity_find_or_create(entities, id, alloc);
             MD_ASSERT(ent);
             ent->type = mmcif_entity_type_from_str(mmcif_section_value(&sec, i, type_col));
-            ent->description = md_str_copy(mmcif_section_value(&sec, i, desc_col), alloc);
+            ent->description = md_alloc_str(alloc, mmcif_section_value(&sec, i, desc_col));
         }
     }
 
@@ -715,9 +716,9 @@ static bool mmcif_parse_assembly_gen(md_array(mmcif_assembly_gen_t)* rows, mmcif
     }
     for (size_t i = 0; i < sec.num_rows; ++i) {
         const mmcif_assembly_gen_t row = {
-            .assembly_id     = md_str_copy(mmcif_section_value(&sec, i, id_col), alloc),
-            .oper_expression = md_str_copy(mmcif_section_value(&sec, i, expr_col), alloc),
-            .asym_id_list    = md_str_copy(mmcif_section_value(&sec, i, asym_col), alloc),
+            .assembly_id     = md_alloc_str(alloc, mmcif_section_value(&sec, i, id_col)),
+            .oper_expression = md_alloc_str(alloc, mmcif_section_value(&sec, i, expr_col)),
+            .asym_id_list    = md_alloc_str(alloc, mmcif_section_value(&sec, i, asym_col)),
         };
         md_array_push(*rows, row, alloc);
     }
@@ -760,7 +761,7 @@ static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_sta
     }
     for (size_t i = 0; i < sec.num_rows; ++i) {
         // Row r column c of the matrix, column major as mat4_t: elem[c][r]
-        mmcif_oper_t op = {.id = md_str_copy(mmcif_section_value(&sec, i, id_col), alloc), .transform = mat4_ident()};
+        mmcif_oper_t op = {.id = md_alloc_str(alloc, mmcif_section_value(&sec, i, id_col)), .transform = mat4_ident()};
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
                 op.transform.elem[c][r] = (float)parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
@@ -787,10 +788,10 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_arr
     // The groups: the parenthesized parts, or the whole expression
     md_array(md_str_t) groups = 0;
     expr = md_str_trim(expr);
-    if (md_str_find_char(NULL, expr, '(')) {
+    if (md_str_contains_char(expr, '(')) {
         while (!md_str_empty(expr)) {
             size_t beg, end;
-            if (!md_str_find_char(&beg, expr, '(') || !md_str_find_char(&end, expr, ')') || end < beg) {
+            if (((beg = md_str_find_char(expr, '(')) == MD_STR_NPOS) || ((end = md_str_find_char(expr, ')')) == MD_STR_NPOS) || end < beg) {
                 MD_LOG_ERROR("Unbalanced operator expression: '" MD_STR_FMT "'", MD_STR_ARG(expr));
                 goto done;
             }
@@ -808,21 +809,21 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_arr
     for (size_t g = 0; g < group_count; ++g) {
         md_str_t list = groups[g];
         md_str_t item;
-        while (extract_token_delim(&item, &list, ',')) {
+        while (md_parse_next_token_delim(&item, &list, ',')) {
             item = md_str_trim(item);
             if (md_str_empty(item)) continue;
-            size_t dash;
+            md_str_t lo_str, hi_str;
             int64_t lo = 0, hi = -1;
-            if (md_str_find_char(&dash, item, '-') && dash > 0) {
-                lo = parse_int(md_str_trim(md_str_substr(item, 0, dash)));
-                hi = parse_int(md_str_trim(md_str_substr(item, dash + 1, SIZE_MAX)));
+            if (md_str_cut(&lo_str, &hi_str, item, md_str_find_char(item, '-')) && lo_str.len > 0) {
+                lo = parse_int(md_str_trim(lo_str));
+                hi = parse_int(md_str_trim(hi_str));
             }
             if (hi >= lo) {
                 for (int64_t v = lo; v <= hi; ++v) {
                     size_t k = 0;
                     for (; k < base_count; ++k) {
                         const md_str_t id = (*opers)[k].id;
-                        if (!md_str_empty(id) && is_digit(id.ptr[0]) && parse_int(id) == v) break;
+                        if (!md_str_empty(id) && md_ascii_is_digit(id.ptr[0]) && parse_int(id) == v) break;
                     }
                     if (k == base_count) {
                         MD_LOG_ERROR("Operator %" PRId64 " of the expression is not in _pdbx_struct_oper_list", v);
@@ -871,7 +872,7 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_arr
                 len += snprintf(name + len, sizeof(name) - len, "%s" MD_STR_FMT, g ? "x" : "", MD_STR_ARG(f->id));
                 len = MD_MIN(len, (int)sizeof(name) - 1);
             }
-            op.id = md_str_copy((md_str_t){name, (size_t)len}, alloc);
+            op.id = md_alloc_str(alloc, (md_str_t){name, (size_t)len});
             md_array_push(*out, (uint32_t)md_array_size(*opers), alloc);
             md_array_push(*opers, op, alloc);
             for (size_t g = group_count; g-- > 0; ) {
@@ -901,7 +902,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
         md_array(md_instance_idx_t) inst = 0;
         md_str_t list = rows[r].asym_id_list;
         md_str_t asym;
-        while (extract_token_delim(&asym, &list, ',')) {
+        while (md_parse_next_token_delim(&asym, &list, ',')) {
             asym = md_str_trim(asym);
             if (md_str_empty(asym)) continue;
             bool found = false;
@@ -1085,7 +1086,7 @@ static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const md_
 static inline bool mmcif_plain_row(md_str_t* tok, size_t num_cols, md_str_t line) {
     const char* b = line.ptr;
     const char* e = line.ptr + line.len;
-    while (b < e && is_whitespace(*b)) ++b;
+    while (b < e && md_ascii_is_whitespace(*b)) ++b;
     return b < e && *b != '\'' && *b != '"' && mmcif_split_row(tok, num_cols, b, e) && !mmcif_is_item(tok[0]) && !mmcif_is_control(tok[0]);
 }
 

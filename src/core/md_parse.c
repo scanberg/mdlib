@@ -1,4 +1,5 @@
 #include <core/md_parse.h>
+#include <core/md_format.h>
 #include <core/md_common.h>
 
 #include <stdlib.h>
@@ -586,5 +587,57 @@ bool md_parse_fixed_f32_wide(float* out, md_str_t field, size_t decimals) {
     const md_str_t text = { p + number, width - number };
     md_parse_f64(&value, text);
     *out = (float)value;
+    return true;
+}
+
+bool md_parse_next_i32(int32_t* val, md_str_t* str) {
+    MD_ASSERT(val);
+    MD_ASSERT(str);
+
+    md_str_t tok;
+    if (!md_parse_next_token(&tok, str)) return false;
+    tok = md_str_trim(tok);
+    if (!is_int(tok)) return false;
+    *val = (int)parse_int(tok);
+    
+    return true;
+}
+
+bool md_parse_next_i64(int64_t* val, md_str_t* str) {
+    MD_ASSERT(val);
+    MD_ASSERT(str);
+
+    md_str_t tok;
+    if (!md_parse_next_token(&tok, str)) return false;
+    tok = md_str_trim(tok);
+    if (!is_int(tok)) return false;
+    *val = parse_int(tok);
+
+    return true;
+}
+
+bool md_parse_next_f32(float* val, md_str_t* str) {
+    MD_ASSERT(val);
+    MD_ASSERT(str);
+
+    md_str_t tok;
+    if (!md_parse_next_token(&tok, str)) return false;
+    tok = md_str_trim(tok);
+    if (!is_float(tok)) return false;
+    *val = (float)parse_float(tok);
+
+    return true;
+}
+
+bool md_parse_next_f64(double* val, md_str_t* str) {
+    MD_ASSERT(val);
+    MD_ASSERT(str);
+
+    md_str_t tok;
+    if (!md_parse_next_token(&tok, str)) return false;
+    tok = md_str_trim(tok);
+    if (!is_float(tok)) return false;
+    *val = parse_float(tok);
+
     return true;
 }

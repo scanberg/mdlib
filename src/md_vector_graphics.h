@@ -236,7 +236,7 @@ void md_vg_scene_clear(md_vg_scene_t* scene);
 void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size);
 void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, md_str_t font_family);
 
-// The scene as an SVG document: written to w, as a string allocated with alloc (freed with md_str_free), or to a file
+// The scene as an SVG document: written to w, as a string allocated from alloc (see md_alloc_str), or to a file
 void  md_vg_scene_write_svg(struct md_writer_i* w, const md_vg_scene_t* scene);
 md_str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, struct md_allocator_i* alloc);
 bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, md_str_t path);

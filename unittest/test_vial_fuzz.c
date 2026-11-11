@@ -12,6 +12,8 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
+#include <core/md_os.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +49,7 @@ static uint64_t fuzz_env(const char* name, uint64_t def) {
 static md_str_t* fuzz_read_dict(md_str_t text, md_allocator_i* alloc) {
     md_str_t* words = NULL;
     md_str_t line;
-    while (md_str_extract_line(&line, &text)) {
+    while (md_parse_next_line(&line, &text)) {
         line = md_str_trim(line);
         if (line.len < 2 || line.ptr[0] != '"' || line.ptr[line.len - 1] != '"') continue;
         char* w = md_alloc(alloc, line.len);

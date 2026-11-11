@@ -421,7 +421,7 @@ int main(int argc, char** argv) {
             }
         }
         printf("\n");
-        if (text.ptr) md_str_free(text, md_get_heap_allocator());
+        if (text.ptr) md_free_str(md_get_heap_allocator(), text);
     }
     return 0;
 }

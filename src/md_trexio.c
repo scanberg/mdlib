@@ -95,7 +95,7 @@ static md_str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i
     if (H5Tis_variable_str(type)) {
         char* var = NULL;
         if (H5Aread(attr, type, &var) >= 0 && var) {
-            result = md_str_copy_cstr(var, alloc);
+            result = md_alloc_str(alloc, md_str_from_cstr(var));
             H5free_memory(var);
         }
     } else {
@@ -105,7 +105,7 @@ static md_str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i
             if (buf) {
                 md_memset(buf, 0, size + 1);
                 if (H5Aread(attr, type, buf) >= 0) {
-                    result = md_str_copy_cstrn(buf, strnlen(buf, size), alloc);
+                    result = md_alloc_str(alloc, md_str_from_cstrn(buf, strnlen(buf, size)));
                 }
             }
         }
@@ -189,7 +189,7 @@ static size_t trexio_read_str_dataset(md_str_t dst[], size_t cap, hid_t loc, con
                 md_memset(raw, 0, sizeof(char*) * cap);
                 if (H5Dread(dset, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
-                        dst[i] = raw[i] ? md_str_copy_cstr(raw[i], alloc) : (md_str_t){0};
+                        dst[i] = raw[i] ? md_alloc_str(alloc, md_str_from_cstr(raw[i])) : (md_str_t){0};
                     }
                     written = cap;
                     H5Dvlen_reclaim(mem_type, H5Dget_space(dset), H5P_DEFAULT, raw);
@@ -202,7 +202,7 @@ static size_t trexio_read_str_dataset(md_str_t dst[], size_t cap, hid_t loc, con
                 md_memset(raw, 0, size * cap + 1);
                 if (H5Dread(dset, file_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
-                        dst[i] = md_str_copy_cstrn(raw + i * size, strnlen(raw + i * size, size), alloc);
+                        dst[i] = md_alloc_str(alloc, md_str_from_cstrn(raw + i * size, strnlen(raw + i * size, size)));
                     }
                     written = cap;
                 }

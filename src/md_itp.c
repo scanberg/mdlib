@@ -9,6 +9,7 @@
 #include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
 #include <core/md_writer.h>
@@ -158,7 +159,7 @@ static float parse_f32(md_str_t tok) {
 static void parse_data_line(itp_parser_t* p, md_str_t line) {
     md_str_t tok[ITP_MAX_TOKENS];
     md_str_t rest = line;
-    const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
+    const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &rest);
     if (num_tok == 0) return;
 
     switch (p->section) {
@@ -180,7 +181,7 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
             return;
         }
         md_itp_atomtype_t type = {
-            .name   = md_str_copy(tok[0], p->alloc),
+            .name   = md_alloc_str(p->alloc, tok[0]),
             .atomic_number = -1,
             .mass   = parse_f32(tok[pt - 2]),
             .charge = parse_f32(tok[pt - 1]),
@@ -193,7 +194,7 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
     }
     case SECTION_MOLECULETYPE: {
         md_itp_moleculetype_t mol = {
-            .name   = md_str_copy(tok[0], p->alloc),
+            .name   = md_alloc_str(p->alloc, tok[0]),
             .nrexcl = num_tok > 1 ? (int32_t)parse_int(tok[1]) : 0,
         };
         md_array_push(p->data->moleculetypes, mol, p->alloc);
@@ -216,10 +217,10 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
             return;
         }
         md_itp_atom_t atom = {
-            .type     = md_str_copy(tok[1], p->alloc),
+            .type     = md_alloc_str(p->alloc, tok[1]),
             .res_nr   = (int32_t)parse_int(tok[2]),
-            .res_name = md_str_copy(tok[3], p->alloc),
-            .name     = md_str_copy(tok[4], p->alloc),
+            .res_name = md_alloc_str(p->alloc, tok[3]),
+            .name     = md_alloc_str(p->alloc, tok[4]),
         };
         if (num_tok > 6 && itp_number(&atom.charge, p, tok[6])) {
             atom.has_charge = true;
@@ -264,14 +265,14 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
     case SECTION_MOLECULES: {
         int64_t count = 0;
         if (num_tok >= 2 && parse_i64(&count, tok[1])) {
-            md_itp_molecules_t entry = { .name = md_str_copy(tok[0], p->alloc), .count = (int32_t)count };
+            md_itp_molecules_t entry = { .name = md_alloc_str(p->alloc, tok[0]), .count = (int32_t)count };
             md_array_push(p->data->molecules, entry, p->alloc);
         }
         break;
     }
     case SECTION_SYSTEM:
         if (md_str_empty(p->data->system_name)) {
-            p->data->system_name = md_str_copy(line, p->alloc);
+            p->data->system_name = md_alloc_str(p->alloc, line);
         }
         break;
     default:
@@ -292,7 +293,7 @@ static void parse_include(itp_parser_t* p, md_str_t arg, md_str_t folder) {
     }
     size_t end = 0;
     md_str_t inner = md_str_substr(arg, 1, SIZE_MAX);
-    if (!md_str_find_char(&end, inner, close)) {
+    if ((end = md_str_find_char(inner, close)) == MD_STR_NPOS) {
         MD_LOG_INFO("itp: malformed #include '" MD_STR_FMT "'", MD_STR_ARG(arg));
         return;
     }
@@ -341,11 +342,11 @@ static void parse_include(itp_parser_t* p, md_str_t arg, md_str_t folder) {
         return;
     }
     md_str_t sub_folder = {0};
-    md_extract_folder_path(&sub_folder, resolved);
+    md_path_folder(&sub_folder, resolved);
     // The included file's sections do not leak into the including one's position, but its current
     // moleculetype does: a molecule .itp is commonly followed by position restraints in the parent.
     p->include_depth += 1;
-    parse_text(p, text, md_str_copy(sub_folder, p->temp));
+    parse_text(p, text, md_alloc_str(p->temp, sub_folder));
     p->include_depth -= 1;
 }
 
@@ -353,11 +354,11 @@ static void parse_directive(itp_parser_t* p, md_str_t line, md_str_t folder) {
     md_str_t rest = md_str_trim(md_str_substr(line, 1, SIZE_MAX));
     md_str_t word = {0};
     md_str_t args = rest;
-    extract_token(&word, &args);
+    md_parse_next_token(&word, &args);
     md_str_t arg0 = {0};
     {
         md_str_t tmp = args;
-        extract_token(&arg0, &tmp);
+        md_parse_next_token(&arg0, &tmp);
     }
 
     if (md_str_eq_cstr(word, "ifdef") || md_str_eq_cstr(word, "ifndef")) {
@@ -391,9 +392,9 @@ static void parse_directive(itp_parser_t* p, md_str_t line, md_str_t folder) {
     } else if (md_str_eq_cstr(word, "define")) {
         if (!md_str_empty(arg0) && !is_defined(p, arg0)) {
             md_str_t value = args;
-            extract_token(&(md_str_t){0}, &value);
-            md_array_push(p->defines, md_str_copy(arg0, p->temp), p->temp);
-            md_array_push(p->define_values, md_str_copy(md_str_trim(value), p->temp), p->temp);
+            md_parse_next_token(&(md_str_t){0}, &value);
+            md_array_push(p->defines, md_alloc_str(p->temp, arg0), p->temp);
+            md_array_push(p->define_values, md_alloc_str(p->temp, md_str_trim(value)), p->temp);
         }
     } else if (md_str_eq_cstr(word, "undef")) {
         for (size_t i = 0; i < md_array_size(p->defines); ++i) {
@@ -417,7 +418,7 @@ static bool parse_text(itp_parser_t* p, md_str_t text, md_str_t folder) {
     bool continuing = false;
 
     md_str_t raw;
-    while (md_str_extract_line(&raw, &text)) {
+    while (md_parse_next_line(&raw, &text)) {
         md_str_t line = md_str_trim_end(raw);
 
         // Line continuation, before comments like the C preprocessor it imitates
@@ -433,10 +434,7 @@ static bool parse_text(itp_parser_t* p, md_str_t text, md_str_t folder) {
             continuing = false;
         }
 
-        size_t loc = 0;
-        if (md_str_find_char(&loc, line, ';')) {
-            line = md_str_substr(line, 0, loc);
-        }
+        line = md_str_substr(line, 0, md_str_find_char(line, ';'));
         line = md_str_trim(line);
 
         if (line.len > 0) {
@@ -445,7 +443,7 @@ static bool parse_text(itp_parser_t* p, md_str_t text, md_str_t folder) {
             } else if (parser_active(p)) {
                 if (line.ptr[0] == '[') {
                     size_t close = 0;
-                    if (md_str_find_char(&close, line, ']')) {
+                    if ((close = md_str_find_char(line, ']')) != MD_STR_NPOS) {
                         md_str_t name = md_str_trim(md_str_substr(line, 1, close - 1));
                         p->section = section_from_name(name);
                         if (md_str_eq_cstr_ignore_case(name, "intermolecular_interactions")) {
@@ -539,7 +537,7 @@ bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, md_allocator
         MD_LOG_ERROR("Could not open topology file '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         md_str_t folder = {0};
-        md_extract_folder_path(&folder, filename);
+        md_path_folder(&folder, filename);
         ok = md_itp_data_parse_str(data, text, folder, alloc);
     }
     md_temp_end(temp);
@@ -550,24 +548,24 @@ void md_itp_data_free(md_itp_data_t* data, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
     for (size_t i = 0; i < md_array_size(data->atomtypes); ++i) {
-        md_str_free(data->atomtypes[i].name, alloc);
+        md_free_str(alloc, data->atomtypes[i].name);
     }
     for (size_t i = 0; i < md_array_size(data->moleculetypes); ++i) {
         md_itp_moleculetype_t* mol = &data->moleculetypes[i];
         for (size_t j = 0; j < md_array_size(mol->atoms); ++j) {
-            md_str_free(mol->atoms[j].type, alloc);
-            md_str_free(mol->atoms[j].name, alloc);
-            md_str_free(mol->atoms[j].res_name, alloc);
+            md_free_str(alloc, mol->atoms[j].type);
+            md_free_str(alloc, mol->atoms[j].name);
+            md_free_str(alloc, mol->atoms[j].res_name);
         }
-        md_str_free(mol->name, alloc);
+        md_free_str(alloc, mol->name);
         md_array_free(mol->atoms, alloc);
         md_array_free(mol->bonds, alloc);
         md_array_free(mol->elastic_bonds, alloc);
     }
     for (size_t i = 0; i < md_array_size(data->molecules); ++i) {
-        md_str_free(data->molecules[i].name, alloc);
+        md_free_str(alloc, data->molecules[i].name);
     }
-    if (!md_str_empty(data->system_name)) md_str_free(data->system_name, alloc);
+    if (!md_str_empty(data->system_name)) md_free_str(alloc, data->system_name);
     md_array_free(data->atomtypes, alloc);
     md_array_free(data->moleculetypes, alloc);
     md_array_free(data->molecules, alloc);

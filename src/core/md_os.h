@@ -131,6 +131,8 @@ const char* md_os_env_get(const char* name);
 bool md_os_env_set(const char* name, const char* value);
 
 // ### PATH ###
+// The operations here ask the file system. Purely lexical ones (extension, file name, folder,
+// is_absolute) are in md_path.h.
 // Gets the current working directory
 // Writes into a buffer (up to buf_cap) and returns the number of characters written
 size_t md_path_write_cwd(char* buf, size_t buf_cap);
@@ -154,11 +156,6 @@ md_str_t md_path_make_canonical(md_str_t path, struct md_allocator_i* alloc);
 // Writes a relative path from path_from to path_to to buf.
 size_t md_path_write_relative(char* buf, size_t buf_cap, md_str_t path_from, md_str_t path_to);
 md_str_t md_path_make_relative(md_str_t path_from, md_str_t path_to, struct md_allocator_i* alloc);
-
-// Checks if a path is absolute, i.e. it does not have to be resolved against a base folder.
-// Recognizes both unix roots and windows drive letters / UNC shares on every platform, so
-// that a path stored on one platform can be classified on another.
-bool md_path_is_absolute(md_str_t path);
 
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.
 bool md_path_is_valid(md_str_t path);
@@ -253,6 +250,10 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
 size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr, size_t num_bytes);
 
 size_t md_file_printf(md_file_t file, const char* format, ...);
+
+// Reads a whole file into memory allocated from alloc, zero terminated (not counted in len).
+// Returns an empty string on failure.
+md_str_t md_load_textfile(md_str_t filename, struct md_allocator_i* alloc);
 
 // ### Semaphore ###
 // @NOTE: The size type does not reflect the actual size of the semaphore which is probably (int).

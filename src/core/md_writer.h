@@ -69,12 +69,6 @@ value, but a copy is a second cursor into the same buffer: use one or the other.
 // The staging buffer a file or log writer allocates, when it is not given one
 #define MD_WRITER_DEFAULT_CAPACITY (64 * 1024)
 
-#if defined(__GNUC__) || defined(__clang__)
-#define MD_WRITER_PRINTF(fmt_idx, arg_idx) __attribute__((format(printf, fmt_idx, arg_idx)))
-#else
-#define MD_WRITER_PRINTF(fmt_idx, arg_idx)
-#endif
-
 typedef struct md_writer_i md_writer_i;
 
 typedef enum md_writer_flags_t {
@@ -181,7 +175,7 @@ static inline void md_write_cstr(md_writer_i* w, const char* cstr) {
 void md_write_fill(md_writer_i* w, char c, size_t count);
 
 // Formatted as printf does. It formats in place when it fits, so a format is not measured first.
-void md_writef (md_writer_i* w, const char* format, ...) MD_WRITER_PRINTF(2, 3);
+void md_writef (md_writer_i* w, const char* format, ...) MD_PRINTF_FORMAT(2, 3);
 void md_vwritef(md_writer_i* w, const char* format, va_list args);
 
 // Integers, formatted without printf: for writing many of them
@@ -249,7 +243,7 @@ static inline void md_str_writer_push_char (md_str_writer_t* sw, char c)        
 static inline void md_str_writer_push_str  (md_str_writer_t* sw, md_str_t str)                  { md_write_str(&sw->w, str); }
 static inline void md_str_writer_push_cstr (md_str_writer_t* sw, const char* cstr)           { md_write_cstr(&sw->w, cstr); }
 static inline void md_str_writer_push_cstrl(md_str_writer_t* sw, const char* cstr, size_t n) { md_write(&sw->w, cstr, n); }
-void md_str_writer_fmt (md_str_writer_t* sw, const char* format, ...) MD_WRITER_PRINTF(2, 3);
+void md_str_writer_fmt (md_str_writer_t* sw, const char* format, ...) MD_PRINTF_FORMAT(2, 3);
 void md_str_writer_vfmt(md_str_writer_t* sw, const char* format, va_list args);
 
 static inline size_t md_str_writer_len(const md_str_writer_t* sw) {
@@ -284,7 +278,7 @@ void md_str_writer_pop(md_str_writer_t* sw, size_t n);
 void md_str_writer_reset(md_str_writer_t* sw);
 
 // Hands over what is written as a string of its own: allocated with the writer's allocator, terminated, and freed with
-// md_str_free. The writer is left empty and can be written to again, or freed (which then has nothing to free).
+// md_free_str (or with that allocator as a whole, if it is an arena). The writer is left empty and can be written to again, or freed (which then has nothing to free).
 md_str_t md_str_writer_release(md_str_writer_t* sw);
 
 // ### FIXED ARRAY WRITER ###

@@ -47,6 +47,13 @@
 #   define MD_FALLTHROUGH __attribute__((fallthrough))
 #endif
 
+// Has GCC and Clang check the arguments of a printf style function against its format string
+#if defined(__GNUC__) || defined(__clang__)
+#   define MD_PRINTF_FORMAT(fmt_idx, arg_idx) __attribute__((format(printf, fmt_idx, arg_idx)))
+#else
+#   define MD_PRINTF_FORMAT(fmt_idx, arg_idx)
+#endif
+
 #define MD_RESTRICT  __restrict
 #define MD_TYPEOF(x) __typeof__(x)
 

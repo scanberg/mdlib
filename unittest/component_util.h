@@ -11,6 +11,7 @@
 #include <core/md_array.h>
 #include <core/md_os.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
 #include <core/md_vec_math.h>
 
 #include <stdio.h>
@@ -38,7 +39,7 @@ static inline md_array(ref_comp_t) read_components(md_str_t path, md_allocator_i
     md_str_t text = md_load_textfile(path, alloc);
     md_str_t line;
     char buf[256];
-    while (md_str_extract_line(&line, &text)) {
+    while (md_parse_next_line(&line, &text)) {
         if (line.len == 0 || line.ptr[0] == '#' || line.len >= sizeof(buf)) continue;
         md_memcpy(buf, line.ptr, line.len);
         buf[line.len] = '\0';

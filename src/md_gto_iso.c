@@ -32,6 +32,7 @@
 
 #include <md_gto.h>
 #include <core/md_allocator.h>
+#include <core/md_format.h>
 #include <core/md_array.h>
 #include <core/md_linalg.h>
 #include <core/md_log.h>
