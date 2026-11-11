@@ -4874,6 +4874,56 @@ UTEST(util, backbones_from_bonds_with_residues) {
     }
 }
 
+// The atoms a segment stands for without residues, by the roles of its atoms: those of its residue as the file gives it,
+// the atoms in the order of the file or sorted by element. The segments are matched by the atom of their CA.
+static void expect_segment_atoms_by_roles(int* utest_result, const char* path, bool by_element, size_t num_different) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t ref = { .alloc = alloc };
+    md_system_state_t ref_state = { .alloc = alloc };
+    const md_str_t file = md_str_from_cstr(path);
+    const bool gro = md_str_ends_with(file, MD_STR_LIT(".gro"));
+    ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_ALL, NULL));
+
+    int32_t* xyz_to_ref = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
+    md_str_t text;
+    xyz_text_of(&text, xyz_to_ref, &ref, &ref_state, by_element, alloc);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_EQ(ref.protein_backbone.segment.count, sys.protein_backbone.segment.count);
+
+    int32_t* ref_seg = segment_of_atom(ref.atom.count, alloc);
+    for (size_t s = 0; s < ref.protein_backbone.segment.count; ++s) ref_seg[ref.protein_backbone.segment.atoms[s].ca] = (int32_t)s;
+    uint8_t* in_ref = md_alloc(alloc, ref.atom.count);
+    size_t same = 0;
+    for (size_t s = 0; s < sys.protein_backbone.segment.count; ++s) {
+        md_atom_idx_t atoms[512], ref_atoms[512];
+        const size_t n = md_util_protein_segment_atoms(atoms, 512, &sys, s);
+        const int32_t rs = ref_seg[xyz_to_ref[sys.protein_backbone.segment.atoms[s].ca]];
+        if (rs < 0) continue;
+        const size_t m = md_util_protein_segment_atoms(ref_atoms, 512, &ref, (size_t)rs);
+        md_memset(in_ref, 0, ref.atom.count);
+        for (size_t k = 0; k < m; ++k) in_ref[ref_atoms[k]] = 1;
+        bool equal = n == m;
+        for (size_t k = 0; k < n && equal; ++k) equal = in_ref[xyz_to_ref[atoms[k]]];
+        same += equal;
+    }
+    EXPECT_EQ(sys.protein_backbone.segment.count - num_different, same);
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(util, protein_segment_atoms_by_roles) {
+    // Without hydrogens and with 18 disulfides (1k4r), and with hydrogens and termini (the nucleosome, whose histones are
+    // free at both ends). In 1k4r
+    // the backbone O of HIS 86 of chain C is 1.4 Å from the ND1 of HIS 86 of chain A, taken for a bond: without
+    // residues the two amino acids reach each other over it (the O is of the one, the side chain of the other)
+    expect_segment_atoms_by_roles(utest_result, MD_UNITTEST_DATA_DIR "/1k4r.pdb", false, 2);
+    expect_segment_atoms_by_roles(utest_result, MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb", true, 0);
+    expect_segment_atoms_by_roles(utest_result, MD_UNITTEST_DATA_DIR "/nucl-dna.gro", false, 0);
+}
+
 // Nothing which is no polymer: fullerenes, and a tryptophan alone (one residue is no chain)
 UTEST(util, backbones_from_bonds_none) {
     const char* files[] = {

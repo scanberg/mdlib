@@ -145,6 +145,13 @@ bool md_util_system_infer_residue_types(md_system_t* sys);
 // False, and out_atoms -1, when there is no break after it.
 bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t res_idx);
 
+// The atoms segment seg_idx of the protein backbone stands for: those of its residue; for a segment of none (a system
+// without residues, a residue which is a whole chain) those of its amino acid by the roles of the atoms: from its CA,
+// everything bonded to it short of the backbone of another segment, a disulfide bond and a coordination bond, which is
+// its N, C and O, its side chain, and the hydrogens and terminal groups on these. Writes at most cap of them to out and
+// returns how many there are (at most 512 for a segment of no residue).
+size_t md_util_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_system_t* sys, size_t seg_idx);
+
 // The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
 // of one entry per segment (capacity at least backbone->segment.count). They do not allocate. The secondary structure
 // has its own header, md_dssp.h.

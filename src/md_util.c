@@ -11782,6 +11782,46 @@ static void mark_chain_break(md_system_t* sys, size_t a, size_t b) {
     }
 }
 
+size_t md_util_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_system_t* sys, size_t seg_idx) {
+    MD_ASSERT(sys);
+    const md_protein_backbone_data_t* bb = &sys->protein_backbone;
+    if (seg_idx >= bb->segment.count || !bb->segment.atoms) return 0;
+    const md_residue_idx_t res_idx = bb->segment.res_idx ? bb->segment.res_idx[seg_idx] : -1;
+    if (res_idx >= 0 && (size_t)res_idx < sys->residue.count) {
+        const md_urange_t range = md_system_residue_atom_range(sys, (size_t)res_idx);
+        for (uint32_t i = range.beg; i < range.end && i - range.beg < cap; ++i) out[i - range.beg] = (md_atom_idx_t)i;
+        return range.end - range.beg;
+    }
+
+    const md_amino_acid_atoms_t* a = &bb->segment.atoms[seg_idx];
+    if (a->ca < 0) return 0;
+    if (a->n < 0) {
+        // A bead of a trace stands for itself
+        if (cap > 0) out[0] = a->ca;
+        return 1;
+    }
+    enum { MAX_ATOMS = 512 };
+    md_atom_idx_t found[MAX_ATOMS];
+    size_t num = 0;
+    found[num++] = a->ca;
+    for (size_t k = 0; k < num; ++k) {
+        const md_atom_idx_t x = found[k];
+        const bool x_sulfur = md_atom_atomic_number(&sys->atom, (size_t)x) == MD_Z_S;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)x);
+        for (; md_bond_iter_has_next(&it) && num < (size_t)MAX_ATOMS; md_bond_iter_next(&it)) {
+            const md_atom_idx_t y = md_bond_iter_atom_index(&it);
+            if (md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&it)) != MD_BOND_KIND_COVALENT) continue;
+            if ((md_atom_flags(&sys->atom, (size_t)y) & MD_ATOM_FLAG_BACKBONE) && y != a->n && y != a->c) continue;
+            if (x_sulfur && md_atom_atomic_number(&sys->atom, (size_t)y) == MD_Z_S) continue;
+            bool seen = false;
+            for (size_t j = 0; j < num && !seen; ++j) seen = found[j] == y;
+            if (!seen) found[num++] = y;
+        }
+    }
+    for (size_t k = 0; k < num && k < cap; ++k) out[k] = found[k];
+    return num;
+}
+
 bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(out_atoms);
     out_atoms[0] = -1;
