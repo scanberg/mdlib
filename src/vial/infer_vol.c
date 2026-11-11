@@ -8,7 +8,7 @@
 #include <md_system.h>
 #include <md_mcs.h>
 #include <core/md_unit.h>
-#include <core/md_common.h>
+#include <core/md_format.h>
 
 #include <math.h>
 #include <string.h>
@@ -312,7 +312,7 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
                 char fix[160] = "";
                 if (md_str_eq(kw, MD_STR_LIT("by")) && vn) {
                     const md_str_t vt = vx_text(x, vn);
-                    if (vt.len < 140) snprintf(fix, sizeof(fix), "match=%.*s", (int)vt.len, vt.ptr);
+                    if (vt.len < 140) md_snprintf(fix, sizeof(fix), "match=%.*s", (int)vt.len, vt.ptr);
                 }
                 vx_diag_fix(x, "E0202", a, fix[0] ? fix : NULL, "`mcs` takes no keyword `%.*s`; it takes structures, match and least", (int)kw.len, kw.ptr);
                 ok = false;
