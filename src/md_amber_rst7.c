@@ -16,15 +16,8 @@
 #define RST7_FIELD 12
 
 static md_str_t rst7_next_line(md_str_t* text) {
-    size_t nl = 0;
     md_str_t line;
-    if (!md_str_find_char(&nl, *text, '\n')) {
-        line = *text;
-        *text = (md_str_t){0};
-    } else {
-        line = md_str_substr(*text, 0, nl);
-        *text = md_str_substr(*text, nl + 1, SIZE_MAX);
-    }
+    md_str_cut(&line, text, *text, md_str_find_char(*text, '\n'));
     if (line.len && line.ptr[line.len - 1] == '\r') line.len -= 1;
     return line;
 }

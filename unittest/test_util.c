@@ -19,6 +19,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_bitset.h>
 #include <core/md_hash.h>
 
@@ -3102,7 +3103,7 @@ UTEST(util, radix_sort) {
 
 static inline bool init_system(md_system_t* sys, md_system_state_t* sys_state, md_str_t path) {
     md_str_t ext;
-    if (!md_extract_ext(&ext, path)) {
+    if (!md_path_ext(&ext, path)) {
         return false;
     }
 

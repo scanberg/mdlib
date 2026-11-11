@@ -4,6 +4,7 @@
 #include <md_util.h>
 
 #include <core/md_common.h>
+#include <core/md_format.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -205,7 +206,7 @@ static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_
 	}
 
 	md_str_t tokens[16];
-	const size_t num_tokens = extract_tokens(tokens, MD_COUNTOF(tokens), &str);
+	const size_t num_tokens = md_parse_next_tokens(tokens, MD_COUNTOF(tokens), &str);
 	for (size_t i = 0; i < num_tokens; ++i) {
 		const md_str_t token = tokens[i];
 		for (size_t j = 1; j < ATOM_FIELD_COUNT; ++j) {
@@ -307,7 +308,7 @@ static md_str_t lammps_content(md_str_t line, md_str_t* comment) {
 	while (c < end) {
 		c = (const char*)memchr(c, '#', (size_t)(end - c));
 		if (!c) { c = end; break; }
-		if (c == beg || is_whitespace(c[-1])) break;
+		if (c == beg || md_ascii_is_whitespace(c[-1])) break;
 		++c;
 	}
 	if (comment) {
@@ -318,15 +319,15 @@ static md_str_t lammps_content(md_str_t line, md_str_t* comment) {
 
 // The section a keyword line begins (its content, the words of the keyword a blank apart), SEC_NONE for any other line
 static int lammps_section_kind(md_str_t content) {
-	if (content.len == 0 || !is_alpha(content.ptr[0])) return SEC_NONE;
+	if (content.len == 0 || !md_ascii_is_alpha(content.ptr[0])) return SEC_NONE;
 	for (size_t i = 0; i < MD_COUNTOF(lammps_sections); ++i) {
 		const char* k = lammps_sections[i].keyword;
 		const char* c = content.ptr;
 		const char* e = content.ptr + content.len;
 		while (*k && c < e) {
 			if (*k == ' ') {
-				if (!is_whitespace(*c)) break;
-				while (c < e && is_whitespace(*c)) ++c;
+				if (!md_ascii_is_whitespace(*c)) break;
+				while (c < e && md_ascii_is_whitespace(*c)) ++c;
 				++k;
 			} else if (*k == *c) {
 				++k;
@@ -351,7 +352,7 @@ static bool lammps_section_line(md_reader_i* reader, md_str_t* content) {
 			reader->cur = next;
 			continue;
 		}
-		if (is_alpha(c.ptr[0]) && lammps_section_kind(c) != SEC_NONE) {
+		if (md_ascii_is_alpha(c.ptr[0]) && lammps_section_kind(c) != SEC_NONE) {
 			return false;
 		}
 		reader->cur = next;
@@ -385,7 +386,7 @@ static size_t lammps_atom_columns(const int mappings[ATOM_FIELD_COUNT]) {
 // three image flags more, when exact; at least as many otherwise.
 static bool lammps_atom_line_fits(md_str_t content, const int mappings[ATOM_FIELD_COUNT], size_t num_fields, size_t num_types, bool exact) {
 	md_str_t tok[24];
-	const size_t n = extract_tokens(tok, MD_COUNTOF(tok), &content);
+	const size_t n = md_parse_next_tokens(tok, MD_COUNTOF(tok), &content);
 	if (n < num_fields) return false;
 	if (exact) {
 		if (n != num_fields && n != num_fields + 3) return false;
@@ -398,7 +399,7 @@ static bool lammps_atom_line_fits(md_str_t content, const int mappings[ATOM_FIEL
 			if (is_int(t)) {
 				const int64_t type = parse_int(t);
 				if (type < 1 || (num_types && (size_t)type > num_types)) return false;
-			} else if (!is_alpha(t.ptr[0])) {
+			} else if (!md_ascii_is_alpha(t.ptr[0])) {
 				return false;
 			}
 		} else if (atom_field_type[j] == TYPE_INT) {
@@ -431,13 +432,13 @@ static md_lammps_atom_format_t detect_atom_format(md_reader_i* reader) {
 			if (header) {
 				md_str_t tok[4];
 				md_str_t c = content;
-				if (extract_tokens(tok, MD_COUNTOF(tok), &c) == 3 && md_str_eq(tok[1], MD_STR_LIT("atom")) && md_str_eq(tok[2], MD_STR_LIT("types"))) {
+				if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &c) == 3 && md_str_eq(tok[1], MD_STR_LIT("atom")) && md_str_eq(tok[2], MD_STR_LIT("types"))) {
 					num_types = (size_t)MD_MAX(0, parse_int(tok[0]));
 				}
 			}
 		} else if (sec == SEC_ATOMS) {
 			md_str_t word;
-			if (extract_token(&word, &comment)) {
+			if (md_parse_next_token(&word, &comment)) {
 				const size_t len = md_str_copy_to_char_buf(hint_buf, sizeof(hint_buf), word);
 				hint = (md_str_t){ hint_buf, len };
 			}
@@ -560,7 +561,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_types, m
 	double params[8];
 
 	md_str_t style = hint;
-	const bool hybrid = md_str_eq_cstr_n(hint, "hybrid", 6) && (hint.len == 6 || is_whitespace(hint.ptr[6]));
+	const bool hybrid = md_str_eq_cstr_n(hint, "hybrid", 6) && (hint.len == 6 || md_ascii_is_whitespace(hint.ptr[6]));
 
 	md_str_t line;
 	for (size_t i = 0; i < num_types; ++i) {
@@ -570,7 +571,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_types, m
 		}
 		if (md_str_empty(hint)) continue;
 
-		const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
+		const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &line);
 		const int32_t type = lammps_atom_type(tok[0], labels);
 		if (type < 1 || (size_t)type > num_types) {
 			MD_LOG_ERROR("LAMMPS: Invalid atom type '" MD_STR_FMT "' in Pair Coeffs", MD_STR_ARG(tok[0]));
@@ -644,7 +645,7 @@ static int compare_atom(const void* a, const void* b) {
 // A header line (its content), into data. False for a malformed one of the box.
 static bool lammps_header_line(md_lammps_data_t* data, md_str_t content) {
 	md_str_t tok[8];
-	const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &content);
+	const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &content);
 	if (num_tok == 2 && is_int(tok[0])) {
 		const size_t n = (size_t)MD_MAX(0, parse_int(tok[0]));
 		if      (md_str_eq(tok[1], MD_STR_LIT("atoms")))		data->num_atoms = n;
@@ -714,7 +715,7 @@ static bool lammps_parse_topology(int32_t* out, size_t stride, size_t num_atom_i
 			MD_LOG_ERROR("LAMMPS: The %s section ends after %zu of its %zu entries", section, i, n);
 			return false;
 		}
-		const size_t num_tok = extract_tokens(tok, 2 + num_atom_ids, &line);
+		const size_t num_tok = md_parse_next_tokens(tok, 2 + num_atom_ids, &line);
 		if (num_tok < 2 + num_atom_ids) {
 			MD_LOG_ERROR("LAMMPS: Failed to parse a line of the %s section, expected %zu tokens, got %zu", section, 2 + num_atom_ids, num_tok);
 			return false;
@@ -776,7 +777,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 		case SEC_ATOM_TYPE_LABELS:
 			for (size_t i = 0; i < data->num_particle_types; ++i) {
 				md_str_t tok[2];
-				if (!lammps_section_line(reader, &line) || extract_tokens(tok, 2, &line) != 2) {
+				if (!lammps_section_line(reader, &line) || md_parse_next_tokens(tok, 2, &line) != 2) {
 					MD_LOG_ERROR("LAMMPS: The Atom Type Labels section ends after %zu of %zu atom types", i, data->num_particle_types);
 					goto done;
 				}
@@ -796,7 +797,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 			}
 			for (size_t i = 0; i < data->num_particle_types; ++i) {
 				md_str_t tok[2];
-				if (!lammps_section_line(reader, &line) || extract_tokens(tok, 2, &line) != 2) {
+				if (!lammps_section_line(reader, &line) || md_parse_next_tokens(tok, 2, &line) != 2) {
 					MD_LOG_ERROR("Number of entries in Masses section did not match the number of atom types");
 					goto done;
 				}
@@ -836,7 +837,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 					goto done;
 				}
 				const md_str_t atom_line = line;
-				if (extract_tokens(tok, num_columns, &line) < num_columns) {
+				if (md_parse_next_tokens(tok, num_columns, &line) < num_columns) {
 					MD_LOG_ERROR("LAMMPS: Failed to parse atom line '" MD_STR_FMT "', expected at least %zu columns (%s)", MD_STR_ARG(atom_line), num_columns, format);
 					goto done;
 				}
@@ -1302,7 +1303,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 	// "pp pp pp", "xy xz yz pp pp pp" or "abc origin pp pp pp", of any boundaries
 	md_str_t rest = md_str_substr(line, 16, SIZE_MAX);
 	md_str_t tok[8];
-	const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rest);
+	const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &rest);
 	size_t skip = 0;
 	bool tilt = false, general = false;
 	if (num_tok >= 3 && md_str_eq(tok[0], MD_STR_LIT("xy")) && md_str_eq(tok[1], MD_STR_LIT("xz")) && md_str_eq(tok[2], MD_STR_LIT("yz"))) {
@@ -1324,7 +1325,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 			MD_LOG_ERROR("Failed to extract box bounds");
 			return false;
 		}
-		const size_t n = extract_tokens(tok, num_values, &line);
+		const size_t n = md_parse_next_tokens(tok, num_values, &line);
 		if (n < num_values) {
 			MD_LOG_ERROR("Failed to extract box bounds");
 			return false;
@@ -1422,7 +1423,7 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, md_str_t str) {
 	MD_ASSERT(mappings);
 
 	md_str_t tokens[130];
-	const size_t num_tokens = extract_tokens(tokens, MD_COUNTOF(tokens), &str);
+	const size_t num_tokens = md_parse_next_tokens(tokens, MD_COUNTOF(tokens), &str);
 	if (num_tokens < 2 || !md_str_eq(tokens[0], MD_STR_LIT("ITEM:")) || !md_str_eq(tokens[1], MD_STR_LIT("ATOMS"))) {
 		return false;
 	}
@@ -1575,7 +1576,7 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, md_str_t 
 		bool sorted = true;
 
 		while (line_count < header.num_atoms && md_reader_extract_line(&reader, &line)) {
-			const size_t num_tokens = extract_tokens(tokens, num_columns, &line);
+			const size_t num_tokens = md_parse_next_tokens(tokens, num_columns, &line);
 			if (num_tokens < num_columns) {
 				MD_LOG_ERROR("Unexpected number of tokens in ITEM: ATOMS line, got %zu, expected at least %zu", num_tokens, num_columns);
 				goto coords_done;

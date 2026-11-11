@@ -447,7 +447,7 @@ static uint32_t completion_identifier_types(const identifier_t* ident) {
 
 static void completion_push(md_array(md_script_completion_t)* items, md_script_completion_kind_t kind, md_str_t label, md_str_t pre, md_str_t post, bool fits, md_allocator_i* alloc) {
     md_script_completion_t item = {.kind = kind, .fits = fits};
-    item.label = md_str_copy(label, alloc);
+    item.label = md_alloc_str(alloc, label);
     if (pre.len == 0 && post.len == 0) {
         item.text = item.label;
     } else {
@@ -519,13 +519,13 @@ static md_script_completions_t complete(md_str_t src, int cursor, const md_syste
 
     int end = cursor;
     if (partial == PARTIAL_IDENT) {
-        while (end < (int)src.len && (is_alpha(src.ptr[end]) || is_digit(src.ptr[end]) || src.ptr[end] == '_')) ++end;
+        while (end < (int)src.len && (md_ascii_is_alpha(src.ptr[end]) || md_ascii_is_digit(src.ptr[end]) || src.ptr[end] == '_')) ++end;
     } else if (partial == PARTIAL_STRING) {
         while (end < (int)src.len && src.ptr[end] != quote && src.ptr[end] != ';' && src.ptr[end] != '\n' && src.ptr[end] != '\r') ++end;
     }
     result.range.beg = beg;
     result.range.end = end;
-    result.prefix = md_str_copy(md_str_substr(src, (size_t)beg, (size_t)(cursor - beg)), alloc);
+    result.prefix = md_alloc_str(alloc, md_str_substr(src, (size_t)beg, (size_t)(cursor - beg)));
 
     if (partial != PARTIAL_NOTHING_TO_OFFER) {
         completion_context_t ctx;

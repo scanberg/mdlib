@@ -389,7 +389,7 @@ void md_vg_scene_init(md_vg_scene_t* scene, vec2_t size, md_allocator_i* alloc) 
     *scene = (md_vg_scene_t){0};
     scene->size = size;
     scene->alloc = alloc;
-    scene->default_font_family = md_str_copy(MD_STR_LIT("sans-serif"), alloc);
+    scene->default_font_family = md_alloc_str(alloc, MD_STR_LIT("sans-serif"));
 }
 
 void md_vg_scene_free(md_vg_scene_t* scene) {
@@ -400,7 +400,7 @@ void md_vg_scene_free(md_vg_scene_t* scene) {
     md_array_free(scene->strings, scene->alloc);
     md_array_free(scene->path_points, scene->alloc);
     md_array_free(scene->path_verbs, scene->alloc);
-    md_str_free(scene->default_font_family, scene->alloc);
+    md_free_str(scene->alloc, scene->default_font_family);
     *scene = (md_vg_scene_t){0};
 }
 
@@ -422,8 +422,8 @@ void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size) {
 void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, md_str_t font_family) {
     MD_ASSERT(scene);
     MD_ASSERT(scene->alloc);
-    md_str_free(scene->default_font_family, scene->alloc);
-    scene->default_font_family = md_str_copy(font_family, scene->alloc);
+    md_free_str(scene->alloc, scene->default_font_family);
+    scene->default_font_family = md_alloc_str(scene->alloc, font_family);
 }
 
 void md_vg_scene_write_svg(md_writer_i* w, const md_vg_scene_t* scene) {

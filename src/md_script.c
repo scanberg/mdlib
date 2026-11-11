@@ -43,6 +43,7 @@
 #include <core/md_bitset.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
 #include <core/md_parse.h>
 #include <core/md_array.h>
 #include <core/md_arena_allocator.h>
@@ -1556,7 +1557,7 @@ static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t 
             .beg = token.beg,
             .end = token.end,
         },
-        .text = md_str_copy(str, ir->arena),
+        .text = md_alloc_str(ir->arena, str),
     };
 
     switch (level) {
@@ -1610,7 +1611,7 @@ static void eval_log_str(log_level_t level, const eval_context_t* ctx, token_t t
             .beg = token.beg,
             .end = token.end,
         },
-        .text = md_str_copy(str, log->alloc),
+        .text = md_alloc_str(log->alloc, str),
     };
     if (level >= LOG_LEVEL_ERROR) {
         md_array_push(log->errors, log_tok, log->alloc);
@@ -1676,7 +1677,7 @@ static bool glob_match(md_str_t pattern, md_str_t str) {
 }
 
 static inline bool str_has_glob(md_str_t str) {
-    return md_str_find_char(NULL, str, '*');
+    return md_str_contains_char(str, '*');
 }
 
 // Whether path matches pattern segment by segment: as many segments, each matching its own. A '*' does not reach
@@ -1684,8 +1685,8 @@ static inline bool str_has_glob(md_str_t str) {
 static bool glob_match_path(md_str_t pattern, md_str_t path) {
     for (;;) {
         size_t pl = 0, sl = 0;
-        const bool p_more = md_str_find_char(&pl, pattern, '/');
-        const bool s_more = md_str_find_char(&sl, path, '/');
+        const bool p_more = ((pl = md_str_find_char(pattern, '/')) != MD_STR_NPOS);
+        const bool s_more = ((sl = md_str_find_char(path, '/')) != MD_STR_NPOS);
         if (p_more != s_more) return false;
         if (!p_more) return glob_match(pattern, path);
         if (!glob_match(md_str_substr(pattern, 0, pl), md_str_substr(path, 0, sl))) return false;
@@ -1700,7 +1701,7 @@ static md_str_t glob_varying_segments(md_str_t pattern, md_str_t path, md_alloca
     md_str_writer_t w = md_str_writer_create(alloc);
     for (;;) {
         size_t pl = 0, sl = 0;
-        const bool more = md_str_find_char(&pl, pattern, '/') && md_str_find_char(&sl, path, '/');
+        const bool more = ((pl = md_str_find_char(pattern, '/')) != MD_STR_NPOS) && ((sl = md_str_find_char(path, '/')) != MD_STR_NPOS);
         const md_str_t p_seg = more ? md_str_substr(pattern, 0, pl) : pattern;
         const md_str_t s_seg = more ? md_str_substr(path, 0, sl) : path;
         if (str_has_glob(p_seg)) {
@@ -1716,8 +1717,7 @@ static md_str_t glob_varying_segments(md_str_t pattern, md_str_t path, md_alloca
 
 // The last segment of a path
 static md_str_t path_leaf(md_str_t path) {
-    size_t loc;
-    return md_str_rfind_char(&loc, path, '/') ? md_str_substr(path, loc + 1, SIZE_MAX) : path;
+    return md_str_substr(path, md_str_rfind_char(path, '/') + 1, SIZE_MAX);
 }
 
 // Include all procedures, operators and defines
@@ -2054,7 +2054,7 @@ static identifier_t* create_identifier(md_script_ir_t* ir, md_str_t name) {
     }
 
     identifier_t ident = {
-        .name = md_str_copy(name, ir->arena),
+        .name = md_alloc_str(ir->arena, name),
         .node = 0,
         .data = 0,
     };
@@ -2127,9 +2127,9 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
         }
         
         // Alpha numeric block
-        else if (is_alpha(buf[i]) || buf[i] == '_') {
+        else if (md_ascii_is_alpha(buf[i]) || buf[i] == '_') {
             for (j = i+1; j != len; ++j) {
-                if (!is_alpha(buf[j]) && buf[j] != '_' && !is_digit(buf[j])) {
+                if (!md_ascii_is_alpha(buf[j]) && buf[j] != '_' && !md_ascii_is_digit(buf[j])) {
                     break;
                 }
             }
@@ -2170,13 +2170,13 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
         }
         
         // Numeric literal
-        else if (is_digit(buf[i])) {
+        else if (md_ascii_is_digit(buf[i])) {
             bool is_float = false;
             for (j = i+1; j != len; ++j) {
                 if (buf[j] == '.') {
                     is_float = true;
                     continue;
-                } else if (!is_digit(buf[j])) {
+                } else if (!md_ascii_is_digit(buf[j])) {
                     break;
                 }
             }
@@ -2201,7 +2201,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             }
         }
         
-        else if (is_symbol(buf[i])) {
+        else if (md_ascii_is_symbol(buf[i])) {
             typedef struct symbol_t {
                 const char* str;
                 token_type_t type;
@@ -2219,7 +2219,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             };
             
             // Potential symbol count in buf to match (only care about 1 or 2)
-            const int n = (i + 1 < len && is_symbol(buf[i + 1])) ? 2 : 1;
+            const int n = (i + 1 < len && md_ascii_is_symbol(buf[i + 1])) ? 2 : 1;
             
             // Match buf + i against the longest accepted symbol that we can find.
             if (n == 2) {
@@ -2944,7 +2944,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
         next = tokenizer_consume_next(ctx->tokenizer);
         if (expect_token_type(ctx->ir, next, ')')) {
             node = create_node(ctx->ir, AST_PROC_CALL, token);
-            node->ident = md_str_copy(token.str, ctx->ir->arena);
+            node->ident = md_alloc_str(ctx->ir->arena, token.str);
             const size_t num_args = md_array_size(args);
             if (num_args) {
                 md_array_push_array(node->children, args, num_args, ctx->ir->arena);
@@ -2960,7 +2960,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
         }
     } else {
         node = create_node(ctx->ir, AST_PROC_CALL, token);
-        node->ident = md_str_copy(token.str, ctx->ir->arena);
+        node->ident = md_alloc_str(ctx->ir->arena, token.str);
     }
 
     return node;
@@ -3025,7 +3025,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         node->data.size = sizeof(float);
         node->data.type = (type_info_t)TI_FLOAT;
         node->flags |= FLAG_CONSTANT;
-        node->ident = md_str_copy(ident, ctx->ir->arena);
+        node->ident = md_alloc_str(ctx->ir->arena, ident);
     } else {
         // Identifier
         token_t next = tokenizer_peek_next(ctx->tokenizer);
@@ -3054,7 +3054,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         } else {
             // Identifier reference, resolve this later in the static check
             node = create_node(ctx->ir, AST_IDENTIFIER, token);
-            node->ident = md_str_copy(ident, ctx->ir->arena);
+            node->ident = md_alloc_str(ctx->ir->arena, ident);
         }
     }
     return node;
@@ -3301,7 +3301,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     }
     else if (token.type == TOKEN_STRING) {
         node->data.type = (type_info_t)TI_STRING;
-        node->value._string = md_str_copy(md_str_substr(token.str, 1, MD_MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
+        node->value._string = md_alloc_str(ctx->ir->arena, md_str_substr(token.str, 1, MD_MAX(0, ((int)token.str.len - 2)))); // remove quotation marks
     }
     else {
         MD_ASSERT(false);
@@ -5194,7 +5194,7 @@ static attr_readable_t attr_readable(const md_attributes_t* attributes, const md
     // The run is the first two segments, and its frames are the ones the script steps through.
     const md_str_t full = attr->path;
     size_t name_len = 0;
-    if (!md_str_begins_with(full, MD_STR_LIT("run/")) || !md_str_find_char(&name_len, md_str_substr(full, 4, SIZE_MAX), '/')) {
+    if (!md_str_begins_with(full, MD_STR_LIT("run/")) || ((name_len = md_str_find_char(md_str_substr(full, 4, SIZE_MAX), '/')) == MD_STR_NPOS)) {
         return ATTR_NOT_IN_RUN;
     }
     info->run = md_str_substr(full, 0, 4 + name_len);
@@ -5273,7 +5273,7 @@ static void attr_member_labels(attr_member_t* members, const md_str_t* subjects,
         for (size_t j = 0; j < i && own; ++j) {
             own = !md_str_eq(members[j].label, a->label);
         }
-        if (own) members[i].label = md_str_copy(a->label, alloc);
+        if (own) members[i].label = md_alloc_str(alloc, a->label);
     }
     if (!own) {
         for (size_t i = 0; i < count; ++i) {
@@ -5303,10 +5303,8 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, md_str
         if (!md_str_begins_with(a->path, MD_STR_LIT("run/"))) continue;
         md_str_t subject = a->path;
         if (!absolute) {
-            size_t loc;
             const md_str_t below = md_str_substr(a->path, 4, SIZE_MAX);
-            if (!md_str_find_char(&loc, below, '/')) continue;
-            subject = md_str_substr(below, loc + 1, SIZE_MAX);
+            if (!md_str_cut(NULL, &subject, below, md_str_find_char(below, '/'))) continue;
         }
         if (!glob_match_path(pattern, subject)) continue;
 
@@ -5324,7 +5322,7 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, md_str
             md_array_push(runs, info.run, ctx->temp_alloc);
         }
         if (!run_axis) run_axis = info.run_axis;
-        attr_member_t m = { .path = md_str_copy(a->path, arena), .id = a->id, .axis_id = info.attr_axis->id };
+        attr_member_t m = { .path = md_alloc_str(arena, a->path), .id = a->id, .axis_id = info.attr_axis->id };
         md_array_push(members, m, arena);
         md_array_push(subjects, subject, ctx->temp_alloc);
     }
@@ -5345,7 +5343,7 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, md_str
         // The pattern below the run, which each run is suggested with
         md_str_t below = pattern;
         size_t loc;
-        if (absolute && md_str_find_char(&loc, md_str_substr(pattern, 4, SIZE_MAX), '/')) {
+        if (absolute && ((loc = md_str_find_char(md_str_substr(pattern, 4, SIZE_MAX), '/')) != MD_STR_NPOS)) {
             below = md_str_substr(pattern, 4 + loc + 1, SIZE_MAX);
         }
         md_str_writer_t w = md_str_writer_create(ctx->temp_alloc);
@@ -5389,7 +5387,7 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, md_str
     }
     attr_member_labels(members, subjects, num, pattern, attributes, arena);
 
-    node->attr_path    = md_str_copy(pattern, arena);
+    node->attr_path    = md_alloc_str(arena, pattern);
     node->attr_members = members;
     node->attr_pattern = true;
     node->run_axis_id  = run_axis->id;
@@ -5496,7 +5494,7 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     type_info_t type = { .base_type = TYPE_FLOAT, .dim = {1} };
     attr_value_dims(type.dim, 0, attr);
 
-    attr_member_t member = { .path = md_str_copy(full, ctx->compile_ir->arena), .id = attr->id, .axis_id = attr_axis->id };
+    attr_member_t member = { .path = md_alloc_str(ctx->compile_ir->arena, full), .id = attr->id, .axis_id = attr_axis->id };
     md_array_push(node->attr_members, member, ctx->compile_ir->arena);
     node->attr_path    = member.path;
     node->run_axis_id  = run_axis->id;
@@ -7941,7 +7939,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
-    vis.text = md_str_copy(md_str_writer_to_str(&sb), ir->arena);
+    vis.text = md_alloc_str(ir->arena, md_str_writer_to_str(&sb));
     vis.ref = make_vis_ref(ir, node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)
@@ -8062,7 +8060,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, md_str_t src, const md
         return false;
     }
     
-    ir->str = md_str_copy(src, ir->arena);
+    ir->str = md_alloc_str(ir->arena, src);
     ir->id  = next_ir_id();
 
     if (ctx_ir) {
@@ -9008,7 +9006,7 @@ bool md_script_eval_plan(md_script_eval_plan_t* out_plans, size_t cap, md_bitset
         }
         const eval_property_t* src = &eval->props[j];
         plan->status     = MD_SCRIPT_EVAL_STATUS_HELD;
-        plan->from       = md_str_copy(src->ident, alloc);
+        plan->from       = md_alloc_str(alloc, src->ident);
         plan->num_frames = (uint32_t)md_bitmask_count(&src->done);
 
         // The frames it does not hold, and those its slots have to add or take out
@@ -9364,7 +9362,7 @@ static bool eval_expression(data_t* dst, md_str_t expr, md_system_t* sys, md_all
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = md_str_copy(expr, ir->arena);
+    ir->str = md_alloc_str(ir->arena, expr);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
@@ -9394,7 +9392,7 @@ static bool eval_expression(data_t* dst, md_str_t expr, md_system_t* sys, md_all
                     const size_t num_elem = element_count(*dst);
                     md_str_t* dst_str = dst->ptr;
                     for (size_t i = 0; i < num_elem; ++i) {
-                        dst_str[i] = md_str_copy(dst_str[i], alloc);
+                        dst_str[i] = md_alloc_str(alloc, dst_str[i]);
                     }
                 }
                 result = true;
@@ -9419,7 +9417,7 @@ static void parse_type_check_and_print_expression_to_json(md_str_t expr, const m
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = md_str_copy(expr, ir->arena);
+    ir->str = md_alloc_str(ir->arena, expr);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     ast_node_t* node = prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc}));
@@ -9449,7 +9447,7 @@ static void parse_type_check_and_print_expression_to_json(md_str_t expr, const m
 // which determines it (evaluate_node_alloc). What went wrong in the compilation is recorded in ir->errors.
 // ctx is left ready for the evaluation: reading ir, and logging to ctx->log.
 static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, md_str_t expr, const md_script_ir_t* ctx_ir) {
-    ir->str = md_str_copy(expr, ir->arena);
+    ir->str = md_alloc_str(ir->arena, expr);
     if (ctx_ir) {
         add_ir_ctx(ir, ctx_ir);
     }
@@ -10020,7 +10018,7 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, md_str_t expr, const md_scr
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = md_str_copy(expr, ir->arena);
+    ir->str = md_alloc_str(ir->arena, expr);
 
     if (vis_ctx->ir) {
         add_ir_ctx(ir, vis_ctx->ir);
@@ -10158,9 +10156,9 @@ bool md_script_identifier_name_valid(md_str_t ident) {
     const char* beg = md_str_beg(ident);
     const char* end = md_str_end(ident);
 
-    if (!is_alpha(*beg) && *beg != '_') return false;
+    if (!md_ascii_is_alpha(*beg) && *beg != '_') return false;
     for (const char* c = beg + 1; c < end; ++c) {
-        if (!is_alpha(*c) && (*c != '_') && !is_digit(*c)) return false;
+        if (!md_ascii_is_alpha(*c) && (*c != '_') && !md_ascii_is_digit(*c)) return false;
     }
 
     return true;

@@ -254,12 +254,12 @@ static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* e
         const float* vel = gro_test_velocities(&sys);
         md_str_t text = md_load_textfile(path, alloc);
         md_str_t rest = text, line;
-        md_str_extract_line(&line, &rest);
-        md_str_extract_line(&line, &rest);
-        for (size_t i = 0; i < sys.atom.count && md_str_extract_line(&line, &rest); ++i) {
+        md_parse_next_line(&line, &rest);
+        md_parse_next_line(&line, &rest);
+        for (size_t i = 0; i < sys.atom.count && md_parse_next_line(&line, &rest); ++i) {
             md_str_t coords = md_str_substr(line, 20, SIZE_MAX);
             md_str_t tok[6];
-            const size_t n = extract_tokens(tok, 6, &coords);
+            const size_t n = md_parse_next_tokens(tok, 6, &coords);
             const float xyz[3] = { st.xyz[i].x, st.xyz[i].y, st.xyz[i].z };
             for (size_t k = 0; k < n && k < 3; ++k) {
                 if (!gro_test_same(xyz[k], nm((float)parse_float(tok[k])))) mismatches += 1;

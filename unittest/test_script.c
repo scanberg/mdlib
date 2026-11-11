@@ -8,6 +8,7 @@
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
 #include <core/md_bitset.h>
 #include <core/md_os.h>
 #include <md_script.h>
@@ -269,7 +270,7 @@ done:
 ast_node_t* parse_and_type_check_expression(md_str_t expr, md_script_ir_t* ir, md_system_t* sys, md_allocator_i* arena) {
     // @HACK: We use alloc here: If the data type is a md_str_t, then it gets a shallow copy
     // Which means that the actual string data is contained within the ir->arena => temp_alloc
-    ir->str = md_str_copy(expr, ir->arena);
+    ir->str = md_alloc_str(ir->arena, expr);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
@@ -1227,11 +1228,12 @@ UTEST_F(script, compile_script) {
     {
         md_str_writer_t w = md_str_writer_create(alloc);
         md_str_t rest = script_src;
-        size_t pos = 0;
-        while (md_str_find_str(&pos, rest, MD_STR_LIT("chain("))) {
+        const md_str_t chain = MD_STR_LIT("chain(");
+        size_t pos;
+        while ((pos = md_str_find_str(rest, chain)) != MD_STR_NPOS) {
             md_str_writer_push_str(&w, md_str_substr(rest, 0, pos));
             md_str_writer_push_str(&w, MD_STR_LIT("polymer("));
-            rest = md_str_substr(rest, pos + 6, SIZE_MAX);
+            rest = md_str_substr(rest, pos + chain.len, SIZE_MAX);
         }
         md_str_writer_push_str(&w, rest);
         script_src = md_str_writer_to_str(&w);
@@ -2273,7 +2275,7 @@ UTEST_F(script, named_args_errors) {
 }
 
 static ast_node_t* named_args_parse_only(md_script_ir_t* ir, const char* expr, md_allocator_i* alloc) {
-    ir->str = md_str_copy(md_str_from_cstr(expr), ir->arena);
+    ir->str = md_alloc_str(ir->arena, md_str_from_cstr(expr));
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     return prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = alloc }));
 }
@@ -2504,7 +2506,7 @@ static md_attribute_id_t publish_series(md_attributes_t* t, const char* path, co
 static bool fails_because(md_script_ir_t* ir, const char* src, const md_system_t* sys, const char* because) {
     if (compiles(ir, src, sys)) return false;
     for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
-        if (md_str_find_str(NULL, md_script_ir_errors(ir)[i].text, md_str_from_cstr(because))) return true;
+        if (md_str_contains_str(md_script_ir_errors(ir)[i].text, md_str_from_cstr(because))) return true;
     }
     for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
         printf("  %s: " MD_STR_FMT "\n", src, MD_STR_ARG(md_script_ir_errors(ir)[i].text));
@@ -2826,7 +2828,7 @@ UTEST(script, name_patterns) {
             const md_str_t n = md_atom_name(&test_mol.atom, i);
             bool expected = false;
             switch (cases[c].kind) {
-            case 0: expected = md_str_find_char(NULL, n, cases[c].a); break;
+            case 0: expected = md_str_contains_char(n, cases[c].a); break;
             case 1: expected = n.len && n.ptr[n.len - 1] == cases[c].a; break;
             case 2: expected = n.len && n.ptr[0] == cases[c].a; break;
             case 3: expected = n.len >= 2 && n.ptr[0] == cases[c].a && n.ptr[n.len - 1] == cases[c].b; break;
@@ -3016,7 +3018,7 @@ UTEST(script, reference_documents_every_procedure) {
 
     md_str_t rest = doc;
     md_str_t line;
-    while (md_str_extract_line(&line, &rest)) {
+    while (md_parse_next_line(&line, &rest)) {
         if (!md_str_begins_with(line, MD_STR_LIT("<!-- proc"))) continue;
         const md_str_t name = reference_meta_value(line, MD_STR_LIT("name"));
         snprintf(msg, sizeof(msg), "procedure comment without a name: '%.*s'", MD_STR_ARG(line));
@@ -3026,14 +3028,14 @@ UTEST(script, reference_documents_every_procedure) {
 
         md_str_t list = reference_meta_value(line, MD_STR_LIT("aliases"));
         while (!md_str_empty(list)) {
-            size_t comma = list.len;
-            md_str_find_char(&comma, list, ',');
-            const md_str_t alias = md_str_trim(md_str_substr(list, 0, comma));
+            md_str_t alias;
+            md_str_cut(&alias, &list, list, md_str_find_char(list, ','));
+            alias = md_str_trim(alias);
             if (!md_str_empty(alias)) {
                 ASSERT_LT(num_names, MD_COUNTOF(names));
                 names[num_names++] = alias;
             }
-            list = md_str_substr(list, MD_MIN(comma + 1, list.len), SIZE_MAX);
+            
         }
     }
     EXPECT_GT(num_names, (size_t)0);
@@ -3056,7 +3058,7 @@ UTEST(script, reference_documents_every_procedure) {
         EXPECT_TRUE_MSG(known, msg);
     }
 
-    md_str_free(doc, alloc);
+    md_free_str(alloc, doc);
 }
 
 // ### IDENTIFIER MEMOIZATION ###
@@ -3899,7 +3901,7 @@ UTEST_F(script, contacts_single_group_warnings) {
         const md_log_token_t* warnings = md_script_ir_warnings(ir);
         bool found = false;
         for (size_t w = 0; w < num; ++w) {
-            if (cases[i].warning && md_str_find_str(NULL, warnings[w].text, md_str_from_cstr(cases[i].warning))) found = true;
+            if (cases[i].warning && md_str_contains_str(warnings[w].text, md_str_from_cstr(cases[i].warning))) found = true;
         }
         if (cases[i].warning) {
             EXPECT_TRUE(found);
@@ -4465,7 +4467,7 @@ static md_script_completions_t complete_at(const char* src_with_cursor, const md
     const int cursor = bar ? (int)(bar - src_with_cursor) : (int)strlen(src_with_cursor);
     char buf[512];
     snprintf(buf, sizeof(buf), "%.*s%s", cursor, src_with_cursor, bar ? bar + 1 : "");
-    return md_script_complete(md_str_copy_cstr(buf, alloc), cursor, sys, alloc);
+    return md_script_complete(md_alloc_str(alloc, md_str_from_cstr(buf)), cursor, sys, alloc);
 }
 
 static int count_kind(md_script_completions_t c, md_script_completion_kind_t kind) {
@@ -4627,7 +4629,7 @@ static md_script_completions_t complete_filter_at(const char* expr_with_cursor, 
     char buf[512];
     snprintf(buf, sizeof(buf), "%.*s%s", cursor, expr_with_cursor, bar ? bar + 1 : "");
     const md_filter_context_t ctx = {&test_mol, NULL, ir};
-    return md_filter_complete(md_str_copy_cstr(buf, alloc), cursor, &ctx, alloc);
+    return md_filter_complete(md_alloc_str(alloc, md_str_from_cstr(buf)), cursor, &ctx, alloc);
 }
 
 static const md_script_completion_t* find_item(md_script_completions_t c, md_script_completion_kind_t kind, const char* text) {
@@ -6002,7 +6004,7 @@ static bool plane_compile_fails_with(plane_sys_t* p, const char* src, const char
     bool found = false;
     for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
         const md_log_token_t* e = md_script_ir_errors(ir) + i;
-        found |= md_str_find_str(NULL, e->text, md_str_from_cstr(expected));
+        found |= md_str_contains_str(e->text, md_str_from_cstr(expected));
     }
     if (ok || !found) printf("  '%s' was expected to fail with '%s'\n", src, expected);
     md_script_ir_free(ir);
@@ -6102,7 +6104,7 @@ UTEST(script, plane) {
 static int warnings_with(const md_script_ir_t* ir, const char* text) {
     int n = 0;
     for (size_t i = 0; i < md_script_ir_num_warnings(ir); ++i) {
-        n += md_str_find_str(NULL, md_script_ir_warnings(ir)[i].text, md_str_from_cstr(text)) ? 1 : 0;
+        n += md_str_contains_str(md_script_ir_warnings(ir)[i].text, md_str_from_cstr(text)) ? 1 : 0;
     }
     return n;
 }
@@ -6252,8 +6254,8 @@ UTEST(script, hover_text) {
 
     for (size_t i = 0; i < md_script_ir_num_vis_tokens(ir); ++i) {
         const md_str_t t = md_script_ir_vis_tokens(ir)[i].text;
-        EXPECT_FALSE(md_str_find_str(NULL, t, MD_STR_LIT("NULL")));
-        EXPECT_FALSE(md_str_find_str(NULL, t, MD_STR_LIT("undefined")));
+        EXPECT_FALSE(md_str_contains_str(t, MD_STR_LIT("NULL")));
+        EXPECT_FALSE(md_str_contains_str(t, MD_STR_LIT("undefined")));
     }
 
     const md_script_vis_token_t* t;
@@ -6265,7 +6267,7 @@ UTEST(script, hover_text) {
     EXPECT_TRUE(md_str_begins_with(t->text, MD_STR_LIT("atomset")));
     t = hover_token(ir, src, "ring()");
     ASSERT_TRUE(t != NULL);
-    EXPECT_TRUE(md_str_find_str(NULL, t->text, MD_STR_LIT("2 selections, 9 atoms in all")));
+    EXPECT_TRUE(md_str_contains_str(t->text, MD_STR_LIT("2 selections, 9 atoms in all")));
 
     // At the state given
     const md_script_vis_ctx_t ctx = { .ir = ir, .sys = &trp.sys, .state = &trp.st };
@@ -6615,7 +6617,7 @@ static const char* diagnostics_of(md_str_writer_t* sw, const char* src, int beg,
 }
 
 static bool diagnostics_contain(md_str_t txt, const char* expected) {
-    if (md_str_find_str(NULL, txt, md_str_from_cstr(expected))) return true;
+    if (md_str_contains_str(txt, md_str_from_cstr(expected))) return true;
     printf("Expected the diagnostics to contain:\n%s\nGot:\n" MD_STR_FMT, expected, MD_STR_ARG(txt));
     return false;
 }

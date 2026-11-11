@@ -34,6 +34,7 @@ set (SRC_FILES
     test_simd_ops.c
     test_vec_math.c
     test_os.c
+    test_path.c
     test_pdb.c
     test_attributes.c
     test_gro.c

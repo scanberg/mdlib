@@ -28,7 +28,7 @@ bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* a
 // Values are written as "%f" writes them.
 void  md_csv_write(struct md_writer_i* w, const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values);
 
-// The same, as a string allocated with md_str_alloc (freed with md_str_free), and to a file which is created or truncated
+// The same, as a string allocated from str_alloc (see md_alloc_str), and to a file which is created or truncated
 md_str_t md_csv_write_to_str (const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* str_alloc);
 bool  md_csv_write_to_file(const float* const field_values[], const md_str_t field_names[], size_t num_fields, size_t num_values, md_str_t path_to_file);
 

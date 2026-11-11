@@ -54,6 +54,6 @@ UTEST(vector_graphics, svg_export) {
     ASSERT_TRUE(strstr(svg.ptr, "url(#mdvg-grad-") != NULL);
     ASSERT_TRUE(strstr(svg.ptr, "Vector export") != NULL);
 
-    md_str_free(svg, alloc);
+    md_free_str(alloc, svg);
     md_vg_scene_free(&scene);
 }

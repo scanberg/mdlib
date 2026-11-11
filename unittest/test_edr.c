@@ -275,7 +275,7 @@ UTEST(edr, term_groups) {
         const md_str_t name = energies.energy[i].name;
         md_edr_term_groups_t tg;
         size_t colon;
-        if (!md_str_find_char(&colon, name, ':')) {
+        if ((colon = md_str_find_char(name, ':')) == MD_STR_NPOS) {
             EXPECT_FALSE(md_edr_term_groups(&tg, &sys, name));
             continue;
         }

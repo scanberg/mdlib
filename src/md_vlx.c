@@ -1,6 +1,8 @@
 ﻿#include <md_vlx.h>
 
 #include <core/md_os.h>
+#include <core/md_path.h>
+#include <core/md_format.h>
 #include <core/md_log.h>
 #include <core/md_parse.h>
 #include <core/md_reader.h>
@@ -706,7 +708,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 	while (md_reader_extract_line(reader, &line)) {
 		line_count += 1;
 		md_str_t line_original = line;
-		size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
+		size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &line);
 		if (!num_tok) continue;
 
 		if ((num_tok == 2 || num_tok == 3) && md_str_eq(tok[0], MD_STR_LIT("@BASIS_SET"))) {
@@ -718,7 +720,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 				ident = md_str_substr(tok[2], 1, SIZE_MAX);
 			}
 			MD_LOG_DEBUG("Parsing Basis Set with identifier: '" MD_STR_FMT "'", MD_STR_ARG(ident));
-			basis_set->identifier = md_str_copy(ident, alloc);
+			basis_set->identifier = md_alloc_str(alloc, ident);
 		}
 		else if (num_tok == 2 && md_str_eq(tok[0], MD_STR_LIT("@ATOMBASIS"))) {
 			int atomic_number = md_atomic_number_from_symbol(tok[1], true);
@@ -778,7 +780,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 					MD_LOG_ERROR("Failed to parse coefficients in atom basis function");
 					return false;
 				}
-				num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
+				num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &line);
 				if (num_tok != 2) {
 					MD_LOG_ERROR("Unexpected number of parameters in atom basis function coefficients");
 					return false;
@@ -977,11 +979,7 @@ static bool h5_read_str(md_str_t* str, hid_t file_id, const char* field_name, md
 		}
 
 		size_t len = tmp ? strlen(tmp) : 0;
-		md_str_t data = md_str_alloc(len, alloc);
-		if (len > 0) {
-			md_memcpy((char*)data.ptr, tmp, len);
-		}
-		*str = data;
+		*str = md_alloc_str(alloc, (md_str_t){tmp, len});
 
 		if (tmp) {
 			H5free_memory(tmp);
@@ -1004,11 +1002,7 @@ static bool h5_read_str(md_str_t* str, hid_t file_id, const char* field_name, md
 		}
 
 		size_t len = strnlen(tmp, raw_len);
-		md_str_t data = md_str_alloc(len, alloc);
-		if (len > 0) {
-			md_memcpy((char*)data.ptr, tmp, len);
-		}
-		*str = data;
+		*str = md_alloc_str(alloc, (md_str_t){tmp, len});
 		fixed_result = true;
 
 	fixed_done:
@@ -1711,7 +1705,7 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 
 		// The label is what the file called it for a human; when it is the dataset name there is
 		// nothing for it to add, and an absent label is a valid state.
-		md_str_t label = md_str_eq(md_str_from_cstr(property_label), name) ? (md_str_t){0} : md_str_copy_cstr(property_label, vlx->arena);
+		md_str_t label = md_str_eq(md_str_from_cstr(property_label), name) ? (md_str_t){0} : md_alloc_str(vlx->arena, md_str_from_cstr(property_label));
 
 		md_attribute_id_t id = md_qm_publish(vlx->sys, path, label, md_unit_none(), format, NULL, 0);
 		double* dst = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&vlx->sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
@@ -1913,9 +1907,9 @@ static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, 
 		const vlx_raw_t raw = vlx_h5_raw_location(&offset, dataset_id);
 
 		vlx_density_property_t property = {
-			 .label   = md_str_copy_cstr(property_label, vlx->arena),
-			 .name    = md_str_copy_cstr(name_buf, vlx->arena),
-			 .dataset = md_str_copy_cstr(dataset_path, vlx->arena),
+			 .label   = md_alloc_str(vlx->arena, md_str_from_cstr(property_label)),
+			 .name    = md_alloc_str(vlx->arena, md_str_from_cstr(name_buf)),
+			 .dataset = md_alloc_str(vlx->arena, md_str_from_cstr(dataset_path)),
 			 .offset  = offset,
 			 .raw     = raw,
 			 .dim     = dims[0],
@@ -2119,8 +2113,8 @@ static void vlx_scf_density_locate(vlx_density_property_t* out, vlx_t* vlx, hid_
 		int64_t offset = -1;
 		out->raw     = vlx_h5_raw_location(&offset, dset);
 		out->offset  = offset;
-		out->dataset = md_str_copy(md_str_from_cstr(path), vlx->arena);
-		out->name    = md_str_copy(md_str_from_cstr(name), vlx->arena);
+		out->dataset = md_alloc_str(vlx->arena, md_str_from_cstr(path));
+		out->name    = md_alloc_str(vlx->arena, md_str_from_cstr(name));
 		out->dim     = dim;
 	}
 	H5Dclose(dset);
@@ -3447,10 +3441,10 @@ static size_t h5_induced_dipole_count(hid_t scf_handle) {
 // VeloxChem's own fallback in pe_sanity_check), and an absolute reference as written (a local run).
 static bool vlx_resolve_potfile(char* out_buf, size_t out_cap, md_str_t h5_filename, md_str_t ref) {
 	md_str_t folder = {0};
-	md_extract_folder_path(&folder, h5_filename);	// Stays empty for a bare file name, which is the cwd
+	md_path_folder(&folder, h5_filename);	// Stays empty for a bare file name, which is the cwd
 
 	md_str_t name = ref;
-	md_extract_file(&name, ref);					// Stays the whole reference when it names no folder
+	md_path_filename(&name, ref);					// Stays the whole reference when it names no folder
 
 	const bool absolute = md_path_is_absolute(ref);
 
@@ -3679,7 +3673,7 @@ static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, md_str_t filen
 	}
 
 	md_str_t ext = {0};
-	if (md_extract_ext(&ext, ref) && md_str_eq_ignore_case(ext, MD_STR_LIT("json"))) {
+	if (md_path_ext(&ext, ref) && md_str_eq_ignore_case(ext, MD_STR_LIT("json"))) {
 		MD_LOG_INFO("VeloxChem: the embedding potential '" MD_STR_FMT "' is a PyFraME JSON file, which is not read; the environment is not added", MD_STR_ARG(ref));
 		return;
 	}
@@ -3963,7 +3957,7 @@ static bool vlx_read_h5_file(vlx_t* vlx, md_str_t filename, md_system_state_t* s
 
 	// The file as it is being read: the density properties are read from it again later, on demand,
 	// and have to be able to tell whether it is still this file holding this calculation.
-	vlx->filename = md_str_copy(filename, vlx->arena);
+	vlx->filename = md_alloc_str(vlx->arena, filename);
 	md_file_info_extract_from_path(filename, &vlx->file_info);
 	if (!vlx_h5_identity(&vlx->identity, file_id)) {
 		MD_LOG_DEBUG("VeloxChem: '" MD_STR_FMT "' does not state its nuclear charges, coordinates and basis set at its root", MD_STR_ARG(filename));
@@ -4283,7 +4277,7 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, md_str_t filename) {
 	md_str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
 
 	md_str_t exe_dir = {0};
-	if (!md_extract_folder_path(&exe_dir, exe_path)) {
+	if (!md_path_folder(&exe_dir, exe_path)) {
 		MD_LOG_ERROR("Failed to extract executable directory");
 	}
 
@@ -4293,7 +4287,7 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, md_str_t filename) {
 	md_file_t basis_file = {0};
 	if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
 		md_str_t folder = { 0 };
-		if (!md_extract_folder_path(&folder, filename)) {
+		if (!md_path_folder(&folder, filename)) {
 			MD_LOG_ERROR("An error occured when extracting the path to supplied file");
 			goto done;
 		}
@@ -6147,7 +6141,7 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, md_str_t filenam
 	// Simple check here, we just check for the existence of a couple of fields in h5 file.
 
 	md_str_t ext = {0};
-	if (md_extract_ext(&ext, filename)) {
+	if (md_path_ext(&ext, filename)) {
         if (!md_str_eq_ignore_case(ext, MD_STR_LIT("h5")) && !md_str_eq_ignore_case(ext, MD_STR_LIT("hdf5"))) {
 			// Unsupported file extension
 			return false;

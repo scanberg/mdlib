@@ -6,6 +6,7 @@
 #include <core/md_log.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
+#include <core/md_os.h>
 
 #define BOHR_TO_ANGSTROM 0.5291772109029999
 
@@ -28,7 +29,7 @@ static md_str_t pot_intern(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
             return pot->strings[i];
         }
     }
-    md_str_t cpy = md_str_copy(str, alloc);
+    md_str_t cpy = md_alloc_str(alloc, str);
     md_array_push(pot->strings, cpy, alloc);
     return cpy;
 }
@@ -80,7 +81,7 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
     int  line_num = 0;
     md_str_t line;
 
-    while (md_str_extract_line(&line, &str)) {
+    while (md_parse_next_line(&line, &str)) {
         line_num += 1;
 
         md_str_t l = md_str_trim(line);
@@ -90,7 +91,7 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
         if (l.ptr[0] == '@') {
             md_str_t kw  = {0};
             md_str_t rem = md_str_substr(l, 1, SIZE_MAX);
-            extract_token(&kw, &rem);
+            md_parse_next_token(&kw, &rem);
 
             if (md_str_eq_cstr_ignore_case(kw, "end")) {
                 if (section == SECTION_NONE) {
@@ -123,17 +124,17 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
 
         md_str_t  tok[10];
         md_str_t  rem = l;
-        size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &rem);
+        size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &rem);
 
         if (section == SECTION_ENVIRONMENT && !in_xyz) {
             // Directives of the form 'key: value'. Coordinate rows never contain a colon.
-            size_t loc;
-            if (!md_str_find_char(&loc, l, ':')) {
+            md_str_t key, val;
+            if (!md_str_cut(&key, &val, l, md_str_find_char(l, ':'))) {
                 MD_LOG_ERROR("POT: line %i: expected a directive ('units:' or 'xyz:') within @environment, got '%.*s'", line_num, (int)l.len, l.ptr);
                 goto fail;
             }
-            md_str_t key = md_str_trim(md_str_substr(l, 0, loc));
-            md_str_t val = md_str_trim(md_str_substr(l, loc + 1, SIZE_MAX));
+            key = md_str_trim(key);
+            val = md_str_trim(val);
 
             if (md_str_eq_cstr_ignore_case(key, "xyz")) {
                 in_xyz = true;
@@ -308,7 +309,7 @@ void md_pot_free(md_pot_t* pot, md_allocator_i* alloc) {
     md_array_free(pot->polarizabilities, alloc);
 
     for (size_t i = 0; i < md_array_size(pot->strings); ++i) {
-        md_str_free(pot->strings[i], alloc);
+        md_free_str(alloc, pot->strings[i]);
     }
     md_array_free(pot->strings, alloc);
 

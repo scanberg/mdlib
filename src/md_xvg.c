@@ -5,6 +5,8 @@
 
 #include "core/md_allocator.h"
 #include "core/md_os.h"
+#include "core/md_path.h"
+#include "core/md_format.h"
 #include "core/md_log.h"
 #include "core/md_writer.h"
 #include "core/md_array.h"
@@ -48,7 +50,7 @@ md_str_t md_xvg_format_header(md_str_t title, md_str_t xaxis_label, md_str_t yax
 		md_str_writer_fmt(&sb, "@ s%d legend \"%.*s\"\n", (int)i, (int)legends[i].len, legends[i].ptr);
 	}
 
-	md_str_t result = md_str_copy(md_str_writer_to_str(&sb), str_alloc);
+	md_str_t result = md_alloc_str(str_alloc, md_str_writer_to_str(&sb));
 
 	md_temp_end(temp_scope);
 	return result;
@@ -87,7 +89,7 @@ md_str_t md_xvg_format(md_str_t header, size_t num_fields, size_t num_values, co
 		}
 	}
 
-	str = md_str_copy(md_str_writer_to_str(&sb), str_alloc);
+	str = md_alloc_str(str_alloc, md_str_writer_to_str(&sb));
 	md_temp_end(temp_scope);
 	return str;
 }
@@ -153,13 +155,13 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, m
 	}
 
 	// Extract string from reader
-	md_str_t header = md_str_copy(md_str_writer_to_str(&sb), alloc);
+	md_str_t header = md_alloc_str(alloc, md_str_writer_to_str(&sb));
 	header_info->header = header;
 
 	// read comment
-	while (md_str_peek_line(&line, &header)) {
+	while (md_parse_peek_line(&line, &header)) {
 		if (line.ptr[0] != '#') break;
-		md_str_skip_line(&header);
+		md_parse_skip_line(&header);
 	}
 	
 	header_info->comment = (md_str_t){header_info->header.ptr, line.ptr - header_info->header.ptr};
@@ -167,8 +169,8 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, m
 	md_str_t tok[16];
 	
 	// Read meta
-	while (md_str_extract_line(&line, &header)) {
-		int64_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &line);
+	while (md_parse_next_line(&line, &header)) {
+		int64_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &line);
 		if (num_tok >= 3 && md_str_eq(tok[0], MD_STR_LIT("@"))) {
 			if		  (md_str_eq(tok[1], MD_STR_LIT("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
@@ -201,8 +203,7 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 	size_t num_fields = 0;
 	md_str_t line;
 	while (md_reader_extract_line(reader, &line)) {
-		size_t hash = 0;
-		if (md_str_find_char(&hash, line, '#')) line = md_str_substr(line, 0, hash);
+		line = md_str_substr(line, 0, md_str_find_char(line, '#'));
 		line = md_str_trim(line);
 		if (!line.len || line.ptr[0] == '@') continue;
 		if (line.ptr[0] == '&') break;
@@ -210,7 +211,7 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 		md_str_t tok = {0};
 		if (!fields) {
 			// The first line of values makes the fields: every following one is expected to have as many
-			while (extract_token(&tok, &line)) {
+			while (md_parse_next_token(&tok, &line)) {
 				if (!is_float(tok)) {
 					MD_LOG_ERROR("XVG: Invalid float among field values: '"MD_STR_FMT"'", MD_STR_ARG(tok));
 					return false;
@@ -223,7 +224,7 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 			continue;
 		}
 		for (size_t i = 0; i < num_fields; ++i) {
-			if (!extract_token(&tok, &line)) {
+			if (!md_parse_next_token(&tok, &line)) {
 				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, (int)i);
 				return false;
 			}
@@ -282,7 +283,7 @@ void md_xvg_free(md_xvg_t* xvg, md_allocator_i* alloc) {
 	MD_ASSERT(xvg);
 	MD_ASSERT(alloc);
 	if (!md_str_empty(xvg->header_info.header)) {
-		md_str_free(xvg->header_info.header, alloc);
+		md_free_str(alloc, xvg->header_info.header);
 	}
 	md_array_free(xvg->header_info.legends, alloc);
 	for (size_t i = 0; i < md_array_size(xvg->fields); ++i) {
@@ -297,7 +298,7 @@ void md_xvg_free(md_xvg_t* xvg, md_allocator_i* alloc) {
 static md_unit_t xvg_label_unit(md_str_t label) {
     size_t beg, end;
     md_unit_t unit = md_unit_none();
-    if (md_str_find_char(&beg, label, '(') && md_str_find_char(&end, label, ')') && end > beg) {
+    if (((beg = md_str_find_char(label, '(')) != MD_STR_NPOS) && ((end = md_str_find_char(label, ')')) != MD_STR_NPOS) && end > beg) {
         md_unit_t parsed;
         if (md_unit_parse(&parsed, md_str_substr(label, beg + 1, end - beg - 1))) {
             unit = parsed;
@@ -309,11 +310,9 @@ static md_unit_t xvg_label_unit(md_str_t label) {
 // "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
 static md_str_t xvg_group(char* buf, size_t cap, const char* kind, md_str_t filename) {
     md_str_t file = filename;
-    md_extract_file(&file, filename);
-    size_t dot;
-    if (md_str_rfind_char(&dot, file, '.') && dot > 0) {
-        file = md_str_substr(file, 0, dot);
-    }
+    md_path_filename(&file, filename);
+    const size_t dot = md_str_rfind_char(file, '.');
+    if (dot > 0) file = md_str_substr(file, 0, dot);   // MD_STR_NPOS keeps all of it
     size_t len = (size_t)md_snprintf(buf, cap, "%s/", kind);
     const size_t base = len;
     bool sep = false;

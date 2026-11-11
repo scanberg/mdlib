@@ -1,6 +1,7 @@
 #include "vial_internal.h"
 
 #include <core/md_common.h>
+#include <core/md_allocator.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -60,7 +61,7 @@ void vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, const c
                     code[0] == 'R' ? MD_VIAL_SEVERITY_RUNTIME : MD_VIAL_SEVERITY_ERROR;
     diag.span = span;
     if (span.beg <= d->src.len) d->at[span.beg / 64] |= 1ull << (span.beg % 64);
-    diag.message = md_str_copy_cstrn(buf, (size_t)len, d->alloc);
+    diag.message = md_alloc_str(d->alloc, md_str_from_cstrn(buf, (size_t)len));
     md_array_push(d->items, diag, d->alloc);
 }
 
@@ -73,7 +74,7 @@ size_t vial_diag_count(const vial_diags_t* d, const char code[6]) {
 }
 
 void vial_diag_set_fix(vial_diags_t* d, size_t index, md_str_t fix) {
-    if (index < md_array_size(d->items)) d->items[index].fix = md_str_copy(fix, d->alloc);
+    if (index < md_array_size(d->items)) d->items[index].fix = md_alloc_str(d->alloc, fix);
 }
 
 bool vial_diag_at(const vial_diags_t* d, uint32_t offset) {

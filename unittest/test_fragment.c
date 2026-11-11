@@ -7,6 +7,8 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
+#include <core/md_parse.h>
+#include <core/md_os.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 
@@ -546,7 +548,7 @@ static md_array(frag_ref_t) frag_read_refs(md_str_t path, md_allocator_i* alloc)
     md_array(frag_ref_t) refs = 0;
     md_str_t text = md_load_textfile(path, alloc);
     md_str_t line;
-    while (md_str_extract_line(&line, &text)) {
+    while (md_parse_next_line(&line, &text)) {
         if (line.len >= 5 && (!strncmp(line.ptr, "COMP ", 5) || !strncmp(line.ptr, "FRAG ", 5))) {
             frag_ref_t r = { 0 };
             char buf[64] = { 0 };

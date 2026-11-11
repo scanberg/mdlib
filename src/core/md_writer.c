@@ -1,4 +1,5 @@
 #include <core/md_writer.h>
+#include <core/md_format.h>
 
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -316,7 +317,7 @@ md_str_t md_str_writer_release(md_str_writer_t* sw) {
         const size_t len  = md_str_writer_len(sw);
         const size_t size = str_alloc_size(&sw->w);
         if (len > 0) {
-            // Down to what md_str_free frees: the string and its terminator
+            // Down to what md_free_str frees: the string and its terminator
             char* ptr = (char*)md_realloc(alloc, sw->w.buf, size, len + 1);
             ptr[len] = '\0';
             str.ptr = ptr;

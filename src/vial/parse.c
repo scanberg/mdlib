@@ -609,7 +609,7 @@ static bool int_literal(const parser_t* p, vial_node_id id, int64_t* out) {
     int64_t v = 0;
     for (size_t i = 0; i < s.len; ++i) {
         if (s.ptr[i] == '_') continue;
-        if (!is_digit(s.ptr[i]) || v > 1000000000) return false;
+        if (!md_ascii_is_digit(s.ptr[i]) || v > 1000000000) return false;
         v = v * 10 + (s.ptr[i] - '0');
     }
     *out = v;

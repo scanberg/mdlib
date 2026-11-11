@@ -5,6 +5,7 @@
 #include <core/md_allocator.h>
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
 #include <core/md_log.h>
 
 #include <string.h>
@@ -142,7 +143,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(md_str_t atom_name, md_str_
     
     if (atom_name.len == 0) return MD_Z_X;
 
-    if (is_digit(atom_name.ptr[0])) {
+    if (md_ascii_is_digit(atom_name.ptr[0])) {
         atom_name = md_str_substr(atom_name, 1, SIZE_MAX); // Skip leading digits
     }
     

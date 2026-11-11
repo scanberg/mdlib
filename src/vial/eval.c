@@ -174,7 +174,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     e->prog = prog;
     e->ir = ir;
     e->sys = desc->sys;
-    e->run = md_str_copy(desc->run, arena);
+    e->run = md_alloc_str(arena, desc->run);
     e->attributes.alloc = arena;
     // The run's frames, and their times
     e->times = run_times(desc->sys, e->run, arena, &e->num_frames);
@@ -203,7 +203,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
                 void* data = md_alloc(arena, bytes ? bytes : 1);
                 memcpy(data, at->data, bytes);
                 hd.desc = (md_attribute_desc_t){.format = at->format, .flags = at->flags, .unit = at->unit,
-                                                .label = md_str_copy(o[i].name, arena), .data = data, .byte_size = bytes};
+                                                .label = md_alloc_str(arena, o[i].name), .data = data, .byte_size = bytes};
                 md_array_push(e->held, hd, arena);
                 // And its summary, as it was
                 static const char* leaf[3] = {"/mean", "/variance", "/extent"};
@@ -559,7 +559,7 @@ static void publish_labels(md_vial_eval_t* e) {
             char buf[128];
             const size_t len = ss->single ? vial_unit_label(buf, sizeof(buf), &e->vs, VIAL_LEVEL_PARTICLE, vial_sets_items(ss, 0)[i])
                                           : vial_unit_label(buf, sizeof(buf), &e->vs, d->level, ss->unit[i]);
-            labels[i] = md_str_copy((md_str_t){buf, len}, e->arena);
+            labels[i] = md_alloc_str(e->arena, (md_str_t){buf, len});
         }
         char path[192];
         snprintf(path, sizeof(path), "script/%.*s/labels", (int)o->name.len, o->name.ptr);
@@ -639,7 +639,7 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
     md_array_shrink(e->diags, 0);
     for (size_t i = 0; i < md_array_size(e->in.errors); ++i) {
         const vial_rt_error_t* r = &e->in.errors[i];
-        md_vial_diagnostic_t d = {.severity = MD_VIAL_SEVERITY_RUNTIME, .span = r->span, .message = md_str_copy(md_str_from_cstr(r->message), e->arena)};
+        md_vial_diagnostic_t d = {.severity = MD_VIAL_SEVERITY_RUNTIME, .span = r->span, .message = md_alloc_str(e->arena, md_str_from_cstr(r->message))};
         memcpy(d.code, r->code, 6);
         md_array_push(e->diags, d, e->arena);
     }
@@ -884,7 +884,7 @@ static void draw_spheres(draw_out_t* o) {
 
 static void draw_label(draw_out_t* o, const float pos[3], uint32_t element, const vial_prim_t* p) {
     if (!draw_room(o)) return;
-    md_vial_label_t l = {.pos = {pos[0], pos[1], pos[2]}, .element = element, .text = md_str_copy(p->text, o->alloc), .value = p->value, .unit = p->unit};
+    md_vial_label_t l = {.pos = {pos[0], pos[1], pos[2]}, .element = element, .text = md_alloc_str(o->alloc, p->text), .value = p->value, .unit = p->unit};
     md_array_push(o->d->labels, l, o->alloc);
 }
 
@@ -1291,7 +1291,7 @@ static bool filter_fail(md_vial_filter_t* out, md_allocator_i* alloc, md_str_t e
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    out->error.message = md_str_copy(md_str_from_cstr(buf), alloc);
+    out->error.message = md_alloc_str(alloc, md_str_from_cstr(buf));
     return false;
 }
 

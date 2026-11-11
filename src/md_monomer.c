@@ -183,7 +183,7 @@ static md_monomer_t match_amino_acid(md_str_t name) {
     md_monomer_t m = match_name(name, MD_RESIDUE_KIND_AMINO_ACID);
     // The N- and C-terminal residues of Amber: NALA, CALA, NHIE, ...
     if (!m && name.len == 4) {
-        const int c = to_upper(name.ptr[0]);
+        const int c = md_ascii_to_upper(name.ptr[0]);
         if (c == 'N' || c == 'C') {
             m = match_name(md_str_substr(name, 1, SIZE_MAX), MD_RESIDUE_KIND_AMINO_ACID);
         }
@@ -195,7 +195,7 @@ static md_monomer_t match_nucleotide(md_str_t name) {
     md_monomer_t m = match_name(name, MD_RESIDUE_KIND_NUCLEOTIDE);
     // The 5' and 3' terminal residues and the free nucleosides of Amber: DA5, DA3, DAN, RA5, A3, ...
     if (!m && name.len >= 2) {
-        const int c = to_upper(name.ptr[name.len - 1]);
+        const int c = md_ascii_to_upper(name.ptr[name.len - 1]);
         if (c == '5' || c == '3' || c == 'N') {
             m = match_name(md_str_substr(name, 0, name.len - 1), MD_RESIDUE_KIND_NUCLEOTIDE);
         }

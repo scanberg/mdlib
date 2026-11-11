@@ -6,6 +6,8 @@
 
 #include "core/md_allocator.h"
 #include "core/md_os.h"
+#include "core/md_path.h"
+#include "core/md_format.h"
 #include "core/md_log.h"
 #include "core/md_writer.h"
 #include "core/md_array.h"
@@ -66,9 +68,8 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     }
 
     md_memset(csv, 0, sizeof(md_csv_t));
-
-    size_t pos = 0;
-    const char delim = md_str_find_char(&pos, line, ',') ? ',' : md_str_find_char(&pos, line, ';') ? ';' : md_str_find_char(&pos, line, '\t') ? '\t' : ',';
+
+    const char delim = md_str_contains_char(line, ',') ? ',' : md_str_contains_char(line, ';') ? ';' : md_str_contains_char(line, '\t') ? '\t' : ',';
 
     // Read first row explicitly to determine the expected number of columns
     // Also potentially extract field names from first row
@@ -102,7 +103,7 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
             more = true;
             for (size_t i = 0; i < num_fields; ++i) {
                 csv_next_field(&tok, &row, delim, &more);
-                md_array_push(csv->field_names, md_str_copy(csv_field(tok), alloc), alloc);
+                md_array_push(csv->field_names, md_alloc_str(alloc, csv_field(tok)), alloc);
             }
             first = false;
             continue;
@@ -217,7 +218,7 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
 
     if (csv->field_names) {
         for (size_t i = 0; i < md_array_size(csv->field_names); ++i) {
-            md_str_free(csv->field_names[i], alloc);
+            md_free_str(alloc, csv->field_names[i]);
         }
     }
     
@@ -233,7 +234,7 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
 static md_unit_t csv_label_unit(md_str_t label) {
     size_t beg, end;
     md_unit_t unit = md_unit_none();
-    if (md_str_find_char(&beg, label, '(') && md_str_find_char(&end, label, ')') && end > beg) {
+    if (((beg = md_str_find_char(label, '(')) != MD_STR_NPOS) && ((end = md_str_find_char(label, ')')) != MD_STR_NPOS) && end > beg) {
         md_unit_t parsed;
         if (md_unit_parse(&parsed, md_str_substr(label, beg + 1, end - beg - 1))) {
             unit = parsed;
@@ -245,11 +246,9 @@ static md_unit_t csv_label_unit(md_str_t label) {
 // "<kind>/<file stem>", the stem folded to lower case letters, digits and '_'
 static md_str_t csv_group(char* buf, size_t cap, const char* kind, md_str_t filename) {
     md_str_t file = filename;
-    md_extract_file(&file, filename);
-    size_t dot;
-    if (md_str_rfind_char(&dot, file, '.') && dot > 0) {
-        file = md_str_substr(file, 0, dot);
-    }
+    md_path_filename(&file, filename);
+    const size_t dot = md_str_rfind_char(file, '.');
+    if (dot > 0) file = md_str_substr(file, 0, dot);   // MD_STR_NPOS keeps all of it
     size_t len = (size_t)md_snprintf(buf, cap, "%s/", kind);
     const size_t base = len;
     bool sep = false;

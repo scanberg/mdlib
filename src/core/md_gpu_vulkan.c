@@ -45,6 +45,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #include "md_gpu_tlsf.h"
 
 #include <core/md_allocator.h>
+#include <core/md_format.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_os.h>

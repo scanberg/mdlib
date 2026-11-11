@@ -71,12 +71,12 @@ static inline int32_t parse_id(md_str_t line, size_t beg, size_t end, uint32_t* 
     while (i < len && c[i] == ' ') ++i;
     int32_t value = 0;
     uint32_t j = i;
-    while (j < len && is_digit(c[j])) value = value * 10 + (c[j++] - '0');
+    while (j < len && md_ascii_is_digit(c[j])) value = value * 10 + (c[j++] - '0');
     if (j == len) return value;
     // hy36decode reads hybrid-36 where the field begins with a letter and decimal otherwise, where only a '-' or a blank
     // (after digits, which it takes as a 0) is something more: anything else ('*****', VMD's hexadecimal) it rejects
     int32_t res = 0;
-    if ((is_alpha(c[0]) || c[j] == '-' || c[j] == ' ') && !hy36decode(len, c, len, &res)) {
+    if ((md_ascii_is_alpha(c[0]) || c[j] == '-' || c[j] == ' ') && !hy36decode(len, c, len, &res)) {
         return res;
     }
     if (num_bad) *num_bad += 1;
@@ -90,8 +90,8 @@ static MD_FORCE_INLINE float pdb_charge(md_str_t field) {
     if (field.len == 1 && field.ptr[0] == '0') return 0.0f;
     if (field.len != 2) return NAN;
     const char a = field.ptr[0], b = field.ptr[1];
-    if (is_digit(a) && (b == '+' || b == '-')) return (float)((b == '-' ? -1 : 1) * (a - '0'));
-    if (is_digit(b) && (a == '+' || a == '-')) return (float)((a == '-' ? -1 : 1) * (b - '0'));
+    if (md_ascii_is_digit(a) && (b == '+' || b == '-')) return (float)((b == '-' ? -1 : 1) * (a - '0'));
+    if (md_ascii_is_digit(b) && (a == '+' || a == '-')) return (float)((a == '-' ? -1 : 1) * (b - '0'));
     return NAN;
 }
 
@@ -246,11 +246,10 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
             }
             pdb_group_t* group = md_array_last(x->groups);
             if (group) {
-                size_t colon = 0;
-                md_str_find_char(&colon, rest, ':');
-                md_str_t chains = md_str_substr(rest, colon + 1, SIZE_MAX);
+                md_str_t chains;
+                md_str_cut(NULL, &chains, rest, md_str_find_char(rest, ':'));
                 md_str_t chain;
-                while (extract_token_delim(&chain, &chains, ',')) {
+                while (md_parse_next_token_delim(&chain, &chains, ',')) {
                     chain = md_str_trim(chain);
                     if (md_str_empty(chain)) continue;
                     md_array_push(x->chains, chain.ptr[0], alloc);
@@ -263,10 +262,10 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
         else if (md_str_eq_cstr_n(md_str_trim(rest), "BIOMT", 5) && line.len > 18) {
             // REMARK 350   BIOMTr   n  m[r][1] m[r][2] m[r][3]  t[r], the rows of transform n of the group
             pdb_group_t* group = md_array_last(x->groups);
-            const int32_t row = char_to_digit(line.ptr[18]) - 1;
+            const int32_t row = md_ascii_char_to_digit(line.ptr[18]) - 1;
             md_str_t fields = md_str_substr(line, 19, SIZE_MAX);
             md_str_t tok[5];
-            const size_t num_tok = extract_tokens(tok, MD_COUNTOF(tok), &fields);
+            const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &fields);
             if (!group || row < 0 || row > 2 || num_tok < 5) {
                 MD_LOG_DEBUG("REMARK 350: a malformed BIOMT record");
             } else {
@@ -1594,7 +1593,7 @@ static size_t pdb_parse_model_coords(float* xyz, md_str_t str, size_t first, siz
     md_str_t line;
     size_t i = 0;
     size_t written = 0;
-    while (written < count && md_str_extract_line(&line, &str)) {
+    while (written < count && md_parse_next_line(&line, &str)) {
         if (pdb_line_kind(line) != PDB_LINE_ATOM) continue;
         if (i >= first) {
             xyz[written * 3 + 0] = extract_fixed_float(line, 31, 38, 3);

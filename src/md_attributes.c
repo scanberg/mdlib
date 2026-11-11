@@ -75,7 +75,8 @@ size_t md_attribute_byte_size(const md_attribute_format_t* format) {
 
 // Splits at the LAST separator. loc is the separator offset, false if there is none.
 static bool attr_path_split(size_t* loc, md_str_t path) {
-    return md_str_rfind_char(loc, path, '/');
+    *loc = md_str_rfind_char(path, '/');
+    return *loc != MD_STR_NPOS;
 }
 
 md_str_t md_attribute_group(const md_attribute_t* attr) {
@@ -598,11 +599,11 @@ static void attr_release(md_attribute_t* attr, md_allocator_i* alloc) {
     MD_ASSERT(attr);
     MD_ASSERT(alloc);
     MD_ASSERT(attr_consistent(attr));
-    md_str_free(attr->path, alloc);
+    md_free_str(alloc, attr->path);
     // Both are optional and an absent one is a zeroed md_str_t, which is not something to hand to an
     // allocator.
-    if (attr->label.ptr)       md_str_free(attr->label, alloc);
-    if (attr->description.ptr) md_str_free(attr->description, alloc);
+    if (attr->label.ptr)       md_free_str(alloc, attr->label);
+    if (attr->description.ptr) md_free_str(alloc, attr->description);
     // Only an owner releases storage; an alias borrows both the buffer and the provider state.
     if (md_attribute_is_alias(attr)) {
         return;
@@ -931,7 +932,7 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
         }
     }
 
-    md_str_t stored_path = md_str_copy(path, alloc);
+    md_str_t stored_path = md_alloc_str(alloc, path);
     if (md_str_empty(stored_path)) {
         if (storage) {
             md_free(alloc, storage, required);
@@ -942,8 +943,8 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
 
     // Presentation only, so an empty one is a valid state and a failed copy is not worth failing
     // the create over: the consumer's fallback for "no label" is the same either way.
-    md_str_t stored_label = md_str_empty(desc->label) ? (md_str_t){0} : md_str_copy(desc->label, alloc);
-    md_str_t stored_desc  = md_str_empty(desc->description) ? (md_str_t){0} : md_str_copy(desc->description, alloc);
+    md_str_t stored_label = md_str_empty(desc->label) ? (md_str_t){0} : md_alloc_str(alloc, desc->label);
+    md_str_t stored_desc  = md_str_empty(desc->description) ? (md_str_t){0} : md_alloc_str(alloc, desc->description);
 
     const md_attribute_t entry = {
         .id          = id,
@@ -1044,13 +1045,13 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
 
     md_allocator_i* alloc = attributes->alloc;
 
-    md_str_t stored_path = md_str_copy(path, alloc);
+    md_str_t stored_path = md_alloc_str(alloc, path);
     if (md_str_empty(stored_path)) {
         MD_LOG_ERROR("Failed to copy attribute path '" MD_STR_FMT "'", MD_STR_ARG(path));
         return MD_ATTRIBUTE_INVALID;
     }
-    md_str_t stored_label = md_str_empty(label)       ? (md_str_t){0} : md_str_copy(label, alloc);
-    md_str_t stored_desc  = md_str_empty(description) ? (md_str_t){0} : md_str_copy(description, alloc);
+    md_str_t stored_label = md_str_empty(label)       ? (md_str_t){0} : md_alloc_str(alloc, label);
+    md_str_t stored_desc  = md_str_empty(description) ? (md_str_t){0} : md_alloc_str(alloc, description);
 
     const md_attribute_t entry = {
         .id          = id,
@@ -1421,8 +1422,7 @@ bool md_attributes_next(md_attribute_iter_t* it) {
         if (name.len > base.len) {
             const size_t offset = md_str_empty(base) ? 0 : base.len + 1;
             const md_str_t rest = md_str_substr(name, offset, SIZE_MAX);
-            size_t loc;
-            child = md_str_find_char(&loc, rest, '/') ? md_str_substr(rest, 0, loc) : rest;
+            child = md_str_substr(rest, 0, md_str_find_char(rest, '/'));
             child_path = md_str_substr(name, 0, offset + child.len);
         }
 
@@ -1622,7 +1622,7 @@ bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, si
 static void attr_io_close_slot(md_attribute_io_t* io, size_t i) {
     if (io->slot[i].hash) {
         md_file_close(&io->slot[i].file);
-        md_str_free(io->slot[i].path, io->alloc);
+        md_free_str(io->alloc, io->slot[i].path);
         md_memset(&io->slot[i], 0, sizeof(io->slot[i]));
     }
 }
@@ -1750,7 +1750,7 @@ size_t md_attribute_io_read_at(md_attribute_io_t* io, md_str_t path, int64_t off
             return 0;
         }
         io->slot[idx].hash = hash;
-        io->slot[idx].path = md_str_copy(path, io->alloc);
+        io->slot[idx].path = md_alloc_str(io->alloc, path);
         io->slot[idx].file = file;
     }
 

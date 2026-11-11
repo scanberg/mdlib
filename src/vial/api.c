@@ -11,6 +11,7 @@
 
 #include <md_util.h>
 #include <core/md_array.h>
+#include <core/md_allocator.h>
 #include <core/md_os.h>
 #include <stdlib.h>
 
@@ -175,7 +176,7 @@ md_vial_program_t* md_vial_compile(md_str_t src, const md_vial_compile_desc_t* d
     md_vial_program_t* prog = md_alloc(arena, sizeof(md_vial_program_t));
     memset(prog, 0, sizeof(*prog));
     prog->arena = arena;
-    prog->src = md_str_copy(src, arena);
+    prog->src = md_alloc_str(arena, src);
 
     vial_diags_init(&prog->diags, prog->src, arena);
     prog->tokens = vial_lex(prog->src, &prog->diags, arena);
@@ -193,7 +194,7 @@ md_vial_program_t* md_vial_compile(md_str_t src, const md_vial_compile_desc_t* d
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_resolved = with_prelude ? &shared_prelude.names : NULL,
         .prelude_src = prog->prelude_src,
         .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL,
-        .num_frames = desc ? desc->num_frames : 0, .run = desc ? md_str_copy(desc->run, arena) : (md_str_t){0}, .alloc = arena};
+        .num_frames = desc ? desc->num_frames : 0, .run = desc ? md_alloc_str(arena, desc->run) : (md_str_t){0}, .alloc = arena};
     if (desc && desc->num_sets && desc->sets) {
         // The stored selections, copied: those with a name a script may bind
         md_vial_named_set_t* st = md_alloc(arena, desc->num_sets * sizeof(md_vial_named_set_t));
@@ -204,7 +205,7 @@ md_vial_program_t* md_vial_compile(md_str_t src, const md_vial_compile_desc_t* d
             if (s->ndim > 2 || (s->ndim && !s->offsets)) continue;
             uint32_t* at = md_alloc(arena, (s->num_atoms ? s->num_atoms : 1) * sizeof(uint32_t));
             if (s->num_atoms) memcpy(at, s->atoms, s->num_atoms * sizeof(uint32_t));
-            md_vial_named_set_t c = {.name = md_str_copy(s->name, arena), .atoms = at, .num_atoms = s->num_atoms, .ndim = s->ndim};
+            md_vial_named_set_t c = {.name = md_alloc_str(arena, s->name), .atoms = at, .num_atoms = s->num_atoms, .ndim = s->ndim};
             if (s->ndim) {
                 const size_t count = (size_t)s->dims[0] * (s->ndim > 1 ? s->dims[1] : 1);
                 if (s->offsets[count] > s->num_atoms) continue;
@@ -508,7 +509,7 @@ typedef struct cmpl_t {
 static void cmpl_add(cmpl_t* c, md_str_t label, md_str_t text, md_vial_completion_kind_t kind) {
     if (!label.len || label.len < c->prefix.len || (c->prefix.len && strncmp(label.ptr, c->prefix.ptr, c->prefix.len))) return;
     for (size_t i = 0; i < md_array_size(c->items); ++i) if (md_str_eq(c->items[i].label, label)) return;
-    md_vial_completion_t it = {.label = md_str_copy(label, c->alloc), .text = md_str_copy(text, c->alloc), .kind = kind};
+    md_vial_completion_t it = {.label = md_alloc_str(c->alloc, label), .text = md_alloc_str(c->alloc, text), .kind = kind};
     md_array_push(c->items, it, c->alloc);
 }
 
@@ -844,7 +845,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         }
     }
     out->span = span;
-    out->prefix = md_str_copy(c.prefix, alloc);
+    out->prefix = md_alloc_str(alloc, c.prefix);
     out->count = md_array_size(c.items);
     if (out->count) qsort(c.items, out->count, sizeof(*c.items), cmpl_cmp);
     out->items = c.items;

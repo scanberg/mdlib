@@ -3,6 +3,8 @@
 #include <core/md_common.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
+#include <core/md_allocator.h>
+#include <core/md_os.h>
 
 #include <vial/vial_internal.h>
 
@@ -45,7 +47,7 @@ static md_str_t kinds(const lexed_t* r, const char* src, md_allocator_i* alloc) 
         }
         len += snprintf(buf + len, sizeof(buf) - len, "%s%s", len ? " " : "", item);
     }
-    return md_str_copy_cstrn(buf, len, alloc);
+    return md_alloc_str(alloc, md_str_from_cstrn(buf, len));
 }
 
 #define EXPECT_KINDS(src, expected) do { \
@@ -267,7 +269,7 @@ static md_str_t tree_str(const parsed_t* r, md_allocator_i* alloc) {
         if (i) len += (size_t)snprintf(buf + len, sizeof(buf) - len, " ");
         sexpr(buf, sizeof(buf), &len, r, r->tree.children[m->child_beg + i]);
     }
-    return md_str_copy_cstrn(buf, len, alloc);
+    return md_alloc_str(alloc, md_str_from_cstrn(buf, len));
 }
 
 #define EXPECT_TREE(src, expected) do { \

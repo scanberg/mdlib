@@ -1,11 +1,15 @@
 #include "utest.h"
 
 #include <core/md_str.h>
+#include <core/md_format.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 #include <core/md_writer.h>
 #include <md_types.h>
+#include <core/md_parse.h>
 #include <float.h>
+#include <math.h>
+#include <string.h>
 
 #include "comma_locale.h"
 
@@ -33,9 +37,9 @@ UTEST(str, printf_ignores_the_locale) {
     EXPECT_STREQ("1.", buf);
 
     md_allocator_i* alloc = md_get_heap_allocator();
-    md_str_t str = md_str_printf(alloc, "%.3f", 2.25);
+    md_str_t str = md_alloc_printf(alloc, "%.3f", 2.25);
     EXPECT_TRUE(md_str_eq_cstr(str, "2.250"));
-    md_str_free(str, alloc);
+    md_free_str(alloc, str);
 
     md_str_writer_t sw = md_str_writer_create(alloc);
     md_str_writer_fmt(&sw, "%g,%g", 0.5, 1.5);
@@ -45,97 +49,103 @@ UTEST(str, printf_ignores_the_locale) {
     comma_locale_leave(&loc);
 }
 
-UTEST(str, extract_line) {
-    md_str_t str = MD_STR_INIT(
-        "this is some text\n"
-        "this is line 2\n"
-        "\n"
-        "\r\n"
-        "}\n"
-        "this is the end"
-    );
+UTEST(str, printf_edges) {
+    char buf[8] = "xxxxxxx";
+    // No room at all: measured, and nothing written - not even a terminator in front of the buffer
+    EXPECT_EQ(5, md_snprintf(buf + 1, 0, "%s", "hello"));
+    EXPECT_STREQ("xxxxxxx", buf);
 
-    md_str_t line;
-    
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_STRNEQ("this is some text", line.ptr, line.len);
-    
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_STRNEQ("this is line 2", line.ptr, line.len);
-    
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_STRNEQ("", line.ptr, line.len);
-    
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_STRNEQ("", line.ptr, line.len);
-
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_STRNEQ("}", line.ptr, line.len);
-
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_STRNEQ("this is the end", line.ptr, line.len);
-
-    EXPECT_FALSE(md_str_extract_line(&line, &str));
+    // The C libraries spell them differently (glibc "nan", the UCRT "-nan(ind)"); md_parse reads every one
+    const double specials[] = { NAN, -NAN, INFINITY, -INFINITY };
+    for (size_t i = 0; i < sizeof(specials) / sizeof(specials[0]); ++i) {
+        char out[64];
+        const int len = md_snprintf(out, sizeof(out), "%f", specials[i]);
+        double v = 0;
+        EXPECT_NE(0u, md_parse_f64(&v, (md_str_t){out, (size_t)len}));
+        EXPECT_EQ(!!isnan(specials[i]), !!isnan(v));
+        EXPECT_EQ(!!isinf(specials[i]), !!isinf(v));
+        if (isinf(specials[i])) {
+            EXPECT_EQ(specials[i] < 0, v < 0);
+        }
+    }
 }
 
-UTEST(str, edit_distance) {
-    int dist;
+// What is written as %.17g (double) or %.9g (float) reads back with md_parse as the very same value
+UTEST(str, printf_round_trips_through_md_parse) {
+    uint64_t s = 0x9E3779B97F4A7C15ull;
+    size_t fails_f64 = 0, fails_f32 = 0;
+    char buf[64];
+    for (int i = 0; i < 200000; ++i) {
+        s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+        // Any finite bit pattern, subnormals included
+        uint64_t bits = s;
+        if (((bits >> 52) & 0x7FF) == 0x7FF) continue;
+        double d;
+        memcpy(&d, &bits, sizeof(d));
 
-    dist = md_str_edit_distance(MD_STR_LIT("kitten"), MD_STR_LIT("sitting"));
-    EXPECT_EQ(3, dist);
-    
-    dist = md_str_edit_distance(MD_STR_LIT("rosettacode"), MD_STR_LIT("raisethysword"));
-    EXPECT_EQ(8, dist);
+        const int len = md_snprintf(buf, sizeof(buf), "%.17g", d);
+        double r = 0;
+        if (md_parse_f64(&r, (md_str_t){buf, (size_t)len}) != (size_t)len || memcmp(&r, &d, sizeof(d)) != 0) {
+            fails_f64 += 1;
+        }
 
-    dist = md_str_edit_distance(MD_STR_LIT(""), MD_STR_LIT("something"));
-    EXPECT_EQ(9, dist);
+        uint32_t fbits = (uint32_t)(s >> 32);
+        if (((fbits >> 23) & 0xFF) == 0xFF) continue;
+        float f;
+        memcpy(&f, &fbits, sizeof(f));
+        const int flen = md_snprintf(buf, sizeof(buf), "%.9g", (double)f);
+        double rf = 0;
+        md_parse_f64(&rf, (md_str_t){buf, (size_t)flen});
+        const float back = (float)rf;
+        if (memcmp(&back, &f, sizeof(f)) != 0) {
+            fails_f32 += 1;
+        }
+    }
+    EXPECT_EQ(0u, fails_f64);
+    EXPECT_EQ(0u, fails_f32);
 }
 
-UTEST(str, count_equal_chars) {
-    int count;
-    count = md_str_count_equal_chars(MD_STR_LIT("kitten"), MD_STR_LIT("kittenz"));
-    EXPECT_EQ(6, count);
-
-    count = md_str_count_equal_chars(MD_STR_LIT("kitten"), MD_STR_LIT("sitting"));
-    EXPECT_EQ(0, count);
-
-    count = md_str_count_equal_chars(
-        MD_STR_LIT("/mnt/e/git/viamd/ext/mdlib/test_data/dir/subdir"),
-        MD_STR_LIT("/mnt/e/git/viamd/ext/mdlib/test_data/40-40-2-ddba-dyna.xmol"));
-    EXPECT_EQ(sizeof("/mnt/e/git/viamd/ext/mdlib/test_data/") - 1, count);
+UTEST(str, chars_in_place) {
+    char buf[] = "C:\\Data\\Run-1.PDB";
+    md_chars_replace(buf, sizeof(buf) - 1, '\\', '/');
+    EXPECT_STREQ("C:/Data/Run-1.PDB", buf);
+    md_chars_to_lower(buf, sizeof(buf) - 1);
+    EXPECT_STREQ("c:/data/run-1.pdb", buf);
+    // Only the first len characters, and nothing past them
+    md_chars_to_upper(buf, 6);
+    EXPECT_STREQ("C:/DATa/run-1.pdb", buf);
+    // Only ASCII letters change: UTF-8 bytes are left as they are
+    char utf8[] = "\xC3\x85ngstr\xC3\xB6m";
+    md_chars_to_upper(utf8, sizeof(utf8) - 1);
+    EXPECT_STREQ("\xC3\x85NGSTR\xC3\xB6M", utf8);
+    // An empty run, with no storage at all
+    md_chars_replace(NULL, 0, 'a', 'b');
+    md_chars_to_lower(NULL, 0);
+    md_chars_to_upper(NULL, 0);
 }
 
 UTEST(str, find_str) {
-    size_t loc = SIZE_MAX;
-
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("hello world"), MD_STR_LIT("world")));
-    EXPECT_EQ(loc, 6);
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("hello"), MD_STR_LIT("hello")));
-    EXPECT_EQ(loc, 0);
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("hello"), MD_STR_LIT("o")));
-    EXPECT_EQ(loc, 4);
+    EXPECT_EQ((size_t)6, md_str_find_str(MD_STR_LIT("hello world"), MD_STR_LIT("world")));
+    EXPECT_EQ((size_t)0, md_str_find_str(MD_STR_LIT("hello"), MD_STR_LIT("hello")));
+    EXPECT_EQ((size_t)4, md_str_find_str(MD_STR_LIT("hello"), MD_STR_LIT("o")));
 
     // The match starts inside an earlier partial match
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("aab"), MD_STR_LIT("ab")));
-    EXPECT_EQ(loc, 1);
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("ababac"), MD_STR_LIT("abac")));
-    EXPECT_EQ(loc, 2);
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("<a id=\"x\"></a>"), MD_STR_LIT("id=\"")));
-    EXPECT_EQ(loc, 3);
+    EXPECT_EQ((size_t)1, md_str_find_str(MD_STR_LIT("aab"), MD_STR_LIT("ab")));
+    EXPECT_EQ((size_t)2, md_str_find_str(MD_STR_LIT("ababac"), MD_STR_LIT("abac")));
+    EXPECT_EQ((size_t)3, md_str_find_str(MD_STR_LIT("<a id=\"x\"></a>"), MD_STR_LIT("id=\"")));
 
     // First occurrence
-    EXPECT_TRUE(md_str_find_str(&loc, MD_STR_LIT("xyxy"), MD_STR_LIT("xy")));
-    EXPECT_EQ(loc, 0);
+    EXPECT_EQ((size_t)0, md_str_find_str(MD_STR_LIT("xyxy"), MD_STR_LIT("xy")));
 
     // Nothing to find
-    EXPECT_FALSE(md_str_find_str(&loc, MD_STR_LIT("hello"), MD_STR_LIT("world")));
-    EXPECT_FALSE(md_str_find_str(&loc, MD_STR_LIT("hell"),  MD_STR_LIT("hello")));   // needle longer than haystack
-    EXPECT_FALSE(md_str_find_str(&loc, MD_STR_LIT("hello"), MD_STR_LIT("")));
-    EXPECT_FALSE(md_str_find_str(&loc, MD_STR_LIT(""),      MD_STR_LIT("a")));
-    EXPECT_FALSE(md_str_find_str(&loc, MD_STR_LIT("abc"),   MD_STR_LIT("bcd")));     // would run past the end
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_str(MD_STR_LIT("hello"), MD_STR_LIT("world")));
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_str(MD_STR_LIT("hell"),  MD_STR_LIT("hello")));   // needle longer than haystack
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_str(MD_STR_LIT("hello"), MD_STR_LIT("")));
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_str(MD_STR_LIT(""),      MD_STR_LIT("a")));
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_str(MD_STR_LIT("abc"),   MD_STR_LIT("bcd")));     // would run past the end
 
-    // loc is optional
-    EXPECT_TRUE(md_str_find_str(NULL, MD_STR_LIT("abc"), MD_STR_LIT("bc")));
+    EXPECT_TRUE (md_str_contains_str(MD_STR_LIT("abc"), MD_STR_LIT("bc")));
+    EXPECT_FALSE(md_str_contains_str(MD_STR_LIT("abc"), MD_STR_LIT("bd")));
 }
 
 UTEST(str, copy_to_char_buf) {
@@ -190,11 +200,11 @@ UTEST(str, eq_empty) {
     EXPECT_TRUE(md_str_eq_cstr_ignore_case(slice, ""));
     EXPECT_TRUE(md_str_eq_cstr_n(null_str, "", 3));
 
-    // A copy of an empty string is equal to it ({0} comes back from md_str_copy)
+    // A copy of an empty string is equal to it ({0} comes back from md_alloc_str)
     md_allocator_i* alloc = md_get_heap_allocator();
-    md_str_t copy = md_str_copy(lit, alloc);
+    md_str_t copy = md_alloc_str(alloc, lit);
     EXPECT_TRUE(md_str_eq(copy, lit));
-    md_str_free(copy, alloc);
+    md_free_str(alloc, copy);
 }
 
 UTEST(str, eq) {
@@ -261,48 +271,82 @@ UTEST(str, begins_ends_with) {
 }
 
 UTEST(str, find_char) {
-    size_t loc = SIZE_MAX;
-    EXPECT_TRUE(md_str_find_char(&loc, MD_STR_LIT("a=b=c"), '='));
-    EXPECT_EQ(loc, 1);
-    EXPECT_TRUE(md_str_rfind_char(&loc, MD_STR_LIT("a=b=c"), '='));
-    EXPECT_EQ(loc, 3);
-    EXPECT_TRUE(md_str_rfind_char(&loc, MD_STR_LIT("abc"), 'a'));
-    EXPECT_EQ(loc, 0);
-    EXPECT_FALSE(md_str_find_char(&loc, MD_STR_LIT("abc"), 'x'));
-    EXPECT_FALSE(md_str_rfind_char(&loc, MD_STR_LIT("abc"), 'x'));
-    EXPECT_FALSE(md_str_find_char(&loc, (md_str_t){0}, 'a'));
-    EXPECT_FALSE(md_str_rfind_char(&loc, (md_str_t){0}, 'a'));
-    EXPECT_TRUE(md_str_find_char(NULL, MD_STR_LIT("abc"), 'c'));
+    EXPECT_EQ((size_t)1, md_str_find_char (MD_STR_LIT("a=b=c"), '='));
+    EXPECT_EQ((size_t)3, md_str_rfind_char(MD_STR_LIT("a=b=c"), '='));
+    EXPECT_EQ((size_t)0, md_str_rfind_char(MD_STR_LIT("abc"), 'a'));
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_char (MD_STR_LIT("abc"), 'x'));
+    EXPECT_EQ(MD_STR_NPOS, md_str_rfind_char(MD_STR_LIT("abc"), 'x'));
+    EXPECT_EQ(MD_STR_NPOS, md_str_find_char ((md_str_t){0}, 'a'));
+    EXPECT_EQ(MD_STR_NPOS, md_str_rfind_char((md_str_t){0}, 'a'));
+    EXPECT_TRUE (md_str_contains_char(MD_STR_LIT("abc"), 'c'));
+    EXPECT_FALSE(md_str_contains_char(MD_STR_LIT(""), 'c'));
 
-    // A byte above 0x7F is found whether it is passed as a char or as an unsigned char value
+    // A byte above 0x7F is matched as that byte
     const md_str_t utf8 = MD_STR_LIT("x\xC3\xA5y");
-    EXPECT_TRUE(md_str_find_char(&loc, utf8, (char)0xC3));
-    EXPECT_EQ(loc, 1);
-    EXPECT_TRUE(md_str_find_char(&loc, utf8, 0xA5));
-    EXPECT_EQ(loc, 2);
-    EXPECT_TRUE(md_str_rfind_char(&loc, utf8, 0xC3));
-    EXPECT_EQ(loc, 1);
+    EXPECT_EQ((size_t)1, md_str_find_char (utf8, (char)0xC3));
+    EXPECT_EQ((size_t)2, md_str_find_char (utf8, (char)0xA5));
+    EXPECT_EQ((size_t)1, md_str_rfind_char(utf8, (char)0xC3));
+
+    // The (ptr, len) layer underneath: only the first len characters, and (NULL, 0) is fine
+    EXPECT_EQ((size_t)2,   md_chars_find ("abc", 3, 'c'));
+    EXPECT_EQ(MD_STR_NPOS, md_chars_find ("abc", 2, 'c'));
+    EXPECT_EQ(MD_STR_NPOS, md_chars_rfind("abc", 2, 'c'));
+    EXPECT_EQ(MD_STR_NPOS, md_chars_find (NULL, 0, 'c'));
+    EXPECT_EQ(MD_STR_NPOS, md_chars_rfind(NULL, 0, 'c'));
 }
 
-UTEST(str, skip_peek_line) {
-    md_str_t str = MD_STR_LIT("first\r\nsecond\nthird");
-    md_str_t line;
+// MD_STR_NPOS is SIZE_MAX, which md_str_substr reads as "to the end"
+UTEST(str, npos_composes_with_substr) {
+    const md_str_t kv = MD_STR_LIT("key=value");
+    EXPECT_TRUE(md_str_eq_cstr(md_str_substr(kv, 0, md_str_find_char(kv, '=')), "key"));
+    EXPECT_TRUE(md_str_eq_cstr(md_str_substr(kv, 0, md_str_find_char(kv, '#')), "key=value"));
 
-    EXPECT_TRUE(md_str_peek_line(&line, &str));
-    EXPECT_TRUE(md_str_eq_cstr(line, "first"));
-    EXPECT_TRUE(md_str_skip_line(&str));
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_TRUE(md_str_eq_cstr(line, "second"));
-    EXPECT_TRUE(md_str_peek_line(&line, &str));
-    EXPECT_TRUE(md_str_eq_cstr(line, "third"));
-    EXPECT_TRUE(md_str_skip_line(&str));
-    EXPECT_FALSE(md_str_skip_line(&str));
-    EXPECT_FALSE(md_str_peek_line(&line, &str));
+    // After the last '/': MD_STR_NPOS + 1 is 0, which keeps all of it
+    const md_str_t path = MD_STR_LIT("a/b/c.txt"), file = MD_STR_LIT("c.txt");
+    EXPECT_TRUE(md_str_eq_cstr(md_str_substr(path, md_str_rfind_char(path, '/') + 1, SIZE_MAX), "c.txt"));
+    EXPECT_TRUE(md_str_eq_cstr(md_str_substr(file, md_str_rfind_char(file, '/') + 1, SIZE_MAX), "c.txt"));
+}
 
-    // A '\r' is only taken off together with a '\n'
-    str = MD_STR_LIT("end\r");
-    EXPECT_TRUE(md_str_extract_line(&line, &str));
-    EXPECT_TRUE(md_str_eq_cstr(line, "end\r"));
+UTEST(str, cut) {
+    md_str_t a, b;
+    const md_str_t kv = MD_STR_LIT("key=value=x");
+
+    // At the first and at the last '='
+    EXPECT_TRUE(md_str_cut(&a, &b, kv, md_str_find_char(kv, '=')));
+    EXPECT_TRUE(md_str_eq_cstr(a, "key"));
+    EXPECT_TRUE(md_str_eq_cstr(b, "value=x"));
+    EXPECT_TRUE(md_str_cut(&a, &b, kv, md_str_rfind_char(kv, '=')));
+    EXPECT_TRUE(md_str_eq_cstr(a, "key=value"));
+    EXPECT_TRUE(md_str_eq_cstr(b, "x"));
+
+    // At either end, that part is empty
+    EXPECT_TRUE(md_str_cut(&a, &b, kv, 0));
+    EXPECT_EQ((size_t)0, a.len);
+    EXPECT_TRUE(md_str_eq_cstr(b, "ey=value=x"));
+    EXPECT_TRUE(md_str_cut(&a, &b, kv, kv.len - 1));
+    EXPECT_TRUE(md_str_eq_cstr(a, "key=value="));
+    EXPECT_EQ((size_t)0, b.len);
+
+    // Nothing found, or past the end: before is all of it, after is empty
+    EXPECT_FALSE(md_str_cut(&a, &b, kv, md_str_find_char(kv, '#')));
+    EXPECT_TRUE(md_str_eq_cstr(a, "key=value=x"));
+    EXPECT_EQ((size_t)0, b.len);
+    EXPECT_FALSE(md_str_cut(&a, &b, kv, kv.len));
+    EXPECT_TRUE(md_str_eq_cstr(a, "key=value=x"));
+    EXPECT_FALSE(md_str_cut(&a, &b, (md_str_t){0}, 0));
+    EXPECT_EQ((size_t)0, a.len);
+
+    // The out pointers may be NULL, and may point at the input: walking a list
+    md_str_t list = MD_STR_LIT("a,b,c");
+    md_str_t item;
+    EXPECT_TRUE(md_str_cut(&item, &list, list, md_str_find_char(list, ',')));
+    EXPECT_TRUE(md_str_eq_cstr(item, "a"));
+    EXPECT_TRUE(md_str_eq_cstr(list, "b,c"));
+    EXPECT_TRUE(md_str_cut(NULL, &list, list, md_str_find_char(list, ',')));
+    EXPECT_TRUE(md_str_eq_cstr(list, "c"));
+    EXPECT_FALSE(md_str_cut(&item, &list, list, md_str_find_char(list, ',')));
+    EXPECT_TRUE(md_str_eq_cstr(item, "c"));
+    EXPECT_EQ((size_t)0, list.len);
 }
 
 UTEST(str, swap) {
@@ -336,15 +380,4 @@ UTEST(str, labels) {
     EXPECT_FALSE(md_label_eq(make_label(MD_STR_LIT("CA")), make_label(MD_STR_LIT("CA1"))));
     EXPECT_TRUE(md_label_eq(make_label(MD_STR_LIT("ABCDEFGH")), make_label(MD_STR_LIT("ABCDEFGHI"))));
     EXPECT_NE(md_label_key(make_label(MD_STR_LIT("CA"))), md_label_key(make_label(MD_STR_LIT("CB"))));
-}
-
-UTEST(str, extract_ext_of_the_file_name) {
-    md_str_t ext = {0};
-    EXPECT_TRUE(md_extract_ext(&ext, MD_STR_LIT("/data/run.1/traj.nc")));
-    EXPECT_TRUE(md_str_eq_cstr(ext, "nc"));
-    // A dot in a folder is not an extension of a file without one (Amber's mdout, prmtop)
-    EXPECT_FALSE(md_extract_ext(&ext, MD_STR_LIT("/data/run.1/mdout")));
-    EXPECT_FALSE(md_extract_ext(&ext, MD_STR_LIT("C:\\runs\\v1.2\\prmtop")));
-    EXPECT_TRUE(md_extract_ext(&ext, MD_STR_LIT("C:\\runs\\v1.2\\sys.parm7")));
-    EXPECT_TRUE(md_str_eq_cstr(ext, "parm7"));
 }

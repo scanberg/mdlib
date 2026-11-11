@@ -4,6 +4,7 @@
 #include <core/md_array.h>
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -78,16 +79,16 @@ static inline char peek_at(const parser_t* p, size_t i) {
     return p->cur + i < p->end ? p->cur[i] : '\0';
 }
 
-// is_digit and is_whitespace come from md_str.h
+// md_ascii_is_digit and md_ascii_is_whitespace come from md_str.h
 static inline bool is_upper(char c) { return 'A' <= c && c <= 'Z'; }
 static inline bool is_lower(char c) { return 'a' <= c && c <= 'z'; }
 
 // Reads up to max_digits digits. Returns false if there is none.
 static bool parse_uint(uint32_t* out, parser_t* p, int max_digits) {
-    if (!is_digit(peek(p))) return false;
+    if (!md_ascii_is_digit(peek(p))) return false;
     uint32_t val = 0;
     int n = 0;
-    while (n < max_digits && is_digit(peek(p))) {
+    while (n < max_digits && md_ascii_is_digit(peek(p))) {
         val = val * 10 + (uint32_t)(*p->cur - '0');
         p->cur++;
         n++;
@@ -296,7 +297,7 @@ static bool parse_ring_bond(parser_t* p) {
     uint32_t num;
     if (peek(p) == '%') {
         p->cur++;
-        if (!is_digit(peek(p)) || !is_digit(peek_at(p, 1))) return fail(p, at, "Expected two digits after '%%'");
+        if (!md_ascii_is_digit(peek(p)) || !md_ascii_is_digit(peek_at(p, 1))) return fail(p, at, "Expected two digits after '%%'");
         parse_uint(&num, p, 2);
     } else {
         parse_uint(&num, p, 1);
@@ -373,7 +374,7 @@ static bool parse_line(parser_t* p) {
             p->bond_offset  = offset_of(p, p->cur);
             p->cur++;
         }
-        else if (is_digit(c) || c == '%') {
+        else if (md_ascii_is_digit(c) || c == '%') {
             if (!parse_ring_bond(p)) return false;
         }
         else if (c == '(') {
@@ -399,7 +400,7 @@ static bool parse_line(parser_t* p) {
             p->prev = -1;
             p->cur++;
         }
-        else if (is_whitespace(c)) {
+        else if (md_ascii_is_whitespace(c)) {
             return fail(p, p->cur, "Unexpected whitespace");
         }
         else {
@@ -465,8 +466,8 @@ bool md_smiles_parse(md_smiles_t* out, md_str_t str, struct md_allocator_i* allo
     }
 
     // Leading and trailing whitespace (and a terminating null) is not part of the pattern
-    while (p.cur < p.end && is_whitespace(*p.cur)) p.cur++;
-    while (p.end > p.cur && (is_whitespace(p.end[-1]) || p.end[-1] == '\0')) p.end--;
+    while (p.cur < p.end && md_ascii_is_whitespace(*p.cur)) p.cur++;
+    while (p.end > p.cur && (md_ascii_is_whitespace(p.end[-1]) || p.end[-1] == '\0')) p.end--;
 
     bool ok = false;
     if (p.cur == p.end) {

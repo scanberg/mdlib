@@ -1,6 +1,7 @@
 #include <md_cube.h>
 
 #include "core/md_allocator.h"
+#include "core/md_parse.h"
 #include "core/md_os.h"
 #include "core/md_log.h"
 #include "core/md_writer.h"
@@ -71,10 +72,7 @@ static bool open_file(md_file_t* file, md_str_t path) {
 }
 
 md_str_t tidy_comment(md_str_t comment) {
-    size_t loc;
-	if (md_str_find_char(&loc, comment, '\n')) {
-		comment.len = loc;
-	}
+    comment = md_str_substr(comment, 0, md_str_find_char(comment, '\n'));
     return comment;
 }
 
@@ -132,7 +130,7 @@ md_str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) 
 }
 
 static inline bool str_extract_v3(md_cube_v3 v, md_str_t* str) {
-	return md_str_extract_f32(&v[0], str) && md_str_extract_f32(&v[1], str) && md_str_extract_f32(&v[2], str);
+	return md_parse_next_f32(&v[0], str) && md_parse_next_f32(&v[1], str) && md_parse_next_f32(&v[2], str);
 }
 
 bool md_cube_deserialize(md_cube_t* cube, md_str_t str, struct md_allocator_i* alloc) {
@@ -140,49 +138,49 @@ bool md_cube_deserialize(md_cube_t* cube, md_str_t str, struct md_allocator_i* a
 	MD_ASSERT(alloc);
 
 	md_str_t title, comment;
-    if (!(md_str_extract_line(&title,	 &str) &&
-		  md_str_extract_line(&comment, &str)))
+    if (!(md_parse_next_line(&title,	 &str) &&
+		  md_parse_next_line(&comment, &str)))
 	{
 		MD_LOG_ERROR("CUBE: Could not extract comment section");
 		return false;
 	}
-    cube->title   = md_str_copy(title, alloc);
-    cube->comment = md_str_copy(comment, alloc);
+    cube->title   = md_alloc_str(alloc, title);
+    cube->comment = md_alloc_str(alloc, comment);
 
 	md_str_t line;
 	
 	// natoms, origin, [nval]
-	if (!md_str_extract_line(&line, &str)) {
+	if (!md_parse_next_line(&line, &str)) {
 		goto line_error;
 	}
-    if (!(md_str_extract_i32(&cube->atom.count, &line) && str_extract_v3(cube->origin, &line))) {
+    if (!(md_parse_next_i32(&cube->atom.count, &line) && str_extract_v3(cube->origin, &line))) {
 		goto parse_error;
 	}
-	if (!md_str_extract_i32(&cube->data.num_m, &line)) {
+	if (!md_parse_next_i32(&cube->data.num_m, &line)) {
 		cube->data.num_m = 1;
 	}
 
 	// num_x, xaxis
-	if (!md_str_extract_line(&line, &str)) {
+	if (!md_parse_next_line(&line, &str)) {
 		goto line_error;
 	}
-    if (!(md_str_extract_i32(&cube->data.num_x, &line) && str_extract_v3(cube->xaxis, &line))) {
+    if (!(md_parse_next_i32(&cube->data.num_x, &line) && str_extract_v3(cube->xaxis, &line))) {
 		goto parse_error;
 	}
 	
 	// num_y, yaxis
-	if (!md_str_extract_line(&line, &str)) {
+	if (!md_parse_next_line(&line, &str)) {
 		goto line_error;
 	}
-	if (!(md_str_extract_i32(&cube->data.num_y, &line) && str_extract_v3(cube->yaxis, &line))) {
+	if (!(md_parse_next_i32(&cube->data.num_y, &line) && str_extract_v3(cube->yaxis, &line))) {
 		goto parse_error;
 	}
 
 	// num_z, zaxis
-	if (!md_str_extract_line(&line, &str)) {
+	if (!md_parse_next_line(&line, &str)) {
 		goto line_error;
 	}
-	if (!(md_str_extract_i32(&cube->data.num_z, &line) && str_extract_v3(cube->zaxis, &line))) {
+	if (!(md_parse_next_i32(&cube->data.num_z, &line) && str_extract_v3(cube->zaxis, &line))) {
 		goto parse_error;
 	}
 
@@ -207,10 +205,10 @@ bool md_cube_deserialize(md_cube_t* cube, md_str_t str, struct md_allocator_i* a
 		float charge;
         md_cube_v3 coord;
 		
-        if (!md_str_extract_line(&line, &str)) {
+        if (!md_parse_next_line(&line, &str)) {
 			goto line_error;
 		}
-        if (!(md_str_extract_i32(&number, &line) && md_str_extract_f32(&charge, &line) && str_extract_v3(coord, &line))) {
+        if (!(md_parse_next_i32(&number, &line) && md_parse_next_f32(&charge, &line) && str_extract_v3(coord, &line))) {
 			goto parse_error;
 		}
 		coord[0] *= length_scale;
@@ -225,12 +223,12 @@ bool md_cube_deserialize(md_cube_t* cube, md_str_t str, struct md_allocator_i* a
 	if (cube->atom.count < 0) {
         cube->atom.count = -cube->atom.count;
         // data id
-		if (!md_str_extract_i32(&cube->data.num_m, &str)) {
+		if (!md_parse_next_i32(&cube->data.num_m, &str)) {
 			goto parse_error;
 		}
 		for (int i = 0; i < cube->data.num_m; ++i) {
 			int id;
-			if (!md_str_extract_i32(&id, &str)) {
+			if (!md_parse_next_i32(&id, &str)) {
 				goto parse_error;
 			}
 			md_array_push(cube->data.id, id, alloc);
@@ -253,7 +251,7 @@ bool md_cube_deserialize(md_cube_t* cube, md_str_t str, struct md_allocator_i* a
     for (int64_t i = 0; i < num_data; ++i) {
         float val;
 
-        if (!md_str_extract_f32(&val, &str)) {
+        if (!md_parse_next_f32(&val, &str)) {
 			goto parse_error;
 		}
         md_array_push(cube->data.val, val, alloc);
@@ -314,6 +312,6 @@ void md_cube_free(md_cube_t* cube, md_allocator_i* alloc) {
 	if (cube->atom.coord)	md_array_free(cube->atom.coord,	 alloc); 
 	if (cube->atom.number)	md_array_free(cube->atom.number, alloc); 
 	if (cube->atom.charge)	md_array_free(cube->atom.charge, alloc); 
-	if (!md_str_empty(cube->title)) md_str_free(cube->title, alloc);
-	if (!md_str_empty(cube->comment)) md_str_free(cube->comment, alloc);
+	if (!md_str_empty(cube->title)) md_free_str(alloc, cube->title);
+	if (!md_str_empty(cube->comment)) md_free_str(alloc, cube->comment);
 }

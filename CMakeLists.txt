@@ -75,6 +75,7 @@ set(CORE_FILES
   src/core/md_executor.h
   src/core/md_fifo.c
   src/core/md_fifo.h
+  src/core/md_format.h
   src/core/md_fft.c
   src/core/md_fft.h
   src/core/md_gl_util.c
@@ -98,6 +99,8 @@ set(CORE_FILES
   src/core/md_os.h
   src/core/md_parse.c
   src/core/md_parse.h
+  src/core/md_path.c
+  src/core/md_path.h
   src/core/md_platform.h
   src/core/md_ring_allocator.c
   src/core/md_ring_allocator.h
@@ -108,7 +111,6 @@ set(CORE_FILES
   src/core/md_reader.c
   src/core/md_writer.h
   src/core/md_reader.h
-  src/core/md_str.c
   src/core/md_str.h
   src/core/md_tracking_allocator.c
   src/core/md_tracking_allocator.h

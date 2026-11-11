@@ -4,17 +4,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <stdarg.h>
 
-#include <core/md_common.h>  // MD_ASSERT, MIN, MAX
+#include <core/md_common.h>  // MD_ASSERT, MD_MIN, MD_MAX
 
 #ifdef __cplusplus
 #define MD_DEF_VAL(x) = x
 #else
 #define MD_DEF_VAL(x)
 #endif
-
-struct md_allocator_i;
 
 // Non owning string_view type
 typedef struct md_str_t {
@@ -54,13 +51,13 @@ extern "C" {
 #endif
 
 // Only for ASCII character set
-static inline int  char_to_digit(int c) { return c - '0'; }
-static inline int  to_lower(int c)      { return ('A' <= c && c <= 'Z') ? c+32 : c; }
-static inline int  to_upper(int c)      { return ('a' <= c && c <= 'z') ? c-32 : c; }
-static inline bool is_digit(int c)      { return '0' <= c && c <= '9'; }
-static inline bool is_alpha(int c)      { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
-static inline bool is_whitespace(int c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
-static inline bool is_symbol(int c) {
+static inline int  md_ascii_char_to_digit(int c) { return c - '0'; }
+static inline int  md_ascii_to_lower(int c)      { return ('A' <= c && c <= 'Z') ? c+32 : c; }
+static inline int  md_ascii_to_upper(int c)      { return ('a' <= c && c <= 'z') ? c-32 : c; }
+static inline bool md_ascii_is_digit(int c)      { return '0' <= c && c <= '9'; }
+static inline bool md_ascii_is_alpha(int c)      { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
+static inline bool md_ascii_is_whitespace(int c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
+static inline bool md_ascii_is_symbol(int c) {
     return (32 < c && c < 48) || (57 < c && c < 65) || (90 < c && c < 97) || (122 < c && c < 127);
 }
 
@@ -81,7 +78,7 @@ static inline void md_str_swap(md_str_t* a, md_str_t* b) {
 static inline md_str_t md_str_trim_beg(md_str_t str) {
     const char* beg = md_str_beg(str);
     const char* end = md_str_end(str);
-    while (beg < end && is_whitespace(*beg)) ++beg;
+    while (beg < end && md_ascii_is_whitespace(*beg)) ++beg;
     str.ptr = beg;
     str.len = end - beg;
     return str;
@@ -90,7 +87,7 @@ static inline md_str_t md_str_trim_beg(md_str_t str) {
 static inline md_str_t md_str_trim_end(md_str_t str) {
     const char* beg = md_str_beg(str);
     const char* end = md_str_end(str);
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+    while (beg < end && (md_ascii_is_whitespace(end[-1]) || end[-1] == '\0')) --end;
     str.ptr = beg;
     str.len = end - beg;
     return str;
@@ -99,8 +96,8 @@ static inline md_str_t md_str_trim_end(md_str_t str) {
 static inline md_str_t md_str_trim(md_str_t str) {
     const char* beg = md_str_beg(str);
     const char* end = md_str_end(str);
-    while (beg < end && is_whitespace(*beg)) ++beg;
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+    while (beg < end && md_ascii_is_whitespace(*beg)) ++beg;
+    while (beg < end && (md_ascii_is_whitespace(end[-1]) || end[-1] == '\0')) --end;
     str.ptr = beg;
     str.len = end - beg;
     return str;
@@ -122,7 +119,7 @@ static inline bool md_str_eq(md_str_t str_a, md_str_t str_b) {
 static inline bool md_str_eq_ignore_case(md_str_t str_a, md_str_t str_b) {
     if (str_a.len != str_b.len) return false;
     for (size_t i = 0; i < str_a.len; ++i) {
-        if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
+        if (md_ascii_to_lower(str_a.ptr[i]) != md_ascii_to_lower(str_b.ptr[i])) return false;
     }
     return true;
 }
@@ -139,7 +136,7 @@ static inline bool md_str_eq_n_ignore_case(md_str_t str_a, md_str_t str_b, size_
     const size_t len = MD_MIN(str_a.len, n);
     if (len != MD_MIN(str_b.len, n)) return false;
     for (size_t i = 0; i < len; ++i) {
-        if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
+        if (md_ascii_to_lower(str_a.ptr[i]) != md_ascii_to_lower(str_b.ptr[i])) return false;
     }
     return true;
 }
@@ -155,7 +152,7 @@ static inline bool md_str_eq_cstr(md_str_t str, const char* cstr) {
 static inline bool md_str_eq_cstr_ignore_case(md_str_t str, const char* cstr) {
     if (!cstr) return str.len == 0;
     for (size_t i = 0; i < str.len; ++i) {
-        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
+        if (cstr[i] == '\0' || md_ascii_to_lower(str.ptr[i]) != md_ascii_to_lower(cstr[i])) return false;
     }
     return cstr[str.len] == '\0';
 }
@@ -175,7 +172,7 @@ static inline bool md_str_eq_cstr_n_ignore_case(md_str_t str, const char* cstr, 
     const size_t len = MD_MIN(str.len, n);
     if (!cstr) return len == 0;
     for (size_t i = 0; i < len; ++i) {
-        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
+        if (cstr[i] == '\0' || md_ascii_to_lower(str.ptr[i]) != md_ascii_to_lower(cstr[i])) return false;
     }
     return len == n || cstr[len] == '\0';
 }
@@ -201,8 +198,14 @@ static inline bool md_str_ends_with(md_str_t str, md_str_t suffix) {
     return str.len >= suffix.len && (suffix.len == 0 || md_memcmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0);
 }
 
-size_t md_str_count_equal_chars(md_str_t a, md_str_t b);
-size_t md_str_count_occur_char(md_str_t str, char character);
+// The number of times c occurs in str
+static inline size_t md_str_count_occur_char(md_str_t str, char c) {
+    size_t count = 0;
+    for (size_t i = 0; i < str.len; ++i) {
+        if (str.ptr[i] == c) count += 1;
+    }
+    return count;
+}
 
 static inline md_str_t md_str_substr(md_str_t str, size_t offset, size_t length MD_DEF_VAL(SIZE_MAX)) {
     md_str_t res = {0,0};
@@ -234,128 +237,99 @@ static inline md_str_t md_str_from_cstrn(const char* cstr, size_t n) {
 }
 
 // Joins two strings by taking the beginning of the first and the end of the last
-// @WARNING:
-// This does no allocation of any sort, it simply creates a new string view from the two inputs which correspond to the total span
-// Use at your own risk!
-static inline md_str_t md_str_join(md_str_t first, md_str_t last) {
-    MD_ASSERT(first.ptr < last.ptr + last.len);
-    md_str_t str = { first.ptr, (size_t)(last.ptr + last.len - first.ptr) };
-    return str;
+// A position that is not there: what the finds give when they find nothing. It is SIZE_MAX, which md_str_substr
+// reads as "to the end", so md_str_substr(s, 0, md_str_find_char(s, ',')) is s up to its first ',' or all of s.
+// And MD_STR_NPOS + 1 is 0: md_str_substr(s, md_str_rfind_char(s, '/') + 1, SIZE_MAX) is what follows the last
+// '/', or all of s. To split in two, use md_str_cut.
+#define MD_STR_NPOS SIZE_MAX
+
+// ### CHARACTER RUNS ###
+// On the len characters at chars: no terminator is needed, and none is written. (NULL, 0) is fine.
+// Characters are matched as bytes.
+
+// The position of the first (find) or the last (rfind) c, or MD_STR_NPOS
+static inline size_t md_chars_find(const char* chars, size_t len, char c) {
+    if (len == 0) return MD_STR_NPOS;
+    const char* p = (const char*)memchr(chars, (unsigned char)c, len);
+    return p ? (size_t)(p - chars) : MD_STR_NPOS;
 }
 
-// Skip, peek and extract agree on what a line is: the text up to a '\n' or the end, without the '\r' of a CRLF,
-// and a last line counts whether or not a newline ends it. Inlined, as parsers call them for every line.
-static inline bool md_str_extract_line(md_str_t* out_line, md_str_t* in_out_str) {
-    MD_ASSERT(out_line);
-    MD_ASSERT(in_out_str);
-    if (in_out_str->len == 0) return false;
-
-    const char* beg = in_out_str->ptr;
-    const char* end = beg + in_out_str->len;
-    const char* nl  = (const char*)memchr(beg, '\n', in_out_str->len);
-    const char* line_end = nl ? nl     : end;
-    const char* next     = nl ? nl + 1 : end;
-    if (nl && line_end > beg && line_end[-1] == '\r') --line_end;
-
-    out_line->ptr = beg;
-    out_line->len = (size_t)(line_end - beg);
-    in_out_str->ptr = next;
-    in_out_str->len = (size_t)(end - next);
-    return true;
+static inline size_t md_chars_rfind(const char* chars, size_t len, char c) {
+    // A loop: memrchr is glibc's only
+    for (size_t i = len; i > 0; --i) {
+        if (chars[i - 1] == c) return i - 1;
+    }
+    return MD_STR_NPOS;
 }
 
-static inline bool md_str_peek_line(md_str_t* out_line, const md_str_t* in_str) {
-    MD_ASSERT(in_str);
-    md_str_t rest = *in_str;
-    return md_str_extract_line(out_line, &rest);
+// In place
+static inline void md_chars_replace(char* chars, size_t len, char target, char replacement) {
+    MD_ASSERT(chars || len == 0);
+    for (size_t i = 0; i < len; ++i) {
+        if (chars[i] == target) chars[i] = replacement;
+    }
 }
 
-static inline bool md_str_skip_line(md_str_t* in_out_str) {
-    MD_ASSERT(in_out_str);
-    if (in_out_str->len == 0) return false;
-    const char* nl   = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
-    const char* next = nl ? nl + 1 : in_out_str->ptr + in_out_str->len;
-    in_out_str->len -= (size_t)(next - in_out_str->ptr);
-    in_out_str->ptr  = next;
-    return true;
+// md_ascii_to_lower / md_ascii_to_upper on each character
+static inline void md_chars_to_lower(char* chars, size_t len) {
+    MD_ASSERT(chars || len == 0);
+    for (size_t i = 0; i < len; ++i) {
+        chars[i] = (char)md_ascii_to_lower(chars[i]);
+    }
 }
 
-bool md_str_extract_i32  (int32_t* val, md_str_t* in_out_str);
-bool md_str_extract_i64  (int64_t* val, md_str_t* in_out_str);
-
-bool md_str_extract_f32  (float*  val,  md_str_t* in_out_str);
-bool md_str_extract_f64  (double* val,  md_str_t* in_out_str);
-
-// Return true if the item is found, and write its offset to loc (when loc is not NULL).
-// A character is matched as a byte: c is converted to char (as memchr converts it to unsigned char).
-// md_str_find_str finds nothing when the needle is empty or longer than the haystack.
-static inline bool md_str_find_char(size_t* loc, md_str_t str, int c) {
-    if (str.len == 0) return false;
-    const char* p = (const char*)memchr(str.ptr, c, str.len);
-    if (!p) return false;
-    if (loc) *loc = (size_t)(p - str.ptr);
-    return true;
+static inline void md_chars_to_upper(char* chars, size_t len) {
+    MD_ASSERT(chars || len == 0);
+    for (size_t i = 0; i < len; ++i) {
+        chars[i] = (char)md_ascii_to_upper(chars[i]);
+    }
 }
 
-static inline bool md_str_rfind_char(size_t* loc, md_str_t str, int c) {
-    const char ch = (char)c;
-    for (size_t i = str.len; i > 0; --i) {
-        if (str.ptr[i - 1] == ch) {
-            if (loc) *loc = i - 1;
-            return true;
+// ### FIND ###
+// Positions are indices into str, MD_STR_NPOS when there is none.
+
+static inline size_t md_str_find_char (md_str_t str, char c) { return md_chars_find (str.ptr, str.len, c); }
+static inline size_t md_str_rfind_char(md_str_t str, char c) { return md_chars_rfind(str.ptr, str.len, c); }
+
+// The first needle in haystack. An empty needle, or one longer than haystack, is not found.
+static inline size_t md_str_find_str(md_str_t haystack, md_str_t needle) {
+    if (needle.len == 0 || needle.len > haystack.len) return MD_STR_NPOS;
+
+    // Every position where the needle still fits is a candidate. (Restarting the match after the character that broke
+    // a partial match is not enough: "aab" contains "ab" starting inside the partial match "aa".)
+    const char* beg  = haystack.ptr;
+    const char* last = haystack.ptr + (haystack.len - needle.len);
+    for (const char* c = beg; c <= last; ++c) {
+        c = (const char*)memchr(c, (unsigned char)needle.ptr[0], (size_t)(last - c) + 1);
+        if (!c) break;
+        if (md_memcmp(c, needle.ptr, needle.len) == 0) {
+            return (size_t)(c - beg);
         }
     }
-    return false;
+    return MD_STR_NPOS;
 }
 
-bool md_str_find_str(size_t* loc, md_str_t haystack, md_str_t needle);
+static inline bool md_str_contains_char(md_str_t str, char c)               { return md_str_find_char(str, c) != MD_STR_NPOS; }
+static inline bool md_str_contains_str (md_str_t haystack, md_str_t needle) { return md_str_find_str(haystack, needle) != MD_STR_NPOS; }
 
-// Will allocate one extra character for zero termination
-md_str_t md_str_alloc(size_t len, struct md_allocator_i* alloc);
-void  md_str_free(md_str_t str, struct md_allocator_i* alloc);
-md_str_t md_str_copy(md_str_t str, struct md_allocator_i* alloc);
-md_str_t md_str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
-md_str_t md_str_copy_cstrn(const char* cstr, size_t len, struct md_allocator_i* alloc);
-
-md_str_t md_str_printf(struct md_allocator_i* alloc, const char* format, ...);
-
-#if defined(__GNUC__) || defined(__clang__)
-#define MD_STR_PRINTF(fmt_idx, arg_idx) __attribute__((format(printf, fmt_idx, arg_idx)))
-#else
-#define MD_STR_PRINTF(fmt_idx, arg_idx)
-#endif
-
-// snprintf and vsnprintf as C99 has them, in the "C" locale whatever the process or the calling thread
-// has set: the decimal point is always '.'. The process locale is not ours to rely on. A GTK file dialog
-// switches it to the user's, and so may a shell extension a Windows file dialog loads, and under a decimal
-// comma locale the C library writes 1.5 as "1,5" - which md_parse, as it does not follow the locale either,
-// reads back as 1 and 5. Everything mdlib formats goes through these (md_str_printf, the writers,
-// md_file_printf and the log too), so what it writes is the same text in every locale.
-//
-// Implemented in md_os.c: each call is handed a "C" locale of its own through the platform's API, rather
-// than setlocale, which is process wide and would change what every other thread prints meanwhile.
-int md_snprintf (char* buf, size_t cap, const char* format, ...) MD_STR_PRINTF(3, 4);
-int md_vsnprintf(char* buf, size_t cap, const char* format, va_list args);
-
-// This should probably be removed
-md_str_t md_load_textfile(md_str_t path, struct md_allocator_i* alloc);
-
-// c:/folder/file.ext -> ext
-bool md_extract_ext(md_str_t* ext, md_str_t path);
-
-// c:/folder/file.ext -> file.ext
-bool md_extract_file(md_str_t* file, md_str_t path);
-
-// c:/folder/file.ext -> c:/folder/file
-bool md_extract_file_path_without_ext(md_str_t* file_path, md_str_t path);
-
-// c:/folder/file.ext -> c:/folder/
-bool md_extract_folder_path(md_str_t* folder_path, md_str_t path);
-
-// Mutating string operations
-void md_replace_char(char* str, size_t len, char c, char replacement);
-void md_convert_to_lower(char* str, size_t len);
-void md_convert_to_upper(char* str, size_t len);
+// Splits str at loc, a position from one of the finds, and drops the character there: before is what precedes it,
+// after what follows it. md_str_cut(&key, &val, s, md_str_find_char(s, '=')) splits at the first '=', and with
+// md_str_rfind_char at the last. MD_STR_NPOS (or any loc past the end) cuts nothing: before is all of str, after
+// is empty, and the result is false. Either out pointer may be NULL, and either may point at str itself - but as a
+// miss empties after, a loop that needs what is left once nothing more is found cuts into a variable of its own.
+static inline bool md_str_cut(md_str_t* before, md_str_t* after, md_str_t str, size_t loc) {
+    md_str_t b = str;
+    md_str_t a = {0, 0};
+    const bool found = loc < str.len;
+    if (found) {
+        b.len = loc;
+        a.ptr = str.ptr + loc + 1;
+        a.len = str.len - loc - 1;
+    }
+    if (before) *before = b;
+    if (after)  *after  = a;
+    return found;
+}
 
 // Copies the contents of a md_str_t into a char buffer and ensures zero termination (also for an empty md_str_t, which
 // leaves an empty string). Truncates to fit in cap. Returns the number of characters written (excluding the zero
@@ -368,10 +342,6 @@ static inline size_t md_str_copy_to_char_buf(char* buf, size_t cap, md_str_t str
     buf[len] = '\0';
     return len;
 }
-
-// Returns the Levenshtein edit distance between two strings
-// https://en.wikipedia.org/wiki/Levenshtein_distance
-int md_str_edit_distance(md_str_t a, md_str_t b);
 
 #ifdef __cplusplus
 }

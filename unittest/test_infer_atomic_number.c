@@ -5,6 +5,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
 #include <string.h>
 
 // Test element inference against all PDB files with explicit element symbols
@@ -43,7 +44,7 @@ UTEST(element_guess_compat, all_pdb_validation) {
         }
         files_processed++;
         md_str_t rest = text, line;
-        while (md_str_extract_line(&line, &rest)) {
+        while (md_parse_next_line(&line, &rest)) {
             if (!(md_str_eq_cstr_n(line, "ATOM", 4) || md_str_eq_cstr_n(line, "HETATM", 6)) || line.len < 78) continue;
             md_str_t explicit_symbol = md_str_trim(md_str_substr(line, 76, 2));
             if (md_str_empty(explicit_symbol)) {

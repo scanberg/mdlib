@@ -21,6 +21,7 @@
 
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
 #include <core/md_array.h>
 #include <core/md_allocator.h>
 
@@ -77,8 +78,8 @@ typedef struct vial_spec_t {
 static inline bool vial_spec__is_code(md_str_t s) {
     if (s.len < 5) return false;
     if (s.ptr[0] != 'E' && s.ptr[0] != 'W' && s.ptr[0] != 'R') return false;
-    for (int i = 1; i < 5; ++i) if (!is_digit(s.ptr[i])) return false;
-    return s.len == 5 || !is_digit(s.ptr[5]);
+    for (int i = 1; i < 5; ++i) if (!md_ascii_is_digit(s.ptr[i])) return false;
+    return s.len == 5 || !md_ascii_is_digit(s.ptr[5]);
 }
 
 // The position of the comment's '#' on a line of source, outside string literals; SIZE_MAX for none
@@ -100,7 +101,7 @@ static inline size_t vial_spec__comment_pos(md_str_t line) {
 
 static inline bool vial_spec__starts_word(md_str_t s, const char* word) {
     const size_t n = strlen(word);
-    return s.len >= n && strncmp(s.ptr, word, n) == 0 && (s.len == n || !is_alpha(s.ptr[n]));
+    return s.len >= n && strncmp(s.ptr, word, n) == 0 && (s.len == n || !md_ascii_is_alpha(s.ptr[n]));
 }
 
 // Splits the text after "->" into the result and what follows it. The result ends at the first ',' ':' or ';' that
@@ -183,7 +184,7 @@ typedef struct vial_result_t {
 static inline bool vial_spec__is_value(md_str_t s) {
     if (md_str_empty(s)) return false;
     const char c = s.ptr[0];
-    return is_digit(c) || c == '-' || c == '\'' || c == '"' || md_str_eq(s, MD_STR_LIT("True")) || md_str_eq(s, MD_STR_LIT("False")) ||
+    return md_ascii_is_digit(c) || c == '-' || c == '\'' || c == '"' || md_str_eq(s, MD_STR_LIT("True")) || md_str_eq(s, MD_STR_LIT("False")) ||
            md_str_eq(s, MD_STR_LIT("None"));
 }
 
@@ -199,7 +200,7 @@ static inline void vial_spec__read_stage(vial_result_t* r, md_str_t note) {
             break;
         }
     }
-    if (vial_spec__starts_word(note, "pass") && note.len > 5 && is_digit(note.ptr[5])) r->pass = note.ptr[5] - '0';
+    if (vial_spec__starts_word(note, "pass") && note.len > 5 && md_ascii_is_digit(note.ptr[5])) r->pass = note.ptr[5] - '0';
 }
 
 static inline bool vial_spec_read_result(vial_result_t* r, const vial_expect_t* e) {
@@ -256,10 +257,10 @@ static inline bool vial_spec_type_matches(md_str_t expected, md_str_t actual) {
     const size_t na = vial_spec__norm_type(a, sizeof(a), actual);
     size_t i = 0, j = 0;
     while (i < ne && j < na) {
-        if (e[i] == '[' && i + 2 < ne && is_alpha(e[i + 1]) && e[i + 1] != '?') {
+        if (e[i] == '[' && i + 2 < ne && md_ascii_is_alpha(e[i + 1]) && e[i + 1] != '?') {
             // [letter...]: any extent
             size_t k = i + 1;
-            while (k < ne && is_alpha(e[k])) ++k;
+            while (k < ne && md_ascii_is_alpha(e[k])) ++k;
             if (k < ne && e[k] == ']' && a[j] == '[') {
                 while (j < na && a[j] != ']') ++j;
                 i = k + 1;
@@ -277,7 +278,7 @@ static inline bool vial_spec_type_matches(md_str_t expected, md_str_t actual) {
 static inline void vial_spec__read_diag_codes(vial_spec_t* spec, md_allocator_i* alloc) {
     md_str_t text = spec->text;
     md_str_t line;
-    while (md_str_extract_line(&line, &text)) {
+    while (md_parse_next_line(&line, &text)) {
         if (line.len >= 9 && line.ptr[0] == '|' && line.ptr[1] == ' ') {
             md_str_t s = md_str_substr(line, 2, SIZE_MAX);
             if (vial_spec__is_code(s) && s.len > 6 && s.ptr[5] == ' ' && s.ptr[6] == '|') {
@@ -307,7 +308,7 @@ static inline void vial_spec_read(vial_spec_t* spec, md_str_t text, md_allocator
     int line_no = 0;
     char structure = 0;
 
-    while (md_str_extract_line(&line, &rest)) {
+    while (md_parse_next_line(&line, &rest)) {
         ++line_no;
         if (line.len > 0 && line.ptr[0] == '#') {
             md_str_t h = line;
@@ -323,7 +324,7 @@ static inline void vial_spec_read(vial_spec_t* spec, md_str_t text, md_allocator
         int line_in_block = 0;
         bool first_comment = true;
 
-        while (md_str_extract_line(&line, &rest)) {
+        while (md_parse_next_line(&line, &rest)) {
             ++line_no;
             if (md_str_eq(md_str_trim_end(line), MD_STR_LIT("```"))) break;
             ++line_in_block;
@@ -341,10 +342,9 @@ static inline void vial_spec_read(vial_spec_t* spec, md_str_t text, md_allocator
                 structure = (what.len >= 1 && (what.ptr[0] == 'T' || what.ptr[0] == 'P') &&
                              (what.len == 1 || what.ptr[1] == ',' || what.ptr[1] == ' ')) ? what.ptr[0] : 0;
                 if (first_comment) {
-                    block.structure = structure;
-                    size_t loc;
-                    if (md_str_find_str(&loc, comment, MD_STR_LIT("with the names above"))) block.continues = true;
-                    if (md_str_find_str(&loc, comment, MD_STR_LIT("as filters")))           block.mode = VIAL_BLOCK_FILTERS;
+                    block.structure = structure;
+                    if (md_str_contains_str(comment, MD_STR_LIT("with the names above"))) block.continues = true;
+                    if (md_str_contains_str(comment, MD_STR_LIT("as filters")))           block.mode = VIAL_BLOCK_FILTERS;
                 }
                 first_comment = false;
                 continue;

@@ -18,8 +18,8 @@
 
 // WHITESPACE, 64 BYTES AT ONCE
 //
-// md_parse_whitespace_mask64 gives the whitespace of 64 bytes ('\t', '\n', '\r' and ' ', what is_whitespace and
-// extract_token split by), one bit per byte: what a tokenizer takes the tokens of a line from, 64 bytes at a time
+// md_parse_whitespace_mask64 gives the whitespace of 64 bytes ('\t', '\n', '\r' and ' ', what md_ascii_is_whitespace and
+// md_parse_next_token split by), one bit per byte: what a tokenizer takes the tokens of a line from, 64 bytes at a time
 // (md_mmcif.c, the rows of _atom_site). p is aligned to 64, so that no load crosses a page: the bytes around a range may
 // be read where a page holds bytes of it, which address sanitizers are told not to look at.
 

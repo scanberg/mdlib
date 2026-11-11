@@ -107,8 +107,8 @@ static inline int peek(const lexer_t* l, size_t ahead) {
 
 static inline bool at_end(const lexer_t* l) { return l->pos >= l->src.len; }
 
-static inline bool is_ident_start(int c) { return is_alpha(c) || c == '_' || c >= 0x80; }
-static inline bool is_ident_char(int c)  { return is_ident_start(c) || is_digit(c); }
+static inline bool is_ident_start(int c) { return md_ascii_is_alpha(c) || c == '_' || c >= 0x80; }
+static inline bool is_ident_char(int c)  { return is_ident_start(c) || md_ascii_is_digit(c); }
 
 static inline md_vial_span_t span(size_t beg, size_t end) { return (md_vial_span_t){(uint32_t)beg, (uint32_t)end}; }
 
@@ -312,8 +312,8 @@ static size_t scan_digits(const lexer_t* l, size_t p, bool (*ok)(int), bool* bad
     return p;
 }
 
-static bool is_dec(int c) { return is_digit(c); }
-static bool is_hex(int c) { return is_digit(c) || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F'); }
+static bool is_dec(int c) { return md_ascii_is_digit(c); }
+static bool is_hex(int c) { return md_ascii_is_digit(c) || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F'); }
 static bool is_oct(int c) { return '0' <= c && c <= '7'; }
 static bool is_bin(int c) { return c == '0' || c == '1'; }
 
@@ -340,7 +340,7 @@ static void lex_number(lexer_t* l) {
         if (p < l->src.len && (l->src.ptr[p] == 'e' || l->src.ptr[p] == 'E')) {
             size_t e = p + 1;
             if (e < l->src.len && (l->src.ptr[e] == '+' || l->src.ptr[e] == '-')) ++e;
-            if (e < l->src.len && is_digit((unsigned char)l->src.ptr[e])) {
+            if (e < l->src.len && md_ascii_is_digit((unsigned char)l->src.ptr[e])) {
                 p = scan_digits(l, e, is_dec, &bad);
                 is_float = true;
             }
@@ -458,7 +458,7 @@ static bool string_prefix(md_str_t s, uint16_t* flags) {
     if (s.len == 0 || s.len > 2) return false;
     uint16_t f = 0;
     for (size_t i = 0; i < s.len; ++i) {
-        const int c = to_lower(s.ptr[i]);
+        const int c = md_ascii_to_lower(s.ptr[i]);
         uint16_t bit = c == 'r' ? VIAL_STR_RAW : c == 'b' ? VIAL_STR_BYTES : c == 'f' ? VIAL_STR_FORMAT : c == 'u' ? 0x100 : 0;
         if (!bit || (f & bit)) return false;
         f |= bit;
@@ -567,7 +567,7 @@ vial_token_t* vial_lex(md_str_t src, vial_diags_t* diags, md_allocator_i* alloc)
             continue;
         }
 
-        if (is_digit(c) || (c == '.' && is_digit(peek(&l, 1)))) {
+        if (md_ascii_is_digit(c) || (c == '.' && md_ascii_is_digit(peek(&l, 1)))) {
             lex_number(&l);
             continue;
         }

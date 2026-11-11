@@ -66,7 +66,7 @@ static inline bool is_unsigned_int(md_str_t str) {
 
     if (c >= end) return false;
     while (c < end) {
-        if (!is_digit(*c)) return false;
+        if (!md_ascii_is_digit(*c)) return false;
         ++c;
     }
     return true;
@@ -74,7 +74,7 @@ static inline bool is_unsigned_int(md_str_t str) {
 
 // The name of an atom of Tinker: a letter first ("C", "CT", "HW1", "N3+")
 static inline bool is_atom_name(md_str_t str) {
-    return str.len > 0 && is_alpha(str.ptr[0]);
+    return str.len > 0 && md_ascii_is_alpha(str.ptr[0]);
 }
 
 // The value of key=value in a comment line of extended XYZ, the key in any case and at the start or after a blank.
@@ -83,7 +83,7 @@ static bool xyz_find_key(md_str_t* out_value, md_str_t line, md_str_t key) {
     const char* beg = line.ptr;
     const char* end = line.ptr + line.len;
     for (const char* c = beg; c + key.len < end; ++c) {
-        if (c > beg && !is_whitespace(c[-1])) continue;
+        if (c > beg && !md_ascii_is_whitespace(c[-1])) continue;
         if (c[key.len] != '=' || !md_str_eq_ignore_case((md_str_t){c, key.len}, key)) continue;
         const char* v = c + key.len + 1;
         const char* e = v;
@@ -97,7 +97,7 @@ static bool xyz_find_key(md_str_t* out_value, md_str_t line, md_str_t key) {
                 if (open != '"' && *e == close) --depth;
             }
         } else {
-            while (e < end && !is_whitespace(*e)) ++e;
+            while (e < end && !md_ascii_is_whitespace(*e)) ++e;
         }
         *out_value = (md_str_t){ v, (size_t)(e - v) };
         return true;
@@ -120,7 +120,7 @@ static bool xyz_extended_columns(uint32_t* flags, md_str_t comment) {
     md_str_t field[3];
     for (;;) {
         size_t n = 0;
-        while (n < 3 && extract_token_delim(&field[n], &props, ':')) ++n;
+        while (n < 3 && md_parse_next_token_delim(&field[n], &props, ':')) ++n;
         if (n == 0) break;
         if (n != 3 || !is_unsigned_int(field[2]) || field[1].len != 1) {
             MD_LOG_ERROR("XYZ: Invalid Properties in the extended XYZ comment line: '" MD_STR_FMT "'", MD_STR_ARG(value));
@@ -195,7 +195,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ formats
         md_str_t token;
         md_str_t line = lines[0];
-        if (!extract_token(&token, &line) || !is_unsigned_int(token)) {
+        if (!md_parse_next_token(&token, &line) || !is_unsigned_int(token)) {
             MD_LOG_ERROR("Invalid format for XYZ: Missing coordinate count");
             return false;
         }
@@ -212,7 +212,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
             md_str_t tok;
             md_str_t line = lines[2];
             size_t n = 0;
-            while (extract_token(&tok, &line)) ++n;
+            while (md_parse_next_token(&tok, &line)) ++n;
             if (n < XYZ_POS_COL(*flags) + 3) {
                 MD_LOG_ERROR("Invalid format for XYZ: The atom lines have fewer columns than the Properties of the extended XYZ comment line say");
                 return false;
@@ -226,7 +226,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         // Second line should then contain exactly 6 floats
         md_str_t token[8];
         md_str_t line = lines[1];
-        const int64_t num_tokens = extract_tokens(token, MD_COUNTOF(token), &line);
+        const int64_t num_tokens = md_parse_next_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens == 6 &&
             is_float(token[0]) && is_float(token[1]) && is_float(token[2]) &&
@@ -242,7 +242,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         // Tinker holds additional fields (atom index, atom name, atom type and connectivity): at least 6 fields
         md_str_t token[8];
         md_str_t line = lines[2];
-        int64_t num_tokens = extract_tokens(token, MD_COUNTOF(token), &line);
+        int64_t num_tokens = md_parse_next_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens >= 6 &&
             is_unsigned_int(token[0]) &&
@@ -294,8 +294,8 @@ static inline bool extract_extxyz_cell(double cell[3][3], md_str_t line) {
     md_str_t inner = md_str_substr(value, 1, value.len - 2);
 
     if ((open == '"' && close == '"') || (open == '{' && close == '}')) {
-        num_tok = extract_tokens(tok, MD_COUNTOF(tok), &inner);
-        if (extract_token(&(md_str_t){0}, &inner)) {
+        num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &inner);
+        if (md_parse_next_token(&(md_str_t){0}, &inner)) {
             MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
             return false;
         }
@@ -313,7 +313,7 @@ static inline bool extract_extxyz_cell(double cell[3][3], md_str_t line) {
             }
             md_str_t vec = { b + 1, (size_t)(c - b - 1) };
             inner = (md_str_t){ c + 1, (size_t)(e - c - 1) };
-            size_t num_sub_toks = extract_tokens_delim(tok + i*3, 3, &vec, ',');
+            size_t num_sub_toks = md_parse_next_tokens_delim(tok + i*3, 3, &vec, ',');
             if (num_sub_toks != 3 || !md_str_empty(md_str_trim(vec))) {
                 MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
                 return false;
@@ -363,7 +363,7 @@ static md_atomic_number_t xyz_element(md_str_t sym, bool tinker) {
 
 // The element column of a line: a symbol or name, else an atomic number
 static void xyz_set_element(md_xyz_coordinate_t* coord, md_str_t tok, uint32_t flags) {
-    if ((flags & XYZ_ELEMENT_Z) || !is_alpha(tok.ptr[0])) {
+    if ((flags & XYZ_ELEMENT_Z) || !md_ascii_is_alpha(tok.ptr[0])) {
         const int64_t z = parse_int(tok);
         coord->atomic_number = (0 < z && z < 119) ? (int)z : 0;
         const md_str_t sym = coord->atomic_number ? md_util_element_symbol((md_element_t)coord->atomic_number) : tok;
@@ -382,7 +382,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, md_str_t line, uint
     if (flags & XYZ_TINKER) {
         // Index, name, x, y, z, then the atom type and the bonded atoms
         md_str_t tok[6 + 9];
-        const size_t num_tokens = extract_tokens(tok, MD_COUNTOF(tok), &line);
+        const size_t num_tokens = md_parse_next_tokens(tok, MD_COUNTOF(tok), &line);
         if (num_tokens < 5) {
             MD_LOG_ERROR("Invalid number of tokens in Tinker XYZ coordinate when parsing line: '" MD_STR_FMT "', expected >= 5, got %i", MD_STR_ARG(original), (int)num_tokens);
             return false;
@@ -404,7 +404,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, md_str_t line, uint
                 coord->connectivity[i - 6] = (int)parse_int(tok[i]);
             }
         }
-        if (extract_token(&(md_str_t){0}, &line)) {
+        if (md_parse_next_token(&(md_str_t){0}, &line)) {
             MD_LOG_ERROR("More bonded atoms than %d in Tinker XYZ line: '" MD_STR_FMT "'", XYZ_MAX_CONN, MD_STR_ARG(original));
             return false;
         }
@@ -419,7 +419,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, md_str_t line, uint
     md_str_t pos[3];
     md_str_t tok;
     for (size_t col = 0; col < need; ++col) {
-        if (!extract_token(&tok, &line)) {
+        if (!md_parse_next_token(&tok, &line)) {
             MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate when parsing line: '" MD_STR_FMT "', expected >= %zu, got %zu", MD_STR_ARG(original), need, col);
             return false;
         }
@@ -464,7 +464,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
     // The number of atoms leads the first line
     md_str_t rest = line;
     md_str_t count_tok;
-    if (!extract_token(&count_tok, &rest) || !is_unsigned_int(count_tok)) {
+    if (!md_parse_next_token(&count_tok, &rest) || !is_unsigned_int(count_tok)) {
         MD_LOG_ERROR("Failed to extract coordinate count in XYZ header: '" MD_STR_FMT "'", MD_STR_ARG(line));
         return false;
     }
@@ -479,7 +479,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
         const md_str_t comment = md_str_trim(rest);
         if (!md_str_empty(comment)) {
             MD_ASSERT(alloc);
-            model->comment = md_str_copy(comment, alloc);
+            model->comment = md_alloc_str(alloc, comment);
         }
     }
 
@@ -492,12 +492,12 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
 
         if (!(flags & XYZ_TINKER) && (flags & XYZ_STORE_COMMENT) && !md_str_empty(line)) {
             MD_ASSERT(alloc);
-            model->comment = md_str_copy(line, alloc);
+            model->comment = md_alloc_str(alloc, line);
         }
     }
 
     if (flags & XYZ_ARC) {
-        const size_t num_tokens = extract_tokens(tokens, MD_COUNTOF(tokens), &line);
+        const size_t num_tokens = md_parse_next_tokens(tokens, MD_COUNTOF(tokens), &line);
         
         if (num_tokens != 6) {
             MD_LOG_ERROR("Unexpected number of tokens (%zu) when parsing XYZ Arc Cell data", num_tokens);
@@ -641,7 +641,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     if (data->models) {
         for (size_t i = 0; i < data->num_models; ++i) {
             if (!md_str_empty(data->models[i].comment)) {
-                md_str_free(data->models[i].comment, alloc);
+                md_free_str(alloc, data->models[i].comment);
             }
         }
         md_array_free(data->models, alloc);

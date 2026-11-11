@@ -5,6 +5,7 @@
 #include <md_types.h>
 
 #include <core/md_common.h>
+#include <core/md_format.h>
 
 #include <math.h>
 #include <stdio.h>
