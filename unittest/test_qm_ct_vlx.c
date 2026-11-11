@@ -18,6 +18,7 @@ typedef struct ct_vlx_t {
     double* omega;      // {N,N} atoms, normalized to sum 1
     double  lambda_sum;
     double  omega_sum;
+    double  norm_sum;   // sum_k lambda_k |h~_k|^2 |p~_k|^2: what Omega sums to, exactly
 } ct_vlx_t;
 
 static bool ct_vlx_compute(ct_vlx_t* out, vlx_test_t* t, uint32_t state) {
@@ -68,12 +69,20 @@ static bool ct_vlx_compute(ct_vlx_t* out, vlx_test_t* t, uint32_t state) {
     double* omega = md_alloc(alloc, sizeof(double) * num_atoms * num_atoms);
     md_qm_ct_omega(omega, lambda, K, Hb, num_atoms, Pb, num_atoms);
 
-    double lsum = 0.0, osum = 0.0;
-    for (size_t k = 0; k < K; ++k) lsum += lambda[k];
+    double lsum = 0.0, osum = 0.0, nsum = 0.0;
+    for (size_t k = 0; k < K; ++k) {
+        double hh = 0.0, pp = 0.0;
+        for (size_t mu = 0; mu < num_ao; ++mu) {
+            hh += ht[k * num_ao + mu] * ht[k * num_ao + mu];
+            pp += pt[k * num_ao + mu] * pt[k * num_ao + mu];
+        }
+        lsum += lambda[k];
+        nsum += lambda[k] * hh * pp;
+    }
     for (size_t i = 0; i < num_atoms * num_atoms; ++i) osum += omega[i];
     for (size_t i = 0; i < num_atoms * num_atoms; ++i) omega[i] /= osum;
 
-    *out = (ct_vlx_t){ num_ao, num_mo, num_atoms, K, omega, lsum, osum };
+    *out = (ct_vlx_t){ num_ao, num_mo, num_atoms, K, omega, lsum, osum, nsum };
     return true;
 }
 
@@ -91,8 +100,12 @@ UTEST(qm_ct_vlx, amide_s1_is_local) {
     ASSERT_TRUE(ct_vlx_compute(&ct, &t, 0));
     ASSERT_EQ(ct.num_atoms, 12u);
 
-    // every pair kept: Omega carries exactly the norm of the excitation
-    EXPECT_NEAR(ct.omega_sum, ct.lambda_sum, 1.0e-9 * ct.lambda_sum);
+    // every pair kept: Omega carries the norm of the excitation - exactly what the Lowdin NTOs' norms
+    // make it, and those are 1 only as far as the file's orbitals are orthonormal in the overlap
+    // computed here from the basis: c^T S c = 1 to about 1e-7 for these files (measured), so the sum
+    // matches the lambdas to a few 1e-8.
+    EXPECT_NEAR(ct.omega_sum, ct.norm_sum, 1.0e-12 * ct.lambda_sum);
+    EXPECT_NEAR(ct.omega_sum, ct.lambda_sum, 1.0e-6 * ct.lambda_sum);
     for (size_t i = 0; i < ct.num_atoms * ct.num_atoms; ++i) EXPECT_GE(ct.omega[i], 0.0);
 
     const int formamide[] = { 0, 1, 2, 5 };
@@ -118,7 +131,8 @@ UTEST(qm_ct_vlx, mol_s1_amine_to_phenyl) {
     ct_vlx_t ct = {0};
     ASSERT_TRUE(ct_vlx_compute(&ct, &t, 0));
     ASSERT_EQ(ct.num_atoms, 26u);
-    EXPECT_NEAR(ct.omega_sum, ct.lambda_sum, 1.0e-9 * ct.lambda_sum);
+    EXPECT_NEAR(ct.omega_sum, ct.norm_sum, 1.0e-12 * ct.lambda_sum);
+    EXPECT_NEAR(ct.omega_sum, ct.lambda_sum, 1.0e-6 * ct.lambda_sum);
 
     const int amine[]  = { 0, 7, 17, 20, 21, 22 };
     const int linker[] = { 1, 2, 4, 11, 12, 13, 14, 15, 16 };
