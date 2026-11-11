@@ -560,13 +560,20 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         // Setting the bit means "derive this", unconditionally. A format which supplies its own
         // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
         // Beads too: a coarse grained system gets the bonds of its model's topologies (mdi_infer_coarse_grained_bonds).
-        // The bonds inferred, in place of those inferred before: those given (by a file, a topology, a user) stay
-        md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-        md_bond_data_t inferred = {0};
-        md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
+        // The bonds inferred, in place of those inferred before: those given (by a file, a topology, a user) stay. Without
+        // any (most structure files) the inferred are the bonds, and nothing is merged.
+        bool given = sys->bond.noncovalent_count > 0;
+        for (size_t i = 0; i < sys->bond.count && !given; ++i) given = md_bond_origin(sys->bond.flags[i]) != MD_BOND_ORIGIN_INFERRED;
         md_bond_data_t bonds = {0};
-        md_bond_merge(&bonds, &sys->bond, &inferred, sys->atom.count, sys->alloc);
-        md_temp_end(temp);
+        if (given) {
+            md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+            md_bond_data_t inferred = {0};
+            md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
+            md_bond_merge(&bonds, &sys->bond, &inferred, sys->atom.count, sys->alloc);
+            md_temp_end(temp);
+        } else {
+            md_bond_infer(&bonds, sys, state, sys->alloc, executor);
+        }
         md_bond_data_free(&sys->bond, sys->alloc);
         sys->bond = bonds;
         md_system_topology_changed(sys);
