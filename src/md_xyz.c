@@ -275,7 +275,7 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
 // Old style: {} enclosed list 9 elements separated by whitespace: {1 2 3 4 5 6 7 8 9}
 // The cell as written: row i is vector i, in whatever orientation.
 
-static inline bool extract_extxyz_cell(float cell[3][3], md_str_t line) {
+static inline bool extract_extxyz_cell(double cell[3][3], md_str_t line) {
     md_str_t value;
     if (!xyz_find_key(&value, line, MD_STR_LIT("Lattice"))) {
         // Lattice information not found, since Lattice is optional, this is not an error
@@ -328,15 +328,14 @@ static inline bool extract_extxyz_cell(float cell[3][3], md_str_t line) {
         return false;
     }
 
-    float val[9];
+    double val[9] = {0};
     for (size_t i = 0; i < num_tok; ++i) {
-        if (!is_float(tok[i])) {
+        if (md_parse_f64(&val[i], tok[i]) != tok[i].len) {
             MD_LOG_ERROR("XYZ: Invalid number in Lattice: '" MD_STR_FMT "'", MD_STR_ARG(tok[i]));
             return false;
         }
-        val[i] = (float)parse_float(tok[i]);
     }
-    md_memset(cell, 0, sizeof(float) * 9);
+    md_memset(cell, 0, sizeof(double) * 9);
     if (num_tok == 3) {
         // The diagonal
         for (size_t i = 0; i < 3; ++i) cell[i][i] = val[i];
@@ -513,7 +512,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
         const double gamma = parse_float(tokens[5]);
 
         md_unitcell_t cell = md_unitcell_from_extent_and_angles(a, b, c, alpha, beta, gamma);
-        md_unitcell_A_extract_float(model->cell, &cell);
+        md_unitcell_A_extract_double(model->cell, &cell);
     } else if (flags & XYZ_EXTENDED) {
         if (!extract_extxyz_cell(model->cell, line)) {
             MD_LOG_ERROR("Failed to extract cell data from line");
@@ -528,7 +527,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
 
 // The cell of a model as md_unitcell_t holds it, and the rotation of its coordinates into it (the identity where the
 // cell is in that orientation already, as one of Tinker always is): see md_unitcell_from_basis_vectors.
-static bool xyz_model_cell(md_unitcell_t* out_cell, double R[3][3], const float cell[3][3]) {
+static bool xyz_model_cell(md_unitcell_t* out_cell, double R[3][3], const double cell[3][3]) {
     const double basis[3][3] = {
         { cell[0][0], cell[0][1], cell[0][2] },
         { cell[1][0], cell[1][1], cell[1][2] },
@@ -712,7 +711,7 @@ typedef struct xyz_builder_t {
     double R[3][3];
 } xyz_builder_t;
 
-static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_state_t* state, size_t num_atoms, const float cell[3][3], md_allocator_i* temp) {
+static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_state_t* state, size_t num_atoms, const double cell[3][3], md_allocator_i* temp) {
     md_memset(b, 0, sizeof(*b));
     b->sys = sys;
     b->state = state;
@@ -844,7 +843,7 @@ static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reade
     }
 
     xyz_builder_t b;
-    xyz_builder_begin(&b, sys, state, count, MD_AS_CONST_MAT3(model.cell), temp_alloc);
+    xyz_builder_begin(&b, sys, state, count, model.cell, temp_alloc);
     for (size_t i = 0; i < count; ++i) {
         md_str_t line;
         md_xyz_coordinate_t coord;
@@ -1008,7 +1007,7 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, md_str_t
             break;
         }
         md_unitcell_t cell;
-        xyz_model_cell(&cell, NULL, MD_AS_CONST_MAT3(model.cell));
+        xyz_model_cell(&cell, NULL, model.cell);
         float A[3][3] = {0};
         md_unitcell_A_extract_float(A, &cell);
         md_array_push(offsets, offset, temp_alloc);
@@ -1056,7 +1055,7 @@ static size_t xyz_parse_frame_coords(float* xyz, md_str_t text, uint32_t flags, 
     }
     md_unitcell_t cell;
     double R[3][3];
-    const bool rotate = xyz_model_cell(&cell, R, MD_AS_CONST_MAT3(model.cell));
+    const bool rotate = xyz_model_cell(&cell, R, model.cell);
 
     // Only the columns of the coordinates are read
     const uint32_t col_flags = (flags & ~(uint32_t)XYZ_TINKER) | XYZ_NO_ELEMENT;

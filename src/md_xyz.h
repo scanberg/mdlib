@@ -40,7 +40,7 @@ typedef struct md_xyz_model_t {
 	uint32_t end_coord_index;
 	// The cell as the file gives it, row i vector i, zero without one. A system made of the model holds it turned so
 	// that a lies along x and b in the xy plane (md_unitcell_from_basis_vectors), and its atoms turned with it.
-	float cell[3][3];
+	double cell[3][3];
 	md_str_t comment;
 } md_xyz_model_t;
 
