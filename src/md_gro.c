@@ -580,7 +580,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     if (L.velocity) {
         md_attributes_commit_atom_column(&sys->attributes, velocity_id);
     }
-    md_util_system_infer_particle_types_from_labels(sys, L.atom_names, ex);
+    md_system_infer_particle_types_from_labels(sys, L.atom_names, ex);
     state->num_atoms = num_atoms;
     result = true;
 

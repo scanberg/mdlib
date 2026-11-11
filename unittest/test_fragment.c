@@ -23,6 +23,15 @@
 // (right after its heavy atom), bond orders and aromaticity known, metal - non metal bonds coordinate.
 // Residues, when given, as counts of heavy atoms in SMILES order.
 
+// What md_util_system_infer gives the system of its molecules and parts (MD_UTIL_INFER_MOLECULE_BIT, _PART_BIT)
+static bool test_infer_molecules(md_system_t* sys) {
+    md_molecule_data_t molecules = {0};
+    const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
+    md_molecule_data_free(&sys->molecule, sys->alloc);
+    sys->molecule = molecules;
+    return ok;
+}
+
 static bool frag_is_metal_z(md_atomic_number_t z) {
     return (z == 3 || z == 4) || (z >= 11 && z <= 13) || (z >= 19 && z <= 31) || (z >= 37 && z <= 50) || (z >= 55 && z <= 84) || z >= 87;
 }
@@ -137,12 +146,17 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
             md_array_push(sys->residue.atom_offset, end, alloc);
         }
         sys->residue.count = (size_t)num_res;
-        for (int r = 0; r < num_res; ++r) md_util_system_set_residue_kind(sys, (size_t)r, MD_RESIDUE_KIND_AMINO_ACID);
+        for (int r = 0; r < num_res; ++r) md_system_set_residue_kind(sys, (size_t)r, MD_RESIDUE_KIND_AMINO_ACID);
     }
 
     md_bond_build_connectivity(&sys->bond, n, alloc);
-    md_util_system_infer_molecules(sys);
-    md_util_system_infer_rings(sys);
+    test_infer_molecules(sys);
+    {
+        md_ring_data_t rings = {0};
+        md_ring_infer(&rings, sys, (sys)->alloc);
+        md_ring_data_free(&(sys)->ring, (sys)->alloc);
+        (sys)->ring = rings;
+    }
     return true;
 }
 
@@ -365,7 +379,7 @@ UTEST(fragment, molecules_alike_share_a_template_whatever_order_their_bonds_came
         bond->flags[j] = f;
     }
     md_bond_build_connectivity(bond, t.sys.atom.count, t.alloc);
-    ASSERT_TRUE(md_util_system_infer_molecules(&t.sys));
+    ASSERT_TRUE(test_infer_molecules(&t.sys));
     ASSERT_TRUE(md_util_system_infer_fragments(&t.sys));
     frag_check(utest_result, &t.sys);
     EXPECT_EQ(md_system_molecule_count(&t.sys), (size_t)3);
@@ -474,7 +488,7 @@ UTEST(fragment, a_group_across_residues_is_of_both) {
     const char* names[] = { "PRO", "ETH" };
     const int heavy[] = { 4, 3 };
     ASSERT_TRUE(frag_system_from_smiles(&sys, "CCC(=O)OCC", names, heavy, 2));
-    for (size_t r = 0; r < 2; ++r) md_util_system_set_residue_kind(&sys, r, MD_RESIDUE_KIND_OTHER);
+    for (size_t r = 0; r < 2; ++r) md_system_set_residue_kind(&sys, r, MD_RESIDUE_KIND_OTHER);
     ASSERT_TRUE(md_util_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
     const md_fragment_idx_t ester = frag_find(&sys, "ester");

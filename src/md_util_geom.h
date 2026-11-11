@@ -61,7 +61,7 @@ bool md_util_pbc_vec4(md_f32x4_t* in_out_xyzw, size_t count, const md_unitcell_t
 // Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
 bool md_util_system_pbc(md_system_state_t* state);
 
-// Unwraps a single molecule by walking the parent hierarchy md_util_system_infer_molecules
+// Unwraps a single molecule by walking the parent hierarchy md_molecule_infer
 // already computed. Linear, allocation free, and does not consult bond connectivity.
 void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol);
 

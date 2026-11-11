@@ -1587,7 +1587,7 @@ bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const m
             n[ej] += 1;
         }
 
-        // In the order of md_util_infer_covalent_bonds: bonds between residues apart first, then between residues next
+        // In the order of md_bond_infer: bonds between residues apart first, then between residues next
         // to each other, then the furthest from the radii (bond_excess_t)
         md_array(bond_excess_t) over = 0;
         for (size_t k = 0; k < num_candidates; ++k) {

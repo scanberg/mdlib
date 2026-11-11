@@ -2,6 +2,8 @@
 
 // Ring inference: the rings of the bond graph and their flags (md_util.h).
 
+static void ring_flags(md_ring_data_t* rings, const md_system_t* sys);
+
 static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* ring_b, int ring_b_size) {
     if (ring_a_size != ring_b_size) {
         return false;
@@ -214,7 +216,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
 // Copyright (c) 2018 mol* contributors, licensed under MIT, See LICENSE file for more info.
 // @author David Sehnal <david.sehnal@gmail.com>
 
-// The rings of the bond graph (bond, with its connectivity), pushed to out: see md_util_system_infer_rings. The atoms
+// The rings of the bond graph (bond, with its connectivity), pushed to out: see md_ring_infer. The atoms
 // set in skip (optional) are neither roots nor passed through.
 static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t num_atoms, const uint64_t* skip, md_allocator_i* alloc, md_temp_scope_t temp) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
@@ -353,7 +355,7 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
     remove_envelope_rings(out, bond, num_atoms, temp_arena);
 }
 
-void md_util_infer_rings(md_ring_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* alloc) {
+void md_ring_infer_from_bonds(md_ring_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* alloc) {
     MD_ASSERT(out_rings && alloc);
     MD_ASSERT(bond);
     md_ring_data_clear(out_rings);
@@ -363,10 +365,12 @@ void md_util_infer_rings(md_ring_data_t* out_rings, const md_bond_data_t* bond, 
     md_temp_end(temp);
 }
 
-bool md_util_system_infer_rings(md_system_t* sys) {
+bool md_ring_infer(md_ring_data_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    MD_ASSERT(out);
     MD_ASSERT(sys);
-    MD_ASSERT(sys->alloc);
-    md_allocator_i* alloc = sys->alloc;
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != &sys->ring);
+    md_ring_data_clear(out);
 
     size_t num_atoms = md_system_atom_count(sys);
     size_t num_bonds = md_system_bond_count(sys);
@@ -377,10 +381,6 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     if (num_bonds == 0) {
         return false;
     }
-    md_system_topology_changed(sys);
-
-    md_ring_data_clear(&sys->ring);
-
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
@@ -432,11 +432,11 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         }
     }
 
-    find_rings(&sys->ring, &sys->bond, num_atoms, skip, alloc, temp);
+    find_rings(out, &sys->bond, num_atoms, skip, alloc, temp);
 
     md_temp_end(temp);
 
-    md_util_system_infer_ring_flags(sys);
+    ring_flags(out, sys);
 
     return true;
 }
@@ -495,11 +495,12 @@ static void sugar_canonical_order(int32_t* ring, int n, int ring_o, int anomeric
     md_memcpy(ring, tmp, n * sizeof(int32_t));
 }
 
-void md_util_system_infer_ring_flags(md_system_t* sys) {
+// The flags of the rings of rings, from the bonds and atoms of sys (whose rings they are or are to be)
+static void ring_flags(md_ring_data_t* rings, const md_system_t* sys) {
     MD_ASSERT(sys);
-    const size_t num_rings = md_ring_data_count(&sys->ring);
+    const size_t num_rings = md_ring_data_count(rings);
     if (num_rings == 0) return;
-    for (size_t r = 0; r < num_rings; ++r) sys->ring.rings[r].flags = 0;
+    for (size_t r = 0; r < num_rings; ++r) rings->rings[r].flags = 0;
     if (!sys->bond.conn.offset || !sys->bond.flags) return;
 
     // Bonds in more than one ring make those rings fused
@@ -507,8 +508,8 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     uint8_t* bond_rings = md_temp_alloc(temp, MD_MAX(sys->bond.count, 1));
     md_memset(bond_rings, 0, MD_MAX(sys->bond.count, 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_ring_atoms(&sys->ring, r);
-        const size_t n = md_ring_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) {
             const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
             if (b >= 0 && bond_rings[b] < 255) bond_rings[b] += 1;
@@ -516,8 +517,8 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     }
 
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_ring_atoms(&sys->ring, r);
-        const size_t n = md_ring_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         md_ring_flags_t flags = MD_RING_FLAG_NONE;
         bool aromatic = n > 0;
         for (size_t k = 0; k < n; ++k) {
@@ -535,9 +536,9 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
         const int anomeric = sugar_anomeric(sys, ring, (int)n, &ring_o);
         if (anomeric >= 0) {
             flags |= MD_RING_FLAG_SUGAR;
-            sugar_canonical_order(md_ring_atoms_mut(&sys->ring, r), (int)n, ring_o, anomeric);
+            sugar_canonical_order(md_ring_atoms_mut(rings, r), (int)n, ring_o, anomeric);
         }
-        sys->ring.rings[r].flags = (uint16_t)flags;
+        rings->rings[r].flags = (uint16_t)flags;
     }
 
     // Bonds of aromatic rings fuse the other rings they are in to an aromatic ring: an aromatic ring which shares a
@@ -546,28 +547,33 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     uint8_t* bond_aromatic = md_temp_alloc(temp, MD_MAX(sys->bond.count, 1));
     md_memset(bond_aromatic, 0, MD_MAX(sys->bond.count, 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        if (!(md_ring_flags(&sys->ring, r) & MD_RING_FLAG_AROMATIC)) continue;
-        const int32_t* ring = md_ring_atoms(&sys->ring, r);
-        const size_t n = md_ring_size(&sys->ring, r);
+        if (!(md_ring_flags(rings, r) & MD_RING_FLAG_AROMATIC)) continue;
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) {
             const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
             if (b >= 0 && bond_aromatic[b] < 255) bond_aromatic[b] += 1;
         }
     }
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_ring_atoms(&sys->ring, r);
-        const size_t n = md_ring_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         // Aromatic rings other than this one
-        const uint8_t self = (md_ring_flags(&sys->ring, r) & MD_RING_FLAG_AROMATIC) ? 1 : 0;
+        const uint8_t self = (md_ring_flags(rings, r) & MD_RING_FLAG_AROMATIC) ? 1 : 0;
         for (size_t k = 0; k < n; ++k) {
             const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
             if (b >= 0 && bond_aromatic[b] > self) {
-                sys->ring.rings[r].flags |= MD_RING_FLAG_FUSED_AROMATIC;
+                rings->rings[r].flags |= MD_RING_FLAG_FUSED_AROMATIC;
                 break;
             }
         }
     }
     md_temp_end(temp);
+}
+
+void md_system_infer_ring_flags(md_system_t* sys) {
+    MD_ASSERT(sys);
+    ring_flags(&sys->ring, sys);
 }
 
 #undef MIN_RING_SIZE

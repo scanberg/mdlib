@@ -3,12 +3,14 @@
 // Inference of the levels of a system above its atoms: chains, instances, parts, molecules and residue types
 // (md_util.h).
 
-static void clear_chains(md_system_t* sys, md_allocator_i* alloc) {
-    md_array_free(sys->chain.id, alloc);
-    md_array_free(sys->chain.run_offset, alloc);
-    md_array_free(sys->chain.run, alloc);
-    md_array_free(sys->chain.res_chain, alloc);
-    md_memset(&sys->chain, 0, sizeof(sys->chain));
+void md_chain_data_free(md_chain_data_t* chain, md_allocator_i* alloc) {
+    MD_ASSERT(chain);
+    MD_ASSERT(alloc);
+    md_array_free(chain->id, alloc);
+    md_array_free(chain->run_offset, alloc);
+    md_array_free(chain->run, alloc);
+    md_array_free(chain->res_chain, alloc);
+    md_memset(chain, 0, sizeof(*chain));
 }
 
 
@@ -21,7 +23,7 @@ static void clear_instances(md_system_t* sys, md_allocator_i* alloc) {
     md_memset(&sys->instance, 0, sizeof(sys->instance));
 }
 
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]) {
+bool md_system_instances_from_chain_ids(md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
         return false;
@@ -58,15 +60,12 @@ bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t re
     return true;
 }
 
-bool md_util_system_infer_chains(md_system_t* sys) {
-    if (!sys) {
-        MD_LOG_ERROR("Missing system");
-        return false;
-    }
-    MD_ASSERT(sys->alloc);
-    md_allocator_i* alloc = sys->alloc;
-    clear_chains(sys, alloc);
-    md_system_topology_changed(sys);
+bool md_chain_infer(md_chain_data_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != &sys->chain);
+    md_chain_data_free(out, alloc);
 
     const size_t num_inst = sys->instance.count;
     const size_t num_res = sys->residue.count;
@@ -77,8 +76,8 @@ bool md_util_system_infer_chains(md_system_t* sys) {
 
     // The chain of each id, by the hash of the id
     md_hashmap32_t chain_of_id = { .allocator = temp_arena };
-    md_array_resize(sys->chain.res_chain, num_res, alloc);
-    for (size_t c = 0; c < num_res; ++c) sys->chain.res_chain[c] = -1;
+    md_array_resize(out->res_chain, num_res, alloc);
+    for (size_t c = 0; c < num_res; ++c) out->res_chain[c] = -1;
 
     // The runs, in the order they are found, each with its chain. A chain is a label: only what carries an id is in one.
     md_array(md_urange_t) runs = 0;
@@ -94,8 +93,8 @@ bool md_util_system_infer_chains(md_system_t* sys) {
         if (found) {
             chain = (md_chain_idx_t)*found;
         } else {
-            chain = (md_chain_idx_t)sys->chain.count++;
-            md_array_push(sys->chain.id, md_label_make(id), alloc);
+            chain = (md_chain_idx_t)out->count++;
+            md_array_push(out->id, md_label_make(id), alloc);
             md_hashmap_add(&chain_of_id, key, (uint32_t)chain);
         }
         md_array_push(runs, residues, temp_arena);
@@ -103,30 +102,30 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     }
 
     // The runs of each chain, in the order of the chains, the consecutive ones of a chain joined
-    if (sys->chain.count) {
+    if (out->count) {
         const size_t num_runs = md_array_size(runs);
-        uint32_t* count = md_temp_alloc_zero_array(temp, uint32_t, sys->chain.count + 1);
+        uint32_t* count = md_temp_alloc_zero_array(temp, uint32_t, out->count + 1);
         for (size_t r = 0; r < num_runs; ++r) count[run_chain[r] + 1] += 1;
-        for (size_t c = 0; c < sys->chain.count; ++c) count[c + 1] += count[c];
+        for (size_t c = 0; c < out->count; ++c) count[c + 1] += count[c];
         md_urange_t* sorted = md_temp_alloc_array(temp, md_urange_t, MD_MAX(1, num_runs));
-        uint32_t* fill = md_temp_alloc_array(temp, uint32_t, sys->chain.count);
-        md_memcpy(fill, count, sizeof(uint32_t) * sys->chain.count);
+        uint32_t* fill = md_temp_alloc_array(temp, uint32_t, out->count);
+        md_memcpy(fill, count, sizeof(uint32_t) * out->count);
         for (size_t r = 0; r < num_runs; ++r) sorted[fill[run_chain[r]]++] = runs[r];
 
-        md_array_resize(sys->chain.run_offset, sys->chain.count + 1, alloc);
-        sys->chain.run_offset[0] = 0;
-        for (size_t c = 0; c < sys->chain.count; ++c) {
+        md_array_resize(out->run_offset, out->count + 1, alloc);
+        out->run_offset[0] = 0;
+        for (size_t c = 0; c < out->count; ++c) {
             for (uint32_t r = count[c]; r < count[c + 1]; ++r) {
                 const md_urange_t run = sorted[r];
-                const size_t n = md_array_size(sys->chain.run);
-                if (r > count[c] && sys->chain.run[n - 1].end == run.beg) {
-                    sys->chain.run[n - 1].end = run.end;
+                const size_t n = md_array_size(out->run);
+                if (r > count[c] && out->run[n - 1].end == run.beg) {
+                    out->run[n - 1].end = run.end;
                 } else {
-                    md_array_push(sys->chain.run, run, alloc);
+                    md_array_push(out->run, run, alloc);
                 }
-                for (uint32_t k = run.beg; k < run.end; ++k) sys->chain.res_chain[k] = (md_chain_idx_t)c;
+                for (uint32_t k = run.beg; k < run.end; ++k) out->res_chain[k] = (md_chain_idx_t)c;
             }
-            sys->chain.run_offset[c + 1] = (uint32_t)md_array_size(sys->chain.run);
+            out->run_offset[c + 1] = (uint32_t)md_array_size(out->run);
         }
     }
 
@@ -187,16 +186,31 @@ static md_part_kind_t classify_part(const md_system_t* sys, md_urange_t res_rang
 }
 
 // The given part types are kept, the inferred ones (which come after them) dropped: the parts are about to infer them anew
-static void drop_inferred_part_types(md_part_type_data_t* type, md_allocator_i* alloc) {
+// The types the data gave (those before the inferred ones), copied into out
+static void copy_given_part_types(md_part_type_data_t* out, const md_part_type_data_t* type, md_allocator_i* alloc) {
     size_t n = type->count;
     while (n > 0 && (type->flags[n - 1] & MD_PART_TYPE_FLAG_INFERRED)) --n;
-    md_part_type_data_shrink(type, n, alloc);
+    for (size_t i = 0; i < n; ++i) {
+        md_array_push(out->id, type->id[i], alloc);
+        md_array_push(out->flags, type->flags[i], alloc);
+        md_array_push(out->description, md_alloc_str(alloc, type->description[i]), alloc);
+    }
+    out->count = n;
+}
+
+void md_part_data_free(md_part_data_t* part, md_allocator_i* alloc) {
+    MD_ASSERT(part);
+    MD_ASSERT(alloc);
+    md_array_free(part->res_offset, alloc);
+    md_array_free(part->type_idx, alloc);
+    md_part_type_data_free(&part->type, alloc);
+    md_memset(part, 0, sizeof(*part));
 }
 
 // The type of a part which is not all of an instance of a given type: one per kind and sequence of residue names. That
 // the type was inferred is carried by its flags, the description only says what it is: the kind of a polymer, the
 // residue names of anything else.
-static md_part_type_idx_t inferred_part_type(md_system_t* sys, md_hashmap32_t* type_of_key, md_urange_t residues) {
+static md_part_type_idx_t inferred_part_type(md_part_type_data_t* types, const md_system_t* sys, md_hashmap32_t* type_of_key, md_urange_t residues, md_allocator_i* alloc) {
     const md_part_kind_t kind = classify_part(sys, residues);
     const bool polymer = md_part_kind_is_polymer(kind);
 
@@ -222,25 +236,18 @@ static md_part_type_idx_t inferred_part_type(md_system_t* sys, md_hashmap32_t* t
     } else {
         desc = md_system_residue_name(sys, residues.beg);
     }
-    const md_part_type_idx_t type = md_part_type_data_push(&sys->part.type, MD_STR_LIT(""), md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_INFERRED, kind), desc, sys->alloc);
+    const md_part_type_idx_t type = md_part_type_data_push(types, MD_STR_LIT(""), md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_INFERRED, kind), desc, alloc);
     md_hashmap_add(type_of_key, key, (uint32_t)type);
     return type;
 }
 
-bool md_util_system_infer_parts(md_system_t* sys) {
-    if (!sys) {
-        MD_LOG_ERROR("Missing system");
-        return false;
-    }
-    MD_ASSERT(sys->alloc);
-    md_allocator_i* alloc = sys->alloc;
-    md_array_free(sys->part.res_offset, alloc);
-    md_array_free(sys->part.type_idx, alloc);
-    sys->part.res_offset = NULL;
-    sys->part.type_idx = NULL;
-    sys->part.count = 0;
-    drop_inferred_part_types(&sys->part.type, alloc);
-    md_system_topology_changed(sys);
+bool md_part_infer(md_part_data_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != &sys->part);
+    md_part_data_free(out, alloc);
+    copy_given_part_types(&out->type, &sys->part.type, alloc);
 
     const size_t num_res = sys->residue.count;
     if (num_res == 0) return true;
@@ -313,11 +320,11 @@ bool md_util_system_infer_parts(md_system_t* sys) {
 
     md_hashmap32_t type_of_key = { .allocator = temp_arena };
 
-    md_array_push(sys->part.res_offset, 0, alloc);
+    md_array_push(out->res_offset, 0, alloc);
     for (size_t s = 0; s < md_array_size(spans); ++s) {
         const span_t span = spans[s];
         const md_urange_t residues = span.residues;
-        const size_t first_part = md_array_size(sys->part.res_offset) - 1;
+        const size_t first_part = md_array_size(out->res_offset) - 1;
 
         uint32_t beg = residues.beg;
         bool run_polymer = residue_kind_is_monomer(md_system_residue_kind(sys, beg));
@@ -351,31 +358,31 @@ bool md_util_system_infer_parts(md_system_t* sys) {
                 run_polymer |= residue_kind_is_monomer(md_system_residue_kind(sys, j));
                 continue;
             }
-            md_array_push(sys->part.res_offset, j, alloc);
+            md_array_push(out->res_offset, j, alloc);
             beg = j;
             if (j < residues.end) run_polymer = residue_kind_is_monomer(md_system_residue_kind(sys, j));
         }
 
         // The types: that of the instance where the part is all of it, else an inferred one
-        const size_t end_part = md_array_size(sys->part.res_offset) - 1;
+        const size_t end_part = md_array_size(out->res_offset) - 1;
         const md_part_type_idx_t given = span.inst >= 0 ? md_system_instance_part_type_idx(sys, (size_t)span.inst) : -1;
         for (size_t p = first_part; p < end_part; ++p) {
-            const md_urange_t r = { sys->part.res_offset[p], sys->part.res_offset[p + 1] };
+            const md_urange_t r = { out->res_offset[p], out->res_offset[p + 1] };
             md_part_type_idx_t type = -1;
-            if (given >= 0 && (size_t)given < sys->part.type.count && end_part - first_part == 1) {
+            if (given >= 0 && (size_t)given < out->type.count && end_part - first_part == 1) {
                 type = given;
-                if (md_system_part_type_kind(sys, (size_t)type) == MD_PART_KIND_UNKNOWN) {
+                if (md_part_type_flags_kind(out->type.flags[type]) == MD_PART_KIND_UNKNOWN) {
                     // A given type which does not say what it is (a polymer entity without _entity_poly)
-                    sys->part.type.flags[type] = md_part_type_flags_set_kind(sys->part.type.flags[type], classify_part(sys, r));
+                    out->type.flags[type] = md_part_type_flags_set_kind(out->type.flags[type], classify_part(sys, r));
                 }
             } else {
-                type = inferred_part_type(sys, &type_of_key, r);
+                type = inferred_part_type(&out->type, sys, &type_of_key, r, alloc);
             }
-            md_array_push(sys->part.type_idx, type, alloc);
+            md_array_push(out->type_idx, type, alloc);
         }
     }
-    sys->part.count = md_array_size(sys->part.res_offset) - 1;
-    MD_ASSERT(md_array_size(sys->part.type_idx) == sys->part.count);
+    out->count = md_array_size(out->res_offset) - 1;
+    MD_ASSERT(md_array_size(out->type_idx) == out->count);
 
     md_temp_end(temp);
     return true;
@@ -536,7 +543,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
         const md_residue_kind_t ck = md_system_residue_kind(sys, ci);
         const md_residue_kind_t kind = residue_kind_is_monomer(ck) ? ck : MD_RESIDUE_KIND_OTHER;
         // Within a part the residues are of one strand whatever their numbering (a strand goes on over a gap,
-        // md_util_system_infer_parts), as a molecule holds its parts whole; without parts by consecutive numbers
+        // md_part_infer), as a molecule holds its parts whole; without parts by consecutive numbers
         const bool same_part = res_part[prev_res] >= 0 && res_part[prev_res] == res_part[ci];
         const bool consecutive = !sys->residue.seq_id || md_system_residue_seq_id(sys, ci) == md_system_residue_seq_id(sys, prev_res) + 1;
         if (kind && prev_anchor >= 0 && prev_res + 1 == ci && prev_kind == kind &&
@@ -687,15 +694,13 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
 // molecule of a topology) is of that type. The others are of inferred types, one for the molecules made alike: of the
 // same part types in the same order, as many atoms of each particle type, and as many bonds between each pair of
 // particle types. The inferred types of the last inference are dropped first.
-static void infer_molecule_types(md_system_t* sys) {
-    md_allocator_i* alloc = sys->alloc;
-    md_molecule_data_t* mol = &sys->molecule;
-
+static void infer_molecule_types(md_molecule_data_t* mol, const md_system_t* sys, md_allocator_i* alloc) {
+    // The types the data gave (those before the inferred ones)
     {
-        md_molecule_type_data_t* type = &mol->type;
+        const md_molecule_type_data_t* type = &sys->molecule.type;
         size_t n = type->count;
         while (n > 0 && (type->flags[n - 1] & MD_MOLECULE_TYPE_FLAG_INFERRED)) --n;
-        md_molecule_type_data_shrink(type, n, alloc);
+        for (size_t i = 0; i < n; ++i) md_molecule_type_data_push(&mol->type, type->name[i], type->flags[i], alloc);
     }
     md_array_resize(mol->type_idx, mol->count, alloc);
     if (mol->count == 0) return;
@@ -748,7 +753,10 @@ static void infer_molecule_types(md_system_t* sys) {
     char name[128];
 
     for (size_t m = 0; m < mol->count; ++m) {
-        const md_molecule_t molecule = md_system_molecule(sys, m);
+        md_molecule_t molecule = {0};
+        molecule.count      = mol->offset[m + 1] - mol->offset[m];
+        molecule.atom_idx   = mol->atom_idx + mol->offset[m];
+        molecule.parent_idx = mol->parent_idx + mol->offset[m];
 
         // All of one instance of a given type
         md_molecule_type_idx_t type = -1;
@@ -793,32 +801,24 @@ static void infer_molecule_types(md_system_t* sys) {
     md_temp_end(temp);
 }
 
-bool md_util_system_infer_molecules(md_system_t* sys) {
+void md_molecule_data_free(md_molecule_data_t* mol, md_allocator_i* alloc) {
+    MD_ASSERT(mol);
+    MD_ASSERT(alloc);
+    md_array_free(mol->offset, alloc);
+    md_array_free(mol->atom_idx, alloc);
+    md_array_free(mol->parent_idx, alloc);
+    md_array_free(mol->atom_slot, alloc);
+    md_array_free(mol->type_idx, alloc);
+    md_molecule_type_data_free(&mol->type, alloc);
+    md_memset(mol, 0, sizeof(*mol));
+}
+
+bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    MD_ASSERT(out);
     MD_ASSERT(sys);
-    MD_ASSERT(sys->alloc);
-
-    md_allocator_i* alloc = sys->alloc;
-    md_system_topology_changed(sys);
-
-    md_array_shrink(sys->molecule.offset, 0);
-    md_array_shrink(sys->molecule.atom_idx, 0);
-    md_array_shrink(sys->molecule.parent_idx, 0);
-    md_array_shrink(sys->molecule.atom_slot, 0);
-    sys->molecule.count = 0;
-
-    // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
-    // (md_util_system_infer_fragments). Their types stay, for the colours to be kept.
-    sys->fragment.count = 0;
-    sys->fragment.template_count = 0;
-    md_array_shrink(sys->fragment.mol_template, 0);
-    md_array_shrink(sys->fragment.frag_offset, 0);
-    md_array_shrink(sys->fragment.template_molecule, 0);
-    md_array_shrink(sys->fragment.template_slot_offset, 0);
-    md_array_shrink(sys->fragment.slot_frag, 0);
-    md_array_shrink(sys->fragment.template_frag_offset, 0);
-    md_array_shrink(sys->fragment.frag_type, 0);
-    md_array_shrink(sys->fragment.frag_slot_offset, 0);
-    md_array_shrink(sys->fragment.frag_slot, 0);
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != &sys->molecule);
+    md_molecule_data_free(out, alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
@@ -828,9 +828,9 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
     // Reverse map from atom to slot, one entry per atom in the system. Every atom is in one molecule: the slots are as
     // many as the atoms, and reserved at once rather than grown (the system's allocator is often an arena, which keeps
     // what a growing array leaves behind)
-    md_array_resize(sys->molecule.atom_slot, atom_count, alloc);
-    md_array_ensure(sys->molecule.atom_idx, atom_count, alloc);
-    md_array_ensure(sys->molecule.parent_idx, atom_count, alloc);
+    md_array_resize(out->atom_slot, atom_count, alloc);
+    md_array_ensure(out->atom_idx, atom_count, alloc);
+    md_array_ensure(out->parent_idx, atom_count, alloc);
 
     // Which atoms have been assigned to a molecule. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
@@ -881,7 +881,7 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
     }
 
     // Sentinel start offset
-    md_array_push(sys->molecule.offset, 0, alloc);
+    md_array_push(out->offset, 0, alloc);
 
     for (int i = 0; i < (int)atom_count; ++i) {
         if (bitfield_test_bit(visited, i)) continue;
@@ -924,9 +924,9 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
             const int cur        = md_fifo_pop(&atom_queue);
             const int parent_idx = md_fifo_pop(&parent_queue);
 
-            sys->molecule.atom_slot[cur] = (int32_t)md_array_size(sys->molecule.atom_idx);
-            md_array_push(sys->molecule.atom_idx, cur, alloc);
-            md_array_push(sys->molecule.parent_idx, parent_idx, alloc);
+            out->atom_slot[cur] = (int32_t)md_array_size(out->atom_idx);
+            md_array_push(out->atom_idx, cur, alloc);
+            md_array_push(out->parent_idx, parent_idx, alloc);
 
             md_bond_iter_t it = md_bond_iter(graph, cur);
             while (md_bond_iter_has_next(&it)) {
@@ -941,13 +941,13 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
             }
         }
 
-        sys->molecule.count += 1;
-        md_array_push(sys->molecule.offset, (uint32_t)md_array_size(sys->molecule.atom_idx), alloc);
+        out->count += 1;
+        md_array_push(out->offset, (uint32_t)md_array_size(out->atom_idx), alloc);
     }
     
     md_temp_end(temp);
 
-    infer_molecule_types(sys);
+    infer_molecule_types(out, sys, alloc);
     return true;
 }
 
@@ -974,7 +974,7 @@ static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_id
     return (0xFFu << 24) | (b << 16) | (g << 8) | r;
 }
 
-void md_util_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
+void md_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
     MD_ASSERT(sys);
     md_residue_data_t* res = &sys->residue;
     if (res_idx >= res->count) return;
@@ -1006,7 +1006,7 @@ void md_util_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residu
     res->type_idx[res_idx] = type_idx;
 }
 
-bool md_util_system_infer_residue_types(md_system_t* sys) {
+bool md_system_infer_residue_types(md_system_t* sys) {
     MD_ASSERT(sys);
     if (sys->residue.count == 0) return false;
     if (!sys->alloc) {
@@ -1014,7 +1014,7 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
         return false;
     }
     for (size_t c = 0; c < sys->residue.count; ++c) {
-        if (md_system_residue_type_idx(sys, c) < 0) md_util_system_set_residue_kind(sys, c, MD_RESIDUE_KIND_OTHER);
+        if (md_system_residue_type_idx(sys, c) < 0) md_system_set_residue_kind(sys, c, MD_RESIDUE_KIND_OTHER);
     }
     return true;
 }

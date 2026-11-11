@@ -6,6 +6,9 @@
 #include <core/md_array.h>
 #include <core/md_label.h>
 
+struct md_system_t;
+struct md_executor_t;
+
 // Atoms and their particle types (md_atom_data_t, md_particle_type_data_t).
 
 // ### PARTICLE TYPE ### (see CLASSIFICATION in md_types.h)
@@ -369,6 +372,25 @@ static inline void md_atom_extract_atomic_numbers(md_atomic_number_t out_z[], si
         out_z[i] = md_atom_atomic_number(atom_data, offset + i);
     }
 }
+
+// ### PARTICLE TYPES OF A SYSTEM, IN PLACE ###
+
+// Identify particle types within the system from the atom labels and the names of their residues. Coarse grained beads
+// come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
+// residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
+// the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
+// one label with a different element, mass, size or particle kind are of different types.
+void md_system_infer_particle_types(struct md_system_t* sys, const md_str_t atom_labels[], const struct md_executor_t* ex);
+// The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
+void md_system_infer_particle_types_from_labels(struct md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
+
+// Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
+// for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
+// parameters of every bead). Only types without an element (z == 0) are considered. The table gives
+// the atoms their role (backbone, side chain), the residues their kind (amino acid, water) where
+// they have none, and the types their particle kind where the loader did not say. Mass and radius
+// are left alone: they are the loader's.
+void md_system_augment_particle_types(struct md_system_t* sys);
 
 #ifdef __cplusplus
 }

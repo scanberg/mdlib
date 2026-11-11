@@ -279,7 +279,12 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
         sys->bond.count += 1;
     }
     md_bond_build_connectivity(&sys->bond, n, alloc);
-    md_util_system_infer_rings(sys);
+    {
+        md_ring_data_t rings = {0};
+        md_ring_infer(&rings, sys, (sys)->alloc);
+        md_ring_data_free(&(sys)->ring, (sys)->alloc);
+        (sys)->ring = rings;
+    }
     md_util_system_infer_residue_flags(sys, NULL);
     return md_util_system_infer_lipids(sys);
 }

@@ -33,10 +33,35 @@
 
 // The tests below lay out coordinates per axis, which reads well; a state holds them packed.
 
+// What md_util_system_infer gives the system of its molecules and parts (MD_UTIL_INFER_MOLECULE_BIT, _PART_BIT)
+static bool test_infer_molecules(md_system_t* sys) {
+    md_molecule_data_t molecules = {0};
+    const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
+    md_molecule_data_free(&sys->molecule, sys->alloc);
+    sys->molecule = molecules;
+    return ok;
+}
+
+static bool test_infer_chains(md_system_t* sys) {
+    md_chain_data_t chains = {0};
+    const bool ok = md_chain_infer(&chains, sys, sys->alloc);
+    md_chain_data_free(&sys->chain, sys->alloc);
+    sys->chain = chains;
+    return ok;
+}
+
+static bool test_infer_parts(md_system_t* sys) {
+    md_part_data_t parts = {0};
+    const bool ok = md_part_infer(&parts, sys, sys->alloc);
+    md_part_data_free(&sys->part, sys->alloc);
+    sys->part = parts;
+    return ok;
+}
+
 // What a structure file's loader gave before it gave only the core (md_gro, md_pdb, md_mmcif): the bonds, what the
 // residues are by them, and the chains. The tests below were written against that.
 static bool test_infer_as_loaded(md_system_t* sys, md_system_state_t* state) {
-    return md_util_system_infer(sys, state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT, NULL) && md_util_system_infer_chains(sys);
+    return md_util_system_infer(sys, state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT, NULL) && test_infer_chains(sys);
 }
 
 static md_f32x3_t* pack_xyz(md_f32x3_t* dst, const float* x, const float* y, const float* z, size_t n) {
@@ -392,7 +417,7 @@ UTEST(util, molecule_hierarchy) {
         // A chain of nine has a single center, the middle atom
         md_system_t sys = {0};
         make_chain_system(&sys, alloc, 1, 9);
-        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        ASSERT_TRUE(test_infer_molecules(&sys));
 
         ASSERT_EQ(md_system_molecule_count(&sys), 1);
         EXPECT_EQ(sys.molecule.atom_idx[0], 4);
@@ -416,7 +441,7 @@ UTEST(util, molecule_hierarchy) {
         // Separate residues are rooted independently and stored back to back
         md_system_t sys = {0};
         make_chain_system(&sys, alloc, 2, 5);
-        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        ASSERT_TRUE(test_infer_molecules(&sys));
 
         ASSERT_EQ(md_system_molecule_count(&sys), 2);
         EXPECT_EQ(sys.molecule.offset[0], 0u);
@@ -437,7 +462,7 @@ UTEST(util, molecule_hierarchy) {
         md_array_push(sys.bond.pairs, pair, alloc);
         sys.bond.count = 1;
         md_bond_build_connectivity(&sys.bond, 3, alloc);
-        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        ASSERT_TRUE(test_infer_molecules(&sys));
 
         ASSERT_EQ(md_system_molecule_count(&sys), 2);
         for (size_t slot = 0; slot < 3; ++slot) {
@@ -470,7 +495,7 @@ static void cg_add_residue(md_system_t* sys, const char* res_name, int seq_id, m
     md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
     md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
     sys->residue.count += 1;
-    md_util_system_set_residue_kind(sys, sys->residue.count - 1, res_kind);
+    md_system_set_residue_kind(sys, sys->residue.count - 1, res_kind);
 }
 
 static void check_molecule_invariants(int* utest_result, const md_system_t* sys) {
@@ -516,7 +541,7 @@ UTEST(util, molecule_hierarchy_coarse_grained_without_bonds) {
     cg_add_residue(&sys, "POPC", 10, 0, popc, 6, alloc);                 // atoms 16-21, must not join the previous lipid
     cg_add_residue(&sys, "W", 11, MD_RESIDUE_KIND_WATER, w, 1, alloc);             // atom  22
 
-    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_TRUE(test_infer_molecules(&sys));
     EXPECT_EQ(sys.bond.count, 0u);
 
     ASSERT_EQ(md_system_molecule_count(&sys), 5u);
@@ -564,7 +589,7 @@ UTEST(util, molecule_hierarchy_coarse_grained_partial_bonds) {
         sys.bond.count = 2;
         md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
 
-        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        ASSERT_TRUE(test_infer_molecules(&sys));
         EXPECT_EQ(sys.bond.count, 2u);
         ASSERT_EQ(md_system_molecule_count(&sys), 1u);
         check_molecule_invariants(utest_result, &sys);
@@ -586,7 +611,7 @@ UTEST(util, molecule_hierarchy_coarse_grained_partial_bonds) {
 
         // Atoms without bonds: each residue a molecule, its atoms joined to its first. Without instances there are no
         // chains to join the residues.
-        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        ASSERT_TRUE(test_infer_molecules(&sys));
         EXPECT_EQ(md_system_molecule_count(&sys), 2u);
         check_molecule_invariants(utest_result, &sys);
     }
@@ -639,7 +664,7 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
             num_coord += 1;
         }
         EXPECT_GT(num_coord, 0u);
-        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        ASSERT_TRUE(test_infer_molecules(&sys));
         EXPECT_LT(1000u, molecule_size_of_atom(&sys, mg));
         check_molecule_invariants(utest_result, &sys);
     }
@@ -772,7 +797,7 @@ UTEST(util, unwrap_molecule_coarse_grained_without_bonds) {
     for (int i = 0; i < N; ++i) {
         cg_add_residue(&sys, "LEU", i + 1, MD_RESIDUE_KIND_AMINO_ACID, res, 2, alloc);
     }
-    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_TRUE(test_infer_molecules(&sys));
     ASSERT_EQ(md_system_molecule_count(&sys), 1u);
 
     float x[2 * N], y[2 * N], z[2 * N];
@@ -2017,7 +2042,7 @@ UTEST(util, unwrap_molecule_ortho) {
 
     md_system_t sys = {0};
     make_chain_system(&sys, alloc, 1, 9);
-    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_TRUE(test_infer_molecules(&sys));
 
     float x[9], y[9] = {0}, z[9] = {0};
     for (int i = 0; i < 9; ++i) {
@@ -2047,7 +2072,7 @@ UTEST(util, unwrap_molecule_triclinic) {
 
     md_system_t sys = {0};
     make_chain_system(&sys, alloc, 1, 9);
-    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_TRUE(test_infer_molecules(&sys));
 
     md_unitcell_t cell = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
     float A[3][3] = {0};
@@ -3161,7 +3186,7 @@ UTEST(util, part_and_part_type) {
         EXPECT_GT(md_system_atom_count(&sys),   0);
         EXPECT_EQ(md_system_instance_count(&sys), 0);
         EXPECT_EQ(md_system_chain_count(&sys), 0);
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         ASSERT_EQ(md_system_part_type_count(&sys), 1);
         EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_PEPTIDE));
         EXPECT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("peptide")));
@@ -3182,7 +3207,7 @@ UTEST(util, part_and_part_type) {
             EXPECT_TRUE(md_str_empty(md_system_instance_id(&sys, i)));
             EXPECT_TRUE(md_str_eq(md_system_instance_auth_id(&sys, i), md_str_from_cstr(ids[i])));
         }
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         ASSERT_EQ(md_system_part_type_count(&sys), 1);
         EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_PEPTIDE));
         ASSERT_EQ(md_system_part_count(&sys), 3);
@@ -3200,7 +3225,7 @@ UTEST(util, part_and_part_type) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         ASSERT_EQ(md_system_part_type_count(&sys), 3);
         EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_PEPTIDE));
         EXPECT_EQ(md_system_part_type_flags(&sys, 2), inferred_kind(MD_PART_KIND_WATER));
@@ -3230,7 +3255,7 @@ UTEST(util, part_and_part_type) {
         }
         EXPECT_EQ(num_nucleotides, 0);
 
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         static const struct { md_part_kind_t kind; const char* desc; } types[] = {
             {MD_PART_KIND_PEPTIDE, "peptide"}, {MD_PART_KIND_PEPTIDE, "peptide"}, {MD_PART_KIND_NON_POLYMER, "GTP"}, {MD_PART_KIND_NON_POLYMER, "MG"},
             {MD_PART_KIND_NON_POLYMER, "SO4"}, {MD_PART_KIND_WATER, "water"}, {MD_PART_KIND_NON_POLYMER, "GDP"}, {MD_PART_KIND_NON_POLYMER, "VLB"},
@@ -3267,7 +3292,7 @@ UTEST(util, part_and_part_type) {
         EXPECT_EQ(md_system_chain_count(&sys), 26);
         EXPECT_TRUE(md_str_empty(md_system_instance_auth_id(&sys, 26)));
 
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         ASSERT_EQ(md_system_part_type_count(&sys), 2);
         EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_NON_POLYMER));
         EXPECT_EQ(md_system_part_type_flags(&sys, 1), inferred_kind(MD_PART_KIND_WATER));
@@ -3309,7 +3334,7 @@ UTEST(util, part_type_derived) {
         EXPECT_EQ(sys.protein_backbone.range.count, 8);
 
         // Deriving again starts over rather than appending
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         EXPECT_EQ(md_system_part_type_count(&sys), 6);
         EXPECT_EQ(md_system_part_count(&sys), 10);
     }
@@ -3670,13 +3695,13 @@ UTEST(util, topology_molecules_are_whole) {
         sys.instance.mol_type_idx[i] = sys.instance.mol_type_idx[i + 1 < num_inst ? i + 1 : i];
     }
     sys.instance.count -= 1;
-    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_TRUE(test_infer_molecules(&sys));
     EXPECT_EQ(num_inst - 1, md_system_molecule_count(&sys));
     check_molecule_invariants(utest_result, &sys);
 
     // Not a topology's: two molecules
     sys.instance.mol_type_idx[1] = -1;
-    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_TRUE(test_infer_molecules(&sys));
     EXPECT_EQ(num_inst, md_system_molecule_count(&sys));
     md_vm_arena_destroy(alloc);
 }
@@ -3751,7 +3776,7 @@ UTEST(util, molecule_type_topology) {
         ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, 0), 0);
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, md_system_instance_count(&sys) - 1), 1);
-        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_TRUE(test_infer_parts(&sys));
         EXPECT_EQ(md_system_part_kind(&sys, 0), MD_PART_KIND_NON_POLYMER);
         EXPECT_EQ(md_system_part_kind(&sys, md_system_part_count(&sys) - 1), MD_PART_KIND_WATER);
     }

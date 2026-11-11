@@ -3927,7 +3927,7 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
 
     // md_molecule_data_t stores each molecule in BFS order, so a single forward pass places every
     // atom after the one it was reached from. No queue, no visited set and no bond lookups: the
-    // traversal was already computed by md_util_system_infer_molecules.
+    // traversal was already computed by md_molecule_infer.
     // The seed is its own parent, so it deperiodizes against itself and stays put - no branch.
     for (size_t i = 0; i < mol->count; ++i) {
         const int32_t a = mol->atom_idx[i];

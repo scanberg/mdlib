@@ -469,7 +469,7 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
 
     // The units of the file are its chains: the runs of residues of one chain id, which a TER record ends (two chains of
     // one id written one after the other are two: the segments of an EM structure)
-    md_util_system_instances_from_chain_ids(sys, res_chain_ids, res_after_ter);
+    md_system_instances_from_chain_ids(sys, res_chain_ids, res_after_ter);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
     pdb_assemblies(sys, x, temp_arena);
@@ -746,7 +746,7 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B
                 // are three residues of the same number (the insertions of Kabat numbered antibodies), also when they
                 // share a name. A TER record ends the residue before it, whatever the residue after it is called, and
-                // the chain: what follows is a unit of its own (md_util_system_instances_from_chain_ids).
+                // the chain: what follows is a unit of its own (md_system_instances_from_chain_ids).
                 const pdb_res_fields_t fields = pdb_res_fields(line);
                 bool begins = false;
                 if (num_atoms == 0) {
@@ -1298,7 +1298,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
 
     if (L->unassigned) {
         if (!md_parallel_for(ex, (uint32_t)MD_DIV_UP(num_atoms, PDB_NAME_CHUNK), 1, pdb_fill_names, L)) return false;
-        md_util_system_infer_particle_types_from_labels(sys, L->atom_name, ex);
+        md_system_infer_particle_types_from_labels(sys, L->atom_name, ex);
     }
     pdb_lap(L, PDB_PHASE_TYPING, &t);
 

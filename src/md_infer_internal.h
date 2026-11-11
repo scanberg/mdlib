@@ -170,7 +170,7 @@ static inline md_str_t label_of_atom(const void* data, size_t i) {
 }
 
 static inline void set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
-    md_util_system_set_residue_kind(sys, res_idx, kind);
+    md_system_set_residue_kind(sys, res_idx, kind);
 }
 
 static inline int32_t uf_find(int32_t* parent, int32_t x) {

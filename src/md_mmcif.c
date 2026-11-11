@@ -211,7 +211,7 @@ static md_part_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
         case ENTITY_POLY_TYPE_OTHER:
             return MD_PART_KIND_POLYMER;
         default:
-            // Classified from its residues once they are (md_util_system_infer_parts)
+            // Classified from its residues once they are (md_part_infer)
             return MD_PART_KIND_UNKNOWN;
         }
     case ENTITY_TYPE_BRANCHED:

@@ -246,7 +246,7 @@ static particle_type_t* find_predefined_particle_type(md_str_t res_name, md_str_
 // The residue kind a predefined type tells, applied when the residue has none yet
 static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
     if (kind != MD_RESIDUE_KIND_OTHER && md_system_residue_kind(sys, res_idx) == MD_RESIDUE_KIND_OTHER) {
-        md_util_system_set_residue_kind(sys, res_idx, kind);
+        md_system_set_residue_kind(sys, res_idx, kind);
     }
 }
 
@@ -591,7 +591,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
     md_temp_end(temp);
 }
 
-void md_util_system_infer_particle_types(md_system_t* sys, const md_str_t atom_labels[], const md_executor_t* ex) {
+void md_system_infer_particle_types(md_system_t* sys, const md_str_t atom_labels[], const md_executor_t* ex) {
     if (!atom_labels) {
         MD_LOG_ERROR("Must provide atom_labels");
         return;
@@ -599,7 +599,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const md_str_t atom_l
     infer_particle_types(sys, label_of_array, atom_labels, ex);
 }
 
-void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const md_executor_t* ex) {
+void md_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const md_executor_t* ex) {
     if (!atom_labels) {
         MD_LOG_ERROR("Must provide atom_labels");
         return;
@@ -607,7 +607,7 @@ void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_
     infer_particle_types(sys, label_of_labels, atom_labels, ex);
 }
 
-void md_util_system_augment_particle_types(md_system_t* sys) {
+void md_system_augment_particle_types(md_system_t* sys) {
     if (!sys || !sys->atom.type_idx || sys->residue.count == 0) {
         return;
     }

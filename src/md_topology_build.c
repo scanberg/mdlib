@@ -158,14 +158,14 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         md_bond_build_connectivity(&sys->bond, N, alloc);
     }
 
-    md_util_system_augment_particle_types(sys);
+    md_system_augment_particle_types(sys);
     md_util_system_infer_residue_flags(sys, state);
 
     // ## Chains, as ParmEd keeps them from the structure the topology was made from
     if (d.res_chain) {
         bool any = false;
         for (size_t r = 0; r < R && !any; ++r) any = !md_str_empty(d.res_chain[r]);
-        if (any) md_util_system_instances_from_chain_ids(sys, d.res_chain, NULL);
+        if (any) md_system_instances_from_chain_ids(sys, d.res_chain, NULL);
     }
 
     // ## Attributes
@@ -301,7 +301,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
     // ## Derived topology, from the new bonds and the coordinates the system was inferred from
     md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT, NULL);
     md_util_system_infer_lipids(sys);
-    md_util_system_infer_residue_types(sys);
+    md_system_infer_residue_types(sys);
     result = true;
 
 done:

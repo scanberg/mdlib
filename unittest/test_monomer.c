@@ -13,7 +13,7 @@
 #include <core/md_str.h>
 
 // MONOMERS: the predefined table of standard monomers, the names of the residues it resolves, and the residue types
-// of md_util_system_infer_residue_types which link to it.
+// of md_system_infer_residue_types which link to it.
 
 UTEST(monomer, table) {
     for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
@@ -147,7 +147,7 @@ UTEST(monomer, residue_types_nucleosome) {
     const size_t count = type->count;
     const md_residue_type_idx_t t_da = type_of_name(&sys, "DA");
     type->color[t_da] = 0xFF123456u;
-    ASSERT_TRUE(md_util_system_infer_residue_types(&sys));
+    ASSERT_TRUE(md_system_infer_residue_types(&sys));
     EXPECT_EQ(count, sys.residue.type.count);
     EXPECT_EQ(t_da, type_of_name(&sys, "DA"));
     EXPECT_EQ(0xFF123456u, md_residue_type_color(&sys.residue.type, t_da));

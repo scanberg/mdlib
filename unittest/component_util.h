@@ -110,6 +110,11 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
         }
         md_bond_build_connectivity(&sys->bond, n, alloc);
     }
-    md_util_system_infer_rings(sys);
+    {
+        md_ring_data_t rings = {0};
+        md_ring_infer(&rings, sys, (sys)->alloc);
+        md_ring_data_free(&(sys)->ring, (sys)->alloc);
+        (sys)->ring = rings;
+    }
 }
 

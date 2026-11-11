@@ -157,7 +157,7 @@ static inline md_residue_flags_t md_system_residue_flags(const md_system_t* sys,
 }
 
 // The kind of the residue: that of its type (md_residue_type_data_t). OTHER for a residue of no type yet (one never
-// classified, before md_util_system_infer_residue_types)
+// classified, before md_system_infer_residue_types)
 static inline md_residue_kind_t md_system_residue_kind(const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(sys);
     if (!sys->residue.type_idx || res_idx >= sys->residue.count || res_idx >= md_array_size(sys->residue.type_idx)) return MD_RESIDUE_KIND_OTHER;
@@ -454,7 +454,7 @@ static inline size_t md_system_molecule_count(const md_system_t* sys) {
     return sys->molecule.count;
 }
 
-// The molecule of the atom, -1 when the molecules have not been inferred (md_util_system_infer_molecules). The atoms
+// The molecule of the atom, -1 when the molecules have not been inferred (md_molecule_infer). The atoms
 // of a molecule need not be consecutive: it is found by the atom's slot (md_molecule_data_t).
 static inline md_molecule_idx_t md_system_molecule_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     MD_ASSERT(sys);
@@ -507,7 +507,7 @@ static inline md_molecule_t md_system_molecule(const md_system_t* sys, size_t mo
 }
 
 // The slot of the atom in the arrays of the molecules (md_molecule_data_t). Requires the molecules
-// (md_util_system_infer_molecules).
+// (md_molecule_infer).
 static inline int32_t md_system_molecule_atom_slot(const md_system_t* sys, size_t atom_idx) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->molecule.atom_slot);
@@ -515,7 +515,7 @@ static inline int32_t md_system_molecule_atom_slot(const md_system_t* sys, size_
 }
 
 // The atom the atom was reached from in the tree of its molecule; a root is its own parent. Requires the molecules
-// (md_util_system_infer_molecules).
+// (md_molecule_infer).
 static inline int32_t md_system_molecule_atom_parent(const md_system_t* sys, size_t atom_idx) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->molecule.atom_slot);

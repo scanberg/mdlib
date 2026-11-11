@@ -987,7 +987,7 @@ static md_str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md
 
 // The molecules of a LAMMPS data file are its residues. Each is an instance, of a molecule type per distinct sequence of
 // particle types, which the file implies without naming: the type is named by its formula. Each instance is one
-// molecule whatever its bonds, as the file has it. What its parts are is inferred (md_util_system_infer_parts).
+// molecule whatever its bonds, as the file has it. What its parts are is inferred (md_part_infer).
 static void lammps_molecules_as_instances(md_system_t* sys) {
 	md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
 	md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };

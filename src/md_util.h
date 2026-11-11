@@ -21,7 +21,7 @@ typedef enum {
     MD_UTIL_INFER_NONE                = 0,
     MD_UTIL_INFER_COLOR_BIT           = 1u << 1,
     MD_UTIL_INFER_BOND_BIT            = 1u << 2,
-    MD_UTIL_INFER_PART_BIT            = 1u << 3,     // The chains and the parts with their types (md_util_system_infer_chains, _parts)
+    MD_UTIL_INFER_PART_BIT            = 1u << 3,     // The chains and the parts with their types (md_chain_infer, _parts)
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_MOLECULE_BIT        = 1u << 5,
     MD_UTIL_INFER_RESIDUE_BIT         = 1u << 6,     // The kinds of the residues and the roles of their atoms (md_util_system_infer_residue_flags), after the bonds which tell them
@@ -75,30 +75,6 @@ bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_
 // the molecules of several residues (without them a lipid is its residue), and for sterols the rings.
 bool md_util_system_infer_lipids(md_system_t* sys);
 
-// Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
-// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id, and a new one
-// where res_unit_begins says the data ends one before the residue (a TER record of a PDB file), whatever the ids: two
-// chains of one id in a row are two (NULL: by the ids alone). A run without an id is an instance of no id (the
-// instances are back to back). Replaces the instances of the system. The instances are what the data gives
-// (md_instance_data_t): where it gives no chain ids at all the system has none.
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]);
-
-// The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
-// without ids has no chains. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT) and by the loaders which give the
-// ids; whatever changes the instances after calls it again.
-bool md_util_system_infer_chains(md_system_t* sys);
-
-// The parts of the system (sys->part, see md_part_data_t) and their types from its instances, its bonds and the kinds
-// of its residues. A part never reaches over an instance; a system without instances is one span to divide. A strand
-// goes on over a gap (two consecutive residues of it not bonded) within one instance the data names (an id or an author
-// id: an asym, a chain of a PDB file; not a molecule of a topology) while the sequence ids increase, and elsewhere in
-// a system without bonds while they are consecutive, unless the chain ends there (CHAIN BREAKS). A part which is
-// all of an instance with a given part type is of that type; the others are of inferred types
-// (MD_PART_TYPE_FLAG_INFERRED), one per kind and sequence of residue names, which replace those of the last inference.
-// A given type of unknown kind is classified from its first part. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT,
-// after the bonds); whatever changes the instances, the bonds or the kinds calls it after.
-bool md_util_system_infer_parts(md_system_t* sys);
-
 // The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
 // md_nucleic_backbone_data_t), found anew: ranges of at least 3 residues along each chain of a polymer, ending where the
 // chain breaks (CHAIN BREAKS), whose residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first).
@@ -111,17 +87,6 @@ bool md_util_system_infer_parts(md_system_t* sys);
 // The ranges come in the order of their first atom. Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the
 // parts); requires the bonds, and the parts for the beads.
 bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
-
-// The kind of a residue is that of its type (md_residue_type_data_t): one per name and kind of residue, with the
-// standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the monomer, that of the
-// element of a monatomic ion, else one made from its name. md_util_system_set_residue_kind makes the residue of the
-// type of its name and the kind, added where the system has none; the types the system has already are kept (with
-// the colors they were given), also one no residue is of any more.
-void md_util_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind);
-
-// Gives every residue of no type yet (one never classified) the type of its name and kind OTHER. md_util_system_infer
-// calls it last.
-bool md_util_system_infer_residue_types(md_system_t* sys);
 
 // CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose
 // backbones are not linked: no peptide bond from the C of the one to the N of the next, no phosphodiester bond from the
@@ -200,50 +165,10 @@ void md_util_mask_grow_by_bonds(struct md_bitmask_t* mask, const struct md_syste
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
 void md_util_mask_grow_by_radius(struct md_bitmask_t* mask, const md_system_state_t* state, double radius, const struct md_bitset_t* viable_mask);
 
-// Infer rings formed by covalent bonds: the rings of 3 to 7 atoms which are not sums of smaller rings (sys->ring: the
-// smallest set of smallest rings, made symmetric), and their flags (md_ring_t::flags)
-// (md_util_system_infer_ring_flags). Only atoms
-// (MD_PARTICLE_ATOM) make rings: the cycles of coarse grained beads and virtual sites are not searched.
-bool md_util_system_infer_rings(md_system_t* sys);
-
-// The rings of a bond graph as md_util_system_infer_rings finds them, of every atom: bond, with its connectivity
-// (md_bond_build_connectivity), over num_atoms atoms. Pushed to out_rings, cleared first and allocated with alloc.
-void md_util_infer_rings(md_ring_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms, struct md_allocator_i* alloc);
-
-// The flags of the rings (md_ring_t::flags, md_ring_flags_t) from the rings, the bonds and their flags, and the atoms of
-// sugar rings in canonical order (MD_RING_FLAG_SUGAR). Call it again when the bond orders or aromaticity change
-// (md_chem_perceive does).
-void md_util_system_infer_ring_flags(md_system_t* sys);
-
-// The molecules of the system (md_molecule_data_t), see there for what holds one together.
-// For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
-// joined through the residue hierarchy instead: each bead to its residue's backbone (or first) bead, and those
-// anchors along consecutive polymer residues. No coordinates are consulted and sys->bond is not modified.
-// The molecules get their types too (md_molecule_type_data_t): the given type of the instance a molecule is all of (a
-// molecule of a topology), else an inferred one, which replace those of the last inference. Requires the parts.
-bool md_util_system_infer_molecules(md_system_t* sys);
-
 // The type of an atom of the name and element, added when the system has none, with the mass, size and color of the
 // element. map, which the caller keeps for a load (zeroed, with an allocator), finds a type it has given before in one
 // lookup rather than a search of the types.
 md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, md_str_t name, md_atomic_number_t z);
-
-// Identify particle types within the system from the atom labels and the names of their residues. Coarse grained beads
-// come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
-// residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
-// the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
-// one label with a different element, mass, size or particle kind are of different types.
-void md_util_system_infer_particle_types(md_system_t* sys, const md_str_t atom_labels[], const struct md_executor_t* ex);
-// The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
-void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
-
-// Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
-// for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
-// parameters of every bead). Only types without an element (z == 0) are considered. The table gives
-// the atoms their role (backbone, side chain), the residues their kind (amino acid, water) where
-// they have none, and the types their particle kind where the loader did not say. Mass and radius
-// are left alone: they are the loader's.
-void md_util_system_augment_particle_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 // Infers the derivable parts of a system (covalent bonds, rings, molecules, backbones, hydrogen

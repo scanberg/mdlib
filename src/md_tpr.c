@@ -1795,7 +1795,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     sys->atom.count = num_atoms;
 
-    md_util_system_augment_particle_types(sys);
+    md_system_augment_particle_types(sys);
 
     // ## Coordinates, nm -> Ångström
     if (data->x) {
@@ -1858,7 +1858,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         MD_ASSERT(bi == count);
 
         // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
-        // same as when the system is read from coordinates. md_util_system_infer_molecules keeps it with its
+        // same as when the system is read from coordinates. md_molecule_infer keeps it with its
         // molecule. Sites that interact (coarse grained beads) keep theirs.
         // Of the types first: a system of no charge sites (most) keeps every bond, without a look at each
         bool any_site = false;

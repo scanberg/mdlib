@@ -585,18 +585,43 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are
     // found from the instances the data gives, the bonds and the classified residues, which the molecules do not change.
     if (flags & MD_UTIL_INFER_PART_BIT) {
-        md_util_system_infer_chains(sys);
-        md_util_system_infer_parts(sys);
+        md_chain_data_t chains = {0};
+        md_chain_infer(&chains, sys, sys->alloc);
+        md_chain_data_free(&sys->chain, sys->alloc);
+        sys->chain = chains;
+        md_part_data_t parts = {0};
+        md_part_infer(&parts, sys, sys->alloc);
+        md_part_data_free(&sys->part, sys->alloc);
+        sys->part = parts;
     }
 
     if (flags & MD_UTIL_INFER_MOLECULE_BIT) {
         // Coarse grained systems get a hierarchy even without bonds (synthesize_hierarchy_links), and a residue is a
         // molecule whatever its bonds (synthesize_molecule_links): ions and waters given without bonds are molecules
         if (sys->bond.count || cg || sys->residue.count) {
-            md_util_system_infer_molecules(sys);
+            md_molecule_data_t molecules = {0};
+            md_molecule_infer(&molecules, sys, sys->alloc);
+            md_molecule_data_free(&sys->molecule, sys->alloc);
+            sys->molecule = molecules;
+            // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
+            // (md_util_system_infer_fragments). Their types stay, for the colours to be kept.
+            sys->fragment.count = 0;
+            sys->fragment.template_count = 0;
+            md_array_shrink(sys->fragment.mol_template, 0);
+            md_array_shrink(sys->fragment.frag_offset, 0);
+            md_array_shrink(sys->fragment.template_molecule, 0);
+            md_array_shrink(sys->fragment.template_slot_offset, 0);
+            md_array_shrink(sys->fragment.slot_frag, 0);
+            md_array_shrink(sys->fragment.template_frag_offset, 0);
+            md_array_shrink(sys->fragment.frag_type, 0);
+            md_array_shrink(sys->fragment.frag_slot_offset, 0);
+            md_array_shrink(sys->fragment.frag_slot, 0);
         }
         if (sys->bond.count) {
-            md_util_system_infer_rings(sys);
+            md_ring_data_t rings = {0};
+            md_ring_infer(&rings, sys, sys->alloc);
+            md_ring_data_free(&sys->ring, sys->alloc);
+            sys->ring = rings;
         }
     }
     
@@ -619,7 +644,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     // Last of what depends on the classification of the residues, which the lipids are the last to change. Cheap,
     // and what a residue type is follows from the residues alone, so not behind a bit.
-    md_util_system_infer_residue_types(sys);
+    md_system_infer_residue_types(sys);
 
     if (flags & MD_UTIL_INFER_FRAGMENT_BIT) {
         // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails

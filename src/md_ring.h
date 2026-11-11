@@ -10,12 +10,12 @@ struct md_allocator_i;
 
 // Rings of a system (md_system_t::ring): 3 to 7 atoms in order around the ring, and what the ring is.
 
-// The sizes of the rings of md_system_t::ring (md_util_system_infer_rings). Larger cycles are loops, not rings.
+// The sizes of the rings of md_system_t::ring (md_ring_infer). Larger cycles are loops, not rings.
 #define MD_RING_MIN_SIZE 3
 #define MD_RING_MAX_SIZE 7
 
-// Ring flags (md_ring_t::flags), what a ring of the system is. md_util_system_infer_ring_flags derives them
-// from the rings, the bonds and their flags; md_util_system_infer_rings and md_chem_perceive call it.
+// Ring flags (md_ring_t::flags), what a ring of the system is. md_system_infer_ring_flags derives them
+// from the rings, the bonds and their flags; md_ring_infer and md_chem_perceive call it.
 //   AROMATIC  Every bond of the ring is aromatic (md_chem_perceive, or the bonds a file gives): an aromatic ring, alone
 //             or fused with a neighbor.
 //   HETERO    The ring has an atom other than carbon.
@@ -111,3 +111,31 @@ static inline md_ring_flags_t md_ring_flags(const md_ring_data_t* data, size_t r
     MD_ASSERT(data);
     return ring_idx < md_array_size(data->rings) ? (md_ring_flags_t)data->rings[ring_idx].flags : MD_RING_FLAG_NONE;
 }
+
+struct md_system_t;
+struct md_bond_data_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ### INFERENCE ###
+
+// The rings of the system formed by its covalent bonds, into out (allocated with alloc, never &sys->ring), with their
+// flags: the rings of 3 to 7 atoms which are not sums of smaller rings (the smallest set of smallest rings, made
+// symmetric). Only atoms (MD_PARTICLE_ATOM) make rings: the cycles of coarse grained beads and virtual sites are not
+// searched, nor water and ions. False, and out empty, when the system has no atoms or no bonds.
+bool md_ring_infer(md_ring_data_t* out, const struct md_system_t* sys, struct md_allocator_i* alloc);
+
+// The rings of a bond graph as md_ring_infer finds them, of every atom (nothing skipped), without flags: bond, with its
+// connectivity (md_bond_build_connectivity), over num_atoms atoms. Into out, cleared first and allocated with alloc.
+void md_ring_infer_from_bonds(md_ring_data_t* out, const struct md_bond_data_t* bond, size_t num_atoms, struct md_allocator_i* alloc);
+
+// The flags of the rings of the system (md_ring_t::flags, md_ring_flags_t) anew, from the rings, the bonds and their
+// flags, and the atoms of sugar rings in canonical order (MD_RING_FLAG_SUGAR). Again when the bond orders or aromaticity
+// change (md_chem_perceive does).
+void md_system_infer_ring_flags(struct md_system_t* sys);
+
+#ifdef __cplusplus
+}
+#endif

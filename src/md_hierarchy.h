@@ -9,6 +9,8 @@
 #include <core/md_array.h>
 #include <core/md_label.h>
 
+struct md_system_t;
+
 // The levels a system is built of above its atoms: residues, instances, chains, parts and molecules, and their types.
 
 // CLASSIFICATION
@@ -23,7 +25,7 @@
 //
 // Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share a particle
 // type: the kind of a residue is that of its type (md_system_residue_kind), and a residue which is classified is made
-// of the type of its name and kind (md_util_system_set_residue_kind). What a particle type is a form of is its element
+// of the type of its name and kind (md_system_set_residue_kind). What a particle type is a form of is its element
 // (md_element.h), what a residue type is a form of is its standard monomer (md_monomer.h): HIE, HSD and MSE are forms
 // of HIS, HIS and MET. Both are where the defaults of the type come from.
 //
@@ -74,7 +76,7 @@ MD_ENUM_FLAGS(md_residue_flags_t)
 // molecule (a ligand, an ion, a lipid) or one water.
 typedef enum md_part_kind_t {
     MD_PART_KIND_UNKNOWN      = 0,    // Not classified yet: a type the data names without saying what it is.
-                                      // md_util_system_infer_parts classifies these from their residues.
+                                      // md_part_infer classifies these from their residues.
     MD_PART_KIND_NON_POLYMER  = 1,    // A small molecule: a ligand, an ion, a lipid, a single residue
     MD_PART_KIND_WATER        = 2,
     MD_PART_KIND_BRANCHED     = 3,    // A branched oligosaccharide (mmCIF 'branched')
@@ -90,7 +92,7 @@ typedef enum {
     MD_PART_TYPE_FLAG_NONE         = 0,
     MD_PART_TYPE_FLAG_KIND_MASK    = 0xF,      // md_part_kind_t, see md_part_type_flags_kind
 
-    // Not given by the data (an mmCIF entity is): the type was inferred with the parts (md_util_system_infer_parts),
+    // Not given by the data (an mmCIF entity is): the type was inferred with the parts (md_part_infer),
     // and is inferred anew with them
     MD_PART_TYPE_FLAG_INFERRED     = 0x10,
 } md_part_type_flags_t;
@@ -101,7 +103,7 @@ typedef enum {
     MD_MOLECULE_TYPE_FLAG_NONE     = 0,
 
     // Not given by the data (a molecule type of a topology is): the type was inferred with the molecules
-    // (md_util_system_infer_molecules), and is inferred anew with them
+    // (md_molecule_infer), and is inferred anew with them
     MD_MOLECULE_TYPE_FLAG_INFERRED = 0x1,
 } md_molecule_type_flags_t;
 
@@ -128,8 +130,8 @@ static inline md_part_type_flags_t md_part_type_flags_set_kind(md_part_type_flag
 // Residue type: the residues of the system of one name and kind. The ALA of every chain is one type, the HIE and
 // the HID of a protein are two, which are both forms of the standard monomer HIS. The kind of a residue is that of its
 // type and nowhere else (md_system_residue_kind): a residue which is classified is made of the type of its name and
-// that kind (md_util_system_set_residue_kind), and one never classified gets the type of its name and kind OTHER
-// (md_util_system_infer_residue_types). Like the particle types they carry what the residues look like, their color.
+// that kind (md_system_set_residue_kind), and one never classified gets the type of its name and kind OTHER
+// (md_system_infer_residue_types). Like the particle types they carry what the residues look like, their color.
 typedef struct md_residue_type_data_t {
     size_t count;
     md_label_t*        name;
@@ -163,7 +165,7 @@ typedef struct md_residue_data_t {
 
 // Instance: a unit of the system AS THE DATA GIVES IT, a contiguous range of residues: an asym of an mmCIF file (a
 // polymer chain, or one of the molecules of a non-polymer asym), a run of residues of one chain id of a PDB file
-// (md_util_system_instances_from_chain_ids), a molecule of a topology (a GROMACS molecule, a molecule of a LAMMPS data
+// (md_system_instances_from_chain_ids), a molecule of a topology (a GROMACS molecule, a molecule of a LAMMPS data
 // file). Instances are never inferred: where the data gives no units (a GRO file, an XYZ file) the system has none. The
 // instances are back to back, so a run of residues the data names nothing (the residues without a chain id between two
 // chains of a PDB file) is an instance of no id.
@@ -196,7 +198,7 @@ typedef struct md_instance_data_t {
 //     polymer is found as a part (polymer() of a script).
 // A chain is runs of residues: a strand, and the ligands and waters filed after all of the polymers under
 // its id. The chains are in the order of their first residue. They are derived from the instances
-// (md_util_system_infer_chains), whose author ids hold the identifiers.
+// (md_chain_infer), whose author ids hold the identifiers.
 typedef struct md_chain_data_t {
     size_t count;
     md_label_t* id;                 // [count] The author's identifier
@@ -225,7 +227,7 @@ typedef struct md_part_type_data_t {
 //     residue) is of it. A bond from a side chain (a disulfide, a glycosylation) joins no parts.
 //   - Residues of no polymer are one part while each is bonded to one of it: a glycan tree, a lipid of several residues.
 //     A coordination bond between residues joins none: a metal is a part of its own, as each ion and water is.
-// They are derived from the instances, the bonds and the kinds of the residues (md_util_system_infer_parts). A part
+// They are derived from the instances, the bonds and the kinds of the residues (md_part_infer). A part
 // which is all of its instance is of the instance's part type; any other is of an inferred one.
 typedef struct md_part_data_t {
     size_t count;
@@ -243,7 +245,7 @@ typedef struct md_part_data_t {
 // unless a topology gives them (a bond within one of its molecules, as GROMACS has it). A molecule of a topology is
 // one molecule whatever its bonds (md_instance_data_t::mol_type_idx): the two strands of a DNA duplex which martinize-dna
 // writes as one molecule type, held together by an elastic network. A molecule is whole parts. Coarse grained systems are held together by their
-// hierarchy instead (md_util_system_infer_molecules).
+// hierarchy instead (md_molecule_infer).
 // It also holds the iteration order of atoms and parent-child relationships for traversing the molecule as a tree,
 // which is what unwrapping uses (md_system_molecule).
 typedef struct md_molecule_t {
@@ -403,6 +405,62 @@ md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, md_str_t id
 void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc);
 void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, md_allocator_i* alloc);
 md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, md_str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc);
+
+// ### INFERENCE ###
+// What is written is out, allocated with alloc; the system is read and never written. out is not the system's own: the
+// system is given the result by md_util_system_infer, or by the caller (the *_data_free of the old, assign).
+
+// The chains of the system (md_chain_data_t) from the author ids of its instances: one per id. A system without ids
+// has no chains. md_util_system_infer gives them the system (MD_UTIL_INFER_PART_BIT), and so do the loaders which give
+// the ids; whatever changes the instances after infers them again.
+bool md_chain_infer(md_chain_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
+
+// The parts of the system (md_part_data_t) and their types from its instances, its bonds and the kinds
+// of its residues. A part never reaches over an instance; a system without instances is one span to divide. A strand
+// goes on over a gap (two consecutive residues of it not bonded) within one instance the data names (an id or an author
+// id: an asym, a chain of a PDB file; not a molecule of a topology) while the sequence ids increase, and elsewhere in
+// a system without bonds while they are consecutive, unless the chain ends there (CHAIN BREAKS). A part which is
+// all of an instance with a given part type is of that type; the others are of inferred types
+// (MD_PART_TYPE_FLAG_INFERRED), one per kind and sequence of residue names, after the types the system was given (those of the last inference are not
+// carried over).
+// A given type of unknown kind is classified from its first part. md_util_system_infer gives them the system
+// (MD_UTIL_INFER_PART_BIT, after the bonds); whatever changes the instances, the bonds or the kinds infers them again.
+bool md_part_infer(md_part_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
+
+// The molecules of the system (md_molecule_data_t), see there for what holds one together.
+// For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
+// joined through the residue hierarchy instead: each bead to its residue's backbone (or first) bead, and those
+// anchors along consecutive polymer residues. No coordinates are consulted and sys->bond is not modified.
+// The molecules get their types too (md_molecule_type_data_t): the given type of the instance a molecule is all of (a
+// molecule of a topology), else an inferred one, which replace those of the last inference. Requires the parts.
+// The fragments of the system (md_fragment.h) are of its molecules: whoever gives the system new molecules empties its
+// fragments, and infers them again.
+bool md_molecule_infer(md_molecule_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
+
+void md_chain_data_free(md_chain_data_t* chain, md_allocator_i* alloc);
+void md_part_data_free(md_part_data_t* part, md_allocator_i* alloc);
+void md_molecule_data_free(md_molecule_data_t* mol, md_allocator_i* alloc);
+
+// ### RESIDUE TYPES AND INSTANCES, IN PLACE ###
+
+// The kind of a residue is that of its type (md_residue_type_data_t): one per name and kind of residue, with the
+// standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the monomer, that of the
+// element of a monatomic ion, else one made from its name. md_system_set_residue_kind makes the residue of the
+// type of its name and the kind, added where the system has none; the types the system has already are kept (with
+// the colors they were given), also one no residue is of any more.
+void md_system_set_residue_kind(struct md_system_t* sys, size_t res_idx, md_residue_kind_t kind);
+
+// Gives every residue of no type yet (one never classified) the type of its name and kind OTHER. md_util_system_infer
+// calls it last.
+bool md_system_infer_residue_types(struct md_system_t* sys);
+
+// Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
+// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id, and a new one
+// where res_unit_begins says the data ends one before the residue (a TER record of a PDB file), whatever the ids: two
+// chains of one id in a row are two (NULL: by the ids alone). A run without an id is an instance of no id (the
+// instances are back to back). Replaces the instances of the system. The instances are what the data gives
+// (md_instance_data_t): where it gives no chain ids at all the system has none.
+bool md_system_instances_from_chain_ids(struct md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]);
 
 #ifdef __cplusplus
 }
