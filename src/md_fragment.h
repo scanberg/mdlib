@@ -33,7 +33,7 @@
 //                   and the termini (an ammonium, a carboxylate). Of a nucleic acid: the sugar of each nucleotide (its
 //                   ring and C5': "deoxyribose", "ribose") and the phosphate between two. Any group with an atom of
 //                   MD_ATOM_FLAG_BACKBONE is of the backbone; the side chains and bases are fragmented as below.
-//   lipid tail      The atoms of MD_ATOM_FLAG_LIPID_TAIL, one fragment per tail.
+//   lipid tail      The atoms of the tails of the lipids (md_lipid_data_t), one fragment per tail.
 //   ring system     Rings (sys->ring) sharing an atom, with the terminal atoms double bonded to them (the O of a
 //                   quinone or a lactam). A macrocycle is no ring there (a ring is of at most MD_RING_MAX_SIZE atoms),
 //                   so its conjugated bridges join the ring systems they are between: an atom with a multiple or

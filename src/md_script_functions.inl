@@ -4128,6 +4128,8 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
         MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         const md_system_t* sys = ctx->sys;
         md_bitmask_t b = result_mask(ctx);
+        uint8_t* in_tail = md_alloc(ctx->temp_alloc, sys->atom.count + 1);
+        md_lipid_tail_atom_mask(in_tail, &sys->lipid, sys->atom.count);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
             if (sys->lipid.head_offset[l + 1] == sys->lipid.head_offset[l]) continue;
             const int32_t* residues = md_lipid_residues(&sys->lipid, l);
@@ -4135,7 +4137,7 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t c = 0; c < num_residues; ++c) {
                 const md_urange_t r = md_system_residue_atom_range(sys, (size_t)residues[c]);
                 for (uint32_t i = r.beg; i < r.end; ++i) {
-                    if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL)) md_bitmask_set_bit(&b, i);
+                    if (!in_tail[i]) md_bitmask_set_bit(&b, i);
                 }
             }
         }

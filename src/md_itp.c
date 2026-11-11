@@ -1043,10 +1043,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
 
     // ## Derived topology: the parts (and the chains) from the units and the bonds, the molecules and the rings, and the
     // backbones, which name their parts, from the coordinates the system was inferred from
-    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT, NULL);
-    // The lipids follow from the bonds, and the kinds of the residues from the lipids
-    md_util_system_infer_lipids(sys);
-    md_system_infer_residue_types(sys);
+    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT | MD_UTIL_INFER_LIPID_BIT, NULL);
 
     MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
         num_instances, num_covered, atom_count, num_topology_bonds, md_system_molecule_count(sys));

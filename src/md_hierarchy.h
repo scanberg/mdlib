@@ -48,7 +48,7 @@ typedef enum md_residue_kind_t {
     MD_RESIDUE_KIND_WATER           = 3,
     MD_RESIDUE_KIND_ION             = 4,    // A monatomic ion
     MD_RESIDUE_KIND_LIPID           = 5,    // A lipid, sterols included: by name (md_util_resname_lipid), or by its structure
-                                            // (a polar head with hydrocarbon tails, see md_util_system_infer_lipids)
+                                            // (a polar head with hydrocarbon tails, see md_lipid_infer)
 } md_residue_kind_t;
 
 typedef enum {

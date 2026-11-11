@@ -4,7 +4,7 @@
 
 // ### LIPIDS ###
 //
-// md_util_system_infer_lipids: the heads and tails of the lipids (md_lipid_data_t). A molecule is a set of residues
+// md_lipid_infer: the heads and tails of the lipids (md_lipid_data_t). A molecule is a set of residues
 // which are not amino acids, nucleotides, water or ions, bonded to each other, wherever they are in the system. Its apolar atoms
 // are the carbons bonded to carbons (and hydrogens) only, or, for coarse grained beads, the beads named as the beads of
 // the tails of the Martini lipidomes (lipid_bead_kind). Each connected part of them which hangs off the rest of the
@@ -188,17 +188,12 @@ static void init_lipid_data(md_lipid_data_t* lipid, md_allocator_i* alloc) {
 }
 
 // Records a lipid of the residues residues (ascending), with the heads and tails pushed for it since the last one (none
-// when its anatomy is not known), and its residues as lipids
-static void record_lipid(md_system_t* sys, const int32_t* residues, size_t num_residues) {
-    md_lipid_data_t* lipid = &sys->lipid;
-    md_allocator_i* alloc = sys->alloc;
+// when its anatomy is not known)
+static void record_lipid(md_lipid_data_t* lipid, const int32_t* residues, size_t num_residues, md_allocator_i* alloc) {
     push_index_range(&lipid->residue_offset, &lipid->residue_idx, residues, num_residues, alloc);
     md_array_push(lipid->head_offset, (uint32_t)lipid->head.count, alloc);
     md_array_push(lipid->tail_offset, (uint32_t)lipid->tail.count, alloc);
     lipid->count += 1;
-    for (size_t i = 0; i < num_residues; ++i) {
-        set_residue_kind(sys, (size_t)residues[i], MD_RESIDUE_KIND_LIPID);
-    }
 }
 
 // The lipid of a molecule of several residues: the residues which hold its tails and those between them (the core),
@@ -283,10 +278,7 @@ static void lipid_extent(uint8_t* in_lipid, const md_system_t* sys, const lipid_
 }
 
 // The lipid of a molecule, if it is or holds one
-static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const uint8_t* in_fused_ring, md_allocator_i* temp_arena) {
-    md_lipid_data_t* lipid = &sys->lipid;
-    md_allocator_i* alloc = sys->alloc;
-
+static void infer_lipid_molecule(md_lipid_data_t* lipid, const md_system_t* sys, const lipid_mol_t* mol, const uint8_t* in_fused_ring, md_allocator_i* temp_arena, md_allocator_i* alloc) {
     const int32_t n = mol->n;
     const int32_t* atoms = mol->atoms;
     const int32_t nc = mol->num_residues;
@@ -308,22 +300,21 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
             cg = r.beg < r.end && lipid_atom_is_bead(sys, r.beg);
         }
     }
-    // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
-    // what inferring once did. A coarse grained lipid is one of the force field, by its name or, where that is not
-    // Martini's, by its beads (the kind md_util_system_infer_residue_flags gave it), or one whose beads are named as those
-    // of the lipids of the force field (below): never by its structure alone.
+    // Lipids by name. A coarse grained lipid is one of the force field, by its name or, where that is not Martini's, by
+    // its beads (the kind md_util_system_infer_residue_flags gave it), or one whose beads are named as those of the
+    // lipids of the force field (below): never by its structure alone. A residue which is a lipid by its structure alone
+    // (the kind an earlier inference gave it) is none by name: it is a lipid again only if it is found to be one
+    // (md_system_infer_lipid_kinds), so that inferring again gives what inferring once did.
     bool named = false;
     for (int32_t c = 0; c < nc; ++c) {
         const size_t res = (size_t)mol->residues[c];
         if (md_util_resname_lipid(md_system_residue_name(sys, res)) || (cg && md_system_residue_kind(sys, res) == MD_RESIDUE_KIND_LIPID)) {
             named = true;
-        } else if (md_system_residue_kind(sys, res) == MD_RESIDUE_KIND_LIPID) {
-            set_residue_kind(sys, res, MD_RESIDUE_KIND_OTHER);
         }
     }
     // A lipid by name too small or too large to look into is one without heads and tails
     if (n <= 1 || n > LIPID_MAX_ATOMS || !atoms) {
-        if (named) record_lipid(sys, mol->residues, (size_t)nc);
+        if (named) record_lipid(lipid, mol->residues, (size_t)nc, alloc);
         return;
     }
 
@@ -518,7 +509,7 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
     // tails: it is a lipid molecule still
     const size_t num_tails = md_array_size(spine_ranges);
     if (num_tails == 0) {
-        if (named) record_lipid(sys, mol->residues, (size_t)nc);
+        if (named) record_lipid(lipid, mol->residues, (size_t)nc, alloc);
         goto done;
     }
 
@@ -598,9 +589,6 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
             m = u;
         }
         push_index_range(&lipid->tail.atom_offset, &lipid->tail.atom_idx, queue, (size_t)m, alloc);
-        for (int32_t q = 0; q < m; ++q) {
-            sys->atom.flags[queue[q]] |= MD_ATOM_FLAG_LIPID_TAIL;
-        }
 
         const int32_t ab = tail_anchor_beg[t];
         const int32_t ae = tail_anchor_end[t];
@@ -622,45 +610,26 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
         for (int32_t c = 0; c < nc; ++c) {
             if (in_lipid[c]) {
                 lipid_residues[num_lipid_residues++] = mol->residues[c];
-            } else if (md_system_residue_kind(sys, (size_t)mol->residues[c]) == MD_RESIDUE_KIND_LIPID) {
-                set_residue_kind(sys, (size_t)mol->residues[c], MD_RESIDUE_KIND_OTHER);
             }
         }
-        record_lipid(sys, lipid_residues, (size_t)num_lipid_residues);
+        record_lipid(lipid, lipid_residues, (size_t)num_lipid_residues, alloc);
     }
 
 done:
     md_vm_arena_set_pos_back(temp_arena, pos);
 }
 
-bool md_util_system_infer_lipids(md_system_t* sys) {
+bool md_lipid_infer(md_lipid_data_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    MD_ASSERT(out);
     MD_ASSERT(sys);
-    if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator not set");
-        return false;
-    }
-    md_allocator_i* alloc = sys->alloc;
-    md_system_topology_changed(sys);
-
-    // Derived from scratch
-    md_lipid_data_free(&sys->lipid, alloc);
-    md_lipid_data_t* lipid = &sys->lipid;
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != &sys->lipid);
+    md_lipid_data_free(out, alloc);
+    md_lipid_data_t* lipid = out;
     init_lipid_data(lipid, alloc);
-
-    if (md_array_size(sys->atom.flags) < sys->atom.count) {
-        const size_t size = md_array_size(sys->atom.flags);
-        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
-        md_memset(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
-    }
-    for (size_t i = 0; i < sys->atom.count; ++i) sys->atom.flags[i] &= ~MD_ATOM_FLAG_LIPID_TAIL;
     // Without bonds every lipid by name is a molecule of its own residue, without heads and tails
     if (sys->atom.count == 0 || sys->residue.count == 0) {
         return true;
-    }
-    if (md_array_size(sys->residue.flags) < sys->residue.count) {
-        const size_t size = md_array_size(sys->residue.flags);
-        md_array_resize(sys->residue.flags, sys->residue.count, alloc);
-        md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -753,10 +722,50 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
             }
             mol.contiguous = n > 0 && mol.atoms[n - 1] - mol.atoms[0] == (int32_t)n - 1;
         }
-        infer_lipid_molecule(sys, &mol, in_fused_ring, temp_arena);
+        infer_lipid_molecule(lipid, sys, &mol, in_fused_ring, temp_arena, alloc);
         md_vm_arena_set_pos_back(temp_arena, mark);
     }
 
     md_temp_end(temp);
     return true;
+}
+
+void md_system_infer_lipid_kinds(md_system_t* sys) {
+    MD_ASSERT(sys);
+    const md_lipid_data_t* lipid = &sys->lipid;
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    uint8_t* in_lipid = md_temp_alloc_zero_array(temp, uint8_t, MD_MAX(sys->residue.count, 1));
+    for (size_t l = 0; l < lipid->count; ++l) {
+        const int32_t* res = md_lipid_residues(lipid, l);
+        const size_t n = md_lipid_residue_count(lipid, l);
+        for (size_t k = 0; k < n; ++k) {
+            if (res[k] >= 0 && (size_t)res[k] < sys->residue.count) in_lipid[res[k]] = 1;
+        }
+    }
+    for (size_t r = 0; r < sys->residue.count; ++r) {
+        if (in_lipid[r]) {
+            if (md_system_residue_kind(sys, r) != MD_RESIDUE_KIND_LIPID) md_system_set_residue_kind(sys, r, MD_RESIDUE_KIND_LIPID);
+            continue;
+        }
+        // A lipid by its structure (an earlier inference) which is none now; one by name or by its beads stays
+        if (md_system_residue_kind(sys, r) != MD_RESIDUE_KIND_LIPID) continue;
+        if (md_util_resname_lipid(md_system_residue_name(sys, r))) continue;
+        const md_urange_t range = md_system_residue_atom_range(sys, r);
+        if (range.beg < range.end && lipid_atom_is_bead(sys, range.beg)) continue;
+        md_system_set_residue_kind(sys, r, MD_RESIDUE_KIND_OTHER);
+    }
+    md_temp_end(temp);
+}
+
+size_t md_lipid_tail_atom_mask(uint8_t* out, const md_lipid_data_t* lipid, size_t atom_count) {
+    MD_ASSERT(out);
+    MD_ASSERT(lipid);
+    md_memset(out, 0, atom_count);
+    size_t count = 0;
+    const size_t n = md_array_size(lipid->tail.atom_idx);
+    for (size_t k = 0; k < n; ++k) {
+        const md_atom_idx_t a = lipid->tail.atom_idx[k];
+        if (a >= 0 && (size_t)a < atom_count && !out[a]) { out[a] = 1; count += 1; }
+    }
+    return count;
 }

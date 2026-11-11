@@ -639,7 +639,11 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     if (flags & MD_UTIL_INFER_LIPID_BIT) {
         // After the bonds, the rings (a sterol is told by its fused rings) and the classification of the residues
-        md_util_system_infer_lipids(sys);
+        md_lipid_data_t lipids = {0};
+        md_lipid_infer(&lipids, sys, sys->alloc);
+        md_lipid_data_free(&sys->lipid, sys->alloc);
+        sys->lipid = lipids;
+        md_system_infer_lipid_kinds(sys);
     }
 
     // Last of what depends on the classification of the residues, which the lipids are the last to change. Cheap,

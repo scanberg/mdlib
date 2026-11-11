@@ -55,10 +55,7 @@ typedef enum {
     MD_ATOM_FLAG_NUCLEOBASE             = 0x8,      // Base of a nucleotide
     MD_ATOM_FLAG_TERMINAL_BEG           = 0x10,     // In the terminal group which begins a chain (N-terminus, 5' end)
     MD_ATOM_FLAG_TERMINAL_END           = 0x20,     // In the terminal group which ends a chain (C-terminus, 3' end)
-    // In a tail of a lipid (md_util_system_infer_lipids): an acyl, alkyl or sphingoid chain, or the ring skeleton of a
-    // sterol, with its branches and hydrogens. The other atoms of a lipid are its head(s).
-    MD_ATOM_FLAG_LIPID_TAIL             = 0x40,
-
+    // 0x40 unused: the atoms of the tails of the lipids are in md_lipid_data_t (md_lipid_tail_atom_mask)
     // 0x80 unused: the atoms of a metallic phase are those of its metallic bonds (md_bond_metallic_atoms)
 
     // Chemistry, see md_chem.h (md_chem_perceive)

@@ -28,7 +28,7 @@ typedef enum {
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
 	MD_UTIL_INFER_UNWRAP_MOLECULE_BIT = 1u << 7,
     MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
-    MD_UTIL_INFER_LIPID_BIT           = 1u << 9,     // The heads and tails of the lipids (md_util_system_infer_lipids)
+    MD_UTIL_INFER_LIPID_BIT           = 1u << 9,     // The heads and tails of the lipids (md_lipid_infer), and the kinds of their residues
     MD_UTIL_INFER_FRAGMENT_BIT        = 1u << 10,    // Ring systems, functional groups, backbones (md_util_system_infer_fragments, md_fragment.h), last
 
     MD_UTIL_INFER_ALL                 = -1,
@@ -63,17 +63,6 @@ void md_util_system_extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const struct md
 // Requires the bonds. state (optional) gives the coordinates which tell the carbonyl of a C terminus without its OXT
 // from a hydroxyl.
 bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state);
-
-// The lipids of the system (sys->lipid, see md_lipid_data_t): every lipid molecule, its heads and tails, and the atoms
-// of the tails (MD_ATOM_FLAG_LIPID_TAIL). A molecule (a run of consecutive residues bonded to each other, none of them an amino
-// acid, a nucleotide, water or an ion) whose residues are lipids by name gets the tails found in it. One whose
-// residues are not is a lipid by its structure when it has a polar head and a hydrocarbon chain of at least 8 carbons
-// or the skeleton of a sterol (atomistic molecules only), and its residues become MD_RESIDUE_KIND_LIPID: lipids of
-// names nothing knows (the 3 letter names of PDB files, the codes of the PDB, lipids split into several residues).
-// Tails are found from the bonds alone for atoms, and from the names of the beads (the conventions of the Martini
-// lipidomes) for coarse grained lipids. Requires the classified residues, the bonds for the heads and tails and for
-// the molecules of several residues (without them a lipid is its residue), and for sterols the rings.
-bool md_util_system_infer_lipids(md_system_t* sys);
 
 // The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
 // md_nucleic_backbone_data_t), found anew: ranges of at least 3 residues along each chain of a polymer, ending where the

@@ -16,10 +16,21 @@
 #include <stdio.h>
 #include <string.h>
 
-// LIPIDS: the heads and tails of md_util_system_infer_lipids, on the membranes of the test data (a united atom DPPC
+// LIPIDS: the heads and tails of md_lipid_infer, on the membranes of the test data (a united atom DPPC
 // bilayer whose residues are named DPP, Martini 2 and 3 membranes with cholesterol) and on molecules built from SMILES
 // (heavy atoms and bonds only, as a united atom topology has them): sterols, a bolalipid, a cardiolipin, and molecules
 // which are no lipids.
+
+// What md_util_system_infer gives the system of its lipids (MD_UTIL_INFER_LIPID_BIT): the lipids, and the kinds of
+// their residues
+static bool test_infer_lipids(md_system_t* sys) {
+    md_lipid_data_t lipids = {0};
+    const bool ok = md_lipid_infer(&lipids, sys, sys->alloc);
+    md_lipid_data_free(&sys->lipid, sys->alloc);
+    sys->lipid = lipids;
+    md_system_infer_lipid_kinds(sys);
+    return ok;
+}
 
 static size_t lipid_num_heads(const md_system_t* sys, size_t i) { return sys->lipid.head_offset[i + 1] - sys->lipid.head_offset[i]; }
 static size_t lipid_num_tails(const md_system_t* sys, size_t i) { return sys->lipid.tail_offset[i + 1] - sys->lipid.tail_offset[i]; }
@@ -38,8 +49,8 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
     if (md_array_size(L->tail.spine_offset) != L->tail.count + 1) return false;
     if (md_array_size(L->tail.atom_offset) != L->tail.count + 1) return false;
 
-    size_t num_flagged = 0;
-    for (size_t i = 0; i < sys->atom.count; ++i) num_flagged += (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL) != 0;
+    uint8_t* in_tail = md_alloc(sys->alloc, sys->atom.count + 1);
+    const size_t num_flagged = md_lipid_tail_atom_mask(in_tail, L, sys->atom.count);
     size_t num_tail_atoms = 0;
 
     for (size_t l = 0; l < L->count; ++l) {
@@ -74,7 +85,7 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
             const int32_t* atoms = md_lipid_tail_atoms(L, t);
             const size_t num_atoms = md_lipid_tail_atom_count(L, t);
             for (size_t k = 0; k < num_atoms; ++k) {
-                if (!(md_atom_flags(&sys->atom, atoms[k]) & MD_ATOM_FLAG_LIPID_TAIL)) return false;
+                if (!in_tail[atoms[k]]) return false;
                 if (k > 0 && atoms[k] <= atoms[k - 1]) return false;
             }
             num_tail_atoms += num_atoms;
@@ -84,7 +95,7 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
             const size_t num_atoms = md_lipid_head_atom_count(L, h);
             if (num_atoms == 0) return false;
             for (size_t k = 0; k < num_atoms; ++k) {
-                if (md_atom_flags(&sys->atom, atoms[k]) & MD_ATOM_FLAG_LIPID_TAIL) return false;
+                if (in_tail[atoms[k]]) return false;
             }
         }
     }
@@ -131,7 +142,7 @@ UTEST(lipid, dppc_united_atom_pdb) {
     EXPECT_EQ(64, (int)num_lipid_residues);
 
     // Inferring again gives the same: a lipid by its structure is not taken for one by name the second time
-    ASSERT_TRUE(md_util_system_infer_lipids(&sys));
+    ASSERT_TRUE(test_infer_lipids(&sys));
     EXPECT_EQ(64, (int)sys.lipid.count);
     EXPECT_EQ(128, (int)sys.lipid.tail.count);
     EXPECT_TRUE(lipid_invariants_hold(&sys));
@@ -286,7 +297,7 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
         (sys)->ring = rings;
     }
     md_util_system_infer_residue_flags(sys, NULL);
-    return md_util_system_infer_lipids(sys);
+    return test_infer_lipids(sys);
 }
 
 #define CHOLESTEROL     "CC(CCCC(C)C)C1CCC2C1(CCC3C2CC=C4C3(CCC(C4)O)C)C"
@@ -865,7 +876,7 @@ UTEST(lipid, glycolipid_of_several_residues) {
     EXPECT_EQ(1, num_sets);
 
     // The same again
-    ASSERT_TRUE(md_util_system_infer_lipids(&sys));
+    ASSERT_TRUE(test_infer_lipids(&sys));
     ASSERT_EQ(1, (int)sys.lipid.count);
     EXPECT_EQ(2, (int)lipid_num_residues(&sys, 0));
     EXPECT_EQ(MD_RESIDUE_KIND_OTHER, md_system_residue_kind(&sys, 2));
@@ -1144,7 +1155,7 @@ UTEST(lipid, martini_unknown_by_tail_beads) {
     for (uint32_t t = 0; t < 2; ++t) EXPECT_EQ(4u, tail_spine_len(&sys, t));
 
     // Inferred again, now a lipid by its kind: the same
-    ASSERT_TRUE(md_util_system_infer_lipids(&sys));
+    ASSERT_TRUE(test_infer_lipids(&sys));
     ASSERT_EQ(1u, sys.lipid.count);
     EXPECT_EQ(2u, lipid_num_tails(&sys, 0));
     lipid_head_names(head, sizeof(head), &sys, 0);
