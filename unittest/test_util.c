@@ -465,9 +465,10 @@ static void cg_add_residue(md_system_t* sys, const char* res_name, int seq_id, m
     }
     md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(res_name)), alloc);
     md_array_push(sys->residue.seq_id, seq_id, alloc);
-    md_array_push(sys->residue.flags, md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, res_kind), alloc);
+    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
     md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
     sys->residue.count += 1;
+    md_util_system_set_residue_kind(sys, sys->residue.count - 1, res_kind);
 }
 
 static void check_molecule_invariants(int* utest_result, const md_system_t* sys) {

@@ -156,8 +156,13 @@ static inline md_residue_flags_t md_system_residue_flags(const md_system_t* sys,
     return (sys->residue.flags && res_idx < sys->residue.count) ? sys->residue.flags[res_idx] : MD_RESIDUE_FLAG_NONE;
 }
 
+// The kind of the residue: that of its type (md_residue_type_data_t). OTHER for a residue of no type yet (one never
+// classified, before md_util_system_infer_residue_types)
 static inline md_residue_kind_t md_system_residue_kind(const md_system_t* sys, size_t res_idx) {
-    return md_residue_flags_kind(md_system_residue_flags(sys, res_idx));
+    MD_ASSERT(sys);
+    if (!sys->residue.type_idx || res_idx >= sys->residue.count || res_idx >= md_array_size(sys->residue.type_idx)) return MD_RESIDUE_KIND_OTHER;
+    const md_residue_type_idx_t t = sys->residue.type_idx[res_idx];
+    return (t >= 0 && (size_t)t < sys->residue.type.count) ? sys->residue.type.kind[t] : MD_RESIDUE_KIND_OTHER;
 }
 
 // The residue of the atom, -1 for an atom in none
@@ -166,10 +171,10 @@ static inline md_residue_idx_t md_system_residue_find_by_atom_idx(const md_syste
     return (md_residue_idx_t)md_offset_range_find(sys->residue.atom_offset, sys->residue.count, atom_idx);
 }
 
-// The type of the residue, -1 when the types have not been inferred
+// The type of the residue, -1 for one of none yet
 static inline md_residue_type_idx_t md_system_residue_type_idx(const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(sys);
-    return (sys->residue.type_idx && res_idx < sys->residue.count) ? sys->residue.type_idx[res_idx] : -1;
+    return (sys->residue.type_idx && res_idx < sys->residue.count && res_idx < md_array_size(sys->residue.type_idx)) ? sys->residue.type_idx[res_idx] : -1;
 }
 
 // PART TYPES (md_part_type_data_t)

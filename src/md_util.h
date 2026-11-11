@@ -111,11 +111,15 @@ bool md_util_system_infer_parts(md_system_t* sys);
 // parts); requires the bonds, and the parts for the beads.
 bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
 
-// The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
-// residue, with the standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the
-// monomer, that of the element of a monatomic ion, else one made from its name. The types the system has already are
-// kept (with the colors they were given), the residues which match none get new ones. Requires the classified
-// residues, lipids included; md_util_system_infer calls it last.
+// The kind of a residue is that of its type (md_residue_type_data_t): one per name and kind of residue, with the
+// standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the monomer, that of the
+// element of a monatomic ion, else one made from its name. md_util_system_set_residue_kind makes the residue of the
+// type of its name and the kind, added where the system has none; the types the system has already are kept (with
+// the colors they were given), also one no residue is of any more.
+void md_util_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind);
+
+// Gives every residue of no type yet (one never classified) the type of its name and kind OTHER. md_util_system_infer
+// calls it last.
 bool md_util_system_infer_residue_types(md_system_t* sys);
 
 // CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose

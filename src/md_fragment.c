@@ -317,7 +317,7 @@ static md_residue_kind_t frag_resolved_kind(const frag_mol_t* c, uint32_t i) {
     if (r < 0) return MD_RESIDUE_KIND_OTHER;
     const md_residue_flags_t rf = md_system_residue_flags(c->sys, (size_t)r);
     if (!(rf & MD_RESIDUE_FLAG_RESOLVED)) return MD_RESIDUE_KIND_OTHER;
-    const md_residue_kind_t rk = md_residue_flags_kind(rf);
+    const md_residue_kind_t rk = md_system_residue_kind(c->sys, (size_t)r);
     return (rk == MD_RESIDUE_KIND_AMINO_ACID || rk == MD_RESIDUE_KIND_NUCLEOTIDE) ? rk : MD_RESIDUE_KIND_OTHER;
 }
 
@@ -784,7 +784,7 @@ static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t 
         const int32_t r = atom_res ? atom_res[a] : -1;
         if (r >= 0) {
             const md_residue_flags_t rf = md_system_residue_flags(sys, (size_t)r);
-            rk = (uint64_t)md_residue_flags_kind(rf) | ((rf & MD_RESIDUE_FLAG_RESOLVED) ? 8u : 0u);
+            rk = (uint64_t)md_system_residue_kind(sys, (size_t)r) | ((rf & MD_RESIDUE_FLAG_RESOLVED) ? 8u : 0u);
         }
         md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40), temp);
     }

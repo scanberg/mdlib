@@ -133,10 +133,11 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
             const uint32_t end = heavy < g.num_atoms ? (uint32_t)map[heavy] : (uint32_t)n;
             md_array_push(sys->residue.name, frag_label(res_names[r]), alloc);
             md_array_push(sys->residue.seq_id, r + 1, alloc);
-            md_array_push(sys->residue.flags, md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, MD_RESIDUE_KIND_AMINO_ACID), alloc);
+            md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
             md_array_push(sys->residue.atom_offset, end, alloc);
         }
         sys->residue.count = (size_t)num_res;
+        for (int r = 0; r < num_res; ++r) md_util_system_set_residue_kind(sys, (size_t)r, MD_RESIDUE_KIND_AMINO_ACID);
     }
 
     md_bond_build_connectivity(&sys->bond, n, alloc);
@@ -473,7 +474,7 @@ UTEST(fragment, a_group_across_residues_is_of_both) {
     const char* names[] = { "PRO", "ETH" };
     const int heavy[] = { 4, 3 };
     ASSERT_TRUE(frag_system_from_smiles(&sys, "CCC(=O)OCC", names, heavy, 2));
-    for (size_t r = 0; r < 2; ++r) sys.residue.flags[r] = md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, MD_RESIDUE_KIND_OTHER);
+    for (size_t r = 0; r < 2; ++r) md_util_system_set_residue_kind(&sys, r, MD_RESIDUE_KIND_OTHER);
     ASSERT_TRUE(md_util_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
     const md_fragment_idx_t ester = frag_find(&sys, "ester");

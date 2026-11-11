@@ -46,11 +46,13 @@ typedef struct md_atom_pair_t {
 //
 //   particle type md_particle_type_flags_t what the particle is: an atom, a coarse grained bead or a virtual site
 //   atom       md_atom_flags_t       the atom's role in its residue (backbone, side chain, ...) and its chemistry
-//   residue    md_residue_flags_t    what the residue is (amino acid, nucleotide, water, ion), and where in its chain
+//   residue    md_residue_flags_t    where the residue is in its chain, and whether its backbone was found
+//   residue type md_residue_kind_t   what the residue is (amino acid, nucleotide, water, ion, lipid)
 //   part type  md_part_type_flags_t  what the part is (peptide, DNA, water, ...)
 //
 // Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share a particle
-// type. What a particle type is a form of is its element, what a residue type is a form of is its standard monomer
+// type: the kind of a residue is that of its type (md_system_residue_kind), and a residue which is classified is made
+// of the type of its name and kind (md_util_system_set_residue_kind). What a particle type is a form of is its element, what a residue type is a form of is its standard monomer
 // (md_monomer_t): HIE, HSD and MSE are forms of HIS, HIS and MET. Both are where the defaults of the type come from.
 //
 // A part has no flags of its own: what it is is the kind of its type (md_system_part_kind).
@@ -59,12 +61,12 @@ typedef struct md_atom_pair_t {
 // stale when the type or the residue is reclassified.
 //
 // Options which exclude each other are a VALUE, packed into a few bits and read and written through the accessors
-// below (md_residue_flags_kind, md_residue_flags_set_kind, ...). Independent properties are single bits. No
+// below (md_atom_flags_hybridization, md_part_type_flags_kind, ...). Independent properties are single bits. No
 // meaning is carried by a combination of bits.
 
 // ### RESIDUE ###
 
-// What a residue is, see md_util_system_infer_residue_flags.
+// What a residue is: the kind of its residue type (md_system_residue_kind), see md_util_system_infer_residue_flags.
 typedef enum md_residue_kind_t {
     MD_RESIDUE_KIND_OTHER           = 0,    // Unclassified, or none of the below: a ligand, a sugar, ...
     MD_RESIDUE_KIND_AMINO_ACID      = 1,
@@ -77,7 +79,6 @@ typedef enum md_residue_kind_t {
 
 typedef enum {
     MD_RESIDUE_FLAG_NONE                = 0,
-    MD_RESIDUE_FLAG_KIND_MASK           = 0x7,      // md_residue_kind_t, see md_residue_flags_kind
 
     // The residue holds the backbone of one amino acid or nucleotide of a chain, found from its bonds, and its atoms
     // have their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the residue is one by name only: missing atoms, no
@@ -168,15 +169,6 @@ static inline bool md_part_kind_is_polymer(md_part_kind_t kind) {
 
 static inline bool md_part_kind_is_nucleic_acid(md_part_kind_t kind) {
     return kind == MD_PART_KIND_DNA || kind == MD_PART_KIND_RNA || kind == MD_PART_KIND_NUCLEIC;
-}
-
-static inline md_residue_kind_t md_residue_flags_kind(md_residue_flags_t flags) {
-    return (md_residue_kind_t)((unsigned int)flags & (unsigned int)MD_RESIDUE_FLAG_KIND_MASK);
-}
-
-static inline md_residue_flags_t md_residue_flags_set_kind(md_residue_flags_t flags, md_residue_kind_t kind) {
-    const unsigned int mask = (unsigned int)MD_RESIDUE_FLAG_KIND_MASK;
-    return (md_residue_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
 static inline md_part_kind_t md_part_type_flags_kind(md_part_type_flags_t flags) {

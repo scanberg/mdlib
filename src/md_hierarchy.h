@@ -9,9 +9,10 @@
 // The levels a system is built of above its atoms: residues, instances, chains, parts and molecules, and their types.
 
 // Residue type: the residues of the system of one name and kind. The ALA of every chain is one type, the HIE and
-// the HID of a protein are two, which are both forms of the standard monomer HIS. Inferred from the residues
-// (md_util_system_infer_residue_types), as the residues are classified late (a lipid is found by its structure
-// after the residues are classified). Like the particle types they carry what the residues look like, their color.
+// the HID of a protein are two, which are both forms of the standard monomer HIS. The kind of a residue is that of its
+// type and nowhere else (md_system_residue_kind): a residue which is classified is made of the type of its name and
+// that kind (md_util_system_set_residue_kind), and one never classified gets the type of its name and kind OTHER
+// (md_util_system_infer_residue_types). Like the particle types they carry what the residues look like, their color.
 typedef struct md_residue_type_data_t {
     size_t count;
     md_label_t*        name;
@@ -26,9 +27,9 @@ typedef struct md_residue_data_t {
     md_label_t* name;
     md_sequence_id_t* seq_id;
     uint32_t* atom_offset;          // [count + 1]
-    md_residue_flags_t* flags;      // Kind (amino acid, nucleotide, water, ion) and place in the chain, see md_types.h
+    md_residue_flags_t* flags;      // Place in the chain and whether its backbone was found, see md_residue_flags_t
 
-    md_residue_type_idx_t* type_idx;    // [count] Once inferred (md_util_system_infer_residue_types), NULL before
+    md_residue_type_idx_t* type_idx;    // [count] -1 (or short of count, or NULL) for a residue of no type yet
     md_residue_type_data_t type;
 } md_residue_data_t;
 

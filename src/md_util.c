@@ -4278,7 +4278,7 @@ static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exc
 }
 
 static inline void set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
-    sys->residue.flags[res_idx] = md_residue_flags_set_kind(sys->residue.flags[res_idx], kind);
+    md_util_system_set_residue_kind(sys, res_idx, kind);
 }
 
 // Whether the atoms of the range are all coarse grained beads (or their virtual sites)
@@ -6739,8 +6739,8 @@ static particle_type_t* find_predefined_particle_type(md_str_t res_name, md_str_
 
 // The residue kind a predefined type tells, applied when the residue has none yet
 static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
-    if (kind != MD_RESIDUE_KIND_OTHER && sys->residue.flags && md_system_residue_kind(sys, res_idx) == MD_RESIDUE_KIND_OTHER) {
-        sys->residue.flags[res_idx] = md_residue_flags_set_kind(sys->residue.flags[res_idx], kind);
+    if (kind != MD_RESIDUE_KIND_OTHER && md_system_residue_kind(sys, res_idx) == MD_RESIDUE_KIND_OTHER) {
+        md_util_system_set_residue_kind(sys, res_idx, kind);
     }
 }
 
@@ -12790,53 +12790,48 @@ static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_id
     return (0xFFu << 24) | (b << 16) | (g << 8) | r;
 }
 
-static inline uint64_t residue_type_key(md_str_t name, md_residue_kind_t kind) {
-    return md_hash64_str(name, (uint64_t)kind + 1);
+void md_util_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
+    MD_ASSERT(sys);
+    md_residue_data_t* res = &sys->residue;
+    if (res_idx >= res->count) return;
+    MD_ASSERT(sys->alloc);
+    if (md_array_size(res->type_idx) < res->count) {
+        const size_t size = md_array_size(res->type_idx);
+        md_array_resize(res->type_idx, res->count, sys->alloc);
+        for (size_t i = size; i < res->count; ++i) res->type_idx[i] = -1;
+    }
+    const md_label_t name = res->name[res_idx];
+    const md_residue_type_idx_t cur = res->type_idx[res_idx];
+    if (cur >= 0 && (size_t)cur < res->type.count && res->type.kind[cur] == kind && md_label_eq(res->type.name[cur], name)) return;
+
+    // The type of the residue before it is most often the one (a solvent, a membrane), else one of the types
+    md_residue_type_idx_t type_idx = -1;
+    const md_residue_type_idx_t prev = res_idx > 0 ? res->type_idx[res_idx - 1] : -1;
+    if (prev >= 0 && (size_t)prev < res->type.count && res->type.kind[prev] == kind && md_label_eq(res->type.name[prev], name)) {
+        type_idx = prev;
+    }
+    for (size_t t = 0; t < res->type.count && type_idx < 0; ++t) {
+        if (res->type.kind[t] == kind && md_label_eq(res->type.name[t], name)) type_idx = (md_residue_type_idx_t)t;
+    }
+    if (type_idx < 0) {
+        const md_str_t name_str = MD_LABEL_STR(res->name[res_idx]);
+        const md_monomer_t monomer = md_monomer_from_residue_name(name_str, kind);
+        const uint32_t color = residue_type_default_color(sys, res_idx, name_str, kind, monomer);
+        type_idx = md_residue_type_add(&res->type, name_str, kind, monomer, color, sys->alloc);
+    }
+    res->type_idx[res_idx] = type_idx;
 }
 
 bool md_util_system_infer_residue_types(md_system_t* sys) {
     MD_ASSERT(sys);
-    md_residue_data_t* res = &sys->residue;
-    if (res->count == 0) return false;
+    if (sys->residue.count == 0) return false;
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
         return false;
     }
-    md_allocator_i* alloc = sys->alloc;
-
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-
-    // The types the system has already, so that inferring again keeps them and what was made of them (their colors).
-    // A type no residue is of any more (a residue which was reclassified) stays, used by none.
-    md_hashmap32_t lookup = { .allocator = temp_arena };
-    for (size_t t = 0; t < res->type.count; ++t) {
-        md_hashmap_add(&lookup, residue_type_key(MD_LABEL_STR(res->type.name[t]), res->type.kind[t]), (uint32_t)t);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        if (md_system_residue_type_idx(sys, c) < 0) md_util_system_set_residue_kind(sys, c, MD_RESIDUE_KIND_OTHER);
     }
-
-    md_array_resize(res->type_idx, res->count, alloc);
-    for (size_t c = 0; c < res->count; ++c) {
-        const md_str_t name = md_system_residue_name(sys, c);
-        const md_residue_kind_t kind = md_system_residue_kind(sys, c);
-        const uint64_t key = residue_type_key(name, kind);
-
-        md_residue_type_idx_t type_idx = -1;
-        const uint32_t* found = md_hashmap_get(&lookup, key);
-        if (found && res->type.kind[*found] == kind && md_str_eq(MD_LABEL_STR(res->type.name[*found]), name)) {
-            type_idx = (md_residue_type_idx_t)*found;
-        } else if (found) {
-            type_idx = md_residue_type_find(&sys->residue.type, name, kind);       // Two keys which collide
-        }
-        if (type_idx < 0) {
-            const md_monomer_t monomer = md_monomer_from_residue_name(name, kind);
-            const uint32_t color = residue_type_default_color(sys, c, name, kind, monomer);
-            type_idx = md_residue_type_add(&sys->residue.type, name, kind, monomer, color, alloc);
-            if (!found) md_hashmap_add(&lookup, key, (uint32_t)type_idx);
-        }
-        res->type_idx[c] = type_idx;
-    }
-
-    md_temp_end(temp);
     return true;
 }
 
