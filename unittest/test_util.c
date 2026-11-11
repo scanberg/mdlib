@@ -4270,7 +4270,7 @@ UTEST(util, sort_spatial) {
         xyz[i] = md_f32x3_set(cluster * 20.0f, cluster * 20.0f, 0.0f);
     }
     uint32_t order[N];
-    md_util_sort_spatial(order, xyz, N);
+    md_util_sort_spatial(order, (const float*)xyz, sizeof(md_f32x3_t), N);
     bool seen[N] = {0};
     for (int i = 0; i < N; ++i) {
         ASSERT_LT(order[i], (uint32_t)N);

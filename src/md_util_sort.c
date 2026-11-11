@@ -1,5 +1,4 @@
 ﻿#include <md_util_sort.h>
-#include <md_util_geom.h>
 
 #include <core/md_compiler.h>
 #include <core/md_common.h>
@@ -358,47 +357,6 @@ static inline uint32_t part1By2(uint32_t x) {
     return x;
 }
 
-static void computeOrder(uint32_t* result, const float* vx, const float* vy, const float* vz, size_t count, size_t byte_stride) {
-    float minv[3] = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
-    float maxv[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-
-    byte_stride = MD_MAX(byte_stride, sizeof(float));
-    for (size_t i = 0; i < count; ++i) {
-        float x = *(float*)((const char*)vx + byte_stride * i);
-        float y = *(float*)((const char*)vy + byte_stride * i);
-        float z = *(float*)((const char*)vz + byte_stride * i);
-
-        minv[0] = MD_MIN(minv[0], x);
-        maxv[0] = MD_MAX(maxv[0], x);
-
-        minv[1] = MD_MIN(minv[1], y);
-        maxv[1] = MD_MAX(maxv[1], y);
-
-        minv[2] = MD_MIN(minv[2], z);
-        maxv[2] = MD_MAX(maxv[2], z);
-    }
-
-    float extent = 0.f;
-
-    extent = (maxv[0] - minv[0]) < extent ? extent : (maxv[0] - minv[0]);
-    extent = (maxv[1] - minv[1]) < extent ? extent : (maxv[1] - minv[1]);
-    extent = (maxv[2] - minv[2]) < extent ? extent : (maxv[2] - minv[2]);
-
-    float scale = extent == 0 ? 0.f : 1.f / extent;
-
-    // generate Morton order based on the position inside a unit cube
-    for (size_t i = 0; i < count; ++i) {
-        const float px = *(const float*)((const char*)vx + byte_stride * i);
-        const float py = *(const float*)((const char*)vy + byte_stride * i);
-        const float pz = *(const float*)((const char*)vz + byte_stride * i);
-        int x = (int)((px - minv[0]) * scale * 1023.f + 0.5f);
-        int y = (int)((py - minv[1]) * scale * 1023.f + 0.5f);
-        int z = (int)((pz - minv[2]) * scale * 1023.f + 0.5f);
-
-        result[i] = part1By2(x) | (part1By2(y) << 1) | (part1By2(z) << 2);
-    }
-}
-
 static void computeHistogram10(uint32_t hist[1024][3], const uint32_t* data, size_t count) {
     // compute 3 10-bit histograms in parallel
     for (size_t i = 0; i < count; ++i) {
@@ -437,24 +395,34 @@ static void radixPass10(uint32_t* destination, const uint32_t* source, const uin
 
 // Packed coordinates: the bounds come from the packed AABB, which reads them as they lie, and the
 // keys from each atom in turn.
-void md_util_sort_spatial(uint32_t* source, const md_f32x3_t* xyz, size_t count) {
-    if (!source || !xyz || count == 0) return;
+void md_util_sort_spatial(uint32_t* out_order, const float* xyz, size_t stride_in_bytes, size_t count) {
+    if (!out_order || !xyz || count == 0) return;
+    const size_t stride = stride_in_bytes ? stride_in_bytes : 3 * sizeof(float);
+#define XYZ(i) ((const float*)((const char*)xyz + stride * (i)))
 
     md_temp_scope_t temp_scope = md_temp_begin();
 
-    float minv[3], maxv[3];
-    md_util_aabb_compute(minv, maxv, xyz, NULL, NULL, count);
+    float minv[3] = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
+    float maxv[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (size_t i = 0; i < count; ++i) {
+        const float* p = XYZ(i);
+        minv[0] = MD_MIN(minv[0], p[0]); maxv[0] = MD_MAX(maxv[0], p[0]);
+        minv[1] = MD_MIN(minv[1], p[1]); maxv[1] = MD_MAX(maxv[1], p[1]);
+        minv[2] = MD_MIN(minv[2], p[2]); maxv[2] = MD_MAX(maxv[2], p[2]);
+    }
     const float extent = MD_MAX(maxv[0] - minv[0], MD_MAX(maxv[1] - minv[1], maxv[2] - minv[2]));
     const float scale = extent == 0 ? 0.f : 1023.f / extent;
 
     // Morton order based on the position inside a unit cube
     uint32_t* keys = md_temp_alloc_array(temp_scope, uint32_t, count);
     for (size_t i = 0; i < count; ++i) {
-        const int x = (int)((xyz[i].x - minv[0]) * scale + 0.5f);
-        const int y = (int)((xyz[i].y - minv[1]) * scale + 0.5f);
-        const int z = (int)((xyz[i].z - minv[2]) * scale + 0.5f);
+        const float* p = XYZ(i);
+        const int x = (int)((p[0] - minv[0]) * scale + 0.5f);
+        const int y = (int)((p[1] - minv[1]) * scale + 0.5f);
+        const int z = (int)((p[2] - minv[2]) * scale + 0.5f);
         keys[i] = part1By2(x) | (part1By2(y) << 1) | (part1By2(z) << 2);
     }
+#undef XYZ
 
     // Important to zero the data here, since we increment when computing the histogram
     uint32_t hist[1024][3] = {0};
@@ -466,38 +434,9 @@ void md_util_sort_spatial(uint32_t* source, const md_f32x3_t* xyz, size_t count)
     }
 
     // 3-pass 10-bit radix sort computes the resulting order into scratch
-    radixPass10(source, scratch, keys, count, hist, 0);
-    radixPass10(scratch, source, keys, count, hist, 1);
-    radixPass10(source, scratch, keys, count, hist, 2);
-
-    md_temp_end(temp_scope);
-}
-
-void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_in_bytes, size_t count) {
-    if (!source || !xyz || count <= 0) return;
-
-    md_temp_scope_t temp_scope = md_temp_begin();
-
-    uint32_t* keys = md_temp_alloc_array(temp_scope, uint32_t, count);
-    const float* base = (const float*)xyz;
-    const float* x = base + 0;
-    const float* y = base + 1;
-    const float* z = base + 2;
-    computeOrder(keys, x, y, z, count, stride_in_bytes);
-
-    // Important to zero the data here, since we increment when computing the histogram
-    uint32_t hist[1024][3] = {0};
-    computeHistogram10(hist, keys, count);
-
-    uint32_t* scratch = md_temp_alloc_array(temp_scope, uint32_t, count);
-    for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-        scratch[i] = i;
-    }
-
-    // 3-pass radix sort computes the resulting order into scratch
-    radixPass10(source, scratch, keys, count, hist, 0);
-    radixPass10(scratch, source, keys, count, hist, 1);
-    radixPass10(source, scratch, keys, count, hist, 2);
+    radixPass10(out_order, scratch, keys, count, hist, 0);
+    radixPass10(scratch, out_order, keys, count, hist, 1);
+    radixPass10(out_order, scratch, keys, count, hist, 2);
 
     md_temp_end(temp_scope);
 }

@@ -158,7 +158,7 @@ UBENCH_EX(coords, sort_spatial) {
     if (load_big(&sys, &st, arena)) {
         uint32_t* idx = md_alloc(arena, st.num_atoms * sizeof(uint32_t));
         UBENCH_DO_BENCHMARK() {
-            md_util_sort_spatial(idx, st.xyz, st.num_atoms);
+            md_util_sort_spatial(idx, (const float*)st.xyz, sizeof(md_f32x3_t), st.num_atoms);
             UBENCH_DO_NOTHING(idx);
         }
     }
