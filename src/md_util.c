@@ -4,7 +4,6 @@
 #include "md_system_fields.h"
 #include <md_chem.h>
 #include <md_dssp.h>
-#include <md_match.h>
 #include <md_element.h>
 
 #include <core/md_coord_stream.h>
@@ -3930,7 +3929,7 @@ static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_
 
 // ### BACKBONES FROM THE BONDS ###
 //
-// The backbones of an atomistic system are found from its covalent bonds alone (md_match within each structure),
+// The backbones of an atomistic system are found from its covalent bonds alone (backbone_paths_ncco, _sugar),
 // whatever its atoms and residues are called: an XYZ file or the geometry of a QM calculation has no residues, a LAMMPS
 // data file names its atoms by their types and its residues "MOL". The names play no part. What is found is what a
 // cartoon and the secondary structure need: the atoms of each segment, in order along each chain.
@@ -3979,20 +3978,73 @@ static md_atom_idx_t bonded_atom_other(const md_system_t* sys, md_atom_idx_t a, 
     return -1;
 }
 
-// The matches of a query of the backbone atoms in the system, at the structure level, bonds of any order
-static bool backbone_matches(md_match_result_t* out, md_str_t smiles, const md_system_t* sys, md_allocator_i* alloc) {
-    md_match_query_t query = {0};
-    if (!md_match_query_init_smiles(&query, smiles, alloc, NULL)) return false;
-    const md_match_desc_t desc = {
-        .query       = &query,
-        .level       = MD_MATCH_LEVEL_MOLECULE,
-        .mode        = MD_MATCH_MODE_UNIQUE,
-        .hydrogens   = MD_MATCH_RESOLVE_NEVER,
-        .bond_orders = MD_MATCH_RESOLVE_NEVER,
-        .charges     = MD_MATCH_RESOLVE_NEVER,
-    };
-    return md_match_find(out, &desc, sys, alloc) && out->count > 0;
+// The paths of the backbone atoms in the covalent bond graph (the bonds md_bond_iter walks: no elastic or metallic
+// bonds), by the elements of the atoms alone: bond orders, hydrogens and charges are not tested. A coordination bond
+// takes no part, as it is between a metal and an atom of none of these paths. atom_idx holds count paths of width
+// atoms each, in the order of their first atom.
+typedef struct backbone_paths_t {
+    int32_t* atom_idx;
+    size_t   count;
+} backbone_paths_t;
+
+#define FOR_BONDED(x, a, z)                                                                                      \
+    for (md_bond_iter_t it_##x = md_bond_iter(&sys->bond, (size_t)(a)); md_bond_iter_has_next(&it_##x); md_bond_iter_next(&it_##x)) \
+        for (md_atom_idx_t x = md_bond_iter_atom_index(&it_##x); x >= 0 && md_atom_atomic_number(&sys->atom, (size_t)x) == (z); x = -1)
+
+// N-CA-C-O: an N, a C, a C and an O bonded in a row
+static bool backbone_paths_ncco(backbone_paths_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    md_array(int32_t) idx = 0;
+    for (size_t i = 0; i < sys->atom.count; ++i) {
+        const md_atom_idx_t n = (md_atom_idx_t)i;
+        if (md_atom_atomic_number(&sys->atom, i) != MD_Z_N) continue;
+        FOR_BONDED(ca, n, MD_Z_C) {
+            FOR_BONDED(c, ca, MD_Z_C) {
+                FOR_BONDED(o, c, MD_Z_O) {
+                    const int32_t path[4] = { n, ca, c, o };
+                    md_array_push_array(idx, path, 4, alloc);
+                }
+            }
+        }
+    }
+    out->atom_idx = idx;
+    out->count = md_array_size(idx) / 4;
+    return out->count > 0;
 }
+
+// The sugar of a nucleotide with its backbone, O5'-C5'-C4'(-O4'-C1'-C2'-C3'-)C3'-O3': the ring C4' O4' C1' C2' C3' of
+// an oxygen and four carbons, C5' a carbon on C4' with the O5' on it, O3' an oxygen on C3'. Eight atoms, all different.
+static bool backbone_paths_sugar(backbone_paths_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    md_array(int32_t) idx = 0;
+    for (size_t i = 0; i < sys->atom.count; ++i) {
+        const md_atom_idx_t c4 = (md_atom_idx_t)i;
+        if (md_atom_atomic_number(&sys->atom, i) != MD_Z_C) continue;
+        FOR_BONDED(c5, c4, MD_Z_C) {
+            FOR_BONDED(o5, c5, MD_Z_O) {
+                FOR_BONDED(o4, c4, MD_Z_O) {
+                    FOR_BONDED(c1, o4, MD_Z_C) {
+                        if (c1 == c4 || c1 == c5) continue;
+                        FOR_BONDED(c2, c1, MD_Z_C) {
+                            if (c2 == c4 || c2 == c5) continue;
+                            FOR_BONDED(c3, c2, MD_Z_C) {
+                                if (c3 == c1 || c3 == c4 || c3 == c5 || md_bond_find(&sys->bond, c3, c4) < 0) continue;
+                                FOR_BONDED(o3, c3, MD_Z_O) {
+                                    if (o3 == o4 || o3 == o5) continue;
+                                    const int32_t path[8] = { o5, c5, c4, o4, c1, c2, c3, o3 };
+                                    md_array_push_array(idx, path, 8, alloc);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out->atom_idx = idx;
+    out->count = md_array_size(idx) / 8;
+    return out->count > 0;
+}
+
+#undef FOR_BONDED
 
 static int cmp_u64(const void* a, const void* b) {
     const uint64_t x = *(const uint64_t*)a;
@@ -4038,10 +4090,9 @@ typedef struct backbone_chains_t {
 
 static bool protein_chains_from_bonds(backbone_chains_t* out, const md_system_t* sys, const md_system_state_t* state, md_temp_scope_t temp) {
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_match_result_t res = {0};
+    backbone_paths_t res = {0};
     // Columns: N CA C O
-    if (!backbone_matches(&res, MD_STR_LIT("NCCO"), sys, temp_alloc)) return false;
-    MD_ASSERT(res.width == 4);
+    if (!backbone_paths_ncco(&res, sys, temp_alloc)) return false;
 
     const size_t num_atoms = sys->atom.count;
     const size_t num_matches = res.count;
@@ -4131,10 +4182,9 @@ static bool protein_chains_from_bonds(backbone_chains_t* out, const md_system_t*
 
 static bool nucleic_chains_from_bonds(backbone_chains_t* out, const md_system_t* sys, md_temp_scope_t temp) {
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_match_result_t res = {0};
+    backbone_paths_t res = {0};
     // Columns: O5' C5' C4' O4' C1' C2' C3' O3'
-    if (!backbone_matches(&res, MD_STR_LIT("OCC1OCCC1O"), sys, temp_alloc)) return false;
-    MD_ASSERT(res.width == 8);
+    if (!backbone_paths_sugar(&res, sys, temp_alloc)) return false;
 
     const size_t num_atoms = sys->atom.count;
 
