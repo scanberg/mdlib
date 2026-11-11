@@ -4999,6 +4999,39 @@ UTEST(util, backbones_named_as_their_atoms) {
     }
 }
 
+// A residue of one atom of an element which forms monatomic ions (O, H, Na, ...) is an ion where its name says so, or
+// where it is bonded to nothing but by coordination. Orthosilicic acid, Si(OH)4, and a sodium, each atom a residue
+// "MOL" as a LAMMPS data file gives them: classified first without bonds (as the loader does), every O and H is taken
+// for an ion; with the bonds inferred they are not, and the sodium still is.
+UTEST(util, lone_atom_ion_only_without_covalent_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(64));
+    const float d = 1.63f / 1.7320508f;     // Si-O 1.63 along the diagonals of a cube
+    const float h = 2.59f / 1.7320508f;     // O-H 0.96 further out
+    const float dir[4][3] = { {1, 1, 1}, {1, -1, -1}, {-1, 1, -1}, {-1, -1, 1} };
+    char text[2048];
+    int len = 0, serial = 1;
+    #define ATOM(name, elem, x, y, z) len += snprintf(text + len, sizeof(text) - len, "HETATM%5d %-4s MOL A%4d    %8.3f%8.3f%8.3f  1.00  0.00          %2s\n", serial, name, serial, (double)(x), (double)(y), (double)(z), elem), serial += 1
+    ATOM("SI", "SI", 0, 0, 0);
+    for (int k = 0; k < 4; ++k) ATOM("O", " O", d * dir[k][0], d * dir[k][1], d * dir[k][2]);
+    for (int k = 0; k < 4; ++k) ATOM("H", " H", h * dir[k][0], h * dir[k][1], h * dir[k][2]);
+    ATOM("NA", "NA", 8, 0, 0);
+    #undef ATOM
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){ text, (size_t)len }, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_EQ(10u, sys.residue.count);
+    ASSERT_EQ(0u, sys.bond.count);
+
+    ASSERT_TRUE(md_util_system_infer_residue_flags(&sys, &state));
+    for (size_t r = 1; r < 10; ++r) EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&sys, r));
+
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    EXPECT_EQ(8u, sys.bond.count);
+    for (size_t r = 1; r < 9; ++r) EXPECT_EQ(MD_RESIDUE_KIND_OTHER, md_system_residue_kind(&sys, r));
+    EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&sys, 9));
+    md_vm_arena_destroy(alloc);
+}
+
 // Nothing which is no polymer: fullerenes, and a tryptophan alone (one residue is no chain)
 UTEST(util, backbones_from_bonds_none) {
     const char* files[] = {

@@ -4290,6 +4290,15 @@ static bool atoms_are_beads(const md_system_t* sys, md_urange_t range) {
     return true;
 }
 
+// Whether the atom has a covalent bond (not a coordination bond to a metal)
+static bool atom_bonded_covalently(const md_system_t* sys, md_atom_idx_t atom) {
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)atom);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        if (md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&it)) == MD_BOND_KIND_COVALENT) return true;
+    }
+    return false;
+}
+
 // True when every neighbor of the atom other than 'except' is of element allowed_z: the atom ends its chain
 static bool atom_is_chain_end(const md_system_t* sys, int atom, int except, md_atomic_number_t allowed_z) {
     md_bond_iter_t it = md_bond_iter(&sys->bond, atom);
@@ -4762,9 +4771,11 @@ bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_
         md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
         size_t len = (size_t)(res_range.end - res_range.beg);
 
+        // A residue of beads a predefined coarse grained type classified keeps its kind. One of atoms is classified anew
+        // each time, from what the system is now: an atom a loader classified before the bonds were inferred (a lone O
+        // of a LAMMPS data file without bonds, which the bonds then join into a silica network) is not kept an ion.
         const md_residue_kind_t kind = md_system_residue_kind(sys, residue_idx);
-        if (kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID) {
-            // Already classified (by a predefined coarse grained type)
+        if ((kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID) && atoms_are_beads(sys, res_range)) {
             continue;
 		}
 
@@ -4822,10 +4833,16 @@ bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_
            (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, res_range.beg))))
         {
             set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_WATER);
-        } else if (len == 1 && (md_util_resname_ion(res_name) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, res_range.beg)))) {
+        } else if (len == 1 && (md_util_resname_ion(res_name) ||
+                   (monatomic_ion_element(md_atom_atomic_number(&sys->atom, res_range.beg)) && !atom_bonded_covalently(sys, (md_atom_idx_t)res_range.beg)))) {
+            // An ion by its name, or by its element where it is bonded to nothing but by coordination: a lone O, S or N
+            // covalently bonded (the O between two Si of a silica network, a residue to an atom) is no ion
             set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_ION);
         } else if (md_util_resname_lipid(res_name)) {
             set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_LIPID);
+        } else if (len == 1 && kind == MD_RESIDUE_KIND_ION) {
+            // An ion no more: its bonds tell otherwise now
+            set_residue_kind(sys, residue_idx, MD_RESIDUE_KIND_OTHER);
         }
     }
 
