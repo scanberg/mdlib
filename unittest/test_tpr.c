@@ -690,7 +690,13 @@ UTEST(tpr, elastic_bonds) {
     EXPECT_EQ(2u, count_elastic(&sys));
 
     // Inferring the bonds anew keeps the elastic bonds: nothing infers them
-    md_util_system_infer_covalent_bonds(&sys, &state, NULL);
+    {
+        md_bond_data_t inferred = {0};
+        md_bond_data_t merged = {0};
+        md_bond_infer(&inferred, &sys, &state, sys.alloc, NULL);
+        md_bond_merge(&merged, &sys.bond, &inferred, sys.atom.count, sys.alloc);
+        sys.bond = merged;
+    }
     EXPECT_EQ(2u, count_elastic(&sys));
 
     md_arena_allocator_destroy(arena);

@@ -930,7 +930,7 @@ static void delta_load(delta_fixture_chem_t* f, const char* before, const char* 
     md_system_state_init(&f->frame, n);
     for (size_t i = 0; i < n; ++i) f->frame.xyz[i] = f->after_state.xyz[i];
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
-    if (!md_util_bond_delta(&f->delta, &f->before, &f->frame, &desc, f->alloc)) return;
+    if (!md_bond_delta_compute(&f->delta, &f->before, &f->frame, &desc, f->alloc)) return;
     f->ok = md_chem_perceive_delta(&f->chem, &f->before, &f->frame, &f->delta, MD_CHEM_FLAG_PROTONATE_PH7, f->alloc);
 }
 
@@ -1186,7 +1186,7 @@ UTEST(chem, delta_metal_contact) {
             fs.xyz[i] = md_f32x3_set(c.x, c.y, c.z);
         }
         md_bond_delta_t d = {0};
-        ASSERT_TRUE(md_util_bond_delta(&d, &sys, &fs, &desc, alloc));
+        ASSERT_TRUE(md_bond_delta_compute(&d, &sys, &fs, &desc, alloc));
         if (d.num_formed == 0 && md_bitset_empty(d.broken)) continue;
         frames += 1;
         md_chem_delta_t chem = {0};

@@ -76,7 +76,7 @@ bool md_chem_perceive(struct md_system_t* sys, const struct md_system_state_t* r
 
 // ### A FRAME WITH OTHER BONDS ###
 //
-// A state whose bonds are not those of the system (bonds formed and broken in it: md_bond_delta_t, md_util_bond_delta)
+// A state whose bonds are not those of the system (bonds formed and broken in it: md_bond_delta_t, md_bond_delta_compute)
 // has a chemistry of its own where they changed. md_chem_perceive_delta works it out for the REGION the changes
 // reach, as md_chem_perceive would for the bonds of the state, and leaves the system as it is: what lies outside of
 // the region keeps what md_chem_perceive gave it, as nothing there can change.

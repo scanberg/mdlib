@@ -56,11 +56,7 @@ typedef enum {
     // sterol, with its branches and hydrogens. The other atoms of a lipid are its head(s).
     MD_ATOM_FLAG_LIPID_TAIL             = 0x40,
 
-    // Of a metallic phase: a metal in bulk, at a surface or in a particle, bonded to the metal atoms of its first
-    // coordination shell by MD_BOND_KIND_METALLIC bonds, and to nothing else in the topology (what touches a surface
-    // moves across it: its contacts are those of a frame, md_util_bond_delta). Set with the bonds
-    // (md_util_system_infer_covalent_bonds, METALLIC PHASES in md_util.c).
-    MD_ATOM_FLAG_METALLIC               = 0x80,
+    // 0x80 unused: the atoms of a metallic phase are those of its metallic bonds (md_bond_metallic_atoms)
 
     // Chemistry, see md_chem.h (md_chem_perceive)
     MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization

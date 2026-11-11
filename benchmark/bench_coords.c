@@ -193,8 +193,10 @@ UBENCH_EX(coords, infer_covalent_bonds) {
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_DO_BENCHMARK() {
-            md_util_system_infer_covalent_bonds(&sys, &st, NULL);
-            UBENCH_DO_NOTHING(&sys.bond);
+            md_bond_data_t bonds = {0};
+            md_bond_infer(&bonds, &sys, &st, md_get_heap_allocator(), NULL);
+            UBENCH_DO_NOTHING(&bonds);
+            md_bond_data_free(&bonds, md_get_heap_allocator());
         }
     }
     md_vm_arena_destroy(arena);

@@ -1884,7 +1884,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues
     // know what they are
-    const size_t num_elastic = md_util_system_infer_elastic_bonds(sys);
+    const size_t num_elastic = md_system_infer_elastic_bonds(sys);
     if (num_elastic) {
         MD_LOG_INFO("TPR: %zu bonds between the residues of coarse grained chains are an elastic network, not bonds of the chains", num_elastic);
     }

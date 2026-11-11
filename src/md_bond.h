@@ -5,6 +5,11 @@
 #include <md_types.h>
 #include <core/md_array.h>
 #include <md_atom.h>
+#include <core/md_bitset.h>
+
+struct md_system_t;
+struct md_system_state_t;
+struct md_executor_t;
 
 // Bonds: the bond graph of the atoms and the non-covalent bonds (md_bond_data_t), and iterating them.
 
@@ -32,25 +37,25 @@
 //                        Mo-Mo of a paddlewheel): whether a bond involves a metal is a question for the elements of its
 //                        atoms. Two metal atoms of a metallic phase have a METALLIC bond instead.
 //     COORDINATE   0x20  A metal-ligand bond, which counts towards the valence of neither atom: every bond between a
-//                        metal and a non-metal unless its kind was given (md_util_system_infer_coordination), and any
+//                        metal and a non-metal unless its kind was given (md_system_infer_coordination), and any
 //                        other bond a file says is one. Whether the ligand is then an anion (the thiolate of a zinc
 //                        finger cysteine) is for the perception of its atom to say (md_chem_perceive), not the bond.
 //     ELASTIC      0x80  Not a bond of the molecule but a spring of its force field which holds two particles at a
 //                        distance: the elastic network of a coarse grained protein or nucleic acid (the rubber bands of
 //                        martinize, ElNeDyn), the restraints of its secondary structure, a restraint between two atoms.
 //                        GROMACS writes them as bonds which make no connection (bond types 6, 9 and 10, constraints of
-//                        type 2), or as plain bonds (md_util_system_infer_elastic_bonds). They are kept, as
+//                        type 2), or as plain bonds (md_system_infer_elastic_bonds). They are kept, as
 //                        information, in the first range of md_bond_data_t, and left out of everything which follows
 //                        the bonds of a molecule: the connectivity (md_bond_conn_data_t, so md_bond_iter and
 //                        md_bond_find), the molecules, rings, chemistry and matching. The representations do not draw
 //                        them unless asked to.
-//     METALLIC     0xA0  Between two atoms of a metallic phase (MD_ATOM_FLAG_METALLIC: a metal in bulk, at a surface,
+//     METALLIC     0xA0  Between two atoms of a metallic phase (md_bond_metallic_atoms: a metal in bulk, at a surface,
 //                        in a particle), neighbours within its first coordination shell. The bonding of a metal is not
 //                        that of a molecule, so like the elastic bonds they are kept in the first range of
 //                        md_bond_data_t and left out of everything which follows the bonds of a molecule (the
 //                        connectivity, molecules, rings, chemistry, matching, the bonds formed and broken over a run).
 //                        Licorice and ball and stick do not draw them; a Bonds representation does (bond(kind=
-//                        "metallic")). Inferred only (METALLIC PHASES in md_util.c).
+//                        "metallic")). Inferred only (METALLIC PHASES in md_bond.c).
 //     INTERACTION  0xC0  A non-covalent bond of no particular kind: one a user marks between two atoms, a salt bridge,
 //                        the contact of a halogen with its acceptor.
 //     HYDROGEN     0xE0  A hydrogen bond, D-H...A. Stored with the hydrogen (or the donor without one) as the first
@@ -227,6 +232,9 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
 
 // This is not something which should be done frequently. The elastic and metallic bonds (md_bond_is_graph) are left out.
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
+
+// Frees the arrays of the bond data, allocated with alloc, and empties it
+void md_bond_data_free(md_bond_data_t* bond, md_allocator_i* alloc);
 
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     MD_ASSERT(bond_data);
@@ -413,6 +421,100 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
     }
     return found;
 }
+
+// ### INFERENCE ###
+// What is written is out, allocated with alloc; the system is read and never written. out is not the system's own
+// (&sys->bond): md_util_system_infer gives the system the result, or the caller does (md_bond_data_free the old, assign).
+
+// The bonds of the atoms of the system from the coordinates of state alone, every one of origin
+// MD_BOND_ORIGIN_INFERRED, with their connectivity: the bonds the system has are not looked at (md_bond_merge puts the
+// two together). Atoms are bonded by their covalent radii (derived from the element). The atoms of a metallic phase (a
+// metal in bulk, at a surface or in a particle) are bonded to the metal atoms of their first coordination shell by
+// metallic bonds and to nothing else, and a halogen bonded to a non-metal coordinates no metal (METALLIC PHASES in
+// md_bond.c). Coarse grained systems (md_system_is_coarse_grained) are bonded as their Martini topologies are: a residue
+// whose beads are those of a residue of the Martini force fields has the bonds of its topology, any other amino acid or
+// nucleotide a minimum spanning tree of its beads with its rings. The backbone bead of each residue is bonded to that of
+// the next unless the numbering starts over, and cysteines are bridged (infer_coarse_grained_bonds in md_martini.c). The
+// pairs within reach are found on the threads of the executor (NULL: the calling thread), and the bonds come out the
+// same whatever the threads. False, and out empty, when state has no coordinates.
+bool md_bond_infer(md_bond_data_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, md_allocator_i* alloc, const struct md_executor_t* executor);
+
+// The bonds given (those a system has) with the inferred ones (md_bond_infer) in place of those inferred before, with
+// their connectivity over atom_count atoms. Every bond of given not of origin MD_BOND_ORIGIN_INFERRED is kept, in its
+// order and after the inferred ones, and so are the non-covalent bonds. An inferred bond is left out where it would
+// duplicate a pair of given (a non-covalent bond included: a pair has one bond, and that one was given), and between two
+// atoms a topology covers (bonds of origin MD_BOND_ORIGIN_TOPOLOGY, which is authoritative where it has bonds). An
+// elastic bond does neither: it is no bond of the molecule. out is neither given nor inferred.
+void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, size_t atom_count, md_allocator_i* alloc);
+
+// The atoms of the metallic phases: those of the metallic bonds (MD_BOND_KIND_METALLIC, METALLIC PHASES in md_bond.c).
+// out[i] is 1 for such an atom and 0 for any other, of atom_count atoms. Returns how many there are.
+size_t md_bond_metallic_atoms(uint8_t* out, const md_bond_data_t* bond, size_t atom_count);
+
+// Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
+// given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_util_system_infer does it for each system; a bond
+// added afterwards (by hand) wants it too.
+size_t md_system_infer_coordination(struct md_system_t* sys);
+
+// Marks the bonds of a coarse grained topology which hold a protein or nucleic acid in shape without being bonds of it
+// MD_BOND_KIND_ELASTIC, and returns how many it marked: an elastic network (ElNeDyn, the rubber bands of martinize) and
+// the restraints of secondary structure, when they are written as plain bonds (bond type 1), as they are as often as
+// not. Between two residues of a chain (amino acids or nucleotides, beads) a Martini topology has the link from the last
+// backbone bead of one to the first of the next (BB to BB, BB3 to BB1, and BB2 to BB1 as well in Martini 3 RNA), a
+// disulfide (the SC1 of two cysteines), and the bond which closes a cyclic chain; every other bond between beads of
+// two residues of a chain is elastic. Bonds within a residue, and to anything other than amino acids and nucleotides,
+// are left as they are. Needs the kinds of the residues and the backbone beads (md_util_system_infer_residue_flags),
+// and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
+size_t md_system_infer_elastic_bonds(struct md_system_t* sys);
+
+// ### BONDS FORMED AND BROKEN ###
+// The bonds of a state against the bond graph of the system, which is the reference topology: the bonds of the graph
+// broken in the state, and the bonds formed in it which the system does not have. What the bonds of the state are is
+// the graph without the broken bonds and with the formed ones; the system is not changed. Only the bonds of a scope are
+// looked at, those with an atom in it (so a bond to an atom just outside of it forms too): outside of it the bonds of
+// the state are those of the graph.
+//
+// The rules are those of md_bond_infer, with a band around their cutoffs so that a bond does not flicker
+// from frame to frame as it vibrates near one: a bond of the graph breaks only beyond (1 + tolerance) times its cutoff,
+// and a pair forms a bond only within (1 - tolerance) times it. Measured against the graph rather than an earlier state,
+// so the bonds of a state are those of that state alone, whatever was evaluated before it.
+//   - Only the bonds of the breakable origins break. A bond a user added stays, and by default so does one of a force
+//     field topology, which holds throughout a classical simulation.
+//   - A formed bond is limited by what its atoms can take (md_bond_infer prunes the same way). A bond of
+//     the graph counts against that while it is within its cutoff, but not once it is stretched beyond it on its way to
+//     breaking: a bond forming as another breaks (a proton moving, the transition state of a substitution) shows both
+//     for the frames it takes, while two atoms which clash in the reference do not bond in every frame.
+//   - A pair with a non-covalent bond in the system forms no bond: what was given of it stands.
+//   - The metallic bonds neither break nor form: two atoms of a metallic phase (atoms of metallic bonds, md_bond_metallic_atoms) are
+//     left out.
+//     What touches the phase has its bonds to it here only, formed in the frames where it is close enough, as it
+//     moves across a surface.
+//   - A halogen bonded to a non-metal in the state, by a bond of the graph which is not broken or by one formed,
+//     forms no coordination bond.
+//   - A coarse grained system has no bonds formed or broken: its bonds come from templates, not distances.
+typedef struct md_bond_delta_t {
+    md_bitset_t      broken;        // Bonds of the graph broken in the state: indices into sys->bond, in [0, count)
+    size_t           num_formed;
+    md_atom_pair_t*  formed_pair;   // [num_formed] Pairs bonded in the state which have no bond in the system, each the
+                                    // lower atom first, sorted
+    md_bond_flags_t* formed_flags;  // [num_formed] Covalent or coordinate, of order unknown and origin inferred
+} md_bond_delta_t;
+
+#define MD_BOND_DELTA_TOLERANCE 0.1f
+#define MD_BOND_DELTA_BREAKABLE ((1u << MD_BOND_ORIGIN_FILE) | (1u << MD_BOND_ORIGIN_INFERRED))
+
+typedef struct md_bond_delta_desc_t {
+    const md_bitset_t* scope;       // The atoms whose bonds are looked at, NULL for all of them
+    float    tolerance;             // Half the width of the band around the cutoffs, as a fraction of them: [0, 0.5).
+                                    // MD_BOND_DELTA_TOLERANCE is what to use without a reason for another
+    uint32_t breakable;             // The origins whose bonds may break, a mask of 1 << md_bond_origin_t:
+                                    // MD_BOND_DELTA_BREAKABLE (a file's and those inferred) without a reason for another
+} md_bond_delta_desc_t;
+
+// The delta of a state, written to out and allocated with alloc. False, with an empty delta, when the state has no
+// coordinates (or not those of the system) or the system is coarse grained.
+bool md_bond_delta_compute(md_bond_delta_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, const md_bond_delta_desc_t* desc, md_allocator_i* alloc);
+void md_bond_delta_free(md_bond_delta_t* delta, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

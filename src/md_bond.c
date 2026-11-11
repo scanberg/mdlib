@@ -3,6 +3,164 @@
 // Bond inference: covalent and metallic bonds from the coordinates, coordination and elastic bonds, and the bonds
 // formed and broken in a state (md_util.h).
 
+// ### BOND DATA ###
+
+const char* md_bond_origin_name(md_bond_origin_t origin) {
+    switch (origin) {
+    case MD_BOND_ORIGIN_FILE:       return "file";
+    case MD_BOND_ORIGIN_TOPOLOGY:   return "topology";
+    case MD_BOND_ORIGIN_USER:       return "user";
+    case MD_BOND_ORIGIN_INFERRED:   return "inferred";
+    default:                        return "";
+    }
+}
+
+static const md_bond_kind_name_t bond_kind_names[] = {
+    {"covalent",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COVALENT},
+    {"coordinate",  MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COORDINATE},
+    {"elastic",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_ELASTIC},
+    {"metallic",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_METALLIC},
+    {"noncovalent", (md_bond_flags_t)0xC0,      (md_bond_flags_t)0xC0},     // md_bond_is_noncovalent
+    {"interaction", MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_INTERACTION},
+    {"hydrogen",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_HYDROGEN},
+};
+
+const md_bond_kind_name_t* md_bond_kind_names(size_t* count) {
+    if (count) *count = MD_COUNTOF(bond_kind_names);
+    return bond_kind_names;
+}
+
+// The connectivity is the graph of the molecules: every bond of the first range but the elastic ones
+// (MD_BOND_KIND_ELASTIC), springs of the force field which connect nothing. bond_flags NULL: every bond is covalent.
+static inline bool conn_has_bond(const md_bond_flags_t* bond_flags, size_t i) {
+    return !bond_flags || md_bond_is_graph(bond_flags[i]);
+}
+
+static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, const md_bond_flags_t* bond_flags, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
+    MD_ASSERT(conn);
+    MD_ASSERT(alloc);
+
+    if (bond_pairs == NULL) return;
+    if (bond_pair_count == 0) return;
+    if (atom_count == 0) return;
+
+    conn->offset_count = atom_count + 1;
+    md_array_resize(conn->offset, conn->offset_count, alloc);
+    md_memset(conn->offset, 0, md_array_bytes(conn->offset));
+
+    size_t graph_count = 0;
+    for (size_t i = 0; i < bond_pair_count; ++i) graph_count += conn_has_bond(bond_flags, i);
+
+    // This have length of 2 * bond_count (one for each direction of the bond)
+    conn->count = 2 * graph_count;
+    md_array_resize(conn->atom_idx, conn->count, alloc);
+    md_array_resize(conn->bond_idx, conn->count, alloc);
+
+    typedef struct {
+        uint16_t off[2];
+    } offset_t;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+
+    offset_t* local_offset = md_temp_alloc_zero_array(temp, offset_t, bond_pair_count);
+    MD_ASSERT(local_offset);
+
+    // Two packed 16-bit local offsets for each of the bond idx
+    // Use offsets as accumulators for length
+    for (size_t i = 0; i < bond_pair_count; ++i) {
+        if (!conn_has_bond(bond_flags, i)) continue;
+		MD_ASSERT(bond_pairs[i].idx[0] < (md_atom_idx_t)atom_count);
+		MD_ASSERT(bond_pairs[i].idx[1] < (md_atom_idx_t)atom_count);
+        local_offset[i].off[0] = (uint16_t)conn->offset[bond_pairs[i].idx[0]]++;
+        local_offset[i].off[1] = (uint16_t)conn->offset[bond_pairs[i].idx[1]]++;
+    }
+
+    // Compute complete edge offsets (exclusive scan)
+    uint32_t off = 0;
+    for (size_t i = 0; i < conn->offset_count; ++i) {
+        const uint32_t len = conn->offset[i];
+        conn->offset[i] = off;
+        off += len;
+    }
+
+    // Write edge indices to correct location
+    for (size_t i = 0; i < bond_pair_count; ++i) {
+        if (!conn_has_bond(bond_flags, i)) continue;
+        const md_atom_pair_t p = bond_pairs[i];
+        const int atom_a = p.idx[0];
+        const int atom_b = p.idx[1];
+        const int local_a = (int)local_offset[i].off[0];
+        const int local_b = (int)local_offset[i].off[1];
+        const int off_a = conn->offset[atom_a];
+        const int off_b = conn->offset[atom_b];
+
+        const int idx_a = off_a + local_a;
+        const int idx_b = off_b + local_b;
+
+        MD_ASSERT(idx_a < (int)conn->count);
+        MD_ASSERT(idx_b < (int)conn->count);
+
+        // Store the cross references to the 'other' atom index signified by the bond in the correct location
+        conn->atom_idx[idx_a] = atom_b;
+        conn->atom_idx[idx_b] = atom_a;
+
+        conn->bond_idx[idx_a] = (md_bond_idx_t)i;
+        conn->bond_idx[idx_b] = (md_bond_idx_t)i;
+    }
+
+    // Each atom's neighbours ascending by atom index, whatever order the bonds were found in (a spatial search finds
+    // them in cell order). What walks the graph - the slot order of the molecules (md_molecule_data_t) above all -
+    // then depends on the atoms' order alone, so that molecules alike, written alike, are walked alike.
+    for (size_t a = 0; a < atom_count; ++a) {
+        const uint32_t beg = conn->offset[a], end = conn->offset[a + 1];
+        for (uint32_t k = beg + 1; k < end; ++k) {
+            const md_atom_idx_t ai = conn->atom_idx[k];
+            const md_bond_idx_t bi = conn->bond_idx[k];
+            uint32_t j = k;
+            for (; j > beg && conn->atom_idx[j - 1] > ai; --j) {
+                conn->atom_idx[j] = conn->atom_idx[j - 1];
+                conn->bond_idx[j] = conn->bond_idx[j - 1];
+            }
+            conn->atom_idx[j] = ai;
+            conn->bond_idx[j] = bi;
+        }
+    }
+
+    md_temp_end(temp);
+}
+
+void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {
+    MD_ASSERT(in_out_bond);
+    MD_ASSERT(alloc);
+	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->flags, in_out_bond->count, atom_count, alloc);
+}
+
+void md_bond_data_free(md_bond_data_t* bond, md_allocator_i* alloc) {
+    MD_ASSERT(bond);
+    MD_ASSERT(alloc);
+    md_array_free(bond->pairs, alloc);
+    md_array_free(bond->flags, alloc);
+    md_array_free(bond->conn.atom_idx, alloc);
+    md_array_free(bond->conn.bond_idx, alloc);
+    md_array_free(bond->conn.offset, alloc);
+    md_memset(bond, 0, sizeof(md_bond_data_t));
+}
+
+size_t md_bond_metallic_atoms(uint8_t* out, const md_bond_data_t* bond, size_t atom_count) {
+    MD_ASSERT(out);
+    MD_ASSERT(bond);
+    md_memset(out, 0, atom_count);
+    size_t count = 0;
+    for (size_t i = 0; i < bond->count; ++i) {
+        if (md_bond_kind(bond->flags[i]) != MD_BOND_KIND_METALLIC) continue;
+        for (int k = 0; k < 2; ++k) {
+            const md_atom_idx_t a = bond->pairs[i].idx[k];
+            if (a >= 0 && (size_t)a < atom_count && !out[a]) { out[a] = 1; count += 1; }
+        }
+    }
+    return count;
+}
+
 // This is bitmasks expressed as combinations of two uint64_t that encodes properties of atomic elements
 static const uint64_t element_metal_mask[2] = {
     0xff87ffe0fff83818,
@@ -528,9 +686,9 @@ static bond_rule_t bond_rule(int ei, int ej, bool same_res, bool water) {
 // A metal in bulk, at a surface or in a particle is not bonded as a molecule is: each atom has as many neighbours as its
 // lattice gives it, and a cutoff on the sum of covalent radii falls within their shell (2.72 Å for gold, against a
 // first shell of 2.6-3.1 Å), which bonds a part of it that looks random and changes from frame to frame. The atoms of
-// a metallic phase (MD_ATOM_FLAG_METALLIC) are instead bonded to every metal atom of their first coordination shell,
+// a metallic phase (md_bond_metallic_atoms) are instead bonded to every metal atom of their first coordination shell,
 // by METALLIC bonds, which are not bonds of the graph (md_bond.h), and to nothing else: what touches a surface moves
-// across it, so its contacts are those of a frame (md_util_bond_delta) rather than of the topology.
+// across it, so its contacts are those of a frame (md_bond_delta_compute) rather than of the topology.
 //
 // THE FIRST SHELL ends at the first minimum of the distances between the metal atoms, each over the sum of the
 // covalent radii of its atoms: the gap between two shells of a crystal, or the first minimum of the radial distribution
@@ -686,43 +844,11 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
     }
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
-    MD_ASSERT(bond);
-    MD_ASSERT(state);
-    MD_ASSERT(sys);
-    MD_ASSERT(alloc);
-
+// The bonds inferred from the coordinates, into bond (empty), every one of origin MD_BOND_ORIGIN_INFERRED
+static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-
-    // Inference only replaces what inference produced. Every bond of another origin (user defined, topology, or read
-    // from the file) is kept, wherever it sits in the arrays, and put back afterwards.
-    md_array(md_atom_pair_t)  bond_pairs = 0;
-    md_array(md_bond_flags_t) bond_flags = 0;
     const md_bond_flags_t inferred = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED);
-
-    for (size_t i = 0; i < bond->count; ++i) {
-        if (md_bond_origin(bond->flags[i]) != MD_BOND_ORIGIN_INFERRED) {
-            md_array_push(bond_pairs, bond->pairs[i], temp_arena);
-            md_array_push(bond_flags, bond->flags[i], temp_arena);
-        }
-    }
-
-    // The non-covalent bonds are not inferred: they are kept as they are, after the graph (md_bond_data_t)
-    const size_t num_noncovalent = bond->noncovalent_count;
-    md_atom_pair_t*  noncovalent_pairs = md_temp_alloc_array(temp_scope, md_atom_pair_t,  MD_MAX(num_noncovalent, 1));
-    md_bond_flags_t* noncovalent_flags = md_temp_alloc_array(temp_scope, md_bond_flags_t, MD_MAX(num_noncovalent, 1));
-    if (num_noncovalent) {
-        md_memcpy(noncovalent_pairs, bond->pairs + bond->count, sizeof(md_atom_pair_t)  * num_noncovalent);
-        md_memcpy(noncovalent_flags, bond->flags + bond->count, sizeof(md_bond_flags_t) * num_noncovalent);
-    }
-
-    md_bond_data_clear(bond);
-    
-    if (!state->xyz) {
-        MD_LOG_ERROR("Missing atom coordinates");
-        goto done;
-    }
 
     const bool is_coarse_grained = md_system_is_coarse_grained(sys);
 
@@ -864,7 +990,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             const int ai = candidates[i].atom_i;
             const int aj = candidates[i].atom_j;
             // An atom of a metallic phase has its metallic bonds, below, and no other: what touches a metal moves
-            // across it, and has its contacts in a frame (md_util_bond_delta)
+            // across it, and has its contacts in a frame (md_bond_delta_compute)
             if (metallic[ai] || metallic[aj]) continue;
             md_bond_insert(&temp_bond, ai, aj, rules[i].coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
             md_array_push(temp_bond_dist, candidates[i].dist, temp_arena);
@@ -1020,6 +1146,57 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         }
     }
 
+    md_temp_end(temp_scope);
+}
+
+bool md_bond_infer(md_bond_data_t* out, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc, const md_executor_t* executor) {
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != &sys->bond);
+    md_bond_data_clear(out);
+    if (!state->xyz) {
+        MD_LOG_ERROR("Missing atom coordinates");
+        return false;
+    }
+    infer_bonds(out, state, sys, alloc, executor);
+    md_bond_build_connectivity(out, state->num_atoms, alloc);
+    return true;
+}
+
+void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, size_t atom_count, md_allocator_i* alloc) {
+    MD_ASSERT(out);
+    MD_ASSERT(given);
+    MD_ASSERT(inferred);
+    MD_ASSERT(alloc);
+    MD_ASSERT(out != given && out != inferred);
+    md_bond_data_clear(out);
+
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+
+    // Every given bond which was not inferred is kept, in its order, after the inferred ones
+    md_array(md_atom_pair_t)  bond_pairs = 0;
+    md_array(md_bond_flags_t) bond_flags = 0;
+    for (size_t i = 0; i < given->count; ++i) {
+        if (md_bond_origin(given->flags[i]) != MD_BOND_ORIGIN_INFERRED) {
+            md_array_push(bond_pairs, given->pairs[i], temp_arena);
+            md_array_push(bond_flags, given->flags[i], temp_arena);
+        }
+    }
+    // The non-covalent bonds are not inferred: they are kept as they are, after the graph (md_bond_data_t)
+    const size_t num_noncovalent = given->noncovalent_count;
+    const md_atom_pair_t*  noncovalent_pairs = given->pairs + given->count;
+    const md_bond_flags_t* noncovalent_flags = given->flags + given->count;
+
+    md_bond_data_t* bond = out;
+    if (inferred->count) {
+        md_array_push_array(bond->pairs, inferred->pairs, inferred->count, alloc);
+        md_array_push_array(bond->flags, inferred->flags, inferred->count, alloc);
+        bond->count = inferred->count;
+    }
+
     // Reconcile the fresh inferred bonds with the kept ones:
     // - an inferred bond naming a pair that is already kept is a duplicate, the kept one wins
     // - where a topology (md_itp) defines the connectivity it is authoritative, so inferred bonds between two
@@ -1029,7 +1206,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         const size_t num_kept  = md_array_size(bond_pairs);
         const size_t num_saved = num_kept + num_noncovalent;
         if (num_saved > 0 && bond->count > 0) {
-            const size_t num_atoms = state->num_atoms;
+            const size_t num_atoms = atom_count;
             uint64_t* covered = make_bitfield(num_atoms, temp_arena);
 
             // An elastic bond is no bond of the molecule: it neither stands in for an inferred bond nor says that a
@@ -1067,10 +1244,6 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         }
     }
 
-done:
-    // Add back the kept bonds, after the inferred ones and in their original order. Also on the early exit above:
-    // missing coordinates mean nothing could be inferred, not that the kept bonds stop existing.
-    // @NOTE: bond->count used to be left out here, so the re-added bonds sat past the end of the valid range.
     for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
         md_array_push(bond->pairs, bond_pairs[i], alloc);
         md_array_push(bond->flags, bond_flags[i], alloc);
@@ -1081,57 +1254,12 @@ done:
         md_array_push(bond->flags, noncovalent_flags[i], alloc);
     }
     bond->noncovalent_count = num_noncovalent;
+    md_bond_build_connectivity(bond, atom_count, alloc);
 
     md_temp_end(temp_scope);
 }
 
-void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state, const md_executor_t* executor) {
-    md_system_topology_changed(sys);
-    // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
-    // added by hand and those the file gives (CONECT records), which md_util_infer_covalent_bonds keeps and reconciles
-    // with the inferred ones: an inferred bond never stands in for one of them. The elastic bonds are kept as well,
-    // whatever their origin: they are no bonds of the molecule, which is what is inferred, and nothing infers them.
-    size_t num_user = 0;
-    for (size_t i = 0; i < sys->bond.count; ++i) {
-        const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
-        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE || md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC) {
-            sys->bond.pairs[num_user] = sys->bond.pairs[i];
-            sys->bond.flags[num_user] = sys->bond.flags[i];
-            num_user += 1;
-        }
-    }
-    // The non-covalent bonds stay, right after the graph (md_bond_data_t)
-    const size_t num_noncovalent = sys->bond.noncovalent_count;
-    for (size_t i = 0; i < num_noncovalent; ++i) {
-        sys->bond.pairs[num_user + i] = sys->bond.pairs[sys->bond.count + i];
-        sys->bond.flags[num_user + i] = sys->bond.flags[sys->bond.count + i];
-    }
-    md_bond_conn_clear(&sys->bond.conn);
-    sys->bond.count = num_user;
-    md_array_shrink(sys->bond.pairs, num_user + num_noncovalent);
-    md_array_shrink(sys->bond.flags, num_user + num_noncovalent);
-    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc, executor);
-    md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
-
-    // The atoms of the metallic phases are those of the metallic bonds (METALLIC PHASES)
-    if (md_array_size(sys->atom.flags) < sys->atom.count) {
-        const size_t size = md_array_size(sys->atom.flags);
-        md_array_resize(sys->atom.flags, sys->atom.count, sys->alloc);
-        md_memset(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
-    }
-    for (size_t i = 0; i < sys->atom.count; ++i) {
-        sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_METALLIC);
-    }
-    for (size_t i = 0; i < sys->bond.count; ++i) {
-        if (md_bond_kind(sys->bond.flags[i]) != MD_BOND_KIND_METALLIC) continue;
-        for (int k = 0; k < 2; ++k) {
-            const md_atom_idx_t a = sys->bond.pairs[i].idx[k];
-            if (a >= 0 && (size_t)a < sys->atom.count) sys->atom.flags[a] |= MD_ATOM_FLAG_METALLIC;
-        }
-    }
-}
-
-size_t md_util_system_infer_coordination(md_system_t* sys) {
+size_t md_system_infer_coordination(md_system_t* sys) {
     MD_ASSERT(sys);
     size_t count = 0;
     if (!sys->bond.flags) return 0;
@@ -1177,6 +1305,7 @@ static void delta_pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
 typedef struct delta_atoms_t {
     const md_system_t* sys;
     int8_t* res_water;          // [residue count] -1 not looked at yet, 0, 1
+    const uint8_t* metallic;    // [atom count] Of a metallic phase: an atom of a metallic bond (md_bond_metallic_atoms)
 } delta_atoms_t;
 
 static inline int delta_res(const delta_atoms_t* a, uint32_t atom) {
@@ -1200,7 +1329,7 @@ static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, f
     if (zi == 0 || zj == 0) return none;
     if (md_atom_particle_kind(&a->sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&a->sys->atom, j) == MD_PARTICLE_VIRTUAL_SITE) return none;
     // The bonds within a metallic phase are its metallic bonds, which do not change (METALLIC PHASES)
-    if ((md_atom_flags(&a->sys->atom, i) & MD_ATOM_FLAG_METALLIC) && (md_atom_flags(&a->sys->atom, j) & MD_ATOM_FLAG_METALLIC)) return none;
+    if (a->metallic[i] && a->metallic[j]) return none;
     const int ci = delta_res(a, i);
     const int cj = delta_res(a, j);
     return bond_rule(zi, zj, ci == cj, delta_water(a, ci) || delta_water(a, cj));
@@ -1247,7 +1376,7 @@ void md_bond_delta_free(md_bond_delta_t* delta, md_allocator_i* alloc) {
     md_memset(delta, 0, sizeof(md_bond_delta_t));
 }
 
-bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_system_state_t* state, const md_bond_delta_desc_t* desc, md_allocator_i* alloc) {
+bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const md_system_state_t* state, const md_bond_delta_desc_t* desc, md_allocator_i* alloc) {
     MD_ASSERT(out);
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -1271,6 +1400,9 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
     delta_atoms_t atoms = { .sys = sys };
     atoms.res_water = md_temp_alloc_array(temp, int8_t, MD_MAX(sys->residue.count, 1));
     md_memset(atoms.res_water, -1, MD_MAX(sys->residue.count, 1));
+    uint8_t* metallic = md_temp_alloc_array(temp, uint8_t, num_atoms);
+    md_bond_metallic_atoms(metallic, &sys->bond, num_atoms);
+    atoms.metallic = metallic;
 
     // ## The bonds of the graph which touch the scope: broken beyond the band, and stretched beyond the cutoff
     // (they no longer count against what their atoms can take)
@@ -1560,7 +1692,7 @@ static inline bool cg_cysteine_sc1(const md_system_t* sys, int32_t res_idx, int3
     return (md_str_eq_cstr(res_name, "CYS") || md_str_eq_cstr(res_name, "CYX")) && md_str_eq_cstr(md_atom_name(&sys->atom, atom_idx), "SC1");
 }
 
-size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
+size_t md_system_infer_elastic_bonds(md_system_t* sys) {
     MD_ASSERT(sys);
     const size_t N = sys->atom.count;
     const size_t C = sys->residue.count;

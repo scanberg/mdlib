@@ -820,7 +820,7 @@ UTEST(util, infer_bonds_coarse_grained) {
     md_system_state_t state = { .num_atoms = 6, .xyz = pack_xyz(xyz, x, y, z, 6) };
 
     md_bond_data_t bond = {0};
-    md_util_infer_covalent_bonds(&bond, &state, &sys, alloc, NULL);
+    md_bond_infer(&bond, &sys, &state, alloc, NULL);
 
     // (0,1) (1,2) (3,4) (4,5) within residues, (0,3) between backbones. 0-2 is 6A, over the cutoff.
     EXPECT_EQ(bond.count, 5u);
@@ -1944,7 +1944,9 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
     md_f32x3_t xyz[5];
     md_system_state_t state = { .num_atoms = 5, .xyz = pack_xyz(xyz, x, y, z, 5) };
 
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, alloc, NULL);
+    md_bond_data_t inferred = {0};
+    md_bond_infer(&inferred, &sys, &state, alloc, NULL);
+    sys.bond = inferred;
     ASSERT_EQ(sys.bond.count, 3u);
     for (size_t i = 0; i < sys.bond.count; ++i) {
         EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[i]));
@@ -1971,7 +1973,12 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
     }
     sys.bond.count = md_array_size(pairs);
 
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, alloc, NULL);
+    // Fresh bond data: inferred above became the system's (its arrays are sys.bond's)
+    md_bond_data_t reinferred = {0};
+    md_bond_data_t merged = {0};
+    md_bond_infer(&reinferred, &sys, &state, alloc, NULL);
+    md_bond_merge(&merged, &sys.bond, &reinferred, sys.atom.count, alloc);
+    sys.bond = merged;
 
     // Inferred 0-1 and 2-3 (1-2 is already kept), then the four kept bonds in their original order
     ASSERT_EQ(sys.bond.count, 6u);
@@ -1988,7 +1995,11 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
 
     // No coordinates: nothing is inferred, the kept bonds are still there
     md_system_state_t empty = { .num_atoms = 5 };
-    md_util_infer_covalent_bonds(&sys.bond, &empty, &sys, alloc, NULL);
+    md_bond_data_t none = {0};
+    md_bond_data_t kept = {0};
+    EXPECT_FALSE(md_bond_infer(&none, &sys, &empty, alloc, NULL));
+    md_bond_merge(&kept, &sys.bond, &none, sys.atom.count, alloc);
+    sys.bond = kept;
     EXPECT_EQ(sys.bond.count, 4u);
 
     md_vm_arena_destroy(alloc);

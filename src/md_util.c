@@ -560,12 +560,21 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         // Setting the bit means "derive this", unconditionally. A format which supplies its own
         // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
         // Beads too: a coarse grained system gets the bonds of its model's topologies (mdi_infer_coarse_grained_bonds).
-        md_util_system_infer_covalent_bonds(sys, state, executor);
+        // The bonds inferred, in place of those inferred before: those given (by a file, a topology, a user) stay
+        md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+        md_bond_data_t inferred = {0};
+        md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
+        md_bond_data_t bonds = {0};
+        md_bond_merge(&bonds, &sys->bond, &inferred, sys->atom.count, sys->alloc);
+        md_temp_end(temp);
+        md_bond_data_free(&sys->bond, sys->alloc);
+        sys->bond = bonds;
+        md_system_topology_changed(sys);
     }
 
     // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are
     // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
-    md_util_system_infer_coordination(sys);
+    md_system_infer_coordination(sys);
 
     // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
     // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.

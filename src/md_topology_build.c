@@ -278,7 +278,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         sys->bond.count = count;
         sys->bond.noncovalent_count = num_noncovalent;
         md_bond_build_connectivity(&sys->bond, N, sys->alloc);
-        md_util_system_infer_coordination(sys);
+        md_system_infer_coordination(sys);
         md_system_topology_changed(sys);
         TOPO_LOG_INFO(d.format, "%zu bonds of the topology replace those inferred", num_topology);
     }

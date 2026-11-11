@@ -8759,7 +8759,7 @@ static int _bond_or (data_t* dst, data_t arg[], eval_context_t* ctx) { return bo
 static int _bond_xor(data_t* dst, data_t arg[], eval_context_t* ctx) { return bond_logic(dst, arg, 2, '^', ctx); }
 
 // bond_delta(scope = none, *, tolerance = none, breakable = none): the bonds formed and broken in the frame against the
-// bond graph of the system, for the bonds with an atom in the scope (md_util_bond_delta). A value of its own, which
+// bond graph of the system, for the bonds with an atom in the scope (md_bond_delta_compute). A value of its own, which
 // formed(), broken() and bond(d) read.
 //   scope      The atoms whose bonds are looked at, all of them without it.
 //   tolerance  Half the width of the band around the cutoffs, a fraction of them in [0, 0.5): 0.1 without it.
@@ -8815,7 +8815,7 @@ static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     md_bond_delta_t d = {0};
     const md_bond_delta_desc_t desc = { .scope = scope_ptr, .tolerance = tolerance, .breakable = breakable };
-    if (ctx->cur_state && md_util_bond_delta(&d, sys, ctx->cur_state, &desc, temp_alloc)) {
+    if (ctx->cur_state && md_bond_delta_compute(&d, sys, ctx->cur_state, &desc, temp_alloc)) {
         val->broken = md_bitset_copy(d.broken, alloc);
         bond_extras_t e = {0};
         for (size_t k = 0; k < d.num_formed; ++k) bond_extras_push(&e, d.formed_pair[k], d.formed_flags[k], temp_alloc);
@@ -8849,7 +8849,7 @@ static int _bond_delta_broken(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // bond(d, b = none, *, kind = none, order = none, resonance = none, origin = none): the bonds of the frame within the
 // scope of d: the persistent bonds which touch it and are not broken, and those formed, within the context (both atoms
 // in it) as bond() is, which b (an atom in it) and the filters let through. The filters read the flags of the system
-// for a persistent bond, and those md_util_bond_delta gives a bond formed (inferred; covalent or coordinate, of no
+// for a persistent bond, and those md_bond_delta_compute gives a bond formed (inferred; covalent or coordinate, of no
 // known order).
 static int _bond_of_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(ctx && ctx->sys);

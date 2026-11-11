@@ -249,8 +249,11 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     }
 
     // Re-inferring bonds keeps the topology's and adds nothing on top of them
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc, NULL);
-    md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
+    md_bond_data_t inferred = {0};
+    md_bond_data_t merged = {0};
+    md_bond_infer(&inferred, &sys, &state, sys.alloc, NULL);
+    md_bond_merge(&merged, &sys.bond, &inferred, sys.atom.count, sys.alloc);
+    sys.bond = merged;
     EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
 
     md_vm_arena_destroy(alloc);

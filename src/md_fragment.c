@@ -212,7 +212,7 @@ static const frag_lib_entry_t frag_library[] = {
 // The atom flags a template depends on
 #define FRAG_ROLE_MASK (MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE | \
                         MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END | MD_ATOM_FLAG_LIPID_TAIL | \
-                        MD_ATOM_FLAG_METALLIC | MD_ATOM_FLAG_AROMATIC)
+                        MD_ATOM_FLAG_AROMATIC)
 
 typedef struct frag_mol_t {
     const md_system_t* sys;
@@ -768,7 +768,8 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
 // Encoding: what makes two molecules alike, in slot order
 // ---------------------------------------------------------------------------
 
-static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t m, const int32_t* atom_res, md_allocator_i* temp) {
+// metallic: the atoms of the metallic phases (md_bond_metallic_atoms), NULL for none
+static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t m, const int32_t* atom_res, const uint8_t* metallic, md_allocator_i* temp) {
     const md_molecule_data_t* mol = &sys->molecule;
     const uint32_t off = mol->offset[m];
     const size_t n = mol->offset[m + 1] - off;
@@ -786,7 +787,8 @@ static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t 
             const md_residue_flags_t rf = md_system_residue_flags(sys, (size_t)r);
             rk = (uint64_t)md_system_residue_kind(sys, (size_t)r) | ((rf & MD_RESIDUE_FLAG_RESOLVED) ? 8u : 0u);
         }
-        md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40), temp);
+        const uint64_t mt = metallic && metallic[a] ? 1u : 0u;
+        md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40) | (mt << 44), temp);
     }
     for (size_t i = 0; i < n; ++i) {
         // The bonds of slot i to later slots, in order of those: made in slot order, and each atom's few sorted
@@ -904,6 +906,10 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         }
     }
 
+    // The atoms of the metallic phases, which a template tells apart from the same metal outside of one
+    uint8_t* metallic = md_temp_alloc_array(temp, uint8_t, num_atoms);
+    if (!md_bond_metallic_atoms(metallic, &sys->bond, num_atoms)) metallic = NULL;
+
     // ---- templates: the molecules by their encoding ----
     md_array(uint32_t) tmpl_enc_off = 0;    // [template + 1] its encoding in enc_pool
     md_array(uint64_t) enc_pool = 0;
@@ -914,7 +920,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
     md_array_resize(out->mol_template, num_mols, alloc);
 
     for (size_t m = 0; m < num_mols; ++m) {
-        frag_encode(&enc, sys, m, atom_res, talloc);
+        frag_encode(&enc, sys, m, atom_res, metallic, talloc);
         const size_t len = md_array_size(enc);
         uint64_t h = md_hash64(enc, len * sizeof(uint64_t), 0);
         if (h >= MD_HASH_TOMBSTONE) h -= 2;
