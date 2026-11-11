@@ -127,6 +127,7 @@ set(CORE_FILES
 
 set(SRC_FILES
   src/md_atomic_infer.c
+  src/md_element.c
   src/md_element.h
   src/md_chem.c
   src/md_chem.h
