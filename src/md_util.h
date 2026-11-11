@@ -42,6 +42,7 @@ bool md_util_resname_acidic(md_str_t str);
 bool md_util_resname_basic(md_str_t str);
 bool md_util_resname_neutral(md_str_t str);
 bool md_util_resname_water(md_str_t str);
+bool md_util_resname_ion(md_str_t str);         // The common monatomic ions (NA, CL, ...)
 bool md_util_resname_lipid(md_str_t str);      // The lipids of the Martini lipidomes (their names are mostly the atomistic ones)
 bool md_util_resname_hydrophobic(md_str_t str);
 bool md_util_resname_amino_acid(md_str_t str);
