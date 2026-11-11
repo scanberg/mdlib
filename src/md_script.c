@@ -36,6 +36,7 @@
 #include <md_edr.h>
 #include <md_filter.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <md_element.h>
 
 #include <core/md_coord_stream.h>

@@ -1,5 +1,6 @@
 ﻿#include <md_gl.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <md_chem.h>
 
 #include <core/md_common.h>

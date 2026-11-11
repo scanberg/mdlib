@@ -14,6 +14,7 @@
 
 #include <md_system.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>

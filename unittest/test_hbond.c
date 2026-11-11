@@ -6,6 +6,7 @@
 #include <md_pdb.h>
 #include <md_xyz.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <md_unitcell.h>
 #include <md_element.h>
 

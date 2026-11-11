@@ -9,6 +9,8 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_util.h>
+#include <md_util_geom.h>
+#include <md_util_sort.h>
 #include <md_dssp.h>
 #include <md_hbond.h>
 #include <md_script.h>

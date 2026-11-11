@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_util.h>
+#include <md_util_sort.h>
 #include <md_unitcell.h>
 #include <md_element.h>
 

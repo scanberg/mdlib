@@ -8,6 +8,7 @@
 #include <md_pdb.h>
 #include <md_tpr.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <md_hbond.h>
 #include <md_element.h>
 

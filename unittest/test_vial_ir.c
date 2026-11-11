@@ -90,6 +90,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <core/md_vec_math.h>
 
 typedef struct vial_ir__run_t {

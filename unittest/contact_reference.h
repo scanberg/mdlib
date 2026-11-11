@@ -6,6 +6,7 @@
 #include <md_contact.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>

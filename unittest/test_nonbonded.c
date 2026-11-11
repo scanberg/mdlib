@@ -4,6 +4,7 @@
 #include <md_tpr.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <core/md_vec_math.h>
 
 #include <core/md_allocator.h>
