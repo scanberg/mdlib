@@ -667,7 +667,7 @@ static bool atom_bonded_outside(const md_system_t* sys, int atom, md_urange_t ra
 //
 // The roles are what everything after reads the atoms of a residue of a chain by, rather than their names: the kinds of
 // the residues (md_util_system_infer_residue_flags), the ends of a chain (mdi_polymer_chain_ends_between), the links over a
-// gap (chain_gap_link), the backbones (md_util_system_infer_backbones). Beads keep the roles their model gave them.
+// gap (chain_gap_link), the backbones (md_backbone_infer). Beads keep the roles their model gave them.
 
 static inline bool atom_has_flags(const md_system_t* sys, md_atom_idx_t a, md_atom_flags_t flags) {
     return ((uint32_t)md_atom_flags(&sys->atom, (size_t)a) & (uint32_t)flags) == (uint32_t)flags;
@@ -1364,20 +1364,16 @@ bool mdi_polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b) 
 // neither residue ends it: what the classification took for a terminus there (the carboxyl group of a residue whose
 // successor is missing, the amino group of one whose predecessor is, a hydroxyl on either side of a nucleic acid
 // break) is not one, and loses its terminal flags.
-static void mark_chain_break(md_system_t* sys, size_t a, size_t b) {
-    MD_ASSERT(b == a + 1 && b < sys->residue.count);
-    sys->residue.flags[a] = (md_residue_flags_t)(((uint32_t)sys->residue.flags[a] | MD_RESIDUE_FLAG_BREAK_AFTER)          & ~(uint32_t)MD_RESIDUE_FLAG_TERMINAL_END);
-    sys->residue.flags[b] = (md_residue_flags_t)(((uint32_t)sys->residue.flags[b] | MD_RESIDUE_FLAG_BREAK_BEFORE) & ~(uint32_t)MD_RESIDUE_FLAG_TERMINAL_BEG);
-    if (sys->atom.flags) {
-        const md_urange_t range_a = md_system_residue_atom_range(sys, a);
-        const md_urange_t range_b = md_system_residue_atom_range(sys, b);
-        for (uint32_t i = range_a.beg; i < range_a.end; ++i) {
-            sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_TERMINAL_END);
-        }
-        for (uint32_t i = range_b.beg; i < range_b.end; ++i) {
-            sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_TERMINAL_BEG);
-        }
-    }
+// A break of the chain between the residues a and b = a + 1 (CHAIN BREAKS in md_util.h)
+static int cmp_residue_idx(const void* a, const void* b) {
+    const md_residue_idx_t x = *(const md_residue_idx_t*)a, y = *(const md_residue_idx_t*)b;
+    return (x > y) - (x < y);
+}
+
+static void mark_chain_break(md_backbone_data_t* out, size_t a, size_t b, md_allocator_i* alloc) {
+    MD_ASSERT(b == a + 1);
+    (void)b;
+    md_array_push(out->breaks, (md_residue_idx_t)a, alloc);
 }
 
 size_t md_util_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const md_system_t* sys, size_t seg_idx) {
@@ -1427,7 +1423,7 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
     if (!sys || res_idx + 1 >= sys->residue.count) return false;
     if (!(md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return false;
 
-    // The atoms of the link the backbones were found by (md_util_system_infer_backbones): of the segments of the two
+    // The atoms of the link the backbones were found by (md_backbone_infer): of the segments of the two
     // residues, the C and N of amino acids (the beads of a trace), else the O3' and P of nucleotides (the BB3 and the
     // phosphate bead of beads)
     const size_t next = res_idx + 1;
@@ -1518,7 +1514,7 @@ static inline md_part_idx_t residue_part(const md_system_t* sys, md_residue_idx_
 }
 
 // Commits the chains of at least min_length residues as ranges, cut where the part of their residues changes
-static void commit_backbone_chains(md_system_t* sys, const backbone_chains_t* ch, const int32_t* unit_res, size_t min_length, md_temp_scope_t temp) {
+static void commit_backbone_chains(md_backbone_data_t* out, const md_system_t* sys, const backbone_chains_t* ch, const int32_t* unit_res, size_t min_length, md_temp_scope_t temp, md_allocator_i* alloc) {
     md_amino_acid_atoms_t*   aa  = ch->aa ? md_temp_alloc_array(temp, md_amino_acid_atoms_t, ch->num) : NULL;
     md_nucleic_acid_atoms_t* na  = ch->na ? md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, ch->num) : NULL;
     md_residue_idx_t*        res = md_temp_alloc_array(temp, md_residue_idx_t, MD_MAX(1, ch->num));
@@ -1531,8 +1527,8 @@ static void commit_backbone_chains(md_system_t* sys, const backbone_chains_t* ch
             const md_part_idx_t p = end ? -1 : residue_part(sys, unit_res[u]);
             if (len > 0 && (end || p != part)) {
                 if (len >= min_length) {
-                    if (aa) commit_protein_backbone(aa, len, -1, res, part, &sys->protein_backbone, sys->alloc);
-                    else    commit_nucleic_backbone(na, len, -1, res, part, &sys->nucleic_backbone, sys->alloc);
+                    if (aa) commit_protein_backbone(aa, len, -1, res, part, &out->protein, alloc);
+                    else    commit_nucleic_backbone(na, len, -1, res, part, &out->nucleic, alloc);
                 }
                 len = 0;
             }
@@ -1551,8 +1547,8 @@ static void commit_backbone_chains(md_system_t* sys, const backbone_chains_t* ch
 // peptide, a nucleic acid), or on a chain of at least min_length residues where the residues are not classified (a
 // LAMMPS molecule of residues named "MOL"). The groups which match without being residues (N7-C5-C6=O6 of a guanine)
 // are neither.
-static void mark_backbone_chain_breaks(md_system_t* sys, const backbone_chains_t* ch, const int32_t* unit_res, size_t min_length, md_temp_scope_t temp) {
-    if (sys->residue.count < 2 || sys->part.count == 0 || !sys->residue.flags) return;
+static void mark_backbone_chain_breaks(md_backbone_data_t* out, const md_system_t* sys, const backbone_chains_t* ch, const int32_t* unit_res, size_t min_length, md_temp_scope_t temp, md_allocator_i* alloc) {
+    if (sys->residue.count < 2 || sys->part.count == 0) return;
     uint32_t* chain_len = md_temp_alloc_array(temp, uint32_t, MD_MAX(1, ch->num));
     for (size_t c = 0; c < ch->num_chains; ++c) {
         for (uint32_t j = ch->begin[c]; j < ch->begin[c + 1]; ++j) chain_len[ch->order[j]] = ch->begin[c + 1] - ch->begin[c];
@@ -1574,7 +1570,7 @@ static void mark_backbone_chain_breaks(md_system_t* sys, const backbone_chains_t
         const md_part_idx_t part = residue_part(sys, (md_residue_idx_t)r);
         if (part < 0 || part != residue_part(sys, (md_residue_idx_t)(r + 1))) continue;
         const bool ends = ch->aa ? protein_chain_ends_between(sys, r, r + 1, &ch->aa[u], &ch->aa[v]) : nucleic_chain_ends_between(sys, &ch->na[u], &ch->na[v]);
-        if (!ends) mark_chain_break(sys, r, r + 1);
+        if (!ends) mark_chain_break(out, r, r + 1, alloc);
     }
 }
 
@@ -1614,48 +1610,17 @@ SORT_BACKBONE_RANGES(sort_nucleic_backbone_ranges, md_nucleic_backbone_data_t, m
 
 #undef SORT_BACKBONE_RANGES
 
-bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state) {
-    if (!sys) {
-        MD_LOG_ERROR("Missing system");
-        return false;
-    }
-    if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator not set");
-        return false;
-    }
-    md_allocator_i* alloc = sys->alloc;
-    md_system_topology_changed(sys);
+bool md_backbone_infer(md_backbone_data_t* out, const md_system_t* sys, md_allocator_i* alloc) {
+    MD_ASSERT(out);
+    MD_ASSERT(sys);
+    MD_ASSERT(alloc);
+    MD_ASSERT(&out->protein != &out->protein && &out->nucleic != &out->nucleic);
+    md_backbone_data_free(out, alloc);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     static const size_t MIN_BACKBONE_LENGTH = 3;
-
-    // Derived from scratch: a repeated inference must not append to the backbones of the last one
-    md_array_shrink(sys->protein_backbone.range.offset, 0);
-    md_array_shrink(sys->protein_backbone.range.part_idx, 0);
-    md_array_shrink(sys->protein_backbone.segment.atoms, 0);
-    md_array_shrink(sys->protein_backbone.segment.res_idx, 0);
-    sys->protein_backbone.range.count = 0;
-    sys->protein_backbone.segment.count = 0;
-    md_array_shrink(sys->nucleic_backbone.range.offset, 0);
-    md_array_shrink(sys->nucleic_backbone.range.part_idx, 0);
-    md_array_shrink(sys->nucleic_backbone.segment.atoms, 0);
-    md_array_shrink(sys->nucleic_backbone.segment.res_idx, 0);
-    sys->nucleic_backbone.range.count = 0;
-    sys->nucleic_backbone.segment.count = 0;
-
-    // The chain breaks are found anew with the backbones (mark_chain_break)
-    if (sys->residue.count) {
-        if (md_array_size(sys->residue.flags) < sys->residue.count) {
-            const size_t size = md_array_size(sys->residue.flags);
-            md_array_resize(sys->residue.flags, sys->residue.count, alloc);
-            md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
-        }
-        for (size_t i = 0; i < sys->residue.count; ++i) {
-            sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
-        }
-    }
 
     if (sys->bond.count && sys->atom.type_idx) {
         // Atoms: by the roles the bonds gave them, whatever the atoms and residues are called (POLYMER ATOMS)
@@ -1663,14 +1628,14 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
         backbone_chains_t prot = {0};
         if (protein_chains_from_roles(&prot, sys, temp_scope)) {
             const int32_t* unit_res = chain_units_residue(sys, &prot, temp_scope);
-            commit_backbone_chains(sys, &prot, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
-            mark_backbone_chain_breaks(sys, &prot, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
+            commit_backbone_chains(out, sys, &prot, unit_res, MIN_BACKBONE_LENGTH, temp_scope, alloc);
+            mark_backbone_chain_breaks(out, sys, &prot, unit_res, MIN_BACKBONE_LENGTH, temp_scope, alloc);
         }
         backbone_chains_t nucl = {0};
         if (nucleic_chains_from_roles(&nucl, sys, temp_scope)) {
             const int32_t* unit_res = chain_units_residue(sys, &nucl, temp_scope);
-            commit_backbone_chains(sys, &nucl, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
-            mark_backbone_chain_breaks(sys, &nucl, unit_res, MIN_BACKBONE_LENGTH, temp_scope);
+            commit_backbone_chains(out, sys, &nucl, unit_res, MIN_BACKBONE_LENGTH, temp_scope, alloc);
+            mark_backbone_chain_breaks(out, sys, &nucl, unit_res, MIN_BACKBONE_LENGTH, temp_scope, alloc);
         }
         md_vm_arena_set_pos_back(temp_arena, temp_pos);
     }
@@ -1707,8 +1672,8 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
                             // md_util.h), where the beads are not bonded, whatever the sequence numbers say
                             const md_amino_acid_atoms_t prev = *md_array_last(backbone_atoms);
                             if (!protein_trace_linked(sys, &prev, &atoms, seq_id == prev_seq_id + 1)) {
-                                mark_chain_break(sys, res_idx - 1, res_idx);
-                                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                mark_chain_break(out, res_idx - 1, res_idx, alloc);
+                                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &out->protein, alloc, MIN_BACKBONE_LENGTH);
                             }
                         }
 
@@ -1720,10 +1685,10 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
                         continue;
                     }
 
-                    flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                    flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &out->protein, alloc, MIN_BACKBONE_LENGTH);
                     prev_seq_id = -1;
                 }
-                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &out->protein, alloc, MIN_BACKBONE_LENGTH);
                 prev_seq_id = -1;
             }
         }
@@ -1753,9 +1718,9 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
                             const md_nucleic_acid_atoms_t prev = *md_array_last(backbone_atoms);
                             if (!nucleic_beads_linked(sys, &prev, &atoms, seq_id == prev_seq_id + 1)) {
                                 if (!nucleic_chain_ends_between(sys, &prev, &atoms)) {
-                                    mark_chain_break(sys, (size_t)res_idx - 1, (size_t)res_idx);
+                                    mark_chain_break(out, (size_t)res_idx - 1, (size_t)res_idx, alloc);
                                 }
-                                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &out->nucleic, alloc, MIN_BACKBONE_LENGTH);
                             }
                         }
 
@@ -1767,31 +1732,90 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
                         continue;
                     }
 
-                    flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                    flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &out->nucleic, alloc, MIN_BACKBONE_LENGTH);
                     prev_seq_id = -1;
                 }
-                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &out->nucleic, alloc, MIN_BACKBONE_LENGTH);
                 prev_seq_id = -1;
             }
         }
         md_vm_arena_set_pos_back(temp_arena, temp_pos);
     }
 
-    sort_protein_backbone_ranges(&sys->protein_backbone, temp_scope);
-    sort_nucleic_backbone_ranges(&sys->nucleic_backbone, temp_scope);
+    sort_protein_backbone_ranges(&out->protein, temp_scope);
+    sort_nucleic_backbone_ranges(&out->nucleic, temp_scope);
 
-    sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
-    if (sys->protein_backbone.range.count) {
-        md_array_push(sys->protein_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
+    out->protein.range.count = md_array_size(out->protein.range.offset);
+    if (out->protein.range.count) {
+        md_array_push(out->protein.range.offset, (uint32_t)md_array_size(out->protein.segment.atoms), alloc);
     }
-    sys->protein_backbone.segment.count = md_array_size(sys->protein_backbone.segment.atoms);
+    out->protein.segment.count = md_array_size(out->protein.segment.atoms);
 
-    sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
-    if (sys->nucleic_backbone.range.count) {
-        md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
+    out->nucleic.range.count = md_array_size(out->nucleic.range.offset);
+    if (out->nucleic.range.count) {
+        md_array_push(out->nucleic.range.offset, (uint32_t)md_array_size(out->nucleic.segment.atoms), alloc);
     }
-    sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
+    out->nucleic.segment.count = md_array_size(out->nucleic.segment.atoms);
+
+    // The breaks, each once and in order of the residues
+    const size_t num_breaks = md_array_size(out->breaks);
+    if (num_breaks > 1) {
+        qsort(out->breaks, num_breaks, sizeof(md_residue_idx_t), cmp_residue_idx);
+        size_t w = 1;
+        for (size_t k = 1; k < num_breaks; ++k) {
+            if (out->breaks[k] != out->breaks[w - 1]) out->breaks[w++] = out->breaks[k];
+        }
+        md_array_shrink(out->breaks, w);
+    }
+    out->num_breaks = md_array_size(out->breaks);
 
     md_temp_end(temp_scope);
     return true;
+}
+
+void md_backbone_data_free(md_backbone_data_t* bb, md_allocator_i* alloc) {
+    MD_ASSERT(bb);
+    MD_ASSERT(alloc);
+    md_array_free(bb->protein.range.offset, alloc);
+    md_array_free(bb->protein.range.part_idx, alloc);
+    md_array_free(bb->protein.segment.atoms, alloc);
+    md_array_free(bb->protein.segment.res_idx, alloc);
+    md_array_free(bb->nucleic.range.offset, alloc);
+    md_array_free(bb->nucleic.range.part_idx, alloc);
+    md_array_free(bb->nucleic.segment.atoms, alloc);
+    md_array_free(bb->nucleic.segment.res_idx, alloc);
+    md_array_free(bb->breaks, alloc);
+    md_memset(bb, 0, sizeof(*bb));
+}
+
+void md_system_set_chain_breaks(md_system_t* sys, const md_residue_idx_t breaks[], size_t num_breaks) {
+    MD_ASSERT(sys);
+    if (sys->residue.count == 0) return;
+    if (md_array_size(sys->residue.flags) < sys->residue.count) {
+        const size_t size = md_array_size(sys->residue.flags);
+        md_array_resize(sys->residue.flags, sys->residue.count, sys->alloc);
+        md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
+    }
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
+    }
+    for (size_t k = 0; k < num_breaks; ++k) {
+        const size_t a = (size_t)breaks[k];
+        const size_t b = a + 1;
+        if (breaks[k] < 0 || b >= sys->residue.count) continue;
+        // A break is no end: the residues on either side lose the terminal flags their classification gave them
+        sys->residue.flags[a] = (md_residue_flags_t)(((uint32_t)sys->residue.flags[a] | MD_RESIDUE_FLAG_BREAK_AFTER)  & ~(uint32_t)MD_RESIDUE_FLAG_TERMINAL_END);
+        sys->residue.flags[b] = (md_residue_flags_t)(((uint32_t)sys->residue.flags[b] | MD_RESIDUE_FLAG_BREAK_BEFORE) & ~(uint32_t)MD_RESIDUE_FLAG_TERMINAL_BEG);
+        if (sys->atom.flags) {
+            const md_urange_t range_a = md_system_residue_atom_range(sys, a);
+            const md_urange_t range_b = md_system_residue_atom_range(sys, b);
+            for (uint32_t i = range_a.beg; i < range_a.end; ++i) {
+                sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_TERMINAL_END);
+            }
+            for (uint32_t i = range_b.beg; i < range_b.end; ++i) {
+                sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_TERMINAL_BEG);
+            }
+        }
+    }
+    md_system_topology_changed(sys);
 }

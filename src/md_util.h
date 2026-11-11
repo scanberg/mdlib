@@ -64,19 +64,6 @@ void md_util_system_extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const struct md
 // from a hydroxyl.
 bool md_util_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state);
 
-// The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
-// md_nucleic_backbone_data_t), found anew: ranges of at least 3 residues along each chain of a polymer, ending where the
-// chain breaks (CHAIN BREAKS), whose residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first).
-//   ATOMS  From the covalent bonds alone, whatever the atoms and residues are called (BACKBONES FROM THE BONDS in
-//          md_util.c): an atomistic system without bonds has no backbones. A segment is of the residue of its CA (C4')
-//          where the system has residues, a range of the part of its residues.
-//   BEADS  The traces of a coarse grained model by the backbone beads its residues were given (Martini's BB, BB1 to
-//          BB3), along each strand of a polymer (the peptide and nucleic acid parts). Linked by their bonds, else by
-//          consecutive sequence numbers (state unused).
-// The ranges come in the order of their first atom. Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the
-// parts); requires the bonds, and the parts for the beads.
-bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
-
 // CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose
 // backbones are not linked: no peptide bond from the C of the one to the N of the next, no phosphodiester bond from the
 // O3' of the one to the P of the next, no bond between the backbone beads of a coarse grained chain. The residues a

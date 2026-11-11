@@ -634,7 +634,14 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     if (flags & MD_UTIL_INFER_BACKBONE_BIT) {
-        md_util_system_infer_backbones(sys, state);
+        md_backbone_data_t bb = {0};
+        md_backbone_infer(&bb, sys, sys->alloc);
+        md_backbone_data_t old = { .protein = sys->protein_backbone, .nucleic = sys->nucleic_backbone };
+        md_backbone_data_free(&old, sys->alloc);
+        sys->protein_backbone = bb.protein;
+        sys->nucleic_backbone = bb.nucleic;
+        md_system_set_chain_breaks(sys, bb.breaks, bb.num_breaks);
+        md_array_free(bb.breaks, sys->alloc);
     }
 
     if (flags & MD_UTIL_INFER_LIPID_BIT) {

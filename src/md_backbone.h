@@ -6,6 +6,9 @@
 #include <md_types.h>
 #include <core/md_common.h>
 
+struct md_system_t;
+struct md_allocator_i;
+
 // The protein and nucleic acid backbones of a system.
 
 // Secondary structure types (DSSP-like)
@@ -144,6 +147,37 @@ static inline bool md_nucleic_backbone_range_is_coarse_grained(const md_nucleic_
     MD_ASSERT(range_idx < backbone->range.count);
     return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].o5 < 0;
 }
+
+// ### INFERENCE ###
+
+// The backbones of the system (md_protein_backbone_data_t, md_nucleic_backbone_data_t) and the breaks of its chains:
+// ranges of at least 3 residues along each chain of a polymer, ending where the chain breaks (CHAIN BREAKS in
+// md_util.h).
+//   ATOMS  From the covalent bonds alone, whatever the atoms and residues are called (BACKBONES FROM THE BONDS in
+//          md_backbone.c): an atomistic system without bonds has no backbones. A segment is of the residue of its CA (C4')
+//          where the system has residues, a range of the part of its residues.
+//   BEADS  The traces of a coarse grained model by the backbone beads its residues were given (Martini's BB, BB1 to
+//          BB3), along each strand of a polymer (the peptide and nucleic acid parts). Linked by their bonds, else by
+//          consecutive sequence numbers.
+// The ranges come in the order of their first atom. Requires the bonds and the roles of the atoms
+// (md_util_system_infer_residue_flags), and the parts for the beads. Into out (allocated with alloc); the system is read
+// and never written. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the parts) gives the system the backbones
+// and marks the breaks (md_system_set_chain_breaks).
+typedef struct md_backbone_data_t {
+    md_protein_backbone_data_t protein;
+    md_nucleic_backbone_data_t nucleic;
+    size_t num_breaks;
+    md_residue_idx_t* breaks;       // [num_breaks] The residues after which a chain breaks, ascending
+} md_backbone_data_t;
+
+bool md_backbone_infer(md_backbone_data_t* out, const struct md_system_t* sys, struct md_allocator_i* alloc);
+void md_backbone_data_free(md_backbone_data_t* bb, struct md_allocator_i* alloc);
+
+// Marks the breaks of the chains of the system (CHAIN BREAKS in md_util.h): residue breaks[k] MD_RESIDUE_FLAG_BREAK_AFTER
+// and the one after it MD_RESIDUE_FLAG_BREAK_BEFORE, the flags of every other residue cleared. A break is no end of a
+// chain: the residues on either side of one lose the terminal flags their classification gave them
+// (MD_RESIDUE_FLAG_TERMINAL_BEG, _END, and those of their atoms).
+void md_system_set_chain_breaks(struct md_system_t* sys, const md_residue_idx_t breaks[], size_t num_breaks);
 
 #ifdef __cplusplus
 }
