@@ -4924,6 +4924,81 @@ UTEST(util, protein_segment_atoms_by_roles) {
     expect_segment_atoms_by_roles(utest_result, MD_UNITTEST_DATA_DIR "/nucl-dna.gro", false, 0);
 }
 
+// A reference for the backbones found from the bonds, independent of them: the names the files give the atoms. Every
+// atom of every segment is the one its name says it is, and there are as many segments as the atom names found before
+// the backbones came from the bonds (when the names were what found them).
+static bool name_is(md_str_t name, const char* const* names) {
+    for (; *names; ++names) {
+        if (md_str_eq_cstr(name, *names)) return true;
+    }
+    return false;
+}
+
+// The atom of the name, or primed as of a sugar (C4', C4*), -1 counting as named (a field the segment does not have)
+static bool atom_named(const md_system_t* sys, md_atom_idx_t atom, const char* base, bool primed) {
+    if (atom < 0) return true;
+    const md_str_t name = md_atom_name(&sys->atom, (size_t)atom);
+    const size_t n = strlen(base);
+    if (!md_str_begins_with(name, (md_str_t){ base, n })) return false;
+    if (!primed) return name.len == n;
+    return name.len == n + 1 && (name.ptr[n] == '\'' || name.ptr[n] == '*');
+}
+
+UTEST(util, backbones_named_as_their_atoms) {
+    const struct { const char* file; size_t protein; size_t nucleic; } refs[] = {
+        { MD_UNITTEST_DATA_DIR "/1k4r.pdb",              1185,   0 },
+        { MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb",        865,   0 },
+        { MD_UNITTEST_DATA_DIR "/1LAF.pdb",               238,   0 },
+        { MD_UNITTEST_DATA_DIR "/1a64.pdb",               188,   0 },
+        { MD_UNITTEST_DATA_DIR "/1fez.cif",               512,   0 },
+        { MD_UNITTEST_DATA_DIR "/2or2.cif",               592,   0 },
+        { MD_UNITTEST_DATA_DIR "/9gfu.cif",               520,   0 },
+        { MD_UNITTEST_DATA_DIR "/8g7u.cif",              1634,  48 },
+        { MD_UNITTEST_DATA_DIR "/nucl-dna.gro",           974, 294 },
+        { MD_UNITTEST_DATA_DIR "/centered.gro",         10626,   0 },
+        { MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro",  119,   0 },
+    };
+    static const char* const O[]  = { "O", "OXT", "O1", "O2", "OT1", "OT2", "OC1", "OC2", NULL };
+    static const char* const HN[] = { "H", "HN", NULL };
+    for (size_t i = 0; i < MD_COUNTOF(refs); ++i) {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        const md_str_t file = md_str_from_cstr(refs[i].file);
+        bool loaded = false;
+        if (md_str_ends_with(file, MD_STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&sys, &state, file, MD_PDB_OPTION_NONE, NULL);
+        if (md_str_ends_with(file, MD_STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&sys, &state, file, NULL);
+        if (md_str_ends_with(file, MD_STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&sys, &state, file, NULL);
+        ASSERT_TRUE(loaded);
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+
+        const md_protein_backbone_data_t* pb = &sys.protein_backbone;
+        EXPECT_EQ(refs[i].protein, pb->segment.count);
+        size_t named = 0;
+        for (size_t s = 0; s < pb->segment.count; ++s) {
+            const md_amino_acid_atoms_t a = pb->segment.atoms[s];
+            named += atom_named(&sys, a.n, "N", false) && atom_named(&sys, a.ca, "CA", false) && atom_named(&sys, a.c, "C", false) &&
+                     name_is(md_atom_name(&sys.atom, (size_t)a.o), O) && atom_named(&sys, a.cb, "CB", false) &&
+                     (a.hn < 0 || name_is(md_atom_name(&sys.atom, (size_t)a.hn), HN));
+        }
+        EXPECT_EQ(pb->segment.count, named);
+
+        const md_nucleic_backbone_data_t* nb = &sys.nucleic_backbone;
+        EXPECT_EQ(refs[i].nucleic, nb->segment.count);
+        named = 0;
+        for (size_t s = 0; s < nb->segment.count; ++s) {
+            const md_nucleic_acid_atoms_t a = nb->segment.atoms[s];
+            // The P on the O5' of a 5' triphosphate is its PA
+            const bool p = a.p < 0 || atom_named(&sys, a.p, "P", false) || atom_named(&sys, a.p, "PA", false);
+            named += p && atom_named(&sys, a.o5, "O5", true) && atom_named(&sys, a.c5, "C5", true) && atom_named(&sys, a.c4, "C4", true) &&
+                     atom_named(&sys, a.c3, "C3", true) && atom_named(&sys, a.o3, "O3", true) && atom_named(&sys, a.c1, "C1", true) &&
+                     atom_named(&sys, a.c2, "C2", true) && atom_named(&sys, a.o4, "O4", true);
+        }
+        EXPECT_EQ(nb->segment.count, named);
+        md_vm_arena_destroy(alloc);
+    }
+}
+
 // Nothing which is no polymer: fullerenes, and a tryptophan alone (one residue is no chain)
 UTEST(util, backbones_from_bonds_none) {
     const char* files[] = {
