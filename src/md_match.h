@@ -7,6 +7,7 @@
 #include <core/md_bitset.h>
 #include <core/md_str.h>
 #include <md_types.h>
+#include <core/md_label.h>
 
 struct md_allocator_i;
 struct md_system_t;

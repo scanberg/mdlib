@@ -22,6 +22,7 @@
 
 #include <hdf5.h>
 #include "md_hdf5.h"
+#include <md_element.h>
 
 
 // ---------------------------------------------------------------------------
@@ -3741,7 +3742,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 
 	MD_ASSERT(sys->residue.count == 0);
 	md_array_push(sys->residue.atom_offset, 0u, sys->alloc);
-	md_array_push(sys->residue.name,     make_label(MD_STR_LIT("QM")), sys->alloc);
+	md_array_push(sys->residue.name,     md_label_make(MD_STR_LIT("QM")), sys->alloc);
 	md_array_push(sys->residue.seq_id, (md_sequence_id_t)0, sys->alloc);
 	md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 	sys->residue.count += 1;
@@ -3765,7 +3766,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 		// sites are adjacent in this order however the file scattered them
 		if (k == 0 || site->fragment_id != pot->sites[vlx->mm.order[k - 1]].fragment_id) {
 			md_array_push(sys->residue.atom_offset, (uint32_t)atom_idx, sys->alloc);
-			md_array_push(sys->residue.name,     make_label(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
+			md_array_push(sys->residue.name,     md_label_make(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
 			md_array_push(sys->residue.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
 			md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 			sys->residue.count += 1;

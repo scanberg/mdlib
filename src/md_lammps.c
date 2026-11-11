@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_util.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_path.h>
@@ -1122,7 +1123,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				md_array_push(sys->residue.seq_id, resid, sys->alloc);
 				// No name in the file: the generic one (a number would not fit a residue name past 99, and a formula
 				// may read as a residue of its own, "C" a cytidine)
-				md_array_push(sys->residue.name, make_label(MD_STR_LIT("MOL")), sys->alloc);
+				md_array_push(sys->residue.name, md_label_make(MD_STR_LIT("MOL")), sys->alloc);
 				md_array_push(sys->residue.flags, 0, sys->alloc);
 				sys->residue.count += 1;
 			}

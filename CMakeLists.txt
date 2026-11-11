@@ -113,6 +113,7 @@ set(CORE_FILES
   src/core/md_writer.h
   src/core/md_reader.h
   src/core/md_str.h
+  src/core/md_label.h
   src/core/md_tracking_allocator.c
   src/core/md_tracking_allocator.h
   src/core/md_unit.c
@@ -126,6 +127,7 @@ set(CORE_FILES
 
 set(SRC_FILES
   src/md_atomic_infer.c
+  src/md_element.h
   src/md_chem.c
   src/md_chem.h
   src/md_contact.c
@@ -207,6 +209,7 @@ set(SRC_FILES
   src/md_backbone.h
   src/md_lipid.h
   src/md_bond.h
+  src/md_ring.h
   src/md_assembly.h
   src/md_group.h
   src/md_system_state.h

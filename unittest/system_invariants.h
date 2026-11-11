@@ -74,7 +74,7 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
                         break;
                     }
                     if (type->kind[t] != md_system_residue_kind(sys, i) ||
-                        !md_str_eq(LBL_TO_STR(type->name[t]), md_system_residue_name(sys, i))) {
+                        !md_str_eq(MD_LABEL_STR(type->name[t]), md_system_residue_name(sys, i))) {
                         FAIL("component[%zu] is not of the name and kind of its type %d", i, t);
                         break;
                     }

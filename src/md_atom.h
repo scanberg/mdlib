@@ -3,8 +3,111 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <md_types.h>
+#include <core/md_array.h>
+#include <core/md_label.h>
 
 // Atoms and their particle types (md_atom_data_t, md_particle_type_data_t).
+
+// ### PARTICLE TYPE ### (see CLASSIFICATION in md_types.h)
+
+// What a particle is. A property of its type: every particle of a type is the same kind of particle.
+typedef enum md_particle_kind_t {
+    MD_PARTICLE_ATOM         = 0,   // An atom. Its element is the type's atomic number, 0 when it is not known.
+    MD_PARTICLE_BEAD         = 1,   // A coarse grained bead which stands for a group of atoms. A system with beads is
+                                    // coarse grained (md_system_is_coarse_grained): bonds and hydrogen bonds are not
+                                    // inferred from the geometry, as atomic radii do not apply.
+    MD_PARTICLE_VIRTUAL_SITE = 2,   // A massless interaction site without an element: the M site of 4 site water models
+                                    // (TIP4P, OPC), the lone pairs of 5 site models (TIP5P). It belongs to its molecule
+                                    // but forms no bonds.
+} md_particle_kind_t;
+
+typedef enum {
+    MD_PARTICLE_TYPE_FLAG_NONE              = 0,
+    MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK = 0x3,     // md_particle_kind_t, see md_particle_type_flags_particle_kind
+} md_particle_type_flags_t;
+
+MD_ENUM_FLAGS(md_particle_type_flags_t)
+
+// ### ATOM ###
+
+// Hybridization of a heavy atom, see md_chem.h. SP2 includes the N and O whose lone pair takes part in a pi system
+// (amide and aniline N, pyrrole N, furan O).
+typedef enum md_hybridization_t {
+    MD_HYBRIDIZATION_UNKNOWN = 0,   // Not perceived, or not applicable (hydrogens, metals)
+    MD_HYBRIDIZATION_SP      = 1,
+    MD_HYBRIDIZATION_SP2     = 2,
+    MD_HYBRIDIZATION_SP3     = 3,
+} md_hybridization_t;
+
+typedef enum {
+    MD_ATOM_FLAG_NONE                   = 0,
+
+    // The atom's role in its residue, set when the residue is classified (md_util_system_infer_residue_flags) and
+    // for the beads of the predefined coarse grained types. Only the residues whose backbone was verified
+    // (MD_RESIDUE_FLAG_RESOLVED) have their atoms given a role.
+    MD_ATOM_FLAG_BACKBONE               = 0x1,      // N, CA, C of an amino acid; P, O5', C5', C4', C3', O3' of a nucleotide
+    MD_ATOM_FLAG_SIDE_CHAIN             = 0x2,      // Amino acid side chain, from CB outwards
+    MD_ATOM_FLAG_NUCLEOSIDE             = 0x4,      // Sugar and base of a nucleotide
+    MD_ATOM_FLAG_NUCLEOBASE             = 0x8,      // Base of a nucleotide
+    MD_ATOM_FLAG_TERMINAL_BEG           = 0x10,     // In the terminal group which begins a chain (N-terminus, 5' end)
+    MD_ATOM_FLAG_TERMINAL_END           = 0x20,     // In the terminal group which ends a chain (C-terminus, 3' end)
+    // In a tail of a lipid (md_util_system_infer_lipids): an acyl, alkyl or sphingoid chain, or the ring skeleton of a
+    // sterol, with its branches and hydrogens. The other atoms of a lipid are its head(s).
+    MD_ATOM_FLAG_LIPID_TAIL             = 0x40,
+
+    // Of a metallic phase: a metal in bulk, at a surface or in a particle, bonded to the metal atoms of its first
+    // coordination shell by MD_BOND_KIND_METALLIC bonds, and to nothing else in the topology (what touches a surface
+    // moves across it: its contacts are those of a frame, md_util_bond_delta). Set with the bonds
+    // (md_util_system_infer_covalent_bonds, METALLIC PHASES in md_util.c).
+    MD_ATOM_FLAG_METALLIC               = 0x80,
+
+    // Chemistry, see md_chem.h (md_chem_perceive)
+    MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
+    MD_ATOM_FLAG_AROMATIC               = 0x400,    // In an aromatic ring
+
+    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, set by its loader.
+    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
+    // QM region flagged, and the atoms without the flag are its environment. Nothing infers it: a system no
+    // loader said it of has no QM region. Selected in scripts by 'qm' and 'environment'.
+    MD_ATOM_FLAG_QM                     = 0x800,
+
+    // Hydrogen bond roles are not flags: they depend on the hydrogen bond model and its options, and a donor is a
+    // D-H pair rather than an atom. See md_hbond_perceive_roles and md_hbond_query_t.
+} md_atom_flags_t;
+
+MD_ENUM_FLAGS(md_atom_flags_t)
+
+static inline md_particle_kind_t md_particle_type_flags_particle_kind(md_particle_type_flags_t flags) {
+    return (md_particle_kind_t)((unsigned int)flags & (unsigned int)MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK);
+}
+
+static inline md_particle_type_flags_t md_particle_type_flags_set_particle_kind(md_particle_type_flags_t flags, md_particle_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK;
+    return (md_particle_type_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+}
+
+#define MD_ATOM_HYBRIDIZATION_SHIFT 8
+
+static inline md_hybridization_t md_atom_flags_hybridization(md_atom_flags_t flags) {
+    return (md_hybridization_t)(((unsigned int)flags & (unsigned int)MD_ATOM_FLAG_HYBRIDIZATION_MASK) >> MD_ATOM_HYBRIDIZATION_SHIFT);
+}
+
+static inline md_atom_flags_t md_atom_flags_set_hybridization(md_atom_flags_t flags, md_hybridization_t hyb) {
+    const unsigned int mask = (unsigned int)MD_ATOM_FLAG_HYBRIDIZATION_MASK;
+    return (md_atom_flags_t)(((unsigned int)flags & ~mask) | (((unsigned int)hyb << MD_ATOM_HYBRIDIZATION_SHIFT) & mask));
+}
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Names for printing ("atom", "bead", "sp2", ...), "" for a value out of range
+const char* md_particle_kind_name(md_particle_kind_t kind);
+const char* md_hybridization_name(md_hybridization_t hyb);
+
+#ifdef __cplusplus
+}
+#endif
 
 typedef struct md_particle_type_data_t {
     size_t count;
@@ -19,7 +122,7 @@ typedef struct md_particle_type_data_t {
     float*          mass;
     float*          radius;
     uint32_t*       color;
-    md_particle_type_flags_t* flags; // The particle kind, see md_types.h
+    md_particle_type_flags_t* flags; // The particle kind, see md_particle_type_flags_t above
 } md_particle_type_data_t;
 
 typedef struct md_atom_data_t {
@@ -28,7 +131,7 @@ typedef struct md_atom_data_t {
     // Coordinates live in md_system_state_t, not here. A system is time invariant; where the atoms
     // are is not.
     md_particle_type_idx_t* type_idx;
-    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_types.h
+    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_atom_flags_t above
 
     // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
     // and not per type, as particle types are shared by name (the OD1 of Asp and of Asn).
@@ -51,7 +154,7 @@ static inline size_t md_particle_type_count(const md_particle_type_data_t* parti
 static inline md_particle_type_idx_t md_particle_type_find(const md_particle_type_data_t* particle_type, md_str_t name, md_atomic_number_t z) {
     MD_ASSERT(particle_type);
     // The name as a type keeps it, its first 8 characters, compared as one word
-    const uint64_t key = md_label_key(make_label(name));
+    const uint64_t key = md_label_key(md_label_make(name));
     for (size_t i = 1; i < particle_type->count; ++i) {
         if (md_label_key(particle_type->name[i]) == key && particle_type->z[i] == z) {
             return (md_particle_type_idx_t)i;
@@ -66,8 +169,8 @@ static inline md_particle_type_idx_t md_particle_type_add(md_particle_type_data_
     MD_ASSERT(particle_type);
     MD_ASSERT(alloc);
 
-    md_array_push(particle_type->name, make_label(name), alloc);
-    md_array_push(particle_type->ff_type, make_label16(ff_type), alloc);
+    md_array_push(particle_type->name, md_label_make(name), alloc);
+    md_array_push(particle_type->ff_type, md_label16_make(ff_type), alloc);
     md_array_push(particle_type->z, z, alloc);
     md_array_push(particle_type->mass, mass, alloc);
     md_array_push(particle_type->radius, radius, alloc);
@@ -139,7 +242,7 @@ static inline uint32_t md_particle_type_color(const md_particle_type_data_t* typ
 static inline md_str_t md_particle_type_name(const md_particle_type_data_t* type_data, size_t type_idx) {
     MD_ASSERT(type_data);
     if (type_idx < type_data->count) {
-        return LBL_TO_STR(type_data->name[type_idx]);
+        return MD_LABEL_STR(type_data->name[type_idx]);
     }
     return MD_STR_LIT("");
 }

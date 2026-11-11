@@ -15,6 +15,7 @@
 #include <md_util.h>
 #include <md_dssp.h>
 #include <md_itp.h>
+#include <md_element.h>
 #include <core/md_writer.h>
 
 #include <core/md_allocator.h>
@@ -462,7 +463,7 @@ static void cg_add_residue(md_system_t* sys, const char* res_name, int seq_id, m
         md_array_push(sys->atom.flags, flags, alloc);
         sys->atom.count += 1;
     }
-    md_array_push(sys->residue.name, make_label(md_str_from_cstr(res_name)), alloc);
+    md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(res_name)), alloc);
     md_array_push(sys->residue.seq_id, seq_id, alloc);
     md_array_push(sys->residue.flags, md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, res_kind), alloc);
     md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
@@ -4613,7 +4614,7 @@ UTEST(util, ramachandran_classify) {
     md_label_t labels[9];
     md_residue_idx_t res_idx[9];
     for (int i = 0; i < 9; ++i) {
-        labels[i]   = make_label(md_str_from_cstr(names[i]));
+        labels[i]   = md_label_make(md_str_from_cstr(names[i]));
         res_idx[i] = i;
     }
     uint32_t range_offset[3] = { 0, 7, 9 };
@@ -4845,25 +4846,6 @@ UTEST(util, backbones_from_bonds_none) {
         EXPECT_EQ(0, sys.nucleic_backbone.range.count);
         md_vm_arena_destroy(alloc);
     }
-}
-
-UTEST(util, index_data_cleared) {
-    // A cleared index data keeps its arrays, emptied: no ranges, as one never pushed to, and none in range
-    md_allocator_i* alloc = md_vm_arena_create(MD_MEGABYTES(1));
-    md_index_data_t data = { .alloc = alloc };
-    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
-    const int32_t a[] = { 1, 2, 3 };
-    md_index_data_push_arr(&data, a, 3);
-    md_index_data_push_arr(&data, a, 2);
-    EXPECT_EQ(2u, md_index_data_num_ranges(&data));
-    md_index_data_clear(&data);
-    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
-    EXPECT_TRUE(md_index_range_beg(&data, 0) == NULL);
-    EXPECT_EQ(0u, md_index_range_size(&data, 0));
-    md_index_data_push_arr(&data, a, 1);
-    EXPECT_EQ(1u, md_index_data_num_ranges(&data));
-    EXPECT_EQ(1u, md_index_range_size(&data, 0));
-    md_vm_arena_destroy(alloc);
 }
 
 // The kernels that take packed positions give the same bits wherever the positions start in memory. Each runs on the

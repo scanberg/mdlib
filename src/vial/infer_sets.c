@@ -11,6 +11,7 @@
 #include <md_match.h>
 #include <md_attributes.h>
 #include <md_smiles.h>
+#include <md_element.h>
 #include <core/md_bitset.h>
 #include <core/md_allocator.h>
 #include <core/md_hash.h>

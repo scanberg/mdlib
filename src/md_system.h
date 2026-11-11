@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include <md_types.h>
+#include <md_ring.h>
 #include <md_fragment.h>
 
 #include <md_atom.h>
@@ -126,7 +127,7 @@ static inline size_t md_system_residue_count(const md_system_t* sys) {
 
 static inline md_str_t md_system_residue_name(const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(sys);
-    if (sys->residue.name && res_idx < sys->residue.count) return LBL_TO_STR(sys->residue.name[res_idx]);
+    if (sys->residue.name && res_idx < sys->residue.count) return MD_LABEL_STR(sys->residue.name[res_idx]);
     return MD_STR_LIT("");
 }
 
@@ -183,7 +184,7 @@ static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_
     MD_ASSERT(sys);
     if (sys->part.type.id) {
         for (size_t i = 0; i < sys->part.type.count; ++i) {
-            if (md_str_eq(LBL_TO_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
+            if (md_str_eq(MD_LABEL_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
         }
     }
     return -1;
@@ -191,7 +192,7 @@ static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_
 
 static inline md_str_t md_system_part_type_id(const md_system_t* sys, size_t type_idx) {
     MD_ASSERT(sys);
-    if (sys->part.type.id && type_idx < sys->part.type.count) return LBL_TO_STR(sys->part.type.id[type_idx]);
+    if (sys->part.type.id && type_idx < sys->part.type.count) return MD_LABEL_STR(sys->part.type.id[type_idx]);
     return MD_STR_LIT("");
 }
 
@@ -250,13 +251,13 @@ static inline size_t md_system_instance_atom_count(const md_system_t* sys, size_
 
 static inline md_str_t md_system_instance_id(const md_system_t* sys, size_t inst_idx) {
     MD_ASSERT(sys);
-    if (sys->instance.id && inst_idx < sys->instance.count) return LBL_TO_STR(sys->instance.id[inst_idx]);
+    if (sys->instance.id && inst_idx < sys->instance.count) return MD_LABEL_STR(sys->instance.id[inst_idx]);
     return MD_STR_LIT("");
 }
 
 static inline md_str_t md_system_instance_auth_id(const md_system_t* sys, size_t inst_idx) {
     MD_ASSERT(sys);
-    if (sys->instance.auth_id && inst_idx < sys->instance.count) return LBL_TO_STR(sys->instance.auth_id[inst_idx]);
+    if (sys->instance.auth_id && inst_idx < sys->instance.count) return MD_LABEL_STR(sys->instance.auth_id[inst_idx]);
     return MD_STR_LIT("");
 }
 
@@ -337,7 +338,7 @@ static inline md_str_t md_system_chain_id(const md_system_t* sys, size_t chain_i
     MD_ASSERT(sys);
     md_str_t id = MD_STR_INIT("");
     if (sys->chain.id && chain_idx < sys->chain.count) {
-        id = LBL_TO_STR(sys->chain.id[chain_idx]);
+        id = MD_LABEL_STR(sys->chain.id[chain_idx]);
     }
     return id;
 }

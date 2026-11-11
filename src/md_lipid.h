@@ -4,7 +4,16 @@
 #include <stdbool.h>
 #include <md_types.h>
 
+struct md_allocator_i;
+
 // Lipids: the heads and tails of each lipid molecule.
+
+// What a tail of a lipid is (md_lipid_data_t)
+typedef enum md_lipid_tail_kind_t {
+    MD_LIPID_TAIL_CHAIN     = 0,    // A hydrocarbon chain: acyl, alkyl, alkenyl or sphingoid, branched or not (phytanyl).
+                                    // It hangs off a head, or spans two (the chains of a bolalipid).
+    MD_LIPID_TAIL_SKELETON  = 1,    // The fused ring system of a sterol, with its side chain
+} md_lipid_tail_kind_t;
 
 // LIPIDS (md_util_system_infer_lipids): the anatomy of each lipid molecule, its heads and its tails.
 //
@@ -60,7 +69,7 @@ extern "C" {
 #endif
 
 // Frees the lipids of a system (allocated from alloc, the system's) and leaves them empty
-void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
+void md_lipid_data_free(md_lipid_data_t* lipid, struct md_allocator_i* alloc);
 
 // The ranges of a lipid: NULL and 0 when the index is out of range
 static inline const int32_t* md_lipid_residues(const md_lipid_data_t* lipid, size_t lipid_idx) {

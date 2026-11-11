@@ -6,6 +6,7 @@
 #include <md_pdb.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_element.h>
 #include <core/md_allocator.h>
 #include <core/md_parse.h>
 #include <core/md_file.h>

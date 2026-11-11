@@ -190,8 +190,8 @@ UTEST(mmcif, assemblies) {
     EXPECT_STREQ("4", md_str_ptr(md_assembly_id(a, 3)));
     // The three operators, and the two of the product (1)(3), (2)(3)
     ASSERT_EQ(5, a->oper_count);
-    EXPECT_STREQ("1x3", md_str_ptr(LBL_TO_STR(a->oper_id[3])));
-    EXPECT_STREQ("2x3", md_str_ptr(LBL_TO_STR(a->oper_id[4])));
+    EXPECT_STREQ("1x3", md_str_ptr(MD_LABEL_STR(a->oper_id[3])));
+    EXPECT_STREQ("2x3", md_str_ptr(MD_LABEL_STR(a->oper_id[4])));
 
     // 1: A and the waters by the identity, B by the other
     {

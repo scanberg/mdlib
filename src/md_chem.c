@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <md_attributes.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>

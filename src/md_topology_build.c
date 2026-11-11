@@ -2,6 +2,7 @@
 
 #include <md_system.h>
 #include <md_util.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -131,7 +132,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Residues
     for (size_t r = 0; r < R; ++r) {
         md_array_push(sys->residue.atom_offset, d.res_offset[r], alloc);
-        md_array_push(sys->residue.name, make_label(d.res_name[r]), alloc);
+        md_array_push(sys->residue.name, md_label_make(d.res_name[r]), alloc);
         md_array_push(sys->residue.seq_id, (md_sequence_id_t)(d.res_number ? d.res_number[r] : (int64_t)r + 1), alloc);
         md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
     }

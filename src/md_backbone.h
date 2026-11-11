@@ -6,6 +6,75 @@
 
 // The protein and nucleic acid backbones of a system.
 
+// Secondary structure types (DSSP-like)
+typedef enum {
+    MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
+    MD_SECONDARY_STRUCTURE_COIL,
+    MD_SECONDARY_STRUCTURE_TURN,
+    MD_SECONDARY_STRUCTURE_BEND,
+    MD_SECONDARY_STRUCTURE_HELIX_310,
+    MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+    MD_SECONDARY_STRUCTURE_HELIX_PI,
+    MD_SECONDARY_STRUCTURE_BETA_SHEET,
+    MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
+} md_secondary_structure_t;
+
+typedef uint8_t md_ramachandran_type_t;
+
+enum {
+    MD_RAMACHANDRAN_TYPE_UNKNOWN = 0,
+    MD_RAMACHANDRAN_TYPE_GENERAL,
+    MD_RAMACHANDRAN_TYPE_GLYCINE,
+    MD_RAMACHANDRAN_TYPE_PROLINE,
+    MD_RAMACHANDRAN_TYPE_PREPROL,
+};
+
+// The atoms of an amino acid of a protein backbone, -1 where it has none. A coarse grained bead which stands for the
+// residue's backbone (the BB bead of Martini) is held in ca, with every other index -1 (md_protein_backbone_data_t).
+typedef struct md_amino_acid_atoms_t {
+    // Backbone
+    md_atom_idx_t n;
+    md_atom_idx_t ca;
+    md_atom_idx_t c;
+	// Side chain and appendages
+    md_atom_idx_t o;
+    md_atom_idx_t cb;
+    md_atom_idx_t hn;
+} md_amino_acid_atoms_t;
+
+// Backbone angles
+// φ (phi) is the angle in the chain C' − N − Cα − C'
+// ψ (psi) is the angle in the chain N − Cα − C' − N
+// https://en.wikipedia.org/wiki/Dihedral_angle#/media/File:Protein_backbone_PhiPsiOmega_drawing.svg)
+typedef struct md_backbone_angles_t {
+    float phi;
+    float psi;
+} md_backbone_angles_t;
+
+typedef struct md_nucleic_acid_atoms_t {
+    // Backbone
+    md_atom_idx_t p;
+    md_atom_idx_t o5;
+    md_atom_idx_t c5;
+    md_atom_idx_t c4;
+    md_atom_idx_t c3;
+    md_atom_idx_t o3;
+    // Nucleoside
+    md_atom_idx_t c1;
+    md_atom_idx_t c2;
+    md_atom_idx_t o4;
+} md_nucleic_acid_atoms_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+const char* md_secondary_structure_name(md_secondary_structure_t ss);   // "" for a value out of range
+
+#ifdef __cplusplus
+}
+#endif
+
 // The backbones hold only what is static with regard to the topology: which atoms of which residues form them, in
 // consecutive ranges along a chain. What depends on a frame (the backbone angles, the secondary structure) or serves a
 // single consumer (the ramachandran classification) is computed from them by whoever needs it, into arrays of its own

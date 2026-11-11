@@ -200,7 +200,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         } else {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", i + 1);
-            id = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)});
+            id = md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)});
         }
         md_array_push(A->oper_id, id, alloc);
 
@@ -213,7 +213,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             }
         }
         if (dev > 1.0e-3f || M.elem[0][3] != 0.0f || M.elem[1][3] != 0.0f || M.elem[2][3] != 0.0f || M.elem[3][3] != 1.0f) {
-            MD_LOG_INFO("Assemblies: operator '" MD_STR_FMT "' is not rigid (off by %g)", MD_STR_ARG(LBL_TO_STR(id)), dev);
+            MD_LOG_INFO("Assemblies: operator '" MD_STR_FMT "' is not rigid (off by %g)", MD_STR_ARG(MD_LABEL_STR(id)), dev);
         }
     }
     A->oper_count = oper_count;
@@ -242,7 +242,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             for (size_t k = 0; k < gen[g].oper_count; ++k) {
                 const uint32_t o = gen[g].oper[k];
                 if (o >= oper_count) {
-                    MD_LOG_ERROR("Assemblies: assembly '" MD_STR_FMT "' names operator %u of %zu", MD_STR_ARG(LBL_TO_STR(asm_id)), o, oper_count);
+                    MD_LOG_ERROR("Assemblies: assembly '" MD_STR_FMT "' names operator %u of %zu", MD_STR_ARG(MD_LABEL_STR(asm_id)), o, oper_count);
                     continue;
                 }
                 md_array_push(pairs, ((uint64_t)o << 32) | (uint64_t)g, ta);
@@ -344,7 +344,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             A->group_count += 1;
         }
         if (A->group_count == first_group) {
-            MD_LOG_INFO("Assemblies: assembly '" MD_STR_FMT "' holds none of the instances of the system and was left out", MD_STR_ARG(LBL_TO_STR(asm_id)));
+            MD_LOG_INFO("Assemblies: assembly '" MD_STR_FMT "' holds none of the instances of the system and was left out", MD_STR_ARG(MD_LABEL_STR(asm_id)));
             continue;
         }
         md_array_push(A->id, asm_id, alloc);
@@ -402,13 +402,13 @@ void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_alloca
 
 md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, md_str_t id, md_part_type_flags_t flags, md_str_t description, md_allocator_i* alloc) {
     MD_ASSERT(type);
-    md_label_t lbl = make_label(id);
+    md_label_t lbl = md_label_make(id);
     if (md_str_empty(id)) {
         // Its position, or the first number after it which no type has for an id (the ids of a file need not be 1..n)
         for (size_t n = type->count + 1;; ++n) {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", n);
-            lbl = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)});
+            lbl = md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)});
             bool taken = false;
             for (size_t i = 0; i < md_array_size(type->id) && !taken; ++i) taken = md_label_eq(type->id[i], lbl);
             if (!taken) break;

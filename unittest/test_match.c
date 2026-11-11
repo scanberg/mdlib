@@ -8,6 +8,7 @@
 #include <md_pdb.h>
 #include <md_mmcif.h>
 #include <md_filter.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -622,7 +623,7 @@ UTEST(match, bracket_hydrogens) {
 UTEST(match, aliphatic) {
     const md_system_t* sys = get_sys(SYS_DNA);
     size_t num_his = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) num_his += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "HIS");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_his += md_str_eq_cstr(MD_LABEL_STR(sys->residue.name[i]), "HIS");
     ASSERT_LT(0, (int)num_his);
 
     // The imidazole of a histidine with the carbon it hangs from. A purine has an imidazole too, but the carbon next
@@ -639,7 +640,7 @@ UTEST(match, protonation) {
     const md_system_t* sys = get_sys(SYS_TUBULIN);
     size_t num_acid = 0;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+        const md_str_t name = MD_LABEL_STR(sys->residue.name[i]);
         num_acid += md_str_eq_cstr(name, "ASP") || md_str_eq_cstr(name, "GLU");
     }
     ASSERT_LT(0, (int)num_acid);
@@ -679,8 +680,8 @@ UTEST(match, resonance) {
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     size_t num_arg = 0, num_found = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) num_arg += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "ARG");
-    for (size_t i = 0; i < res.count; ++i) num_found += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[res.unit[i]]), "ARG");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_arg += md_str_eq_cstr(MD_LABEL_STR(sys->residue.name[i]), "ARG");
+    for (size_t i = 0; i < res.count; ++i) num_found += md_str_eq_cstr(MD_LABEL_STR(sys->residue.name[res.unit[i]]), "ARG");
     EXPECT_LT(0, (int)num_arg);
     EXPECT_EQ(num_arg, num_found);
     md_match_result_free(&res);
@@ -762,7 +763,7 @@ UTEST(match, virtual_sites) {
     // residues
     const md_system_t* sys = get_sys(SYS_TIP4P);
     size_t num_sol = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) num_sol += md_str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "SOL");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_sol += md_str_eq_cstr(MD_LABEL_STR(sys->residue.name[i]), "SOL");
     ASSERT_LT(0, (int)num_sol);
     md_match_desc_t desc = {.flags = MD_MATCH_FLAG_WHOLE};
     desc.level = MD_MATCH_LEVEL_MOLECULE;
@@ -784,7 +785,7 @@ UTEST(match, whole) {
     // Glycine is part of every amino acid
     size_t num_aa = 0, num_gly = 0;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+        const md_str_t name = MD_LABEL_STR(sys->residue.name[i]);
         if (md_util_resname_amino_acid(name)) num_aa++;
         if (md_str_eq_cstr(name, "GLY")) {
             // Without its C terminal oxygen
@@ -813,7 +814,7 @@ UTEST(match, mask) {
     size_t num_rings = 0, num_rings_chain0 = 0;
     const md_urange_t chain0 = md_system_instance_atom_range(sys, 0);
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+        const md_str_t name = MD_LABEL_STR(sys->residue.name[i]);
         if (md_str_eq_cstr(name, "PHE") || md_str_eq_cstr(name, "TYR")) {
             num_rings++;
             num_rings_chain0 += md_system_residue_atom_range(sys, i).beg >= chain0.beg && md_system_residue_atom_range(sys, i).end <= chain0.end;
@@ -910,7 +911,7 @@ UTEST(match, reference_identity) {
     for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         const md_system_t* sys = get_sys(cases[c].id);
         for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-            if (!md_str_eq_cstr(LBL_TO_STR(sys->residue.name[ci]), cases[c].name)) continue;
+            if (!md_str_eq_cstr(MD_LABEL_STR(sys->residue.name[ci]), cases[c].name)) continue;
             const md_urange_t range = md_system_residue_atom_range(sys, ci);
             md_array(int32_t) ref = 0;
             for (uint32_t i = range.beg; i < range.end; ++i) md_array_push(ref, (int32_t)i, alloc);
@@ -1102,7 +1103,7 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
 
     size_t num_missed = 0, num_wrong = 0, num_known = 0;
     for (size_t i = 0; i < num_res; ++i) {
-        const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+        const md_str_t name = MD_LABEL_STR(sys->residue.name[i]);
         int expected = -1;
         for (size_t p = 0; p < num_pat; ++p) {
             if (residue_kind(name, residue_patterns[p].name)) expected = (int)p;
@@ -1203,7 +1204,7 @@ static void check_identify(int* utest_result, sys_id_t id, const md_match_identi
         char kind[16];
         const md_str_t entry_name = md_match_library_name(desc->library, e);
         snprintf(kind, sizeof(kind), "%.*s", (int)entry_name.len, entry_name.ptr);
-        if (names) EXPECT_TRUE(residue_kind(LBL_TO_STR(sys->residue.name[u]), kind));
+        if (names) EXPECT_TRUE(residue_kind(MD_LABEL_STR(sys->residue.name[u]), kind));
 
         const md_match_query_t* q = md_match_library_query(desc->library, e);
         ASSERT_EQ(q->num_atoms, (size_t)(res.offset[i + 1] - res.offset[i]));

@@ -89,7 +89,7 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     }
     st->num_atoms = n;
     sys->residue.count = 1;
-    md_array_push(sys->residue.name, make_label(md_str_from_cstr(c->id)), alloc);
+    md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(c->id)), alloc);
     md_array_push(sys->residue.seq_id, 1, alloc);
     md_array_push(sys->residue.flags, 0, alloc);
     md_array_push(sys->residue.atom_offset, 0, alloc);

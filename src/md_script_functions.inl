@@ -1444,7 +1444,7 @@ static int32_t find_val(const int32_t* arr, int64_t count, int32_t val) {
 
 static int32_t find_label(const md_label_t* arr, int64_t count, md_str_t lbl) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
-        if (md_str_eq(LBL_TO_STR(arr[i]), lbl)) {
+        if (md_str_eq(MD_LABEL_STR(arr[i]), lbl)) {
             return i;
         }
     }
@@ -4375,7 +4375,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_queries; ++j) {
-                    if (match_query(queries[j], LBL_TO_STR(ctx->sys->residue.name[res_idx]))) {
+                    if (match_query(queries[j], MD_LABEL_STR(ctx->sys->residue.name[res_idx]))) {
                         const md_urange_t atom_range = md_system_residue_atom_range(ctx->sys, res_idx);
                         set_writer_push_range(&w, atom_range.beg, atom_range.end);
 
@@ -4396,7 +4396,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (match_query(queries[j], LBL_TO_STR(ctx->sys->residue.name[res_idx]))) {
+                if (match_query(queries[j], MD_LABEL_STR(ctx->sys->residue.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }

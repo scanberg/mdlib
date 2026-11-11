@@ -9,6 +9,7 @@
 #include <md_tpr.h>
 #include <md_util.h>
 #include <md_hbond.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>

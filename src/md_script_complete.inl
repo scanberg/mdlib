@@ -229,11 +229,11 @@ static md_array(md_str_t) completion_domain_values(value_domain_t domain, const 
                     }
                 }
                 for (size_t i = 0; i < sys->atom.type.count; ++i) {
-                    if (present[i]) completion_add_value(&values, &seen, LBL_TO_STR(sys->atom.type.name[i]), alloc);
+                    if (present[i]) completion_add_value(&values, &seen, MD_LABEL_STR(sys->atom.type.name[i]), alloc);
                 }
             } else {
                 for (size_t i = 0; i < sys->atom.type.count; ++i) {
-                    completion_add_value(&values, &seen, LBL_TO_STR(sys->atom.type.name[i]), alloc);
+                    completion_add_value(&values, &seen, MD_LABEL_STR(sys->atom.type.name[i]), alloc);
                 }
             }
         }
@@ -255,7 +255,7 @@ static md_array(md_str_t) completion_domain_values(value_domain_t domain, const 
             md_str_t prev = {0};
             for (size_t i = 0; i < sys->residue.count; ++i) {
                 if (!completion_in_context(atoms, md_system_residue_atom_range(sys, i))) continue;
-                const md_str_t name = LBL_TO_STR(sys->residue.name[i]);
+                const md_str_t name = MD_LABEL_STR(sys->residue.name[i]);
                 if (md_str_eq(name, prev)) continue;   // Runs of the same residue (water) are common
                 completion_add_value(&values, &seen, name, alloc);
                 prev = name;

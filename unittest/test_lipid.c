@@ -6,6 +6,7 @@
 #include <core/md_str.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_element.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_tpr.h>
@@ -252,7 +253,7 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
     md_array_push(sys->residue.atom_offset, 0, alloc);
     if (num_residues == 0) {
         sys->residue.count = 1;
-        md_array_push(sys->residue.name, make_label(md_str_from_cstr(res_names[0])), alloc);
+        md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(res_names[0])), alloc);
         md_array_push(sys->residue.seq_id, 1, alloc);
         md_array_push(sys->residue.flags, 0, alloc);
         md_array_push(sys->residue.atom_offset, (uint32_t)n, alloc);
@@ -260,7 +261,7 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
         uint32_t end = 0;
         for (int c = 0; c < num_residues; ++c) {
             end += (uint32_t)res_sizes[c];
-            md_array_push(sys->residue.name, make_label(md_str_from_cstr(res_names[c])), alloc);
+            md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(res_names[c])), alloc);
             md_array_push(sys->residue.seq_id, c + 1, alloc);
             md_array_push(sys->residue.flags, 0, alloc);
             md_array_push(sys->residue.atom_offset, end, alloc);

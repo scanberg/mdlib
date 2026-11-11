@@ -5,6 +5,7 @@
 
 #include <md_types.h>
 #include <core/md_unit.h>
+#include <core/md_array.h>
 
 struct md_allocator_i;
 struct md_executor_t;

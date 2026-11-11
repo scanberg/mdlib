@@ -10,6 +10,7 @@
 #include <core/md_log.h>
 #include <core/md_file.h>
 #include <md_unitcell.h>
+#include <md_element.h>
 #include <stdio.h>
 
 #include "run_check.h"

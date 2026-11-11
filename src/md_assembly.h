@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <md_types.h>
+#include <core/md_label.h>
 #include <core/md_vec.h>
 
 // The biological assemblies of a deposited structure.
@@ -91,7 +92,7 @@ static inline md_str_t md_assembly_id(const md_assembly_data_t* a, size_t asm_id
     MD_ASSERT(a);
     md_str_t id = MD_STR_INIT("");
     if (a->id && asm_idx < a->count) {
-        id = LBL_TO_STR(a->id[asm_idx]);
+        id = MD_LABEL_STR(a->id[asm_idx]);
     }
     return id;
 }

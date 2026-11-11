@@ -5,6 +5,7 @@
 #include <md_chem.h>
 #include <md_dssp.h>
 #include <md_match.h>
+#include <md_element.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_format.h>
@@ -2360,7 +2361,7 @@ static bond_rule_t bond_rule(int ei, int ej, bool same_res, bool water) {
 // lattice gives it, and a cutoff on the sum of covalent radii falls within their shell (2.72 Å for gold, against a
 // first shell of 2.6-3.1 Å), which bonds a part of it that looks random and changes from frame to frame. The atoms of
 // a metallic phase (MD_ATOM_FLAG_METALLIC) are instead bonded to every metal atom of their first coordination shell,
-// by METALLIC bonds, which are not bonds of the graph (md_types.h), and to nothing else: what touches a surface moves
+// by METALLIC bonds, which are not bonds of the graph (md_bond.h), and to nothing else: what touches a surface moves
 // across it, so its contacts are those of a frame (md_util_bond_delta) rather than of the topology.
 //
 // THE FIRST SHELL ends at the first minimum of the distances between the metal atoms, each over the sum of the
@@ -4434,7 +4435,7 @@ bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t re
         size_t j = i + 1;
         while (j < num_res && md_str_eq(id, md_str_trim(res_chain_id[j])) && !(res_unit_begins && res_unit_begins[j])) ++j;
         md_array_push(sys->instance.id, (md_label_t){0}, alloc);
-        md_array_push(sys->instance.auth_id, make_label(id), alloc);
+        md_array_push(sys->instance.auth_id, md_label_make(id), alloc);
         md_array_push(sys->instance.res_offset, (uint32_t)i, alloc);
         md_array_push(sys->instance.part_type_idx, -1, alloc);
         md_array_push(sys->instance.mol_type_idx, -1, alloc);
@@ -4482,7 +4483,7 @@ bool md_util_system_infer_chains(md_system_t* sys) {
             chain = (md_chain_idx_t)*found;
         } else {
             chain = (md_chain_idx_t)sys->chain.count++;
-            md_array_push(sys->chain.id, make_label(id), alloc);
+            md_array_push(sys->chain.id, md_label_make(id), alloc);
             md_hashmap_add(&chain_of_id, key, (uint32_t)chain);
         }
         md_array_push(runs, residues, temp_arena);
@@ -4524,7 +4525,7 @@ bool md_util_system_infer_chains(md_system_t* sys) {
 md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, md_str_t name, md_atomic_number_t z) {
     MD_ASSERT(sys && map);
     // The name as the type keeps it, its first 8 characters
-    const uint64_t kv[2] = { md_label_key(make_label(name)), (uint64_t)z };
+    const uint64_t kv[2] = { md_label_key(md_label_make(name)), (uint64_t)z };
     const uint64_t key = md_hash64(kv, sizeof(kv), 0);
     const uint32_t* found = md_hashmap_get(map, key);
     if (found) return (md_particle_type_idx_t)*found;
@@ -12494,7 +12495,7 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
     // A type no residue is of any more (a residue which was reclassified) stays, used by none.
     md_hashmap32_t lookup = { .allocator = temp_arena };
     for (size_t t = 0; t < res->type.count; ++t) {
-        md_hashmap_add(&lookup, residue_type_key(LBL_TO_STR(res->type.name[t]), res->type.kind[t]), (uint32_t)t);
+        md_hashmap_add(&lookup, residue_type_key(MD_LABEL_STR(res->type.name[t]), res->type.kind[t]), (uint32_t)t);
     }
 
     md_array_resize(res->type_idx, res->count, alloc);
@@ -12505,7 +12506,7 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
 
         md_residue_type_idx_t type_idx = -1;
         const uint32_t* found = md_hashmap_get(&lookup, key);
-        if (found && res->type.kind[*found] == kind && md_str_eq(LBL_TO_STR(res->type.name[*found]), name)) {
+        if (found && res->type.kind[*found] == kind && md_str_eq(MD_LABEL_STR(res->type.name[*found]), name)) {
             type_idx = (md_residue_type_idx_t)*found;
         } else if (found) {
             type_idx = md_residue_type_find(&sys->residue.type, name, kind);       // Two keys which collide

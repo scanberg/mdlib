@@ -6,6 +6,7 @@
 #include <md_util.h>
 #include <md_gro.h>
 #include <md_pdb.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -127,7 +128,7 @@ UTEST(monomer, residue_types_nucleosome) {
     // Each name and kind once
     for (size_t a = 0; a < type->count; ++a) {
         for (size_t b = a + 1; b < type->count; ++b) {
-            EXPECT_FALSE(type->kind[a] == type->kind[b] && md_str_eq(LBL_TO_STR(type->name[a]), LBL_TO_STR(type->name[b])));
+            EXPECT_FALSE(type->kind[a] == type->kind[b] && md_str_eq(MD_LABEL_STR(type->name[a]), MD_LABEL_STR(type->name[b])));
         }
     }
 

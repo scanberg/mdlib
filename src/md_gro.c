@@ -185,9 +185,9 @@ static MD_FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields
     return a.lo == b.lo && a.hi == b.hi && a.len == b.len;
 }
 
-// The field of 5 characters at offset as a label, without the whitespace around it: make_label(md_str_trim()) of it. As one
+// The field of 5 characters at offset as a label, without the whitespace around it: md_label_make(md_str_trim()) of it. As one
 // word where the line goes on for 8 characters from there and the field has no control character (whose blanks are
-// spaces alone, which a byte above ' ' bounds: no scan); else as make_label(md_str_trim()).
+// spaces alone, which a byte above ' ' bounds: no scan); else as md_label_make(md_str_trim()).
 static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
     if (line.len >= offset + 8) {
         uint64_t w;
@@ -208,7 +208,7 @@ static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
             return lbl;
         }
     }
-    return make_label(md_str_trim(md_str_substr(line, offset, 5)));
+    return md_label_make(md_str_trim(md_str_substr(line, offset, 5)));
 }
 
 // The residue number of a line (columns 0 to 4): parse_int(md_str_trim()) of it. Blanks and then digits up to its end

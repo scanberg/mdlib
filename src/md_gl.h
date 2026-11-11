@@ -15,6 +15,8 @@
 #include <core/md_str.h>
 #include <core/md_vec.h>
 #include <md_types.h>
+#include <md_bond.h>
+#include <md_backbone.h>
 
 // Forward declarations
 struct md_system_t;

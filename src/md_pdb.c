@@ -4,6 +4,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_util.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -337,7 +338,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
                 char buf[16];
                 const int len = snprintf(buf, sizeof(buf), "%u", t + 1);
                 md_array_push(transform, M, temp_alloc);
-                md_array_push(oper_id, make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)}), temp_alloc);
+                md_array_push(oper_id, md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)}), temp_alloc);
             }
             md_array_push(oper, (uint32_t)k, temp_alloc);
         }
@@ -345,7 +346,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
         char buf[16];
         const int len = snprintf(buf, sizeof(buf), "%d", group->id);
         const md_assembly_gen_t row = {
-            .assembly_id = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)}),
+            .assembly_id = md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)}),
             .inst        = inst,
             .inst_count  = md_array_size(inst),
             .oper        = oper,

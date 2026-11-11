@@ -1,6 +1,9 @@
 #pragma once
 
 #include <md_types.h>
+#include <md_ring.h>
+#include <md_bond.h>
+#include <md_atom.h>
 
 #include <stdint.h>
 #include <stddef.h>

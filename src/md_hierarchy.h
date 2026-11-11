@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <md_types.h>
+#include <core/md_array.h>
+#include <core/md_label.h>
 
 // The levels a system is built of above its atoms: residues, instances, chains, parts and molecules, and their types.
 
@@ -220,7 +222,7 @@ static inline size_t md_residue_type_count(const md_residue_type_data_t* type) {
 static inline md_residue_type_idx_t md_residue_type_find(const md_residue_type_data_t* type, md_str_t name, md_residue_kind_t kind) {
     MD_ASSERT(type);
     for (size_t i = 0; i < type->count; ++i) {
-        if (type->kind[i] == kind && md_str_eq(LBL_TO_STR(type->name[i]), name)) {
+        if (type->kind[i] == kind && md_str_eq(MD_LABEL_STR(type->name[i]), name)) {
             return (md_residue_type_idx_t)i;
         }
     }
@@ -230,7 +232,7 @@ static inline md_residue_type_idx_t md_residue_type_find(const md_residue_type_d
 static inline md_residue_type_idx_t md_residue_type_add(md_residue_type_data_t* type, md_str_t name, md_residue_kind_t kind, md_monomer_t monomer, uint32_t color, struct md_allocator_i* alloc) {
     MD_ASSERT(type);
     MD_ASSERT(alloc);
-    md_array_push(type->name, make_label(name), alloc);
+    md_array_push(type->name, md_label_make(name), alloc);
     md_array_push(type->kind, kind, alloc);
     md_array_push(type->monomer, monomer, alloc);
     md_array_push(type->color, color, alloc);
@@ -240,7 +242,7 @@ static inline md_residue_type_idx_t md_residue_type_add(md_residue_type_data_t* 
 
 static inline md_str_t md_residue_type_name(const md_residue_type_data_t* type, size_t type_idx) {
     MD_ASSERT(type);
-    if (type_idx < type->count) return LBL_TO_STR(type->name[type_idx]);
+    if (type_idx < type->count) return MD_LABEL_STR(type->name[type_idx]);
     return MD_STR_LIT("");
 }
 

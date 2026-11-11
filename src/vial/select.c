@@ -481,7 +481,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
     switch (level) {
     case VIAL_LEVEL_PARTICLE: {
         const bool has = sys->atom.type_idx && sys->atom.type_idx[unit] < sys->atom.type.count;
-        const md_str_t name = has ? LBL_TO_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : MD_STR_LIT("");
+        const md_str_t name = has ? MD_LABEL_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : MD_STR_LIT("");
         n = snprintf(buf, cap, "%.*s/", (int)name.len, name.ptr);
         const uint32_t r = atom_res(s, unit);
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
@@ -770,7 +770,7 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
         for (size_t i = 0; pass && i < md_array_size(q->filters); ++i) {
             const vial_filter_t* f = &q->filters[i];
             switch (f->key) {
-            case VIAL_KEY_NAME: pass = match_str(f, LBL_TO_STR(sys->atom.type.name[t]), true); break;
+            case VIAL_KEY_NAME: pass = match_str(f, MD_LABEL_STR(sys->atom.type.name[t]), true); break;
             case VIAL_KEY_ELEMENT: {
                 const md_str_t sym = sys->atom.type.z ? md_util_element_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
                 pass = match_element(f, sym);

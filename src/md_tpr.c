@@ -4,6 +4,7 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <md_nonbonded.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -1772,7 +1773,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     const md_tpr_residue_t* res = &mt->residues[atom->residue];
                     const md_sequence_id_t seq_id = renumber ? next_renum + m * (int32_t)mt->num_residues + atom->residue : res->nr;
                     md_array_push(sys->residue.atom_offset, (uint32_t)ai, alloc);
-                    md_array_push(sys->residue.name, make_label(res->name), alloc);
+                    md_array_push(sys->residue.name, md_label_make(res->name), alloc);
                     md_array_push(sys->residue.seq_id, seq_id, alloc);
                     md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
                     sys->residue.count += 1;

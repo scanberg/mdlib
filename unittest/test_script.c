@@ -44,11 +44,11 @@ static md_particle_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2,
 #define PARTICLE_TYPE_COUNT 5
 static md_atomic_number_t particle_type_z[] = {1, 2, 6, 7, 8};
 static md_label_t particle_type_id[] = {
-    MAKE_LABEL("H1"),
-    MAKE_LABEL("HE"),
-    MAKE_LABEL("CA"),
-    MAKE_LABEL("N"),
-    MAKE_LABEL("O")
+    MD_LABEL("H1"),
+    MD_LABEL("HE"),
+    MD_LABEL("CA"),
+    MD_LABEL("N"),
+    MD_LABEL("O")
 };
 static float particle_type_mass[] = {
     1.008f,
@@ -66,18 +66,18 @@ static float particle_type_radius[] = {
 };
 
 #define RES_COUNT 4
-static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
+static md_label_t r_name[] = {MD_LABEL("SOL"), MD_LABEL("LYS"), MD_LABEL("PFT"), MD_LABEL("PFT")};
 static md_sequence_id_t  r_id[] = {1, 2, 3, 4};
 static uint32_t    r_off[] = {0, 3, 8, 12, 16};
 
 #define ENT_COUNT 3
-static md_label_t    e_id[] = {MAKE_LABEL("WAT"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT")};
+static md_label_t    e_id[] = {MD_LABEL("WAT"), MD_LABEL("LYS"), MD_LABEL("PFT")};
 // The kind is the low bits of the entity flags
 static md_part_type_flags_t e_flags[] = {(md_part_type_flags_t)MD_PART_KIND_WATER, (md_part_type_flags_t)MD_PART_KIND_PEPTIDE, (md_part_type_flags_t)MD_PART_KIND_NON_POLYMER};
-static md_str_t       e_desc[] = {MAKE_LABEL("water"), MAKE_LABEL("polypeptide"), MAKE_LABEL("non-polymer")};
+static md_str_t       e_desc[] = {MD_LABEL("water"), MD_LABEL("polypeptide"), MD_LABEL("non-polymer")};
 
 #define INST_COUNT 4
-static md_label_t        i_id[] = {MAKE_LABEL("A"), MAKE_LABEL("B"), MAKE_LABEL("C"), MAKE_LABEL("D")};
+static md_label_t        i_id[] = {MD_LABEL("A"), MD_LABEL("B"), MD_LABEL("C"), MD_LABEL("D")};
 static uint32_t         i_off[] = {0, 3, 8, 12, 16};
 static md_part_type_idx_t i_eidx[] = {0, 1, 2, 2};
 

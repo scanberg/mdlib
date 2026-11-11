@@ -1,5 +1,6 @@
 ﻿#include <md_types.h>
 #include <md_util.h>
+#include <md_element.h>
 
 #include <core/md_hash.h>
 #include <core/md_allocator.h>

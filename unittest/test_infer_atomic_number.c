@@ -1,6 +1,7 @@
 ﻿#include "utest.h"
 #include <md_util.h>
 #include <md_system.h>
+#include <md_element.h>
 #include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>

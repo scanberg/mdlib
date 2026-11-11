@@ -21,6 +21,7 @@
 #include <hdf5.h>
 #include "md_hdf5.h"
 #include "md_hdf5_direct.h"
+#include <md_element.h>
 
 
 #include <inttypes.h>
