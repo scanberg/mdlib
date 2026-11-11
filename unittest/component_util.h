@@ -51,7 +51,7 @@ static inline md_array(ref_comp_t) read_components(md_str_t path, md_allocator_i
             ref_atom_t a = { 0 };
             char el[8];
             sscanf(buf + 2, "%7s %7s %d %f %f %f", a.name, el, &a.q, &a.x.x, &a.x.y, &a.x.z);
-            a.z = md_util_element_lookup((md_str_t){ el, strlen(el) }, true);
+            a.z = md_atomic_number_from_symbol((md_str_t){ el, strlen(el) }, true);
             md_array_push(md_array_last(comps)->atom, a, alloc);
         } else if (buf[0] == 'B' && buf[1] == ' ' && md_array_size(comps)) {
             ref_bond_t b = { 0 };
@@ -84,7 +84,7 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     for (int i = 0; i < na; ++i) {
         if (map[i] < 0) continue;
         const ref_atom_t* a = &c->atom[i];
-        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(a->name), (md_atomic_number_t)a->z, md_util_element_atomic_mass(a->z), md_util_element_vdw_radius(a->z), 0, 0, alloc);
+        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(a->name), (md_atomic_number_t)a->z, md_atomic_number_mass(a->z), md_atomic_number_vdw_radius(a->z), 0, 0, alloc);
         st->xyz[map[i]] = a->x;
     }
     st->num_atoms = n;

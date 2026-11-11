@@ -106,18 +106,18 @@ UTEST(atomic, inference_fallbacks) {
 
 UTEST(atomic, backward_compatibility) {
     // Test that old API still works through wrappers
-    EXPECT_EQ(md_util_element_lookup(MD_STR_LIT("H"), true), MD_Z_H);
-    EXPECT_EQ(md_util_element_lookup(MD_STR_LIT("ca"), true), MD_Z_Ca);
+    EXPECT_EQ(md_atomic_number_from_symbol(MD_STR_LIT("H"), true), MD_Z_H);
+    EXPECT_EQ(md_atomic_number_from_symbol(MD_STR_LIT("ca"), true), MD_Z_Ca);
     
-    md_str_t symbol = md_util_element_symbol(MD_Z_C);
+    md_str_t symbol = md_atomic_number_symbol(MD_Z_C);
     EXPECT_TRUE(md_str_eq_cstr(symbol, "C"));
     
-    md_str_t name = md_util_element_name(MD_Z_O);
+    md_str_t name = md_atomic_number_name(MD_Z_O);
     EXPECT_TRUE(md_str_eq_cstr(name, "Oxygen"));
     
-    EXPECT_GT(md_util_element_atomic_mass(MD_Z_C), 0.0f);
-    EXPECT_GT(md_util_element_vdw_radius(MD_Z_H), 0.0f);
-    EXPECT_GT(md_util_element_covalent_radius(MD_Z_N), 0.0f);
-    EXPECT_GT(md_util_element_max_valence(MD_Z_C), 0);
-    EXPECT_GT(md_util_element_cpk_color(MD_Z_O), 0);
+    EXPECT_GT(md_atomic_number_mass(MD_Z_C), 0.0f);
+    EXPECT_GT(md_atomic_number_vdw_radius(MD_Z_H), 0.0f);
+    EXPECT_GT(md_atomic_number_covalent_radius(MD_Z_N), 0.0f);
+    EXPECT_GT(md_atomic_number_max_valence(MD_Z_C), 0);
+    EXPECT_GT(md_atomic_number_cpk_color(MD_Z_O), 0);
 }

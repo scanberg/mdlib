@@ -1066,7 +1066,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	}
 	
 	// The element of a type is told by its mass, else (no mass given) by its label
-	md_util_element_from_mass(type_z, type_masses, num_types);
+	md_atomic_number_infer_from_mass_batch(type_z, type_masses, num_types);
 	for (size_t i = 0; i < num_types; ++i) {
 		const md_str_t label = md_str_from_cstr(data->particle_types[i].label);
 		if (type_z[i] == MD_Z_X && type_masses[i] == 0.0f && !md_str_empty(label)) {

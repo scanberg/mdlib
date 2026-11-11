@@ -684,7 +684,7 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
         case 0:  ((float*)o.data)[i] = k_mass(ms, sys, a); break;
         case 1:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
         case 2:  ((md_str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
-        default: ((md_str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a)); break;
+        default: ((md_str_t*)o.data)[i] = md_atomic_number_symbol(md_atom_atomic_number(&sys->atom, a)); break;
         }
     }
     o.origin = s->sets;

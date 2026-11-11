@@ -356,10 +356,10 @@ static inline bool extract_extxyz_cell(double cell[3][3], md_str_t line) {
 // The element of an atom of the symbol or name sym. A plain XYZ file holds element symbols, in any case and some
 // with a number after them ("C", "CL", "C12", "Cl1"); Tinker holds atom names of its force field ("CA" is a carbon)
 static md_atomic_number_t xyz_element(md_str_t sym, bool tinker) {
-    md_atomic_number_t z = md_util_element_lookup(sym, false);
+    md_atomic_number_t z = md_atomic_number_from_symbol(sym, false);
     if (z) return z;
     if (!tinker) {
-        z = md_util_element_lookup(sym, true);
+        z = md_atomic_number_from_symbol(sym, true);
         if (z) return z;
     }
     return md_atomic_number_infer_from_label(sym, (md_str_t){0}, tinker ? 3 : 0);
@@ -370,7 +370,7 @@ static void xyz_set_element(md_xyz_coordinate_t* coord, md_str_t tok, uint32_t f
     if ((flags & XYZ_ELEMENT_Z) || !md_ascii_is_alpha(tok.ptr[0])) {
         const int64_t z = parse_int(tok);
         coord->atomic_number = (0 < z && z < 119) ? (int)z : 0;
-        const md_str_t sym = coord->atomic_number ? md_util_element_symbol((md_element_t)coord->atomic_number) : tok;
+        const md_str_t sym = coord->atomic_number ? md_atomic_number_symbol((md_atomic_number_t)coord->atomic_number) : tok;
         md_str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), sym);
     } else {
         md_str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tok);

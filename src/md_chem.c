@@ -278,7 +278,7 @@ static void build_graph(chem_t* c) {
         if (c->z[c->pairs[b].idx[0]] == MD_Z_H || c->z[c->pairs[b].idx[1]] == MD_Z_H) continue;
         const uint32_t x = (uint32_t)c->pairs[b].idx[0];
         const uint32_t y = (uint32_t)c->pairs[b].idx[1];
-        const float sum = md_util_element_covalent_radius(c->z[x]) + md_util_element_covalent_radius(c->z[y]);
+        const float sum = md_atomic_number_covalent_radius(c->z[x]) + md_atomic_number_covalent_radius(c->z[y]);
         if (sum > 0) c->ratio[b] = md_f32x3_length(bond_vec(c, x, y)) / sum;
     }
 }

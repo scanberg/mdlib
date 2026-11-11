@@ -23,10 +23,7 @@ typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint16_t    md_particle_type_idx_t;
 typedef int32_t     md_residue_type_idx_t;
-typedef uint8_t     md_atomic_number_t;
-
-// For backwards compatibility
-typedef uint8_t md_element_t;  // Atomic number (1-118), 0 is unknown
+typedef uint8_t     md_atomic_number_t;      // Atomic number (1-118), 0 is unknown
 
 // Open ended range of indices (e.g. range(0,4) -> [0,1,2,3])
 typedef struct md_irange_t {

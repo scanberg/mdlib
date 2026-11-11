@@ -370,7 +370,7 @@ static void frag_formula(char* buf, size_t cap, const frag_mol_t* c, const uint3
         size_t j = i;
         for (; j > 0; --j) {
             const md_atomic_number_t y = el[j - 1];
-            const bool before = z == MD_Z_C ? y != MD_Z_C : (y != MD_Z_C && md_str_cmp_lex(md_util_element_symbol((md_element_t)z), md_util_element_symbol((md_element_t)y)) < 0);
+            const bool before = z == MD_Z_C ? y != MD_Z_C : (y != MD_Z_C && md_str_cmp_lex(md_atomic_number_symbol((md_atomic_number_t)z), md_atomic_number_symbol((md_atomic_number_t)y)) < 0);
             if (!before) break;
             el[j] = el[j - 1];
             num[j] = num[j - 1];
@@ -380,7 +380,7 @@ static void frag_formula(char* buf, size_t cap, const frag_mol_t* c, const uint3
     }
     size_t len = 0;
     for (size_t k = 0; k < num_el; ++k) {
-        const md_str_t sym = md_util_element_symbol((md_element_t)el[k]);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)el[k]);
         for (size_t s_ = 0; s_ < sym.len && len + 1 < cap; ++s_) buf[len++] = sym.ptr[s_];
         if (num[k] > 1) {
             char digits[12];
@@ -418,7 +418,7 @@ static void frag_name_single(char* buf, size_t cap, const frag_mol_t* c, uint32_
     if (name) {
         snprintf(buf, cap, "%s", name);
     } else {
-        const md_str_t sym = md_util_element_symbol((md_element_t)z);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
         snprintf(buf, cap, "%.*s", (int)sym.len, sym.ptr);
     }
 }
@@ -1080,7 +1080,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                 break;
             }
             case MD_FRAGMENT_ATOM: {
-                const md_str_t sym = md_util_element_symbol((md_element_t)c.z[first]);
+                const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)c.z[first]);
                 snprintf(name, FRAG_NAME_CAP, "%.*s", (int)sym.len, sym.ptr);
                 break;
             }

@@ -246,7 +246,7 @@ static md_array(md_str_t) completion_domain_values(value_domain_t domain, const 
                 present[md_atom_atomic_number(&sys->atom, i)] = true;
             }
             for (int z = 1; z < 256; ++z) {
-                if (present[z]) completion_add_value(&values, &seen, md_util_element_symbol((md_element_t)z), alloc);
+                if (present[z]) completion_add_value(&values, &seen, md_atomic_number_symbol((md_atomic_number_t)z), alloc);
             }
         }
         break;

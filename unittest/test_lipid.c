@@ -244,9 +244,9 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
     for (size_t i = 0; i < n; ++i) {
         const md_atomic_number_t z = g.atoms[i].z;
         char name[8];
-        const md_str_t sym = md_util_element_symbol(z);
+        const md_str_t sym = md_atomic_number_symbol(z);
         snprintf(name, sizeof(name), "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
-        sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_util_element_atomic_mass(z), md_util_element_vdw_radius(z), 0, 0, alloc);
+        sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), 0, 0, alloc);
         // Aromatic as written (lowercase), as md_chem_perceive would flag it
         if (g.atoms[i].flags & MD_SMILES_ATOM_AROMATIC) sys->atom.flags[i] |= MD_ATOM_FLAG_AROMATIC;
     }

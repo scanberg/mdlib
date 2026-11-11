@@ -656,7 +656,7 @@ static void system_values(cmpl_t* c, const md_system_t* sys, md_str_t callee, md
         }
     } else if (particles && IS(kw, "element")) {
         for (size_t t = 0; t < sys->atom.type.count && sys->atom.type.z; ++t) {
-            const md_str_t n = md_util_element_symbol(sys->atom.type.z[t]);
+            const md_str_t n = md_atomic_number_symbol(sys->atom.type.z[t]);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     } else if ((particles && IS(kw, "resname")) || (residues && (IS(kw, "name") || !kw.len))) {

@@ -92,11 +92,11 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
 
     for (size_t i = 0; i < g.num_atoms; ++i) {
         const md_atomic_number_t z = g.atoms[i].z;
-        const md_str_t sym = md_util_element_symbol(z);
+        const md_str_t sym = md_atomic_number_symbol(z);
         char name[8];
         snprintf(name, sizeof(name), "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
         const int32_t ai = map[i];
-        sys->atom.type_idx[ai] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_util_element_atomic_mass(z), md_util_element_vdw_radius(z), 0, 0, alloc);
+        sys->atom.type_idx[ai] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), 0, 0, alloc);
         if (g.atoms[i].flags & MD_SMILES_ATOM_AROMATIC) sys->atom.flags[ai] |= MD_ATOM_FLAG_AROMATIC;
         sys->atom.hydrogen_count[ai] = (uint8_t)hcount[i];
         sys->atom.formal_charge[ai] = g.atoms[i].charge;
@@ -574,7 +574,7 @@ static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_
     md_array_push_array(xyz, buf, (size_t)len, alloc);
     for (size_t i = 0; i < md_array_size(c->atom); ++i) {
         const ref_atom_t* a = &c->atom[i];
-        const md_str_t sym = md_util_element_symbol((md_element_t)a->z);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)a->z);
         len = snprintf(buf, sizeof(buf), "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, a->x.x, a->x.y, a->x.z);
         md_array_push_array(xyz, buf, (size_t)len, alloc);
     }

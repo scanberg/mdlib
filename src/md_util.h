@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <md_system.h>
+#include <md_element.h>
 
 #include <core/md_str.h>
 #include <core/md_vec.h>
@@ -34,21 +35,6 @@ typedef enum {
 } md_infer_flags_t;
 
 MD_ENUM_FLAGS(md_infer_flags_t)
-
-// Access to the static arrays (preserved for direct access)
-const md_str_t* md_util_element_symbols(void);
-const md_str_t* md_util_element_names(void);
-const float* md_util_element_vdw_radii(void);
-
-// Element functions (now calling new atomic number API internally)
-md_element_t md_util_element_lookup(md_str_t element_str, bool ignore_case);
-md_str_t md_util_element_symbol(md_element_t element);
-md_str_t md_util_element_name(md_element_t element);
-float md_util_element_vdw_radius(md_element_t element);
-float md_util_element_covalent_radius(md_element_t element);
-float md_util_element_atomic_mass(md_element_t element);
-int   md_util_element_max_valence(md_element_t element);
-uint32_t md_util_element_cpk_color(md_element_t element);
 
 bool md_util_resname_dna(md_str_t str);
 bool md_util_resname_rna(md_str_t str);
@@ -123,8 +109,6 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
 // kept (with the colors they were given), the residues which match none get new ones. Requires the classified
 // residues, lipids included; md_util_system_infer calls it last.
 bool md_util_system_infer_residue_types(md_system_t* sys);
-
-size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose
 // backbones are not linked: no peptide bond from the C of the one to the N of the next, no phosphodiester bond from the

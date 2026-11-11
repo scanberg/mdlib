@@ -1261,7 +1261,7 @@ bool md_util_resname_amino_acid(md_str_t str) {
     return find_str_in_cstr_arr(NULL, str, amino_acids, MD_COUNTOF(amino_acids));
 }
 
-static inline bool aromatic_ring_element(md_element_t elem) {
+static inline bool aromatic_ring_element(md_atomic_number_t elem) {
     switch (elem) {
     case B:
     case C:
@@ -1281,7 +1281,7 @@ static inline bool aromatic_ring_element(md_element_t elem) {
     }
 }
 
-static inline bool metal_element(md_element_t elem) {
+static inline bool metal_element(md_atomic_number_t elem) {
     switch(elem) {
     case Li:
     case Be:
@@ -1334,7 +1334,7 @@ static inline bool metal_element(md_element_t elem) {
     }
 }
 
-static inline bool halogen_element(md_element_t elem) {
+static inline bool halogen_element(md_atomic_number_t elem) {
     switch (elem) {
     case F:
     case Cl:
@@ -1347,9 +1347,10 @@ static inline bool halogen_element(md_element_t elem) {
     }
 }
 
-md_element_t md_util_element_lookup(md_str_t str, bool ignore_case) {
+// The element properties of md_element.h, from the tables above
+md_atomic_number_t md_atomic_number_from_symbol(md_str_t str, bool ignore_case) {
     if (str.len == 1 || str.len == 2) {
-        for (md_element_t i = 0; i < MD_COUNTOF(element_symbols); ++i) {
+        for (md_atomic_number_t i = 0; i < MD_COUNTOF(element_symbols); ++i) {
             md_str_t sym = element_symbols[i];
             if (md_str_len(sym) != md_str_len(str)) continue;
             if (ignore_case) {
@@ -1362,7 +1363,7 @@ md_element_t md_util_element_lookup(md_str_t str, bool ignore_case) {
     return 0;
 }
 
-static bool water_heuristic(const md_element_t elements[], size_t size) {
+static bool water_heuristic(const md_atomic_number_t elements[], size_t size) {
     if (size == 3) {
         size_t h_count = 0;
         size_t o_count = 0;
@@ -1475,7 +1476,7 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
     return (bits & req_bits) == req_bits;
 }
 
-size_t md_util_element_from_mass(md_element_t element[], const float mass[], size_t count) {
+size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t element[], const float mass[], size_t count) {
     if (!element) {
         MD_LOG_ERROR("element is null");
         return false;
@@ -1489,7 +1490,7 @@ size_t md_util_element_from_mass(md_element_t element[], const float mass[], siz
     size_t successful_matches = 0;
 
     for (size_t i = 0; i < count; ++i) {
-        md_element_t elem = 0;
+        md_atomic_number_t elem = 0;
         const float m = mass[i];
 
         // Use an epsilon which scales with the mass
@@ -1503,7 +1504,7 @@ size_t md_util_element_from_mass(md_element_t element[], const float mass[], siz
                 const float d = fabsf(m - element_atomic_mass[j]);
                 if (d < best) {
                     best = d;
-                    elem = (md_element_t)j;
+                    elem = (md_atomic_number_t)j;
                 }
             }
         }
@@ -1515,56 +1516,44 @@ size_t md_util_element_from_mass(md_element_t element[], const float mass[], siz
     return successful_matches;
 }
 
-const md_str_t* md_util_element_symbols(void) {
-    return element_symbols;
-}
-
-const md_str_t* md_util_element_names(void) {
-    return element_names;
-}
-
-const float* md_util_element_vdw_radii(void) {
-    return element_vdw_radii;
-}
-
-md_str_t md_util_element_symbol(md_element_t element) {
+md_str_t md_atomic_number_symbol(md_atomic_number_t element) {
     element = element < Num_Elements ? element : 0;
     return element_symbols[element];
 }
 
-md_str_t md_util_element_name(md_element_t element) {
+md_str_t md_atomic_number_name(md_atomic_number_t element) {
     element = element < Num_Elements ? element : 0;
     return element_names[element];
 }
 
-float md_util_element_vdw_radius(md_element_t element) {
+float md_atomic_number_vdw_radius(md_atomic_number_t element) {
     element = element < Num_Elements ? element : 0;
     return element_vdw_radii[element];
 }
 
-static inline float element_covalent_radius(md_element_t element) {
+static inline float element_covalent_radius(md_atomic_number_t element) {
     return element < Num_Elements ? element_covalent_radii_u8[element] * 0.01f : 0;
 }
 
-static inline float element_ionic_radius(md_element_t element) {
+static inline float element_ionic_radius(md_atomic_number_t element) {
     return element < Num_Elements ? element_ionic_radii_u8[element] * 0.01f : 0;
 }
 
-float md_util_element_covalent_radius(md_element_t element) {
+float md_atomic_number_covalent_radius(md_atomic_number_t element) {
     return element_covalent_radius(element);
 }
 
-float md_util_element_atomic_mass(md_element_t element) {
+float md_atomic_number_mass(md_atomic_number_t element) {
     element = element < Num_Elements ? element : 0;
     return element_atomic_mass[element];
 }
 
-int md_util_element_max_valence(md_element_t element) {
+int md_atomic_number_max_valence(md_atomic_number_t element) {
     element = element < Num_Elements ? element : 0;
     return (int)element_max_valence[element];
 }
 
-uint32_t md_util_element_cpk_color(md_element_t element) {
+uint32_t md_atomic_number_cpk_color(md_atomic_number_t element) {
     element = element < Num_Elements ? element : 0;
     return element_cpk_colors[element];
 }
@@ -2037,7 +2026,7 @@ static const int max_valence_bonds[] = {
     6   // Og
 };
 
-static inline int max_neighbors_element(md_element_t elem) {
+static inline int max_neighbors_element(md_atomic_number_t elem) {
     if (elem < Num_Elements)
         return max_valence_bonds[elem];
     return 0;
@@ -3991,7 +3980,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
 #define MIN_POLYMER_RES_LEN 2
 
 // @TODO: Convert to a table
-static bool monatomic_ion_element(md_element_t elem) {
+static bool monatomic_ion_element(md_atomic_number_t elem) {
     switch (elem) {
     case 1:   // H+ / H-
     case 3:   // Li+
@@ -5763,7 +5752,7 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
         if (count[MD_Z_C] == 0 && first[k] == MD_Z_H) break;    // Without carbon, H goes in order (Hill)
         const md_atomic_number_t z = first[k];
         if (!count[z]) continue;
-        const md_str_t sym = md_util_element_symbol(z);
+        const md_str_t sym = md_atomic_number_symbol(z);
         len += count[z] > 1 ? md_snprintf(buf + len, cap - len, MD_STR_FMT "%u", MD_STR_ARG(sym), count[z]) : md_snprintf(buf + len, cap - len, MD_STR_FMT, MD_STR_ARG(sym));
         len = MD_MIN(len, (int)cap - 1);
         count[z] = 0;
@@ -5772,10 +5761,10 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
     for (;;) {
         md_atomic_number_t best = 0;
         for (int z = 1; z < MD_Z_Count; ++z) {
-            if (count[z] && (!best || md_str_cmp_lex(md_util_element_symbol((md_atomic_number_t)z), md_util_element_symbol(best)) < 0)) best = (md_atomic_number_t)z;
+            if (count[z] && (!best || md_str_cmp_lex(md_atomic_number_symbol((md_atomic_number_t)z), md_atomic_number_symbol(best)) < 0)) best = (md_atomic_number_t)z;
         }
         if (!best) break;
-        const md_str_t sym = md_util_element_symbol(best);
+        const md_str_t sym = md_atomic_number_symbol(best);
         len += count[best] > 1 ? md_snprintf(buf + len, cap - len, MD_STR_FMT "%u", MD_STR_ARG(sym), count[best]) : md_snprintf(buf + len, cap - len, MD_STR_FMT, MD_STR_ARG(sym));
         len = MD_MIN(len, (int)cap - 1);
         count[best] = 0;
@@ -12766,7 +12755,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                 if (color == 0) {
                     // Try to assign a color based on element if available
                     if (z != 0) {
-                        color = md_util_element_cpk_color(z);
+                        color = md_atomic_number_cpk_color(z);
                         sys->atom.type.color[i] = color;
                     } else {
                         // Assign a random color for the type

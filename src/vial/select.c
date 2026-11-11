@@ -772,7 +772,7 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
             switch (f->key) {
             case VIAL_KEY_NAME: pass = match_str(f, MD_LABEL_STR(sys->atom.type.name[t]), true); break;
             case VIAL_KEY_ELEMENT: {
-                const md_str_t sym = sys->atom.type.z ? md_util_element_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
+                const md_str_t sym = sys->atom.type.z ? md_atomic_number_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
                 pass = match_element(f, sym);
                 break;
             }
