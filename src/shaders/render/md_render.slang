@@ -39,7 +39,15 @@ struct ViewData {
     float  dt;                  // time since the previous raster
     uint   ortho;
     uint   batch_count;
-    uint   _pad;
+    uint   total_work;          // elements times instances over all batches
+    float  near_z;              // view-space z of the near plane (negative)
+    uint   hiz_valid;           // the pyramid holds the previous raster at this size
+    uint   hiz_w;               // its level 0 (half the target, rounded up)
+    uint   hiz_h;
+    uint   hiz_levels;
+    uint   occlusion;           // cull against the pyramid
+    uint   compute_raster;      // rasterise small primitives in compute
+    float  small_px;            // up to this many pixels across counts as small
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -106,20 +114,51 @@ struct Batch {
 
     float   sharpness;
     float   desaturate;
-    uint    _pad0;
+    uint    work_offset;        // first work item (element x instance) of the cull
     uint    _pad1;
 };
 
+// The per-view lists the cull writes and everything after it reads.
+// Entries are ids (encode_id): batch slot and linear index.
+struct Lists {
+    uint2*    hw0;              // spheres for the hardware raster
+    uint2*    hw1;              // capsules
+    uint2*    st0;              // spheres with a state bit, for the masks
+    uint2*    st1;              // capsules with a state bit
+    uint2*    small;            // primitives for the compute raster
+    uint2*    occ;              // occluded in phase 1, tested again in phase 2
+    uint*     counters;         // see C_* below
+    uint64_t* vis64;            // compute raster: depth << 32 | index into small
+};
+
+// counters[]: counts, then the indirect commands made of them
+static const uint C_HW1        = 0;    // + kind index (0 spheres, 1 capsules)
+static const uint C_HW2        = 2;
+static const uint C_ST         = 4;
+static const uint C_SMALL1     = 6;
+static const uint C_SMALL2     = 7;
+static const uint C_OCC        = 8;
+static const uint C_HIDDEN     = 9;
+static const uint C_OUTSIDE    = 10;
+static const uint C_OCCLUDED   = 11;
+static const uint C_CMD        = 16;   // md_gpu_draw_cmd_t [phase - 1][kind]: 16..31
+static const uint C_STCMD      = 32;   // [kind]: 32..39
+static const uint C_GRID_SMALL = 40;   // md_gpu_grid_t [phase - 1], 4 words apart: 40, 44
+static const uint C_GRID_OCC   = 48;
+static const uint C_COUNT      = 64;
+
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
-//   raster:  view, batches, slot (the batch's position in the frame), mode
-//            (0 visibility, 1 mask)
-//   kernels: view, batches, the targets, size; pick: px, py, pick_out
+//   raster:      view, batches, lists, mode (0 visibility, 1 mask), list (0..3:
+//                hw0, hw1, st0, st1)
+//   cull, finalize, raster_small: view, batches, lists, mode = phase (1, 2)
+//   resolve, mask_visible, pick: view, batches, the targets, size, px, py, pick_out
+//   hiz_reduce:  src (mip src_mip, src_w x src_h), dst (dst_w x dst_h)
 struct Args {
     ViewData* view;
     Batch*    batches;
-    uint      slot;
     uint      mode;
+    uint      list;
     DescriptorHandle<Texture2D<uint2>>     id;
     DescriptorHandle<RWTexture2D<float4>>  color;
     DescriptorHandle<RWTexture2D<float2>>  normal;
@@ -130,6 +169,16 @@ struct Args {
     uint      px;
     uint      py;
     uint*     pick_out;
+    Lists*    lists;
+    DescriptorHandle<Texture2D<float>>     src;
+    DescriptorHandle<Texture2D<float>>     hiz;
+    DescriptorHandle<RWTexture2D<float>>   dst;
+    uint      src_mip;
+    uint      src_w;
+    uint      src_h;
+    uint      dst_w;
+    uint      dst_h;
+    uint      _pad0;
 };
 MD_SHADER_ARGS(Args);
 
@@ -271,6 +320,14 @@ float clip_depth(ViewData v, float3 p) {
     return c.z / c.w;
 }
 
+// Where a sphere and a capsule are the same surface (the joints of licorice,
+// whose spheres have the sticks' radius), the sphere must win whatever path
+// rasterised each and in whatever order. Capsule depths are one ulp farther
+// (reverse Z: smaller), which breaks exactly those ties and nothing visible.
+float capsule_depth(float d) {
+    return d > 0.0 ? asfloat(asuint(d) - 1u) : d;
+}
+
 // ---------------------------------------------------------------------------
 // Ids
 // ---------------------------------------------------------------------------
@@ -281,10 +338,423 @@ uint2 encode_id(uint slot, uint part, uint64_t linear) {
 }
 
 // ---------------------------------------------------------------------------
-// Raster
+// Elements
+// ---------------------------------------------------------------------------
+
+struct Elem {
+    uint slot;
+    uint inst;
+    uint e;
+};
+
+Elem decode(Batch* batches, uint2 ent) {
+    Elem el;
+    el.slot = (ent.y >> 20) - 1u;
+    uint64_t linear = (uint64_t(ent.y & 0x3FFFFu) << 32) | uint64_t(ent.x);
+    uint cnt = max(batches[el.slot].count, 1u);
+    el.inst = uint(linear / uint64_t(cnt));
+    el.e    = uint(linear - uint64_t(el.inst) * uint64_t(cnt));
+    return el;
+}
+
+// An element in view space: spheres a = b = centre; capsules a, b the ends.
+struct Geo {
+    bool   ok;                  // visible and of positive radius
+    uint   kind;                // 0 spheres, 1 capsules
+    uint   st;                  // state bits
+    float3 a;
+    float3 b;
+    float  r;
+};
+
+Geo element_geo(ViewData v, Batch b, uint inst, uint e) {
+    Geo g;
+    g.ok   = false;
+    g.kind = b.kind == KIND_CAPSULES ? 1u : 0u;
+    g.st   = 0u;
+    g.a    = float3(0.0);
+    g.b    = float3(0.0);
+    g.r    = 0.0;
+    Mat   T = load_transform(b.transforms, inst);
+    float s = length(T.c0.xyz);
+    if (b.kind == KIND_SPHERES) {
+        uint pi = point_of(b, e, 0u, 1u);
+        uint ai = attr_of(b, pi);
+        if (!attr_visible(b, ai)) return g;
+        g.st = attr_state(b, ai);
+        g.r  = sphere_radius(b, pi) * s;
+        g.a  = mulp(M(v, view), mulp(T, load_pos(b, pi)));
+        g.b  = g.a;
+    } else if (b.kind == KIND_CAPSULES) {
+        uint p0 = point_of(b, e, 0u, 2u);
+        uint p1 = point_of(b, e, 1u, 2u);
+        uint a0 = attr_of(b, p0);
+        uint a1 = attr_of(b, p1);
+        if (!attr_visible(b, a0) || !attr_visible(b, a1)) return g;
+        g.st = attr_state(b, a0) & attr_state(b, a1);
+        g.r  = capsule_radius(b, e) * s;
+        g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
+        g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
+    } else {
+        return g;
+    }
+    g.ok = g.r > 0.0;
+    return g;
+}
+
+// Screen bounds of a view-space sphere (the bounding sphere of an element),
+// from the unjittered projection, padded by a pixel for the jitter.
+struct Bounds {
+    bool   outside;             // wholly outside the frustum
+    bool   near_clip;           // crosses the near plane: no bounds, no occlusion test
+    float2 pmin;                // pixels, top-left origin
+    float2 pmax;
+    float  dnear;               // depth of its nearest point
+};
+
+Bounds sphere_bounds(ViewData v, float3 c, float r) {
+    Bounds bd;
+    bd.outside   = false;
+    bd.near_clip = false;
+    bd.pmin      = float2(0.0);
+    bd.pmax      = v.viewport.xy;
+    bd.dnear     = 1.0;
+    if (c.z - r > v.near_z) { bd.outside = true; return bd; }
+    if (c.z + r > v.near_z) { bd.near_clip = true; return bd; }
+    Mat P = M(v, proj_cur);
+    float2 lo, hi;
+    if (v.ortho != 0u) {
+        float2 nc = float2(P.c0.x * c.x, P.c1.y * c.y) + P.c3.xy;
+        float2 nr = abs(float2(P.c0.x, P.c1.y)) * r;
+        lo = nc - nr;
+        hi = nc + nr;
+    } else {
+        // The tangents from the eye in the xz and yz planes: x / -z of the two
+        // tangent points, exact for a sphere in front of the near plane.
+        float zf = -c.z;
+        float2 cc = c.xy;
+        float2 d2 = cc * cc + zf * zf;
+        float2 t  = sqrt(max(d2 - r * r, 0.0));
+        float2 s0 = (t * cc - r * zf) / (t * zf + r * cc);
+        float2 s1 = (t * cc + r * zf) / (t * zf - r * cc);
+        float2 smin = min(s0, s1);
+        float2 smax = max(s0, s1);
+        float2 sc = float2(P.c0.x, P.c1.y);
+        float2 off = -P.c2.xy;              // off-centre projections
+        float2 a0 = smin * sc + off;
+        float2 a1 = smax * sc + off;
+        lo = min(a0, a1);
+        hi = max(a0, a1);
+    }
+    // ndc -> pixels (y flips)
+    float2 wh = v.viewport.xy;
+    bd.pmin = float2((lo.x * 0.5 + 0.5) * wh.x, (0.5 - hi.y * 0.5) * wh.y) - 1.0;
+    bd.pmax = float2((hi.x * 0.5 + 0.5) * wh.x, (0.5 - lo.y * 0.5) * wh.y) + 1.0;
+    float4 cz = mul4(P, float4(c.x, c.y, c.z + r, 1.0));
+    bd.dnear = cz.z / cz.w;
+    if (bd.pmax.x <= 0.0 || bd.pmax.y <= 0.0 || bd.pmin.x >= wh.x || bd.pmin.y >= wh.y || bd.dnear < 0.0) bd.outside = true;
+    return bd;
+}
+
+Bounds geo_bounds(ViewData v, Geo g) {
+    float3 c = 0.5 * (g.a + g.b);
+    float  r = 0.5 * length(g.b - g.a) + g.r;
+    return sphere_bounds(v, c, r);
+}
+
+// Occluded by the previous raster: nearer than nothing in its rectangle. The
+// pyramid holds the farthest (min, under reverse Z) depth of each texel's
+// pixels; level L texels are 2^(L+1) pixels across, and the level is the one
+// at which the rectangle spans at most 2 x 2 texels.
+bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd) {
+    if (v.hiz_valid == 0u || bd.near_clip) return false;
+    float2 lo = max(bd.pmin, float2(0.0));
+    float2 hi = min(bd.pmax, v.viewport.xy);
+    float  w  = max(hi.x - lo.x, hi.y - lo.y);
+    uint   L  = w <= 2.0 ? 0u : uint(ceil(log2(w))) - 1u;
+    L = min(L, v.hiz_levels - 1u);
+    uint dw = v.hiz_w, dh = v.hiz_h;
+    for (uint j = 0u; j < L; ++j) { dw = max(1u, (dw + 1u) >> 1); dh = max(1u, (dh + 1u) >> 1); }
+    float s  = float(1u << (L + 1u));
+    int2  t0 = min(int2(floor(lo / s)), int2(int(dw) - 1, int(dh) - 1));
+    int2  t1 = min(int2(floor((hi - 1e-3) / s)), int2(int(dw) - 1, int(dh) - 1));
+    t1 = max(t0, t1);
+    float m = hiz.Load(int3(t0.x, t0.y, int(L)));
+    m = min(m, hiz.Load(int3(t1.x, t0.y, int(L))));
+    m = min(m, hiz.Load(int3(t0.x, t1.y, int(L))));
+    m = min(m, hiz.Load(int3(t1.x, t1.y, int(L))));
+    return bd.dnear < m;
+}
+
+// ---------------------------------------------------------------------------
+// Cull
+// ---------------------------------------------------------------------------
+
+// Appends with one atomic per wave: the index for this lane (valid when it wants one)
+uint wave_append(uint* counter, bool want) {
+    uint n    = WaveActiveCountBits(want);
+    uint base = 0u;
+    if (WaveIsFirstLane() && n > 0u) base = ((Atomic<uint>*)counter)->add(n);
+    base = WaveReadLaneFirst(base);
+    return base + WavePrefixSum(want ? 1u : 0u);    // WavePrefixCountBits has no Metal lowering
+}
+
+void wave_count(uint* counter, bool want) {
+    uint n = WaveActiveCountBits(want);
+    if (WaveIsFirstLane() && n > 0u) ((Atomic<uint>*)counter)->add(n);
+}
+
+// Binary search for the batch of work item i: the last with work_offset <= i
+// (batches without work share their offset with the next one, which wins)
+uint find_batch(Batch* batches, uint count, uint i) {
+    uint lo = 0u, hi = count;
+    while (hi - lo > 1u) {
+        uint mid = (lo + hi) >> 1;
+        if (batches[mid].work_offset <= i) lo = mid; else hi = mid;
+    }
+    return lo;
+}
+
+uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
+
+static const uint OUT_HIDDEN   = 0u;
+static const uint OUT_OUTSIDE  = 1u;
+static const uint OUT_OCCLUDED = 2u;
+static const uint OUT_HW       = 3u;
+static const uint OUT_SMALL    = 4u;
+static const uint OUT_NONE     = 5u;   // phase 3: nothing but the state lists
+
+// Phase 1 (mode 1): every element of every batch, against the pyramid of the
+// previous raster. Phase 2 (mode 2): what phase 1 found occluded, against the
+// pyramid of phase 1's raster. Phase 3: the state lists alone, again, after a
+// change of state bits without a raster (the masks must follow the selection).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull(uint3 tid : SV_DispatchThreadID) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Lists    L = *a.lists;
+    uint phase = a.mode;
+    uint n = phase == 2u ? L.counters[C_OCC] : v.total_work;
+    uint stride = grid_threads(n);
+    for (uint i = tid.x; i < n; i += stride) {
+        uint slot, inst, e;
+        uint2 ent;
+        if (phase != 2u) {
+            slot = find_batch(a.batches, v.batch_count, i);
+            Batch bb = a.batches[slot];
+            uint local = i - bb.work_offset;
+            inst = local / max(bb.count, 1u);
+            e    = local - inst * bb.count;
+            ent  = encode_id(slot, 0u, uint64_t(inst) * uint64_t(bb.count) + uint64_t(e));
+        } else {
+            ent = L.occ[i];
+            Elem el = decode(a.batches, ent);
+            slot = el.slot; inst = el.inst; e = el.e;
+        }
+        Batch b = a.batches[slot];
+        Geo   g = element_geo(v, b, inst, e);
+        uint  out = OUT_HIDDEN;
+        if (g.ok) {
+            Bounds bd = geo_bounds(v, g);
+            if (bd.outside) {
+                out = OUT_OUTSIDE;
+            } else if (phase != 3u && v.occlusion != 0u && hiz_occluded(v, a.hiz, bd)) {
+                out = OUT_OCCLUDED;
+            } else {
+                float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;   // without the pad
+                out = (v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
+            }
+        }
+        uint k = g.kind;
+
+        // State lists (phases 1 and 3): everything in the frustum, occluded or
+        // not, so the masks also show what is hidden.
+        bool st_any = phase != 2u && g.ok && out != OUT_OUTSIDE && g.st != 0u;
+        if (phase == 3u) out = OUT_NONE;
+        uint is0 = wave_append(L.counters + C_ST + 0u, st_any && k == 0u);
+        uint is1 = wave_append(L.counters + C_ST + 1u, st_any && k == 1u);
+        if (st_any) { if (k == 0u) L.st0[is0] = ent; else L.st1[is1] = ent; }
+
+        uint hw_base0 = phase == 2u ? L.counters[C_HW1 + 0u] : 0u;
+        uint hw_base1 = phase == 2u ? L.counters[C_HW1 + 1u] : 0u;
+        uint c_hw = phase == 2u ? C_HW2 : C_HW1;
+        uint ih0 = wave_append(L.counters + c_hw + 0u, out == OUT_HW && k == 0u);
+        uint ih1 = wave_append(L.counters + c_hw + 1u, out == OUT_HW && k == 1u);
+        if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else L.hw1[hw_base1 + ih1] = ent; }
+
+        uint sm_base = phase == 2u ? L.counters[C_SMALL1] : 0u;
+        uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL);
+        if (out == OUT_SMALL) L.small[sm_base + ism] = ent;
+
+        uint ioc = wave_append(L.counters + C_OCC, phase == 1u && out == OUT_OCCLUDED);
+        if (phase == 1u && out == OUT_OCCLUDED) L.occ[ioc] = ent;
+
+        wave_count(L.counters + C_HIDDEN,   out == OUT_HIDDEN && phase == 1u);
+        wave_count(L.counters + C_OUTSIDE,  out == OUT_OUTSIDE && phase != 3u);
+        wave_count(L.counters + C_OCCLUDED, phase == 2u && out == OUT_OCCLUDED);
+    }
+}
+
+// The indirect commands of a phase, from its counts. One thread.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void finalize(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint* c = a.lists->counters;
+    uint phase = a.mode;
+    for (uint k = 0u; k < 2u; ++k) {
+        if (phase != 2u) {
+            uint* sc = c + C_STCMD + k * 4u;
+            sc[0] = k == 0u ? 6u : 36u;
+            sc[1] = c[C_ST + k];
+            sc[2] = 0u;
+            sc[3] = 0u;
+        }
+        if (phase == 3u) continue;
+        uint* cmd = c + C_CMD + ((phase - 1u) * 2u + k) * 4u;
+        cmd[0] = k == 0u ? 6u : 36u;
+        cmd[1] = phase == 1u ? c[C_HW1 + k] : c[C_HW2 + k];
+        cmd[2] = 0u;
+        cmd[3] = phase == 1u ? 0u : c[C_HW1 + k];
+    }
+    if (phase == 3u) return;
+    uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
+    uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
+    gs[0] = min((ns + 63u) / 64u, 65535u);
+    gs[1] = 1u;
+    gs[2] = 1u;
+    if (phase == 1u) {
+        uint no = c[C_OCC];
+        uint* go = c + C_GRID_OCC;
+        go[0] = min((no + 63u) / 64u, 65535u);
+        go[1] = 1u;
+        go[2] = 1u;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compute raster of small primitives
+// ---------------------------------------------------------------------------
+
+// 64-bit atomic max without a return value: Metal has only that form for
+// 64-bit integers (atomic_max_explicit on atomic_ulong, Apple8+), and Slang's
+// Atomic<uint64_t>.max() lowers to the fetching one there.
+void atomic_max_u64(uint64_t* p, uint64_t v) {
+    __target_switch {
+    case metal:
+        __intrinsic_asm "atomic_max_explicit((device atomic_ulong*)($0), $1, memory_order_relaxed)";
+    default:
+        ((Atomic<uint64_t>*)p)->max(v);
+    }
+}
+
+// One thread per primitive: every pixel of its rectangle is tested against
+// the exact shape with the same ray and intersection as the fragment stages,
+// and the nearest wins by a 64-bit max of (depth, index into the small list).
+// Depth bits compare as unsigned because depths are non-negative.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void raster_small(uint3 tid : SV_DispatchThreadID) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Lists    L = *a.lists;
+    uint phase = a.mode;
+    uint n     = phase == 1u ? L.counters[C_SMALL1] : L.counters[C_SMALL2];
+    uint base  = phase == 1u ? 0u : L.counters[C_SMALL1];
+    uint stride = grid_threads(n);
+    uint W = uint(v.viewport.x), H = uint(v.viewport.y);
+    for (uint i = tid.x; i < n; i += stride) {
+        uint  idx = base + i;
+        Elem  el  = decode(a.batches, L.small[idx]);
+        Batch b   = a.batches[el.slot];
+        Geo   g   = element_geo(v, b, el.inst, el.e);
+        if (!g.ok) continue;
+        Bounds bd = geo_bounds(v, g);
+        int2 p0 = max(int2(floor(bd.pmin)), int2(0));
+        int2 p1 = min(int2(ceil(bd.pmax)), int2(int(W), int(H)));
+        for (int y = p0.y; y < p1.y; ++y) {
+            for (int x = p0.x; x < p1.x; ++x) {
+                Ray   r = pixel_ray(v, float2(float(x), float(y)) + 0.5);
+                float t = g.kind == 0u ? sphere_hit(r, g.a, g.r, false) : capsule_hit(r, g.a, g.b, g.r);
+                if (t < 0.0) continue;
+                float d = clip_depth(v, r.o + r.d * t);
+                if (g.kind == 1u) d = capsule_depth(d);
+                uint64_t val = (uint64_t(asuint(d)) << 32) | uint64_t(idx);
+                atomic_max_u64(L.vis64 + (uint(y) * W + uint(x)), val);
+            }
+        }
+    }
+}
+
+// The compute raster's result into depth and ids, so that it occludes and is
+// occluded like any other raster. A fullscreen triangle.
+struct FullV {
+    float4 pos : SV_Position;
+};
+
+[shader("vertex")]
+FullV merge_vs(uint vid : SV_VertexID) {
+    FullV o;
+    float2 p = float2(float((vid << 1) & 2u), float(vid & 2u));
+    o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    if (MD_ARGS.width == 0u) o.pos = float4(0.0, 0.0, -2.0, 1.0);  // reads the arguments: both stages must declare the same struct
+    return o;
+}
+
+struct MergeOut {
+    uint2 id    : SV_Target0;
+    float depth : SV_Depth;
+};
+
+[shader("fragment")]
+MergeOut merge_fs(FullV i) {
+    Args a = MD_ARGS;
+    uint2 px = uint2(i.pos.xy);
+    uint64_t val = a.lists->vis64[px.y * a.width + px.x];
+    if (val == 0ull) discard;
+    MergeOut o;
+    o.depth = asfloat(uint(val >> 32));
+    o.id    = a.lists->small[uint(val & 0xFFFFFFFFull)];
+    return o;
+}
+
+// ---------------------------------------------------------------------------
+// Depth pyramid
+// ---------------------------------------------------------------------------
+
+// One level from the one before (or from the depth target): the farthest
+// (min) depth of each 2 x 2, edges clamped, so every texel covers exactly its
+// pixels.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void hiz_reduce(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    if (tid.x >= a.dst_w || tid.y >= a.dst_h) return;
+    int2 s  = int2(tid.xy) * 2;
+    int2 mx = int2(int(a.src_w) - 1, int(a.src_h) - 1);
+    float m = a.src.Load(int3(min(s, mx), int(a.src_mip)));
+    m = min(m, a.src.Load(int3(min(s + int2(1, 0), mx), int(a.src_mip))));
+    m = min(m, a.src.Load(int3(min(s + int2(0, 1), mx), int(a.src_mip))));
+    m = min(m, a.src.Load(int3(min(s + int2(1, 1), mx), int(a.src_mip))));
+    a.dst[tid.xy] = m;
+}
+
+// ---------------------------------------------------------------------------
+// Hardware raster, pulling from a list
 // ---------------------------------------------------------------------------
 
 static const float4 CULLED = float4(0.0, 0.0, -2.0, 1.0);   // outside the depth range: clipped
+
+uint2 list_entry(Args a, uint i) {
+    Lists L = *a.lists;
+    switch (a.list) {
+    case 0u: return L.hw0[i];
+    case 1u: return L.hw1[i];
+    case 2u: return L.st0[i];
+    default: return L.st1[i];
+    }
+}
 
 struct SphereV {
     float4 pos : SV_Position;
@@ -294,9 +764,9 @@ struct SphereV {
 };
 
 [shader("vertex")]
-SphereV sphere_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+                  uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
     Args     a = MD_ARGS;
-    Batch    b = a.batches[a.slot];
     ViewData v = *a.view;
     SphereV  o;
     o.pos   = CULLED;
@@ -304,21 +774,13 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     o.idv   = uint2(0u);
     o.state = 0u;
 
-    uint e      = vid / 6u;
-    uint corner = vid % 6u;
-    if (e >= b.count) return o;
-    uint pi = point_of(b, e, 0u, 1u);
-    uint ai = attr_of(b, pi);
-    if (!attr_visible(b, ai)) return o;
-    uint st = attr_state(b, ai);
-    if (a.mode == 1u && st == 0u) return o;
-
-    Mat    T  = load_transform(b.transforms, inst);
-    float  s  = length(T.c0.xyz);
-    float  rad = sphere_radius(b, pi) * s;
-    if (!(rad > 0.0)) return o;
-    float3 cw = mulp(T, load_pos(b, pi));
-    float3 c  = mulp(M(v, view), cw);
+    uint  corner = md_draw_vertex(vid, base_vertex);
+    uint2 ent    = list_entry(a, base_instance + md_draw_instance(iid, base_instance));
+    Elem  el     = decode(a.batches, ent);
+    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
+    if (!g.ok) return o;
+    float3 c   = g.a;
+    float  rad = g.r;
 
     // A quad on the plane tangent to the sphere at its point nearest the eye,
     // just large enough to hold the sphere's silhouette as seen through it.
@@ -335,6 +797,10 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
         dir = c / d;
         qr  = rad * (d - rad) / sqrt(d * d - rad * rad);
     }
+    // Proxies that only touch the silhouette lose pixels whose centres lie on
+    // it to rounding (the compute raster, which tests every pixel of a padded
+    // rectangle, showed it): a little larger, still in front of the surface.
+    qr *= 1.002;
     float3 np = c - dir * rad;
     float3 up = abs(dir.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
     float3 u  = normalize(cross(up, dir));
@@ -352,8 +818,8 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
 
     o.pos   = mul4(M(v, proj), float4(p, 1.0));
     o.sph   = float4(c, rad);
-    o.idv   = encode_id(a.slot, 0u, uint64_t(inst) * uint64_t(b.count) + uint64_t(e));
-    o.state = st;
+    o.idv   = ent;
+    o.state = g.st;
     return o;
 }
 
@@ -411,9 +877,9 @@ static const uint BOX[36] = {
 };
 
 [shader("vertex")]
-CapsuleV capsule_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+                    uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
     Args     a = MD_ARGS;
-    Batch    b = a.batches[a.slot];
     ViewData v = *a.view;
     CapsuleV o;
     o.pos   = CULLED;
@@ -422,23 +888,14 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     o.idv   = uint2(0u);
     o.state = 0u;
 
-    uint e  = vid / 36u;
-    uint vk = vid % 36u;
-    if (e >= b.count) return o;
-    uint p0 = point_of(b, e, 0u, 2u);
-    uint p1 = point_of(b, e, 1u, 2u);
-    uint a0 = attr_of(b, p0);
-    uint a1 = attr_of(b, p1);
-    if (!attr_visible(b, a0) || !attr_visible(b, a1)) return o;
-    uint st = attr_state(b, a0) & attr_state(b, a1);
-    if (a.mode == 1u && st == 0u) return o;
-
-    Mat    T   = load_transform(b.transforms, inst);
-    float  s   = length(T.c0.xyz);
-    float  rad = capsule_radius(b, e) * s;
-    if (!(rad > 0.0)) return o;
-    float3 pa = mulp(M(v, view), mulp(T, load_pos(b, p0)));
-    float3 pb = mulp(M(v, view), mulp(T, load_pos(b, p1)));
+    uint  vk  = md_draw_vertex(vid, base_vertex);
+    uint2 ent = list_entry(a, base_instance + md_draw_instance(iid, base_instance));
+    Elem  el  = decode(a.batches, ent);
+    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
+    if (!g.ok) return o;
+    float3 pa  = g.a;
+    float3 pb  = g.b;
+    float  rad = g.r;
 
     float3 ax  = pb - pa;
     float  len = length(ax);
@@ -447,23 +904,21 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float3 x   = normalize(cross(z, hlp));
     float3 y   = cross(z, x);               // (x, y, z) right-handed
 
-    // A mirroring transform would turn the box inside out: keep it outward.
-    float det = dot(cross(T.c0.xyz, T.c1.xyz), T.c2.xyz);
-    uint  tri = vk / 3u;
-    uint  kk  = vk % 3u;
-    if (det < 0.0 && kk != 0u) kk = 3u - kk;
-    uint  c   = BOX[tri * 3u + kk];
+    // Built in view space from the transformed ends, in a right-handed frame:
+    // outward faces stay counter-clockwise whatever the transforms mirror.
+    uint  c   = BOX[vk];
 
+    float  br = rad * 1.002;                // see sphere_vs: not just touching
     float3 p = pa
-             + x * (((c & 1u) != 0u) ? rad : -rad)
-             + y * (((c & 2u) != 0u) ? rad : -rad)
-             + z * (((c & 4u) != 0u) ? len + rad : -rad);
+             + x * (((c & 1u) != 0u) ? br : -br)
+             + y * (((c & 2u) != 0u) ? br : -br)
+             + z * (((c & 4u) != 0u) ? len + br : -br);
 
     o.pos   = mul4(M(v, proj), float4(p, 1.0));
     o.pa    = float4(pa, rad);
     o.pb    = float4(pb, 0.0);
-    o.idv   = encode_id(a.slot, 0u, uint64_t(inst) * uint64_t(b.count) + uint64_t(e));
-    o.state = st;
+    o.idv   = ent;
+    o.state = g.st;
     return o;
 }
 
@@ -475,7 +930,7 @@ VisOut capsule_fs(CapsuleV i) {
     if (t < 0.0) discard;
     VisOut o;
     o.id    = i.idv;
-    o.depth = clip_depth(v, r.o + r.d * t);
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
 
@@ -487,7 +942,7 @@ MaskOut capsule_mask_fs(CapsuleV i) {
     if (t < 0.0) discard;
     MaskOut o;
     o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
-    o.depth = clip_depth(v, r.o + r.d * t);
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
 

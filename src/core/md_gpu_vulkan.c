@@ -525,6 +525,7 @@ typedef struct md_vk_dev_caps_t {
     bool dynamic_storage_image;
     bool dynamic_sampled_image;
     bool shader_int64;
+    bool buffer_int64_atomics;           /* 64-bit atomics on device memory */
     bool storage_read_without_format;    /* device-wide; otherwise per format */
     bool storage_write_without_format;
 } md_vk_dev_caps_t;
@@ -1252,6 +1253,7 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     out_caps->dynamic_storage_image       = f2.features.shaderStorageImageArrayDynamicIndexing;
     out_caps->dynamic_sampled_image       = f2.features.shaderSampledImageArrayDynamicIndexing;
     out_caps->shader_int64                = f2.features.shaderInt64;
+    out_caps->buffer_int64_atomics        = f2.features.shaderInt64 && f12.shaderBufferInt64Atomics;
     return true;
 }
 
@@ -1603,6 +1605,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f12.descriptorBindingUpdateUnusedWhilePending = caps.update_unused_while_pending ? VK_TRUE : VK_FALSE;
     f12.shaderStorageImageArrayNonUniformIndexing = caps.nonuniform_storage_image    ? VK_TRUE : VK_FALSE;
     f12.shaderSampledImageArrayNonUniformIndexing = caps.nonuniform_sampled_image    ? VK_TRUE : VK_FALSE;
+    f12.shaderBufferInt64Atomics                  = caps.buffer_int64_atomics        ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     f11.pNext = &f12;
@@ -1734,6 +1737,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->subgroup_size;
     info->supports_graphics        = dev->supports_graphics;
     info->supports_present         = dev->supports_present;
+    info->supports_atomic_int64    = dev->caps.buffer_int64_atomics;
     info->vendor_id                = dev->props.vendorID;
     info->device_id                = dev->props.deviceID;
     info->type                     = md_vk_device_type(dev->props.deviceType);

@@ -360,6 +360,12 @@ typedef struct md_gpu_device_info_t {
     uint32_t preferred_group_multiple;   /* warp / SIMD width */
     bool     supports_graphics;          /* GRAPHICS streams and rendering */
     bool     supports_present;           /* surfaces can be created        */
+    bool     supports_atomic_int64;      /* 64-bit integer atomic min/max on
+                                            device memory (Vulkan
+                                            shaderBufferInt64Atomics; Metal
+                                            Apple8+). Use them without a
+                                            return value: Metal has no fetch
+                                            form for 64-bit min/max          */
     uint32_t vendor_id;                  /* PCI vendor id: 0x10DE NVIDIA, 0x1002 AMD,
                                             0x8086 Intel, 0x106B Apple; 0 unknown */
     uint32_t device_id;                  /* PCI device id, 0 unknown */

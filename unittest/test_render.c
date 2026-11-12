@@ -688,6 +688,152 @@ UTEST(render, external_ids) {
     f_close(&fx);
 }
 
+/* ---- Culling and the compute raster ---------------------------------------------
+   The options change the cost, never the image: a dense scene of spheres and
+   capsules of all sizes (many under a pixel or two, most occluded) through
+   the full pipeline must give the ids and depths of the plain hardware raster
+   with nothing culled but the frustum. */
+
+typedef struct {
+    uint32_t n_sph, n_cap;
+    md_gpu_addr_t pos, rad, cap_idx;
+    md_render_batch_t b[2];
+} dense_t;
+
+static void dense_scene(fix_t* fx, dense_t* d) {
+    const int NX = 48, NY = 32, NZ = 12;
+    d->n_sph = (uint32_t)(NX * NY * NZ);
+    float* pos = malloc(d->n_sph * 12);
+    float* rad = malloc(d->n_sph * 4);
+    uint32_t seed = 12345;
+    #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
+    for (int z = 0, i = 0; z < NZ; ++z) for (int y = 0; y < NY; ++y) for (int x = 0; x < NX; ++x, ++i) {
+        pos[3 * i + 0] = (x - NX / 2) * 0.9f + RND() * 0.3f;
+        pos[3 * i + 1] = (y - NY / 2) * 0.9f + RND() * 0.3f;
+        pos[3 * i + 2] = -8.0f - z * 3.0f - RND();
+        rad[i] = z == 0 ? 0.65f : 0.05f + 0.5f * RND() * RND();   /* the front layer is a wall */
+    }
+    #undef RND
+    /* capsules between neighbours along x */
+    d->n_cap = 0;
+    uint32_t* idx = malloc(d->n_sph * 8);
+    for (uint32_t i = 0; i + 1 < d->n_sph; i += 3) { idx[2 * d->n_cap] = i; idx[2 * d->n_cap + 1] = i + 1; d->n_cap++; }
+    d->pos = f_buf(fx, pos, d->n_sph * 12);
+    d->rad = f_buf(fx, rad, d->n_sph * 4);
+    d->cap_idx = f_buf(fx, idx, d->n_cap * 8);
+    free(pos); free(rad); free(idx);
+    memset(d->b, 0, sizeof(d->b));
+    d->b[0].key = 1; d->b[0].kind = MD_RENDER_SPHERES; d->b[0].count = d->n_sph; d->b[0].points.count = d->n_sph;
+    d->b[0].points.position = d->pos; d->b[0].points.radius = d->rad;
+    d->b[0].style.spheres.radius_scale = 1.0f;
+    d->b[1].key = 2; d->b[1].kind = MD_RENDER_CAPSULES; d->b[1].count = d->n_cap; d->b[1].points.count = d->n_sph;
+    d->b[1].points.position = d->pos; d->b[1].index = d->cap_idx;
+    d->b[1].style.capsules.radius = 0.04f;
+}
+
+static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered) {
+    uint32_t* ia = malloc(W * H * 8); uint32_t* ib = malloc(W * H * 8);
+    float* da = malloc(W * H * 4); float* db = malloc(W * H * 4);
+    int bad = -1;
+    if (f_read(fx, md_render_view_targets(a).id, ia, W * H * 8) && f_read(fx, md_render_view_targets(b).id, ib, W * H * 8) &&
+        f_read(fx, md_render_view_targets(a).depth, da, W * H * 4) && f_read(fx, md_render_view_targets(b).depth, db, W * H * 4)) {
+        bad = 0; *covered = 0;
+        for (uint32_t i = 0; i < W * H; ++i) {
+            if (ib[2 * i + 1]) (*covered)++;
+            if (ia[2 * i] != ib[2 * i] || ia[2 * i + 1] != ib[2 * i + 1] || da[i] != db[i]) {
+                if (bad < 8) printf("    pixel (%u, %u): id %u/%x depth %.9g  vs reference %u/%x depth %.9g\n", i % W, i / W,
+                                    ia[2 * i], ia[2 * i + 1], da[i], ib[2 * i], ib[2 * i + 1], db[i]);
+                bad++;
+            }
+        }
+    }
+    free(ia); free(ib); free(da); free(db);
+    return bad;
+}
+
+UTEST(render, culling_and_compute_raster_change_nothing) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
+    dense_t d;
+    dense_scene(&fx, &d);
+
+    md_render_view_t ref = md_render_view_create(fx.r, "reference");
+    md_render_frame_t fr = frame_of(W, H, make_camera(&c), d.b, 2);
+    fr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), d.b, 2);
+    f.small_pixels = 4.0f;
+    md_render_stats_t st;
+    /* First raster: no pyramid yet, so nothing is occluded in phase 1 */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_EQ((uint64_t)(d.n_sph + d.n_cap), st.elements);
+    EXPECT_EQ(0u, st.occlusion_retested);
+    if (info.supports_atomic_int64) EXPECT_GT(st.compute[0], 0u);
+    int covered = 0;
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_GT(covered, (int)(W * H / 2));
+
+    /* Second raster of the same scene (the positions announced as changed):
+       phase 1 culls against the first raster's pyramid */
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_EQ(2u, st.raster);
+    EXPECT_GT(st.occluded, (d.n_sph + d.n_cap) / 4);       /* most of a 12-deep stack */
+    EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    printf("    elements %llu: outside %u, occluded %u (retested %u), hardware %u + %u, compute %u + %u\n",
+           (unsigned long long)st.elements, st.outside, st.occluded, st.occlusion_retested, st.hardware[0], st.hardware[1], st.compute[0], st.compute[1]);
+
+    /* The camera moves: the old pyramid is wrong for it. Phase 2 must recover
+       everything phase 1 culled wrongly. */
+    md_render_camera_t moved = make_camera(&c);
+    moved.view[12] = 2.5f;       /* translate x */
+    moved.view[13] = -1.0f;
+    f.camera  = moved;
+    fr.camera = moved;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_GT(st.hardware[1] + st.compute[1], 0u);         /* phase 2 found some */
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    printf("    moved:  occluded %u (retested %u), phase 2 drew %u + %u\n", st.occluded, st.occlusion_retested, st.hardware[1], st.compute[1]);
+
+    /* Selection after culling: the state cull (phase 3) follows a change of
+       the bits without a raster, hidden ones included */
+    uint32_t words = (d.n_sph + 31) / 32;
+    uint32_t* sel = calloc(words, 4);
+    const uint32_t deep = d.n_sph - 1;                      /* back of the stack: hidden */
+    sel[deep / 32] |= 1u << (deep % 32);
+    md_gpu_addr_t S = f_buf(&fx, NULL, words * 4);
+    md_gpu_memset(fx.gfx, S, 0, words * 4);
+    d.b[0].points.state[0] = S;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));   /* the address is geometry: a raster */
+    md_gpu_upload(fx.gfx, S, sel, words * 4);
+    f.content[MD_RENDER_CONTENT_STATE]++;
+    md_render_status_t rs;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &rs));
+    EXPECT_EQ(MD_RENDER_WORK_MASK, rs.work);
+    uint32_t* m = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m, W * H * 4));
+    int anywhere = 0, visible = 0;
+    for (uint32_t i = 0; i < W * H; ++i) { if (m[i] & 0x0000FF00u) anywhere++; if (m[i] & 0xFFu) visible++; }
+    EXPECT_GT(anywhere, 0);
+    EXPECT_LE(visible, anywhere);
+    free(m); free(sel);
+    md_render_view_destroy(fx.gfx, ref);
+    f_close(&fx);
+}
+
 /* ---- The molecular layer ------------------------------------------------------- */
 
 static const char ethanol_pdb[] =

@@ -29,7 +29,8 @@ The model, in full
                     something the caller renders itself           [implemented]
 
     Every primitive but the triangle is raycast exactly; nothing is
-    tessellated.
+    tessellated. Where a sphere and a capsule are the same surface (licorice
+    joints), the sphere wins, whatever the order of the batches.
 
   * Points carry positions and, optionally, a VELOCITY. Through an optional
     index they also carry ATTRIBUTES (usually per atom): a colour or a palette
@@ -314,6 +315,20 @@ typedef enum md_render_jitter_t {
     MD_RENDER_JITTER_NONE,         /* one unjittered raster per change              */
 } md_render_jitter_t;
 
+/* How a view rasterises. Every primitive is culled on the GPU each raster:
+   by its visibility bits and radius, by the frustum, and by occlusion against
+   a depth pyramid in two phases (the previous raster's pyramid first, then
+   this raster's for what that found occluded, so the result is exact even
+   when the camera or the geometry moved). Survivors go to the hardware
+   raster, or, when they are at most `small_pixels` across, to a compute
+   raster (64-bit atomics; the hardware raster when the device lacks them).
+   The image does not depend on these options, only the cost; they exist for
+   measuring and debugging. */
+enum {
+    MD_RENDER_NO_OCCLUSION_CULLING = 1u << 0,
+    MD_RENDER_NO_COMPUTE_RASTER    = 1u << 1,
+};
+
 typedef struct md_render_frame_t {
     uint32_t                 width, height;   /* of the targets, in pixels            */
     md_render_camera_t       camera;
@@ -325,6 +340,9 @@ typedef struct md_render_frame_t {
     double                   time;            /* of the positions, in the velocities'
                                                  time unit                           */
     uint64_t                 content[MD_RENDER_CONTENT_COUNT];
+    uint32_t                 options;         /* MD_RENDER_NO_* */
+    float                    small_pixels;    /* compute raster up to this extent
+                                                 in pixels; 0: 6                  */
 } md_render_frame_t;
 
 typedef uint32_t md_render_work_t;
@@ -404,6 +422,24 @@ bool md_render_view_pick(md_gpu_stream_t stream, md_render_view_t view, uint32_t
 /* The most recent completed request not returned before. Does not block;
    completion is noticed through md_gpu_sync_is_complete. */
 bool md_render_view_pick_result(md_render_view_t view, md_render_pick_t* out_pick);
+
+/* ---- Statistics -------------------------------------------------------------
+   What the cull did with the elements (times instances) of the last raster
+   that has completed on the GPU. Asynchronous like picking: false until one
+   has completed since the previous call. */
+
+typedef struct md_render_stats_t {
+    uint64_t elements;             /* submitted: count x instances over all batches */
+    uint32_t hidden;               /* by visibility bits or a radius <= 0           */
+    uint32_t outside;              /* the frustum                                   */
+    uint32_t occluded;             /* by the depth pyramid, after both phases       */
+    uint32_t hardware[2];          /* rasterised in hardware: phase 1, phase 2      */
+    uint32_t compute[2];           /* rasterised in compute:  phase 1, phase 2      */
+    uint32_t occlusion_retested;   /* found occluded in phase 1, tested again       */
+    uint32_t raster;               /* which raster of the view these are from (1..) */
+} md_render_stats_t;
+
+bool md_render_view_stats(md_render_view_t view, md_render_stats_t* out_stats);
 
 /* ---- Helpers ----------------------------------------------------------------- */
 

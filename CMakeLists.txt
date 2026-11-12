@@ -843,9 +843,9 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_render.slang
-    ENTRIES   resolve mask_visible pick
-    VERTEX    sphere_vs capsule_vs
-    FRAGMENT  sphere_fs sphere_mask_fs capsule_fs capsule_mask_fs
+    ENTRIES   cull finalize raster_small hiz_reduce resolve mask_visible pick
+    VERTEX    sphere_vs capsule_vs merge_vs
+    FRAGMENT  sphere_fs sphere_mask_fs capsule_fs capsule_mask_fs merge_fs
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl

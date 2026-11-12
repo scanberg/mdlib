@@ -163,9 +163,9 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, const md_render_mo
         return 0;
     }
 
-    /* Sticks first, atoms last: where a stick's round end and an atom's sphere
-       are the same surface (licorice joints) the later draw wins the depth
-       tie, and a joint should pick as its atom. */
+    /* At licorice joints the atom's sphere and the stick's round end are the
+       same surface; md_render gives such ties to the sphere, so a joint picks
+       as its atom whatever the order here. */
     uint32_t n = 0;
     if (sticks) {
         for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
