@@ -30,14 +30,21 @@ typedef struct gpu_view_t {
     uint32_t      total_clusters, total_cluster_work, refit_mode;
     float         jitter_px;        /* how far this raster's jitter moves the image: max |jx|, |jy| */
     float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
-    uint32_t      _vpad[3];
+    float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
+    uint32_t      _vpad[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
-/* Experiment, for md_render_bench (declared there, not in the header): the
-   phase-1 occlusion margin in element radii */
-static float g_occl_margin = 0.0f;
-void md_render_debug_occlusion_margin(float radii) { g_occl_margin = radii; }
+/* Phase 1's occlusion test passes what is nearer than the pyramid by fewer
+   than this many radii (so elements just behind the front surface draw in
+   phase 1, and its pyramid has fewer holes for phase 2 to cascade through
+   after a camera move: M4, 10M atoms, far spacefill 6.2 -> 5.4 ms, near
+   4.9 -> 4.5). Elements no wider than occl_min_px are not tested at all
+   (their test costs about what drawing them does). Settable for
+   md_render_bench's experiments (declared there, not in the header). */
+static float g_occl_margin = 2.0f;
+static float g_occl_min_px = 0.0f;
+void md_render_debug_occlusion(float margin_radii, float min_px) { g_occl_margin = margin_radii; g_occl_min_px = min_px; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -1255,6 +1262,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.small_px        = f->small_pixels > 0.0f ? f->small_pixels : DEFAULT_SMALL_PIXELS;
         gv.jitter_px       = fabsf(jx) > fabsf(jy) ? fabsf(jx) : fabsf(jy);
         gv.occl_margin     = g_occl_margin;
+        gv.occl_min_px     = g_occl_min_px;
         if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_view_t)).gpu;
         if (!v->view_buf) return false;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
