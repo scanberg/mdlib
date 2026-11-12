@@ -43,6 +43,7 @@ lifetime:
         ...
         md_render_mol_upload_state(s, positions, &state, content);
         md_render_mol_update(mol, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content);
+        n = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, cap);
 
     When to regroup is the caller's call: on a new frame of a trajectory,
     not for the steps interpolated between two frames (the grouping of the
@@ -50,6 +51,16 @@ lifetime:
     slower: the bounds follow the positions regardless, the clusters just
     grow as the molecules spread. Before the first regroup the small
     molecules are grouped in molecule order.
+
+  * What md_render draws is a copy of the atoms in cluster order, in the
+    per-frame block: float4 (position, radius) and the velocity per point,
+    gathered by every md_render_mol_update. Read through the cluster order
+    instead, the caller's arrays in file order cost a scattered fetch in
+    every pass over the elements; the copy costs one per position change.
+    Everything per atom that is not geometry (colours, palette indices,
+    visibility, selection) is read in place, through the point's atom
+    (attr_index = atom_order), and picks report atoms. The update must run
+    after every change of positions, velocities or radii.
 
   * Radii come from the system's particle types: the topology holds each
     atom's type and radius (from sys->atom.type.radius when planned). A
@@ -119,8 +130,8 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t base;            /* the block; md_gpu_free(stream, base) frees it    */
     uint64_t      size;
     uint64_t      topology_version;/* of the system it was planned from               */
-    uint64_t      dynamic_size;    /* bytes of the per-frame block md_render_mol_update
-                                      writes; 0: there is nothing to update          */
+    uint64_t      dynamic_size;    /* bytes of the per-frame block: the copy that is
+                                      drawn, and the update's scratch                */
     uint32_t      atom_count;
 
     /* Particle types and radii, per atom */
@@ -129,19 +140,21 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t atom_radius;             /* float [atom_count]: the type's radius    */
 
     /* The atoms in cluster order: residue clusters first, then one cluster
-       per grid cell (grid_cells of them, some empty) for the small molecules */
-    md_gpu_addr_t atom_order;              /* uint32 [atom_count]                      */
+       per grid cell (grid_cells of them, some empty) for the small molecules.
+       Point p (of the per-frame copy) is atom atom_order[p]. */
+    md_gpu_addr_t atom_order;              /* uint32 [atom_count]: point -> atom        */
+    md_gpu_addr_t atom_point;              /* uint32 [atom_count]: atom -> point        */
     uint32_t      atom_cluster_count;
     md_gpu_addr_t atom_cluster_offset;     /* uint32 [atom_cluster_count + 1]          */
 
     /* Bonds, grouped by class: class c is bond_pairs[class_offset[c] ..
        class_offset[c + 1]), in cluster order: with the cluster of their
        first atom's (64 at most per cluster); the covalent bonds within small
-       molecules last, by grid cell. Usable outside rendering too, but the
-       order within a class changes with every update. */
+       molecules last, by grid cell. Between points, not atoms (atom_order
+       maps back); the order within a class changes with every regroup. */
     uint32_t      bond_count;
     uint32_t      bond_class_offset[MD_RENDER_MOL_BOND_CLASS_COUNT + 1];
-    md_gpu_addr_t bond_pairs;              /* uint32 [2 * bond_count]                  */
+    md_gpu_addr_t bond_pairs;              /* uint32 [2 * bond_count]: two points      */
     md_gpu_addr_t bond_ids;                /* uint32 [bond_count]: index in sys->bond  */
     uint32_t      bond_cluster_count[MD_RENDER_MOL_BOND_CLASS_COUNT];
     md_gpu_addr_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];  /* uint32 [count + 1],
@@ -153,6 +166,8 @@ typedef struct md_render_mol_topo_t {
     uint32_t      small_bond_count;        /* the tail of the covalent class            */
     uint32_t      grid_cells;              /* the last clusters of the atoms (and of the
                                               covalent bonds, when small_bond_count)    */
+    uint32_t      mixed_bond_count;        /* other bonds touching small molecules:
+                                              their points follow every regroup         */
     md_gpu_addr_t small_tables;            /* internal: their atoms and bonds by molecule */
 } md_render_mol_topo_t;
 
@@ -179,7 +194,8 @@ typedef struct md_render_mol_atoms_t {
     md_gpu_addr_t position;        /* float3, `stride` bytes apart                    */
     uint32_t      stride;          /* 0: 12                                           */
     uint32_t      velocity_stride; /* 0: 8                                            */
-    md_gpu_addr_t velocity;        /* packed half3 per atom, optional                 */
+    md_gpu_addr_t velocity;        /* packed half3 per atom, optional (the same for
+                                      update and emit: copied, or not)                */
     md_gpu_addr_t radius;          /* float per atom, optional: instead of the types' */
     md_gpu_addr_t radius_table;    /* float per particle type [topo.type_count]: for
                                       MD_RENDER_MOL_UPDATE_RADII                      */
@@ -204,10 +220,11 @@ enum {
     MD_RENDER_MOL_UPDATE_RADII   = 1u << 1,
 };
 
-/* GPU work only, no readback, ordered in `stream` like any other. `dynamic`
-   ([topo->dynamic_size] bytes, caller-owned) is scratch: its contents need
-   not survive between calls. Bumps content[MD_RENDER_CONTENT_GEOMETRY] when
-   it did anything. */
+/* After positions, velocities or radii changed (and before the first draw):
+   the copy that is drawn gathered into `dynamic` ([topo->dynamic_size]
+   bytes, caller-owned, kept for the batches emitted from it), after what
+   the flags ask. GPU work only, no readback, ordered in `stream` like any
+   other. Bumps content[MD_RENDER_CONTENT_GEOMETRY]. */
 bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                           md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]);
@@ -262,7 +279,7 @@ enum {
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
    needs, which may exceed cap (then nothing past cap is written). Host only,
    no GPU work. 0 for an invalid representation (logged). */
-uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, const md_render_mol_atoms_t* atoms,
+uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                             const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap);
 
 /* =========================================================================

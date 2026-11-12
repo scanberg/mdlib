@@ -15,8 +15,15 @@
 //              the same cell in one atomic.
 //     scan     exclusive, of the per-cell counts (blocks, sums, add)
 //     write    each molecule's atoms and bonds into the tails of the
-//              topology's arrays, at its cell's offset plus its place
+//              topology's arrays, at its cell's offset plus its place: the
+//              bonds between the points its atoms now are
 //     offsets  the cells' cluster offsets
+//     mixed    the points of the other bonds touching small molecules
+//
+// And on every update, whatever else it does:
+//
+//     gather   the copy that is drawn: per point (cluster order), its atom's
+//              position and radius as a float4, and its velocity
 //
 // Every pass reads the molecules in their own order (the order of the small
 // tables, close to the file order of the atoms): only the write lands
@@ -33,6 +40,10 @@ static const float CELL_TARGET = 64.0;
 
 struct Args {
     uint* position;             // float3 per atom, `stride` bytes apart
+    uint* velocity;             // packed half3 per atom, `vel_stride` bytes apart
+    uint* radius_override;      // float per atom
+    uint* points;               // float4 per point: the copy
+    uint* vel_out;              // uint2 per point
     uint* params;               // 16 words: ordered bounds, then the grid
     uint* mol_slot;             // uint4 per molecule: cell, its atoms' and bonds' place in it
     uint* cnt;                  // uint4 per cell, [cells + 1]: atoms, bonds
@@ -43,11 +54,14 @@ struct Args {
     uint* mol_atom_offset;      // [n_mol + 1]
     uint* mol_atoms;            // atom indices
     uint* mol_bond_offset;      // [n_mol + 1]
-    uint* mol_bond_pairs;       // uint2 per bond
+    uint* mol_bond_local;       // per bond: its atoms' places in the molecule, k0 | k1 << 16
     uint* mol_bond_ids;
+    uint* mixed_pos;            // per mixed bond: its place in bond_pairs
+    uint* mixed_atoms;          // uint2 per mixed bond
     uint* atom_order;           // the topology's: the tail from static_atoms on
+    uint* atom_point;           // the topology's: atom -> point
     uint* atom_cluster_offset;  // the topology's: from static_atom_clusters on
-    uint* bond_pairs;           // the topology's covalent class: from static_bonds on
+    uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
     uint  stride;
@@ -61,8 +75,12 @@ struct Args {
     uint  has_bonds;
     uint  mode;                 // scan: 0 blocks, 1 the block sums, 2 add
     uint  n;                    // scan: elements
-    uint  atom_count;           // radii
+    uint  atom_count;           // radii, gather
     uint  type_count;
+    uint  vel_stride;
+    uint  has_velocity;
+    uint  has_radius;           // radius_override given
+    uint  mixed_count;
     uint  _pad;
 };
 MD_SHADER_ARGS(Args);
@@ -292,13 +310,20 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
     for (uint m = tid.x; m < n; m += grid_threads(n)) {
         uint* s = a.mol_slot + 4u * m;
         uint c = s[0];
-        uint at = a.static_atoms + a.cnt[4u * c] + s[1];
-        for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) a.atom_order[at++] = a.mol_atoms[k];
+        uint p0 = a.static_atoms + a.cnt[4u * c] + s[1];      // the molecule's first point
+        uint at = p0;
+        for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) {
+            uint atom = a.mol_atoms[k];
+            a.atom_order[at] = atom;
+            a.atom_point[atom] = at;
+            at += 1u;
+        }
         if (a.has_bonds != 0u) {
             uint bt = a.static_bonds + a.cnt[4u * c + 1u] + s[2];
             for (uint k = a.mol_bond_offset[m]; k < a.mol_bond_offset[m + 1u]; ++k) {
-                a.bond_pairs[2u * bt]      = a.mol_bond_pairs[2u * k];
-                a.bond_pairs[2u * bt + 1u] = a.mol_bond_pairs[2u * k + 1u];
+                uint l = a.mol_bond_local[k];
+                a.bond_pairs[2u * bt]      = p0 + (l & 0xFFFFu);
+                a.bond_pairs[2u * bt + 1u] = p0 + (l >> 16u);
                 a.bond_ids[bt]             = a.mol_bond_ids[k];
                 bt += 1u;
             }
@@ -327,5 +352,40 @@ void sol_radii(uint3 tid : SV_DispatchThreadID) {
     for (uint i = tid.x; i < n; i += grid_threads(n)) {
         uint t = (a.types[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu;
         a.atom_radius[i] = t < a.type_count ? a.radius_table[t] : 0u;
+    }
+}
+
+// After a regroup: the other bonds touching small molecules, between the
+// points their atoms now are
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sol_mixed(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.mixed_count;
+    for (uint i = tid.x; i < n; i += grid_threads(n)) {
+        uint pos = a.mixed_pos[i];
+        a.bond_pairs[2u * pos]      = a.atom_point[a.mixed_atoms[2u * i]];
+        a.bond_pairs[2u * pos + 1u] = a.atom_point[a.mixed_atoms[2u * i + 1u]];
+    }
+}
+
+// The copy that is drawn: point p is atom atom_order[p]. Writes in order,
+// reads where the atoms are (in runs: the atoms of a residue or a molecule
+// are neighbours in both orders).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sol_gather(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    for (uint p = tid.x; p < n; p += grid_threads(n)) {
+        uint atom = a.atom_order[p];
+        uint* q = a.position + atom * (a.stride >> 2u);
+        uint r = a.has_radius != 0u ? a.radius_override[atom] : a.atom_radius[atom];
+        uint4 v = uint4(q[0], q[1], q[2], r);
+        ((uint4*)a.points)[p] = v;
+        if (a.has_velocity != 0u) {
+            uint* w = a.velocity + atom * (a.vel_stride >> 2u);
+            ((uint2*)a.vel_out)[p] = uint2(w[0], w[1]);
+        }
     }
 }
