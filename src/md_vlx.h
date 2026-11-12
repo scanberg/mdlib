@@ -51,6 +51,23 @@ struct md_executor_t;
 //                                                            - published whether or not the
 //                                                            environment could be added
 //
+//   vlx/scf/gostshyp/tessera/{coordinate,normal}             {T} x 3: the GOSTSHYP cavity of a run under pressure,
+//                                                            one point (tessera) per row, Å and unit normals. On the
+//                                                            scaled van der Waals sphere of one QM atom each
+//   vlx/scf/gostshyp/tessera/area                            {T} Å^2, as the switching left it (smaller where the
+//                                                            spheres overlap, down to nothing)
+//   vlx/scf/gostshyp/tessera/{amplitude,exponent}            {T}: the normalized 3D Gaussian on each tessera,
+//                                                            (zeta/pi)^(3/2) exp(-zeta r^2) with its amplitude p
+//                                                            (Eh bohr^3) - zeta is what the file calls its 'width',
+//                                                            Å^-2 here, and zeta a is constant
+//   vlx/scf/gostshyp/tessera/decay_length                    {T} Å, <rho|g> / (-d/dn <rho|g>). The amplitudes hold the
+//                                                            pressure: p (-d/dn <rho|g>) = P a
+//   vlx/scf/gostshyp/tessera/atom_index                      {T} u32, the QM atom whose sphere it lies on: read where
+//                                                            the file has it (gostshyp_gaussian_atom_indices), else
+//                                                            found from the distances (vlx_publish_gostshyp)
+//   vlx/scf/gostshyp/sphere_radius                           {A} Å, of each QM atom's sphere; NAN where an element
+//                                                            has no tesserae at all
+//   vlx/scf/gostshyp/pressure                                rank 0, GPa
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
