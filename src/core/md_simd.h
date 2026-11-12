@@ -531,6 +531,7 @@ MD_SIMD_INLINE int md_mm256_movemask_ps(md_256 a) {
 #define md_mm_set1_epi16 simde_mm_set1_epi16
 #define md_mm_set1_epi32 simde_mm_set1_epi32
 #define md_mm_set1_epi64 simde_mm_set1_epi64x
+#define md_mm256_set1_epi8  simde_mm256_set1_epi8
 #define md_mm256_set1_epi32 simde_mm256_set1_epi32
 #define md_mm256_set1_epi64 simde_mm256_set1_epi64x
 
