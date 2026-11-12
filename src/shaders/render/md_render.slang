@@ -548,29 +548,27 @@ Bounds prev_geo_bounds(ViewData v, Geo g) {
 
 // Occluded: nearer than nothing in its rectangle. The pyramid holds the
 // farthest (min, under reverse Z) depth of each texel's pixels; level L
-// texels are 2^(L+1) pixels across. The level is the one at which a texel is
-// at least half the rectangle, so it spans at most 3 x 3 texels (up to 9
-// reads): a footprint at most about 4x the rectangle. (At most 2 x 2 at a
-// texel the rectangle's size was up to 16x: a single uncovered pixel nearby,
-// which a camera move of a fraction of a pixel leaves among sub-pixel
-// elements, then passed everything behind it.)
+// texels are 2^(L+1) pixels across, and the level is the one at which the
+// rectangle spans at most 2 x 2 texels: four reads. (A finer level, at most
+// 3 x 3 texels, occluded a little more and cost far more: on the M4 a
+// licorice frame of 10M atoms went from 18.7 to 24.2 ms.)
 bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd) {
     if (v.hiz_valid == 0u || bd.near_clip) return false;
     float2 lo = max(bd.pmin, float2(0.0));
     float2 hi = min(bd.pmax, v.viewport.xy);
     float  w  = max(hi.x - lo.x, hi.y - lo.y);
-    uint   L  = w <= 4.0 ? 0u : uint(ceil(log2(w))) - 2u;
+    uint   L  = w <= 2.0 ? 0u : uint(ceil(log2(w))) - 1u;
     L = min(L, v.hiz_levels - 1u);
     uint dw = v.hiz_w, dh = v.hiz_h;
     for (uint j = 0u; j < L; ++j) { dw = max(1u, (dw + 1u) >> 1); dh = max(1u, (dh + 1u) >> 1); }
     float s  = float(1u << (L + 1u));
     int2  t0 = min(int2(floor(lo / s)), int2(int(dw) - 1, int(dh) - 1));
     int2  t1 = min(int2(floor((hi - 1e-3) / s)), int2(int(dw) - 1, int(dh) - 1));
-    t1 = max(t0, min(t1, t0 + int2(2)));        // 3 x 3 at most (by the choice of level; a guard)
-    float m = 1.0;
-    for (int ty = t0.y; ty <= t1.y; ++ty)
-        for (int tx = t0.x; tx <= t1.x; ++tx)
-            m = min(m, hiz.Load(int3(tx, ty, int(L))));
+    t1 = max(t0, t1);
+    float m = hiz.Load(int3(t0.x, t0.y, int(L)));
+    m = min(m, hiz.Load(int3(t1.x, t0.y, int(L))));
+    m = min(m, hiz.Load(int3(t0.x, t1.y, int(L))));
+    m = min(m, hiz.Load(int3(t1.x, t1.y, int(L))));
     return bd.dnear < m;
 }
 
