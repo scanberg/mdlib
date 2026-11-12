@@ -47,23 +47,6 @@ static const uint8_t element_covalent_radii_u8[] = {
     169, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160
 };
 
-// Approximate ionic radii (� �100), mostly Shannon radii (CN�6, common oxidation state)
-static const uint8_t element_ionic_radii_u8[] = {
-    0,
-    0,   0,  76,  45,  27,  16, 146, 140, 133,   0,
-    102,  72,  54,  40, 212, 184, 181,   0, 138, 100,
-    75,  61,  54,  62,  83,  78,  74,  69,  73,  74,
-    62,  53, 222, 198, 196,   0, 152, 118,  90,  72,
-    64,  59,  56,  68,  67,  86, 115,  95,  80,  69,
-    245, 221, 220,   0, 167, 135, 103, 101,  99,  98,
-    97,  96,  95,  94,  92,  91,  90,  89,  88,  87,
-    86,  71,  64,  60,  56,  77,  77,  80, 137, 102,
-    150, 119, 103, 230, 227,   0, 180, 148, 112,  94,
-    89, 100,  98,  96, 109, 108, 107, 106, 105, 104,
-    103, 110, 103,  78,  74,  69,  67,  66,   0,   0,
-    0, 100,   0, 120,   0, 240, 230,   0
-};
-
 #if 0
 // Covalent radii for elements (single, double, triple) bonds in pikometers
 // https://en.wikipedia.org/wiki/Covalent_radius
@@ -437,10 +420,6 @@ float md_atomic_number_vdw_radius(md_atomic_number_t element) {
 
 static inline float element_covalent_radius(md_atomic_number_t element) {
     return element < Num_Elements ? element_covalent_radii_u8[element] * 0.01f : 0;
-}
-
-static inline float element_ionic_radius(md_atomic_number_t element) {
-    return element < Num_Elements ? element_ionic_radii_u8[element] * 0.01f : 0;
 }
 
 float md_atomic_number_covalent_radius(md_atomic_number_t element) {

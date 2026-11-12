@@ -370,20 +370,6 @@ md_float3x3_t md_float3x3_extract_rotation(md_float3x3_t M) {
     return R;
 }
 
-static double highp_dot(md_float3_t a, md_float3_t b) {
-    return (double)a.x * (double)b.x + (double)a.y * (double)b.y + (double)a.z * (double)b.z;
-}
-
-static md_float3_t highp_normalize(md_float3_t v) {
-    double len = sqrt(highp_dot(v, v));
-    md_float3_t result = {
-        (float)(v.x / len),
-        (float)(v.y / len),
-        (float)(v.z / len),
-    };
-    return result;
-}
-
 md_float3x3_t md_float3x3_orthonormalize(md_float3x3_t M) {
     M.col[0] = md_float3_normalize(M.col[0]);
 

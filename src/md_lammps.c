@@ -908,7 +908,9 @@ bool md_lammps_validate_atom_format(char* err_buf, size_t err_cap, const char* f
 	return interpret_format(mappings, format, err_buf, err_cap) > 0;
 }
 
-bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* format, struct md_allocator_i* alloc) {
+// DATA PARSING
+// atom_format is optional and will be used if supplied
+static bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* format, struct md_allocator_i* alloc) {
 	MD_ASSERT(data);
 	MD_ASSERT(alloc);
 

@@ -93,7 +93,6 @@ md_str_t md_alloc_str(md_allocator_i* alloc, md_str_t str);
 // Formats with md_vsnprintf (the "C" locale) into memory from alloc. Empty, and nothing allocated, when nothing
 // is written.
 md_str_t md_alloc_printf (md_allocator_i* alloc, const char* format, ...) MD_PRINTF_FORMAT(2, 3);
-md_str_t md_alloc_vprintf(md_allocator_i* alloc, const char* format, va_list args);
 
 // TRANSITIONAL: frees a string from the functions above, made with an allocator that frees (the heap). It is
 // only here for the owners which still free their strings one by one; it goes once they have an arena.

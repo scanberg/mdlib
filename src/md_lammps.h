@@ -145,9 +145,6 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(md_str_t filename);
 // the format must contain the fields: 'id type x y z'
 bool md_lammps_validate_atom_format(char* out_buf, size_t buf_cap, const char* atom_format);
 
-// DATA PARSING
-// atom_format is optional and will be used if supplied
-bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* atom_format, struct md_allocator_i* alloc);
 bool md_lammps_data_parse_file(md_lammps_data_t* data, md_str_t filename, const char* atom_format, struct md_allocator_i* alloc);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 

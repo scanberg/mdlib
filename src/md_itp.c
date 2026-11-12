@@ -527,7 +527,7 @@ bool md_itp_data_parse_str(md_itp_data_t* data, md_str_t str, md_str_t base_fold
     return ok;
 }
 
-bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, md_allocator_i* alloc) {
+static bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
 

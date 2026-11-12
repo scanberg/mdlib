@@ -62,11 +62,6 @@ const char* md_fragment_kind_str(md_fragment_kind_t kind) {
     }
 }
 
-static int frag_cmp_u64(const void* a, const void* b) {
-    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
-    return (x > y) - (x < y);
-}
-
 static int frag_cmp_u32(const void* a, const void* b) {
     const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
     return (x > y) - (x < y);

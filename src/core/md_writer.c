@@ -109,7 +109,7 @@ void md_write_fill(md_writer_i* w, char c, size_t count) {
     }
 }
 
-void md_vwritef(md_writer_i* w, const char* format, va_list args) {
+static void md_vwritef(md_writer_i* w, const char* format, va_list args) {
     MD_ASSERT(w);
     MD_ASSERT(format);
 

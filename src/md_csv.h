@@ -23,7 +23,6 @@ typedef struct md_csv_t {
 
 // The result is an array of fields each containing the values
 bool md_csv_parse_str (md_csv_t* csv, md_str_t in_str,  struct md_allocator_i* alloc);
-bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc);
 
 // Writes the fields as columns, a row per value, with field_names (if not NULL) as the first row.
 // Values are written as "%f" writes them.

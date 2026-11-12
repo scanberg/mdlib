@@ -176,7 +176,6 @@ void md_write_fill(md_writer_i* w, char c, size_t count);
 
 // Formatted as printf does. It formats in place when it fits, so a format is not measured first.
 void md_writef (md_writer_i* w, const char* format, ...) MD_PRINTF_FORMAT(2, 3);
-void md_vwritef(md_writer_i* w, const char* format, va_list args);
 
 // Integers, formatted without printf: for writing many of them
 void md_write_i64(md_writer_i* w, int64_t x);

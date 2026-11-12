@@ -327,7 +327,7 @@ md_str_t md_alloc_str(md_allocator_i* alloc, md_str_t str) {
     return result;
 }
 
-md_str_t md_alloc_vprintf(md_allocator_i* alloc, const char* format, va_list args) {
+static md_str_t md_alloc_vprintf(md_allocator_i* alloc, const char* format, va_list args) {
     MD_ASSERT(alloc);
     MD_ASSERT(format);
     va_list measure;

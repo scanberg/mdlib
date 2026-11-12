@@ -41,16 +41,9 @@ typedef struct md_cube_t {
 extern "C" {
 #endif
 
-// The cube in the cube file format: written to w, or as a string allocated from alloc (see md_alloc_str).
-// False (and nothing written) if the cube is not valid.
-bool  md_cube_write(struct md_writer_i* w, const md_cube_t* cube);
-md_str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc);
-bool  md_cube_deserialize(md_cube_t* cube, md_str_t data, struct md_allocator_i* alloc);
-	
-bool md_cube_file_store(const md_cube_t* cube, md_str_t path_to_file);
+// A cube file, from the text of one or from a file. Writing a cube is the application's (viamd's density volume export)
+bool md_cube_deserialize(md_cube_t* cube, md_str_t data, struct md_allocator_i* alloc);
 bool md_cube_file_load(md_cube_t* cube, md_str_t path_to_file, struct md_allocator_i* alloc);
-
-bool md_cube_valid(const md_cube_t* cube);
 
 // Only free using this function if the cube object was allocated through cube_file_load or cube_file_deserialize
 void md_cube_free(md_cube_t* cube, struct md_allocator_i* alloc);

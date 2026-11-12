@@ -2315,7 +2315,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
 // protein backbone on either side, or where a side has no cartoon (a piece of chain too short for one), from the atom
 // of the link there. Then those of licorice and ball and stick (link): between the atoms a link would join
 // (md_system_chain_break_atoms), each its own neighbour.
-void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
+static void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
     molecule_t* mol = mol_lookup(handle.id);
     if (!mol) {
         MD_LOG_ERROR("Invalid molecule");

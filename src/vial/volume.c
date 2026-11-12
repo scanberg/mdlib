@@ -113,8 +113,6 @@ bool vial_mcs(vial_mcs_t* out, const md_system_t* sys, const vial_sets_t* st, bo
     return true;
 }
 
-static const vial_val_t* varg_k(const vial_val_t* const* args, const md_str_t* names, uint32_t n, const char* name, uint32_t pos);
-
 bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const md_str_t* names, uint32_t n, const float* xyz, vial_val_t* out) {
     // Every positional argument is structures; match= and least= are named
     const vial_sets_t* parts[64];
@@ -190,11 +188,6 @@ static const vial_val_t* varg(const vargs_t* a, const char* name, uint32_t pos) 
 }
 
 static bool is_none(const vial_val_t* v) { return !v || v->dtype == VIAL_DT_NONE; }
-
-static const vial_val_t* varg_k(const vial_val_t* const* args, const md_str_t* names, uint32_t n, const char* name, uint32_t pos) {
-    const vargs_t a = {args, names, n};
-    return varg(&a, name, pos);
-}
 
 static double num(const vial_val_t* v, size_t i) {
     switch (v->dtype) {

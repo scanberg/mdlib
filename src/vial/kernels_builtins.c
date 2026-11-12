@@ -466,10 +466,6 @@ static bool k_angle(vial_kctx_t* k, const bargs_t* ba, int npts, vial_val_t* out
 // the pairs of a particle with itself, by the points' particles; or, mapped over a dimension that runs over the units
 // q's points do, the pair of the call's own unit, skip.
 static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, bool closest, bool distinct, int64_t skip, vial_val_t* out);
-static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, bool closest, vial_val_t* out) {
-    return k_pair_x(k, pv, qv, closest, false, -1, out);
-}
-
 // The matrix's entry for points a and b: the length of b - a under the minimum image, as distance() computes it
 static inline float pair_entry(const float* a, const float* b, const md_unitcell_t* cell) {
     md_float3_t v = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};

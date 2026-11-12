@@ -78,7 +78,6 @@ set (SRC_FILES
     test_linalg.c
     test_qm_ct.c
     test_fragment.c
-    test_gisaxs.c
     test_xvg.c
     rmsd.c
     test_lammps.c

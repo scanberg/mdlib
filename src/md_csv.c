@@ -145,7 +145,7 @@ bool md_csv_parse_str (md_csv_t* csv, md_str_t in_str, struct md_allocator_i* al
     return parse(csv, &reader, alloc);
 }
 
-bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc) {
+static bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc) {
     md_file_t file = {0};
     if (md_file_open(&file, in_path, MD_FILE_READ)) {
         size_t cap = MD_MEGABYTES(1);

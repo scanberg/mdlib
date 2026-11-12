@@ -49,10 +49,6 @@ static inline md_str_t text(const resolver_t* r, vial_node_id id) {
     return (md_str_t){r->src.ptr + s.beg, s.end - s.beg};
 }
 
-static inline uint32_t line_of(const resolver_t* r, vial_node_id id) {
-    return vial_line_of(r->diags, r->t->nodes[id].span.beg);
-}
-
 static uint64_t name_key(md_str_t name) {
     uint64_t k = md_hash64_str(name, 0x5eed);
     return k >= MD_HASH_TOMBSTONE ? k - 2 : k;

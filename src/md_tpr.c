@@ -252,7 +252,6 @@ static inline void skip_bytes(tpr_reader_t* r, size_t count, size_t size) {
 
 static inline void skip_ints (tpr_reader_t* r, size_t count) { skip_bytes(r, count, 4); }
 static inline void skip_reals(tpr_reader_t* r, size_t count) { skip_bytes(r, count, r->dbl ? 8 : 4); }
-static inline void skip_uchars(tpr_reader_t* r, size_t count) { skip_bytes(r, count, r->in_memory ? 1 : 4); }
 
 // Reads count reals into dst as floats
 static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {

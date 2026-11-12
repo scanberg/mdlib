@@ -14,14 +14,6 @@
 #include <core/md_hash.h>
 #include <stdlib.h>
 
-// Comparison function to sort uint32 indices (for quicksort C)
-static int uint_compare(const void* a, const void* b) {
-    uint32_t val_a = *(const uint32_t*)a;
-    uint32_t val_b = *(const uint32_t*)b;
-    if (val_a < val_b) return -1;
-    if (val_a > val_b) return 1;
-    return 0;
-}
 #endif
 
 static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* grid) {
