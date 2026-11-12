@@ -7,6 +7,7 @@
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 // Coordinates are handed back through a state; only passed by pointer here.
 typedef struct md_system_state_t md_system_state_t;
 
@@ -152,8 +153,10 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
 bool md_lammps_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_lammps_data_t* lammps_data);
-bool md_lammps_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const char* atom_format);
-bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,	  const char* atom_format);
+// The atom style is desc->format ("full", or the columns); without one it is told from the file, and the load fails
+// where it cannot be
+bool md_lammps_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+bool md_lammps_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc);
 
 // RUN
 // A dump file (.lammpstrj) published as a run (see md_run_publish in md_system.h): time as frame

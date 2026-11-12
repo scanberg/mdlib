@@ -1,4 +1,5 @@
 #include <md_pdb.h>
+#include <md_io.h>
 #include <math.h>
 
 #include <md_system.h>
@@ -494,7 +495,7 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
 // makes the types of their tables the system's, piece by piece, which is the order the atoms first have them, and reads
 // the few records of interest in order.
 //
-// Of a file of several models the atoms of the first are loaded (all of them with MD_PDB_OPTION_CONCAT_MODELS). Once
+// Of a file of several models the atoms of the first are loaded (all of them with MD_LOAD_FLAG_ALL_MODELS). Once
 // it has ended the load goes to the end of the file, past the last MODEL or ENDMDL record, for the CONECT records.
 
 #define PDB_RES_FIELDS_BEG  17      // The residue name, the chain id, the sequence number and the insertion code:
@@ -1321,7 +1322,8 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     return true;
 }
 
-static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, md_pdb_options_t options, const md_executor_t* ex) {
+static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -1349,7 +1351,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         .sys = sys,
         .state = state,
         .temp = temp,
-        .concat_models = (options & MD_PDB_OPTION_CONCAT_MODELS) != 0,
+        .concat_models = desc && (desc->flags & MD_LOAD_FLAG_ALL_MODELS),
         .atoms = true,
         .type_map = { .allocator = temp },
         .extras = { .alloc = temp },
@@ -1426,23 +1428,23 @@ done:
 
 #undef PDB_ROOM
 
-bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, md_pdb_options_t options, const md_executor_t* executor) {
+bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
     md_reader_i src = md_reader_from_str(str);
-    return pdb_load(sys, state, &src, options, executor);
+    return pdb_load(sys, state, &src, desc);
 }
 
-bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
+bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     // The reader's buffer in a temp scope, below the one of the load (pdb_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
-    const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(executor)));
+    const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(desc ? desc->executor : NULL)));
     if (!md_file_reader_open(&fr, filename, cap, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         md_temp_end(temp);
         return false;
     }
     // Several models are a trajectory as well: md_pdb_system_publish_run makes them a run.
-    const bool result = pdb_load(sys, state, &fr.r, options, executor);
+    const bool result = pdb_load(sys, state, &fr.r, desc);
     md_file_reader_close(&fr);
     md_temp_end(temp);
     return result;

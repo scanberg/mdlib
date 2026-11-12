@@ -13,6 +13,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 
 // GROMACS index files (.ndx): named groups of atoms, what grompp and the gmx tools are given with -n. A topology never
 // refers to one; an mdp names its groups (energygrps = Protein SOL) and grompp finds them in the index file it is given.
@@ -48,7 +49,7 @@ void md_ndx_data_free(md_ndx_data_t* data, struct md_allocator_i* alloc);
 // system (from the tpr of the same run) gains nothing. False, and nothing added, when the file names an atom the system
 // does not have: it is of another system.
 bool md_ndx_system_supplement(struct md_system_t* sys, const md_ndx_data_t* data);
-bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
+bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 // GROMACS' DEFAULT GROUPS. Without an index file, grompp (and gmx make_ndx, which starts from them) makes groups of the
 // topology by its residue types (share/top/residuetypes.dat) and atom names, and an mdp names those: tc-grps = Protein

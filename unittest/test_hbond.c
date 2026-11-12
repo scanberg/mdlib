@@ -26,7 +26,7 @@
 static bool load_xyz(md_system_t* sys, md_system_state_t* st, const char* text, const md_unitcell_t* cell, md_allocator_i* alloc) {
     *sys = (md_system_t){ .alloc = alloc };
     *st  = (md_system_state_t){ .alloc = alloc };
-    if (!md_xyz_system_init_from_str(sys, st, md_str_from_cstr(text), MD_XYZ_OPTION_NONE)) return false;
+    if (!md_xyz_system_init_from_str(sys, st, md_str_from_cstr(text), NULL)) return false;
     if (cell) st->unitcell = *cell;
     return md_system_infer(sys, st, MD_SYSTEM_INFER_ALL, NULL);
 }
@@ -388,7 +388,7 @@ UTEST(hbond, no_hydrogens) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     md_hbond_query_t q;
     ASSERT_TRUE(md_hbond_query_init(&q, NULL, &sys, alloc));

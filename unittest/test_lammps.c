@@ -1,4 +1,5 @@
 ﻿#include "utest.h"
+#include <md_io.h>
 #include <string.h>
 #include <math.h>
 
@@ -386,7 +387,7 @@ UTEST(lammps, comprehensive_data_validation) {
     for (int p = 0; p < 2; ++p) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, paths[p], atom_format));
+        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, paths[p], &(md_load_desc_t){ .format = md_str_from_cstr(atom_format) }));
         
         EXPECT_GT(sys.atom.count, 0);
         

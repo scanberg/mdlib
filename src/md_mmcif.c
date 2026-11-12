@@ -13,6 +13,7 @@
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
 #include <md_infer.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_element.h>
 
@@ -1669,7 +1670,8 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
 
@@ -1697,7 +1699,8 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, m
     return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
 

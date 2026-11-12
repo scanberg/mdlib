@@ -173,7 +173,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
@@ -203,7 +203,7 @@ UTEST(monomer, residue_types_without_monomer) {
 
     md_system_t sys2 = { .alloc = alloc };
     md_system_state_t state2 = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys2, &state2, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_EQ(md_residue_type_color(type, lig), md_residue_type_color(&sys2.residue.type, type_of_name(&sys2, "LIG")));
 

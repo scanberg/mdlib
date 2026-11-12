@@ -1,4 +1,5 @@
 #include <md_ndx.h>
+#include <md_io.h>
 #include <md_system.h>
 
 #include <core/md_allocator.h>
@@ -136,7 +137,8 @@ bool md_ndx_system_supplement(md_system_t* sys, const md_ndx_data_t* data) {
     return true;
 }
 
-bool md_ndx_system_supplement_from_file(md_system_t* sys, md_str_t filename) {
+bool md_ndx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_ndx_data_t data = {0};

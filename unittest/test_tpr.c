@@ -139,7 +139,7 @@ UTEST(tpr, system_tip3p) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), NULL));
     EXPECT_EQ(1577u, sys.atom.count);
     EXPECT_EQ(1577u, state.num_atoms);
     EXPECT_EQ(2u + 509u + 4u, sys.residue.count);
@@ -206,7 +206,7 @@ UTEST(tpr, virtual_sites) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr"), NULL));
     EXPECT_EQ(2074u, sys.atom.count);
     // TIP4P: the two O-H bonds of the SETTLE. The charge site is not bonded, as when read from coordinates.
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, sys.bond.count);
@@ -612,7 +612,7 @@ UTEST(tpr, martini_no_elastic_bonds) {
         md_system_state_t state = { .alloc = arena };
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", files[f]);
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path)));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
         EXPECT_EQ(0u, count_elastic(&sys));
         if (count_elastic(&sys)) printf("%s: %zu bonds taken for elastic ones\n", files[f], count_elastic(&sys));
         md_arena_allocator_destroy(arena);

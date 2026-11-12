@@ -1,4 +1,5 @@
 #include <md_ase_traj.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_run.h>
@@ -401,7 +402,8 @@ static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t*
     return cap;
 }
 
-bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     MD_ASSERT(state);
     if (!sys->alloc || !state->alloc) {

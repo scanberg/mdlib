@@ -1,6 +1,7 @@
 ﻿#include <md_gro.h>
 
 #include <md_infer.h>
+#include <md_io.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -596,7 +597,8 @@ done:
 
 #undef GRO_ROOM
 
-bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
+bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     // The reader's buffer in a temp scope, below the one of the load (gro_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
@@ -612,7 +614,8 @@ bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md
     return result;
 }
 
-bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
+bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     md_reader_i src = md_reader_from_str(str);
     return gro_load(sys, state, &src, ex);
 }

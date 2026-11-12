@@ -216,7 +216,7 @@ UBENCH_EX(coords, protein_backbone) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    if (md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(PROTEIN_PDB), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
+    if (md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(PROTEIN_PDB), NULL) &&
         md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) {
         const size_t n = sys.protein_backbone.segment.count;
         md_secondary_structure_t* ss = md_alloc(arena, n * sizeof(md_secondary_structure_t));

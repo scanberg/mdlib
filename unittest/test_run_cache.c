@@ -161,11 +161,11 @@ static bool publish_trr(md_system_t* sys, md_str_t path, md_str_t run, md_alloca
 }
 static bool publish_pdb(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_pdb_system_init_from_file(sys, &st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) && md_pdb_system_publish_run(sys, path, run, 0);
+    return md_pdb_system_init_from_file(sys, &st, path, NULL) && md_pdb_system_publish_run(sys, path, run, 0);
 }
 static bool publish_xyz(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_xyz_system_init_from_file(sys, &st, path, MD_XYZ_OPTION_DISABLE_CACHE_WRITE) && md_xyz_system_publish_run(sys, path, run, 0);
+    return md_xyz_system_init_from_file(sys, &st, path, NULL) && md_xyz_system_publish_run(sys, path, run, 0);
 }
 static bool publish_lammps(md_system_t* sys, md_str_t path, md_str_t run, md_allocator_i* arena) {
     (void)arena;

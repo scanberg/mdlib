@@ -6,6 +6,7 @@
 #include <core/md_str.h>
 
 struct md_system_t;
+struct md_load_desc_t;
 struct md_system_state_t;
 
 #ifdef __cplusplus
@@ -41,10 +42,10 @@ size_t md_psf_file_atom_count(md_str_t filename);
 
 // Builds the system. The state receives no coordinates (md_system_state_has_coords is false).
 // Published: 'atom/charge' (e), 'atom/mass' (Da).
-bool md_psf_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename);
+bool md_psf_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 // Applies the PSF to a loaded system of the same atoms in the same order (see md_topology_system_supplement).
-bool md_psf_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
+bool md_psf_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

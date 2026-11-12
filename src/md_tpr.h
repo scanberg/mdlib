@@ -13,6 +13,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 typedef struct md_system_state_t md_system_state_t;
 
 // GROMACS portable run input (.tpr)
@@ -324,7 +325,7 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // The bonds are the topology's and are complete, so a caller should not infer covalent bonds on
 // top of them.
 bool md_tpr_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data);
-bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename);
+bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

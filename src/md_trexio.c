@@ -1,4 +1,5 @@
 #include <md_trexio.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_types.h>
@@ -985,7 +986,8 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
 
     char path[2048];

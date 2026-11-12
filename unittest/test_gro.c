@@ -1,4 +1,5 @@
 ﻿#include "utest.h"
+#include <md_io.h>
 #include <string.h>
 
 #include <md_gro.h>
@@ -249,7 +250,7 @@ static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* e
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     size_t mismatches = SIZE_MAX;
-    if (md_gro_system_init_from_file(&sys, &st, path, ex)) {
+    if (md_gro_system_init_from_file(&sys, &st, path, &(md_load_desc_t){ .executor = ex })) {
         mismatches = 0;
         const float* vel = gro_test_velocities(&sys);
         md_str_t text = md_load_textfile(path, alloc);
@@ -335,18 +336,18 @@ UTEST(gro, blocks_and_pieces) {
     for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), executors[e]));
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = executors[e] }));
         EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys, &st));
         md_system_t sys2 = { .alloc = alloc };
         md_system_state_t st2 = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys2, &st2, str, executors[e]));
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys2, &st2, str, &(md_load_desc_t){ .executor = executors[e] }));
         EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys2, &st2));
     }
 
     // The velocities: of every line which has them, absent where a line has none
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), test_executor(&threads)));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = test_executor(&threads) }));
     const md_attribute_t* vel = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/velocity"));
     ASSERT_TRUE(vel != NULL);
     const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());

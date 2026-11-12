@@ -31,7 +31,7 @@ static mcs_fixture_t* mcs_tubulin(void) {
         f.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         f.sys = (md_system_t){.alloc = f.alloc};
         f.state = (md_system_state_t){.alloc = f.alloc};
-        f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
+        f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL) &&
                md_system_infer(&f.sys, &f.state, MD_SYSTEM_INFER_ALL, NULL);
     }
     return f.ok ? &f : NULL;

@@ -2282,7 +2282,7 @@ static bool elf_molden_load(vlx_test_t* t, float** xyz, size_t* num_atoms, const
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/molden/%s", file);
     qm_test_init(t, MD_MEGABYTES(64));
-    if (!md_molden_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path))) return false;
+    if (!md_molden_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path), NULL)) return false;
     *num_atoms = t->sys.atom.count;
     *xyz = (float*)malloc(sizeof(float) * 3 * *num_atoms);
     return vlx_test_atom_xyz_bohr(*xyz, 3 * *num_atoms, t) == *num_atoms;

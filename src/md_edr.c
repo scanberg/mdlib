@@ -1,4 +1,5 @@
 #include <md_edr.h>
+#include <md_io.h>
 
 #include <core/md_allocator.h>
 #include <core/md_format.h>
@@ -1103,7 +1104,8 @@ done:
 	return result;
 }
 
-bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, md_str_t run) {
+bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
 	MD_ASSERT(sys);
 
 	md_edr_energies_t energies = {0};

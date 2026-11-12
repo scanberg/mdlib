@@ -13,6 +13,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 
 // GROMACS topology (.top / .itp)
 //
@@ -111,7 +112,7 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 //   reference coordinates).
 // Returns false if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);
-bool md_itp_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
+bool md_itp_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

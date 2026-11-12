@@ -1,4 +1,5 @@
 #include <md_molden.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_types.h>
@@ -1155,7 +1156,8 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str) {
+bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
@@ -1171,7 +1173,8 @@ bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
     return result;
 }
 
-bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
 
     md_file_t file = {0};
@@ -1190,7 +1193,7 @@ bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state,
         MD_LOG_ERROR("MOLDEN: failed to read '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         buf[size] = '\0';
-        result = md_molden_system_init_from_str(sys, state, (md_str_t){ buf, size });
+        result = md_molden_system_init_from_str(sys, state, (md_str_t){ buf, size }, desc);
     }
 
     if (buf) {

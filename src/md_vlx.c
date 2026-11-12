@@ -14,6 +14,7 @@
 #include <core/md_vec_math.h>
 
 #include <md_types.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_gto.h>
 #include <md_qm.h>
@@ -6077,7 +6078,8 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	}
 }
 
-bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_executor_t* executor) {
+bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* executor = desc ? desc->executor : NULL;
 	MD_ASSERT(sys);
 
 	// Heap backed, not temp backed - see vlx_create.
@@ -6103,7 +6105,8 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 	return success;
 }
 
-bool md_vlx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const struct md_executor_t* executor) {
+bool md_vlx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* executor = desc ? desc->executor : NULL;
 	MD_ASSERT(sys);
 
 	if (!sys->attributes.alloc) {

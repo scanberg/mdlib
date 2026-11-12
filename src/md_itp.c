@@ -1,4 +1,5 @@
 #include <md_itp.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_infer.h>
@@ -1054,7 +1055,8 @@ done:
     return result;
 }
 
-bool md_itp_system_supplement_from_file(md_system_t* sys, md_str_t filename) {
+bool md_itp_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
