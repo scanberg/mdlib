@@ -53,7 +53,7 @@ struct ViewData {
     uint   refit_mode;          // 0 bounds and state, 1 state only
     float  jitter_px;           // how far this raster's jitter moves the image (pixels)
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
-    uint   _vpad0;
+    float  occl_min_px;         // elements no wider are not tested for occlusion
     uint   _vpad1;
     uint   _vpad2;
 };
@@ -829,7 +829,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
         int4  rp  = reach_px(v, bd);
         if (bd.outside || (!bd.near_clip && ext <= v.small_px && (rp.z < rp.x || rp.w < rp.y))) {
             out = OUT_OUTSIDE;          // off screen, or between pixel centres: no pixel to draw
-        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
+        } else if (!state_only && v.occlusion != 0u && ext > v.occl_min_px && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
             out = OUT_OCCLUDED;
         } else {
             out = (v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
