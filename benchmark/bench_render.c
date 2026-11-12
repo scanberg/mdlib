@@ -9,7 +9,7 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       in proportion to it), and the largest radius (one huge cluster ruins
       occlusion around it).
 
-  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit]
+  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME]
       Renders generated scenes (water-like boxes of three-atom molecules, in
       spacefill and licorice, near and far) through md_render, with each of
       the culling and raster options, and times full rasters, resolves and
@@ -18,6 +18,9 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       order, clustered by md_render_mol_update, which is timed too);
       --host-grid sorts and clusters by grid cell on the host instead, and
       --implicit sorts on the host and leaves md_render its runs of 64.
+      --look keeps the looks whose name contains NAME ("licorice", "far").
+      After each look's first row, one camera raster is profiled pass by
+      pass (each pass synced, so each number carries a sync).
 
 Every run prints the mdlib revision it was built from, first.
 */
@@ -662,6 +665,9 @@ bool md_render_mol_update_hooked(md_render_mol_t mol, md_gpu_stream_t stream, co
                                  md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                                  md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
+/* md_render's per-pass hook: in md_render.c, not in its header */
+void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
+
 typedef struct pass_prof_t {
     md_gpu_stream_t s;
     md_tick_t       t;
@@ -706,6 +712,7 @@ static int run_gpu(int argc, char** argv) {
     float smalls[8] = { 6 };
     uint32_t n_small = 1;
     cluster_src_t src = SRC_MOL;
+    const char* only_look = NULL;     /* --look NAME: the looks whose name contains NAME */
     for (int i = 0; i < argc; ++i) {
         if (!strcmp(argv[i], "--atoms") && i + 1 < argc) {
             n_atoms = 0;
@@ -718,6 +725,8 @@ static int run_gpu(int argc, char** argv) {
             src = SRC_IMPLICIT;
         } else if (!strcmp(argv[i], "--host-grid")) {
             src = SRC_HOST_GRID;
+        } else if (!strcmp(argv[i], "--look") && i + 1 < argc) {
+            only_look = argv[++i];
         } else if (!strcmp(argv[i], "--small") && i + 1 < argc) {
             n_small = 0;
             for (char* p = argv[++i]; *p && n_small < 8; ) { smalls[n_small++] = strtof(p, &p); if (*p == ',') ++p; }
@@ -789,6 +798,7 @@ static int run_gpu(int argc, char** argv) {
                    sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0);
         }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
+            if (only_look && !strstr(looks[li].name, only_look)) continue;
             md_render_batch_t b[8];
             memset(b, 0, sizeof(b));
             uint32_t nb = 0;
@@ -855,6 +865,20 @@ static int run_gpu(int argc, char** argv) {
                            tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
                            st.outside, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
                            st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
+                    if (oi == 0 && pi == 0) {
+                        /* where a camera raster's time goes, pass by pass (each synced) */
+                        pass_prof_t prof = { .s = s };
+                        f.camera.view[12] += 0.001f * sc.box;
+                        md_gpu_stream_sync(s);
+                        prof.t = md_tick_now();
+                        md_render_debug_pass_hook(pass_hook, &prof);
+                        md_render_view_draw(s, v, &f, NULL);
+                        md_render_debug_pass_hook(NULL, NULL);
+                        md_gpu_stream_sync(s);
+                        printf("    camera raster, passes each synced:");
+                        for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
+                        printf("\n");
+                    }
                     md_render_view_destroy(s, v);
                 }
             }
@@ -879,7 +903,7 @@ int main(int argc, char** argv) {
 #endif
     fprintf(stderr, "usage:\n  md_render_bench clusters <structure> [<trajectory>] [--frames N] [--size N]\n"
 #if MD_ENABLE_GPU
-                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit]\n"
+                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME]\n"
 #endif
            );
     return 1;
