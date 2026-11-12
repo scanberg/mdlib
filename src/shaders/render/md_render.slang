@@ -35,7 +35,6 @@ struct ViewData {
     float4 view_prev0, view_prev1, view_prev2, view_prev3;// of the previous raster
     float4 proj_prev0, proj_prev1, proj_prev2, proj_prev3;// of the previous raster, unjittered
     float4 proj_cur0, proj_cur1, proj_cur2, proj_cur3;  // unjittered
-    float4 prev_from_cur0, prev_from_cur1, prev_from_cur2, prev_from_cur3;  // view -> the previous raster's view
     float4 viewport;            // w, h, 1/w, 1/h
     float  dt;                  // time since the previous raster
     uint   ortho;
@@ -52,7 +51,7 @@ struct ViewData {
     uint   total_clusters;      // clusters over all batches (refit)
     uint   total_cluster_work;  // clusters times instances (cluster cull)
     uint   refit_mode;          // 0 bounds and state, 1 state only
-    uint   moved;               // the camera differs from the previous raster's
+    uint   _vpad;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -452,11 +451,7 @@ struct Bounds {
     float  dnear;               // depth of its nearest point
 };
 
-Bounds sphere_bounds_p(ViewData v, Mat P, float3 c, float r);
-Bounds sphere_bounds(ViewData v, float3 c, float r) { return sphere_bounds_p(v, M(v, proj_cur), c, r); }
-
-// Under the projection P (unjittered: the current, or the previous raster's)
-Bounds sphere_bounds_p(ViewData v, Mat P, float3 c, float r) {
+Bounds sphere_bounds(ViewData v, float3 c, float r) {
     Bounds bd;
     bd.outside   = false;
     bd.near_clip = false;
@@ -465,6 +460,7 @@ Bounds sphere_bounds_p(ViewData v, Mat P, float3 c, float r) {
     bd.dnear     = 1.0;
     if (c.z - r > v.near_z) { bd.outside = true; return bd; }
     if (c.z + r > v.near_z) { bd.near_clip = true; return bd; }
+    Mat P = M(v, proj_cur);
     float2 lo, hi;
     if (v.ortho != 0u) {
         float2 nc = float2(P.c0.x * c.x, P.c1.y * c.y) + P.c3.xy;
@@ -502,11 +498,8 @@ Bounds sphere_bounds_p(ViewData v, Mat P, float3 c, float r) {
 // A capsule is the convex hull of its two end spheres, so its rectangle is
 // the union of theirs (not the bounding sphere's: for a stick that is up to
 // (length + 2r)^2 against (length + 2r) x 2r)
-Bounds geo_bounds_p(ViewData v, Mat P, Geo g);
-Bounds geo_bounds(ViewData v, Geo g) { return geo_bounds_p(v, M(v, proj_cur), g); }
-
-Bounds geo_bounds_p(ViewData v, Mat P, Geo g) {
-    if (g.kind == 0u) return sphere_bounds_p(v, P, g.a, g.r);
+Bounds geo_bounds(ViewData v, Geo g) {
+    if (g.kind == 0u) return sphere_bounds(v, g.a, g.r);
     Bounds bd;
     bd.outside   = false;
     bd.near_clip = false;
@@ -515,8 +508,8 @@ Bounds geo_bounds_p(ViewData v, Mat P, Geo g) {
     bd.dnear     = 1.0;
     if (min(g.a.z, g.b.z) - g.r > v.near_z) { bd.outside = true; return bd; }
     if (max(g.a.z, g.b.z) + g.r > v.near_z) { bd.near_clip = true; return bd; }
-    Bounds b0 = sphere_bounds_p(v, P, g.a, g.r);
-    Bounds b1 = sphere_bounds_p(v, P, g.b, g.r);
+    Bounds b0 = sphere_bounds(v, g.a, g.r);
+    Bounds b1 = sphere_bounds(v, g.b, g.r);
     bd.pmin  = min(b0.pmin, b1.pmin);
     bd.pmax  = max(b0.pmax, b1.pmax);
     bd.dnear = max(b0.dnear, b1.dnear);
@@ -525,33 +518,10 @@ Bounds geo_bounds_p(ViewData v, Mat P, Geo g) {
     return bd;
 }
 
-// Phase 1 tests against the previous raster's pyramid, so with bounds in
-// that raster's screen space: the current ones moved through prev_from_cur
-// and projected as it was. (Current bounds against an old pyramid misalign
-// by however far the camera moved: a move of 40 px doubled what phase 2 then
-// had to draw.) Outside the previous frustum nothing can be said: not
-// occluded.
-Bounds prev_sphere_bounds(ViewData v, float3 c, float r) {
-    Bounds bd = sphere_bounds_p(v, M(v, proj_prev), mulp(M(v, prev_from_cur), c), r);
-    if (bd.outside) bd.near_clip = true;        // hiz_occluded: no
-    return bd;
-}
-
-Bounds prev_geo_bounds(ViewData v, Geo g) {
-    Geo gp = g;
-    gp.a = mulp(M(v, prev_from_cur), g.a);
-    gp.b = mulp(M(v, prev_from_cur), g.b);
-    Bounds bd = geo_bounds_p(v, M(v, proj_prev), gp);
-    if (bd.outside) bd.near_clip = true;
-    return bd;
-}
-
-// Occluded: nearer than nothing in its rectangle. The pyramid holds the
-// farthest (min, under reverse Z) depth of each texel's pixels; level L
-// texels are 2^(L+1) pixels across, and the level is the one at which the
-// rectangle spans at most 2 x 2 texels: four reads. (A finer level, at most
-// 3 x 3 texels, occluded a little more and cost far more: on the M4 a
-// licorice frame of 10M atoms went from 18.7 to 24.2 ms.)
+// Occluded by the previous raster: nearer than nothing in its rectangle. The
+// pyramid holds the farthest (min, under reverse Z) depth of each texel's
+// pixels; level L texels are 2^(L+1) pixels across, and the level is the one
+// at which the rectangle spans at most 2 x 2 texels.
 bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd) {
     if (v.hiz_valid == 0u || bd.near_clip) return false;
     float2 lo = max(bd.pmin, float2(0.0));
@@ -789,8 +759,7 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (cs.count > 0u) {
             Bounds bd = sphere_bounds(v, cs.c, cs.r);
             if (bd.outside) out = OUT_OUTSIDE;
-            else if (mode != 3u && v.occlusion != 0u &&
-                     hiz_occluded(v, MD_ARGS.hiz, (mode == 1u && v.moved != 0u) ? prev_sphere_bounds(v, cs.c, cs.r) : bd)) out = OUT_OCCLUDED;
+            else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd)) out = OUT_OCCLUDED;
             else out = OUT_HW;      // visible: expand
         }
         if (mode == 3u) {
@@ -834,8 +803,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
         Bounds bd = geo_bounds(v, g);
         if (bd.outside) {
             out = OUT_OUTSIDE;
-        } else if (!state_only && v.occlusion != 0u &&
-                   hiz_occluded(v, MD_ARGS.hiz, (phase == 1u && v.moved != 0u) ? prev_geo_bounds(v, g) : bd)) {
+        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd)) {
             out = OUT_OCCLUDED;
         } else {
             float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;   // without the pad

@@ -13,7 +13,7 @@
    in the shader build holds the Slang side to md_gpu's ABI rule; these are the
    C side of the same rule (md_gpu_float4 at 16-byte offsets, handles at 8). */
 
-enum { M_VIEW, M_PROJ, M_INV_PROJ, M_INV_VIEW, M_VIEW_PREV, M_PROJ_PREV, M_PROJ_CUR, M_PREV_FROM_CUR, M_COUNT };
+enum { M_VIEW, M_PROJ, M_INV_PROJ, M_INV_VIEW, M_VIEW_PREV, M_PROJ_PREV, M_PROJ_CUR, M_COUNT };
 
 typedef struct gpu_view_t {
     md_gpu_float4 m[M_COUNT][4];   /* columns */
@@ -27,9 +27,9 @@ typedef struct gpu_view_t {
     uint32_t      hiz_levels;
     uint32_t      occlusion, compute_raster;
     float         small_px;
-    uint32_t      total_clusters, total_cluster_work, refit_mode, moved;
+    uint32_t      total_clusters, total_cluster_work, refit_mode, _vpad;
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 592, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 528, "ViewData mirror");
 
 enum {
     F_INDEX        = 1u << 0,
@@ -1218,17 +1218,6 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         put_mat(gv.m[M_VIEW_PREV], v->has_raster ? v->raster_view : f->camera.view);
         put_mat(gv.m[M_PROJ_PREV], v->has_raster ? v->raster_proj : f->camera.proj);
         put_mat(gv.m[M_PROJ_CUR],  f->camera.proj);
-        /* Phase 1 tests against the previous raster's pyramid, which is in
-           that raster's screen space: bounds go there through this */
-        {
-            const float* vp = v->has_raster ? v->raster_view : f->camera.view;
-            const float* pp = v->has_raster ? v->raster_proj : f->camera.proj;
-            float pfc[16];
-            mat_mul(pfc, vp, inv_view);
-            put_mat(gv.m[M_PREV_FROM_CUR], pfc);
-            gv.moved = (memcmp(vp, f->camera.view, sizeof(f->camera.view)) != 0 ||
-                        memcmp(pp, f->camera.proj, sizeof(f->camera.proj)) != 0) ? 1u : 0u;
-        }
         gv.viewport.x = (float)f->width;
         gv.viewport.y = (float)f->height;
         gv.viewport.z = 1.0f / (float)f->width;
