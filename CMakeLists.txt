@@ -836,6 +836,17 @@ if (MD_ENABLE_GPU)
               iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles
               iso_dmat_rows iso_points_load iso_points_store
   )
+  # md_render: primitives -> visibility buffer -> surfaces (md_render.h), and the
+  # molecular layer over it (md_render_mol.h). GPU only: there is nothing to fall back to.
+  target_sources(mdlib PRIVATE src/md_render.c src/md_render.h src/md_render_mol.c src/md_render_mol.h)
+  compile_gpu_shaders(md_render_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_render.slang
+    ENTRIES   resolve mask_visible pick
+    VERTEX    sphere_vs capsule_vs
+    FRAGMENT  sphere_fs sphere_mask_fs capsule_fs capsule_mask_fs
+  )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
                  ${GEN_DIR}/gto_gpu_shaders.inl COPYONLY)

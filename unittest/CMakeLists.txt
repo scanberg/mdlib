@@ -94,7 +94,7 @@ if (MD_ENABLE_HDF5)
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
-  set (SRC_FILES ${SRC_FILES} test_gpu.c test_gpu_tlsf.c test_gpu_render.c)
+  set (SRC_FILES ${SRC_FILES} test_gpu.c test_gpu_tlsf.c test_gpu_render.c test_render.c)
   # The kernels and shaders the GPU tests launch. They belong to the test
   # executable: nothing in mdlib uses them.
   compile_gpu_shaders(gpu_test_shaders.inl
