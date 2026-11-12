@@ -277,6 +277,8 @@ set(SRC_FILES
   src/md_trr.h
   src/md_types.h
   src/md_infer.c
+  src/md_io.c
+  src/md_io.h
   src/md_infer_internal.h
   src/md_bond.c
   src/md_ring.c
