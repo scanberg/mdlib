@@ -4055,6 +4055,14 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_tssf")) {
 			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), MD_STR_LIT("Sphere Radius Scale"), md_unit_none(), value);
 		}
+		// The switching of 'swig' is evaluated on the spheres grown by r_ext (VeloxChem's outer cavity correction, given
+		// in Ångström), and a point is kept where it is above the threshold
+		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_r_ext")) {
+			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/r_ext"), MD_STR_LIT("Outer Cavity Extension"), md_unit_angstrom(), value);
+		}
+		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_switching_thresh")) {
+			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/switching_threshold"), MD_STR_LIT("Switching Threshold"), md_unit_none(), value);
+		}
 		md_str_t discretization = {0};
 		if (h5_read_str(&discretization, scf_handle, "gostshyp_discretization", vlx->arena)) {
 			md_qm_publish_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"), MD_STR_LIT("Discretization"), discretization);

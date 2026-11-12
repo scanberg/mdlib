@@ -72,6 +72,9 @@ struct md_executor_t;
 //   vlx/scf/gostshyp/discretization                          points per sphere, the scale of the van der Waals
 //                                                            radii (the file's 'tssf') and the discretization
 //                                                            ('swig': switching Gaussians), {1} string
+//   vlx/scf/gostshyp/{r_ext,switching_threshold}             rank 0: the switching of 'swig' is evaluated on
+//                                                            the spheres grown by r_ext (Å), and a point is
+//                                                            kept where it is above the threshold
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
