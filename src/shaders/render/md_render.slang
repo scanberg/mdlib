@@ -178,7 +178,9 @@ static const uint C_CMD        = 16;   // md_gpu_draw_cmd_t [phase - 1][kind]: 1
 static const uint C_STCMD      = 32;   // [kind]: 32..39
 static const uint C_GRID_SMALL = 40;   // md_gpu_grid_t [phase - 1], 4 words apart: 40, 44
 static const uint C_GRID_OCC   = 48;
-static const uint C_COUNT      = 80;
+static const uint C_ICMD       = 80;   // md_gpu_draw_indexed_cmd_t, capsules [phase - 1]: 80..89
+static const uint C_STICMD     = 90;   // the state list's capsules: 90..94
+static const uint C_COUNT      = 96;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -905,23 +907,24 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
         return;
     }
     if (mode == 32u) {
-        for (uint k = 0u; k < 2u; ++k) {
-            uint* sc = c + C_STCMD + k * 4u;
-            sc[0] = k == 0u ? 6u : 36u;
-            sc[1] = c[C_ST + k];
-            sc[2] = 0u;
-            sc[3] = 0u;
-        }
+        uint* sc = c + C_STCMD;
+        sc[0] = 6u; sc[1] = c[C_ST]; sc[2] = 0u; sc[3] = 0u;
+        uint* si = c + C_STICMD;                // capsules: indexed, 36 indices over 8 corners
+        si[0] = 36u; si[1] = c[C_ST + 1u]; si[2] = 0u; si[3] = 0u; si[4] = 0u;
         return;
     }
     uint phase = mode == 12u ? 1u : 2u;
-    for (uint k = 0u; k < 2u; ++k) {
-        uint* cmd = c + C_CMD + ((phase - 1u) * 2u + k) * 4u;
-        cmd[0] = k == 0u ? 6u : 36u;
-        cmd[1] = phase == 1u ? c[C_HW1 + k] : c[C_HW2 + k];
-        cmd[2] = 0u;
-        cmd[3] = phase == 1u ? 0u : c[C_HW1 + k];
-    }
+    uint* cmd = c + C_CMD + (phase - 1u) * 2u * 4u;
+    cmd[0] = 6u;
+    cmd[1] = phase == 1u ? c[C_HW1] : c[C_HW2];
+    cmd[2] = 0u;
+    cmd[3] = phase == 1u ? 0u : c[C_HW1];
+    uint* icmd = c + C_ICMD + (phase - 1u) * 5u;    // capsules: indexed, 36 indices over 8 corners
+    icmd[0] = 36u;
+    icmd[1] = phase == 1u ? c[C_HW1 + 1u] : c[C_HW2 + 1u];
+    icmd[2] = 0u;
+    icmd[3] = 0u;
+    icmd[4] = phase == 1u ? 0u : c[C_HW1 + 1u];
     uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
     uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
     gs[0] = min((ns + 63u) / 64u, 65535u); gs[1] = 1u; gs[2] = 1u;
@@ -1214,16 +1217,10 @@ struct CapsuleV {
     nointerpolation uint   state : STATE;
 };
 
-// The box around a capsule, 12 triangles counter-clockwise seen from outside.
-// Corner c is (c & 1, c >> 1 & 1, c >> 2 & 1) in the capsule's frame (u, v, axis).
-static const uint BOX[36] = {
-    0, 4, 6,  0, 6, 2,      // -u
-    1, 3, 7,  1, 7, 5,      // +u
-    0, 1, 5,  0, 5, 4,      // -v
-    2, 6, 7,  2, 7, 3,      // +v
-    0, 2, 3,  0, 3, 1,      // -axis
-    4, 5, 7,  4, 7, 6,      // +axis
-};
+// The box around a capsule: drawn indexed (md_render.c holds the 36 indices,
+// 12 triangles counter-clockwise seen from outside), so the vertex id is the
+// corner c = (c & 1, c >> 1 & 1, c >> 2 & 1) in the capsule's frame
+// (u, v, axis), and each corner is shaded once.
 
 [shader("vertex")]
 CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
@@ -1255,7 +1252,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
 
     // Built in view space from the transformed ends, in a right-handed frame:
     // outward faces stay counter-clockwise whatever the transforms mirror.
-    uint  c   = BOX[vk];
+    uint  c   = vk;
 
     float  br = rad * 1.002;                // see sphere_vs: not just touching
     float3 p = pa
