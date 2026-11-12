@@ -6,6 +6,7 @@
 #include <md_system.h>
 #include <md_system_state.h>
 #include <md_pdb.h>
+#include <md_gro.h>
 #include <md_infer.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
@@ -999,6 +1000,271 @@ UTEST(render, mol_licorice_emit_and_pick) {
 
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, topo.base);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* ---- Clusters of the molecular layer -------------------------------------------
+   The topology block holds every atom and bond once, in cluster order: static
+   clusters of whole residues (at most 64 atoms, one molecule each), then one
+   per grid cell holding whole small molecules. Checked on the host image of a
+   block (the plan's, or a copy of the GPU's). */
+
+static int32_t* molecule_of_atoms(const md_system_t* sys) {
+    int32_t* mol = malloc((sys->atom.count + 1) * sizeof(int32_t));
+    for (size_t i = 0; i < sys->atom.count; ++i) mol[i] = -1;
+    for (size_t m = 0; m < sys->molecule.count; ++m)
+        for (uint32_t k = sys->molecule.offset[m]; k < sys->molecule.offset[m + 1]; ++k) mol[sys->molecule.atom_idx[k]] = (int32_t)m;
+    return mol;
+}
+
+static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* T, const uint8_t* img) {
+    int bad = 0;
+    #define FAIL(...) do { if (bad++ < 6) { printf("    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
+    const uint32_t n = T->atom_count, nb = T->bond_count;
+    const uint32_t* order = (const uint32_t*)(img + T->atom_order);
+    const uint32_t* coff  = (const uint32_t*)(img + T->atom_cluster_offset);
+    int32_t* mol = molecule_of_atoms(sys);
+    uint8_t* seen = calloc(n + nb + 1, 1);
+    const uint32_t n_static = T->atom_cluster_count - T->grid_cells;
+    if (coff[0] != 0 || coff[T->atom_cluster_count] != n) FAIL("atom cluster offsets span %u..%u of %u", coff[0], coff[T->atom_cluster_count], n);
+    for (uint32_t c = 0; c < T->atom_cluster_count; ++c) {
+        if (coff[c + 1] < coff[c]) { FAIL("atom cluster %u decreasing", c); continue; }
+        uint32_t size = coff[c + 1] - coff[c];
+        bool dynamic = c >= n_static;
+        if (!dynamic && (size == 0 || size > 64)) FAIL("static cluster %u has %u atoms", c, size);
+        for (uint32_t k = coff[c]; k < coff[c + 1] && k < n; ++k) {
+            uint32_t a = order[k];
+            if (a >= n || seen[a]) { FAIL("atom %u at %u: out of range or twice", a, k); continue; }
+            seen[a] = 1;
+            bool small = mol[a] >= 0 && sys->molecule.offset[mol[a] + 1] - sys->molecule.offset[mol[a]] <= MD_RENDER_MOL_SMALL;
+            if (small != dynamic) FAIL("atom %u (small %d) in a %s cluster", a, small, dynamic ? "grid" : "static");
+            if (!dynamic && mol[a] != mol[order[coff[c]]]) FAIL("static cluster %u crosses molecules", c);
+            /* a small molecule is whole and contiguous: the slot after its first atom continues it */
+            if (dynamic && mol[a] >= 0) {
+                uint32_t mb = sys->molecule.offset[mol[a]], me = sys->molecule.offset[mol[a] + 1];
+                if ((uint32_t)sys->molecule.atom_idx[mb] == a && k + (me - mb) > coff[c + 1]) FAIL("molecule %d split by cluster %u", mol[a], c);
+                if ((uint32_t)sys->molecule.atom_idx[mb] == a)
+                    for (uint32_t j = 1; j < me - mb; ++j) if (order[k + j] != (uint32_t)sys->molecule.atom_idx[mb + j]) { FAIL("molecule %d not contiguous", mol[a]); break; }
+            }
+        }
+    }
+    const uint32_t* pairs = (const uint32_t*)(img + T->bond_pairs);
+    const uint32_t* ids   = (const uint32_t*)(img + T->bond_ids);
+    memset(seen, 0, n + nb + 1);
+    for (uint32_t j = 0; j < nb; ++j) {
+        uint32_t i = ids[j];
+        if (i >= nb || seen[i]) { FAIL("bond id %u at %u: out of range or twice", i, j); continue; }
+        seen[i] = 1;
+        if (pairs[2 * j] != (uint32_t)sys->bond.pairs[i].idx[0] || pairs[2 * j + 1] != (uint32_t)sys->bond.pairs[i].idx[1]) FAIL("bond %u: pair does not match its id", j);
+    }
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
+        const uint32_t* bo = (const uint32_t*)(img + T->bond_cluster_offset[c]);
+        uint32_t size = T->bond_class_offset[c + 1] - T->bond_class_offset[c], cc = T->bond_cluster_count[c];
+        if (bo[0] != 0 || bo[cc] != size) FAIL("class %u: clusters span %u..%u of %u", c, bo[0], bo[cc], size);
+        uint32_t n_grid = (c == 0 && T->small_bond_count) ? T->grid_cells : 0;
+        for (uint32_t k = 0; k < cc; ++k) {
+            if (bo[k + 1] < bo[k]) FAIL("class %u cluster %u decreasing", c, k);
+            else if (k < cc - n_grid && bo[k + 1] - bo[k] > 64) FAIL("class %u cluster %u has %u bonds", c, k, bo[k + 1] - bo[k]);
+        }
+    }
+    #undef FAIL
+    free(mol); free(seen);
+    return bad;
+}
+
+static bool load_system(md_system_t* sys, md_system_state_t* state, const char* file) {
+    md_str_t path = md_str_from_cstr(file);
+    bool ok = md_str_ends_with(path, MD_STR_LIT(".gro")) ? md_gro_system_init_from_file(sys, state, path, NULL)
+            : md_pdb_system_init_from_file(sys, state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    return ok && md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
+}
+
+/* Host only: the plan of systems with chains, ligands and small molecules */
+UTEST(render, mol_plan_clusters) {
+    const char* files[] = { MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb", MD_UNITTEST_DATA_DIR "/1a64.pdb", MD_UNITTEST_DATA_DIR "/tryptophan-md.gro" };
+    for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(load_system(&sys, &state, files[f]));
+        md_temp_scope_t temp = md_temp_begin();
+        md_render_mol_plan_t plan;
+        ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+        const md_render_mol_topo_t* T = &plan.layout;
+        EXPECT_EQ(0, check_topo_image(&sys, T, plan.data));
+        uint32_t n_static = T->atom_count - T->small_atom_count, cl_static = T->atom_cluster_count - T->grid_cells;
+        printf("    %s: %u atoms: %u in %u residue clusters (%.1f per cluster), %u in %u small molecules over %u cells; %u bonds\n",
+               strrchr(files[f], '/') + 1, T->atom_count, n_static, cl_static, cl_static ? (double)n_static / cl_static : 0.0,
+               T->small_atom_count, T->small_molecule_count, T->grid_cells, T->bond_count);
+        if (n_static > 1000) EXPECT_GT((double)n_static / cl_static, 40.0);   /* residues pack well */
+        md_temp_end(temp);
+        md_system_free(&sys);
+        md_vm_arena_destroy(alloc);
+    }
+}
+
+static uint8_t* read_block(fix_t* fx, md_gpu_addr_t base, uint64_t size) {
+    md_gpu_mem_t rb = md_gpu_malloc(fx->gfx, MD_GPU_MEM_HOST_READ, size);
+    if (!rb.cpu) return NULL;
+    md_gpu_copy(fx->gfx, rb.gpu, base, size);
+    md_gpu_stream_sync(fx->gfx);
+    uint8_t* out = malloc(size);
+    memcpy(out, rb.cpu, size);
+    md_gpu_free(fx->gfx, rb.gpu);
+    return out;
+}
+
+/* Mean bounding-box diagonal of the grid clusters */
+static double grid_cluster_extent(const md_render_mol_topo_t* T, const uint8_t* img, const float* xyz) {
+    const uint32_t* order = (const uint32_t*)(img + T->atom_order);
+    const uint32_t* coff  = (const uint32_t*)(img + T->atom_cluster_offset);
+    double sum = 0; uint32_t cnt = 0;
+    for (uint32_t c = T->atom_cluster_count - T->grid_cells; c < T->atom_cluster_count; ++c) {
+        if (coff[c + 1] == coff[c]) continue;
+        double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
+        for (uint32_t k = coff[c]; k < coff[c + 1]; ++k)
+            for (int j = 0; j < 3; ++j) { double v = xyz[3 * order[k] + j]; if (v < lo[j]) lo[j] = v; if (v > hi[j]) hi[j] = v; }
+        sum += sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        cnt++;
+    }
+    return cnt ? sum / cnt : 0.0;
+}
+
+/* Tryptophan in water, the waters shuffled (whole molecules swap places) so
+   their order says nothing of where they are: the update must regroup them,
+   and the clustered licorice must give the depths and picks of a plain one. */
+UTEST(render, mol_clusters_follow_the_solvent) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count, nb = (uint32_t)(sys.bond.count + sys.bond.noncovalent_count);
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    EXPECT_EQ(27u, n - topo.small_atom_count);              /* the tryptophan */
+    EXPECT_EQ(2156u, topo.small_molecule_count);            /* the waters */
+    ASSERT_GT(topo.dynamic_size, 0u);
+
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+
+    /* Shuffle */
+    float* xyz = malloc(n * 12);
+    memcpy(xyz, state.xyz, n * 12);
+    uint32_t seed = 7;
+    const md_molecule_data_t* M = &sys.molecule;
+    for (size_t k = M->count; k-- > 1;) {
+        seed = seed * 1664525u + 1013904223u;
+        size_t j = (seed >> 8) % (k + 1);
+        uint32_t sk = M->offset[k + 1] - M->offset[k], sj = M->offset[j + 1] - M->offset[j];
+        if (sk != sj || sk > MD_RENDER_MOL_SMALL) continue;
+        for (uint32_t s = 0; s < sk; ++s) {
+            float* a = xyz + 3 * M->atom_idx[M->offset[k] + s];
+            float* b = xyz + 3 * M->atom_idx[M->offset[j] + s];
+            for (int d = 0; d < 3; ++d) { float t = a[d]; a[d] = b[d]; b[d] = t; }
+        }
+    }
+    md_gpu_addr_t P = f_buf(&fx, xyz, n * 12);
+    content[MD_RENDER_CONTENT_GEOMETRY]++;
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+
+    uint8_t* before = read_block(&fx, topo.base, topo.size);
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, content));
+    uint8_t* after = read_block(&fx, topo.base, topo.size);
+    /* the block's own image: rebase the addresses to offsets */
+    md_render_mol_topo_t rel = topo;
+    rel.atom_order -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
+    for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
+    EXPECT_EQ(0, check_topo_image(&sys, &rel, after));
+    double e0 = grid_cluster_extent(&rel, before, xyz), e1 = grid_cluster_extent(&rel, after, xyz);
+    printf("    grid clusters: mean extent %.1f A in molecule order, %.1f A after the update\n", e0, e1);
+    EXPECT_LT(e1, 0.4 * e0);
+    /* the same positions give the same order */
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, content));
+    uint8_t* again = read_block(&fx, topo.base, topo.size);
+    EXPECT_EQ(0, memcmp(after, again, topo.size));
+
+    /* Licorice: clustered (from emit) against plain batches in system order */
+    md_render_mol_rep_t rep = {0};
+    rep.key  = 7;
+    rep.type = MD_RENDER_MOL_REP_LICORICE;
+    rep.params.licorice.radius = 0.3f;
+    rep.bond_classes = MD_RENDER_MOL_BONDS_ALL;
+    md_render_batch_t batches[8];
+    uint32_t nbat = md_render_mol_emit(&topo, &atoms, &rep, batches, 8);
+    ASSERT_GE(nbat, 2u);
+    EXPECT_EQ(topo.atom_cluster_count, batches[nbat - 1].cluster_count);
+
+    uint32_t* plain_pairs = malloc(nb * 8);
+    for (uint32_t i = 0; i < nb; ++i) { plain_pairs[2 * i] = (uint32_t)sys.bond.pairs[i].idx[0]; plain_pairs[2 * i + 1] = (uint32_t)sys.bond.pairs[i].idx[1]; }
+    md_render_batch_t plain[2];
+    memset(plain, 0, sizeof(plain));
+    plain[0].key = 1; plain[0].kind = MD_RENDER_SPHERES; plain[0].count = n;
+    plain[0].points.count = n; plain[0].points.position = P;
+    plain[0].style.spheres.radius_add = 0.3f;
+    plain[1].key = 2; plain[1].kind = MD_RENDER_CAPSULES; plain[1].count = nb;
+    plain[1].points.count = n; plain[1].points.position = P; plain[1].index = f_buf(&fx, plain_pairs, nb * 8);
+    plain[1].style.capsules.radius = 0.3f;
+
+    /* the 40 A box from outside, in perspective */
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.5f, .aspect = (float)W / H, .n = 1.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -20.0f; cam.view[13] = -20.0f; cam.view[14] = -85.0f;
+    md_render_view_t ref = md_render_view_create(fx.r, "reference");
+    md_render_frame_t fr = frame_of(W, H, cam, plain, 2);
+    fr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    md_render_frame_t f = frame_of(W, H, cam, batches, nbat);
+    memcpy(f.content, content, sizeof(content));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;                 /* again, culling against the pyramid */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    printf("    clusters %u, expanded %u + %u, occluded %u; elements %llu, occluded %u\n", st.clusters,
+           st.clusters_expanded[0], st.clusters_expanded[1], st.clusters_occluded, (unsigned long long)st.elements, st.occluded);
+    int covered = 0;
+    EXPECT_EQ(0, compare_views_ex(&fx, fx.view, ref, W, H, &covered, true));
+    EXPECT_GT(covered, (int)(W * H / 4));
+
+    /* Picks: the same atom or bond under the same pixel */
+    int picked = 0, agree = 0;
+    for (uint32_t y = 5; y < H; y += 23) for (uint32_t x = 7; x < W; x += 29) {
+        md_render_pick_t pa, pb;
+        ASSERT_TRUE(f_pick(&fx, x, y, &pa));
+        if (!md_render_view_pick(fx.gfx, ref, x, y)) continue;
+        md_gpu_stream_sync(fx.gfx);
+        ASSERT_TRUE(md_render_view_pick_result(ref, &pb));
+        if (pb.key == 0) { EXPECT_EQ(0u, (unsigned)pa.key); continue; }
+        md_render_mol_hit_t hit;
+        ASSERT_TRUE(md_render_mol_decode_pick(&pa, &hit));
+        picked++;
+        if (pb.kind == MD_RENDER_SPHERES) agree += hit.kind == MD_RENDER_MOL_HIT_ATOM && hit.atom == pb.attr;
+        else                              agree += hit.kind == MD_RENDER_MOL_HIT_BOND && hit.bond == pb.id;
+    }
+    EXPECT_GT(picked, 10);
+    EXPECT_EQ(picked, agree);
+
+    md_render_view_destroy(fx.gfx, ref);
+    free(xyz); free(before); free(after); free(again); free(plain_pairs);
+    md_gpu_free(fx.gfx, plain[1].index);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
     md_system_free(&sys);
     f_close(&fx);
 }

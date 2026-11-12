@@ -30,11 +30,23 @@ lifetime:
     is pure and host-only: it records no GPU work and appends batches, which
     the caller can inspect, change or add to before md_render_view_draw.
 
-  * Per-frame derived data (spline frames and their history, bead positions,
-    bond-order sticks) will live in a second caller-owned block, sized by the
-    topology (`dynamic_size`), written by md_render_mol_update once per
-    position change and shared by every representation. [Not implemented:
-    nothing implemented so far needs it.]
+  * Clusters (md_render's first level of culling) come with the topology:
+    the atoms and the bonds are stored in cluster order, and emit hands that
+    order and the cluster offsets to md_render. Bonded structures are cut
+    into whole residues, packed up to 64 atoms and never across molecules,
+    once. Small molecules (solvent, ions: at most MD_RENDER_MOL_SMALL atoms)
+    diffuse, so their clusters are cells of a grid, rebuilt on the GPU by
+    md_render_mol_update whenever the positions change:
+
+        md_render_mol_t mol = md_render_mol_create(device, NULL);   // kernels, once
+        md_gpu_addr_t   dyn = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+        ...
+        md_render_mol_upload_state(s, positions, &state, content);
+        md_render_mol_update(mol, s, &topo, dyn, &atoms, content);    // after every position change
+
+    Skipping the update is never wrong, only slower: until the first one the
+    small molecules are grouped in molecule order. The same per-frame block
+    will hold spline frames, bead positions and bond-order sticks.
 
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, solid (dashes per kind wait for capsule dashes in md_render). Declared
@@ -74,6 +86,22 @@ typedef enum md_render_mol_bond_class_t {
 #define MD_RENDER_MOL_BONDS(c) (1u << (c))
 #define MD_RENDER_MOL_BONDS_ALL ((1u << MD_RENDER_MOL_BOND_CLASS_COUNT) - 1u)
 
+/* Molecules of at most this many atoms are "small": regrouped by position on
+   every update instead of by the topology once */
+#define MD_RENDER_MOL_SMALL 16
+
+/* =========================================================================
+   Kernels
+   ========================================================================= */
+
+/* The GPU work of the layer (md_render_mol_update) needs compiled kernels: a
+   context holding those and nothing else. One per device, shared by every
+   system and view. */
+typedef struct md_render_mol* md_render_mol_t;
+
+md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc);
+void            md_render_mol_destroy(md_render_mol_t mol);
+
 /* =========================================================================
    Topology: one caller-owned block per system
    ========================================================================= */
@@ -82,24 +110,44 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t base;            /* the block; md_gpu_free(stream, base) frees it    */
     uint64_t      size;
     uint64_t      topology_version;/* of the system it was planned from               */
-    uint64_t      dynamic_size;    /* bytes of the per-frame block (0 so far)          */
+    uint64_t      dynamic_size;    /* bytes of the per-frame block md_render_mol_update
+                                      writes; 0: there is nothing to update          */
     uint32_t      atom_count;
 
+    /* The atoms in cluster order: residue clusters first, then one cluster
+       per grid cell (grid_cells of them, some empty) for the small molecules */
+    md_gpu_addr_t atom_order;              /* uint32 [atom_count]                      */
+    uint32_t      atom_cluster_count;
+    md_gpu_addr_t atom_cluster_offset;     /* uint32 [atom_cluster_count + 1]          */
+
     /* Bonds, grouped by class: class c is bond_pairs[class_offset[c] ..
-       class_offset[c + 1]). Usable outside rendering too. */
+       class_offset[c + 1]), in cluster order: with the cluster of their
+       first atom's (64 at most per cluster); the covalent bonds within small
+       molecules last, by grid cell. Usable outside rendering too, but the
+       order within a class changes with every update. */
     uint32_t      bond_count;
     uint32_t      bond_class_offset[MD_RENDER_MOL_BOND_CLASS_COUNT + 1];
-    md_gpu_addr_t bond_pairs;      /* uint32 [2 * bond_count]                          */
-    md_gpu_addr_t bond_ids;        /* uint32 [bond_count]: index in sys->bond          */
+    md_gpu_addr_t bond_pairs;              /* uint32 [2 * bond_count]                  */
+    md_gpu_addr_t bond_ids;                /* uint32 [bond_count]: index in sys->bond  */
+    uint32_t      bond_cluster_count[MD_RENDER_MOL_BOND_CLASS_COUNT];
+    md_gpu_addr_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];  /* uint32 [count + 1],
+                                                       relative to the class's first bond */
+
+    /* The small molecules, regrouped by md_render_mol_update */
+    uint32_t      small_molecule_count;
+    uint32_t      small_atom_count;        /* the tail of atom_order                    */
+    uint32_t      small_bond_count;        /* the tail of the covalent class            */
+    uint32_t      grid_cells;              /* the last clusters of the atoms (and of the
+                                              covalent bonds, when small_bond_count)    */
+    md_gpu_addr_t small_tables;            /* internal: their atoms and bonds by molecule */
 } md_render_mol_topo_t;
 
-/* Host side of a topology to be written: arrays in the caller's temp scope,
-   and the byte size to allocate. Valid until that scope ends. */
+/* Host side of a topology to be written: the block's image in the caller's
+   temp scope, and the byte size to allocate. Valid until that scope ends. */
 typedef struct md_render_mol_plan_t {
     uint64_t             size;
     md_render_mol_topo_t layout;   /* addresses are offsets from 0                     */
-    const uint32_t*      bond_pairs;
-    const uint32_t*      bond_ids;
+    const void*          data;     /* [size] bytes                                     */
 } md_render_mol_plan_t;
 
 bool md_render_mol_plan(md_render_mol_plan_t* out, const struct md_system_t* sys, md_temp_scope_t temp);
@@ -129,6 +177,16 @@ typedef struct md_render_mol_atoms_t {
    is one upload and the GEOMETRY counter bump that goes with it. */
 bool md_render_mol_upload_state(md_gpu_stream_t stream, md_gpu_addr_t dst, const struct md_system_state_t* state,
                                 uint64_t content[MD_RENDER_CONTENT_COUNT]);
+
+/* After the positions changed: the small molecules regrouped into grid cells
+   (the tails of topo's atom_order and covalent bonds, and their cluster
+   offsets), using `dynamic` ([topo->dynamic_size] bytes, caller-owned, its
+   contents need not survive between calls) as scratch. GPU work only, no
+   readback. Bumps content[MD_RENDER_CONTENT_GEOMETRY]. True and nothing done
+   when the topology has no small molecules. */
+bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+                          md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
+                          uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
 /* =========================================================================
    Representations
