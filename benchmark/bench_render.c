@@ -669,8 +669,10 @@ bool md_render_mol_update_hooked(md_render_mol_t mol, md_gpu_stream_t stream, co
                                  md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                                  md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
-/* md_render's per-pass hook: in md_render.c, not in its header */
+/* md_render's per-pass hook and the phase-1 occlusion margin experiment: in
+   md_render.c, not in its header */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
+void md_render_debug_occlusion_margin(float radii);
 
 typedef struct pass_prof_t {
     md_gpu_stream_t s;
@@ -758,11 +760,13 @@ static int run_gpu(int argc, char** argv) {
         { "spacefill, far",  false, 6.0f },
         { "licorice, near",  true,  0.6f },
     };
-    const struct { const char* name; uint32_t options; } opts[] = {
-        { "all",                     0 },
-        { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING },
-        { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER },
-        { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER },
+    const struct { const char* name; uint32_t options; float margin; } opts[] = {
+        { "all",                     0, 0.0f },
+        { "all, margin 1 radius",    0, 1.0f },
+        { "all, margin 2 radii",     0, 2.0f },
+        { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 0.0f },
+        { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 0.0f },
+        { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 0.0f },
     };
 
     for (uint32_t ai = 0; ai < n_atoms; ++ai) {
@@ -834,6 +838,7 @@ static int run_gpu(int argc, char** argv) {
                    "outside", "occluded", "hw", "compute", "retested", "clusters", "expanded", "c.occl");
             for (size_t oi = 0; oi < sizeof(opts) / sizeof(opts[0]); ++oi) {
                 for (uint32_t pi = 0; pi < (opts[oi].options & MD_RENDER_NO_COMPUTE_RASTER ? 1u : n_small); ++pi) {
+                    md_render_debug_occlusion_margin(opts[oi].margin);
                     md_render_view_t v = md_render_view_create(r, "bench");
                     md_render_frame_t f;
                     memset(&f, 0, sizeof(f));
@@ -869,7 +874,7 @@ static int run_gpu(int argc, char** argv) {
                            tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
                            st.outside, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
                            st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
-                    if (oi == 0 && pi == 0) {
+                    if (oi < 3 && pi == 0) {
                         /* where a camera raster's time goes, pass by pass (each synced) */
                         pass_prof_t prof = { .s = s };
                         f.camera.view[12] += 0.001f * sc.box;
@@ -904,6 +909,7 @@ static int run_gpu(int argc, char** argv) {
                         }
                     }
                     md_render_view_destroy(s, v);
+                    md_render_debug_occlusion_margin(0.0f);
                 }
             }
         }

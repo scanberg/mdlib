@@ -51,7 +51,11 @@ struct ViewData {
     uint   total_clusters;      // clusters over all batches (refit)
     uint   total_cluster_work;  // clusters times instances (cluster cull)
     uint   refit_mode;          // 0 bounds and state, 1 state only
-    uint   _vpad;
+    float  jitter_px;           // how far this raster's jitter moves the image (pixels)
+    float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
+    uint   _vpad0;
+    uint   _vpad1;
+    uint   _vpad2;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -449,6 +453,7 @@ struct Bounds {
     float2 pmin;                // pixels, top-left origin
     float2 pmax;
     float  dnear;               // depth of its nearest point
+    float  dnear_m;             // ... of a point occl_margin radii nearer still (phase 1's test)
 };
 
 Bounds sphere_bounds(ViewData v, float3 c, float r) {
@@ -458,6 +463,7 @@ Bounds sphere_bounds(ViewData v, float3 c, float r) {
     bd.pmin      = float2(0.0);
     bd.pmax      = v.viewport.xy;
     bd.dnear     = 1.0;
+    bd.dnear_m   = 1.0;
     if (c.z - r > v.near_z) { bd.outside = true; return bd; }
     if (c.z + r > v.near_z) { bd.near_clip = true; return bd; }
     Mat P = M(v, proj_cur);
@@ -491,6 +497,12 @@ Bounds sphere_bounds(ViewData v, float3 c, float r) {
     bd.pmax = float2((hi.x * 0.5 + 0.5) * wh.x, (0.5 - lo.y * 0.5) * wh.y) + 1.0;
     float4 cz = mul4(P, float4(c.x, c.y, c.z + r, 1.0));
     bd.dnear = cz.z / cz.w;
+    bd.dnear_m = bd.dnear;
+    if (v.occl_margin > 0.0) {
+        float zm = c.z + r * (1.0 + v.occl_margin);
+        float4 cm = mul4(P, float4(c.x, c.y, zm, 1.0));
+        bd.dnear_m = zm < v.near_z ? cm.z / cm.w : 2.0;     // past the near plane: never occluded
+    }
     if (bd.pmax.x <= 0.0 || bd.pmax.y <= 0.0 || bd.pmin.x >= wh.x || bd.pmin.y >= wh.y || bd.dnear < 0.0) bd.outside = true;
     return bd;
 }
@@ -506,13 +518,15 @@ Bounds geo_bounds(ViewData v, Geo g) {
     bd.pmin      = float2(0.0);
     bd.pmax      = v.viewport.xy;
     bd.dnear     = 1.0;
+    bd.dnear_m   = 1.0;
     if (min(g.a.z, g.b.z) - g.r > v.near_z) { bd.outside = true; return bd; }
     if (max(g.a.z, g.b.z) + g.r > v.near_z) { bd.near_clip = true; return bd; }
     Bounds b0 = sphere_bounds(v, g.a, g.r);
     Bounds b1 = sphere_bounds(v, g.b, g.r);
     bd.pmin  = min(b0.pmin, b1.pmin);
     bd.pmax  = max(b0.pmax, b1.pmax);
-    bd.dnear = max(b0.dnear, b1.dnear);
+    bd.dnear   = max(b0.dnear, b1.dnear);
+    bd.dnear_m = max(b0.dnear_m, b1.dnear_m);
     float2 wh = v.viewport.xy;
     if (bd.pmax.x <= 0.0 || bd.pmax.y <= 0.0 || bd.pmin.x >= wh.x || bd.pmin.y >= wh.y || bd.dnear < 0.0) bd.outside = true;
     return bd;
@@ -522,7 +536,7 @@ Bounds geo_bounds(ViewData v, Geo g) {
 // pyramid holds the farthest (min, under reverse Z) depth of each texel's
 // pixels; level L texels are 2^(L+1) pixels across, and the level is the one
 // at which the rectangle spans at most 2 x 2 texels.
-bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd) {
+bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd, bool margin) {
     if (v.hiz_valid == 0u || bd.near_clip) return false;
     float2 lo = max(bd.pmin, float2(0.0));
     float2 hi = min(bd.pmax, v.viewport.xy);
@@ -539,7 +553,17 @@ bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd)
     m = min(m, hiz.Load(int3(t1.x, t0.y, int(L))));
     m = min(m, hiz.Load(int3(t0.x, t1.y, int(L))));
     m = min(m, hiz.Load(int3(t1.x, t1.y, int(L))));
-    return bd.dnear < m;
+    return (margin ? bd.dnear_m : bd.dnear) < m;
+}
+
+// The pixel centres an element can reach: its exact rectangle (the bounds
+// without their pad) widened by the jitter this raster applies and a hair
+// for rounding. x0, y0, x1, y1, inclusive; none when x1 < x0 or y1 < y0.
+int4 reach_px(ViewData v, Bounds bd) {
+    float  g  = v.jitter_px + 0.05;
+    float2 lo = bd.pmin + (1.0 - g);
+    float2 hi = bd.pmax - (1.0 - g);
+    return int4(int2(ceil(lo - 0.5)), int2(floor(hi - 0.5)));
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +783,7 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (cs.count > 0u) {
             Bounds bd = sphere_bounds(v, cs.c, cs.r);
             if (bd.outside) out = OUT_OUTSIDE;
-            else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd)) out = OUT_OCCLUDED;
+            else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd, mode == 1u)) out = OUT_OCCLUDED;
             else out = OUT_HW;      // visible: expand
         }
         if (mode == 3u) {
@@ -801,12 +825,13 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
     if (g.ok) {
         Bounds bd = geo_bounds(v, g);
-        if (bd.outside) {
-            out = OUT_OUTSIDE;
-        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd)) {
+        float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;     // without the pad
+        int4  rp  = reach_px(v, bd);
+        if (bd.outside || (!bd.near_clip && ext <= v.small_px && (rp.z < rp.x || rp.w < rp.y))) {
+            out = OUT_OUTSIDE;          // off screen, or between pixel centres: no pixel to draw
+        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
             out = OUT_OCCLUDED;
         } else {
-            float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;   // without the pad
             out = (v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
         }
     }
@@ -990,8 +1015,8 @@ void atomic_max_u64(uint64_t* p, uint64_t v) {
 // A group takes 64 primitives and shares out all their pixels among its 64
 // threads (a prefix sum of the pixel counts, then a binary search per pixel),
 // so a lane with a large primitive does not hold up 63 with small ones. The
-// pixels are those whose centre the jittered shape can reach: the bounds'
-// one-pixel pad is twice the jitter's reach. A pixel already holding a
+// pixels are those whose centre the jittered shape can reach (reach_px: the
+// exact rectangle widened by this raster's jitter). A pixel already holding a
 // nearer depth skips the atomic (the read is a plain one; a stale value only
 // costs an atomic that changes nothing).
 groupshared float4 gs_a[64];        // a, radius
@@ -1023,9 +1048,9 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
             Geo   g  = element_geo(v, b, el.inst, el.e);
             if (g.ok) {
                 Bounds bd = geo_bounds(v, g);
-                // centres within [unpadded rectangle +- 0.5 px], a hair wider for rounding
-                int2 p0 = max(int2(ceil(bd.pmin - 0.05)), int2(0));
-                int2 p1 = min(int2(floor(bd.pmax - 0.95)), int2(W - 1, H - 1));
+                int4 rp = reach_px(v, bd);
+                int2 p0 = max(rp.xy, int2(0));
+                int2 p1 = min(rp.zw, int2(W - 1, H - 1));
                 if (p1.x >= p0.x && p1.y >= p0.y) {
                     uint w = uint(p1.x - p0.x + 1), h = uint(p1.y - p0.y + 1);
                     cnt = w * h;
