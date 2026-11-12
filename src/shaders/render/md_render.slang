@@ -493,10 +493,27 @@ Bounds sphere_bounds(ViewData v, float3 c, float r) {
     return bd;
 }
 
+// A capsule is the convex hull of its two end spheres, so its rectangle is
+// the union of theirs (not the bounding sphere's: for a stick that is up to
+// (length + 2r)^2 against (length + 2r) x 2r)
 Bounds geo_bounds(ViewData v, Geo g) {
-    float3 c = 0.5 * (g.a + g.b);
-    float  r = 0.5 * length(g.b - g.a) + g.r;
-    return sphere_bounds(v, c, r);
+    if (g.kind == 0u) return sphere_bounds(v, g.a, g.r);
+    Bounds bd;
+    bd.outside   = false;
+    bd.near_clip = false;
+    bd.pmin      = float2(0.0);
+    bd.pmax      = v.viewport.xy;
+    bd.dnear     = 1.0;
+    if (min(g.a.z, g.b.z) - g.r > v.near_z) { bd.outside = true; return bd; }
+    if (max(g.a.z, g.b.z) + g.r > v.near_z) { bd.near_clip = true; return bd; }
+    Bounds b0 = sphere_bounds(v, g.a, g.r);
+    Bounds b1 = sphere_bounds(v, g.b, g.r);
+    bd.pmin  = min(b0.pmin, b1.pmin);
+    bd.pmax  = max(b0.pmax, b1.pmax);
+    bd.dnear = max(b0.dnear, b1.dnear);
+    float2 wh = v.viewport.xy;
+    if (bd.pmax.x <= 0.0 || bd.pmax.y <= 0.0 || bd.pmin.x >= wh.x || bd.pmin.y >= wh.y || bd.dnear < 0.0) bd.outside = true;
+    return bd;
 }
 
 // Occluded by the previous raster: nearer than nothing in its rectangle. The
@@ -931,13 +948,26 @@ void atomic_max_u64(uint64_t* p, uint64_t v) {
     }
 }
 
-// One thread per primitive: every pixel of its rectangle is tested against
-// the exact shape with the same ray and intersection as the fragment stages,
-// and the nearest wins by a 64-bit max of (depth, index into the small list).
-// Depth bits compare as unsigned because depths are non-negative.
+// Every pixel a small primitive can cover is tested against the exact shape,
+// with the same ray and intersection as the fragment stages, and the nearest
+// wins by a 64-bit max of (depth, index into the small list). Depth bits
+// compare as unsigned because depths are non-negative.
+//
+// A group takes 64 primitives and shares out all their pixels among its 64
+// threads (a prefix sum of the pixel counts, then a binary search per pixel),
+// so a lane with a large primitive does not hold up 63 with small ones. The
+// pixels are those whose centre the jittered shape can reach: the bounds'
+// one-pixel pad is twice the jitter's reach. A pixel already holding a
+// nearer depth skips the atomic (the read is a plain one; a stale value only
+// costs an atomic that changes nothing).
+groupshared float4 gs_a[64];        // a, radius
+groupshared float4 gs_b[64];        // b, kind
+groupshared uint4  gs_box[64];      // x0, y0, width, index into the small list
+groupshared uint   gs_inc[64];      // inclusive prefix of the pixel counts
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void raster_small(uint3 tid : SV_DispatchThreadID) {
+void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
     Lists    L = *a.lists;
@@ -945,27 +975,64 @@ void raster_small(uint3 tid : SV_DispatchThreadID) {
     uint n     = phase == 1u ? L.counters[C_SMALL1] : L.counters[C_SMALL2];
     uint base  = phase == 1u ? 0u : L.counters[C_SMALL1];
     uint stride = grid_threads(n);
-    uint W = uint(v.viewport.x), H = uint(v.viewport.y);
-    for (uint i = tid.x; i < n; i += stride) {
-        uint  idx = base + i;
-        Elem  el  = decode(a.batches, L.small[idx]);
-        Batch b   = a.batches[el.slot];
-        Geo   g   = element_geo(v, b, el.inst, el.e);
-        if (!g.ok) continue;
-        Bounds bd = geo_bounds(v, g);
-        int2 p0 = max(int2(floor(bd.pmin)), int2(0));
-        int2 p1 = min(int2(ceil(bd.pmax)), int2(int(W), int(H)));
-        for (int y = p0.y; y < p1.y; ++y) {
-            for (int x = p0.x; x < p1.x; ++x) {
-                Ray   r = pixel_ray(v, float2(float(x), float(y)) + 0.5);
-                float t = g.kind == 0u ? sphere_hit(r, g.a, g.r, false) : capsule_hit(r, g.a, g.b, g.r);
-                if (t < 0.0) continue;
-                float d = clip_depth(v, r.o + r.d * t);
-                if (g.kind == 1u) d = capsule_depth(d);
-                uint64_t val = (uint64_t(asuint(d)) << 32) | uint64_t(idx);
-                atomic_max_u64(L.vis64 + (uint(y) * W + uint(x)), val);
+    int  W = int(v.viewport.x), H = int(v.viewport.y);
+    uint* depth_words = (uint*)L.vis64;
+    for (uint i0 = group_start(tid, gi); i0 < n; i0 += stride) {
+        uint i   = i0 + gi;
+        uint cnt = 0u;
+        uint idx = base + i;
+        float4 ga = float4(0.0), gb = float4(0.0);
+        uint4  box = uint4(0u, 0u, 1u, idx);
+        if (i < n) {
+            Elem  el = decode(a.batches, L.small[idx]);
+            Batch b  = a.batches[el.slot];
+            Geo   g  = element_geo(v, b, el.inst, el.e);
+            if (g.ok) {
+                Bounds bd = geo_bounds(v, g);
+                // centres within [unpadded rectangle +- 0.5 px], a hair wider for rounding
+                int2 p0 = max(int2(ceil(bd.pmin - 0.05)), int2(0));
+                int2 p1 = min(int2(floor(bd.pmax - 0.95)), int2(W - 1, H - 1));
+                if (p1.x >= p0.x && p1.y >= p0.y) {
+                    uint w = uint(p1.x - p0.x + 1), h = uint(p1.y - p0.y + 1);
+                    cnt = w * h;
+                    box = uint4(uint(p0.x), uint(p0.y), w, idx);
+                    ga  = float4(g.a, g.r);
+                    gb  = float4(g.b, float(g.kind));
+                }
             }
         }
+        gs_a[gi]   = ga;
+        gs_b[gi]   = gb;
+        gs_box[gi] = box;
+        gs_inc[gi] = cnt;
+        GroupMemoryBarrierWithGroupSync();
+        for (uint off = 1u; off < 64u; off <<= 1u) {
+            uint x = gi >= off ? gs_inc[gi - off] : 0u;
+            GroupMemoryBarrierWithGroupSync();
+            gs_inc[gi] += x;
+            GroupMemoryBarrierWithGroupSync();
+        }
+        uint total = gs_inc[63];
+        for (uint k = gi; k < total; k += 64u) {
+            uint lo = 0u, hi = 63u;                         // the first e with gs_inc[e] > k
+            while (lo < hi) { uint mid = (lo + hi) >> 1; if (gs_inc[mid] > k) hi = mid; else lo = mid + 1u; }
+            uint  e     = lo;
+            uint  local = k - (e > 0u ? gs_inc[e - 1u] : 0u);
+            uint4 bx    = gs_box[e];
+            uint  x     = bx.x + local % bx.z;
+            uint  y     = bx.y + local / bx.z;
+            float4 ea   = gs_a[e];
+            float4 eb   = gs_b[e];
+            Ray   r = pixel_ray(v, float2(float(x), float(y)) + 0.5);
+            float t = eb.w < 0.5 ? sphere_hit(r, ea.xyz, ea.w, false) : capsule_hit(r, ea.xyz, eb.xyz, ea.w);
+            if (t < 0.0) continue;
+            float d = clip_depth(v, r.o + r.d * t);
+            if (eb.w >= 0.5) d = capsule_depth(d);
+            uint pix = y * uint(W) + x;
+            if (depth_words[2u * pix + 1u] > asuint(d)) continue;      // nearer already there
+            atomic_max_u64(L.vis64 + pix, (uint64_t(asuint(d)) << 32) | uint64_t(bx.w));
+        }
+        GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next 64
     }
 }
 
