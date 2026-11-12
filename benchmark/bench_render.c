@@ -9,11 +9,15 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       in proportion to it), and the largest radius (one huge cluster ruins
       occlusion around it).
 
-  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--implicit]
+  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit]
       Renders generated scenes (water-like boxes of three-atom molecules, in
       spacefill and licorice, near and far) through md_render, with each of
       the culling and raster options, and times full rasters, resolves and
-      masks on the GPU stream, with the cull statistics beside them.
+      masks on the GPU stream, with the cull statistics beside them. By
+      default the scene goes through md_render_mol (molecules in random
+      order, clustered by md_render_mol_update, which is timed too);
+      --host-grid sorts and clusters by grid cell on the host instead, and
+      --implicit sorts on the host and leaves md_render its runs of 64.
 
 Every run prints the mdlib revision it was built from, first.
 */
@@ -493,12 +497,21 @@ static int run_clusters(int argc, char** argv) {
 
 #if MD_ENABLE_GPU
 
+typedef enum cluster_src_t {
+    SRC_MOL,          /* md_render_mol: the molecules in random order, regrouped by md_render_mol_update */
+    SRC_HOST_GRID,    /* sorted by grid cell on the host, a cluster per cell */
+    SRC_IMPLICIT,     /* sorted by grid cell on the host, runs of 64 */
+} cluster_src_t;
+
 typedef struct scene_t {
     uint32_t      atoms, bonds;
     md_gpu_addr_t pos, rad, bond_idx, color, sel;
-    uint32_t      clusters;          /* grid cells, as md_render_mol makes them for solvent */
+    uint32_t      clusters;          /* SRC_HOST_GRID: grid cells */
     md_gpu_addr_t atom_clusters, bond_clusters;
     float         box;            // edge, A
+    /* SRC_MOL */
+    md_render_mol_topo_t topo;
+    md_gpu_addr_t        dyn;
 } scene_t;
 
 typedef struct mol_cell_t { uint32_t cell, m; } mol_cell_t;
@@ -511,7 +524,8 @@ static int mol_cell_cmp(const void* a, const void* b) {
    O anywhere, two H at 1 A from it. The molecules are ordered by the grid
    cell of their O, cells sized for about 64 atoms, and each cell is a
    cluster: what md_render_mol builds for solvent. */
-static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules) {
+static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, cluster_src_t src) {
+    memset(sc, 0, sizeof(*sc));
     sc->atoms = molecules * 3;
     sc->bonds = molecules * 2;
     sc->box   = (float)cbrt(sc->atoms / 0.1);
@@ -536,8 +550,31 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules) {
         idx[4 * m + 2] = 3 * m; idx[4 * m + 3] = 3 * m + 2;
     }
     #undef RND
+    if (src == SRC_MOL) {
+        /* A system of waters for md_render_mol: molecules and bonds, nothing else */
+        md_system_t sys;
+        memset(&sys, 0, sizeof(sys));
+        sys.topology_version = 1;
+        sys.atom.count = sc->atoms;
+        uint32_t* moff = malloc(((size_t)molecules + 1) * 4);
+        int32_t*  mats = malloc((size_t)sc->atoms * 4);
+        md_atom_pair_t* pairs = malloc((size_t)sc->bonds * sizeof(md_atom_pair_t));
+        for (uint32_t m = 0; m <= molecules; ++m) moff[m] = 3 * m;
+        for (uint32_t i = 0; i < sc->atoms; ++i) mats[i] = (int32_t)i;
+        for (uint32_t b = 0; b < sc->bonds; ++b) { pairs[b].idx[0] = (md_atom_idx_t)idx[2 * b]; pairs[b].idx[1] = (md_atom_idx_t)idx[2 * b + 1]; }
+        sys.molecule.count = molecules; sys.molecule.offset = moff; sys.molecule.atom_idx = mats;
+        sys.bond.count = sc->bonds; sys.bond.pairs = pairs;
+        md_temp_scope_t temp = md_temp_begin();
+        md_render_mol_plan_t plan;
+        bool ok = md_render_mol_plan(&plan, &sys, temp);
+        md_gpu_addr_t base = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, plan.size).gpu : 0;
+        ok = ok && base && md_render_mol_write(s, &sc->topo, &plan, base, NULL);
+        md_temp_end(temp);
+        sc->dyn = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size).gpu : 0;
+        free(moff); free(mats); free(pairs);
+        if (!ok || !sc->dyn) { free(pos); free(rad); free(idx); free(col); return false; }
+    } else {
     /* order by cell (Morton order of the cells), and the clusters */
-    {
         const float edge = cbrtf(64.0f / 0.1f);
         uint32_t dim = (uint32_t)(sc->box / edge) + 1;
         mol_cell_t* mc = malloc((size_t)molecules * sizeof(mol_cell_t));
@@ -589,7 +626,10 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules) {
 }
 
 static void scene_free(md_gpu_stream_t s, scene_t* sc) {
-    md_gpu_free(s, sc->atom_clusters); md_gpu_free(s, sc->bond_clusters);
+    if (sc->atom_clusters) md_gpu_free(s, sc->atom_clusters);
+    if (sc->bond_clusters) md_gpu_free(s, sc->bond_clusters);
+    if (sc->topo.base) md_gpu_free(s, sc->topo.base);
+    if (sc->dyn) md_gpu_free(s, sc->dyn);
     md_gpu_free(s, sc->pos); md_gpu_free(s, sc->rad); md_gpu_free(s, sc->bond_idx); md_gpu_free(s, sc->color); md_gpu_free(s, sc->sel);
 }
 
@@ -636,7 +676,7 @@ static int run_gpu(int argc, char** argv) {
     uint32_t W = 1920, H = 1080, reps = 10;
     float smalls[8] = { 6 };
     uint32_t n_small = 1;
-    bool implicit = false;
+    cluster_src_t src = SRC_MOL;
     for (int i = 0; i < argc; ++i) {
         if (!strcmp(argv[i], "--atoms") && i + 1 < argc) {
             n_atoms = 0;
@@ -646,7 +686,9 @@ static int run_gpu(int argc, char** argv) {
         } else if (!strcmp(argv[i], "--reps") && i + 1 < argc) {
             reps = (uint32_t)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--implicit")) {
-            implicit = true;
+            src = SRC_IMPLICIT;
+        } else if (!strcmp(argv[i], "--host-grid")) {
+            src = SRC_HOST_GRID;
         } else if (!strcmp(argv[i], "--small") && i + 1 < argc) {
             n_small = 0;
             for (char* p = argv[++i]; *p && n_small < 8; ) { smalls[n_small++] = strtof(p, &p); if (*p == ',') ++p; }
@@ -662,7 +704,8 @@ static int run_gpu(int argc, char** argv) {
     md_gpu_device_info(dev, &info);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
     md_render_t r = md_render_create(dev, NULL);
-    if (!s || !r) { fprintf(stderr, "md_render could not start\n"); return 1; }
+    md_render_mol_t mol = md_render_mol_create(dev, NULL);
+    if (!s || !r || !mol) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
@@ -682,24 +725,52 @@ static int run_gpu(int argc, char** argv) {
 
     for (uint32_t ai = 0; ai < n_atoms; ++ai) {
         scene_t sc;
-        if (!scene_make(s, &sc, atoms_list[ai] / 3)) { fprintf(stderr, "scene of %u atoms failed (memory?)\n", atoms_list[ai]); continue; }
+        if (!scene_make(s, &sc, atoms_list[ai] / 3, src)) { fprintf(stderr, "scene of %u atoms failed (memory?)\n", atoms_list[ai]); continue; }
         printf("== %u atoms, %u bonds, box %.0f A, %s\n", sc.atoms, sc.bonds, sc.box,
-               implicit ? "implicit clusters (runs of 64 in grid-cell order)" : "clusters by grid cell");
+               src == SRC_IMPLICIT ? "implicit clusters (runs of 64 in grid-cell order)" :
+               src == SRC_HOST_GRID ? "clusters by grid cell, built on the host" : "md_render_mol (molecules in random order, GPU grid)");
+        md_render_mol_atoms_t atoms = {0};
+        atoms.position = sc.pos; atoms.radius = sc.rad; atoms.selection = sc.sel;
+        if (src == SRC_MOL) {
+            /* what a trajectory frame costs on top of the raster: the regrouping */
+            double* tu = malloc(reps * sizeof(double));
+            for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+                md_tick_t t0 = md_tick_now();
+                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, NULL);
+                md_gpu_stream_sync(s);
+                if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+            }
+            qsort(tu, reps, sizeof(double), cmp_d);
+            printf("md_render_mol_update: %.2f / %.2f ms; %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block\n",
+                   tu[0], tu[reps / 2], sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0);
+            free(tu);
+        }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
-            md_render_batch_t b[2];
+            md_render_batch_t b[8];
             memset(b, 0, sizeof(b));
             uint32_t nb = 0;
+            if (src == SRC_MOL) {
+                md_render_mol_rep_t rep = {0};
+                rep.key = 1;
+                rep.color.mode = MD_RENDER_COLOR_POINTS;
+                rep.atom_color = sc.color;
+                if (looks[li].licorice) { rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; }
+                else                    { rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f; }
+                nb = md_render_mol_emit(&sc.topo, &atoms, &rep, b, 8);
+            }
             md_render_points_t pts = {0};
             pts.count = sc.atoms; pts.position = sc.pos; pts.radius = sc.rad; pts.color = sc.color; pts.state[0] = sc.sel;
-            b[nb].key = 1; b[nb].kind = MD_RENDER_SPHERES; b[nb].count = sc.atoms; b[nb].points = pts;
-            if (!implicit) { b[nb].cluster_offset = sc.atom_clusters; b[nb].cluster_count = sc.clusters; }
-            if (looks[li].licorice) b[nb].style.spheres.radius_add = 0.2f; else b[nb].style.spheres.radius_scale = 1.0f;
-            nb++;
-            if (looks[li].licorice) {
-                b[nb].key = 2; b[nb].kind = MD_RENDER_CAPSULES; b[nb].count = sc.bonds; b[nb].points = pts;
-                b[nb].index = sc.bond_idx; b[nb].style.capsules.radius = 0.2f;
-                if (!implicit) { b[nb].cluster_offset = sc.bond_clusters; b[nb].cluster_count = sc.clusters; }
+            if (src != SRC_MOL) {
+                b[nb].key = 1; b[nb].kind = MD_RENDER_SPHERES; b[nb].count = sc.atoms; b[nb].points = pts;
+                if (src == SRC_HOST_GRID) { b[nb].cluster_offset = sc.atom_clusters; b[nb].cluster_count = sc.clusters; }
+                if (looks[li].licorice) b[nb].style.spheres.radius_add = 0.2f; else b[nb].style.spheres.radius_scale = 1.0f;
                 nb++;
+                if (looks[li].licorice) {
+                    b[nb].key = 2; b[nb].kind = MD_RENDER_CAPSULES; b[nb].count = sc.bonds; b[nb].points = pts;
+                    b[nb].index = sc.bond_idx; b[nb].style.capsules.radius = 0.2f;
+                    if (src == SRC_HOST_GRID) { b[nb].cluster_offset = sc.bond_clusters; b[nb].cluster_count = sc.clusters; }
+                    nb++;
+                }
             }
             printf("-- %s\n", looks[li].name);
             printf("  %-24s %6s | %17s %17s %17s %17s | %9s %9s %9s %9s %9s | %8s %8s %8s\n", "options", "small", "raster (refit)", "raster (camera)", "resolve", "mask",
@@ -751,6 +822,7 @@ static int run_gpu(int argc, char** argv) {
         scene_free(s, &sc);
         md_gpu_stream_sync(s);
     }
+    md_render_mol_destroy(mol);
     md_render_destroy(r);
     md_gpu_device_destroy(dev);
     return 0;
@@ -764,7 +836,7 @@ int main(int argc, char** argv) {
 #endif
     fprintf(stderr, "usage:\n  md_render_bench clusters <structure> [<trajectory>] [--frames N] [--size N]\n"
 #if MD_ENABLE_GPU
-                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--implicit]\n"
+                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit]\n"
 #endif
            );
     return 1;

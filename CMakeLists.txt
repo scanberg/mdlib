@@ -847,6 +847,12 @@ if (MD_ENABLE_GPU)
     VERTEX    sphere_vs capsule_vs merge_vs
     FRAGMENT  sphere_fs sphere_mask_fs capsule_fs capsule_mask_fs merge_fs
   )
+  compile_gpu_shaders(md_render_mol_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_render_mol.slang
+    ENTRIES   sol_clear sol_bounds sol_dims sol_count sol_scan sol_scatter sol_write
+  )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
                  ${GEN_DIR}/gto_gpu_shaders.inl COPYONLY)
