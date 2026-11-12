@@ -531,8 +531,11 @@ bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd)
 //             the visible ones likewise
 //   phase 2   clusters occluded in phase 1, and elements occluded in phase 1,
 //             against this raster's pyramid
-//   state     clusters with a state bit in the frustum, then their elements
-//             with one, into the state lists for the masks (occluded or not)
+//   state     clusters with a state bit, then their elements with one, into
+//             the state lists for the masks: occluded or not, and not tested
+//             against the frustum (the mask raster clips), so the lists hold
+//             for any camera and are rebuilt only when the state bits or the
+//             geometry change
 //
 // Statistics count elements, each exactly once: elements of hidden clusters
 // and hidden elements of visible ones at the cluster level, the rest where
@@ -736,7 +739,7 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
             else out = OUT_HW;      // visible: expand
         }
         if (mode == 3u) {
-            bool want = valid && out != OUT_HIDDEN && out != OUT_OUTSIDE && b.cstate[2u * c] != 0u;
+            bool want = valid && cs.count > 0u && b.cstate[2u * c] != 0u;
             uint k = wave_append(L.counters + C_CST, want);
             if (want) L.cst[k] = ent;
             continue;
@@ -785,7 +788,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
     }
     uint k = g.kind;
     if (state_only) {
-        bool want = g.ok && out != OUT_OUTSIDE && g.st != 0u;
+        bool want = g.ok && g.st != 0u;
         uint is0 = wave_append(L.counters + C_ST + 0u, want && k == 0u);
         uint is1 = wave_append(L.counters + C_ST + 1u, want && k == 1u);
         if (want) { if (k == 0u) L.st0[is0] = ent; else L.st1[is1] = ent; }
