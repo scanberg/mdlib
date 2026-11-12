@@ -590,6 +590,7 @@ void wave_count(uint* counter, bool want) { wave_add(counter, want ? 1u : 0u); }
 
 uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
 uint grid_groups(uint n)  { return min(n, 65535u); }
+uint cluster_groups(uint n) { return min((n + 63u) / 64u, 65535u); }   // the element cull: 64 clusters a group
 
 // The batch of work item i: the last with offset <= i (batches without work
 // share their offset with the next one, which wins)
@@ -840,10 +841,17 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
 // lanes together, so a lane past the end still takes part (valid false)
 uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
 
-// Elements. mode 1: of the clusters visible in phase 1 (a group per cluster).
-// mode 2: those phase 1 found occluded (a thread each). mode 4: of the
-// clusters phase 2 found visible. mode 3: the state lists, from the clusters
-// of the state pass.
+// Elements. mode 1: of the clusters visible in phase 1. mode 2: those phase
+// 1 found occluded (a thread each). mode 4: of the clusters phase 2 found
+// visible. mode 3: the state lists, from the clusters of the state pass.
+//
+// For the clusters, a group takes 64 of them and its threads walk all their
+// elements together (a prefix sum of the sizes, then a binary search per
+// element): a cluster of 40 no longer leaves 24 lanes idle, nor one of 70 a
+// second round of 58.
+groupshared uint4 gc_cl[64];        // slot, instance, first element
+groupshared uint  gc_inc[64];       // inclusive prefix of the sizes
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
@@ -867,18 +875,41 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
     uint2* src  = mode == 3u ? L.cst : L.cvis;
     uint   base = mode == 4u ? L.counters[C_CVIS1] : 0u;
     uint   n    = mode == 1u ? L.counters[C_CVIS1] : mode == 4u ? L.counters[C_CVIS2] : L.counters[C_CST];
-    uint   groups = grid_groups(n);
-    for (uint ci = gid.x; ci < n; ci += groups) {
-        uint2 ent  = src[base + ci];
-        uint  slot = (ent.y >> 20) - 1u;
-        Batch b    = a.batches[slot];
-        uint  inst = ent.x / max(b.cluster_count, 1u);
-        uint  c    = ent.x - inst * b.cluster_count;
-        uint2 rng  = cluster_range(b, c);
-        for (uint e0 = rng.x; e0 < rng.y; e0 += 64u) {
-            uint e = e0 + gi;
-            element_pass(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, e < rng.y, slot, inst, e);
+    uint   groups = cluster_groups(n);
+    for (uint c0 = gid.x * 64u; c0 < n; c0 += groups * 64u) {
+        uint  ci  = c0 + gi;
+        uint4 cl  = uint4(0u);
+        uint  cnt = 0u;
+        if (ci < n) {
+            uint2 ent  = src[base + ci];
+            uint  slot = (ent.y >> 20) - 1u;
+            Batch b    = a.batches[slot];
+            uint  inst = ent.x / max(b.cluster_count, 1u);
+            uint  c    = ent.x - inst * b.cluster_count;
+            uint2 rng  = cluster_range(b, c);
+            cl  = uint4(slot, inst, rng.x, 0u);
+            cnt = rng.y - rng.x;
         }
+        gc_cl[gi]  = cl;
+        gc_inc[gi] = cnt;
+        GroupMemoryBarrierWithGroupSync();
+        for (uint off = 1u; off < 64u; off <<= 1u) {
+            uint x = gi >= off ? gc_inc[gi - off] : 0u;
+            GroupMemoryBarrierWithGroupSync();
+            gc_inc[gi] += x;
+            GroupMemoryBarrierWithGroupSync();
+        }
+        uint total = gc_inc[63];
+        for (uint k0 = 0u; k0 < total; k0 += 64u) {         // uniform: element_pass has wave operations
+            uint k = k0 + gi;
+            bool valid = k < total;
+            uint lo = 0u, hi = 63u;                         // the first cluster with gc_inc > k
+            while (lo < hi) { uint mid = (lo + hi) >> 1; if (gc_inc[mid] > k) hi = mid; else lo = mid + 1u; }
+            uint4 c = gc_cl[lo];
+            uint  e = c.z + (k - (lo > 0u ? gc_inc[lo - 1u] : 0u));
+            element_pass(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, valid, c.x, c.y, e);
+        }
+        GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next 64
     }
 }
 
@@ -898,7 +929,7 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     if (mode == 11u || mode == 21u || mode == 31u) {
         uint n = mode == 11u ? c[C_CVIS1] : mode == 21u ? c[C_CVIS2] : c[C_CST];
         uint* g = c + (mode == 31u ? C_GRID_CST : C_GRID_CVIS + (mode == 21u ? 4u : 0u));
-        g[0] = grid_groups(n); g[1] = 1u; g[2] = 1u;
+        g[0] = cluster_groups(n); g[1] = 1u; g[2] = 1u;
         if (mode == 11u) {
             uint no = c[C_COCC];
             uint* go = c + C_GRID_COCC;
