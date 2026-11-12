@@ -4046,6 +4046,20 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		md_qm_publish_column(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/atom_index"), MD_STR_LIT("Tessera Atom"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, atom, sizeof(uint32_t), count);
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"), MD_STR_LIT("Cavity Sphere Radius"), ang, radius, num_atoms);
 
+		// How the cavity was made: the Lebedev points per sphere, the scale of the van der Waals radii and the
+		// discretization (VeloxChem's 'swig': switching Gaussians, which keeps points where spheres overlap)
+		double value = 0.0;
+		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_num_lebedev_points")) {
+			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), MD_STR_LIT("Lebedev Points per Sphere"), md_unit_count(), value);
+		}
+		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_tssf")) {
+			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), MD_STR_LIT("Sphere Radius Scale"), md_unit_none(), value);
+		}
+		md_str_t discretization = {0};
+		if (h5_read_str(&discretization, scf_handle, "gostshyp_discretization", vlx->arena)) {
+			md_qm_publish_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"), MD_STR_LIT("Discretization"), discretization);
+		}
+
 		double pressure = 0.0;
 		md_str_t unit = {0};
 		if (h5_read_dataset_data(&pressure, 1, scf_handle, H5T_NATIVE_DOUBLE, "pressure")) {

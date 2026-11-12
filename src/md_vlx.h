@@ -68,6 +68,10 @@ struct md_executor_t;
 //   vlx/scf/gostshyp/sphere_radius                           {A} Å, of each QM atom's sphere; NAN where an element
 //                                                            has no tesserae at all
 //   vlx/scf/gostshyp/pressure                                rank 0, GPa
+//   vlx/scf/gostshyp/{num_lebedev_points,radius_scale}       rank 0: how the cavity was made - the Lebedev
+//   vlx/scf/gostshyp/discretization                          points per sphere, the scale of the van der Waals
+//                                                            radii (the file's 'tssf') and the discretization
+//                                                            ('swig': switching Gaussians), {1} string
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
