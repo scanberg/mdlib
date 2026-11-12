@@ -815,12 +815,12 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
     uint32_t clusters = 0;
     for (uint32_t i = 0; i < f->batch_count; ++i) clusters += batch_clusters(&f->batches[i]);
     {
-        size_t need = (size_t)(clusters ? clusters : 1) * 36u + 256u;
+        size_t need = (size_t)(clusters ? clusters : 1) * 40u + 256u;
         md_gpu_addr_t old = v->bounds_mem;
         if (!gpu_realloc(s, &v->bounds_mem, &v->bounds_cap, need)) return false;
         if (v->bounds_mem != old) v->bounds_valid = false;
     }
-    const md_gpu_addr_t cstate_base = align_addr(v->bounds_mem + (md_gpu_addr_t)clusters * 32u);
+    const md_gpu_addr_t cstate_base = align_addr(v->bounds_mem + (md_gpu_addr_t)clusters * 32u);   /* 2 uint per cluster */
     uint32_t work = 0, cbase = 0, cwork = 0;
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
@@ -834,7 +834,7 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         g->cluster_base        = cbase;
         g->cluster_work_offset = cwork;
         g->bounds              = v->bounds_mem + (md_gpu_addr_t)cbase * 32u;
-        g->cstate              = cstate_base + (md_gpu_addr_t)cbase * 4u;
+        g->cstate              = cstate_base + (md_gpu_addr_t)cbase * 8u;
         for (uint32_t j = 0; j < i; ++j) {
             if (g->cluster_count && bounds_shared(b, &f->batches[j])) {
                 g->bounds = v->table[j].bounds;

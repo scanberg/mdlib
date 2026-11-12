@@ -129,8 +129,8 @@ struct Batch {
     // element centres (spheres) or ends (capsules); each batch pads them by
     // its own style at cull time, so batches over the same points share them.
     uint*   cluster_offset;
-    float4* bounds;             // [2 per cluster]: min.xyz, max radius factor; max.xyz, asfloat(visible elements)
-    uint*   cstate;             // [cluster]: OR of the state bits of its elements
+    float4* bounds;             // [2 per cluster]: min.xyz, max radius factor; max.xyz, unused
+    uint*   cstate;             // [2 per cluster]: OR of the state bits of its elements, visible elements
     uint*   _pptr;
     uint    cluster_count;
     uint    cluster_work_offset;// first cluster work item (cluster x instance)
@@ -657,10 +657,13 @@ void refit(uint3 tid : SV_DispatchThreadID) {
                 count += 1u;
             }
         }
-        b.cstate[c] = st;
+        b.cstate[2u * c] = st;
         if (v.refit_mode == 0u) {
+            // The count goes in an integer, not in a float's bits: as a float
+            // it is a denormal, which fast math may flush to zero
+            b.cstate[2u * c + 1u] = count;
             b.bounds[2u * c + 0u] = float4(lo, fmax);
-            b.bounds[2u * c + 1u] = float4(hi, asfloat(count));
+            b.bounds[2u * c + 1u] = float4(hi, 0.0);
         }
     }
 }
@@ -677,7 +680,7 @@ ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
     ClusterSphere cs;
     float4 lo = b.bounds[2u * c + 0u];
     float4 hi = b.bounds[2u * c + 1u];
-    cs.count = asuint(hi.w);
+    cs.count = b.cstate[2u * c + 1u];
     Mat   T  = load_transform(b.transforms, inst);
     float s  = length(T.c0.xyz);
     float3 ctr = 0.5 * (lo.xyz + hi.xyz);
@@ -729,11 +732,11 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (cs.count > 0u) {
             Bounds bd = sphere_bounds(v, cs.c, cs.r);
             if (bd.outside) out = OUT_OUTSIDE;
-            else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, a.hiz, bd)) out = OUT_OCCLUDED;
+            else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd)) out = OUT_OCCLUDED;
             else out = OUT_HW;      // visible: expand
         }
         if (mode == 3u) {
-            bool want = valid && out != OUT_HIDDEN && out != OUT_OUTSIDE && b.cstate[c] != 0u;
+            bool want = valid && out != OUT_HIDDEN && out != OUT_OUTSIDE && b.cstate[2u * c] != 0u;
             uint k = wave_append(L.counters + C_CST, want);
             if (want) L.cst[k] = ent;
             continue;
@@ -756,12 +759,15 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 // Every lane of a wave calls this together, those without an element with
 // valid false: the wave operations inside run converged. (Divergent wave
 // operations are legal, and are where drivers have bugs: lavapipe faulted.)
-void element_pass(Args a, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
+// Texture handles are read from the root where used (MD_ARGS.hiz), never from
+// a copy of the argument struct: on Metal, element occlusion through a copied
+// struct never fired (the M4 counted no element occluded where lavapipe did).
+void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
     Geo   g;
     g.ok = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint2 ent = uint2(0u);
     if (valid) {
-        Batch b = a.batches[slot];
+        Batch b = batches[slot];
         ent = encode_id(slot, 0u, uint64_t(inst) * uint64_t(b.count) + uint64_t(e));
         g   = element_geo(v, b, inst, e);
     }
@@ -770,7 +776,7 @@ void element_pass(Args a, ViewData v, Lists L, uint phase, bool state_only, bool
         Bounds bd = geo_bounds(v, g);
         if (bd.outside) {
             out = OUT_OUTSIDE;
-        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, a.hiz, bd)) {
+        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd)) {
             out = OUT_OCCLUDED;
         } else {
             float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;   // without the pad
@@ -828,7 +834,7 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
             Elem el;
             el.slot = 0u; el.inst = 0u; el.e = 0u;
             if (valid) el = decode(a.batches, L.occ[i]);
-            element_pass(a, v, L, 2u, false, valid, el.slot, el.inst, el.e);
+            element_pass(a.batches, v, L, 2u, false, valid, el.slot, el.inst, el.e);
         }
         return;
     }
@@ -845,7 +851,7 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
         uint2 rng  = cluster_range(b, c);
         for (uint e0 = rng.x; e0 < rng.y; e0 += 64u) {
             uint e = e0 + gi;
-            element_pass(a, v, L, mode == 4u ? 2u : 1u, mode == 3u, e < rng.y, slot, inst, e);
+            element_pass(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, e < rng.y, slot, inst, e);
         }
     }
 }
