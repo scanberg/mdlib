@@ -20,9 +20,14 @@ typedef struct gpu_view_t {
     float         dt;
     uint32_t      ortho;
     uint32_t      batch_count;
-    uint32_t      _pad;
+    uint32_t      total_work;
+    float         near_z;
+    uint32_t      hiz_valid, hiz_w, hiz_h;
+    uint32_t      hiz_levels;
+    uint32_t      occlusion, compute_raster;
+    float         small_px;
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 480, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 512, "ViewData mirror");
 
 enum {
     F_INDEX        = 1u << 0,
@@ -49,24 +54,43 @@ typedef struct gpu_batch_t {
     uint32_t      uniform_color, palette_count;
     md_gpu_float4 tint;
     float         sharpness, desaturate;
-    uint32_t      _pad0, _pad1;
+    uint32_t      work_offset, _pad1;
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 208, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
     md_gpu_addr_t        batches;
-    uint32_t             slot;
-    uint32_t             mode;
+    uint32_t             mode;      /* raster: 0 visibility, 1 mask. cull etc.: phase 1 or 2 */
+    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1 */
     md_gpu_sampled_tex_t id;
     md_gpu_storage_tex_t color, normal, motion, mask;
     uint32_t             width, height, px, py;
     md_gpu_addr_t        pick_out;
+    md_gpu_addr_t        lists;
+    md_gpu_sampled_tex_t src, hiz;
+    md_gpu_storage_tex_t dst;
+    uint32_t             src_mip, src_w, src_h, dst_w, dst_h, _pad0;
 } gpu_args_t;
-_Static_assert(sizeof(gpu_args_t) == 88, "Args mirror");
+_Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
+
+typedef struct gpu_lists_t {
+    md_gpu_addr_t hw0, hw1, st0, st1, small, occ, counters, vis64;
+} gpu_lists_t;
+
+/* counters[] (md_render.slang C_*) */
+enum {
+    C_HW1 = 0, C_HW2 = 2, C_ST = 4, C_SMALL1 = 6, C_SMALL2 = 7, C_OCC = 8,
+    C_HIDDEN = 9, C_OUTSIDE = 10, C_OCCLUDED = 11,
+    C_CMD = 16, C_STCMD = 32, C_GRID_SMALL = 40, C_GRID_OCC = 48, C_COUNT = 64,
+};
+#define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
 
 #define MAX_BATCHES 4095u
 #define PICK_SLOTS  4u
+#define STAT_SLOTS  3u
+#define CULL_GROUP  64u
+#define DEFAULT_SMALL_PIXELS 6.0f
 
 /* =========================================================================
    Context
@@ -75,8 +99,9 @@ _Static_assert(sizeof(gpu_args_t) == 88, "Args mirror");
 struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
-    md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask;
-    md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick;
+    md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, merge;
+    md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz;
+    bool              atomic_int64;    /* the compute raster is possible */
 };
 
 static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, md_gpu_shader_t fs, bool mask, const char* label) {
@@ -124,14 +149,23 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     r->sphere_mask  = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_mask_fs_shader(),  true,  "md_render.sphere_mask");
     r->capsule_vis  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_fs_shader(),      false, "md_render.capsule");
     r->capsule_mask = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_mask_fs_shader(), true,  "md_render.capsule_mask");
+    r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        false, "md_render.merge");
+    r->atomic_int64 = info.supports_atomic_int64;
 
     md_gpu_kernel_desc_t kd;
     kd = md_shader_md_render_resolve_kernel();      r->k_resolve      = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mask_visible_kernel(); r->k_mask_visible = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_pick_kernel();         r->k_pick         = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_cull_kernel();         r->k_cull         = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_finalize_kernel();     r->k_finalize     = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_hiz_reduce_kernel();   r->k_hiz          = md_gpu_kernel_create(device, &kd);
+    if (r->atomic_int64) {
+        kd = md_shader_md_render_raster_small_kernel(); r->k_raster_small = md_gpu_kernel_create(device, &kd);
+        if (!r->k_raster_small) r->atomic_int64 = false;
+    }
 
-    if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask ||
-        !r->k_resolve || !r->k_mask_visible || !r->k_pick) {
+    if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->merge ||
+        !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
         md_render_destroy(r);
         return NULL;
@@ -148,6 +182,11 @@ void md_render_destroy(md_render_t r) {
     if (r->k_resolve)      md_gpu_kernel_destroy(r->k_resolve);
     if (r->k_mask_visible) md_gpu_kernel_destroy(r->k_mask_visible);
     if (r->k_pick)         md_gpu_kernel_destroy(r->k_pick);
+    if (r->merge)          md_gpu_pipeline_destroy(r->merge);
+    if (r->k_cull)         md_gpu_kernel_destroy(r->k_cull);
+    if (r->k_finalize)     md_gpu_kernel_destroy(r->k_finalize);
+    if (r->k_raster_small) md_gpu_kernel_destroy(r->k_raster_small);
+    if (r->k_hiz)          md_gpu_kernel_destroy(r->k_hiz);
     md_free(r->alloc, r, sizeof(struct md_render));
 }
 
@@ -266,6 +305,27 @@ struct md_render_view {
     size_t              xform_buf_cap;     /* bytes                            */
     gpu_batch_t*        table;             /* host copy of the batch table     */
 
+    /* Cull lists, counters, compute raster buffer, depth pyramid */
+    md_gpu_addr_t       lists_buf;         /* gpu_lists_t                      */
+    md_gpu_addr_t       list_mem;          /* the lists themselves             */
+    size_t              list_mem_cap;
+    md_gpu_addr_t       counters;          /* uint32 [C_COUNT]                 */
+    md_gpu_addr_t       vis64;
+    size_t              vis64_cap;
+    md_gpu_texture_t    hiz;
+    uint32_t            hiz_w, hiz_h, hiz_levels;
+    bool                hiz_ok;            /* holds the last raster            */
+    uint32_t            raster_count;
+
+    struct {
+        md_gpu_mem_t    host;
+        md_gpu_sync_t   sync;
+        bool            pending;
+        uint32_t        raster;
+        uint64_t        elements;
+    } stats[STAT_SLOTS];
+    uint32_t            stats_returned;
+
     pick_slot_t         picks[PICK_SLOTS];
     uint64_t            pick_seq;
     uint64_t            pick_returned;
@@ -305,6 +365,12 @@ void md_render_view_destroy(md_gpu_stream_t s, md_render_view_t v) {
     if (v->view_buf)  md_gpu_free(s, v->view_buf);
     if (v->batch_buf) md_gpu_free(s, v->batch_buf);
     if (v->xform_buf) md_gpu_free(s, v->xform_buf);
+    if (v->lists_buf) md_gpu_free(s, v->lists_buf);
+    if (v->list_mem)  md_gpu_free(s, v->list_mem);
+    if (v->counters)  md_gpu_free(s, v->counters);
+    if (v->vis64)     md_gpu_free(s, v->vis64);
+    if (v->hiz)       md_gpu_texture_destroy(v->hiz);
+    for (uint32_t i = 0; i < STAT_SLOTS; ++i) if (v->stats[i].host.gpu) md_gpu_free(s, v->stats[i].host.gpu);
     for (uint32_t i = 0; i < PICK_SLOTS; ++i) free_pick(v, s, &v->picks[i]);
     if (v->batches)      md_free(a, v->batches, v->batch_cap * sizeof(md_render_batch_t));
     if (v->table)        md_free(a, v->table, v->batch_cap * sizeof(gpu_batch_t));
@@ -410,6 +476,13 @@ static bool validate(const md_render_frame_t* f) {
         MD_LOG_ERROR("md_render: batch_count without batches");
         return false;
     }
+    uint64_t total = 0;
+    for (uint32_t i = 0; i < f->batch_count; ++i) total += (f->batches[i].kind == MD_RENDER_SPHERES || f->batches[i].kind == MD_RENDER_CAPSULES)
+        ? (uint64_t)f->batches[i].count * ((f->batches[i].transform && f->batches[i].transform_count) ? f->batches[i].transform_count : 1u) : 0u;
+    if (total >= (1ull << 31)) {
+        MD_LOG_ERROR("md_render: %llu elements times instances in a frame; at most 2^31", (unsigned long long)total);
+        return false;
+    }
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
         if (b->key == 0) {
@@ -473,6 +546,12 @@ static uint32_t instance_count(const md_render_batch_t* b) {
     return (b->transform && b->transform_count) ? b->transform_count : 1u;
 }
 
+/* Work items of the cull: elements times instances, for the kinds that are culled */
+static uint64_t batch_work(const md_render_batch_t* b) {
+    if (b->kind != MD_RENDER_SPHERES && b->kind != MD_RENDER_CAPSULES) return 0;
+    return (uint64_t)b->count * instance_count(b);
+}
+
 /* Store the frame as the one last drawn. */
 static bool ensure_batch_cap(md_render_view_t v, uint32_t n) {
     md_allocator_i* a = v->r->alloc;
@@ -523,6 +602,7 @@ static change_t compare(const md_render_view_t v, const md_render_frame_t* f) {
     if (memcmp(&f->camera, &l->camera, sizeof(f->camera)) != 0) return CHANGE_RASTER;
     if (f->batch_count != l->batch_count) return CHANGE_RASTER;
     if (f->content[MD_RENDER_CONTENT_GEOMETRY] != l->content[MD_RENDER_CONTENT_GEOMETRY]) return CHANGE_RASTER;
+    if (f->options != l->options || f->small_pixels != l->small_pixels) return CHANGE_RASTER;
     change_t c = CHANGE_NONE;
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         md_render_batch_t x, y;
@@ -665,9 +745,12 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
             o += 16u * n;
         }
     }
+    uint32_t work = 0;
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         md_gpu_addr_t xf = v->table[i].transforms, xp = v->table[i].transforms_prev;
         fill_batch(&v->table[i], &f->batches[i], instance_count(&f->batches[i]), xf, xp);
+        v->table[i].work_offset = work;
+        work += (uint32_t)batch_work(&f->batches[i]);
     }
     size_t cap = (size_t)v->batch_buf_cap * sizeof(gpu_batch_t);
     size_t need = (size_t)(f->batch_count ? f->batch_count : 1) * sizeof(gpu_batch_t);
@@ -689,37 +772,132 @@ static gpu_args_t base_args(const md_render_view_t v) {
     a.mask    = md_gpu_texture_storage(v->t.mask, 0);
     a.width   = v->width;
     a.height  = v->height;
+    a.lists   = v->lists_buf;
+    if (v->hiz) a.hiz = md_gpu_texture_sampled(v->hiz);
     return a;
 }
 
-static void draw_batches(md_gpu_stream_t s, const md_render_view_t v, const md_render_frame_t* f, uint32_t mode) {
-    md_render_t r = v->r;
-    gpu_args_t  a = base_args(v);
-    a.mode = mode;
-    for (uint32_t i = 0; i < f->batch_count; ++i) {
-        const md_render_batch_t* b = &f->batches[i];
-        if (b->count == 0) continue;
-        if (mode == 1 && !b->points.state[0] && !b->points.state[1]) continue;
-        md_gpu_draw_state_t ds = {0};
-        ds.depth_compare = mode == 0 ? MD_GPU_COMPARE_GREATER_EQUAL : MD_GPU_COMPARE_ALWAYS;
-        ds.depth_write   = mode == 0;
-        md_gpu_pipeline_t p = NULL;
-        uint32_t verts = 0;
-        if (b->kind == MD_RENDER_SPHERES) {
-            p = mode == 0 ? r->sphere_vis : r->sphere_mask;
-            verts = 6;
-            ds.cull = MD_GPU_CULL_NONE;
-        } else if (b->kind == MD_RENDER_CAPSULES) {
-            p = mode == 0 ? r->capsule_vis : r->capsule_mask;
-            verts = 36;
-            ds.cull = MD_GPU_CULL_BACK;
-        } else {
-            continue;
-        }
-        md_gpu_set_draw_state(s, &ds);
-        a.slot = i;
-        md_gpu_draw(s, p, b->count * verts, instance_count(b), &a, sizeof(a));
+/* ---- Cull lists, pyramid -------------------------------------------------------- */
+
+static md_gpu_addr_t align_addr(md_gpu_addr_t x) { return (x + 255u) & ~(md_gpu_addr_t)255u; }
+
+/* Lists sized for the worst case of this frame: every element in each list of
+   its kind. 32 bytes per element in all; clusters would cut that down. */
+static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, uint64_t work0, uint64_t work1, bool compute) {
+    const uint64_t tot = work0 + work1;
+    const uint64_t sizes[6] = { work0, work1, work0, work1, tot, tot };
+    size_t need = 0;
+    for (int i = 0; i < 6; ++i) need += (size_t)align_addr((sizes[i] + 1) * 8u);
+    if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
+    gpu_lists_t l;
+    md_gpu_addr_t o = v->list_mem;
+    md_gpu_addr_t* dst[6] = { &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ };
+    for (int i = 0; i < 6; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * 8u); }
+    if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
+    if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
+    if (!v->counters || !v->lists_buf) return false;
+    if (compute && !gpu_realloc(s, &v->vis64, &v->vis64_cap, (size_t)v->width * v->height * 8u)) return false;
+    l.counters = v->counters;
+    l.vis64    = v->vis64;
+    return md_gpu_upload(s, v->lists_buf, &l, sizeof(l));
+}
+
+/* Level 0 is half the target, rounded up, down to 1 x 1 */
+static bool ensure_hiz(md_gpu_stream_t s, md_render_view_t v) {
+    uint32_t w = (v->width + 1) / 2, h = (v->height + 1) / 2;
+    if (v->hiz && v->hiz_w == w && v->hiz_h == h) return true;
+    if (v->hiz) md_gpu_texture_destroy(v->hiz);
+    uint32_t levels = 1, m = w > h ? w : h;
+    while (m > 1) { m >>= 1; ++levels; }
+    md_gpu_texture_desc_t td = {0};
+    td.type       = MD_GPU_TEX_2D;
+    td.format     = MD_GPU_FORMAT_R32_FLOAT;
+    td.usage      = MD_GPU_TEX_SAMPLED | MD_GPU_TEX_STORAGE;
+    td.width      = w;
+    td.height     = h;
+    td.mip_levels = levels;
+    td.label      = "md_render.hiz";
+    v->hiz        = md_gpu_texture_create(s, &td);
+    v->hiz_w      = w;
+    v->hiz_h      = h;
+    v->hiz_levels = levels;
+    v->hiz_ok     = false;
+    return v->hiz != NULL;
+}
+
+static bool build_hiz(md_gpu_stream_t s, md_render_view_t v) {
+    gpu_args_t a = base_args(v);
+    uint32_t sw = v->width, sh = v->height, dw = v->hiz_w, dh = v->hiz_h;
+    for (uint32_t L = 0; L < v->hiz_levels; ++L) {
+        a.src     = L == 0 ? md_gpu_texture_sampled(v->t.depth) : md_gpu_texture_sampled(v->hiz);
+        a.src_mip = L == 0 ? 0 : L - 1;
+        a.src_w   = sw;
+        a.src_h   = sh;
+        a.dst     = md_gpu_texture_storage(v->hiz, L);
+        a.dst_w   = dw;
+        a.dst_h   = dh;
+        if (!md_gpu_launch(s, v->r->k_hiz, md_gpu_grid_for(v->r->k_hiz, dw, dh, 1), &a, sizeof(a))) return false;
+        sw = dw; sh = dh;
+        dw = dw > 1 ? (dw + 1) / 2 : 1;
+        dh = dh > 1 ? (dh + 1) / 2 : 1;
     }
+    return true;
+}
+
+static bool run_cull(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, uint32_t total) {
+    gpu_args_t a = base_args(v);
+    a.mode = phase;
+    bool ok;
+    if (phase == 2) {
+        ok = md_gpu_launch_indirect(s, v->r->k_cull, CTR(v, C_GRID_OCC), &a, sizeof(a));
+    } else {
+        uint32_t groups = (total + CULL_GROUP - 1) / CULL_GROUP;
+        if (groups > 65535) groups = 65535;
+        if (groups == 0) groups = 1;
+        ok = md_gpu_launch(s, v->r->k_cull, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
+    }
+    return ok && md_gpu_launch(s, v->r->k_finalize, md_gpu_grid(1, 1, 1), &a, sizeof(a));
+}
+
+static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t phase) {
+    gpu_args_t a = base_args(v);
+    a.mode = phase;
+    return md_gpu_launch_indirect(s, v->r->k_raster_small, CTR(v, C_GRID_SMALL + (phase - 1) * 4), &a, sizeof(a));
+}
+
+/* Phase 1 clears; phase 2 adds. The compute raster's result goes in first, as
+   depth and ids, then each kind in one indirect draw whose instance count the
+   cull wrote. The CPU's cost is independent of the number of batches. */
+static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bool compute, const bool has_kind[2]) {
+    md_render_t r = v->r;
+    md_gpu_render_desc_t rd = {0};
+    rd.color_count       = 1;
+    rd.color[0].texture  = v->t.id;
+    rd.color[0].load     = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
+    rd.color[0].store    = MD_GPU_STORE;
+    rd.depth.texture     = v->t.depth;
+    rd.depth.load        = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
+    rd.depth.store       = MD_GPU_STORE;
+    rd.depth.clear_depth = 0.0f;
+    rd.label             = phase == 1 ? "md_render.raster1" : "md_render.raster2";
+    if (!md_gpu_render_begin(s, &rd)) return false;
+    gpu_args_t a = base_args(v);
+    md_gpu_draw_state_t ds = {0};
+    ds.depth_compare = MD_GPU_COMPARE_GREATER_EQUAL;
+    ds.depth_write   = true;
+    if (compute) {
+        md_gpu_set_draw_state(s, &ds);
+        md_gpu_draw(s, r->merge, 3, 1, &a, sizeof(a));
+    }
+    for (uint32_t k = 0; k < 2; ++k) {
+        if (!has_kind[k]) continue;
+        ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
+        md_gpu_set_draw_state(s, &ds);
+        a.mode = 0;
+        a.list = k;
+        md_gpu_draw_indirect(s, k == 0 ? r->sphere_vis : r->capsule_vis, CTR(v, C_CMD + ((phase - 1) * 2 + k) * 4), 1, &a, sizeof(a));
+    }
+    return md_gpu_render_end(s);
 }
 
 static bool run_resolve(md_gpu_stream_t s, md_render_view_t v) {
@@ -728,28 +906,86 @@ static bool run_resolve(md_gpu_stream_t s, md_render_view_t v) {
     return md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a));
 }
 
+/* The visible part from the ids; the hidden part by rasterising the state
+   lists of the cull without a depth test, so it costs as much as the
+   selection and not the system. */
 static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f) {
     gpu_args_t a = base_args(v);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_mask_visible, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_mask_visible, g, &a, sizeof(a))) return false;
 
-    bool any = false;
+    bool has[2] = { false, false };
     for (uint32_t i = 0; i < f->batch_count; ++i) {
-        if (f->batches[i].count && (f->batches[i].points.state[0] || f->batches[i].points.state[1])) any = true;
+        const md_render_batch_t* b = &f->batches[i];
+        if (b->count && (b->points.state[0] || b->points.state[1])) {
+            if (b->kind == MD_RENDER_SPHERES)  has[0] = true;
+            if (b->kind == MD_RENDER_CAPSULES) has[1] = true;
+        }
     }
-    if (!any) return true;
+    if (!has[0] && !has[1]) return true;
     md_gpu_render_desc_t rd = {0};
-    rd.color_count     = 1;
+    rd.color_count      = 1;
     rd.color[0].texture = v->t.mask;
     rd.color[0].load    = MD_GPU_LOAD;
     rd.color[0].store   = MD_GPU_STORE;
-    rd.depth.texture    = v->t.depth;
+    rd.depth.texture    = v->t.depth;     /* not tested: the fragment stage writes depth, which Metal wants an attachment for */
     rd.depth.load       = MD_GPU_LOAD;
     rd.depth.store      = MD_GPU_STORE;
     rd.label            = "md_render.mask";
     if (!md_gpu_render_begin(s, &rd)) return false;
-    draw_batches(s, v, f, 1);
+    md_gpu_draw_state_t ds = {0};
+    ds.depth_compare = MD_GPU_COMPARE_ALWAYS;
+    for (uint32_t k = 0; k < 2; ++k) {
+        if (!has[k]) continue;
+        ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
+        md_gpu_set_draw_state(s, &ds);
+        a.mode = 1;
+        a.list = 2 + k;
+        md_gpu_draw_indirect(s, k == 0 ? v->r->sphere_mask : v->r->capsule_mask, CTR(v, C_STCMD + k * 4), 1, &a, sizeof(a));
+    }
     return md_gpu_render_end(s);
+}
+
+static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t elements) {
+    /* the slot not pending, else the oldest */
+    uint32_t best = 0;
+    for (uint32_t i = 0; i < STAT_SLOTS; ++i) {
+        if (!v->stats[i].pending) { best = i; break; }
+        if (v->stats[i].raster < v->stats[best].raster) best = i;
+    }
+    if (!v->stats[best].host.gpu) v->stats[best].host = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, C_COUNT * 4u);
+    if (!v->stats[best].host.cpu) return;
+    md_gpu_copy(s, v->stats[best].host.gpu, v->counters, C_COUNT * 4u);
+    v->stats[best].sync     = md_gpu_stream_record(s);
+    v->stats[best].pending  = true;
+    v->stats[best].raster   = v->raster_count;
+    v->stats[best].elements = elements;
+}
+
+bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
+    if (!v || !out) return false;
+    int best = -1;
+    for (uint32_t i = 0; i < STAT_SLOTS; ++i) {
+        if (!v->stats[i].pending || !md_gpu_sync_is_complete(v->stats[i].sync)) continue;
+        if (v->stats[i].raster <= v->stats_returned) { v->stats[i].pending = false; continue; }
+        if (best < 0 || v->stats[i].raster > v->stats[best].raster) best = (int)i;
+    }
+    if (best < 0) return false;
+    const uint32_t* c = (const uint32_t*)v->stats[best].host.cpu;
+    memset(out, 0, sizeof(*out));
+    out->elements    = v->stats[best].elements;
+    out->hidden      = c[C_HIDDEN];
+    out->outside     = c[C_OUTSIDE];
+    out->occluded    = c[C_OCCLUDED];
+    out->hardware[0] = c[C_HW1] + c[C_HW1 + 1];
+    out->hardware[1] = c[C_HW2] + c[C_HW2 + 1];
+    out->compute[0]  = c[C_SMALL1];
+    out->compute[1]  = c[C_SMALL2];
+    out->occlusion_retested = c[C_OCC];
+    out->raster      = v->stats[best].raster;
+    v->stats_returned = out->raster;
+    for (uint32_t i = 0; i < STAT_SLOTS; ++i) if (v->stats[i].raster <= v->stats_returned) v->stats[i].pending = false;
+    return true;
 }
 
 static void store_raster_meta(md_render_view_t v, const md_render_frame_t* f) {
@@ -801,6 +1037,11 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         break;
     }
 
+    const bool occlusion = !(f->options & MD_RENDER_NO_OCCLUSION_CULLING);
+    const bool compute   = !(f->options & MD_RENDER_NO_COMPUTE_RASTER) && v->r->atomic_int64;
+    bool hiz_valid = false;
+    if (resized) v->hiz_ok = false;
+
     if (raster) {
         /* Jitter, in pixels. Sample 0 is pixel centres, so a view drawn once
            (or a test) sees exactly what its camera says. */
@@ -837,25 +1078,65 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.dt          = v->has_raster ? (float)(f->time - v->raster_time) : 0.0f;
         gv.ortho       = (f->camera.proj[3] == 0.0f && f->camera.proj[7] == 0.0f && f->camera.proj[11] == 0.0f && f->camera.proj[15] == 1.0f) ? 1u : 0u;
         gv.batch_count = f->batch_count;
+        {
+            uint64_t tw = 0;
+            for (uint32_t i = 0; i < f->batch_count; ++i) tw += batch_work(&f->batches[i]);
+            gv.total_work = (uint32_t)tw;
+        }
+        /* The near plane: where the projection's depth is 1 */
+        {
+            const float* P = f->camera.proj;
+            float den = P[10] - P[11];
+            gv.near_z = den != 0.0f ? (P[15] - P[14]) / den : 0.0f;
+        }
+        if (occlusion && !ensure_hiz(s, v)) return false;
+        hiz_valid          = occlusion && v->hiz_ok;
+        gv.hiz_valid       = hiz_valid ? 1u : 0u;
+        gv.hiz_w           = v->hiz_w;
+        gv.hiz_h           = v->hiz_h;
+        gv.hiz_levels      = v->hiz_levels;
+        gv.occlusion       = occlusion ? 1u : 0u;
+        gv.compute_raster  = compute ? 1u : 0u;
+        gv.small_px        = f->small_pixels > 0.0f ? f->small_pixels : DEFAULT_SMALL_PIXELS;
         if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_view_t)).gpu;
         if (!v->view_buf) return false;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         if (!upload_tables(s, v, f, true)) return false;
 
-        md_gpu_render_desc_t rd = {0};
-        rd.color_count       = 1;
-        rd.color[0].texture  = v->t.id;
-        rd.color[0].load     = MD_GPU_LOAD_CLEAR;
-        rd.color[0].store    = MD_GPU_STORE;
-        rd.depth.texture     = v->t.depth;
-        rd.depth.load        = MD_GPU_LOAD_CLEAR;
-        rd.depth.store       = MD_GPU_STORE;
-        rd.depth.clear_depth = 0.0f;
-        rd.label             = "md_render.raster";
-        if (!md_gpu_render_begin(s, &rd)) return false;
-        draw_batches(s, v, f, 0);
-        if (!md_gpu_render_end(s)) return false;
+        uint64_t work[2] = { 0, 0 };
+        bool has_kind[2] = { false, false };
+        for (uint32_t i = 0; i < f->batch_count; ++i) {
+            const md_render_batch_t* b = &f->batches[i];
+            uint32_t k = b->kind == MD_RENDER_CAPSULES ? 1u : 0u;
+            work[k] += batch_work(b);
+            if (batch_work(b)) has_kind[k] = true;
+        }
+        const uint32_t total = (uint32_t)(work[0] + work[1]);
+        if (!ensure_lists(s, v, work[0], work[1], compute)) return false;
+        md_gpu_memset(s, v->counters, 0, C_COUNT * 4u);
+        if (compute) md_gpu_memset(s, v->vis64, 0, (size_t)v->width * v->height * 8u);
+
+        /* Phase 1: against the previous raster's pyramid (when there is one) */
+        if (!run_cull(s, v, 1, total)) return false;
+        if (compute && !run_raster_small(s, v, 1)) return false;
+        if (!run_raster(s, v, 1, compute, has_kind)) return false;
+
+        if (occlusion) {
+            if (!build_hiz(s, v)) return false;
+            if (hiz_valid) {
+                /* Phase 2: what phase 1 found occluded, against this raster */
+                if (!run_cull(s, v, 2, total)) return false;
+                if (compute && !run_raster_small(s, v, 2)) return false;
+                if (!run_raster(s, v, 2, compute, has_kind)) return false;
+                if (!build_hiz(s, v)) return false;     /* for the next raster */
+            }
+            v->hiz_ok = true;
+        } else {
+            v->hiz_ok = false;
+        }
+        v->raster_count++;
+        record_stats(s, v, total);
 
         v->raster_time = f->time;
         memcpy(v->raster_view, f->camera.view, sizeof(v->raster_view));
@@ -865,6 +1146,14 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         store_raster_meta(v, f);
     } else if (resolve) {
         if (!upload_tables(s, v, f, false)) return false;
+    }
+    if (!raster && mask) {
+        /* The state bits changed (or the colours, which this does not need, but
+           cheaply): the state lists follow them. Phase 3 culls nothing else. */
+        uint64_t tw = 0;
+        for (uint32_t i = 0; i < f->batch_count; ++i) tw += batch_work(&f->batches[i]);
+        md_gpu_memset(s, CTR(v, C_ST), 0, 8u);
+        if (!run_cull(s, v, 3, (uint32_t)tw)) return false;
     }
 
     if (resolve && !run_resolve(s, v)) return false;
