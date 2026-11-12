@@ -39,6 +39,12 @@
 #   define MD_NOINLINE      __attribute__((noinline))
 #endif
 
+#ifdef __cplusplus
+#define MD_ALIGNOF(T) alignof(T)
+#else
+#define MD_ALIGNOF(T) _Alignof(T)
+#endif
+
 #if defined(__cplusplus)
 #   define MD_FALLTHROUGH [[fallthrough]]
 #elif MD_COMPILER_MSVC

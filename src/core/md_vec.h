@@ -201,20 +201,14 @@ typedef struct MD_ALIGNAS(32) md_double4_t {
 #	pragma warning(pop)
 #endif
 
-#ifdef __cplusplus
-#define MD_VEC__ALIGNOF(T) alignof(T)
-#else
-#define MD_VEC__ALIGNOF(T) _Alignof(T)
-#endif
-
-MD_STATIC_ASSERT(sizeof(md_float2_t)   ==  8 && MD_VEC__ALIGNOF(md_float2_t)   ==  4, "md_float2_t layout");
-MD_STATIC_ASSERT(sizeof(md_float3_t)   == 12 && MD_VEC__ALIGNOF(md_float3_t)   ==  4, "md_float3_t layout");
-MD_STATIC_ASSERT(sizeof(md_float4_t)   == 16 && MD_VEC__ALIGNOF(md_float4_t)   == 16, "md_float4_t layout");
-MD_STATIC_ASSERT(sizeof(md_quat_t)    == 16 && MD_VEC__ALIGNOF(md_quat_t)    == 16, "md_quat_t layout");
-MD_STATIC_ASSERT(sizeof(md_float2x2_t) == 16 && MD_VEC__ALIGNOF(md_float2x2_t) ==  4, "md_float2x2_t layout");
-MD_STATIC_ASSERT(sizeof(md_float3x3_t) == 36 && MD_VEC__ALIGNOF(md_float3x3_t) ==  4, "md_float3x3_t layout");
-MD_STATIC_ASSERT(sizeof(md_float4x4_t) == 64 && MD_VEC__ALIGNOF(md_float4x4_t) == 16, "md_float4x4_t layout");
-MD_STATIC_ASSERT(sizeof(md_float4x3_t) == 48 && MD_VEC__ALIGNOF(md_float4x3_t) == 16, "md_float4x3_t layout");
-MD_STATIC_ASSERT(sizeof(md_double2_t)   == 16 && MD_VEC__ALIGNOF(md_double2_t)   == 16, "md_double2_t layout");
-MD_STATIC_ASSERT(sizeof(md_double3_t)   == 24 && MD_VEC__ALIGNOF(md_double3_t)   ==  8, "md_double3_t layout");
-MD_STATIC_ASSERT(sizeof(md_double4_t)   == 32 && MD_VEC__ALIGNOF(md_double4_t)   == 32, "md_double4_t layout");
+MD_STATIC_ASSERT(sizeof(md_float2_t)   ==  8 && MD_ALIGNOF(md_float2_t)   ==  4, "md_float2_t layout");
+MD_STATIC_ASSERT(sizeof(md_float3_t)   == 12 && MD_ALIGNOF(md_float3_t)   ==  4, "md_float3_t layout");
+MD_STATIC_ASSERT(sizeof(md_float4_t)   == 16 && MD_ALIGNOF(md_float4_t)   == 16, "md_float4_t layout");
+MD_STATIC_ASSERT(sizeof(md_quat_t)     == 16 && MD_ALIGNOF(md_quat_t)     == 16, "md_quat_t layout");
+MD_STATIC_ASSERT(sizeof(md_float2x2_t) == 16 && MD_ALIGNOF(md_float2x2_t) ==  4, "md_float2x2_t layout");
+MD_STATIC_ASSERT(sizeof(md_float3x3_t) == 36 && MD_ALIGNOF(md_float3x3_t) ==  4, "md_float3x3_t layout");
+MD_STATIC_ASSERT(sizeof(md_float4x4_t) == 64 && MD_ALIGNOF(md_float4x4_t) == 16, "md_float4x4_t layout");
+MD_STATIC_ASSERT(sizeof(md_float4x3_t) == 48 && MD_ALIGNOF(md_float4x3_t) == 16, "md_float4x3_t layout");
+MD_STATIC_ASSERT(sizeof(md_double2_t)  == 16 && MD_ALIGNOF(md_double2_t)  == 16, "md_double2_t layout");
+MD_STATIC_ASSERT(sizeof(md_double3_t)  == 24 && MD_ALIGNOF(md_double3_t)  ==  8, "md_double3_t layout");
+MD_STATIC_ASSERT(sizeof(md_double4_t)  == 32 && MD_ALIGNOF(md_double4_t)  == 32, "md_double4_t layout");
