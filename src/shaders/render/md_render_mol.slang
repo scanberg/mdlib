@@ -68,6 +68,18 @@ struct Args {
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
     uint* marker;               // 4 words: whose radii the copy's w holds (see sol_gather)
+    uint* frame0;               // frames: the slots combined (planes x, y, z, plane_words apart)
+    uint* frame1;
+    uint* frame2;
+    uint* frame3;
+    uint* fpar0;                // and their parameters (see FP_*)
+    uint* fpar1;
+    uint* fpar2;
+    uint* fpar3;
+    uint* qsrc;                 // reorder, permute: planes from; regroup: the uploaded frame's
+    uint* qdst;                 // planes to
+    uint* qpar;                 // regroup: the uploaded frame's parameters
+    uint* src_point;            // regroup with resident frames: each small point's old point
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -90,6 +102,14 @@ struct Args {
     uint  ident1;
     uint  ident2;
     uint  _pad;
+    uint  plane_words;          // frames: words from one plane to the next
+    uint  frame_count;          // fr_gather: 1, 2 or 4
+    uint  quantized;            // regroup: positions from qsrc, not `position`
+    uint  has_src;              // sol_write: record src_point
+    uint  has_fvel;             // fr_gather: velocities from dw
+    uint  _pad2;
+    float w0, w1, w2, w3;       // fr_gather: weights of the frames
+    float dw0, dw1, dw2, dw3;   // and of their derivative
 };
 MD_SHADER_ARGS(Args);
 
@@ -110,8 +130,36 @@ uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
 uint  ordered(float f)  { uint b = asuint(f); return (b & 0x80000000u) != 0u ? ~b : (b | 0x80000000u); }
 float unordered(uint u) { return asfloat((u & 0x80000000u) != 0u ? (u & 0x7FFFFFFFu) : ~u); }
 
+// ---- Frames: 16-bit planes, two values to a word ------------------------------
+// Parameters of a frame, 32 words: origin, scale, the cell's columns, the
+// rows of its inverse (zero for an axis that is not periodic), periodic.
+
+static const uint FP_ORIGIN   = 0u;
+static const uint FP_SCALE    = 3u;
+static const uint FP_CELL     = 6u;
+static const uint FP_INV      = 15u;
+static const uint FP_PERIODIC = 24u;
+
+float3 ld3(uint* p, uint o) { return float3(asfloat(p[o]), asfloat(p[o + 1u]), asfloat(p[o + 2u])); }
+
+uint half16(uint* plane, uint i) { return (plane[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu; }
+
+float3 dequant(uint* planes, uint pw, uint* par, uint i) {
+    float3 q = float3(float(half16(planes, i)), float(half16(planes + pw, i)), float(half16(planes + 2u * pw, i)));
+    return ld3(par, FP_ORIGIN) + q * ld3(par, FP_SCALE);
+}
+
+// d at its minimum image, by the cell's lattice: right while the true
+// displacement is well inside the cell (between frames it is)
+float3 min_image(uint* par, float3 d) {
+    if (par[FP_PERIODIC] == 0u) return d;
+    float3 n = round(float3(dot(ld3(par, FP_INV), d), dot(ld3(par, FP_INV + 3u), d), dot(ld3(par, FP_INV + 6u), d)));
+    return d - ld3(par, FP_CELL) * n.x - ld3(par, FP_CELL + 3u) * n.y - ld3(par, FP_CELL + 6u) * n.z;
+}
+
 float3 first_pos(Args a, uint m) {
     uint i = a.mol_atoms[a.mol_atom_offset[m]];
+    if (a.quantized != 0u) return dequant(a.qsrc, a.plane_words, a.qpar, i);
     uint* p = a.position + i * (a.stride >> 2);
     return float3(asfloat(p[0]), asfloat(p[1]), asfloat(p[2]));
 }
@@ -324,6 +372,7 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
         uint at = p0;
         for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) {
             uint atom = a.mol_atoms[k];
+            if (a.has_src != 0u) a.src_point[at - a.static_atoms] = a.atom_point[atom];
             a.atom_order[at] = atom;
             a.atom_point[atom] = at;
             at += 1u;
@@ -368,6 +417,17 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
+bool radii_valid(Args a) {
+    return a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2;
+}
+
+// An atom's radius from its source: the caller's array, or its type's
+uint radius_of(Args a, uint atom) {
+    if (a.has_radius != 0u) return a.radius_override[atom];
+    uint t = (a.types[atom >> 1u] >> ((atom & 1u) * 16u)) & 0xFFFFu;
+    return t < a.type_count ? a.type_radius[t] : 0u;
+}
+
 // The copy that is drawn: point p is atom atom_order[p]. Writes in order,
 // reads where the atoms are (in runs: the atoms of a residue or a molecule
 // are neighbours in both orders).
@@ -376,19 +436,11 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
 void sol_gather(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
-    bool reuse = a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2;
+    bool reuse = radii_valid(a);
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
-        uint r;
-        if (reuse) {
-            r = a.points[4u * p + 3u];
-        } else if (a.has_radius != 0u) {
-            r = a.radius_override[atom];
-        } else {
-            uint t = (a.types[atom >> 1u] >> ((atom & 1u) * 16u)) & 0xFFFFu;
-            r = t < a.type_count ? a.type_radius[t] : 0u;
-        }
+        uint r = reuse ? a.points[4u * p + 3u] : radius_of(a, atom);
         uint4 v = uint4(q[0], q[1], q[2], r);
         ((uint4*)a.points)[p] = v;
         if (a.has_velocity != 0u) {
@@ -407,4 +459,73 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
     a.marker[1] = a.ident0;
     a.marker[2] = a.ident1;
     a.marker[3] = a.ident2;
+}
+
+// ---- Frames --------------------------------------------------------------------
+
+// The copy that is drawn, from resident frames in point order: every read in
+// order (the atom only for radii from their source)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_gather(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    uint pw = a.plane_words;
+    bool reuse = radii_valid(a);
+    for (uint p = tid.x; p < n; p += grid_threads(n)) {
+        float3 pos, vel = float3(0.0);
+        float3 x0 = dequant(a.frame0, pw, a.fpar0, p);
+        if (a.frame_count == 1u) {
+            pos = x0;
+        } else if (a.frame_count == 2u) {
+            float3 x1 = x0 + min_image(a.fpar0, dequant(a.frame1, pw, a.fpar1, p) - x0);
+            pos = a.w0 * x0 + a.w1 * x1;
+            vel = a.dw0 * x0 + a.dw1 * x1;
+        } else {
+            float3 x1 = dequant(a.frame1, pw, a.fpar1, p);
+            x0 = x1 + min_image(a.fpar1, x0 - x1);
+            float3 x2 = x1 + min_image(a.fpar1, dequant(a.frame2, pw, a.fpar2, p) - x1);
+            float3 x3 = x2 + min_image(a.fpar1, dequant(a.frame3, pw, a.fpar3, p) - x2);
+            pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
+            vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
+        }
+        uint r = reuse ? a.points[4u * p + 3u] : radius_of(a, a.atom_order[p]);
+        ((uint4*)a.points)[p] = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
+        if (a.has_fvel != 0u) ((uint2*)a.vel_out)[p] = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
+    }
+}
+
+// An uploaded frame (qsrc, atom order) into its slot (qdst, point order).
+// A thread per word of the destination: two points, each from its atom.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_reorder(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count, words = (n + 1u) >> 1u, pw = a.plane_words;
+    for (uint w = tid.x; w < words; w += grid_threads(words)) {
+        uint i0 = a.atom_order[2u * w];
+        uint i1 = 2u * w + 1u < n ? a.atom_order[2u * w + 1u] : i0;
+        for (uint k = 0u; k < 3u; ++k) {
+            uint* src = a.qsrc + k * pw;
+            a.qdst[k * pw + w] = half16(src, i0) | (half16(src, i1) << 16u);
+        }
+    }
+}
+
+// After a regroup: a resident frame (qsrc, the old point order) into the new
+// one (qdst). The static points stay; a small one was src_point[p - static].
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_permute(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count, words = (n + 1u) >> 1u, pw = a.plane_words, st = a.static_atoms;
+    for (uint w = tid.x; w < words; w += grid_threads(words)) {
+        uint p0 = 2u * w, p1 = min(p0 + 1u, n - 1u);
+        uint s0 = p0 < st ? p0 : a.src_point[p0 - st];
+        uint s1 = p1 < st ? p1 : a.src_point[p1 - st];
+        for (uint k = 0u; k < 3u; ++k) {
+            uint* src = a.qsrc + k * pw;
+            a.qdst[k * pw + w] = half16(src, s0) | (half16(src, s1) << 16u);
+        }
+    }
 }

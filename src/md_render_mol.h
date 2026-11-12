@@ -62,6 +62,11 @@ lifetime:
     (attr_index = atom_order), and picks report atoms. The update must run
     after every change of positions, velocities or radii.
 
+  * The positions can be the caller's, or frames of a trajectory resident on
+    the GPU (see Frames): each uploaded once, quantized, and interpolated by
+    the update with the velocities of the curve, so nothing is uploaded or
+    interpolated on the host per step.
+
   * Radii come from the system's particle types: the topology holds each
     atom's type and a radius per type (sys->atom.type.radius when planned).
     A changed radius per type is a table and an update
@@ -86,6 +91,7 @@ chain gaps, ring circles.
 
 struct md_system_t;
 struct md_system_state_t;
+struct md_unitcell_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -205,6 +211,19 @@ typedef struct md_render_mol_atoms_t {
     md_gpu_addr_t visible;         /* bitset over atoms: globally shown, optional     */
     md_gpu_addr_t selection;       /* bitset over atoms, optional                     */
     md_gpu_addr_t highlight;       /* bitset over atoms, optional                     */
+
+    /* Instead of position and velocity: frames resident on the GPU (see
+       Frames below), combined by the update. In a periodic cell frames [0]
+       and [2] of four are taken at the minimum image of [1], and [3] at that
+       of [2]; of two, [1] at that of [0] (the cell of [1] of four, of [0] of
+       two). md_render_mol_frame_weights writes the weights. */
+    const struct md_render_mol_frames_t* frames;
+    uint32_t      frame_count;     /* 1: frame_slot[0] as it is; 2 or 4: weighted     */
+    uint32_t      frame_slot[4];
+    float         frame_w[4];      /* position = sum of w[k] frame[k]                 */
+    float         frame_dw[4];     /* velocity = sum of dw[k] frame[k]. All 0: at rest,
+                                      no velocities (as without `velocity`); else
+                                      needs a block of topo.dynamic_size_velocity    */
 } md_render_mol_atoms_t;
 
 /* The coordinates of a state into `dst` (num_atoms * 12 bytes): md_system_state_t
@@ -228,7 +247,9 @@ enum {
 
 /* A regroup reorders the topology: every per-frame block gathered from it
    before is stale (its copy in the old order) until it is updated again.
-   One per-frame block per topology is the usual case.
+   One per-frame block per topology is the usual case. With atoms->frames
+   the regroup belongs to md_render_mol_frame_upload, and REGROUP here
+   fails.
 
    After positions, velocities or radii changed (and before the first draw):
    the copy that is drawn gathered into `dynamic` ([topo->dynamic_size]
@@ -238,6 +259,105 @@ enum {
 bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                           md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]);
+
+/* =========================================================================
+   Frames: a trajectory resident on the GPU, interpolated there
+   ========================================================================= */
+
+/* Instead of the caller's positions, the update can combine frames held in
+   GPU memory: up to MD_RENDER_MOL_FRAME_SLOTS of them in one caller-owned
+   block, each uploaded once and interpolated on the GPU for every step
+   between them, with the velocities of the curve. What crosses the bus is
+   one small frame per frame of the trajectory, nothing per step.
+
+   A frame is quantized on the host: each axis to 16 bits over the frame's
+   bounds, p = origin + q * scale, as three planes (x, y, z) in atom order,
+   6 bytes per atom. The step is the extent over 65535: 0.01 A up to a 655 A
+   system (the precision of an xtc at its default, so such a frame loses
+   nothing the file had), 0.03 A at 2000 A.
+
+   Resident frames are in the point order, so the update reads them in
+   order: one coalesced pass, 6 bytes per frame and atom in, the copy out.
+   A regroup reorders the points, so it happens at an upload, by the frame
+   uploaded, and the frames already resident are reordered along (one pass
+   over each). The usual pattern is a regroup with every new frame of the
+   trajectory:
+
+       md_render_mol_frames_t fr;
+       md_gpu_addr_t fb = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&topo, 4)).gpu;
+       md_render_mol_frames_init(&fr, &topo, fb, 4);
+       ...
+       md_render_mol_frame_quantize(&f, x, y, z, xyz, 0, n, cell);     // host, any thread
+       md_render_mol_frame_upload(mol, s, &topo, dyn, &fr, slot, &f, MD_RENDER_MOL_UPDATE_REGROUP);
+       ...
+       atoms.frames = &fr;                                            // per step
+       atoms.frame_count = 4;  atoms.frame_slot = { ... };            // the slots of frames i-1 .. i+2
+       md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, 4, t, dt, 0.5f);
+       md_render_mol_update(mol, s, &topo, dyn, &atoms, 0, content);
+
+   Which slot holds which frame is the caller's business (a ring, a cache).
+
+   The block: the frames, one more buffer that an upload passes through
+   (the upload lands in atom order and is reordered from there), and for a
+   regroup the old place of every small atom: (slots + 1) * 6 bytes per atom,
+   and 4 per atom of the small molecules. */
+
+#define MD_RENDER_MOL_FRAME_SLOTS 4
+
+/* A frame on the host, as uploaded */
+typedef struct md_render_mol_frame_t {
+    float           origin[3];
+    float           scale[3];      /* p = origin + q * scale, per axis               */
+    float           cell[9];       /* columns a, b, c; a zero column: not periodic
+                                      along it (all zero: not periodic)              */
+    const uint16_t* q[3];          /* the x, y and z planes, [atom_count] each       */
+} md_render_mol_frame_t;
+
+/* `count` positions (float3, `stride` bytes apart; 0: 12) into the planes x,
+   y, z ([count] each) over their bounds, and the frame of them. NaN goes to
+   the origin. `cell` may be NULL (not periodic). */
+void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* x, uint16_t* y, uint16_t* z,
+                                  const float* xyz, uint32_t stride, uint32_t count, const float cell[9]);
+
+/* An md_unitcell_t as such columns: the periodic axes' (PBC flags) */
+void md_render_mol_frame_cell(float out[9], const struct md_unitcell_t* cell);
+
+/* The block's frames, in the point order of one topology. A plain value
+   that uploads change: keep one per topology. */
+typedef struct md_render_mol_frames_t {
+    md_gpu_addr_t base;            /* the block; md_gpu_free(stream, base) frees it  */
+    uint64_t      size;
+    md_gpu_addr_t topology_base;   /* whose point order: topo.base, topo.topology_version */
+    uint64_t      topology_version;
+    uint32_t      slots;
+    uint32_t      atom_count;
+    uint32_t      valid;           /* bit k: slot k holds a frame                    */
+    uint32_t      buffer[MD_RENDER_MOL_FRAME_SLOTS + 1];   /* internal: each slot's
+                                      buffer, then the upload's                      */
+} md_render_mol_frames_t;
+
+/* Bytes of a block of `slots` frames (1 .. MD_RENDER_MOL_FRAME_SLOTS) */
+uint64_t md_render_mol_frames_size(const md_render_mol_topo_t* topo, uint32_t slots);
+
+/* An empty block at `base` (md_render_mol_frames_size bytes, caller-owned) */
+bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_topo_t* topo, md_gpu_addr_t base, uint32_t slots);
+
+/* `frame` into slot `slot`, replacing what it held. With
+   MD_RENDER_MOL_UPDATE_REGROUP (other flags are ignored): the small
+   molecules regrouped by this frame's positions, which needs `dynamic` (the
+   regroup's scratch) and reorders the topology and the other resident
+   frames along; then update before drawing. GPU work only, ordered in
+   `stream`: the frame's planes are read before this returns. */
+bool md_render_mol_frame_upload(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+                                md_gpu_addr_t dynamic, md_render_mol_frames_t* frames, uint32_t slot,
+                                const md_render_mol_frame_t* frame, md_render_mol_update_flags_t flags);
+
+/* Weights of `frame_count` frames (1, 2 or 4) at t in [0, 1] between the two
+   interpolated ([0] and [1] of two, [1] and [2] of four), and of their
+   derivative over `dt`, the time from one frame to the next in md_render's
+   frame.time units (0: no velocities). Four: a cardinal spline of tangent
+   scale `tension` (0.5: Catmull-Rom), as md_util_cubic_spline_weights. */
+void md_render_mol_frame_weights(float w[4], float dw[4], uint32_t frame_count, float t, float dt, float tension);
 
 /* =========================================================================
    Representations

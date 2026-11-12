@@ -15,7 +15,10 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       the culling and raster options, and times full rasters, resolves and
       masks on the GPU stream, with the cull statistics beside them. By
       default the scene goes through md_render_mol (molecules in random
-      order, clustered by md_render_mol_update, which is timed too);
+      order, clustered by md_render_mol_update, which is timed too, and
+      the frame pipeline: a frame quantized on the host, its upload into a
+      slot of four with and without the regroup, and the copy from 1, 2 or 4
+      resident frames in a periodic box);
       --host-grid sorts and clusters by grid cell on the host instead, and
       --implicit sorts on the host and leaves md_render its runs of 64.
       --look keeps the looks whose name contains NAME ("licorice", "far").
@@ -518,7 +521,8 @@ typedef struct scene_t {
     float         box;            // edge, A
     /* SRC_MOL */
     md_render_mol_topo_t topo;
-    md_gpu_addr_t        dyn;
+    md_gpu_addr_t        dyn;            /* with room for velocities */
+    float*               host_pos;       /* the positions, for the frames */
 } scene_t;
 
 typedef struct mol_cell_t { uint32_t cell, m; } mol_cell_t;
@@ -583,7 +587,7 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         md_gpu_addr_t base = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, plan.size).gpu : 0;
         ok = ok && base && md_render_mol_write(s, &sc->topo, &plan, base, NULL);
         md_temp_end(temp);
-        sc->dyn = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size).gpu : 0;
+        sc->dyn = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size_velocity).gpu : 0;
         free(moff); free(mats); free(pairs); free(types);
         if (!ok || !sc->dyn) { free(pos); free(rad); free(idx); free(col); return false; }
     } else {
@@ -637,7 +641,8 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
               (!plain || (md_gpu_upload(s, sc->rad, rad, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->bond_idx, idx, (size_t)sc->bonds * 8))) &&
               md_gpu_upload(s, sc->color, col, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->sel, sel, words * 4);
     md_gpu_stream_sync(s);
-    free(pos); free(rad); free(idx); free(col); free(sel);
+    if (src == SRC_MOL) sc->host_pos = pos; else free(pos);
+    free(rad); free(idx); free(col); free(sel);
     return ok;
 }
 
@@ -649,6 +654,7 @@ static void scene_free(md_gpu_stream_t s, scene_t* sc) {
     md_gpu_free(s, sc->pos); md_gpu_free(s, sc->color); md_gpu_free(s, sc->sel);
     if (sc->rad) md_gpu_free(s, sc->rad);
     if (sc->bond_idx) md_gpu_free(s, sc->bond_idx);
+    free(sc->host_pos);
 }
 
 static md_render_camera_t camera_at(const scene_t* sc, float distance_in_boxes, float aspect) {
@@ -673,6 +679,10 @@ static int cmp_d(const void* a, const void* b) { double x = *(const double*)a, y
 bool md_render_mol_update_hooked(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                                  md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                                  md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
+
+bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+                                       md_render_mol_frames_t* frames, uint32_t slot, const md_render_mol_frame_t* frame,
+                                       md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
 /* md_render's per-pass hook and the phase-1 occlusion margin experiment: in
    md_render.c, not in its header */
@@ -714,6 +724,84 @@ static timing_t time_draws(md_gpu_stream_t s, md_render_view_t v, md_render_fram
     timing_t out = { t[0], t[reps / 2] };
     free(t);
     return out;
+}
+
+static void print_times(const char* name, double* t, uint32_t reps) {
+    qsort(t, reps, sizeof(double), cmp_d);
+    printf("%s: %6.2f / %6.2f ms\n", name, t[0], t[reps / 2]);
+}
+
+/* The frame pipeline: a frame quantized on the host, uploaded into a slot of
+   four (with and without the regroup, which reorders the three others), and
+   the copy interpolated from 1, 2 or 4 resident frames. The box is periodic,
+   so the minimum image is part of every interpolation. */
+static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, uint32_t reps) {
+    const uint32_t n = sc->atoms;
+    uint16_t* q[3] = { malloc((size_t)n * 2), malloc((size_t)n * 2), malloc((size_t)n * 2) };
+    float cell[9] = { sc->box, 0, 0, 0, sc->box, 0, 0, 0, sc->box };
+    md_render_mol_frame_t f;
+    double* t = malloc((reps + 2) * sizeof(double));
+    for (uint32_t rr = 0; rr < reps; ++rr) {
+        md_tick_t t0 = md_tick_now();
+        md_render_mol_frame_quantize(&f, q[0], q[1], q[2], sc->host_pos, 0, n, cell);
+        t[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
+    }
+    print_times("frame quantize (host, one thread)   ", t, reps);
+
+    const uint64_t size = md_render_mol_frames_size(&sc->topo, 4);
+    md_render_mol_frames_t fr;
+    md_gpu_addr_t base = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, size).gpu;
+    if (!base || !md_render_mol_frames_init(&fr, &sc->topo, base, 4)) {
+        printf("  frames: no memory for %.1f MB\n", size / 1048576.0);
+        free(q[0]); free(q[1]); free(q[2]); free(t);
+        return;
+    }
+    for (uint32_t k = 0; k < 4; ++k) md_render_mol_frame_upload(mol, s, &sc->topo, 0, &fr, k, &f, 0);
+    md_gpu_stream_sync(s);
+    const struct { const char* name; md_render_mol_update_flags_t flags; } ups[] = {
+        { "frame upload (reorder)               ", 0 },
+        { "frame upload (regroup, 3 permutes)   ", MD_RENDER_MOL_UPDATE_REGROUP },
+    };
+    for (int ui = 0; ui < 2; ++ui) {
+        for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+            md_tick_t t0 = md_tick_now();
+            md_render_mol_frame_upload(mol, s, &sc->topo, sc->dyn, &fr, rr % 4, &f, ups[ui].flags);
+            md_gpu_stream_sync(s);
+            if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+        }
+        print_times(ups[ui].name, t, reps);
+    }
+    pass_prof_t prof = { .s = s };
+    md_gpu_stream_sync(s);
+    prof.t = md_tick_now();
+    md_render_mol_frame_upload_hooked(mol, s, &sc->topo, sc->dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
+    printf("  passes, each synced (the first: the planes' transfer and the clear):");
+    for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
+    printf("\n");
+
+    const struct { const char* name; uint32_t count; float dt; } ints[] = {
+        { "update from frames: nearest          ", 1, 0.0f },
+        { "update from frames: linear           ", 2, 0.0f },
+        { "update from frames: linear + velocity", 2, 1.0f },
+        { "update from frames: cubic + velocity ", 4, 1.0f },
+    };
+    md_render_mol_atoms_t atoms = {0};
+    atoms.frames = &fr;
+    for (size_t ii = 0; ii < sizeof(ints) / sizeof(ints[0]); ++ii) {
+        atoms.frame_count = ints[ii].count;
+        for (uint32_t k = 0; k < 4; ++k) atoms.frame_slot[k] = k;
+        for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+            md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, ints[ii].count, (rr % 8) / 8.0f, ints[ii].dt, 0.5f);
+            md_tick_t t0 = md_tick_now();
+            md_render_mol_update(mol, s, &sc->topo, sc->dyn, &atoms, 0, NULL);
+            md_gpu_stream_sync(s);
+            if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+        }
+        print_times(ints[ii].name, t, reps);
+    }
+    printf("  frames block: %.1f MB for 4 slots (%.1f bytes per atom)\n", size / 1048576.0, (double)size / n);
+    md_gpu_free(s, base);
+    free(q[0]); free(q[1]); free(q[2]); free(t);
 }
 
 static int run_gpu(int argc, char** argv) {
@@ -808,8 +896,12 @@ static int run_gpu(int argc, char** argv) {
             md_render_mol_update_hooked(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
             printf("  passes, each synced:");
             for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
-            printf("\n  %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block\n",
-                   sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0);
+            printf("\n  %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block (%.1f MB with velocities)\n",
+                   sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0, sc.topo.dynamic_size_velocity / 1048576.0);
+            bench_frames(s, mol, &sc, reps);
+            /* the copy drawn below: from the positions, as before */
+            md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, 0, NULL);
+            md_gpu_stream_sync(s);
         }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
             if (only_look && !strstr(looks[li].name, only_look)) continue;
