@@ -56,10 +56,6 @@ void md_util_min_image_vec4(md_f32x4_t* in_out_dx, size_t count, const md_unitce
 
 // Applies periodic boundary conditions to coordinates
 bool md_util_pbc(md_f32x3_t* in_out_xyz, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
-bool md_util_pbc_vec4(md_f32x4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell);
-
-// Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
-bool md_util_system_pbc(md_system_state_t* state);
 
 // Unwraps a single molecule by walking the parent hierarchy md_molecule_infer
 // already computed. Linear, allocation free, and does not consult bond connectivity.
@@ -70,9 +66,6 @@ void md_util_unwrap_system(md_system_state_t* state, const struct md_system_t* s
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference
 bool md_util_deperiodize_vec4(md_f32x4_t* xyzw, size_t count, md_f32x3_t ref_xyz, const md_unitcell_t* cell);
-
-// Converts absolute coordinates (in unitcell) to relative coordinates (with respect to given reference point)
-void md_util_convert_to_relative_coordinates_vec4(md_f32x4_t* in_out_rel_xyzw, md_f32x3_t ref_xyz, size_t count, const md_unitcell_t* cell);
 
 // PERIODIC IMAGE SELECTION
 //
@@ -131,10 +124,6 @@ md_f32x3x3_t md_util_optimal_rotation_rel_vec4(const md_f32x4_t* ref_rel_xyzw, c
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
 void md_util_aabb_compute     (float out_ext_min[3], float out_ext_max[3], const md_f32x3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count);
 void md_util_aabb_compute_vec4(float out_ext_min[3], float out_ext_max[3], const md_f32x4_t* in_xyzr, const int32_t* in_idx, size_t count);
-
-// Computes an object oriented bounding box based on the PCA of the provided points (with optional radius)
-void md_util_oobb_compute     (float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const md_f32x3_t* in_xyz, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
-void md_util_oobb_compute_vec4(float out_rotation[3][3], float out_ext_min[3], float out_ext_max[3], const md_f32x4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
 
 // Computes the center of mass for a set of points with a given weight
 // xyz:         Packed coordinates
