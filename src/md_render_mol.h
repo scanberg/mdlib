@@ -36,17 +36,26 @@ lifetime:
     into whole residues, packed up to 64 atoms and never across molecules,
     once. Small molecules (solvent, ions: at most MD_RENDER_MOL_SMALL atoms)
     diffuse, so their clusters are cells of a grid, rebuilt on the GPU by
-    md_render_mol_update whenever the positions change:
+    md_render_mol_update when the caller asks:
 
         md_render_mol_t mol = md_render_mol_create(device, NULL);   // kernels, once
         md_gpu_addr_t   dyn = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
         ...
         md_render_mol_upload_state(s, positions, &state, content);
-        md_render_mol_update(mol, s, &topo, dyn, &atoms, content);    // after every position change
+        md_render_mol_update(mol, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content);
 
-    Skipping the update is never wrong, only slower: until the first one the
-    small molecules are grouped in molecule order. The same per-frame block
-    will hold spline frames, bead positions and bond-order sticks.
+    When to regroup is the caller's call: on a new frame of a trajectory,
+    not for the steps interpolated between two frames (the grouping of the
+    first is still a good one for those). Skipping it is never wrong, only
+    slower: the bounds follow the positions regardless, the clusters just
+    grow as the molecules spread. Before the first regroup the small
+    molecules are grouped in molecule order.
+
+  * Radii come from the system's particle types: the topology holds each
+    atom's type and radius (from sys->atom.type.radius when planned). A
+    changed radius per type is a table upload and an update
+    (MD_RENDER_MOL_UPDATE_RADII); a radius per atom (size by a property)
+    is the caller's array, md_render_mol_atoms_t.radius.
 
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, solid (dashes per kind wait for capsule dashes in md_render). Declared
@@ -114,6 +123,11 @@ typedef struct md_render_mol_topo_t {
                                       writes; 0: there is nothing to update          */
     uint32_t      atom_count;
 
+    /* Particle types and radii, per atom */
+    uint32_t      type_count;              /* entries a radius table has: sys->atom.type.count */
+    md_gpu_addr_t atom_type;               /* uint16 [atom_count]                      */
+    md_gpu_addr_t atom_radius;             /* float [atom_count]: the type's radius    */
+
     /* The atoms in cluster order: residue clusters first, then one cluster
        per grid cell (grid_cells of them, some empty) for the small molecules */
     md_gpu_addr_t atom_order;              /* uint32 [atom_count]                      */
@@ -166,7 +180,9 @@ typedef struct md_render_mol_atoms_t {
     uint32_t      stride;          /* 0: 12                                           */
     uint32_t      velocity_stride; /* 0: 8                                            */
     md_gpu_addr_t velocity;        /* packed half3 per atom, optional                 */
-    md_gpu_addr_t radius;          /* float per atom (van der Waals)                  */
+    md_gpu_addr_t radius;          /* float per atom, optional: instead of the types' */
+    md_gpu_addr_t radius_table;    /* float per particle type [topo.type_count]: for
+                                      MD_RENDER_MOL_UPDATE_RADII                      */
     md_gpu_addr_t visible;         /* bitset over atoms: globally shown, optional     */
     md_gpu_addr_t selection;       /* bitset over atoms, optional                     */
     md_gpu_addr_t highlight;       /* bitset over atoms, optional                     */
@@ -178,15 +194,23 @@ typedef struct md_render_mol_atoms_t {
 bool md_render_mol_upload_state(md_gpu_stream_t stream, md_gpu_addr_t dst, const struct md_system_state_t* state,
                                 uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
-/* After the positions changed: the small molecules regrouped into grid cells
-   (the tails of topo's atom_order and covalent bonds, and their cluster
-   offsets), using `dynamic` ([topo->dynamic_size] bytes, caller-owned, its
-   contents need not survive between calls) as scratch. GPU work only, no
-   readback. Bumps content[MD_RENDER_CONTENT_GEOMETRY]. True and nothing done
-   when the topology has no small molecules. */
+typedef uint32_t md_render_mol_update_flags_t;
+enum {
+    /* The small molecules regrouped into grid cells by the current positions:
+       the tails of topo's atom_order and covalent bonds, and their cluster
+       offsets. Nothing to do without small molecules. */
+    MD_RENDER_MOL_UPDATE_REGROUP = 1u << 0,
+    /* topo's atom radii from atoms->radius_table, by particle type */
+    MD_RENDER_MOL_UPDATE_RADII   = 1u << 1,
+};
+
+/* GPU work only, no readback, ordered in `stream` like any other. `dynamic`
+   ([topo->dynamic_size] bytes, caller-owned) is scratch: its contents need
+   not survive between calls. Bumps content[MD_RENDER_CONTENT_GEOMETRY] when
+   it did anything. */
 bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
-                          uint64_t content[MD_RENDER_CONTENT_COUNT]);
+                          md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
 /* =========================================================================
    Representations

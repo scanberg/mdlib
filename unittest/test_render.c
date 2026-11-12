@@ -1180,7 +1180,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     atoms.position = P;
 
     uint8_t* before = read_block(&fx, topo.base, topo.size);
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, content));
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint8_t* after = read_block(&fx, topo.base, topo.size);
     /* the block's own image: rebase the addresses to offsets */
     md_render_mol_topo_t rel = topo;
@@ -1190,10 +1190,19 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     double e0 = grid_cluster_extent(&rel, before, xyz), e1 = grid_cluster_extent(&rel, after, xyz);
     printf("    grid clusters: mean extent %.1f A in molecule order, %.1f A after the update\n", e0, e1);
     EXPECT_LT(e1, 0.4 * e0);
-    /* the same positions give the same order */
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, content));
+    /* again from the regrouped order: the same cells (the order within one is the atomics') */
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint8_t* again = read_block(&fx, topo.base, topo.size);
-    EXPECT_EQ(0, memcmp(after, again, topo.size));
+    EXPECT_EQ(0, check_topo_image(&sys, &rel, again));
+    EXPECT_EQ(0, memcmp(after + rel.atom_cluster_offset, again + rel.atom_cluster_offset, (topo.atom_cluster_count + 1) * 4));
+    /* the radii of the particle types, per atom */
+    {
+        const float* r = (const float*)(again + (topo.atom_radius - topo.base));
+        int wrong = 0;
+        for (uint32_t i = 0; i < n; ++i) wrong += r[i] != sys.atom.type.radius[sys.atom.type_idx[i]];
+        EXPECT_EQ(0, wrong);
+        EXPECT_EQ((uint32_t)sys.atom.type.count, topo.type_count);
+    }
 
     /* Licorice: clustered (from emit) against plain batches in system order */
     md_render_mol_rep_t rep = {0};
@@ -1257,6 +1266,42 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     }
     EXPECT_GT(picked, 10);
     EXPECT_EQ(picked, agree);
+
+    /* Spacefill: the radii of the particle types, then of an edited table */
+    float* rad = malloc(n * 4);
+    for (int pass = 0; pass < 2; ++pass) {
+        const float scale = pass ? 0.5f : 1.0f;
+        if (pass) {
+            float* table = malloc(sys.atom.type.count * 4);
+            for (size_t t = 0; t < sys.atom.type.count; ++t) table[t] = sys.atom.type.radius[t] * scale;
+            atoms.radius_table = f_buf(&fx, table, sys.atom.type.count * 4);
+            free(table);
+            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RADII, content));
+        }
+        for (uint32_t i = 0; i < n; ++i) rad[i] = sys.atom.type.radius[sys.atom.type_idx[i]] * scale;
+        md_gpu_addr_t R = f_buf(&fx, rad, n * 4);
+        rep.type = MD_RENDER_MOL_REP_SPACEFILL;
+        rep.params.spacefill.radius_scale = 1.0f;
+        nbat = md_render_mol_emit(&topo, &atoms, &rep, batches, 8);
+        ASSERT_EQ(1u, nbat);
+        md_render_batch_t ps = plain[0];
+        ps.points.radius = R;
+        ps.style.spheres.radius_add = 0.0f;
+        ps.style.spheres.radius_scale = 1.0f;
+        fr.batches = &ps; fr.batch_count = 1;
+        fr.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+        f.batches = batches; f.batch_count = nbat;
+        memcpy(f.content, content, sizeof(content));
+        f.content[MD_RENDER_CONTENT_GEOMETRY] += 1000;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        EXPECT_EQ(0, compare_views_ex(&fx, fx.view, ref, W, H, &covered, true));
+        EXPECT_GT(covered, (int)(W * H / 4));
+        md_gpu_stream_sync(fx.gfx);
+        md_gpu_free(fx.gfx, R);
+    }
+    free(rad);
+    md_gpu_free(fx.gfx, atoms.radius_table);
 
     md_render_view_destroy(fx.gfx, ref);
     free(xyz); free(before); free(after); free(again); free(plain_pairs);

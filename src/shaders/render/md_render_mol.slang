@@ -2,19 +2,25 @@
 //
 // Small molecules (solvent, ions) diffuse: clusters made of them once fall
 // apart over a trajectory. So their part of the cluster order is rebuilt from
-// a uniform grid whenever the positions change, in O(n):
+// a uniform grid when the caller asks (MD_RENDER_MOL_UPDATE_REGROUP), in O(n):
 //
 //     clear    the bounds and the per-cell counts
 //     bounds   of the molecules' first atoms (one atomic per wave and axis)
 //     dims     the cell edge: about CELL_TARGET atoms per cell at the bounds'
 //              mean density, at most `cells` cells (the capacity the plan
 //              allocated, so the host never reads back how many there are)
-//     count    molecules, atoms and bonds per cell
-//     scan     exclusive, of the three counts at once (blocks, sums, add)
-//     scatter  each molecule into its cell's list
-//     write    one thread per cell: its molecules sorted (the order is then
-//              a function of the positions alone), their atoms and bonds into
-//              the tails of the topology's arrays, the cell's cluster offsets
+//     count    each molecule's cell, and its place in it: the atomics return
+//              the atoms and bonds counted before it. Molecules in file order
+//              are often neighbours, so a group adds a run of molecules with
+//              the same cell in one atomic.
+//     scan     exclusive, of the per-cell counts (blocks, sums, add)
+//     write    each molecule's atoms and bonds into the tails of the
+//              topology's arrays, at its cell's offset plus its place
+//     offsets  the cells' cluster offsets
+//
+// Every pass reads the molecules in their own order (the order of the small
+// tables, close to the file order of the atoms): only the write lands
+// scattered. The order within a cell is the atomics', not reproducible.
 //
 // A cell is one cluster. The grid spans the bounds, so a far outlier makes
 // the cells larger everywhere (still correct, only looser clusters).
@@ -23,15 +29,17 @@
 
 #include "../md_gpu.slang"
 
-static const float CELL_TARGET = 48.0;
+static const float CELL_TARGET = 64.0;
 
 struct Args {
     uint* position;             // float3 per atom, `stride` bytes apart
     uint* params;               // 16 words: ordered bounds, then the grid
-    uint* mol_cell;             // [n_mol]
-    uint* cnt;                  // uint4 per cell, [cells + 1]: molecules, atoms, bonds, fill
+    uint* mol_slot;             // uint4 per molecule: cell, its atoms' and bonds' place in it
+    uint* cnt;                  // uint4 per cell, [cells + 1]: atoms, bonds
     uint* sums;                 // uint4 per scan block
-    uint* mol_list;             // [n_mol]: molecules by cell
+    uint* types;                // uint16 per atom: particle type
+    uint* radius_table;         // float per type
+    uint* atom_radius;          // float per atom (the topology's)
     uint* mol_atom_offset;      // [n_mol + 1]
     uint* mol_atoms;            // atom indices
     uint* mol_bond_offset;      // [n_mol + 1]
@@ -53,6 +61,8 @@ struct Args {
     uint  has_bonds;
     uint  mode;                 // scan: 0 blocks, 1 the block sums, 2 add
     uint  n;                    // scan: elements
+    uint  atom_count;           // radii
+    uint  type_count;
     uint  _pad;
 };
 MD_SHADER_ARGS(Args);
@@ -152,17 +162,59 @@ uint cell_of(Args a, float3 p) {
     return min((c.z * d.y + c.y) * d.x + c.x, a.cells - 1u);
 }
 
+// One group adds a run of equal cells with one atomic: each lane's place is
+// the run's base plus its exclusive prefix within the run. Groupshared, not
+// wave operations: the same on every wave size.
+groupshared uint  g_key[64];
+groupshared uint2 g_inc[64];
+groupshared uint2 g_exc[64];
+groupshared uint2 g_base[64];
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void sol_count(uint3 tid : SV_DispatchThreadID) {
+void sol_count(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args a = MD_ARGS;
     uint n = a.n_mol;
-    for (uint m = tid.x; m < n; m += grid_threads(n)) {
-        uint c = cell_of(a, first_pos(a, m));
-        a.mol_cell[m] = c;
-        ((Atomic<uint>*)(a.cnt + 4u * c + 0u))->add(1u);
-        ((Atomic<uint>*)(a.cnt + 4u * c + 1u))->add(a.mol_atom_offset[m + 1u] - a.mol_atom_offset[m]);
-        if (a.has_bonds != 0u) ((Atomic<uint>*)(a.cnt + 4u * c + 2u))->add(a.mol_bond_offset[m + 1u] - a.mol_bond_offset[m]);
+    for (uint i0 = group_start(tid, gi); i0 < n; i0 += grid_threads(n)) {
+        uint m = i0 + gi;
+        bool valid = m < n;
+        uint key = 0xFFFFFFFFu;
+        uint2 v = uint2(0u);
+        if (valid) {
+            key = cell_of(a, first_pos(a, m));
+            v.x = a.mol_atom_offset[m + 1u] - a.mol_atom_offset[m];
+            if (a.has_bonds != 0u) v.y = a.mol_bond_offset[m + 1u] - a.mol_bond_offset[m];
+        }
+        g_key[gi] = key;
+        g_inc[gi] = v;
+        GroupMemoryBarrierWithGroupSync();
+        for (uint off = 1u; off < 64u; off <<= 1u) {
+            uint2 x = gi >= off ? g_inc[gi - off] : uint2(0u);
+            GroupMemoryBarrierWithGroupSync();
+            g_inc[gi] += x;
+            GroupMemoryBarrierWithGroupSync();
+        }
+        uint2 exc = g_inc[gi] - v;
+        g_exc[gi] = exc;
+        GroupMemoryBarrierWithGroupSync();
+        uint h = gi;                                    // the run's first lane
+        while (h > 0u && g_key[h - 1u] == key) h -= 1u;
+        if (valid && h == gi) {
+            uint e = gi;                                // its last
+            while (e + 1u < 64u && g_key[e + 1u] == key) e += 1u;
+            uint2 total = g_inc[e] - exc;
+            uint2 base;
+            base.x = ((Atomic<uint>*)(a.cnt + 4u * key + 0u))->add(total.x);
+            base.y = total.y > 0u ? ((Atomic<uint>*)(a.cnt + 4u * key + 1u))->add(total.y) : 0u;
+            g_base[gi] = base;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (valid) {
+            uint2 place = g_base[h] + (exc - g_exc[h]);
+            uint* s = a.mol_slot + 4u * m;
+            s[0] = key; s[1] = place.x; s[2] = place.y; s[3] = 0u;
+        }
+        GroupMemoryBarrierWithGroupSync();              // the arrays are free for the next run
     }
 }
 
@@ -230,58 +282,50 @@ void sol_scan(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     }
 }
 
-// ---- Scatter and write -----------------------------------------------------------
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void sol_scatter(uint3 tid : SV_DispatchThreadID) {
-    Args a = MD_ARGS;
-    uint n = a.n_mol;
-    for (uint m = tid.x; m < n; m += grid_threads(n)) {
-        uint c = a.mol_cell[m];
-        uint k = ((Atomic<uint>*)(a.cnt + 4u * c + 3u))->add(1u);
-        a.mol_list[a.cnt[4u * c] + k] = m;
-    }
-}
+// ---- Write, offsets, radii --------------------------------------------------------
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void sol_write(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
-    uint n = a.cells;
+    uint n = a.n_mol;
+    for (uint m = tid.x; m < n; m += grid_threads(n)) {
+        uint* s = a.mol_slot + 4u * m;
+        uint c = s[0];
+        uint at = a.static_atoms + a.cnt[4u * c] + s[1];
+        for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) a.atom_order[at++] = a.mol_atoms[k];
+        if (a.has_bonds != 0u) {
+            uint bt = a.static_bonds + a.cnt[4u * c + 1u] + s[2];
+            for (uint k = a.mol_bond_offset[m]; k < a.mol_bond_offset[m + 1u]; ++k) {
+                a.bond_pairs[2u * bt]      = a.mol_bond_pairs[2u * k];
+                a.bond_pairs[2u * bt + 1u] = a.mol_bond_pairs[2u * k + 1u];
+                a.bond_ids[bt]             = a.mol_bond_ids[k];
+                bt += 1u;
+            }
+        }
+    }
+}
+
+// cells + 1 entries: the last is the totals (the exclusive scan's end)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sol_offsets(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.cells + 1u;
     for (uint c = tid.x; c < n; c += grid_threads(n)) {
-        uint mo = a.cnt[4u * c], ao = a.cnt[4u * c + 1u], bo = a.cnt[4u * c + 2u];
-        uint nm = a.cnt[4u * (c + 1u)] - mo;
-        // Sorted, so that the order is the same for the same positions. A
-        // degenerate cell (everything in one place) stays unsorted rather
-        // than quadratic.
-        if (nm <= 256u) {
-            for (uint i = 1u; i < nm; ++i) {
-                uint x = a.mol_list[mo + i];
-                uint j = i;
-                while (j > 0u && a.mol_list[mo + j - 1u] > x) { a.mol_list[mo + j] = a.mol_list[mo + j - 1u]; j -= 1u; }
-                a.mol_list[mo + j] = x;
-            }
-        }
-        uint at = a.static_atoms + ao;
-        uint bt = a.static_bonds + bo;
-        for (uint i = 0u; i < nm; ++i) {
-            uint m = a.mol_list[mo + i];
-            for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) a.atom_order[at++] = a.mol_atoms[k];
-            if (a.has_bonds != 0u) {
-                for (uint k = a.mol_bond_offset[m]; k < a.mol_bond_offset[m + 1u]; ++k) {
-                    a.bond_pairs[2u * bt]      = a.mol_bond_pairs[2u * k];
-                    a.bond_pairs[2u * bt + 1u] = a.mol_bond_pairs[2u * k + 1u];
-                    a.bond_ids[bt]             = a.mol_bond_ids[k];
-                    bt += 1u;
-                }
-            }
-        }
-        a.atom_cluster_offset[a.static_atom_clusters + c] = a.static_atoms + ao;
-        if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + c] = a.static_bonds + bo;
-        if (c + 1u == n) {
-            a.atom_cluster_offset[a.static_atom_clusters + n] = a.static_atoms + a.cnt[4u * n + 1u];
-            if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + n] = a.static_bonds + a.cnt[4u * n + 2u];
-        }
+        a.atom_cluster_offset[a.static_atom_clusters + c] = a.static_atoms + a.cnt[4u * c];
+        if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + c] = a.static_bonds + a.cnt[4u * c + 1u];
+    }
+}
+
+// The atoms' radii from the table, by particle type
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sol_radii(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    for (uint i = tid.x; i < n; i += grid_threads(n)) {
+        uint t = (a.types[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu;
+        a.atom_radius[i] = t < a.type_count ? a.radius_table[t] : 0u;
     }
 }

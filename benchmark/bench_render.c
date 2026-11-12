@@ -563,6 +563,12 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         for (uint32_t i = 0; i < sc->atoms; ++i) mats[i] = (int32_t)i;
         for (uint32_t b = 0; b < sc->bonds; ++b) { pairs[b].idx[0] = (md_atom_idx_t)idx[2 * b]; pairs[b].idx[1] = (md_atom_idx_t)idx[2 * b + 1]; }
         sys.molecule.count = molecules; sys.molecule.offset = moff; sys.molecule.atom_idx = mats;
+        /* two particle types, O and H: the radii come from their table */
+        md_particle_type_idx_t* types = malloc((size_t)sc->atoms * sizeof(md_particle_type_idx_t));
+        for (uint32_t i = 0; i < sc->atoms; ++i) types[i] = (i % 3) ? 2 : 1;
+        float type_radius[3] = { 0.0f, 1.52f, 1.1f };
+        sys.atom.type_idx = types;
+        sys.atom.type.count = 3; sys.atom.type.radius = type_radius;
         sys.bond.count = sc->bonds; sys.bond.pairs = pairs;
         md_temp_scope_t temp = md_temp_begin();
         md_render_mol_plan_t plan;
@@ -571,7 +577,7 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         ok = ok && base && md_render_mol_write(s, &sc->topo, &plan, base, NULL);
         md_temp_end(temp);
         sc->dyn = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size).gpu : 0;
-        free(moff); free(mats); free(pairs);
+        free(moff); free(mats); free(pairs); free(types);
         if (!ok || !sc->dyn) { free(pos); free(rad); free(idx); free(col); return false; }
     } else {
     /* order by cell (Morton order of the cells), and the clusters */
@@ -730,18 +736,18 @@ static int run_gpu(int argc, char** argv) {
                src == SRC_IMPLICIT ? "implicit clusters (runs of 64 in grid-cell order)" :
                src == SRC_HOST_GRID ? "clusters by grid cell, built on the host" : "md_render_mol (molecules in random order, GPU grid)");
         md_render_mol_atoms_t atoms = {0};
-        atoms.position = sc.pos; atoms.radius = sc.rad; atoms.selection = sc.sel;
+        atoms.position = sc.pos; atoms.selection = sc.sel;
         if (src == SRC_MOL) {
             /* what a trajectory frame costs on top of the raster: the regrouping */
             double* tu = malloc(reps * sizeof(double));
             for (uint32_t rr = 0; rr < reps + 2; ++rr) {
                 md_tick_t t0 = md_tick_now();
-                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, NULL);
+                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
                 md_gpu_stream_sync(s);
                 if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
             }
             qsort(tu, reps, sizeof(double), cmp_d);
-            printf("md_render_mol_update: %.2f / %.2f ms; %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block\n",
+            printf("md_render_mol_update (regroup): %.2f / %.2f ms; %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block\n",
                    tu[0], tu[reps / 2], sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0);
             free(tu);
         }
