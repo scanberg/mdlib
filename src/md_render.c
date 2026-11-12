@@ -102,6 +102,19 @@ enum {
 #define CULL_GROUP  64u
 #define DEFAULT_SMALL_PIXELS 6.0f
 
+/* A hook after each pass of a draw, for md_render_bench's per-pass profile
+   (it syncs the stream in the hook). Not in the header: a debugging aid, set
+   by md_render_debug_pass_hook, which the bench declares itself. */
+static void (*g_pass_hook)(void* user, const char* pass);
+static void* g_pass_user;
+
+void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user) {
+    g_pass_hook = hook;
+    g_pass_user = user;
+}
+
+#define PASS_DONE(name) do { if (g_pass_hook) g_pass_hook(g_pass_user, name); } while (0)
+
 /* =========================================================================
    Context
    ========================================================================= */
@@ -1257,31 +1270,44 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             if (w < C_COUNT) md_gpu_memset(s, CTR(v, w), 0, (C_COUNT - w) * 4u);
         }
         if (compute) md_gpu_memset(s, v->vis64, 0, (size_t)v->width * v->height * 8u);
+        PASS_DONE("setup");
 
         /* Cluster bounds: refitted when the geometry changed, else only their
            state bits when those did. Not when only the camera moved. */
         md_render_t r = v->r;
         if ((refit || state_changed) && !pass(s, v, r->k_refit, 0, gv.total_clusters, 0)) return false;
+        if (refit || state_changed) PASS_DONE("refit");
         v->bounds_valid = true;
 
         /* Phase 1: clusters, then the elements of the visible ones, against
            the previous raster's pyramid (when there is one) */
         if (!pass(s, v, r->k_cull_clusters, 1, gv.total_cluster_work, 0) || !fin(s, v, 11)) return false;
+        PASS_DONE("clusters1");
         if (!pass(s, v, r->k_cull, 1, 0, C_GRID_CVIS) || !fin(s, v, 12)) return false;
+        PASS_DONE("cull1");
         if (compute && !run_raster_small(s, v, 1)) return false;
+        if (compute) PASS_DONE("small1");
         if (!run_raster(s, v, 1, compute, has_kind)) return false;
+        PASS_DONE("raster1");
 
         if (occlusion) {
             if (!build_hiz(s, v)) return false;
+            PASS_DONE("hiz1");
             if (hiz_valid) {
                 /* Phase 2: the clusters and the elements phase 1 found
                    occluded, against this raster */
                 if (!pass(s, v, r->k_cull_clusters, 2, 0, C_GRID_COCC) || !fin(s, v, 21)) return false;
+                PASS_DONE("clusters2");
                 if (!pass(s, v, r->k_cull, 2, 0, C_GRID_OCC)) return false;
+                PASS_DONE("retest2");
                 if (!pass(s, v, r->k_cull, 4, 0, C_GRID_CVIS + 4) || !fin(s, v, 22)) return false;
+                PASS_DONE("cull2");
                 if (compute && !run_raster_small(s, v, 2)) return false;
+                if (compute) PASS_DONE("small2");
                 if (!run_raster(s, v, 2, compute, has_kind)) return false;
+                PASS_DONE("raster2");
                 if (!build_hiz(s, v)) return false;     /* for the next raster */
+                PASS_DONE("hiz2");
             }
             v->hiz_ok = true;
         } else {
@@ -1290,6 +1316,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         if (state_lists) {
             if (!run_state_lists(s, v, gv.total_cluster_work)) return false;
             v->state_lists_ok = true;
+            PASS_DONE("state lists");
         }
         v->raster_count++;
         record_stats(s, v, total, gv.total_cluster_work, refit);
@@ -1321,7 +1348,9 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
     }
 
     if (resolve && !run_resolve(s, v)) return false;
+    if (resolve) PASS_DONE("resolve");
     if (mask && !run_masks(s, v, f)) return false;
+    if (mask) PASS_DONE("mask");
 
     if (!remember(v, f)) return false;
     v->has_raster = true;
