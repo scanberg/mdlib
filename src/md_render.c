@@ -27,9 +27,17 @@ typedef struct gpu_view_t {
     uint32_t      hiz_levels;
     uint32_t      occlusion, compute_raster;
     float         small_px;
-    uint32_t      total_clusters, total_cluster_work, refit_mode, _vpad;
+    uint32_t      total_clusters, total_cluster_work, refit_mode;
+    float         jitter_px;        /* how far this raster's jitter moves the image: max |jx|, |jy| */
+    float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
+    uint32_t      _vpad[3];
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 528, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
+
+/* Experiment, for md_render_bench (declared there, not in the header): the
+   phase-1 occlusion margin in element radii */
+static float g_occl_margin = 0.0f;
+void md_render_debug_occlusion_margin(float radii) { g_occl_margin = radii; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -1245,6 +1253,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.occlusion       = occlusion ? 1u : 0u;
         gv.compute_raster  = compute ? 1u : 0u;
         gv.small_px        = f->small_pixels > 0.0f ? f->small_pixels : DEFAULT_SMALL_PIXELS;
+        gv.jitter_px       = fabsf(jx) > fabsf(jy) ? fabsf(jx) : fabsf(jy);
+        gv.occl_margin     = g_occl_margin;
         if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_view_t)).gpu;
         if (!v->view_buf) return false;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
