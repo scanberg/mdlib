@@ -20,7 +20,11 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       --implicit sorts on the host and leaves md_render its runs of 64.
       --look keeps the looks whose name contains NAME ("licorice", "far").
       After each look's first row, one camera raster is profiled pass by
-      pass (each pass synced, so each number carries a sync).
+      pass (each pass synced, so each number carries a sync), with the cull
+      by phase. MD_BENCH_SEQ=1 adds a sequence of rasters (a camera c0
+      twice, c1 = c0 moved by MD_BENCH_SHIFT box widths (0.001), c1 again,
+      back to c0) with the cull by phase for each: what a camera move costs
+      phase 2.
 
 Every run prints the mdlib revision it was built from, first.
 */
@@ -877,7 +881,27 @@ static int run_gpu(int argc, char** argv) {
                         md_gpu_stream_sync(s);
                         printf("    camera raster, passes each synced:");
                         for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
-                        printf("\n");
+                        md_render_stats_t ps = {0};
+                        md_render_view_stats(v, &ps);
+                        printf("\n    by phase: clusters expanded %u + %u, hardware %u + %u, compute %u + %u, occluded %u (retested %u)\n",
+                               ps.clusters_expanded[0], ps.clusters_expanded[1], ps.hardware[0], ps.hardware[1], ps.compute[0], ps.compute[1],
+                               ps.occluded, ps.occlusion_retested);
+                        if (getenv("MD_BENCH_SEQ")) {
+                            float base12 = f.camera.view[12];
+                            const char* step[] = { "c0 (geometry)", "c0 again (geometry)", "c1 = c0 + shift", "c1 again (geometry)", "c0 (back)", "c0 again (geometry)" };
+                            const float sh[] = { 0, 0, 1, 1, 0, 0 };
+                            const int  geo[] = { 1, 1, 0, 1, 0, 1 };
+                            for (int q = 0; q < 6; ++q) {
+                                f.camera.view[12] = base12 + sh[q] * (getenv("MD_BENCH_SHIFT") ? (float)atof(getenv("MD_BENCH_SHIFT")) : 0.001f) * sc.box;
+                                if (geo[q]) f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+                                md_render_view_draw(s, v, &f, NULL);
+                                md_gpu_stream_sync(s);
+                                md_render_view_stats(v, &ps);
+                                printf("    %-22s: clusters %u + %u, hw %u + %u, compute %u + %u, occluded %u (retested %u)\n", step[q],
+                                       ps.clusters_expanded[0], ps.clusters_expanded[1], ps.hardware[0], ps.hardware[1], ps.compute[0], ps.compute[1],
+                                       ps.occluded, ps.occlusion_retested);
+                            }
+                        }
                     }
                     md_render_view_destroy(s, v);
                 }
