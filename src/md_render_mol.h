@@ -63,8 +63,8 @@ lifetime:
     after every change of positions, velocities or radii.
 
   * Radii come from the system's particle types: the topology holds each
-    atom's type and radius (from sys->atom.type.radius when planned). A
-    changed radius per type is a table upload and an update
+    atom's type and a radius per type (sys->atom.type.radius when planned).
+    A changed radius per type is a table and an update
     (MD_RENDER_MOL_UPDATE_RADII); a radius per atom (size by a property)
     is the caller's array, md_render_mol_atoms_t.radius.
 
@@ -132,12 +132,14 @@ typedef struct md_render_mol_topo_t {
     uint64_t      topology_version;/* of the system it was planned from               */
     uint64_t      dynamic_size;    /* bytes of the per-frame block: the copy that is
                                       drawn, and the update's scratch                */
+    uint64_t      dynamic_size_velocity; /* ... when md_render_mol_atoms_t.velocity is
+                                      given: the velocities are copied too           */
     uint32_t      atom_count;
 
     /* Particle types and radii, per atom */
     uint32_t      type_count;              /* entries a radius table has: sys->atom.type.count */
     md_gpu_addr_t atom_type;               /* uint16 [atom_count]                      */
-    md_gpu_addr_t atom_radius;             /* float [atom_count]: the type's radius    */
+    md_gpu_addr_t type_radius;             /* float [type_count]: each type's radius   */
 
     /* The atoms in cluster order: residue clusters first, then one cluster
        per grid cell (grid_cells of them, some empty) for the small molecules.
@@ -195,7 +197,8 @@ typedef struct md_render_mol_atoms_t {
     uint32_t      stride;          /* 0: 12                                           */
     uint32_t      velocity_stride; /* 0: 8                                            */
     md_gpu_addr_t velocity;        /* packed half3 per atom, optional (the same for
-                                      update and emit: copied, or not)                */
+                                      update and emit: copied, or not); needs a
+                                      per-frame block of topo.dynamic_size_velocity  */
     md_gpu_addr_t radius;          /* float per atom, optional: instead of the types' */
     md_gpu_addr_t radius_table;    /* float per particle type [topo.type_count]: for
                                       MD_RENDER_MOL_UPDATE_RADII                      */
@@ -216,13 +219,18 @@ enum {
        the tails of topo's atom_order and covalent bonds, and their cluster
        offsets. Nothing to do without small molecules. */
     MD_RENDER_MOL_UPDATE_REGROUP = 1u << 0,
-    /* The radii changed: topo's atom radii refilled from atoms->radius_table
-       when given, and the copy's radii from those (or from atoms->radius).
-       Also after changing atoms->radius (its contents or which array). */
+    /* The radii changed: topo's radius per type copied from
+       atoms->radius_table when given, and the copy's radii from those (or
+       from atoms->radius). Also after changing atoms->radius (its contents
+       or which array). */
     MD_RENDER_MOL_UPDATE_RADII   = 1u << 1,
 };
 
-/* After positions, velocities or radii changed (and before the first draw):
+/* A regroup reorders the topology: every per-frame block gathered from it
+   before is stale (its copy in the old order) until it is updated again.
+   One per-frame block per topology is the usual case.
+
+   After positions, velocities or radii changed (and before the first draw):
    the copy that is drawn gathered into `dynamic` ([topo->dynamic_size]
    bytes, caller-owned, kept for the batches emitted from it), after what
    the flags ask. GPU work only, no readback, ordered in `stream` like any

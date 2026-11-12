@@ -142,18 +142,20 @@ struct Batch {
     uint    _pad2;
 };
 
-// The per-view lists the cull writes and everything after it reads.
-// Entries are ids (encode_id): batch slot and linear index.
+// The per-view lists the cull writes and everything after it reads. Cluster
+// entries: the batch's local cluster work index and (slot + 1) << 20. Element
+// entries: the element's global work index (its batch's work_offset plus
+// instance * count + element; decode_work), half the size of an id.
 struct Lists {
     uint2*    cvis;             // clusters to expand: phase 1, then phase 2 after them
     uint2*    cocc;             // clusters occluded in phase 1
     uint2*    cst;              // clusters with a state bit, in the frustum
-    uint2*    hw0;              // spheres for the hardware raster
-    uint2*    hw1;              // capsules
-    uint2*    st0;              // spheres with a state bit, for the masks
-    uint2*    st1;              // capsules with a state bit
-    uint2*    small;            // primitives for the compute raster
-    uint2*    occ;              // occluded in phase 1, tested again in phase 2
+    uint*     hw0;              // spheres for the hardware raster
+    uint*     hw1;              // capsules
+    uint*     st0;              // spheres with a state bit, for the masks
+    uint*     st1;              // capsules with a state bit
+    uint*     small;            // primitives for the compute raster
+    uint*     occ;              // occluded in phase 1, tested again in phase 2
     uint*     counters;         // see C_* below
     uint64_t* vis64;            // compute raster: depth << 32 | index into small
 };
@@ -623,6 +625,22 @@ uint find_batch_work(Batch* batches, uint count, uint i) {
     while (hi - lo > 1u) { uint mid = (lo + hi) >> 1; if (batches[mid].work_offset <= i) lo = mid; else hi = mid; }
     return lo;
 }
+// An element list entry (a global work index) as batch, instance, element
+Elem decode_work(Batch* batches, uint batch_count, uint w) {
+    Elem el;
+    el.slot = find_batch_work(batches, batch_count, w);
+    uint local = w - batches[el.slot].work_offset;
+    uint cnt   = max(batches[el.slot].count, 1u);
+    el.inst = local / cnt;
+    el.e    = local - el.inst * cnt;
+    return el;
+}
+
+// The visibility id of an element
+uint2 elem_id(Batch* batches, Elem el) {
+    return encode_id(el.slot, 0u, uint64_t(el.inst) * uint64_t(batches[el.slot].count) + uint64_t(el.e));
+}
+
 uint find_batch_cluster_work(Batch* batches, uint count, uint i) {
     uint lo = 0u, hi = count;
     while (hi - lo > 1u) { uint mid = (lo + hi) >> 1; if (batches[mid].cluster_work_offset <= i) lo = mid; else hi = mid; }
@@ -816,10 +834,10 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
     Geo   g;
     g.ok = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
-    uint2 ent = uint2(0u);
+    uint ent = 0u;                      // the list entry: global work index
     if (valid) {
         Batch b = batches[slot];
-        ent = encode_id(slot, 0u, uint64_t(inst) * uint64_t(b.count) + uint64_t(e));
+        ent = b.work_offset + inst * b.count + e;
         g   = element_geo(v, b, inst, e);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
@@ -892,7 +910,7 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
             bool valid = i < n;
             Elem el;
             el.slot = 0u; el.inst = 0u; el.e = 0u;
-            if (valid) el = decode(a.batches, L.occ[i]);
+            if (valid) el = decode_work(a.batches, v.batch_count, L.occ[i]);
             element_pass(a.batches, v, L, 2u, false, valid, el.slot, el.inst, el.e);
         }
         return;
@@ -1043,7 +1061,7 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         float4 ga = float4(0.0), gb = float4(0.0);
         uint4  box = uint4(0u, 0u, 1u, idx);
         if (i < n) {
-            Elem  el = decode(a.batches, L.small[idx]);
+            Elem  el = decode_work(a.batches, v.batch_count, L.small[idx]);
             Batch b  = a.batches[el.slot];
             Geo   g  = element_geo(v, b, el.inst, el.e);
             if (g.ok) {
@@ -1123,7 +1141,7 @@ MergeOut merge_fs(FullV i) {
     if (val == 0ull) discard;
     MergeOut o;
     o.depth = asfloat(uint(val >> 32));
-    o.id    = a.lists->small[uint(val & 0xFFFFFFFFull)];
+    o.id    = elem_id(a.batches, decode_work(a.batches, a.view->batch_count, a.lists->small[uint(val & 0xFFFFFFFFull)]));
     return o;
 }
 
@@ -1154,7 +1172,7 @@ void hiz_reduce(uint3 tid : SV_DispatchThreadID) {
 
 static const float4 CULLED = float4(0.0, 0.0, -2.0, 1.0);   // outside the depth range: clipped
 
-uint2 list_entry(Args a, uint i) {
+uint list_entry(Args a, uint i) {
     Lists L = *a.lists;
     switch (a.list) {
     case 0u: return L.hw0[i];
@@ -1183,8 +1201,8 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.state = 0u;
 
     uint  corner = md_draw_vertex(vid, base_vertex);
-    uint2 ent    = list_entry(a, base_instance + md_draw_instance(iid, base_instance));
-    Elem  el     = decode(a.batches, ent);
+    Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
+    uint2 ent    = elem_id(a.batches, el);
     Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
     float3 c   = g.a;
@@ -1291,8 +1309,8 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.state = 0u;
 
     uint  vk  = md_draw_vertex(vid, base_vertex);
-    uint2 ent = list_entry(a, base_instance + md_draw_instance(iid, base_instance));
-    Elem  el  = decode(a.batches, ent);
+    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
+    uint2 ent = elem_id(a.batches, el);
     Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
     float3 pa  = g.a;

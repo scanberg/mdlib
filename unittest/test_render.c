@@ -1250,11 +1250,42 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     uint8_t* again = read_block(&fx, topo.base, topo.size);
     EXPECT_EQ(0, check_topo_image(&sys, &rel, again));
     EXPECT_EQ(0, memcmp(after + rel.atom_cluster_offset, again + rel.atom_cluster_offset, (topo.atom_cluster_count + 1) * 4));
-    /* the radii of the particle types, per atom */
+    /* Velocities: copied into the point order when given (a per-frame block
+       of dynamic_size_velocity), and emit hands md_render that copy */
     {
-        const float* r = (const float*)(again + (topo.atom_radius - topo.base));
+        EXPECT_GT(topo.dynamic_size_velocity, topo.dynamic_size);
+        md_gpu_addr_t dyn_v = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
+        uint32_t* vel = malloc((size_t)n * 8);
+        for (uint32_t i = 0; i < n; ++i) { vel[2 * i] = 0x10000u + i; vel[2 * i + 1] = 0x20000u + i; }
+        md_render_mol_atoms_t av = atoms;
+        av.velocity = f_buf(&fx, vel, (size_t)n * 8);
+        /* no regroup: that would reorder the topology under `dyn`, whose copy is drawn below */
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn_v, &av, 0, content));
+        md_render_mol_rep_t rv = {0};
+        rv.key = 9; rv.type = MD_RENDER_MOL_REP_SPACEFILL; rv.params.spacefill.radius_scale = 1.0f;
+        md_render_batch_t bv;
+        ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn_v, &av, &rv, &bv, 1));
+        ASSERT_TRUE(bv.points.velocity != 0);
+        uint8_t* blk  = read_block(&fx, dyn_v, topo.dynamic_size_velocity);
+        uint8_t* topb = read_block(&fx, topo.base, topo.size);
+        const uint32_t* cv    = (const uint32_t*)(blk + (bv.points.velocity - dyn_v));
+        const uint32_t* order = (const uint32_t*)(topb + (topo.atom_order - topo.base));
         int wrong = 0;
-        for (uint32_t i = 0; i < n; ++i) wrong += r[i] != sys.atom.type.radius[sys.atom.type_idx[i]];
+        for (uint32_t p = 0; p < n; ++p) wrong += cv[2 * p] != vel[2 * order[p]] || cv[2 * p + 1] != vel[2 * order[p] + 1];
+        EXPECT_EQ(0, wrong);
+        /* and without velocities, no velocity for md_render */
+        ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn_v, &atoms, &rv, &bv, 1));
+        EXPECT_TRUE(bv.points.velocity == 0);
+        free(blk); free(topb); free(vel);
+        md_gpu_free(fx.gfx, av.velocity);
+        md_gpu_free(fx.gfx, dyn_v);
+    }
+
+    /* the radii of the particle types */
+    {
+        const float* r = (const float*)(again + (topo.type_radius - topo.base));
+        int wrong = 0;
+        for (size_t t = 0; t < sys.atom.type.count; ++t) wrong += r[t] != sys.atom.type.radius[t];
         EXPECT_EQ(0, wrong);
         EXPECT_EQ((uint32_t)sys.atom.type.count, topo.type_count);
     }

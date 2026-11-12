@@ -911,17 +911,20 @@ static gpu_args_t base_args(const md_render_view_t v) {
 
 
 /* Lists sized for the worst case of this frame: every element in each list of
-   its kind. 32 bytes per element in all; clusters would cut that down. */
+   its kind (hardware, state, small, occluded), 4 bytes an entry: 16 bytes per
+   element in all, plus 24 per cluster. */
 static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, uint64_t work0, uint64_t work1, uint64_t cwork, bool compute) {
     const uint64_t tot = work0 + work1;
+    /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
     const uint64_t sizes[9] = { cwork, cwork, cwork, work0, work1, work0, work1, tot, tot };
+    const uint32_t esize[9] = { 8, 8, 8, 4, 4, 4, 4, 4, 4 };
     size_t need = 0;
-    for (int i = 0; i < 9; ++i) need += (size_t)align_addr((sizes[i] + 1) * 8u);
+    for (int i = 0; i < 9; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
     md_gpu_addr_t* dst[9] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ };
-    for (int i = 0; i < 9; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * 8u); }
+    for (int i = 0; i < 9; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;

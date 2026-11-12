@@ -53,8 +53,7 @@ struct Args {
     uint* cnt;                  // uint4 per cell, [cells + 1]: atoms, bonds
     uint* sums;                 // uint4 per scan block
     uint* types;                // uint16 per atom: particle type
-    uint* radius_table;         // float per type
-    uint* atom_radius;          // float per atom (the topology's)
+    uint* type_radius;          // float per particle type (the topology's)
     uint* mol_atom_offset;      // [n_mol + 1]
     uint* mol_atoms;            // atom indices
     uint* mol_bond_offset;      // [n_mol + 1]
@@ -354,17 +353,6 @@ void sol_offsets(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-// The atoms' radii from the table, by particle type
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void sol_radii(uint3 tid : SV_DispatchThreadID) {
-    Args a = MD_ARGS;
-    uint n = a.atom_count;
-    for (uint i = tid.x; i < n; i += grid_threads(n)) {
-        uint t = (a.types[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu;
-        a.atom_radius[i] = t < a.type_count ? a.radius_table[t] : 0u;
-    }
-}
 
 // After a regroup: the other bonds touching small molecules, between the
 // points their atoms now are
@@ -392,7 +380,15 @@ void sol_gather(uint3 tid : SV_DispatchThreadID) {
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
-        uint r = reuse ? a.points[4u * p + 3u] : a.has_radius != 0u ? a.radius_override[atom] : a.atom_radius[atom];
+        uint r;
+        if (reuse) {
+            r = a.points[4u * p + 3u];
+        } else if (a.has_radius != 0u) {
+            r = a.radius_override[atom];
+        } else {
+            uint t = (a.types[atom >> 1u] >> ((atom & 1u) * 16u)) & 0xFFFFu;
+            r = t < a.type_count ? a.type_radius[t] : 0u;
+        }
         uint4 v = uint4(q[0], q[1], q[2], r);
         ((uint4*)a.points)[p] = v;
         if (a.has_velocity != 0u) {
