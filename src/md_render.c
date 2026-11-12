@@ -91,7 +91,9 @@ enum {
     C_CVIS1 = 12, C_CVIS2 = 13, C_COCC = 14, C_CST = 15,
     C_CMD = 16, C_STCMD = 32, C_GRID_SMALL = 40, C_GRID_OCC = 48,
     C_GRID_CVIS = 52, C_GRID_COCC = 60, C_GRID_CST = 64, C_CL_VIS = 72, C_CL_OCC = 74,
-    C_COUNT = 80,
+    C_ICMD = 80,      /* md_gpu_draw_indexed_cmd_t: capsules, phase 1 and 2: 80..89 */
+    C_STICMD = 90,    /* the state list's capsules: 90..94 */
+    C_COUNT = 96,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -337,6 +339,7 @@ struct md_render_view {
     md_gpu_addr_t       list_mem;          /* the lists themselves             */
     size_t              list_mem_cap;
     md_gpu_addr_t       counters;          /* uint32 [C_COUNT]                 */
+    md_gpu_addr_t       box_idx;           /* uint16 [36]: a capsule's box over its 8 corners */
     md_gpu_addr_t       vis64;
     size_t              vis64_cap;
     md_gpu_addr_t       bounds_mem;        /* per cluster: 2 float4 bounds, 1 uint state */
@@ -402,6 +405,7 @@ void md_render_view_destroy(md_gpu_stream_t s, md_render_view_t v) {
     if (v->bounds_mem) md_gpu_free(s, v->bounds_mem);
     if (v->list_mem)  md_gpu_free(s, v->list_mem);
     if (v->counters)  md_gpu_free(s, v->counters);
+    if (v->box_idx)   md_gpu_free(s, v->box_idx);
     if (v->vis64)     md_gpu_free(s, v->vis64);
     if (v->hiz)       md_gpu_texture_destroy(v->hiz);
     for (uint32_t i = 0; i < STAT_SLOTS; ++i) if (v->stats[i].host.gpu) md_gpu_free(s, v->stats[i].host.gpu);
@@ -906,6 +910,17 @@ static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, uint64_t work0, 
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
+    if (!v->box_idx) {
+        /* 12 triangles counter-clockwise seen from outside; corner c is
+           (c & 1, c >> 1 & 1, c >> 2 & 1) in the capsule's frame (u, v, axis).
+           Indexed, the vertex stage runs once per corner, not per index. */
+        static const uint16_t box[36] = {
+            0, 4, 6,  0, 6, 2,   1, 3, 7,  1, 7, 5,   0, 1, 5,  0, 5, 4,
+            2, 6, 7,  2, 7, 3,   0, 2, 3,  0, 3, 1,   4, 5, 7,  4, 7, 6,
+        };
+        v->box_idx = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(box)).gpu;
+        if (!v->box_idx || !md_gpu_upload(s, v->box_idx, box, sizeof(box))) return false;
+    }
     if (compute && !gpu_realloc(s, &v->vis64, &v->vis64_cap, (size_t)v->width * v->height * 8u)) return false;
     l.counters = v->counters;
     l.vis64    = v->vis64;
@@ -1016,7 +1031,8 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         md_gpu_set_draw_state(s, &ds);
         a.mode = 0;
         a.list = k;
-        md_gpu_draw_indirect(s, k == 0 ? r->sphere_vis : r->capsule_vis, CTR(v, C_CMD + ((phase - 1) * 2 + k) * 4), 1, &a, sizeof(a));
+        if (k == 0) md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
+        else        md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
     }
     return md_gpu_render_end(s);
 }
@@ -1062,7 +1078,8 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
         md_gpu_set_draw_state(s, &ds);
         a.mode = 1;
         a.list = 2 + k;
-        md_gpu_draw_indirect(s, k == 0 ? v->r->sphere_mask : v->r->capsule_mask, CTR(v, C_STCMD + k * 4), 1, &a, sizeof(a));
+        if (k == 0) md_gpu_draw_indirect(s, v->r->sphere_mask, CTR(v, C_STCMD), 1, &a, sizeof(a));
+        else        md_gpu_draw_indexed_indirect(s, v->r->capsule_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMD), 1, &a, sizeof(a));
     }
     return md_gpu_render_end(s);
 }
@@ -1261,7 +1278,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         if (state_lists) {
             md_gpu_memset(s, v->counters, 0, C_COUNT * 4u);
         } else {
-            static const uint32_t keep[][2] = { { C_ST, C_ST + 2 }, { C_CST, C_CST + 1 }, { C_STCMD, C_STCMD + 8 }, { C_GRID_CST, C_GRID_CST + 3 } };
+            static const uint32_t keep[][2] = { { C_ST, C_ST + 2 }, { C_CST, C_CST + 1 }, { C_STCMD, C_STCMD + 8 }, { C_GRID_CST, C_GRID_CST + 3 },
+                                                { C_STICMD, C_STICMD + 5 } };
             uint32_t w = 0;
             for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); ++i) {
                 if (keep[i][0] > w) md_gpu_memset(s, CTR(v, w), 0, (keep[i][0] - w) * 4u);
