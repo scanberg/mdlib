@@ -35,15 +35,22 @@ typedef struct gpu_view_t {
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
-/* Phase 1's occlusion test passes what is nearer than the pyramid by fewer
-   than this many radii (so elements just behind the front surface draw in
-   phase 1, and its pyramid has fewer holes for phase 2 to cascade through
-   after a camera move: M4, 10M atoms, far spacefill 6.2 -> 5.4 ms, near
-   4.9 -> 4.5). Elements no wider than occl_min_px are not tested at all
-   (their test costs about what drawing them does). Settable for
-   md_render_bench's experiments (declared there, not in the header). */
+/* Occlusion settings, measured on the M4 at 10M atoms (camera moving):
+   - Elements no wider than occl_min_px pixels are not tested one by one
+     (their clusters are). Testing one costs about what drawing it does, and
+     a tiny element rejected against the previous raster's pyramid leaves a
+     hole in phase 1's: one uncovered pixel and the farthest-depth pyramid
+     occludes nothing above it, so phase 2 let through everything behind.
+     Far spacefill 5.4 -> 3.3 ms (phase 2's clusters 110k -> 1.5k); licorice
+     14.8 -> 14.4 moving, 16.8 -> 17.6 still; near unchanged.
+   - Phase 1's test passes what is nearer than the pyramid by fewer than
+     occl_margin radii: elements just behind the front surface draw in phase
+     1, for the same holes. Far 6.2 -> 5.4 ms, near 4.9 -> 4.5 (before the
+     size threshold; beyond 2 radii nothing more).
+   Settable for md_render_bench's experiments (declared there, not in the
+   header). */
 static float g_occl_margin = 2.0f;
-static float g_occl_min_px = 0.0f;
+static float g_occl_min_px = 2.0f;
 void md_render_debug_occlusion(float margin_radii, float min_px) { g_occl_margin = margin_radii; g_occl_min_px = min_px; }
 
 enum {

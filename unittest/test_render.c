@@ -744,6 +744,10 @@ static void dense_scene(fix_t* fx, dense_t* d) {
     d->b[1].style.capsules.radius = 0.04f;
 }
 
+/* md_render's occlusion settings, for a test of the path its defaults skip
+   (in md_render.c, not in its header) */
+void md_render_debug_occlusion(float margin_radii, float min_px);
+
 /* ids and depths equal; with depth_only, depths (an index renumbers the elements) */
 static int compare_views_ex(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered, bool depth_only) {
     uint32_t* ia = malloc(W * H * 8); uint32_t* ib = malloc(W * H * 8);
@@ -806,7 +810,7 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
     EXPECT_EQ(2u, st.raster);
     EXPECT_TRUE(st.refitted);                             /* the geometry was announced as changed */
-    EXPECT_GT(st.occluded, (d.n_sph + d.n_cap) / 4);       /* most of a 12-deep stack */
+    EXPECT_GT(st.occluded, (d.n_sph + d.n_cap) / 5);       /* much of a 12-deep stack (elements up to 2 px are drawn, not tested) */
     EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     printf("    elements %llu: outside %u, occluded %u (retested %u), hardware %u + %u, compute %u + %u\n",
@@ -862,6 +866,31 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
         f.batches = d.b;
         free(off);
         free(perm);
+    }
+
+    /* Every element tested for occlusion, the tiny ones too (md_render
+       leaves those up to 2 px to its depth test by default): the same image,
+       more occluded */
+    {
+        md_render_debug_occlusion(2.0f, 0.0f);
+        md_render_view_t vo = md_render_view_create(fx.r, "every element tested");
+        md_render_frame_t fo = frame_of(W, H, make_camera(&c), d.b, 2);
+        fo.small_pixels = 4.0f;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, vo, &fo, NULL));
+        fo.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, vo, &fo, NULL));
+        md_gpu_stream_sync(fx.gfx);
+        md_render_stats_t so;
+        ASSERT_TRUE(md_render_view_stats(vo, &so));
+        EXPECT_GT(so.occluded, (d.n_sph + d.n_cap) / 4);
+        md_render_view_t ro = md_render_view_create(fx.r, "its reference");
+        md_render_frame_t fro = fo;
+        fro.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, ro, &fro, NULL));
+        EXPECT_EQ(0, compare_views(&fx, vo, ro, W, H, &covered));
+        md_render_view_destroy(fx.gfx, vo);
+        md_render_view_destroy(fx.gfx, ro);
+        md_render_debug_occlusion(2.0f, 2.0f);
     }
 
     /* Jittered: the compute raster tests only the pixels the jittered shape
