@@ -1,7 +1,6 @@
 ﻿#pragma once
 
 #include "md_common.h"
-#include "md_compiler.h"
 #include "md_vec.h"
 
 #ifndef MD_VEC_MATH_USE_SIMD
@@ -24,9 +23,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-
-
 
 MD_VEC_INLINE float md_f32_step(float edge, float x) { return (float)((x - edge) > 0); }
 MD_VEC_INLINE double md_f64_step(double edge, double x) { return (double)((x - edge) > 0); }
@@ -67,10 +63,9 @@ MD_VEC_INLINE float md_f32_lerp(float a, float b, float t) {
     return a * (1.0f - t) + b * t;
 }
 
-// Collision with std::lerp in math.h on GCC (fucking hell) 
-// MD_VEC_INLINE double lerp(double a, double b, double t) {
-//    return a * (1.0 - t) + b * t;
-//}
+MD_VEC_INLINE double md_f64_lerp(double a, double b, double t) {
+    return a * (1.0 - t) + b * t;
+}
 
 // Cardinal cubic spline
 MD_VEC_INLINE float md_f32_cubic_spline(float p0, float p1, float p2, float p3, float t, float s) {
