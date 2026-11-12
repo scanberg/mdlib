@@ -61,7 +61,7 @@ static small_layout_t small_layout(uint32_t n_mol, uint32_t n_atoms, uint32_t n_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, velocity, params, mol_slot, cnt, sums, size;
+    uint64_t points, velocity, marker, params, mol_slot, cnt, sums, size;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
@@ -74,6 +74,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t cells)
     uint64_t o = 0;
     L.points   = o; o = align256(o + (uint64_t)n_atoms * 16u);
     L.velocity = o; o = align256(o + (uint64_t)n_atoms * 8u);
+    L.marker   = o; o = align256(o + 16u);
     L.params   = o; o = align256(o + 16u * 4u);
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
     L.cnt      = o; o = align256(o + (uint64_t)L.scan_n * 16u);
@@ -417,7 +418,7 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
 
 struct md_render_mol {
     md_allocator_i* alloc;
-    md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_radii, k_mixed, k_gather;
+    md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_radii, k_mixed, k_gather, k_mark;
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -425,11 +426,12 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t position, velocity, radius_override, points, vel_out;
     md_gpu_addr_t params, mol_slot, cnt, sums, types, radius_table, atom_radius;
     md_gpu_addr_t mol_atom_offset, mol_atoms, mol_bond_offset, mol_bond_local, mol_bond_ids, mixed_pos, mixed_atoms;
-    md_gpu_addr_t atom_order, atom_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset;
+    md_gpu_addr_t atom_order, atom_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, marker;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
-    uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count, _pad;
+    uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
+    uint32_t full, ident0, ident1, ident2, _pad;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 25 * 8 + 18 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 26 * 8 + 22 * 4, "gpu_mol_args_t mirrors Args");
 
 md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
     if (!device) return NULL;
@@ -449,8 +451,9 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_sol_radii_kernel();   r->k_radii   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_mixed_kernel();   r->k_mixed   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_gather_kernel();  r->k_gather  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_sol_mark_kernel();    r->k_mark    = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets || !r->k_radii ||
-        !r->k_mixed || !r->k_gather) {
+        !r->k_mixed || !r->k_gather || !r->k_mark) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -461,7 +464,7 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
 void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets, &r->k_radii,
-                             &r->k_mixed, &r->k_gather };
+                             &r->k_mixed, &r->k_gather, &r->k_mark };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -492,10 +495,6 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     }
     const bool regroup = (flags & MD_RENDER_MOL_UPDATE_REGROUP) && topo->grid_cells;
     const bool radii   = (flags & MD_RENDER_MOL_UPDATE_RADII) != 0;
-    if (radii && !atoms->radius_table) {
-        MD_LOG_ERROR("md_render_mol_update: MD_RENDER_MOL_UPDATE_RADII without a radius table");
-        return false;
-    }
     const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
     const dyn_layout_t   D  = dyn_layout(topo->atom_count, n_mol, cells);
     const small_layout_t SL = small_layout(n_mol, topo->small_atom_count, topo->small_bond_count, topo->mixed_bond_count);
@@ -545,9 +544,14 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     a.static_bond_clusters= a.has_bonds ? topo->bond_cluster_count[MD_RENDER_MOL_BOND_COVALENT] - cells : 0;
     a.mixed_count         = topo->mixed_bond_count;
     a.n                   = D.scan_n;
+    a.marker              = dynamic + D.marker;
+    a.full                = (regroup || radii) ? 1u : 0u;
+    a.ident0              = (uint32_t)topo->base;
+    a.ident1              = (uint32_t)(topo->base >> 32);
+    a.ident2              = (uint32_t)topo->topology_version;
 
     bool ok = true;
-    if (radii && topo->atom_count) ok = launch(s, r->k_radii, groups_for(topo->atom_count, 64), &a, hook, user, "radii");
+    if (radii && atoms->radius_table && topo->atom_count) ok = launch(s, r->k_radii, groups_for(topo->atom_count, 64), &a, hook, user, "radii");
     if (ok && regroup) {
         ok = ok && launch(s, r->k_clear,  groups_for(4 * (cells + 1) > 16 ? 4 * (cells + 1) : 16, 64), &a, hook, user, "clear");
         ok = ok && launch(s, r->k_bounds, groups_for(n_mol, 64), &a, hook, user, "bounds");
@@ -565,7 +569,12 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
         ok = ok && launch(s, r->k_offsets, groups_for(cells + 1, 64), &a, hook, user, "offsets");
         if (topo->mixed_bond_count) ok = ok && launch(s, r->k_mixed, groups_for(topo->mixed_bond_count, 64), &a, hook, user, "mixed");
     }
-    if (topo->atom_count) ok = ok && launch(s, r->k_gather, groups_for(topo->atom_count, 64), &a, hook, user, "gather");
+    if (topo->atom_count) {
+        ok = ok && launch(s, r->k_gather, groups_for(topo->atom_count, 64), &a, hook, user, "gather");
+        /* Every gather reads the radii from their source until a full one has
+           marked the copy's w valid; after that only the flags make it full */
+        ok = ok && launch(s, r->k_mark, md_gpu_grid(1, 1, 1), &a, hook, user, "mark");
+    }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return ok;
 }

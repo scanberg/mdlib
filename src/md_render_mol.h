@@ -216,7 +216,9 @@ enum {
        the tails of topo's atom_order and covalent bonds, and their cluster
        offsets. Nothing to do without small molecules. */
     MD_RENDER_MOL_UPDATE_REGROUP = 1u << 0,
-    /* topo's atom radii from atoms->radius_table, by particle type */
+    /* The radii changed: topo's atom radii refilled from atoms->radius_table
+       when given, and the copy's radii from those (or from atoms->radius).
+       Also after changing atoms->radius (its contents or which array). */
     MD_RENDER_MOL_UPDATE_RADII   = 1u << 1,
 };
 

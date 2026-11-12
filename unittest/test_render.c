@@ -1314,6 +1314,8 @@ UTEST(render, mol_clusters_follow_the_solvent) {
             free(table);
             ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RADII, content));   /* refills the copy too */
         }
+        /* a plain update (positions only) keeps the copy's radii: its w, not the source */
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
         for (uint32_t i = 0; i < n; ++i) rad[i] = sys.atom.type.radius[sys.atom.type_idx[i]] * scale;
         md_gpu_addr_t R = f_buf(&fx, rad, n * 4);
         rep.type = MD_RENDER_MOL_REP_SPACEFILL;
