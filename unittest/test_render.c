@@ -864,6 +864,25 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
         free(perm);
     }
 
+    /* Jittered: the compute raster tests only the pixels the jittered shape
+       can reach, so check it against the hardware raster sample by sample */
+    {
+        md_render_view_t vj = md_render_view_create(fx.r, "jittered");
+        md_render_view_t rj = md_render_view_create(fx.r, "jittered reference");
+        md_render_frame_t fj = frame_of(W, H, make_camera(&c), d.b, 2);
+        fj.jitter = MD_RENDER_JITTER_ALWAYS;
+        fj.small_pixels = 4.0f;
+        md_render_frame_t fjr = fj;
+        fjr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+        for (int k = 0; k < 5; ++k) {
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, vj, &fj, NULL));
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, rj, &fjr, NULL));
+            EXPECT_EQ(0, compare_views(&fx, vj, rj, W, H, &covered));
+        }
+        md_render_view_destroy(fx.gfx, vj);
+        md_render_view_destroy(fx.gfx, rj);
+    }
+
     /* Selection after culling: the state cull (phase 3) follows a change of
        the bits without a raster, hidden ones included */
     uint32_t words = (d.n_sph + 31) / 32;
