@@ -329,6 +329,7 @@ struct md_render_view {
     md_gpu_addr_t       bounds_mem;        /* per cluster: 2 float4 bounds, 1 uint state */
     size_t              bounds_cap;
     bool                bounds_valid;      /* of the last raster's geometry   */
+    bool                state_lists_ok;    /* hold the current state bits     */
     md_gpu_texture_t    hiz;
     uint32_t            hiz_w, hiz_h, hiz_levels;
     bool                hiz_ok;            /* holds the last raster            */
@@ -1236,8 +1237,23 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             if (batch_work(b)) has_kind[k] = true;
         }
         const uint32_t total = (uint32_t)(work[0] + work[1]);
+        const md_gpu_addr_t list_mem_before = v->list_mem;
         if (!ensure_lists(s, v, work[0], work[1], gv.total_cluster_work, compute)) return false;
-        md_gpu_memset(s, v->counters, 0, C_COUNT * 4u);
+        /* State lists: rebuilt only when the state bits or the geometry
+           changed (they do not depend on the camera); their counts and
+           commands survive the counters' reset otherwise */
+        const bool state_lists = refit || state_changed || !v->state_lists_ok || v->list_mem != list_mem_before;
+        if (state_lists) {
+            md_gpu_memset(s, v->counters, 0, C_COUNT * 4u);
+        } else {
+            static const uint32_t keep[][2] = { { C_ST, C_ST + 2 }, { C_CST, C_CST + 1 }, { C_STCMD, C_STCMD + 8 }, { C_GRID_CST, C_GRID_CST + 3 } };
+            uint32_t w = 0;
+            for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); ++i) {
+                if (keep[i][0] > w) md_gpu_memset(s, CTR(v, w), 0, (keep[i][0] - w) * 4u);
+                w = keep[i][1];
+            }
+            if (w < C_COUNT) md_gpu_memset(s, CTR(v, w), 0, (C_COUNT - w) * 4u);
+        }
         if (compute) md_gpu_memset(s, v->vis64, 0, (size_t)v->width * v->height * 8u);
 
         /* Cluster bounds: refitted when the geometry changed, else only their
@@ -1269,7 +1285,10 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         } else {
             v->hiz_ok = false;
         }
-        if (!run_state_lists(s, v, gv.total_cluster_work)) return false;
+        if (state_lists) {
+            if (!run_state_lists(s, v, gv.total_cluster_work)) return false;
+            v->state_lists_ok = true;
+        }
         v->raster_count++;
         record_stats(s, v, total, gv.total_cluster_work, refit);
 

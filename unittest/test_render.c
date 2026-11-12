@@ -651,6 +651,18 @@ UTEST(render, masks_visible_and_hidden) {
     EXPECT_EQ(0u, AT(-1.5));
     EXPECT_EQ(0x0000FF00u | 0x000000FFu, AT(-0.3));
     #undef AT
+
+    /* The camera moves a little: a raster that keeps the state lists, and the
+       masks still show the selection */
+    f.camera.view[12] = 0.05f;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(MD_RENDER_WORK_RASTER | MD_RENDER_WORK_RESOLVE | MD_RENDER_WORK_MASK, st.work);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m, W * H * 4));
+    #define AT(wx) m[(H / 2) * W + (uint32_t)(((wx) / 4.0 * 0.5 + 0.5) * W)]
+    EXPECT_EQ(0u, AT(-1.5));
+    EXPECT_EQ(0x0000FF00u | 0x000000FFu, AT(-0.3));
+    EXPECT_EQ(0xFF000000u | 0x00FF0000u, AT(2.5));    /* the highlight too */
+    #undef AT
     free(m);
     f_close(&fx);
 }
