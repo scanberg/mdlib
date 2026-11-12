@@ -162,10 +162,13 @@ typedef struct md_render_points_t {
     uint32_t      stride;          /* multiple of 4; 0: 12                            */
     uint32_t      velocity_stride; /* multiple of 4; 0: 8                             */
     md_gpu_addr_t velocity;        /* packed half3 (see conventions); 0: at rest      */
-    md_gpu_addr_t radius;          /* float per point (SPHERES); 0: radius 0          */
+    md_gpu_addr_t radius;          /* float per point (SPHERES), `radius_stride` bytes
+                                      apart; 0: radius 0                              */
+    uint32_t      radius_stride;   /* multiple of 4; 0: 4. Points stored as float4
+                                      (x, y, z, radius): position with stride 16 and
+                                      radius = position + 12 with stride 16           */
 
     uint32_t      attr_count;      /* entries of the attribute arrays; 0: count       */
-    uint32_t      _pad0;
     md_gpu_addr_t attr_index;      /* uint32 per point; 0: the point itself           */
     md_gpu_addr_t color;           /* uint32 RGBA8 per attribute, COLOR_POINTS        */
     md_gpu_addr_t palette_index;   /* uint16 per attribute, COLOR_PALETTE             */

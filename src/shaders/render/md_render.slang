@@ -121,7 +121,7 @@ struct Batch {
     float   sharpness;
     float   desaturate;
     uint    work_offset;        // first work item (element x instance) of the state cull
-    uint    _pad1;
+    uint    rad_stride;         // in bytes
 
     // Clusters: the unit of the first level of the cull. Cluster c holds the
     // elements cluster_offset[c] .. cluster_offset[c + 1], or 64c .. 64c + 64
@@ -268,8 +268,12 @@ Mat load_transform(float4* t, uint inst) {
     return m;
 }
 
+float point_radius(Batch b, uint pi) {
+    return ((b.flags & F_RADIUS) != 0u) ? b.radius[pi * (b.rad_stride >> 2)] : 0.0;
+}
+
 float sphere_radius(Batch b, uint pi) {
-    float r = ((b.flags & F_RADIUS) != 0u) ? b.radius[pi] : 0.0;
+    float r = point_radius(b, pi);
     return r * b.s0 + b.s1;
 }
 
@@ -613,7 +617,7 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         uint ai = attr_of(b, pi);
         if (!attr_visible(b, ai)) return l;
         l.st = attr_state(b, ai);
-        l.factor = ((b.flags & F_RADIUS) != 0u) ? b.radius[pi] : 0.0;
+        l.factor = point_radius(b, pi);
         if (geo) { l.a = load_pos(b, pi); l.b = l.a; }
         l.ok = sphere_radius(b, pi) > 0.0;
     } else if (b.kind == KIND_CAPSULES) {

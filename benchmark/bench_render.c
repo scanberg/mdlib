@@ -656,6 +656,29 @@ static md_render_camera_t camera_at(const scene_t* sc, float distance_in_boxes, 
 
 static int cmp_d(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
 
+/* md_render_mol_update with a hook after each launch: in md_render_mol.c,
+   not in its header (it is for this profile only) */
+bool md_render_mol_update_hooked(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+                                 md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
+                                 md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
+
+typedef struct pass_prof_t {
+    md_gpu_stream_t s;
+    md_tick_t       t;
+    uint32_t        n;
+    const char*     name[24];
+    double          ms[24];
+} pass_prof_t;
+
+/* Each pass synced and timed on the host: the sync's own cost is in every number */
+static void pass_hook(void* user, const char* pass) {
+    pass_prof_t* p = user;
+    md_gpu_stream_sync(p->s);
+    md_tick_t now = md_tick_now();
+    if (p->n < 24) { p->name[p->n] = pass; p->ms[p->n] = md_tick_to_milliseconds(now - p->t); p->n++; }
+    p->t = now;
+}
+
 typedef struct timing_t { double best, median; } timing_t;
 
 /* reps draws of the frame, each after `bump` (a content counter index, or -1 for none), each synced */
@@ -738,18 +761,32 @@ static int run_gpu(int argc, char** argv) {
         md_render_mol_atoms_t atoms = {0};
         atoms.position = sc.pos; atoms.selection = sc.sel;
         if (src == SRC_MOL) {
-            /* what a trajectory frame costs on top of the raster: the regrouping */
+            /* what a position change costs on top of the raster: the copy, and the copy after a regroup */
+            const struct { const char* name; md_render_mol_update_flags_t flags; } ups[] = {
+                { "md_render_mol_update (copy)          ", 0 },
+                { "md_render_mol_update (regroup + copy)", MD_RENDER_MOL_UPDATE_REGROUP },
+            };
             double* tu = malloc(reps * sizeof(double));
-            for (uint32_t rr = 0; rr < reps + 2; ++rr) {
-                md_tick_t t0 = md_tick_now();
-                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
-                md_gpu_stream_sync(s);
-                if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+            for (int ui = 1; ui >= 0; --ui) {          /* the regroup first: the copy then times the grouping it leaves */
+                for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+                    md_tick_t t0 = md_tick_now();
+                    md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, ups[ui].flags, NULL);
+                    md_gpu_stream_sync(s);
+                    if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                qsort(tu, reps, sizeof(double), cmp_d);
+                printf("%s: %6.2f / %6.2f ms\n", ups[ui].name, tu[0], tu[reps / 2]);
             }
-            qsort(tu, reps, sizeof(double), cmp_d);
-            printf("md_render_mol_update (regroup): %.2f / %.2f ms; %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block\n",
-                   tu[0], tu[reps / 2], sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0);
             free(tu);
+            /* where the regroup's time goes: each pass synced (so each carries a sync) */
+            pass_prof_t prof = { .s = s };
+            md_gpu_stream_sync(s);
+            prof.t = md_tick_now();
+            md_render_mol_update_hooked(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
+            printf("  passes, each synced:");
+            for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
+            printf("\n  %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block\n",
+                   sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0);
         }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
             md_render_batch_t b[8];
@@ -762,7 +799,7 @@ static int run_gpu(int argc, char** argv) {
                 rep.atom_color = sc.color;
                 if (looks[li].licorice) { rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; }
                 else                    { rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f; }
-                nb = md_render_mol_emit(&sc.topo, &atoms, &rep, b, 8);
+                nb = md_render_mol_emit(&sc.topo, sc.dyn, &atoms, &rep, b, 8);
             }
             md_render_points_t pts = {0};
             pts.count = sc.atoms; pts.position = sc.pos; pts.radius = sc.rad; pts.color = sc.color; pts.state[0] = sc.sel;

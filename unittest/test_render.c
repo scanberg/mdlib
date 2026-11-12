@@ -935,6 +935,10 @@ UTEST(render, mol_licorice_emit_and_pick) {
     for (int i = 0; i < 9; ++i) colors[i] = 0xFF000000u | (uint32_t)(i * 20);
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));   /* the copy that is drawn */
 
     md_render_mol_rep_t rep = {0};
     rep.key  = 42;
@@ -944,13 +948,13 @@ UTEST(render, mol_licorice_emit_and_pick) {
     rep.color.mode = MD_RENDER_COLOR_POINTS;
 
     md_render_batch_t batches[8];
-    uint32_t nb = md_render_mol_emit(&topo, &atoms, &rep, batches, 8);
+    uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, 8);
     ASSERT_EQ(2u, nb);                          /* atoms, covalent bonds */
     EXPECT_EQ(MD_RENDER_CAPSULES, batches[0].kind);
     EXPECT_EQ(MD_RENDER_SPHERES, batches[1].kind);
     EXPECT_EQ(8u, batches[0].count);
     /* emit is pure: asking with no room says how many it needs */
-    EXPECT_EQ(2u, md_render_mol_emit(&topo, &atoms, &rep, NULL, 0));
+    EXPECT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rep, NULL, 0));
 
     /* Looking down -Z at the molecule from 6 Å, orthographic */
     const uint32_t W = 128, H = 96;
@@ -999,7 +1003,9 @@ UTEST(render, mol_licorice_emit_and_pick) {
     }
 
     md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -1049,6 +1055,9 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
             }
         }
     }
+    const uint32_t* point = (const uint32_t*)(img + T->atom_point);
+    for (uint32_t p = 0; p < n; ++p) if (order[p] < n && point[order[p]] != p) { FAIL("atom_point is not the inverse at point %u", p); break; }
+    /* bonds are between points: atom order[p] is at point p */
     const uint32_t* pairs = (const uint32_t*)(img + T->bond_pairs);
     const uint32_t* ids   = (const uint32_t*)(img + T->bond_ids);
     memset(seen, 0, n + nb + 1);
@@ -1056,7 +1065,8 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
         uint32_t i = ids[j];
         if (i >= nb || seen[i]) { FAIL("bond id %u at %u: out of range or twice", i, j); continue; }
         seen[i] = 1;
-        if (pairs[2 * j] != (uint32_t)sys->bond.pairs[i].idx[0] || pairs[2 * j + 1] != (uint32_t)sys->bond.pairs[i].idx[1]) FAIL("bond %u: pair does not match its id", j);
+        if (pairs[2 * j] >= n || pairs[2 * j + 1] >= n ||
+            order[pairs[2 * j]] != (uint32_t)sys->bond.pairs[i].idx[0] || order[pairs[2 * j + 1]] != (uint32_t)sys->bond.pairs[i].idx[1]) FAIL("bond %u: points do not match its id", j);
     }
     for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
         const uint32_t* bo = (const uint32_t*)(img + T->bond_cluster_offset[c]);
@@ -1080,9 +1090,16 @@ static bool load_system(md_system_t* sys, md_system_state_t* state, const char* 
     return ok && md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
 }
 
-/* Host only: the plan of systems with chains, ligands and small molecules */
+static uint8_t* read_block(fix_t* fx, md_gpu_addr_t base, uint64_t size);
+
+/* The plan of systems with chains, ligands and small molecules; then (with a
+   GPU) the same after a regroup, which moves the small molecules and with
+   them the bonds that reach them from elsewhere (mixed) */
 UTEST(render, mol_plan_clusters) {
     const char* files[] = { MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb", MD_UNITTEST_DATA_DIR "/1a64.pdb", MD_UNITTEST_DATA_DIR "/tryptophan-md.gro" };
+    fix_t fx;
+    bool gpu = f_open(&fx);
+    md_render_mol_t mol = gpu ? md_render_mol_create(fx.dev, NULL) : NULL;
     for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
         md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
@@ -1094,14 +1111,33 @@ UTEST(render, mol_plan_clusters) {
         const md_render_mol_topo_t* T = &plan.layout;
         EXPECT_EQ(0, check_topo_image(&sys, T, plan.data));
         uint32_t n_static = T->atom_count - T->small_atom_count, cl_static = T->atom_cluster_count - T->grid_cells;
-        printf("    %s: %u atoms: %u in %u residue clusters (%.1f per cluster), %u in %u small molecules over %u cells; %u bonds\n",
+        printf("    %s: %u atoms: %u in %u residue clusters (%.1f per cluster), %u in %u small molecules over %u cells; %u bonds (%u mixed)\n",
                strrchr(files[f], '/') + 1, T->atom_count, n_static, cl_static, cl_static ? (double)n_static / cl_static : 0.0,
-               T->small_atom_count, T->small_molecule_count, T->grid_cells, T->bond_count);
+               T->small_atom_count, T->small_molecule_count, T->grid_cells, T->bond_count, T->mixed_bond_count);
         if (n_static > 1000) EXPECT_GT((double)n_static / cl_static, 40.0);   /* residues pack well */
+        if (mol) {
+            md_render_mol_topo_t topo;
+            ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
+            md_gpu_addr_t P   = f_buf(&fx, state.xyz, T->atom_count * 12);
+            md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+            md_render_mol_atoms_t atoms = {0};
+            atoms.position = P;
+            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
+            uint8_t* img = read_block(&fx, topo.base, topo.size);
+            md_render_mol_topo_t rel = topo;
+            rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base;
+            rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
+            for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
+            EXPECT_EQ(0, check_topo_image(&sys, &rel, img));
+            free(img);
+            md_gpu_free(fx.gfx, P); md_gpu_free(fx.gfx, dyn); md_gpu_free(fx.gfx, topo.base);
+        }
         md_temp_end(temp);
         md_system_free(&sys);
         md_vm_arena_destroy(alloc);
     }
+    if (mol) md_render_mol_destroy(mol);
+    if (gpu) f_close(&fx);
 }
 
 static uint8_t* read_block(fix_t* fx, md_gpu_addr_t base, uint64_t size) {
@@ -1184,7 +1220,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     uint8_t* after = read_block(&fx, topo.base, topo.size);
     /* the block's own image: rebase the addresses to offsets */
     md_render_mol_topo_t rel = topo;
-    rel.atom_order -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
+    rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
     for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
     EXPECT_EQ(0, check_topo_image(&sys, &rel, after));
     double e0 = grid_cluster_extent(&rel, before, xyz), e1 = grid_cluster_extent(&rel, after, xyz);
@@ -1211,7 +1247,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     rep.params.licorice.radius = 0.3f;
     rep.bond_classes = MD_RENDER_MOL_BONDS_ALL;
     md_render_batch_t batches[8];
-    uint32_t nbat = md_render_mol_emit(&topo, &atoms, &rep, batches, 8);
+    uint32_t nbat = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, 8);
     ASSERT_GE(nbat, 2u);
     EXPECT_EQ(topo.atom_cluster_count, batches[nbat - 1].cluster_count);
 
@@ -1276,13 +1312,13 @@ UTEST(render, mol_clusters_follow_the_solvent) {
             for (size_t t = 0; t < sys.atom.type.count; ++t) table[t] = sys.atom.type.radius[t] * scale;
             atoms.radius_table = f_buf(&fx, table, sys.atom.type.count * 4);
             free(table);
-            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RADII, content));
+            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RADII, content));   /* refills the copy too */
         }
         for (uint32_t i = 0; i < n; ++i) rad[i] = sys.atom.type.radius[sys.atom.type_idx[i]] * scale;
         md_gpu_addr_t R = f_buf(&fx, rad, n * 4);
         rep.type = MD_RENDER_MOL_REP_SPACEFILL;
         rep.params.spacefill.radius_scale = 1.0f;
-        nbat = md_render_mol_emit(&topo, &atoms, &rep, batches, 8);
+        nbat = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, 8);
         ASSERT_EQ(1u, nbat);
         md_render_batch_t ps = plain[0];
         ps.points.radius = R;

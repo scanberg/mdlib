@@ -58,7 +58,7 @@ typedef struct gpu_batch_t {
     uint32_t      uniform_color, palette_count;
     md_gpu_float4 tint;
     float         sharpness, desaturate;
-    uint32_t      work_offset, _pad1;
+    uint32_t      work_offset, rad_stride;
     md_gpu_addr_t cluster_offset, bounds, cstate, _pptr;
     uint32_t      cluster_count, cluster_work_offset, cluster_base, _pad2;
 } gpu_batch_t;
@@ -447,6 +447,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     out->points.velocity_stride = b->points.velocity_stride;
     out->points.velocity        = b->points.velocity;
     out->points.radius          = b->points.radius;
+    out->points.radius_stride   = b->points.radius_stride;
     out->points.attr_count      = b->points.attr_count;
     out->points.attr_index      = b->points.attr_index;
     out->points.visible[0]      = b->points.visible[0];
@@ -708,6 +709,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->instance_count = n_inst;
     g->stride         = p->stride ? p->stride : 12u;
     g->vel_stride     = p->velocity_stride ? p->velocity_stride : 8u;
+    g->rad_stride     = p->radius_stride ? p->radius_stride : 4u;
     g->attr_count     = p->attr_count ? p->attr_count : p->count;
     g->color_mode     = (uint32_t)b->color.mode;
     g->position       = p->position;
