@@ -23,7 +23,11 @@
 // And on every update, whatever else it does:
 //
 //     gather   the copy that is drawn: per point (cluster order), its atom's
-//              position and radius as a float4, and its velocity
+//              position and radius as a float4, and its velocity. The radius
+//              is a scattered fetch like the position; when neither the order
+//              nor the radii changed it is the old copy's w instead, read in
+//              order. A marker says the w are valid: written after a full
+//              gather, for this topology.
 //
 // Every pass reads the molecules in their own order (the order of the small
 // tables, close to the file order of the atoms): only the write lands
@@ -64,6 +68,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
+    uint* marker;               // 4 words: whose radii the copy's w holds (see sol_gather)
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -81,6 +86,10 @@ struct Args {
     uint  has_velocity;
     uint  has_radius;           // radius_override given
     uint  mixed_count;
+    uint  full;                 // gather: the radii from their source (the order or the radii changed)
+    uint  ident0;               // the topology the copy belongs to: its block address and version
+    uint  ident1;
+    uint  ident2;
     uint  _pad;
 };
 MD_SHADER_ARGS(Args);
@@ -92,6 +101,8 @@ static const uint P_LO    = 6u;    // 3 floats
 static const uint P_INV   = 9u;    // 1 / edge
 static const uint P_DIM   = 10u;   // 3 uints
 static const uint P_EDGE  = 13u;
+
+static const uint MARKER = 0x6D64726Du;   // the copy's radii are valid
 
 uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
 uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
@@ -377,10 +388,11 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
 void sol_gather(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
+    bool reuse = a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2;
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
-        uint r = a.has_radius != 0u ? a.radius_override[atom] : a.atom_radius[atom];
+        uint r = reuse ? a.points[4u * p + 3u] : a.has_radius != 0u ? a.radius_override[atom] : a.atom_radius[atom];
         uint4 v = uint4(q[0], q[1], q[2], r);
         ((uint4*)a.points)[p] = v;
         if (a.has_velocity != 0u) {
@@ -388,4 +400,15 @@ void sol_gather(uint3 tid : SV_DispatchThreadID) {
             ((uint2*)a.vel_out)[p] = uint2(w[0], w[1]);
         }
     }
+}
+
+// After a full gather (its own launch: the gather's threads read the marker)
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void sol_mark(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    a.marker[0] = MARKER;
+    a.marker[1] = a.ident0;
+    a.marker[2] = a.ident1;
+    a.marker[3] = a.ident2;
 }
