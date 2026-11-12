@@ -1960,7 +1960,7 @@ static md_array(md_float4_t) coordinate_extract_xyzw(data_t arg, float default_w
                 md_array_resize(indices, md_bitset_count(*bf), ctx->temp_alloc);
                 md_bitset_iter_t it = md_bitset_iter(*bf);
                 md_bitset_iter_extract_indices(indices, md_array_size(indices), it);
-                md_float3_t xyz = md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, md_array_size(indices), &ctx->cur_state->unitcell);
+                md_float3_t xyz = md_geom_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, md_array_size(indices), &ctx->cur_state->unitcell);
                 double w = 0;
                 if (ctx->atom_mass) {
                 for (size_t j = 0; j < md_array_size(indices); ++j) {
@@ -2081,7 +2081,7 @@ static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         for (size_t i = 0; i < len; ++i) {
             xyzw[i] = md_float4_from_float3(in_pos[i], 1.0f);
         }
-        com = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, len, &ctx->cur_state->unitcell);
+        com = md_geom_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, len, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_INT: {
@@ -2098,7 +2098,7 @@ static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             goto done;
         }
         
-        com = md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, idx, num_idx, &ctx->cur_state->unitcell);
+        com = md_geom_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, idx, num_idx, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_IRANGE: {
@@ -2126,7 +2126,7 @@ static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     }
                     ++k;
                 }
-                xyzw_arr[i] = md_float4_from_float3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = md_float4_from_float3(md_geom_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
             else {
                 size_t len = (size_t)((MD_MAX(0, range.end - range.beg) + step - 1) / step);
@@ -2136,11 +2136,11 @@ static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     // 1 based indexing to 0 based indexing
                     md_array_push(indices, j, ctx->temp_alloc);
                 }
-                xyzw_arr[i] = md_float4_from_float3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = md_float4_from_float3(md_geom_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
         }
 
-        com = md_util_com((const float*)xyzw_arr, sizeof(md_float4_t), (const float*)xyzw_arr + 3, sizeof(md_float4_t), 0, num_ranges, &ctx->cur_state->unitcell);
+        com = md_geom_com((const float*)xyzw_arr, sizeof(md_float4_t), (const float*)xyzw_arr + 3, sizeof(md_float4_t), 0, num_ranges, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_ATOMSET: {
@@ -2159,7 +2159,7 @@ static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             size_t len = md_bitset_count(*bf);
             int32_t* indices = md_temp_alloc_array(temp, int32_t, len);
             md_bitset_iter_extract_indices(indices, len, md_bitset_iter(*bf));
-            com = md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell);
+            com = md_geom_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell);
         }
         else {
             // If we have multiple atomsets we compute the center of mass for each atomset before computing a single com from the sub-coms
@@ -2175,9 +2175,9 @@ static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, len);
                 md_bitset_iter_extract_indices(indices, len, md_bitset_iter(*bf));
-                xyzw_arr[i] = md_float4_from_float3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = md_float4_from_float3(md_geom_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
-            com = md_util_com((const float*)xyzw_arr, sizeof(md_float4_t), (const float*)xyzw_arr + 3, sizeof(md_float4_t), 0, num_bf, &ctx->cur_state->unitcell);
+            com = md_geom_com((const float*)xyzw_arr, sizeof(md_float4_t), (const float*)xyzw_arr + 3, sizeof(md_float4_t), 0, num_bf, &ctx->cur_state->unitcell);
         }
         break;
     }
@@ -4997,7 +4997,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // b in its image nearest a
         md_float3_t d = md_float3_sub(b, a);
-        md_util_min_image(d.elem, 0, 1, &ctx->cur_state->unitcell);
+        md_geom_min_image(d.elem, 0, 1, &ctx->cur_state->unitcell);
         b = md_float3_add(a, d);
         float dist = md_float3_distance(a, b);
 
@@ -5077,7 +5077,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
         const size_t      elem_stride = type_info_element_byte_stride(arg[0].type);
 
         // The positions of the elements one after another, all measured against b in one pass: each element starts
-        // from the pair of the one before, which is what makes it cheap (see md_util_min_distance_groups)
+        // from the pair of the one before, which is what makes it cheap (see md_geom_min_distance_groups)
         const size_t num = end - beg;
         md_array(md_float3_t) a_pos = 0;
         size_t* a_off = md_temp_alloc_array(temp, size_t, num + 1);
@@ -5100,9 +5100,9 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
         int64_t* ia   = md_temp_alloc_array(temp, int64_t, num);
         int64_t* ib   = md_temp_alloc_array(temp, int64_t, num);
         if (largest) {
-            md_util_max_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
+            md_geom_max_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
         } else {
-            md_util_min_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
+            md_geom_min_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
         }
 
         for (size_t k = 0; k < num; ++k) {
@@ -5117,7 +5117,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
                 // The end in b drawn in the image it was measured in
                 const md_float3_t a = a_pos[ia[k]];
                 md_float3_t d = md_float3_sub(b_pos[ib[k]], a);
-                md_util_min_image(d.elem, 0, 1, &ctx->cur_state->unitcell);
+                md_geom_min_image(d.elem, 0, 1, &ctx->cur_state->unitcell);
                 draw_distance(a, md_float3_add(a, d), dist[k], ctx->vis, ctx->vis_flags);
             }
         }
@@ -5185,7 +5185,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             dst_arr = md_temp_alloc_array(temp, float, a_len * b_len);
         }
-        md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
+        md_geom_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
         if (dst && dst_arr != as_float_arr(*dst)) {
             const size_t n = MD_MIN(dst->size / sizeof(float), a_len * b_len);
             md_memcpy(dst->ptr, dst_arr, n * sizeof(float));
@@ -5307,7 +5307,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_float3_sub(coordinate_extract_com(arg[0], ctx), b),
             md_float3_sub(coordinate_extract_com(arg[2], ctx), b),
         };
-        md_util_min_image((float*)dx, 0, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
+        md_geom_min_image((float*)dx, 0, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
 
         // The ends placed in the images the arms were taken in, so the drawn angle is the measured one
         const md_float3_t a = md_float3_add(b, dx[0]);
@@ -5395,7 +5395,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_float3_sub(x[2], x[1]),
             md_float3_sub(x[3], x[2]),
         };
-        md_util_min_image((float*)dx, 0, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
+        md_geom_min_image((float*)dx, 0, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
         float angle = (float)md_float3_dihedral_angle(dx[0], dx[1], dx[2]);
 
         if (dst) {
@@ -5553,13 +5553,13 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             // Each set is placed into mutually consistent images against its own cell, and its centre is
             // the plain weighted mean of the placed points - which is what the fit below subtracts.
-            // Coordinates stay absolute: md_util_rmsd subtracts the centres itself.
+            // Coordinates stay absolute: md_geom_rmsd subtracts the centres itself.
             // Correct while the selection spans less than half a cell, as any per point image choice.
             md_float3_t com[2] = {0};
-            md_util_deperiodize_self(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
-            md_util_deperiodize_self(xyzw[1], count, &ctx->cur_state->unitcell, &com[1]);
+            md_geom_deperiodize_self(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
+            md_geom_deperiodize_self(xyzw[1], count, &ctx->cur_state->unitcell, &com[1]);
 
-            out[i] = (float)md_util_rmsd((const md_float4_t* const*)xyzw, 0, count, com);
+            out[i] = (float)md_geom_rmsd((const md_float4_t* const*)xyzw, 0, count, com);
         }
 
         md_temp_end(temp);
@@ -5935,7 +5935,7 @@ static int64_t plane_rings_find(const plane_rings_t* pr, const md_system_t* sys,
 // The points xyzw made mutually consistent across the cell, and their centroid
 static md_float3_t plane_place(md_float4_t* xyzw, size_t count, const md_unitcell_t* cell) {
     md_float3_t c = {0};
-    md_util_deperiodize_self(xyzw, count, cell, &c);
+    md_geom_deperiodize_self(xyzw, count, cell, &c);
     // The centroid of the points as placed
     md_float3_t sum = {0};
     for (size_t k = 0; k < count; ++k) sum = md_float3_add(sum, md_float3_from_float4(xyzw[k]));
@@ -7510,7 +7510,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // @NOTE: against ref_state's OWN cell. The reference configuration and the current frame need
         // not share one, which matters under a varying cell.
         extract_xyzw_vec4(ref_xyzw[0], ctx->ref_state->xyz, ref_w, ref_bf);
-        md_util_deperiodize_self(ref_xyzw[0], ref_size, &ctx->ref_state->unitcell, &ref_com[0]);
+        md_geom_deperiodize_self(ref_xyzw[0], ref_size, &ctx->ref_state->unitcell, &ref_com[0]);
 
         // Fetch target positions
         int*    trg_idx = md_temp_alloc_array(temp, int, trg_size);
@@ -7558,14 +7558,14 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // are chosen to minimise the very residual this alignment is about to be judged by. No
             // topology is consulted: the copies need not be whole structures, or even bonded.
             md_float3x3_t R = {0};
-            const float residual = md_util_optimal_rotation_pbc(&R, &ref_com[1], ref_xyzw[1], ref_xyzw[0], ref_com[0], ref_xyzw[1], ref_size, &ctx->cur_state->unitcell, 8, 1.0e-6f);
+            const float residual = md_geom_optimal_rotation_pbc(&R, &ref_com[1], ref_xyzw[1], ref_xyzw[0], ref_com[0], ref_xyzw[1], ref_size, &ctx->cur_state->unitcell, 8, 1.0e-6f);
 
             // The residual is the margin to an ambiguous image choice. Approaching half a cell means
             // no per point image assignment can represent this copy and the alignment is meaningless,
             // so drop the copy rather than smear a wrong orientation into the volume.
             if (residual > 0.25f * min_cell_extent) continue;
 
-            // ref_com[1] is in the image the copy arrived in (see md_util_optimal_rotation_pbc),
+            // ref_com[1] is in the image the copy arrived in (see md_geom_optimal_rotation_pbc),
             // which is where it is drawn, so the visualized frame sits on the atoms.
             md_float4x4_t RT = md_float4x4_mul(md_float4x4_from_float3x3(R), md_float4x4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
@@ -7705,7 +7705,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_array(md_float4_t) xyzr = 0;
     md_array_resize(xyzr, count, ctx->temp_alloc);
     extract_xyzw_vec4(xyzr, ctx->cur_state->xyz, rad, bf);
-    md_util_deperiodize_self(xyzr, count, &ctx->cur_state->unitcell, NULL);
+    md_geom_deperiodize_self(xyzr, count, &ctx->cur_state->unitcell, NULL);
 
     // The box of the spheres
     md_float3_t bmin = md_float3_set1( FLT_MAX);
@@ -7836,19 +7836,19 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     // placement is seeded from is not that mean, and the offset between the two enters
                     // the covariance squared.
                     md_float3_t com = {0};
-                    md_util_deperiodize_self(xyzw, count, &ctx->cur_state->unitcell, &com);
+                    md_geom_deperiodize_self(xyzw, count, &ctx->cur_state->unitcell, &com);
 
                     const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, count, com);
-                    out_weights[i] = md_util_shape_weights(&M);
+                    out_weights[i] = md_geom_shape_weights(&M);
                 }
             }
         } else {
             xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
             const size_t count = md_array_size(xyzw);
             md_float3_t com = {0};
-            md_util_deperiodize_self(xyzw, count, &ctx->cur_state->unitcell, &com);
+            md_geom_deperiodize_self(xyzw, count, &ctx->cur_state->unitcell, &com);
             const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, count, com);
-            out_weights[0] = md_util_shape_weights(&M);
+            out_weights[0] = md_geom_shape_weights(&M);
         }
 
         md_temp_end(temp);
@@ -8691,7 +8691,7 @@ static int _bond_length(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t len = MD_MIN(n, (size_t)element_count(*dst));
         for (size_t k = 0; k < len; ++k) {
             md_float3_t dx = md_float3_sub(ctx->cur_state->xyz[pairs[k].idx[1]], ctx->cur_state->xyz[pairs[k].idx[0]]);
-            md_util_min_image(dx.elem, 0, 1, &ctx->cur_state->unitcell);
+            md_geom_min_image(dx.elem, 0, 1, &ctx->cur_state->unitcell);
             out[k] = md_float3_length(dx);
         }
     }

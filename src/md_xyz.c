@@ -3,7 +3,7 @@
 #include <md_system.h>
 #include <core/md_hash.h>
 #include <md_run.h>
-#include <md_util_sort.h>
+#include <md_sort.h>
 #include <md_unitcell.h>
 #include <md_element.h>
 
@@ -689,7 +689,7 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
     if (num_keys == 0) return;
 
     uint32_t* order = md_alloc(temp, num_keys * sizeof(uint32_t));
-    md_util_argsort_radix_u64(order, keys, num_keys);
+    md_argsort_radix_u64(order, keys, num_keys);
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
     md_array_ensure(sys->bond.pairs, num_keys, sys->alloc);
     md_array_ensure(sys->bond.flags, num_keys, sys->alloc);

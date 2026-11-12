@@ -4,7 +4,7 @@
 #include <md_pdb.h>
 #include <md_system.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_dssp.h>
 
 #include <core/md_allocator.h>
@@ -294,7 +294,7 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
     com = md_float3_mul1(com, 1.0f / (float)state.num_atoms);
     for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = md_float3_sub(state.xyz[i], com);
     const md_unitcell_t cell = md_unitcell_from_extent(60.0, 60.0, 60.0);
-    ASSERT_TRUE(md_util_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell));
+    ASSERT_TRUE(md_geom_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell));
 
     md_secondary_structure_t split[76];
     ASSERT_TRUE(md_dssp_compute(split, n, state.xyz, &cell, &sys.protein_backbone));
@@ -350,7 +350,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     com = md_float3_mul1(com, 1.0f / (float)state.num_atoms);
     for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = md_float3_sub(state.xyz[i], com);
     const md_unitcell_t cell = md_unitcell_from_extent(120.0, 120.0, 120.0);
-    ASSERT_TRUE(md_util_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell));
+    ASSERT_TRUE(md_geom_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell));
 
     ASSERT_TRUE(md_dssp_compute(split, n, state.xyz, &cell, &sys.protein_backbone));
     size_t differ = 0;

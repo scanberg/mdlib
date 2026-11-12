@@ -1,7 +1,7 @@
 ﻿#include <md_hbond.h>
 
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_element.h>
 
 #include <core/md_common.h>
@@ -152,7 +152,7 @@ static float angle_sum(const md_system_t* sys, const md_system_state_t* ref, siz
         md_bond_iter_next(&it);
     }
     if (n < 3) return 360.0f;
-    md_util_min_image((float*)v, 0, 3, &ref->unitcell);
+    md_geom_min_image((float*)v, 0, 3, &ref->unitcell);
     const float a = md_float3_angle(v[0], v[1]) + md_float3_angle(v[1], v[2]) + md_float3_angle(v[0], v[2]);
     return (float)MD_RAD_TO_DEG(a);
 }
@@ -613,7 +613,7 @@ static inline md_float3_t min_image_diff(md_float3_t a, md_float3_t b, float dis
     md_float3_t d = md_float3_sub(b, a);
     const float l2 = md_float3_dot(d, d);
     const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
-    if (l2 > ref2) md_util_min_image(d.elem, 0, 1, cell);
+    if (l2 > ref2) md_geom_min_image(d.elem, 0, 1, cell);
     return d;
 }
 

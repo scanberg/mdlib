@@ -12,13 +12,13 @@
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
 //
 // The FIELDS hold exactly what shares one interpolation contract - same type in and out, periodic
-// boundary aware, handled as a unit by md_util_interpolate_*. Nothing which interpolates differently
+// boundary aware, handled as a unit by md_geom_interpolate_*. Nothing which interpolates differently
 // becomes a field here, because a field in this struct is a promise that it does.
 //
 // 'attributes' is how a frame carries everything else. A TRR frame has velocities and forces beside
 // its coordinates; they belong to that frame and to no other, and load_frame hands back one object
 // precisely so a caller cannot pair one frame's velocities with another frame's positions. They are
-// NOT part of the interpolation contract and nothing pretends otherwise: md_util_interpolate_* takes
+// NOT part of the interpolation contract and nothing pretends otherwise: md_geom_interpolate_* takes
 // raw coordinate arrays and never sees this table, so an interpolated state carries whatever its
 // producer chose to put there and no quantity is silently blended.
 //

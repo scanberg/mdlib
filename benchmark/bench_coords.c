@@ -9,8 +9,8 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
-#include <md_util_sort.h>
+#include <md_geom.h>
+#include <md_sort.h>
 #include <md_dssp.h>
 #include <md_hbond.h>
 #include <md_script.h>
@@ -51,7 +51,7 @@ UBENCH_EX(coords, com_pbc) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
         md_float3_t com = {0};
         UBENCH_DO_BENCHMARK() {
-            com = md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, &st.unitcell);
+            com = md_geom_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, &st.unitcell);
             UBENCH_DO_NOTHING(&com);
         }
     }
@@ -65,7 +65,7 @@ UBENCH_EX(coords, com_nopbc) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
         md_float3_t com = {0};
         UBENCH_DO_BENCHMARK() {
-            com = md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL);
+            com = md_geom_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL);
             UBENCH_DO_NOTHING(&com);
         }
     }
@@ -79,7 +79,7 @@ UBENCH_EX(coords, aabb) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
         float mn[3], mx[3];
         UBENCH_DO_BENCHMARK() {
-            md_util_aabb(mn, mx, (const float*)st.xyz, 0, NULL, st.num_atoms);
+            md_geom_aabb(mn, mx, (const float*)st.xyz, 0, NULL, st.num_atoms);
             UBENCH_DO_NOTHING(mn);
         }
     }
@@ -93,7 +93,7 @@ UBENCH_EX(coords, pbc_wrap) {
         jitter(&moved, &st, 30.0f);
         UBENCH_SET_BYTES(st.num_atoms * 12);
         UBENCH_DO_BENCHMARK() {
-            md_util_pbc((float*)moved.xyz, 0, NULL, moved.num_atoms, &st.unitcell);
+            md_geom_pbc((float*)moved.xyz, 0, NULL, moved.num_atoms, &st.unitcell);
             UBENCH_DO_NOTHING(moved.xyz);
         }
     }
@@ -109,7 +109,7 @@ UBENCH_EX(coords, interpolate_linear) {
         const md_float3_t* xyz[2] = {st.xyz, b.xyz};
         UBENCH_SET_BYTES(st.num_atoms * 12 * 3);
         UBENCH_DO_BENCHMARK() {
-            md_util_interpolate_linear(out.xyz, xyz, st.num_atoms, &st.unitcell, 0.3f);
+            md_geom_interpolate_linear(out.xyz, xyz, st.num_atoms, &st.unitcell, 0.3f);
             UBENCH_DO_NOTHING(out.xyz);
         }
     }
@@ -125,9 +125,9 @@ UBENCH_EX(coords, interpolate_cubic) {
         const md_float3_t* xyz[4] = {st.xyz, s[0].xyz, s[1].xyz, s[2].xyz};
         UBENCH_SET_BYTES(st.num_atoms * 12 * 5);
         float w[4];
-        md_util_cubic_spline_weights(w, 0.3f, 1.0f);
+        md_geom_cubic_spline_weights(w, 0.3f, 1.0f);
         UBENCH_DO_BENCHMARK() {
-            md_util_interpolate_cubic_weighted(out.xyz, xyz, st.num_atoms, &st.unitcell, w);
+            md_geom_interpolate_cubic_weighted(out.xyz, xyz, st.num_atoms, &st.unitcell, w);
             UBENCH_DO_NOTHING(out.xyz);
         }
     }
@@ -152,10 +152,10 @@ UBENCH_EX(coords, rmsd) {
         double r = 0;
         UBENCH_DO_BENCHMARK() {
             const md_float3_t com[2] = {
-                md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL),
-                md_util_com((const float*)b.xyz, 0, NULL, 0, NULL, b.num_atoms, NULL),
+                md_geom_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL),
+                md_geom_com((const float*)b.xyz, 0, NULL, 0, NULL, b.num_atoms, NULL),
             };
-            r = md_util_rmsd(cxyzw, NULL, st.num_atoms, com);
+            r = md_geom_rmsd(cxyzw, NULL, st.num_atoms, com);
             UBENCH_DO_NOTHING(&r);
         }
     }
@@ -168,7 +168,7 @@ UBENCH_EX(coords, sort_spatial) {
     if (load_big(&sys, &st, arena)) {
         uint32_t* idx = md_alloc(arena, st.num_atoms * sizeof(uint32_t));
         UBENCH_DO_BENCHMARK() {
-            md_util_sort_spatial(idx, (const float*)st.xyz, sizeof(md_float3_t), st.num_atoms);
+            md_sort_spatial(idx, (const float*)st.xyz, sizeof(md_float3_t), st.num_atoms);
             UBENCH_DO_NOTHING(idx);
         }
     }

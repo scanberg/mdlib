@@ -14,7 +14,6 @@ struct md_system_t;
 // Coordinates are handed back through a state; only passed by pointer here.
 typedef struct md_system_state_t md_system_state_t;
 
-struct md_system_loader_i;
 struct md_executor_t;
 
 // A GRO file is read into a system, and nothing else: there is no representation of the file of its own. The system: the

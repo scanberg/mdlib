@@ -8,7 +8,7 @@
 #include <md_pdb.h>
 #include <md_tpr.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_hbond.h>
 #include <md_element.h>
 
@@ -220,7 +220,7 @@ UTEST(water, unwrap_virtual_site) {
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_EQ(2, (int)sys.bond.count);
     EXPECT_EQ(1, (int)sys.molecule.count);
-    md_util_unwrap_system(&st, &sys);
+    md_geom_unwrap_system(&st, &sys);
     for (int i = 1; i < 4; ++i) {
         const float d = md_float3_length(md_float3_sub(st.xyz[i], st.xyz[0]));
         EXPECT_LT(d, 1.0f);

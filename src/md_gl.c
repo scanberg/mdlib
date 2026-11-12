@@ -1,6 +1,6 @@
 ﻿#include <md_gl.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_chem.h>
 
 #include <core/md_common.h>
@@ -1070,7 +1070,7 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t c
         // The box of the positions, for the culling of copies: of all of them, or grown by a part of them
         if (count > 0) {
             md_float3_t mn, mx;
-            md_util_aabb(mn.elem, mx.elem, (const float*)xyz, 0, NULL, count);
+            md_geom_aabb(mn.elem, mx.elem, (const float*)xyz, 0, NULL, count);
             if (offset == 0 && count == mol->atom_count) {
                 mol->aabb_min = mn;
                 mol->aabb_max = mx;

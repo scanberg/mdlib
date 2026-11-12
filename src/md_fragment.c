@@ -872,7 +872,7 @@ void md_fragment_data_free(md_fragment_data_t* d, md_allocator_i* alloc) {
 // Inference
 // ---------------------------------------------------------------------------
 
-bool md_util_system_infer_fragments(md_system_t* sys) {
+bool md_system_infer_fragments(md_system_t* sys) {
     if (!sys || !sys->alloc) return false;
     md_allocator_i* alloc = sys->alloc;
 

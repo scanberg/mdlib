@@ -3,7 +3,7 @@
 #include <md_nonbonded.h>
 #include <md_tpr.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <core/md_vec_math.h>
 
 #include <core/md_allocator.h>
@@ -205,7 +205,7 @@ UTEST(nonbonded, system_forcefield) {
     for (uint32_t i = 0; i < 19; ++i) {
         for (uint32_t j = i + 1; j < 19; ++j) {
             md_float3_t d = md_float3_sub(state.xyz[i], state.xyz[j]);
-            md_util_min_image(d.elem, 0, 1, &state.unitcell);
+            md_geom_min_image(d.elem, 0, 1, &state.unitcell);
             const double r2 = 0.01 * ((double)d.x * d.x + (double)d.y * d.y + (double)d.z * d.z);
             double elj, ec;
             md_nb_forcefield_pair_energy(ff, i, j, r2, &elj, &ec);

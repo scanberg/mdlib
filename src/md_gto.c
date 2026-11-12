@@ -1020,7 +1020,7 @@ static void gto_build_sparse_pairs(
 
     // Step 1: Morton-sort CGTO centers.
     // cgto_order[new_idx] = original_idx after the sort.
-    //md_util_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
+    //md_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
 
     //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
 

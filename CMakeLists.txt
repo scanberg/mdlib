@@ -126,7 +126,6 @@ set(CORE_FILES
 )
 
 set(SRC_FILES
-  src/md_atomic_infer.c
   src/md_element.c
   src/md_element.h
   src/md_chem.c
@@ -288,10 +287,10 @@ set(SRC_FILES
   src/md_martini.c
   src/md_martini_db.inl
   src/md_infer.h
-  src/md_util_geom.c
-  src/md_util_geom.h
-  src/md_util_sort.c
-  src/md_util_sort.h
+  src/md_geom.c
+  src/md_geom.h
+  src/md_sort.c
+  src/md_sort.h
   src/md_unitcell.h
   src/md_unitcell.c
   src/md_vector_graphics.c

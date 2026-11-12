@@ -4076,7 +4076,7 @@ static void pbc_translate(md_system_state_t* dst, const md_system_state_t* src, 
         dst->xyz[i] = md_float3_add(src->xyz[i], shift);
     }
     if (wrap) {
-        md_util_pbc((float*)dst->xyz, 0, NULL, dst->num_atoms, &dst->unitcell);
+        md_geom_pbc((float*)dst->xyz, 0, NULL, dst->num_atoms, &dst->unitcell);
     }
 }
 
@@ -4326,7 +4326,7 @@ static float extent_reference(md_system_t* sys, const md_system_state_t* state, 
         md_bitset_iter_t it_b = md_bitset_iter(bf[1]);
         while (md_bitset_iter_next(&it_b)) {
             md_float3_t dx = md_float3_sub(state->xyz[it_a.idx], state->xyz[it_b.idx]);
-            md_util_min_image(dx.elem, 0, 1, &state->unitcell);
+            md_geom_min_image(dx.elem, 0, 1, &state->unitcell);
             const float d = md_float3_length(dx);
             ext = largest ? MD_MAX(ext, d) : MD_MIN(ext, d);
         }

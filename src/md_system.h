@@ -38,7 +38,7 @@ typedef struct md_system_t {
     // equality only: it is not a count of changes. 0 is a system no mdlib function has built.
     //
     // Every mdlib function which changes the topology bumps it: md_system_reset (and so every loader),
-    // md_system_infer and the md_util_system_infer_* functions, md_chem_perceive, md_system_bond_insert and
+    // md_system_infer and the md_system_infer_* functions, md_chem_perceive, md_system_bond_insert and
     // md_system_bond_remove, md_itp_system_supplement. Code which changes the arrays by hand calls
     // md_system_topology_changed afterwards.
     uint64_t                    topology_version;

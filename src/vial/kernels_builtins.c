@@ -14,7 +14,7 @@
 
 #include <md_system.h>
 #include <md_element.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>
@@ -248,7 +248,7 @@ static bool k_displacement(vial_kctx_t* k, const vial_val_t* a, const vial_val_t
         if (miss) for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * i + c, k->alloc);
     }
     // The minimum image over every difference in one call
-    md_util_min_image((float*)o.data, 0, n, &cell);
+    md_geom_min_image((float*)o.data, 0, n, &cell);
     if (pb.origin && nd == lb.ndim) o.origin = pb.origin;
     *out = o;
     return true;
@@ -330,7 +330,7 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
                 return vial_rt_fail(k, "R0103", "a particle is beyond the frame's %zu", k->in->frame->num_atoms);
             }
             if (!k_weights(k, weights, true, "com", (const uint32_t*)idx, n, w, &any)) return false;
-            const md_float3_t c = md_util_com((const float*)g, 0, any ? w : NULL, 0, NULL, n, &cell);
+            const md_float3_t c = md_geom_com((const float*)g, 0, any ? w : NULL, 0, NULL, n, &cell);
             float* O = (float*)o.data + 3 * i;
             O[0] = c.x; O[1] = c.y; O[2] = c.z;
         }
@@ -355,7 +355,7 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
         float* O = (float*)o.data + 3 * g;
         if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * g + c, k->alloc); continue; }
         memcpy(buf, (const float*)p.data + 3 * (size_t)n * g, n * sizeof(md_float3_t));
-        const md_float3_t c = md_util_com((const float*)buf, 0, w, 0, NULL, n, &cell);
+        const md_float3_t c = md_geom_com((const float*)buf, 0, w, 0, NULL, n, &cell);
         O[0] = c.x; O[1] = c.y; O[2] = c.z;
     }
     *out = o;
@@ -366,8 +366,8 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
 static float angle3(const float* a, const float* b, const float* c, const md_unitcell_t* cell) {
     md_float3_t u = {{a[0] - b[0], a[1] - b[1], a[2] - b[2]}};
     md_float3_t v = {{c[0] - b[0], c[1] - b[1], c[2] - b[2]}};
-    md_util_min_image(u.elem, 0, 1, cell);
-    md_util_min_image(v.elem, 0, 1, cell);
+    md_geom_min_image(u.elem, 0, 1, cell);
+    md_geom_min_image(v.elem, 0, 1, cell);
     const double uu = (double)u.x * u.x + (double)u.y * u.y + (double)u.z * u.z;
     const double vv = (double)v.x * v.x + (double)v.y * v.y + (double)v.z * v.z;
     const double uv = (double)u.x * v.x + (double)u.y * v.y + (double)u.z * v.z;
@@ -382,9 +382,9 @@ static float dihedral4(const float* a, const float* b, const float* c, const flo
     md_float3_t b1 = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
     md_float3_t b2 = {{c[0] - b[0], c[1] - b[1], c[2] - b[2]}};
     md_float3_t b3 = {{d[0] - c[0], d[1] - c[1], d[2] - c[2]}};
-    md_util_min_image(b1.elem, 0, 1, cell);
-    md_util_min_image(b2.elem, 0, 1, cell);
-    md_util_min_image(b3.elem, 0, 1, cell);
+    md_geom_min_image(b1.elem, 0, 1, cell);
+    md_geom_min_image(b2.elem, 0, 1, cell);
+    md_geom_min_image(b3.elem, 0, 1, cell);
     // Blondel and Karplus: atan2(|b2| b1 . (b2 x b3), (b1 x b2) . (b2 x b3)), positive clockwise, as IUPAC
     const double n1[3] = {(double)b1.y * b2.z - (double)b1.z * b2.y, (double)b1.z * b2.x - (double)b1.x * b2.z, (double)b1.x * b2.y - (double)b1.y * b2.x};
     const double n2[3] = {(double)b2.y * b3.z - (double)b2.z * b3.y, (double)b2.z * b3.x - (double)b2.x * b3.z, (double)b2.x * b3.y - (double)b2.y * b3.x};
@@ -473,7 +473,7 @@ static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, b
 // The matrix's entry for points a and b: the length of b - a under the minimum image, as distance() computes it
 static inline float pair_entry(const float* a, const float* b, const md_unitcell_t* cell) {
     md_float3_t v = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
-    md_util_min_image(v.elem, 0, 1, cell);
+    md_geom_min_image(v.elem, 0, 1, cell);
     return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
@@ -483,7 +483,7 @@ static void pair_row(const float* a, const float* Q, uint32_t m, const md_unitce
         const float* b = Q + 3 * j;
         row[j] = (md_float3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
     }
-    md_util_min_image((float*)row, 0, m, cell);
+    md_geom_min_image((float*)row, 0, m, cell);
     for (uint32_t j = 0; j < m; ++j) d[j] = sqrtf(row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z);
 }
 
@@ -550,8 +550,8 @@ static bool pair_extreme_fast(md_allocator_i* alloc, const float* P, uint32_t n,
     for (size_t cap = 64; cap <= 4096; cap *= 8) {
         int64_t* a = md_alloc(alloc, cap * sizeof(int64_t));
         int64_t* b = md_alloc(alloc, cap * sizeof(int64_t));
-        const size_t cnt = closest ? md_util_min_distance_near(a, b, cap, 2.0f * slack, (const md_float3_t*)P, n, (const md_float3_t*)Q, m, cell)
-                                   : md_util_max_distance_near(a, b, cap, 2.0f * slack, (const md_float3_t*)P, n, (const md_float3_t*)Q, m, cell);
+        const size_t cnt = closest ? md_geom_min_distance_near(a, b, cap, 2.0f * slack, (const md_float3_t*)P, n, (const md_float3_t*)Q, m, cell)
+                                   : md_geom_max_distance_near(a, b, cap, 2.0f * slack, (const md_float3_t*)P, n, (const md_float3_t*)Q, m, cell);
         if (cnt > cap) continue;
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
@@ -937,7 +937,7 @@ static void pairs_search_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
         const float* A = s->px + 3 * (size_t)i;
         const float* B = s->py + 3 * (size_t)j;
         md_float3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
-        md_util_min_image(v.elem, 0, 1, s->cell);
+        md_geom_min_image(v.elem, 0, 1, s->cell);
         float e = 0.0f;
         e += v.x * v.x;
         e += v.y * v.y;
@@ -983,7 +983,7 @@ static void pairs_nearest_cb(const uint32_t* i_idx, const uint32_t* j_idx, const
         const float* A = s->px + 3 * (size_t)i;
         const float* B = s->py + 3 * (size_t)j;
         md_float3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
-        md_util_min_image(v.elem, 0, 1, s->cell);
+        md_geom_min_image(v.elem, 0, 1, s->cell);
         float e = 0.0f;
         e += v.x * v.x;
         e += v.y * v.y;
@@ -1114,7 +1114,7 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
             const float* B = (const float*)py.data + 3 * j;
             buf[e] = (md_float3_t){{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
         }
-        md_util_min_image((float*)buf, 0, len, &cell);
+        md_geom_min_image((float*)buf, 0, len, &cell);
         memset(mask, 0, mask_bytes);
         for (size_t e = 0; e < len; ++e) {
             const size_t i = rows ? L : e, j = rows ? e : L;
@@ -1857,7 +1857,7 @@ static bool k_fit(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* rv, co
         rel_r[m] = md_float4_set((float)(b[0] - cr[0]), (float)(b[1] - cr[1]), (float)(b[2] - cr[2]), (float)w[i]);
         m++;
     }
-    const md_float3x3_t R = md_util_optimal_rotation_rel(rel_r, rel_p, m);
+    const md_float3x3_t R = md_geom_optimal_rotation_rel(rel_r, rel_p, m);
     vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 2, p.dims, &o)) return false;
     for (uint32_t i = 0; i < n; ++i) {
         const float* a = (const float*)p.data + 3 * i;
@@ -2216,7 +2216,7 @@ static bool scalar_of(const vial_val_t* v, double* out) {
 static void nearest_image(vial_kctx_t* k, const float a[3], float b[3]) {
     if (!k->in->frame) return;
     md_float3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-    md_util_min_image(d.elem, 0, 1, &k->in->frame->cell);
+    md_geom_min_image(d.elem, 0, 1, &k->in->frame->cell);
     b[0] = a[0] + d.x; b[1] = a[1] + d.y; b[2] = a[2] + d.z;
 }
 
@@ -2353,7 +2353,7 @@ static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, via
 // each point and the particles in them. Computed only while drawing, after the built-in's value, which labels it.
 static void near3(const md_unitcell_t* cell, const float a[3], const float b[3], float out[3]) {
     md_float3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-    md_util_min_image(d.elem, 0, 1, cell);
+    md_geom_min_image(d.elem, 0, 1, cell);
     out[0] = a[0] + d.x; out[1] = a[1] + d.y; out[2] = a[2] + d.z;
 }
 

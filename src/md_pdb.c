@@ -4,7 +4,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_infer.h>
-#include <md_util_sort.h>
+#include <md_sort.h>
 #include <md_element.h>
 
 #include <core/md_common.h>
@@ -387,7 +387,7 @@ static void pdb_serial_index_init(pdb_serial_index_t* idx, const int32_t* serial
         return;
     }
     idx->order = md_alloc(alloc, num_atoms * sizeof(uint32_t));
-    md_util_argsort_radix_u32(idx->order, (const uint32_t*)serial, num_atoms);
+    md_argsort_radix_u32(idx->order, (const uint32_t*)serial, num_atoms);
 }
 
 // The atom of a serial, or UINT32_MAX for none
@@ -428,7 +428,7 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
 
     // Stable: of the keys of one pair, the first record's comes first
     uint32_t* order = md_alloc(temp_arena, num_keys * sizeof(uint32_t));
-    md_util_argsort_radix_u64(order, key, num_keys);
+    md_argsort_radix_u64(order, key, num_keys);
     uint8_t* keep = md_alloc(temp_arena, num_keys);
     md_memset(keep, 0, num_keys);
     size_t num_bonds = 0;

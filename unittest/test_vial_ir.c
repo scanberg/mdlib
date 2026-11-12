@@ -90,7 +90,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <core/md_vec_math.h>
 
 typedef struct vial_ir__run_t {
@@ -262,7 +262,7 @@ UTEST(vial_ir, evaluates_frames) {
     for (int64_t f = 0; f < nf; ++f) {
         md_system_extract_frame(ex, f, &state);
         md_float3_t dx = md_float3_sub(state.xyz[ca[3]], state.xyz[ca[0]]);
-        md_util_min_image(dx.elem, 0, 1, &state.unitcell);
+        md_geom_min_image(dx.elem, 0, 1, &state.unitcell);
         const double want = sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
         EXPECT_NEAR(want, d[f], 1e-5);
     }

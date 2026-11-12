@@ -15,7 +15,6 @@ struct md_system_t;
 typedef struct md_system_state_t md_system_state_t;
 
 struct md_allocator_i;
-struct md_system_loader_i;
 struct md_executor_t;
 
 enum {

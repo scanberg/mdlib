@@ -9,7 +9,7 @@
 #include <md_tpr.h>
 #include <md_lammps.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_xyz.h>
 
 #include <core/md_allocator.h>
@@ -573,7 +573,7 @@ UTEST(bonds, metallic_crystal) {
         for (size_t i = 0; i < num; ++i) {
             for (size_t j = i + 1; j < num; ++j) {
                 md_float3_t d = md_float3_sub(st.xyz[j], st.xyz[i]);
-                md_util_min_image(d.elem, 0, 1, &st.unitcell);
+                md_geom_min_image(d.elem, 0, 1, &st.unitcell);
                 expected += md_float3_length(d) < 1.1f * nn;
             }
         }
@@ -689,7 +689,7 @@ UTEST(bonds, metallic_slab) {
     for (int i = 0; i < num_au; ++i) {
         for (int j = i + 1; j < num_au; ++j) {
             md_float3_t v = md_float3_sub(st.xyz[j], st.xyz[i]);
-            md_util_min_image(v.elem, 0, 1, &st.unitcell);
+            md_geom_min_image(v.elem, 0, 1, &st.unitcell);
             shell += md_float3_length(v) < 3.5f;
         }
     }

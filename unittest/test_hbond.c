@@ -6,7 +6,7 @@
 #include <md_pdb.h>
 #include <md_xyz.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_unitcell.h>
 #include <md_element.h>
 
@@ -64,7 +64,7 @@ static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size
 
 static md_float3_t mi_diff(const md_system_state_t* st, uint32_t from, uint32_t to) {
     md_float3_t d = md_float3_sub(st->xyz[to], st->xyz[from]);
-    md_util_min_image(d.elem, 0, 1, &st->unitcell);
+    md_geom_min_image(d.elem, 0, 1, &st->unitcell);
     return d;
 }
 

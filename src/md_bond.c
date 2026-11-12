@@ -1337,7 +1337,7 @@ static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, f
 
 static inline float delta_distance(const md_system_state_t* state, uint32_t i, uint32_t j) {
     md_float3_t dx = md_float3_sub(state->xyz[j], state->xyz[i]);
-    md_util_min_image(dx.elem, 0, 1, &state->unitcell);
+    md_geom_min_image(dx.elem, 0, 1, &state->unitcell);
     return md_float3_length(dx);
 }
 
