@@ -603,7 +603,9 @@ struct LocalElem {
     float  factor;
 };
 
-LocalElem element_local(Batch b, uint e) {
+// Without `geo` (a refit of the state bits alone) the positions are not read:
+// over all elements, that is most of the traffic.
+LocalElem element_local(Batch b, uint e, bool geo) {
     LocalElem l;
     l.ok = false; l.st = 0u; l.a = float3(0.0); l.b = float3(0.0); l.factor = 0.0;
     if (b.kind == KIND_SPHERES) {
@@ -612,8 +614,7 @@ LocalElem element_local(Batch b, uint e) {
         if (!attr_visible(b, ai)) return l;
         l.st = attr_state(b, ai);
         l.factor = ((b.flags & F_RADIUS) != 0u) ? b.radius[pi] : 0.0;
-        l.a = load_pos(b, pi);
-        l.b = l.a;
+        if (geo) { l.a = load_pos(b, pi); l.b = l.a; }
         l.ok = sphere_radius(b, pi) > 0.0;
     } else if (b.kind == KIND_CAPSULES) {
         uint p0 = point_of(b, e, 0u, 2u);
@@ -623,8 +624,7 @@ LocalElem element_local(Batch b, uint e) {
         if (!attr_visible(b, a0) || !attr_visible(b, a1)) return l;
         l.st = attr_state(b, a0) & attr_state(b, a1);
         l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[e] : 1.0;
-        l.a = load_pos(b, p0);
-        l.b = load_pos(b, p1);
+        if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
         l.ok = capsule_radius(b, e) > 0.0;
     }
     return l;
@@ -650,7 +650,7 @@ void refit(uint3 tid : SV_DispatchThreadID) {
         float  fmax = 0.0;
         uint   count = 0u, st = 0u;
         for (uint e = rng.x; e < rng.y; ++e) {
-            LocalElem l = element_local(b, e);
+            LocalElem l = element_local(b, e, v.refit_mode == 0u);
             if (!l.ok) continue;
             st |= l.st;
             if (v.refit_mode == 0u) {
