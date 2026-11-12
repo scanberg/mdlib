@@ -5,6 +5,7 @@
 
 #include <md_system.h>
 #include <md_system_state.h>
+#include <md_unitcell.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_infer.h>
@@ -1424,6 +1425,197 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     free(xyz); free(before); free(after); free(again); free(plain_pairs);
     md_gpu_free(fx.gfx, plain[1].index);
     md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* ---- Frames: resident on the GPU, interpolated there ---------------------------- */
+
+static float half_to_float(uint32_t h) {
+    uint32_t sgn = (h >> 15) & 1u, e = (h >> 10) & 31u, m = h & 1023u;
+    float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? (m ? NAN : INFINITY) : ldexpf((float)(m | 1024u), (int)e - 25);
+    return sgn ? -v : v;
+}
+
+/* The tryptophan box over five frames: every atom on its own curve, wrapped
+   into the box, so many cross it between frames. Uploads that regroup (one
+   into a slot that holds a frame) must leave every resident frame in the new
+   point order, and nearest, linear and cubic must give the CPU's answer from
+   the same quantized frames, minimum image included. */
+UTEST(render, mol_frames_interpolate) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    ASSERT_TRUE(md_unitcell_is_orthorhombic(&state.unitcell));
+    const float L[3] = { (float)state.unitcell.x, (float)state.unitcell.y, (float)state.unitcell.z };
+    float cell[9];
+    md_render_mol_frame_cell(cell, &state.unitcell);
+    EXPECT_EQ(L[0], cell[0]); EXPECT_EQ(L[1], cell[4]); EXPECT_EQ(L[2], cell[8]);
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
+    md_temp_end(temp);
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
+
+    /* Five frames: x(k) = x + v k + c k^2, wrapped; the waters shuffled
+       first, so their file order says nothing of where they are */
+    enum { NF = 5 };
+    float* xyz = malloc((size_t)n * 12);
+    memcpy(xyz, state.xyz, (size_t)n * 12);
+    uint32_t seed = 11;
+    #define RND() (((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f)
+    const md_molecule_data_t* M = &sys.molecule;
+    for (size_t k = M->count; k-- > 1;) {
+        size_t j = (size_t)(RND() * (k + 1));
+        uint32_t sk = M->offset[k + 1] - M->offset[k], sj = M->offset[j + 1] - M->offset[j];
+        if (sk != sj || sk > MD_RENDER_MOL_SMALL) continue;
+        for (uint32_t q = 0; q < sk; ++q) {
+            float* a = xyz + 3 * M->atom_idx[M->offset[k] + q];
+            float* b = xyz + 3 * M->atom_idx[M->offset[j] + q];
+            for (int d = 0; d < 3; ++d) { float t = a[d]; a[d] = b[d]; b[d] = t; }
+        }
+    }
+    float* fpos[NF];
+    uint16_t* planes[NF][3];
+    md_render_mol_frame_t frames[NF];
+    float* deq[NF];                                /* what the GPU holds, atom order */
+    float* v = malloc((size_t)n * 24);
+    for (uint32_t i = 0; i < 6 * n; ++i) v[i] = (RND() - 0.5f) * (i % 2 ? 0.3f : 1.6f);
+    int crossings = 0, quant_bad = 0;
+    for (int f = 0; f < NF; ++f) {
+        fpos[f] = malloc((size_t)n * 12);
+        deq[f]  = malloc((size_t)n * 12);
+        for (uint32_t i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
+            float x = xyz[3 * i + d] + v[6 * i + 2 * d] * f + v[6 * i + 2 * d + 1] * f * f;
+            fpos[f][3 * i + d] = x - L[d] * floorf(x / L[d]);
+            if (f && fabsf(fpos[f][3 * i + d] - fpos[f - 1][3 * i + d]) > 0.5f * L[d]) crossings++;
+        }
+        for (int d = 0; d < 3; ++d) planes[f][d] = malloc((size_t)n * 2);
+        md_render_mol_frame_quantize(&frames[f], planes[f][0], planes[f][1], planes[f][2], fpos[f], 0, n, cell);
+        for (uint32_t i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
+            deq[f][3 * i + d] = frames[f].origin[d] + (float)planes[f][d][i] * frames[f].scale[d];
+            quant_bad += fabsf(deq[f][3 * i + d] - fpos[f][3 * i + d]) > 0.5f * frames[f].scale[d] + 1e-5f;
+        }
+    }
+    printf("    %d crossings of the box between frames; step %.4f A\n", crossings, frames[0].scale[0]);
+    EXPECT_GT(crossings, 100);
+    EXPECT_EQ(0, quant_bad);
+
+    md_render_mol_frames_t fr;
+    const uint64_t fsize = md_render_mol_frames_size(&topo, 4);
+    ASSERT_GT(fsize, (uint64_t)n * 30);
+    ASSERT_TRUE(md_render_mol_frames_init(&fr, &topo, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, fsize).gpu, 4));
+    const md_render_mol_update_flags_t RG = MD_RENDER_MOL_UPDATE_REGROUP;
+    /* frames 0..3 into slots 0..3, regrouping with the first and the last */
+    uint8_t* order0 = read_block(&fx, topo.atom_order, (size_t)n * 4);
+    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &frames[0], RG));
+    uint8_t* order1 = read_block(&fx, topo.atom_order, (size_t)n * 4);
+    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0,   &fr, 1, &frames[1], 0));
+    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0,   &fr, 2, &frames[2], 0));
+    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 3, &frames[3], RG));
+    uint8_t* order2 = read_block(&fx, topo.atom_order, (size_t)n * 4);
+    EXPECT_NE(0, memcmp(order0, order1, (size_t)n * 4));
+    EXPECT_NE(0, memcmp(order1, order2, (size_t)n * 4));
+    EXPECT_EQ(15u, fr.valid);
+
+    /* the slots' frames, by slot: which of ours each holds */
+    int held[4] = { 0, 1, 2, 3 };
+    md_render_mol_atoms_t atoms = {0};
+    atoms.frames = &fr;
+    md_render_mol_rep_t rep = {0};
+    rep.key = 3; rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f;
+
+    /* nearest, linear, cubic; then frame 4 into slot 0 (which held frame 0),
+       regrouping, and cubic over the four latest */
+    const struct { uint32_t count; uint32_t slot[4]; float t, dt; bool replace; } cases[] = {
+        { 1, { 2 },          0.0f, 0.0f, false },
+        { 2, { 1, 2 },       0.6f, 2.0f, false },
+        { 4, { 0, 1, 2, 3 }, 0.3f, 2.0f, false },
+        { 4, { 1, 2, 3, 0 }, 0.8f, 0.5f, true  },
+    };
+    for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
+        if (cases[ci].replace) {
+            ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &frames[4], RG));
+            held[0] = 4;
+        }
+        atoms.frame_count = cases[ci].count;
+        memcpy(atoms.frame_slot, cases[ci].slot, sizeof(atoms.frame_slot));
+        md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, cases[ci].count, cases[ci].t, cases[ci].dt, 0.5f);
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+        md_render_batch_t b;
+        ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &rep, &b, 1));
+        const bool with_v = cases[ci].count > 1;
+        EXPECT_EQ(with_v, b.points.velocity != 0);
+
+        uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size_velocity);
+        uint8_t* ord = read_block(&fx, topo.atom_order, (size_t)n * 4);
+        const float* pts = (const float*)(blk + (b.points.position - dyn));
+        const uint32_t* vel = with_v ? (const uint32_t*)(blk + (b.points.velocity - dyn)) : NULL;
+        const uint32_t* order = (const uint32_t*)ord;
+        double pos_err = 0, vel_err = 0, vmax = 0;
+        int rad_bad = 0;
+        for (uint32_t p = 0; p < n; ++p) {
+            const uint32_t i = order[p];
+            double x[4][3];
+            for (uint32_t k = 0; k < cases[ci].count; ++k)
+                for (int d = 0; d < 3; ++d) x[k][d] = deq[held[cases[ci].slot[k]]][3 * i + d];
+            /* the minimum image, as documented: of [0] for two, of [1] (and [3] of [2]) for four */
+            for (int d = 0; d < 3; ++d) {
+                #define MI(a, ref) (a) = (ref) + ((a) - (ref)) - L[d] * roundf((float)(((a) - (ref)) / L[d]))
+                if (cases[ci].count == 2) { MI(x[1][d], x[0][d]); }
+                if (cases[ci].count == 4) { MI(x[0][d], x[1][d]); MI(x[2][d], x[1][d]); MI(x[3][d], x[2][d]); }
+                #undef MI
+                double pr = 0, vr = 0;
+                for (uint32_t k = 0; k < cases[ci].count; ++k) { pr += atoms.frame_w[k] * x[k][d]; vr += atoms.frame_dw[k] * x[k][d]; }
+                double e = fabs(pts[4 * p + d] - pr);
+                if (e > pos_err) pos_err = e;
+                if (with_v) {
+                    uint32_t h = d == 0 ? vel[2 * p] & 0xFFFFu : d == 1 ? vel[2 * p] >> 16 : vel[2 * p + 1] & 0xFFFFu;
+                    /* half precision, and the float sum of terms of 45 A: relative and absolute */
+                    double ev = fabs(half_to_float(h) - vr) / (2e-3 * fabs(vr) + 1e-4);
+                    if (ev > vel_err) vel_err = ev;
+                    if (fabs(vr) > vmax) vmax = fabs(vr);
+                }
+            }
+            rad_bad += pts[4 * p + 3] != sys.atom.type.radius[sys.atom.type_idx[i]];
+        }
+        printf("    %u frame(s), t %.1f: position error %.2g A, velocity error %.2g of the tolerance (max |v| %.2f)\n",
+               cases[ci].count, cases[ci].t, pos_err, vel_err, vmax);
+        EXPECT_LT(pos_err, 1e-3);
+        if (with_v) EXPECT_LT(vel_err, 1.0);
+        EXPECT_EQ(0, rad_bad);
+        free(blk); free(ord);
+    }
+    /* the topology after the regroups: whole and consistent */
+    uint8_t* img = read_block(&fx, topo.base, topo.size);
+    md_render_mol_topo_t rel = topo;
+    rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
+    for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
+    EXPECT_EQ(0, check_topo_image(&sys, &rel, img));
+    /* refused: a regroup in the update, a slot without a frame */
+    EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, RG, NULL));
+    md_render_mol_frames_t empty;
+    ASSERT_TRUE(md_render_mol_frames_init(&empty, &topo, fr.base, 4));
+    atoms.frames = &empty;
+    EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+    #undef RND
+
+    md_gpu_stream_sync(fx.gfx);
+    free(img); free(order0); free(order1); free(order2); free(v); free(xyz);
+    for (int f = 0; f < NF; ++f) { free(fpos[f]); free(deq[f]); for (int d = 0; d < 3; ++d) free(planes[f][d]); }
+    md_gpu_free(fx.gfx, fr.base);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
     md_render_mol_destroy(mol);

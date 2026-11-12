@@ -3,8 +3,10 @@
 #include <md_system.h>
 #include <md_bond.h>
 #include <md_system_state.h>
+#include <md_unitcell.h>
 #include <core/md_log.h>
 
+#include <float.h>
 #include <string.h>
 
 #include "md_render_mol_shaders.inl"
@@ -82,6 +84,25 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t cells)
     L.size = o;
     L.velocity = o; o = align256(o + (uint64_t)n_atoms * 8u);
     L.size_velocity = o;
+    return L;
+}
+
+/* The frames block: each slot's parameters (32 words), the buffers (the
+   slots', then the upload's), each three planes of 16-bit values two to a
+   word, then the old points of the small atoms (a regroup's) */
+typedef struct frames_layout_t {
+    uint64_t params, plane, buffer, buffers, src_point, size;
+} frames_layout_t;
+
+static frames_layout_t frames_layout(uint32_t n_atoms, uint32_t n_small, uint32_t slots) {
+    frames_layout_t L;
+    uint64_t o = 0;
+    L.params    = o; o = align256(o + (uint64_t)slots * 128u);
+    L.plane     = align256((uint64_t)((n_atoms + 1u) / 2u) * 4u);
+    L.buffer    = 3u * L.plane;
+    L.buffers   = o; o += (uint64_t)(slots + 1u) * L.buffer;
+    L.src_point = o; o = align256(o + (uint64_t)n_small * 4u);
+    L.size = o;
     return L;
 }
 
@@ -419,6 +440,7 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
 struct md_render_mol {
     md_allocator_i* alloc;
     md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather, k_mark;
+    md_gpu_kernel_t k_fr_gather, k_fr_reorder, k_fr_permute;
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -427,11 +449,14 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t params, mol_slot, cnt, sums, types, type_radius;
     md_gpu_addr_t mol_atom_offset, mol_atoms, mol_bond_offset, mol_bond_local, mol_bond_ids, mixed_pos, mixed_atoms;
     md_gpu_addr_t atom_order, atom_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, marker;
+    md_gpu_addr_t frame[4], fpar[4], qsrc, qdst, qpar, src_point;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t full, ident0, ident1, ident2, _pad;
+    uint32_t plane_words, frame_count, quantized, has_src, has_fvel, _pad2;
+    float    w[4], dw[4];
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 25 * 8 + 22 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 37 * 8 + 36 * 4, "gpu_mol_args_t mirrors Args");
 
 md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
     if (!device) return NULL;
@@ -451,8 +476,11 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_sol_mixed_kernel();   r->k_mixed   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_gather_kernel();  r->k_gather  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_mark_kernel();    r->k_mark    = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_gather_kernel();   r->k_fr_gather  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_reorder_kernel();  r->k_fr_reorder = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_permute_kernel();  r->k_fr_permute = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
-        !r->k_mixed || !r->k_gather || !r->k_mark) {
+        !r->k_mixed || !r->k_gather || !r->k_mark || !r->k_fr_gather || !r->k_fr_reorder || !r->k_fr_permute) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -463,7 +491,7 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
 void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
-                             &r->k_mixed, &r->k_gather, &r->k_mark };
+                             &r->k_mixed, &r->k_gather, &r->k_mark, &r->k_fr_gather, &r->k_fr_reorder, &r->k_fr_permute };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -484,91 +512,170 @@ static bool launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t g, const 
     return true;
 }
 
+/* The arguments every kernel shares: the topology, the per-frame block */
+static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic) {
+    const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
+    const dyn_layout_t   D  = dyn_layout(topo->atom_count, n_mol, cells);
+    const small_layout_t SL = small_layout(n_mol, topo->small_atom_count, topo->small_bond_count, topo->mixed_bond_count);
+    memset(a, 0, sizeof(*a));
+    if (dynamic) {
+        a->points         = dynamic + D.points;
+        a->vel_out        = dynamic + D.velocity;
+        a->params         = dynamic + D.params;
+        a->mol_slot       = dynamic + D.mol_slot;
+        a->cnt            = dynamic + D.cnt;
+        a->sums           = dynamic + D.sums;
+        a->marker         = dynamic + D.marker;
+    }
+    a->atom_count         = topo->atom_count;
+    a->type_count         = topo->type_count;
+    a->types              = topo->atom_type;
+    a->type_radius        = topo->type_radius;
+    if (topo->small_tables) {
+        a->mol_atom_offset = topo->small_tables + SL.mol_atom_offset;
+        a->mol_atoms       = topo->small_tables + SL.mol_atoms;
+        a->mol_bond_offset = topo->small_tables + SL.mol_bond_offset;
+        a->mol_bond_local  = topo->small_tables + SL.mol_bond_local;
+        a->mol_bond_ids    = topo->small_tables + SL.mol_bond_ids;
+        a->mixed_pos       = topo->small_tables + SL.mixed_pos;
+        a->mixed_atoms     = topo->small_tables + SL.mixed_atoms;
+    }
+    a->atom_order          = topo->atom_order;
+    a->atom_point          = topo->atom_point;
+    a->atom_cluster_offset = topo->atom_cluster_offset;
+    a->bond_pairs          = topo->bond_pairs;      /* the covalent class is first: its bonds start at 0 */
+    a->bond_ids            = topo->bond_ids;
+    a->bond_cluster_offset = topo->bond_cluster_offset[MD_RENDER_MOL_BOND_COVALENT];
+    a->n_mol               = n_mol;
+    a->cells               = cells;
+    a->n_atoms             = topo->small_atom_count;
+    a->static_atoms        = topo->atom_count - topo->small_atom_count;
+    a->static_atom_clusters= topo->atom_cluster_count - cells;
+    a->has_bonds           = topo->small_bond_count ? 1u : 0u;
+    a->static_bonds        = (topo->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT + 1] - topo->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT]) - topo->small_bond_count;
+    a->static_bond_clusters= a->has_bonds ? topo->bond_cluster_count[MD_RENDER_MOL_BOND_COVALENT] - cells : 0;
+    a->mixed_count         = topo->mixed_bond_count;
+    a->n                   = D.scan_n;
+    a->ident0              = (uint32_t)topo->base;
+    a->ident1              = (uint32_t)(topo->base >> 32);
+    a->ident2              = (uint32_t)topo->topology_version;
+}
+
+/* The small molecules into grid cells, by the positions `a` points at */
+static bool run_regroup(md_render_mol_t r, md_gpu_stream_t s, gpu_mol_args_t* a, const md_render_mol_topo_t* topo, pass_hook_t hook, void* user) {
+    const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
+    const dyn_layout_t D = dyn_layout(topo->atom_count, n_mol, cells);
+    bool ok = true;
+    ok = ok && launch(s, r->k_clear,  groups_for(4 * (cells + 1) > 16 ? 4 * (cells + 1) : 16, 64), a, hook, user, "clear");
+    ok = ok && launch(s, r->k_bounds, groups_for(n_mol, 64), a, hook, user, "bounds");
+    ok = ok && launch(s, r->k_dims,   md_gpu_grid(1, 1, 1), a, hook, user, "dims");
+    ok = ok && launch(s, r->k_count,  groups_for(n_mol, 64), a, hook, user, "count");
+    a->mode = 0;
+    ok = ok && launch(s, r->k_scan, md_gpu_grid(D.scan_blocks, 1, 1), a, hook, user, "scan");
+    if (D.scan_blocks > 1) {
+        a->mode = 1;
+        ok = ok && launch(s, r->k_scan, md_gpu_grid(1, 1, 1), a, hook, user, "scan sums");
+        a->mode = 2;
+        ok = ok && launch(s, r->k_scan, md_gpu_grid(D.scan_blocks, 1, 1), a, hook, user, "scan add");
+    }
+    ok = ok && launch(s, r->k_write,   groups_for(n_mol, 64), a, hook, user, "write");
+    ok = ok && launch(s, r->k_offsets, groups_for(cells + 1, 64), a, hook, user, "offsets");
+    if (topo->mixed_bond_count) ok = ok && launch(s, r->k_mixed, groups_for(topo->mixed_bond_count, 64), a, hook, user, "mixed");
+    return ok;
+}
+
+static bool frames_match(const md_render_mol_frames_t* fr, const md_render_mol_topo_t* topo) {
+    return fr->base && fr->topology_base == topo->base && fr->topology_version == topo->topology_version && fr->atom_count == topo->atom_count;
+}
+
+static md_gpu_addr_t frame_buffer(const md_render_mol_frames_t* fr, uint32_t b) {
+    const frames_layout_t L = frames_layout(fr->atom_count, 0, fr->slots);
+    return fr->base + L.buffers + (uint64_t)b * L.buffer;
+}
+
+static md_gpu_addr_t frame_params(const md_render_mol_frames_t* fr, uint32_t slot) {
+    return fr->base + frames_layout(fr->atom_count, 0, fr->slots).params + (uint64_t)slot * 128u;
+}
+
+static uint32_t plane_words(uint32_t n_atoms) {
+    return (uint32_t)(frames_layout(n_atoms, 0, 1).plane / 4u);
+}
+
+/* Velocities are written (and drawn) when given, or from frames with a
+   derivative */
+static bool has_velocity(const md_render_mol_atoms_t* atoms) {
+    if (atoms->frames) {
+        if (atoms->frame_count < 2) return false;
+        for (uint32_t k = 0; k < atoms->frame_count && k < 4; ++k) if (atoms->frame_dw[k] != 0.0f) return true;
+        return false;
+    }
+    return atoms->velocity != 0;
+}
+
 static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
                         md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                         md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT],
                         pass_hook_t hook, void* user) {
-    if (!r || !s || !topo || !atoms || !topo->base || !dynamic || !atoms->position) {
+    const md_render_mol_frames_t* fr = atoms ? atoms->frames : NULL;
+    if (!r || !s || !topo || !atoms || !topo->base || !dynamic || (!fr && !atoms->position)) {
         MD_LOG_ERROR("md_render_mol_update: missing context, stream, topology, per-frame block or positions");
         return false;
     }
     const bool regroup = (flags & MD_RENDER_MOL_UPDATE_REGROUP) && topo->grid_cells;
     const bool radii   = (flags & MD_RENDER_MOL_UPDATE_RADII) != 0;
-    const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
-    const dyn_layout_t   D  = dyn_layout(topo->atom_count, n_mol, cells);
-    const small_layout_t SL = small_layout(n_mol, topo->small_atom_count, topo->small_bond_count, topo->mixed_bond_count);
+    if (fr) {
+        if (regroup) {
+            MD_LOG_ERROR("md_render_mol_update: with frames, the regroup belongs to md_render_mol_frame_upload");
+            return false;
+        }
+        if (!frames_match(fr, topo)) {
+            MD_LOG_ERROR("md_render_mol_update: the frames are not of this topology");
+            return false;
+        }
+        const uint32_t n = atoms->frame_count;
+        if (n != 1 && n != 2 && n != 4) {
+            MD_LOG_ERROR("md_render_mol_update: frame_count must be 1, 2 or 4 (is %u)", n);
+            return false;
+        }
+        for (uint32_t k = 0; k < n; ++k) {
+            uint32_t sl = atoms->frame_slot[k];
+            if (sl >= fr->slots || !(fr->valid & (1u << sl))) {
+                MD_LOG_ERROR("md_render_mol_update: frame_slot[%u] = %u holds no frame", k, sl);
+                return false;
+            }
+        }
+    }
 
     gpu_mol_args_t a;
-    memset(&a, 0, sizeof(a));
+    base_args(&a, topo, dynamic);
     a.position            = atoms->position;
     a.stride              = atoms->stride ? atoms->stride : 12u;
     a.velocity            = atoms->velocity;
     a.vel_stride          = atoms->velocity_stride ? atoms->velocity_stride : 8u;
-    a.has_velocity        = atoms->velocity ? 1u : 0u;
+    a.has_velocity        = !fr && atoms->velocity ? 1u : 0u;
     a.radius_override     = atoms->radius;
     a.has_radius          = atoms->radius ? 1u : 0u;
-    a.points              = dynamic + D.points;
-    a.vel_out             = dynamic + D.velocity;
-    a.atom_count          = topo->atom_count;
-    a.type_count          = topo->type_count;
-    a.types               = topo->atom_type;
-    a.type_radius         = topo->type_radius;
-    a.params              = dynamic + D.params;
-    a.mol_slot            = dynamic + D.mol_slot;
-    a.cnt                 = dynamic + D.cnt;
-    a.sums                = dynamic + D.sums;
-    if (topo->small_tables) {
-        a.mol_atom_offset = topo->small_tables + SL.mol_atom_offset;
-        a.mol_atoms       = topo->small_tables + SL.mol_atoms;
-        a.mol_bond_offset = topo->small_tables + SL.mol_bond_offset;
-        a.mol_bond_local  = topo->small_tables + SL.mol_bond_local;
-        a.mol_bond_ids    = topo->small_tables + SL.mol_bond_ids;
-        a.mixed_pos       = topo->small_tables + SL.mixed_pos;
-        a.mixed_atoms     = topo->small_tables + SL.mixed_atoms;
-    }
-    a.atom_order          = topo->atom_order;
-    a.atom_point          = topo->atom_point;
-    a.atom_cluster_offset = topo->atom_cluster_offset;
-    a.bond_pairs          = topo->bond_pairs;      /* the covalent class is first: its bonds start at 0 */
-    a.bond_ids            = topo->bond_ids;
-    a.bond_cluster_offset = topo->bond_cluster_offset[MD_RENDER_MOL_BOND_COVALENT];
-    a.n_mol               = n_mol;
-    a.cells               = cells;
-    a.n_atoms             = topo->small_atom_count;
-    a.static_atoms        = topo->atom_count - topo->small_atom_count;
-    a.static_atom_clusters= topo->atom_cluster_count - cells;
-    a.has_bonds           = topo->small_bond_count ? 1u : 0u;
-    a.static_bonds        = (topo->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT + 1] - topo->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT]) - topo->small_bond_count;
-    a.static_bond_clusters= a.has_bonds ? topo->bond_cluster_count[MD_RENDER_MOL_BOND_COVALENT] - cells : 0;
-    a.mixed_count         = topo->mixed_bond_count;
-    a.n                   = D.scan_n;
-    a.marker              = dynamic + D.marker;
     a.full                = (regroup || radii) ? 1u : 0u;
-    a.ident0              = (uint32_t)topo->base;
-    a.ident1              = (uint32_t)(topo->base >> 32);
-    a.ident2              = (uint32_t)topo->topology_version;
 
     bool ok = true;
     if (radii && atoms->radius_table && topo->type_count) ok = md_gpu_copy(s, topo->type_radius, atoms->radius_table, (size_t)topo->type_count * 4u);
-    if (ok && regroup) {
-        ok = ok && launch(s, r->k_clear,  groups_for(4 * (cells + 1) > 16 ? 4 * (cells + 1) : 16, 64), &a, hook, user, "clear");
-        ok = ok && launch(s, r->k_bounds, groups_for(n_mol, 64), &a, hook, user, "bounds");
-        ok = ok && launch(s, r->k_dims,   md_gpu_grid(1, 1, 1), &a, hook, user, "dims");
-        ok = ok && launch(s, r->k_count,  groups_for(n_mol, 64), &a, hook, user, "count");
-        a.mode = 0;
-        ok = ok && launch(s, r->k_scan, md_gpu_grid(D.scan_blocks, 1, 1), &a, hook, user, "scan");
-        if (D.scan_blocks > 1) {
-            a.mode = 1;
-            ok = ok && launch(s, r->k_scan, md_gpu_grid(1, 1, 1), &a, hook, user, "scan sums");
-            a.mode = 2;
-            ok = ok && launch(s, r->k_scan, md_gpu_grid(D.scan_blocks, 1, 1), &a, hook, user, "scan add");
-        }
-        ok = ok && launch(s, r->k_write,   groups_for(n_mol, 64), &a, hook, user, "write");
-        ok = ok && launch(s, r->k_offsets, groups_for(cells + 1, 64), &a, hook, user, "offsets");
-        if (topo->mixed_bond_count) ok = ok && launch(s, r->k_mixed, groups_for(topo->mixed_bond_count, 64), &a, hook, user, "mixed");
-    }
+    if (ok && regroup) ok = run_regroup(r, s, &a, topo, hook, user);
     if (topo->atom_count) {
-        ok = ok && launch(s, r->k_gather, groups_for(topo->atom_count, 64), &a, hook, user, "gather");
+        if (fr) {
+            a.frame_count = atoms->frame_count;
+            a.plane_words = plane_words(topo->atom_count);
+            for (uint32_t k = 0; k < 4; ++k) {
+                uint32_t sl = atoms->frame_slot[k < atoms->frame_count ? k : 0];
+                a.frame[k] = frame_buffer(fr, fr->buffer[sl]);
+                a.fpar[k]  = frame_params(fr, sl);
+                a.w[k]     = k < atoms->frame_count ? atoms->frame_w[k] : 0.0f;
+                a.dw[k]    = k < atoms->frame_count ? atoms->frame_dw[k] : 0.0f;
+            }
+            a.has_fvel = has_velocity(atoms) ? 1u : 0u;
+            ok = ok && launch(s, r->k_fr_gather, groups_for(topo->atom_count, 64), &a, hook, user, "gather");
+        } else {
+            ok = ok && launch(s, r->k_gather, groups_for(topo->atom_count, 64), &a, hook, user, "gather");
+        }
         /* Every gather reads the radii from their source until a full one has
            marked the copy's w valid; after that only the flags make it full */
         ok = ok && launch(s, r->k_mark, md_gpu_grid(1, 1, 1), &a, hook, user, "mark");
@@ -600,6 +707,206 @@ bool md_render_mol_upload_state(md_gpu_stream_t s, md_gpu_addr_t dst, const md_s
     return true;
 }
 
+/* ---- Frames ---------------------------------------------------------------------- */
+
+void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* x, uint16_t* y, uint16_t* z,
+                                  const float* xyz, uint32_t stride, uint32_t count, const float cell[9]) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->q[0] = x; out->q[1] = y; out->q[2] = z;
+    if (cell) memcpy(out->cell, cell, sizeof(out->cell));
+    if (!x || !y || !z || (count && !xyz)) return;
+    const size_t step = (stride ? stride : 12u) / sizeof(float);
+    float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    const float* p = xyz;
+    for (uint32_t i = 0; i < count; ++i, p += step) {
+        for (int d = 0; d < 3; ++d) {          /* NaN compares false: skipped */
+            if (p[d] < lo[d]) lo[d] = p[d];
+            if (p[d] > hi[d]) hi[d] = p[d];
+        }
+    }
+    float inv[3];
+    for (int d = 0; d < 3; ++d) {
+        if (!(lo[d] <= hi[d])) lo[d] = hi[d] = 0.0f;
+        out->origin[d] = lo[d];
+        out->scale[d]  = (hi[d] - lo[d]) / 65535.0f;
+        inv[d] = out->scale[d] > 0.0f ? 65535.0f / (hi[d] - lo[d]) : 0.0f;
+    }
+    uint16_t* planes[3] = { x, y, z };
+    p = xyz;
+    for (uint32_t i = 0; i < count; ++i, p += step) {
+        for (int d = 0; d < 3; ++d) {
+            float t = (p[d] - lo[d]) * inv[d] + 0.5f;
+            if (!(t >= 0.0f)) t = 0.0f;
+            if (t > 65535.0f) t = 65535.0f;
+            planes[d][i] = (uint16_t)t;
+        }
+    }
+}
+
+void md_render_mol_frame_cell(float out[9], const md_unitcell_t* cell) {
+    if (!out) return;
+    memset(out, 0, 9 * sizeof(float));
+    if (!cell) return;
+    float A[3][3];
+    md_unitcell_A_extract_float(A, cell);
+    const md_unitcell_flags_t pbc[3] = { MD_UNITCELL_PBC_X, MD_UNITCELL_PBC_Y, MD_UNITCELL_PBC_Z };
+    for (int c = 0; c < 3; ++c) {
+        if (!(cell->flags & pbc[c])) continue;
+        for (int k = 0; k < 3; ++k) out[3 * c + k] = A[c][k];
+    }
+}
+
+/* A frame's 32 words on the GPU: origin, scale, the cell's columns, the rows
+   of its inverse (zero for an axis that is not periodic), periodic */
+static void frame_param_words(uint32_t out[32], const md_render_mol_frame_t* f) {
+    float o[32];
+    memset(o, 0, sizeof(o));
+    for (int d = 0; d < 3; ++d) { o[0 + d] = f->origin[d]; o[3 + d] = f->scale[d]; }
+    memcpy(o + 6, f->cell, 9 * sizeof(float));
+    bool col[3];
+    double M[3][3];                 /* columns; a missing one replaced by its axis */
+    for (int c = 0; c < 3; ++c) {
+        col[c] = f->cell[3 * c] != 0.0f || f->cell[3 * c + 1] != 0.0f || f->cell[3 * c + 2] != 0.0f;
+        for (int k = 0; k < 3; ++k) M[c][k] = col[c] ? f->cell[3 * c + k] : (k == c ? 1.0 : 0.0);
+    }
+    uint32_t periodic = 0;
+    if (col[0] || col[1] || col[2]) {
+        /* rows of the inverse: the cofactors over the determinant */
+        double r[3][3];
+        r[0][0] = M[1][1] * M[2][2] - M[1][2] * M[2][1]; r[0][1] = M[1][2] * M[2][0] - M[1][0] * M[2][2]; r[0][2] = M[1][0] * M[2][1] - M[1][1] * M[2][0];
+        r[1][0] = M[2][1] * M[0][2] - M[2][2] * M[0][1]; r[1][1] = M[2][2] * M[0][0] - M[2][0] * M[0][2]; r[1][2] = M[2][0] * M[0][1] - M[2][1] * M[0][0];
+        r[2][0] = M[0][1] * M[1][2] - M[0][2] * M[1][1]; r[2][1] = M[0][2] * M[1][0] - M[0][0] * M[1][2]; r[2][2] = M[0][0] * M[1][1] - M[0][1] * M[1][0];
+        const double det = M[0][0] * r[0][0] + M[0][1] * r[0][1] + M[0][2] * r[0][2];
+        double scale = 0.0;
+        for (int c = 0; c < 3; ++c) for (int k = 0; k < 3; ++k) scale = M[c][k] * M[c][k] > scale ? M[c][k] * M[c][k] : scale;
+        if (det * det > 1e-12 * scale * scale * scale) {
+            for (int i = 0; i < 3; ++i) {
+                if (!col[i]) continue;
+                for (int k = 0; k < 3; ++k) o[15 + 3 * i + k] = (float)(r[i][k] / det);
+            }
+            periodic = 1;
+        }
+    }
+    memcpy(out, o, sizeof(o));
+    out[24] = periodic;
+}
+
+uint64_t md_render_mol_frames_size(const md_render_mol_topo_t* topo, uint32_t slots) {
+    if (!topo || slots < 1 || slots > MD_RENDER_MOL_FRAME_SLOTS) return 0;
+    return frames_layout(topo->atom_count, topo->small_atom_count, slots).size;
+}
+
+bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_topo_t* topo, md_gpu_addr_t base, uint32_t slots) {
+    if (!out || !topo || !base || slots < 1 || slots > MD_RENDER_MOL_FRAME_SLOTS) {
+        MD_LOG_ERROR("md_render_mol_frames_init: missing block or topology, or slots not in [1, %d]", MD_RENDER_MOL_FRAME_SLOTS);
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->base             = base;
+    out->size             = md_render_mol_frames_size(topo, slots);
+    out->topology_base    = topo->base;
+    out->topology_version = topo->topology_version;
+    out->slots            = slots;
+    out->atom_count       = topo->atom_count;
+    for (uint32_t b = 0; b <= slots; ++b) out->buffer[b] = b;
+    return true;
+}
+
+static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+                              md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
+                              md_render_mol_update_flags_t flags, pass_hook_t hook, void* user) {
+    if (!r || !s || !topo || !topo->base || !fr || !f || (topo->atom_count && (!f->q[0] || !f->q[1] || !f->q[2]))) {
+        MD_LOG_ERROR("md_render_mol_frame_upload: missing context, stream, topology, frames or planes");
+        return false;
+    }
+    if (!frames_match(fr, topo) || slot >= fr->slots) {
+        MD_LOG_ERROR("md_render_mol_frame_upload: frames not of this topology, or slot %u not in [0, %u)", slot, fr->slots);
+        return false;
+    }
+    const bool regroup = (flags & MD_RENDER_MOL_UPDATE_REGROUP) && topo->grid_cells;
+    if (regroup && !dynamic) {
+        MD_LOG_ERROR("md_render_mol_frame_upload: a regroup needs the per-frame block (its scratch)");
+        return false;
+    }
+    const uint32_t n = topo->atom_count;
+    const frames_layout_t L = frames_layout(n, topo->small_atom_count, fr->slots);
+    const md_gpu_addr_t staging = frame_buffer(fr, fr->buffer[fr->slots]);
+    uint32_t par[32];
+    frame_param_words(par, f);
+    bool ok = md_gpu_upload(s, frame_params(fr, slot), par, sizeof(par));
+    for (uint32_t k = 0; k < 3 && n; ++k) ok = ok && md_gpu_upload(s, staging + k * L.plane, f->q[k], (size_t)n * 2u);
+    if (!ok || !n) {
+        if (ok) fr->valid |= 1u << slot;
+        return ok;
+    }
+
+    gpu_mol_args_t a;
+    base_args(&a, topo, dynamic);
+    a.plane_words = (uint32_t)(L.plane / 4u);
+    uint32_t free_buf = fr->buffer[slot];          /* its frame is replaced: free */
+    if (regroup) {
+        const uint32_t others = fr->valid & ~(1u << slot);
+        a.quantized = 1;
+        a.qsrc      = staging;
+        a.qpar      = frame_params(fr, slot);
+        a.has_src   = others ? 1u : 0u;
+        a.src_point = fr->base + L.src_point;
+        ok = run_regroup(r, s, &a, topo, hook, user);
+        a.quantized = 0;
+        for (uint32_t j = 0; ok && j < fr->slots; ++j) {
+            if (!(others & (1u << j))) continue;
+            a.qsrc = frame_buffer(fr, fr->buffer[j]);
+            a.qdst = frame_buffer(fr, free_buf);
+            ok = launch(s, r->k_fr_permute, groups_for((n + 1) / 2, 64), &a, hook, user, "permute");
+            uint32_t t = fr->buffer[j]; fr->buffer[j] = free_buf; free_buf = t;
+        }
+    }
+    a.qsrc = staging;
+    a.qdst = frame_buffer(fr, free_buf);
+    ok = ok && launch(s, r->k_fr_reorder, groups_for((n + 1) / 2, 64), &a, hook, user, "reorder");
+    fr->buffer[slot] = free_buf;
+    if (ok) fr->valid |= 1u << slot;
+    else    fr->valid = 0;                         /* the slots' contents are unknown */
+    return ok;
+}
+
+bool md_render_mol_frame_upload(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+                                md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
+                                md_render_mol_update_flags_t flags) {
+    return frame_upload_impl(r, s, topo, dynamic, fr, slot, f, flags, NULL, NULL);
+}
+
+/* Not in the header: for md_render_bench, as md_render_mol_update_hooked */
+bool md_render_mol_frame_upload_hooked(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+                                       md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
+                                       md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user) {
+    return frame_upload_impl(r, s, topo, dynamic, fr, slot, f, flags, hook, user);
+}
+
+void md_render_mol_frame_weights(float w[4], float dw[4], uint32_t frame_count, float t, float dt, float tension) {
+    if (!w || !dw) return;
+    memset(w, 0, 4 * sizeof(float));
+    memset(dw, 0, 4 * sizeof(float));
+    t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+    const float id = dt > 0.0f ? 1.0f / dt : 0.0f;
+    if (frame_count == 2) {
+        w[0] = 1.0f - t; w[1] = t;
+        dw[0] = -id; dw[1] = id;
+    } else if (frame_count == 4) {
+        /* Hermite: p = h00 p1 + h10 m1 + h01 p2 + h11 m2, m1 = s (p2 - p0), m2 = s (p3 - p1) */
+        const float s = tension, t2 = t * t, t3 = t2 * t;
+        const float h00 =  2.0f * t3 - 3.0f * t2 + 1.0f, h10 = t3 - 2.0f * t2 + t;
+        const float h01 = -2.0f * t3 + 3.0f * t2,        h11 = t3 - t2;
+        const float d00 =  6.0f * t2 - 6.0f * t,         d10 = 3.0f * t2 - 4.0f * t + 1.0f;
+        const float d01 = -6.0f * t2 + 6.0f * t,         d11 = 3.0f * t2 - 2.0f * t;
+        w[0] = -s * h10;  w[1] = h00 - s * h11;  w[2] = h01 + s * h10;  w[3] = s * h11;
+        dw[0] = -s * d10 * id; dw[1] = (d00 - s * d11) * id; dw[2] = (d01 + s * d10) * id; dw[3] = s * d11 * id;
+    } else {
+        w[0] = 1.0f;
+    }
+}
+
 /* ---- Emit ------------------------------------------------------------------------ */
 
 /* The copy in the per-frame block: points in cluster order, each its atom's
@@ -613,7 +920,7 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     p.stride          = 16;
     p.radius          = dynamic + D.points + 12;
     p.radius_stride   = 16;
-    p.velocity        = atoms->velocity ? dynamic + D.velocity : 0;
+    p.velocity        = has_velocity(atoms) ? dynamic + D.velocity : 0;
     p.velocity_stride = 8;
     p.attr_count      = topo->atom_count;
     p.attr_index      = topo->atom_order;
