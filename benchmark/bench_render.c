@@ -625,14 +625,17 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
     uint32_t* sel = calloc(words, 4);
     for (uint32_t i = 0; i < sc->atoms; i += 97) sel[i / 32] |= 1u << (i % 32);     // about 1 % selected
     sc->pos      = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 12).gpu;
-    sc->rad      = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu;
-    sc->bond_idx = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->bonds * 8).gpu;
+    /* md_render_mol reads radii from its types and bonds from its topology:
+       the scene's own arrays only for the plain batches */
+    const bool plain = src != SRC_MOL;
+    sc->rad      = plain ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu : 0;
+    sc->bond_idx = plain ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->bonds * 8).gpu : 0;
     sc->color    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu;
     sc->sel      = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, words * 4).gpu;
-    bool ok = sc->pos && sc->rad && sc->bond_idx && sc->color && sc->sel &&
-              md_gpu_upload(s, sc->pos, pos, (size_t)sc->atoms * 12) && md_gpu_upload(s, sc->rad, rad, (size_t)sc->atoms * 4) &&
-              md_gpu_upload(s, sc->bond_idx, idx, (size_t)sc->bonds * 8) && md_gpu_upload(s, sc->color, col, (size_t)sc->atoms * 4) &&
-              md_gpu_upload(s, sc->sel, sel, words * 4);
+    bool ok = sc->pos && (!plain || (sc->rad && sc->bond_idx)) && sc->color && sc->sel &&
+              md_gpu_upload(s, sc->pos, pos, (size_t)sc->atoms * 12) &&
+              (!plain || (md_gpu_upload(s, sc->rad, rad, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->bond_idx, idx, (size_t)sc->bonds * 8))) &&
+              md_gpu_upload(s, sc->color, col, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->sel, sel, words * 4);
     md_gpu_stream_sync(s);
     free(pos); free(rad); free(idx); free(col); free(sel);
     return ok;
@@ -643,7 +646,9 @@ static void scene_free(md_gpu_stream_t s, scene_t* sc) {
     if (sc->bond_clusters) md_gpu_free(s, sc->bond_clusters);
     if (sc->topo.base) md_gpu_free(s, sc->topo.base);
     if (sc->dyn) md_gpu_free(s, sc->dyn);
-    md_gpu_free(s, sc->pos); md_gpu_free(s, sc->rad); md_gpu_free(s, sc->bond_idx); md_gpu_free(s, sc->color); md_gpu_free(s, sc->sel);
+    md_gpu_free(s, sc->pos); md_gpu_free(s, sc->color); md_gpu_free(s, sc->sel);
+    if (sc->rad) md_gpu_free(s, sc->rad);
+    if (sc->bond_idx) md_gpu_free(s, sc->bond_idx);
 }
 
 static md_render_camera_t camera_at(const scene_t* sc, float distance_in_boxes, float aspect) {
@@ -760,17 +765,14 @@ static int run_gpu(int argc, char** argv) {
         { "spacefill, far",  false, 6.0f },
         { "licorice, near",  true,  0.6f },
     };
-    /* The default occlusion settings are margin 2, every element tested; the
-       rows marked "x:" are experiments with others */
+    /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
+       untested. Rows marked "x:" would be experiments with other settings
+       (md_render_debug_occlusion); none at the moment. */
     const struct { const char* name; uint32_t options; float margin, min_px; } opts[] = {
-        { "all",                     0, 2.0f, 0.0f },
-        { "x: margin 3",             0, 3.0f, 0.0f },
-        { "x: margin 4",             0, 4.0f, 0.0f },
-        { "x: untested <= 2 px",     0, 2.0f, 2.0f },
-        { "x: untested <= 4 px",     0, 2.0f, 4.0f },
-        { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 2.0f, 0.0f },
-        { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 0.0f },
-        { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 0.0f },
+        { "all",                     0, 2.0f, 2.0f },
+        { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 2.0f, 2.0f },
+        { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
+        { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
     };
 
     for (uint32_t ai = 0; ai < n_atoms; ++ai) {
@@ -878,7 +880,7 @@ static int run_gpu(int argc, char** argv) {
                            tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
                            st.outside, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
                            st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
-                    if (oi < 5 && pi == 0) {
+                    if (oi == 0 && pi == 0) {
                         /* where a camera raster's time goes, pass by pass (each synced) */
                         pass_prof_t prof = { .s = s };
                         f.camera.view[12] += 0.001f * sc.box;
@@ -913,7 +915,7 @@ static int run_gpu(int argc, char** argv) {
                         }
                     }
                     md_render_view_destroy(s, v);
-                    md_render_debug_occlusion(2.0f, 0.0f);
+                    md_render_debug_occlusion(2.0f, 2.0f);
                 }
             }
         }
