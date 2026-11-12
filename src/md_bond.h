@@ -424,7 +424,7 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 
 // ### INFERENCE ###
 // What is written is out, allocated with alloc; the system is read and never written. out is not the system's own
-// (&sys->bond): md_util_system_infer gives the system the result, or the caller does (md_bond_data_free the old, assign).
+// (&sys->bond): md_system_infer gives the system the result, or the caller does (md_bond_data_free the old, assign).
 
 // The bonds of the atoms of the system from the coordinates of state alone, every one of origin
 // MD_BOND_ORIGIN_INFERRED, with their connectivity: the bonds the system has are not looked at (md_bond_merge puts the
@@ -452,7 +452,7 @@ void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bo
 size_t md_bond_metallic_atoms(uint8_t* out, const md_bond_data_t* bond, size_t atom_count);
 
 // Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
-// given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_util_system_infer does it for each system; a bond
+// given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_system_infer does it for each system; a bond
 // added afterwards (by hand) wants it too.
 size_t md_system_infer_coordination(struct md_system_t* sys);
 
@@ -466,6 +466,10 @@ size_t md_system_infer_coordination(struct md_system_t* sys);
 // are left as they are. Needs the kinds of the residues and the backbone beads (md_system_infer_residue_flags),
 // and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
 size_t md_system_infer_elastic_bonds(struct md_system_t* sys);
+
+// Grows mask by the bonds (their connectivity, over atom_count atoms) up to extent bonds from the atoms it holds (at
+// most 255). viable_mask (optional) keeps the growth within it.
+void md_bond_mask_grow(struct md_bitmask_t* mask, const md_bond_data_t* bond, size_t atom_count, size_t extent, const struct md_bitset_t* viable_mask);
 
 // ### BONDS FORMED AND BROKEN ###
 // The bonds of a state against the bond graph of the system, which is the reference topology: the bonds of the graph

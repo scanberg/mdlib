@@ -47,7 +47,7 @@ typedef enum md_residue_kind_t {
     MD_RESIDUE_KIND_NUCLEOTIDE      = 2,
     MD_RESIDUE_KIND_WATER           = 3,
     MD_RESIDUE_KIND_ION             = 4,    // A monatomic ion
-    MD_RESIDUE_KIND_LIPID           = 5,    // A lipid, sterols included: by name (md_util_resname_lipid), or by its structure
+    MD_RESIDUE_KIND_LIPID           = 5,    // A lipid, sterols included: by name (md_resname_lipid), or by its structure
                                             // (a polar head with hydrocarbon tails, see md_lipid_infer)
 } md_residue_kind_t;
 
@@ -408,10 +408,10 @@ md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type,
 
 // ### INFERENCE ###
 // What is written is out, allocated with alloc; the system is read and never written. out is not the system's own: the
-// system is given the result by md_util_system_infer, or by the caller (the *_data_free of the old, assign).
+// system is given the result by md_system_infer, or by the caller (the *_data_free of the old, assign).
 
 // The chains of the system (md_chain_data_t) from the author ids of its instances: one per id. A system without ids
-// has no chains. md_util_system_infer gives them the system (MD_UTIL_INFER_PART_BIT), and so do the loaders which give
+// has no chains. md_system_infer gives them the system (MD_SYSTEM_INFER_PART_BIT), and so do the loaders which give
 // the ids; whatever changes the instances after infers them again.
 bool md_chain_infer(md_chain_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
 
@@ -423,8 +423,8 @@ bool md_chain_infer(md_chain_data_t* out, const struct md_system_t* sys, md_allo
 // all of an instance with a given part type is of that type; the others are of inferred types
 // (MD_PART_TYPE_FLAG_INFERRED), one per kind and sequence of residue names, after the types the system was given (those of the last inference are not
 // carried over).
-// A given type of unknown kind is classified from its first part. md_util_system_infer gives them the system
-// (MD_UTIL_INFER_PART_BIT, after the bonds); whatever changes the instances, the bonds or the kinds infers them again.
+// A given type of unknown kind is classified from its first part. md_system_infer gives them the system
+// (MD_SYSTEM_INFER_PART_BIT, after the bonds); whatever changes the instances, the bonds or the kinds infers them again.
 bool md_part_infer(md_part_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
 
 // The molecules of the system (md_molecule_data_t), see there for what holds one together.
@@ -450,7 +450,7 @@ void md_molecule_data_free(md_molecule_data_t* mol, md_allocator_i* alloc);
 // the colors they were given), also one no residue is of any more.
 void md_system_set_residue_kind(struct md_system_t* sys, size_t res_idx, md_residue_kind_t kind);
 
-// Gives every residue of no type yet (one never classified) the type of its name and kind OTHER. md_util_system_infer
+// Gives every residue of no type yet (one never classified) the type of its name and kind OTHER. md_system_infer
 // calls it last.
 bool md_system_infer_residue_types(struct md_system_t* sys);
 

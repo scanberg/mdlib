@@ -666,7 +666,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
     dst->unitcell = src->unitcell;
     dst->frame    = src->frame;
 
-    // The attribute table is deliberately NOT carried over. The one caller is md_util_system_infer
+    // The attribute table is deliberately NOT carried over. The one caller is md_system_infer
     // writing sys->reference, and topology inference reads coordinates and the cell - nothing else.
     // Duplicating a frame's velocities into a reference snapshot would put a second copy of them in
     // the system with nothing keeping the two in step, which is the whole class of problem the

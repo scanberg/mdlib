@@ -1,5 +1,5 @@
 ﻿#include <md_gl.h>
-#include <md_util.h>
+#include <md_system.h>
 #include <md_util_geom.h>
 #include <md_chem.h>
 
@@ -13,7 +13,6 @@
 #include <core/md_gl_util.h>
 #include <core/md_bitset.h>
 
-#include <md_system.h>
 
 #include <stdbool.h>
 #include <string.h>

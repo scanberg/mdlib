@@ -8,6 +8,7 @@
 
 struct md_system_t;
 struct md_executor_t;
+struct md_hashmap32_t;
 
 // Atoms and their particle types (md_atom_data_t, md_particle_type_data_t).
 
@@ -371,6 +372,11 @@ static inline void md_atom_extract_atomic_numbers(md_atomic_number_t out_z[], si
 }
 
 // ### PARTICLE TYPES OF A SYSTEM, IN PLACE ###
+
+// The type of an atom of the name and element, added when the system has none, with the mass, size and color of the
+// element. map, which the caller keeps for a load (zeroed, with an allocator), finds a type it has given before in one
+// lookup rather than a search of the types.
+md_particle_type_idx_t md_system_particle_type_find_or_add(struct md_system_t* sys, struct md_hashmap32_t* map, md_str_t name, md_atomic_number_t z);
 
 // Identify particle types within the system from the atom labels and the names of their residues. Coarse grained beads
 // come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any

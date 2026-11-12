@@ -1,8 +1,8 @@
 ﻿#include <md_xyz.h>
 
 #include <md_system.h>
+#include <core/md_hash.h>
 #include <md_run.h>
-#include <md_util.h>
 #include <md_util_sort.h>
 #include <md_unitcell.h>
 #include <md_element.h>
@@ -751,7 +751,7 @@ static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
         size_t symbol_len = 0;
         while (symbol_len < sizeof(c->element_symbol) && c->element_symbol[symbol_len]) ++symbol_len;
         const md_str_t symbol = { c->element_symbol, symbol_len };
-        type = md_util_particle_type_find_or_add(sys, &b->type_map, symbol, (md_atomic_number_t)c->atomic_number);
+        type = md_system_particle_type_find_or_add(sys, &b->type_map, symbol, (md_atomic_number_t)c->atomic_number);
         b->cache_key[slot] = key;
         b->cache_type[slot] = type;
     }

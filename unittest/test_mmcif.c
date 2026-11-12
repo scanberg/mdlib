@@ -3,7 +3,7 @@
 
 #include <md_mmcif.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <core/md_allocator.h>
 #include <core/md_file.h>
 #include <core/md_arena_allocator.h>
@@ -44,7 +44,7 @@ UTEST(mmcif, 2or2) {
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
     bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
-    //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_INFER_ALL);
+    //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_SYSTEM_INFER_ALL);
 
     if (result) {
         EXPECT_EQ(5382, sys.atom.count);
@@ -70,7 +70,7 @@ UTEST(mmcif, 8g7u) {
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
     bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
-    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     if (result) {
         EXPECT_EQ(14229, sys.atom.count);
@@ -655,7 +655,7 @@ UTEST(mmcif, chain_breaks) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     const struct {
         const char* chain;

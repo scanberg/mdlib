@@ -14,7 +14,7 @@ md_particle_type_idx_t mdi_find_or_add_particle_type(md_particle_type_data_t* ty
     return md_particle_type_add(type, name, (md_str_t){0}, z, mass, radius, color, flags, alloc);
 }
 
-md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, md_str_t name, md_atomic_number_t z) {
+md_particle_type_idx_t md_system_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, md_str_t name, md_atomic_number_t z) {
     MD_ASSERT(sys && map);
     // The name as the type keeps it, its first 8 characters
     const uint64_t kv[2] = { md_label_key(md_label_make(name)), (uint64_t)z };
@@ -220,8 +220,8 @@ static bool pattern_match_any(const char* patterns, const char* str) {
 // Whether a residue name is that of the kind: what a predefined type without a residue name matches
 static bool resname_of_kind(md_str_t res_name, md_residue_kind_t kind) {
     switch (kind) {
-    case MD_RESIDUE_KIND_AMINO_ACID: return md_util_resname_amino_acid(res_name);
-    case MD_RESIDUE_KIND_NUCLEOTIDE: return md_util_resname_nucleotide(res_name);
+    case MD_RESIDUE_KIND_AMINO_ACID: return md_resname_amino_acid(res_name);
+    case MD_RESIDUE_KIND_NUCLEOTIDE: return md_resname_nucleotide(res_name);
     default: return false;
     }
 }
@@ -444,7 +444,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
             if (mol && res_size == 1 && !martini.martini && mol->kind != MD_RESIDUE_KIND_WATER) mol = NULL;
             // A molecule renamed (CHL for CHOL, the three letters of a PDB file) is told by its beads, in a Martini system
             // only: atomistic residues are named as their atoms, which may be the names of beads
-            if (!mol && martini.martini && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name)) {
+            if (!mol && martini.martini && !md_resname_amino_acid(res_name) && !md_resname_nucleotide(res_name)) {
                 mol = mdi_martini_db_match_beads(martini.version, labels, NULL, res_size, map);
             }
             if (mol) {
@@ -465,7 +465,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
             // edited), in a Martini system: beads still, rather than the elements their names would read as (the dummy V1
             // of a sterol vanadium, its C1 carbon). Regular beads, as nothing tells their masses and sizes, of the kind of
             // the molecule, and without a topology of it no bonds. Not of a polymer, whose residues are bonded by name.
-            if (martini.martini && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name) && !mdi_martini_db_linked(res_name)) {
+            if (martini.martini && !md_resname_amino_acid(res_name) && !md_resname_nucleotide(res_name) && !mdi_martini_db_linked(res_name)) {
                 const martini_db_residue_t* like = mdi_martini_db_unknown_variant(res_name, labels, res_size);
                 if (like) {
                     const md_particle_type_flags_t flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, MD_PARTICLE_BEAD);

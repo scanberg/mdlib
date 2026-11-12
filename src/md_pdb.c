@@ -3,7 +3,7 @@
 
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_util_sort.h>
 #include <md_element.h>
 
@@ -364,7 +364,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
 //
 // What a load gives is the core: the atoms, where they are, their types, the residues, the units of the file (its
 // chains), the bonds the file gives (CONECT), the cell and the assemblies. Nothing is derived from the coordinates here,
-// neither the bonds nor what the residues are by them: that is md_util_system_infer's, which a caller runs when (and
+// neither the bonds nor what the residues are by them: that is md_system_infer's, which a caller runs when (and
 // where, on what thread) it wants.
 
 // The atoms of serials, by the serials of the atoms (0 where a serial is not a number of the format, which no record
@@ -966,7 +966,7 @@ static void pdb_type_overflow(pdb_load_t* L, const pdb_piece_t* piece) {
         if (sys->atom.type_idx[atom] == PDB_TYPE_OVERFLOW) {
             const md_str_t name = md_str_trim(md_str_substr(line, 12, 4));
             const md_atomic_number_t z = md_atomic_number_from_symbol(md_str_trim(md_str_substr(line, 76, 2)), true);
-            sys->atom.type_idx[atom] = md_util_particle_type_find_or_add(sys, &L->type_map, name, z);
+            sys->atom.type_idx[atom] = md_system_particle_type_find_or_add(sys, &L->type_map, name, z);
         }
         ++atom;
     }
@@ -1021,7 +1021,7 @@ static void pdb_gather_pieces(pdb_load_t* L) {
         const pdb_piece_t* piece = &L->pieces[p];
         pdb_types_t* t = piece->types;
         for (uint32_t e = 0; e < t->count; ++e) {
-            t->type[e] = md_util_particle_type_find_or_add(L->sys, &L->type_map, md_label_str(&t->name[e]), (md_atomic_number_t)t->z[e]);
+            t->type[e] = md_system_particle_type_find_or_add(L->sys, &L->type_map, md_label_str(&t->name[e]), (md_atomic_number_t)t->z[e]);
         }
         if (piece->num_atoms) {
             const bool first = piece->first_atom == 0;

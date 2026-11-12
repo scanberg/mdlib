@@ -14,7 +14,7 @@
 // A LEVEL OF THE SYSTEM
 //
 // Every atom with an element is in exactly one fragment, and every fragment is within one molecule. The fragments are
-// inferred with the rest of the topology (md_util_system_infer, MD_UTIL_INFER_FRAGMENT_BIT, last: after the molecules,
+// inferred with the rest of the topology (md_system_infer, MD_SYSTEM_INFER_FRAGMENT_BIT, last: after the molecules,
 // the residue flags and atom roles, the rings, the chemistry and the lipids, which they are made from), are DERIVED
 // (md_system_fields.h) and covered by sys->topology_version, and are what a selection of fragment granularity grows to.
 //
@@ -166,7 +166,7 @@ extern "C" {
 // version. Needs the molecules (md_molecule_infer, which clears the fragments: infer them again after
 // it); without them the system has no fragments. Reads the bond orders and aromaticity (md_chem_perceive), without
 // which every C=O reads as single, the rings, the residue flags and atom roles (md_system_infer_residue_flags)
-// and the lipid tails. Done by md_util_system_infer with MD_UTIL_INFER_FRAGMENT_BIT.
+// and the lipid tails. Done by md_system_infer with MD_SYSTEM_INFER_FRAGMENT_BIT.
 bool md_util_system_infer_fragments(struct md_system_t* sys);
 void md_fragment_data_free(md_fragment_data_t* data, struct md_allocator_i* alloc);
 

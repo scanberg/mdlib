@@ -1,5 +1,5 @@
 ﻿#include <md_types.h>
-#include <md_util.h>
+#include <md_system.h>
 #include <md_element.h>
 
 #include <core/md_hash.h>
@@ -118,7 +118,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(md_str_t atom_name, md_str_
     // First try residue+atom combination
     if (res_name.len > 0) {
         // Special case: if water, amino acid or nucleotide: Match against first character only
-        if (md_util_resname_water(res_name) || md_util_resname_amino_acid(res_name) || md_util_resname_nucleotide(res_name)) {
+        if (md_resname_water(res_name) || md_resname_amino_acid(res_name) || md_resname_nucleotide(res_name)) {
             md_str_t first_char = md_str_substr(atom_name, 0, 1);
             md_atomic_number_t z = md_atomic_number_from_symbol(first_char, true);
             if (z != MD_Z_X) return z;

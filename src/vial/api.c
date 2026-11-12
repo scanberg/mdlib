@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include <md_system.h>
+#include <md_element.h>
 #include <md_attributes.h>
 #include "infer.h"
 #include "ir.h"
@@ -9,7 +10,6 @@
 #include "select.h"
 #include "volume.h"
 
-#include <md_util.h>
 #include <core/md_array.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>

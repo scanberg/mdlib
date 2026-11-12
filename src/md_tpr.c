@@ -2,7 +2,6 @@
 #include <md_xdr.h>
 
 #include <md_system.h>
-#include <md_util.h>
 #include <md_nonbonded.h>
 #include <md_element.h>
 

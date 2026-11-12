@@ -46,6 +46,21 @@ uint32_t md_monomer_color(md_monomer_t monomer);       // Default color (RGBA, R
 // The monomer of the given id ("HIS"), exactly and ignoring case. MD_MONOMER_NONE if there is none.
 md_monomer_t md_monomer_from_id(md_str_t id);
 
+// The names residues go by in files: whether a name is one of the standard amino acids, nucleotides (DNA, RNA), waters,
+// common ions, lipids (those of the Martini lipidomes, mostly the atomistic names), and the acidic, basic, neutral and
+// hydrophobic amino acids. By the name alone, case sensitive.
+bool md_resname_dna(md_str_t str);
+bool md_resname_rna(md_str_t str);
+bool md_resname_acidic(md_str_t str);
+bool md_resname_basic(md_str_t str);
+bool md_resname_neutral(md_str_t str);
+bool md_resname_water(md_str_t str);
+bool md_resname_ion(md_str_t str);         // The common monatomic ions (NA, CL, ...)
+bool md_resname_lipid(md_str_t str);      // The lipids of the Martini lipidomes (their names are mostly the atomistic ones)
+bool md_resname_hydrophobic(md_str_t str);
+bool md_resname_amino_acid(md_str_t str);
+bool md_resname_nucleotide(md_str_t str);
+
 #ifdef __cplusplus
 }
 #endif

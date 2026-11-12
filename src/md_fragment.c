@@ -1,7 +1,6 @@
 #include <md_fragment.h>
 
 #include <md_system.h>
-#include <md_util.h>
 #include <md_match.h>
 #include <md_element.h>
 

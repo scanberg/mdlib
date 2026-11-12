@@ -181,7 +181,7 @@ bool md_system_infer_residue_flags(struct md_system_t* sys, const struct md_syst
 // The bonds decide, not the sequence numbers: an insertion code (52, 52A) or numbering that skips (antibodies, the
 // chymotrypsin numbering of proteases) does not break a chain whose backbone is bonded, and numbering that runs on
 // does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) have no
-// backbones to break; beads without bonds are linked by consecutive sequence numbers. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT) marks the residues on either side of each break,
+// backbones to break; beads without bonds are linked by consecutive sequence numbers. md_system_infer (MD_SYSTEM_INFER_BACKBONE_BIT) marks the residues on either side of each break,
 // MD_RESIDUE_FLAG_BREAK_AFTER the one before it and MD_RESIDUE_FLAG_BREAK_BEFORE the one after it, and ends the
 // backbone ranges there (md_protein_backbone_data_t, md_nucleic_backbone_data_t).
 
@@ -248,7 +248,7 @@ bool md_system_state_backbone_compute(struct md_system_state_t* state, const str
 //          consecutive sequence numbers.
 // The ranges come in the order of their first atom. Requires the bonds and the roles of the atoms
 // (md_system_infer_residue_flags), and the parts for the beads. Into out (allocated with alloc); the system is read
-// and never written. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the parts) gives the system the backbones
+// and never written. md_system_infer (MD_SYSTEM_INFER_BACKBONE_BIT, after the parts) gives the system the backbones
 // and marks the breaks (md_system_set_chain_breaks).
 typedef struct md_backbone_data_t {
     md_protein_backbone_data_t protein;

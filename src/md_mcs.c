@@ -3,7 +3,6 @@
 #include <md_mcs.h>
 #include <md_system.h>
 #include <md_match.h>
-#include <md_util.h>
 #include <md_util_geom.h>
 
 #include <core/md_allocator.h>

@@ -133,7 +133,7 @@ bool md_lipid_infer(md_lipid_data_t* out, const struct md_system_t* sys, struct 
 
 // The kinds of the residues from the lipids of the system (sys->lipid): the residues of a lipid are
 // MD_RESIDUE_KIND_LIPID (lipids of names nothing knows, found by their structure), and a residue of kind LIPID which is
-// of no lipid now is MD_RESIDUE_KIND_OTHER, unless it is a lipid by its name (md_util_resname_lipid) or a coarse grained
+// of no lipid now is MD_RESIDUE_KIND_OTHER, unless it is a lipid by its name (md_resname_lipid) or a coarse grained
 // one (its kind is the force field's): a lipid by its structure alone stays one only while it is found to be one.
 void md_system_infer_lipid_kinds(struct md_system_t* sys);
 

@@ -3157,7 +3157,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
             data.count = 0; // Each element of a gets its own count
             md_bitmask_assign(&exclusion_bf, *bf);
             md_bitmask_and(&exclusion_bf, *bf_b); // Start with overlap
-			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->sys, path_length, NULL);
+			md_bond_mask_grow(&exclusion_bf, &ctx->sys->bond, ctx->sys->atom.count, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
             md_coord_stream_t a_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), a_indices, a_length);

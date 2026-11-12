@@ -1,9 +1,9 @@
 #pragma once
 
-// What the inference of a system (md_util_system_infer and its steps, in md_util.c, md_bond.c, md_ring.c, md_atom.c,
+// What the inference of a system (md_system_infer and its steps, in md_infer.c, md_bond.c, md_ring.c, md_atom.c,
 // md_hierarchy.c, md_backbone.c, md_lipid.c and md_martini.c) shares between its files. Not a public header.
 
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_util_geom.h>
 #include <md_system.h>
 #include "md_system_fields.h"

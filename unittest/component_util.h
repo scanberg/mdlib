@@ -5,7 +5,6 @@
 // Format: COMP id / A name element charge x y z / B i j order aromatic, '#' starts a comment line.
 
 #include <md_system.h>
-#include <md_util.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>

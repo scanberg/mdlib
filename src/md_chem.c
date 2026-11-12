@@ -1,7 +1,6 @@
 #include <md_chem.h>
 
 #include <md_system.h>
-#include <md_util.h>
 #include <md_util_geom.h>
 #include <md_attributes.h>
 #include <md_element.h>

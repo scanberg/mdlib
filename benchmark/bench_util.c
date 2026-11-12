@@ -3,7 +3,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_vec_math.h>
 #include <md_gro.h>
-#include <md_util.h>
+#include <md_system.h>
 
 #include <stdlib.h>
 

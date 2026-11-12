@@ -9,7 +9,6 @@
 #include <md_match.h>
 #include <md_smiles.h>
 #include <md_filter.h>
-#include <md_util.h>
 
 #include "component_util.h"
 

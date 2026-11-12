@@ -2,6 +2,9 @@
 
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <md_monomer.h>
+
+#include <string.h>
 
 // The predefined table of standard monomers (md_monomer_t), and the names residues of these go by in files.
 // What md_util_element_* is to the particle types, this is to the residue types.
@@ -219,4 +222,124 @@ md_monomer_t md_monomer_from_residue_name(md_str_t res_name, md_residue_kind_t k
     default:
         return MD_MONOMER_NONE;
     }
+}
+
+// ### RESIDUE NAMES ###
+
+// Some from here https://daylight.com/meetings/mug01/Sayle/m4xbondage.html
+// Some from molstar (github.com/molstar)
+static const char* amino_acids[] = {
+    "ACE", "ALA", "ARG", "ASC", "ASN", "ASP", "ASX",
+    "CYS", "CYX",
+    "FOR",
+    "GLN", "GLU", "GLX", "GLY",
+    "HIS", "HYP", "HISE",
+    "ILE", "LEU",
+    "LYS",
+    "MET",
+    "PHE", "PRO", "PCA", "PYL",
+    "SER",
+    "THR", "TRP", "TYR",
+    "VAL", "SEC",
+    "XLE",
+    
+    // CCD
+    "UNK",
+    "MSE", "SEP", "TPO", "PTR",
+
+    // Charmm
+    "HSD", "HSE", "HSP", "LSN", "ASPP", "GLUP",
+
+    // Amber
+    "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
+
+    // Martini: the neutral Arg, Asp, Glu, Lys and the charged His of Martini 2 (HISH is GROMOS's too) and of Martini 3
+    // beta (HIH), and the lipidated residues of Martini 3: farnesyl, geranylgeranyl and palmitoyl Cys, myristoyl Gly
+    "ARG0", "ASP0", "GLU0", "LYS0", "HISH", "HIH",
+    "CYSF", "CYSG", "CYSP", "GLYM",
+};
+
+#if 0
+static const char* nucleic_acids[] = {
+    "A", "C", "G", "T", "U", "+U", "YG", "1MA", "1MG", "2MG", "5MC", "5MU", "7MG", "H2U", "M2G", "OMC", "OMG", "PSU",
+};
+#endif
+
+/*static const char* peptides[] = {"APN", "CPN", "TPN", "GPN"};*/
+static const char* rna[] = {"A", "C", "T", "G", "I", "U", "N"};
+static const char* dna[] = {"DA", "DC", "DT", "DG", "DI", "DU", "DN"};
+
+static const char* acidic[] = { "ASP", "GLU" };
+static const char* basic[] = { "ARG", "HIS", "LYS" };
+
+static const char* neutral[] = { "VAL", "PHE", "GLN", "TYR", "HIS", "CYS", "MET", "TRP", "ASX", "GLX", "PCA", "HYP" };
+static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "TIP5", "TIP4P", "TIP5P", "TP3", "TP4", "TP5", "T3P", "T4P", "T5P", "T4E", "OPC", "W", "DOD", "D30", "SPC" };
+static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TYR", "TRP", "CYX" };
+
+static const char* common_ions[] = { "NA", "K", "CA", "MG", "ZN", "CL", "F", "MN", "FE", "CU", "CO", "NI", "CD", "BR", "I", "CS", "SR"};
+
+static inline bool find_str_in_cstr_arr(size_t* loc, md_str_t str, const char* arr[], size_t arr_len) {
+    for (size_t i = 0; i < arr_len; ++i) {
+        if (md_str_eq_cstr(str, arr[i])) {
+            if (loc) *loc = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+// A residue name as a name of a nucleotide: without the padding, and without the terminal suffix of Amber and GROMACS
+// (DA5, DT3, A5, U3). A name which goes on otherwise is not one, empty: A1JB9 (a ligand of the extended codes of the
+// chemical component dictionary, A1xxx), U5P (uridine monophosphate, a ligand) or T3P (TIP3P water) are not A, U or T.
+static inline md_str_t nucleotide_resname(md_str_t name) {
+    name = md_str_trim(name);
+    const char* p = md_str_ptr(name);
+    size_t n = 0;
+    while (n < name.len && md_ascii_is_alpha(p[n])) ++n;
+    if (n == name.len) return name;
+    if (n > 0 && n + 1 == name.len && (p[n] == '5' || p[n] == '3')) return md_str_substr(name, 0, n);
+    return (md_str_t){0};
+}
+
+bool md_resname_rna(md_str_t str) {
+    str = nucleotide_resname(str);
+    return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna));
+}
+
+bool md_resname_dna(md_str_t str) {
+    str = nucleotide_resname(str);
+    return find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
+}
+
+bool md_resname_nucleotide(md_str_t str) {
+    str = nucleotide_resname(str);
+    return find_str_in_cstr_arr(NULL, str, rna, MD_COUNTOF(rna)) || find_str_in_cstr_arr(NULL, str, dna, MD_COUNTOF(dna));
+}
+
+bool md_resname_acidic(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, acidic, MD_COUNTOF(acidic));
+}
+
+bool md_resname_basic(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, basic, MD_COUNTOF(basic));
+}
+
+bool md_resname_neutral(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, neutral, MD_COUNTOF(neutral));
+}
+
+bool md_resname_water(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, water, MD_COUNTOF(water));
+}
+
+bool md_resname_ion(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, common_ions, MD_COUNTOF(common_ions));
+}
+
+bool md_resname_hydrophobic(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, hydrophobic, MD_COUNTOF(hydrophobic));
+}
+
+bool md_resname_amino_acid(md_str_t str) {
+    return find_str_in_cstr_arr(NULL, str, amino_acids, MD_COUNTOF(amino_acids));
 }

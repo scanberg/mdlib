@@ -254,7 +254,7 @@ martini_system_t mdi_martini_system(const md_system_t* sys, md_str_t (*label)(co
 
 // Lipids by name: those of the Martini lipidomes (whose names the atomistic force fields mostly share: POPC, DPPC, CHOL,
 // ...) and the cholesterol of CHARMM
-bool md_util_resname_lipid(md_str_t str) {
+bool md_resname_lipid(md_str_t str) {
     size_t beg, end;
     martini_db_find(str, &beg, &end);
     for (size_t k = beg; k < end; ++k) {

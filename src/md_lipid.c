@@ -308,7 +308,7 @@ static void infer_lipid_molecule(md_lipid_data_t* lipid, const md_system_t* sys,
     bool named = false;
     for (int32_t c = 0; c < nc; ++c) {
         const size_t res = (size_t)mol->residues[c];
-        if (md_util_resname_lipid(md_system_residue_name(sys, res)) || (cg && md_system_residue_kind(sys, res) == MD_RESIDUE_KIND_LIPID)) {
+        if (md_resname_lipid(md_system_residue_name(sys, res)) || (cg && md_system_residue_kind(sys, res) == MD_RESIDUE_KIND_LIPID)) {
             named = true;
         }
     }
@@ -749,7 +749,7 @@ void md_system_infer_lipid_kinds(md_system_t* sys) {
         }
         // A lipid by its structure (an earlier inference) which is none now; one by name or by its beads stays
         if (md_system_residue_kind(sys, r) != MD_RESIDUE_KIND_LIPID) continue;
-        if (md_util_resname_lipid(md_system_residue_name(sys, r))) continue;
+        if (md_resname_lipid(md_system_residue_name(sys, r))) continue;
         const md_urange_t range = md_system_residue_atom_range(sys, r);
         if (range.beg < range.end && lipid_atom_is_bead(sys, range.beg)) continue;
         md_system_set_residue_kind(sys, r, MD_RESIDUE_KIND_OTHER);

@@ -2,7 +2,6 @@
 
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
 #include <md_element.h>
 
 #include <core/md_common.h>

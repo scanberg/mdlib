@@ -130,7 +130,7 @@ bool md_system_state_backbone_compute(md_system_state_t* state, const md_system_
 // none.
 static char ramachandran_residue(const md_system_t* sys, const md_protein_backbone_data_t* backbone, size_t i, bool has_prev) {
     const md_residue_idx_t res_idx = backbone->segment.res_idx[i];
-    if (res_idx >= 0 && md_util_resname_amino_acid(md_system_residue_name(sys, res_idx))) {
+    if (res_idx >= 0 && md_resname_amino_acid(md_system_residue_name(sys, res_idx))) {
         const md_str_t name = md_system_residue_name(sys, res_idx);
         return md_str_eq(name, MD_STR_LIT("GLY")) ? 'G' : md_str_eq(name, MD_STR_LIT("PRO")) ? 'P' : 0;
     }
@@ -834,7 +834,7 @@ static void perceive_polymer_atoms(md_system_t* sys, const md_system_state_t* st
             const md_amino_acid_atoms_t* a = &prot.aa[u];
             if (own[u] >= 0) {
                 const md_urange_t range = md_system_residue_atom_range(sys, (size_t)own[u]);
-                take[u] = md_util_resname_amino_acid(md_system_residue_name(sys, (size_t)own[u])) ||
+                take[u] = md_resname_amino_acid(md_system_residue_name(sys, (size_t)own[u])) ||
                           atom_bonded_outside(sys, a->n, range, MD_Z_C) || atom_bonded_outside(sys, a->c, range, MD_Z_N);
             } else {
                 take[u] = prot.prev[u] >= 0 || prot.next[u] >= 0;
@@ -874,7 +874,7 @@ static void perceive_polymer_atoms(md_system_t* sys, const md_system_state_t* st
             const md_nucleic_acid_atoms_t* a = &nucl.na[u];
             if (own[u] >= 0) {
                 const md_urange_t range = md_system_residue_atom_range(sys, (size_t)own[u]);
-                take[u] = md_util_resname_nucleotide(md_system_residue_name(sys, (size_t)own[u])) ||
+                take[u] = md_resname_nucleotide(md_system_residue_name(sys, (size_t)own[u])) ||
                           (a->p >= 0 && atom_bonded_outside(sys, a->p, range, MD_Z_O)) || atom_bonded_outside(sys, a->o3, range, MD_Z_P);
             } else {
                 take[u] = nucl.prev[u] >= 0 || nucl.next[u] >= 0;
@@ -1070,7 +1070,7 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
         for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, res_range.beg + i);
         const martini_db_residue_t* mol = mdi_martini_db_match_molecule(MARTINI_ANY, res_name, labels, len, map);
         // Renamed (CHL for CHOL): by its beads, unless it is named as a residue of a chain
-        if (!mol && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name)) {
+        if (!mol && !md_resname_amino_acid(res_name) && !md_resname_nucleotide(res_name)) {
             mol = mdi_martini_db_match_beads(MARTINI_ANY, labels, NULL, len, map);
         }
         if (mol) return mol->kind;
@@ -1086,7 +1086,7 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
         if (md_atom_flags(&sys->atom, (size_t)prot_atoms.c) & MD_ATOM_FLAG_TERMINAL_END) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_END;
         return MD_RESIDUE_KIND_AMINO_ACID;
     }
-    if (md_util_resname_amino_acid(res_name)) {
+    if (md_resname_amino_acid(res_name)) {
         *ambiguous = 1;
         return MD_RESIDUE_KIND_AMINO_ACID;
     }
@@ -1098,24 +1098,24 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
         if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o3) & MD_ATOM_FLAG_TERMINAL_END) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_END;
         return MD_RESIDUE_KIND_NUCLEOTIDE;
     }
-    if (md_util_resname_nucleotide(res_name)) {
+    if (md_resname_nucleotide(res_name)) {
         *ambiguous = 2;
         return MD_RESIDUE_KIND_NUCLEOTIDE;
     }
 
     // Water by its atoms, or by name when its hydrogens are left out (united atom, coarse grained)
     if (atoms_are_water(sys, res_range) ||
-       ((len == 1 || len == 3) && md_util_resname_water(res_name)) ||
-       (len == 1 && md_util_resname_water(md_atom_name(&sys->atom, res_range.beg)))) {
+       ((len == 1 || len == 3) && md_resname_water(res_name)) ||
+       (len == 1 && md_resname_water(md_atom_name(&sys->atom, res_range.beg)))) {
         return MD_RESIDUE_KIND_WATER;
     }
     // An ion by its name, or by its element where it is bonded to nothing but by coordination: a lone O, S or N
     // covalently bonded (the O between two Si of a silica network, a residue to an atom) is no ion
-    if (len == 1 && (md_util_resname_ion(res_name) ||
+    if (len == 1 && (md_resname_ion(res_name) ||
         (monatomic_ion_element(md_atom_atomic_number(&sys->atom, res_range.beg)) && !atom_bonded_covalently(sys, (md_atom_idx_t)res_range.beg)))) {
         return MD_RESIDUE_KIND_ION;
     }
-    if (md_util_resname_lipid(res_name)) {
+    if (md_resname_lipid(res_name)) {
         return MD_RESIDUE_KIND_LIPID;
     }
     return fallback;

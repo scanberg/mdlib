@@ -1785,3 +1785,73 @@ size_t md_system_infer_elastic_bonds(md_system_t* sys) {
     }
     return count;
 }
+
+void md_bond_mask_grow(md_bitmask_t* mask, const md_bond_data_t* bond, size_t atom_count, size_t extent, const md_bitset_t* viable_mask) {
+    MD_ASSERT(mask);
+    MD_ASSERT(bond);
+
+    if (extent >= 255) {
+        MD_LOG_DEBUG("Maximum supported growth extent is 255, the extent will be clamped to 255");
+        extent = 255;
+    }
+    // The initial depth is 1, so we need to add one.
+    extent += 1;
+    
+    const size_t mask_size = md_bitmask_count(mask);
+    if (!mask_size) return;
+
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(mask->alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+
+    int* indices = md_alloc(temp_alloc, mask_size * sizeof(int));
+    const size_t num_indices = md_bitset_iter_extract_indices(indices, mask_size, md_bitmask_iter(mask));
+    MD_ASSERT(num_indices == mask_size);
+
+    md_fifo_t queue = md_fifo_create(64, temp_alloc);
+
+    // Zero means 'not reached'. Temp memory is not cleared, so this has to be, or the walk depends on what the
+    // allocator handed out last: fresh pages happen to be zero, reused ones are not.
+    uint8_t* depth = md_temp_alloc_array(temp_scope, uint8_t, atom_count);
+    md_memset(depth, 0, atom_count * sizeof(uint8_t));
+
+    {
+        md_bitset_iter_t it = md_bitmask_iter(mask);
+        while (md_bitset_iter_next(&it)) {
+            int idx = (int)it.idx;
+            depth[idx] = 1;
+        }
+    }
+    
+    for (size_t j = 0; j < num_indices; ++j) {
+        int i = indices[j];
+
+        md_fifo_clear(&queue);
+        md_fifo_push(&queue, i);
+        
+        while (!md_fifo_empty(&queue)) {
+            int idx = md_fifo_pop(&queue);
+            md_bitmask_set_bit(mask, (uint32_t)idx);
+
+            md_bond_iter_t it = md_bond_iter(bond, idx);
+            while (md_bond_iter_has_next(&it)) {
+                int next = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                if (viable_mask && md_bitset_test(*viable_mask, (uint32_t)next) == false) {
+                    continue;
+                }
+                // Only explore the path if it is not already marked and it is within the extent.
+                // Or if the current path is 'cheaper'
+                const uint8_t dc = depth[idx] + 1;
+                const uint8_t dn = depth[next];
+                if (dn == 0 || dc < dn) {
+                    depth[next] = dc;
+                    if (dc <= extent) {
+                        md_fifo_push(&queue, next);
+                    }
+                }
+            }
+        }
+    }
+
+    md_temp_end(temp_scope);
+}

@@ -1,6 +1,6 @@
 ﻿#include <md_gro.h>
 
-#include <md_util.h>
+#include <md_infer.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -135,7 +135,7 @@ static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3],
 // THE SYSTEM
 //
 // What a load gives is the core: the atoms, where they are, their types, the residues and the cell. Nothing is derived
-// from the coordinates here, neither the bonds nor what the residues are by them: that is md_util_system_infer's, which
+// from the coordinates here, neither the bonds nor what the residues are by them: that is md_system_infer's, which
 // a caller runs when (and where, on what thread) it wants.
 //
 // Straight from the text, a block at a time (read over the threads of the executor where the source reads at offsets,

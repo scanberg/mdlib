@@ -5,7 +5,7 @@
 #include <md_xyz.h>
 #include <md_pdb.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_element.h>
 #include <core/md_allocator.h>
 #include <core/md_parse.h>
@@ -23,7 +23,7 @@
 // (right after its heavy atom), bond orders and aromaticity known, metal - non metal bonds coordinate.
 // Residues, when given, as counts of heavy atoms in SMILES order.
 
-// What md_util_system_infer gives the system of its molecules and parts (MD_UTIL_INFER_MOLECULE_BIT, _PART_BIT)
+// What md_system_infer gives the system of its molecules and parts (MD_SYSTEM_INFER_MOLECULE_BIT, _PART_BIT)
 static bool test_infer_molecules(md_system_t* sys) {
     md_molecule_data_t molecules = {0};
     const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
@@ -596,7 +596,7 @@ static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, 0)) return 0;
-    if (!md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) return 0;
+    if (!md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) return 0;
     const size_t n = md_system_fragment_count(&sys);
     md_array_resize(*out, n * FRAG_REF_LINE, alloc);
     for (md_fragment_idx_t f = 0; f < n; ++f) {
@@ -658,7 +658,7 @@ UTEST(fragment, the_residues_of_a_protein) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     // The side chain of each amino acid within a chain: its fragments of no backbone, by heavy atoms and name
     static const struct { const char* res; const char* side; } want[] = {

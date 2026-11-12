@@ -1,18 +1,18 @@
 #pragma once
 
 // The arrays of md_system_t, as X macros: X(field), field a path from the system ("atom.type_idx"). Each array of the
-// system is in exactly one of the lists, by what it is to inference (md_util_system_infer):
+// system is in exactly one of the lists, by what it is to inference (md_system_infer):
 //
 //   CORE       What the data gives: the atoms, their types, the residues, the instances and the assemblies. Inference
 //              reads it and never writes it, so a system inferred on another thread can share it
-//              (md_util_system_infer_prepare).
+//              (md_system_infer_prepare).
 //   DERIVED    What inference writes: what it finds (the bonds, chains, parts, backbones, molecules, rings, lipids, fragments, the
 //              chemistry, the kinds of the residues and the roles of their atoms), and what the data may give of it
 //              which inference adds to or replaces (the bonds of a file, the part types of an mmCIF file).
 //   DERIVED_STRINGS  Arrays of strings of DERIVED, each string allocated of its own
 //
 // A new array of the system goes in one of the lists, or it is neither copied (md_system_copy) nor published from a
-// system inferred in the background (md_util_system_infer_publish). The unit test system_invariants.infer_write_set
+// system inferred in the background (md_system_infer_publish). The unit test system_invariants.infer_write_set
 // fails when inference writes an array of CORE.
 
 #define MD_SYSTEM_CORE_ARRAYS(X) \
@@ -45,7 +45,7 @@
 #define MD_SYSTEM_DERIVED_STRINGS(X) \
     X(part.type.description) X(molecule.type.name) X(fragment.type.name)
 
-// The structs of DERIVED whole, with their counts: what md_util_system_infer_publish moves into the system. Of the atoms
+// The structs of DERIVED whole, with their counts: what md_system_infer_publish moves into the system. Of the atoms
 // and the residues, which are CORE and DERIVED both, the DERIVED arrays one by one (MD_SYSTEM_DERIVED_ARRAYS) and these
 // counts and structs.
 #define MD_SYSTEM_DERIVED_STRUCTS(X) \

@@ -2,7 +2,6 @@
 
 #include <md_system.h>
 #include <md_unitcell.h>
-#include <md_util.h>
 #include <md_util_geom.h>
 #include <md_util_sort.h>
 

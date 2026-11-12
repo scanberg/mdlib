@@ -7,7 +7,7 @@
 #include <md_gro.h>
 #include <md_pdb.h>
 #include <md_tpr.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_util_geom.h>
 #include <md_hbond.h>
 #include <md_element.h>
@@ -131,7 +131,7 @@ static bool load_case(md_system_t* sys, md_system_state_t* st, const water_case_
     *st  = (md_system_state_t){ .alloc = alloc };
     const md_str_t text = md_str_from_cstr(c->text);
     const bool ok = c->gro ? md_gro_system_init_from_str(sys, st, text, NULL) : md_pdb_system_init_from_str(sys, st, text, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
-    return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
+    return ok && md_system_infer(sys, st, MD_SYSTEM_INFER_ALL, NULL);
 }
 
 static inline md_particle_kind_t particle(const md_system_t* sys, size_t i) {
@@ -217,7 +217,7 @@ UTEST(water, unwrap_virtual_site) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(text), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_EQ(2, (int)sys.bond.count);
     EXPECT_EQ(1, (int)sys.molecule.count);
     md_util_unwrap_system(&st, &sys);
@@ -238,7 +238,7 @@ UTEST(water, tip4p_gro_and_tpr) {
         const bool ok = f == 0 ? md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL)
                                : md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr"));
         ASSERT_TRUE(ok);
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
         size_t water = 0, sites = 0, bonded_sites = 0, cg = 0;
         for (size_t ci = 0; ci < sys.residue.count; ++ci) water += md_system_residue_kind(&sys, ci) == MD_RESIDUE_KIND_WATER;
         for (size_t i = 0; i < sys.atom.count; ++i) {

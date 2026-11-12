@@ -12,7 +12,7 @@
 #include <core/md_writer.h>
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_system.h>
 #include <md_element.h>
 
@@ -1559,7 +1559,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                     md_str_t symbol = md_str_from_cstrn(entry->type_symbol, sizeof(entry->type_symbol));
                     md_str_t atom_id = md_str_from_cstrn(entry->label_atom_id, sizeof(entry->label_atom_id));
                     md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
-                    particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
+                    particle_type_idx = md_system_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
                     if (!s_idx) {
                         md_hashmap_add(&seen_map, key, (uint32_t)md_array_size(seen));
                         md_array_push(seen, ((mmcif_type_seen_t){ name, symbol_word, particle_type_idx }), temp_arena);
@@ -1656,7 +1656,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // The bonds, what the residues are by them and the chains are md_util_system_infer's (MD_UTIL_INFER_BOND_BIT,
+    // The bonds, what the residues are by them and the chains are md_system_infer's (MD_SYSTEM_INFER_BOND_BIT,
     // _RESIDUE_BIT, _PART_BIT): the loader gives what the file says.
 
     // The assemblies name the instances by their asym ids

@@ -8,7 +8,7 @@
 #include <md_gro.h>
 #include <md_pdb.h>
 #include <md_mmcif.h>
-#include <md_util.h>
+#include <md_infer.h>
 
 #include <md_filter.h>
 #include <md_script.h>
@@ -25,7 +25,7 @@ UTEST(filter, centered) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     
     md_bitset_t bf = {0};
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -45,7 +45,7 @@ UTEST(filter, variable_length) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     const md_filter_context_t fctx = {&sys, &state, NULL};
 
@@ -89,7 +89,7 @@ UTEST(filter, qm_regions_need_a_qm_system) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     md_bitset_t bf = {0};
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -112,7 +112,7 @@ UTEST(filter, errors_say_where) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     md_bitset_t bf = {0};
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -175,7 +175,7 @@ UTEST(filter, in_context) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
 
@@ -261,7 +261,7 @@ UTEST(filter, completion_within_context) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
     md_bitset_t context = {0};
@@ -318,7 +318,7 @@ UTEST(filter, bonds) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
@@ -420,7 +420,7 @@ UTEST(filter, bonds_as_atoms) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
 
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
@@ -487,7 +487,7 @@ UTEST(filter, chains_by_author_id) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
 
     // The atoms whose instance the author filed under A
@@ -580,7 +580,7 @@ UTEST(filter, chains_without_ids) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     ASSERT_EQ(md_system_chain_count(&sys), 0);
 
@@ -628,7 +628,7 @@ UTEST(filter, molecules) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     const size_t num = md_system_molecule_count(&sys);
     ASSERT_GT(num, 1);
@@ -724,7 +724,7 @@ UTEST(filter, parts_and_glycans) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(4u, md_system_residue_count(&sys));
     EXPECT_EQ(1u, md_system_molecule_count(&sys));
     ASSERT_EQ(2u, md_system_part_count(&sys));

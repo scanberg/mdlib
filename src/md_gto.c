@@ -1,5 +1,5 @@
 ﻿#include <md_gto.h>
-#include <md_util.h>
+#include <md_system.h>
 
 #include <core/md_platform.h>
 
@@ -14,7 +14,6 @@
 #include <core/md_common.h>
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
-#include <md_system.h>
 
 #include <stdbool.h>
 #include <float.h>

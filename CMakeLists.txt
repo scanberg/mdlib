@@ -277,7 +277,7 @@ set(SRC_FILES
   src/md_trr.c
   src/md_trr.h
   src/md_types.h
-  src/md_util.c
+  src/md_infer.c
   src/md_infer_internal.h
   src/md_bond.c
   src/md_ring.c
@@ -287,7 +287,7 @@ set(SRC_FILES
   src/md_lipid.c
   src/md_martini.c
   src/md_martini_db.inl
-  src/md_util.h
+  src/md_infer.h
   src/md_util_geom.c
   src/md_util_geom.h
   src/md_util_sort.c

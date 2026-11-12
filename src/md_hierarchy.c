@@ -142,8 +142,8 @@ static inline bool residue_kind_is_monomer(md_residue_kind_t kind) {
 // resolved nucleotide with a 2' oxygen is RNA, one without DNA.
 static int nucleotide_type(const md_system_t* sys, size_t res_idx) {
     const md_str_t name = md_system_residue_name(sys, res_idx);
-    if (md_util_resname_dna(name)) return 1;
-    if (md_util_resname_rna(name)) return 2;
+    if (md_resname_dna(name)) return 1;
+    if (md_resname_rna(name)) return 2;
     md_nucleic_acid_atoms_t na;
     if ((md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_RESOLVED) && mdi_residue_nucleotide_atoms(&na, sys, md_system_residue_atom_range(sys, res_idx))) {
         return mdi_bonded_atom_with(sys, na.c2, MD_Z_O, 0, 0, -1, -1) >= 0 ? 2 : 1;
@@ -468,7 +468,7 @@ static void link_topology_molecules(const md_system_t* sys, int32_t* set, md_arr
 // Hierarchy links for coarse grained systems, used where bonds leave the topology disconnected.
 //
 // md_molecule_data_t is a spanning forest and unwrap only needs each atom's parent to stay within half a cell
-// of it, not to be bonded to it. Coarse grained systems frequently have no bonds (md_util_system_infer skips
+// of it, not to be bonded to it. Coarse grained systems frequently have no bonds (md_system_infer skips
 // bond inference for them) or have a distance guess that misses stretched ones. So the missing links are
 // synthesized from the residue hierarchy instead, WITHOUT looking at coordinates:
 //   - within a residue, every bead hangs off the residue's anchor (its backbone bead, else its first bead)
@@ -503,7 +503,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
         }
     }
 
-    // Part of each residue, -1 when the parts are unknown (md_util_system_infer infers them before the molecules)
+    // Part of each residue, -1 when the parts are unknown (md_system_infer infers them before the molecules)
     int32_t* res_part = md_alloc(alloc, sizeof(int32_t) * res_count);
     for (size_t i = 0; i < res_count; ++i) res_part[i] = -1;
     for (size_t p = 0; p < sys->part.count; ++p) {

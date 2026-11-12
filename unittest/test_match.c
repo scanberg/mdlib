@@ -3,7 +3,7 @@
 #include <md_match.h>
 #include <md_smiles.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_gro.h>
 #include <md_pdb.h>
 #include <md_mmcif.h>
@@ -58,7 +58,7 @@ static md_system_t* get_sys(sys_id_t id) {
         case SYS_TIP4P:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
         default: break;
         }
-        md_util_system_infer(s, st, MD_UTIL_INFER_ALL, NULL);
+        md_system_infer(s, st, MD_SYSTEM_INFER_ALL, NULL);
         loaded[id] = true;
     }
     return &sys_data[id];
@@ -786,7 +786,7 @@ UTEST(match, whole) {
     size_t num_aa = 0, num_gly = 0;
     for (size_t i = 0; i < sys->residue.count; ++i) {
         const md_str_t name = MD_LABEL_STR(sys->residue.name[i]);
-        if (md_util_resname_amino_acid(name)) num_aa++;
+        if (md_resname_amino_acid(name)) num_aa++;
         if (md_str_eq_cstr(name, "GLY")) {
             // Without its C terminal oxygen
             size_t heavy = 0;
