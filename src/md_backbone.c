@@ -42,7 +42,7 @@ bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t c
                 md_f32x3_sub(n_next, c),
             };
 
-            md_util_min_image_vec3(d, MD_COUNTOF(d), cell);
+            md_util_min_image((float*)d, 0, MD_COUNTOF(d), cell);
 
             backbone_angles[i].phi = md_f32x3_dihedral_angle(d[0], d[1], d[2]);
             backbone_angles[i].psi = md_f32x3_dihedral_angle(d[1], d[2], d[3]);
@@ -287,7 +287,7 @@ static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_
 static inline bool atoms_closer_than(const md_system_state_t* state, md_atom_idx_t a, md_atom_idx_t b, float max_dist) {
     if (!md_system_state_has_coords(state) || (size_t)a >= state->num_atoms || (size_t)b >= state->num_atoms) return false;
     md_f32x3_t d = md_f32x3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
-    md_util_min_image_vec3(&d, 1, &state->unitcell);
+    md_util_min_image(d.elem, 0, 1, &state->unitcell);
     return md_f32x3_dot(d, d) < max_dist * max_dist;
 }
 

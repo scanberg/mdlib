@@ -154,7 +154,7 @@ static inline int pi_sum(const chem_t* c, uint32_t i) {
 static inline md_f32x3_t bond_vec(const chem_t* c, uint32_t from, uint32_t to) {
     md_f32x3_t d = md_f32x3_sub(c->xyz[to], c->xyz[from]);
     // A bond is far shorter than 3 Å: only one split by the periodic boundary pays for the minimum image
-    if (md_f32x3_dot(d, d) > 9.0f) md_util_min_image_vec3(&d, 1, c->cell);
+    if (md_f32x3_dot(d, d) > 9.0f) md_util_min_image(d.elem, 0, 1, c->cell);
     return d;
 }
 

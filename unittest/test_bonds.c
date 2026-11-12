@@ -573,7 +573,7 @@ UTEST(bonds, metallic_crystal) {
         for (size_t i = 0; i < num; ++i) {
             for (size_t j = i + 1; j < num; ++j) {
                 md_f32x3_t d = md_f32x3_sub(st.xyz[j], st.xyz[i]);
-                md_util_min_image_vec3(&d, 1, &st.unitcell);
+                md_util_min_image(d.elem, 0, 1, &st.unitcell);
                 expected += md_f32x3_length(d) < 1.1f * nn;
             }
         }
@@ -689,7 +689,7 @@ UTEST(bonds, metallic_slab) {
     for (int i = 0; i < num_au; ++i) {
         for (int j = i + 1; j < num_au; ++j) {
             md_f32x3_t v = md_f32x3_sub(st.xyz[j], st.xyz[i]);
-            md_util_min_image_vec3(&v, 1, &st.unitcell);
+            md_util_min_image(v.elem, 0, 1, &st.unitcell);
             shell += md_f32x3_length(v) < 3.5f;
         }
     }

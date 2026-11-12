@@ -362,7 +362,7 @@ static bool kind_ref(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* re
         gather(kind->ref_xyzw, first->xyz, first->num_atoms, kind->atoms, kind->n, sys);
     }
     const md_unitcell_t cell = first ? first->cell : md_unitcell_none();
-    md_util_deperiodize_self_vec4(kind->ref_xyzw, kind->n, &cell, &kind->ref_com);
+    md_util_deperiodize_self(kind->ref_xyzw, kind->n, &cell, &kind->ref_com);
     return true;
 }
 
@@ -498,7 +498,7 @@ const uint32_t* vial_volume_structure(const vial_volume_t* vol, uint32_t s, uint
 static bool fit_structure(const vial_sdf_kind_t* kind, uint32_t j, const float* xyz, size_t num_atoms, const md_unitcell_t* cell,
                           const md_system_t* sys, md_f32x4_t* scratch, md_f32x3x3_t* R, md_f32x3_t* com) {
     gather(scratch, xyz, num_atoms, kind->atoms + (size_t)j * kind->n, kind->n, sys);
-    const float residual = md_util_optimal_rotation_pbc_vec4_iter(R, com, NULL, kind->ref_xyzw, kind->ref_com, scratch, kind->n, cell, 8, 1.0e-6f);
+    const float residual = md_util_optimal_rotation_pbc(R, com, NULL, kind->ref_xyzw, kind->ref_com, scratch, kind->n, cell, 8, 1.0e-6f);
     // The residual is the margin to an ambiguous choice of images: near half a cell no choice per point represents
     // this copy, so it is left out rather than smeared into the volume in a wrong orientation
     float min_ext = FLT_MAX;
@@ -682,7 +682,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
             const float* q = (const float*)p.data + 3 * i;
             // The image nearest the box's centre
             md_f32x3_t d = {{(float)(q[0] - c[0]), (float)(q[1] - c[1]), (float)(q[2] - c[2])}};
-            if (periodic) md_util_min_image_vec3(&d, 1, &cell);
+            if (periodic) md_util_min_image(d.elem, 0, 1, &cell);
             const double gx = (c[0] + d.x - vol->lo[0]) * inv[0] - 0.5;
             const double gy = (c[1] + d.y - vol->lo[1]) * inv[1] - 0.5;
             const double gz = (c[2] + d.z - vol->lo[2]) * inv[2] - 0.5;

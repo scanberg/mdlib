@@ -295,7 +295,7 @@ bool md_resname_lipid(md_str_t str) {
 // secondary structure, which are not chemical bonds.
 static inline float cg_bead_distance(const md_system_state_t* state, int i, int j) {
     md_f32x3_t d = md_f32x3_sub(state->xyz[i], state->xyz[j]);
-    md_util_min_image_vec3(&d, 1, &state->unitcell);
+    md_util_min_image(d.elem, 0, 1, &state->unitcell);
     return md_f32x3_length(d);
 }
 

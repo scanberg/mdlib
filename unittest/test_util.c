@@ -69,7 +69,7 @@ static md_f32x3_t* pack_xyz(md_f32x3_t* dst, const float* x, const float* y, con
     return dst;
 }
 
-// md_util_com_compute over planar inputs: packed first. With indices the source is as long as the
+// md_util_com over planar inputs: packed first. With indices the source is as long as the
 // largest index reaches.
 static md_f32x3_t com_planar(const float* x, const float* y, const float* z, const float* w, const int32_t* idx, size_t n, const md_unitcell_t* cell) {
     size_t len = n;
@@ -80,7 +80,7 @@ static md_f32x3_t com_planar(const float* x, const float* y, const float* z, con
     md_temp_scope_t temp = md_temp_begin();
     md_f32x3_t* xyz = md_temp_alloc_array(temp, md_f32x3_t, MD_ALIGN_TO(len, 16));
     pack_xyz(xyz, x, y, z, len);
-    const md_f32x3_t com = md_util_com_compute(xyz, w, idx, n, cell);
+    const md_f32x3_t com = md_util_com((const float*)xyz, 0, w, 0, idx, n, cell);
     md_temp_end(temp);
     return com;
 }
@@ -261,16 +261,26 @@ UTEST_F(util, rmsd) {
     fast_rmsd((double(*)[3])xyz0, (double(*)[3])xyz1, (int)N, &ref_rmsd);
 
     // Our implementation
-    const md_f32x3_t* const cxyz[2] = { xyz[0], xyz[1] };
-    const float* const cw[2] = { w, w };
+    md_f32x4_t* xyzw[2] = {
+        md_alloc(alloc, N * sizeof(md_f32x4_t)),
+        md_alloc(alloc, N * sizeof(md_f32x4_t)),
+    };
+    for (size_t i = 0; i < N; ++i) {
+        xyzw[0][i] = md_f32x4_from_f32x3(xyz[0][i], w[i]);
+        xyzw[1][i] = md_f32x4_from_f32x3(xyz[1][i], w[i]);
+    }
+    const md_f32x4_t* const cxyzw[2] = { xyzw[0], xyzw[1] };
 
     md_f32x3_t com[2] = {
-        md_util_com_compute(xyz[0], w, 0, N, 0),
-        md_util_com_compute(xyz[1], w, 0, N, 0),
+        md_util_com((const float*)xyz[0], 0, w, 0, 0, N, 0),
+        md_util_com((const float*)xyz[1], 0, w, 0, 0, N, 0),
     };
-    double rmsd = md_util_rmsd_compute(cxyz, cw, 0, N, com);
+    double rmsd = md_util_rmsd(cxyzw, 0, N, com);
 
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
+
+    md_free(alloc, xyzw[0], N * sizeof(md_f32x4_t));
+    md_free(alloc, xyzw[1], N * sizeof(md_f32x4_t));
 
     md_free(alloc, xyz[0], cap * sizeof(md_f32x3_t));
     md_free(alloc, xyz[1], cap * sizeof(md_f32x3_t));
@@ -299,7 +309,7 @@ UTEST(util, com) {
             {4,0,0,1},
         };
 
-        md_f32x3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
+        md_f32x3_t com = md_util_com((const float*)xyzw, sizeof(md_f32x4_t), (const float*)xyzw + 3, sizeof(md_f32x4_t), 0, MD_COUNTOF(xyzw), &cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -311,7 +321,7 @@ UTEST(util, com) {
             {5,0,0,1},
         };
 
-        md_f32x3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
+        md_f32x3_t com = md_util_com((const float*)xyzw, sizeof(md_f32x4_t), (const float*)xyzw + 3, sizeof(md_f32x4_t), 0, MD_COUNTOF(xyzw), &cell);
 		com = md_f32x3_deperiodize_ortho(com, (md_f32x3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -330,7 +340,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        md_f32x3_t com = md_util_com_compute_vec4(xyzw, 0, MD_COUNTOF(xyzw), &cell);
+        md_f32x3_t com = md_util_com((const float*)xyzw, sizeof(md_f32x4_t), (const float*)xyzw + 3, sizeof(md_f32x4_t), 0, MD_COUNTOF(xyzw), &cell);
         com = md_f32x3_deperiodize_ortho(com, md_f32x3_mul1(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -361,9 +371,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        md_f32x3_t com0 = md_util_com_compute_vec4(pos0, 0, MD_COUNTOF(pos0), &cell);
-        md_f32x3_t com1 = md_util_com_compute_vec4(pos1, 0, MD_COUNTOF(pos1), &cell);
-        md_f32x3_t com2 = md_util_com_compute_vec4(pos2, 0, MD_COUNTOF(pos2), &cell);
+        md_f32x3_t com0 = md_util_com((const float*)pos0, sizeof(md_f32x4_t), (const float*)pos0 + 3, sizeof(md_f32x4_t), 0, MD_COUNTOF(pos0), &cell);
+        md_f32x3_t com1 = md_util_com((const float*)pos1, sizeof(md_f32x4_t), (const float*)pos1 + 3, sizeof(md_f32x4_t), 0, MD_COUNTOF(pos1), &cell);
+        md_f32x3_t com2 = md_util_com((const float*)pos2, sizeof(md_f32x4_t), (const float*)pos2 + 3, sizeof(md_f32x4_t), 0, MD_COUNTOF(pos2), &cell);
 
         com0 = md_f32x3_deperiodize_ortho(com0, (md_f32x3_t){ 0,0,0 }, pbc_ext);
         com1 = md_f32x3_deperiodize_ortho(com1, (md_f32x3_t){ 0,0,0 }, pbc_ext);
@@ -2113,7 +2123,7 @@ UTEST(util, unwrap_molecule_triclinic) {
     md_system_free(&sys);
 }
 
-// md_util_min_image_vec3 / _vec4 reduce a separation vector to its shortest periodic image, so no
+// md_util_min_image, packed and of md_f32x4_t, reduces a separation vector to its shortest periodic image, so no
 // residue may exceed half the box and the result must differ from the input by whole box lengths.
 UTEST(util, min_image) {
     const float e = 10.0f;
@@ -2127,7 +2137,7 @@ UTEST(util, min_image) {
     };
     const md_f32x3_t in3[4] = { dx3[0], dx3[1], dx3[2], dx3[3] };
 
-    md_util_min_image_vec3(dx3, 4, &cell);
+    md_util_min_image((float*)dx3, 0, 4, &cell);
 
     for (int i = 0; i < 4; ++i) {
         for (int c = 0; c < 3; ++c) {
@@ -2144,7 +2154,7 @@ UTEST(util, min_image) {
     EXPECT_NEAR(dx3[3].x,  4.9f, 1.0e-4f);
 
     md_f32x4_t dx4[2] = { {12.0f, 0.0f, 0.0f, 7.0f}, {-27.0f, 41.0f, -8.0f, 8.0f} };
-    md_util_min_image_vec4(dx4, 2, &cell);
+    md_util_min_image((float*)dx4, sizeof(md_f32x4_t), 2, &cell);
     EXPECT_NEAR(dx4[0].x, 2.0f, 1.0e-4f);
     EXPECT_NEAR(dx4[1].x, 3.0f, 1.0e-4f);
     EXPECT_NEAR(dx4[1].y, 1.0f, 1.0e-4f);
@@ -2206,7 +2216,7 @@ UTEST(util, pbc_deperiodize_self) {
     }
 
     md_f32x3_t com = {0};
-    ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
+    ASSERT_TRUE(md_util_deperiodize_self(pts, PBC_NP, &cell, &com));
 
     // Every pairwise separation must match the original shape: the set is whole again
     for (int i = 0; i < PBC_NP; ++i) {
@@ -2218,7 +2228,7 @@ UTEST(util, pbc_deperiodize_self) {
     }
 
     // The centre must sit inside the reassembled set, not at some average of scattered images
-    const md_f32x3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const md_f32x3_t shape_com = md_util_com((const float*)shape, sizeof(md_f32x4_t), (const float*)shape + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
     for (int i = 0; i < PBC_NP; ++i) {
         const md_f32x3_t d = md_f32x3_sub(md_f32x3_from_f32x4(pts[i]), com);
         const md_f32x3_t r = md_f32x3_sub(md_f32x3_from_f32x4(shape[i]), shape_com);
@@ -2231,7 +2241,7 @@ UTEST(util, pbc_deperiodize_self) {
     md_f32x4_t again[PBC_NP];
     md_memcpy(again, pts, sizeof(pts));
     md_f32x3_t com2 = {0};
-    ASSERT_TRUE(md_util_deperiodize_self_vec4(again, PBC_NP, &cell, &com2));
+    ASSERT_TRUE(md_util_deperiodize_self(again, PBC_NP, &cell, &com2));
     for (int i = 0; i < PBC_NP; ++i) {
         EXPECT_NEAR(again[i].x, pts[i].x, 1.0e-4f);
         EXPECT_NEAR(again[i].w, pts[i].w, 1.0e-6f);  // weights carried through untouched
@@ -2251,7 +2261,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image) {
 
     md_f32x4_t shape[PBC_NP];
     pbc_make_shape(shape, 3.0f);
-    const md_f32x3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const md_f32x3_t shape_com = md_util_com((const float*)shape, sizeof(md_f32x4_t), (const float*)shape + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
 
     for (int nx = -2; nx <= 2; ++nx) {
         for (int nz = -1; nz <= 1; ++nz) {
@@ -2263,7 +2273,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image) {
             }
 
             md_f32x3_t com = {0};
-            ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
+            ASSERT_TRUE(md_util_deperiodize_self(pts, PBC_NP, &cell, &com));
 
             // Nothing was broken to begin with, so nothing may move
             for (int i = 0; i < PBC_NP; ++i) {
@@ -2292,7 +2302,7 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
 
     md_f32x4_t ref[PBC_NP];
     pbc_make_shape(ref, 3.0f);
-    const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+    const md_f32x3_t ref_com = md_util_com((const float*)ref, sizeof(md_f32x4_t), (const float*)ref + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
 
     const md_f32x3x3_t R_true = pbc_rot(40.0f * 3.14159265f / 180.0f);
 
@@ -2308,7 +2318,7 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
         md_f32x3x3_t R = {0};
         md_f32x3_t com = {0};
         md_f32x4_t placed[PBC_NP];
-        const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
+        const float residual = md_util_optimal_rotation_pbc(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
         EXPECT_NEAR(com.x, c_true.x, 1.0e-2f);
@@ -2351,7 +2361,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
 
     md_f32x4_t shape[PBC_NP];
     pbc_make_shape(shape, 5.0f);
-    const md_f32x3_t shape_com = md_util_com_compute_vec4(shape, 0, PBC_NP, 0);
+    const md_f32x3_t shape_com = md_util_com((const float*)shape, sizeof(md_f32x4_t), (const float*)shape + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
     const md_f32x3_t base = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.5f, 0.5f, 0.5f));
 
     for (int nx = -1; nx <= 1; ++nx) {
@@ -2364,7 +2374,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
             }
 
             md_f32x3_t com = {0};
-            ASSERT_TRUE(md_util_deperiodize_self_vec4(pts, PBC_NP, &cell, &com));
+            ASSERT_TRUE(md_util_deperiodize_self(pts, PBC_NP, &cell, &com));
 
             const md_f32x3_t want_com = md_f32x3_add(shape_com, off);
             EXPECT_NEAR(com.x, want_com.x, 1.0e-2f);
@@ -2404,8 +2414,8 @@ UTEST(util, pbc_com_triclinic) {
 
     // Nothing is wrapped, so the periodic mean must agree with the plain mean. It is the same set
     // of points either way.
-    const md_f32x3_t com_plain = md_util_com_compute_vec4(pts, 0, PBC_NP, 0);
-    const md_f32x3_t com_pbc   = md_util_com_compute_vec4(pts, 0, PBC_NP, &cell);
+    const md_f32x3_t com_plain = md_util_com((const float*)pts, sizeof(md_f32x4_t), (const float*)pts + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
+    const md_f32x3_t com_pbc   = md_util_com((const float*)pts, sizeof(md_f32x4_t), (const float*)pts + 3, sizeof(md_f32x4_t), 0, PBC_NP, &cell);
     EXPECT_NEAR(com_pbc.x, com_plain.x, 0.2f);
     EXPECT_NEAR(com_pbc.y, com_plain.y, 0.2f);
     EXPECT_NEAR(com_pbc.z, com_plain.z, 0.2f);
@@ -2422,7 +2432,7 @@ UTEST(util, pbc_com_triclinic) {
     }
 
     md_f32x3_t com_wrapped = {0};
-    ASSERT_TRUE(md_util_deperiodize_self_vec4(wrapped, PBC_NP, &cell, &com_wrapped));
+    ASSERT_TRUE(md_util_deperiodize_self(wrapped, PBC_NP, &cell, &com_wrapped));
     EXPECT_NEAR(com_wrapped.x, com_plain.x, 0.05f);
     EXPECT_NEAR(com_wrapped.y, com_plain.y, 0.05f);
     EXPECT_NEAR(com_wrapped.z, com_plain.z, 0.05f);
@@ -2444,7 +2454,7 @@ UTEST(util, pbc_com_triclinic) {
 // Everything below therefore runs against both a cube and a rhombic dodecahedron - the shape
 // GROMACS writes for -bt dodecahedron, and the shape that surfaced this.
 //
-// md_util_com_compute dispatches to one of four internal variants depending on whether weights and
+// md_util_com (packed) dispatches to one of four internal variants depending on whether weights and
 // indices are present, and each of those has an AVX512, an AVX2, an SSE2 and a scalar remainder
 // path. The counts below straddle the block sizes (4 / 8 / 16) so that on any given build both the
 // vector body and the remainder loop are exercised, and every variant is called for each count.
@@ -2479,7 +2489,7 @@ static void com_make_blob(float* x, float* y, float* z, float* w, size_t count, 
 static const size_t COM_COUNTS[] = { 1, 2, 3, 5, 7, 8, 15, 16, 17, 33, 61, 64, 253 };
 
 // With nothing wrapped, the periodic mean is just the mean. All four variants have to say so, for
-// both cell shapes, at every count - and the vec4 entry point has to agree with the float one.
+// both cell shapes, at every count - and strided md_f32x4_t points have to agree with packed ones.
 UTEST(util, com_pbc_matches_plain_mean) {
     md_unitcell_t cells[2];
     cells[0] = com_cell_ortho();
@@ -2508,9 +2518,9 @@ UTEST(util, com_pbc_matches_plain_mean) {
             const md_f32x3_t pbc_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);
             const md_f32x3_t pbc_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
-            // and the vec4 entry point, which carries its weight in w
-            const md_f32x3_t pbc_v4 = md_util_com_compute_vec4(xyzw, NULL, n, &cells[ci]);
-            const md_f32x3_t pbc_v4i = md_util_com_compute_vec4(xyzw, idx, n, &cells[ci]);
+            // and strided, points of md_f32x4_t carrying their weight in w
+            const md_f32x3_t pbc_v4 = md_util_com((const float*)xyzw, sizeof(md_f32x4_t), (const float*)xyzw + 3, sizeof(md_f32x4_t), NULL, n, &cells[ci]);
+            const md_f32x3_t pbc_v4i = md_util_com((const float*)xyzw, sizeof(md_f32x4_t), (const float*)xyzw + 3, sizeof(md_f32x4_t), idx, n, &cells[ci]);
 
             for (int e = 0; e < 3; ++e) {
                 EXPECT_NEAR(pbc.elem[e],     plain_u.elem[e], 0.1f);
@@ -2654,7 +2664,7 @@ UTEST(util, pbc_optimal_rotation) {
     for (int deg = 0; deg <= 180; deg += 20) {
         md_f32x4_t ref[PBC_NP];
         pbc_make_shape(ref, 3.0f);
-        const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+        const md_f32x3_t ref_com = md_util_com((const float*)ref, sizeof(md_f32x4_t), (const float*)ref + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
 
         const md_f32x3x3_t R_true = pbc_rot(deg * 3.14159265f / 180.0f);
         const md_f32x3_t c_true = { 3.0f, 17.0f, 9.0f };   // deliberately near two boundaries
@@ -2668,7 +2678,7 @@ UTEST(util, pbc_optimal_rotation) {
         md_f32x3x3_t R = {0};
         md_f32x3_t com = {0};
         md_f32x4_t placed[PBC_NP];
-        const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
+        const float residual = md_util_optimal_rotation_pbc(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
         EXPECT_LT(pbc_angle_err(R, R_true), 0.5f);
@@ -2693,7 +2703,7 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
 
     md_f32x4_t ref[PBC_NP];
     pbc_make_shape(ref, 8.5f);
-    const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+    const md_f32x3_t ref_com = md_util_com((const float*)ref, sizeof(md_f32x4_t), (const float*)ref + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
 
     const md_f32x3x3_t R_true = pbc_rot(3.14159265f);
     const md_f32x3_t c_true = { 3.0f, 17.0f, 9.0f };
@@ -2706,7 +2716,7 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
 
     md_f32x3x3_t R = {0};
     md_f32x3_t com = {0};
-    const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
+    const float residual = md_util_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
     // The certificate is the whole point: a residual on the order of half a cell means do not trust it
     EXPECT_GT(residual, 0.25f * L);
@@ -2717,22 +2727,22 @@ UTEST(util, pbc_optimal_rotation_degenerate) {
     md_unitcell_t cell = md_unitcell_from_extent(20, 20, 20);
     md_f32x4_t ref[PBC_NP];
     pbc_make_shape(ref, 3.0f);
-    const md_f32x3_t ref_com = md_util_com_compute_vec4(ref, 0, PBC_NP, 0);
+    const md_f32x3_t ref_com = md_util_com((const float*)ref, sizeof(md_f32x4_t), (const float*)ref + 3, sizeof(md_f32x4_t), 0, PBC_NP, 0);
 
     md_f32x3x3_t R = {0};
     md_f32x3_t com = {0};
 
     // Empty set
-    EXPECT_NEAR(md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, ref, 0, &cell, 8, 1.0e-6f), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(md_util_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, ref, 0, &cell, 8, 1.0e-6f), 0.0f, 1.0e-6f);
 
     // No cell at all: still a plain Kabsch fit, identity here since target == reference
-    const float residual = md_util_optimal_rotation_pbc_vec4_iter(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL, 8, 1.0e-6f);
+    const float residual = md_util_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL, 8, 1.0e-6f);
     EXPECT_LT(residual, 1.0e-3f);
     EXPECT_LT(pbc_angle_err(R, md_f32x3x3_ident()), 0.5f);
 
     // A set with no coordinates to speak of
     md_f32x3_t c = {0};
-    EXPECT_TRUE(md_util_deperiodize_self_vec4(ref, 0, &cell, &c));
+    EXPECT_TRUE(md_util_deperiodize_self(ref, 0, &cell, &c));
 }
 
 UTEST_F(util, rings_common) {
@@ -4105,7 +4115,7 @@ UTEST(util, pbc_indexed) {
     md_f32x3_t xyz[20];
     for (int i = 0; i < 20; ++i) xyz[i] = md_f32x3_set(12.0f + i, -3.0f, 5.0f);
     const int32_t idx[3] = { 17, 4, 11 };
-    ASSERT_TRUE(md_util_pbc(xyz, idx, 3, &cell));
+    ASSERT_TRUE(md_util_pbc((float*)xyz, 0, idx, 3, &cell));
     for (int i = 0; i < 20; ++i) {
         const bool wrapped = (i == 17 || i == 4 || i == 11);
         const float ex = wrapped ? fmodf(12.0f + i, 10.0f) : 12.0f + i;
@@ -4115,7 +4125,7 @@ UTEST(util, pbc_indexed) {
 
     // All of them, through the eight wide path and its tail. An atom on the boundary may come out
     // at either end, which is the same place.
-    ASSERT_TRUE(md_util_pbc(xyz, NULL, 20, &cell));
+    ASSERT_TRUE(md_util_pbc((float*)xyz, 0, NULL, 20, &cell));
     for (int i = 0; i < 20; ++i) {
         EXPECT_GE(xyz[i].x, 0.0f);
         EXPECT_LE(xyz[i].x, 10.0f);
@@ -4127,7 +4137,7 @@ UTEST(util, pbc_indexed) {
     // Triclinic: every wrapped atom lands inside the cell
     const md_unitcell_t tri = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
     for (int i = 0; i < 20; ++i) xyz[i] = md_f32x3_set(12.0f + i, -3.0f - i, 25.0f);
-    ASSERT_TRUE(md_util_pbc(xyz, NULL, 20, &tri));
+    ASSERT_TRUE(md_util_pbc((float*)xyz, 0, NULL, 20, &tri));
     md_f32x3x3_t I = {0};
     md_unitcell_I_extract_float(I.elem, &tri);
     for (int i = 0; i < 20; ++i) {
@@ -4139,35 +4149,68 @@ UTEST(util, pbc_indexed) {
     }
 }
 
-// Each of the four paths (plain, radius, index, both) against a scalar reference, on a count that
-// leaves a tail after the eight wide part.
+// Points of md_f32x4_t, by their stride: the same positions as packed, in both kinds of cell, all of them or some,
+// and their w left alone.
+UTEST(util, pbc_strided) {
+    const md_unitcell_t cells[2] = {
+        md_unitcell_from_extent(10, 10, 10),
+        md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3),
+    };
+    const int32_t idx[3] = { 17, 4, 11 };
+    for (int ci = 0; ci < 2; ++ci) {
+        for (int with_idx = 0; with_idx < 2; ++with_idx) {
+            md_f32x3_t xyz[20];
+            md_f32x4_t xyzw[20];
+            for (int i = 0; i < 20; ++i) {
+                xyz[i]  = md_f32x3_set(12.0f + i, -3.0f - i, 25.0f - 0.5f * i);
+                xyzw[i] = md_f32x4_from_f32x3(xyz[i], (float)i);
+            }
+            const int32_t* ii = with_idx ? idx : NULL;
+            const size_t   n  = with_idx ? 3 : 20;
+            ASSERT_TRUE(md_util_pbc((float*)xyz, 0, ii, n, &cells[ci]));
+            ASSERT_TRUE(md_util_pbc((float*)xyzw, sizeof(md_f32x4_t), ii, n, &cells[ci]));
+            for (int i = 0; i < 20; ++i) {
+                for (int k = 0; k < 3; ++k) {
+                    EXPECT_NEAR(xyz[i].elem[k], xyzw[i].elem[k], 1.0e-4f);
+                }
+                EXPECT_EQ((float)i, xyzw[i].w);
+            }
+        }
+    }
+}
+
+// Each of the four paths (packed, packed with an index, strided, strided with an index) against a scalar reference,
+// on a count that leaves a tail after the eight wide part.
 UTEST(util, aabb_paths) {
     enum { N = 37 };
     md_f32x3_t xyz[N];
-    float r[N];
+    md_f32x4_t xyzw[N];
     int32_t idx[N];
     for (int i = 0; i < N; ++i) {
         const float s = (float)((i * 2654435761u) % 1000) / 100.0f - 5.0f;
-        xyz[i] = md_f32x3_set(s, -2.0f * s + i, 0.5f * i - s);
-        r[i]   = 0.1f * (i % 7);
-        idx[i] = (i * 11) % N;
+        xyz[i]  = md_f32x3_set(s, -2.0f * s + i, 0.5f * i - s);
+        xyzw[i] = md_f32x4_from_f32x3(xyz[i], 1.0e9f);
+        idx[i]  = (i * 11) % N;
     }
     for (int variant = 0; variant < 4; ++variant) {
-        const float*   rr = (variant & 1) ? r   : NULL;
+        const bool     strided = (variant & 1) != 0;
         const int32_t* ii = (variant & 2) ? idx : NULL;
         const size_t   n  = ii ? 29 : N;
         float ref_min[3] = { FLT_MAX,  FLT_MAX,  FLT_MAX};
         float ref_max[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
         for (size_t k = 0; k < n; ++k) {
             const int32_t j = ii ? ii[k] : (int32_t)k;
-            const float rad = rr ? rr[j] : 0.0f;
             for (int c = 0; c < 3; ++c) {
-                ref_min[c] = MD_MIN(ref_min[c], xyz[j].elem[c] - rad);
-                ref_max[c] = MD_MAX(ref_max[c], xyz[j].elem[c] + rad);
+                ref_min[c] = MD_MIN(ref_min[c], xyz[j].elem[c]);
+                ref_max[c] = MD_MAX(ref_max[c], xyz[j].elem[c]);
             }
         }
         float got_min[3], got_max[3];
-        md_util_aabb_compute(got_min, got_max, xyz, rr, ii, n);
+        if (strided) {
+            md_util_aabb(got_min, got_max, (const float*)xyzw, sizeof(md_f32x4_t), ii, n);
+        } else {
+            md_util_aabb(got_min, got_max, (const float*)xyz, 0, ii, n);
+        }
         for (int c = 0; c < 3; ++c) {
             EXPECT_EQ(ref_min[c], got_min[c]);
             EXPECT_EQ(ref_max[c], got_max[c]);
@@ -4185,12 +4228,15 @@ UTEST(util, interpolate_cubic) {
         }
     }
     const md_f32x3_t* const in[4] = { f[0], f[1], f[2], f[3] };
-    ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, NULL, 0.0f, 0.5f));
+    float w[4];
+    md_util_cubic_spline_weights(w, 0.0f, 0.5f);
+    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[1][i].x, out[i].x, 1.0e-4f);
         EXPECT_NEAR(f[1][i].z, out[i].z, 1.0e-4f);
     }
-    ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, NULL, 1.0f, 0.5f));
+    md_util_cubic_spline_weights(w, 1.0f, 0.5f);
+    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[2][i].y, out[i].y, 1.0e-4f);
     }
@@ -4202,7 +4248,8 @@ UTEST(util, interpolate_cubic) {
             f[k][i] = md_f32x3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);   // 8, 9, 0, 1
         }
     }
-    ASSERT_TRUE(md_util_interpolate_cubic_spline(out, in, 16, &cell, 0.5f, 0.5f));
+    md_util_cubic_spline_weights(w, 0.5f, 0.5f);
+    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, &cell, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
     }
@@ -4338,8 +4385,8 @@ UTEST(util, packed_kernels_any_alignment) {
             }
             sw += w[i];
         }
-        const md_f32x3_t c  = md_util_com_compute(a, NULL, NULL, N, NULL);
-        const md_f32x3_t cw = md_util_com_compute(a, w,    NULL, N, NULL);
+        const md_f32x3_t c  = md_util_com((const float*)a, 0, NULL, 0, NULL, N, NULL);
+        const md_f32x3_t cw = md_util_com((const float*)a, 0, w, 0, NULL, N, NULL);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(ref[k] / N, c.elem[k], 1.0e-4);
             EXPECT_NEAR(ref_w[k] / sw, cw.elem[k], 1.0e-4);
@@ -4349,10 +4396,10 @@ UTEST(util, packed_kernels_any_alignment) {
         md_f32x3_t near_center[N];
         for (int i = 0; i < N; ++i) near_center[i] = md_f32x3_add(md_f32x3_set(5, 6, 7), md_f32x3_mul1(md_f32x3_sub(a[i], md_f32x3_set(5, 6, 7)), 0.1f));
         md_memcpy(o, near_center, sizeof(near_center));
-        const md_f32x3_t pc  = md_util_com_compute(o, NULL, NULL, N, &cell);
-        const md_f32x3_t pcw = md_util_com_compute(o, w,    NULL, N, &cell);
-        const md_f32x3_t mc  = md_util_com_compute(o, NULL, NULL, N, NULL);
-        const md_f32x3_t mcw = md_util_com_compute(o, w,    NULL, N, NULL);
+        const md_f32x3_t pc  = md_util_com((const float*)o, 0, NULL, 0, NULL, N, &cell);
+        const md_f32x3_t pcw = md_util_com((const float*)o, 0, w, 0, NULL, N, &cell);
+        const md_f32x3_t mc  = md_util_com((const float*)o, 0, NULL, 0, NULL, N, NULL);
+        const md_f32x3_t mcw = md_util_com((const float*)o, 0, w, 0, NULL, N, NULL);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(mc.elem[k],  pc.elem[k],  2.0e-2);
             EXPECT_NEAR(mcw.elem[k], pcw.elem[k], 2.0e-2);
@@ -4360,7 +4407,7 @@ UTEST(util, packed_kernels_any_alignment) {
 
         // AABB
         float mn[3], mx[3];
-        md_util_aabb_compute(mn, mx, a, NULL, NULL, N);
+        md_util_aabb(mn, mx, (const float*)a, 0, NULL, N);
         for (int k = 0; k < 3; ++k) {
             float lo = FLT_MAX, hi = -FLT_MAX;
             for (int i = 0; i < N; ++i) { lo = MD_MIN(lo, a[i].elem[k]); hi = MD_MAX(hi, a[i].elem[k]); }
@@ -4389,7 +4436,9 @@ UTEST(util, packed_kernels_any_alignment) {
 
         // Cubic through the middle frames at the ends of the interval
         const md_f32x3_t* const in4[4] = { a, a, b, b };
-        ASSERT_TRUE(md_util_interpolate_cubic_spline(o, in4, N, NULL, 1.0f, 0.5f));
+        float w4[4];
+        md_util_cubic_spline_weights(w4, 1.0f, 0.5f);
+        ASSERT_TRUE(md_util_interpolate_cubic_weighted(o, in4, N, NULL, w4));
         for (int i = 0; i < N; ++i) {
             EXPECT_NEAR(b[i].y, o[i].y, 1.0e-4f);
         }
@@ -4397,7 +4446,7 @@ UTEST(util, packed_kernels_any_alignment) {
 
         // Wrapping
         md_memcpy(o, b, N * sizeof(md_f32x3_t));
-        ASSERT_TRUE(md_util_pbc(o, NULL, N, &cell));
+        ASSERT_TRUE(md_util_pbc((float*)o, 0, NULL, N, &cell));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 EXPECT_GE(o[i].elem[k], -1.0e-4f);
@@ -4553,17 +4602,25 @@ UTEST(util, min_max_distance_groups) {
         }
     }
 
-    // The single set versions: FLT_MAX and 0 for an empty set, the indices untouched then
+    // A single group: 0 and no pair (-1) for an empty set
     const md_f32x3_t p = md_f32x3_set(1, 2, 3);
     const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
+    const size_t none[2] = { 0, 0 }, one[2] = { 0, 1 };
+    float dd = -1.0f;
     int64_t i0 = 7, i1 = 7;
-    EXPECT_EQ(FLT_MAX, md_util_min_distance(&i0, &i1, &p, 0, &p, 1, &cell));
-    EXPECT_EQ(0.0f,    md_util_max_distance(&i0, &i1, &p, 1, &p, 0, &cell));
-    EXPECT_EQ(7, i0);
-    EXPECT_EQ(7, i1);
+    md_util_min_distance_groups(&dd, &i0, &i1, &p, none, 1, &p, 1, &cell);
+    EXPECT_EQ(0.0f, dd);
+    EXPECT_EQ(-1, i0);
+    EXPECT_EQ(-1, i1);
+    md_util_max_distance_groups(&dd, &i0, &i1, &p, one, 1, &p, 0, &cell);
+    EXPECT_EQ(0.0f, dd);
+    EXPECT_EQ(-1, i0);
+    EXPECT_EQ(-1, i1);
     const md_f32x3_t q = md_f32x3_set(9.5f, 2, 3);
-    EXPECT_NEAR(1.5f, md_util_min_distance(&i0, &i1, &p, 1, &q, 1, &cell), 1.0e-5f);
-    EXPECT_NEAR(8.5f, md_util_min_distance(&i0, &i1, &p, 1, &q, 1, NULL), 1.0e-5f);
+    md_util_min_distance_groups(&dd, &i0, &i1, &p, one, 1, &q, 1, &cell);
+    EXPECT_NEAR(1.5f, dd, 1.0e-5f);
+    md_util_min_distance_groups(&dd, &i0, &i1, &p, one, 1, &q, 1, NULL);
+    EXPECT_NEAR(8.5f, dd, 1.0e-5f);
     EXPECT_EQ(0, i0);
     EXPECT_EQ(0, i1);
 }
@@ -5147,16 +5204,16 @@ UTEST(util, packed_kernels_independent_of_address) {
         md_f32x3_t* p = (md_f32x3_t*)(base + o);
         memcpy(p, src, sizeof(src));
         const md_f32x3_t com[4] = {
-            md_util_com_compute(p, NULL, NULL, N, &none),
-            md_util_com_compute(p, w, NULL, N, &none),
-            md_util_com_compute(p, NULL, NULL, N, &cell),
-            md_util_com_compute(p, w, NULL, N, &cell),
+            md_util_com((const float*)p, 0, NULL, 0, NULL, N, &none),
+            md_util_com((const float*)p, 0, w, 0, NULL, N, &none),
+            md_util_com((const float*)p, 0, NULL, 0, NULL, N, &cell),
+            md_util_com((const float*)p, 0, w, 0, NULL, N, &cell),
         };
         float mn[3], mx[3];
-        md_util_aabb_compute(mn, mx, p, NULL, NULL, N);
+        md_util_aabb(mn, mx, (const float*)p, 0, NULL, N);
         // pbc and interpolation write in place or to out: the result at this offset against the first offset's
         memcpy(p, src, sizeof(src));
-        md_util_pbc(p, NULL, N, &cell);
+        md_util_pbc((float*)p, 0, NULL, N, &cell);
         md_f32x3_t pbc[N];
         memcpy(pbc, p, sizeof(pbc));
         memcpy(p, src, sizeof(src));

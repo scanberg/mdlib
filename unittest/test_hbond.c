@@ -64,7 +64,7 @@ static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size
 
 static md_f32x3_t mi_diff(const md_system_state_t* st, uint32_t from, uint32_t to) {
     md_f32x3_t d = md_f32x3_sub(st->xyz[to], st->xyz[from]);
-    md_util_min_image_vec3(&d, 1, &st->unitcell);
+    md_util_min_image(d.elem, 0, 1, &st->unitcell);
     return d;
 }
 

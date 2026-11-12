@@ -255,7 +255,7 @@ static double pairs_rmsd(const md_f32x3_t* xa, const int32_t* a, const md_f32x3_
         pa[i] = md_f32x4_set((float)(xa[a[i]].x - ca[0]), (float)(xa[a[i]].y - ca[1]), (float)(xa[a[i]].z - ca[2]), 1.0f);
         pb[i] = md_f32x4_set((float)(xb[b[i]].x - cb[0]), (float)(xb[b[i]].y - cb[1]), (float)(xb[b[i]].z - cb[2]), 1.0f);
     }
-    const md_f32x3x3_t R = md_util_optimal_rotation_rel_vec4(pa, pb, n);
+    const md_f32x3x3_t R = md_util_optimal_rotation_rel(pa, pb, n);
     double ss = 0.0;
     for (size_t i = 0; i < n; ++i) {
         const md_f32x3_t q = md_f32x3x3_mul_f32x3(R, md_f32x3_from_f32x4(pb[i]));

@@ -1196,7 +1196,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         double d2_ref = distance_ref_mic27(G, s0, s1);
 
 		md_f32x3_t dx = { x1[0] - x0[0], x1[1] - x0[1], x1[2] - x0[2] };
-        md_util_min_image_vec3(&dx, 1, &sys_state.unitcell);
+        md_util_min_image(dx.elem, 0, 1, &sys_state.unitcell);
         double d2 = dx.x * dx.x + dx.y * dx.y + dx.z * dx.z;
 
 		EXPECT_NEAR(d2_ref, d2, 1.0e-4);

@@ -205,7 +205,7 @@ UTEST(nonbonded, system_forcefield) {
     for (uint32_t i = 0; i < 19; ++i) {
         for (uint32_t j = i + 1; j < 19; ++j) {
             md_f32x3_t d = md_f32x3_sub(state.xyz[i], state.xyz[j]);
-            md_util_min_image_vec3(&d, 1, &state.unitcell);
+            md_util_min_image(d.elem, 0, 1, &state.unitcell);
             const double r2 = 0.01 * ((double)d.x * d.x + (double)d.y * d.y + (double)d.z * d.z);
             double elj, ec;
             md_nb_forcefield_pair_energy(ff, i, j, r2, &elj, &ec);

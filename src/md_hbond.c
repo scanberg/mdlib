@@ -152,7 +152,7 @@ static float angle_sum(const md_system_t* sys, const md_system_state_t* ref, siz
         md_bond_iter_next(&it);
     }
     if (n < 3) return 360.0f;
-    md_util_min_image_vec3(v, 3, &ref->unitcell);
+    md_util_min_image((float*)v, 0, 3, &ref->unitcell);
     const float a = md_f32x3_angle(v[0], v[1]) + md_f32x3_angle(v[1], v[2]) + md_f32x3_angle(v[0], v[2]);
     return (float)MD_RAD_TO_DEG(a);
 }
@@ -613,7 +613,7 @@ static inline md_f32x3_t min_image_diff(md_f32x3_t a, md_f32x3_t b, float dist2,
     md_f32x3_t d = md_f32x3_sub(b, a);
     const float l2 = md_f32x3_dot(d, d);
     const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
-    if (l2 > ref2) md_util_min_image_vec3(&d, 1, cell);
+    if (l2 > ref2) md_util_min_image(d.elem, 0, 1, cell);
     return d;
 }
 

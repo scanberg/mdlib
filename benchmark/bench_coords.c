@@ -51,7 +51,7 @@ UBENCH_EX(coords, com_pbc) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
         md_f32x3_t com = {0};
         UBENCH_DO_BENCHMARK() {
-            com = md_util_com_compute(st.xyz, NULL, NULL, st.num_atoms, &st.unitcell);
+            com = md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, &st.unitcell);
             UBENCH_DO_NOTHING(&com);
         }
     }
@@ -65,7 +65,7 @@ UBENCH_EX(coords, com_nopbc) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
         md_f32x3_t com = {0};
         UBENCH_DO_BENCHMARK() {
-            com = md_util_com_compute(st.xyz, NULL, NULL, st.num_atoms, NULL);
+            com = md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL);
             UBENCH_DO_NOTHING(&com);
         }
     }
@@ -79,7 +79,7 @@ UBENCH_EX(coords, aabb) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
         float mn[3], mx[3];
         UBENCH_DO_BENCHMARK() {
-            md_util_aabb_compute(mn, mx, st.xyz, NULL, NULL, st.num_atoms);
+            md_util_aabb(mn, mx, (const float*)st.xyz, 0, NULL, st.num_atoms);
             UBENCH_DO_NOTHING(mn);
         }
     }
@@ -93,7 +93,7 @@ UBENCH_EX(coords, pbc_wrap) {
         jitter(&moved, &st, 30.0f);
         UBENCH_SET_BYTES(st.num_atoms * 12);
         UBENCH_DO_BENCHMARK() {
-            md_util_pbc(moved.xyz, NULL, moved.num_atoms, &st.unitcell);
+            md_util_pbc((float*)moved.xyz, 0, NULL, moved.num_atoms, &st.unitcell);
             UBENCH_DO_NOTHING(moved.xyz);
         }
     }
@@ -124,8 +124,10 @@ UBENCH_EX(coords, interpolate_cubic) {
         md_system_state_init(&out, st.num_atoms);
         const md_f32x3_t* xyz[4] = {st.xyz, s[0].xyz, s[1].xyz, s[2].xyz};
         UBENCH_SET_BYTES(st.num_atoms * 12 * 5);
+        float w[4];
+        md_util_cubic_spline_weights(w, 0.3f, 1.0f);
         UBENCH_DO_BENCHMARK() {
-            md_util_interpolate_cubic_spline(out.xyz, xyz, st.num_atoms, &st.unitcell, 0.3f, 1.0f);
+            md_util_interpolate_cubic_weighted(out.xyz, xyz, st.num_atoms, &st.unitcell, w);
             UBENCH_DO_NOTHING(out.xyz);
         }
     }
@@ -137,15 +139,23 @@ UBENCH_EX(coords, rmsd) {
     md_system_t sys = {0}; md_system_state_t st = {0}, b = {.alloc = arena};
     if (load_big(&sys, &st, arena)) {
         jitter(&b, &st, 1.0f);
-        const md_f32x3_t* xyz[2] = {st.xyz, b.xyz};
-        UBENCH_SET_BYTES(st.num_atoms * 12 * 2);
+        md_f32x4_t* xyzw[2] = {
+            md_alloc(arena, st.num_atoms * sizeof(md_f32x4_t)),
+            md_alloc(arena, st.num_atoms * sizeof(md_f32x4_t)),
+        };
+        for (size_t i = 0; i < st.num_atoms; ++i) {
+            xyzw[0][i] = md_f32x4_from_f32x3(st.xyz[i], 1.0f);
+            xyzw[1][i] = md_f32x4_from_f32x3(b.xyz[i], 1.0f);
+        }
+        const md_f32x4_t* const cxyzw[2] = {xyzw[0], xyzw[1]};
+        UBENCH_SET_BYTES(st.num_atoms * 16 * 2);
         double r = 0;
         UBENCH_DO_BENCHMARK() {
             const md_f32x3_t com[2] = {
-                md_util_com_compute(st.xyz, NULL, NULL, st.num_atoms, NULL),
-                md_util_com_compute(b.xyz,  NULL, NULL, b.num_atoms,  NULL),
+                md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL),
+                md_util_com((const float*)b.xyz, 0, NULL, 0, NULL, b.num_atoms, NULL),
             };
-            r = md_util_rmsd_compute(xyz, NULL, NULL, st.num_atoms, com);
+            r = md_util_rmsd(cxyzw, NULL, st.num_atoms, com);
             UBENCH_DO_NOTHING(&r);
         }
     }

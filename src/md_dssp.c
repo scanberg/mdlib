@@ -273,7 +273,7 @@ static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, c
             const md_f32x4_t raw = md_f32x4_sub(param->res_coords[j].CA, param->res_coords[i].CA);
             if (md_f32x4_dot(raw, raw) > ij_dist2[idx] * 1.0001f + 1.0e-4f) {
                 md_f32x4_t img = raw;
-                md_util_min_image_vec4(&img, 1, param->cell);
+                md_util_min_image(img.elem, sizeof(md_f32x4_t), 1, param->cell);
                 shift = md_f32x4_sub(img, raw);
             }
         }
@@ -295,7 +295,7 @@ static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, c
 static inline md_f32x4_t dssp_whole_about(md_f32x4_t ref, md_f32x4_t p, const md_unitcell_t* cell) {
     md_f32x4_t d = md_f32x4_sub(p, ref);
     if (md_f32x4_dot(d, d) <= 3.0f * 3.0f) return p;
-    md_util_min_image_vec4(&d, 1, cell);
+    md_util_min_image(d.elem, sizeof(md_f32x4_t), 1, cell);
     return md_f32x4_add(ref, d);
 }
 
@@ -354,8 +354,8 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
             md_f32x4_t v1 = md_f32x4_sub(res_coords[i - 2].CA, res_coords[i].CA);
             md_f32x4_t v2 = md_f32x4_sub(res_coords[i + 2].CA, res_coords[i].CA);
             if ((res_key[i - 2] | res_key[i] | res_key[i + 2]) & 1) {
-                if (md_f32x4_dot(v1, v1) > 8.0f * 8.0f) md_util_min_image_vec4(&v1, 1, cell);
-                if (md_f32x4_dot(v2, v2) > 8.0f * 8.0f) md_util_min_image_vec4(&v2, 1, cell);
+                if (md_f32x4_dot(v1, v1) > 8.0f * 8.0f) md_util_min_image(v1.elem, sizeof(md_f32x4_t), 1, cell);
+                if (md_f32x4_dot(v2, v2) > 8.0f * 8.0f) md_util_min_image(v2.elem, sizeof(md_f32x4_t), 1, cell);
             }
             res_bend[i] = dssp_bend(v1, v2);
         }
@@ -387,7 +387,7 @@ static inline md_f32x3_t min_image_diff(md_f32x3_t a, md_f32x3_t b, float dist2,
     md_f32x3_t d = md_f32x3_sub(b, a);
     const float l2 = md_f32x3_dot(d, d);
     const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
-    if (l2 > ref2) md_util_min_image_vec3(&d, 1, cell);
+    if (l2 > ref2) md_util_min_image(d.elem, 0, 1, cell);
     return d;
 }
 

@@ -469,7 +469,7 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
         md_f32x3_t nw = {0};
         for (size_t k = 0; k < n; ++k) nw = md_f32x3_add(nw, md_f32x3_cross(md_f32x3_sub(xyz[k], c), md_f32x3_sub(xyz[(k + 1) % n], c)));
         md_f32x3_t d = md_f32x3_sub(state->xyz[ref], xyz[4]);
-        md_util_min_image_vec3(&d, 1, &state->unitcell);
+        md_util_min_image(d.elem, 0, 1, &state->unitcell);
         const bool ref_above = md_f32x3_dot(md_f32x3_add(md_f32x3_sub(xyz[4], c), d), nw) < 0.0f;
         char an[16] = "", bn[16] = "";
         if (conf.above[0] >= 0) atom_label(an, sizeof(an), sys, r->atoms[conf.above[0]]);
@@ -503,7 +503,7 @@ static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_s
         xyzw[k] = md_f32x4_set(x.x, x.y, x.z, 1.0f);
     }
     md_f32x3_t com = {0};
-    md_util_deperiodize_self_vec4(xyzw, n, &state->unitcell, &com);
+    md_util_deperiodize_self(xyzw, n, &state->unitcell, &com);
     md_f32x3_t xyz[7];
     md_f32x3_t c = {0};
     for (size_t k = 0; k < n; ++k) {
