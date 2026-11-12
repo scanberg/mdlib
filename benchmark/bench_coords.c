@@ -8,7 +8,9 @@
 #include <md_trr.h>
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_util_geom.h>
+#include <md_util_sort.h>
 #include <md_dssp.h>
 #include <md_hbond.h>
 #include <md_script.h>
@@ -156,7 +158,7 @@ UBENCH_EX(coords, sort_spatial) {
     if (load_big(&sys, &st, arena)) {
         uint32_t* idx = md_alloc(arena, st.num_atoms * sizeof(uint32_t));
         UBENCH_DO_BENCHMARK() {
-            md_util_sort_spatial(idx, st.xyz, st.num_atoms);
+            md_util_sort_spatial(idx, (const float*)st.xyz, sizeof(md_f32x3_t), st.num_atoms);
             UBENCH_DO_NOTHING(idx);
         }
     }
@@ -191,8 +193,10 @@ UBENCH_EX(coords, infer_covalent_bonds) {
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_DO_BENCHMARK() {
-            md_util_system_infer_covalent_bonds(&sys, &st, NULL);
-            UBENCH_DO_NOTHING(&sys.bond);
+            md_bond_data_t bonds = {0};
+            md_bond_infer(&bonds, &sys, &st, md_get_heap_allocator(), NULL);
+            UBENCH_DO_NOTHING(&bonds);
+            md_bond_data_free(&bonds, md_get_heap_allocator());
         }
     }
     md_vm_arena_destroy(arena);
@@ -203,13 +207,13 @@ UBENCH_EX(coords, protein_backbone) {
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     if (md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(PROTEIN_PDB), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
-        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) {
+        md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) {
         const size_t n = sys.protein_backbone.segment.count;
         md_secondary_structure_t* ss = md_alloc(arena, n * sizeof(md_secondary_structure_t));
         md_backbone_angles_t* ang = md_alloc(arena, n * sizeof(md_backbone_angles_t));
         UBENCH_DO_BENCHMARK() {
             md_dssp_compute(ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
-            md_util_backbone_angles_compute(ang, n, st.xyz, &st.unitcell, &sys.protein_backbone);
+            md_backbone_angles_compute(ang, n, st.xyz, &st.unitcell, &sys.protein_backbone);
             UBENCH_DO_NOTHING(ss);
         }
     } else {
@@ -222,7 +226,7 @@ UBENCH_EX(coords, protein_backbone) {
 static void bench_hbonds(struct ubench_run_state_s* ubench_run_state, md_hbond_preset_t preset, bool selection) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
-    if (load_big(&sys, &st, arena) && md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) {
+    if (load_big(&sys, &st, arena) && md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) {
         md_hbond_params_t params = md_hbond_params_preset(preset);
         // Selection: the bonds within the first 40 residues, a small part of the system
         md_bitmask_t few_mask = md_bitmask_create(0, (uint32_t)sys.atom.count, arena);
@@ -259,7 +263,7 @@ UBENCH_EX(coords, script_eval_trr) {
     md_system_state_t st = {.alloc = arena};
     const md_str_t run = MD_STR_INIT("run/t");
     if (md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) &&
-        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL) &&
+        md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL) &&
         md_trr_system_publish_run(&sys, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         md_script_ir_t* ir = md_script_ir_create(arena);
         const md_str_t src = MD_STR_INIT(

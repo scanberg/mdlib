@@ -1,8 +1,8 @@
 #include <md_fragment.h>
 
 #include <md_system.h>
-#include <md_util.h>
 #include <md_match.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -210,14 +210,15 @@ static const frag_lib_entry_t frag_library[] = {
 
 // The atom flags a template depends on
 #define FRAG_ROLE_MASK (MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE | \
-                        MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END | MD_ATOM_FLAG_LIPID_TAIL | \
-                        MD_ATOM_FLAG_METALLIC | MD_ATOM_FLAG_AROMATIC)
+                        MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END | \
+                        MD_ATOM_FLAG_AROMATIC)
 
 typedef struct frag_mol_t {
     const md_system_t* sys;
     size_t           n;
     const int32_t*   atom;          // [n] global atom of each slot
     const int32_t*   atom_res;      // [atom count] residue of each atom, -1 for none (shared)
+    const uint8_t*   lipid_tail;    // [atom count] 1 for an atom of a tail of a lipid, NULL for none (shared)
     md_atomic_number_t* z;          // [n]
     uint32_t*        nb_off;        // [n + 1] covalent neighbours, local
     uint32_t*        nb;
@@ -238,7 +239,8 @@ typedef enum frag_role_t {
 
 // The covalent graph of molecule m in local indices. Coordination bonds join nothing here: a metal and its ligands
 // are fragments of their own.
-static void frag_mol_init(frag_mol_t* c, const md_system_t* sys, size_t m, const int32_t* atom_res, md_allocator_i* temp) {
+// lipid_tail: the atoms of the tails of the lipids (md_lipid_tail_atom_mask), NULL for none
+static void frag_mol_init(frag_mol_t* c, const md_system_t* sys, size_t m, const int32_t* atom_res, const uint8_t* lipid_tail, md_allocator_i* temp) {
     const md_molecule_data_t* mol = &sys->molecule;
     const uint32_t off = mol->offset[m];
     const size_t n = mol->offset[m + 1] - off;
@@ -247,6 +249,7 @@ static void frag_mol_init(frag_mol_t* c, const md_system_t* sys, size_t m, const
     c->n = n;
     c->atom = mol->atom_idx + off;
     c->atom_res = atom_res;
+    c->lipid_tail = lipid_tail;
     c->temp = temp;
     c->z = md_alloc(temp, sizeof(md_atomic_number_t) * (n ? n : 1));
     c->nb_off = md_alloc(temp, sizeof(uint32_t) * (n + 1));
@@ -286,6 +289,10 @@ static inline md_atom_flags_t frag_aflags(const frag_mol_t* c, uint32_t i) {
     return md_atom_flags(&c->sys->atom, (size_t)c->atom[i]);
 }
 
+static inline bool frag_lipid_tail(const frag_mol_t* c, uint32_t i) {
+    return c->lipid_tail && c->lipid_tail[c->atom[i]];
+}
+
 static inline int32_t frag_res(const frag_mol_t* c, uint32_t i) {
     return c->atom_res ? c->atom_res[c->atom[i]] : -1;
 }
@@ -316,7 +323,7 @@ static md_residue_kind_t frag_resolved_kind(const frag_mol_t* c, uint32_t i) {
     if (r < 0) return MD_RESIDUE_KIND_OTHER;
     const md_residue_flags_t rf = md_system_residue_flags(c->sys, (size_t)r);
     if (!(rf & MD_RESIDUE_FLAG_RESOLVED)) return MD_RESIDUE_KIND_OTHER;
-    const md_residue_kind_t rk = md_residue_flags_kind(rf);
+    const md_residue_kind_t rk = md_system_residue_kind(c->sys, (size_t)r);
     return (rk == MD_RESIDUE_KIND_AMINO_ACID || rk == MD_RESIDUE_KIND_NUCLEOTIDE) ? rk : MD_RESIDUE_KIND_OTHER;
 }
 
@@ -369,7 +376,7 @@ static void frag_formula(char* buf, size_t cap, const frag_mol_t* c, const uint3
         size_t j = i;
         for (; j > 0; --j) {
             const md_atomic_number_t y = el[j - 1];
-            const bool before = z == MD_Z_C ? y != MD_Z_C : (y != MD_Z_C && md_str_cmp_lex(md_util_element_symbol((md_element_t)z), md_util_element_symbol((md_element_t)y)) < 0);
+            const bool before = z == MD_Z_C ? y != MD_Z_C : (y != MD_Z_C && md_str_cmp_lex(md_atomic_number_symbol((md_atomic_number_t)z), md_atomic_number_symbol((md_atomic_number_t)y)) < 0);
             if (!before) break;
             el[j] = el[j - 1];
             num[j] = num[j - 1];
@@ -379,7 +386,7 @@ static void frag_formula(char* buf, size_t cap, const frag_mol_t* c, const uint3
     }
     size_t len = 0;
     for (size_t k = 0; k < num_el; ++k) {
-        const md_str_t sym = md_util_element_symbol((md_element_t)el[k]);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)el[k]);
         for (size_t s_ = 0; s_ < sym.len && len + 1 < cap; ++s_) buf[len++] = sym.ptr[s_];
         if (num[k] > 1) {
             char digits[12];
@@ -417,7 +424,7 @@ static void frag_name_single(char* buf, size_t cap, const frag_mol_t* c, uint32_
     if (name) {
         snprintf(buf, cap, "%s", name);
     } else {
-        const md_str_t sym = md_util_element_symbol((md_element_t)z);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
         snprintf(buf, cap, "%.*s", (int)sym.len, sym.ptr);
     }
 }
@@ -519,7 +526,7 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
 
     // 0b. Lipid tails: each connected set of their heavy atoms
     for (uint32_t s = 0; s < n; ++s) {
-        if (c->unit_of[s] >= 0 || !frag_heavy(c, s) || !(frag_aflags(c, s) & MD_ATOM_FLAG_LIPID_TAIL)) continue;
+        if (c->unit_of[s] >= 0 || !frag_heavy(c, s) || !frag_lipid_tail(c, s)) continue;
         const int32_t u = frag_new_unit(c, MD_FRAGMENT_LIPID_TAIL);
         size_t top = 0;
         stack[top++] = s;
@@ -528,7 +535,7 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
             const uint32_t a = stack[--top];
             for (uint32_t k = c->nb_off[a]; k < c->nb_off[a + 1]; ++k) {
                 const uint32_t b = c->nb[k];
-                if (c->unit_of[b] >= 0 || !frag_heavy(c, b) || !(frag_aflags(c, b) & MD_ATOM_FLAG_LIPID_TAIL)) continue;
+                if (c->unit_of[b] >= 0 || !frag_heavy(c, b) || !frag_lipid_tail(c, b)) continue;
                 frag_assign(c, b, u, true);
                 stack[top++] = b;
             }
@@ -767,7 +774,8 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
 // Encoding: what makes two molecules alike, in slot order
 // ---------------------------------------------------------------------------
 
-static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t m, const int32_t* atom_res, md_allocator_i* temp) {
+// metallic: the atoms of the metallic phases (md_bond_metallic_atoms), NULL for none
+static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t m, const int32_t* atom_res, const uint8_t* metallic, const uint8_t* lipid_tail, md_allocator_i* temp) {
     const md_molecule_data_t* mol = &sys->molecule;
     const uint32_t off = mol->offset[m];
     const size_t n = mol->offset[m + 1] - off;
@@ -783,9 +791,11 @@ static void frag_encode(md_array(uint64_t)* enc, const md_system_t* sys, size_t 
         const int32_t r = atom_res ? atom_res[a] : -1;
         if (r >= 0) {
             const md_residue_flags_t rf = md_system_residue_flags(sys, (size_t)r);
-            rk = (uint64_t)md_residue_flags_kind(rf) | ((rf & MD_RESIDUE_FLAG_RESOLVED) ? 8u : 0u);
+            rk = (uint64_t)md_system_residue_kind(sys, (size_t)r) | ((rf & MD_RESIDUE_FLAG_RESOLVED) ? 8u : 0u);
         }
-        md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40), temp);
+        const uint64_t mt = metallic && metallic[a] ? 1u : 0u;
+        const uint64_t lt = lipid_tail && lipid_tail[a] ? 1u : 0u;
+        md_array_push(*enc, z | (q << 8) | (h << 16) | (f << 24) | (rk << 40) | (mt << 44) | (lt << 45), temp);
     }
     for (size_t i = 0; i < n; ++i) {
         // The bonds of slot i to later slots, in order of those: made in slot order, and each atom's few sorted
@@ -903,6 +913,13 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         }
     }
 
+    // The atoms of the metallic phases, which a template tells apart from the same metal outside of one
+    uint8_t* metallic = md_temp_alloc_array(temp, uint8_t, num_atoms);
+    if (!md_bond_metallic_atoms(metallic, &sys->bond, num_atoms)) metallic = NULL;
+    // The atoms of the tails of the lipids, of a fragment of their own
+    uint8_t* lipid_tail = md_temp_alloc_array(temp, uint8_t, num_atoms);
+    if (!md_lipid_tail_atom_mask(lipid_tail, &sys->lipid, num_atoms)) lipid_tail = NULL;
+
     // ---- templates: the molecules by their encoding ----
     md_array(uint32_t) tmpl_enc_off = 0;    // [template + 1] its encoding in enc_pool
     md_array(uint64_t) enc_pool = 0;
@@ -913,7 +930,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
     md_array_resize(out->mol_template, num_mols, alloc);
 
     for (size_t m = 0; m < num_mols; ++m) {
-        frag_encode(&enc, sys, m, atom_res, talloc);
+        frag_encode(&enc, sys, m, atom_res, metallic, lipid_tail, talloc);
         const size_t len = md_array_size(enc);
         uint64_t h = md_hash64(enc, len * sizeof(uint64_t), 0);
         if (h >= MD_HASH_TOMBSTONE) h -= 2;
@@ -984,7 +1001,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
         md_allocator_i* salloc = talloc;     // a template's scratch: the unique molecules', in all
 
         frag_mol_t c;
-        frag_mol_init(&c, sys, m, atom_res, salloc);
+        frag_mol_init(&c, sys, m, atom_res, lipid_tail, salloc);
         frag_analyse(&c, &sys->ring, ring_list + ring_off[m], ring_off[m + 1] - ring_off[m], res_unit);
         const size_t n = c.n;
         const size_t num_units = md_array_size(c.unit_kind);
@@ -1079,7 +1096,7 @@ bool md_util_system_infer_fragments(md_system_t* sys) {
                 break;
             }
             case MD_FRAGMENT_ATOM: {
-                const md_str_t sym = md_util_element_symbol((md_element_t)c.z[first]);
+                const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)c.z[first]);
                 snprintf(name, FRAG_NAME_CAP, "%.*s", (int)sym.len, sym.ptr);
                 break;
             }

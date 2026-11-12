@@ -98,16 +98,16 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 // Applies the topology to the system:
 // - bonds: inside matched molecules the topology is authoritative, so inferred bonds between two matched
 //   atoms are replaced by the topology's, of origin MD_BOND_ORIGIN_TOPOLOGY. Bonds touching unmatched atoms
-//   and user defined bonds are kept. Bonds between a metal and a non-metal are coordination (see md_types.h).
+//   and user defined bonds are kept. Bonds between a metal and a non-metal are coordination (see md_bond_flags_t in md_bond.h).
 //   The elastic bonds of the topology are bonds with MD_BOND_KIND_ELASTIC, and so are those of an elastic
-//   network written as plain bonds (md_util_system_infer_elastic_bonds).
+//   network written as plain bonds (md_system_infer_elastic_bonds).
 // - 'atom/charge' (e) and 'atom/mass' (Da) are published for the matched atoms, taken from [ atoms ] and
 //   falling back to [ atomtypes ]; unmatched atoms are left as gaps.
 // - particle types with no mass (zero) get the topology's mass when all matched atoms of that type agree.
 // - molecules: where the structure gave no units of its own (a GRO file), the matched molecules become its instances,
 //   each of its molecule type (md_instance_data_t, md_molecule_type_data_t), and the residues between them units of
 //   no type. The molecules of the system are then those of the topology, as GROMACS has them.
-// - parts, molecules, rings and backbones are re-inferred from the new bonds (md_util_system_infer, with the system's
+// - parts, molecules, rings and backbones are re-inferred from the new bonds (md_system_infer, with the system's
 //   reference coordinates).
 // Returns false if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);

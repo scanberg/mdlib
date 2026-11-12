@@ -8,7 +8,8 @@
 #include <md_mmcif.h>
 #include <md_tpr.h>
 #include <md_lammps.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_util_geom.h>
 #include <md_xyz.h>
 
 #include <core/md_allocator.h>
@@ -34,6 +35,18 @@ static int compare_u64(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+// What md_system_infer does with the bonds (MD_SYSTEM_INFER_BOND_BIT): inferred anew, merged with those given
+static void infer_system_bonds(md_system_t* sys, const md_system_state_t* st) {
+    md_bond_data_t inferred = {0};
+    md_bond_data_t merged = {0};
+    md_bond_infer(&inferred, sys, st, sys->alloc, NULL);
+    md_bond_merge(&merged, &sys->bond, &inferred, sys->atom.count, sys->alloc);
+    md_bond_data_free(&inferred, sys->alloc);
+    md_bond_data_free(&sys->bond, sys->alloc);
+    sys->bond = merged;
+    md_system_topology_changed(sys);
+}
+
 // Bonds of the system (from its topology) against what inference finds from the coordinates alone
 static void expect_inference_matches_topology(int* utest_result, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc) {
     const size_t n = sys->bond.count;
@@ -42,7 +55,7 @@ static void expect_inference_matches_topology(int* utest_result, const md_system
     qsort(ref, n, sizeof(uint64_t), compare_u64);
 
     md_bond_data_t inferred = { 0 };
-    md_util_infer_covalent_bonds(&inferred, st, sys, alloc, NULL);
+    md_bond_infer(&inferred, sys, st, alloc, NULL);
     ASSERT_EQ(n, inferred.count);
     uint64_t* inf = md_alloc(alloc, sizeof(uint64_t) * (inferred.count + 1));
     for (size_t i = 0; i < inferred.count; ++i) inf[i] = pair_key(inferred.pairs[i]);
@@ -102,7 +115,7 @@ UTEST(bonds, metal_coordination) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     md_bond_flags_t f = 0;
 
     // Acetate
@@ -125,7 +138,7 @@ UTEST(bonds, metal_coordination) {
     for (size_t b = 0; b < sys.bond.count; ++b) {
         sys.bond.flags[b] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
     }
-    EXPECT_EQ(1, (int)md_util_system_infer_coordination(&sys));
+    EXPECT_EQ(1, (int)md_system_infer_coordination(&sys));
     ASSERT_TRUE(has_bond(&sys, 2, 4, &f));
     EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(f));
     EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(f));
@@ -133,7 +146,7 @@ UTEST(bonds, metal_coordination) {
     EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(f));
     ASSERT_TRUE(has_bond(&sys, 1, 2, &f));
     EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(f));
-    EXPECT_EQ(0, (int)md_util_system_infer_coordination(&sys));
+    EXPECT_EQ(0, (int)md_system_infer_coordination(&sys));
     md_vm_arena_destroy(alloc);
 }
 
@@ -144,7 +157,7 @@ UTEST(bonds, metal_sites_deposited) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     int num_zn = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {
         if (md_atom_atomic_number(&sys.atom, i) != 30) continue;
@@ -162,7 +175,7 @@ UTEST(bonds, metal_sites_deposited) {
     md_system_t tub = { .alloc = alloc };
     md_system_state_t tub_st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&tub, &tub_st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&tub, &tub_st, MD_SYSTEM_INFER_ALL, NULL));
     for (size_t i = 0; i < tub.atom.count; ++i) {
         if (md_atom_atomic_number(&tub.atom, i) == 12) {
             EXPECT_GE((int)md_bond_conn_count(&tub.bond, i), 2);
@@ -177,12 +190,12 @@ UTEST(bonds, reinference_keeps_user_bonds) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const size_t inferred = sys.bond.count;
     const int a = 0, b = (int)sys.atom.count - 1;
     ASSERT_FALSE(has_bond(&sys, a, b, NULL));
     md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
-    md_util_system_infer_covalent_bonds(&sys, &st, NULL);
+    infer_system_bonds(&sys, &st);
     md_bond_flags_t f = 0;
     EXPECT_TRUE(has_bond(&sys, a, b, &f));
     EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(f));
@@ -197,7 +210,7 @@ UTEST(bonds, noncovalent_range) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const size_t graph = sys.bond.count;
     const int n = (int)sys.atom.count;
     ASSERT_GE(n, 6);
@@ -238,7 +251,7 @@ UTEST(bonds, noncovalent_range) {
     EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 2, n - 3));
 
     // Inferring the bonds again keeps them, and the user's bond of the graph
-    md_util_system_infer_covalent_bonds(&sys, &st, NULL);
+    infer_system_bonds(&sys, &st);
     EXPECT_EQ(graph + 1, sys.bond.count);
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
     EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 0, n - 1), 0);
@@ -252,7 +265,7 @@ UTEST(bonds, noncovalent_range) {
     md_system_bond_build_connectivity(&sys);
     md_system_bond_insert(&sys, covalent.idx[0], covalent.idx[1], hbond);
     EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
-    md_util_system_infer_covalent_bonds(&sys, &st, NULL);
+    infer_system_bonds(&sys, &st);
     EXPECT_FALSE(has_bond(&sys, covalent.idx[0], covalent.idx[1], NULL));
     EXPECT_GE(md_bond_find_noncovalent(&sys.bond, covalent.idx[0], covalent.idx[1]), 0);
     EXPECT_EQ(graph, sys.bond.count);
@@ -278,15 +291,15 @@ UTEST(bonds, kind_given_stays) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(metal_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const md_bond_idx_t b = md_system_bond_find(&sys, 2, 4);
     ASSERT_GE(b, 0);
     sys.bond.flags[b] = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
-    EXPECT_EQ(0, (int)md_util_system_infer_coordination(&sys));
+    EXPECT_EQ(0, (int)md_system_infer_coordination(&sys));
     EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(sys.bond.flags[b]));
     // Without it, the kind is perceived
     sys.bond.flags[b] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
-    EXPECT_EQ(1, (int)md_util_system_infer_coordination(&sys));
+    EXPECT_EQ(1, (int)md_system_infer_coordination(&sys));
     EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(sys.bond.flags[b]));
     md_vm_arena_destroy(alloc);
 }
@@ -361,7 +374,7 @@ static bool delta_fixture_init(delta_fixture_t* f) {
     f->sys = (md_system_t){ .alloc = f->alloc };
     f->ref = (md_system_state_t){ .alloc = f->alloc };
     if (!md_pdb_system_init_from_str(&f->sys, &f->ref, md_str_from_cstr(water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) return false;
-    if (!md_util_system_infer(&f->sys, &f->ref, MD_UTIL_INFER_ALL, NULL)) return false;
+    if (!md_system_infer(&f->sys, &f->ref, MD_SYSTEM_INFER_ALL, NULL)) return false;
     f->st = f->ref;
     f->st.xyz = md_alloc(f->alloc, sizeof(md_f32x3_t) * f->ref.num_atoms);
     md_memcpy(f->st.xyz, f->ref.xyz, sizeof(md_f32x3_t) * f->ref.num_atoms);
@@ -383,16 +396,16 @@ UTEST(bonds, delta_reference_is_empty) {
     ASSERT_TRUE(delta_fixture_init(&f));
     ASSERT_EQ(4, (int)f.sys.bond.count);
     md_bond_delta_t d = {0};
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.ref, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.ref, &delta_default, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_EQ(0, (int)d.num_formed);
 
     md_system_t tub = { .alloc = f.alloc };
     md_system_state_t tub_st = { .alloc = f.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&tub, &tub_st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&tub, &tub_st, MD_SYSTEM_INFER_ALL, NULL));
     md_bond_delta_t td = {0};
-    ASSERT_TRUE(md_util_bond_delta(&td, &tub, &tub_st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&td, &tub, &tub_st, &delta_default, f.alloc));
     EXPECT_EQ(0, (int)md_bitset_count(td.broken));
     EXPECT_EQ(0, (int)td.num_formed);
     md_vm_arena_destroy(f.alloc);
@@ -407,7 +420,7 @@ UTEST(bonds, delta_proton_transfer) {
     f.st.xyz[1] = md_f32x3_set(1.80f, 0.0f, 0.0f);
 
     md_bond_delta_t d = {0};
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_EQ(1, (int)md_bitset_count(d.broken));
     EXPECT_TRUE(md_bitset_test(d.broken, (uint32_t)oh));
     ASSERT_EQ(1, (int)d.num_formed);
@@ -420,23 +433,23 @@ UTEST(bonds, delta_proton_transfer) {
     md_bitset_t water2 = md_bitset_range(3, 6);
     md_bond_delta_desc_t desc = delta_default;
     desc.scope = &water2;
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &desc, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_TRUE(delta_has_formed(&d, 1, 3));
     md_bitset_t o1 = md_bitset_range(0, 1);
     desc.scope = &o1;
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &desc, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
     EXPECT_TRUE(md_bitset_test(d.broken, (uint32_t)oh));
     EXPECT_EQ(0, (int)d.num_formed);
     md_bitset_t h2 = md_bitset_range(2, 3);
     desc.scope = &h2;
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &desc, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_EQ(0, (int)d.num_formed);
 
     // A bond of an origin which is not breakable stays
     f.sys.bond.flags[oh] = md_bond_flags_set_origin(f.sys.bond.flags[oh], MD_BOND_ORIGIN_TOPOLOGY);
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_TRUE(delta_has_formed(&d, 1, 3));
     md_vm_arena_destroy(f.alloc);
@@ -449,18 +462,18 @@ UTEST(bonds, delta_hysteresis) {
     // O1-H at 1.25 Å: past the cutoff of an O-H of one molecule (1.05 * 1.15 * 0.97 = 1.17) but within the band (1.29)
     f.st.xyz[1] = md_f32x3_set(1.25f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     md_bond_delta_desc_t desc = delta_default;
     desc.tolerance = 0.0f;
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &desc, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
     EXPECT_EQ(1, (int)md_bitset_count(d.broken));
 
     // H to O2 at 1.05 Å: within the cutoff between molecules (1.15 * 0.97 = 1.12) but not past the band (1.00)
     f.st.xyz[1] = md_f32x3_set(1.75f, 0.0f, 0.0f);
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_FALSE(delta_has_formed(&d, 1, 3));
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &desc, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
     EXPECT_TRUE(delta_has_formed(&d, 1, 3));
     md_vm_arena_destroy(f.alloc);
 }
@@ -473,7 +486,7 @@ UTEST(bonds, delta_transition_shows_both) {
     for (int i = 3; i < 6; ++i) f.st.xyz[i].x -= 0.6f;
     f.st.xyz[1] = md_f32x3_set(1.22f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_TRUE(delta_has_formed(&d, 1, 3));
 
@@ -481,7 +494,7 @@ UTEST(bonds, delta_transition_shows_both) {
     f.st.xyz[1] = md_f32x3_set(1.10f, 0.0f, 0.0f);
     md_bond_delta_desc_t desc = delta_default;
     desc.tolerance = 0.0f;
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &desc, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_FALSE(delta_has_formed(&d, 1, 3));
     md_vm_arena_destroy(f.alloc);
@@ -494,7 +507,7 @@ UTEST(bonds, delta_keeps_noncovalent) {
     md_system_bond_insert(&f.sys, 1, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
     f.st.xyz[1] = md_f32x3_set(1.80f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
-    ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_EQ(1, (int)md_bitset_count(d.broken));
     EXPECT_EQ(0, (int)d.num_formed);
     md_vm_arena_destroy(f.alloc);
@@ -534,10 +547,9 @@ static size_t count_kind(const md_system_t* sys, md_bond_kind_t kind) {
     return n;
 }
 
-static size_t count_flag(const md_system_t* sys, md_atom_flags_t flag) {
-    size_t n = 0;
-    for (size_t i = 0; i < sys->atom.count; ++i) n += (md_atom_flags(&sys->atom, i) & flag) != 0;
-    return n;
+static size_t count_metallic(const md_system_t* sys) {
+    uint8_t* metallic = md_alloc(sys->alloc, sys->atom.count + 1);
+    return md_bond_metallic_atoms(metallic, &sys->bond, sys->atom.count);
 }
 
 // A copper crystal: every atom is metallic, bonded to its 12 nearest neighbours (fewer at the faces, edges and corners
@@ -550,9 +562,9 @@ UTEST(bonds, metallic_crystal) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, crystal_xyz(fcc_cu, 4, n, a, periodic, alloc), MD_XYZ_OPTION_NONE));
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
         const size_t num = sys.atom.count;
-        EXPECT_EQ(num, count_flag(&sys, MD_ATOM_FLAG_METALLIC));
+        EXPECT_EQ(num, count_metallic(&sys));
         EXPECT_EQ(0, (int)count_kind(&sys, MD_BOND_KIND_COVALENT));
 
         // The nearest neighbour pairs, a / sqrt(2) apart
@@ -584,8 +596,8 @@ UTEST(bonds, metallic_not_ionic) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, crystal_xyz(rock_salt, 8, 3, salts[s].a, true, alloc), MD_XYZ_OPTION_NONE));
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
-        EXPECT_EQ(0, (int)count_flag(&sys, MD_ATOM_FLAG_METALLIC));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+        EXPECT_EQ(0, (int)count_metallic(&sys));
         EXPECT_EQ(0, (int)count_kind(&sys, MD_BOND_KIND_METALLIC));
         md_vm_arena_destroy(alloc);
     }
@@ -663,11 +675,13 @@ UTEST(bonds, metallic_slab) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (md_str_t){ buf, (size_t)len }, MD_XYZ_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(num, (int)sys.atom.count);
 
+    uint8_t* metallic = md_alloc(alloc, sys.atom.count);
+    md_bond_metallic_atoms(metallic, &sys.bond, sys.atom.count);
     for (int i = 0; i < num; ++i) {
-        EXPECT_EQ(i < num_au, (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_METALLIC) != 0);
+        EXPECT_EQ(i < num_au, metallic[i] != 0);
     }
 
     // The metallic bonds are the pairs of the first shell, 9 to each atom; the rest are the bonds of the molecules
@@ -696,7 +710,7 @@ UTEST(bonds, metallic_slab) {
     // The frame's own contacts: the free carbon on its gold atom, nothing else
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
     md_bond_delta_t delta = {0};
-    ASSERT_TRUE(md_util_bond_delta(&delta, &sys, &st, &desc, alloc));
+    ASSERT_TRUE(md_bond_delta_compute(&delta, &sys, &st, &desc, alloc));
     EXPECT_TRUE(md_bitset_empty(delta.broken));
     ASSERT_EQ(1, (int)delta.num_formed);
     const int fa = (int)delta.formed_pair[0].idx[0];
@@ -721,15 +735,17 @@ UTEST(bonds, metallic_slab_trajectory) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data, MD_XYZ_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const size_t num = sys.atom.count;
     ASSERT_EQ(540, (int)num);
 
     size_t num_gold = 0;
+    uint8_t* metallic = md_alloc(alloc, num);
+    md_bond_metallic_atoms(metallic, &sys.bond, num);
     for (size_t i = 0; i < num; ++i) {
         const bool gold = md_atom_atomic_number(&sys.atom, i) == 79;
         num_gold += gold;
-        EXPECT_EQ(gold, (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_METALLIC) != 0);
+        EXPECT_EQ(gold, metallic[i] != 0);
     }
     ASSERT_EQ(448, (int)num_gold);
 
@@ -779,14 +795,14 @@ UTEST(bonds, metallic_slab_trajectory) {
             fs.xyz[i] = md_f32x3_set(c.x, c.y, c.z);
         }
         md_bond_data_t bonds = {0};
-        md_util_infer_covalent_bonds(&bonds, &fs, &sys, alloc, NULL);
+        md_bond_infer(&bonds, &sys, &fs, alloc, NULL);
         size_t metallic = 0;
         for (size_t b = 0; b < bonds.count; ++b) metallic += md_bond_kind(bonds.flags[b]) == MD_BOND_KIND_METALLIC;
         EXPECT_LT(fabs((double)metallic - (double)num_metallic), 0.01 * (double)num_metallic);
 
         const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
         md_bond_delta_t d = {0};
-        ASSERT_TRUE(md_util_bond_delta(&d, &sys, &fs, &desc, alloc));
+        ASSERT_TRUE(md_bond_delta_compute(&d, &sys, &fs, &desc, alloc));
         EXPECT_TRUE(md_bitset_empty(d.broken));
         size_t contacts = 0;
         for (size_t k = 0; k < d.num_formed; ++k) {
@@ -840,14 +856,14 @@ UTEST(bonds, threads) {
         md_system_t ref = { .alloc = alloc };
         md_system_state_t ref_st = { .alloc = alloc };
         ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), MD_PDB_OPTION_NONE, NULL) : md_gro_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), NULL));
-        ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&ref, &ref_st, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_GT(ref.bond.count, (size_t)0);
         const md_executor_t* executors[] = { test_executor(&threads), test_executor(&shuffled) };
         for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
             md_system_t sys = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc };
             ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]) : md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), executors[e]));
-            ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, executors[e]));
+            ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, executors[e]));
             EXPECT_TRUE_MSG(bonds_threads_same(&ref, &sys), path);
         }
     }

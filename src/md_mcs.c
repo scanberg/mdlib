@@ -3,7 +3,7 @@
 #include <md_mcs.h>
 #include <md_system.h>
 #include <md_match.h>
-#include <md_util.h>
+#include <md_util_geom.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -423,8 +423,8 @@ static bool by_residue(md_mcs_result_t* out, const md_mcs_desc_t* desc, const re
                 const int c = graph_mcs(m, &g0, &g1, desc->max_steps ? desc->max_steps : 10000000, &gave_up, temp);
                 if (gave_up) out->incomplete = true;
                 for (int i = 0; i < c; ++i) {
-                    md_array_push(cache_a, make_label(md_atom_name(&sa->atom, g0.atom[m[i].v])), temp);
-                    md_array_push(cache_b, make_label(md_atom_name(&sb->atom, g1.atom[m[i].w])), temp);
+                    md_array_push(cache_a, md_label_make(md_atom_name(&sa->atom, g0.atom[m[i].v])), temp);
+                    md_array_push(cache_b, md_label_make(md_atom_name(&sb->atom, g1.atom[m[i].w])), temp);
                 }
             }
             e.end = (uint32_t)md_array_size(cache_a);
@@ -433,8 +433,8 @@ static bool by_residue(md_mcs_result_t* out, const md_mcs_desc_t* desc, const re
         }
         for (uint32_t c = hit->beg; c < hit->end; ++c) {
             int32_t pa_atom = -1, pb_atom = -1;
-            for (uint32_t p = 0; p < xn && pa_atom < 0; ++p) if (md_str_eq(md_atom_name(&sa->atom, xa[p]), LBL_TO_STR(cache_a[c]))) pa_atom = xa[p];
-            for (uint32_t q = 0; q < yn && pb_atom < 0; ++q) if (md_str_eq(md_atom_name(&sb->atom, yb[q]), LBL_TO_STR(cache_b[c]))) pb_atom = yb[q];
+            for (uint32_t p = 0; p < xn && pa_atom < 0; ++p) if (md_str_eq(md_atom_name(&sa->atom, xa[p]), MD_LABEL_STR(cache_a[c]))) pa_atom = xa[p];
+            for (uint32_t q = 0; q < yn && pb_atom < 0; ++q) if (md_str_eq(md_atom_name(&sb->atom, yb[q]), MD_LABEL_STR(cache_b[c]))) pb_atom = yb[q];
             if (pa_atom < 0 || pb_atom < 0) continue;
             md_array_push(*pa, pa_atom, temp);
             md_array_push(*pb, pb_atom, temp);

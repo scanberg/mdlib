@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_unitcell.h>
+#include <md_element.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_json.h>

@@ -6,7 +6,7 @@
 #include <md_gro.h>
 #include <md_xdr.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -173,7 +173,7 @@ UTEST(tpr, system_tip3p) {
     compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.gro"));
 
     // What a caller does next: everything but the bonds is derived. One structure per molecule.
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
     EXPECT_EQ(1u + 509u + 4u, md_system_molecule_count(&sys));
 
@@ -223,7 +223,7 @@ UTEST(tpr, virtual_sites) {
     }
 
     // The site still belongs to its water's structure: one per molecule
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
     EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
     compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.gro"));
@@ -418,7 +418,7 @@ UTEST(tpr, martini) {
     }
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
     EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);
@@ -683,14 +683,20 @@ UTEST(tpr, elastic_bonds) {
     }
 
     // Structures, rings and chemistry go by the molecules alone
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
-    md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
+    md_system_infer(&base, &base_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
     EXPECT_EQ(md_system_molecule_count(&base), md_system_molecule_count(&sys));
     EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
     EXPECT_EQ(2u, count_elastic(&sys));
 
     // Inferring the bonds anew keeps the elastic bonds: nothing infers them
-    md_util_system_infer_covalent_bonds(&sys, &state, NULL);
+    {
+        md_bond_data_t inferred = {0};
+        md_bond_data_t merged = {0};
+        md_bond_infer(&inferred, &sys, &state, sys.alloc, NULL);
+        md_bond_merge(&merged, &sys.bond, &inferred, sys.atom.count, sys.alloc);
+        sys.bond = merged;
+    }
     EXPECT_EQ(2u, count_elastic(&sys));
 
     md_arena_allocator_destroy(arena);

@@ -3,7 +3,8 @@
 
 #include <md_pdb.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_util_geom.h>
 #include <md_dssp.h>
 
 #include <core/md_allocator.h>
@@ -205,7 +206,7 @@ static const char ubiquitin_atomistic_ss[] = "EEEEEEECCCCEEEEEECCCCEHHHHHHHHHHHH
 
 static bool load_martini3_ubiquitin(md_system_t* sys, md_system_state_t* state) {
     if (!md_pdb_system_init_from_str(sys, state, md_str_from_cstr(martini3_ubiquitin_pdb), MD_PDB_OPTION_NONE, NULL)) return false;
-    return md_util_system_infer(sys, state, MD_UTIL_INFER_ALL, NULL);
+    return md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
 }
 
 // The BB beads of a Martini protein make a trace: one segment per residue, the bead in ca and no atoms
@@ -232,9 +233,9 @@ UTEST(secondary_structure, martini_trace_backbone) {
 
     // A trace has no phi and psi, and so no Ramachandran type
     md_backbone_angles_t angles[76];
-    EXPECT_TRUE(md_util_backbone_angles_compute(angles, 76, state.xyz, &state.unitcell, bb));
+    EXPECT_TRUE(md_backbone_angles_compute(angles, 76, state.xyz, &state.unitcell, bb));
     md_ramachandran_type_t types[76];
-    EXPECT_TRUE(md_util_backbone_ramachandran_classify(types, 76, &sys));
+    EXPECT_TRUE(md_backbone_ramachandran_classify(types, 76, &sys));
     for (size_t i = 0; i < 76; ++i) {
         EXPECT_EQ(0.0f, angles[i].phi);
         EXPECT_EQ(0.0f, angles[i].psi);
@@ -310,7 +311,7 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     static const char expected[] = "CCCCEEEEEECCCBTTTBBBSTTTSBBSHHHHHHHHHHHHHTTEEEEEESSGGGHHHHHHTTTCCBBCCCCBSSHHHHHHTBBCCCCBCCCEEEEEETTTCCCSSHHHHTTTEEEEETTTHHHHHHIIIIIGGTTEEEEECCHHHHHHHHHTTTCCEEEEEHHHHIIIIITTGGGGGEEECCCCBCSHHHHTCCBCCBBSTTTHHHHHHHHHHHHHHHHHTHHHHHHHGTTSCCTTTC";
     const size_t n = sys.protein_backbone.segment.count;
@@ -334,7 +335,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     const size_t n = sys.protein_backbone.segment.count;
     ASSERT_GT(n, (size_t)200);
 
@@ -369,7 +370,7 @@ UTEST(secondary_structure, mixed_trace_and_atomistic) {
     md_system_t aa = { .alloc = alloc };
     md_system_state_t aa_state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&aa, &aa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&aa, &aa_state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&aa, &aa_state, MD_SYSTEM_INFER_ALL, NULL));
 
     const md_protein_backbone_data_t* cg_bb = &cg.protein_backbone;
     const md_protein_backbone_data_t* aa_bb = &aa.protein_backbone;

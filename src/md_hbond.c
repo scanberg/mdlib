@@ -1,7 +1,8 @@
 ﻿#include <md_hbond.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_util_geom.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -293,8 +294,8 @@ static uint8_t perceive_atom_role(uint8_t* out_cap, const md_system_t* sys, cons
                 if (residue >= 0) {
                     const md_str_t res = md_system_residue_name(sys, residue);
                     const md_residue_kind_t ck = md_system_residue_kind(sys, residue);
-                    const bool aa  = ck == MD_RESIDUE_KIND_AMINO_ACID || md_util_resname_amino_acid(res);
-                    const bool nuc = ck == MD_RESIDUE_KIND_NUCLEOTIDE || md_util_resname_nucleotide(res);
+                    const bool aa  = ck == MD_RESIDUE_KIND_AMINO_ACID || md_resname_amino_acid(res);
+                    const bool nuc = ck == MD_RESIDUE_KIND_NUCLEOTIDE || md_resname_nucleotide(res);
                     if ((aa || nuc) && standard_n_without_lone_pair(res, md_atom_name(&sys->atom, i), aa, nuc)) {
                         acc = false;
                     }

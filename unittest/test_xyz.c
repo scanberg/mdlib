@@ -12,6 +12,7 @@
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <md_unitcell.h>
+#include <md_element.h>
 #include <math.h>
 
 UTEST(xyz, xyz_standard) {

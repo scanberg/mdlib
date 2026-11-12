@@ -2,8 +2,8 @@
 #include <md_xdr.h>
 
 #include <md_system.h>
-#include <md_util.h>
 #include <md_nonbonded.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -1772,7 +1772,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     const md_tpr_residue_t* res = &mt->residues[atom->residue];
                     const md_sequence_id_t seq_id = renumber ? next_renum + m * (int32_t)mt->num_residues + atom->residue : res->nr;
                     md_array_push(sys->residue.atom_offset, (uint32_t)ai, alloc);
-                    md_array_push(sys->residue.name, make_label(res->name), alloc);
+                    md_array_push(sys->residue.name, md_label_make(res->name), alloc);
                     md_array_push(sys->residue.seq_id, seq_id, alloc);
                     md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
                     sys->residue.count += 1;
@@ -1794,7 +1794,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     sys->atom.count = num_atoms;
 
-    md_util_system_augment_particle_types(sys);
+    md_system_augment_particle_types(sys);
 
     // ## Coordinates, nm -> Ångström
     if (data->x) {
@@ -1857,7 +1857,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         MD_ASSERT(bi == count);
 
         // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
-        // same as when the system is read from coordinates. md_util_system_infer_molecules keeps it with its
+        // same as when the system is read from coordinates. md_molecule_infer keeps it with its
         // molecule. Sites that interact (coarse grained beads) keep theirs.
         // Of the types first: a system of no charge sites (most) keeps every bond, without a look at each
         bool any_site = false;
@@ -1879,11 +1879,11 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_bond_build_connectivity(&sys->bond, num_atoms, alloc);
     }
 
-    md_util_system_infer_residue_flags(sys);
+    md_system_infer_residue_flags(sys, state);
 
     // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues
     // know what they are
-    const size_t num_elastic = md_util_system_infer_elastic_bonds(sys);
+    const size_t num_elastic = md_system_infer_elastic_bonds(sys);
     if (num_elastic) {
         MD_LOG_INFO("TPR: %zu bonds between the residues of coarse grained chains are an elastic network, not bonds of the chains", num_elastic);
     }

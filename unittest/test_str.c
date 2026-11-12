@@ -4,7 +4,7 @@
 #include <core/md_format.h>
 #include <core/md_allocator.h>
 #include <core/md_writer.h>
-#include <md_types.h>
+#include <core/md_label.h>
 #include <core/md_parse.h>
 #include <float.h>
 #include <math.h>
@@ -350,22 +350,22 @@ UTEST(str, swap) {
 UTEST(str, labels) {
     static const char text[] = "ABCDEFGHIJKLMNOPQRS";
     for (size_t n = 0; n <= 10; ++n) {
-        const md_label_t l = make_label((md_str_t){text, n});
+        const md_label_t l = md_label_make((md_str_t){text, n});
         EXPECT_EQ(MD_MIN(n, 8), md_label_len(&l));
         EXPECT_TRUE(md_str_eq(md_label_str(&l), (md_str_t){text, MD_MIN(n, 8)}));
-        EXPECT_EQ(n == 0, label_empty(l));
+        EXPECT_EQ(n == 0, md_label_empty(l));
     }
     for (size_t n = 0; n <= 18; ++n) {
-        const md_label16_t l = make_label16((md_str_t){text, n});
+        const md_label16_t l = md_label16_make((md_str_t){text, n});
         EXPECT_EQ(MD_MIN(n, 16), md_label16_len(&l));
         EXPECT_TRUE(md_str_eq(md_label16_str(&l), (md_str_t){text, MD_MIN(n, 16)}));
     }
     // Bytes past ASCII count as characters
-    const md_label_t u = make_label(MD_STR_LIT("C\xc3\xa5\x80\xff"));
+    const md_label_t u = md_label_make(MD_STR_LIT("C\xc3\xa5\x80\xff"));
     EXPECT_EQ(5, md_label_len(&u));
 
-    EXPECT_TRUE(md_label_eq(make_label(MD_STR_LIT("CA")), make_label(MD_STR_LIT("CA"))));
-    EXPECT_FALSE(md_label_eq(make_label(MD_STR_LIT("CA")), make_label(MD_STR_LIT("CA1"))));
-    EXPECT_TRUE(md_label_eq(make_label(MD_STR_LIT("ABCDEFGH")), make_label(MD_STR_LIT("ABCDEFGHI"))));
-    EXPECT_NE(md_label_key(make_label(MD_STR_LIT("CA"))), md_label_key(make_label(MD_STR_LIT("CB"))));
+    EXPECT_TRUE(md_label_eq(md_label_make(MD_STR_LIT("CA")), md_label_make(MD_STR_LIT("CA"))));
+    EXPECT_FALSE(md_label_eq(md_label_make(MD_STR_LIT("CA")), md_label_make(MD_STR_LIT("CA1"))));
+    EXPECT_TRUE(md_label_eq(md_label_make(MD_STR_LIT("ABCDEFGH")), md_label_make(MD_STR_LIT("ABCDEFGHI"))));
+    EXPECT_NE(md_label_key(md_label_make(MD_STR_LIT("CA"))), md_label_key(md_label_make(MD_STR_LIT("CB"))));
 }

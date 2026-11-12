@@ -2,7 +2,7 @@
 
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_path.h>
@@ -986,7 +986,7 @@ static md_str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md
 
 // The molecules of a LAMMPS data file are its residues. Each is an instance, of a molecule type per distinct sequence of
 // particle types, which the file implies without naming: the type is named by its formula. Each instance is one
-// molecule whatever its bonds, as the file has it. What its parts are is inferred (md_util_system_infer_parts).
+// molecule whatever its bonds, as the file has it. What its parts are is inferred (md_part_infer).
 static void lammps_molecules_as_instances(md_system_t* sys) {
 	md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
 	md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
@@ -1065,7 +1065,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	}
 	
 	// The element of a type is told by its mass, else (no mass given) by its label
-	md_util_element_from_mass(type_z, type_masses, num_types);
+	md_atomic_number_infer_from_mass_batch(type_z, type_masses, num_types);
 	for (size_t i = 0; i < num_types; ++i) {
 		const md_str_t label = md_str_from_cstr(data->particle_types[i].label);
 		if (type_z[i] == MD_Z_X && type_masses[i] == 0.0f && !md_str_empty(label)) {
@@ -1122,7 +1122,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				md_array_push(sys->residue.seq_id, resid, sys->alloc);
 				// No name in the file: the generic one (a number would not fit a residue name past 99, and a formula
 				// may read as a residue of its own, "C" a cytidine)
-				md_array_push(sys->residue.name, make_label(MD_STR_LIT("MOL")), sys->alloc);
+				md_array_push(sys->residue.name, md_label_make(MD_STR_LIT("MOL")), sys->alloc);
 				md_array_push(sys->residue.flags, 0, sys->alloc);
 				sys->residue.count += 1;
 			}
@@ -1206,7 +1206,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	}
 
 	// The atoms have no names to classify the molecules by, but water and monatomic ions are told by their atoms
-	md_util_system_infer_residue_flags(sys);
+	md_system_infer_residue_flags(sys, state);
 
 	md_temp_end(temp_scope);
 

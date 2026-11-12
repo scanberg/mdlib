@@ -3,16 +3,17 @@
 
 #include <md_types.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_gro.h>
 #include <md_pdb.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
 // MONOMERS: the predefined table of standard monomers, the names of the residues it resolves, and the residue types
-// of md_util_system_infer_residue_types which link to it.
+// of md_system_infer_residue_types which link to it.
 
 UTEST(monomer, table) {
     for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
@@ -116,7 +117,7 @@ UTEST(monomer, residue_types_nucleosome) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
     const md_residue_type_data_t* type = &sys.residue.type;
@@ -127,7 +128,7 @@ UTEST(monomer, residue_types_nucleosome) {
     // Each name and kind once
     for (size_t a = 0; a < type->count; ++a) {
         for (size_t b = a + 1; b < type->count; ++b) {
-            EXPECT_FALSE(type->kind[a] == type->kind[b] && md_str_eq(LBL_TO_STR(type->name[a]), LBL_TO_STR(type->name[b])));
+            EXPECT_FALSE(type->kind[a] == type->kind[b] && md_str_eq(MD_LABEL_STR(type->name[a]), MD_LABEL_STR(type->name[b])));
         }
     }
 
@@ -146,7 +147,7 @@ UTEST(monomer, residue_types_nucleosome) {
     const size_t count = type->count;
     const md_residue_type_idx_t t_da = type_of_name(&sys, "DA");
     type->color[t_da] = 0xFF123456u;
-    ASSERT_TRUE(md_util_system_infer_residue_types(&sys));
+    ASSERT_TRUE(md_system_infer_residue_types(&sys));
     EXPECT_EQ(count, sys.residue.type.count);
     EXPECT_EQ(t_da, type_of_name(&sys, "DA"));
     EXPECT_EQ(0xFF123456u, md_residue_type_color(&sys.residue.type, t_da));
@@ -173,7 +174,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
     const md_residue_type_data_t* type = &sys.residue.type;
@@ -203,7 +204,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_system_t sys2 = { .alloc = alloc };
     md_system_state_t state2 = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys2, &state2, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys2, &state2, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_EQ(md_residue_type_color(type, lig), md_residue_type_color(&sys2.residue.type, type_of_name(&sys2, "LIG")));
 
     md_vm_arena_destroy(alloc);

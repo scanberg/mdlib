@@ -14,7 +14,7 @@
 // A LEVEL OF THE SYSTEM
 //
 // Every atom with an element is in exactly one fragment, and every fragment is within one molecule. The fragments are
-// inferred with the rest of the topology (md_util_system_infer, MD_UTIL_INFER_FRAGMENT_BIT, last: after the molecules,
+// inferred with the rest of the topology (md_system_infer, MD_SYSTEM_INFER_FRAGMENT_BIT, last: after the molecules,
 // the residue flags and atom roles, the rings, the chemistry and the lipids, which they are made from), are DERIVED
 // (md_system_fields.h) and covered by sys->topology_version, and are what a selection of fragment granularity grows to.
 //
@@ -33,7 +33,7 @@
 //                   and the termini (an ammonium, a carboxylate). Of a nucleic acid: the sugar of each nucleotide (its
 //                   ring and C5': "deoxyribose", "ribose") and the phosphate between two. Any group with an atom of
 //                   MD_ATOM_FLAG_BACKBONE is of the backbone; the side chains and bases are fragmented as below.
-//   lipid tail      The atoms of MD_ATOM_FLAG_LIPID_TAIL, one fragment per tail.
+//   lipid tail      The atoms of the tails of the lipids (md_lipid_data_t), one fragment per tail.
 //   ring system     Rings (sys->ring) sharing an atom, with the terminal atoms double bonded to them (the O of a
 //                   quinone or a lactam). A macrocycle is no ring there (a ring is of at most MD_RING_MAX_SIZE atoms),
 //                   so its conjugated bridges join the ring systems they are between: an atom with a multiple or
@@ -163,10 +163,10 @@ extern "C" {
 #endif
 
 // Infers sys->fragment anew (replacing what it held, keeping the colours of the types it had) and bumps the topology
-// version. Needs the molecules (md_util_system_infer_molecules, which clears the fragments: infer them again after
+// version. Needs the molecules (md_molecule_infer, which clears the fragments: infer them again after
 // it); without them the system has no fragments. Reads the bond orders and aromaticity (md_chem_perceive), without
-// which every C=O reads as single, the rings, the residue flags and atom roles (md_util_system_infer_residue_flags)
-// and the lipid tails. Done by md_util_system_infer with MD_UTIL_INFER_FRAGMENT_BIT.
+// which every C=O reads as single, the rings, the residue flags and atom roles (md_system_infer_residue_flags)
+// and the lipid tails. Done by md_system_infer with MD_SYSTEM_INFER_FRAGMENT_BIT.
 bool md_util_system_infer_fragments(struct md_system_t* sys);
 void md_fragment_data_free(md_fragment_data_t* data, struct md_allocator_i* alloc);
 

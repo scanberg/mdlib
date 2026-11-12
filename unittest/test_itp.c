@@ -7,7 +7,8 @@
 #include <md_itp.h>
 #include <md_gro.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_util_geom.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -203,7 +204,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", SLICES), MD_STR_LIT(""), alloc));
@@ -248,8 +249,11 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     }
 
     // Re-inferring bonds keeps the topology's and adds nothing on top of them
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc, NULL);
-    md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
+    md_bond_data_t inferred = {0};
+    md_bond_data_t merged = {0};
+    md_bond_infer(&inferred, &sys, &state, sys.alloc, NULL);
+    md_bond_merge(&merged, &sys.bond, &inferred, sys.atom.count, sys.alloc);
+    sys.bond = merged;
     EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
 
     md_vm_arena_destroy(alloc);
@@ -397,7 +401,7 @@ UTEST(itp, elastic_bonds) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro), NULL));
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&itp), MD_STR_LIT(""), alloc));
@@ -459,7 +463,7 @@ UTEST(itp, supplement_beads_by_mass) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (md_str_t){gro, (size_t)len}, NULL));
-        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL);
+        md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL);
         md_itp_data_t data = {0};
         ASSERT_TRUE(md_itp_data_parse_str(&data, (md_str_t){itp, (size_t)il}, MD_STR_LIT(""), alloc));
         ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
@@ -489,7 +493,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
 
     const char* itp_fmt =
         "[ moleculetype ]\nSOL 2\n"

@@ -25,7 +25,7 @@
 #include <md_xtc.h>
 #include <md_trr.h>
 #include <md_dcd.h>
-#include <md_util.h>
+#include <md_infer.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,7 +71,7 @@ static bool vial_bench_load(md_system_t* sys, md_system_state_t* state, md_str_t
     bool ok = str_ends(top, ".gro") ? md_gro_system_init_from_file(sys, state, top, NULL) :
               str_ends(top, ".pdb") ? md_pdb_system_init_from_file(sys, state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) : false;
     if (!ok) return false;
-    md_util_system_infer(sys, state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
     const uint32_t flags = MD_RUN_FLAG_DISABLE_CACHE_WRITE;
     return str_ends(traj, ".xtc") ? md_xtc_system_publish_run(sys, traj, MD_STR_LIT("run"), flags) :
            str_ends(traj, ".trr") ? md_trr_system_publish_run(sys, traj, MD_STR_LIT("run"), flags) :

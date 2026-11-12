@@ -16,6 +16,7 @@
 #include <md_script.h>
 #include <md_filter.h>
 #include <md_system.h>
+#include <md_infer.h>
 #include <md_run.h>
 #include <md_gro.h>
 #include <md_pdb.h>
@@ -44,11 +45,11 @@ static md_particle_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2,
 #define PARTICLE_TYPE_COUNT 5
 static md_atomic_number_t particle_type_z[] = {1, 2, 6, 7, 8};
 static md_label_t particle_type_id[] = {
-    MAKE_LABEL("H1"),
-    MAKE_LABEL("HE"),
-    MAKE_LABEL("CA"),
-    MAKE_LABEL("N"),
-    MAKE_LABEL("O")
+    MD_LABEL("H1"),
+    MD_LABEL("HE"),
+    MD_LABEL("CA"),
+    MD_LABEL("N"),
+    MD_LABEL("O")
 };
 static float particle_type_mass[] = {
     1.008f,
@@ -66,18 +67,18 @@ static float particle_type_radius[] = {
 };
 
 #define RES_COUNT 4
-static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
+static md_label_t r_name[] = {MD_LABEL("SOL"), MD_LABEL("LYS"), MD_LABEL("PFT"), MD_LABEL("PFT")};
 static md_sequence_id_t  r_id[] = {1, 2, 3, 4};
 static uint32_t    r_off[] = {0, 3, 8, 12, 16};
 
 #define ENT_COUNT 3
-static md_label_t    e_id[] = {MAKE_LABEL("WAT"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT")};
+static md_label_t    e_id[] = {MD_LABEL("WAT"), MD_LABEL("LYS"), MD_LABEL("PFT")};
 // The kind is the low bits of the entity flags
 static md_part_type_flags_t e_flags[] = {(md_part_type_flags_t)MD_PART_KIND_WATER, (md_part_type_flags_t)MD_PART_KIND_PEPTIDE, (md_part_type_flags_t)MD_PART_KIND_NON_POLYMER};
-static md_str_t       e_desc[] = {MAKE_LABEL("water"), MAKE_LABEL("polypeptide"), MAKE_LABEL("non-polymer")};
+static md_str_t       e_desc[] = {MD_LABEL("water"), MD_LABEL("polypeptide"), MD_LABEL("non-polymer")};
 
 #define INST_COUNT 4
-static md_label_t        i_id[] = {MAKE_LABEL("A"), MAKE_LABEL("B"), MAKE_LABEL("C"), MAKE_LABEL("D")};
+static md_label_t        i_id[] = {MD_LABEL("A"), MD_LABEL("B"), MD_LABEL("C"), MD_LABEL("D")};
 static uint32_t         i_off[] = {0, 3, 8, 12, 16};
 static md_part_type_idx_t i_eidx[] = {0, 1, 2, 2};
 
@@ -143,21 +144,21 @@ UTEST_F_SETUP(script) {
     utest_fixture->amy.alloc = utest_fixture->arena;
     md_system_state_t amy_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    md_util_system_infer(&utest_fixture->amy, &amy_state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&utest_fixture->amy, &amy_state, MD_SYSTEM_INFER_ALL, NULL);
 
     utest_fixture->ala.alloc = utest_fixture->arena;
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     // Its models are the frames the evaluations below step through.
     ASSERT_TRUE(md_pdb_system_publish_run(&utest_fixture->ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), SCRIPT_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&utest_fixture->ala, &ala_state, MD_SYSTEM_INFER_ALL, NULL);
 
     // A triclinic cell, not just a box. Every other system in this fixture is orthorhombic, which
     // is exactly the shape that hides mistakes in the periodic neighbour walk.
     utest_fixture->npt.alloc = utest_fixture->arena;
     md_system_state_t npt_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
-    md_util_system_infer(&utest_fixture->npt, &npt_state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&utest_fixture->npt, &npt_state, MD_SYSTEM_INFER_ALL, NULL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -7110,7 +7111,7 @@ UTEST(script, bondsets) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
     // A hydrogen bond a user marks, from a water hydrogen to O2
@@ -7288,7 +7289,7 @@ UTEST(script, bond_delta) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t ref = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, md_str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &ref, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &ref, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(4, (int)sys.bond.count);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);

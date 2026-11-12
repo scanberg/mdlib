@@ -3,7 +3,9 @@
 
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_util_sort.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -337,7 +339,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
                 char buf[16];
                 const int len = snprintf(buf, sizeof(buf), "%u", t + 1);
                 md_array_push(transform, M, temp_alloc);
-                md_array_push(oper_id, make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)}), temp_alloc);
+                md_array_push(oper_id, md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)}), temp_alloc);
             }
             md_array_push(oper, (uint32_t)k, temp_alloc);
         }
@@ -345,7 +347,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
         char buf[16];
         const int len = snprintf(buf, sizeof(buf), "%d", group->id);
         const md_assembly_gen_t row = {
-            .assembly_id = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)}),
+            .assembly_id = md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)}),
             .inst        = inst,
             .inst_count  = md_array_size(inst),
             .oper        = oper,
@@ -362,7 +364,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
 //
 // What a load gives is the core: the atoms, where they are, their types, the residues, the units of the file (its
 // chains), the bonds the file gives (CONECT), the cell and the assemblies. Nothing is derived from the coordinates here,
-// neither the bonds nor what the residues are by them: that is md_util_system_infer's, which a caller runs when (and
+// neither the bonds nor what the residues are by them: that is md_system_infer's, which a caller runs when (and
 // where, on what thread) it wants.
 
 // The atoms of serials, by the serials of the atoms (0 where a serial is not a number of the format, which no record
@@ -467,7 +469,7 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
 
     // The units of the file are its chains: the runs of residues of one chain id, which a TER record ends (two chains of
     // one id written one after the other are two: the segments of an EM structure)
-    md_util_system_instances_from_chain_ids(sys, res_chain_ids, res_after_ter);
+    md_system_instances_from_chain_ids(sys, res_chain_ids, res_after_ter);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
     pdb_assemblies(sys, x, temp_arena);
@@ -744,7 +746,7 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B
                 // are three residues of the same number (the insertions of Kabat numbered antibodies), also when they
                 // share a name. A TER record ends the residue before it, whatever the residue after it is called, and
-                // the chain: what follows is a unit of its own (md_util_system_instances_from_chain_ids).
+                // the chain: what follows is a unit of its own (md_system_instances_from_chain_ids).
                 const pdb_res_fields_t fields = pdb_res_fields(line);
                 bool begins = false;
                 if (num_atoms == 0) {
@@ -964,7 +966,7 @@ static void pdb_type_overflow(pdb_load_t* L, const pdb_piece_t* piece) {
         if (sys->atom.type_idx[atom] == PDB_TYPE_OVERFLOW) {
             const md_str_t name = md_str_trim(md_str_substr(line, 12, 4));
             const md_atomic_number_t z = md_atomic_number_from_symbol(md_str_trim(md_str_substr(line, 76, 2)), true);
-            sys->atom.type_idx[atom] = md_util_particle_type_find_or_add(sys, &L->type_map, name, z);
+            sys->atom.type_idx[atom] = md_system_particle_type_find_or_add(sys, &L->type_map, name, z);
         }
         ++atom;
     }
@@ -1019,7 +1021,7 @@ static void pdb_gather_pieces(pdb_load_t* L) {
         const pdb_piece_t* piece = &L->pieces[p];
         pdb_types_t* t = piece->types;
         for (uint32_t e = 0; e < t->count; ++e) {
-            t->type[e] = md_util_particle_type_find_or_add(L->sys, &L->type_map, md_label_str(&t->name[e]), (md_atomic_number_t)t->z[e]);
+            t->type[e] = md_system_particle_type_find_or_add(L->sys, &L->type_map, md_label_str(&t->name[e]), (md_atomic_number_t)t->z[e]);
         }
         if (piece->num_atoms) {
             const bool first = piece->first_atom == 0;
@@ -1296,7 +1298,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
 
     if (L->unassigned) {
         if (!md_parallel_for(ex, (uint32_t)MD_DIV_UP(num_atoms, PDB_NAME_CHUNK), 1, pdb_fill_names, L)) return false;
-        md_util_system_infer_particle_types_from_labels(sys, L->atom_name, ex);
+        md_system_infer_particle_types_from_labels(sys, L->atom_name, ex);
     }
     pdb_lap(L, PDB_PHASE_TYPING, &t);
 

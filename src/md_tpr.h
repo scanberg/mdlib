@@ -296,7 +296,7 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // Builds a system from the tpr: atoms, residues, bonds (of origin MD_BOND_ORIGIN_TOPOLOGY), coordinates
 // and box. The elastic bonds of the topology (md_tpr_moltype_t::elastic_bonds) are bonds of the system with
 // MD_BOND_KIND_ELASTIC, and so are the bonds of an elastic network written as plain bonds
-// (md_util_system_infer_elastic_bonds). Residues are numbered the way gmx numbers them when it writes the system out (single
+// (md_system_infer_elastic_bonds). Residues are numbered the way gmx numbers them when it writes the system out (single
 // residue molecules such as water and ions are renumbered consecutively), so the numbers agree with
 // a .gro written from the same tpr.
 //
@@ -306,13 +306,13 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // Atoms with an atomic number get their element's radius. Atoms without one are coarse grained
 // beads (MD_PARTICLE_BEAD) with the radius md_tpr_lj_vdw_radius gives for their non-bonded type;
 // the predefined bead tables then add what they know about them (see
-// md_util_system_augment_particle_types). A virtual site without Lennard-Jones parameters, such as the
+// md_system_augment_particle_types). A virtual site without Lennard-Jones parameters, such as the
 // M site of TIP4P, has no element and is not a bead (MD_PARTICLE_VIRTUAL_SITE).
 //
 // Each molecule type is a molecule type of the system (md_molecule_type_data_t, by its name) and each molecule an
 // instance of it (md_instance_data_t), one molecule whatever its bonds. The residues are classified
-// (md_util_system_infer_residue_flags); what the parts of the molecules are is inferred from them
-// (md_util_system_infer_parts). A topology names no chains: the instances have no ids.
+// (md_system_infer_residue_flags); what the parts of the molecules are is inferred from them
+// (md_part_infer). A topology names no chains: the instances have no ids.
 //
 // The atom groups the simulation used are groups of the system (md_group_data_t) with their roles: those of every type
 // the mdp named groups for, each type's 'rest' included. A type it named none for (one group 'rest' of every atom) adds

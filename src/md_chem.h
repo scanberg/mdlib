@@ -1,6 +1,9 @@
 #pragma once
 
 #include <md_types.h>
+#include <md_ring.h>
+#include <md_bond.h>
+#include <md_atom.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -68,12 +71,12 @@ extern "C" {
 #endif
 
 // reference is optional but needed for anything without hydrogens: the geometry tells sp2 from sp3 and single from
-// double bonds. The rings of the system are used (md_util_system_infer_rings) and inferred if missing.
+// double bonds. The rings of the system are used (md_ring_infer) and inferred if missing.
 bool md_chem_perceive(struct md_system_t* sys, const struct md_system_state_t* reference, uint32_t flags);
 
 // ### A FRAME WITH OTHER BONDS ###
 //
-// A state whose bonds are not those of the system (bonds formed and broken in it: md_bond_delta_t, md_util_bond_delta)
+// A state whose bonds are not those of the system (bonds formed and broken in it: md_bond_delta_t, md_bond_delta_compute)
 // has a chemistry of its own where they changed. md_chem_perceive_delta works it out for the REGION the changes
 // reach, as md_chem_perceive would for the bonds of the state, and leaves the system as it is: what lies outside of
 // the region keeps what md_chem_perceive gave it, as nothing there can change.
@@ -106,7 +109,7 @@ typedef struct md_chem_delta_t {
     uint32_t*        bond_idx;          // [num_bonds] The covalent bonds with an atom in the region, ascending: one of the system by its index,
                                         // one formed by sys->bond.count + its index in the delta
     md_bond_flags_t* bond_flags;        // [num_bonds] Their flags with the order, aromaticity and delocalization of the state
-    md_ring_data_t   ring;              // The rings with an atom in the region, in the state (md_util_infer_rings)
+    md_ring_data_t   ring;              // The rings with an atom in the region, in the state (md_ring_infer_from_bonds)
 } md_chem_delta_t;
 
 // The chemistry of state (the coordinates of sys's atoms) where its bonds are those of sys changed by delta, see A

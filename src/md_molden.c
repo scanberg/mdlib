@@ -4,6 +4,7 @@
 #include <md_types.h>
 #include <md_gto.h>
 #include <md_qm.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>

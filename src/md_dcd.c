@@ -1,7 +1,6 @@
 #include <md_dcd.h>
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>

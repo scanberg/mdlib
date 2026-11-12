@@ -1444,7 +1444,7 @@ static int32_t find_val(const int32_t* arr, int64_t count, int32_t val) {
 
 static int32_t find_label(const md_label_t* arr, int64_t count, md_str_t lbl) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
-        if (md_str_eq(LBL_TO_STR(arr[i]), lbl)) {
+        if (md_str_eq(MD_LABEL_STR(arr[i]), lbl)) {
             return i;
         }
     }
@@ -3157,7 +3157,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
             data.count = 0; // Each element of a gets its own count
             md_bitmask_assign(&exclusion_bf, *bf);
             md_bitmask_and(&exclusion_bf, *bf_b); // Start with overlap
-			md_util_mask_grow_by_bonds(&exclusion_bf, ctx->sys, path_length, NULL);
+			md_bond_mask_grow(&exclusion_bf, &ctx->sys->bond, ctx->sys->atom.count, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
             md_coord_stream_t a_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), a_indices, a_length);
@@ -4128,6 +4128,8 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
         MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         const md_system_t* sys = ctx->sys;
         md_bitmask_t b = result_mask(ctx);
+        uint8_t* in_tail = md_alloc(ctx->temp_alloc, sys->atom.count + 1);
+        md_lipid_tail_atom_mask(in_tail, &sys->lipid, sys->atom.count);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
             if (sys->lipid.head_offset[l + 1] == sys->lipid.head_offset[l]) continue;
             const int32_t* residues = md_lipid_residues(&sys->lipid, l);
@@ -4135,7 +4137,7 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t c = 0; c < num_residues; ++c) {
                 const md_urange_t r = md_system_residue_atom_range(sys, (size_t)residues[c]);
                 for (uint32_t i = r.beg; i < r.end; ++i) {
-                    if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL)) md_bitmask_set_bit(&b, i);
+                    if (!in_tail[i]) md_bitmask_set_bit(&b, i);
                 }
             }
         }
@@ -4375,7 +4377,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_queries; ++j) {
-                    if (match_query(queries[j], LBL_TO_STR(ctx->sys->residue.name[res_idx]))) {
+                    if (match_query(queries[j], MD_LABEL_STR(ctx->sys->residue.name[res_idx]))) {
                         const md_urange_t atom_range = md_system_residue_atom_range(ctx->sys, res_idx);
                         set_writer_push_range(&w, atom_range.beg, atom_range.end);
 
@@ -4396,7 +4398,7 @@ static int _res_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (size_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (match_query(queries[j], LBL_TO_STR(ctx->sys->residue.name[res_idx]))) {
+                if (match_query(queries[j], MD_LABEL_STR(ctx->sys->residue.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }
@@ -8759,7 +8761,7 @@ static int _bond_or (data_t* dst, data_t arg[], eval_context_t* ctx) { return bo
 static int _bond_xor(data_t* dst, data_t arg[], eval_context_t* ctx) { return bond_logic(dst, arg, 2, '^', ctx); }
 
 // bond_delta(scope = none, *, tolerance = none, breakable = none): the bonds formed and broken in the frame against the
-// bond graph of the system, for the bonds with an atom in the scope (md_util_bond_delta). A value of its own, which
+// bond graph of the system, for the bonds with an atom in the scope (md_bond_delta_compute). A value of its own, which
 // formed(), broken() and bond(d) read.
 //   scope      The atoms whose bonds are looked at, all of them without it.
 //   tolerance  Half the width of the band around the cutoffs, a fraction of them in [0, 0.5): 0.1 without it.
@@ -8815,7 +8817,7 @@ static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     md_bond_delta_t d = {0};
     const md_bond_delta_desc_t desc = { .scope = scope_ptr, .tolerance = tolerance, .breakable = breakable };
-    if (ctx->cur_state && md_util_bond_delta(&d, sys, ctx->cur_state, &desc, temp_alloc)) {
+    if (ctx->cur_state && md_bond_delta_compute(&d, sys, ctx->cur_state, &desc, temp_alloc)) {
         val->broken = md_bitset_copy(d.broken, alloc);
         bond_extras_t e = {0};
         for (size_t k = 0; k < d.num_formed; ++k) bond_extras_push(&e, d.formed_pair[k], d.formed_flags[k], temp_alloc);
@@ -8849,7 +8851,7 @@ static int _bond_delta_broken(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // bond(d, b = none, *, kind = none, order = none, resonance = none, origin = none): the bonds of the frame within the
 // scope of d: the persistent bonds which touch it and are not broken, and those formed, within the context (both atoms
 // in it) as bond() is, which b (an atom in it) and the filters let through. The filters read the flags of the system
-// for a persistent bond, and those md_util_bond_delta gives a bond formed (inferred; covalent or coordinate, of no
+// for a persistent bond, and those md_bond_delta_compute gives a bond formed (inferred; covalent or coordinate, of no
 // known order).
 static int _bond_of_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(ctx && ctx->sys);

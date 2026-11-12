@@ -7,7 +7,7 @@
 #include <math.h>
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_attributes.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_file.h>
@@ -159,7 +159,7 @@ UTEST(pdb, create_system) {
     // The chains of the file are its units, and their strands its parts: three of one sequence
     EXPECT_EQ(3, sys.instance.count);
     // The parts are found by the bonds and the kinds of the residues, which the load leaves to inference
-    ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT | MD_UTIL_INFER_PART_BIT, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_RESIDUE_BIT | MD_SYSTEM_INFER_PART_BIT, NULL));
     EXPECT_EQ(3, sys.part.count);
     EXPECT_EQ(1, md_system_part_type_count(&sys));
     md_vm_arena_destroy(arena);
@@ -194,7 +194,7 @@ UTEST(pdb, cryst_record_without_its_1) {
     EXPECT_NEAR(0.0, state.unitcell.xy, 1e-9);
     EXPECT_NEAR(0.0, state.unitcell.xz, 1e-9);
     EXPECT_NEAR(0.0, state.unitcell.yz, 1e-9);
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_GE(md_bond_find(&sys.bond, 0, 1), 0);    // N-CA, across the boundary in x
     EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 0));
     md_arena_allocator_destroy(alloc);
@@ -234,7 +234,7 @@ UTEST(pdb, conect_bonds) {
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
     // The load gives the file's bonds, and those alone
     EXPECT_EQ((size_t)18, sys.bond.count);
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_BOND_BIT, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_BOND_BIT, NULL));
     EXPECT_EQ((size_t)18, count_bonds_of_origin(&sys, MD_BOND_ORIGIN_FILE));
     for (size_t i = 0; i < sys.bond.count; ++i) {
         if (md_bond_origin(sys.bond.flags[i]) != MD_BOND_ORIGIN_FILE) continue;
@@ -248,7 +248,7 @@ UTEST(pdb, conect_bonds) {
     EXPECT_GT(count_bonds_of_origin(&sys, MD_BOND_ORIGIN_INFERRED), (size_t)9000);
 
     const size_t num_bonds = sys.bond.count;
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_EQ((size_t)18, count_bonds_of_origin(&sys, MD_BOND_ORIGIN_FILE));
     EXPECT_EQ(num_bonds, sys.bond.count);
     for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -576,7 +576,7 @@ static md_str_t peptide_pdb(md_allocator_i* alloc, const peptide_pick_t* pick, s
 
 static bool load_peptide(md_system_t* sys, md_system_state_t* state, const peptide_pick_t* pick, size_t count, md_allocator_i* alloc) {
     if (!md_pdb_system_init_from_str(sys, state, peptide_pdb(alloc, pick, count), MD_PDB_OPTION_NONE, NULL)) return false;
-    return md_util_system_infer(sys, state, MD_UTIL_INFER_ALL, NULL);
+    return md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
 }
 
 static size_t count_residues_with(const md_system_t* sys, md_residue_flags_t flag) {
@@ -626,7 +626,7 @@ UTEST(pdb, numbering_jump_is_no_break) {
 
     md_atom_idx_t atoms[2];
     for (size_t i = 0; i < sys.residue.count; ++i) {
-        EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, i));
+        EXPECT_FALSE(md_system_chain_break_atoms(atoms, &sys, i));
         EXPECT_EQ(-1, atoms[0]);
         EXPECT_EQ(-1, atoms[1]);
     }
@@ -654,10 +654,10 @@ static void expect_break_after_fourth(int* utest_result, const md_system_t* sys)
 
     // The C of the fourth residue and the N of the fifth
     md_atom_idx_t atoms[2];
-    ASSERT_TRUE(md_util_chain_break_atoms(atoms, sys, 3));
+    ASSERT_TRUE(md_system_chain_break_atoms(atoms, sys, 3));
     EXPECT_EQ(3 * 4 + 2, atoms[0]);
     EXPECT_EQ(4 * 4 + 0, atoms[1]);
-    EXPECT_FALSE(md_util_chain_break_atoms(atoms, sys, 4));
+    EXPECT_FALSE(md_system_chain_break_atoms(atoms, sys, 4));
 }
 
 UTEST(pdb, chain_break_numbering_runs_on) {
@@ -670,13 +670,17 @@ UTEST(pdb, chain_break_numbering_runs_on) {
     ASSERT_TRUE(load_peptide(&sys, &state, pick, MD_COUNTOF(pick), alloc));
     expect_break_after_fourth(utest_result, &sys);
 
-    // Without bonds the distance of the C and the N tells the same
+    // The backbones of atoms are found from their bonds alone: without bonds there are none, and no breaks
     sys.bond.count = 0;
     md_array_shrink(sys.bond.pairs, 0);
     md_array_shrink(sys.bond.flags, 0);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_BACKBONE_BIT, NULL));
-    expect_break_after_fourth(utest_result, &sys);
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_BACKBONE_BIT, NULL));
+    EXPECT_EQ(0u, sys.protein_backbone.range.count);
+    EXPECT_EQ(0u, sys.protein_backbone.segment.count);
+    for (size_t i = 0; i < sys.residue.count; ++i) {
+        EXPECT_EQ(0u, (unsigned)(md_system_residue_flags(&sys, i) & (MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER)));
+    }
 
     md_vm_arena_destroy(alloc);
 }
@@ -692,7 +696,7 @@ UTEST(pdb, chain_break_numbering_skips) {
     expect_break_after_fourth(utest_result, &sys);
 
     // Inferring again finds the same breaks, not more
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     expect_break_after_fourth(utest_result, &sys);
 
     md_vm_arena_destroy(alloc);
@@ -707,7 +711,7 @@ UTEST(pdb, chain_breaks_of_files) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
-        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
         size_t asp = SIZE_MAX;
         for (size_t i = 0; i + 1 < sys.residue.count; ++i) {
@@ -722,7 +726,7 @@ UTEST(pdb, chain_breaks_of_files) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, whole[f], MD_PDB_OPTION_NONE, NULL));
-        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
     }
     md_vm_arena_destroy(alloc);
@@ -744,7 +748,7 @@ UTEST(pdb, write_ter_between_parts) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(gro), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(2u, md_system_part_count(&sys));
 
     const md_str_t path = MD_STR_LIT("md_unittest_write_ter.pdb");
@@ -897,10 +901,10 @@ UTEST(pdb, ter_ends_the_unit) {
         EXPECT_EQ(2u, sys.instance.res_offset[1]);
         EXPECT_TRUE(md_str_eq(md_system_instance_auth_id(&sys, 0), MD_STR_LIT("J")));
         EXPECT_TRUE(md_str_eq(md_system_instance_auth_id(&sys, 1), MD_STR_LIT("J")));
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
         md_atom_idx_t atoms[2];
-        EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, 1));
+        EXPECT_FALSE(md_system_chain_break_atoms(atoms, &sys, 1));
     }
     md_vm_arena_destroy(alloc);
 }
@@ -924,7 +928,7 @@ UTEST(pdb, formal_charge_column) {
         md_system_state_t st = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL));
         ASSERT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("atom/formal_charge")) != NULL);
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_EQ(-1, (int)md_atom_formal_charge(&sys.atom, 8));
         EXPECT_EQ(0,  (int)md_atom_formal_charge(&sys.atom, 7));
     }

@@ -2,11 +2,25 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <md_types.h>
+#include <core/md_common.h>
+
+struct md_system_t;
+struct md_allocator_i;
+
+struct md_allocator_i;
 
 // Lipids: the heads and tails of each lipid molecule.
 
-// LIPIDS (md_util_system_infer_lipids): the anatomy of each lipid molecule, its heads and its tails.
+// What a tail of a lipid is (md_lipid_data_t)
+typedef enum md_lipid_tail_kind_t {
+    MD_LIPID_TAIL_CHAIN     = 0,    // A hydrocarbon chain: acyl, alkyl, alkenyl or sphingoid, branched or not (phytanyl).
+                                    // It hangs off a head, or spans two (the chains of a bolalipid).
+    MD_LIPID_TAIL_SKELETON  = 1,    // The fused ring system of a sterol, with its side chain
+} md_lipid_tail_kind_t;
+
+// LIPIDS (md_lipid_infer): the anatomy of each lipid molecule, its heads and its tails.
 //
 // A tail is a hydrocarbon part of the molecule which hangs off the rest of it at one point: an acyl, alkyl or sphingoid
 // chain (MD_LIPID_TAIL_CHAIN), or the fused ring skeleton of a sterol with its side chain (MD_LIPID_TAIL_SKELETON). A
@@ -27,7 +41,7 @@
 // residue of its own, the first sugar of a glycolipid, the first Kdo of a lipid A. The rest of the molecule is attached
 // to the lipid but no part of it, nor of its heads, and keeps its kind. Every lipid molecule of the system is here, also
 // one whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of
-// the tails are MD_ATOM_FLAG_LIPID_TAIL.
+// the tails: md_lipid_tail_atom_mask.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
     uint32_t* residue_offset;           // [count + 1] The residues of lipid i are residue_idx[residue_offset[i] .. residue_offset[i + 1]]
@@ -60,7 +74,7 @@ extern "C" {
 #endif
 
 // Frees the lipids of a system (allocated from alloc, the system's) and leaves them empty
-void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
+void md_lipid_data_free(md_lipid_data_t* lipid, struct md_allocator_i* alloc);
 
 // The ranges of a lipid: NULL and 0 when the index is out of range
 static inline const int32_t* md_lipid_residues(const md_lipid_data_t* lipid, size_t lipid_idx) {
@@ -102,6 +116,30 @@ static inline size_t md_lipid_tail_atom_count(const md_lipid_data_t* lipid, size
     MD_ASSERT(lipid);
     return tail_idx < lipid->tail.count ? lipid->tail.atom_offset[tail_idx + 1] - lipid->tail.atom_offset[tail_idx] : 0;
 }
+
+// ### INFERENCE ###
+
+// The lipids of the system (md_lipid_data_t): every lipid molecule, its heads and tails. A molecule (a run of consecutive residues bonded to each other, none of them an amino
+// acid, a nucleotide, water or an ion) whose residues are lipids by name gets the tails found in it. One whose
+// residues are not is a lipid by its structure when it has a polar head and a hydrocarbon chain of at least 8 carbons
+// or the skeleton of a sterol (atomistic molecules only): lipids of
+// names nothing knows (the 3 letter names of PDB files, the codes of the PDB, lipids split into several residues).
+// Tails are found from the bonds alone for atoms, and from the names of the beads (the conventions of the Martini
+// lipidomes) for coarse grained lipids. Requires the classified residues, the bonds for the heads and tails and for
+// the molecules of several residues (without them a lipid is its residue), and for sterols the rings.
+// Into out (allocated with alloc, never &sys->lipid); the system is read and never written: the kinds of the residues
+// follow from the lipids, md_system_infer_lipid_kinds.
+bool md_lipid_infer(md_lipid_data_t* out, const struct md_system_t* sys, struct md_allocator_i* alloc);
+
+// The kinds of the residues from the lipids of the system (sys->lipid): the residues of a lipid are
+// MD_RESIDUE_KIND_LIPID (lipids of names nothing knows, found by their structure), and a residue of kind LIPID which is
+// of no lipid now is MD_RESIDUE_KIND_OTHER, unless it is a lipid by its name (md_resname_lipid) or a coarse grained
+// one (its kind is the force field's): a lipid by its structure alone stays one only while it is found to be one.
+void md_system_infer_lipid_kinds(struct md_system_t* sys);
+
+// The atoms of the tails of the lipids: out[i] is 1 for an atom of a tail, 0 for any other, of atom_count atoms.
+// Returns how many there are.
+size_t md_lipid_tail_atom_mask(uint8_t* out, const md_lipid_data_t* lipid, size_t atom_count);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 ﻿#include <md_gro.h>
 
-#include <md_util.h>
+#include <md_infer.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -135,7 +135,7 @@ static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3],
 // THE SYSTEM
 //
 // What a load gives is the core: the atoms, where they are, their types, the residues and the cell. Nothing is derived
-// from the coordinates here, neither the bonds nor what the residues are by them: that is md_util_system_infer's, which
+// from the coordinates here, neither the bonds nor what the residues are by them: that is md_system_infer's, which
 // a caller runs when (and where, on what thread) it wants.
 //
 // Straight from the text, a block at a time (read over the threads of the executor where the source reads at offsets,
@@ -185,9 +185,9 @@ static MD_FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields
     return a.lo == b.lo && a.hi == b.hi && a.len == b.len;
 }
 
-// The field of 5 characters at offset as a label, without the whitespace around it: make_label(md_str_trim()) of it. As one
+// The field of 5 characters at offset as a label, without the whitespace around it: md_label_make(md_str_trim()) of it. As one
 // word where the line goes on for 8 characters from there and the field has no control character (whose blanks are
-// spaces alone, which a byte above ' ' bounds: no scan); else as make_label(md_str_trim()).
+// spaces alone, which a byte above ' ' bounds: no scan); else as md_label_make(md_str_trim()).
 static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
     if (line.len >= offset + 8) {
         uint64_t w;
@@ -208,7 +208,7 @@ static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
             return lbl;
         }
     }
-    return make_label(md_str_trim(md_str_substr(line, offset, 5)));
+    return md_label_make(md_str_trim(md_str_substr(line, offset, 5)));
 }
 
 // The residue number of a line (columns 0 to 4): parse_int(md_str_trim()) of it. Blanks and then digits up to its end
@@ -580,7 +580,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     if (L.velocity) {
         md_attributes_commit_atom_column(&sys->attributes, velocity_id);
     }
-    md_util_system_infer_particle_types_from_labels(sys, L.atom_names, ex);
+    md_system_infer_particle_types_from_labels(sys, L.atom_names, ex);
     state->num_atoms = num_atoms;
     result = true;
 

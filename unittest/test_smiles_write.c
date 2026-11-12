@@ -3,7 +3,7 @@
 #include <md_smiles.h>
 #include <md_match.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_pdb.h>
 
 #include <core/md_allocator.h>
@@ -25,7 +25,7 @@ static const md_system_t* tubulin(void) {
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t st = {.alloc = alloc};
         ok = md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
-             md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL);
+             md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL);
     }
     return ok ? &sys : NULL;
 }

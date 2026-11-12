@@ -5,7 +5,8 @@
 #include <md_xyz.h>
 #include <md_pdb.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_element.h>
 #include <core/md_allocator.h>
 #include <core/md_parse.h>
 #include <core/md_file.h>
@@ -21,6 +22,15 @@
 // A system built from SMILES the way a quantum chemistry file arrives: every hydrogen an atom of its own
 // (right after its heavy atom), bond orders and aromaticity known, metal - non metal bonds coordinate.
 // Residues, when given, as counts of heavy atoms in SMILES order.
+
+// What md_system_infer gives the system of its molecules and parts (MD_SYSTEM_INFER_MOLECULE_BIT, _PART_BIT)
+static bool test_infer_molecules(md_system_t* sys) {
+    md_molecule_data_t molecules = {0};
+    const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
+    md_molecule_data_free(&sys->molecule, sys->alloc);
+    sys->molecule = molecules;
+    return ok;
+}
 
 static bool frag_is_metal_z(md_atomic_number_t z) {
     return (z == 3 || z == 4) || (z >= 11 && z <= 13) || (z >= 19 && z <= 31) || (z >= 37 && z <= 50) || (z >= 55 && z <= 84) || z >= 87;
@@ -91,11 +101,11 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
 
     for (size_t i = 0; i < g.num_atoms; ++i) {
         const md_atomic_number_t z = g.atoms[i].z;
-        const md_str_t sym = md_util_element_symbol(z);
+        const md_str_t sym = md_atomic_number_symbol(z);
         char name[8];
         snprintf(name, sizeof(name), "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
         const int32_t ai = map[i];
-        sys->atom.type_idx[ai] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_util_element_atomic_mass(z), md_util_element_vdw_radius(z), 0, 0, alloc);
+        sys->atom.type_idx[ai] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(name), z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), 0, 0, alloc);
         if (g.atoms[i].flags & MD_SMILES_ATOM_AROMATIC) sys->atom.flags[ai] |= MD_ATOM_FLAG_AROMATIC;
         sys->atom.hydrogen_count[ai] = (uint8_t)hcount[i];
         sys->atom.formal_charge[ai] = g.atoms[i].charge;
@@ -132,15 +142,21 @@ static bool frag_system_from_smiles(md_system_t* sys, const char* smiles, const 
             const uint32_t end = heavy < g.num_atoms ? (uint32_t)map[heavy] : (uint32_t)n;
             md_array_push(sys->residue.name, frag_label(res_names[r]), alloc);
             md_array_push(sys->residue.seq_id, r + 1, alloc);
-            md_array_push(sys->residue.flags, md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, MD_RESIDUE_KIND_AMINO_ACID), alloc);
+            md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
             md_array_push(sys->residue.atom_offset, end, alloc);
         }
         sys->residue.count = (size_t)num_res;
+        for (int r = 0; r < num_res; ++r) md_system_set_residue_kind(sys, (size_t)r, MD_RESIDUE_KIND_AMINO_ACID);
     }
 
     md_bond_build_connectivity(&sys->bond, n, alloc);
-    md_util_system_infer_molecules(sys);
-    md_util_system_infer_rings(sys);
+    test_infer_molecules(sys);
+    {
+        md_ring_data_t rings = {0};
+        md_ring_infer(&rings, sys, (sys)->alloc);
+        md_ring_data_free(&(sys)->ring, (sys)->alloc);
+        (sys)->ring = rings;
+    }
     return true;
 }
 
@@ -363,7 +379,7 @@ UTEST(fragment, molecules_alike_share_a_template_whatever_order_their_bonds_came
         bond->flags[j] = f;
     }
     md_bond_build_connectivity(bond, t.sys.atom.count, t.alloc);
-    ASSERT_TRUE(md_util_system_infer_molecules(&t.sys));
+    ASSERT_TRUE(test_infer_molecules(&t.sys));
     ASSERT_TRUE(md_util_system_infer_fragments(&t.sys));
     frag_check(utest_result, &t.sys);
     EXPECT_EQ(md_system_molecule_count(&t.sys), (size_t)3);
@@ -472,7 +488,7 @@ UTEST(fragment, a_group_across_residues_is_of_both) {
     const char* names[] = { "PRO", "ETH" };
     const int heavy[] = { 4, 3 };
     ASSERT_TRUE(frag_system_from_smiles(&sys, "CCC(=O)OCC", names, heavy, 2));
-    for (size_t r = 0; r < 2; ++r) sys.residue.flags[r] = md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, MD_RESIDUE_KIND_OTHER);
+    for (size_t r = 0; r < 2; ++r) md_system_set_residue_kind(&sys, r, MD_RESIDUE_KIND_OTHER);
     ASSERT_TRUE(md_util_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
     const md_fragment_idx_t ester = frag_find(&sys, "ester");
@@ -573,14 +589,14 @@ static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_
     md_array_push_array(xyz, buf, (size_t)len, alloc);
     for (size_t i = 0; i < md_array_size(c->atom); ++i) {
         const ref_atom_t* a = &c->atom[i];
-        const md_str_t sym = md_util_element_symbol((md_element_t)a->z);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)a->z);
         len = snprintf(buf, sizeof(buf), "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, a->x.x, a->x.y, a->x.z);
         md_array_push_array(xyz, buf, (size_t)len, alloc);
     }
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, 0)) return 0;
-    if (!md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL)) return 0;
+    if (!md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) return 0;
     const size_t n = md_system_fragment_count(&sys);
     md_array_resize(*out, n * FRAG_REF_LINE, alloc);
     for (md_fragment_idx_t f = 0; f < n; ++f) {
@@ -642,7 +658,7 @@ UTEST(fragment, the_residues_of_a_protein) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     // The side chain of each amino acid within a chain: its fragments of no backbone, by heavy atoms and name
     static const struct { const char* res; const char* side; } want[] = {

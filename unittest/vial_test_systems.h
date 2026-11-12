@@ -9,7 +9,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_pdb.h>
-#include <md_util.h>
+#include <md_infer.h>
 
 #ifndef MD_UNITTEST_DATA_DIR
 #error "MD_UNITTEST_DATA_DIR names the test data"
@@ -32,7 +32,7 @@ static inline const md_system_t* vial_test_system(char which) {
         md_system_state_t state = {.alloc = alloc};
         const char* path = i == 0 ? MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb" : MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb";
         if (md_pdb_system_init_from_file(&sys[i], &state, md_str_from_cstr(path), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) {
-            md_util_system_infer(&sys[i], &state, MD_UTIL_INFER_ALL, NULL);
+            md_system_infer(&sys[i], &state, MD_SYSTEM_INFER_ALL, NULL);
             md_system_state_copy(st, &state);
         }
     }

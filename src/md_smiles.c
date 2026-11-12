@@ -1,4 +1,5 @@
 #include <md_smiles.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>

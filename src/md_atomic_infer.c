@@ -1,5 +1,6 @@
 ﻿#include <md_types.h>
-#include <md_util.h>
+#include <md_system.h>
+#include <md_element.h>
 
 #include <core/md_hash.h>
 #include <core/md_allocator.h>
@@ -78,39 +79,6 @@ static const md_str_t resname_fallback_to_single_character[] = {
     MD_STR_INIT("CHOL"),  // Cholesterol
 };
 
-// Core atomic number functions using existing md_util tables
-md_atomic_number_t md_atomic_number_from_symbol(md_str_t sym, bool ignore_case) {
-    return md_util_element_lookup(sym, ignore_case);
-}
-
-md_str_t md_atomic_number_symbol(md_atomic_number_t z) {
-    return md_util_element_symbol(z);
-}
-
-md_str_t md_atomic_number_name(md_atomic_number_t z) {
-    return md_util_element_name(z);
-}
-
-float md_atomic_number_mass(md_atomic_number_t z) {
-    return md_util_element_atomic_mass(z);
-}
-
-float md_atomic_number_vdw_radius(md_atomic_number_t z) {
-    return md_util_element_vdw_radius(z);
-}
-
-float md_atomic_number_covalent_radius(md_atomic_number_t z) {
-    return md_util_element_covalent_radius(z);
-}
-
-int md_atomic_number_max_valence(md_atomic_number_t z) {
-    return md_util_element_max_valence(z);
-}
-
-uint32_t md_atomic_number_cpk_color(md_atomic_number_t z) {
-    return md_util_element_cpk_color(z);
-}
-
 static inline md_atomic_number_t find_in_mappings(md_str_t key, const Mapping* mappings, size_t num_mappings) {
     for (size_t i = 0; i < num_mappings; ++i) {
         if (md_str_eq_ignore_case(key, mappings[i].str)) {
@@ -150,7 +118,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(md_str_t atom_name, md_str_
     // First try residue+atom combination
     if (res_name.len > 0) {
         // Special case: if water, amino acid or nucleotide: Match against first character only
-        if (md_util_resname_water(res_name) || md_util_resname_amino_acid(res_name) || md_util_resname_nucleotide(res_name)) {
+        if (md_resname_water(res_name) || md_resname_amino_acid(res_name) || md_resname_nucleotide(res_name)) {
             md_str_t first_char = md_str_substr(atom_name, 0, 1);
             md_atomic_number_t z = md_atomic_number_from_symbol(first_char, true);
             if (z != MD_Z_X) return z;
@@ -215,18 +183,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(md_str_t atom_name, md_str_
 
 md_atomic_number_t md_atomic_number_infer_from_mass(float mass) {
     md_atomic_number_t res = MD_Z_X;
-    md_util_element_from_mass(&res, &mass, 1);
+    md_atomic_number_infer_from_mass_batch(&res, &mass, 1);
     return res;
 }
 
-size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count) {
-    if (!out_z) {
-        MD_LOG_ERROR("Output array is null");
-        return 0;
-    }
-    if (!masses) {
-        MD_LOG_ERROR("Input masses array is null");
-        return 0;
-    }
-    return md_util_element_from_mass(out_z, masses, count);
-}

@@ -200,7 +200,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         } else {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", i + 1);
-            id = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)});
+            id = md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)});
         }
         md_array_push(A->oper_id, id, alloc);
 
@@ -213,7 +213,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             }
         }
         if (dev > 1.0e-3f || M.elem[0][3] != 0.0f || M.elem[1][3] != 0.0f || M.elem[2][3] != 0.0f || M.elem[3][3] != 1.0f) {
-            MD_LOG_INFO("Assemblies: operator '" MD_STR_FMT "' is not rigid (off by %g)", MD_STR_ARG(LBL_TO_STR(id)), dev);
+            MD_LOG_INFO("Assemblies: operator '" MD_STR_FMT "' is not rigid (off by %g)", MD_STR_ARG(MD_LABEL_STR(id)), dev);
         }
     }
     A->oper_count = oper_count;
@@ -242,7 +242,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             for (size_t k = 0; k < gen[g].oper_count; ++k) {
                 const uint32_t o = gen[g].oper[k];
                 if (o >= oper_count) {
-                    MD_LOG_ERROR("Assemblies: assembly '" MD_STR_FMT "' names operator %u of %zu", MD_STR_ARG(LBL_TO_STR(asm_id)), o, oper_count);
+                    MD_LOG_ERROR("Assemblies: assembly '" MD_STR_FMT "' names operator %u of %zu", MD_STR_ARG(MD_LABEL_STR(asm_id)), o, oper_count);
                     continue;
                 }
                 md_array_push(pairs, ((uint64_t)o << 32) | (uint64_t)g, ta);
@@ -344,7 +344,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             A->group_count += 1;
         }
         if (A->group_count == first_group) {
-            MD_LOG_INFO("Assemblies: assembly '" MD_STR_FMT "' holds none of the instances of the system and was left out", MD_STR_ARG(LBL_TO_STR(asm_id)));
+            MD_LOG_INFO("Assemblies: assembly '" MD_STR_FMT "' holds none of the instances of the system and was left out", MD_STR_ARG(MD_LABEL_STR(asm_id)));
             continue;
         }
         md_array_push(A->id, asm_id, alloc);
@@ -402,13 +402,13 @@ void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_alloca
 
 md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, md_str_t id, md_part_type_flags_t flags, md_str_t description, md_allocator_i* alloc) {
     MD_ASSERT(type);
-    md_label_t lbl = make_label(id);
+    md_label_t lbl = md_label_make(id);
     if (md_str_empty(id)) {
         // Its position, or the first number after it which no type has for an id (the ids of a file need not be 1..n)
         for (size_t n = type->count + 1;; ++n) {
             char buf[16];
             const int len = snprintf(buf, sizeof(buf), "%zu", n);
-            lbl = make_label((md_str_t){buf, (size_t)MD_MAX(len, 0)});
+            lbl = md_label_make((md_str_t){buf, (size_t)MD_MAX(len, 0)});
             bool taken = false;
             for (size_t i = 0; i < md_array_size(type->id) && !taken; ++i) taken = md_label_eq(type->id[i], lbl);
             if (!taken) break;
@@ -486,31 +486,6 @@ const char* md_hybridization_name(md_hybridization_t hyb) {
     case MD_HYBRIDIZATION_SP3:      return "sp3";
     default:                        return "";
     }
-}
-
-const char* md_bond_origin_name(md_bond_origin_t origin) {
-    switch (origin) {
-    case MD_BOND_ORIGIN_FILE:       return "file";
-    case MD_BOND_ORIGIN_TOPOLOGY:   return "topology";
-    case MD_BOND_ORIGIN_USER:       return "user";
-    case MD_BOND_ORIGIN_INFERRED:   return "inferred";
-    default:                        return "";
-    }
-}
-
-static const md_bond_kind_name_t bond_kind_names[] = {
-    {"covalent",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COVALENT},
-    {"coordinate",  MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COORDINATE},
-    {"elastic",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_ELASTIC},
-    {"metallic",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_METALLIC},
-    {"noncovalent", (md_bond_flags_t)0xC0,      (md_bond_flags_t)0xC0},     // md_bond_is_noncovalent
-    {"interaction", MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_INTERACTION},
-    {"hydrogen",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_HYDROGEN},
-};
-
-const md_bond_kind_name_t* md_bond_kind_names(size_t* count) {
-    if (count) *count = MD_COUNTOF(bond_kind_names);
-    return bond_kind_names;
 }
 
 void md_system_free(md_system_t* sys) {
@@ -691,7 +666,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
     dst->unitcell = src->unitcell;
     dst->frame    = src->frame;
 
-    // The attribute table is deliberately NOT carried over. The one caller is md_util_system_infer
+    // The attribute table is deliberately NOT carried over. The one caller is md_system_infer
     // writing sys->reference, and topology inference reads coordinates and the cell - nothing else.
     // Duplicating a frame's velocities into a reference snapshot would put a second copy of them in
     // the system with nothing keeping the two in step, which is the whole class of problem the
@@ -783,111 +758,6 @@ void md_system_reset(md_system_t* sys) {
     sys->attributes.alloc = alloc;
     // Every loader starts here, so whatever it builds has a version of its own
     md_system_topology_changed(sys);
-}
-
-// The connectivity is the graph of the molecules: every bond of the first range but the elastic ones
-// (MD_BOND_KIND_ELASTIC), springs of the force field which connect nothing. bond_flags NULL: every bond is covalent.
-static inline bool conn_has_bond(const md_bond_flags_t* bond_flags, size_t i) {
-    return !bond_flags || md_bond_is_graph(bond_flags[i]);
-}
-
-static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, const md_bond_flags_t* bond_flags, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
-    MD_ASSERT(conn);
-    MD_ASSERT(alloc);
-
-    if (bond_pairs == NULL) return;
-    if (bond_pair_count == 0) return;
-    if (atom_count == 0) return;
-
-    conn->offset_count = atom_count + 1;
-    md_array_resize(conn->offset, conn->offset_count, alloc);
-    md_memset(conn->offset, 0, md_array_bytes(conn->offset));
-
-    size_t graph_count = 0;
-    for (size_t i = 0; i < bond_pair_count; ++i) graph_count += conn_has_bond(bond_flags, i);
-
-    // This have length of 2 * bond_count (one for each direction of the bond)
-    conn->count = 2 * graph_count;
-    md_array_resize(conn->atom_idx, conn->count, alloc);
-    md_array_resize(conn->bond_idx, conn->count, alloc);
-
-    typedef struct {
-        uint16_t off[2];
-    } offset_t;
-
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-
-    offset_t* local_offset = md_temp_alloc_zero_array(temp, offset_t, bond_pair_count);
-    MD_ASSERT(local_offset);
-
-    // Two packed 16-bit local offsets for each of the bond idx
-    // Use offsets as accumulators for length
-    for (size_t i = 0; i < bond_pair_count; ++i) {
-        if (!conn_has_bond(bond_flags, i)) continue;
-		MD_ASSERT(bond_pairs[i].idx[0] < (md_atom_idx_t)atom_count);
-		MD_ASSERT(bond_pairs[i].idx[1] < (md_atom_idx_t)atom_count);
-        local_offset[i].off[0] = (uint16_t)conn->offset[bond_pairs[i].idx[0]]++;
-        local_offset[i].off[1] = (uint16_t)conn->offset[bond_pairs[i].idx[1]]++;
-    }
-
-    // Compute complete edge offsets (exclusive scan)
-    uint32_t off = 0;
-    for (size_t i = 0; i < conn->offset_count; ++i) {
-        const uint32_t len = conn->offset[i];
-        conn->offset[i] = off;
-        off += len;
-    }
-
-    // Write edge indices to correct location
-    for (size_t i = 0; i < bond_pair_count; ++i) {
-        if (!conn_has_bond(bond_flags, i)) continue;
-        const md_atom_pair_t p = bond_pairs[i];
-        const int atom_a = p.idx[0];
-        const int atom_b = p.idx[1];
-        const int local_a = (int)local_offset[i].off[0];
-        const int local_b = (int)local_offset[i].off[1];
-        const int off_a = conn->offset[atom_a];
-        const int off_b = conn->offset[atom_b];
-
-        const int idx_a = off_a + local_a;
-        const int idx_b = off_b + local_b;
-
-        MD_ASSERT(idx_a < (int)conn->count);
-        MD_ASSERT(idx_b < (int)conn->count);
-
-        // Store the cross references to the 'other' atom index signified by the bond in the correct location
-        conn->atom_idx[idx_a] = atom_b;
-        conn->atom_idx[idx_b] = atom_a;
-
-        conn->bond_idx[idx_a] = (md_bond_idx_t)i;
-        conn->bond_idx[idx_b] = (md_bond_idx_t)i;
-    }
-
-    // Each atom's neighbours ascending by atom index, whatever order the bonds were found in (a spatial search finds
-    // them in cell order). What walks the graph - the slot order of the molecules (md_molecule_data_t) above all -
-    // then depends on the atoms' order alone, so that molecules alike, written alike, are walked alike.
-    for (size_t a = 0; a < atom_count; ++a) {
-        const uint32_t beg = conn->offset[a], end = conn->offset[a + 1];
-        for (uint32_t k = beg + 1; k < end; ++k) {
-            const md_atom_idx_t ai = conn->atom_idx[k];
-            const md_bond_idx_t bi = conn->bond_idx[k];
-            uint32_t j = k;
-            for (; j > beg && conn->atom_idx[j - 1] > ai; --j) {
-                conn->atom_idx[j] = conn->atom_idx[j - 1];
-                conn->bond_idx[j] = conn->bond_idx[j - 1];
-            }
-            conn->atom_idx[j] = ai;
-            conn->bond_idx[j] = bi;
-        }
-    }
-
-    md_temp_end(temp);
-}
-
-void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {
-    MD_ASSERT(in_out_bond);
-    MD_ASSERT(alloc);
-	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->flags, in_out_bond->count, atom_count, alloc);
 }
 
 void md_system_bond_build_connectivity(md_system_t* sys) {

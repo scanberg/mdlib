@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include <md_types.h>
+#include <md_ring.h>
 #include <md_fragment.h>
 
 #include <md_atom.h>
@@ -37,13 +38,13 @@ typedef struct md_system_t {
     // equality only: it is not a count of changes. 0 is a system no mdlib function has built.
     //
     // Every mdlib function which changes the topology bumps it: md_system_reset (and so every loader),
-    // md_util_system_infer and the md_util_system_infer_* functions, md_chem_perceive, md_system_bond_insert and
+    // md_system_infer and the md_util_system_infer_* functions, md_chem_perceive, md_system_bond_insert and
     // md_system_bond_remove, md_itp_system_supplement. Code which changes the arrays by hand calls
     // md_system_topology_changed afterwards.
     uint64_t                    topology_version;
 
     // The state from which the derived topology below (bonds, rings, molecules, backbones) was
-    // inferred. Written by md_util_system_infer as part of performing the inference, so it is by
+    // inferred. Written by md_system_infer as part of performing the inference, so it is by
     // construction the input which produced that topology and cannot go stale.
     //
     // RULE: only inference and load time completion read this. Every other operation takes the
@@ -126,7 +127,7 @@ static inline size_t md_system_residue_count(const md_system_t* sys) {
 
 static inline md_str_t md_system_residue_name(const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(sys);
-    if (sys->residue.name && res_idx < sys->residue.count) return LBL_TO_STR(sys->residue.name[res_idx]);
+    if (sys->residue.name && res_idx < sys->residue.count) return MD_LABEL_STR(sys->residue.name[res_idx]);
     return MD_STR_LIT("");
 }
 
@@ -155,8 +156,13 @@ static inline md_residue_flags_t md_system_residue_flags(const md_system_t* sys,
     return (sys->residue.flags && res_idx < sys->residue.count) ? sys->residue.flags[res_idx] : MD_RESIDUE_FLAG_NONE;
 }
 
+// The kind of the residue: that of its type (md_residue_type_data_t). OTHER for a residue of no type yet (one never
+// classified, before md_system_infer_residue_types)
 static inline md_residue_kind_t md_system_residue_kind(const md_system_t* sys, size_t res_idx) {
-    return md_residue_flags_kind(md_system_residue_flags(sys, res_idx));
+    MD_ASSERT(sys);
+    if (!sys->residue.type_idx || res_idx >= sys->residue.count || res_idx >= md_array_size(sys->residue.type_idx)) return MD_RESIDUE_KIND_OTHER;
+    const md_residue_type_idx_t t = sys->residue.type_idx[res_idx];
+    return (t >= 0 && (size_t)t < sys->residue.type.count) ? sys->residue.type.kind[t] : MD_RESIDUE_KIND_OTHER;
 }
 
 // The residue of the atom, -1 for an atom in none
@@ -165,10 +171,10 @@ static inline md_residue_idx_t md_system_residue_find_by_atom_idx(const md_syste
     return (md_residue_idx_t)md_offset_range_find(sys->residue.atom_offset, sys->residue.count, atom_idx);
 }
 
-// The type of the residue, -1 when the types have not been inferred
+// The type of the residue, -1 for one of none yet
 static inline md_residue_type_idx_t md_system_residue_type_idx(const md_system_t* sys, size_t res_idx) {
     MD_ASSERT(sys);
-    return (sys->residue.type_idx && res_idx < sys->residue.count) ? sys->residue.type_idx[res_idx] : -1;
+    return (sys->residue.type_idx && res_idx < sys->residue.count && res_idx < md_array_size(sys->residue.type_idx)) ? sys->residue.type_idx[res_idx] : -1;
 }
 
 // PART TYPES (md_part_type_data_t)
@@ -183,7 +189,7 @@ static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_
     MD_ASSERT(sys);
     if (sys->part.type.id) {
         for (size_t i = 0; i < sys->part.type.count; ++i) {
-            if (md_str_eq(LBL_TO_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
+            if (md_str_eq(MD_LABEL_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
         }
     }
     return -1;
@@ -191,7 +197,7 @@ static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_
 
 static inline md_str_t md_system_part_type_id(const md_system_t* sys, size_t type_idx) {
     MD_ASSERT(sys);
-    if (sys->part.type.id && type_idx < sys->part.type.count) return LBL_TO_STR(sys->part.type.id[type_idx]);
+    if (sys->part.type.id && type_idx < sys->part.type.count) return MD_LABEL_STR(sys->part.type.id[type_idx]);
     return MD_STR_LIT("");
 }
 
@@ -250,13 +256,13 @@ static inline size_t md_system_instance_atom_count(const md_system_t* sys, size_
 
 static inline md_str_t md_system_instance_id(const md_system_t* sys, size_t inst_idx) {
     MD_ASSERT(sys);
-    if (sys->instance.id && inst_idx < sys->instance.count) return LBL_TO_STR(sys->instance.id[inst_idx]);
+    if (sys->instance.id && inst_idx < sys->instance.count) return MD_LABEL_STR(sys->instance.id[inst_idx]);
     return MD_STR_LIT("");
 }
 
 static inline md_str_t md_system_instance_auth_id(const md_system_t* sys, size_t inst_idx) {
     MD_ASSERT(sys);
-    if (sys->instance.auth_id && inst_idx < sys->instance.count) return LBL_TO_STR(sys->instance.auth_id[inst_idx]);
+    if (sys->instance.auth_id && inst_idx < sys->instance.count) return MD_LABEL_STR(sys->instance.auth_id[inst_idx]);
     return MD_STR_LIT("");
 }
 
@@ -337,7 +343,7 @@ static inline md_str_t md_system_chain_id(const md_system_t* sys, size_t chain_i
     MD_ASSERT(sys);
     md_str_t id = MD_STR_INIT("");
     if (sys->chain.id && chain_idx < sys->chain.count) {
-        id = LBL_TO_STR(sys->chain.id[chain_idx]);
+        id = MD_LABEL_STR(sys->chain.id[chain_idx]);
     }
     return id;
 }
@@ -448,7 +454,7 @@ static inline size_t md_system_molecule_count(const md_system_t* sys) {
     return sys->molecule.count;
 }
 
-// The molecule of the atom, -1 when the molecules have not been inferred (md_util_system_infer_molecules). The atoms
+// The molecule of the atom, -1 when the molecules have not been inferred (md_molecule_infer). The atoms
 // of a molecule need not be consecutive: it is found by the atom's slot (md_molecule_data_t).
 static inline md_molecule_idx_t md_system_molecule_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     MD_ASSERT(sys);
@@ -501,7 +507,7 @@ static inline md_molecule_t md_system_molecule(const md_system_t* sys, size_t mo
 }
 
 // The slot of the atom in the arrays of the molecules (md_molecule_data_t). Requires the molecules
-// (md_util_system_infer_molecules).
+// (md_molecule_infer).
 static inline int32_t md_system_molecule_atom_slot(const md_system_t* sys, size_t atom_idx) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->molecule.atom_slot);
@@ -509,7 +515,7 @@ static inline int32_t md_system_molecule_atom_slot(const md_system_t* sys, size_
 }
 
 // The atom the atom was reached from in the tree of its molecule; a root is its own parent. Requires the molecules
-// (md_util_system_infer_molecules).
+// (md_molecule_infer).
 static inline int32_t md_system_molecule_atom_parent(const md_system_t* sys, size_t atom_idx) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->molecule.atom_slot);

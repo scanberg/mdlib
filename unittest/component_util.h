@@ -5,7 +5,7 @@
 // Format: COMP id / A name element charge x y z / B i j order aromatic, '#' starts a comment line.
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -51,7 +51,7 @@ static inline md_array(ref_comp_t) read_components(md_str_t path, md_allocator_i
             ref_atom_t a = { 0 };
             char el[8];
             sscanf(buf + 2, "%7s %7s %d %f %f %f", a.name, el, &a.q, &a.x.x, &a.x.y, &a.x.z);
-            a.z = md_util_element_lookup((md_str_t){ el, strlen(el) }, true);
+            a.z = md_atomic_number_from_symbol((md_str_t){ el, strlen(el) }, true);
             md_array_push(md_array_last(comps)->atom, a, alloc);
         } else if (buf[0] == 'B' && buf[1] == ' ' && md_array_size(comps)) {
             ref_bond_t b = { 0 };
@@ -84,19 +84,21 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     for (int i = 0; i < na; ++i) {
         if (map[i] < 0) continue;
         const ref_atom_t* a = &c->atom[i];
-        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(a->name), (md_atomic_number_t)a->z, md_util_element_atomic_mass(a->z), md_util_element_vdw_radius(a->z), 0, 0, alloc);
+        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(a->name), (md_atomic_number_t)a->z, md_atomic_number_mass(a->z), md_atomic_number_vdw_radius(a->z), 0, 0, alloc);
         st->xyz[map[i]] = a->x;
     }
     st->num_atoms = n;
     sys->residue.count = 1;
-    md_array_push(sys->residue.name, make_label(md_str_from_cstr(c->id)), alloc);
+    md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(c->id)), alloc);
     md_array_push(sys->residue.seq_id, 1, alloc);
     md_array_push(sys->residue.flags, 0, alloc);
     md_array_push(sys->residue.atom_offset, 0, alloc);
     md_array_push(sys->residue.atom_offset, (uint32_t)n, alloc);
 
     if (infer) {
-        md_util_infer_covalent_bonds(&sys->bond, st, sys, alloc, NULL);
+        md_bond_data_t inferred = {0};
+        md_bond_infer(&inferred, sys, st, alloc, NULL);
+        sys->bond = inferred;
     } else {
         for (size_t b = 0; b < md_array_size(c->bond); ++b) {
             const ref_bond_t* r = &c->bond[b];
@@ -108,6 +110,11 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
         }
         md_bond_build_connectivity(&sys->bond, n, alloc);
     }
-    md_util_system_infer_rings(sys);
+    {
+        md_ring_data_t rings = {0};
+        md_ring_infer(&rings, sys, (sys)->alloc);
+        md_ring_data_free(&(sys)->ring, (sys)->alloc);
+        (sys)->ring = rings;
+    }
 }
 

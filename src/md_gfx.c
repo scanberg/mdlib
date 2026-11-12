@@ -1,7 +1,7 @@
 ﻿#include <md_gfx.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_util_sort.h>
 
 #include <core/md_common.h>
 #include <core/md_parse.h>
@@ -1080,7 +1080,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     }
 
     uint32_t* grp_src_indices = md_temp_alloc(temp_scope, sizeof(uint32_t) * grp_count);
-    md_util_sort_spatial_xyz(grp_src_indices, (const float*)grp_cent, sizeof(md_f32x3_t), grp_count);
+    md_util_sort_spatial(grp_src_indices, (const float*)grp_cent, sizeof(md_f32x3_t), grp_count);
 
     uint32_t* src_indices = NULL;
     range_t* base_groups  = NULL;
@@ -1152,7 +1152,7 @@ void recompute_clusters(structure_t* s, const md_f32x3_t* xyz, uint32_t count) {
     uint32_t* cluster_ranges = NULL;
     uint32_t* src_indices = md_alloc(alloc, sizeof(uint32_t) * count);
 
-    md_util_sort_spatial(src_indices, xyz, count);
+    md_util_sort_spatial(src_indices, (const float*)xyz, sizeof(md_f32x3_t), count);
     md_array_ensure(cluster_ranges, MD_DIV_UP(count, MIN_COUNT_PER_CLUSTER), alloc);
 
     md_f32x3_t min_xyz = {+FLT_MAX, +FLT_MAX, +FLT_MAX};

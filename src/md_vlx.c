@@ -17,11 +17,12 @@
 #include <md_system.h>
 #include <md_gto.h>
 #include <md_qm.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_pot.h>
 
 #include <hdf5.h>
 #include "md_hdf5.h"
+#include <md_element.h>
 
 
 // ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ typedef struct vlx_xps_entry_t {
 	double       contribution;		// Fraction of the core MO localized on 'atom_index'
 	int32_t      atom_index;		// Index into the molecular structure
 	int32_t      mo_index;			// Index into the MO (orbital) arrays
-	md_element_t element;			// Atomic number, matches the owning group
+	md_atomic_number_t element;			// Atomic number, matches the owning group
 	bool         is_delocalized;	// Core hole is spread over several symmetry equivalent atoms
 } vlx_xps_entry_t;
 
@@ -292,7 +293,7 @@ typedef struct vlx_t {
 	vlx_rsp_t rsp;
 	vlx_mm_t  mm;
 
-	md_element_t* atomic_numbers;
+	md_atomic_number_t* atomic_numbers;
 	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
 	// ao_remap[shell_ao_idx] = vlx_ao_idx
 	// Maps from shell order (angl→atom→func→isph) to VeloxChem matrix row order (angl→isph→atom→func).
@@ -432,7 +433,7 @@ static inline basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* bas
 	return NULL;
 }
 
-static inline int compute_max_angular_momentum(const basis_set_t* basis_set, const md_element_t* atomic_numbers, size_t count) {
+static inline int compute_max_angular_momentum(const basis_set_t* basis_set, const md_atomic_number_t* atomic_numbers, size_t count) {
 	MD_ASSERT(basis_set);
 	MD_ASSERT(atomic_numbers);
 	int max_angl = 0;
@@ -3741,7 +3742,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 
 	MD_ASSERT(sys->residue.count == 0);
 	md_array_push(sys->residue.atom_offset, 0u, sys->alloc);
-	md_array_push(sys->residue.name,     make_label(MD_STR_LIT("QM")), sys->alloc);
+	md_array_push(sys->residue.name,     md_label_make(MD_STR_LIT("QM")), sys->alloc);
 	md_array_push(sys->residue.seq_id, (md_sequence_id_t)0, sys->alloc);
 	md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 	sys->residue.count += 1;
@@ -3765,7 +3766,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 		// sites are adjacent in this order however the file scattered them
 		if (k == 0 || site->fragment_id != pot->sites[vlx->mm.order[k - 1]].fragment_id) {
 			md_array_push(sys->residue.atom_offset, (uint32_t)atom_idx, sys->alloc);
-			md_array_push(sys->residue.name,     make_label(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
+			md_array_push(sys->residue.name,     md_label_make(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
 			md_array_push(sys->residue.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
 			md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 			sys->residue.count += 1;
@@ -4137,7 +4138,7 @@ static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 			continue;
 		}
 
-		const md_element_t element = md_util_element_lookup(md_str_from_cstr(name_buf), true);
+		const md_atomic_number_t element = md_atomic_number_from_symbol(md_str_from_cstr(name_buf), true);
 		if (element == 0) {
 			MD_LOG_INFO("XPS: skipping group '%s', not a recognized element symbol", name_buf);
 			continue;
@@ -5988,7 +5989,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
     state->num_atoms = sys->atom.count;
 
 	// The fragments are residues, and what kind of residue (water, above all) is read from their atoms and bonds, by
-	// md_util_system_infer (MD_UTIL_INFER_BOND_BIT, _RESIDUE_BIT) as for a structure file.
+	// md_system_infer (MD_SYSTEM_INFER_BOND_BIT, _RESIDUE_BIT) as for a structure file.
 
 	if (!vlx_publish_core(vlx)) {
 		return false;

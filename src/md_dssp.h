@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include <md_types.h>
+#include <md_backbone.h>
 
 struct md_f32x3_t;
 struct md_unitcell_t;

@@ -14,7 +14,7 @@
 #include <md_gro.h>
 #include <md_pdb.h>
 #include <md_mmcif.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_xyz.h>
 
 #include "component_util.h"
@@ -236,7 +236,7 @@ UTEST(chem, ions) {
         "HETATM   17 MG    MG A   6      50.000   0.000   0.000  1.00  0.00          MG\n"
         "HETATM   18  O   HOH A   7      60.000   0.000   0.000  1.00  0.00           O\n";
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     int q[8] = { 0 };
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
@@ -333,14 +333,14 @@ UTEST_F(chem, given_charges) {
     md_vm_arena_destroy(alloc);
 }
 
-// A protein from a crystal structure (no hydrogens) through md_util_system_infer: charged side chains and termini,
+// A protein from a crystal structure (no hydrogens) through md_system_infer: charged side chains and termini,
 // and the cysteines of the zinc fingers as thiolates
 UTEST(chem, deposited_structure) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_TRUE(sys.atom.formal_charge != NULL);
     ASSERT_TRUE(sys.atom.hydrogen_count != NULL);
 
@@ -388,7 +388,7 @@ UTEST(chem, simulation_with_hydrogens) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     int n_res = 0, unexpected = 0;
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
@@ -923,14 +923,14 @@ static void delta_load(delta_fixture_chem_t* f, const char* before, const char* 
     f->frame        = (md_system_state_t){ .alloc = f->alloc };
     if (!md_xyz_system_init_from_str(&f->before, &f->before_state, md_str_from_cstr(before), MD_XYZ_OPTION_NONE)) return;
     if (!md_xyz_system_init_from_str(&f->after, &f->after_state, md_str_from_cstr(after), MD_XYZ_OPTION_NONE)) return;
-    if (!md_util_system_infer(&f->before, &f->before_state, MD_UTIL_INFER_ALL, NULL)) return;
-    if (!md_util_system_infer(&f->after, &f->after_state, MD_UTIL_INFER_ALL, NULL)) return;
+    if (!md_system_infer(&f->before, &f->before_state, MD_SYSTEM_INFER_ALL, NULL)) return;
+    if (!md_system_infer(&f->after, &f->after_state, MD_SYSTEM_INFER_ALL, NULL)) return;
     const size_t n = f->before.atom.count;
     if (f->after.atom.count != n) return;
     md_system_state_init(&f->frame, n);
     for (size_t i = 0; i < n; ++i) f->frame.xyz[i] = f->after_state.xyz[i];
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
-    if (!md_util_bond_delta(&f->delta, &f->before, &f->frame, &desc, f->alloc)) return;
+    if (!md_bond_delta_compute(&f->delta, &f->before, &f->frame, &desc, f->alloc)) return;
     f->ok = md_chem_perceive_delta(&f->chem, &f->before, &f->frame, &f->delta, MD_CHEM_FLAG_PROTONATE_PH7, f->alloc);
 }
 
@@ -1174,7 +1174,7 @@ UTEST(chem, delta_metal_contact) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data, MD_XYZ_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const size_t n = sys.atom.count;
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
     size_t frames = 0;
@@ -1186,7 +1186,7 @@ UTEST(chem, delta_metal_contact) {
             fs.xyz[i] = md_f32x3_set(c.x, c.y, c.z);
         }
         md_bond_delta_t d = {0};
-        ASSERT_TRUE(md_util_bond_delta(&d, &sys, &fs, &desc, alloc));
+        ASSERT_TRUE(md_bond_delta_compute(&d, &sys, &fs, &desc, alloc));
         if (d.num_formed == 0 && md_bitset_empty(d.broken)) continue;
         frames += 1;
         md_chem_delta_t chem = {0};

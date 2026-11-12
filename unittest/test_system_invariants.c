@@ -4,7 +4,7 @@
 #include <md_gro.h>
 #include <md_mmcif.h>
 #include <md_lammps.h>
-#include <md_util.h>
+#include <md_infer.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -27,7 +27,7 @@ static void check_file(int* utest_result, sys_load_fn load, md_str_t path) {
         return;
     }
 
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
 
     md_system_free(&sys);
@@ -88,8 +88,8 @@ UTEST(system_invariants, copy) {
     EXPECT_NE((void*)sys.atom.type_idx, (void*)core.atom.type_idx);
     md_system_state_t core_state = { .alloc = a2 };
     md_system_state_copy(&core_state, &state);
-    ASSERT_TRUE(md_util_system_infer(&core, &core_state, MD_UTIL_INFER_ALL, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&core, &core_state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     expect_valid_system(utest_result, __FILE__, __LINE__, &core);
     EXPECT_EQ(sys.bond.count, core.bond.count);
     EXPECT_EQ(0, memcmp(sys.bond.pairs, core.bond.pairs, sys.bond.count * sizeof(md_atom_pair_t)));
@@ -116,7 +116,7 @@ UTEST(system_invariants, copy) {
 }
 
 // ### INFERENCE WHILE THE SYSTEM IS IN USE ###
-// md_util_system_infer_prepare shares the CORE of a system with the work and copies the DERIVED (md_system_fields.h).
+// md_system_infer_prepare shares the CORE of a system with the work and copies the DERIVED (md_system_fields.h).
 // That is sound only if inference writes none of the core: these check it of systems of every kind, and that what is
 // published is what inferring the system itself gives.
 
@@ -184,14 +184,14 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
     } else {
         const char* name = (const char*)path.ptr;
         // The colors of the types first, as a viewer has them to show the system with: of the types, which the work
-        // does not publish (md_util_system_infer_run)
-        md_util_system_infer(&sys, &state, MD_UTIL_INFER_COLOR_BIT, NULL);
+        // does not publish (md_system_infer_run)
+        md_system_infer(&sys, &state, MD_SYSTEM_INFER_COLOR_BIT, NULL);
         md_system_t snap = { .alloc = a_snap };
         md_system_copy(&snap, &sys);
 
-        md_util_infer_work_t work;
-        EXPECT_TRUE(md_util_system_infer_prepare(&work, &sys, &state, a_work));
-        EXPECT_TRUE(md_util_system_infer_run(&work, MD_UTIL_INFER_ALL, NULL));
+        md_system_infer_work_t work;
+        EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
+        EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
 
         // Nothing of the system was written: not through what the work shares of it
         expect_same_core(utest_result, __FILE__, __LINE__, name, &sys, &snap);
@@ -203,10 +203,10 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
         md_system_t ref = { .alloc = a_ref };
         md_system_state_t ref_state = { .alloc = a_ref };
         ASSERT_TRUE(load(&ref, &ref_state, path));
-        md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_COLOR_BIT, NULL);
-        md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_COLOR_BIT, NULL);
+        md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_COLOR_BIT, NULL);
+        md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_COLOR_BIT, NULL);
 
-        EXPECT_TRUE(md_util_system_infer_publish(&sys, &work));
+        EXPECT_TRUE(md_system_infer_publish(&sys, &work));
         expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
         expect_same_core(utest_result, __FILE__, __LINE__, name, &sys, &ref);
         expect_same_derived(utest_result, __FILE__, __LINE__, name, &sys, &ref);
@@ -217,9 +217,9 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
 
         // Of a system whose topology changed meanwhile, the work is not published
         const uint64_t version = sys.topology_version;
-        EXPECT_TRUE(md_util_system_infer_prepare(&work, &sys, &state, a_work));
+        EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
         md_system_topology_changed(&sys);
-        EXPECT_FALSE(md_util_system_infer_publish(&sys, &work));
+        EXPECT_FALSE(md_system_infer_publish(&sys, &work));
         EXPECT_NE(version, sys.topology_version);
     }
 

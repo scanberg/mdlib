@@ -12,8 +12,9 @@
 #include <core/md_writer.h>
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_system.h>
+#include <md_element.h>
 
 #include <math.h>
 #include <inttypes.h>
@@ -210,7 +211,7 @@ static md_part_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
         case ENTITY_POLY_TYPE_OTHER:
             return MD_PART_KIND_POLYMER;
         default:
-            // Classified from its residues once they are (md_util_system_infer_parts)
+            // Classified from its residues once they are (md_part_infer)
             return MD_PART_KIND_UNKNOWN;
         }
     case ENTITY_TYPE_BRANCHED:
@@ -938,7 +939,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
         }
 
         const md_assembly_gen_t g = {
-            .assembly_id = make_label(rows[r].assembly_id),
+            .assembly_id = md_label_make(rows[r].assembly_id),
             .inst        = inst,
             .inst_count  = md_array_size(inst),
             .oper        = ops,
@@ -952,7 +953,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
     md_label_t* id        = md_alloc(temp_alloc, oper_count * sizeof(md_label_t));
     for (size_t i = 0; i < oper_count; ++i) {
         transform[i] = opers[i].transform;
-        id[i] = make_label(opers[i].id);
+        id[i] = md_label_make(opers[i].id);
     }
     md_system_assemblies_init(sys, gen, md_array_size(gen), transform, id, oper_count);
 }
@@ -1558,7 +1559,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                     md_str_t symbol = md_str_from_cstrn(entry->type_symbol, sizeof(entry->type_symbol));
                     md_str_t atom_id = md_str_from_cstrn(entry->label_atom_id, sizeof(entry->label_atom_id));
                     md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
-                    particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
+                    particle_type_idx = md_system_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
                     if (!s_idx) {
                         md_hashmap_add(&seen_map, key, (uint32_t)md_array_size(seen));
                         md_array_push(seen, ((mmcif_type_seen_t){ name, symbol_word, particle_type_idx }), temp_arena);
@@ -1580,7 +1581,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 // --- New residue boundary ---
                 // Start residue (store atom offset before adding any residue atoms)
                 md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
-                md_array_push(sys->residue.name, make_label(comp_id), alloc);
+                md_array_push(sys->residue.name, md_label_make(comp_id), alloc);
                 md_array_push(sys->residue.seq_id, seq_id, alloc);
                 md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
 
@@ -1590,8 +1591,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 const md_part_kind_t entity_kind = entity_idx != -1 ? md_system_part_type_kind(sys, entity_idx) : MD_PART_KIND_UNKNOWN;
                 const bool one_per_residue = entity_kind == MD_PART_KIND_WATER || entity_kind == MD_PART_KIND_NON_POLYMER;
                 if (sys->instance.count == 0 || new_inst || one_per_residue) {
-                    md_array_push(sys->instance.id, make_label(label_asym_id), alloc);
-                    md_array_push(sys->instance.auth_id, make_label(auth_asym_id), alloc);
+                    md_array_push(sys->instance.id, md_label_make(label_asym_id), alloc);
+                    md_array_push(sys->instance.auth_id, md_label_make(auth_asym_id), alloc);
                     md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
                     md_array_push(sys->instance.part_type_idx, entity_idx, alloc);
                     md_array_push(sys->instance.mol_type_idx, -1, alloc);
@@ -1655,7 +1656,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // The bonds, what the residues are by them and the chains are md_util_system_infer's (MD_UTIL_INFER_BOND_BIT,
+    // The bonds, what the residues are by them and the chains are md_system_infer's (MD_SYSTEM_INFER_BOND_BIT,
     // _RESIDUE_BIT, _PART_BIT): the loader gives what the file says.
 
     // The assemblies name the instances by their asym ids

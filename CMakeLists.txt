@@ -113,6 +113,7 @@ set(CORE_FILES
   src/core/md_writer.h
   src/core/md_reader.h
   src/core/md_str.h
+  src/core/md_label.h
   src/core/md_tracking_allocator.c
   src/core/md_tracking_allocator.h
   src/core/md_unit.c
@@ -126,6 +127,8 @@ set(CORE_FILES
 
 set(SRC_FILES
   src/md_atomic_infer.c
+  src/md_element.c
+  src/md_element.h
   src/md_chem.c
   src/md_chem.h
   src/md_contact.c
@@ -197,6 +200,7 @@ set(SRC_FILES
   src/md_molden.c
   src/md_molden.h
   src/md_monomer.c
+  src/md_monomer.h
   src/md_attributes.c
   src/md_attributes.h
   src/md_attributes_internal.h
@@ -207,6 +211,7 @@ set(SRC_FILES
   src/md_backbone.h
   src/md_lipid.h
   src/md_bond.h
+  src/md_ring.h
   src/md_assembly.h
   src/md_group.h
   src/md_system_state.h
@@ -272,9 +277,21 @@ set(SRC_FILES
   src/md_trr.c
   src/md_trr.h
   src/md_types.h
-  src/md_util.c
+  src/md_infer.c
+  src/md_infer_internal.h
+  src/md_bond.c
+  src/md_ring.c
+  src/md_atom.c
+  src/md_hierarchy.c
+  src/md_backbone.c
+  src/md_lipid.c
+  src/md_martini.c
   src/md_martini_db.inl
-  src/md_util.h
+  src/md_infer.h
+  src/md_util_geom.c
+  src/md_util_geom.h
+  src/md_util_sort.c
+  src/md_util_sort.h
   src/md_unitcell.h
   src/md_unitcell.c
   src/md_vector_graphics.c

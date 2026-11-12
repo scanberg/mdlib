@@ -3,7 +3,7 @@
 #include "select.h"
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_element.h>
 #include <core/md_common.h>
 #include <core/md_array.h>
 
@@ -135,6 +135,8 @@ static void need_heads(vial_sys_t* s) {
         const size_t n = md_lipid_head_atom_count(lip, h);
         for (size_t k = 0; k < n; ++k) if ((uint32_t)a[k] < s->num_atoms) head_of[a[k]] = (int32_t)h;
     }
+    uint8_t* in_tail = md_alloc(s->alloc, s->num_atoms + 1);
+    md_lipid_tail_atom_mask(in_tail, lip, s->num_atoms);
     for (size_t l = 0; l < lip->count; ++l) {
         const uint32_t h0 = lip->head_offset[l], h1 = lip->head_offset[l + 1];
         if (h0 == h1) continue;
@@ -143,7 +145,7 @@ static void need_heads(vial_sys_t* s) {
         for (size_t c = 0; c < nr; ++c) {
             const md_urange_t r = md_system_residue_atom_range(sys, (size_t)res[c]);
             for (uint32_t a = r.beg; a < r.end && a < s->num_atoms; ++a) {
-                if (head_of[a] >= 0 || (md_system_atom_flags(sys, a) & MD_ATOM_FLAG_LIPID_TAIL)) continue;
+                if (head_of[a] >= 0 || in_tail[a]) continue;
                 if (h1 - h0 == 1) { head_of[a] = (int32_t)h0; continue; }
                 for (md_bond_iter_t it = md_bond_iter(&sys->bond, a); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
                     const md_atom_idx_t o = md_bond_iter_atom_index(&it);
@@ -481,7 +483,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
     switch (level) {
     case VIAL_LEVEL_PARTICLE: {
         const bool has = sys->atom.type_idx && sys->atom.type_idx[unit] < sys->atom.type.count;
-        const md_str_t name = has ? LBL_TO_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : MD_STR_LIT("");
+        const md_str_t name = has ? MD_LABEL_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : MD_STR_LIT("");
         n = snprintf(buf, cap, "%.*s/", (int)name.len, name.ptr);
         const uint32_t r = atom_res(s, unit);
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
@@ -770,9 +772,9 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
         for (size_t i = 0; pass && i < md_array_size(q->filters); ++i) {
             const vial_filter_t* f = &q->filters[i];
             switch (f->key) {
-            case VIAL_KEY_NAME: pass = match_str(f, LBL_TO_STR(sys->atom.type.name[t]), true); break;
+            case VIAL_KEY_NAME: pass = match_str(f, MD_LABEL_STR(sys->atom.type.name[t]), true); break;
             case VIAL_KEY_ELEMENT: {
-                const md_str_t sym = sys->atom.type.z ? md_util_element_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
+                const md_str_t sym = sys->atom.type.z ? md_atomic_number_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
                 pass = match_element(f, sym);
                 break;
             }

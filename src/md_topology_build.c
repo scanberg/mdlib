@@ -1,7 +1,8 @@
 #include <md_topology_build.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_element.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -131,7 +132,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Residues
     for (size_t r = 0; r < R; ++r) {
         md_array_push(sys->residue.atom_offset, d.res_offset[r], alloc);
-        md_array_push(sys->residue.name, make_label(d.res_name[r]), alloc);
+        md_array_push(sys->residue.name, md_label_make(d.res_name[r]), alloc);
         md_array_push(sys->residue.seq_id, (md_sequence_id_t)(d.res_number ? d.res_number[r] : (int64_t)r + 1), alloc);
         md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
     }
@@ -157,14 +158,14 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         md_bond_build_connectivity(&sys->bond, N, alloc);
     }
 
-    md_util_system_augment_particle_types(sys);
-    md_util_system_infer_residue_flags(sys);
+    md_system_augment_particle_types(sys);
+    md_system_infer_residue_flags(sys, state);
 
     // ## Chains, as ParmEd keeps them from the structure the topology was made from
     if (d.res_chain) {
         bool any = false;
         for (size_t r = 0; r < R && !any; ++r) any = !md_str_empty(d.res_chain[r]);
-        if (any) md_util_system_instances_from_chain_ids(sys, d.res_chain, NULL);
+        if (any) md_system_instances_from_chain_ids(sys, d.res_chain, NULL);
     }
 
     // ## Attributes
@@ -277,7 +278,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         sys->bond.count = count;
         sys->bond.noncovalent_count = num_noncovalent;
         md_bond_build_connectivity(&sys->bond, N, sys->alloc);
-        md_util_system_infer_coordination(sys);
+        md_system_infer_coordination(sys);
         md_system_topology_changed(sys);
         TOPO_LOG_INFO(d.format, "%zu bonds of the topology replace those inferred", num_topology);
     }
@@ -298,9 +299,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
     }
 
     // ## Derived topology, from the new bonds and the coordinates the system was inferred from
-    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT, NULL);
-    md_util_system_infer_lipids(sys);
-    md_util_system_infer_residue_types(sys);
+    md_system_infer(sys, &sys->reference, MD_SYSTEM_INFER_PART_BIT | MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_BACKBONE_BIT | MD_SYSTEM_INFER_LIPID_BIT, NULL);
     result = true;
 
 done:

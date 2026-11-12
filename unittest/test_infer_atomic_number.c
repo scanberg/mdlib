@@ -1,6 +1,6 @@
 ﻿#include "utest.h"
-#include <md_util.h>
 #include <md_system.h>
+#include <md_element.h>
 #include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -55,8 +55,8 @@ UTEST(element_guess_compat, all_pdb_validation) {
             md_str_t atom_name    = md_str_trim(md_str_substr(line, 12, 4));
             md_str_t atom_resname = md_str_trim(md_str_substr(line, 17, 3));
 
-            md_element_t expected_element = md_atomic_number_from_symbol(explicit_symbol, true);
-            md_element_t inferred_element = md_atomic_number_infer_from_label(atom_name, atom_resname, 0);
+            md_atomic_number_t expected_element = md_atomic_number_from_symbol(explicit_symbol, true);
+            md_atomic_number_t inferred_element = md_atomic_number_infer_from_label(atom_name, atom_resname, 0);
 
             if (expected_element != 0 && inferred_element == expected_element) {
                 total_correct_inferences++;

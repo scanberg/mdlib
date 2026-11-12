@@ -1,5 +1,5 @@
 ﻿#include <md_gto.h>
-#include <md_util.h>
+#include <md_system.h>
 
 #include <core/md_platform.h>
 
@@ -14,7 +14,6 @@
 #include <core/md_common.h>
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
-#include <md_system.h>
 
 #include <stdbool.h>
 #include <float.h>
@@ -1021,7 +1020,7 @@ static void gto_build_sparse_pairs(
 
     // Step 1: Morton-sort CGTO centers.
     // cgto_order[new_idx] = original_idx after the sort.
-    //md_util_sort_spatial_xyz(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_f32x4_t), num_cgtos);
+    //md_util_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_f32x4_t), num_cgtos);
 
     //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
 

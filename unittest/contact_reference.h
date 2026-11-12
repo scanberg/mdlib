@@ -5,7 +5,7 @@
 
 #include <md_contact.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_util_geom.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>
@@ -40,7 +40,7 @@ static inline bool ref_excluded(md_bitmask_t* cache, const md_system_t* sys, uin
     if (!cache[a].alloc) {
         cache[a] = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
         md_bitmask_set_bit(&cache[a], a);
-        md_util_mask_grow_by_bonds(&cache[a], sys, max_bonds, NULL);
+        md_bond_mask_grow(&cache[a], &sys->bond, sys->atom.count, max_bonds, NULL);
     }
     return md_bitmask_test_bit(&cache[a], b);
 }

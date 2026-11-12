@@ -35,7 +35,8 @@
 #include <md_run.h>
 #include <md_edr.h>
 #include <md_filter.h>
-#include <md_util.h>
+#include <md_util_geom.h>
+#include <md_element.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_common.h>
@@ -283,7 +284,7 @@ typedef struct bondset_t {
     const md_bond_flags_t* extra_flags;     // [num_extra]
 } bondset_t;
 
-// The bonds formed and broken in a frame within a scope (TYPE_BOND_DELTA, bond_delta()), see md_util_bond_delta
+// The bonds formed and broken in a frame within a scope (TYPE_BOND_DELTA, bond_delta()), see md_bond_delta_compute
 typedef struct bond_delta_value_t {
     md_bitset_t touched;    // The persistent bonds with an atom in the scope
     md_bitset_t broken;     // The bonds of the graph broken, of them

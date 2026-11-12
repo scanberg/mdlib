@@ -186,10 +186,10 @@ static inline uint32_t md_hashmap__buckets_for_elements(uint32_t n) {
 // Defines some commonly used set and hash types.
 
 // Maps from an `uint64_t` key to an `uint64_t` value.
-typedef struct MD_HASHMAP_T(uint64_t) md_hashmap64_t;
+typedef struct md_hashmap64_t MD_HASHMAP_T(uint64_t) md_hashmap64_t;
 
 // Maps from an `uint64_t` key to a `uint32_t` value.
-typedef struct MD_HASHMAP_T(uint32_t) md_hashmap32_t;
+typedef struct md_hashmap32_t MD_HASHMAP_T(uint32_t) md_hashmap32_t;
 
 // Maps a key to a hash table index.
 //

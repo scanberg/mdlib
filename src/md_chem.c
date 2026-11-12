@@ -1,8 +1,9 @@
 #include <md_chem.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_util_geom.h>
 #include <md_attributes.h>
+#include <md_element.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -277,7 +278,7 @@ static void build_graph(chem_t* c) {
         if (c->z[c->pairs[b].idx[0]] == MD_Z_H || c->z[c->pairs[b].idx[1]] == MD_Z_H) continue;
         const uint32_t x = (uint32_t)c->pairs[b].idx[0];
         const uint32_t y = (uint32_t)c->pairs[b].idx[1];
-        const float sum = md_util_element_covalent_radius(c->z[x]) + md_util_element_covalent_radius(c->z[y]);
+        const float sum = md_atomic_number_covalent_radius(c->z[x]) + md_atomic_number_covalent_radius(c->z[y]);
         if (sum > 0) c->ratio[b] = md_f32x3_length(bond_vec(c, x, y)) / sum;
     }
 }
@@ -1451,7 +1452,10 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
 
     if (sys->bond.count && md_ring_data_count(&sys->ring) == 0) {
         if (!sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, sys->alloc);
-        md_util_system_infer_rings(sys);
+        md_ring_data_t rings = {0};
+        md_ring_infer(&rings, sys, sys->alloc);
+        md_ring_data_free(&sys->ring, sys->alloc);
+        sys->ring = rings;
     }
 
     if (!sys->atom.flags) {
@@ -1514,7 +1518,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     md_temp_end(temp);
 
     // The ring flags follow the aromaticity and orders just written
-    md_util_system_infer_ring_flags(sys);
+    md_system_infer_ring_flags(sys);
     return true;
 }
 
@@ -1575,7 +1579,7 @@ static inline bool delta_takes_part(const md_system_t* sys, uint32_t a) {
     return base_valence(md_atom_atomic_number(&sys->atom, a)) > 0 && md_atom_particle_kind(&sys->atom, a) == MD_PARTICLE_ATOM;
 }
 
-// Rings are made of atoms, and none of water or of an ion (md_util_system_infer_rings)
+// Rings are made of atoms, and none of water or of an ion (md_ring_infer)
 static inline bool delta_ring_skip(const md_system_t* sys, uint32_t a) {
     if (md_atom_particle_kind(&sys->atom, a) != MD_PARTICLE_ATOM) return true;
     const md_residue_idx_t ci = md_system_residue_find_by_atom_idx(sys, a);
@@ -1687,7 +1691,7 @@ static inline size_t find_pair_key(const uint64_t* keys, size_t n, uint32_t x, u
 }
 
 // The rings of the state within DELTA_RING_REACH bonds of the atoms of the region, in the indices of the system,
-// pushed to out (cleared first): those md_util_system_infer_rings would find there in the bonds of the state
+// pushed to out (cleared first): those md_ring_infer would find there in the bonds of the state
 static void delta_rings(md_ring_data_t* out, const delta_graph_t* g, const uint32_t* region, size_t num_region, uint8_t* state, md_allocator_i* temp) {
     const md_system_t* sys = g->sys;
     md_ring_data_clear(out);
@@ -1733,7 +1737,7 @@ static void delta_rings(md_ring_data_t* out, const delta_graph_t* g, const uint3
     if (!bonds.count) return;
     md_bond_build_connectivity(&bonds, n, temp);
     md_ring_data_t local = {0};
-    md_util_infer_rings(&local, &bonds, n, temp);
+    md_ring_infer_from_bonds(&local, &bonds, n, temp);
     int32_t ring[MD_RING_MAX_SIZE];
     for (size_t r = 0; r < md_ring_data_count(&local); ++r) {
         const int32_t* lr = md_ring_atoms(&local, r);
@@ -2018,7 +2022,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
         out->bond_flags[k] = perceived_bond_flags(&c, (uint32_t)(keyed[k] & 0xFFFFFFFFu));
     }
 
-    // The rings with an atom in the region, and their flags as md_util_system_infer_ring_flags gives them, from all
+    // The rings with an atom in the region, and their flags as md_system_infer_ring_flags gives them, from all
     // the rings around (a ring outside of the region shares its bonds and its aromaticity with those within)
     {
         const size_t num_rings = md_ring_data_count(&rings);
