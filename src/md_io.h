@@ -24,6 +24,10 @@ struct md_system_t;
 struct md_system_state_t;
 struct md_executor_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum {
     MD_LOAD_FLAG_NONE       = 0,
     MD_LOAD_FLAG_ALL_MODELS = 1,    // A file of several models (pdb): the atoms of all of them, rather than of the first
@@ -117,3 +121,7 @@ md_io_format_t md_io_format_from_ext(md_str_t ext);
 // names its files without one, .top is GROMACS or Amber, .nc a trajectory or a restart, .coor binary or PDB, .h5
 // VeloxChem or TREXIO, and a Molden file is often .molden.input. UNKNOWN for none.
 md_io_format_t md_io_format_from_file(md_str_t path);
+
+#ifdef __cplusplus
+}
+#endif
