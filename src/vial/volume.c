@@ -71,8 +71,8 @@ bool vial_mcs(vial_mcs_t* out, const md_system_t* sys, const vial_sets_t* st, bo
         }
         if (m == UINT32_MAX) {
             const md_mcs_desc_t d = {
-                .a = {.sys = sys, .atoms = (const int32_t*)first, .count = n0, .xyz = (const md_f32x3_t*)xyz},
-                .b = {.sys = sys, .atoms = (const int32_t*)items, .count = n, .xyz = (const md_f32x3_t*)xyz},
+                .a = {.sys = sys, .atoms = (const int32_t*)first, .count = n0, .xyz = (const md_float3_t*)xyz},
+                .b = {.sys = sys, .atoms = (const int32_t*)items, .count = n, .xyz = (const md_float3_t*)xyz},
                 .flags = by_name ? MD_MCS_FLAG_BY_NAME : 0,
             };
             md_mcs_result_t r;
@@ -302,19 +302,19 @@ static int cmp_u32(const void* a, const void* b) {
 }
 
 // The positions and masses of particles idx[n] of xyz, as v1 weighs a structure
-static void gather(md_f32x4_t* out, const float* xyz, size_t num_atoms, const uint32_t* idx, uint32_t n, const md_system_t* sys) {
+static void gather(md_float4_t* out, const float* xyz, size_t num_atoms, const uint32_t* idx, uint32_t n, const md_system_t* sys) {
     for (uint32_t i = 0; i < n; ++i) {
         const uint32_t p = idx[i];
         const float* q = p < num_atoms ? xyz + 3 * (size_t)p : NULL;
         const float m = sys && p < sys->atom.count ? md_atom_mass(&sys->atom, p) : 1.0f;
-        out[i] = q ? md_f32x4_set(q[0], q[1], q[2], m > 0.0f ? m : 1.0f) : md_f32x4_set(0, 0, 0, 0);
+        out[i] = q ? md_float4_set(q[0], q[1], q[2], m > 0.0f ? m : 1.0f) : md_float4_set(0, 0, 0, 0);
     }
 }
 
 // One kind's structures from its argument: one set, an array of sets alike, or set[k][w] paired by column
 static bool kind_from(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* v, md_allocator_i* alloc) {
     memset(kind, 0, sizeof(*kind));
-    kind->R = md_f32x3x3_ident();
+    kind->R = md_float3x3_ident();
     if (!v || v->dtype != VIAL_DT_SET || !v->sets || !v->sets->count) return vial_rt_fail(k, "R0103", "sdf takes a set, an array of sets or set[k][w] of structures");
     const vial_sets_t* s = v->sets;
     if (v->ndim == 2) {
@@ -345,7 +345,7 @@ static bool kind_from(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* v
 // A kind's reference: ref= (its positions in the kind's order) or the kind's first structure at frame 0, by mass, in
 // mutually consistent images about its own centre, as v1 places it
 static bool kind_ref(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* ref, const vial_frame_t* first, const md_system_t* sys, md_allocator_i* alloc) {
-    kind->ref_xyzw = md_alloc(alloc, kind->n * sizeof(md_f32x4_t));
+    kind->ref_xyzw = md_alloc(alloc, kind->n * sizeof(md_float4_t));
     if (!is_none(ref)) {
         vial_val_t r = *ref;
         if (r.dtype == VIAL_DT_FLOAT64) r = vial_val_as(ref, VIAL_DT_FLOAT, k->alloc);
@@ -355,7 +355,7 @@ static bool kind_ref(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* re
         for (uint32_t i = 0; i < kind->n; ++i) {
             const float* q = (const float*)r.data + 3 * (size_t)i;
             const float m = sys && kind->atoms[i] < sys->atom.count ? md_atom_mass(&sys->atom, kind->atoms[i]) : 1.0f;
-            kind->ref_xyzw[i] = md_f32x4_set(q[0], q[1], q[2], m > 0.0f ? m : 1.0f);
+            kind->ref_xyzw[i] = md_float4_set(q[0], q[1], q[2], m > 0.0f ? m : 1.0f);
         }
     } else {
         if (!first || !first->xyz) return vial_rt_fail(k, "R0104", "sdf fits onto frame 0, which the run does not have");
@@ -378,8 +378,8 @@ static bool sdf_structures(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t*
     if (!kind_ref(k, kind, ref, first, sys, alloc)) return false;
     vol->num_structures = kind->count;
     vol->max_n = kind->n;
-    const md_f32x3x3_eigen_t eig = md_f32x3x3_eigen(md_f32x3x3_covariance_matrix_f32x4(kind->ref_xyzw, 0, kind->n, kind->ref_com));
-    vol->axes = md_f32x3x3_transpose(eig.vectors);
+    const md_float3x3_eigen_t eig = md_float3x3_eigen(md_float3x3_covariance_matrix_float4(kind->ref_xyzw, 0, kind->n, kind->ref_com));
+    vol->axes = md_float3x3_transpose(eig.vectors);
     return true;
 }
 
@@ -496,7 +496,7 @@ const uint32_t* vial_volume_structure(const vial_volume_t* vol, uint32_t s, uint
 // Structure j of a kind fitted at positions xyz: the rotation onto the kind's reference and its centre, in the image
 // it arrived in. False when it is too spread over the cell to place.
 static bool fit_structure(const vial_sdf_kind_t* kind, uint32_t j, const float* xyz, size_t num_atoms, const md_unitcell_t* cell,
-                          const md_system_t* sys, md_f32x4_t* scratch, md_f32x3x3_t* R, md_f32x3_t* com) {
+                          const md_system_t* sys, md_float4_t* scratch, md_float3x3_t* R, md_float3_t* com) {
     gather(scratch, xyz, num_atoms, kind->atoms + (size_t)j * kind->n, kind->n, sys);
     const float residual = md_util_optimal_rotation_pbc(R, com, NULL, kind->ref_xyzw, kind->ref_com, scratch, kind->n, cell, 8, 1.0e-6f);
     // The residual is the margin to an ambiguous choice of images: near half a cell no choice per point represents
@@ -512,27 +512,27 @@ static bool fit_structure(const vial_sdf_kind_t* kind, uint32_t j, const float* 
 
 // The run's frame to the volume's for a structure of a kind fitted by R about com: axes (Rk (R (p - com)) + tk), as
 // Q (p - com) + o
-static void structure_frame(const vial_volume_t* vol, const vial_sdf_kind_t* kind, md_f32x3x3_t R, md_f32x3x3_t* Q, md_f32x3_t* o) {
-    *Q = md_f32x3x3_mul(vol->axes, md_f32x3x3_mul(kind->R, R));
-    *o = md_f32x3x3_mul_f32x3(vol->axes, kind->t);
+static void structure_frame(const vial_volume_t* vol, const vial_sdf_kind_t* kind, md_float3x3_t R, md_float3x3_t* Q, md_float3_t* o) {
+    *Q = md_float3x3_mul(vol->axes, md_float3x3_mul(kind->R, R));
+    *o = md_float3x3_mul_float3(vol->axes, kind->t);
 }
 
-bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, size_t num_atoms, const md_unitcell_t* cell, md_f32x4x4_t* out) {
+bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, size_t num_atoms, const md_unitcell_t* cell, md_float4x4_t* out) {
     uint32_t j = 0;
     const vial_sdf_kind_t* kind = vol && vol->kind == VIAL_VOLUME_SDF ? kind_at(vol, s, &j) : NULL;
     if (!kind) return false;
     md_allocator_i* heap = md_get_heap_allocator();
-    md_f32x4_t* scratch = md_alloc(heap, kind->n * sizeof(md_f32x4_t));
-    md_f32x3x3_t R;
-    md_f32x3_t com;
+    md_float4_t* scratch = md_alloc(heap, kind->n * sizeof(md_float4_t));
+    md_float3x3_t R;
+    md_float3_t com;
     const bool ok = fit_structure(kind, j, xyz, num_atoms, cell, vol->sys, scratch, &R, &com);
-    md_free(heap, scratch, kind->n * sizeof(md_f32x4_t));
+    md_free(heap, scratch, kind->n * sizeof(md_float4_t));
     if (!ok) return false;
-    md_f32x3x3_t Q;
-    md_f32x3_t o;
+    md_float3x3_t Q;
+    md_float3_t o;
     structure_frame(vol, kind, R, &Q, &o);
-    const md_f32x3_t qc = md_f32x3x3_mul_f32x3(Q, com);
-    *out = md_f32x4x4_from_f32x3x3(Q);
+    const md_float3_t qc = md_float3x3_mul_float3(Q, com);
+    *out = md_float4x4_from_float3x3(Q);
     out->elem[3][0] = o.x - qc.x;
     out->elem[3][1] = o.y - qc.y;
     out->elem[3][2] = o.z - qc.z;
@@ -541,8 +541,8 @@ bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, si
 
 typedef struct sdf_cb_t {
     const vial_volume_t*    vol;
-    md_f32x3x3_t                  Q;          // the run's frame to the volume's
-    md_f32x3_t                  centre;     // where the points come in around
+    md_float3x3_t                  Q;          // the run's frame to the volume's
+    md_float3_t                  centre;     // where the points come in around
     const uint32_t*         own;        // the structure's particles, ascending, which are not its target
     uint32_t                num_own;
     const uint32_t*         ids;        // each point's particle, or NULL when not known
@@ -569,8 +569,8 @@ static void sdf_cb(const uint32_t* idx, const float* x, const float* y, const fl
         if (c->ids && owns(c->own, c->num_own, c->ids[pi])) continue;
         const float w = c->w ? c->w[pi] : c->w1;
         if (w == 0.0f) continue;
-        const md_f32x3_t d = {{x[i] - c->centre.x, y[i] - c->centre.y, z[i] - c->centre.z}};
-        const md_f32x3_t l = md_f32x3x3_mul_f32x3(c->Q, d);
+        const md_float3_t d = {{x[i] - c->centre.x, y[i] - c->centre.y, z[i] - c->centre.z}};
+        const md_float3_t l = md_float3x3_mul_float3(c->Q, d);
         // Grid positions, voxel centres at whole numbers
         const double gx = ((double)l.x - vol->origin[0]) * c->inv_step[0] - 0.5;
         const double gy = ((double)l.y - vol->origin[1]) * c->inv_step[1] - 0.5;
@@ -630,7 +630,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
     const md_unitcell_t cell = fr->cell;
     uint64_t added = 0;
     if (sdf) {
-        md_f32x4_t* scratch = md_alloc(k->alloc, vol->max_n * sizeof(md_f32x4_t));
+        md_float4_t* scratch = md_alloc(k->alloc, vol->max_n * sizeof(md_float4_t));
         double reach = 0.0;
         for (int q = 0; q < 3; ++q) reach = MD_MAX(reach, vol->extent[q] + sqrt(vol->basis[q][0] * vol->basis[q][0] + vol->basis[q][1] * vol->basis[q][1] + vol->basis[q][2] * vol->basis[q][2]));
         md_spatial_acc_t acc = {.alloc = k->alloc};
@@ -646,17 +646,17 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
         for (uint32_t s = 0; s < vol->num_structures; ++s) {
             uint32_t j = 0;
             const vial_sdf_kind_t* kind = kind_at(vol, s, &j);
-            md_f32x3x3_t R;
-            md_f32x3_t com;
+            md_float3x3_t R;
+            md_float3_t com;
             if (!fit_structure(kind, j, fr->xyz, fr->num_atoms, &cell, k->in->msys, scratch, &R, &com)) continue;
             added += 1;
             if (!np) continue;
             // The volume's box is about cen in the run's frame, Q (p - cen) in the volume's. The points come in around
             // the query's centre, folded into the cell: a lattice vector off cen when the structure sits outside it.
-            md_f32x3x3_t Q;
-            md_f32x3_t o;
+            md_float3x3_t Q;
+            md_float3_t o;
             structure_frame(vol, kind, R, &Q, &o);
-            const md_f32x3_t back = md_f32x3x3_mul_f32x3(md_f32x3x3_transpose(Q), o);
+            const md_float3_t back = md_float3x3_mul_float3(md_float3x3_transpose(Q), o);
             const double cen[3] = {com.x - back.x, com.y - back.y, com.z - back.z};
             double qc[3];
             md_spatial_acc_aabb_query_center(qc, &acc, cen);
@@ -681,7 +681,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
             if (w[i] == 0.0f) continue;
             const float* q = (const float*)p.data + 3 * i;
             // The image nearest the box's centre
-            md_f32x3_t d = {{(float)(q[0] - c[0]), (float)(q[1] - c[1]), (float)(q[2] - c[2])}};
+            md_float3_t d = {{(float)(q[0] - c[0]), (float)(q[1] - c[1]), (float)(q[2] - c[2])}};
             if (periodic) md_util_min_image(d.elem, 0, 1, &cell);
             const double gx = (c[0] + d.x - vol->lo[0]) * inv[0] - 0.5;
             const double gy = (c[1] + d.y - vol->lo[1]) * inv[1] - 0.5;

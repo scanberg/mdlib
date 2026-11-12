@@ -294,9 +294,9 @@ bool md_resname_lipid(md_str_t str) {
 // and 3 (their .tpr): no bond which the topologies do not have, besides elastic networks and the restraints of
 // secondary structure, which are not chemical bonds.
 static inline float cg_bead_distance(const md_system_state_t* state, int i, int j) {
-    md_f32x3_t d = md_f32x3_sub(state->xyz[i], state->xyz[j]);
+    md_float3_t d = md_float3_sub(state->xyz[i], state->xyz[j]);
     md_util_min_image(d.elem, 0, 1, &state->unitcell);
-    return md_f32x3_length(d);
+    return md_float3_length(d);
 }
 
 static inline void cg_push_bond(md_array(bond_pair_t)* candidates, int i, int j, float dist, md_allocator_i* alloc) {

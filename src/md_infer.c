@@ -47,7 +47,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
                         float chroma = 0.8f;
                         float light  = 1.0f;
                         float alpha  = 1.0f;
-                        md_f32x3_t rgb = hcl_to_rgb(hue, chroma, light);
+                        md_float3_t rgb = hcl_to_rgb(hue, chroma, light);
                         // Pack into 0xAARRGGBB
                         color = (uint32_t)(uint8_t)(alpha * 255) << 24 | (uint32_t)(uint8_t)(rgb.x * 255) << 16 | (uint32_t)(uint8_t)(rgb.y * 255) << 8 | (uint32_t)(uint8_t)(rgb.z * 255);
                         sys->atom.type.color[i] = color;

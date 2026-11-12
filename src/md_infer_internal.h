@@ -90,10 +90,10 @@ static inline size_t bitfield_popcount(const uint64_t* bits, size_t num_bits) {
     return count;
 }
 
-static inline float angle(md_f32x3_t a, md_f32x3_t b, md_f32x3_t c) {
-    md_f32x3_t v0 = md_f32x3_normalize(md_f32x3_sub(a, b));
-    md_f32x3_t v1 = md_f32x3_normalize(md_f32x3_sub(c, b));
-    return (float)MD_RAD_TO_DEG(acosf(md_f32x3_dot(v0, v1)));
+static inline float angle(md_float3_t a, md_float3_t b, md_float3_t c) {
+    md_float3_t v0 = md_float3_normalize(md_float3_sub(a, b));
+    md_float3_t v1 = md_float3_normalize(md_float3_sub(c, b));
+    return (float)MD_RAD_TO_DEG(acosf(md_float3_dot(v0, v1)));
 }
 
 
@@ -190,7 +190,7 @@ static inline bool uf_union(int32_t* parent, int32_t a, int32_t b) {
     return true;
 }
 
-static inline md_f32x3_t hcl_to_rgb(float h, float c, float l) {
+static inline md_float3_t hcl_to_rgb(float h, float c, float l) {
     float r = 0, g = 0, b = 0;
 
     if (c == 0) {
@@ -219,7 +219,7 @@ static inline md_f32x3_t hcl_to_rgb(float h, float c, float l) {
         b += m;
     }
 
-    return (md_f32x3_t){r, g, b};
+    return (md_float3_t){r, g, b};
 }
 
 // ### SHARED BETWEEN THE FILES OF INFERENCE ###

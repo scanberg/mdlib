@@ -3,8 +3,8 @@
 #include <stdbool.h>
 
 struct md_system_t;
-struct md_f32x3_t;
-struct md_f32x4x4_t;
+struct md_float3_t;
+struct md_float4x4_t;
 
 typedef uint32_t md_gfx_config_flags_t;
 typedef uint32_t md_gfx_draw_flags_t;
@@ -58,7 +58,7 @@ typedef struct md_gfx_draw_op_t {
     md_gfx_handle_t structure;
     md_gfx_handle_t representation;
     uint32_t mask;                   // Optional: 0 implies no masking is done, otherwise each atom is masked with an bitwise AND against this flag
-    const struct md_f32x4x4_t* model_mat;  // Optional: NULL implies identity matrix
+    const struct md_float4x4_t* model_mat;  // Optional: NULL implies identity matrix
 } md_gfx_draw_op_t;
 
 typedef struct md_gfx_rep_attr_t {
@@ -111,7 +111,7 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
 bool md_gfx_structure_destroy(md_gfx_handle_t id);
 
 // ATOM FIELDS
-bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const struct md_f32x3_t* xyz, uint32_t count, uint32_t byte_stride);
+bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const struct md_float3_t* xyz, uint32_t count, uint32_t byte_stride);
 bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, uint32_t count, uint32_t byte_stride);
 bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, uint32_t count, uint32_t byte_stride);
 
@@ -120,7 +120,7 @@ bool md_gfx_structure_set_group_atom_ranges(md_gfx_handle_t id, const md_gfx_ran
 // Parts of a structure can be replicated and transformed as instances
 // An instance is defined as an atom range and a transform
 bool md_gfx_structure_set_instance_atom_ranges(md_gfx_handle_t id, const md_gfx_range_t* atom_ranges, uint32_t count, uint32_t byte_stride);
-bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, const struct md_f32x4x4_t* transforms, uint32_t count, uint32_t byte_stride);
+bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, const struct md_float4x4_t* transforms, uint32_t count, uint32_t byte_stride);
 
 // Required for licorice and vdw
 void md_gfx_structure_set_bonds(md_gfx_handle_t id, const md_gfx_bond_t* bonds, uint32_t count, uint32_t byte_stride);
@@ -137,19 +137,19 @@ bool md_gfx_rep_destroy(md_gfx_handle_t id);
 bool md_gfx_rep_set_data(md_gfx_handle_t id, md_gfx_rep_type_t type, md_gfx_rep_attr_t attr, const md_gfx_color_t* color, uint32_t count, uint32_t byte_stride);
 
 // Draw (Commit draw operations to render structures with representations)
-bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* draw_ops, const struct md_f32x4x4_t* proj_mat, const struct md_f32x4x4_t* view_mat, const struct md_f32x4x4_t* inv_proj_mat, const struct md_f32x4x4_t* inv_view_mat);
+bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* draw_ops, const struct md_float4x4_t* proj_mat, const struct md_float4x4_t* view_mat, const struct md_float4x4_t* inv_proj_mat, const struct md_float4x4_t* inv_view_mat);
 
 // Essentially a render pass
 
 // Call before the submitting draw commands for the render pass
-bool md_gfx_draw_begin(const struct md_f32x4x4_t* proj_mat, const struct md_f32x4x4_t* view_mat, const struct md_f32x4x4_t* inv_proj_mat, const struct md_f32x4x4_t* inv_view_mat, uint32_t draw_flags);
+bool md_gfx_draw_begin(const struct md_float4x4_t* proj_mat, const struct md_float4x4_t* view_mat, const struct md_float4x4_t* inv_proj_mat, const struct md_float4x4_t* inv_view_mat, uint32_t draw_flags);
 
 // Submit draw command
 // struct_id: Handle to a valid structure
 // rep_id: Handle to a valid representation
 // model_mat: pointer to model matrix (column major float[4][4]), [OPTIONAL] NULL implies identity matrix.
 // atom_mask: mask atoms by a bitwise AND operation, [OPTIONAL] 0 implies all atoms are drawn.
-bool md_gfx_draw_submit(md_gfx_handle_t struct_id, md_gfx_handle_t rep_id, const struct md_f32x4x4_t* model_mat, uint32_t atom_mask);
+bool md_gfx_draw_submit(md_gfx_handle_t struct_id, md_gfx_handle_t rep_id, const struct md_float4x4_t* model_mat, uint32_t atom_mask);
 
 // Call after draw commands have been submitted for the render pass
 bool md_gfx_draw_end(void);

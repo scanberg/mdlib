@@ -55,7 +55,7 @@ typedef struct md_mcs_side_t {
     const struct md_system_t* sys;
     const int32_t*  atoms;          // Atoms of sys, in any order; hydrogens among them are not matched
     size_t          count;
-    const md_f32x3_t*   xyz;            // Optional: the positions of every atom of sys, to choose among symmetric mappings
+    const md_float3_t*   xyz;            // Optional: the positions of every atom of sys, to choose among symmetric mappings
 } md_mcs_side_t;
 
 typedef struct md_mcs_desc_t {

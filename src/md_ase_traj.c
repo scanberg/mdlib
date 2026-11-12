@@ -426,7 +426,7 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
     if (result) {
         const size_t N = idx.num_atoms;
         ase_rotate(xyz, N, idx.rotation);
-        md_memcpy(state->xyz, xyz, N * sizeof(md_f32x3_t));
+        md_memcpy(state->xyz, xyz, N * sizeof(md_float3_t));
         state->unitcell = md_unitcell_from_matrix_float((const float (*)[3])idx.cell);
 
         md_array_ensure(sys->atom.type_idx, N, sys->alloc);

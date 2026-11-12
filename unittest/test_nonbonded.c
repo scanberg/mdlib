@@ -204,7 +204,7 @@ UTEST(nonbonded, system_forcefield) {
     double lj[3] = {0}, coul[3] = {0};
     for (uint32_t i = 0; i < 19; ++i) {
         for (uint32_t j = i + 1; j < 19; ++j) {
-            md_f32x3_t d = md_f32x3_sub(state.xyz[i], state.xyz[j]);
+            md_float3_t d = md_float3_sub(state.xyz[i], state.xyz[j]);
             md_util_min_image(d.elem, 0, 1, &state.unitcell);
             const double r2 = 0.01 * ((double)d.x * d.x + (double)d.y * d.y + (double)d.z * d.z);
             double elj, ec;

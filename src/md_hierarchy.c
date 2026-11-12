@@ -967,7 +967,7 @@ static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_id
     // The golden ratio spreads the hues of names which hash alike
     const uint32_t h = (uint32_t)md_hash64_str(name, 0) * 0x9E3779B9u;
     const float hue = (float)(h >> 8) * (1.0f / 16777216.0f);
-    const md_f32x3_t rgb = hcl_to_rgb(hue, 0.5f, 0.7f);    // Channels within [0.45, 0.95]
+    const md_float3_t rgb = hcl_to_rgb(hue, 0.5f, 0.7f);    // Channels within [0.45, 0.95]
     const uint32_t r = (uint32_t)(MD_CLAMP(rgb.x, 0.0f, 1.0f) * 255.0f + 0.5f);
     const uint32_t g = (uint32_t)(MD_CLAMP(rgb.y, 0.0f, 1.0f) * 255.0f + 0.5f);
     const uint32_t b = (uint32_t)(MD_CLAMP(rgb.z, 0.0f, 1.0f) * 255.0f + 0.5f);

@@ -552,7 +552,7 @@ static inline double rnd_rng(double min, double max) {
 // triclinic sphere query in its last batch.
 typedef struct spatial_acc_point_coord_collect_t {
     md_array(uint32_t) idx;
-    md_array(md_f32x3_t)   xyz;
+    md_array(md_float3_t)   xyz;
     md_allocator_i*    alloc;
 } spatial_acc_point_coord_collect_t;
 
@@ -560,7 +560,7 @@ static void spatial_acc_point_coord_collect_callback(const uint32_t* idx, const 
     spatial_acc_point_coord_collect_t* data = (spatial_acc_point_coord_collect_t*)user_param;
     for (size_t i = 0; i < num_points; ++i) {
         md_array_push(data->idx, idx[i], data->alloc);
-        md_array_push(data->xyz, md_f32x3_set(x[i], y[i], z[i]), data->alloc);
+        md_array_push(data->xyz, md_float3_set(x[i], y[i], z[i]), data->alloc);
     }
 }
 
@@ -630,7 +630,7 @@ static void point_query_coordinates(int* utest_result, const double A[3][3]) {
             size_t bad_image = 0, bad_region = 0;
             for (size_t k = 0; k < md_array_size(got.idx); ++k) {
                 const uint32_t i = got.idx[k];
-                const md_f32x3_t p = got.xyz[k];
+                const md_float3_t p = got.xyz[k];
                 const double d_in[3] = { p.x - x[i], p.y - y[i], p.z - z[i] };
                 if (lattice_residual(A, I, d_in) > 1.0e-3) bad_image += 1;
 
@@ -828,7 +828,7 @@ UTEST(spatial_hash, n2) {
 
     // Spatial acc implementation
     start = md_tick_now();
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_f32x3_t), NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = {.alloc = alloc};
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 5.0, .unitcell = &cell });
     md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 5.0, spatial_acc_neighbor_callback, &count);
@@ -894,7 +894,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
 
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_f32x3_t), NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
     
@@ -929,7 +929,7 @@ UTEST_F(spatial_hash, test_correctness_centered) {
         }
 
         uint32_t sa_count = 0;
-        md_f32x3_t pos = md_f32x3_set(x0[0], x0[1], x0[2]);
+        md_float3_t pos = md_float3_set(x0[0], x0[1], x0[2]);
         md_coord_stream_t ext_stream = md_coord_stream_from_soa(&pos.x, &pos.y, &pos.z, NULL, 1);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, (float)radius, spatial_acc_pair_count_callback, &sa_count, 0);
         EXPECT_EQ(ref_count, sa_count);
@@ -954,7 +954,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
 
     srand(31);
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_f32x3_t), NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
@@ -968,7 +968,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         double s0[3] = { rnd(), rnd(), rnd() };
         double x0[3];
         fract_to_cart(x0, s0, A);
-        md_f32x3_t pos = md_f32x3_set(x0[0], x0[1], x0[2]);
+        md_float3_t pos = md_float3_set(x0[0], x0[1], x0[2]);
         double radius = rnd() * 20.0;
 
         int ref_count = 0;
@@ -1008,7 +1008,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_f32x3_t), NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
@@ -1022,7 +1022,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
         double s0[3] = { rnd(), rnd(), rnd() };
         double x0[3];
         fract_to_cart(x0, s0, A);
-        md_f32x3_t pos = md_f32x3_set(x0[0], x0[1], x0[2]);
+        md_float3_t pos = md_float3_set(x0[0], x0[1], x0[2]);
         double radius = rnd() * 20.0;
 
         int ref_count = 0;
@@ -1065,7 +1065,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_f32x3_t), NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
@@ -1079,7 +1079,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
         double s0[3] = { rnd(), rnd(), rnd() };
         double x0[3];
         fract_to_cart(x0, s0, A);
-        md_f32x3_t pos = md_f32x3_set(x0[0], x0[1], x0[2]);
+        md_float3_t pos = md_float3_set(x0[0], x0[1], x0[2]);
         double radius = rnd() * 10.0;
 
         uint32_t ref_count = 0;
@@ -1130,7 +1130,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
     srand(31);
 
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_f32x3_t), NULL, sys.atom.count);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 10.0, .unitcell = &sys_state.unitcell });
 
@@ -1195,7 +1195,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
 
         double d2_ref = distance_ref_mic27(G, s0, s1);
 
-		md_f32x3_t dx = { x1[0] - x0[0], x1[1] - x0[1], x1[2] - x0[2] };
+		md_float3_t dx = { x1[0] - x0[0], x1[1] - x0[1], x1[2] - x0[2] };
         md_util_min_image(dx.elem, 0, 1, &sys_state.unitcell);
         double d2 = dx.x * dx.x + dx.y * dx.y + dx.z * dx.z;
 
@@ -1207,7 +1207,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         double s0[3] = { rnd(), rnd(), rnd() };
         double x0[3];
         fract_to_cart(x0, s0, A);
-        md_f32x3_t pos = md_f32x3_set(x0[0], x0[1], x0[2]);
+        md_float3_t pos = md_float3_set(x0[0], x0[1], x0[2]);
         double radius = rnd() * 10.0;
 
         uint32_t ref_count = 0;
@@ -1582,10 +1582,10 @@ static void bench_count_cb(const uint32_t* i, const uint32_t* j, const float* d2
 
 static double bench_ms(md_tick_t t0) { return md_tick_to_nanoseconds(md_tick_now() - t0) * 1e-6; }
 
-static void bench_system(const char* name, const md_f32x3_t* xyz, size_t n, const md_unitcell_t* cell, double cutoff, int reps) {
-    md_coord_stream_t all = md_coord_stream_from_aos((const float*)xyz, sizeof(md_f32x3_t), NULL, n);
+static void bench_system(const char* name, const md_float3_t* xyz, size_t n, const md_unitcell_t* cell, double cutoff, int reps) {
+    md_coord_stream_t all = md_coord_stream_from_aos((const float*)xyz, sizeof(md_float3_t), NULL, n);
     const size_t ne = n < 50 ? n : 50;
-    md_coord_stream_t ext = md_coord_stream_from_aos((const float*)(xyz + n / 2 - ne / 2), sizeof(md_f32x3_t), NULL, ne);
+    md_coord_stream_t ext = md_coord_stream_from_aos((const float*)(xyz + n / 2 - ne / 2), sizeof(md_float3_t), NULL, ne);
     double best[2][3];
     double cell_ext[2] = {0, 0};
     size_t pairs[2] = {0, 0};
@@ -1648,14 +1648,14 @@ UTEST(spatial_acc_bench, occupancy) {
         for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
             const size_t n = sizes[s];
             const double L = cbrt((double)n / density);
-            md_f32x3_t* xyz = (md_f32x3_t*)md_alloc(md_get_heap_allocator(), n * sizeof(md_f32x3_t));
-            for (size_t i = 0; i < n; ++i) xyz[i] = (md_f32x3_t){{(float)(L * rand() / RAND_MAX), (float)(L * rand() / RAND_MAX), (float)(L * rand() / RAND_MAX)}};
+            md_float3_t* xyz = (md_float3_t*)md_alloc(md_get_heap_allocator(), n * sizeof(md_float3_t));
+            for (size_t i = 0; i < n; ++i) xyz[i] = (md_float3_t){{(float)(L * rand() / RAND_MAX), (float)(L * rand() / RAND_MAX), (float)(L * rand() / RAND_MAX)}};
             const md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
             char name[64];
             snprintf(name, sizeof(name), "uniform %s", d ? "0.001/A3" : "0.1/A3");
             bench_system(name, xyz, n, &cell, 5.0, reps);
             if (L > 25.0) bench_system(name, xyz, n, &cell, 10.0, reps);
-            md_free(md_get_heap_allocator(), xyz, n * sizeof(md_f32x3_t));
+            md_free(md_get_heap_allocator(), xyz, n * sizeof(md_float3_t));
         }
     }
 }

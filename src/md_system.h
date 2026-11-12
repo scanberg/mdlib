@@ -103,7 +103,7 @@ uint64_t md_system_topology_changed(md_system_t* sys);
 // ids first appear, an assembly's groups in the order of their first operator, and the operators of a group in the order
 // they first appear. Instances out of range are left out; a row without instances or operators adds nothing.
 // An operator which is not rigid is logged, and kept. Replaces the previous assemblies; false (and none) on bad input.
-bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const md_f32x4x4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
+bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const md_float4x4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
 void md_system_assemblies_free(md_system_t* sys);
 
 // GROUPS (md_group_data_t)

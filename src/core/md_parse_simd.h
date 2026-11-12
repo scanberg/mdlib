@@ -4,7 +4,7 @@
 //
 // md_parse_fixed_f32 (md_parse.h) reads one field of a fixed width column format. The coordinates of the structure
 // formats come three at a time, in fields of 8 characters: "%8.3f" for those of pdb and gro, "%8.4f" for the velocities
-// of gro. md_parse_fixed_f32x3_w8 reads three such fields at once (md_simd: SSE/AVX on x86, NEON on arm64), and takes
+// of gro. md_parse_fixed_float3_w8 reads three such fields at once (md_simd: SSE/AVX on x86, NEON on arm64), and takes
 // exactly what md_parse_fixed_f32 takes, with the same value: where any of the three is laid out otherwise it gives
 // false with out untouched, and the caller reads them one by one.
 //
@@ -82,7 +82,7 @@ static MD_FORCE_INLINE md_128i md_parse_fixed_w8_pair(md_128i v, int decimals, m
 // the field's integer (at most 9999999, exact as a float) over 10^decimals, correctly rounded as a float, as is its
 // double rounded to a float (no decimal of 7 digits is near enough to a float's rounding boundary to round otherwise),
 // and negated last (a "-0.000" is -0).
-static MD_FORCE_INLINE bool md_parse_fixed_f32x3_w8(float out[3], const char* p, int decimals) {
+static MD_FORCE_INLINE bool md_parse_fixed_float3_w8(float out[3], const char* p, int decimals) {
     MD_ASSERT(decimals == 3 || decimals == 4);
     const md_128i z = md_mm_loadl_epi64((const md_128i*)(p + 16));
     md_128i parts01, parts2, pos01, pos2;

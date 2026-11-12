@@ -261,7 +261,7 @@ UTEST(vial_ir, evaluates_frames) {
     ASSERT_EQ(4u, k);
     for (int64_t f = 0; f < nf; ++f) {
         md_system_extract_frame(ex, f, &state);
-        md_f32x3_t dx = md_f32x3_sub(state.xyz[ca[3]], state.xyz[ca[0]]);
+        md_float3_t dx = md_float3_sub(state.xyz[ca[3]], state.xyz[ca[0]]);
         md_util_min_image(dx.elem, 0, 1, &state.unitcell);
         const double want = sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
         EXPECT_NEAR(want, d[f], 1e-5);

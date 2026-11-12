@@ -3,7 +3,7 @@
 // Polymer inference: the roles of the atoms of amino acids and nucleotides, the classification of residues, the
 // protein and nucleic acid backbones and their chain breaks, and the backbone of a state (md_util.h).
 
-bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
 
@@ -29,23 +29,23 @@ bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t c
 			int  n_idx     = backbone->segment.atoms[i].n;
 			int n_next_idx = backbone->segment.atoms[i + 1].n;
 
-			md_f32x3_t c_prev = xyz[c_prev_idx];
-            md_f32x3_t n      = xyz[n_idx];
-            md_f32x3_t ca     = xyz[ca_idx];
-            md_f32x3_t c      = xyz[c_idx];
-            md_f32x3_t n_next = xyz[n_next_idx];
+			md_float3_t c_prev = xyz[c_prev_idx];
+            md_float3_t n      = xyz[n_idx];
+            md_float3_t ca     = xyz[ca_idx];
+            md_float3_t c      = xyz[c_idx];
+            md_float3_t n_next = xyz[n_next_idx];
 
-            md_f32x3_t d[4] = {
-                md_f32x3_sub(n, c_prev),
-                md_f32x3_sub(ca, n),
-                md_f32x3_sub(c, ca),
-                md_f32x3_sub(n_next, c),
+            md_float3_t d[4] = {
+                md_float3_sub(n, c_prev),
+                md_float3_sub(ca, n),
+                md_float3_sub(c, ca),
+                md_float3_sub(n_next, c),
             };
 
             md_util_min_image((float*)d, 0, MD_COUNTOF(d), cell);
 
-            backbone_angles[i].phi = md_f32x3_dihedral_angle(d[0], d[1], d[2]);
-            backbone_angles[i].psi = md_f32x3_dihedral_angle(d[1], d[2], d[3]);
+            backbone_angles[i].phi = md_float3_dihedral_angle(d[0], d[1], d[2]);
+            backbone_angles[i].psi = md_float3_dihedral_angle(d[1], d[2], d[3]);
         }
     }
 
@@ -286,9 +286,9 @@ static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_
 
 static inline bool atoms_closer_than(const md_system_state_t* state, md_atom_idx_t a, md_atom_idx_t b, float max_dist) {
     if (!md_system_state_has_coords(state) || (size_t)a >= state->num_atoms || (size_t)b >= state->num_atoms) return false;
-    md_f32x3_t d = md_f32x3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
+    md_float3_t d = md_float3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
     md_util_min_image(d.elem, 0, 1, &state->unitcell);
-    return md_f32x3_dot(d, d) < max_dist * max_dist;
+    return md_float3_dot(d, d) < max_dist * max_dist;
 }
 
 // The first neighbour of atom a of element z, which is neither x nor y (z 0: any element but hydrogen)

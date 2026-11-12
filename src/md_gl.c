@@ -269,9 +269,9 @@ enum {
 #define MAX_SUBSETS 4096
 #define MAX_SHADER_PERMUTATIONS 2
 
-static inline bool is_ortho_proj_matrix(const md_f32x4x4_t M) { return M.elem[2][3] == 0.0f; }
+static inline bool is_ortho_proj_matrix(const md_float4x4_t M) { return M.elem[2][3] == 0.0f; }
 
-static inline void extract_jitter_uv(float jitter[2], const md_f32x4x4_t  M) {
+static inline void extract_jitter_uv(float jitter[2], const md_float4x4_t  M) {
     if (is_ortho_proj_matrix(M)) {
         jitter[0] = -M.elem[3][0] * 0.5f;
         jitter[1] = -M.elem[3][1] * 0.5f;
@@ -337,20 +337,20 @@ typedef struct {
 } gl_backbone_ring_t;
 
 typedef struct {
-    md_f32x4x4_t world_to_view;
-    md_f32x4x4_t world_to_view_normal;
-    md_f32x4x4_t world_to_clip;
-    md_f32x4x4_t view_to_clip;
-    md_f32x4x4_t view_to_world;
-    md_f32x4x4_t clip_to_view;
-    md_f32x4x4_t prev_world_to_clip;
-    md_f32x4x4_t curr_view_to_prev_clip;
+    md_float4x4_t world_to_view;
+    md_float4x4_t world_to_view_normal;
+    md_float4x4_t world_to_clip;
+    md_float4x4_t view_to_clip;
+    md_float4x4_t view_to_world;
+    md_float4x4_t clip_to_view;
+    md_float4x4_t prev_world_to_clip;
+    md_float4x4_t curr_view_to_prev_clip;
 } gl_view_transform_t;
 
 // Shared ubo data for all shaders
 typedef struct {
     gl_view_transform_t view_transform;
-    md_f32x4_t jitter_uv;
+    md_float4_t jitter_uv;
     uint32_t atom_mask;
     uint32_t atom_index_base;
     uint32_t bond_index_base;
@@ -380,9 +380,9 @@ typedef struct {
     uint32_t  chain_count;
     uint32_t* chain_offset;     // [chain_count + 1] Control point ranges of the chains
     uint32_t* ca_atom_idx;      // [control point count]
-    md_f32x3_t*   ca_xyz;           // [control point count] Last positions of the control points (CA)
-    md_f32x4_t*   chain_sphere;     // [chain_count] Bounding sphere of the control points of the chain (xyz center, w radius)
-    md_f32x4_t    all_sphere;       // A sphere which holds those of all chains: what is within it holds the levels of detail of all of them
+    md_float3_t*   ca_xyz;           // [control point count] Last positions of the control points (CA)
+    md_float4_t*   chain_sphere;     // [chain_count] Bounding sphere of the control points of the chain (xyz center, w radius)
+    md_float4_t    all_sphere;       // A sphere which holds those of all chains: what is within it holds the levels of detail of all of them
     bool      valid;            // The positions have been set
 } backbone_bounds_t;
 
@@ -467,8 +467,8 @@ typedef struct {
 
     // The box of the positions of the atoms, as last set or derived on the CPU, for the culling of the copies of a
     // draw (md_gl_copies_t). Not valid: never culled.
-    md_f32x3_t aabb_min;
-    md_f32x3_t aabb_max;
+    md_float3_t aabb_min;
+    md_float3_t aabb_max;
     bool   aabb_valid;
     float  max_radius;              // The largest radius of an atom set (md_gl_mol_set_atom_radius)
 
@@ -582,8 +582,8 @@ typedef struct {
 
     // The box of the positions of its atoms, as last set (md_gl_mol_set_atom_position) or derived, for the culling of
     // the copies of an op of it. Not valid: found from the positions on the GPU when a draw of copies needs it.
-    md_f32x3_t aabb_min;
-    md_f32x3_t aabb_max;
+    md_float3_t aabb_min;
+    md_float3_t aabb_max;
     bool   aabb_valid;
 } subset_t;
 
@@ -689,7 +689,7 @@ static inline subset_t* subset_lookup(uint32_t id) {
 
 // SUBSETS: the boxes of the subsets of a molecule, from positions of its atoms [offset, offset + count) as they are set:
 // of all of them, or grown by those of a part. Not known: found again when needed.
-static void subsets_aabb_update(const molecule_t* mol, uint32_t offset, uint32_t count, const md_f32x3_t* xyz);
+static void subsets_aabb_update(const molecule_t* mol, uint32_t offset, uint32_t count, const md_float3_t* xyz);
 static void subsets_aabb_invalidate(const molecule_t* mol);
 
 static inline bool validate_context(void) {
@@ -970,8 +970,8 @@ static void backbone_bounds_free(backbone_bounds_t* bounds) {
     if (bounds->chain_offset) {
         const uint32_t cp_count = bounds->chain_offset[bounds->chain_count];
         md_free(alloc, bounds->ca_atom_idx,  cp_count * sizeof(uint32_t));
-        md_free(alloc, bounds->ca_xyz,       cp_count * sizeof(md_f32x3_t));
-        md_free(alloc, bounds->chain_sphere, bounds->chain_count * sizeof(md_f32x4_t));
+        md_free(alloc, bounds->ca_xyz,       cp_count * sizeof(md_float3_t));
+        md_free(alloc, bounds->chain_sphere, bounds->chain_count * sizeof(md_float4_t));
         md_free(alloc, bounds->chain_offset, (bounds->chain_count + 1) * sizeof(uint32_t));
     }
     md_memset(bounds, 0, sizeof(backbone_bounds_t));
@@ -983,45 +983,45 @@ static void backbone_bounds_update_spheres(backbone_bounds_t* bounds) {
         const uint32_t beg = bounds->chain_offset[c];
         const uint32_t end = bounds->chain_offset[c + 1];
         if (beg == end) {
-            bounds->chain_sphere[c] = (md_f32x4_t){0};
+            bounds->chain_sphere[c] = (md_float4_t){0};
             continue;
         }
-        md_f32x3_t min_box = bounds->ca_xyz[beg];
-        md_f32x3_t max_box = bounds->ca_xyz[beg];
+        md_float3_t min_box = bounds->ca_xyz[beg];
+        md_float3_t max_box = bounds->ca_xyz[beg];
         for (uint32_t i = beg + 1; i < end; ++i) {
-            min_box = md_f32x3_min(min_box, bounds->ca_xyz[i]);
-            max_box = md_f32x3_max(max_box, bounds->ca_xyz[i]);
+            min_box = md_float3_min(min_box, bounds->ca_xyz[i]);
+            max_box = md_float3_max(max_box, bounds->ca_xyz[i]);
         }
-        const md_f32x3_t center = md_f32x3_mul1(md_f32x3_add(min_box, max_box), 0.5f);
+        const md_float3_t center = md_float3_mul1(md_float3_add(min_box, max_box), 0.5f);
         float r2 = 0.0f;
         for (uint32_t i = beg; i < end; ++i) {
-            r2 = MD_MAX(r2, md_f32x3_distance_squared(center, bounds->ca_xyz[i]));
+            r2 = MD_MAX(r2, md_float3_distance_squared(center, bounds->ca_xyz[i]));
         }
-        bounds->chain_sphere[c] = (md_f32x4_t){center.x, center.y, center.z, sqrtf(r2)};
+        bounds->chain_sphere[c] = (md_float4_t){center.x, center.y, center.z, sqrtf(r2)};
     }
 
     // The sphere of all chains: about the center of their boxes, out to the farthest point of any of them
-    md_f32x3_t min_all = { FLT_MAX,  FLT_MAX,  FLT_MAX};
-    md_f32x3_t max_all = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    md_float3_t min_all = { FLT_MAX,  FLT_MAX,  FLT_MAX};
+    md_float3_t max_all = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (uint32_t c = 0; c < bounds->chain_count; ++c) {
-        const md_f32x4_t s = bounds->chain_sphere[c];
-        const md_f32x3_t r = {s.w, s.w, s.w};
-        min_all = md_f32x3_min(min_all, md_f32x3_sub(md_f32x3_from_f32x4(s), r));
-        max_all = md_f32x3_max(max_all, md_f32x3_add(md_f32x3_from_f32x4(s), r));
+        const md_float4_t s = bounds->chain_sphere[c];
+        const md_float3_t r = {s.w, s.w, s.w};
+        min_all = md_float3_min(min_all, md_float3_sub(md_float3_from_float4(s), r));
+        max_all = md_float3_max(max_all, md_float3_add(md_float3_from_float4(s), r));
     }
-    const md_f32x3_t center = md_f32x3_mul1(md_f32x3_add(min_all, max_all), 0.5f);
+    const md_float3_t center = md_float3_mul1(md_float3_add(min_all, max_all), 0.5f);
     float radius = 0.0f;
     for (uint32_t c = 0; c < bounds->chain_count; ++c) {
-        const md_f32x4_t s = bounds->chain_sphere[c];
-        radius = MD_MAX(radius, md_f32x3_distance(center, md_f32x3_from_f32x4(s)) + s.w);
+        const md_float4_t s = bounds->chain_sphere[c];
+        radius = MD_MAX(radius, md_float3_distance(center, md_float3_from_float4(s)) + s.w);
     }
     // Rounding: a little more, so that every chain is within it as computed
-    bounds->all_sphere = (md_f32x4_t){center.x, center.y, center.z, radius * 1.0001f + 1.0e-3f};
+    bounds->all_sphere = (md_float4_t){center.x, center.y, center.z, radius * 1.0001f + 1.0e-3f};
     bounds->valid = true;
 }
 
 // xyz holds the positions of the atoms [offset, offset + count)
-static void backbone_bounds_update(backbone_bounds_t* bounds, uint32_t offset, uint32_t count, const md_f32x3_t* xyz) {
+static void backbone_bounds_update(backbone_bounds_t* bounds, uint32_t offset, uint32_t count, const md_float3_t* xyz) {
     if (!bounds->chain_count) return;
     const uint32_t cp_count = bounds->chain_offset[bounds->chain_count];
     for (uint32_t i = 0; i < cp_count; ++i) {
@@ -1035,7 +1035,7 @@ static void backbone_bounds_update(backbone_bounds_t* bounds, uint32_t offset, u
 
 // The buffers hold packed xyz, as the positions come: one upload, after the current positions are
 // kept as the previous ones (the renderer derives motion from the two).
-void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_f32x3_t* xyz) {
+void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_float3_t* xyz) {
     if (xyz == NULL) {
         MD_LOG_ERROR("Missing argument: xyz");
         return;
@@ -1063,21 +1063,21 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t c
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
 
-        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_POSITION], offset * sizeof(md_f32x3_t), count * sizeof(md_f32x3_t), xyz);
+        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_POSITION], offset * sizeof(md_float3_t), count * sizeof(md_float3_t), xyz);
         backbone_bounds_update(&mol->backbone_bounds, offset, count, xyz);
         mol->spline_dirty = true;
 
         // The box of the positions, for the culling of copies: of all of them, or grown by a part of them
         if (count > 0) {
-            md_f32x3_t mn, mx;
+            md_float3_t mn, mx;
             md_util_aabb(mn.elem, mx.elem, (const float*)xyz, 0, NULL, count);
             if (offset == 0 && count == mol->atom_count) {
                 mol->aabb_min = mn;
                 mol->aabb_max = mx;
                 mol->aabb_valid = true;
             } else if (mol->aabb_valid) {
-                mol->aabb_min = md_f32x3_min(mol->aabb_min, mn);
-                mol->aabb_max = md_f32x3_max(mol->aabb_max, mx);
+                mol->aabb_min = md_float3_min(mol->aabb_min, mn);
+                mol->aabb_max = md_float3_max(mol->aabb_max, mx);
             }
             // And of the subsets of the molecule (SUBSETS)
             subsets_aabb_update(mol, offset, count, xyz);
@@ -1085,7 +1085,7 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t c
     }
 }
 
-void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_f32x3_t* xyz) {
+void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_float3_t* xyz) {
     if (xyz == NULL) {
         MD_LOG_ERROR("Missing argument: xyz");
         return;
@@ -1100,7 +1100,7 @@ void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t offset, uint32_t c
             MD_LOG_ERROR("Attempting to write out of bounds");
             return;
         }
-        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_VELOCITY], offset * sizeof(md_f32x3_t), count * sizeof(md_f32x3_t), xyz);
+        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_VELOCITY], offset * sizeof(md_float3_t), count * sizeof(md_float3_t), xyz);
         mol->spline_dirty = true;
     }
 }
@@ -1700,7 +1700,7 @@ void md_gl_initialize(void) {
     }
 
     // Filled by each draw (md_gl_draw)
-    ctx.instance_buf = gl_buffer_create(INSTANCE_TEXELS * sizeof(md_f32x4_t), NULL, GL_STREAM_DRAW);
+    ctx.instance_buf = gl_buffer_create(INSTANCE_TEXELS * sizeof(md_float4_t), NULL, GL_STREAM_DRAW);
     ctx.list_buf     = gl_buffer_create(sizeof(uint32_t), NULL, GL_STREAM_DRAW);
 
     if (!ctx.arena) {
@@ -2519,13 +2519,13 @@ static void mol_set_backbone(molecule_t* mol, uint32_t cp_count, uint32_t chain_
     md_allocator_i* alloc = md_get_heap_allocator();
     bounds->chain_count  = chain_count;
     bounds->chain_offset = md_alloc(alloc, (chain_count + 1) * sizeof(uint32_t));
-    bounds->chain_sphere = md_alloc(alloc, chain_count * sizeof(md_f32x4_t));
+    bounds->chain_sphere = md_alloc(alloc, chain_count * sizeof(md_float4_t));
     bounds->ca_atom_idx  = md_alloc(alloc, cp_count * sizeof(uint32_t));
-    bounds->ca_xyz       = md_alloc(alloc, cp_count * sizeof(md_f32x3_t));
+    bounds->ca_xyz       = md_alloc(alloc, cp_count * sizeof(md_float3_t));
     md_memcpy(bounds->chain_offset, chain_offset, (chain_count + 1) * sizeof(uint32_t));
     md_memcpy(bounds->ca_atom_idx, bounds_atom, cp_count * sizeof(uint32_t));
-    md_memset(bounds->chain_sphere, 0, chain_count * sizeof(md_f32x4_t));
-    md_memset(bounds->ca_xyz, 0, cp_count * sizeof(md_f32x3_t));
+    md_memset(bounds->chain_sphere, 0, chain_count * sizeof(md_float4_t));
+    md_memset(bounds->ca_xyz, 0, cp_count * sizeof(md_float3_t));
     bounds->valid = false;
 
     // The control points as primitives of their atoms (SUBSETS)
@@ -2765,18 +2765,18 @@ void md_gl_mol_set_derived(md_gl_mol_t handle, md_gl_mol_t source_handle, const 
 
 // The periodic images of compute_derived.vert: the basis vectors of the cell as the columns of A, its inverse I and which
 // of them are periodic (mask). Without a cell, or a cell of no volume, there are none.
-static void derived_cell(md_f32x3x3_t* A, md_f32x3x3_t* I, md_f32x3_t* mask, const md_unitcell_t* cell) {
-    *A = md_f32x3x3_ident();
-    *I = md_f32x3x3_ident();
-    *mask = (md_f32x3_t){0, 0, 0};
+static void derived_cell(md_float3x3_t* A, md_float3x3_t* I, md_float3_t* mask, const md_unitcell_t* cell) {
+    *A = md_float3x3_ident();
+    *I = md_float3x3_ident();
+    *mask = (md_float3_t){0, 0, 0};
     if (!cell || !(cell->flags & MD_UNITCELL_PBC_ALL)) return;
-    md_f32x3x3_t M;
+    md_float3x3_t M;
     md_unitcell_A_extract_float(M.elem, cell);
-    const float det = md_f32x3x3_determinant(M);
+    const float det = md_float3x3_determinant(M);
     if (!(fabsf(det) > 1.0e-6f)) return;
     *A = M;
-    *I = md_f32x3x3_inverse(M);
-    *mask = (md_f32x3_t){
+    *I = md_float3x3_inverse(M);
+    *mask = (md_float3_t){
         (cell->flags & MD_UNITCELL_PBC_X) ? 1.0f : 0.0f,
         (cell->flags & MD_UNITCELL_PBC_Y) ? 1.0f : 0.0f,
         (cell->flags & MD_UNITCELL_PBC_Z) ? 1.0f : 0.0f,
@@ -2784,35 +2784,35 @@ static void derived_cell(md_f32x3x3_t* A, md_f32x3x3_t* I, md_f32x3_t* mask, con
 }
 
 // Where particle p is, from the positions of the atoms of the source on the CPU, as compute_derived.vert places it
-static md_f32x3_t derived_position(const molecule_t* mol, uint32_t p, const md_f32x3_t* xyz, const md_f32x3x3_t* A, const md_f32x3x3_t* I, md_f32x3_t mask) {
+static md_float3_t derived_position(const molecule_t* mol, uint32_t p, const md_float3_t* xyz, const md_float3x3_t* A, const md_float3x3_t* I, md_float3_t mask) {
     const uint32_t* d = mol->derived.data + 3 * p;
-    const md_f32x3_t ref = xyz[d[2]];
-    md_f32x3_t sum = {0, 0, 0};
+    const md_float3_t ref = xyz[d[2]];
+    md_float3_t sum = {0, 0, 0};
     float sum_w = 0.0f;
     for (uint32_t k = d[0]; k < d[0] + d[1]; ++k) {
         const float w = mol->derived.weight[k];
-        md_f32x3_t dx = md_f32x3_sub(xyz[mol->derived.atom[k]], ref);
-        md_f32x3_t f = md_f32x3x3_mul_f32x3(*I, dx);
-        f = (md_f32x3_t){floorf(f.x + 0.5f) * mask.x, floorf(f.y + 0.5f) * mask.y, floorf(f.z + 0.5f) * mask.z};
-        dx = md_f32x3_sub(dx, md_f32x3x3_mul_f32x3(*A, f));
-        sum = md_f32x3_add(sum, md_f32x3_mul1(dx, w));
+        md_float3_t dx = md_float3_sub(xyz[mol->derived.atom[k]], ref);
+        md_float3_t f = md_float3x3_mul_float3(*I, dx);
+        f = (md_float3_t){floorf(f.x + 0.5f) * mask.x, floorf(f.y + 0.5f) * mask.y, floorf(f.z + 0.5f) * mask.z};
+        dx = md_float3_sub(dx, md_float3x3_mul_float3(*A, f));
+        sum = md_float3_add(sum, md_float3_mul1(dx, w));
         sum_w += w;
     }
-    return md_f32x3_add(md_f32x3_mul1(ref, sum_w), sum);
+    return md_float3_add(md_float3_mul1(ref, sum_w), sum);
 }
 
 // Where the particles are, from the positions of the atoms of the source on the CPU: the box of all of them, for the
 // culling of copies, and the control points of the tubes, for their culling and level of detail. Each particle once.
-static void derived_bounds_update(molecule_t* mol, const md_f32x3_t* xyz, const md_f32x3x3_t* A, const md_f32x3x3_t* I, md_f32x3_t mask) {
+static void derived_bounds_update(molecule_t* mol, const md_float3_t* xyz, const md_float3x3_t* A, const md_float3x3_t* I, md_float3_t mask) {
     if (!mol->derived.data || mol->atom_count == 0) return;
     md_temp_scope_t temp = md_temp_begin();
-    md_f32x3_t* pos = md_temp_alloc(temp, mol->atom_count * sizeof(md_f32x3_t));
-    md_f32x3_t mn = { FLT_MAX,  FLT_MAX,  FLT_MAX};
-    md_f32x3_t mx = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    md_float3_t* pos = md_temp_alloc(temp, mol->atom_count * sizeof(md_float3_t));
+    md_float3_t mn = { FLT_MAX,  FLT_MAX,  FLT_MAX};
+    md_float3_t mx = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (uint32_t p = 0; p < mol->atom_count; ++p) {
         pos[p] = derived_position(mol, p, xyz, A, I, mask);
-        mn = md_f32x3_min(mn, pos[p]);
-        mx = md_f32x3_max(mx, pos[p]);
+        mn = md_float3_min(mn, pos[p]);
+        mx = md_float3_max(mx, pos[p]);
     }
     mol->aabb_min = mn;
     mol->aabb_max = mx;
@@ -2831,7 +2831,7 @@ static void derived_bounds_update(molecule_t* mol, const md_f32x3_t* xyz, const 
     md_temp_end(temp);
 }
 
-void md_gl_mol_compute_derived(md_gl_mol_t handle, const md_unitcell_t* cell, const md_f32x3_t* source_xyz) {
+void md_gl_mol_compute_derived(md_gl_mol_t handle, const md_unitcell_t* cell, const md_float3_t* source_xyz) {
     if (!validate_context()) {
         return;
     }
@@ -2849,8 +2849,8 @@ void md_gl_mol_compute_derived(md_gl_mol_t handle, const md_unitcell_t* cell, co
         return;
     }
 
-    md_f32x3x3_t A, I;
-    md_f32x3_t mask;
+    md_float3x3_t A, I;
+    md_float3_t mask;
     derived_cell(&A, &I, &mask, cell);
 
     glEnable(GL_RASTERIZER_DISCARD);
@@ -3611,28 +3611,28 @@ static bool subset_refresh(subset_t* s, molecule_t* mol, uint32_t kinds) {
 
 // The box of the atoms of a subset in positions xyz of the atoms [offset, offset + count) of its molecule, merged into
 // mn, mx; whether it has any there
-static bool subset_aabb_of(const subset_t* s, uint32_t offset, uint32_t count, const md_f32x3_t* xyz, md_f32x3_t* mn, md_f32x3_t* mx) {
+static bool subset_aabb_of(const subset_t* s, uint32_t offset, uint32_t count, const md_float3_t* xyz, md_float3_t* mn, md_float3_t* mx) {
     // The first of its atoms at or past offset: they are in order
     uint32_t lo = 0, hi = s->atom_count;
     while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (s->atoms[mid] < offset) lo = mid + 1; else hi = mid; }
     bool any = false;
     for (uint32_t i = lo; i < s->atom_count && s->atoms[i] < offset + count; ++i) {
-        const md_f32x3_t p = xyz[s->atoms[i] - offset];
-        *mn = md_f32x3_min(*mn, p);
-        *mx = md_f32x3_max(*mx, p);
+        const md_float3_t p = xyz[s->atoms[i] - offset];
+        *mn = md_float3_min(*mn, p);
+        *mx = md_float3_max(*mx, p);
         any = true;
     }
     return any;
 }
 
-static void subsets_aabb_update(const molecule_t* mol, uint32_t offset, uint32_t count, const md_f32x3_t* xyz) {
+static void subsets_aabb_update(const molecule_t* mol, uint32_t offset, uint32_t count, const md_float3_t* xyz) {
     const bool all = offset == 0 && count == mol->atom_count;
     for (int i = 1; i < ctx.subset_pool.size; ++i) {
         subset_t* s = ctx.subsets + i;
         if (s->id == MD_HANDLE_INVALID_ID || s->mol_id != mol->id) continue;
         if (all) {
-            s->aabb_min = (md_f32x3_t){ FLT_MAX,  FLT_MAX,  FLT_MAX};
-            s->aabb_max = (md_f32x3_t){-FLT_MAX, -FLT_MAX, -FLT_MAX};
+            s->aabb_min = (md_float3_t){ FLT_MAX,  FLT_MAX,  FLT_MAX};
+            s->aabb_max = (md_float3_t){-FLT_MAX, -FLT_MAX, -FLT_MAX};
             subset_aabb_of(s, 0, count, xyz, &s->aabb_min, &s->aabb_max);
             s->aabb_valid = true;
         } else if (s->aabb_valid) {
@@ -3650,17 +3650,17 @@ static void subsets_aabb_invalidate(const molecule_t* mol) {
 
 // The box of a subset for the culling of the copies of an op, found from the positions on the GPU if it is not known
 // (read back once per draw and molecule, into *xyz). False when there is none to cull with: the box of the molecule then.
-static bool subset_aabb(subset_t* s, const molecule_t* mol, const md_f32x3_t** xyz, md_allocator_i* alloc) {
+static bool subset_aabb(subset_t* s, const molecule_t* mol, const md_float3_t** xyz, md_allocator_i* alloc) {
     if (s->aabb_valid) return true;
     if (!mol->aabb_valid) return false;
     if (!*xyz) {
-        md_f32x3_t* pos = md_alloc(alloc, MD_MAX(mol->atom_count, 1) * sizeof(md_f32x3_t));
-        MD_STATIC_ASSERT(sizeof(md_f32x3_t) == 3 * sizeof(uint32_t), "The positions are packed xyz");
+        md_float3_t* pos = md_alloc(alloc, MD_MAX(mol->atom_count, 1) * sizeof(md_float3_t));
+        MD_STATIC_ASSERT(sizeof(md_float3_t) == 3 * sizeof(uint32_t), "The positions are packed xyz");
         buffer_read_u32((uint32_t*)pos, mol->buffer[GL_BUFFER_ATOM_POSITION], 3 * (size_t)mol->atom_count);
         *xyz = pos;
     }
-    s->aabb_min = (md_f32x3_t){ FLT_MAX,  FLT_MAX,  FLT_MAX};
-    s->aabb_max = (md_f32x3_t){-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    s->aabb_min = (md_float3_t){ FLT_MAX,  FLT_MAX,  FLT_MAX};
+    s->aabb_max = (md_float3_t){-FLT_MAX, -FLT_MAX, -FLT_MAX};
     subset_aabb_of(s, 0, mol->atom_count, *xyz, &s->aabb_min, &s->aabb_max);
     s->aabb_valid = true;
     return true;
@@ -3747,7 +3747,7 @@ static inline bond_params_t chain_gap_params(float radius, int32_t mode, float s
 }
 
 // Parameters of ring.vert and ring.frag, after gl_ubo_base_t. The picking base of the rings is here rather than in
-// gl_ubo_base_t, which every shader declares: it is 16 byte aligned (md_f32x4_t), and a fifth index would pad it.
+// gl_ubo_base_t, which every shader declares: it is 16 byte aligned (md_float4_t), and a fifth index would pad it.
 typedef struct {
     float    radius;        // Of the sticks
     float    max_d2;
@@ -3817,30 +3817,30 @@ typedef struct {
 // The planes of the view volume of a matrix to clip space, inward and of unit normal (xyz), and what the level of detail
 // of the backbone takes from it: the row of w, the length of its xyz and the pixels per unit of length at w = 1
 typedef struct {
-    md_f32x4_t plane[6];
-    md_f32x4_t row_w;
+    md_float4_t plane[6];
+    md_float4_t row_w;
     float  w_scale;
     float  pixel_scale;
 } view_frame_t;
 
-static view_frame_t view_frame_make(const md_f32x4x4_t* to_clip, float viewport_half_height) {
-    md_f32x4_t row[4];
+static view_frame_t view_frame_make(const md_float4x4_t* to_clip, float viewport_half_height) {
+    md_float4_t row[4];
     for (int r = 0; r < 4; ++r) {
-        row[r] = (md_f32x4_t){to_clip->elem[0][r], to_clip->elem[1][r], to_clip->elem[2][r], to_clip->elem[3][r]};
+        row[r] = (md_float4_t){to_clip->elem[0][r], to_clip->elem[1][r], to_clip->elem[2][r], to_clip->elem[3][r]};
     }
     view_frame_t f = {
         .plane = {
-            md_f32x4_add(row[3], row[0]), md_f32x4_sub(row[3], row[0]),
-            md_f32x4_add(row[3], row[1]), md_f32x4_sub(row[3], row[1]),
-            md_f32x4_add(row[3], row[2]), md_f32x4_sub(row[3], row[2]),
+            md_float4_add(row[3], row[0]), md_float4_sub(row[3], row[0]),
+            md_float4_add(row[3], row[1]), md_float4_sub(row[3], row[1]),
+            md_float4_add(row[3], row[2]), md_float4_sub(row[3], row[2]),
         },
         .row_w = row[3],
-        .w_scale = md_f32x3_length(md_f32x3_from_f32x4(row[3])),
-        .pixel_scale = md_f32x3_length(md_f32x3_from_f32x4(row[1])) * viewport_half_height,
+        .w_scale = md_float3_length(md_float3_from_float4(row[3])),
+        .pixel_scale = md_float3_length(md_float3_from_float4(row[1])) * viewport_half_height,
     };
     for (int i = 0; i < 6; ++i) {
-        const float len = md_f32x3_length(md_f32x3_from_f32x4(f.plane[i]));
-        f.plane[i] = len > 0.0f ? md_f32x4_mul1(f.plane[i], 1.0f / len) : (md_f32x4_t){0, 0, 0, 1};
+        const float len = md_float3_length(md_float3_from_float4(f.plane[i]));
+        f.plane[i] = len > 0.0f ? md_float4_mul1(f.plane[i], 1.0f / len) : (md_float4_t){0, 0, 0, 1};
     }
     return f;
 }
@@ -3873,13 +3873,13 @@ static void backbone_chain_lod(uint8_t* chain_lod, const backbone_bounds_t* boun
             continue;
         }
 
-        const md_f32x4_t sphere = bounds->chain_sphere[c];
-        const md_f32x4_t center = {sphere.x, sphere.y, sphere.z, 1.0f};
+        const md_float4_t sphere = bounds->chain_sphere[c];
+        const md_float4_t center = {sphere.x, sphere.y, sphere.z, 1.0f};
         const float radius = sphere.w + max_extent;
 
         bool culled = false;
         for (int i = 0; i < 6; ++i) {
-            if (md_f32x4_dot(f->plane[i], center) < -radius) {
+            if (md_float4_dot(f->plane[i], center) < -radius) {
                 culled = true;
                 break;
             }
@@ -3888,7 +3888,7 @@ static void backbone_chain_lod(uint8_t* chain_lod, const backbone_bounds_t* boun
             chain_lod[c] = BACKBONE_CHAIN_CULLED;
             continue;
         }
-        chain_lod[c] = backbone_lod_at(f, meshes, md_f32x4_dot(f->row_w, center) - radius * f->w_scale);
+        chain_lod[c] = backbone_lod_at(f, meshes, md_float4_dot(f->row_w, center) - radius * f->w_scale);
     }
 }
 
@@ -3896,38 +3896,38 @@ static void backbone_chain_lod(uint8_t* chain_lod, const backbone_bounds_t* boun
 // chains tells without looking at each (no chain is closer or farther than it): -1 when it does not
 static int backbone_uniform_lod(const backbone_bounds_t* bounds, const backbone_mesh_t meshes[BACKBONE_LOD_COUNT], float max_extent, const view_frame_t* f) {
     if (!bounds->valid) return -1;
-    const md_f32x4_t s = bounds->all_sphere;
-    const md_f32x4_t center = {s.x, s.y, s.z, 1.0f};
+    const md_float4_t s = bounds->all_sphere;
+    const md_float4_t center = {s.x, s.y, s.z, 1.0f};
     const float radius = s.w + max_extent;
     for (int i = 0; i < 6; ++i) {
-        if (md_f32x4_dot(f->plane[i], center) < radius) return -1;
+        if (md_float4_dot(f->plane[i], center) < radius) return -1;
     }
-    const float w = md_f32x4_dot(f->row_w, center);
+    const float w = md_float4_dot(f->row_w, center);
     const uint8_t lod_near = backbone_lod_at(f, meshes, w - radius * f->w_scale);
     const uint8_t lod_far  = backbone_lod_at(f, meshes, w + radius * f->w_scale);
     return lod_near == lod_far ? lod_near : -1;
 }
 
 // Whether the box [lo, hi] grown by margin, moved by the rigid transform T, is out of view
-static bool box_out_of_view(const view_frame_t* f, const md_f32x4x4_t* T, md_f32x3_t lo, md_f32x3_t hi, float margin) {
-    const md_f32x3_t c_local = md_f32x3_mul1(md_f32x3_add(lo, hi), 0.5f);
-    const md_f32x3_t e = md_f32x3_mul1(md_f32x3_sub(hi, lo), 0.5f);
-    const md_f32x4_t c = md_f32x4x4_mul_f32x4(*T, md_f32x4_from_f32x3(c_local, 1.0f));
-    const md_f32x3_t ax = md_f32x3_from_f32x4(T->col[0]);
-    const md_f32x3_t ay = md_f32x3_from_f32x4(T->col[1]);
-    const md_f32x3_t az = md_f32x3_from_f32x4(T->col[2]);
+static bool box_out_of_view(const view_frame_t* f, const md_float4x4_t* T, md_float3_t lo, md_float3_t hi, float margin) {
+    const md_float3_t c_local = md_float3_mul1(md_float3_add(lo, hi), 0.5f);
+    const md_float3_t e = md_float3_mul1(md_float3_sub(hi, lo), 0.5f);
+    const md_float4_t c = md_float4x4_mul_float4(*T, md_float4_from_float3(c_local, 1.0f));
+    const md_float3_t ax = md_float3_from_float4(T->col[0]);
+    const md_float3_t ay = md_float3_from_float4(T->col[1]);
+    const md_float3_t az = md_float3_from_float4(T->col[2]);
     for (int i = 0; i < 6; ++i) {
-        const md_f32x3_t n = md_f32x3_from_f32x4(f->plane[i]);
-        const float dist = md_f32x3_dot(n, md_f32x3_from_f32x4(c)) + f->plane[i].w;
-        const float reach = fabsf(md_f32x3_dot(n, ax)) * e.x + fabsf(md_f32x3_dot(n, ay)) * e.y + fabsf(md_f32x3_dot(n, az)) * e.z + margin;
+        const md_float3_t n = md_float3_from_float4(f->plane[i]);
+        const float dist = md_float3_dot(n, md_float3_from_float4(c)) + f->plane[i].w;
+        const float reach = fabsf(md_float3_dot(n, ax)) * e.x + fabsf(md_float3_dot(n, ay)) * e.y + fabsf(md_float3_dot(n, az)) * e.z + margin;
         if (dist < -reach) return true;
     }
     return false;
 }
 
-static inline md_f32x4x4_t instance_transform(const float* transforms, uint32_t i) {
-    md_f32x4x4_t T;
-    md_memcpy(&T, transforms + 16 * i, sizeof(md_f32x4x4_t));
+static inline md_float4x4_t instance_transform(const float* transforms, uint32_t i) {
+    md_float4x4_t T;
+    md_memcpy(&T, transforms + 16 * i, sizeof(md_float4x4_t));
     return T;
 }
 
@@ -4019,11 +4019,11 @@ static uint64_t hash_bytes(const uint8_t* data, size_t size) {
 }
 
 // The rows of a transform and of its previous one, as instance_load reads them (INSTANCES)
-static void push_instance(md_array(md_f32x4_t)* data, const md_f32x4x4_t* T, const md_f32x4x4_t* T_prev, md_allocator_i* alloc) {
+static void push_instance(md_array(md_float4_t)* data, const md_float4x4_t* T, const md_float4x4_t* T_prev, md_allocator_i* alloc) {
     for (int k = 0; k < 2; ++k) {
-        const md_f32x4x4_t* M = k == 0 ? T : T_prev;
+        const md_float4x4_t* M = k == 0 ? T : T_prev;
         for (int r = 0; r < 3; ++r) {
-            const md_f32x4_t row = {M->elem[0][r], M->elem[1][r], M->elem[2][r], M->elem[3][r]};
+            const md_float4_t row = {M->elem[0][r], M->elem[1][r], M->elem[2][r], M->elem[3][r]};
             md_array_push(*data, row, alloc);
         }
     }
@@ -4204,15 +4204,15 @@ static void bind_list(GLuint buf) {
 
 typedef struct {
     const view_frame_t* frame;          // Of world space
-    const md_f32x4x4_t*       world_to_clip;
+    const md_float4x4_t*       world_to_clip;
     float               viewport_half_height;
-    md_array(md_f32x4_t)*   inst_data;
+    md_array(md_float4_t)*   inst_data;
     md_array(uint32_t)* list_data;
     md_array(mol_lists_t)* mol_lists;   // With an atom mask or subsets
     uint32_t            atom_mask;
     md_allocator_i*     alloc;
     const molecule_t*   xyz_mol;        // The positions of this molecule read back for the boxes of its subsets, if any
-    const md_f32x3_t*       xyz;
+    const md_float3_t*       xyz;
 } prep_ctx_t;
 
 // The copies of an op in view, pushed to the instance data (in groups of the levels of detail of the chains for the
@@ -4227,8 +4227,8 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
     // The box of what the op shows, which its copies are culled with: of its subset, or of the molecule
     subset_t* subset = op->subset.id ? subset_lookup(op->subset.id) : NULL;
     bool   culled  = mol->aabb_valid;
-    md_f32x3_t box_min = mol->aabb_min;
-    md_f32x3_t box_max = mol->aabb_max;
+    md_float3_t box_min = mol->aabb_min;
+    md_float3_t box_max = mol->aabb_max;
     if (subset) {
         if (subset->atom_count == 0) return;     // Nothing to show
         if (pc->xyz_mol != mol) {
@@ -4246,7 +4246,7 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
     uint32_t* visible = md_alloc(alloc, count * sizeof(uint32_t));
     uint32_t visible_count = 0;
     for (uint32_t i = 0; i < count; ++i) {
-        const md_f32x4x4_t T = (inst->count && inst->transforms) ? instance_transform(inst->transforms, i) : md_f32x4x4_ident();
+        const md_float4x4_t T = (inst->count && inst->transforms) ? instance_transform(inst->transforms, i) : md_float4x4_ident();
         if (culled && box_out_of_view(pc->frame, &T, box_min, box_max, reach)) {
             continue;
         }
@@ -4272,8 +4272,8 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
 
         for (uint32_t v = 0; v < visible_count; ++v) {
             const uint32_t i = visible[v];
-            const md_f32x4x4_t T = (inst->count && inst->transforms) ? instance_transform(inst->transforms, i) : md_f32x4x4_ident();
-            const md_f32x4x4_t to_clip = md_f32x4x4_mul(*pc->world_to_clip, T);
+            const md_float4x4_t T = (inst->count && inst->transforms) ? instance_transform(inst->transforms, i) : md_float4x4_ident();
+            const md_float4x4_t to_clip = md_float4x4_mul(*pc->world_to_clip, T);
             const view_frame_t f = view_frame_make(&to_clip, pc->viewport_half_height);
 
             const uint8_t* lod = NULL;
@@ -4293,7 +4293,7 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
                 lod = arr;
             }
             const uint64_t key = hash_bytes(lod, chain_count);
-            const bool mirrored = md_f32x3x3_determinant(md_f32x3x3_from_f32x4x4(T)) < 0.0f;
+            const bool mirrored = md_float3x3_determinant(md_float3x3_from_float4x4(T)) < 0.0f;
 
             uint32_t g = 0;
             for (; g < group_count; ++g) {
@@ -4328,11 +4328,11 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
     for (uint32_t v = 0; v < visible_count; ++v) {
         const uint32_t i = order[v];
         if (inst->count && inst->transforms) {
-            const md_f32x4x4_t T = instance_transform(inst->transforms, i);
-            const md_f32x4x4_t T_prev = inst->prev_transforms ? instance_transform(inst->prev_transforms, i) : T;
+            const md_float4x4_t T = instance_transform(inst->transforms, i);
+            const md_float4x4_t T_prev = inst->prev_transforms ? instance_transform(inst->prev_transforms, i) : T;
             push_instance(pc->inst_data, &T, &T_prev, alloc);
         } else {
-            const md_f32x4x4_t I = md_f32x4x4_ident();
+            const md_float4x4_t I = md_float4x4_ident();
             push_instance(pc->inst_data, &I, &I, alloc);
         }
     }
@@ -4378,20 +4378,20 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
     MD_ASSERT(ubo_data);
     MD_ASSERT(args);
 
-    md_memcpy(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(md_f32x4x4_t));
-    md_memcpy(&ubo_data->view_transform.view_to_clip,  args->view_transform.proj_matrix, sizeof(md_f32x4x4_t));
+    md_memcpy(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(md_float4x4_t));
+    md_memcpy(&ubo_data->view_transform.view_to_clip,  args->view_transform.proj_matrix, sizeof(md_float4x4_t));
 
-    ubo_data->view_transform.world_to_clip = md_f32x4x4_mul(ubo_data->view_transform.view_to_clip, ubo_data->view_transform.world_to_view);
-    ubo_data->view_transform.world_to_view_normal = md_f32x4x4_transpose(md_f32x4x4_inverse(ubo_data->view_transform.world_to_view));
-    ubo_data->view_transform.view_to_world = md_f32x4x4_inverse(ubo_data->view_transform.world_to_view);
-    ubo_data->view_transform.clip_to_view = md_f32x4x4_inverse(ubo_data->view_transform.view_to_clip);
+    ubo_data->view_transform.world_to_clip = md_float4x4_mul(ubo_data->view_transform.view_to_clip, ubo_data->view_transform.world_to_view);
+    ubo_data->view_transform.world_to_view_normal = md_float4x4_transpose(md_float4x4_inverse(ubo_data->view_transform.world_to_view));
+    ubo_data->view_transform.view_to_world = md_float4x4_inverse(ubo_data->view_transform.world_to_view);
+    ubo_data->view_transform.clip_to_view = md_float4x4_inverse(ubo_data->view_transform.view_to_clip);
 
     if (args->view_transform.prev_view_matrix && args->view_transform.proj_matrix) {
-        const md_f32x4x4_t* prev_world_to_view = (const md_f32x4x4_t*)args->view_transform.prev_view_matrix;
-        const md_f32x4x4_t* prev_view_to_clip  = (const md_f32x4x4_t*)args->view_transform.prev_proj_matrix;
+        const md_float4x4_t* prev_world_to_view = (const md_float4x4_t*)args->view_transform.prev_view_matrix;
+        const md_float4x4_t* prev_view_to_clip  = (const md_float4x4_t*)args->view_transform.prev_proj_matrix;
         // The copies are taken into world space by the vertex shaders (INSTANCES), with the motion of each in the velocity
-        ubo_data->view_transform.prev_world_to_clip = md_f32x4x4_mul(*prev_view_to_clip, *prev_world_to_view);
-        ubo_data->view_transform.curr_view_to_prev_clip = md_f32x4x4_mul(ubo_data->view_transform.prev_world_to_clip, ubo_data->view_transform.view_to_world);
+        ubo_data->view_transform.prev_world_to_clip = md_float4x4_mul(*prev_view_to_clip, *prev_world_to_view);
+        ubo_data->view_transform.curr_view_to_prev_clip = md_float4x4_mul(ubo_data->view_transform.prev_world_to_clip, ubo_data->view_transform.view_to_world);
         extract_jitter_uv(ubo_data->jitter_uv.elem + 0, ubo_data->view_transform.view_to_clip);
         extract_jitter_uv(ubo_data->jitter_uv.elem + 2, *prev_view_to_clip);
     }
@@ -4487,7 +4487,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     // INSTANCES and MARKS: what each op draws, culled on the CPU, uploaded once for all ops
     const size_t op_count = md_array_size(draw_ops);
     op_prep_t* preps = md_alloc(alloc, MD_MAX(op_count, 1) * sizeof(op_prep_t));
-    md_array(md_f32x4_t)      inst_data = 0;
+    md_array(md_float4_t)      inst_data = 0;
     md_array(uint32_t)    list_data = 0;
     md_array(mol_lists_t) mol_lists = 0;
     // Room for the lists of the molecules: their entries are pointed to and must not move
@@ -4512,7 +4512,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 
     // Uploaded whole: a new store for each draw, which the driver need not wait for
     glBindBuffer(GL_ARRAY_BUFFER, ctx.instance_buf.id);
-    glBufferData(GL_ARRAY_BUFFER, MD_MAX(md_array_bytes(inst_data), sizeof(md_f32x4_t)), inst_data, GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, MD_MAX(md_array_bytes(inst_data), sizeof(md_float4_t)), inst_data, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, ctx.list_buf.id);
     glBufferData(GL_ARRAY_BUFFER, MD_MAX(md_array_bytes(list_data), sizeof(uint32_t)), list_data, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);

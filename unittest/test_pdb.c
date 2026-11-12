@@ -91,8 +91,8 @@ UTEST(pdb, assemblies) {
     const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(3, ir.end - ir.beg);
     EXPECT_EQ(60, md_assembly_copy_count(a, 0));
-    const md_f32x4x4_t I = md_f32x4x4_ident();
-    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[a->oper[0]], sizeof(md_f32x4x4_t)));
+    const md_float4x4_t I = md_float4x4_ident();
+    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[a->oper[0]], sizeof(md_float4x4_t)));
     md_vm_arena_destroy(alloc);
 }
 
@@ -141,7 +141,7 @@ UTEST(pdb, assembly_groups) {
     EXPECT_EQ(1, orr.end - orr.beg);
     EXPECT_EQ(1, a->oper[orr.beg]);
     // A quarter turn about z, by rows as the records give it: x' = -y + 10, y' = x
-    const md_f32x4_t q = md_f32x4x4_mul_f32x4(a->oper_transform[1], (md_f32x4_t){1, 2, 3, 1});
+    const md_float4_t q = md_float4x4_mul_float4(a->oper_transform[1], (md_float4_t){1, 2, 3, 1});
     EXPECT_NEAR(8.0f, q.x, 1e-6f);
     EXPECT_NEAR(1.0f, q.y, 1e-6f);
     EXPECT_NEAR(3.0f, q.z, 1e-6f);
@@ -414,7 +414,7 @@ UTEST(pdb, run_matches_reference) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 0));
-    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(md_f32x3_t)));
+    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(md_float3_t)));
 
     // One atom of one model: the text is read up to that atom and no further.
     float xyz[3];
@@ -462,7 +462,7 @@ UTEST(pdb, run_alternate_locations) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, MD_STR_LIT("run/alt"), 0));
-    EXPECT_EQ(0, md_memcmp(st.xyz, got.xyz, sys.atom.count * sizeof(md_f32x3_t)));
+    EXPECT_EQ(0, md_memcmp(st.xyz, got.xyz, sys.atom.count * sizeof(md_float3_t)));
     ASSERT_TRUE(run_extract_one(&got, &sys, MD_STR_LIT("run/alt"), 1));
     EXPECT_EQ(1.5f, got.xyz[0].x);
     EXPECT_EQ(2.5f, got.xyz[1].x);     // the A location of the CA

@@ -4,27 +4,27 @@
 
 #define SWAP_INT(x, y) {int t = x; x = y; y = t;}
 
-md_f32x3x3_svd_t md_f32x3x3_svd(const md_f32x3x3_t M) {
-    md_f32x3x3_t Mt = md_f32x3x3_transpose(M);
+md_float3x3_svd_t md_float3x3_svd(const md_float3x3_t M) {
+    md_float3x3_t Mt = md_float3x3_transpose(M);
     // the external svd library uses row major matrix convention...
-    md_f32x3x3_t U,S,V;
+    md_float3x3_t U,S,V;
     svd((const float(*)[3])Mt.elem, U.elem, S.elem, V.elem);
     
-    md_f32x3x3_svd_t res = {
-        .U = md_f32x3x3_transpose(U),
-        .V = md_f32x3x3_transpose(V),
+    md_float3x3_svd_t res = {
+        .U = md_float3x3_transpose(U),
+        .V = md_float3x3_transpose(V),
         .s = {S.elem[0][0], S.elem[1][1], S.elem[2][2]},
     };
     
     return res;
 }
 
-md_f32x3x3_eigen_t md_f32x3x3_eigen(md_f32x3x3_t M) {
-    md_f32x3x3_svd_t svd = md_f32x3x3_svd(M);
+md_float3x3_eigen_t md_float3x3_eigen(md_float3x3_t M) {
+    md_float3x3_svd_t svd = md_float3x3_svd(M);
 
     const float max_val = MD_MAX(svd.s.elem[0], MD_MAX(svd.s.elem[1], svd.s.elem[2]));
     const float  e_val[] = {svd.s.elem[0] / max_val, svd.s.elem[1] / max_val, svd.s.elem[2] / max_val};
-    const md_f32x3_t e_vec[] = {svd.U.col[0], svd.U.col[1], svd.U.col[2]};
+    const md_float3_t e_vec[] = {svd.U.col[0], svd.U.col[1], svd.U.col[2]};
 
     int l[3] = {0, 1, 2};
 
@@ -32,8 +32,8 @@ md_f32x3x3_eigen_t md_f32x3x3_eigen(md_f32x3x3_t M) {
     if (e_val[l[1]] < e_val[l[2]]) SWAP_INT(l[1], l[2]);
     if (e_val[l[0]] < e_val[l[1]]) SWAP_INT(l[0], l[1]);
 
-    md_f32x3x3_eigen_t res;
-    res.values = (md_f32x3_t){e_val[l[0]], e_val[l[1]], e_val[l[2]]},
+    md_float3x3_eigen_t res;
+    res.values = (md_float3_t){e_val[l[0]], e_val[l[1]], e_val[l[2]]},
     res.vectors.col[0] = e_vec[l[0]];
     res.vectors.col[1] = e_vec[l[1]];
     res.vectors.col[2] = e_vec[l[2]];
@@ -41,7 +41,7 @@ md_f32x3x3_eigen_t md_f32x3x3_eigen(md_f32x3x3_t M) {
     return res;
 }
 
-md_f32x3x3_t md_f32x3x3_covariance_matrix(const md_f32x3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, md_f32x3_t in_mean) {   
+md_float3x3_t md_float3x3_covariance_matrix(const md_float3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, md_float3_t in_mean) {   
     // The covariance matrix is symmetric, so we only need to compute the upper triangular part
     double A[3][3] = {0};
     double w_sum = 0.0;
@@ -91,14 +91,14 @@ md_f32x3x3_t md_f32x3x3_covariance_matrix(const md_f32x3_t* in_xyz, const float*
         }
     }
 
-    return (md_f32x3x3_t) {
+    return (md_float3x3_t) {
         (float)A[0][0], (float)A[0][1], (float)A[0][2],
         (float)A[1][0], (float)A[1][1], (float)A[1][2],
         (float)A[2][0], (float)A[2][1], (float)A[2][2],
     };
 }
 
-md_f32x3x3_t md_f32x3x3_covariance_matrix_f32x4(const md_f32x4_t* in_xyzw, const int32_t* in_idx, size_t count, md_f32x3_t com) {
+md_float3x3_t md_float3x3_covariance_matrix_float4(const md_float4_t* in_xyzw, const int32_t* in_idx, size_t count, md_float3_t com) {
     // The covariance matrix is symmetric, so we only need to compute the upper triangular part
     double A[3][3] = {0};
     double w_sum = 0.0;
@@ -148,14 +148,14 @@ md_f32x3x3_t md_f32x3x3_covariance_matrix_f32x4(const md_f32x4_t* in_xyzw, const
         }
     }
 
-    return (md_f32x3x3_t) {
+    return (md_float3x3_t) {
         (float)A[0][0], (float)A[0][1], (float)A[0][2],
         (float)A[1][0], (float)A[1][1], (float)A[1][2],
         (float)A[2][0], (float)A[2][1], (float)A[2][2],
     };
 }
 
-md_f32x3x3_t md_f32x3x3_cross_covariance_matrix(const md_f32x3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t com[2]) {
+md_float3x3_t md_float3x3_cross_covariance_matrix(const md_float3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const md_float3_t com[2]) {
     double A[3][3] = {0};
     double w_sum = 0.0;
 
@@ -247,20 +247,20 @@ md_f32x3x3_t md_f32x3x3_cross_covariance_matrix(const md_f32x3_t* const in_xyz[2
         }
     }
 
-    return (md_f32x3x3_t) {
+    return (md_float3x3_t) {
         (float)A[0][0], (float)A[0][1], (float)A[0][2],
         (float)A[1][0], (float)A[1][1], (float)A[1][2],
         (float)A[2][0], (float)A[2][1], (float)A[2][2],
     };
 }
 
-md_f32x3x3_t md_f32x3x3_cross_covariance_matrix_raw_f32x4(const md_f32x4_t* const in_xyzw[2], size_t count) {
+md_float3x3_t md_float3x3_cross_covariance_matrix_raw_float4(const md_float4_t* const in_xyzw[2], size_t count) {
     double A[3][3] = {0};
     double w_sum = 0.0;
 
     for (size_t i = 0; i < count; ++i) {
-        md_f32x4_t p = in_xyzw[0][i];
-        md_f32x4_t q = in_xyzw[1][i];
+        md_float4_t p = in_xyzw[0][i];
+        md_float4_t q = in_xyzw[1][i];
 
         // The question here is how to combine the weights.
         // For now we just take the average.
@@ -285,18 +285,18 @@ md_f32x3x3_t md_f32x3x3_cross_covariance_matrix_raw_f32x4(const md_f32x4_t* cons
         }
     }
 
-    return (md_f32x3x3_t) {
+    return (md_float3x3_t) {
         (float)A[0][0], (float)A[0][1], (float)A[0][2],
         (float)A[1][0], (float)A[1][1], (float)A[1][2],
         (float)A[2][0], (float)A[2][1], (float)A[2][2],
     };
 }
 
-md_f32x3x3_t md_f32x3x3_cross_covariance_matrix_f32x4(const md_f32x4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t com[2]) {
+md_float3x3_t md_float3x3_cross_covariance_matrix_float4(const md_float4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_float3_t com[2]) {
     double A[3][3] = {0};
     double w_sum = 0.0;
-    const md_f32x4_t com0 = md_f32x4_from_f32x3(com[0], 0);
-    const md_f32x4_t com1 = md_f32x4_from_f32x3(com[1], 0);
+    const md_float4_t com0 = md_float4_from_float3(com[0], 0);
+    const md_float4_t com1 = md_float4_from_float3(com[1], 0);
 
     if (in_idx) {
         MD_ASSERT(in_idx[0]);
@@ -304,8 +304,8 @@ md_f32x3x3_t md_f32x3x3_cross_covariance_matrix_f32x4(const md_f32x4_t* const in
         for (size_t i = 0; i < count; ++i) {
             const int32_t i0 = in_idx[0][i];
             const int32_t i1 = in_idx[1][i];
-            md_f32x4_t p = md_f32x4_sub(in_xyzw[0][i0], com0);
-            md_f32x4_t q = md_f32x4_sub(in_xyzw[1][i1], com1);
+            md_float4_t p = md_float4_sub(in_xyzw[0][i0], com0);
+            md_float4_t q = md_float4_sub(in_xyzw[1][i1], com1);
 
             // The question here is how to combine the weights.
             // For now we just take the average.
@@ -325,8 +325,8 @@ md_f32x3x3_t md_f32x3x3_cross_covariance_matrix_f32x4(const md_f32x4_t* const in
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            md_f32x4_t p = md_f32x4_sub(in_xyzw[0][i], com0);
-            md_f32x4_t q = md_f32x4_sub(in_xyzw[1][i], com1);
+            md_float4_t p = md_float4_sub(in_xyzw[0][i], com0);
+            md_float4_t q = md_float4_sub(in_xyzw[1][i], com1);
 
             // The question here is how to combine the weights.
             // For now we just take the average.
@@ -352,31 +352,31 @@ md_f32x3x3_t md_f32x3x3_cross_covariance_matrix_f32x4(const md_f32x4_t* const in
         }
     }
 
-    return (md_f32x3x3_t) {
+    return (md_float3x3_t) {
         (float)A[0][0], (float)A[0][1], (float)A[0][2],
         (float)A[1][0], (float)A[1][1], (float)A[1][2],
         (float)A[2][0], (float)A[2][1], (float)A[2][2],
     };
 }
 
-md_f32x3x3_t md_f32x3x3_extract_rotation(md_f32x3x3_t M) {
-    md_f32x3x3_svd_t svd = md_f32x3x3_svd(M);
+md_float3x3_t md_float3x3_extract_rotation(md_float3x3_t M) {
+    md_float3x3_svd_t svd = md_float3x3_svd(M);
 
-    md_f32x3x3_t Ut = md_f32x3x3_transpose(svd.U);
-    float  d  = md_f32x3x3_determinant(md_f32x3x3_mul(svd.V, Ut));
+    md_float3x3_t Ut = md_float3x3_transpose(svd.U);
+    float  d  = md_float3x3_determinant(md_float3x3_mul(svd.V, Ut));
     float  s  = md_f32_sign(d);
-    md_f32x3x3_t D  = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, s};
-    md_f32x3x3_t R  = md_f32x3x3_mul(md_f32x3x3_mul(svd.V, D), Ut);
+    md_float3x3_t D  = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, s};
+    md_float3x3_t R  = md_float3x3_mul(md_float3x3_mul(svd.V, D), Ut);
     return R;
 }
 
-static double highp_dot(md_f32x3_t a, md_f32x3_t b) {
+static double highp_dot(md_float3_t a, md_float3_t b) {
     return (double)a.x * (double)b.x + (double)a.y * (double)b.y + (double)a.z * (double)b.z;
 }
 
-static md_f32x3_t highp_normalize(md_f32x3_t v) {
+static md_float3_t highp_normalize(md_float3_t v) {
     double len = sqrt(highp_dot(v, v));
-    md_f32x3_t result = {
+    md_float3_t result = {
         (float)(v.x / len),
         (float)(v.y / len),
         (float)(v.z / len),
@@ -384,37 +384,37 @@ static md_f32x3_t highp_normalize(md_f32x3_t v) {
     return result;
 }
 
-md_f32x3x3_t md_f32x3x3_orthonormalize(md_f32x3x3_t M) {
-    M.col[0] = md_f32x3_normalize(M.col[0]);
+md_float3x3_t md_float3x3_orthonormalize(md_float3x3_t M) {
+    M.col[0] = md_float3_normalize(M.col[0]);
 
-    M.col[1] = md_f32x3_sub(M.col[1], md_f32x3_mul1(M.col[0], md_f32x3_dot(M.col[0], M.col[1])));
-    M.col[1] = md_f32x3_normalize(M.col[1]);
+    M.col[1] = md_float3_sub(M.col[1], md_float3_mul1(M.col[0], md_float3_dot(M.col[0], M.col[1])));
+    M.col[1] = md_float3_normalize(M.col[1]);
 
-    M.col[2] = md_f32x3_sub(M.col[2], md_f32x3_add(md_f32x3_mul1(M.col[0], md_f32x3_dot(M.col[0], M.col[2])), md_f32x3_mul1(M.col[1], md_f32x3_dot(M.col[1], M.col[2]))));
-    M.col[2] = md_f32x3_normalize(M.col[2]);
+    M.col[2] = md_float3_sub(M.col[2], md_float3_add(md_float3_mul1(M.col[0], md_float3_dot(M.col[0], M.col[2])), md_float3_mul1(M.col[1], md_float3_dot(M.col[1], M.col[2]))));
+    M.col[2] = md_float3_normalize(M.col[2]);
 
     return M;
 }
 
-md_f32x3x3_t md_f32x3x3_optimal_rotation(const md_f32x3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t com[2]) {
+md_float3x3_t md_float3x3_optimal_rotation(const md_float3_t* const in_xyz[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const md_float3_t com[2]) {
     if (count < 1) {
-        return md_f32x3x3_ident();
+        return md_float3x3_ident();
     }
 
-    const md_f32x3x3_t cov_mat = md_f32x3x3_cross_covariance_matrix(in_xyz, in_w, in_idx, count, com);
-    return md_f32x3x3_extract_rotation(cov_mat);
+    const md_float3x3_t cov_mat = md_float3x3_cross_covariance_matrix(in_xyz, in_w, in_idx, count, com);
+    return md_float3x3_extract_rotation(cov_mat);
 }
 
-md_f32x3x3_t md_f32x3x3_optimal_rotation_f32x4(const md_f32x4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_f32x3_t com[2]) {
+md_float3x3_t md_float3x3_optimal_rotation_float4(const md_float4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_float3_t com[2]) {
     if (count < 1) {
-		return md_f32x3x3_ident();
+		return md_float3x3_ident();
 	}
 
-	const md_f32x3x3_t cov_mat = md_f32x3x3_cross_covariance_matrix_f32x4(in_xyzw, in_idx, count, com);
-	return md_f32x3x3_extract_rotation(cov_mat);
+	const md_float3x3_t cov_mat = md_float3x3_cross_covariance_matrix_float4(in_xyzw, in_idx, count, com);
+	return md_float3x3_extract_rotation(cov_mat);
 }
 
-md_f32x4x4_t md_f32x4x4_inverse(md_f32x4x4_t M) {
+md_float4x4_t md_float4x4_inverse(md_float4x4_t M) {
     const float c00 = M.elem[2][2] * M.elem[3][3] - M.elem[3][2] * M.elem[2][3];
     const float c02 = M.elem[1][2] * M.elem[3][3] - M.elem[3][2] * M.elem[1][3];
     const float c03 = M.elem[1][2] * M.elem[2][3] - M.elem[2][2] * M.elem[1][3];
@@ -439,65 +439,65 @@ md_f32x4x4_t md_f32x4x4_inverse(md_f32x4x4_t M) {
     const float c22 = M.elem[1][0] * M.elem[3][1] - M.elem[3][0] * M.elem[1][1];
     const float c23 = M.elem[1][0] * M.elem[2][1] - M.elem[2][0] * M.elem[1][1];
 
-    const md_f32x4_t f0 = {c00, c00, c02, c03};
-    const md_f32x4_t f1 = {c04, c04, c06, c07};
-    const md_f32x4_t f2 = {c08, c08, c10, c11};
-    const md_f32x4_t f3 = {c12, c12, c14, c15};
-    const md_f32x4_t f4 = {c16, c16, c18, c19};
-    const md_f32x4_t f5 = {c20, c20, c22, c23};
+    const md_float4_t f0 = {c00, c00, c02, c03};
+    const md_float4_t f1 = {c04, c04, c06, c07};
+    const md_float4_t f2 = {c08, c08, c10, c11};
+    const md_float4_t f3 = {c12, c12, c14, c15};
+    const md_float4_t f4 = {c16, c16, c18, c19};
+    const md_float4_t f5 = {c20, c20, c22, c23};
 
-    const md_f32x4_t v0 = {M.elem[1][0], M.elem[0][0], M.elem[0][0], M.elem[0][0]};
-    const md_f32x4_t v1 = {M.elem[1][1], M.elem[0][1], M.elem[0][1], M.elem[0][1]};
-    const md_f32x4_t v2 = {M.elem[1][2], M.elem[0][2], M.elem[0][2], M.elem[0][2]};
-    const md_f32x4_t v3 = {M.elem[1][3], M.elem[0][3], M.elem[0][3], M.elem[0][3]};
+    const md_float4_t v0 = {M.elem[1][0], M.elem[0][0], M.elem[0][0], M.elem[0][0]};
+    const md_float4_t v1 = {M.elem[1][1], M.elem[0][1], M.elem[0][1], M.elem[0][1]};
+    const md_float4_t v2 = {M.elem[1][2], M.elem[0][2], M.elem[0][2], M.elem[0][2]};
+    const md_float4_t v3 = {M.elem[1][3], M.elem[0][3], M.elem[0][3], M.elem[0][3]};
 
-    const md_f32x4_t i0 = md_f32x4_add(md_f32x4_sub(md_f32x4_mul(v1, f0), md_f32x4_mul(v2, f1)), md_f32x4_mul(v3, f2));
-    const md_f32x4_t i1 = md_f32x4_add(md_f32x4_sub(md_f32x4_mul(v0, f0), md_f32x4_mul(v2, f3)), md_f32x4_mul(v3, f4));
-    const md_f32x4_t i2 = md_f32x4_add(md_f32x4_sub(md_f32x4_mul(v0, f1), md_f32x4_mul(v1, f3)), md_f32x4_mul(v3, f5));
-    const md_f32x4_t i3 = md_f32x4_add(md_f32x4_sub(md_f32x4_mul(v0, f2), md_f32x4_mul(v1, f4)), md_f32x4_mul(v2, f5));
+    const md_float4_t i0 = md_float4_add(md_float4_sub(md_float4_mul(v1, f0), md_float4_mul(v2, f1)), md_float4_mul(v3, f2));
+    const md_float4_t i1 = md_float4_add(md_float4_sub(md_float4_mul(v0, f0), md_float4_mul(v2, f3)), md_float4_mul(v3, f4));
+    const md_float4_t i2 = md_float4_add(md_float4_sub(md_float4_mul(v0, f1), md_float4_mul(v1, f3)), md_float4_mul(v3, f5));
+    const md_float4_t i3 = md_float4_add(md_float4_sub(md_float4_mul(v0, f2), md_float4_mul(v1, f4)), md_float4_mul(v2, f5));
 
-    const md_f32x4_t sign_a = {+1, -1, +1, -1};
-    const md_f32x4_t sign_b = {-1, +1, -1, +1};
+    const md_float4_t sign_a = {+1, -1, +1, -1};
+    const md_float4_t sign_b = {-1, +1, -1, +1};
 
-    md_f32x4x4_t I = {0};
-    I.col[0] = md_f32x4_mul(i0, sign_a);
-    I.col[1] = md_f32x4_mul(i1, sign_b);
-    I.col[2] = md_f32x4_mul(i2, sign_a);
-    I.col[3] = md_f32x4_mul(i3, sign_b);
+    md_float4x4_t I = {0};
+    I.col[0] = md_float4_mul(i0, sign_a);
+    I.col[1] = md_float4_mul(i1, sign_b);
+    I.col[2] = md_float4_mul(i2, sign_a);
+    I.col[3] = md_float4_mul(i3, sign_b);
 
-    const md_f32x4_t row0 = {I.elem[0][0], I.elem[1][0], I.elem[2][0], I.elem[3][0]};
-    const md_f32x4_t dot0 = md_f32x4_mul(M.col[0], row0);
+    const md_float4_t row0 = {I.elem[0][0], I.elem[1][0], I.elem[2][0], I.elem[3][0]};
+    const md_float4_t dot0 = md_float4_mul(M.col[0], row0);
 
-    return md_f32x4x4_mul1(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
+    return md_float4x4_mul1(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
 }
 
-md_f32x3_t md_f32x4x4_unproject(md_f32x3_t window_coords, md_f32x4x4_t inv_view_proj_mat, md_f32x4_t viewport) {
-    md_f32x4_t tmp = md_f32x4_from_f32x3(window_coords, 1.f);
+md_float3_t md_float4x4_unproject(md_float3_t window_coords, md_float4x4_t inv_view_proj_mat, md_float4_t viewport) {
+    md_float4_t tmp = md_float4_from_float3(window_coords, 1.f);
     tmp.x = (tmp.x - viewport.elem[0]) / viewport.elem[2];
     tmp.y = (tmp.y - viewport.elem[1]) / viewport.elem[3];
-    tmp = md_f32x4_sub1(md_f32x4_mul1(tmp, 2.f), 1.f);
+    tmp = md_float4_sub1(md_float4_mul1(tmp, 2.f), 1.f);
 
-    md_f32x4_t obj = md_f32x4x4_mul_f32x4(inv_view_proj_mat, tmp);
-    obj = md_f32x4_div1(obj, obj.w);
+    md_float4_t obj = md_float4x4_mul_float4(inv_view_proj_mat, tmp);
+    obj = md_float4_div1(obj, obj.w);
 
-    return md_f32x3_from_f32x4(obj);
+    return md_float3_from_float4(obj);
 }
 
-md_f32x4x4_t md_f32x4x4_look_at(md_f32x3_t look_from, md_f32x3_t look_at, md_f32x3_t look_up) {
-    const md_f32x3_t f = md_f32x3_normalize(md_f32x3_sub(look_at, look_from));
-    const md_f32x3_t s = md_f32x3_normalize(md_f32x3_cross(f, look_up));
-    const md_f32x3_t u = md_f32x3_cross(s, f);
-    const md_f32x4x4_t M = {
+md_float4x4_t md_float4x4_look_at(md_float3_t look_from, md_float3_t look_at, md_float3_t look_up) {
+    const md_float3_t f = md_float3_normalize(md_float3_sub(look_at, look_from));
+    const md_float3_t s = md_float3_normalize(md_float3_cross(f, look_up));
+    const md_float3_t u = md_float3_cross(s, f);
+    const md_float4x4_t M = {
         s.x, u.x, -f.x, 0.0f,
         s.y, u.y, -f.y, 0.0f,
         s.z, u.z, -f.z, 0.0f,
-        -md_f32x3_dot(s, look_from), -md_f32x3_dot(u, look_from), md_f32x3_dot(f, look_from), 1.0f,
+        -md_float3_dot(s, look_from), -md_float3_dot(u, look_from), md_float3_dot(f, look_from), 1.0f,
     };
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_ortho(float l, float r, float b, float t, float n, float f) {
-    md_f32x4x4_t M = {0};
+md_float4x4_t md_float4x4_ortho(float l, float r, float b, float t, float n, float f) {
+    md_float4x4_t M = {0};
     M.elem[0][0] = 2 / (r-l);
     M.elem[1][1] = 2 / (t-b);
     M.elem[2][2] = -2 / (f-n);
@@ -508,8 +508,8 @@ md_f32x4x4_t md_f32x4x4_ortho(float l, float r, float b, float t, float n, float
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_ortho_inv(float l, float r, float b, float t, float n, float f) {
-    md_f32x4x4_t M = {0};
+md_float4x4_t md_float4x4_ortho_inv(float l, float r, float b, float t, float n, float f) {
+    md_float4x4_t M = {0};
     M.elem[0][0] = (r-l) / 2;
     M.elem[1][1] = (t-b) / 2;
     M.elem[2][2] = (n-f) / 2;
@@ -520,8 +520,8 @@ md_f32x4x4_t md_f32x4x4_ortho_inv(float l, float r, float b, float t, float n, f
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_ortho_2d(float l, float r, float b, float t) {
-    md_f32x4x4_t M = {0};
+md_float4x4_t md_float4x4_ortho_2d(float l, float r, float b, float t) {
+    md_float4x4_t M = {0};
     M.elem[0][0] = 2 / (r-l);
     M.elem[1][1] = 2 / (t-b);
     M.elem[2][2] = -1;
@@ -531,8 +531,8 @@ md_f32x4x4_t md_f32x4x4_ortho_2d(float l, float r, float b, float t) {
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_ortho_2d_inv(float l, float r, float b, float t) {
-    md_f32x4x4_t M = {0};
+md_float4x4_t md_float4x4_ortho_2d_inv(float l, float r, float b, float t) {
+    md_float4x4_t M = {0};
     M.elem[0][0] = (r-l) / 2;
     M.elem[1][1] = (t-b) / 2;
     M.elem[2][2] = -1;
@@ -547,9 +547,9 @@ md_f32x4x4_t md_f32x4x4_ortho_2d_inv(float l, float r, float b, float t) {
 // those names preprocess away and leave a bare 'float,' in the list. It only shows up in
 // builds whose include chain reaches that header, so it reads as an architecture problem
 // and is not one.
-md_f32x4x4_t md_f32x4x4_persp(float fovy, float aspect, float z_near, float z_far) {
+md_float4x4_t md_float4x4_persp(float fovy, float aspect, float z_near, float z_far) {
     const float tan_half_fovy = tanf(fovy * 0.5f);
-    md_f32x4x4_t M = {0};
+    md_float4x4_t M = {0};
     M.elem[0][0] = 1.0f / (aspect * tan_half_fovy);
     M.elem[1][1] = 1.0f / (tan_half_fovy);
     M.elem[2][2] = -(z_far + z_near) / (z_far - z_near);
@@ -558,9 +558,9 @@ md_f32x4x4_t md_f32x4x4_persp(float fovy, float aspect, float z_near, float z_fa
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_persp_inv(float fovy, float aspect, float z_near, float z_far) {
+md_float4x4_t md_float4x4_persp_inv(float fovy, float aspect, float z_near, float z_far) {
     const float tan_half_fovy = tanf(fovy * 0.5f);
-    md_f32x4x4_t M = {0};
+    md_float4x4_t M = {0};
     M.elem[0][0] = aspect * tan_half_fovy;
     M.elem[1][1] = tan_half_fovy;
     M.elem[2][3] = (z_near - z_far) / (2 * z_far * z_near);
@@ -569,8 +569,8 @@ md_f32x4x4_t md_f32x4x4_persp_inv(float fovy, float aspect, float z_near, float 
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_frustum(float l, float r, float b, float t, float n, float f) {
-    md_f32x4x4_t M = {0};
+md_float4x4_t md_float4x4_frustum(float l, float r, float b, float t, float n, float f) {
+    md_float4x4_t M = {0};
     M.elem[0][0] = (2*n) / (r-l);
     M.elem[1][1] = (2*n) / (t-b);
     M.elem[2][0] = (r+l) / (r-l);
@@ -581,8 +581,8 @@ md_f32x4x4_t md_f32x4x4_frustum(float l, float r, float b, float t, float n, flo
     return M;
 }
 
-md_f32x4x4_t md_f32x4x4_frustum_inv(float l, float r, float b, float t, float n, float f) {
-    md_f32x4x4_t M = {0};
+md_float4x4_t md_float4x4_frustum_inv(float l, float r, float b, float t, float n, float f) {
+    md_float4x4_t M = {0};
     M.elem[0][0] = (r-l) / (2*n);
     M.elem[1][1] = (t-b) / (2*n);
     M.elem[2][3] = (n-f) / (2*n*f);
@@ -595,7 +595,7 @@ md_f32x4x4_t md_f32x4x4_frustum_inv(float l, float r, float b, float t, float n,
 
 // Translation is the same for every atom, so packed coordinates need no split: 24 floats are eight
 // atoms, and the translation repeats with them every three floats.
-void md_f32x3_batch_translate(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, size_t count, md_f32x3_t t) {
+void md_float3_batch_translate(md_float3_t* out_xyz, const md_float3_t* in_xyz, size_t count, md_float3_t t) {
     const float* src = (const float*)in_xyz;
     float* dst = (float*)out_xyz;
     enum { N = 24 / MD_XV_WIDTH };
@@ -612,17 +612,17 @@ void md_f32x3_batch_translate(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, siz
         }
     }
     for (; i < count; i++) {
-        out_xyz[i] = md_f32x3_add(in_xyz[i], t);
+        out_xyz[i] = md_float3_add(in_xyz[i], t);
     }
 }
 
-void md_f32x3_batch_translate_inplace(md_f32x3_t* in_out_xyz, size_t count, md_f32x3_t translation) {
-    md_f32x3_batch_translate(in_out_xyz, in_out_xyz, count, translation);
+void md_float3_batch_translate_inplace(md_float3_t* in_out_xyz, size_t count, md_float3_t translation) {
+    md_float3_batch_translate(in_out_xyz, in_out_xyz, count, translation);
 }
 
 // A native vector of atoms at a time, split into x, y and z and packed again. In place is allowed:
 // each group is read before it is written.
-void md_f32x3x3_batch_transform(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, size_t count, md_f32x3x3_t M) {
+void md_float3x3_batch_transform(md_float3_t* out_xyz, const md_float3_t* in_xyz, size_t count, md_float3x3_t M) {
     const md_xv m11 = md_xv_set1_ps(M.elem[0][0]);
     const md_xv m12 = md_xv_set1_ps(M.elem[0][1]);
     const md_xv m13 = md_xv_set1_ps(M.elem[0][2]);
@@ -656,8 +656,8 @@ void md_f32x3x3_batch_transform(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, s
     }
 
     for (; i < count; i++) {
-        const md_f32x3_t p = in_xyz[i];
-        out_xyz[i] = (md_f32x3_t) {
+        const md_float3_t p = in_xyz[i];
+        out_xyz[i] = (md_float3_t) {
             p.x * M.elem[0][0] + p.y * M.elem[1][0] + p.z * M.elem[2][0],
             p.x * M.elem[0][1] + p.y * M.elem[1][1] + p.z * M.elem[2][1],
             p.x * M.elem[0][2] + p.y * M.elem[1][2] + p.z * M.elem[2][2],
@@ -665,11 +665,11 @@ void md_f32x3x3_batch_transform(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, s
     }
 }
 
-void md_f32x3x3_batch_transform_inplace(md_f32x3_t* in_out_xyz, size_t count, md_f32x3x3_t M) {
-    md_f32x3x3_batch_transform(in_out_xyz, in_out_xyz, count, M);
+void md_float3x3_batch_transform_inplace(md_float3_t* in_out_xyz, size_t count, md_float3x3_t M) {
+    md_float3x3_batch_transform(in_out_xyz, in_out_xyz, count, M);
 }
 
-void md_f32x4x4_batch_transform(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, float w_comp, size_t count, md_f32x4x4_t M) {
+void md_float4x4_batch_transform(md_float3_t* out_xyz, const md_float3_t* in_xyz, float w_comp, size_t count, md_float4x4_t M) {
     const md_xv m11 = md_xv_set1_ps(M.elem[0][0]);
     const md_xv m12 = md_xv_set1_ps(M.elem[0][1]);
     const md_xv m13 = md_xv_set1_ps(M.elem[0][2]);
@@ -709,8 +709,8 @@ void md_f32x4x4_batch_transform(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, f
     }
 
     for (; i < count; i++) {
-        const md_f32x3_t p = in_xyz[i];
-        out_xyz[i] = (md_f32x3_t) {
+        const md_float3_t p = in_xyz[i];
+        out_xyz[i] = (md_float3_t) {
             p.x * M.elem[0][0] + p.y * M.elem[1][0] + p.z * M.elem[2][0] + w_comp * M.elem[3][0],
             p.x * M.elem[0][1] + p.y * M.elem[1][1] + p.z * M.elem[2][1] + w_comp * M.elem[3][1],
             p.x * M.elem[0][2] + p.y * M.elem[1][2] + p.z * M.elem[2][2] + w_comp * M.elem[3][2],
@@ -718,6 +718,6 @@ void md_f32x4x4_batch_transform(md_f32x3_t* out_xyz, const md_f32x3_t* in_xyz, f
     }
 }
 
-void md_f32x4x4_batch_transform_inplace(md_f32x3_t* in_out_xyz, float w_comp, size_t count, md_f32x4x4_t M) {
-    md_f32x4x4_batch_transform(in_out_xyz, in_out_xyz, w_comp, count, M);
+void md_float4x4_batch_transform_inplace(md_float3_t* in_out_xyz, float w_comp, size_t count, md_float4x4_t M) {
+    md_float4x4_batch_transform(in_out_xyz, in_out_xyz, w_comp, count, M);
 }

@@ -3123,9 +3123,9 @@ UTEST(gto_iso_gpu, benchmark) {
             const double nvox = (double)dd[0] * dd[1] * dd[2];
             if (nvox <= (double)(1u << 27)) {
                 md_grid_t grid = {
-                    .orientation = md_f32x3x3_ident(),
-                    .origin  = md_f32x3_set((float)blo[0], (float)blo[1], (float)blo[2]),
-                    .spacing = md_f32x3_set((float)h, (float)h, (float)h),
+                    .orientation = md_float3x3_ident(),
+                    .origin  = md_float3_set((float)blo[0], (float)blo[1], (float)blo[2]),
+                    .spacing = md_float3_set((float)h, (float)h, (float)h),
                     .dim     = {dd[0], dd[1], dd[2]},
                 };
                 md_gpu_texture_t tex = md_gpu_texture_create(g.s, &(md_gpu_texture_desc_t){
@@ -3692,9 +3692,9 @@ static double iso_bench_dense(iso_gpu_t* g, const iso_dens_src_t* s, const md_gt
     else   md_gto_gpu_coeff_pack_mo(p, orb_rows, NULL, (size_t)nfields, nao);
     md_gpu_upload_end(g->s);
     md_grid_t grid = {
-        .orientation = md_f32x3x3_ident(),
-        .origin  = md_f32x3_set((float)lo[0], (float)lo[1], (float)lo[2]),
-        .spacing = md_f32x3_set((float)h, (float)h, (float)h),
+        .orientation = md_float3x3_ident(),
+        .origin  = md_float3_set((float)lo[0], (float)lo[1], (float)lo[2]),
+        .spacing = md_float3_set((float)h, (float)h, (float)h),
         .dim     = {dd[0], dd[1], dd[2]},
     };
     const int ntex = D ? 1 : nfields;

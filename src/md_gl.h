@@ -163,7 +163,7 @@ void md_gl_mol_set_derived(md_gl_mol_t mol, md_gl_mol_t source, const uint32_t* 
 //  source_xyz: (optional) the positions of the atoms of the source on the CPU, the same as on the GPU. They place the
 //              tubes (md_gl_mol_set_tubes) for their culling and level of detail; without them the tubes are drawn in
 //              full detail and never culled.
-void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell, const md_f32x3_t* source_xyz);
+void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell, const md_float3_t* source_xyz);
 
 // ### TUBES ###
 // Splines through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_TUBES: the backbone of a
@@ -211,8 +211,8 @@ void md_gl_mol_set_slabs(md_gl_mol_t mol, uint32_t count, const uint32_t* offset
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
 // Packed xyz, the buffers' own layout. Setting positions keeps the current ones as the previous.
-void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const md_f32x3_t* xyz);
-void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const md_f32x3_t* xyz);
+void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const md_float3_t* xyz);
+void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const md_float3_t* xyz);
 void md_gl_mol_set_atom_radius  (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* radius,  uint32_t byte_stride);
 void md_gl_mol_set_atom_flags   (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
 

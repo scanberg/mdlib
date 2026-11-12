@@ -13,7 +13,7 @@ extern "C" {
 // k-th point, of count, so that points close in the order are close in space and consecutive ranges make spatially
 // coherent clusters (with a jump now and then between octants, which a cluster made of a range should allow for).
 // xyz points at the x of the first point, its y and z following; stride_in_bytes is the distance from one point to the
-// next (sizeof(md_f32x3_t) for packed xyz, sizeof(md_f32x4_t) for xyzw), 0 for packed xyz. out_order has room for count.
+// next (sizeof(md_float3_t) for packed xyz, sizeof(md_float4_t) for xyzw), 0 for packed xyz. out_order has room for count.
 void md_util_sort_spatial(uint32_t* out_order, const float* xyz, size_t stride_in_bytes, size_t count);
 
 // Radix sorts of unsigned integer keys, in place (sort) or as the order of the keys (argsort): out_indices[0] is the index

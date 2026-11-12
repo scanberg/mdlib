@@ -323,14 +323,14 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
             const int32_t* idx = (const int32_t*)vial_sets_items(s->sets, (uint32_t)i);
             if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * i + c, k->alloc); continue; }
             // Gathered, so mdlib's packed kernel runs over contiguous positions and weights
-            md_f32x3_t* g = k_alloc64(k, n * sizeof(md_f32x3_t));
+            md_float3_t* g = k_alloc64(k, n * sizeof(md_float3_t));
             float* w = md_alloc(k->alloc, n * sizeof(float));
             bool any;
             if (!gather_xyz((float*)g, xyz, k->in->frame->num_atoms, (const uint32_t*)idx, n)) {
                 return vial_rt_fail(k, "R0103", "a particle is beyond the frame's %zu", k->in->frame->num_atoms);
             }
             if (!k_weights(k, weights, true, "com", (const uint32_t*)idx, n, w, &any)) return false;
-            const md_f32x3_t c = md_util_com((const float*)g, 0, any ? w : NULL, 0, NULL, n, &cell);
+            const md_float3_t c = md_util_com((const float*)g, 0, any ? w : NULL, 0, NULL, n, &cell);
             float* O = (float*)o.data + 3 * i;
             O[0] = c.x; O[1] = c.y; O[2] = c.z;
         }
@@ -350,12 +350,12 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
     if (!k_weights(k, weights, true, "com", ids, n, w, &any)) return false;
     if (!any) w = NULL;
     // Each group copied to one aligned buffer, for the same grouping of its sum (k_alloc64)
-    md_f32x3_t* buf = n ? k_alloc64(k, n * sizeof(md_f32x3_t)) : NULL;
+    md_float3_t* buf = n ? k_alloc64(k, n * sizeof(md_float3_t)) : NULL;
     for (size_t g = 0; g < groups; ++g) {
         float* O = (float*)o.data + 3 * g;
         if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * g + c, k->alloc); continue; }
-        memcpy(buf, (const float*)p.data + 3 * (size_t)n * g, n * sizeof(md_f32x3_t));
-        const md_f32x3_t c = md_util_com((const float*)buf, 0, w, 0, NULL, n, &cell);
+        memcpy(buf, (const float*)p.data + 3 * (size_t)n * g, n * sizeof(md_float3_t));
+        const md_float3_t c = md_util_com((const float*)buf, 0, w, 0, NULL, n, &cell);
         O[0] = c.x; O[1] = c.y; O[2] = c.z;
     }
     *out = o;
@@ -364,8 +364,8 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
 
 // The angle at b between a and c, in degrees
 static float angle3(const float* a, const float* b, const float* c, const md_unitcell_t* cell) {
-    md_f32x3_t u = {{a[0] - b[0], a[1] - b[1], a[2] - b[2]}};
-    md_f32x3_t v = {{c[0] - b[0], c[1] - b[1], c[2] - b[2]}};
+    md_float3_t u = {{a[0] - b[0], a[1] - b[1], a[2] - b[2]}};
+    md_float3_t v = {{c[0] - b[0], c[1] - b[1], c[2] - b[2]}};
     md_util_min_image(u.elem, 0, 1, cell);
     md_util_min_image(v.elem, 0, 1, cell);
     const double uu = (double)u.x * u.x + (double)u.y * u.y + (double)u.z * u.z;
@@ -379,9 +379,9 @@ static float angle3(const float* a, const float* b, const float* c, const md_uni
 
 // The dihedral of a-b-c-d, in degrees, in (-180, 180]
 static float dihedral4(const float* a, const float* b, const float* c, const float* d, const md_unitcell_t* cell) {
-    md_f32x3_t b1 = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
-    md_f32x3_t b2 = {{c[0] - b[0], c[1] - b[1], c[2] - b[2]}};
-    md_f32x3_t b3 = {{d[0] - c[0], d[1] - c[1], d[2] - c[2]}};
+    md_float3_t b1 = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+    md_float3_t b2 = {{c[0] - b[0], c[1] - b[1], c[2] - b[2]}};
+    md_float3_t b3 = {{d[0] - c[0], d[1] - c[1], d[2] - c[2]}};
     md_util_min_image(b1.elem, 0, 1, cell);
     md_util_min_image(b2.elem, 0, 1, cell);
     md_util_min_image(b3.elem, 0, 1, cell);
@@ -472,16 +472,16 @@ static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, b
 
 // The matrix's entry for points a and b: the length of b - a under the minimum image, as distance() computes it
 static inline float pair_entry(const float* a, const float* b, const md_unitcell_t* cell) {
-    md_f32x3_t v = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+    md_float3_t v = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
     md_util_min_image(v.elem, 0, 1, cell);
     return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
 // Row i of the matrix, each entry as pair_entry gives it, into d[m]; row holds m
-static void pair_row(const float* a, const float* Q, uint32_t m, const md_unitcell_t* cell, md_f32x3_t* row, float* d) {
+static void pair_row(const float* a, const float* Q, uint32_t m, const md_unitcell_t* cell, md_float3_t* row, float* d) {
     for (uint32_t j = 0; j < m; ++j) {
         const float* b = Q + 3 * j;
-        row[j] = (md_f32x3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+        row[j] = (md_float3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
     }
     md_util_min_image((float*)row, 0, m, cell);
     for (uint32_t j = 0; j < m; ++j) d[j] = sqrtf(row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z);
@@ -493,7 +493,7 @@ static void pair_row(const float* a, const float* Q, uint32_t m, const md_unitce
 // hold m each. One definition for a call and for a map's calls at once (vial_k_pair_batch), so both give the same
 // bits; pair_extreme_fast finds the same pair faster.
 static void pair_extreme(const float* P, uint32_t n, const float* Q, uint32_t m, const md_unitcell_t* cell, bool closest, bool distinct,
-                         int64_t skip, const uint32_t* pp, const uint32_t* qp, md_f32x3_t* row, float* d, float* best_out, int32_t* bi_out, int32_t* bj_out) {
+                         int64_t skip, const uint32_t* pp, const uint32_t* qp, md_float3_t* row, float* d, float* best_out, int32_t* bi_out, int32_t* bj_out) {
     float best = 0.0f;
     int32_t bi = -1, bj = -1;
     for (uint32_t i = 0; i < n; ++i) {
@@ -550,8 +550,8 @@ static bool pair_extreme_fast(md_allocator_i* alloc, const float* P, uint32_t n,
     for (size_t cap = 64; cap <= 4096; cap *= 8) {
         int64_t* a = md_alloc(alloc, cap * sizeof(int64_t));
         int64_t* b = md_alloc(alloc, cap * sizeof(int64_t));
-        const size_t cnt = closest ? md_util_min_distance_near(a, b, cap, 2.0f * slack, (const md_f32x3_t*)P, n, (const md_f32x3_t*)Q, m, cell)
-                                   : md_util_max_distance_near(a, b, cap, 2.0f * slack, (const md_f32x3_t*)P, n, (const md_f32x3_t*)Q, m, cell);
+        const size_t cnt = closest ? md_util_min_distance_near(a, b, cap, 2.0f * slack, (const md_float3_t*)P, n, (const md_float3_t*)Q, m, cell)
+                                   : md_util_max_distance_near(a, b, cap, 2.0f * slack, (const md_float3_t*)P, n, (const md_float3_t*)Q, m, cell);
         if (cnt > cap) continue;
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
@@ -590,7 +590,7 @@ bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const
         }
         for (uint32_t c = 0; c < s->count; ++c) if (vial_sets_size(s, c) > mx[g]) mx[g] = vial_sets_size(s, c);
     }
-    md_f32x3_t* row = md_alloc(k->alloc, (mx[1] ? mx[1] : 1) * sizeof(md_f32x3_t));
+    md_float3_t* row = md_alloc(k->alloc, (mx[1] ? mx[1] : 1) * sizeof(md_float3_t));
     float* d2 = md_alloc(k->alloc, (mx[1] ? mx[1] : 1) * sizeof(float));
     float* O = out->data;
     for (size_t c = 0; c < count; ++c) {
@@ -627,7 +627,7 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
         vial_val_set_missing(&el[2], 0, k->alloc);
     } else {
         const bool by_particle = distinct && p.origin && q.origin;
-        md_f32x3_t* row = md_alloc(k->alloc, m * sizeof(md_f32x3_t));
+        md_float3_t* row = md_alloc(k->alloc, m * sizeof(md_float3_t));
         float* d2 = md_alloc(k->alloc, m * sizeof(float));
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
@@ -936,7 +936,7 @@ static void pairs_search_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
         const uint32_t i = i_idx[q], j = j_idx[q];
         const float* A = s->px + 3 * (size_t)i;
         const float* B = s->py + 3 * (size_t)j;
-        md_f32x3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
+        md_float3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
         md_util_min_image(v.elem, 0, 1, s->cell);
         float e = 0.0f;
         e += v.x * v.x;
@@ -982,7 +982,7 @@ static void pairs_nearest_cb(const uint32_t* i_idx, const uint32_t* j_idx, const
         const uint32_t i = i_idx[q], j = j_idx[q];
         const float* A = s->px + 3 * (size_t)i;
         const float* B = s->py + 3 * (size_t)j;
-        md_f32x3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
+        md_float3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
         md_util_min_image(v.elem, 0, 1, s->cell);
         float e = 0.0f;
         e += v.x * v.x;
@@ -1066,7 +1066,7 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
         }
     }
     const size_t lines = rows ? n : m, len = rows ? m : n;
-    md_f32x3_t* buf = md_alloc(k->alloc, (len ? len : 1) * sizeof(md_f32x3_t));
+    md_float3_t* buf = md_alloc(k->alloc, (len ? len : 1) * sizeof(md_float3_t));
     vial_val_t line = {.dtype = test ? VIAL_DT_BOOL : VIAL_DT_FLOAT, .ndim = 1, .dims = {(uint32_t)len}};
     line.data = md_alloc(k->alloc, (len ? len : 1) * sizeof(float));
     const size_t mask_bytes = ((len ? len : 1) + 63) / 64 * sizeof(uint64_t);
@@ -1112,7 +1112,7 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
             const size_t i = rows ? L : e, j = rows ? e : L;
             const float* A = (const float*)px.data + 3 * i;
             const float* B = (const float*)py.data + 3 * j;
-            buf[e] = (md_f32x3_t){{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
+            buf[e] = (md_float3_t){{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
         }
         md_util_min_image((float*)buf, 0, len, &cell);
         memset(mask, 0, mask_bytes);
@@ -1846,22 +1846,22 @@ static bool k_fit(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* rv, co
     }
     if (ws <= 0.0) return vial_rt_fail(k, "R0103", "fit on no particles");
     for (int c = 0; c < 3; ++c) { cp[c] /= ws; cr[c] /= ws; }
-    md_f32x4_t* rel_p = md_alloc(k->alloc, (n ? n : 1) * sizeof(md_f32x4_t));
-    md_f32x4_t* rel_r = md_alloc(k->alloc, (n ? n : 1) * sizeof(md_f32x4_t));
+    md_float4_t* rel_p = md_alloc(k->alloc, (n ? n : 1) * sizeof(md_float4_t));
+    md_float4_t* rel_r = md_alloc(k->alloc, (n ? n : 1) * sizeof(md_float4_t));
     uint32_t m = 0;
     for (uint32_t i = 0; i < n; ++i) {
         if (!use[i]) continue;
         const float* a = (const float*)p.data + 3 * i;
         const float* b = (const float*)r.data + 3 * i;
-        rel_p[m] = md_f32x4_set((float)(a[0] - cp[0]), (float)(a[1] - cp[1]), (float)(a[2] - cp[2]), (float)w[i]);
-        rel_r[m] = md_f32x4_set((float)(b[0] - cr[0]), (float)(b[1] - cr[1]), (float)(b[2] - cr[2]), (float)w[i]);
+        rel_p[m] = md_float4_set((float)(a[0] - cp[0]), (float)(a[1] - cp[1]), (float)(a[2] - cp[2]), (float)w[i]);
+        rel_r[m] = md_float4_set((float)(b[0] - cr[0]), (float)(b[1] - cr[1]), (float)(b[2] - cr[2]), (float)w[i]);
         m++;
     }
-    const md_f32x3x3_t R = md_util_optimal_rotation_rel(rel_r, rel_p, m);
+    const md_float3x3_t R = md_util_optimal_rotation_rel(rel_r, rel_p, m);
     vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 2, p.dims, &o)) return false;
     for (uint32_t i = 0; i < n; ++i) {
         const float* a = (const float*)p.data + 3 * i;
-        const md_f32x3_t v = md_f32x3x3_mul_f32x3(R, (md_f32x3_t){{(float)(a[0] - cp[0]), (float)(a[1] - cp[1]), (float)(a[2] - cp[2])}});
+        const md_float3_t v = md_float3x3_mul_float3(R, (md_float3_t){{(float)(a[0] - cp[0]), (float)(a[1] - cp[1]), (float)(a[2] - cp[2])}});
         float* d = (float*)o.data + 3 * i;
         d[0] = (float)(v.x + cr[0]); d[1] = (float)(v.y + cr[1]); d[2] = (float)(v.z + cr[2]);
     }
@@ -2215,7 +2215,7 @@ static bool scalar_of(const vial_val_t* v, double* out) {
 // b moved to its image nearest a, as displacement() has it, so no segment spans the box
 static void nearest_image(vial_kctx_t* k, const float a[3], float b[3]) {
     if (!k->in->frame) return;
-    md_f32x3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    md_float3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     md_util_min_image(d.elem, 0, 1, &k->in->frame->cell);
     b[0] = a[0] + d.x; b[1] = a[1] + d.y; b[2] = a[2] + d.z;
 }
@@ -2352,7 +2352,7 @@ static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, via
 // the angle, dihedral the two planes, the arc between them about the axis and a label on it, within a sphere around
 // each point and the particles in them. Computed only while drawing, after the built-in's value, which labels it.
 static void near3(const md_unitcell_t* cell, const float a[3], const float b[3], float out[3]) {
-    md_f32x3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    md_float3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     md_util_min_image(d.elem, 0, 1, cell);
     out[0] = a[0] + d.x; out[1] = a[1] + d.y; out[2] = a[2] + d.z;
 }

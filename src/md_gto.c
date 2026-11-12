@@ -997,7 +997,7 @@ typedef struct {
 // Returns the number of batches.
 static void gto_build_sparse_pairs(
     gto_sparse_pair_list_t* list,
-    const md_f32x4_t*     cgto_xyzr,      // [num_cgtos] original order
+    const md_float4_t*     cgto_xyzr,      // [num_cgtos] original order
     size_t            num_cgtos,
     const double*     density_matrix, // [num_cgtos × num_cgtos] row-major
     double            dm_threshold)
@@ -1020,7 +1020,7 @@ static void gto_build_sparse_pairs(
 
     // Step 1: Morton-sort CGTO centers.
     // cgto_order[new_idx] = original_idx after the sort.
-    //md_util_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_f32x4_t), num_cgtos);
+    //md_util_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
 
     //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
 
@@ -1456,7 +1456,7 @@ done:
 }
 
 void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
-    uint32_t num_cgtos, const md_f32x4_t* cgto_xyzr, const uint32_t* cgto_off_len,
+    uint32_t num_cgtos, const md_float4_t* cgto_xyzr, const uint32_t* cgto_off_len,
     uint32_t num_pgtos, const PGTO* pgto,
     const float* upper_triangular_matrix, size_t upper_triangular_len,
     bool include_gradients, md_gto_op_t op) {
@@ -1509,9 +1509,9 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
     size_t matrix_dim = num_cgtos;
 
     typedef struct {
-        md_f32x4x4_t world_to_model;
-        md_f32x4x4_t index_to_world;
-        md_f32x4_t step;
+        md_float4x4_t world_to_model;
+        md_float4x4_t index_to_world;
+        md_float4_t step;
         uint32_t D_matrix_dim;
         uint32_t operation;
         uint32_t _pad[2];
@@ -1521,12 +1521,12 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid,
     world_to_model_matrix(ub_data.world_to_model.elem, grid);
     const float sample_offset[3] = { 0.5f, 0.5f, 0.5f }; // Sample at voxel centers
     index_to_world_matrix(ub_data.index_to_world.elem, grid, sample_offset);
-    ub_data.step = md_f32x4_from_f32x3(grid->spacing, 0);
+    ub_data.step = md_float4_from_float3(grid->spacing, 0);
     ub_data.D_matrix_dim = (uint32_t)matrix_dim;
     ub_data.operation = (uint32_t)op;
 
     GLintptr   ssbo_cgto_xyzr_base      = 0;
-    GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(md_f32x4_t) * num_cgtos;
+    GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(md_float4_t) * num_cgtos;
 
     GLintptr   ssbo_cgto_off_len_base   = MD_ALIGN_TO(ssbo_cgto_xyzr_base + ssbo_cgto_xyzr_size, 256);
     GLsizeiptr ssbo_cgto_off_len_size   = sizeof(uint32_t) * num_cgtos * 2;
@@ -1699,9 +1699,9 @@ void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* g
 
 
     // Recombine into float4 for the GL path, which keeps its own xyzr SSBO layout.
-    md_f32x4_t* cgto_xyzr = (md_f32x4_t*)md_temp_alloc(temp, sizeof(md_f32x4_t) * num_cgtos);
+    md_float4_t* cgto_xyzr = (md_float4_t*)md_temp_alloc(temp, sizeof(md_float4_t) * num_cgtos);
     for (uint32_t i = 0; i < num_cgtos; ++i) {
-        cgto_xyzr[i] = (md_f32x4_t){cgto_xyz[i*3+0], cgto_xyz[i*3+1], cgto_xyz[i*3+2], cgto_r[i]};
+        cgto_xyzr[i] = (md_float4_t){cgto_xyz[i*3+0], cgto_xyz[i*3+1], cgto_xyz[i*3+2], cgto_r[i]};
     }
 
     md_gto_grid_evaluate_matrix_GPU(vol_tex, grid, num_cgtos, cgto_xyzr, cgto_off_len, num_pgtos, pgto, upper_tri, tri_len, include_gradients, op);
@@ -4250,9 +4250,9 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
         (grid->orientation.elem[1][0] == 0 && grid->orientation.elem[1][2] == 0) &&
         (grid->orientation.elem[2][0] == 0 && grid->orientation.elem[2][1] == 0);
 
-    md_f32x3_t step_x = md_f32x3_mul1(grid->orientation.col[0], grid->spacing.x);
-    md_f32x3_t step_y = md_f32x3_mul1(grid->orientation.col[1], grid->spacing.y);
-    md_f32x3_t step_z = md_f32x3_mul1(grid->orientation.col[2], grid->spacing.z);
+    md_float3_t step_x = md_float3_mul1(grid->orientation.col[0], grid->spacing.x);
+    md_float3_t step_y = md_float3_mul1(grid->orientation.col[1], grid->spacing.y);
+    md_float3_t step_z = md_float3_mul1(grid->orientation.col[2], grid->spacing.z);
 
     // There are specialized versions for evaluating 8x8x8 subgrids
     // 8x8x8 Is a good chunk size to operate on as it probably fits in L1 Cache together with the GTOs

@@ -376,8 +376,8 @@ static bool delta_fixture_init(delta_fixture_t* f) {
     if (!md_pdb_system_init_from_str(&f->sys, &f->ref, md_str_from_cstr(water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) return false;
     if (!md_system_infer(&f->sys, &f->ref, MD_SYSTEM_INFER_ALL, NULL)) return false;
     f->st = f->ref;
-    f->st.xyz = md_alloc(f->alloc, sizeof(md_f32x3_t) * f->ref.num_atoms);
-    md_memcpy(f->st.xyz, f->ref.xyz, sizeof(md_f32x3_t) * f->ref.num_atoms);
+    f->st.xyz = md_alloc(f->alloc, sizeof(md_float3_t) * f->ref.num_atoms);
+    md_memcpy(f->st.xyz, f->ref.xyz, sizeof(md_float3_t) * f->ref.num_atoms);
     return true;
 }
 
@@ -417,7 +417,7 @@ UTEST(bonds, delta_proton_transfer) {
     ASSERT_TRUE(delta_fixture_init(&f));
     const md_bond_idx_t oh = md_system_bond_find(&f.sys, 0, 1);
     ASSERT_GE(oh, 0);
-    f.st.xyz[1] = md_f32x3_set(1.80f, 0.0f, 0.0f);
+    f.st.xyz[1] = md_float3_set(1.80f, 0.0f, 0.0f);
 
     md_bond_delta_t d = {0};
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
@@ -460,7 +460,7 @@ UTEST(bonds, delta_hysteresis) {
     delta_fixture_t f = {0};
     ASSERT_TRUE(delta_fixture_init(&f));
     // O1-H at 1.25 Å: past the cutoff of an O-H of one molecule (1.05 * 1.15 * 0.97 = 1.17) but within the band (1.29)
-    f.st.xyz[1] = md_f32x3_set(1.25f, 0.0f, 0.0f);
+    f.st.xyz[1] = md_float3_set(1.25f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
@@ -470,7 +470,7 @@ UTEST(bonds, delta_hysteresis) {
     EXPECT_EQ(1, (int)md_bitset_count(d.broken));
 
     // H to O2 at 1.05 Å: within the cutoff between molecules (1.15 * 0.97 = 1.12) but not past the band (1.00)
-    f.st.xyz[1] = md_f32x3_set(1.75f, 0.0f, 0.0f);
+    f.st.xyz[1] = md_float3_set(1.75f, 0.0f, 0.0f);
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_FALSE(delta_has_formed(&d, 1, 3));
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
@@ -484,14 +484,14 @@ UTEST(bonds, delta_transition_shows_both) {
     ASSERT_TRUE(delta_fixture_init(&f));
     // The second water 0.6 Å closer, the proton 1.22 Å from O1 and 0.98 Å from O2
     for (int i = 3; i < 6; ++i) f.st.xyz[i].x -= 0.6f;
-    f.st.xyz[1] = md_f32x3_set(1.22f, 0.0f, 0.0f);
+    f.st.xyz[1] = md_float3_set(1.22f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_TRUE(md_bitset_empty(d.broken));
     EXPECT_TRUE(delta_has_formed(&d, 1, 3));
 
     // With the old bond within its cutoff, the hydrogen has all it can take: nothing forms
-    f.st.xyz[1] = md_f32x3_set(1.10f, 0.0f, 0.0f);
+    f.st.xyz[1] = md_float3_set(1.10f, 0.0f, 0.0f);
     md_bond_delta_desc_t desc = delta_default;
     desc.tolerance = 0.0f;
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &desc, f.alloc));
@@ -505,7 +505,7 @@ UTEST(bonds, delta_keeps_noncovalent) {
     delta_fixture_t f = {0};
     ASSERT_TRUE(delta_fixture_init(&f));
     md_system_bond_insert(&f.sys, 1, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
-    f.st.xyz[1] = md_f32x3_set(1.80f, 0.0f, 0.0f);
+    f.st.xyz[1] = md_float3_set(1.80f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
     EXPECT_EQ(1, (int)md_bitset_count(d.broken));
@@ -572,9 +572,9 @@ UTEST(bonds, metallic_crystal) {
         size_t expected = 0;
         for (size_t i = 0; i < num; ++i) {
             for (size_t j = i + 1; j < num; ++j) {
-                md_f32x3_t d = md_f32x3_sub(st.xyz[j], st.xyz[i]);
+                md_float3_t d = md_float3_sub(st.xyz[j], st.xyz[i]);
                 md_util_min_image(d.elem, 0, 1, &st.unitcell);
-                expected += md_f32x3_length(d) < 1.1f * nn;
+                expected += md_float3_length(d) < 1.1f * nn;
             }
         }
         EXPECT_EQ(periodic ? num * 12 / 2 : expected, count_kind(&sys, MD_BOND_KIND_METALLIC));
@@ -632,43 +632,43 @@ UTEST(bonds, metallic_slab) {
     int len = sprintf(buf, "%d\nLattice=\"%.4f 0 0 0 %.4f 0 0 0 %.4f\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\n", num, nx * d, ny * 2 * h, lz);
 
     uint64_t rng = 12345;
-    md_f32x3_t au[2 * 2 * 8 * 5];
+    md_float3_t au[2 * 2 * 8 * 5];
     int n = 0;
     for (int layer = 0; layer < 2; ++layer) {
         for (int i = 0; i < nx; ++i) for (int j = 0; j < ny; ++j) for (int b = 0; b < 2; ++b) {
             const float x = i * d + b * 0.5f * d + layer * 0.5f * d;
             const float y = j * 2 * h + b * h + layer * h / 3.0f;
-            au[n++] = md_f32x3_set(x + 0.1f * gauss(&rng), y + 0.1f * gauss(&rng), z0 + layer * dz + 0.1f * gauss(&rng));
+            au[n++] = md_float3_set(x + 0.1f * gauss(&rng), y + 0.1f * gauss(&rng), z0 + layer * dz + 0.1f * gauss(&rng));
         }
     }
     for (int i = 0; i < num_au; ++i) len += sprintf(buf + len, "Au %.4f %.4f %.4f\n", au[i].x, au[i].y, au[i].z);
 
     // 4-bromophenyl upright in the xz-plane, C1 (the free carbon) 2.0 Å over the gold atom au_c of the top layer
     const int au_c = num_au / 2 + 2 * (1 * ny + 1);
-    const md_f32x3_t c1 = md_f32x3_add(au[au_c], md_f32x3_set(0, 0, 2.0f));
+    const md_float3_t c1 = md_float3_add(au[au_c], md_float3_set(0, 0, 2.0f));
     const float r = 1.39f;
-    const md_f32x3_t ring[6] = {
+    const md_float3_t ring[6] = {
         c1,
-        md_f32x3_add(c1, md_f32x3_set( r * 0.8660254f, 0, 0.5f * r)), md_f32x3_add(c1, md_f32x3_set( r * 0.8660254f, 0, 1.5f * r)),
-        md_f32x3_add(c1, md_f32x3_set(0, 0, 2 * r)),
-        md_f32x3_add(c1, md_f32x3_set(-r * 0.8660254f, 0, 1.5f * r)), md_f32x3_add(c1, md_f32x3_set(-r * 0.8660254f, 0, 0.5f * r)),
+        md_float3_add(c1, md_float3_set( r * 0.8660254f, 0, 0.5f * r)), md_float3_add(c1, md_float3_set( r * 0.8660254f, 0, 1.5f * r)),
+        md_float3_add(c1, md_float3_set(0, 0, 2 * r)),
+        md_float3_add(c1, md_float3_set(-r * 0.8660254f, 0, 1.5f * r)), md_float3_add(c1, md_float3_set(-r * 0.8660254f, 0, 0.5f * r)),
     };
-    const md_f32x3_t center = md_f32x3_add(c1, md_f32x3_set(0, 0, r));
+    const md_float3_t center = md_float3_add(c1, md_float3_set(0, 0, r));
     for (int k = 0; k < 6; ++k) len += sprintf(buf + len, "C %.4f %.4f %.4f\n", ring[k].x, ring[k].y, ring[k].z);
     for (int k = 1; k < 6; ++k) {
-        const md_f32x3_t out = md_f32x3_normalize(md_f32x3_sub(ring[k], center));
-        const md_f32x3_t p = md_f32x3_add(ring[k], md_f32x3_mul1(out, k == 3 ? 1.90f : 1.08f));
+        const md_float3_t out = md_float3_normalize(md_float3_sub(ring[k], center));
+        const md_float3_t p = md_float3_add(ring[k], md_float3_mul1(out, k == 3 ? 1.90f : 1.08f));
         len += sprintf(buf + len, "%s %.4f %.4f %.4f\n", k == 3 ? "Br" : "H", p.x, p.y, p.z);
     }
 
     // Bromomethane, its bromine 2.7 Å over the gold atom au_br (far from au_c) and its carbon above
     const int au_br = num_au / 2 + 2 * (5 * ny + 3);
-    const md_f32x3_t br = md_f32x3_add(au[au_br], md_f32x3_set(0, 0, 2.7f));
-    const md_f32x3_t c = md_f32x3_add(br, md_f32x3_set(0, 0, 1.94f));
+    const md_float3_t br = md_float3_add(au[au_br], md_float3_set(0, 0, 2.7f));
+    const md_float3_t c = md_float3_add(br, md_float3_set(0, 0, 1.94f));
     len += sprintf(buf + len, "Br %.4f %.4f %.4f\nC %.4f %.4f %.4f\n", br.x, br.y, br.z, c.x, c.y, c.z);
     for (int k = 0; k < 3; ++k) {
         const float phi = k * 2.0943951f;
-        const md_f32x3_t p = md_f32x3_add(c, md_f32x3_mul1(md_f32x3_set(0.943f * cosf(phi), 0.943f * sinf(phi), 0.333f), 1.09f));
+        const md_float3_t p = md_float3_add(c, md_float3_mul1(md_float3_set(0.943f * cosf(phi), 0.943f * sinf(phi), 0.333f), 1.09f));
         len += sprintf(buf + len, "H %.4f %.4f %.4f\n", p.x, p.y, p.z);
     }
 
@@ -688,9 +688,9 @@ UTEST(bonds, metallic_slab) {
     size_t shell = 0;
     for (int i = 0; i < num_au; ++i) {
         for (int j = i + 1; j < num_au; ++j) {
-            md_f32x3_t v = md_f32x3_sub(st.xyz[j], st.xyz[i]);
+            md_float3_t v = md_float3_sub(st.xyz[j], st.xyz[i]);
             md_util_min_image(v.elem, 0, 1, &st.unitcell);
-            shell += md_f32x3_length(v) < 3.5f;
+            shell += md_float3_length(v) < 3.5f;
         }
     }
     EXPECT_EQ((size_t)num_au * 9 / 2, shell);
@@ -769,14 +769,14 @@ UTEST(bonds, metallic_slab_trajectory) {
     for (size_t i = 0; i < num; ++i) {
         for (size_t j = i + 1; j < num; ++j) {
             if (md_atom_atomic_number(&sys.atom, i) != 79 || md_atom_atomic_number(&sys.atom, j) != 79) continue;
-            within += md_f32x3_distance(st.xyz[i], st.xyz[j]) < 3.25f;
+            within += md_float3_distance(st.xyz[i], st.xyz[j]) < 3.25f;
         }
     }
     const size_t num_metallic = count_kind(&sys, MD_BOND_KIND_METALLIC);
     EXPECT_GE(num_metallic, within);
     for (size_t b = 0; b < sys.bond.count; ++b) {
         if (md_bond_kind(sys.bond.flags[b]) != MD_BOND_KIND_METALLIC) continue;
-        EXPECT_LT(md_f32x3_distance(st.xyz[sys.bond.pairs[b].idx[0]], st.xyz[sys.bond.pairs[b].idx[1]]), 3.45f);
+        EXPECT_LT(md_float3_distance(st.xyz[sys.bond.pairs[b].idx[0]], st.xyz[sys.bond.pairs[b].idx[1]]), 3.45f);
     }
 
     // No ring of gold, and the molecules are two structures of their own
@@ -792,7 +792,7 @@ UTEST(bonds, metallic_slab_trajectory) {
         md_system_state_init(&fs, num);
         for (size_t i = 0; i < num; ++i) {
             const md_xyz_coordinate_t c = data.coordinates[data.models[f].beg_coord_index + i];
-            fs.xyz[i] = md_f32x3_set(c.x, c.y, c.z);
+            fs.xyz[i] = md_float3_set(c.x, c.y, c.z);
         }
         md_bond_data_t bonds = {0};
         md_bond_infer(&bonds, &sys, &fs, alloc, NULL);

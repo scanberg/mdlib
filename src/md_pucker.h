@@ -84,11 +84,11 @@ extern "C" {
 
 // The Cremer-Pople coordinates of the ring of count (5 to 7) positions, in order around it, made consistent across
 // the periodic cell by the caller. Returns false for another count or a degenerate ring.
-bool md_pucker_cremer_pople(md_pucker_t* out, const md_f32x3_t* xyz, size_t count);
+bool md_pucker_cremer_pople(md_pucker_t* out, const md_float3_t* xyz, size_t count);
 
 // The Altona-Sundaralingam phase P and amplitude tau_m of a furanose, in degrees, from the positions of
 // O4', C1', C2', C3', C4' in that order.
-bool md_pucker_pseudorotation(float* out_phase, float* out_amplitude, const md_f32x3_t xyz[5]);
+bool md_pucker_pseudorotation(float* out_phase, float* out_amplitude, const md_float3_t xyz[5]);
 
 // The canonical conformation nearest p (see CONFORMATIONS)
 md_pucker_conformer_t md_pucker_conformer(const md_pucker_t* p);

@@ -1046,7 +1046,7 @@ static bool draw_sdf(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_
     if (ok) {
         o->d->num_elements = 1;
         for (uint32_t s = 0; s < vol.num_structures; ++s) {
-            md_f32x4x4_t M;
+            md_float4x4_t M;
             if (!vial_volume_pose(&vol, s, fr.xyz, fr.num_atoms, &fr.cell, &M)) continue;
             uint32_t n;
             const uint32_t* atoms = vial_volume_structure(&vol, s, &n);

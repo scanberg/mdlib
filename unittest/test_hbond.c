@@ -62,16 +62,16 @@ static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size
     return md_bitmask_extract(&bf, alloc);
 }
 
-static md_f32x3_t mi_diff(const md_system_state_t* st, uint32_t from, uint32_t to) {
-    md_f32x3_t d = md_f32x3_sub(st->xyz[to], st->xyz[from]);
+static md_float3_t mi_diff(const md_system_state_t* st, uint32_t from, uint32_t to) {
+    md_float3_t d = md_float3_sub(st->xyz[to], st->xyz[from]);
     md_util_min_image(d.elem, 0, 1, &st->unitcell);
     return d;
 }
 
-static double angle_deg(md_f32x3_t a, md_f32x3_t b) {
-    const double la = sqrt((double)md_f32x3_dot(a, a));
-    const double lb = sqrt((double)md_f32x3_dot(b, b));
-    double c = (double)md_f32x3_dot(a, b) / (la * lb);
+static double angle_deg(md_float3_t a, md_float3_t b) {
+    const double la = sqrt((double)md_float3_dot(a, a));
+    const double lb = sqrt((double)md_float3_dot(b, b));
+    double c = (double)md_float3_dot(a, b) / (la * lb);
     c = c < -1 ? -1 : (c > 1 ? 1 : c);
     return acos(c) * 180.0 / 3.14159265358979323846;
 }
@@ -107,22 +107,22 @@ static void reference_hbonds(md_array(uint64_t)* out_pass, md_array(uint64_t)* o
             }
             for (size_t v = 0; v < md_array_size(queue); ++v) depth[queue[v]] = 0;
         }
-        const md_f32x3_t v_dh = mi_diff(st, D, H);
+        const md_float3_t v_dh = mi_diff(st, D, H);
         for (size_t j = 0; j < q->num_acceptors; ++j) {
             const uint32_t A = q->acceptor[j];
             if (A == D || A == H) continue;
             bool excl = false;
             for (size_t n = 0; n < md_array_size(near); ++n) if (near[n] == A) { excl = true; break; }
             if (excl) continue;
-            const md_f32x3_t v_da = mi_diff(st, D, A);
-            const double r_da = sqrt((double)md_f32x3_dot(v_da, v_da));
+            const md_float3_t v_da = mi_diff(st, D, A);
+            const double r_da = sqrt((double)md_float3_dot(v_da, v_da));
             if (r_da > 6.0) continue;
-            const md_f32x3_t v_ha = md_f32x3_sub(v_da, v_dh);
-            const double r_ha = sqrt((double)md_f32x3_dot(v_ha, v_ha));
+            const md_float3_t v_ha = md_float3_sub(v_da, v_dh);
+            const double r_ha = sqrt((double)md_float3_dot(v_ha, v_ha));
             bool pass = true, border = false;
             if (p->max_ha > 0) { if (r_ha > p->max_ha) pass = false; if (fabs(r_ha - p->max_ha) < eps_d) border = true; }
             if (p->max_da > 0) { if (r_da > p->max_da) pass = false; if (fabs(r_da - p->max_da) < eps_d) border = true; }
-            const double dha = angle_deg(md_f32x3_mul1(v_dh, -1.0f), v_ha);
+            const double dha = angle_deg(md_float3_mul1(v_dh, -1.0f), v_ha);
             if (p->min_dha > 0) { if (dha < p->min_dha) pass = false; if (fabs(dha - p->min_dha) < eps_a) border = true; }
             const double hda = angle_deg(v_dh, v_da);
             if (p->max_hda > 0) { if (hda > p->max_hda) pass = false; if (fabs(hda - p->max_hda) < eps_a) border = true; }
@@ -132,7 +132,7 @@ static void reference_hbonds(md_array(uint64_t)* out_pass, md_array(uint64_t)* o
                     const uint32_t X = (uint32_t)md_bond_iter_atom_index(&it);
                     md_bond_iter_next(&it);
                     if (X == H || md_atom_atomic_number(&sys->atom, X) == 0) continue;
-                    const double xah = angle_deg(mi_diff(st, A, X), md_f32x3_mul1(v_ha, -1.0f));
+                    const double xah = angle_deg(mi_diff(st, A, X), md_float3_mul1(v_ha, -1.0f));
                     if (xah < p->min_xah) pass = false;
                     if (fabs(xah - p->min_xah) < eps_a) border = true;
                 }

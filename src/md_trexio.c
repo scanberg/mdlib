@@ -240,7 +240,7 @@ typedef struct trexio_t {
     size_t             num_atoms;
     md_array(uint8_t)  atomic_number;
     md_array(double)   nuclear_charge;  // nucleus_charge: Z less the core electrons of an ECP
-    md_array(md_f64x3_t)  coord;      // Angstrom
+    md_array(md_double3_t)  coord;      // Angstrom
 
     bool               cartesian;  // ao_cartesian != 0
     size_t             num_shells;
@@ -311,7 +311,7 @@ static bool trexio_read_nucleus(trexio_t* trexio, hid_t file) {
                 const double rounded = round(charge[i]);
                 z = (md_atomic_number_t)MD_CLAMP((int)rounded, 0, 118);
             }
-            const md_f64x3_t xyz = {
+            const md_double3_t xyz = {
                 coord[i * 3 + 0] * TREXIO_BOHR_TO_ANGSTROM,
                 coord[i * 3 + 1] * TREXIO_BOHR_TO_ANGSTROM,
                 coord[i * 3 + 2] * TREXIO_BOHR_TO_ANGSTROM,
@@ -925,7 +925,7 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
-        state->xyz[i] = md_f32x3_set((float)trexio->coord[i].x, (float)trexio->coord[i].y, (float)trexio->coord[i].z);
+        state->xyz[i] = md_float3_set((float)trexio->coord[i].x, (float)trexio->coord[i].y, (float)trexio->coord[i].z);
 
         const md_atomic_number_t z = trexio->atomic_number[i];
         sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,

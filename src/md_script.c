@@ -260,9 +260,9 @@ struct frange_t {
 
 // The plane through a group of atoms or through positions (plane()): the least squares plane of the positions
 typedef struct plane_t {
-    md_f32x3_t centroid;        // Mean position of the atoms (Å)
-    md_f32x3_t normal;          // Unit normal, oriented (see plane())
-    md_f32x3_t axis;            // Unit direction in the plane along which the atoms spread the most
+    md_float3_t centroid;        // Mean position of the atoms (Å)
+    md_float3_t normal;          // Unit normal, oriented (see plane())
+    md_float3_t axis;            // Unit direction in the plane along which the atoms spread the most
     float  extent[2];       // RMS spread of the atoms along axis and along normal x axis (Å)
     float  radius;          // Mean distance of the atoms from the centroid (Å)
     float  deviation;       // RMS distance of the atoms from the plane (Å)
@@ -658,8 +658,8 @@ typedef struct eval_property_t {
     double* sum_weights;
     float*  mean;           // script/<ident>/mean       temporal with a population only
     float*  var;            // script/<ident>/variance
-    md_f32x2_t* ext;            // script/<ident>/extent
-    md_f32x2_t* range;          // script/<ident>/range      temporal and distribution
+    md_float2_t* ext;            // script/<ident>/extent
+    md_float2_t* range;          // script/<ident>/range      temporal and distribution
 
     // Of a periodic temporal property (MD_SCRIPT_PROPERTY_FLAG_PERIODIC), as script/<ident>/period and /seam publish
     // it: what makes its summary over the population (mean, var, ext) a circular one
@@ -7197,7 +7197,7 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, md
             prop->count      = shape[1];
             prop->num_values = (size_t)shape[0] * (size_t)shape[1];
             prop->values = script_attr_storage(attributes, alloc, ident, NULL, value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 2, shape);
-            prop->range  = (md_f32x2_t*)script_attr_storage(attributes, alloc, ident, "/range", value_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
+            prop->range  = (md_float2_t*)script_attr_storage(attributes, alloc, ident, "/range", value_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
 
             if (shape[1] > 1) {
                 // The population has more than one member, so the per frame summary over it is a
@@ -7207,7 +7207,7 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, md
                 prop->var  = script_attr_storage(attributes, alloc, ident, "/variance", md_unit_mul(value_unit, value_unit), MD_ATTRIBUTE_FLAG_TEMPORAL, 1, 1, frames);
                 // min and max are two COMPONENTS of one value, not two positions along an axis:
                 // they are not interchangeable and nothing indexes between them.
-                prop->ext  = (md_f32x2_t*)script_attr_storage(attributes, alloc, ident, "/extent", value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 2, 1, frames);
+                prop->ext  = (md_float2_t*)script_attr_storage(attributes, alloc, ident, "/extent", value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 2, 1, frames);
             }
 
             if ((flags & MD_SCRIPT_PROPERTY_FLAG_PERIODIC) && period_valid(period)) {
@@ -7234,7 +7234,7 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, md
             prop->num_values = (size_t)num * bins[0];
             prop->values  = script_attr_storage(attributes, alloc, ident, NULL,      value_unit,    MD_ATTRIBUTE_FLAG_NONE, 1, rank, dims);
             prop->weights = script_attr_storage(attributes, alloc, ident, "/weight", md_unit_none(), MD_ATTRIBUTE_FLAG_NONE, 1, rank, dims);
-            prop->range   = (md_f32x2_t*)script_attr_storage(attributes, alloc, ident, "/range", coord_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
+            prop->range   = (md_float2_t*)script_attr_storage(attributes, alloc, ident, "/range", coord_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
             prop->sum_values  = md_alloc(alloc, prop->num_values * sizeof(double));
             prop->sum_weights = md_alloc(alloc, prop->num_values * sizeof(double));
             for (size_t i = 0; i < prop->num_values; ++i) {
@@ -7388,7 +7388,7 @@ static void clear_property(eval_property_t* prop) {
         fill_float(prop->mean, num_frames, NAN);
         fill_float(prop->var,  num_frames, NAN);
         for (size_t i = 0; i < num_frames; ++i) {
-            prop->ext[i] = (md_f32x2_t){NAN, NAN};
+            prop->ext[i] = (md_float2_t){NAN, NAN};
         }
     }
     if (prop->sum_values) {
@@ -7398,7 +7398,7 @@ static void clear_property(eval_property_t* prop) {
         fill_float(prop->weights, prop->num_values, 1.0f);
     }
     if (prop->range) {
-        *prop->range = (md_f32x2_t){0, 0};
+        *prop->range = (md_float2_t){0, 0};
     }
     prop->min_value = +FLT_MAX;
     prop->max_value = -FLT_MAX;
@@ -7662,11 +7662,11 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, md_s
                         compute_circular_summary(&c_min, &c_max, &c_mean, &c_var, values, size, prop->period, scratch);
                         prop->mean[f_idx] = c_mean;
                         prop->var [f_idx] = c_var;
-                        prop->ext [f_idx] = (md_f32x2_t){c_min, c_max};
+                        prop->ext [f_idx] = (md_float2_t){c_min, c_max};
                     } else {
                         prop->mean[f_idx] = mean;
                         prop->var [f_idx] = var;
-                        prop->ext [f_idx] = (md_f32x2_t){min, max};
+                        prop->ext [f_idx] = (md_float2_t){min, max};
                     }
                 }
 
@@ -8810,7 +8810,7 @@ static void adopt_property(eval_property_t* dst, const eval_property_t* src, siz
     if (dst->mean && src->mean) {
         md_memcpy(dst->mean, src->mean, num_frames * sizeof(float));
         md_memcpy(dst->var,  src->var,  num_frames * sizeof(float));
-        md_memcpy(dst->ext,  src->ext,  num_frames * sizeof(md_f32x2_t));
+        md_memcpy(dst->ext,  src->ext,  num_frames * sizeof(md_float2_t));
     }
     if (dst->frame_values && src->frame_values) {
         md_memcpy(dst->frame_values,  src->frame_values,  num_frames * dst->num_values * sizeof(float));

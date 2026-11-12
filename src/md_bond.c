@@ -795,7 +795,7 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
 
     // The histogram of the pairs, then the pairs within the first shell
     uint32_t hist[METALLIC_HIST_BINS] = {0};
-    md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), metals, num_metals);
+    md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), metals, num_metals);
     {
         const double cutoff = 2.0 * max_rad * METALLIC_HIST_HI;
         md_spatial_acc_t acc = { .alloc = temp_arena };
@@ -919,7 +919,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
 
             // Build candidate list
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
-            md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), NULL, state->num_atoms);
+            md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
             cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
@@ -1336,9 +1336,9 @@ static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, f
 }
 
 static inline float delta_distance(const md_system_state_t* state, uint32_t i, uint32_t j) {
-    md_f32x3_t dx = md_f32x3_sub(state->xyz[j], state->xyz[i]);
+    md_float3_t dx = md_float3_sub(state->xyz[j], state->xyz[i]);
     md_util_min_image(dx.elem, 0, 1, &state->unitcell);
-    return md_f32x3_length(dx);
+    return md_float3_length(dx);
 }
 
 static int compare_u64(const void* a, const void* b) {
@@ -1454,7 +1454,7 @@ bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const m
         const double cutoff = MD_MAX(1.0, (double)(max_rad_scope + max_rad_all) * bond_k_coord);
 
         delta_search_t search = { .scope = scope, .alloc = temp_alloc };
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), NULL, num_atoms);
+        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), NULL, num_atoms);
         md_spatial_acc_t acc = { .alloc = temp_alloc };
         md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
         if (!scope) {
@@ -1468,7 +1468,7 @@ bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const m
                 while (md_bitset_iter_next(&it) && n < num_scope) {
                     if (it.idx < num_atoms) idx[n++] = (int)it.idx;
                 }
-                md_coord_stream_t ext = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), idx, n);
+                md_coord_stream_t ext = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), idx, n);
                 md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, cutoff, delta_pair_callback, &search, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
             }
         }

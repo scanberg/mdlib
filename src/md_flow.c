@@ -1246,8 +1246,8 @@ static const md_flow_layout_ribbon_t* flow_find_ribbon(const md_flow_layout_t* l
     return NULL;
 }
 
-static md_f32x2_t flow_lerp2(md_f32x2_t a, md_f32x2_t b, float t) {
-    md_f32x2_t r = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t };
+static md_float2_t flow_lerp2(md_float2_t a, md_float2_t b, float t) {
+    md_float2_t r = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t };
     return r;
 }
 
@@ -1274,7 +1274,7 @@ void md_flow_layout_lerp(md_flow_layout_t* out, const md_flow_layout_t* a, const
             n.min = flow_lerp2(na->min, nb->min, t);
             n.max = flow_lerp2(na->max, nb->max, t);
         } else {
-            const md_f32x2_t mid = { (nb->min.x + nb->max.x) * 0.5f, (nb->min.y + nb->max.y) * 0.5f };
+            const md_float2_t mid = { (nb->min.x + nb->max.x) * 0.5f, (nb->min.y + nb->max.y) * 0.5f };
             n.min = flow_lerp2(mid, nb->min, t);
             n.max = flow_lerp2(mid, nb->max, t);
         }
@@ -1286,7 +1286,7 @@ void md_flow_layout_lerp(md_flow_layout_t* out, const md_flow_layout_t* a, const
     for (size_t i = 0; i < num_a_nodes; ++i) {
         const md_flow_layout_node_t* na = a->nodes + i;
         if (flow_find_node(b, na->cut_idx)) continue;
-        const md_f32x2_t mid = { (na->min.x + na->max.x) * 0.5f, (na->min.y + na->max.y) * 0.5f };
+        const md_float2_t mid = { (na->min.x + na->max.x) * 0.5f, (na->min.y + na->max.y) * 0.5f };
         md_flow_layout_node_t n = *na;
         n.min = flow_lerp2(na->min, mid, t);
         n.max = flow_lerp2(na->max, mid, t);

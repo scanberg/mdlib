@@ -142,14 +142,14 @@ static inline void set_writer_end(set_writer_t* w) {
     }
 }
 
-#define as_vec2(arg) (*((md_f32x2_t*)((arg).ptr)))
-#define as_vec2_arr(arg) (((md_f32x2_t*)((arg).ptr)))
+#define as_vec2(arg) (*((md_float2_t*)((arg).ptr)))
+#define as_vec2_arr(arg) (((md_float2_t*)((arg).ptr)))
 
-#define as_vec3(arg) (*((md_f32x3_t*)((arg).ptr)))
-#define as_vec3_arr(arg) (((md_f32x3_t*)((arg).ptr)))
+#define as_vec3(arg) (*((md_float3_t*)((arg).ptr)))
+#define as_vec3_arr(arg) (((md_float3_t*)((arg).ptr)))
 
-#define as_vec4(arg) (*((md_f32x4_t*)((arg).ptr)))
-#define as_vec4_arr(arg) (((md_f32x4_t*)((arg).ptr)))
+#define as_vec4(arg) (*((md_float4_t*)((arg).ptr)))
+#define as_vec4_arr(arg) (((md_float4_t*)((arg).ptr)))
 
 // Macros to bake standard functions into something callable through our interface
 #define BAKE_FUNC_F__F(prefix, func) \
@@ -1230,7 +1230,7 @@ static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_
 
         // Rounded up to a multiple of 6 A, so a few different cutoffs within one evaluation share a structure
 		const double cutoff = ceil(max_cutoff / 6.0) * 6.0;
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), NULL, ctx->sys->atom.count);
+        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), NULL, ctx->sys->atom.count);
         md_spatial_acc_init(&ctx->spatial_acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell });
 		ctx->spatial_acc_cutoff = cutoff;
     }
@@ -1264,8 +1264,8 @@ static inline void visualize_atom_index(int64_t index, eval_context_t* ctx) {
 
 #define COLOR_U32(R,G,B,A) (((uint32_t)A << 24) | ((uint32_t)B << 16) | ((uint32_t)G << 8) | ((uint32_t)R))
 
-static inline md_script_vis_vertex_t vertex(md_f32x3_t p, uint32_t color) {
-    return (md_script_vis_vertex_t){p, color, md_f32x3_set(0,0,1), 0xFFFFFFFFu};
+static inline md_script_vis_vertex_t vertex(md_float3_t p, uint32_t color) {
+    return (md_script_vis_vertex_t){p, color, md_float3_set(0,0,1), 0xFFFFFFFFu};
 }
 
 static inline void push_point(md_script_vis_vertex_t v, md_script_vis_t* vis) {
@@ -1289,14 +1289,14 @@ static inline void push_triangle(md_script_vis_vertex_t v0, md_script_vis_vertex
     md_array_push(vis->triangles, v2, vis->alloc);
 }
 
-static inline void push_sphere(md_f32x3_t xyz, float r, uint32_t color, md_script_vis_t* vis) {
+static inline void push_sphere(md_float3_t xyz, float r, uint32_t color, md_script_vis_t* vis) {
     MD_ASSERT(vis);
     MD_ASSERT(vis->alloc);
     md_script_vis_sphere_t sphere = {xyz, r, color};
     md_array_push(vis->spheres, sphere, vis->alloc);
 }
 
-static inline void push_text(md_f32x3_t xyz, const char* cstr, md_script_vis_t* vis) {
+static inline void push_text(md_float3_t xyz, const char* cstr, md_script_vis_t* vis) {
     MD_ASSERT(vis);
     MD_ASSERT(vis->alloc);
     md_script_vis_text_t text = {xyz, md_alloc_str(vis->alloc, md_str_from_cstr(cstr)) };
@@ -1306,7 +1306,7 @@ static inline void push_text(md_f32x3_t xyz, const char* cstr, md_script_vis_t* 
 // A label which is a quantity. 'str' is still filled in with the default spelling so the label can
 // be drawn without looking at anything else, but the value and its unit are carried alongside for a
 // viewer which would rather show it in a unit of its own choosing.
-static inline void push_quantity_text(md_f32x3_t xyz, double value, md_unit_t unit, md_script_vis_t* vis) {
+static inline void push_quantity_text(md_float3_t xyz, double value, md_unit_t unit, md_script_vis_t* vis) {
     MD_ASSERT(vis);
     MD_ASSERT(vis->alloc);
 
@@ -1350,24 +1350,24 @@ static inline bool range_in_range(irange_t small_range, irange_t big_range) {
     return big_range.beg <= small_range.beg && small_range.end <= big_range.end;
 }
 
-static inline md_f32x3_t extract_com(const md_f32x3_t* xyz, const float* w, const md_bitset_t* bitfield) {
+static inline md_float3_t extract_com(const md_float3_t* xyz, const float* w, const md_bitset_t* bitfield) {
     MD_ASSERT(xyz);
     MD_ASSERT(bitfield);
 
-    md_f32x4_t sum = {0};
+    md_float4_t sum = {0};
     md_bitset_iter_t it = md_bitset_iter(*bitfield);
     while (md_bitset_iter_next(&it)) {
         const int64_t idx = it.idx;
         const float weight = w ? w[idx] : 1.0f;
-        md_f32x4_t v = md_f32x4_from_f32x3(xyz[idx], 1.0f);
-        v = md_f32x4_mul1(v, weight);
-        sum = md_f32x4_add(sum, v);
+        md_float4_t v = md_float4_from_float3(xyz[idx], 1.0f);
+        v = md_float4_mul1(v, weight);
+        sum = md_float4_add(sum, v);
     }
     if (sum.w == 0) sum.w = 1.0f;
-    return md_f32x3_div1(md_f32x3_from_f32x4(sum), sum.w);
+    return md_float3_div1(md_float3_from_float4(sum), sum.w);
 }
 
-static inline md_f32x3_t* extract_vec3(const md_f32x3_t* xyz, const md_bitset_t* bf, md_allocator_i* alloc) {
+static inline md_float3_t* extract_vec3(const md_float3_t* xyz, const md_bitset_t* bf, md_allocator_i* alloc) {
     MD_ASSERT(xyz);
     MD_ASSERT(bf);
     MD_ASSERT(alloc);
@@ -1377,7 +1377,7 @@ static inline md_f32x3_t* extract_vec3(const md_f32x3_t* xyz, const md_bitset_t*
         return NULL;
     }
 
-    md_array(md_f32x3_t) result = md_array_create(md_f32x3_t, count, alloc);
+    md_array(md_float3_t) result = md_array_create(md_float3_t, count, alloc);
     md_bitset_iter_t it = md_bitset_iter(*bf);
     size_t i = 0;
     while (md_bitset_iter_next(&it)) {
@@ -1387,7 +1387,7 @@ static inline md_f32x3_t* extract_vec3(const md_f32x3_t* xyz, const md_bitset_t*
     return result;
 }
 
-static inline size_t extract_xyzw_vec4(md_f32x4_t* dst_xyzw, const md_f32x3_t* src_xyz, const float* src_w, const md_bitset_t* bf) {
+static inline size_t extract_xyzw_vec4(md_float4_t* dst_xyzw, const md_float3_t* src_xyz, const float* src_w, const md_bitset_t* bf) {
     MD_ASSERT(dst_xyzw);
     MD_ASSERT(src_xyz);
     MD_ASSERT(bf);
@@ -1397,7 +1397,7 @@ static inline size_t extract_xyzw_vec4(md_f32x4_t* dst_xyzw, const md_f32x3_t* s
     md_bitset_iter_t it = md_bitset_iter(*bf);
     while (md_bitset_iter_next(&it)) {
         const uint64_t idx = it.idx;
-        dst_xyzw[count] = md_f32x4_from_f32x3(src_xyz[idx], src_w ? src_w[idx] : 1.0f);
+        dst_xyzw[count] = md_float4_from_float3(src_xyz[idx], src_w ? src_w[idx] : 1.0f);
         count += 1;
     }
 
@@ -1688,7 +1688,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
     case TYPE_FLOAT:
         MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            const md_f32x3_t* pos = as_vec3_arr(arg);
+            const md_float3_t* pos = as_vec3_arr(arg);
             const int64_t len = element_count(arg);
             for (int64_t i = 0; i < len; ++i) {
                 md_script_vis_vertex_t v = vertex(pos[i], COLOR_WHITE);
@@ -1772,9 +1772,9 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
     }
 }
 
-static md_array(md_f32x3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
+static md_array(md_float3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
-    md_array(md_f32x3_t) positions = 0;
+    md_array(md_float3_t) positions = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
@@ -1790,7 +1790,7 @@ static md_array(md_f32x3_t) coordinate_extract(data_t arg, eval_context_t* ctx) 
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + indices[i] - 1;
-            md_f32x3_t pos = { ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z };
+            md_float3_t pos = { ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z };
             md_array_push(positions, pos, ctx->temp_alloc);
         }
         break;
@@ -1811,7 +1811,7 @@ static md_array(md_f32x3_t) coordinate_extract(data_t arg, eval_context_t* ctx) 
                 while (md_bitset_iter_next(&it)) {
                     const int64_t idx = it.idx;
                     if ((k % step) == 0) {
-                        md_f32x3_t pos = { ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z };
+                        md_float3_t pos = { ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z };
                         md_array_push(positions, pos, ctx->temp_alloc);
                     }
                     ++k;
@@ -1821,7 +1821,7 @@ static md_array(md_f32x3_t) coordinate_extract(data_t arg, eval_context_t* ctx) 
                 int64_t len = MD_MAX(0, range.end - range.beg);
                 md_array_ensure(positions, (size_t)((len + step - 1) / step), ctx->temp_alloc);
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    md_f32x3_t pos = { ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z };
+                    md_float3_t pos = { ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z };
                     md_array_push(positions, pos, ctx->temp_alloc);
                 }
             }
@@ -1856,11 +1856,11 @@ static md_array(md_f32x3_t) coordinate_extract(data_t arg, eval_context_t* ctx) 
                     md_array_ensure(positions, md_array_size(positions) + count, ctx->temp_alloc);
                     while (md_bitset_iter_next(&it)) {
                         const uint64_t idx = it.idx;
-                        md_f32x3_t pos = md_f32x3_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z);
+                        md_float3_t pos = md_float3_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z);
                         md_array_push(positions, pos, ctx->temp_alloc);
                     }
                 } else {
-                    md_f32x3_t com = extract_com(ctx->cur_state->xyz, ctx->atom_mass, bf);
+                    md_float3_t com = extract_com(ctx->cur_state->xyz, ctx->atom_mass, bf);
                     md_array_push(positions, com, ctx->temp_alloc);
                 }
             }
@@ -1876,9 +1876,9 @@ static md_array(md_f32x3_t) coordinate_extract(data_t arg, eval_context_t* ctx) 
     return positions;
 }
 
-static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_weight, eval_context_t* ctx) {
+static md_array(md_float4_t) coordinate_extract_xyzw(data_t arg, float default_weight, eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
-    md_array(md_f32x4_t) out_xyzw = 0;
+    md_array(md_float4_t) out_xyzw = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
@@ -1886,9 +1886,9 @@ static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_we
         MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         size_t num_xyz = element_count(arg);
         md_array_resize(out_xyzw, num_xyz, ctx->temp_alloc);
-        const md_f32x3_t* src_xyz = as_vec3_arr(arg);
+        const md_float3_t* src_xyz = as_vec3_arr(arg);
         for (size_t i = 0; i < num_xyz; ++i) {
-            out_xyzw[i] = md_f32x4_from_f32x3(src_xyz[i], default_weight); 
+            out_xyzw[i] = md_float4_from_float3(src_xyz[i], default_weight); 
         }
         md_array_push_array(out_xyzw, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
         break;
@@ -1900,7 +1900,7 @@ static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_we
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
             const int idx = ctx_range.beg + in_idx[i] - 1;
-            out_xyzw[i] = md_f32x4_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z, ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
+            out_xyzw[i] = md_float4_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z, ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
         }
         break;
     }
@@ -1919,7 +1919,7 @@ static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_we
                 while (md_bitset_iter_next(&it)) {
                     const uint64_t idx = it.idx;
                     if ((k % step) == 0) {
-                        md_f32x4_t xyzw = md_f32x4_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z, ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
+                        md_float4_t xyzw = md_float4_set(ctx->cur_state->xyz[idx].x, ctx->cur_state->xyz[idx].y, ctx->cur_state->xyz[idx].z, ctx->atom_mass ? ctx->atom_mass[idx] : default_weight);
                         md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                     }
                     ++k;
@@ -1927,7 +1927,7 @@ static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_we
             }
             else {
                 for (int64_t j = range.beg; j < range.end; j += step) {
-                    md_f32x4_t xyzw = md_f32x4_set(ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z, ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
+                    md_float4_t xyzw = md_float4_set(ctx->cur_state->xyz[j].x, ctx->cur_state->xyz[j].y, ctx->cur_state->xyz[j].z, ctx->atom_mass ? ctx->atom_mass[j] : default_weight);
                     md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
                 }
             }
@@ -1960,7 +1960,7 @@ static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_we
                 md_array_resize(indices, md_bitset_count(*bf), ctx->temp_alloc);
                 md_bitset_iter_t it = md_bitset_iter(*bf);
                 md_bitset_iter_extract_indices(indices, md_array_size(indices), it);
-                md_f32x3_t xyz = md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, md_array_size(indices), &ctx->cur_state->unitcell);
+                md_float3_t xyz = md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, md_array_size(indices), &ctx->cur_state->unitcell);
                 double w = 0;
                 if (ctx->atom_mass) {
                 for (size_t j = 0; j < md_array_size(indices); ++j) {
@@ -1969,7 +1969,7 @@ static md_array(md_f32x4_t) coordinate_extract_xyzw(data_t arg, float default_we
                 } else {
                     w = (double)md_array_size(indices);
                 }
-                md_array_push(out_xyzw, md_f32x4_from_f32x3(xyz, (float)w), ctx->temp_alloc);
+                md_array_push(out_xyzw, md_float4_from_float3(xyz, (float)w), ctx->temp_alloc);
             }
         }
 
@@ -2058,9 +2058,9 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
     return out_indices;
 }
 
-static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
+static md_float3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
-    md_f32x3_t com = {0};
+    md_float3_t com = {0};
 
     md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
@@ -2069,7 +2069,7 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     case TYPE_FLOAT: {
         // This corresponds to user supplied coordinates
         MD_ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
-        md_f32x3_t* in_pos = as_vec3_arr(arg);
+        md_float3_t* in_pos = as_vec3_arr(arg);
         size_t len = element_count(arg);
 
         if (len == 1) {
@@ -2077,11 +2077,11 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             goto done;
         }
 
-        md_f32x4_t* xyzw = md_temp_alloc_array(temp, md_f32x4_t, len);
+        md_float4_t* xyzw = md_temp_alloc_array(temp, md_float4_t, len);
         for (size_t i = 0; i < len; ++i) {
-            xyzw[i] = md_f32x4_from_f32x3(in_pos[i], 1.0f);
+            xyzw[i] = md_float4_from_float3(in_pos[i], 1.0f);
         }
-        com = md_util_com((const float*)xyzw, sizeof(md_f32x4_t), (const float*)xyzw + 3, sizeof(md_f32x4_t), 0, len, &ctx->cur_state->unitcell);
+        com = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, len, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_INT: {
@@ -2107,7 +2107,7 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         md_array(int32_t) indices = 0;
         // We have multiple ranges which may be overlapping
         // We therefore compute the com for each range and then compute the com from the sub-com
-        md_f32x4_t* xyzw_arr = md_temp_alloc(temp, num_ranges * sizeof(md_f32x4_t));
+        md_float4_t* xyzw_arr = md_temp_alloc(temp, num_ranges * sizeof(md_float4_t));
         for (size_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             range = clamp_range(range, ctx_range);
@@ -2126,7 +2126,7 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     }
                     ++k;
                 }
-                xyzw_arr[i] = md_f32x4_from_f32x3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = md_float4_from_float3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
             else {
                 size_t len = (size_t)((MD_MAX(0, range.end - range.beg) + step - 1) / step);
@@ -2136,11 +2136,11 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     // 1 based indexing to 0 based indexing
                     md_array_push(indices, j, ctx->temp_alloc);
                 }
-                xyzw_arr[i] = md_f32x4_from_f32x3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = md_float4_from_float3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
         }
 
-        com = md_util_com((const float*)xyzw_arr, sizeof(md_f32x4_t), (const float*)xyzw_arr + 3, sizeof(md_f32x4_t), 0, num_ranges, &ctx->cur_state->unitcell);
+        com = md_util_com((const float*)xyzw_arr, sizeof(md_float4_t), (const float*)xyzw_arr + 3, sizeof(md_float4_t), 0, num_ranges, &ctx->cur_state->unitcell);
         break;
     }
     case TYPE_ATOMSET: {
@@ -2164,7 +2164,7 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         else {
             // If we have multiple atomsets we compute the center of mass for each atomset before computing a single com from the sub-coms
             md_array(int32_t) indices = 0;
-            md_f32x4_t* xyzw_arr = md_temp_alloc_array(temp, md_f32x4_t, num_bf);
+            md_float4_t* xyzw_arr = md_temp_alloc_array(temp, md_float4_t, num_bf);
             for (size_t i = 0; i < num_bf; ++i) {
                 md_bitset_t* bf = &in_bf[i];
                 if (ctx->mol_ctx) {
@@ -2175,9 +2175,9 @@ static md_f32x3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, len);
                 md_bitset_iter_extract_indices(indices, len, md_bitset_iter(*bf));
-                xyzw_arr[i] = md_f32x4_from_f32x3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
+                xyzw_arr[i] = md_float4_from_float3(md_util_com((const float*)ctx->cur_state->xyz, 0, ctx->atom_mass, 0, indices, len, &ctx->cur_state->unitcell), 1.0f);
             }
-            com = md_util_com((const float*)xyzw_arr, sizeof(md_f32x4_t), (const float*)xyzw_arr + 3, sizeof(md_f32x4_t), 0, num_bf, &ctx->cur_state->unitcell);
+            com = md_util_com((const float*)xyzw_arr, sizeof(md_float4_t), (const float*)xyzw_arr + 3, sizeof(md_float4_t), 0, num_bf, &ctx->cur_state->unitcell);
         }
         break;
     }
@@ -2441,10 +2441,10 @@ static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
 
     if (dst) {
-        md_f32x4x4_t* A = (md_f32x4x4_t*) arg[0].ptr;
-        md_f32x4x4_t* B = (md_f32x4x4_t*) arg[1].ptr;
-        md_f32x4x4_t* C = (md_f32x4x4_t*) dst->ptr;
-        *C = md_f32x4x4_mul(*A, *B);
+        md_float4x4_t* A = (md_float4x4_t*) arg[0].ptr;
+        md_float4x4_t* B = (md_float4x4_t*) arg[1].ptr;
+        md_float4x4_t* C = (md_float4x4_t*) dst->ptr;
+        *C = md_float4x4_mul(*A, *B);
     }
     return 0;
 }
@@ -2456,10 +2456,10 @@ static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
 
     if (dst) {
-        md_f32x4x4_t* M = (md_f32x4x4_t*) arg[0].ptr;
-        md_f32x4_t* v = (md_f32x4_t*) arg[1].ptr;
-        md_f32x4_t* r = (md_f32x4_t*) dst->ptr;
-        *r = md_f32x4x4_mul_f32x4(*M, *v);
+        md_float4x4_t* M = (md_float4x4_t*) arg[0].ptr;
+        md_float4_t* v = (md_float4_t*) arg[1].ptr;
+        md_float4_t* r = (md_float4_t*) dst->ptr;
+        *r = md_float4x4_mul_float4(*M, *v);
     }
     return 0;
 }
@@ -2786,7 +2786,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const float radius = as_float(arg[0]);
 
     if (dst || ctx->vis) {
-        const md_f32x3_t* in_pos = coordinate_extract(arg[1], ctx);
+        const md_float3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_spatial_acc_t* sa = get_spatial_acc(ctx, radius);
         const md_bitset_t* bf_mask = 0;
@@ -2797,7 +2797,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_mask = as_bitset(arg[1]);
         }
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(md_f32x3_t), NULL, num_pos);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(md_float3_t), NULL, num_pos);
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
@@ -2857,7 +2857,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), idx, num_idx);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), idx, num_idx);
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
@@ -2869,7 +2869,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_dst = ctx->vis_structure;
             visualize_atom_mask(ctx->mol_ctx, ctx);
             for (size_t i = 0; i < num_idx; ++i) {
-                md_f32x3_t pos = ctx->cur_state->xyz[idx[i]];
+                md_float3_t pos = ctx->cur_state->xyz[idx[i]];
                 push_sphere(pos, radius, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2920,7 +2920,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         const md_spatial_acc_t* sa = get_spatial_acc(ctx, rad_range.end);
-        const md_f32x3_t* in_pos = coordinate_extract(arg[1], ctx);
+        const md_float3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitset_t* bf_mask = 0;
         md_bitmask_t result = {0};
@@ -2947,7 +2947,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             .bf = bf_dst,
             .min_r2 = rad_range.beg * rad_range.beg,
         };
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(md_f32x3_t), NULL, num_pos);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(md_float3_t), NULL, num_pos);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, rad_range.end, within_frng_cb, &payload, 0);
 
         if (bf_mask) {
@@ -2988,7 +2988,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         (void)num_written;
         MD_ASSERT(num_written == num_idx);
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), idx, num_idx);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), idx, num_idx);
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
         
@@ -3002,7 +3002,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_dst = ctx->vis_structure;
             const float rad = rad_range.end;
             for (size_t i = 0; i < num_idx; ++i) {
-                md_f32x3_t pos = ctx->cur_state->xyz[idx[i]];
+                md_float3_t pos = ctx->cur_state->xyz[idx[i]];
                 push_sphere(pos, rad, COLOR_WHITE, ctx->vis);
             }
         }
@@ -3057,8 +3057,8 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
         uint32_t i = i_idx[k];
         uint32_t j = j_idx[k];
         if (data->exclusion_bf && md_bitmask_test_bit(data->exclusion_bf, j)) continue;
-        const md_f32x3_t pos_i = md_state_coord(ctx->cur_state, i);
-        const md_f32x3_t pos_j = md_state_coord(ctx->cur_state, j);
+        const md_float3_t pos_i = md_state_coord(ctx->cur_state, i);
+        const md_float3_t pos_j = md_state_coord(ctx->cur_state, j);
         md_script_vis_vertex_t v1 = vertex(pos_i, COLOR_U32(0, 0, 0, 255));
         md_script_vis_vertex_t v2 = vertex(pos_j, COLOR_U32(0, 0, 0, 0));
         push_line(v1, v2, ctx->vis);
@@ -3114,7 +3114,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitset_iter_t it = md_bitset_iter(*bf_b);
 		md_bitset_iter_extract_indices(indices, num_indices, it);
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), indices, num_indices);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
 		md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
 
@@ -3160,7 +3160,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_bond_mask_grow(&exclusion_bf, &ctx->sys->bond, ctx->sys->atom.count, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            md_coord_stream_t a_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), a_indices, a_length);
+            md_coord_stream_t a_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), a_indices, a_length);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
@@ -3701,11 +3701,11 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
             const int32_t* ring = md_ring_atoms(&sys->ring, rings[i]);
             const size_t n = md_ring_size(&sys->ring, rings[i]);
             if (n == 0) continue;
-            const md_f32x3_t* xyz = ctx->cur_state->xyz;
-            md_script_vis_vertex_t vbeg = vertex(md_f32x3_set(xyz[ring[0]].x, xyz[ring[0]].y, xyz[ring[0]].z), COLOR_WHITE);
+            const md_float3_t* xyz = ctx->cur_state->xyz;
+            md_script_vis_vertex_t vbeg = vertex(md_float3_set(xyz[ring[0]].x, xyz[ring[0]].y, xyz[ring[0]].z), COLOR_WHITE);
             md_script_vis_vertex_t v0 = vbeg;
             for (size_t k = 1; k < n; ++k) {
-                md_script_vis_vertex_t v1 = vertex(md_f32x3_set(xyz[ring[k]].x, xyz[ring[k]].y, xyz[ring[k]].z), COLOR_WHITE);
+                md_script_vis_vertex_t v1 = vertex(md_float3_set(xyz[ring[k]].x, xyz[ring[k]].y, xyz[ring[k]].z), COLOR_WHITE);
                 push_line(v0, v1, ctx->vis);
                 v0 = v1;
             }
@@ -4197,14 +4197,14 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        const md_f32x3_t* xyz = ctx->cur_state->xyz;
+        const md_float3_t* xyz = ctx->cur_state->xyz;
         for (int i = 0; i < count; ++i) {
             const int32_t* spine = md_lipid_tail_spine(lipid, tails[i]);
             const size_t n = md_lipid_tail_spine_size(lipid, tails[i]);
             for (size_t k = 1; k < n; ++k) {
-                const md_f32x3_t a = xyz[spine[k - 1]];
-                const md_f32x3_t c = xyz[spine[k]];
-                push_line(vertex(md_f32x3_set(a.x, a.y, a.z), COLOR_WHITE), vertex(md_f32x3_set(c.x, c.y, c.z), COLOR_WHITE), ctx->vis);
+                const md_float3_t a = xyz[spine[k - 1]];
+                const md_float3_t c = xyz[spine[k]];
+                push_line(vertex(md_float3_set(a.x, a.y, a.z), COLOR_WHITE), vertex(md_float3_set(c.x, c.y, c.z), COLOR_WHITE), ctx->vis);
             }
         }
         return 0;
@@ -4946,14 +4946,14 @@ static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // Property Compute
 
-static inline void draw_distance_text(const md_f32x3_t c_a, const md_f32x3_t c_b, const float value, md_script_vis_t* vis) {
-    md_f32x3_t c = md_f32x3_mul1(md_f32x3_add(c_a, c_b), 0.5f);
+static inline void draw_distance_text(const md_float3_t c_a, const md_float3_t c_b, const float value, md_script_vis_t* vis) {
+    md_float3_t c = md_float3_mul1(md_float3_add(c_a, c_b), 0.5f);
     // Coordinates are Angstrom, so that is what the separation between two of them is.
     push_quantity_text(c, value, md_unit_angstrom(), vis);
 }
 
 // Draw single distance between two points
-static inline void draw_distance(const md_f32x3_t c_a, const md_f32x3_t c_b, const float value, md_script_vis_t* vis, uint32_t vis_flags) {
+static inline void draw_distance(const md_float3_t c_a, const md_float3_t c_b, const float value, md_script_vis_t* vis, uint32_t vis_flags) {
     if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
         md_script_vis_vertex_t va = { c_a, COLOR_WHITE };
         md_script_vis_vertex_t vb = { c_b, COLOR_WHITE };
@@ -4966,7 +4966,7 @@ static inline void draw_distance(const md_f32x3_t c_a, const md_f32x3_t c_b, con
     }
 }
 
-static void draw_distances(const md_f32x3_t* a, size_t num_a, const md_f32x3_t* b, size_t num_b, const float* values, md_script_vis_t* vis, uint32_t vis_flags) {
+static void draw_distances(const md_float3_t* a, size_t num_a, const md_float3_t* b, size_t num_b, const float* values, md_script_vis_t* vis, uint32_t vis_flags) {
     for (size_t i = 0; i < num_a; ++i) {
         md_script_vis_vertex_t va = {a[i], COLOR_WHITE};
         if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
@@ -4992,14 +4992,14 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        md_f32x3_t a = coordinate_extract_com(arg[0], ctx);
-        md_f32x3_t b = coordinate_extract_com(arg[1], ctx);
+        md_float3_t a = coordinate_extract_com(arg[0], ctx);
+        md_float3_t b = coordinate_extract_com(arg[1], ctx);
 
         // b in its image nearest a
-        md_f32x3_t d = md_f32x3_sub(b, a);
+        md_float3_t d = md_float3_sub(b, a);
         md_util_min_image(d.elem, 0, 1, &ctx->cur_state->unitcell);
-        b = md_f32x3_add(a, d);
-        float dist = md_f32x3_distance(a, b);
+        b = md_float3_add(a, d);
+        float dist = md_float3_distance(a, b);
 
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -5049,7 +5049,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
             b.size = sizeof(md_bitset_t);
             b.type = type_info_element_type(b.type);
         }
-        const md_f32x3_t* b_pos = coordinate_extract(b, ctx);
+        const md_float3_t* b_pos = coordinate_extract(b, ctx);
         const size_t  b_len = md_array_size(b_pos);
 
         // Total count, not element_count: evaluated in a context the result is laid out as [context][N] (see rmsd)
@@ -5079,7 +5079,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
         // The positions of the elements one after another, all measured against b in one pass: each element starts
         // from the pair of the one before, which is what makes it cheap (see md_util_min_distance_groups)
         const size_t num = end - beg;
-        md_array(md_f32x3_t) a_pos = 0;
+        md_array(md_float3_t) a_pos = 0;
         size_t* a_off = md_temp_alloc_array(temp, size_t, num + 1);
         for (size_t i = beg; i < end; ++i) {
             const data_t elem = {
@@ -5087,7 +5087,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
                 .ptr  = (char*)arg[0].ptr + i * elem_stride,
                 .size = elem_stride,
             };
-            const md_f32x3_t* pos = coordinate_extract(elem, ctx);
+            const md_float3_t* pos = coordinate_extract(elem, ctx);
             a_off[i - beg] = md_array_size(a_pos);
             md_array_push_array(a_pos, pos, md_array_size(pos), ctx->temp_alloc);
             if (ctx->vis) {
@@ -5115,10 +5115,10 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
             }
             if (ctx->vis) {
                 // The end in b drawn in the image it was measured in
-                const md_f32x3_t a = a_pos[ia[k]];
-                md_f32x3_t d = md_f32x3_sub(b_pos[ib[k]], a);
+                const md_float3_t a = a_pos[ia[k]];
+                md_float3_t d = md_float3_sub(b_pos[ib[k]], a);
                 md_util_min_image(d.elem, 0, 1, &ctx->cur_state->unitcell);
-                draw_distance(a, md_f32x3_add(a, d), dist[k], ctx->vis, ctx->vis_flags);
+                draw_distance(a, md_float3_add(a, d), dist[k], ctx->vis, ctx->vis_flags);
             }
         }
 
@@ -5170,8 +5170,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
 
-        md_f32x3_t* a_pos = coordinate_extract(arg[0], ctx);
-        md_f32x3_t* b_pos = coordinate_extract(arg[1], ctx);
+        md_float3_t* a_pos = coordinate_extract(arg[0], ctx);
+        md_float3_t* b_pos = coordinate_extract(arg[1], ctx);
         const size_t a_len = md_array_size(a_pos);
         const size_t b_len = md_array_size(b_pos);
 
@@ -5261,23 +5261,23 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static void draw_angle_arc(md_f32x3_t c, md_f32x3_t v, md_f32x3_t axis, float angle, uint32_t color, md_script_vis_t* vis) {
+static void draw_angle_arc(md_float3_t c, md_float3_t v, md_float3_t axis, float angle, uint32_t color, md_script_vis_t* vis) {
     MD_ASSERT(vis);
     const float len = 0.5f;
     /*if (angle < 0.0f) {
-        axis = md_f32x3_mul1(axis, -1.0f);
+        axis = md_float3_mul1(axis, -1.0f);
         angle = -angle;
     }*/
     const size_t num_segments = MD_MAX(1, (size_t)(fabs(angle) / MD_DEG_TO_RAD(10)));
     const float scl = 1.0f / (float)num_segments;
     md_script_vis_vertex_t vb = vertex(c, color);
-    md_script_vis_vertex_t vp = vertex(md_f32x3_add(c, md_f32x3_mul1(v, len)), color);
+    md_script_vis_vertex_t vp = vertex(md_float3_add(c, md_float3_mul1(v, len)), color);
     push_line(vb, vp, vis);
     for (size_t i = 1; i <= num_segments; ++i) {
         const float t = i * scl;
         md_quat_t q = md_quat_axis_angle(axis, angle * t);
-        md_f32x3_t n = md_quat_mul_f32x3(q, v);
-        md_script_vis_vertex_t vn = vertex(md_f32x3_add(c, md_f32x3_mul1(n, len)), color);
+        md_float3_t n = md_quat_mul_float3(q, v);
+        md_script_vis_vertex_t vn = vertex(md_float3_add(c, md_float3_mul1(n, len)), color);
         push_triangle(vb, vp, vn, vis);
         push_line(vp, vn, vis);
         vp = vn;
@@ -5287,8 +5287,8 @@ static void draw_angle_arc(md_f32x3_t c, md_f32x3_t v, md_f32x3_t axis, float an
     // Add text. The angle is carried in radians with its unit rather than converted here, so a
     // viewer showing angles in something else is not fighting a conversion baked into the string.
     md_quat_t q = md_quat_axis_angle(axis, angle * 0.5f);
-    md_f32x3_t n = md_quat_mul_f32x3(q, v);
-    c = md_f32x3_add(c, md_f32x3_mul1(n, len + 0.1f));
+    md_float3_t n = md_quat_mul_float3(q, v);
+    c = md_float3_add(c, md_float3_mul1(n, len + 0.1f));
     push_quantity_text(c, angle, md_unit_radian(), vis);
 }
 
@@ -5298,23 +5298,23 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
     
     if (dst || ctx->vis) {
-        const md_f32x3_t b = coordinate_extract_com(arg[1], ctx);
+        const md_float3_t b = coordinate_extract_com(arg[1], ctx);
 
         // Both arms under the minimum image convention, as distance and dihedral do. Taken from the
         // raw coordinates, an angle whose atoms sit on either side of a cell boundary came out as the
         // angle to an arm a whole cell long.
-        md_f32x3_t dx[2] = {
-            md_f32x3_sub(coordinate_extract_com(arg[0], ctx), b),
-            md_f32x3_sub(coordinate_extract_com(arg[2], ctx), b),
+        md_float3_t dx[2] = {
+            md_float3_sub(coordinate_extract_com(arg[0], ctx), b),
+            md_float3_sub(coordinate_extract_com(arg[2], ctx), b),
         };
         md_util_min_image((float*)dx, 0, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
 
         // The ends placed in the images the arms were taken in, so the drawn angle is the measured one
-        const md_f32x3_t a = md_f32x3_add(b, dx[0]);
-        const md_f32x3_t c = md_f32x3_add(b, dx[1]);
-        const md_f32x3_t v0 = md_f32x3_normalize(dx[0]);
-        const md_f32x3_t v1 = md_f32x3_normalize(dx[1]);
-        const float  cos_angle = MD_CLAMP(md_f32x3_dot(v0, v1), -1.0f, 1.0f);
+        const md_float3_t a = md_float3_add(b, dx[0]);
+        const md_float3_t c = md_float3_add(b, dx[1]);
+        const md_float3_t v0 = md_float3_normalize(dx[0]);
+        const md_float3_t v1 = md_float3_normalize(dx[1]);
+        const float  cos_angle = MD_CLAMP(md_float3_dot(v0, v1), -1.0f, 1.0f);
 
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -5338,7 +5338,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vb, vc, ctx->vis);
 
                 // This is the angle arc
-                const md_f32x3_t axis = md_f32x3_normalize(md_f32x3_cross(v0, v1));
+                const md_float3_t axis = md_float3_normalize(md_float3_cross(v0, v1));
                 const float angle = acosf(cos_angle);
 
                 draw_angle_arc(b, v0, axis, angle, COLOR_WHITE, ctx->vis);
@@ -5346,13 +5346,13 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 /*
                 const size_t num_segments = 10;
                 const float scl = 1.0 / num_segments;
-                md_script_vis_vertex_t vp = vertex(md_f32x3_add(b, md_f32x3_mul1(v0, 0.5f)), COLOR_WHITE);
+                md_script_vis_vertex_t vp = vertex(md_float3_add(b, md_float3_mul1(v0, 0.5f)), COLOR_WHITE);
                 push_line(vb, vp, ctx->vis);
                 for (size_t i = 1; i <= num_segments; ++i) {
                     const float t = i * scl;
                     md_quat_t q = md_quat_axis_angle(axis, angle * t);
-                    md_f32x3_t n = md_quat_mul_f32x3(q, v0);
-                    md_script_vis_vertex_t v = vertex(md_f32x3_add(b, md_f32x3_mul1(n, 0.5f)), COLOR_WHITE);
+                    md_float3_t n = md_quat_mul_float3(q, v0);
+                    md_script_vis_vertex_t v = vertex(md_float3_add(b, md_float3_mul1(n, 0.5f)), COLOR_WHITE);
                     push_triangle(vb, vp, v, ctx->vis);
                     push_line(vp, v, ctx->vis);
                     vp = v;
@@ -5383,20 +5383,20 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        md_f32x3_t x[4] = {
+        md_float3_t x[4] = {
             coordinate_extract_com(arg[0], ctx),
             coordinate_extract_com(arg[1], ctx),
             coordinate_extract_com(arg[2], ctx),
             coordinate_extract_com(arg[3], ctx),
         };
 
-        md_f32x3_t dx[3] = {
-            md_f32x3_sub(x[1], x[0]),
-            md_f32x3_sub(x[2], x[1]),
-            md_f32x3_sub(x[3], x[2]),
+        md_float3_t dx[3] = {
+            md_float3_sub(x[1], x[0]),
+            md_float3_sub(x[2], x[1]),
+            md_float3_sub(x[3], x[2]),
         };
         md_util_min_image((float*)dx, 0, MD_COUNTOF(dx), &ctx->cur_state->unitcell);
-        float angle = (float)md_f32x3_dihedral_angle(dx[0], dx[1], dx[2]);
+        float angle = (float)md_float3_dihedral_angle(dx[0], dx[1], dx[2]);
 
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -5424,27 +5424,27 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vc, vd, ctx->vis);
 
 #if 1
-                md_f32x3_t b = x[1];
-                md_f32x3_t c = x[2];
+                md_float3_t b = x[1];
+                md_float3_t c = x[2];
 
-                md_f32x3_t ba = md_f32x3_sub(x[0], x[1]);
-                md_f32x3_t bc = md_f32x3_sub(x[2], x[1]);
-                md_f32x3_t cd = md_f32x3_sub(x[3], x[2]);
+                md_float3_t ba = md_float3_sub(x[0], x[1]);
+                md_float3_t bc = md_float3_sub(x[2], x[1]);
+                md_float3_t cd = md_float3_sub(x[3], x[2]);
 
-                md_f32x3_t u  = md_f32x3_normalize(bc); // Axis
-                md_f32x3_t vp = md_f32x3_mul1(u, md_f32x3_dot(ba, u));
-                md_f32x3_t vo = md_f32x3_sub(ba, vp);
-                md_f32x3_t wp = md_f32x3_mul1(u, md_f32x3_dot(cd, u));
-                md_f32x3_t wo = md_f32x3_sub(cd, wp);
+                md_float3_t u  = md_float3_normalize(bc); // Axis
+                md_float3_t vp = md_float3_mul1(u, md_float3_dot(ba, u));
+                md_float3_t vo = md_float3_sub(ba, vp);
+                md_float3_t wp = md_float3_mul1(u, md_float3_dot(cd, u));
+                md_float3_t wo = md_float3_sub(cd, wp);
 
                 // Plane 1
                 {
-                    md_f32x3_t d = md_f32x3_mul1(md_f32x3_normalize(vo), 1.0f);
+                    md_float3_t d = md_float3_mul1(md_float3_normalize(vo), 1.0f);
                     md_script_vis_vertex_t v[4] = {
                         vb,
                         vc,
-                        vertex(md_f32x3_add(c, d), COLOR_WHITE),
-                        vertex(md_f32x3_add(b, d), COLOR_WHITE),
+                        vertex(md_float3_add(c, d), COLOR_WHITE),
+                        vertex(md_float3_add(b, d), COLOR_WHITE),
                     };
 
                     push_line(v[0], v[1], ctx->vis);
@@ -5455,12 +5455,12 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
                 // Plane 2
                 {
-                    md_f32x3_t d = md_f32x3_mul1(md_f32x3_normalize(wo), 1.0f);
+                    md_float3_t d = md_float3_mul1(md_float3_normalize(wo), 1.0f);
                     md_script_vis_vertex_t v[4] = {
                         vc,
                         vb,
-                        vertex(md_f32x3_add(b, d), COLOR_WHITE),
-                        vertex(md_f32x3_add(c, d), COLOR_WHITE),
+                        vertex(md_float3_add(b, d), COLOR_WHITE),
+                        vertex(md_float3_add(c, d), COLOR_WHITE),
                     };
 
                     push_line(v[0], v[1], ctx->vis);
@@ -5470,7 +5470,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
                 // Angle
                 {
-                    md_f32x3_t p0 = md_f32x3_lerp(b, c, 0.5f);
+                    md_float3_t p0 = md_float3_lerp(b, c, 0.5f);
                     draw_angle_arc(p0, vo, u, angle, COLOR_WHITE, ctx->vis);
                 }
 #endif
@@ -5531,7 +5531,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_bitset_t tmp_bf = {0};
 
-        md_array(md_f32x4_t) xyzw[2] = {0};
+        md_array(md_float4_t) xyzw[2] = {0};
 
         for (size_t i = 0; i < MD_MIN(num_bf, out_len); ++i) {
             const md_bitset_t* bf = &bf_arr[i];
@@ -5555,11 +5555,11 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // the plain weighted mean of the placed points - which is what the fit below subtracts.
             // Coordinates stay absolute: md_util_rmsd subtracts the centres itself.
             // Correct while the selection spans less than half a cell, as any per point image choice.
-            md_f32x3_t com[2] = {0};
+            md_float3_t com[2] = {0};
             md_util_deperiodize_self(xyzw[0], count, &ctx->ref_state->unitcell, &com[0]);
             md_util_deperiodize_self(xyzw[1], count, &ctx->cur_state->unitcell, &com[1]);
 
-            out[i] = (float)md_util_rmsd((const md_f32x4_t* const*)xyzw, 0, count, com);
+            out[i] = (float)md_util_rmsd((const md_float4_t* const*)xyzw, 0, count, com);
         }
 
         md_temp_end(temp);
@@ -5844,7 +5844,7 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
     MD_ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
-    md_f32x3_t com;
+    md_float3_t com;
     if (dst || ctx->vis) {
         com = coordinate_extract_com(arg[0], ctx);
         if (dst) {
@@ -5854,7 +5854,7 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
+                md_float3_t* pos = coordinate_extract(arg[0], ctx);
                 md_script_vis_vertex_t c = vertex(com, COLOR_WHITE);
                 push_point(c, ctx->vis);
                 for (size_t i = 0; i < md_array_size(pos); ++i) {
@@ -5933,57 +5933,57 @@ static int64_t plane_rings_find(const plane_rings_t* pr, const md_system_t* sys,
 }
 
 // The points xyzw made mutually consistent across the cell, and their centroid
-static md_f32x3_t plane_place(md_f32x4_t* xyzw, size_t count, const md_unitcell_t* cell) {
-    md_f32x3_t c = {0};
+static md_float3_t plane_place(md_float4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+    md_float3_t c = {0};
     md_util_deperiodize_self(xyzw, count, cell, &c);
     // The centroid of the points as placed
-    md_f32x3_t sum = {0};
-    for (size_t k = 0; k < count; ++k) sum = md_f32x3_add(sum, md_f32x3_from_f32x4(xyzw[k]));
-    return md_f32x3_mul1(sum, 1.0f / (float)count);
+    md_float3_t sum = {0};
+    for (size_t k = 0; k < count; ++k) sum = md_float3_add(sum, md_float3_from_float4(xyzw[k]));
+    return md_float3_mul1(sum, 1.0f / (float)count);
 }
 
 // Positions of the atoms idx in state, made mutually consistent across the cell, and their centroid
-static md_f32x3_t plane_positions(md_f32x4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
+static md_float3_t plane_positions(md_float4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
     for (size_t k = 0; k < count; ++k) {
-        const md_f32x3_t x = state->xyz[idx[k]];
-        xyzw[k] = md_f32x4_set(x.x, x.y, x.z, 1.0f);
+        const md_float3_t x = state->xyz[idx[k]];
+        xyzw[k] = md_float4_set(x.x, x.y, x.z, 1.0f);
     }
     return plane_place(xyzw, count, &state->unitcell);
 }
 
 // The side from which the points go around anticlockwise, in their order (twice the area of a planar polygon)
-static md_f32x3_t plane_turn(const md_f32x4_t* xyzw, size_t count, md_f32x3_t c) {
-    md_f32x3_t ref = {0};
+static md_float3_t plane_turn(const md_float4_t* xyzw, size_t count, md_float3_t c) {
+    md_float3_t ref = {0};
     for (size_t k = 0; k < count; ++k) {
-        const md_f32x3_t a = md_f32x3_sub(md_f32x3_from_f32x4(xyzw[k]), c);
-        const md_f32x3_t b = md_f32x3_sub(md_f32x3_from_f32x4(xyzw[(k + 1) % count]), c);
-        ref = md_f32x3_add(ref, md_f32x3_cross(a, b));
+        const md_float3_t a = md_float3_sub(md_float3_from_float4(xyzw[k]), c);
+        const md_float3_t b = md_float3_sub(md_float3_from_float4(xyzw[(k + 1) % count]), c);
+        ref = md_float3_add(ref, md_float3_cross(a, b));
     }
     return ref;
 }
 
 // The least squares plane of count >= 3 points, placed, with centroid c. The normal is on the side of ref.
-static void plane_from_points(plane_t* out, const md_f32x4_t* xyzw, size_t count, md_f32x3_t c, md_f32x3_t ref) {
-    const md_f32x3x3_t M = md_f32x3x3_covariance_matrix_f32x4(xyzw, 0, count, c);
-    const md_f32x3x3_eigen_t E = md_f32x3x3_eigen(M);
+static void plane_from_points(plane_t* out, const md_float4_t* xyzw, size_t count, md_float3_t c, md_float3_t ref) {
+    const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, count, c);
+    const md_float3x3_eigen_t E = md_float3x3_eigen(M);
 
     // Eigenvalues in descending order: the two in the plane, then the normal
     int order[3] = {0, 1, 2};
     for (int i = 0; i < 3; ++i) for (int j = i + 1; j < 3; ++j) {
         if (E.values.elem[order[j]] > E.values.elem[order[i]]) { int t = order[i]; order[i] = order[j]; order[j] = t; }
     }
-    md_f32x3_t n    = md_f32x3_normalize(E.vectors.col[order[2]]);
-    md_f32x3_t axis = md_f32x3_normalize(E.vectors.col[order[0]]);
+    md_float3_t n    = md_float3_normalize(E.vectors.col[order[2]]);
+    md_float3_t axis = md_float3_normalize(E.vectors.col[order[0]]);
 
-    if (md_f32x3_dot(n, ref) < 0.0f) n = md_f32x3_mul1(n, -1.0f);
+    if (md_float3_dot(n, ref) < 0.0f) n = md_float3_mul1(n, -1.0f);
     // A right handed frame: axis, normal x axis, normal
-    if (md_f32x3_dot(md_f32x3_cross(axis, md_f32x3_cross(n, axis)), n) < 0.0f) axis = md_f32x3_mul1(axis, -1.0f);
+    if (md_float3_dot(md_float3_cross(axis, md_float3_cross(n, axis)), n) < 0.0f) axis = md_float3_mul1(axis, -1.0f);
 
     float radius = 0.0f, dev = 0.0f;
     for (size_t k = 0; k < count; ++k) {
-        const md_f32x3_t d = md_f32x3_sub(md_f32x3_from_f32x4(xyzw[k]), c);
-        radius += md_f32x3_length(d);
-        const float h = md_f32x3_dot(d, n);
+        const md_float3_t d = md_float3_sub(md_float3_from_float4(xyzw[k]), c);
+        radius += md_float3_length(d);
+        const float h = md_float3_dot(d, n);
         dev += h * h;
     }
     out->count     = (int)count;
@@ -6002,11 +6002,11 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
     if (count < 3) return;
     const md_system_t* sys = ctx->sys;
 
-    md_f32x4_t* xyzw = md_alloc(temp, sizeof(md_f32x4_t) * count);
-    const md_f32x3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
+    md_float4_t* xyzw = md_alloc(temp, sizeof(md_float4_t) * count);
+    const md_float3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
 
     // Orientation
-    md_f32x3_t ref = {0};
+    md_float3_t ref = {0};
     if (ring >= 0) {
         // Around the ring, in its order
         const int32_t* ring_idx = md_ring_atoms(&sys->ring, (size_t)ring);
@@ -6017,28 +6017,28 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
                 if (idx[j] == ring_idx[k]) a = j;
                 if (idx[j] == ring_idx[(k + 1) % n_ring]) b = j;
             }
-            ref = md_f32x3_add(ref, md_f32x3_cross(md_f32x3_sub(md_f32x3_from_f32x4(xyzw[a]), c), md_f32x3_sub(md_f32x3_from_f32x4(xyzw[b]), c)));
+            ref = md_float3_add(ref, md_float3_cross(md_float3_sub(md_float3_from_float4(xyzw[a]), c), md_float3_sub(md_float3_from_float4(xyzw[b]), c)));
         }
     } else {
         // Two anchors chosen in the reference structure, the same in every frame
         const md_system_state_t* rs = (ctx->ref_state && ctx->ref_state->xyz) ? ctx->ref_state : ctx->cur_state;
-        md_f32x4_t* r = md_alloc(temp, sizeof(md_f32x4_t) * count);
-        const md_f32x3_t rc = plane_positions(r, idx, count, rs);
+        md_float4_t* r = md_alloc(temp, sizeof(md_float4_t) * count);
+        const md_float3_t rc = plane_positions(r, idx, count, rs);
         size_t a = 0;
         float best = -1.0f;
         for (size_t k = 0; k < count; ++k) {
-            const float d = md_f32x3_length_squared(md_f32x3_sub(md_f32x3_from_f32x4(r[k]), rc));
+            const float d = md_float3_length_squared(md_float3_sub(md_float3_from_float4(r[k]), rc));
             if (d > best + 1.0e-6f) { best = d; a = k; }
         }
         size_t b = a;
         best = 1.0e-8f;
-        const md_f32x3_t ra = md_f32x3_sub(md_f32x3_from_f32x4(r[a]), rc);
+        const md_float3_t ra = md_float3_sub(md_float3_from_float4(r[a]), rc);
         for (size_t k = 0; k < count; ++k) {
-            const float area = md_f32x3_length(md_f32x3_cross(ra, md_f32x3_sub(md_f32x3_from_f32x4(r[k]), rc)));
+            const float area = md_float3_length(md_float3_cross(ra, md_float3_sub(md_float3_from_float4(r[k]), rc)));
             if (area > best * (1.0f + 1.0e-4f)) { best = area; b = k; }
         }
         if (b != a) {
-            ref = md_f32x3_cross(md_f32x3_sub(md_f32x3_from_f32x4(xyzw[a]), c), md_f32x3_sub(md_f32x3_from_f32x4(xyzw[b]), c));
+            ref = md_float3_cross(md_float3_sub(md_float3_from_float4(xyzw[a]), c), md_float3_sub(md_float3_from_float4(xyzw[b]), c));
         }
     }
     plane_from_points(out, xyzw, count, c, ref);
@@ -6046,20 +6046,20 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
 
 static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
     if (!(ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) || p->count < 3) return;
-    const md_f32x3_t u = md_f32x3_mul1(p->axis, p->radius);
-    const md_f32x3_t v = md_f32x3_mul1(md_f32x3_cross(p->normal, p->axis), p->radius);
+    const md_float3_t u = md_float3_mul1(p->axis, p->radius);
+    const md_float3_t v = md_float3_mul1(md_float3_cross(p->normal, p->axis), p->radius);
     const int segments = 32;
-    md_script_vis_vertex_t prev = vertex(md_f32x3_add(p->centroid, u), COLOR_WHITE);
+    md_script_vis_vertex_t prev = vertex(md_float3_add(p->centroid, u), COLOR_WHITE);
     for (int i = 1; i <= segments; ++i) {
         const float t = (float)i / (float)segments * 2.0f * MD_PI;
-        const md_f32x3_t x = md_f32x3_add(p->centroid, md_f32x3_add(md_f32x3_mul1(u, cosf(t)), md_f32x3_mul1(v, sinf(t))));
+        const md_float3_t x = md_float3_add(p->centroid, md_float3_add(md_float3_mul1(u, cosf(t)), md_float3_mul1(v, sinf(t))));
         md_script_vis_vertex_t cur = vertex(x, COLOR_WHITE);
         push_line(prev, cur, ctx->vis);
         prev = cur;
     }
     // The normal, as long as the radius, from the centroid
     push_point(vertex(p->centroid, COLOR_WHITE), ctx->vis);
-    push_line(vertex(p->centroid, COLOR_WHITE), vertex(md_f32x3_add(p->centroid, md_f32x3_mul1(p->normal, p->radius)), COLOR_WHITE), ctx->vis);
+    push_line(vertex(p->centroid, COLOR_WHITE), vertex(md_float3_add(p->centroid, md_float3_mul1(p->normal, p->radius)), COLOR_WHITE), ctx->vis);
 }
 
 static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -6160,17 +6160,17 @@ static int _plane_points(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     plane_t p = {0};
-    md_array(md_f32x3_t) xyz = coordinate_extract(arg[0], ctx);
+    md_array(md_float3_t) xyz = coordinate_extract(arg[0], ctx);
     const size_t count = md_array_size(xyz);
     p.count = (int)count;
     if (count >= 3) {
-        md_f32x4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(md_f32x4_t) * count);
+        md_float4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(md_float4_t) * count);
         for (size_t k = 0; k < count; ++k) {
-            xyzw[k] = md_f32x4_from_f32x3(xyz[k], 1.0f);
+            xyzw[k] = md_float4_from_float3(xyz[k], 1.0f);
         }
-        const md_f32x3_t c = plane_place(xyzw, count, &ctx->cur_state->unitcell);
+        const md_float3_t c = plane_place(xyzw, count, &ctx->cur_state->unitcell);
         plane_from_points(&p, xyzw, count, c, plane_turn(xyzw, count, c));
-        md_free(ctx->temp_alloc, xyzw, sizeof(md_f32x4_t) * count);
+        md_free(ctx->temp_alloc, xyzw, sizeof(md_float4_t) * count);
     }
 
     if (dst) {
@@ -6199,18 +6199,18 @@ static int plane_accessor_static(data_t arg[], md_unit_t unit, eval_context_t* c
 static int _plane_centroid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
     const plane_t* p = as_planes(arg[0]);
-    md_f32x3_t* out = as_vec3_arr(*dst);
+    md_float3_t* out = as_vec3_arr(*dst);
     const size_t n = MD_MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
-    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].centroid : (md_f32x3_t){0};
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].centroid : (md_float3_t){0};
     return 0;
 }
 
 static int _plane_normal(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return plane_accessor_static(arg, md_unit_none(), ctx);
     const plane_t* p = as_planes(arg[0]);
-    md_f32x3_t* out = as_vec3_arr(*dst);
+    md_float3_t* out = as_vec3_arr(*dst);
     const size_t n = MD_MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
-    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].normal : (md_f32x3_t){0};
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].normal : (md_float3_t){0};
     return 0;
 }
 
@@ -6255,7 +6255,7 @@ static int _plane_angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     for (size_t i = 0; i < n; ++i) {
         const plane_t* pa = &a[na == 1 ? 0 : i];
         const plane_t* pb = &b[nb == 1 ? 0 : i];
-        const float c = fabsf(md_f32x3_dot(pa->normal, pb->normal));
+        const float c = fabsf(md_float3_dot(pa->normal, pb->normal));
         out[i] = acosf(MD_CLAMP(c, 0.0f, 1.0f));
     }
     return 0;
@@ -6272,10 +6272,10 @@ static void pucker_visualize(const int32_t* order, size_t n, eval_context_t* ctx
         for (size_t k = 0; k < n; ++k) md_bitmask_set_bit(ctx->vis_structure, (uint32_t)order[k]);
     }
     if (!(ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY)) return;
-    md_f32x4_t xyzw[MD_RING_MAX_SIZE];
+    md_float4_t xyzw[MD_RING_MAX_SIZE];
     plane_positions(xyzw, order, n, ctx->cur_state);
     for (size_t k = 0; k < n; ++k) {
-        push_line(vertex(md_f32x3_from_f32x4(xyzw[k]), COLOR_WHITE), vertex(md_f32x3_from_f32x4(xyzw[(k + 1) % n]), COLOR_WHITE), ctx->vis);
+        push_line(vertex(md_float3_from_float4(xyzw[k]), COLOR_WHITE), vertex(md_float3_from_float4(xyzw[(k + 1) % n]), COLOR_WHITE), ctx->vis);
     }
 }
 
@@ -6543,38 +6543,38 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             bf = md_bitset_and(bf, *ctx->mol_ctx, ctx->temp_alloc);
         }
 
-        md_f32x3x3_t A = { 0 };
+        md_float3x3_t A = { 0 };
         md_unitcell_A_extract(A.elem, &ctx->ref_state->unitcell);
 
         // Reference point
-        md_f32x3_t rc = md_f32x3x3_mul_f32x3(A, md_f32x3_set1(0.5f));
+        md_float3_t rc = md_float3x3_mul_float3(A, md_float3_set1(0.5f));
         // Reference extent
-        md_f32x3_t re = md_f32x3x3_diag(A);
+        md_float3_t re = md_float3x3_diag(A);
 
-        md_f32x4_t ext = md_f32x4_from_f32x3(re, 0);
+        md_float4_t ext = md_float4_from_float3(re, 0);
         if (axis == -1) {
             // We use the max axis as we cannot output three individual value_ranges
-            ext = md_f32x4_set1(MD_MAX(re.x, MD_MAX(re.y, re.z)));
+            ext = md_float4_set1(MD_MAX(re.x, MD_MAX(re.y, re.z)));
             ext.w = 0;
         }
 
         md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
 
         size_t count = md_bitset_count(bf);
-        md_f32x4_t* xyzw = md_temp_alloc_array(temp, md_f32x4_t, count);
+        md_float4_t* xyzw = md_temp_alloc_array(temp, md_float4_t, count);
 
         extract_xyzw_vec4(xyzw, ctx->cur_state->xyz, ctx->atom_mass, &bf);
 
-        md_f32x4_t mid_point = md_f32x4_from_f32x3(rc, 0);
-        md_f32x4_t period = md_f32x4_from_f32x3(re, 0);
-        md_f32x4_t inv_ext = {
+        md_float4_t mid_point = md_float4_from_float3(rc, 0);
+        md_float4_t period = md_float4_from_float3(re, 0);
+        md_float4_t inv_ext = {
             ext.x > 0.0f ? 1.0f / ext.x : 0.0f,
             ext.y > 0.0f ? 1.0f / ext.y : 0.0f,
             ext.z > 0.0f ? 1.0f / ext.z : 0.0f,
             0.0f
         };
 
-        md_f32x4_t min_point = md_f32x4_sub(mid_point, md_f32x4_mul1(ext, 0.5f));
+        md_float4_t min_point = md_float4_sub(mid_point, md_float4_mul1(ext, 0.5f));
 
         // @TODO: This is conceptually not correct in the periferi of the system as it does not count multiple occurences of atoms
         // This should be resolved with spatial hashing and counting occurrences within the cells
@@ -6582,8 +6582,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
 
         for (size_t i = 0; i < count; ++i) {
-            md_f32x4_t xyzw_dp = md_f32x4_deperiodize_ortho(xyzw[i], mid_point, period);
-            md_f32x4_t fc = md_f32x4_mul(md_f32x4_sub(xyzw_dp, min_point), inv_ext);
+            md_float4_t xyzw_dp = md_float4_deperiodize_ortho(xyzw[i], mid_point, period);
+            md_float4_t fc = md_float4_mul(md_float4_sub(xyzw_dp, min_point), inv_ext);
             float w = xyzw[i].w;
 
             int bin_idx[3] = {
@@ -6652,9 +6652,9 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         }
         if (ctx->backchannel) {
             // Reference half extent
-            md_f32x3x3_t A = { 0 };
+            md_float3x3_t A = { 0 };
             md_unitcell_A_extract_float(A.elem, unit_cell);
-            md_f32x3_t re = md_f32x3_mul1(md_f32x3x3_diag(A), 0.5f);
+            md_float3_t re = md_float3_mul1(md_float3x3_diag(A), 0.5f);
 
             // We use the max axis half ext as we cannot output three individual value_ranges
             float rad = 0;
@@ -6694,7 +6694,7 @@ static int _coordinate(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
-            md_array(md_f32x3_t) pos = coordinate_extract(arg[0], ctx);
+            md_array(md_float3_t) pos = coordinate_extract(arg[0], ctx);
             // As for coord_x: what fits is written and the rest zeroed
             const size_t bytes = MD_MIN(dst->size, md_array_bytes(pos));
             md_memcpy(dst->ptr, pos, bytes);
@@ -6715,7 +6715,7 @@ static int _coordinate_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-            const md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
+            const md_float3_t* pos = coordinate_extract(arg[0], ctx);
             float* x = as_float_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
@@ -6740,7 +6740,7 @@ static int _coordinate_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-            const md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
+            const md_float3_t* pos = coordinate_extract(arg[0], ctx);
             float* y = as_float_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
@@ -6765,7 +6765,7 @@ static int _coordinate_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-            const md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
+            const md_float3_t* pos = coordinate_extract(arg[0], ctx);
             float* z = as_float_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
@@ -6790,14 +6790,14 @@ static int _coordinate_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-            const md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
-            md_f32x2_t* xy = as_vec2_arr(*dst);
+            const md_float3_t* pos = coordinate_extract(arg[0], ctx);
+            md_float2_t* xy = as_vec2_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MD_MIN(dst->size / sizeof(md_f32x2_t), md_array_size(pos));
-            md_memset((char*)dst->ptr + n * sizeof(md_f32x2_t), 0, dst->size - n * sizeof(md_f32x2_t));
+            const size_t n = MD_MIN(dst->size / sizeof(md_float2_t), md_array_size(pos));
+            md_memset((char*)dst->ptr + n * sizeof(md_float2_t), 0, dst->size - n * sizeof(md_float2_t));
             for (size_t i = 0; i < n; ++i) {
-                xy[i] = (md_f32x2_t){pos[i].x, pos[i].y};
+                xy[i] = (md_float2_t){pos[i].x, pos[i].y};
             }
         }
         if (ctx->vis) {
@@ -6815,14 +6815,14 @@ static int _coordinate_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-            const md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
-            md_f32x2_t* xz = as_vec2_arr(*dst);
+            const md_float3_t* pos = coordinate_extract(arg[0], ctx);
+            md_float2_t* xz = as_vec2_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MD_MIN(dst->size / sizeof(md_f32x2_t), md_array_size(pos));
-            md_memset((char*)dst->ptr + n * sizeof(md_f32x2_t), 0, dst->size - n * sizeof(md_f32x2_t));
+            const size_t n = MD_MIN(dst->size / sizeof(md_float2_t), md_array_size(pos));
+            md_memset((char*)dst->ptr + n * sizeof(md_float2_t), 0, dst->size - n * sizeof(md_float2_t));
             for (size_t i = 0; i < n; ++i) {
-                xz[i] = (md_f32x2_t){pos[i].x, pos[i].z};
+                xz[i] = (md_float2_t){pos[i].x, pos[i].z};
             }
         }
         if (ctx->vis) {
@@ -6840,14 +6840,14 @@ static int _coordinate_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-            const md_f32x3_t* pos = coordinate_extract(arg[0], ctx);
-            md_f32x2_t* yz = as_vec2_arr(*dst);
+            const md_float3_t* pos = coordinate_extract(arg[0], ctx);
+            md_float2_t* yz = as_vec2_arr(*dst);
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
-            const size_t n = MD_MIN(dst->size / sizeof(md_f32x2_t), md_array_size(pos));
-            md_memset((char*)dst->ptr + n * sizeof(md_f32x2_t), 0, dst->size - n * sizeof(md_f32x2_t));
+            const size_t n = MD_MIN(dst->size / sizeof(md_float2_t), md_array_size(pos));
+            md_memset((char*)dst->ptr + n * sizeof(md_float2_t), 0, dst->size - n * sizeof(md_float2_t));
             for (size_t i = 0; i < n; ++i) {
-                yz[i] = (md_f32x2_t){pos[i].y, pos[i].z};
+                yz[i] = (md_float2_t){pos[i].y, pos[i].z};
             }
         }
         if (ctx->vis) {
@@ -6874,7 +6874,7 @@ bool rdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
     
     while (mask) {
         const int idx = md_ctz32(mask);
-        const float d2 = md_f32x4_periodic_distance_squared(md_f32x4_from_f32x3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
+        const float d2 = md_float4_periodic_distance_squared(md_float4_from_float3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
         if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
             const float d = sqrtf(d2);
             int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
@@ -6894,7 +6894,7 @@ bool rdf_iter_excl_mask(const md_spatial_hash_elem_t* elem_arr, int mask, void* 
     while (mask) {
         const int idx = md_ctz32(mask);
         if (!md_bitset_test(*data->exclusion_mask, elem_arr[idx].idx)) {
-            const float d2 = md_f32x4_periodic_distance_squared(md_f32x4_from_f32x3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
+            const float d2 = md_float4_periodic_distance_squared(md_float4_from_float3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
             if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
                 const float d = sqrtf(d2);
                 int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
@@ -6969,12 +6969,12 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_spatial_acc_flags_t ref_flags = 0;
     if (ref_idx) {
         ref_len = md_array_size(ref_idx);
-        ref_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), ref_idx, ref_len);
+        ref_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), ref_idx, ref_len);
         ref_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
     } else {
-        md_array(md_f32x3_t) ref_pos = coordinate_extract(arg[0], ctx);
+        md_array(md_float3_t) ref_pos = coordinate_extract(arg[0], ctx);
         ref_len = md_array_size(ref_pos);
-        ref_stream = md_coord_stream_from_aos((const float*)ref_pos, sizeof(md_f32x3_t), NULL, ref_len);
+        ref_stream = md_coord_stream_from_aos((const float*)ref_pos, sizeof(md_float3_t), NULL, ref_len);
     }
 
     md_array(int32_t) trg_idx = coordinate_extract_indices(arg[1], ctx);
@@ -6984,12 +6984,12 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_spatial_acc_flags_t trg_flags = 0;
     if (trg_idx) {
         trg_len = md_array_size(trg_idx);
-        trg_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), trg_idx, trg_len);
+        trg_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), trg_idx, trg_len);
         trg_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
     } else {
-        md_array(md_f32x3_t) trg_pos = coordinate_extract(arg[1], ctx);
+        md_array(md_float3_t) trg_pos = coordinate_extract(arg[1], ctx);
         trg_len = md_array_size(trg_pos);
-        trg_stream = md_coord_stream_from_aos((const float*)trg_pos, sizeof(md_f32x3_t), NULL, trg_len);
+        trg_stream = md_coord_stream_from_aos((const float*)trg_pos, sizeof(md_float3_t), NULL, trg_len);
     }
 
     {
@@ -7048,8 +7048,8 @@ static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff
             vertex_count += 1;
             push_point(r_v, ctx->vis);
             for (int64_t j = 0; j < trg_len; ++j) {
-                const md_f32x3_t d = md_f32x3_sub(ref_pos[i], trg_pos[j]);
-                const float d2 = md_f32x3_dot(d, d);
+                const md_float3_t d = md_float3_sub(ref_pos[i], trg_pos[j]);
+                const float d2 = md_float3_dot(d, d);
                 if (min_cutoff2 < d2 && d2 < max_cutoff2) {
                     md_script_vis_vertex_t t_v = vertex(trg_pos[j], COLOR_WHITE);
                     vertex_count += 1;
@@ -7377,8 +7377,8 @@ static inline bool are_bitfields_equivalent(const md_bitset_t bitfields[], size_
     return true;
 }
 
-static inline void populate_volume(float* vol, const md_f32x3_t* xyz, const int* idx, size_t count, const md_bitset_t* exclusion_mask, md_f32x4x4_t M) {
-    const md_f32x4_t dim = md_f32x4_set(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0);
+static inline void populate_volume(float* vol, const md_float3_t* xyz, const int* idx, size_t count, const md_bitset_t* exclusion_mask, md_float4x4_t M) {
+    const md_float4_t dim = md_float4_set(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0);
     for (size_t i = 0; i < count; ++i) {
         if (exclusion_mask) {
             if (md_bitset_test(*exclusion_mask, idx[i])) {
@@ -7386,7 +7386,7 @@ static inline void populate_volume(float* vol, const md_f32x3_t* xyz, const int*
             }
         }
 
-        const md_f32x4_t coord = md_f32x4x4_mul_f32x4(M, md_f32x4_from_f32x3(xyz[i], 1.0f));
+        const md_float4_t coord = md_float4x4_mul_float4(M, md_float4_from_float3(xyz[i], 1.0f));
         
         const md_128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), md_mm_load_ps(coord.elem));
         const md_128 b = md_mm_cmplt_ps(md_mm_load_ps(coord.elem), md_mm_load_ps(dim.elem));
@@ -7400,22 +7400,22 @@ static inline void populate_volume(float* vol, const md_f32x3_t* xyz, const int*
     }
 }
 
-static inline md_f32x4x4_t compute_volume_matrix(float radius) {
+static inline md_float4x4_t compute_volume_matrix(float radius) {
     // We have the cutoff as a radius, meaning our volume radius has the length 'r' for each axis.
     // Thus this means the diameter is 2*r.
     // We have the resolution MD_VOL_DIM for each axis, meaning each voxel has the extent of 2*r / VOL_RES units
     const float voxel_ext = (2*radius) / MD_VOL_DIM;
     const float s = 1.0f / voxel_ext;
-    md_f32x4x4_t S = md_f32x4x4_scale(s, s, s);
+    md_float4x4_t S = md_float4x4_scale(s, s, s);
 
     const float t = (MD_VOL_DIM / 2);
-    md_f32x4x4_t T = md_f32x4x4_translate(t, t, t);
+    md_float4x4_t T = md_float4x4_translate(t, t, t);
 
-    return md_f32x4x4_mul(T, S);
+    return md_float4x4_mul(T, S);
 }
 
 typedef struct sdf_payload_t {
-    md_f32x4x4_t M;
+    md_float4x4_t M;
     float* vol;
     const md_bitset_t* exclusion_mask;
 } sdf_payload_t;
@@ -7434,7 +7434,7 @@ void sdf_cb(const uint32_t in_idx[], const float in_x[], const float in_y[], con
             continue;
         }
 
-        const md_f32x4_t c = md_f32x4x4_mul_f32x4(data->M, md_f32x4_set(in_x[i], in_y[i], in_z[i], 1.0f));
+        const md_float4_t c = md_float4x4_mul_float4(data->M, md_float4_set(in_x[i], in_y[i], in_z[i], 1.0f));
         if (!(c.x >= 0.0f && c.x < (float)MD_VOL_DIM &&
               c.y >= 0.0f && c.y < (float)MD_VOL_DIM &&
               c.z >= 0.0f && c.z < (float)MD_VOL_DIM)) {
@@ -7495,14 +7495,14 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Allocate temporary memory.
         // [0] is the reference template, taken from the configuration the topology was inferred from.
         // [1] is refilled below from the current frame for each of the equivalent structures.
-        md_f32x4_t* ref_xyzw[2] = {
-            md_temp_alloc_array(temp, md_f32x4_t, ref_size),
-            md_temp_alloc_array(temp, md_f32x4_t, ref_size)
+        md_float4_t* ref_xyzw[2] = {
+            md_temp_alloc_array(temp, md_float4_t, ref_size),
+            md_temp_alloc_array(temp, md_float4_t, ref_size)
         };
 
         const float* ref_w = (const float*)ctx->atom_mass;
 
-        md_f32x3_t ref_com[2] = {0};
+        md_float3_t ref_com[2] = {0};
 
         // The reference template. Placed into mutually consistent images against its own circular
         // mean, which needs no image assignment to compute and so cannot be skewed by whichever
@@ -7516,18 +7516,18 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int*    trg_idx = md_temp_alloc_array(temp, int, trg_size);
         md_bitset_iter_extract_indices(trg_idx, trg_size, md_bitset_iter(*trg_bf));
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_f32x3_t), trg_idx, trg_size);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = temp.arena };
         md_spatial_acc_init(&spatial_acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(md_f32x3x3_covariance_matrix_f32x4(ref_xyzw[0], 0, ref_size, ref_com[0]));
-        const md_f32x3x3_t A3 = md_f32x3x3_transpose(eigen.vectors);
-        md_f32x4x4_t A = md_f32x4x4_from_f32x3x3(A3);
+        md_float3x3_eigen_t eigen = md_float3x3_eigen(md_float3x3_covariance_matrix_float4(ref_xyzw[0], 0, ref_size, ref_com[0]));
+        const md_float3x3_t A3 = md_float3x3_transpose(eigen.vectors);
+        md_float4x4_t A = md_float4x4_from_float3x3(A3);
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
-        md_f32x4x4_t V = compute_volume_matrix(cutoff);
-        md_f32x4x4_t VA = md_f32x4x4_mul(V, A);
+        md_float4x4_t V = compute_volume_matrix(cutoff);
+        md_float4x4_t VA = md_float4x4_mul(V, A);
 
         if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
             ctx->vis->sdf.extent = cutoff;
@@ -7537,7 +7537,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // which disables the guard below - without periodicity there is no ambiguity to guard against.
         float min_cell_extent = FLT_MAX;
         if (md_unitcell_flags(&ctx->cur_state->unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) {
-            md_f32x3_t ext = {0};
+            md_float3_t ext = {0};
             md_unitcell_diag_extract_float(ext.elem, &ctx->cur_state->unitcell);
             for (int k = 0; k < 3; ++k) {
                 if (ext.elem[k] > 0.0f) min_cell_extent = MD_MIN(min_cell_extent, ext.elem[k]);
@@ -7557,7 +7557,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Rotation, centre and each point's periodic image are solved for together, so the images
             // are chosen to minimise the very residual this alignment is about to be judged by. No
             // topology is consulted: the copies need not be whole structures, or even bonded.
-            md_f32x3x3_t R = {0};
+            md_float3x3_t R = {0};
             const float residual = md_util_optimal_rotation_pbc(&R, &ref_com[1], ref_xyzw[1], ref_xyzw[0], ref_com[0], ref_xyzw[1], ref_size, &ctx->cur_state->unitcell, 8, 1.0e-6f);
 
             // The residual is the margin to an ambiguous image choice. Approaching half a cell means
@@ -7567,7 +7567,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             // ref_com[1] is in the image the copy arrived in (see md_util_optimal_rotation_pbc),
             // which is where it is drawn, so the visualized frame sits on the atoms.
-            md_f32x4x4_t RT = md_f32x4x4_mul(md_f32x4x4_from_f32x3x3(R), md_f32x4x4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
+            md_float4x4_t RT = md_float4x4_mul(md_float4x4_from_float3x3(R), md_float4x4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {
                 // The neighbours come back around the query centre as the spatial acc folds it into the
@@ -7577,10 +7577,10 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const double aabb_cen[3] = { ref_com[1].x, ref_com[1].y, ref_com[1].z };
                 double query_cen[3];
                 md_spatial_acc_aabb_query_center(query_cen, &spatial_acc, aabb_cen);
-                const md_f32x4x4_t RT_query = md_f32x4x4_mul(md_f32x4x4_from_f32x3x3(R), md_f32x4x4_translate(-(float)query_cen[0], -(float)query_cen[1], -(float)query_cen[2]));
+                const md_float4x4_t RT_query = md_float4x4_mul(md_float4x4_from_float3x3(R), md_float4x4_translate(-(float)query_cen[0], -(float)query_cen[1], -(float)query_cen[2]));
 
                 sdf_payload_t payload = {
-                    .M = md_f32x4x4_mul(VA, RT_query),
+                    .M = md_float4x4_mul(VA, RT_query),
                     .vol = vol,
                     .exclusion_mask = bf,
                 };
@@ -7588,7 +7588,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 // The volume is a cube of half extent 'cutoff' in the aligned frame. Its extent along each
                 // world axis is the query box, which must enclose all of it: a box of half extent 'cutoff'
                 // in world space misses the corners of any rotated volume.
-                const md_f32x3x3_t Q = md_f32x3x3_mul(A3, R);   // world -> aligned
+                const md_float3x3_t Q = md_float3x3_mul(A3, R);   // world -> aligned
                 double aabb_rad[3];
                 for (int k = 0; k < 3; ++k) {
                     aabb_rad[k] = cutoff * (fabs(Q.elem[k][0]) + fabs(Q.elem[k][1]) + fabs(Q.elem[k][2]));
@@ -7600,7 +7600,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 MD_ASSERT(alloc);
                 md_bitset_t bf_cpy = md_bitset_copy(*bf, alloc);
 
-                md_f32x4x4_t ART = md_f32x4x4_mul(A, RT);
+                md_float4x4_t ART = md_float4x4_mul(A, RT);
                 md_array_push(ctx->vis->sdf.matrices, ART, alloc);
                 md_array_push(ctx->vis->sdf.structures, bf_cpy, alloc);
             }
@@ -7702,22 +7702,22 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     // Build a working copy of coordinates and deperiodize to make selection contiguous
-    md_array(md_f32x4_t) xyzr = 0;
+    md_array(md_float4_t) xyzr = 0;
     md_array_resize(xyzr, count, ctx->temp_alloc);
     extract_xyzw_vec4(xyzr, ctx->cur_state->xyz, rad, bf);
     md_util_deperiodize_self(xyzr, count, &ctx->cur_state->unitcell, NULL);
 
     // The box of the spheres
-    md_f32x3_t bmin = md_f32x3_set1( FLT_MAX);
-    md_f32x3_t bmax = md_f32x3_set1(-FLT_MAX);
+    md_float3_t bmin = md_float3_set1( FLT_MAX);
+    md_float3_t bmax = md_float3_set1(-FLT_MAX);
     for (size_t i = 0; i < count; ++i) {
-        const md_f32x3_t c = md_f32x3_from_f32x4(xyzr[i]);
-        bmin = md_f32x3_min(bmin, md_f32x3_sub1(c, xyzr[i].w));
-        bmax = md_f32x3_max(bmax, md_f32x3_add1(c, xyzr[i].w));
+        const md_float3_t c = md_float3_from_float4(xyzr[i]);
+        bmin = md_float3_min(bmin, md_float3_sub1(c, xyzr[i].w));
+        bmax = md_float3_max(bmax, md_float3_add1(c, xyzr[i].w));
     }
 
     // Compute voxel sizes from ROI extents; guard zero extents
-    md_f32x3_t ext = md_f32x3_max(md_f32x3_sub(bmax, bmin), md_f32x3_set1(1.0));
+    md_float3_t ext = md_float3_max(md_float3_sub(bmax, bmin), md_float3_set1(1.0));
     float max_ext = MD_MAX(ext.x, MD_MAX(ext.y, ext.z));
 
     const int max_dim = 512; // Use this for largest extent then try to construct a uniform voxel size
@@ -7740,7 +7740,7 @@ static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     // Voxelize occupancy
     for (size_t i = 0; i < count; ++i) {
-        const md_f32x4_t p = xyzr[i];
+        const md_float4_t p = xyzr[i];
         const float x = p.x, y = p.y, z = p.z;
         const float r  = md_atom_radius(&ctx->sys->atom, idx[i]);
 
@@ -7810,12 +7810,12 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
         md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
 
-        md_f32x3_t* out_weights = as_vec3_arr(*dst);
+        md_float3_t* out_weights = as_vec3_arr(*dst);
         // Bounded by the destination: evaluated inside a context, an argument whose length varies over frames
         // can hold more atomsets than the length the context fixed at compile time
         const size_t out_len = type_info_total_element_count(dst->type) / 3;
 
-        md_array(md_f32x4_t)  xyzw = 0;
+        md_array(md_float4_t)  xyzw = 0;
         if (arg[0].type.base_type == TYPE_ATOMSET) {
             const size_t bf_len = MD_MIN(element_count(arg[0]), out_len);
             const md_bitset_t* bf_arr = as_bitset(arg[0]);
@@ -7835,19 +7835,19 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     // The covariance is about the mean of the placed points. The circular mean the
                     // placement is seeded from is not that mean, and the offset between the two enters
                     // the covariance squared.
-                    md_f32x3_t com = {0};
+                    md_float3_t com = {0};
                     md_util_deperiodize_self(xyzw, count, &ctx->cur_state->unitcell, &com);
 
-                    const md_f32x3x3_t M = md_f32x3x3_covariance_matrix_f32x4(xyzw, 0, count, com);
+                    const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, count, com);
                     out_weights[i] = md_util_shape_weights(&M);
                 }
             }
         } else {
             xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
             const size_t count = md_array_size(xyzw);
-            md_f32x3_t com = {0};
+            md_float3_t com = {0};
             md_util_deperiodize_self(xyzw, count, &ctx->cur_state->unitcell, &com);
-            const md_f32x3x3_t M = md_f32x3x3_covariance_matrix_f32x4(xyzw, 0, count, com);
+            const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, count, com);
             out_weights[0] = md_util_shape_weights(&M);
         }
 
@@ -8387,7 +8387,7 @@ static void visualize_bond(md_atom_pair_t p, bool atoms, bool lines, eval_contex
         md_bitmask_set_bit(ctx->vis_atom_mask, (uint32_t)p.idx[1]);
     }
     if (lines) {
-        const md_f32x3_t* xyz = ctx->cur_state->xyz;
+        const md_float3_t* xyz = ctx->cur_state->xyz;
         push_line(vertex(xyz[p.idx[0]], COLOR_WHITE), vertex(xyz[p.idx[1]], COLOR_WHITE), ctx->vis);
     }
 }
@@ -8690,9 +8690,9 @@ static int _bond_length(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float* out = as_float_arr(*dst);
         const size_t len = MD_MIN(n, (size_t)element_count(*dst));
         for (size_t k = 0; k < len; ++k) {
-            md_f32x3_t dx = md_f32x3_sub(ctx->cur_state->xyz[pairs[k].idx[1]], ctx->cur_state->xyz[pairs[k].idx[0]]);
+            md_float3_t dx = md_float3_sub(ctx->cur_state->xyz[pairs[k].idx[1]], ctx->cur_state->xyz[pairs[k].idx[0]]);
             md_util_min_image(dx.elem, 0, 1, &ctx->cur_state->unitcell);
-            out[k] = md_f32x3_length(dx);
+            out[k] = md_float3_length(dx);
         }
     }
     md_temp_end(temp);

@@ -56,24 +56,24 @@ static bool bench_esp_load(bench_esp_t* b) {
     b->atom_z   = md_arena_allocator_push(b->arena, sizeof(double) * b->num_atoms);
     md_attribute_extract_f64(b->atom_z, b->num_atoms, z, md_attribute_slice_all(), md_unit_none());
 
-    md_f32x3_t lo = md_f32x3_set1(FLT_MAX), hi = md_f32x3_set1(-FLT_MAX);
+    md_float3_t lo = md_float3_set1(FLT_MAX), hi = md_float3_set1(-FLT_MAX);
     for (size_t i = 0; i < b->num_atoms; ++i) {
-        const md_f32x3_t p = md_f32x3_set((float)(xyz[3 * i + 0] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 1] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 2] * BENCH_ANGSTROM_TO_BOHR));
+        const md_float3_t p = md_float3_set((float)(xyz[3 * i + 0] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 1] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 2] * BENCH_ANGSTROM_TO_BOHR));
         md_memcpy(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
-        lo = md_f32x3_min(lo, p);
-        hi = md_f32x3_max(hi, p);
+        lo = md_float3_min(lo, p);
+        hi = md_float3_max(hi, p);
     }
     const size_t n = md_gto_basis_num_ao(&b->basis);
     b->D = md_arena_allocator_push(b->arena, sizeof(double) * n * n);
     md_attribute_extract_f64(b->D, n * n, d, md_attribute_slice_all(), md_unit_none());
 
     const float h = 0.4f, margin = 6.0f;
-    lo = md_f32x3_sub1(lo, margin);
-    hi = md_f32x3_add1(hi, margin);
+    lo = md_float3_sub1(lo, margin);
+    hi = md_float3_add1(hi, margin);
     b->grid = (md_grid_t){
-        .orientation = md_f32x3x3_ident(),
+        .orientation = md_float3x3_ident(),
         .origin  = lo,
-        .spacing = md_f32x3_set1(h),
+        .spacing = md_float3_set1(h),
         .dim     = { (int)ceilf((hi.x - lo.x) / h), (int)ceilf((hi.y - lo.y) / h), (int)ceilf((hi.z - lo.z) / h) },
     };
     return true;

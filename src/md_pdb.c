@@ -197,7 +197,7 @@ typedef struct pdb_extras_t {
     int32_t biomolecule;        // REMARK 350: the one whose groups of chains follow
     md_array(pdb_group_t) groups;
     md_array(char)   chains;
-    md_array(md_f32x4x4_t) transforms;
+    md_array(md_float4x4_t) transforms;
     md_allocator_i*  alloc;
 } pdb_extras_t;
 
@@ -275,10 +275,10 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
                 MD_LOG_DEBUG("REMARK 350: a malformed BIOMT record");
             } else {
                 if (row == 0) {
-                    md_array_push(x->transforms, md_f32x4x4_ident(), alloc);
+                    md_array_push(x->transforms, md_float4x4_ident(), alloc);
                     group->transform_count += 1;
                 }
-                md_f32x4x4_t* transform = md_array_last(x->transforms);
+                md_float4x4_t* transform = md_array_last(x->transforms);
                 for (int c = 0; c < 3; ++c) {
                     transform->elem[c][row] = (float)parse_float(tok[1 + c]);
                 }
@@ -301,7 +301,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
     const size_t num_transforms = md_array_size(x->transforms);
     if (num_groups == 0 || num_transforms == 0) return;
 
-    md_array(md_f32x4x4_t)     transform = 0;
+    md_array(md_float4x4_t)     transform = 0;
     md_array(md_label_t) oper_id = 0;
     md_array(md_assembly_gen_t) gen = 0;
 
@@ -330,10 +330,10 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
 
         md_array(uint32_t) oper = 0;
         for (uint32_t t = 0; t < group->transform_count; ++t) {
-            const md_f32x4x4_t M = x->transforms[group->transform_offset + t];
+            const md_float4x4_t M = x->transforms[group->transform_offset + t];
             size_t k = 0;
             for (; k < md_array_size(transform); ++k) {
-                if (md_memcmp(&transform[k], &M, sizeof(md_f32x4x4_t)) == 0) break;
+                if (md_memcmp(&transform[k], &M, sizeof(md_float4x4_t)) == 0) break;
             }
             if (k == md_array_size(transform)) {
                 char buf[16];
@@ -552,7 +552,7 @@ static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t
     return lbl;
 }
 
-// The three coordinates of an atom line, "%8.3f" each from column 31: at once (md_parse_fixed_f32x3_w8), and one by one
+// The three coordinates of an atom line, "%8.3f" each from column 31: at once (md_parse_fixed_float3_w8), and one by one
 // (md_parse_fixed_f32, else parse_float) where any is laid out otherwise or the line is too short for them
 static inline void pdb_coords_scalar(float out[3], md_str_t line) {
     out[0] = extract_fixed_float(line, 31, 38, 3);
@@ -561,7 +561,7 @@ static inline void pdb_coords_scalar(float out[3], md_str_t line) {
 }
 
 static MD_FORCE_INLINE void pdb_coords(float out[3], md_str_t line) {
-    if (line.len < 54 || !md_parse_fixed_f32x3_w8(out, line.ptr + 30, 3)) pdb_coords_scalar(out, line);
+    if (line.len < 54 || !md_parse_fixed_float3_w8(out, line.ptr + 30, 3)) pdb_coords_scalar(out, line);
 }
 
 typedef struct pdb_residue_start_t {
@@ -806,7 +806,7 @@ static MD_FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, md_str_t
 static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
     (void)thread_idx;
     const pdb_load_t* L = (const pdb_load_t*)arg;
-    md_f32x3_t* xyz = L->state->xyz;
+    md_float3_t* xyz = L->state->xyz;
     md_particle_type_idx_t* type_idx = L->sys->atom.type_idx;
     md_atom_flags_t* flags = L->sys->atom.flags;
     for (uint32_t p = beg; p < end; ++p) {
@@ -1149,7 +1149,7 @@ static int64_t pdb_tail(md_reader_i* src, int64_t from) {
 static void pdb_first_model(pdb_load_t* L) {
     const size_t beg = L->model_beg;
     const size_t n = L->num_atoms - beg;
-    md_memmove(L->state->xyz,         L->state->xyz + beg,         n * sizeof(md_f32x3_t));
+    md_memmove(L->state->xyz,         L->state->xyz + beg,         n * sizeof(md_float3_t));
     md_memmove(L->sys->atom.type_idx, L->sys->atom.type_idx + beg, n * sizeof(md_particle_type_idx_t));
     md_memmove(L->sys->atom.flags,    L->sys->atom.flags + beg,    n * sizeof(md_atom_flags_t));
     md_memmove(L->serial,             L->serial + beg,             n * sizeof(int32_t));

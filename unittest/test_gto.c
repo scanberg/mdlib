@@ -34,23 +34,23 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
     float* atom_xyz = md_temp_alloc_array(temp, float, 3 * num_atoms);
     vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t);
 
-    md_f32x3_t min_box = md_f32x3_set1(FLT_MAX);
-    md_f32x3_t max_box = md_f32x3_set1(-FLT_MAX);
+    md_float3_t min_box = md_float3_set1(FLT_MAX);
+    md_float3_t max_box = md_float3_set1(-FLT_MAX);
     for (size_t i = 0; i < num_atoms; ++i) {
-        md_f32x3_t c = {atom_xyz[3*i+0], atom_xyz[3*i+1], atom_xyz[3*i+2]};
-        min_box = md_f32x3_min(min_box, c);
-        max_box = md_f32x3_max(max_box, c);
+        md_float3_t c = {atom_xyz[3*i+0], atom_xyz[3*i+1], atom_xyz[3*i+2]};
+        min_box = md_float3_min(min_box, c);
+        max_box = md_float3_max(max_box, c);
     }
 
-    min_box = md_f32x3_sub1(min_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
-    max_box = md_f32x3_add1(max_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
+    min_box = md_float3_sub1(min_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
+    max_box = md_float3_add1(max_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
 
     float* vol_data = md_temp_alloc_zero_array(temp, float, vol_dim * vol_dim * vol_dim);
 
-    md_f32x3_t step = md_f32x3_div1(md_f32x3_sub(max_box, min_box), (float)vol_dim);
+    md_float3_t step = md_float3_div1(md_float3_sub(max_box, min_box), (float)vol_dim);
 
     *grid = (md_grid_t) {
-        .orientation = md_f32x3x3_ident(),
+        .orientation = md_float3x3_ident(),
         .origin = {min_box.x, min_box.y, min_box.z},
         .spacing = {step.x, step.y, step.z},
         .dim = {vol_dim, vol_dim, vol_dim},
@@ -408,7 +408,7 @@ UTEST(gto, evaluate_grid) {
 
     md_grid_t ref_grid = grid;
     float* ref_data    = md_temp_alloc_array(temp, float, num_points);
-    md_f32x3_t* ref_points = md_temp_alloc_array(temp, md_f32x3_t, num_points);
+    md_float3_t* ref_points = md_temp_alloc_array(temp, md_float3_t, num_points);
 
     md_grid_extract_points((float*)ref_points, &ref_grid);
 
@@ -435,41 +435,41 @@ static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
-    md_f32x3x3_t orientation = md_f32x3x3_ident();
-    md_f32x3_t x_axis = md_f32x3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
-    md_f32x3_t y_axis = md_f32x3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
-    md_f32x3_t z_axis = md_f32x3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
+    md_float3x3_t orientation = md_float3x3_ident();
+    md_float3_t x_axis = md_float3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
+    md_float3_t y_axis = md_float3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
+    md_float3_t z_axis = md_float3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
 
-    float x_len = md_f32x3_length(x_axis);
-    float y_len = md_f32x3_length(y_axis);
-    float z_len = md_f32x3_length(z_axis);
+    float x_len = md_float3_length(x_axis);
+    float y_len = md_float3_length(y_axis);
+    float z_len = md_float3_length(z_axis);
 
-    orientation.col[0] = md_f32x3_div1(x_axis, x_len);
-    orientation.col[1] = md_f32x3_div1(y_axis, y_len);
-    orientation.col[2] = md_f32x3_div1(z_axis, z_len);
+    orientation.col[0] = md_float3_div1(x_axis, x_len);
+    orientation.col[1] = md_float3_div1(y_axis, y_len);
+    orientation.col[2] = md_float3_div1(z_axis, z_len);
 
     md_grid_t grid = {
         .orientation = orientation,
         .origin = {cube->origin[0], cube->origin[1], cube->origin[2]},
-        .spacing = md_f32x3_set(x_len, y_len, z_len),
+        .spacing = md_float3_set(x_len, y_len, z_len),
         .dim = {cube->data.num_x, cube->data.num_y, cube->data.num_z},
     };
     float* grid_data = md_temp_alloc_array(temp, float, cube->data.num_x * cube->data.num_y * cube->data.num_z);
 
     size_t num_gtos = md_gto_pgto_count(gto_basis);
     md_gto_t* gtos = (md_gto_t*)md_temp_alloc_array(temp, md_gto_t, num_gtos);
-    num_gtos = md_gto_expand_with_ao_coeffs(gtos, gto_basis, atom_xyz, sizeof(md_f32x3_t), ao_coeffs, cutoff_value);
+    num_gtos = md_gto_expand_with_ao_coeffs(gtos, gto_basis, atom_xyz, sizeof(md_float3_t), ao_coeffs, cutoff_value);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 
-    md_f32x4x4_t M = md_grid_index_to_world(&grid);
+    md_float4x4_t M = md_grid_index_to_world(&grid);
 
     float* psi  = md_temp_alloc_array(temp, float, count);
     md_memset(psi, 0, sizeof(float) * count);
-    md_f32x3_t* xyz = md_temp_alloc_array(temp, md_f32x3_t, count);
+    md_float3_t* xyz = md_temp_alloc_array(temp, md_float3_t, count);
     md_grid_extract_points((float*)xyz, &grid);
 
-    md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(md_f32x3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(md_float3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
     md_memset(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
 
@@ -562,23 +562,23 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     md_gpu_texture_t out_tex   = NULL;
     md_gpu_stream_t stream    = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
 
-    md_f32x3x3_t orientation = md_f32x3x3_ident();
-    md_f32x3_t x_axis = md_f32x3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
-    md_f32x3_t y_axis = md_f32x3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
-    md_f32x3_t z_axis = md_f32x3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
+    md_float3x3_t orientation = md_float3x3_ident();
+    md_float3_t x_axis = md_float3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
+    md_float3_t y_axis = md_float3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
+    md_float3_t z_axis = md_float3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
 
-    float x_len = md_f32x3_length(x_axis);
-    float y_len = md_f32x3_length(y_axis);
-    float z_len = md_f32x3_length(z_axis);
+    float x_len = md_float3_length(x_axis);
+    float y_len = md_float3_length(y_axis);
+    float z_len = md_float3_length(z_axis);
 
-    orientation.col[0] = md_f32x3_div1(x_axis, x_len);
-    orientation.col[1] = md_f32x3_div1(y_axis, y_len);
-    orientation.col[2] = md_f32x3_div1(z_axis, z_len);
+    orientation.col[0] = md_float3_div1(x_axis, x_len);
+    orientation.col[1] = md_float3_div1(y_axis, y_len);
+    orientation.col[2] = md_float3_div1(z_axis, z_len);
 
     md_grid_t grid = {
         .orientation = orientation,
         .origin = {cube->origin[0], cube->origin[1], cube->origin[2]},
-        .spacing = md_f32x3_set(x_len, y_len, z_len),
+        .spacing = md_float3_set(x_len, y_len, z_len),
         .dim = {cube->data.num_x, cube->data.num_y, cube->data.num_z},
     };
 
@@ -612,7 +612,7 @@ static double compare_vlx_and_cube_gpu(md_gpu_device_t device, const float* atom
     {
         float* p = (float*)md_gpu_upload_begin(stream, atom_buf, md_gto_gpu_atom_buffer_size(num_atoms));
         if (!p) goto done;
-        md_gto_gpu_atom_pack(p, atom_xyz, sizeof(md_f32x3_t), num_atoms);
+        md_gto_gpu_atom_pack(p, atom_xyz, sizeof(md_float3_t), num_atoms);
         md_gpu_upload_end(stream);
     }
     const double* mo_coeffs[1] = {ao_coeffs};
@@ -799,9 +799,9 @@ UTEST(gto, density_gpu_algorithms_agree) {
     const int gd[3] = { 37, 29, 34 };
     const float h = 0.3f;
     md_grid_t grid = {
-        .orientation = md_f32x3x3_ident(),
-        .origin  = md_f32x3_set(-5.5f, -4.3f, -5.0f),
-        .spacing = md_f32x3_set(h, h, h),
+        .orientation = md_float3x3_ident(),
+        .origin  = md_float3_set(-5.5f, -4.3f, -5.0f),
+        .spacing = md_float3_set(h, h, h),
         .dim     = { gd[0], gd[1], gd[2] },
     };
     const size_t num_vox = (size_t)gd[0] * gd[1] * gd[2];
@@ -922,9 +922,9 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
 
     const int gd[3] = { 37, 29, 34 };
     md_grid_t grid = {
-        .orientation = md_f32x3x3_ident(),
-        .origin  = md_f32x3_set(-5.5f, -4.3f, -5.0f),
-        .spacing = md_f32x3_set(0.3f, 0.3f, 0.3f),
+        .orientation = md_float3x3_ident(),
+        .origin  = md_float3_set(-5.5f, -4.3f, -5.0f),
+        .spacing = md_float3_set(0.3f, 0.3f, 0.3f),
         .dim     = { gd[0], gd[1], gd[2] },
     };
     const size_t num_vox = (size_t)gd[0] * gd[1] * gd[2];

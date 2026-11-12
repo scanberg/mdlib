@@ -7,7 +7,7 @@
 
 #include <stdlib.h>
 
-static const md_f32x3_t pbc_ext = {100, 100, 100};
+static const md_float3_t pbc_ext = {100, 100, 100};
 static const int size = 1024 * 1024;
 
 #define SETUP_XYZW \
@@ -24,10 +24,10 @@ static const int size = 1024 * 1024;
 	}
 
 #define SETUP_XYZW_VEC4 \
-	md_f32x4_t* xyzw = md_alloc(alloc, size * sizeof(md_f32x4_t)); \
+	md_float4_t* xyzw = md_alloc(alloc, size * sizeof(md_float4_t)); \
 	srand(0); \
 	for (int i = 0; i < size; ++i) { \
-		xyzw[i] = md_f32x4_set( \
+		xyzw[i] = md_float4_set( \
 			(float)rand() / (float)RAND_MAX * pbc_ext.x, \
 			(float)rand() / (float)RAND_MAX * pbc_ext.y, \
 			(float)rand() / (float)RAND_MAX * pbc_ext.z, \

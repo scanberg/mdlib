@@ -1129,9 +1129,9 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 		}
 
 		const double p[3] = { data->atoms[i].x - origin[0], data->atoms[i].y - origin[1], data->atoms[i].z - origin[2] };
-		const md_f32x3_t xyz = rotate ?
-			md_f32x3_set((float)(R[0][0]*p[0] + R[0][1]*p[1] + R[0][2]*p[2]), (float)(R[1][0]*p[0] + R[1][1]*p[1] + R[1][2]*p[2]), (float)(R[2][0]*p[0] + R[2][1]*p[1] + R[2][2]*p[2])) :
-			md_f32x3_set((float)p[0], (float)p[1], (float)p[2]);
+		const md_float3_t xyz = rotate ?
+			md_float3_set((float)(R[0][0]*p[0] + R[0][1]*p[1] + R[0][2]*p[2]), (float)(R[1][0]*p[0] + R[1][1]*p[1] + R[1][2]*p[2]), (float)(R[2][0]*p[0] + R[2][1]*p[1] + R[2][2]*p[2])) :
+			md_float3_set((float)p[0], (float)p[1], (float)p[2]);
 
 		md_array_push_no_grow(sys->atom.type_idx, type_idx);
 		md_array_push_no_grow(state->xyz, xyz);

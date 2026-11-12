@@ -20,7 +20,7 @@ static bool paint_is_gradient(md_vg_paint_t paint) {
     return paint.type == MD_VG_PAINT_LINEAR_GRADIENT;
 }
 
-static uint32_t push_points(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count) {
+static uint32_t push_points(md_vg_scene_t* scene, const md_float2_t* points, size_t count) {
     MD_ASSERT(scene);
     MD_ASSERT(scene->alloc);
     const uint32_t offset = (uint32_t)md_array_size(scene->points);
@@ -192,7 +192,7 @@ static void emit_defs(md_writer_i* w, const md_vg_scene_t* scene) {
     md_write_cstr(w, "  </defs>\n");
 }
 
-static void emit_points(md_writer_i* w, const md_f32x2_t* points, size_t count) {
+static void emit_points(md_writer_i* w, const md_float2_t* points, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         if (i) md_write_char(w, ' ');
         md_writef(w, "%.9g,%.9g", points[i].x, points[i].y);
@@ -201,7 +201,7 @@ static void emit_points(md_writer_i* w, const md_f32x2_t* points, size_t count) 
 
 static void emit_path_data(md_writer_i* w, const md_vg_scene_t* scene, const md_vg_cmd_t* cmd) {
     const md_vg_path_verb_t* verbs = scene->verbs + cmd->data.path.verb_offset;
-    const md_f32x2_t* points = scene->points + cmd->data.path.point_offset;
+    const md_float2_t* points = scene->points + cmd->data.path.point_offset;
     size_t point_idx = 0;
 
     for (size_t i = 0; i < cmd->data.path.verb_count; ++i) {
@@ -258,7 +258,7 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
             md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_RECT: {
-            const md_f32x2_t size = { cmd->data.rect.max.x - cmd->data.rect.min.x, cmd->data.rect.max.y - cmd->data.rect.min.y };
+            const md_float2_t size = { cmd->data.rect.max.x - cmd->data.rect.min.x, cmd->data.rect.max.y - cmd->data.rect.min.y };
             md_writef(w, "  <rect x=\"%.9g\" y=\"%.9g\" width=\"%.9g\" height=\"%.9g\"",
                 cmd->data.rect.min.x, cmd->data.rect.min.y, size.x, size.y);
             if (cmd->data.rect.rounding > 0.0f) {
@@ -288,7 +288,7 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
             md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_POLYLINE: {
-            const md_f32x2_t* points = scene->points + cmd->data.polyline.point_offset;
+            const md_float2_t* points = scene->points + cmd->data.polyline.point_offset;
             if (cmd->data.polyline.closed) {
                 md_write_cstr(w, "  <polygon points=\"");
             } else {
@@ -301,7 +301,7 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
             break;
         }
         case MD_VG_CMD_POLYGON: {
-            const md_f32x2_t* points = scene->points + cmd->data.polygon.point_offset;
+            const md_float2_t* points = scene->points + cmd->data.polygon.point_offset;
             md_write_cstr(w, "  <polygon points=\"");
             emit_points(w, points, cmd->data.polygon.point_count);
             md_write_char(w, '\"');
@@ -364,7 +364,7 @@ static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
     md_write_cstr(w, "</svg>\n");
 }
 
-md_vg_color_t md_vg_color_from_vec4(md_f32x4_t color) {
+md_vg_color_t md_vg_color_from_vec4(md_float4_t color) {
     uint32_t r = (uint32_t)MD_CLAMP(color.x * 255.0f + 0.5f, 0.0f, 255.0f);
     uint32_t g = (uint32_t)MD_CLAMP(color.y * 255.0f + 0.5f, 0.0f, 255.0f);
     uint32_t b = (uint32_t)MD_CLAMP(color.z * 255.0f + 0.5f, 0.0f, 255.0f);
@@ -372,10 +372,10 @@ md_vg_color_t md_vg_color_from_vec4(md_f32x4_t color) {
     return MD_VG_COLOR_RGBA(r, g, b, a);
 }
 
-md_f32x4_t md_vg_color_to_vec4(md_vg_color_t color) {
+md_float4_t md_vg_color_to_vec4(md_vg_color_t color) {
     uint8_t rgba[4];
     color_unpack(color, rgba);
-    return (md_f32x4_t){
+    return (md_float4_t){
         .x = rgba[0] / 255.0f,
         .y = rgba[1] / 255.0f,
         .z = rgba[2] / 255.0f,
@@ -383,7 +383,7 @@ md_f32x4_t md_vg_color_to_vec4(md_vg_color_t color) {
     };
 }
 
-void md_vg_scene_init(md_vg_scene_t* scene, md_f32x2_t size, md_allocator_i* alloc) {
+void md_vg_scene_init(md_vg_scene_t* scene, md_float2_t size, md_allocator_i* alloc) {
     MD_ASSERT(scene);
     MD_ASSERT(alloc);
     *scene = (md_vg_scene_t){0};
@@ -414,7 +414,7 @@ void md_vg_scene_clear(md_vg_scene_t* scene) {
     md_array_shrink(scene->path_verbs, 0);
 }
 
-void md_vg_scene_set_size(md_vg_scene_t* scene, md_f32x2_t size) {
+void md_vg_scene_set_size(md_vg_scene_t* scene, md_float2_t size) {
     MD_ASSERT(scene);
     scene->size = size;
 }
@@ -454,7 +454,7 @@ bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, md_str_t path) {
     return result;
 }
 
-void md_vg_add_line(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_vg_color_t color, float thickness) {
+void md_vg_add_line(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_vg_color_t color, float thickness) {
     md_vg_add_line_styled(scene, p0, p1, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
         .stroke = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -466,7 +466,7 @@ void md_vg_add_line(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_vg_co
     });
 }
 
-void md_vg_add_line_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, const md_vg_style_t* style) {
+void md_vg_add_line_styled(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, const md_vg_style_t* style) {
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_LINE,
         .style = safe_style(style),
@@ -476,7 +476,7 @@ void md_vg_add_line_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, c
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_rect(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, md_vg_color_t color, float rounding, float thickness) {
+void md_vg_add_rect(md_vg_scene_t* scene, md_float2_t min, md_float2_t max, md_vg_color_t color, float rounding, float thickness) {
     md_vg_add_rect_styled(scene, min, max, rounding, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
         .stroke = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -488,7 +488,7 @@ void md_vg_add_rect(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, md_vg_
     });
 }
 
-void md_vg_add_rect_filled(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, md_vg_color_t color, float rounding) {
+void md_vg_add_rect_filled(md_vg_scene_t* scene, md_float2_t min, md_float2_t max, md_vg_color_t color, float rounding) {
     md_vg_add_rect_styled(scene, min, max, rounding, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_COLOR, .data.color = color },
         .stroke = { .type = MD_VG_PAINT_NONE },
@@ -500,7 +500,7 @@ void md_vg_add_rect_filled(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max,
     });
 }
 
-void md_vg_add_rect_styled(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max, float rounding, const md_vg_style_t* style) {
+void md_vg_add_rect_styled(md_vg_scene_t* scene, md_float2_t min, md_float2_t max, float rounding, const md_vg_style_t* style) {
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_RECT,
         .style = safe_style(style),
@@ -513,7 +513,7 @@ void md_vg_add_rect_styled(md_vg_scene_t* scene, md_f32x2_t min, md_f32x2_t max,
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_circle(md_vg_scene_t* scene, md_f32x2_t center, float radius, md_vg_color_t color, int num_segments, float thickness) {
+void md_vg_add_circle(md_vg_scene_t* scene, md_float2_t center, float radius, md_vg_color_t color, int num_segments, float thickness) {
     (void)num_segments;
     md_vg_add_circle_styled(scene, center, radius, num_segments, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
@@ -526,7 +526,7 @@ void md_vg_add_circle(md_vg_scene_t* scene, md_f32x2_t center, float radius, md_
     });
 }
 
-void md_vg_add_circle_filled(md_vg_scene_t* scene, md_f32x2_t center, float radius, md_vg_color_t color, int num_segments) {
+void md_vg_add_circle_filled(md_vg_scene_t* scene, md_float2_t center, float radius, md_vg_color_t color, int num_segments) {
     (void)num_segments;
     md_vg_add_circle_styled(scene, center, radius, num_segments, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -539,7 +539,7 @@ void md_vg_add_circle_filled(md_vg_scene_t* scene, md_f32x2_t center, float radi
     });
 }
 
-void md_vg_add_circle_styled(md_vg_scene_t* scene, md_f32x2_t center, float radius, int num_segments, const md_vg_style_t* style) {
+void md_vg_add_circle_styled(md_vg_scene_t* scene, md_float2_t center, float radius, int num_segments, const md_vg_style_t* style) {
     (void)num_segments;
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_CIRCLE,
@@ -552,7 +552,7 @@ void md_vg_add_circle_styled(md_vg_scene_t* scene, md_f32x2_t center, float radi
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_ellipse(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radius, md_vg_color_t color, float rotation, int num_segments, float thickness) {
+void md_vg_add_ellipse(md_vg_scene_t* scene, md_float2_t center, md_float2_t radius, md_vg_color_t color, float rotation, int num_segments, float thickness) {
     (void)num_segments;
     md_vg_add_ellipse_styled(scene, center, radius, rotation, num_segments, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
@@ -565,7 +565,7 @@ void md_vg_add_ellipse(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radiu
     });
 }
 
-void md_vg_add_ellipse_filled(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radius, md_vg_color_t color, float rotation, int num_segments) {
+void md_vg_add_ellipse_filled(md_vg_scene_t* scene, md_float2_t center, md_float2_t radius, md_vg_color_t color, float rotation, int num_segments) {
     (void)num_segments;
     md_vg_add_ellipse_styled(scene, center, radius, rotation, num_segments, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -578,7 +578,7 @@ void md_vg_add_ellipse_filled(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_
     });
 }
 
-void md_vg_add_ellipse_styled(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_t radius, float rotation, int num_segments, const md_vg_style_t* style) {
+void md_vg_add_ellipse_styled(md_vg_scene_t* scene, md_float2_t center, md_float2_t radius, float rotation, int num_segments, const md_vg_style_t* style) {
     (void)num_segments;
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_ELLIPSE,
@@ -592,22 +592,22 @@ void md_vg_add_ellipse_styled(md_vg_scene_t* scene, md_f32x2_t center, md_f32x2_
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_triangle(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_vg_color_t color, float thickness) {
-    const md_f32x2_t points[] = { p0, p1, p2 };
+void md_vg_add_triangle(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, md_vg_color_t color, float thickness) {
+    const md_float2_t points[] = { p0, p1, p2 };
     md_vg_add_polyline(scene, points, MD_COUNTOF(points), color, true, thickness);
 }
 
-void md_vg_add_triangle_filled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_vg_color_t color) {
-    const md_f32x2_t points[] = { p0, p1, p2 };
+void md_vg_add_triangle_filled(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, md_vg_color_t color) {
+    const md_float2_t points[] = { p0, p1, p2 };
     md_vg_add_convex_poly_filled(scene, points, MD_COUNTOF(points), color);
 }
 
-void md_vg_add_triangle_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, const md_vg_style_t* style) {
-    const md_f32x2_t points[] = { p0, p1, p2 };
+void md_vg_add_triangle_styled(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, const md_vg_style_t* style) {
+    const md_float2_t points[] = { p0, p1, p2 };
     md_vg_add_polygon_styled(scene, points, MD_COUNTOF(points), style);
 }
 
-void md_vg_add_polyline(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, md_vg_color_t color, bool closed, float thickness) {
+void md_vg_add_polyline(md_vg_scene_t* scene, const md_float2_t* points, size_t count, md_vg_color_t color, bool closed, float thickness) {
     md_vg_add_polyline_styled(scene, points, count, closed, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
         .stroke = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -619,7 +619,7 @@ void md_vg_add_polyline(md_vg_scene_t* scene, const md_f32x2_t* points, size_t c
     });
 }
 
-void md_vg_add_polyline_styled(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, bool closed, const md_vg_style_t* style) {
+void md_vg_add_polyline_styled(md_vg_scene_t* scene, const md_float2_t* points, size_t count, bool closed, const md_vg_style_t* style) {
     if (!points || count == 0) return;
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_POLYLINE,
@@ -636,7 +636,7 @@ void md_vg_add_polyline_styled(md_vg_scene_t* scene, const md_f32x2_t* points, s
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_convex_poly_filled(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, md_vg_color_t color) {
+void md_vg_add_convex_poly_filled(md_vg_scene_t* scene, const md_float2_t* points, size_t count, md_vg_color_t color) {
     md_vg_add_polygon_styled(scene, points, count, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_COLOR, .data.color = color },
         .stroke = { .type = MD_VG_PAINT_NONE },
@@ -648,7 +648,7 @@ void md_vg_add_convex_poly_filled(md_vg_scene_t* scene, const md_f32x2_t* points
     });
 }
 
-void md_vg_add_polygon_styled(md_vg_scene_t* scene, const md_f32x2_t* points, size_t count, const md_vg_style_t* style) {
+void md_vg_add_polygon_styled(md_vg_scene_t* scene, const md_float2_t* points, size_t count, const md_vg_style_t* style) {
     if (!points || count == 0) return;
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_POLYGON,
@@ -661,7 +661,7 @@ void md_vg_add_polygon_styled(md_vg_scene_t* scene, const md_f32x2_t* points, si
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_bezier_quadratic(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_vg_color_t color, float thickness) {
+void md_vg_add_bezier_quadratic(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, md_vg_color_t color, float thickness) {
     md_vg_add_bezier_quadratic_styled(scene, p0, p1, p2, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
         .stroke = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -673,7 +673,7 @@ void md_vg_add_bezier_quadratic(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t 
     });
 }
 
-void md_vg_add_bezier_quadratic_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, const md_vg_style_t* style) {
+void md_vg_add_bezier_quadratic_styled(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, const md_vg_style_t* style) {
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_BEZIER_QUADRATIC,
         .style = safe_style(style),
@@ -687,7 +687,7 @@ void md_vg_add_bezier_quadratic_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_bezier_cubic(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_f32x2_t p3, md_vg_color_t color, float thickness) {
+void md_vg_add_bezier_cubic(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, md_float2_t p3, md_vg_color_t color, float thickness) {
     md_vg_add_bezier_cubic_styled(scene, p0, p1, p2, p3, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_NONE },
         .stroke = { .type = MD_VG_PAINT_COLOR, .data.color = color },
@@ -699,7 +699,7 @@ void md_vg_add_bezier_cubic(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, 
     });
 }
 
-void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2_t p1, md_f32x2_t p2, md_f32x2_t p3, const md_vg_style_t* style) {
+void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, md_float2_t p0, md_float2_t p1, md_float2_t p2, md_float2_t p3, const md_vg_style_t* style) {
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_BEZIER_CUBIC,
         .style = safe_style(style),
@@ -714,7 +714,7 @@ void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, md_f32x2_t p0, md_f32x2
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_text(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg_color_t color, md_str_t text) {
+void md_vg_add_text(md_vg_scene_t* scene, md_float2_t pos, float font_size, md_vg_color_t color, md_str_t text) {
     md_vg_add_text_styled(scene, pos, font_size, &(md_vg_style_t){
         .fill = { .type = MD_VG_PAINT_COLOR, .data.color = color },
         .stroke = { .type = MD_VG_PAINT_NONE },
@@ -726,7 +726,7 @@ void md_vg_add_text(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg
     }, text);
 }
 
-void md_vg_add_text_styled(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, const md_vg_style_t* style, md_str_t text) {
+void md_vg_add_text_styled(md_vg_scene_t* scene, md_float2_t pos, float font_size, const md_vg_style_t* style, md_str_t text) {
     if (!text.ptr || text.len == 0) return;
     md_vg_cmd_t cmd = {
         .type = MD_VG_CMD_TEXT,
@@ -741,13 +741,13 @@ void md_vg_add_text_styled(md_vg_scene_t* scene, md_f32x2_t pos, float font_size
     push_cmd(scene, &cmd);
 }
 
-void md_vg_add_text_anchored(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, md_str_t text) {
+void md_vg_add_text_anchored(md_vg_scene_t* scene, md_float2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, md_str_t text) {
     const size_t before = md_array_size(scene->commands);
     md_vg_add_text(scene, pos, font_size, color, text);
     if (md_array_size(scene->commands) > before) scene->commands[before].data.text.anchor = (uint32_t)anchor;
 }
 
-void md_vg_add_text_rotated(md_vg_scene_t* scene, md_f32x2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, float rotation, md_str_t text) {
+void md_vg_add_text_rotated(md_vg_scene_t* scene, md_float2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, float rotation, md_str_t text) {
     const size_t before = md_array_size(scene->commands);
     md_vg_add_text_anchored(scene, pos, font_size, color, anchor, text);
     if (md_array_size(scene->commands) > before) scene->commands[before].data.text.rotation = rotation;
@@ -759,13 +759,13 @@ void md_vg_path_clear(md_vg_scene_t* scene) {
     md_array_shrink(scene->path_verbs, 0);
 }
 
-void md_vg_path_move_to(md_vg_scene_t* scene, md_f32x2_t pos) {
+void md_vg_path_move_to(md_vg_scene_t* scene, md_float2_t pos) {
     MD_ASSERT(scene);
     md_array_push(scene->path_verbs, MD_VG_PATH_MOVE_TO, scene->alloc);
     md_array_push(scene->path_points, pos, scene->alloc);
 }
 
-void md_vg_path_line_to(md_vg_scene_t* scene, md_f32x2_t pos) {
+void md_vg_path_line_to(md_vg_scene_t* scene, md_float2_t pos) {
     MD_ASSERT(scene);
     if (md_array_size(scene->path_verbs) == 0) {
         md_vg_path_move_to(scene, pos);
@@ -775,14 +775,14 @@ void md_vg_path_line_to(md_vg_scene_t* scene, md_f32x2_t pos) {
     md_array_push(scene->path_points, pos, scene->alloc);
 }
 
-void md_vg_path_bezier_quadratic_curve_to(md_vg_scene_t* scene, md_f32x2_t p1, md_f32x2_t p2) {
+void md_vg_path_bezier_quadratic_curve_to(md_vg_scene_t* scene, md_float2_t p1, md_float2_t p2) {
     MD_ASSERT(scene);
     md_array_push(scene->path_verbs, MD_VG_PATH_QUADRATIC_TO, scene->alloc);
     md_array_push(scene->path_points, p1, scene->alloc);
     md_array_push(scene->path_points, p2, scene->alloc);
 }
 
-void md_vg_path_bezier_cubic_curve_to(md_vg_scene_t* scene, md_f32x2_t p1, md_f32x2_t p2, md_f32x2_t p3) {
+void md_vg_path_bezier_cubic_curve_to(md_vg_scene_t* scene, md_float2_t p1, md_float2_t p2, md_float2_t p3) {
     MD_ASSERT(scene);
     md_array_push(scene->path_verbs, MD_VG_PATH_CUBIC_TO, scene->alloc);
     md_array_push(scene->path_points, p1, scene->alloc);

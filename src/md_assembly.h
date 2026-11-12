@@ -33,7 +33,7 @@ typedef struct md_assembly_data_t {
 
     size_t              oper_count;
     md_label_t*         oper_id;            // [oper_count] As the file names it ("1", "X0"); a product its factors ("1x61")
-    md_f32x4x4_t*             oper_transform;     // [oper_count] Rigid: a rotation (possibly improper) and a translation
+    md_float4x4_t*             oper_transform;     // [oper_count] Rigid: a rotation (possibly improper) and a translation
 } md_assembly_data_t;
 
 // One row of the description of an assembly, as the files give them: the instances which each of the operators copies

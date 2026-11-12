@@ -13,11 +13,11 @@
 bool md_cube_valid(const md_cube_t* cube) {
 	if (!cube) return false;
 
-	md_f32x3_t x = md_f32x3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
-	md_f32x3_t y = md_f32x3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
-	md_f32x3_t z = md_f32x3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
+	md_float3_t x = md_float3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
+	md_float3_t y = md_float3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
+	md_float3_t z = md_float3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
 
-	if (fabsf(md_f32x3_dot(x, md_f32x3_cross(y, z))) < 1.e-3f) {
+	if (fabsf(md_float3_dot(x, md_float3_cross(y, z))) < 1.e-3f) {
 		MD_LOG_ERROR("CUBE: The coordinate axes do not span a volume");
 		return false;
 	}

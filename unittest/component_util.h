@@ -21,7 +21,7 @@ typedef struct ref_atom_t {
     char  name[8];
     int   z;
     int   q;
-    md_f32x3_t x;
+    md_float3_t x;
 } ref_atom_t;
 
 typedef struct ref_bond_t {

@@ -20,7 +20,7 @@ static size_t load_blocks_diff(const md_system_t* a, const md_system_state_t* as
         return 1;
     }
     const size_t n = a->atom.count, r = a->residue.count;
-    LOAD_BLOCKS_CHECK(memcmp(as->xyz, bs->xyz, n * sizeof(md_f32x3_t)) == 0, "xyz");
+    LOAD_BLOCKS_CHECK(memcmp(as->xyz, bs->xyz, n * sizeof(md_float3_t)) == 0, "xyz");
     LOAD_BLOCKS_CHECK(memcmp(a->atom.type_idx, b->atom.type_idx, n * sizeof(md_particle_type_idx_t)) == 0, "atom.type_idx");
     LOAD_BLOCKS_CHECK(memcmp(a->atom.flags, b->atom.flags, n * sizeof(md_atom_flags_t)) == 0, "atom.flags");
     for (size_t t = 0; t < a->atom.type.count; ++t) {

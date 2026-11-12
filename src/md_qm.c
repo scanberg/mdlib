@@ -155,11 +155,11 @@ md_attribute_id_t md_qm_publish_series(md_system_t* sys, md_str_t path, md_str_t
     return md_qm_publish(sys, path, label, unit, format, values, count * sizeof(double));
 }
 
-md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const md_f64x3_t* values, size_t count) {
+md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const md_double3_t* values, size_t count) {
     if (!values || count == 0) {
         return MD_ATTRIBUTE_INVALID;
     }
-    // md_f64x3_t is three contiguous doubles, so the source array is already the interleaved layout an
+    // md_double3_t is three contiguous doubles, so the source array is already the interleaved layout an
     // attribute stores and this is a straight copy.
     md_attribute_format_t format = {
         .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 1, .shape = { (uint32_t)count },
@@ -229,7 +229,7 @@ md_attribute_id_t md_qm_publish_column(md_system_t* sys, md_str_t path, md_str_t
     return id;
 }
 
-md_attribute_id_t md_qm_publish_origin(md_system_t* sys, md_str_t path, md_f64x3_t origin) {
+md_attribute_id_t md_qm_publish_origin(md_system_t* sys, md_str_t path, md_double3_t origin) {
     md_attribute_format_t format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 0 };
     return md_qm_publish(sys, path, (md_str_t){0}, md_unit_angstrom(), format, &origin, 3 * sizeof(double));
 }
@@ -451,7 +451,7 @@ bool md_qm_publish_basis(md_system_t* sys, const md_gto_basis_t* basis) {
     return ok;
 }
 
-bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const md_f64x3_t coord_angstrom[], size_t count) {
+bool md_qm_publish_atoms(md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const md_double3_t coord_angstrom[], size_t count) {
     MD_ASSERT(sys);
 
     if (count == 0 || !atomic_number || !coord_angstrom) {
@@ -520,7 +520,7 @@ static double qm_overlap_1d(int la, int lb, double pa, double pb, double p) {
     return sum;
 }
 
-size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const md_f64x3_t atom_coord_bohr[], size_t num_atoms) {
+size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const md_double3_t atom_coord_bohr[], size_t num_atoms) {
     if (!out || !basis || !atom_coord_bohr || basis->num_shells == 0) {
         return 0;
     }
@@ -562,7 +562,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const md_
 
     for (uint32_t si = 0; si < basis->num_shells; ++si) {
         const md_gto_shell_t* a = &basis->shells[si];
-        const md_f64x3_t         A = atom_coord_bohr[a->atom_idx];
+        const md_double3_t         A = atom_coord_bohr[a->atom_idx];
         const double          Av[3] = { A.x, A.y, A.z };
         const uint32_t        la = a->l, na = md_gto_num_cart_ao(la);
         if (la > MD_GTO_MAX_ANGULAR_MOMENTUM) {
@@ -573,7 +573,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const md_
 
         for (uint32_t sj = si; sj < basis->num_shells; ++sj) {
             const md_gto_shell_t* b = &basis->shells[sj];
-            const md_f64x3_t         B = atom_coord_bohr[b->atom_idx];
+            const md_double3_t         B = atom_coord_bohr[b->atom_idx];
             const double          Bv[3] = { B.x, B.y, B.z };
             const uint32_t        lb = b->l, nb = md_gto_num_cart_ao(lb);
             if (lb > MD_GTO_MAX_ANGULAR_MOMENTUM) {
@@ -649,14 +649,14 @@ static size_t qm_overlap_provider(void* dst, size_t cap, const md_attribute_t* a
     md_gto_basis_t basis = {0};
     const size_t num_atoms = md_attribute_value_count(&coord->format);
     double*  xyz  = md_temp_alloc_array(temp, double,  num_atoms * 3);
-    md_f64x3_t* bohr = md_temp_alloc_array(temp, md_f64x3_t, num_atoms);
+    md_double3_t* bohr = md_temp_alloc_array(temp, md_double3_t, num_atoms);
 
     if (xyz && bohr && md_gto_basis_extract_attributes(&basis, &sys->attributes, temp_alloc)
         && md_attribute_extract_f64(xyz, num_atoms * 3, coord, md_attribute_slice_all(), md_unit_none()) == num_atoms * 3) {
 
         const double angstrom_to_bohr = 1.0 / 0.529177210903;
         for (size_t i = 0; i < num_atoms; ++i) {
-            bohr[i] = (md_f64x3_t){ xyz[i * 3 + 0] * angstrom_to_bohr, xyz[i * 3 + 1] * angstrom_to_bohr, xyz[i * 3 + 2] * angstrom_to_bohr };
+            bohr[i] = (md_double3_t){ xyz[i * 3 + 0] * angstrom_to_bohr, xyz[i * 3 + 1] * angstrom_to_bohr, xyz[i * 3 + 2] * angstrom_to_bohr };
         }
         const size_t num_ao = md_gto_basis_num_ao(&basis);
         if (num_ao * num_ao != cap) {

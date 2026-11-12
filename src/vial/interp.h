@@ -14,7 +14,7 @@
 #include <core/md_executor.h>
 
 struct md_system_t;
-struct md_f32x3_t;
+struct md_float3_t;
 
 // One frame of a run, as the interpreter reads it
 typedef struct vial_frame_t {

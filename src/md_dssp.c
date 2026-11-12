@@ -69,11 +69,11 @@ typedef struct dssp_hbond_t {
 } dssp_hbond_t;
 
 typedef struct dssp_res_coords_t {
-    md_f32x4_t N;
-    md_f32x4_t O;
-    md_f32x4_t C;
-    md_f32x4_t H;
-    md_f32x4_t CA;
+    md_float4_t N;
+    md_float4_t O;
+    md_float4_t C;
+    md_float4_t H;
+    md_float4_t CA;
 } dssp_res_coords_t;
 
 typedef struct dssp_res_hbonds_t {
@@ -107,12 +107,12 @@ static inline void dssp_hbond_insert(dssp_res_hbonds_t res_hbonds[], size_t don_
 
 // The energy of the bond from donor don_idx to acceptor acc_idx, with the acceptor moved by acc_shift: the lattice vector
 // which takes it to the periodic image nearest the donor, zero (exactly) when the two are in one image already
-static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t don_idx, size_t acc_idx, md_f32x4_t acc_shift) {
+static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t don_idx, size_t acc_idx, md_float4_t acc_shift) {
     /*
-    float d_NO = md_f32x3_distance(donor->N, acceptor->O);
-    float d_HC = md_f32x3_distance(donor->H, acceptor->C);
-    float d_NC = md_f32x3_distance(donor->N, acceptor->C);
-    float d_OH = md_f32x3_distance(donor->O, acceptor->H);
+    float d_NO = md_float3_distance(donor->N, acceptor->O);
+    float d_HC = md_float3_distance(donor->H, acceptor->C);
+    float d_NC = md_float3_distance(donor->N, acceptor->C);
+    float d_OH = md_float3_distance(donor->O, acceptor->H);
     double e_ref = 0.084 * (1.0 / d_NO + 1.0 / d_HC - 1.0 / d_NC - 1.0 / d_OH) * 332.0;
     */
 
@@ -125,23 +125,23 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     const float min_bond_energy = -9.9f;
 	const float energy_cutoff   = -0.5f;
 
-    const md_f32x4_t acc_O = md_f32x4_add(acc->O, acc_shift);
-    const md_f32x4_t acc_C = md_f32x4_add(acc->C, acc_shift);
-    const md_f32x4_t d2 = {
-        md_f32x4_distance_squared(don->N, acc_O),
-        md_f32x4_distance_squared(don->H, acc_C),
-        md_f32x4_distance_squared(don->N, acc_C),
-        md_f32x4_distance_squared(don->H, acc_O),
+    const md_float4_t acc_O = md_float4_add(acc->O, acc_shift);
+    const md_float4_t acc_C = md_float4_add(acc->C, acc_shift);
+    const md_float4_t d2 = {
+        md_float4_distance_squared(don->N, acc_O),
+        md_float4_distance_squared(don->H, acc_C),
+        md_float4_distance_squared(don->N, acc_C),
+        md_float4_distance_squared(don->H, acc_O),
     };
 
-    const int mask_min = md_f32x4_move_mask(md_f32x4_cmp_lt(d2, md_f32x4_set1(min_distance_sq)));
+    const int mask_min = md_float4_move_mask(md_float4_cmp_lt(d2, md_float4_set1(min_distance_sq)));
     if (mask_min > 0) {
         energy = min_bond_energy;
     } else {
-        const md_f32x4_t inv_d = md_f32x4_rsqrt(d2);
-		const md_f32x4_t w = md_f32x4_set(1.0f, 1.0f, -1.0f, -1.0f);
+        const md_float4_t inv_d = md_float4_rsqrt(d2);
+		const md_float4_t w = md_float4_set(1.0f, 1.0f, -1.0f, -1.0f);
         const float Q  = 27.888f; // 0.084f * 332.0f;
-        energy = Q * md_f32x4_reduce_add(md_f32x4_mul(inv_d, w));
+        energy = Q * md_float4_reduce_add(md_float4_mul(inv_d, w));
     }
 
     if (energy > energy_cutoff)
@@ -152,18 +152,18 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     return energy;
 }
 
-static inline md_f32x4_t estimate_HN(md_f32x4_t N, md_f32x4_t CA, md_f32x4_t C_prev) {
+static inline md_float4_t estimate_HN(md_float4_t N, md_float4_t CA, md_float4_t C_prev) {
     const float NH_dist = 1.01f;
-    md_f32x4_t U = md_f32x4_normalize(md_f32x4_sub(N, CA));
-    md_f32x4_t V = md_f32x4_normalize(md_f32x4_sub(N, C_prev));
-    return md_f32x4_add(N, md_f32x4_mul1(md_f32x4_normalize(md_f32x4_add(U, V)), NH_dist));
+    md_float4_t U = md_float4_normalize(md_float4_sub(N, CA));
+    md_float4_t V = md_float4_normalize(md_float4_sub(N, C_prev));
+    return md_float4_add(N, md_float4_mul1(md_float4_normalize(md_float4_add(U, V)), NH_dist));
 }
 
-static inline md_f32x4_t estimate_HN_term(md_f32x4_t N, md_f32x4_t CA, md_f32x4_t C) {
+static inline md_float4_t estimate_HN_term(md_float4_t N, md_float4_t CA, md_float4_t C) {
     // i == range.beg (N-terminus): estimate previous C by extrapolation
     // C_prev_est = N + (CA - C)
-    md_f32x4_t CA_minus_C = md_f32x4_sub(CA, C);
-    md_f32x4_t Cprev_est  = md_f32x4_add(N, CA_minus_C);
+    md_float4_t CA_minus_C = md_float4_sub(CA, C);
+    md_float4_t Cprev_est  = md_float4_add(N, CA_minus_C);
 
     // Try to construct H using the standard estimator
     return estimate_HN(N, CA, Cprev_est);
@@ -194,11 +194,11 @@ typedef struct residue_pair_t {
 // A bend at the middle of five residues: the vectors from its CA (or bead) to those two before and two after it, in one
 // image, meet at less than 70 degrees. The angle is atan2(|v1 x v2|, v1 . v2); below 90 degrees it is less than 70 where
 // the cross is less than tan(70) times the dot, which spares the arctangent.
-static inline bool dssp_bend(md_f32x4_t to_prev, md_f32x4_t to_next) {
-    const float dot = md_f32x4_dot(to_prev, to_next);
-    const md_f32x4_t cross = md_f32x4_cross(to_prev, to_next);
+static inline bool dssp_bend(md_float4_t to_prev, md_float4_t to_next) {
+    const float dot = md_float4_dot(to_prev, to_next);
+    const md_float4_t cross = md_float4_cross(to_prev, to_next);
     const float tan2_70 = 7.5486322f;   // tan(70 degrees)^2
-    return dot >= 0.0f && md_f32x4_dot(cross, cross) <= tan2_70 * (dot * dot);
+    return dot >= 0.0f && md_float4_dot(cross, cross) <= tan2_70 * (dot * dot);
 }
 
 // ### THE BONDS OF ATOMISTIC RANGES ###
@@ -232,7 +232,7 @@ static inline dssp_interior_t dssp_interior_init(const md_unitcell_t* cell, floa
     return t;
 }
 
-static inline bool dssp_interior_test(const dssp_interior_t* t, md_f32x3_t p) {
+static inline bool dssp_interior_test(const dssp_interior_t* t, md_float3_t p) {
     bool inside = true;
     for (int k = 0; k < 3; ++k) {
         const float f = t->I[0][k] * p.x + t->I[1][k] * p.y + t->I[2][k] * p.z;
@@ -268,18 +268,18 @@ static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, c
         // given are that far apart unless the pair crosses the periodic boundary: only then is j moved, by the lattice
         // vector to its image nearest i. Every other pair keeps its coordinates as they are, bit for bit. A pair in
         // the interior of the cell cannot cross.
-        md_f32x4_t shift = md_f32x4_zero();
+        md_float4_t shift = md_float4_zero();
         if ((ki | kj) & 1) {
-            const md_f32x4_t raw = md_f32x4_sub(param->res_coords[j].CA, param->res_coords[i].CA);
-            if (md_f32x4_dot(raw, raw) > ij_dist2[idx] * 1.0001f + 1.0e-4f) {
-                md_f32x4_t img = raw;
-                md_util_min_image(img.elem, sizeof(md_f32x4_t), 1, param->cell);
-                shift = md_f32x4_sub(img, raw);
+            const md_float4_t raw = md_float4_sub(param->res_coords[j].CA, param->res_coords[i].CA);
+            if (md_float4_dot(raw, raw) > ij_dist2[idx] * 1.0001f + 1.0e-4f) {
+                md_float4_t img = raw;
+                md_util_min_image(img.elem, sizeof(md_float4_t), 1, param->cell);
+                shift = md_float4_sub(img, raw);
             }
         }
 
         calc_hbond_energy(param->res_hbonds, param->res_coords, i, j, shift);
-        calc_hbond_energy(param->res_hbonds, param->res_coords, j, i, md_f32x4_sub(md_f32x4_zero(), shift));
+        calc_hbond_energy(param->res_hbonds, param->res_coords, j, i, md_float4_sub(md_float4_zero(), shift));
 
         // DSSP excludes very local sequence contacts on the same chain
         if (same_range && d <= 2) continue;
@@ -292,21 +292,21 @@ static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, c
 
 // p in the image of ref, for atoms bonded within a residue (within 3 A): only a longer vector crosses the periodic boundary
 // and is taken to its minimum image, the others stay as they are, bit for bit
-static inline md_f32x4_t dssp_whole_about(md_f32x4_t ref, md_f32x4_t p, const md_unitcell_t* cell) {
-    md_f32x4_t d = md_f32x4_sub(p, ref);
-    if (md_f32x4_dot(d, d) <= 3.0f * 3.0f) return p;
-    md_util_min_image(d.elem, sizeof(md_f32x4_t), 1, cell);
-    return md_f32x4_add(ref, d);
+static inline md_float4_t dssp_whole_about(md_float4_t ref, md_float4_t p, const md_unitcell_t* cell) {
+    md_float4_t d = md_float4_sub(p, ref);
+    if (md_float4_dot(d, d) <= 3.0f * 3.0f) return p;
+    md_util_min_image(d.elem, sizeof(md_float4_t), 1, cell);
+    return md_float4_add(ref, d);
 }
 
 // The bonds and the bends of the atomistic ranges (num_trace residues are in traces)
-static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, uint8_t res_bend[], const md_f32x3_t* xyz, const md_unitcell_t* cell,
+static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, uint8_t res_bend[], const md_float3_t* xyz, const md_unitcell_t* cell,
     const md_protein_backbone_data_t* backbone, size_t num_trace, md_temp_scope_t temp)
 {
     const size_t backbone_segment_count = backbone->segment.count;
     const md_amino_acid_atoms_t* backbone_atoms = backbone->segment.atoms;
     dssp_res_coords_t* res_coords = md_temp_alloc_array(temp, dssp_res_coords_t, backbone_segment_count);
-    md_f32x3_t* res_ca = md_temp_alloc_array(temp, md_f32x3_t, backbone_segment_count);
+    md_float3_t* res_ca = md_temp_alloc_array(temp, md_float3_t, backbone_segment_count);
     uint32_t* res_key = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
     const float cutoff = 9.0f;
     const dssp_interior_t interior = dssp_interior_init(cell, cutoff);
@@ -329,14 +329,14 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
             res_key[i] = (uint32_t)range_idx << 1 | (dssp_interior_test(&interior, xyz[ca_idx]) ? 0 : 1);
 
             // The residue whole, in the image of its CA, should the periodic boundary split it
-            const md_f32x4_t CA = md_f32x4_from_f32x3(xyz[ca_idx], 0);
+            const md_float4_t CA = md_float4_from_float3(xyz[ca_idx], 0);
             res_coords[i].CA = CA;
-            res_coords[i].N  = dssp_whole_about(CA, md_f32x4_from_f32x3(xyz[n_idx], 0), cell);
-            res_coords[i].C  = dssp_whole_about(CA, md_f32x4_from_f32x3(xyz[c_idx], 0), cell);
-            res_coords[i].O  = dssp_whole_about(CA, md_f32x4_from_f32x3(xyz[o_idx], 0), cell);
+            res_coords[i].N  = dssp_whole_about(CA, md_float4_from_float3(xyz[n_idx], 0), cell);
+            res_coords[i].C  = dssp_whole_about(CA, md_float4_from_float3(xyz[c_idx], 0), cell);
+            res_coords[i].O  = dssp_whole_about(CA, md_float4_from_float3(xyz[o_idx], 0), cell);
 
             if (hn_idx >= 0) {
-                res_coords[i].H = dssp_whole_about(CA, md_f32x4_from_f32x3(xyz[hn_idx], 0), cell);
+                res_coords[i].H = dssp_whole_about(CA, md_float4_from_float3(xyz[hn_idx], 0), cell);
             } else {
                 if (i > range.beg)
                     res_coords[i].H = estimate_HN(res_coords[i].N, res_coords[i].CA, dssp_whole_about(res_coords[i].N, res_coords[i - 1].C, cell));
@@ -351,11 +351,11 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
         // Bends. Residues two apart are never more than 8 A apart, unless split by the boundary, and in the interior
         // of the cell they cannot be.
         for (int i = range.beg + 2; i + 2 < range.end; ++i) {
-            md_f32x4_t v1 = md_f32x4_sub(res_coords[i - 2].CA, res_coords[i].CA);
-            md_f32x4_t v2 = md_f32x4_sub(res_coords[i + 2].CA, res_coords[i].CA);
+            md_float4_t v1 = md_float4_sub(res_coords[i - 2].CA, res_coords[i].CA);
+            md_float4_t v2 = md_float4_sub(res_coords[i + 2].CA, res_coords[i].CA);
             if ((res_key[i - 2] | res_key[i] | res_key[i + 2]) & 1) {
-                if (md_f32x4_dot(v1, v1) > 8.0f * 8.0f) md_util_min_image(v1.elem, sizeof(md_f32x4_t), 1, cell);
-                if (md_f32x4_dot(v2, v2) > 8.0f * 8.0f) md_util_min_image(v2.elem, sizeof(md_f32x4_t), 1, cell);
+                if (md_float4_dot(v1, v1) > 8.0f * 8.0f) md_util_min_image(v1.elem, sizeof(md_float4_t), 1, cell);
+                if (md_float4_dot(v2, v2) > 8.0f * 8.0f) md_util_min_image(v2.elem, sizeof(md_float4_t), 1, cell);
             }
             res_bend[i] = dssp_bend(v1, v2);
         }
@@ -363,7 +363,7 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
 
     // The spatial structure and the candidates grow through the allocator interface
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(md_f32x3_t), res_idx, num_res);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(md_float3_t), res_idx, num_res);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell, .flags = res_idx ? MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX : MD_SPATIAL_ACC_FLAG_NONE });
 
@@ -383,9 +383,9 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
 // The difference b - a by minimum image, as md_hbond takes it: dist2 is the minimum image distance squared of the pair
 // as the spatial structure found it (negative when there is none, and max_len bounds the vector instead). Only a vector
 // longer than that crosses the periodic boundary and pays for the general minimum image.
-static inline md_f32x3_t min_image_diff(md_f32x3_t a, md_f32x3_t b, float dist2, float max_len, const md_unitcell_t* cell) {
-    md_f32x3_t d = md_f32x3_sub(b, a);
-    const float l2 = md_f32x3_dot(d, d);
+static inline md_float3_t min_image_diff(md_float3_t a, md_float3_t b, float dist2, float max_len, const md_unitcell_t* cell) {
+    md_float3_t d = md_float3_sub(b, a);
+    const float l2 = md_float3_dot(d, d);
     const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
     if (l2 > ref2) md_util_min_image(d.elem, 0, 1, cell);
     return d;
@@ -393,14 +393,14 @@ static inline md_f32x3_t min_image_diff(md_f32x3_t a, md_f32x3_t b, float dist2,
 
 // The cosine and sine of the dihedral p0-p1-p2-p3 (IUPAC sign: positive in an alpha helix), from the outer bonds
 // projected on the plane normal to the middle one, without the angle itself. Collinear beads have none: 0.
-static inline void cg_dssp_dihedral_cs(float* out_cos, float* out_sin, md_f32x3_t p0, md_f32x3_t p1, md_f32x3_t p2, md_f32x3_t p3) {
-    const md_f32x3_t b0 = md_f32x3_sub(p0, p1);
-    const md_f32x3_t b1 = md_f32x3_normalize(md_f32x3_sub(p2, p1));
-    const md_f32x3_t b2 = md_f32x3_sub(p3, p2);
-    const md_f32x3_t v = md_f32x3_sub(b0, md_f32x3_mul1(b1, md_f32x3_dot(b0, b1)));
-    const md_f32x3_t w = md_f32x3_sub(b2, md_f32x3_mul1(b1, md_f32x3_dot(b2, b1)));
-    const float x = md_f32x3_dot(v, w);
-    const float y = md_f32x3_dot(md_f32x3_cross(b1, v), w);
+static inline void cg_dssp_dihedral_cs(float* out_cos, float* out_sin, md_float3_t p0, md_float3_t p1, md_float3_t p2, md_float3_t p3) {
+    const md_float3_t b0 = md_float3_sub(p0, p1);
+    const md_float3_t b1 = md_float3_normalize(md_float3_sub(p2, p1));
+    const md_float3_t b2 = md_float3_sub(p3, p2);
+    const md_float3_t v = md_float3_sub(b0, md_float3_mul1(b1, md_float3_dot(b0, b1)));
+    const md_float3_t w = md_float3_sub(b2, md_float3_mul1(b1, md_float3_dot(b2, b1)));
+    const float x = md_float3_dot(v, w);
+    const float y = md_float3_dot(md_float3_cross(b1, v), w);
     const float r2 = x * x + y * y;
     if (r2 > 0.0f) {
         const float inv = 1.0f / sqrtf(r2);
@@ -413,10 +413,10 @@ static inline void cg_dssp_dihedral_cs(float* out_cos, float* out_sin, md_f32x3_
 }
 
 // The cosine of the angle at b between a and c
-static inline float cg_dssp_angle_cos(md_f32x3_t a, md_f32x3_t b, md_f32x3_t c) {
-    const md_f32x3_t u = md_f32x3_sub(a, b);
-    const md_f32x3_t v = md_f32x3_sub(c, b);
-    return MD_CLAMP(md_f32x3_dot(u, v) / sqrtf(md_f32x3_dot(u, u) * md_f32x3_dot(v, v)), -1.0f, 1.0f);
+static inline float cg_dssp_angle_cos(md_float3_t a, md_float3_t b, md_float3_t c) {
+    const md_float3_t u = md_float3_sub(a, b);
+    const md_float3_t v = md_float3_sub(c, b);
+    return MD_CLAMP(md_float3_dot(u, v) / sqrtf(md_float3_dot(u, u) * md_float3_dot(v, v)), -1.0f, 1.0f);
 }
 
 // The direction of the C=O of residue i of the chain x[beg, end) (beads in one image): the virtual C and O of the residue,
@@ -424,17 +424,17 @@ static inline float cg_dssp_angle_cos(md_f32x3_t a, md_f32x3_t b, md_f32x3_t c) 
 // frame and the features in the order used here. The features are cosines and sines of the angles and dihedrals of
 // the trace, which the geometry gives without the angles themselves. False for a residue without a frame: the ends of
 // the chain, and chains of three beads.
-static bool cg_dssp_dipole(md_f32x3_t* out_dipole, const md_f32x3_t* x, int beg, int end, int i) {
+static bool cg_dssp_dipole(md_float3_t* out_dipole, const md_float3_t* x, int beg, int end, int i) {
     if (i < beg + 1 || i + 1 >= end) return false;
     const bool has_a = i - 2 >= beg;
     const bool has_b = i + 2 < end;
     if (!has_a && !has_b) return false;
 
-    const md_f32x3_t t = md_f32x3_normalize(md_f32x3_sub(x[i + 1], x[i - 1]));
-    md_f32x3_t m = md_f32x3_sub(md_f32x3_add(x[i - 1], x[i + 1]), md_f32x3_mul1(x[i], 2.0f));
-    m = md_f32x3_sub(m, md_f32x3_mul1(t, md_f32x3_dot(m, t)));
-    const md_f32x3_t n = md_f32x3_normalize(m);
-    const md_f32x3_t b = md_f32x3_cross(t, n);
+    const md_float3_t t = md_float3_normalize(md_float3_sub(x[i + 1], x[i - 1]));
+    md_float3_t m = md_float3_sub(md_float3_add(x[i - 1], x[i + 1]), md_float3_mul1(x[i], 2.0f));
+    m = md_float3_sub(m, md_float3_mul1(t, md_float3_dot(m, t)));
+    const md_float3_t n = md_float3_normalize(m);
+    const md_float3_t b = md_float3_cross(t, n);
 
     // tau, the bond angle at i, is in [0, pi]: its sine is not negative. Where there is no i-2 (i+2), theta_a
     // (theta_b) is 0 and tau_p (tau_n) is tau.
@@ -479,16 +479,16 @@ static bool cg_dssp_dipole(md_f32x3_t* out_dipole, const md_f32x3_t* x, int beg,
     for (int j = 0; j < k; ++j) {
         for (int c = 0; c < 6; ++c) co[c] += f[j] * w[j][c];
     }
-    const md_f32x3_t d = md_f32x3_add(md_f32x3_add(md_f32x3_mul1(t, co[3] - co[0]), md_f32x3_mul1(n, co[4] - co[1])), md_f32x3_mul1(b, co[5] - co[2]));
-    const float len = md_f32x3_length(d);
+    const md_float3_t d = md_float3_add(md_float3_add(md_float3_mul1(t, co[3] - co[0]), md_float3_mul1(n, co[4] - co[1])), md_float3_mul1(b, co[5] - co[2]));
+    const float len = md_float3_length(d);
     if (!(len > 0.0f)) return false;
-    *out_dipole = md_f32x3_mul1(d, 1.0f / len);
+    *out_dipole = md_float3_mul1(d, 1.0f / len);
     return true;
 }
 
 typedef struct cg_dssp_param_t {
-    const md_f32x3_t* site;             // [peptide]
-    const md_f32x3_t* dipole;           // [peptide]
+    const md_float3_t* site;             // [peptide]
+    const md_float3_t* dipole;           // [peptide]
     const uint32_t* peptide_seg;    // [peptide] -> segment, whose C=O it holds
     const uint32_t* res_range_id;   // [segment]
     const md_unitcell_t* cell;
@@ -533,10 +533,10 @@ static void cg_dssp_pair_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
         // The distance is the spatial structure's (minimum image), the direction the vector of that image
         const float d = sqrtf(ij_dist2[idx]);
         if (!(d > 0.0f)) continue;
-        const md_f32x3_t r = md_f32x3_mul1(min_image_diff(p->site[a], p->site[b], ij_dist2[idx], 0.0f, p->cell), 1.0f / d);
+        const md_float3_t r = md_float3_mul1(min_image_diff(p->site[a], p->site[b], ij_dist2[idx], 0.0f, p->cell), 1.0f / d);
 
-        const float cos_a = md_f32x3_dot(p->dipole[a], r);
-        const float cos_b = md_f32x3_dot(p->dipole[b], r);
+        const float cos_a = md_float3_dot(p->dipole[a], r);
+        const float cos_b = md_float3_dot(p->dipole[b], r);
         if (cos_a > min_cos && cos_b > min_cos) {
             // Both point from a to b: the C=O of k to the N-H of l+1
             cg_dssp_bond(p, k, l + 1, -1.0f - 0.5f * (cos_a + cos_b));
@@ -547,13 +547,13 @@ static void cg_dssp_pair_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
 }
 
 // The bonds and the bends of the traces
-static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, uint8_t res_bend[], const md_f32x3_t* xyz, const md_unitcell_t* cell,
+static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, uint8_t res_bend[], const md_float3_t* xyz, const md_unitcell_t* cell,
     const md_protein_backbone_data_t* backbone, const uint32_t* res_range_id, md_temp_scope_t temp)
 {
     const size_t num_segments = backbone->segment.count;
-    md_f32x3_t* x = md_temp_alloc_array(temp, md_f32x3_t, num_segments);
-    md_f32x3_t* site = md_temp_alloc_array(temp, md_f32x3_t, num_segments);
-    md_f32x3_t* dipole = md_temp_alloc_array(temp, md_f32x3_t, num_segments);
+    md_float3_t* x = md_temp_alloc_array(temp, md_float3_t, num_segments);
+    md_float3_t* site = md_temp_alloc_array(temp, md_float3_t, num_segments);
+    md_float3_t* dipole = md_temp_alloc_array(temp, md_float3_t, num_segments);
     uint32_t* peptide_seg = md_temp_alloc_array(temp, uint32_t, num_segments);
     size_t num_peptides = 0;
 
@@ -564,15 +564,15 @@ static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pa
         // The chain in one image: the beads are bonded, and so each the minimum image of the one before it
         x[beg] = xyz[backbone->segment.atoms[beg].ca];
         for (int i = beg + 1; i < end; ++i) {
-            x[i] = md_f32x3_add(x[i - 1], min_image_diff(xyz[backbone->segment.atoms[i - 1].ca], xyz[backbone->segment.atoms[i].ca], -1.0f, CG_DSSP_MAX_BOND, cell));
+            x[i] = md_float3_add(x[i - 1], min_image_diff(xyz[backbone->segment.atoms[i - 1].ca], xyz[backbone->segment.atoms[i].ca], -1.0f, CG_DSSP_MAX_BOND, cell));
         }
         for (int i = beg + 2; i + 2 < end; ++i) {
-            res_bend[i] = dssp_bend(md_f32x4_from_f32x3(md_f32x3_sub(x[i - 2], x[i]), 0), md_f32x4_from_f32x3(md_f32x3_sub(x[i + 2], x[i]), 0));
+            res_bend[i] = dssp_bend(md_float4_from_float3(md_float3_sub(x[i - 2], x[i]), 0), md_float4_from_float3(md_float3_sub(x[i + 2], x[i]), 0));
         }
         for (int k = beg; k + 1 < end; ++k) {
-            md_f32x3_t mu;
+            md_float3_t mu;
             if (!cg_dssp_dipole(&mu, x, beg, end, k)) continue;
-            site[num_peptides] = md_f32x3_mul1(md_f32x3_add(x[k], x[k + 1]), 0.5f);
+            site[num_peptides] = md_float3_mul1(md_float3_add(x[k], x[k + 1]), 0.5f);
             dipole[num_peptides] = mu;
             peptide_seg[num_peptides] = (uint32_t)k;
             num_peptides += 1;
@@ -582,7 +582,7 @@ static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pa
 
     // The spatial structure and the candidates grow through the allocator interface
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)site, sizeof(md_f32x3_t), NULL, num_peptides);
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)site, sizeof(md_float3_t), NULL, num_peptides);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     const double cutoff = MD_MAX(CG_DSSP_TURN_DISTANCE, CG_DSSP_SHEET_DISTANCE);
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell });
@@ -871,7 +871,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
     }
 }
 
-static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     MD_ASSERT(out_secondary_structure);
     MD_ASSERT(xyz);
     MD_ASSERT(cell);
@@ -936,7 +936,7 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
     md_temp_end(temp);
 }
 
-bool md_dssp_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_dssp_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
 
     if (!backbone) return false;
     if (capacity < backbone->segment.count) {

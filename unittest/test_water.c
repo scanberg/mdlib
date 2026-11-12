@@ -222,7 +222,7 @@ UTEST(water, unwrap_virtual_site) {
     EXPECT_EQ(1, (int)sys.molecule.count);
     md_util_unwrap_system(&st, &sys);
     for (int i = 1; i < 4; ++i) {
-        const float d = md_f32x3_length(md_f32x3_sub(st.xyz[i], st.xyz[0]));
+        const float d = md_float3_length(md_float3_sub(st.xyz[i], st.xyz[0]));
         EXPECT_LT(d, 1.0f);
     }
     md_vm_arena_destroy(alloc);

@@ -202,7 +202,7 @@ size_t md_system_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const st
 // has its own header, md_dssp.h.
 
 // Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
-bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_f32x3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
+bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
 // sys->protein_backbone, or for segments without a residue (res_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the

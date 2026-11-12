@@ -49,7 +49,7 @@ UBENCH_EX(coords, com_pbc) {
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
-        md_f32x3_t com = {0};
+        md_float3_t com = {0};
         UBENCH_DO_BENCHMARK() {
             com = md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, &st.unitcell);
             UBENCH_DO_NOTHING(&com);
@@ -63,7 +63,7 @@ UBENCH_EX(coords, com_nopbc) {
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
         UBENCH_SET_BYTES(st.num_atoms * 12);
-        md_f32x3_t com = {0};
+        md_float3_t com = {0};
         UBENCH_DO_BENCHMARK() {
             com = md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL);
             UBENCH_DO_NOTHING(&com);
@@ -106,7 +106,7 @@ UBENCH_EX(coords, interpolate_linear) {
     if (load_big(&sys, &st, arena)) {
         jitter(&b, &st, 3.0f);
         md_system_state_init(&out, st.num_atoms);
-        const md_f32x3_t* xyz[2] = {st.xyz, b.xyz};
+        const md_float3_t* xyz[2] = {st.xyz, b.xyz};
         UBENCH_SET_BYTES(st.num_atoms * 12 * 3);
         UBENCH_DO_BENCHMARK() {
             md_util_interpolate_linear(out.xyz, xyz, st.num_atoms, &st.unitcell, 0.3f);
@@ -122,7 +122,7 @@ UBENCH_EX(coords, interpolate_cubic) {
     if (load_big(&sys, &st, arena)) {
         for (int i = 0; i < 3; ++i) jitter(&s[i], &st, 1.0f + i);
         md_system_state_init(&out, st.num_atoms);
-        const md_f32x3_t* xyz[4] = {st.xyz, s[0].xyz, s[1].xyz, s[2].xyz};
+        const md_float3_t* xyz[4] = {st.xyz, s[0].xyz, s[1].xyz, s[2].xyz};
         UBENCH_SET_BYTES(st.num_atoms * 12 * 5);
         float w[4];
         md_util_cubic_spline_weights(w, 0.3f, 1.0f);
@@ -139,19 +139,19 @@ UBENCH_EX(coords, rmsd) {
     md_system_t sys = {0}; md_system_state_t st = {0}, b = {.alloc = arena};
     if (load_big(&sys, &st, arena)) {
         jitter(&b, &st, 1.0f);
-        md_f32x4_t* xyzw[2] = {
-            md_alloc(arena, st.num_atoms * sizeof(md_f32x4_t)),
-            md_alloc(arena, st.num_atoms * sizeof(md_f32x4_t)),
+        md_float4_t* xyzw[2] = {
+            md_alloc(arena, st.num_atoms * sizeof(md_float4_t)),
+            md_alloc(arena, st.num_atoms * sizeof(md_float4_t)),
         };
         for (size_t i = 0; i < st.num_atoms; ++i) {
-            xyzw[0][i] = md_f32x4_from_f32x3(st.xyz[i], 1.0f);
-            xyzw[1][i] = md_f32x4_from_f32x3(b.xyz[i], 1.0f);
+            xyzw[0][i] = md_float4_from_float3(st.xyz[i], 1.0f);
+            xyzw[1][i] = md_float4_from_float3(b.xyz[i], 1.0f);
         }
-        const md_f32x4_t* const cxyzw[2] = {xyzw[0], xyzw[1]};
+        const md_float4_t* const cxyzw[2] = {xyzw[0], xyzw[1]};
         UBENCH_SET_BYTES(st.num_atoms * 16 * 2);
         double r = 0;
         UBENCH_DO_BENCHMARK() {
-            const md_f32x3_t com[2] = {
+            const md_float3_t com[2] = {
                 md_util_com((const float*)st.xyz, 0, NULL, 0, NULL, st.num_atoms, NULL),
                 md_util_com((const float*)b.xyz, 0, NULL, 0, NULL, b.num_atoms, NULL),
             };
@@ -168,7 +168,7 @@ UBENCH_EX(coords, sort_spatial) {
     if (load_big(&sys, &st, arena)) {
         uint32_t* idx = md_alloc(arena, st.num_atoms * sizeof(uint32_t));
         UBENCH_DO_BENCHMARK() {
-            md_util_sort_spatial(idx, (const float*)st.xyz, sizeof(md_f32x3_t), st.num_atoms);
+            md_util_sort_spatial(idx, (const float*)st.xyz, sizeof(md_float3_t), st.num_atoms);
             UBENCH_DO_NOTHING(idx);
         }
     }
@@ -184,7 +184,7 @@ UBENCH_EX(coords, spatial_acc_build_and_pairs) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)st.xyz, sizeof(md_f32x3_t), NULL, st.num_atoms);
+        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)st.xyz, sizeof(md_float3_t), NULL, st.num_atoms);
         size_t count = 0;
         UBENCH_DO_BENCHMARK() {
             md_allocator_i* tmp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));

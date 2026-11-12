@@ -44,7 +44,7 @@ typedef struct md_flow_node_t {
     uint32_t parent;    // coarser node in the SAME column, or MD_FLOW_INVALID_INDEX
     uint32_t level;     // 0 = coarsest. Purely descriptive; the hierarchy is 'parent'.
     float    weight;    // share of this node's column total, [0,1]
-    md_f32x4_t   color;
+    md_float4_t   color;
     md_str_t    label;     // NOT owned - must outlive the graph
     md_str_t    sublabel;  // optional second line, same ownership rule; {0} for none
     uint64_t key;       // stable identity across rebuilds; interaction state keys off this
@@ -247,8 +247,8 @@ md_flow_layout_params_t md_flow_layout_params_default(void);
 
 typedef struct md_flow_layout_node_t {
     uint32_t cut_idx;
-    md_f32x2_t   min;               // graph space; x is the flow axis, y is the weight axis
-    md_f32x2_t   max;
+    md_float2_t   min;               // graph space; x is the flow axis, y is the weight axis
+    md_float2_t   max;
 } md_flow_layout_node_t;
 
 // A ribbon is a quad with two curved edges. p0/p1 are the near and far edge of the band where it
@@ -264,8 +264,8 @@ typedef enum md_flow_ribbon_flag_t {
 typedef struct md_flow_layout_ribbon_t {
     uint32_t link_idx;          // index into cut->links
     uint32_t flags;             // md_flow_ribbon_flag_t
-    md_f32x2_t   p0, p1;
-    md_f32x2_t   q0, q1;
+    md_float2_t   p0, p1;
+    md_float2_t   q0, q1;
 } md_flow_layout_ribbon_t;
 
 // An ancestor that is currently EXPANDED, and therefore not drawn as a node itself. It still has
@@ -279,8 +279,8 @@ typedef struct md_flow_layout_band_t {
     uint32_t node;      // graph node index of the ancestor
     uint32_t column;
     uint32_t depth;     // 0 = outermost ancestor, 1 = its child, ...
-    md_f32x2_t   min;       // y spans the visible descendants; x matches the column's node rects
-    md_f32x2_t   max;
+    md_float2_t   min;       // y spans the visible descendants; x matches the column's node rects
+    md_float2_t   max;
 } md_flow_layout_band_t;
 
 typedef struct md_flow_layout_t {

@@ -155,7 +155,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     const double L = tpr_state.unitcell.x;
     double max_diff = 0;
     for (size_t i = 0; i < h.state.num_atoms; ++i) {
-        const md_f32x3_t d = md_f32x3_sub(tpr_state.xyz[i], h.state.xyz[i]);
+        const md_float3_t d = md_float3_sub(tpr_state.xyz[i], h.state.xyz[i]);
         const double dx = d.x - L * round(d.x / L), dy = d.y - L * round(d.y / L), dz = d.z - L * round(d.z / L);
         max_diff = MD_MAX(max_diff, sqrt(dx * dx + dy * dy + dz * dz));
     }

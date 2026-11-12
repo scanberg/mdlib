@@ -34,7 +34,7 @@
 // num_atoms is used rather than testing xyz != NULL because md_array_ensure allocates capacity
 // without setting size, so a non NULL xyz does not imply the coordinates were populated.
 //
-// xyz is packed, one md_f32x3_t of 12 bytes per atom - the layout every source and every consumer
+// xyz is packed, one md_float3_t of 12 bytes per atom - the layout every source and every consumer
 // already has: the files, a run's atom/position attribute, the GPU buffers. Kernels that want x, y
 // and z apart load four or eight atoms and de-interleave in registers (md_mm_load_xyz_packed_ps).
 // The array is padded to a multiple of 16 atoms, zeroed past num_atoms, so such loads never need a
@@ -68,7 +68,7 @@
 // very thing this struct exists to prevent - two fields which must agree, with nothing enforcing it.
 typedef struct md_system_state_t {
     size_t num_atoms;
-    md_f32x3_t* xyz;
+    md_float3_t* xyz;
     md_unitcell_t unitcell;
     double frame;
     md_attributes_t attributes;   // per frame quantities beyond the interpolation contract above
@@ -112,12 +112,12 @@ static inline double md_state_frame_frac(const md_system_state_t* state) {
     return state->frame - (double)(int64_t)state->frame;
 }
 
-static inline md_f32x3_t md_state_coord(const md_system_state_t* state, size_t atom_idx) {
+static inline md_float3_t md_state_coord(const md_system_state_t* state, size_t atom_idx) {
     MD_ASSERT(state);
     if (atom_idx < state->num_atoms) {
         return state->xyz[atom_idx];
     }
-    md_f32x3_t zero = {0};
+    md_float3_t zero = {0};
     return zero;
 }
 

@@ -196,7 +196,7 @@ typedef struct vlx_scf_t {
 	vlx_scf_type_t type;
 
 	double energy;
-	md_f64x3_t ground_state_dipole_moment;
+	md_double3_t ground_state_dipole_moment;
 
 	vlx_orbital_t alpha;
 	vlx_orbital_t beta;
@@ -221,9 +221,9 @@ typedef struct vlx_rsp_t {
 	size_t   num_valence;
 	size_t   num_virtual;
 
-	md_f64x3_t* electric_transition_dipoles;
-	md_f64x3_t* magnetic_transition_dipoles;
-	md_f64x3_t* velocity_transition_dipoles;
+	md_double3_t* electric_transition_dipoles;
+	md_double3_t* magnetic_transition_dipoles;
+	md_double3_t* velocity_transition_dipoles;
 
 
 	// Linear only: the response eigenvectors, [states][num_occ * num_vir (* 2 with Y)]. Only their SHAPE is
@@ -284,7 +284,7 @@ typedef struct vlx_t {
 	size_t spin_multiplicity;
 
 	// Arrays (length = number_of_atoms)
-	md_f64x3_t* atom_coordinates;
+	md_double3_t* atom_coordinates;
 
 	vlx_density_property_t* density_properties; // Optional data, may be NULL, length is number of density properties
 
@@ -388,10 +388,10 @@ static vlx_t* vlx_create(struct md_allocator_i* backing, struct md_system_t* sys
 static void   vlx_destroy(vlx_t* vlx);
 static size_t vlx_number_of_atoms(const vlx_t* vlx);
 static size_t vlx_number_of_electrons(const vlx_t* vlx, vlx_spin_t spin);
-static const md_f64x3_t* vlx_atom_coordinates(const vlx_t* vlx);
+static const md_double3_t* vlx_atom_coordinates(const vlx_t* vlx);
 static const uint8_t* vlx_atomic_numbers(const vlx_t* vlx);
 static const int* vlx_local_to_global_atom_idx(const vlx_t* vlx);
-static md_f64x3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx);
+static md_double3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx);
 
 static size_t vlx_scf_number_of_molecular_orbitals(const vlx_t* vlx);
 static const double* vlx_scf_mo_occupancy(const vlx_t* vlx, vlx_spin_t spin);
@@ -399,9 +399,9 @@ static const double* vlx_scf_mo_energy(const vlx_t* vlx, vlx_spin_t spin);
 static bool vlx_gto_basis_extract(md_gto_basis_t* out, const vlx_t* vlx, struct md_allocator_i* alloc);
 static const double* vlx_scf_mo_coefficients(const vlx_t* vlx, size_t mo_idx, vlx_spin_t spin);
 static size_t vlx_rsp_number_of_excited_states(const vlx_t* vlx);
-static const md_f64x3_t* vlx_rsp_electric_transition_dipole_moments(const vlx_t* vlx);
-static const md_f64x3_t* vlx_rsp_magnetic_transition_dipole_moments(const vlx_t* vlx);
-static const md_f64x3_t* vlx_rsp_velocity_transition_dipole_moments(const vlx_t* vlx);
+static const md_double3_t* vlx_rsp_electric_transition_dipole_moments(const vlx_t* vlx);
+static const md_double3_t* vlx_rsp_magnetic_transition_dipole_moments(const vlx_t* vlx);
+static const md_double3_t* vlx_rsp_velocity_transition_dipole_moments(const vlx_t* vlx);
 static bool vlx_rsp_has_nto(const vlx_t* vlx);
 static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state);
 // Publishes what could NOT be published as it was read.
@@ -2258,7 +2258,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	// The ground state dipole moment is not present in all versions
 	vlx->scf.has_ground_state_dipole_moment = h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, 3, handle, H5T_NATIVE_DOUBLE, "dipole_moment");
 	if (!vlx->scf.has_ground_state_dipole_moment) {
-		vlx->scf.ground_state_dipole_moment = (md_f64x3_t){0};
+		vlx->scf.ground_state_dipole_moment = (md_double3_t){0};
 	}
 
 	// The embedding's induced dipoles, when the run kept them. The system exists by now, and with it
@@ -3760,7 +3760,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 			md_particle_type_find_or_add(&sys->atom.type, name, 0, 0.0f, 0.0f, 0, vsite, sys->alloc);
 		sys->atom.type_idx[atom_idx] = type_idx;
 
-		state->xyz[atom_idx] = md_f32x3_set((float)(site->coord[0] * to_angstrom), (float)(site->coord[1] * to_angstrom), (float)(site->coord[2] * to_angstrom));
+		state->xyz[atom_idx] = md_float3_set((float)(site->coord[0] * to_angstrom), (float)(site->coord[1] * to_angstrom), (float)(site->coord[2] * to_angstrom));
 
 		// Every site has a fragment number, vlx_mm_resolve_parameters made sure of it, and a fragment's
 		// sites are adjacent in this order however the file scattered them
@@ -3833,7 +3833,7 @@ static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
 	const md_unit_t e_bohr = md_unit_elementary_charge_bohr();
 
 	md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
-	md_f64x3_t* mu = md_temp_alloc_array(temp, md_f64x3_t, num_sites);
+	md_double3_t* mu = md_temp_alloc_array(temp, md_double3_t, num_sites);
 	if (!h5_read_dataset_data(mu, num_sites * 3, scf_handle, H5T_NATIVE_DOUBLE, VLX_H5_INDUCED_DIPOLES)) {
 		MD_LOG_ERROR("VeloxChem: failed to read scf/" VLX_H5_INDUCED_DIPOLES);
 		goto done;
@@ -3844,9 +3844,9 @@ static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
 	if (vlx->mm.in_system && vlx->mm.num_polarizable == num_sites) {
 		const size_t num_qm    = vlx->number_of_atoms;
 		const size_t num_atoms = num_qm + vlx->mm.count;
-		md_f64x3_t* per_atom = md_temp_alloc_array(temp, md_f64x3_t, num_atoms);
+		md_double3_t* per_atom = md_temp_alloc_array(temp, md_double3_t, num_atoms);
 		for (size_t i = 0; i < num_qm; ++i) {
-			per_atom[i] = (md_f64x3_t){NAN, NAN, NAN};
+			per_atom[i] = (md_double3_t){NAN, NAN, NAN};
 		}
 		// The dipoles follow the file rows and the atoms the fragment numbers: the file row's dipole
 		// first, then each atom takes its row's
@@ -3858,7 +3858,7 @@ static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
 		MD_ASSERT(next == num_sites);
 		for (size_t k = 0; k < vlx->mm.count; ++k) {
 			const uint32_t d = dipole_of_row[vlx->mm.order[k]];
-			per_atom[num_qm + k] = d != UINT32_MAX ? mu[d] : (md_f64x3_t){0, 0, 0};
+			per_atom[num_qm + k] = d != UINT32_MAX ? mu[d] : (md_double3_t){0, 0, 0};
 		}
 		md_qm_publish_vec3_series(sys, MD_STR_LIT("atom/induced_dipole"), MD_STR_LIT("Induced Dipole"), e_bohr, per_atom, num_atoms);
 	}
@@ -4413,21 +4413,21 @@ size_t vlx_rsp_number_of_excited_states(const vlx_t* vlx) {
 	return 0;
 }
 
-const md_f64x3_t* vlx_rsp_electric_transition_dipole_moments(const vlx_t* vlx) {
+const md_double3_t* vlx_rsp_electric_transition_dipole_moments(const vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.electric_transition_dipoles;
 	}
 	return NULL;
 }
 
-const md_f64x3_t* vlx_rsp_magnetic_transition_dipole_moments(const vlx_t* vlx) {
+const md_double3_t* vlx_rsp_magnetic_transition_dipole_moments(const vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.magnetic_transition_dipoles;
 	}
 	return NULL;
 }
 
-const md_f64x3_t* vlx_rsp_velocity_transition_dipole_moments(const vlx_t* vlx) {
+const md_double3_t* vlx_rsp_velocity_transition_dipole_moments(const vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.velocity_transition_dipoles;
 	}
@@ -4489,9 +4489,9 @@ void vlx_destroy(vlx_t* vlx) {
 // nothing but the root of the file and is where the electrons' centre lies for any neutral molecule
 // whose dipole vanishes. Returns false only when not even that can be computed, in which case no
 // dipole group is published at all - half a group is not a dipole anyone can draw.
-static bool vlx_centre_of_charge(md_f64x3_t* out_angstrom, const vlx_t* vlx) {
+static bool vlx_centre_of_charge(md_double3_t* out_angstrom, const vlx_t* vlx) {
 	const size_t   num_atoms     = vlx_number_of_atoms(vlx);
-	const md_f64x3_t* atom_coord    = vlx_atom_coordinates(vlx);
+	const md_double3_t* atom_coord    = vlx_atom_coordinates(vlx);
 	const uint8_t* atomic_number = vlx_atomic_numbers(vlx);
 
 	if (num_atoms == 0 || !atom_coord || !atomic_number) {
@@ -4514,7 +4514,7 @@ static bool vlx_centre_of_charge(md_f64x3_t* out_angstrom, const vlx_t* vlx) {
 		if (num_electrons == 0) {
 			return false;
 		}
-		const md_f64x3_t moment = vlx_scf_ground_state_dipole_moment(vlx);
+		const md_double3_t moment = vlx_scf_ground_state_dipole_moment(vlx);
 		const double  inv_ne = 1.0 / (double)num_electrons;
 
 		out_angstrom->x = (nx - moment.x) * inv_ne * BOHR_TO_ANGSTROM;
@@ -5819,12 +5819,12 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	// has no index space of its own to anchor it - see the ANCHORING note in md_system.h. Publishing
 	// a vector without its origin would leave a group nothing can draw, so all of this is skipped
 	// together when the centre of charge cannot be computed.
-	md_f64x3_t origin = {0, 0, 0};
+	md_double3_t origin = {0, 0, 0};
 	if (vlx_centre_of_charge(&origin, vlx)) {
 		// Only what the file stated: the transition dipoles below are response data and stand on
 		// their own, so a file without an SCF dipole still gets those, anchored at the nuclear centre.
 		if (vlx->scf.has_ground_state_dipole_moment) {
-			const md_f64x3_t ground_state = vlx_scf_ground_state_dipole_moment(vlx);
+			const md_double3_t ground_state = vlx_scf_ground_state_dipole_moment(vlx);
 			md_qm_publish_vec3_series(sys, MD_STR_LIT("dipole/ground_state/vector"), MD_STR_LIT("Ground State"), e_bohr, &ground_state, 1);
 			md_qm_publish_origin(sys, MD_STR_LIT("dipole/ground_state/origin"), origin);
 		}
@@ -5833,9 +5833,9 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		// One per excited state. The magnetic and velocity forms are different quantities in
 		// different units, which is exactly why unit sits on the attribute and not on the group.
 		if (num_states > 0) {
-			const md_f64x3_t* electric = vlx_rsp_electric_transition_dipole_moments(vlx);
-			const md_f64x3_t* magnetic = vlx_rsp_magnetic_transition_dipole_moments(vlx);
-			const md_f64x3_t* velocity = vlx_rsp_velocity_transition_dipole_moments(vlx);
+			const md_double3_t* electric = vlx_rsp_electric_transition_dipole_moments(vlx);
+			const md_double3_t* magnetic = vlx_rsp_magnetic_transition_dipole_moments(vlx);
+			const md_double3_t* velocity = vlx_rsp_velocity_transition_dipole_moments(vlx);
 
 			if (electric) {
 				md_qm_publish_vec3_series(sys, MD_STR_LIT("dipole/electric_transition/vector"), MD_STR_LIT("Electric Transition"), e_bohr, electric, num_states);
@@ -5967,7 +5967,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
-		state->xyz[i] = md_f32x3_set((float)vlx->atom_coordinates[i].x, (float)vlx->atom_coordinates[i].y, (float)vlx->atom_coordinates[i].z);
+		state->xyz[i] = md_float3_set((float)vlx->atom_coordinates[i].x, (float)vlx->atom_coordinates[i].y, (float)vlx->atom_coordinates[i].z);
 		
 		md_atomic_number_t z = vlx->atomic_numbers[i];
 		md_str_t sym  = md_atomic_number_symbol(z);
@@ -6221,7 +6221,7 @@ size_t vlx_number_of_electrons(const vlx_t* vlx, vlx_spin_t spin) {
 	return 0;
 }
 
-const md_f64x3_t* vlx_atom_coordinates(const vlx_t* vlx) {
+const md_double3_t* vlx_atom_coordinates(const vlx_t* vlx) {
 	if (vlx) return vlx->atom_coordinates;
 	return NULL;
 }
@@ -6236,9 +6236,9 @@ const int* vlx_local_to_global_atom_idx(const vlx_t* vlx) {
 	return NULL;
 }
 
-md_f64x3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx) {
+md_double3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx) {
 	if (vlx) return vlx->scf.ground_state_dipole_moment;
-	return (md_f64x3_t){0};
+	return (md_double3_t){0};
 }
 
 

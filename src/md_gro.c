@@ -120,15 +120,15 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], md_str_t line, boo
 }
 
 // The coordinates and velocities of an atom line in the columns GROMACS writes by default, "%8.3f" and "%8.4f": three
-// fields at a time (md_parse_fixed_f32x3_w8), what gro_parse_coordinates reads by those columns. False where it would
+// fields at a time (md_parse_fixed_float3_w8), what gro_parse_coordinates reads by those columns. False where it would
 // read the line otherwise, or would find something there that is not three velocities: the caller reads the line with it.
 static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], md_str_t line) {
-    if (line.len < 20 + 24 || !md_parse_fixed_f32x3_w8(xyz, line.ptr + 20, 3)) return false;
+    if (line.len < 20 + 24 || !md_parse_fixed_float3_w8(xyz, line.ptr + 20, 3)) return false;
     if (line.len == 20 + 24) {
         vel[0] = vel[1] = vel[2] = NAN;
         return true;
     }
-    return line.len >= 20 + 48 && md_parse_fixed_f32x3_w8(vel, line.ptr + 44, 4);
+    return line.len >= 20 + 48 && md_parse_fixed_float3_w8(vel, line.ptr + 44, 4);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -292,7 +292,7 @@ typedef struct gro_load_t {
     gro_residue_start_t*  res;              // of the load
     bool                  columns;
     size_t                width, decimals;
-    md_f32x3_t*               xyz;
+    md_float3_t*               xyz;
     float*                velocity;         // NULL when the file has none
     md_label_t*           atom_names;
     md_particle_type_idx_t* type_idx;       // none yet: typed by the names once all are read
@@ -341,7 +341,7 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             float xyz[3], vel[3];
             if (!(L->columns_w8 && gro_parse_coordinates_w8(xyz, vel, line)) &&
                 !gro_parse_coordinates(xyz, vel, line, L->columns, L->width, L->decimals)) piece->loose = true;
-            L->xyz[atom] = md_f32x3_set(xyz[0] * NM_TO_ANGSTROM, xyz[1] * NM_TO_ANGSTROM, xyz[2] * NM_TO_ANGSTROM);
+            L->xyz[atom] = md_float3_set(xyz[0] * NM_TO_ANGSTROM, xyz[1] * NM_TO_ANGSTROM, xyz[2] * NM_TO_ANGSTROM);
             if (L->velocity) {
                 L->velocity[atom * 3 + 0] = vel[0];
                 L->velocity[atom * 3 + 1] = vel[1];

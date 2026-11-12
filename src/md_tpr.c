@@ -1799,7 +1799,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // ## Coordinates, nm -> Ångström
     if (data->x) {
         for (size_t i = 0; i < num_atoms; ++i) {
-            state->xyz[i] = md_f32x3_set(data->x[i * 3 + 0] * 10.0f, data->x[i * 3 + 1] * 10.0f, data->x[i * 3 + 2] * 10.0f);
+            state->xyz[i] = md_float3_set(data->x[i * 3 + 0] * 10.0f, data->x[i * 3 + 1] * 10.0f, data->x[i * 3 + 2] * 10.0f);
         }
     } else {
         MD_LOG_INFO("TPR: The file has no coordinates");
