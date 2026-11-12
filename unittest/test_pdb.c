@@ -482,7 +482,7 @@ UTEST(pdb, run_needs_several_models) {
     md_vm_arena_destroy(arena);
 }
 
-// The columns read without a scan give what parse_float gives on them: every coordinate, occupancy
+// The columns read without a scan give what md_parse_float gives on them: every coordinate, occupancy
 // and temperature factor of the reference files
 #include <core/md_parse.h>
 
@@ -510,7 +510,7 @@ static size_t pdb_test_compare_with_columns(md_str_t path) {
         for (int k = 0; k < 5; ++k) {
             if (line.len < cols[k][0] + cols[k][1]) continue;
             if ((k == 3 && !occupancy) || (k == 4 && !b_factor)) continue;
-            const float want = (float)parse_float(md_str_substr(line, cols[k][0], cols[k][1]));
+            const float want = (float)md_parse_float(md_str_substr(line, cols[k][0], cols[k][1]));
             if (memcmp(&want, &got[k], sizeof(float)) != 0) mismatches += 1;
         }
     }

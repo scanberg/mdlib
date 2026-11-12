@@ -394,22 +394,22 @@ static bool lammps_atom_line_fits(md_str_t content, const int mappings[ATOM_FIEL
 	if (n < num_fields) return false;
 	if (exact) {
 		if (n != num_fields && n != num_fields + 3) return false;
-		if (n == num_fields + 3 && !(is_int(tok[n - 3]) && is_int(tok[n - 2]) && is_int(tok[n - 1]))) return false;
+		if (n == num_fields + 3 && !(md_parse_is_int(tok[n - 3]) && md_parse_is_int(tok[n - 2]) && md_parse_is_int(tok[n - 1]))) return false;
 	}
 	for (size_t j = 1; j < ATOM_FIELD_COUNT; ++j) {
 		if (mappings[j] < 0) continue;
 		const md_str_t t = tok[mappings[j]];
 		if (j == ATOM_FIELD_TYPE) {
-			if (is_int(t)) {
-				const int64_t type = parse_int(t);
+			if (md_parse_is_int(t)) {
+				const int64_t type = md_parse_int(t);
 				if (type < 1 || (num_types && (size_t)type > num_types)) return false;
 			} else if (!md_ascii_is_alpha(t.ptr[0])) {
 				return false;
 			}
 		} else if (atom_field_type[j] == TYPE_INT) {
-			if (!is_int(t)) return false;
+			if (!md_parse_is_int(t)) return false;
 		} else if (atom_field_type[j] == TYPE_FLOAT) {
-			if (!is_float(t)) return false;
+			if (!md_parse_is_float(t)) return false;
 		}
 	}
 	return true;
@@ -437,7 +437,7 @@ static md_lammps_atom_format_t detect_atom_format(md_reader_i* reader) {
 				md_str_t tok[4];
 				md_str_t c = content;
 				if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &c) == 3 && md_str_eq(tok[1], MD_STR_LIT("atom")) && md_str_eq(tok[2], MD_STR_LIT("types"))) {
-					num_types = (size_t)MD_MAX(0, parse_int(tok[0]));
+					num_types = (size_t)MD_MAX(0, md_parse_int(tok[0]));
 				}
 			}
 		} else if (sec == SEC_ATOMS) {
@@ -591,7 +591,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_types, m
 
 		int num_param = 0;
 		for (size_t j = tok_idx; j < num_tok; ++j) {
-			params[num_param++] = parse_float(tok[j]);
+			params[num_param++] = md_parse_float(tok[j]);
 		}
 
 		md_lammps_atom_type_t* t = &types[type - 1];
@@ -650,15 +650,15 @@ static int compare_atom(const void* a, const void* b) {
 static bool lammps_header_line(md_lammps_data_t* data, md_str_t content) {
 	md_str_t tok[8];
 	const size_t num_tok = md_parse_next_tokens(tok, MD_COUNTOF(tok), &content);
-	if (num_tok == 2 && is_int(tok[0])) {
-		const size_t n = (size_t)MD_MAX(0, parse_int(tok[0]));
+	if (num_tok == 2 && md_parse_is_int(tok[0])) {
+		const size_t n = (size_t)MD_MAX(0, md_parse_int(tok[0]));
 		if      (md_str_eq(tok[1], MD_STR_LIT("atoms")))		data->num_atoms = n;
 		else if (md_str_eq(tok[1], MD_STR_LIT("bonds")))		data->num_bonds = n;
 		else if (md_str_eq(tok[1], MD_STR_LIT("angles")))		data->num_angles = n;
 		else if (md_str_eq(tok[1], MD_STR_LIT("dihedrals")))	data->num_dihedrals = n;
 		else if (md_str_eq(tok[1], MD_STR_LIT("impropers")))	data->num_impropers = n;
-	} else if (num_tok == 3 && md_str_eq(tok[2], MD_STR_LIT("types")) && is_int(tok[0])) {
-		const size_t n = (size_t)MD_MAX(0, parse_int(tok[0]));
+	} else if (num_tok == 3 && md_str_eq(tok[2], MD_STR_LIT("types")) && md_parse_is_int(tok[0])) {
+		const size_t n = (size_t)MD_MAX(0, md_parse_int(tok[0]));
 		if      (md_str_eq(tok[1], MD_STR_LIT("atom")))		data->num_particle_types = n;
 		else if (md_str_eq(tok[1], MD_STR_LIT("bond")))		data->num_bond_types = n;
 		else if (md_str_eq(tok[1], MD_STR_LIT("angle")))		data->num_angle_types = n;
@@ -667,34 +667,34 @@ static bool lammps_header_line(md_lammps_data_t* data, md_str_t content) {
 	} else if (num_tok == 4 && (md_str_eq(tok[2], MD_STR_LIT("xlo")) || md_str_eq(tok[2], MD_STR_LIT("ylo")) || md_str_eq(tok[2], MD_STR_LIT("zlo")))) {
 		const char axis = tok[2].ptr[0];
 		if (tok[3].len != 3 || tok[3].ptr[0] != axis || !md_str_begins_with(md_str_substr(tok[3], 1, 2), MD_STR_LIT("hi"))) return true;
-		if (!is_float(tok[0]) || !is_float(tok[1])) {
+		if (!md_parse_is_float(tok[0]) || !md_parse_is_float(tok[1])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
 		}
-		const float lo = (float)parse_float(tok[0]);
-		const float hi = (float)parse_float(tok[1]);
+		const float lo = (float)md_parse_float(tok[0]);
+		const float hi = (float)md_parse_float(tok[1]);
 		if (axis == 'x') { data->cell.xlo = lo; data->cell.xhi = hi; }
 		if (axis == 'y') { data->cell.ylo = lo; data->cell.yhi = hi; }
 		if (axis == 'z') { data->cell.zlo = lo; data->cell.zhi = hi; }
 	} else if (num_tok == 6 && md_str_eq(tok[3], MD_STR_LIT("xy")) && md_str_eq(tok[4], MD_STR_LIT("xz")) && md_str_eq(tok[5], MD_STR_LIT("yz"))) {
-		if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
+		if (!md_parse_is_float(tok[0]) || !md_parse_is_float(tok[1]) || !md_parse_is_float(tok[2])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
 		}
-		data->cell.xy = (float)parse_float(tok[0]);
-		data->cell.xz = (float)parse_float(tok[1]);
-		data->cell.yz = (float)parse_float(tok[2]);
+		data->cell.xy = (float)md_parse_float(tok[0]);
+		data->cell.xz = (float)md_parse_float(tok[1]);
+		data->cell.yz = (float)md_parse_float(tok[2]);
 	} else if ((num_tok == 4 && (md_str_eq(tok[3], MD_STR_LIT("avec")) || md_str_eq(tok[3], MD_STR_LIT("bvec")) || md_str_eq(tok[3], MD_STR_LIT("cvec")))) ||
 			   (num_tok == 5 && md_str_eq(tok[3], MD_STR_LIT("abc")) && md_str_eq(tok[4], MD_STR_LIT("origin")))) {
 		// A general triclinic box
-		if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
+		if (!md_parse_is_float(tok[0]) || !md_parse_is_float(tok[1]) || !md_parse_is_float(tok[2])) {
 			MD_LOG_ERROR("Failed to parse cell definition");
 			return false;
 		}
 		float* v = md_str_eq(tok[3], MD_STR_LIT("avec")) ? data->cell.avec : md_str_eq(tok[3], MD_STR_LIT("bvec")) ? data->cell.bvec : md_str_eq(tok[3], MD_STR_LIT("cvec")) ? data->cell.cvec : data->cell.origin;
-		v[0] = (float)parse_float(tok[0]);
-		v[1] = (float)parse_float(tok[1]);
-		v[2] = (float)parse_float(tok[2]);
+		v[0] = (float)md_parse_float(tok[0]);
+		v[1] = (float)md_parse_float(tok[1]);
+		v[2] = (float)md_parse_float(tok[2]);
 		data->cell.general = true;
 	}
 	return true;
@@ -726,7 +726,7 @@ static bool lammps_parse_topology(int32_t* out, size_t stride, size_t num_atom_i
 		}
 		int32_t* o = out + i * stride;
 		for (size_t j = 0; j < 2 + num_atom_ids; ++j) {
-			o[j] = (int32_t)parse_int(tok[j]);
+			o[j] = (int32_t)md_parse_int(tok[j]);
 		}
 	}
 	return true;
@@ -785,8 +785,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 					MD_LOG_ERROR("LAMMPS: The Atom Type Labels section ends after %zu of %zu atom types", i, data->num_particle_types);
 					goto done;
 				}
-				const int64_t type = parse_int(tok[0]);
-				if (!is_int(tok[0]) || type < 1 || (size_t)type > data->num_particle_types) {
+				const int64_t type = md_parse_int(tok[0]);
+				if (!md_parse_is_int(tok[0]) || type < 1 || (size_t)type > data->num_particle_types) {
 					MD_LOG_ERROR("LAMMPS: Invalid atom type '" MD_STR_FMT "' in Atom Type Labels", MD_STR_ARG(tok[0]));
 					goto done;
 				}
@@ -811,7 +811,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 					goto done;
 				}
 				md_lammps_atom_type_t* t = &data->particle_types[type - 1];
-				t->mass = (float)parse_float(tok[1]);
+				t->mass = (float)md_parse_float(tok[1]);
 				const md_atomic_number_t z = md_atomic_number_infer_from_mass(t->mass);
 				if (z != MD_Z_X) {
 					t->radius = md_atomic_number_vdw_radius(z);
@@ -846,13 +846,13 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 					goto done;
 				}
 				md_lammps_atom_t* atom = &data->atoms[i];
-				atom->id     = (int32_t)parse_int(tok[mappings[ATOM_FIELD_ID]]);
-				atom->resid  = mappings[ATOM_FIELD_RESID] != -1 ? (int32_t)parse_int(tok[mappings[ATOM_FIELD_RESID]]) : -1;
+				atom->id     = (int32_t)md_parse_int(tok[mappings[ATOM_FIELD_ID]]);
+				atom->resid  = mappings[ATOM_FIELD_RESID] != -1 ? (int32_t)md_parse_int(tok[mappings[ATOM_FIELD_RESID]]) : -1;
 				atom->type   = lammps_atom_type(tok[mappings[ATOM_FIELD_TYPE]], &labels);
-				atom->charge = mappings[ATOM_FIELD_Q] != -1 ? (float)parse_float(tok[mappings[ATOM_FIELD_Q]]) : 0.0f;
-				atom->x      = (float)parse_float(tok[mappings[ATOM_FIELD_X]]);
-				atom->y      = (float)parse_float(tok[mappings[ATOM_FIELD_Y]]);
-				atom->z      = (float)parse_float(tok[mappings[ATOM_FIELD_Z]]);
+				atom->charge = mappings[ATOM_FIELD_Q] != -1 ? (float)md_parse_float(tok[mappings[ATOM_FIELD_Q]]) : 0.0f;
+				atom->x      = (float)md_parse_float(tok[mappings[ATOM_FIELD_X]]);
+				atom->y      = (float)md_parse_float(tok[mappings[ATOM_FIELD_Y]]);
+				atom->z      = (float)md_parse_float(tok[mappings[ATOM_FIELD_Z]]);
 				if (atom->type < 1 || (data->num_particle_types && (size_t)atom->type > data->num_particle_types)) {
 					MD_LOG_ERROR("LAMMPS: Invalid atom type '" MD_STR_FMT "' of atom %d", MD_STR_ARG(tok[mappings[ATOM_FIELD_TYPE]]), atom->id);
 					goto done;
@@ -1335,7 +1335,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 			return false;
 		}
 		for (size_t j = 0; j < num_values; ++j) {
-			values[i][j] = parse_float(tok[j]);
+			values[i][j] = md_parse_float(tok[j]);
 		}
 	}
 
@@ -1381,8 +1381,8 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 	md_reader_skip_line(reader);
 	if (md_reader_extract_line(reader, &line)) {
 		if (header) {
-			header->timestep = parse_int(line);
-		} else if (!is_int(line)) {
+			header->timestep = md_parse_int(line);
+		} else if (!md_parse_is_int(line)) {
 			MD_LOG_ERROR("Could not extract timestep");
 			return false;
 		}
@@ -1397,8 +1397,8 @@ static bool parse_header(header_t* header, md_reader_i* reader) {
 		md_reader_extract_line(reader, &line))
 	{
 		if (header) {
-			header->num_atoms = parse_int(line);
-		} else if (!is_int(line)) {
+			header->num_atoms = md_parse_int(line);
+		} else if (!md_parse_is_int(line)) {
 			MD_LOG_ERROR("Could not extract number of atoms");
 			return false;
 		}
@@ -1586,11 +1586,11 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, md_str_t 
 				goto coords_done;
 			}
 
-			const int32_t id = (int32_t)parse_int(tokens[mappings->id_idx]);
+			const int32_t id = (int32_t)md_parse_int(tokens[mappings->id_idx]);
 			const double c[3] = {
-				parse_float(tokens[mappings->coord_idx[0]]),
-				parse_float(tokens[mappings->coord_idx[1]]),
-				parse_float(tokens[mappings->coord_idx[2]]),
+				md_parse_float(tokens[mappings->coord_idx[0]]),
+				md_parse_float(tokens[mappings->coord_idx[1]]),
+				md_parse_float(tokens[mappings->coord_idx[2]]),
 			};
 			double p[3];
 			if (mappings->flags & COORD_FLAG_SCALED) {
@@ -1603,9 +1603,9 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, md_str_t 
 
 			if (mappings->flags & COORD_FLAG_UNWRAP) {
 				const double img[3] = {
-					(double)parse_int(tokens[mappings->image_idx[0]]),
-					(double)parse_int(tokens[mappings->image_idx[1]]),
-					(double)parse_int(tokens[mappings->image_idx[2]]),
+					(double)md_parse_int(tokens[mappings->image_idx[0]]),
+					(double)md_parse_int(tokens[mappings->image_idx[1]]),
+					(double)md_parse_int(tokens[mappings->image_idx[2]]),
 				};
 				for (int k = 0; k < 3; ++k) p[k] += A[0][k] * img[0] + A[1][k] * img[1] + A[2][k] * img[2];
 			}

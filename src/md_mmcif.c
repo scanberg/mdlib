@@ -261,14 +261,14 @@ static inline float mmcif_optional_float(const md_str_t tok[], const int table[]
     if (t.len == 0 || (t.len == 1 && (t.ptr[0] == '.' || t.ptr[0] == '?'))) {
         return NAN;
     }
-    return (float)parse_float(t);
+    return (float)md_parse_float(t);
 }
 
 static inline int parse_int_with_default(md_str_t tok, int def) {
     if (tok.len == 0 || tok.ptr[0] == '.' || tok.ptr[0] == '?') {
         return def;
     }
-    return (int)parse_int(tok);
+    return (int)md_parse_int(tok);
 }
 
 typedef struct {
@@ -767,9 +767,9 @@ static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_sta
         mmcif_oper_t op = {.id = md_alloc_str(alloc, mmcif_section_value(&sec, i, id_col)), .transform = md_float4x4_ident()};
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
-                op.transform.elem[c][r] = (float)parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
+                op.transform.elem[c][r] = (float)md_parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
             }
-            op.transform.elem[3][r] = (float)parse_float(mmcif_section_value(&sec, i, v_col[r]));
+            op.transform.elem[3][r] = (float)md_parse_float(mmcif_section_value(&sec, i, v_col[r]));
         }
         md_array_push(*opers, op, alloc);
     }
@@ -818,15 +818,15 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_arr
             md_str_t lo_str, hi_str;
             int64_t lo = 0, hi = -1;
             if (md_str_cut(&lo_str, &hi_str, item, md_str_find_char(item, '-')) && lo_str.len > 0) {
-                lo = parse_int(md_str_trim(lo_str));
-                hi = parse_int(md_str_trim(hi_str));
+                lo = md_parse_int(md_str_trim(lo_str));
+                hi = md_parse_int(md_str_trim(hi_str));
             }
             if (hi >= lo) {
                 for (int64_t v = lo; v <= hi; ++v) {
                     size_t k = 0;
                     for (; k < base_count; ++k) {
                         const md_str_t id = (*opers)[k].id;
-                        if (!md_str_empty(id) && md_ascii_is_digit(id.ptr[0]) && parse_int(id) == v) break;
+                        if (!md_str_empty(id) && md_ascii_is_digit(id.ptr[0]) && md_parse_int(id) == v) break;
                     }
                     if (k == base_count) {
                         MD_LOG_ERROR("Operator %" PRId64 " of the expression is not in _pdbx_struct_oper_list", v);
@@ -1063,9 +1063,9 @@ static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const md_
     const int default_value = INT32_MIN;
 
     mmcif_atom_site_entry_t entry = {
-        .x = (float)parse_float(cartn_x),
-        .y = (float)parse_float(cartn_y),
-        .z = (float)parse_float(cartn_z),
+        .x = (float)md_parse_float(cartn_x),
+        .y = (float)md_parse_float(cartn_y),
+        .z = (float)md_parse_float(cartn_z),
         .label_seq_id = parse_int_with_default(label_seq_id, default_value),
         .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
         .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
@@ -1367,7 +1367,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
                 return false;
             }
 
-            double val = parse_float(val_tok);
+            double val = md_parse_float(val_tok);
 
             if (md_str_eq_cstr(tok, "_cell.angle_alpha")) {
                 cell->alpha = val;

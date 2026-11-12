@@ -3236,7 +3236,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     int    step = 1;
 
         if (is_number(token.type)) {
-            beg = parse_float(token.str);
+            beg = md_parse_float(token.str);
             expect_token_type(ctx->ir, tokenizer_consume_next(ctx->tokenizer), ':');
         } else { // == ':'
             beg = -FLT_MAX;
@@ -3245,7 +3245,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
         next = tokenizer_peek_next(ctx->tokenizer);
         if (is_number(next.type)) {
             token = tokenizer_consume_next(ctx->tokenizer);
-            double mid = parse_float(token.str);
+            double mid = md_parse_float(token.str);
             bool mid_is_float = (token.type == TOKEN_FLOAT);
             // Expand token span
             node->token = concat_tokens(node->token, next);
@@ -3259,7 +3259,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
                 // Next must be a number (end)
                 token_t end_tok = tokenizer_peek_next(ctx->tokenizer);
                 if (is_number(end_tok.type)) {
-                    end = parse_float(tokenizer_consume_next(ctx->tokenizer).str);
+                    end = md_parse_float(tokenizer_consume_next(ctx->tokenizer).str);
                     node->token = concat_tokens(node->token, end_tok);
                 } else {
                     // Missing end, treat as open range
@@ -3296,11 +3296,11 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     }
     else if (token.type == TOKEN_FLOAT) {
         node->data.type = (type_info_t)TI_FLOAT;
-        node->value._float = (float)parse_float(token.str);
+        node->value._float = (float)md_parse_float(token.str);
     }
     else if (token.type == TOKEN_INT) {
         node->data.type = (type_info_t)TI_INT;
-        node->value._int = (int32_t)parse_int(token.str);
+        node->value._int = (int32_t)md_parse_int(token.str);
     }
     else if (token.type == TOKEN_STRING) {
         node->data.type = (type_info_t)TI_STRING;

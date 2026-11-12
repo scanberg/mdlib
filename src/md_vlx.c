@@ -757,7 +757,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 
 				return false;
 			}
-			int count = (int)parse_int(tok[1]);
+			int count = (int)md_parse_int(tok[1]);
 			if (count == 0 || count > 255) {
 				MD_LOG_ERROR("Invalid number of coefficients in atom basis in basis set");
 				return false;
@@ -790,8 +790,8 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 				char buf[64];
 				md_str_copy_to_char_buf(buf, sizeof(buf), tok[0]);
 
-				double exponent = parse_float(tok[0]);
-				double coeff    = parse_float(tok[1]);
+				double exponent = md_parse_float(tok[0]);
+				double coeff    = md_parse_float(tok[1]);
 				
 				md_array_push(basis_set->param.exponents, exponent, alloc);
 				md_array_push(basis_set->param.normalization_coefficients, coeff, alloc);

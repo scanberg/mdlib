@@ -213,12 +213,12 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 		if (!fields) {
 			// The first line of values makes the fields: every following one is expected to have as many
 			while (md_parse_next_token(&tok, &line)) {
-				if (!is_float(tok)) {
+				if (!md_parse_is_float(tok)) {
 					MD_LOG_ERROR("XVG: Invalid float among field values: '"MD_STR_FMT"'", MD_STR_ARG(tok));
 					return false;
 				}
 				md_array(float) values = 0;
-				md_array_push(values, (float)parse_float(tok), alloc);
+				md_array_push(values, (float)md_parse_float(tok), alloc);
 				md_array_push(fields, values, alloc);
 			}
 			num_fields = md_array_size(fields);
@@ -230,12 +230,12 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 				return false;
 			}
 
-			if (!is_float(tok)) {
+			if (!md_parse_is_float(tok)) {
 				MD_LOG_ERROR("XVG: Invalid float: '"MD_STR_FMT"'", MD_STR_ARG(tok));
 				return false;
 			}
 
-			md_array_push(fields[i], (float)parse_float(tok), alloc);
+			md_array_push(fields[i], (float)md_parse_float(tok), alloc);
 		}
 	}
 

@@ -158,11 +158,11 @@ UTEST(parse, f64_reads_only_its_view) {
     EXPECT_EQ(3u, md_parse_f64(&v, (md_str_t){ inf, 5 }));     // "infin" reads as "inf"
     EXPECT_EQ(0u, md_parse_f64(&v, (md_str_t){ inf, 2 }));
 
-    EXPECT_TRUE(is_float((md_str_t){ text, 3 }));
-    EXPECT_TRUE(is_float((md_str_t){ text, 4 }));
-    EXPECT_FALSE(is_float((md_str_t){ text, 8 }));
-    EXPECT_TRUE(is_int((md_str_t){ text, 3 }));
-    EXPECT_FALSE(is_int((md_str_t){ text, 4 }));
+    EXPECT_TRUE(md_parse_is_float((md_str_t){ text, 3 }));
+    EXPECT_TRUE(md_parse_is_float((md_str_t){ text, 4 }));
+    EXPECT_FALSE(md_parse_is_float((md_str_t){ text, 8 }));
+    EXPECT_TRUE(md_parse_is_int((md_str_t){ text, 3 }));
+    EXPECT_FALSE(md_parse_is_int((md_str_t){ text, 4 }));
 }
 
 // Inputs where a parser that is merely close gets the last bit wrong: half way cases, the subnormal
@@ -364,46 +364,46 @@ UTEST(parse, i64_matches_strtoll) {
 // ---------------------------------------------------------------------------
 
 UTEST(parse, parse_float_and_parse_int) {
-    EXPECT_EQ(-125.0, parse_float(MD_STR_LIT("  -12.5e1  ")));
-    EXPECT_EQ(1.5, parse_float(MD_STR_LIT("\t+1.5")));
-    EXPECT_EQ(0.0, parse_float(MD_STR_LIT("abc")));
-    EXPECT_EQ(0.0, parse_float(MD_STR_LIT("")));
-    EXPECT_EQ(0.0, parse_float((md_str_t){0}));
-    EXPECT_EQ(1023.2231128379817, parse_float(MD_STR_LIT("1023.22311283798172389718923789172389")));
-    EXPECT_EQ(1232326745e10, parse_float(MD_STR_LIT("1232326745e10")));
-    EXPECT_EQ(1.0e-29, parse_float(MD_STR_LIT("1.0e-29")));
-    EXPECT_EQ(0.02e+10, parse_float(MD_STR_LIT("0.02e+10")));
-    EXPECT_EQ(0.273, parse_float(MD_STR_LIT("0000000000000.273")));
+    EXPECT_EQ(-125.0, md_parse_float(MD_STR_LIT("  -12.5e1  ")));
+    EXPECT_EQ(1.5, md_parse_float(MD_STR_LIT("\t+1.5")));
+    EXPECT_EQ(0.0, md_parse_float(MD_STR_LIT("abc")));
+    EXPECT_EQ(0.0, md_parse_float(MD_STR_LIT("")));
+    EXPECT_EQ(0.0, md_parse_float((md_str_t){0}));
+    EXPECT_EQ(1023.2231128379817, md_parse_float(MD_STR_LIT("1023.22311283798172389718923789172389")));
+    EXPECT_EQ(1232326745e10, md_parse_float(MD_STR_LIT("1232326745e10")));
+    EXPECT_EQ(1.0e-29, md_parse_float(MD_STR_LIT("1.0e-29")));
+    EXPECT_EQ(0.02e+10, md_parse_float(MD_STR_LIT("0.02e+10")));
+    EXPECT_EQ(0.273, md_parse_float(MD_STR_LIT("0000000000000.273")));
 
-    EXPECT_EQ(42, parse_int(MD_STR_LIT(" 42")));
-    EXPECT_EQ(42, parse_int(MD_STR_LIT("+42")));
-    EXPECT_EQ(-1, parse_int(MD_STR_LIT("-1.9")));
-    EXPECT_EQ(0, parse_int(MD_STR_LIT("abc")));
-    EXPECT_EQ(0, parse_int(MD_STR_LIT("")));
-    EXPECT_EQ(1232326745, parse_int(MD_STR_LIT("1232326745")));
+    EXPECT_EQ(42, md_parse_int(MD_STR_LIT(" 42")));
+    EXPECT_EQ(42, md_parse_int(MD_STR_LIT("+42")));
+    EXPECT_EQ(-1, md_parse_int(MD_STR_LIT("-1.9")));
+    EXPECT_EQ(0, md_parse_int(MD_STR_LIT("abc")));
+    EXPECT_EQ(0, md_parse_int(MD_STR_LIT("")));
+    EXPECT_EQ(1232326745, md_parse_int(MD_STR_LIT("1232326745")));
 }
 
 UTEST(parse, is_float_and_is_int) {
     static const char* floats[] = { "1", "-1", "+1", "1.", ".5", "-.5", "1e5", "1.5E-3", "007", "0.0", "1e+05" };
     static const char* not_floats[] = { "", "-", "+", ".", "e5", "1e", "1e+", "1.5x", " 1", "1 ", "inf", "nan", "Infinity", "1,5", "--1", "1.2.3", "0x10", "1e5.5" };
     for (size_t i = 0; i < MD_COUNTOF(floats); ++i) {
-        EXPECT_TRUE(is_float(str_of(floats[i])));
+        EXPECT_TRUE(md_parse_is_float(str_of(floats[i])));
     }
     for (size_t i = 0; i < MD_COUNTOF(not_floats); ++i) {
-        EXPECT_FALSE(is_float(str_of(not_floats[i])));
-        if (is_float(str_of(not_floats[i]))) printf("  is_float('%s')\n", not_floats[i]);
+        EXPECT_FALSE(md_parse_is_float(str_of(not_floats[i])));
+        if (md_parse_is_float(str_of(not_floats[i]))) printf("  md_parse_is_float('%s')\n", not_floats[i]);
     }
-    EXPECT_FALSE(is_float((md_str_t){0}));
+    EXPECT_FALSE(md_parse_is_float((md_str_t){0}));
 
     static const char* ints[] = { "0", "-0", "+42", "123456789012345678901234567890" };
     static const char* not_ints[] = { "", "-", "+", "1.0", "1e5", " 1", "1 ", "1-" };
     for (size_t i = 0; i < MD_COUNTOF(ints); ++i) {
-        EXPECT_TRUE(is_int(str_of(ints[i])));
+        EXPECT_TRUE(md_parse_is_int(str_of(ints[i])));
     }
     for (size_t i = 0; i < MD_COUNTOF(not_ints); ++i) {
-        EXPECT_FALSE(is_int(str_of(not_ints[i])));
+        EXPECT_FALSE(md_parse_is_int(str_of(not_ints[i])));
     }
-    EXPECT_FALSE(is_int((md_str_t){0}));
+    EXPECT_FALSE(md_parse_is_int((md_str_t){0}));
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +646,7 @@ static uint32_t bits_of_f32(float f) {
 
 // What the fixed width path must agree with: the float of the correctly rounded double
 static float general_f32(md_str_t field) {
-    return (float)parse_float(field);
+    return (float)md_parse_float(field);
 }
 
 // Formats m / 10^decimals right aligned in 'width' characters, as "%*.*f" does, without printf

@@ -81,7 +81,7 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     bool more = true;
     while (csv_next_field(&tok, &first_line, delim, &more)) {
         tok = csv_field(tok);
-        if (!is_float(tok)) {
+        if (!md_parse_is_float(tok)) {
             has_field_names = true;
         }
         num_fields += 1;
@@ -120,8 +120,8 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
             tok = csv_field(tok);
             if (md_str_empty(tok)) {
                 md_array_push(csv->field_values[i], NAN, alloc);
-            } else if (is_float(tok)) {
-                md_array_push(csv->field_values[i], (float)parse_float(tok), alloc);
+            } else if (md_parse_is_float(tok)) {
+                md_array_push(csv->field_values[i], (float)md_parse_float(tok), alloc);
             } else {
                 MD_LOG_ERROR("CSV: Unable to parse float from token: '"MD_STR_FMT"'", MD_STR_ARG(tok));
                 return false;

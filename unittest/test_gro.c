@@ -23,7 +23,7 @@ static const float* gro_test_velocities(const md_system_t* sys) {
     return (const float*)md_attribute_view(md_attributes_find(&sys->attributes, MD_STR_LIT("atom/velocity")), MD_ATTRIBUTE_TYPE_F32, 3, 1);
 }
 
-// The reference files, every coordinate (and velocity) of the system against parse_float on its token, defined later
+// The reference files, every coordinate (and velocity) of the system against md_parse_float on its token, defined later
 static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* ex);
 
 UTEST(gro, parse_small) {
@@ -139,7 +139,7 @@ UTEST(gro, frames) {
 // The coordinate columns
 //
 // A line that keeps to the columns of the first atom line is read field by field; one that does not
-// is read by its tokens. Either way the values are the ones parse_float gives the numbers written.
+// is read by its tokens. Either way the values are the ones md_parse_float gives the numbers written.
 // ---------------------------------------------------------------------------
 
 #include <core/md_parse.h>
@@ -242,7 +242,7 @@ UTEST(gro, coordinate_columns_with_more_decimals) {
     md_system_state_free(&st);
 }
 
-// The reference files, every coordinate against parse_float on its token (in Angstrom, as the loader makes it), every
+// The reference files, every coordinate against md_parse_float on its token (in Angstrom, as the loader makes it), every
 // velocity against its own
 static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* ex) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
@@ -262,10 +262,10 @@ static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* e
             const size_t n = md_parse_next_tokens(tok, 6, &coords);
             const float xyz[3] = { st.xyz[i].x, st.xyz[i].y, st.xyz[i].z };
             for (size_t k = 0; k < n && k < 3; ++k) {
-                if (!gro_test_same(xyz[k], nm((float)parse_float(tok[k])))) mismatches += 1;
+                if (!gro_test_same(xyz[k], nm((float)md_parse_float(tok[k])))) mismatches += 1;
             }
             for (size_t k = 3; vel && k < n; ++k) {
-                if (!gro_test_same(vel[i * 3 + k - 3], (float)parse_float(tok[k]))) mismatches += 1;
+                if (!gro_test_same(vel[i * 3 + k - 3], (float)md_parse_float(tok[k]))) mismatches += 1;
             }
         }
     }

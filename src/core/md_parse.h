@@ -27,11 +27,11 @@
 // is handed to strtod, in a form without a decimal point. This takes IEEE arithmetic in the default
 // round to nearest mode, which is why md_parse.c is compiled without fast math.
 //
-// parse_float, parse_int, is_float and is_int are the long standing conveniences on top:
-//   parse_float / parse_int  skip leading whitespace, read a prefix, and give 0 when there is none
-//   is_float / is_int        whether the WHOLE string is a number, with nothing around it; is_float
-//                            accepts the finite forms only, so "inf" and "nan" are not floats here
-//                            (a script identifier named nan must stay an identifier)
+// md_parse_float, md_parse_int, md_parse_is_float and md_parse_is_int are the conveniences on top:
+//   md_parse_float / md_parse_int        skip leading whitespace, read a prefix, and give 0 when there is none
+//   md_parse_is_float / md_parse_is_int  whether the WHOLE string is a number, with nothing around it;
+//                                        md_parse_is_float accepts the finite forms only, so "inf" and "nan"
+//                                        are not floats here (a script identifier named nan must stay one)
 
 #ifdef __cplusplus
 extern "C" {
@@ -179,23 +179,19 @@ static inline size_t md_parse_i64(int64_t* out_value, md_str_t str) {
     return (size_t)(c - str.ptr);
 }
 
-static inline double parse_float(md_str_t str) {
+static inline double md_parse_float(md_str_t str) {
     double value = 0.0;
     md_parse_f64(&value, md_str_trim_beg(str));
     return value;
 }
 
-static inline int64_t parse_int(md_str_t str) {
+static inline int64_t md_parse_int(md_str_t str) {
     int64_t value = 0;
     md_parse_i64(&value, md_str_trim_beg(str));
     return value;
 }
 
-static inline bool is_float(md_str_t str) {
-    return md_parse_is_float(str);
-}
-
-static inline bool is_int(md_str_t str) {
+static inline bool md_parse_is_int(md_str_t str) {
     const char* c   = str.ptr;
     const char* end = str.ptr + str.len;
     if (c < end && (*c == '-' || *c == '+')) ++c;
@@ -214,10 +210,10 @@ static inline bool is_int(md_str_t str) {
 //
 // A field laid out any other way - another number of decimals, an exponent, a '+', trailing spaces,
 // even when it is a number - gives false with *out untouched, so the caller decides what that means:
-// the field parsed again by parse_float (pdb), or the line read another way (gro, whose columns are
+// the field parsed again by md_parse_float (pdb), or the line read another way (gro, whose columns are
 // only a convention some writers do not keep to).
 //
-// The value is the one (float)parse_float(field) gives. For a field of up to 8 characters that holds in
+// The value is the one (float)md_parse_float(field) gives. For a field of up to 8 characters that holds in
 // a fast math build as well, where the division below may become a multiplication by an inexact
 // reciprocal: the double is then off by at most an ulp or two, while a decimal of at most 7 digits
 // lies at least 2^-25 / 10^6 (relative) from every float rounding boundary - and is on one exactly

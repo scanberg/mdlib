@@ -402,7 +402,7 @@ static size_t print_scale(char* buf, size_t cap, double scale) {
     char tmp[64];
     for (int precision = 6; precision <= 17; ++precision) {
         md_snprintf(tmp, sizeof(tmp), "%.*g", precision, scale);
-        if (value_equal(parse_float(md_str_from_cstr(tmp)), scale)) {
+        if (value_equal(md_parse_float(md_str_from_cstr(tmp)), scale)) {
             break;
         }
     }
@@ -629,10 +629,10 @@ static bool parse_unit(md_unit_t* unit, md_str_t str);
 static bool parse_term(md_unit_t* unit, md_str_t str) {
     // A numeric factor, either as the numerator of an inverse unit ('1/s') or as an explicit scale ('1e-10*m')
     if (md_ascii_is_digit(str.ptr[0]) || str.ptr[0] == '.') {
-        if (!is_float(str)) {
+        if (!md_parse_is_float(str)) {
             return false;
         }
-        *unit = md_unit_scl(md_unit_none(), parse_float(str));
+        *unit = md_unit_scl(md_unit_none(), md_parse_float(str));
         return true;
     }
 

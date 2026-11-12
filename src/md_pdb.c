@@ -45,7 +45,7 @@ extern "C" {
 // The columns [beg, end], 1 based, of which a line cut short (trailing blanks trimmed) may hold only the first
 static inline float extract_float(md_str_t line, size_t beg, size_t end) {
     if (line.len < beg) return 0.0f;
-    return (float)parse_float(md_str_substr(line, beg - 1, MD_MIN(end, line.len) - beg + 1));
+    return (float)md_parse_float(md_str_substr(line, beg - 1, MD_MIN(end, line.len) - beg + 1));
 }
 
 // A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
@@ -55,7 +55,7 @@ static MD_FORCE_INLINE float extract_fixed_float(md_str_t line, size_t beg, size
     if (line.len < end) return 0.0f;
     const md_str_t field = md_str_substr(line, beg - 1, end-beg + 1);
     float value;
-    return md_parse_fixed_f32(&value, field, decimals) ? value : (float)parse_float(field);
+    return md_parse_fixed_f32(&value, field, decimals) ? value : (float)md_parse_float(field);
 }
 
 static inline char extract_char(md_str_t line, size_t idx) {
@@ -237,7 +237,7 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
         // A biomolecule is one or more groups of chains, each followed by the BIOMT transforms which copy them
         const md_str_t rest = md_str_substr(line, 11, SIZE_MAX);
         if (md_str_begins_with(rest, MD_STR_LIT("BIOMOLECULE:"))) {
-            x->biomolecule = (int32_t)parse_int(md_str_trim(md_str_substr(rest, 12, SIZE_MAX)));
+            x->biomolecule = (int32_t)md_parse_int(md_str_trim(md_str_substr(rest, 12, SIZE_MAX)));
         }
         else if (md_str_begins_with(rest, MD_STR_LIT("APPLY THE FOLLOWING TO CHAINS:")) || md_str_begins_with(md_str_trim(rest), MD_STR_LIT("AND CHAINS:"))) {
             // A group begins with the chains to apply to, which AND CHAINS lines continue
@@ -280,9 +280,9 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
                 }
                 md_float4x4_t* transform = md_array_last(x->transforms);
                 for (int c = 0; c < 3; ++c) {
-                    transform->elem[c][row] = (float)parse_float(tok[1 + c]);
+                    transform->elem[c][row] = (float)md_parse_float(tok[1 + c]);
                 }
-                transform->elem[3][row] = (float)parse_float(tok[4]);
+                transform->elem[3][row] = (float)md_parse_float(tok[4]);
             }
         }
         break;
@@ -553,7 +553,7 @@ static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t
 }
 
 // The three coordinates of an atom line, "%8.3f" each from column 31: at once (md_parse_fixed_float3_w8), and one by one
-// (md_parse_fixed_f32, else parse_float) where any is laid out otherwise or the line is too short for them
+// (md_parse_fixed_f32, else md_parse_float) where any is laid out otherwise or the line is too short for them
 static inline void pdb_coords_scalar(float out[3], md_str_t line) {
     out[0] = extract_fixed_float(line, 31, 38, 3);
     out[1] = extract_fixed_float(line, 39, 46, 3);

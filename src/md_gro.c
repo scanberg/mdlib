@@ -100,21 +100,21 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], md_str_t line, boo
     const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), md_str_substr(line, 20, SIZE_MAX));
     if (num_tokens < 3) {
         // Fallback to fixed width format
-        xyz[0] = (float)parse_float(md_str_substr(line, 20, 8));
-        xyz[1] = (float)parse_float(md_str_substr(line, 28, 8));
-        xyz[2] = (float)parse_float(md_str_substr(line, 36, 8));
+        xyz[0] = (float)md_parse_float(md_str_substr(line, 20, 8));
+        xyz[1] = (float)md_parse_float(md_str_substr(line, 28, 8));
+        xyz[2] = (float)md_parse_float(md_str_substr(line, 36, 8));
         return false;
     }
-    xyz[0] = (float)parse_float(tokens[0]);
-    xyz[1] = (float)parse_float(tokens[1]);
-    xyz[2] = (float)parse_float(tokens[2]);
+    xyz[0] = (float)md_parse_float(tokens[0]);
+    xyz[1] = (float)md_parse_float(tokens[1]);
+    xyz[2] = (float)md_parse_float(tokens[2]);
 
     // Velocities are all three or none: a line carrying only part of them is malformed, and
     // guessing which residue was meant is worse than reading none.
     if (num_tokens >= 6) {
-        vel[0] = (float)parse_float(tokens[3]);
-        vel[1] = (float)parse_float(tokens[4]);
-        vel[2] = (float)parse_float(tokens[5]);
+        vel[0] = (float)md_parse_float(tokens[3]);
+        vel[1] = (float)md_parse_float(tokens[4]);
+        vel[2] = (float)md_parse_float(tokens[5]);
     }
     return true;
 }
@@ -211,8 +211,8 @@ static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
     return md_label_make(md_str_trim(md_str_substr(line, offset, 5)));
 }
 
-// The residue number of a line (columns 0 to 4): parse_int(md_str_trim()) of it. Blanks and then digits up to its end
-// without a scan of what is around; else as parse_int(md_str_trim()).
+// The residue number of a line (columns 0 to 4): md_parse_int(md_str_trim()) of it. Blanks and then digits up to its end
+// without a scan of what is around; else as md_parse_int(md_str_trim()).
 static MD_FORCE_INLINE int64_t gro_res_number(md_str_t line) {
     if (line.len >= 5) {
         const char* c = line.ptr;
@@ -223,7 +223,7 @@ static MD_FORCE_INLINE int64_t gro_res_number(md_str_t line) {
         while (j < 5 && md_ascii_is_digit(c[j])) value = value * 10 + (c[j++] - '0');
         if (j == 5) return value;
     }
-    return parse_int(md_str_trim(md_str_substr(line, 0, 5)));
+    return md_parse_int(md_str_trim(md_str_substr(line, 0, 5)));
 }
 
 // The velocities, in the file's own nm/ps rather than converted the way the coordinates are, because a velocity has a
@@ -241,16 +241,16 @@ static bool gro_parse_box(md_unitcell_t* cell, md_str_t line) {
         return false;
     }
     float box[3][3] = {0};
-    box[0][0] = (float)parse_float(tokens[0]);
-    box[1][1] = (float)parse_float(tokens[1]);
-    box[2][2] = (float)parse_float(tokens[2]);
+    box[0][0] = (float)md_parse_float(tokens[0]);
+    box[1][1] = (float)md_parse_float(tokens[1]);
+    box[2][2] = (float)md_parse_float(tokens[2]);
     if (num_tokens > 3) {
-        box[0][1] = (float)parse_float(tokens[3]);
-        box[0][2] = (float)parse_float(tokens[4]);
-        box[1][0] = (float)parse_float(tokens[5]);
-        box[1][2] = (float)parse_float(tokens[6]);
-        box[2][0] = (float)parse_float(tokens[7]);
-        box[2][1] = (float)parse_float(tokens[8]);
+        box[0][1] = (float)md_parse_float(tokens[3]);
+        box[0][2] = (float)md_parse_float(tokens[4]);
+        box[1][0] = (float)md_parse_float(tokens[5]);
+        box[1][2] = (float)md_parse_float(tokens[6]);
+        box[2][0] = (float)md_parse_float(tokens[7]);
+        box[2][1] = (float)md_parse_float(tokens[8]);
     }
     // nm to Ångström
     for (int i = 0; i < 3; ++i) {
@@ -485,7 +485,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
     }
-    const int64_t num_atoms_in_file = parse_int(md_str_trim(md_text_next_line(&c, e)));
+    const int64_t num_atoms_in_file = md_parse_int(md_str_trim(md_text_next_line(&c, e)));
     if (num_atoms_in_file <= 0 || num_atoms_in_file >= UINT32_MAX) {
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
