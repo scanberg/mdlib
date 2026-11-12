@@ -271,6 +271,19 @@ typedef struct md_render_batch_t {
        the bond a capsule stands for. 0: the index. */
     md_gpu_addr_t      id;
 
+    /* Clusters: the first level of the cull. Cluster c is the elements
+       cluster_offset[c] .. cluster_offset[c + 1] (uint32 [cluster_count + 1],
+       in element order, as `index` orders them), best at most 64 and
+       spatially compact: md_render_mol makes them from the topology for
+       bonded structures and from a grid for solvent. 0: runs of 64
+       consecutive elements, which is only as good as the element order.
+       Their bounds are refitted when the geometry changes (not when only the
+       camera moves), over the element centres, and padded by each batch's
+       own style; batches with the same points, index, clusters, visibility
+       and style share one refit. */
+    md_gpu_addr_t      cluster_offset;
+    uint32_t           cluster_count;
+
     union {
         md_render_sphere_style_t  spheres;
         md_render_capsule_style_t capsules;
@@ -435,7 +448,11 @@ typedef struct md_render_stats_t {
     uint32_t occluded;             /* by the depth pyramid, after both phases       */
     uint32_t hardware[2];          /* rasterised in hardware: phase 1, phase 2      */
     uint32_t compute[2];           /* rasterised in compute:  phase 1, phase 2      */
-    uint32_t occlusion_retested;   /* found occluded in phase 1, tested again       */
+    uint32_t occlusion_retested;   /* elements found occluded in phase 1, tested again */
+    uint32_t clusters;             /* clusters x instances                          */
+    uint32_t clusters_expanded[2]; /* whose elements were tested: phase 1, phase 2  */
+    uint32_t clusters_occluded;    /* after both phases                             */
+    bool     refitted;             /* the cluster bounds were refitted              */
     uint32_t raster;               /* which raster of the view these are from (1..) */
 } md_render_stats_t;
 

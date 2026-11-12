@@ -4,6 +4,7 @@
 #include <core/md_log.h>
 
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "md_render_shaders.inl"
@@ -26,8 +27,9 @@ typedef struct gpu_view_t {
     uint32_t      hiz_levels;
     uint32_t      occlusion, compute_raster;
     float         small_px;
+    uint32_t      total_clusters, total_cluster_work, refit_mode, _vpad;
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 512, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 528, "ViewData mirror");
 
 enum {
     F_INDEX        = 1u << 0,
@@ -42,6 +44,8 @@ enum {
     F_RADIUS_SCALE = 1u << 9,
     F_COLOR        = 1u << 10,
     F_PALETTE_IDX  = 1u << 11,
+    F_CLUSTERS     = 1u << 12,
+    F_SHARED       = 1u << 13,
 };
 
 typedef struct gpu_batch_t {
@@ -55,8 +59,10 @@ typedef struct gpu_batch_t {
     md_gpu_float4 tint;
     float         sharpness, desaturate;
     uint32_t      work_offset, _pad1;
+    md_gpu_addr_t cluster_offset, bounds, cstate, _pptr;
+    uint32_t      cluster_count, cluster_work_offset, cluster_base, _pad2;
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 208, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 256, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -75,15 +81,19 @@ typedef struct gpu_args_t {
 _Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
 
 typedef struct gpu_lists_t {
-    md_gpu_addr_t hw0, hw1, st0, st1, small, occ, counters, vis64;
+    md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64;
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
 enum {
     C_HW1 = 0, C_HW2 = 2, C_ST = 4, C_SMALL1 = 6, C_SMALL2 = 7, C_OCC = 8,
     C_HIDDEN = 9, C_OUTSIDE = 10, C_OCCLUDED = 11,
-    C_CMD = 16, C_STCMD = 32, C_GRID_SMALL = 40, C_GRID_OCC = 48, C_COUNT = 64,
+    C_CVIS1 = 12, C_CVIS2 = 13, C_COCC = 14, C_CST = 15,
+    C_CMD = 16, C_STCMD = 32, C_GRID_SMALL = 40, C_GRID_OCC = 48,
+    C_GRID_CVIS = 52, C_GRID_COCC = 60, C_GRID_CST = 64, C_CL_VIS = 72, C_CL_OCC = 74,
+    C_COUNT = 80,
 };
+#define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
 
 #define MAX_BATCHES 4095u
@@ -100,7 +110,7 @@ struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, merge;
-    md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz;
+    md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     bool              atomic_int64;    /* the compute raster is possible */
 };
 
@@ -159,13 +169,15 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     kd = md_shader_md_render_cull_kernel();         r->k_cull         = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_finalize_kernel();     r->k_finalize     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_hiz_reduce_kernel();   r->k_hiz          = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_refit_kernel();        r->k_refit        = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_cull_clusters_kernel(); r->k_cull_clusters = md_gpu_kernel_create(device, &kd);
     if (r->atomic_int64) {
         kd = md_shader_md_render_raster_small_kernel(); r->k_raster_small = md_gpu_kernel_create(device, &kd);
         if (!r->k_raster_small) r->atomic_int64 = false;
     }
 
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->merge ||
-        !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz) {
+        !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
         md_render_destroy(r);
         return NULL;
@@ -187,6 +199,8 @@ void md_render_destroy(md_render_t r) {
     if (r->k_finalize)     md_gpu_kernel_destroy(r->k_finalize);
     if (r->k_raster_small) md_gpu_kernel_destroy(r->k_raster_small);
     if (r->k_hiz)          md_gpu_kernel_destroy(r->k_hiz);
+    if (r->k_refit)        md_gpu_kernel_destroy(r->k_refit);
+    if (r->k_cull_clusters) md_gpu_kernel_destroy(r->k_cull_clusters);
     md_free(r->alloc, r, sizeof(struct md_render));
 }
 
@@ -312,6 +326,9 @@ struct md_render_view {
     md_gpu_addr_t       counters;          /* uint32 [C_COUNT]                 */
     md_gpu_addr_t       vis64;
     size_t              vis64_cap;
+    md_gpu_addr_t       bounds_mem;        /* per cluster: 2 float4 bounds, 1 uint state */
+    size_t              bounds_cap;
+    bool                bounds_valid;      /* of the last raster's geometry   */
     md_gpu_texture_t    hiz;
     uint32_t            hiz_w, hiz_h, hiz_levels;
     bool                hiz_ok;            /* holds the last raster            */
@@ -323,6 +340,8 @@ struct md_render_view {
         bool            pending;
         uint32_t        raster;
         uint64_t        elements;
+        uint32_t        clusters;
+        bool            refitted;
     } stats[STAT_SLOTS];
     uint32_t            stats_returned;
 
@@ -366,6 +385,7 @@ void md_render_view_destroy(md_gpu_stream_t s, md_render_view_t v) {
     if (v->batch_buf) md_gpu_free(s, v->batch_buf);
     if (v->xform_buf) md_gpu_free(s, v->xform_buf);
     if (v->lists_buf) md_gpu_free(s, v->lists_buf);
+    if (v->bounds_mem) md_gpu_free(s, v->bounds_mem);
     if (v->list_mem)  md_gpu_free(s, v->list_mem);
     if (v->counters)  md_gpu_free(s, v->counters);
     if (v->vis64)     md_gpu_free(s, v->vis64);
@@ -434,6 +454,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     out->points.state[1]        = b->points.state[1];
     out->index           = b->index;
     out->id              = b->id;
+    out->cluster_offset  = b->cluster_offset;
+    out->cluster_count   = b->cluster_offset ? b->cluster_count : 0;
     if (b->kind == MD_RENDER_SPHERES) {
         out->style.spheres.radius_scale = b->style.spheres.radius_scale;
         out->style.spheres.radius_add   = b->style.spheres.radius_add;
@@ -515,6 +537,10 @@ static bool validate(const md_render_frame_t* f) {
             MD_LOG_ERROR("md_render: batch %u has no positions", i);
             return false;
         }
+        if (b->cluster_offset && b->cluster_count == 0) {
+            MD_LOG_ERROR("md_render: batch %u has cluster offsets but no cluster count", i);
+            return false;
+        }
         if ((b->points.stride & 3u) || (b->points.velocity_stride & 3u)) {
             MD_LOG_ERROR("md_render: batch %u: strides must be multiples of 4", i);
             return false;
@@ -553,6 +579,28 @@ static uint64_t batch_work(const md_render_batch_t* b) {
 }
 
 /* Store the frame as the one last drawn. */
+/* Clusters of a batch: given, or runs of 64 consecutive elements */
+static uint32_t batch_clusters(const md_render_batch_t* b) {
+    if (b->kind != MD_RENDER_SPHERES && b->kind != MD_RENDER_CAPSULES) return 0;
+    if (b->cluster_offset && b->cluster_count) return b->cluster_count;
+    return (b->count + IMPLICIT_CLUSTER - 1) / IMPLICIT_CLUSTER;
+}
+
+/* Two batches whose cluster bounds are the same refit: the same points,
+   index, clusters, visibility, state and style; not the same key, ids,
+   velocities, colours or instances */
+static bool bounds_shared(const md_render_batch_t* a, const md_render_batch_t* b) {
+    md_render_batch_t x, y;
+    canonical_geometry(&x, a);
+    canonical_geometry(&y, b);
+    x.key = y.key = 0;
+    x.id = y.id = 0;
+    x.transform_count = y.transform_count = 0;
+    x.points.velocity = y.points.velocity = 0;
+    x.points.velocity_stride = y.points.velocity_stride = 0;
+    return memcmp(&x, &y, sizeof(x)) == 0;
+}
+
 static bool ensure_batch_cap(md_render_view_t v, uint32_t n) {
     md_allocator_i* a = v->r->alloc;
     if (n <= v->batch_cap && v->batches) return true;
@@ -622,7 +670,25 @@ static change_t compare(const md_render_view_t v, const md_render_frame_t* f) {
     return c;
 }
 
+/* The cluster bounds of the last raster hold for this frame: same batches
+   (but for colours and instance transforms) and no geometry announced */
+static bool geometry_unchanged(const md_render_view_t v, const md_render_frame_t* f) {
+    if (!v->has_raster || !v->bounds_valid) return false;
+    if (f->batch_count != v->last.batch_count) return false;
+    if (f->content[MD_RENDER_CONTENT_GEOMETRY] != v->last.content[MD_RENDER_CONTENT_GEOMETRY]) return false;
+    for (uint32_t i = 0; i < f->batch_count; ++i) {
+        md_render_batch_t x, y;
+        canonical_geometry(&x, &f->batches[i]);
+        canonical_geometry(&y, &v->batches[i]);
+        x.transform_count = y.transform_count = 0;
+        if (memcmp(&x, &y, sizeof(x)) != 0) return false;
+    }
+    return true;
+}
+
 /* ---- GPU tables --------------------------------------------------------------- */
+
+static md_gpu_addr_t align_addr(md_gpu_addr_t x) { return (x + 255u) & ~(md_gpu_addr_t)255u; }
 
 static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, size_t need) {
     if (*addr && *cap >= need) return true;
@@ -745,12 +811,41 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
             o += 16u * n;
         }
     }
-    uint32_t work = 0;
+    /* Cluster bounds: 2 float4 per cluster, then a uint of state bits each */
+    uint32_t clusters = 0;
+    for (uint32_t i = 0; i < f->batch_count; ++i) clusters += batch_clusters(&f->batches[i]);
+    {
+        size_t need = (size_t)(clusters ? clusters : 1) * 36u + 256u;
+        md_gpu_addr_t old = v->bounds_mem;
+        if (!gpu_realloc(s, &v->bounds_mem, &v->bounds_cap, need)) return false;
+        if (v->bounds_mem != old) v->bounds_valid = false;
+    }
+    const md_gpu_addr_t cstate_base = align_addr(v->bounds_mem + (md_gpu_addr_t)clusters * 32u);
+    uint32_t work = 0, cbase = 0, cwork = 0;
     for (uint32_t i = 0; i < f->batch_count; ++i) {
+        const md_render_batch_t* b = &f->batches[i];
         md_gpu_addr_t xf = v->table[i].transforms, xp = v->table[i].transforms_prev;
-        fill_batch(&v->table[i], &f->batches[i], instance_count(&f->batches[i]), xf, xp);
-        v->table[i].work_offset = work;
-        work += (uint32_t)batch_work(&f->batches[i]);
+        fill_batch(&v->table[i], b, instance_count(b), xf, xp);
+        gpu_batch_t* g = &v->table[i];
+        g->work_offset         = work;
+        g->cluster_count       = batch_clusters(b);
+        g->cluster_offset      = (b->cluster_offset && b->cluster_count) ? b->cluster_offset : 0;
+        if (g->cluster_offset) g->flags |= F_CLUSTERS;
+        g->cluster_base        = cbase;
+        g->cluster_work_offset = cwork;
+        g->bounds              = v->bounds_mem + (md_gpu_addr_t)cbase * 32u;
+        g->cstate              = cstate_base + (md_gpu_addr_t)cbase * 4u;
+        for (uint32_t j = 0; j < i; ++j) {
+            if (g->cluster_count && bounds_shared(b, &f->batches[j])) {
+                g->bounds = v->table[j].bounds;
+                g->cstate = v->table[j].cstate;
+                g->flags |= F_SHARED;
+                break;
+            }
+        }
+        work  += (uint32_t)batch_work(b);
+        cbase += g->cluster_count;
+        cwork += g->cluster_count * instance_count(b);
     }
     size_t cap = (size_t)v->batch_buf_cap * sizeof(gpu_batch_t);
     size_t need = (size_t)(f->batch_count ? f->batch_count : 1) * sizeof(gpu_batch_t);
@@ -779,20 +874,19 @@ static gpu_args_t base_args(const md_render_view_t v) {
 
 /* ---- Cull lists, pyramid -------------------------------------------------------- */
 
-static md_gpu_addr_t align_addr(md_gpu_addr_t x) { return (x + 255u) & ~(md_gpu_addr_t)255u; }
 
 /* Lists sized for the worst case of this frame: every element in each list of
    its kind. 32 bytes per element in all; clusters would cut that down. */
-static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, uint64_t work0, uint64_t work1, bool compute) {
+static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, uint64_t work0, uint64_t work1, uint64_t cwork, bool compute) {
     const uint64_t tot = work0 + work1;
-    const uint64_t sizes[6] = { work0, work1, work0, work1, tot, tot };
+    const uint64_t sizes[9] = { cwork, cwork, cwork, work0, work1, work0, work1, tot, tot };
     size_t need = 0;
-    for (int i = 0; i < 6; ++i) need += (size_t)align_addr((sizes[i] + 1) * 8u);
+    for (int i = 0; i < 9; ++i) need += (size_t)align_addr((sizes[i] + 1) * 8u);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[6] = { &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ };
-    for (int i = 0; i < 6; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * 8u); }
+    md_gpu_addr_t* dst[9] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ };
+    for (int i = 0; i < 9; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * 8u); }
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
@@ -844,19 +938,30 @@ static bool build_hiz(md_gpu_stream_t s, md_render_view_t v) {
     return true;
 }
 
-static bool run_cull(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, uint32_t total) {
+/* One pass of a cull kernel: over n items directly, or over a grid a
+   finalize wrote (n == 0, grid at counter word `grid`) */
+static bool pass(md_gpu_stream_t s, md_render_view_t v, md_gpu_kernel_t k, uint32_t mode, uint32_t n, uint32_t grid) {
     gpu_args_t a = base_args(v);
-    a.mode = phase;
-    bool ok;
-    if (phase == 2) {
-        ok = md_gpu_launch_indirect(s, v->r->k_cull, CTR(v, C_GRID_OCC), &a, sizeof(a));
-    } else {
-        uint32_t groups = (total + CULL_GROUP - 1) / CULL_GROUP;
-        if (groups > 65535) groups = 65535;
-        if (groups == 0) groups = 1;
-        ok = md_gpu_launch(s, v->r->k_cull, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
-    }
-    return ok && md_gpu_launch(s, v->r->k_finalize, md_gpu_grid(1, 1, 1), &a, sizeof(a));
+    a.mode = mode;
+    if (grid) return md_gpu_launch_indirect(s, k, CTR(v, grid), &a, sizeof(a));
+    uint32_t groups = (n + CULL_GROUP - 1) / CULL_GROUP;
+    if (groups > 65535) groups = 65535;
+    if (groups == 0) groups = 1;
+    return md_gpu_launch(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
+}
+
+static bool fin(md_gpu_stream_t s, md_render_view_t v, uint32_t mode) {
+    gpu_args_t a = base_args(v);
+    a.mode = mode;
+    return md_gpu_launch(s, v->r->k_finalize, md_gpu_grid(1, 1, 1), &a, sizeof(a));
+}
+
+/* The state lists, for the masks: clusters with a state bit in the frustum,
+   then their elements with one, occluded or not */
+static bool run_state_lists(md_gpu_stream_t s, md_render_view_t v, uint32_t cluster_work) {
+    md_render_t r = v->r;
+    return pass(s, v, r->k_cull_clusters, 3, cluster_work, 0) && fin(s, v, 31) &&
+           pass(s, v, r->k_cull, 3, 0, C_GRID_CST) && fin(s, v, 32);
 }
 
 static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t phase) {
@@ -946,7 +1051,7 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     return md_gpu_render_end(s);
 }
 
-static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t elements) {
+static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t elements, uint32_t clusters, bool refitted) {
     /* the slot not pending, else the oldest */
     uint32_t best = 0;
     for (uint32_t i = 0; i < STAT_SLOTS; ++i) {
@@ -960,6 +1065,8 @@ static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t element
     v->stats[best].pending  = true;
     v->stats[best].raster   = v->raster_count;
     v->stats[best].elements = elements;
+    v->stats[best].clusters = clusters;
+    v->stats[best].refitted = refitted;
 }
 
 bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
@@ -982,6 +1089,11 @@ bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
     out->compute[0]  = c[C_SMALL1];
     out->compute[1]  = c[C_SMALL2];
     out->occlusion_retested = c[C_OCC];
+    out->clusters             = v->stats[best].clusters;
+    out->clusters_expanded[0] = c[C_CVIS1];
+    out->clusters_expanded[1] = c[C_CVIS2];
+    out->clusters_occluded    = c[C_CL_OCC];
+    out->refitted             = v->stats[best].refitted;
     out->raster      = v->stats[best].raster;
     v->stats_returned = out->raster;
     for (uint32_t i = 0; i < STAT_SLOTS; ++i) if (v->stats[i].raster <= v->stats_returned) v->stats[i].pending = false;
@@ -1012,6 +1124,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
     if (!ensure_targets(s, v, f->width, f->height)) return false;
 
     change_t c = resized ? CHANGE_RASTER : compare(v, f);
+    const bool geometry_same = geometry_unchanged(v, f);
+    const bool state_changed = v->has_raster && f->content[MD_RENDER_CONTENT_STATE] != v->last.content[MD_RENDER_CONTENT_STATE];
     uint32_t samples = f->samples ? f->samples : 1u;
 
     bool raster = false, resolve = false, mask = false;
@@ -1103,6 +1217,15 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         if (!upload_tables(s, v, f, true)) return false;
+        const bool refit = !geometry_same;
+        gv.total_clusters     = 0;
+        gv.total_cluster_work = 0;
+        for (uint32_t i = 0; i < f->batch_count; ++i) {
+            gv.total_clusters     += batch_clusters(&f->batches[i]);
+            gv.total_cluster_work += batch_clusters(&f->batches[i]) * instance_count(&f->batches[i]);
+        }
+        gv.refit_mode = refit ? 0u : 1u;
+        md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[2] = { 0, 0 };
         bool has_kind[2] = { false, false };
@@ -1113,20 +1236,31 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             if (batch_work(b)) has_kind[k] = true;
         }
         const uint32_t total = (uint32_t)(work[0] + work[1]);
-        if (!ensure_lists(s, v, work[0], work[1], compute)) return false;
+        if (!ensure_lists(s, v, work[0], work[1], gv.total_cluster_work, compute)) return false;
         md_gpu_memset(s, v->counters, 0, C_COUNT * 4u);
         if (compute) md_gpu_memset(s, v->vis64, 0, (size_t)v->width * v->height * 8u);
 
-        /* Phase 1: against the previous raster's pyramid (when there is one) */
-        if (!run_cull(s, v, 1, total)) return false;
+        /* Cluster bounds: refitted when the geometry changed, else only their
+           state bits when those did. Not when only the camera moved. */
+        md_render_t r = v->r;
+        if ((refit || state_changed) && !pass(s, v, r->k_refit, 0, gv.total_clusters, 0)) return false;
+        v->bounds_valid = true;
+
+        /* Phase 1: clusters, then the elements of the visible ones, against
+           the previous raster's pyramid (when there is one) */
+        if (!pass(s, v, r->k_cull_clusters, 1, gv.total_cluster_work, 0) || !fin(s, v, 11)) return false;
+        if (!pass(s, v, r->k_cull, 1, 0, C_GRID_CVIS) || !fin(s, v, 12)) return false;
         if (compute && !run_raster_small(s, v, 1)) return false;
         if (!run_raster(s, v, 1, compute, has_kind)) return false;
 
         if (occlusion) {
             if (!build_hiz(s, v)) return false;
             if (hiz_valid) {
-                /* Phase 2: what phase 1 found occluded, against this raster */
-                if (!run_cull(s, v, 2, total)) return false;
+                /* Phase 2: the clusters and the elements phase 1 found
+                   occluded, against this raster */
+                if (!pass(s, v, r->k_cull_clusters, 2, 0, C_GRID_COCC) || !fin(s, v, 21)) return false;
+                if (!pass(s, v, r->k_cull, 2, 0, C_GRID_OCC)) return false;
+                if (!pass(s, v, r->k_cull, 4, 0, C_GRID_CVIS + 4) || !fin(s, v, 22)) return false;
                 if (compute && !run_raster_small(s, v, 2)) return false;
                 if (!run_raster(s, v, 2, compute, has_kind)) return false;
                 if (!build_hiz(s, v)) return false;     /* for the next raster */
@@ -1135,8 +1269,9 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         } else {
             v->hiz_ok = false;
         }
+        if (!run_state_lists(s, v, gv.total_cluster_work)) return false;
         v->raster_count++;
-        record_stats(s, v, total);
+        record_stats(s, v, total, gv.total_cluster_work, refit);
 
         v->raster_time = f->time;
         memcpy(v->raster_view, f->camera.view, sizeof(v->raster_view));
@@ -1147,13 +1282,21 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
     } else if (resolve) {
         if (!upload_tables(s, v, f, false)) return false;
     }
-    if (!raster && mask) {
-        /* The state bits changed (or the colours, which this does not need, but
-           cheaply): the state lists follow them. Phase 3 culls nothing else. */
-        uint64_t tw = 0;
-        for (uint32_t i = 0; i < f->batch_count; ++i) tw += batch_work(&f->batches[i]);
+    if (!raster && state_changed) {
+        /* Only the state bits changed: refit the clusters' state bits, then
+           the state lists from them. Cost: the clusters, and the elements of
+           the clusters with a state bit. */
+        uint32_t clusters = 0, cwork = 0;
+        for (uint32_t i = 0; i < f->batch_count; ++i) {
+            clusters += batch_clusters(&f->batches[i]);
+            cwork    += batch_clusters(&f->batches[i]) * instance_count(&f->batches[i]);
+        }
+        const uint32_t one = 1;
+        md_gpu_upload(s, v->view_buf + offsetof(gpu_view_t, refit_mode), &one, 4);
+        if (!pass(s, v, v->r->k_refit, 0, clusters, 0)) return false;
         md_gpu_memset(s, CTR(v, C_ST), 0, 8u);
-        if (!run_cull(s, v, 3, (uint32_t)tw)) return false;
+        md_gpu_memset(s, CTR(v, C_CST), 0, 4u);
+        if (!run_state_lists(s, v, cwork)) return false;
     }
 
     if (resolve && !run_resolve(s, v)) return false;
