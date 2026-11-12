@@ -48,6 +48,10 @@ struct ViewData {
     uint   occlusion;           // cull against the pyramid
     uint   compute_raster;      // rasterise small primitives in compute
     float  small_px;            // up to this many pixels across counts as small
+    uint   total_clusters;      // clusters over all batches (refit)
+    uint   total_cluster_work;  // clusters times instances (cluster cull)
+    uint   refit_mode;          // 0 bounds and state, 1 state only
+    uint   _vpad;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -66,6 +70,8 @@ static const uint F_ID           = 1u << 8;
 static const uint F_RADIUS_SCALE = 1u << 9;
 static const uint F_COLOR        = 1u << 10;
 static const uint F_PALETTE_IDX  = 1u << 11;
+static const uint F_CLUSTERS     = 1u << 12;  // explicit cluster offsets
+static const uint F_SHARED       = 1u << 13;  // bounds shared with an earlier batch: no refit
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -114,13 +120,30 @@ struct Batch {
 
     float   sharpness;
     float   desaturate;
-    uint    work_offset;        // first work item (element x instance) of the cull
+    uint    work_offset;        // first work item (element x instance) of the state cull
     uint    _pad1;
+
+    // Clusters: the unit of the first level of the cull. Cluster c holds the
+    // elements cluster_offset[c] .. cluster_offset[c + 1], or 64c .. 64c + 64
+    // without explicit offsets. Bounds are in the batch's own space, of the
+    // element centres (spheres) or ends (capsules); each batch pads them by
+    // its own style at cull time, so batches over the same points share them.
+    uint*   cluster_offset;
+    float4* bounds;             // [2 per cluster]: min.xyz, max radius factor; max.xyz, asfloat(visible elements)
+    uint*   cstate;             // [cluster]: OR of the state bits of its elements
+    uint*   _pptr;
+    uint    cluster_count;
+    uint    cluster_work_offset;// first cluster work item (cluster x instance)
+    uint    cluster_base;       // first cluster over all batches (refit)
+    uint    _pad2;
 };
 
 // The per-view lists the cull writes and everything after it reads.
 // Entries are ids (encode_id): batch slot and linear index.
 struct Lists {
+    uint2*    cvis;             // clusters to expand: phase 1, then phase 2 after them
+    uint2*    cocc;             // clusters occluded in phase 1
+    uint2*    cst;              // clusters with a state bit, in the frustum
     uint2*    hw0;              // spheres for the hardware raster
     uint2*    hw1;              // capsules
     uint2*    st0;              // spheres with a state bit, for the masks
@@ -141,11 +164,21 @@ static const uint C_OCC        = 8;
 static const uint C_HIDDEN     = 9;
 static const uint C_OUTSIDE    = 10;
 static const uint C_OCCLUDED   = 11;
+static const uint C_CVIS1      = 12;
+static const uint C_CVIS2      = 13;
+static const uint C_COCC       = 14;
+static const uint C_CST        = 15;
+static const uint C_GRID_CVIS  = 52;   // [phase - 1], 4 words apart: 52, 56
+static const uint C_GRID_COCC  = 60;
+static const uint C_GRID_CST   = 64;
+static const uint C_GRID_STATE = 68;   // unused
+static const uint C_CL_VIS     = 72;   // clusters drawn from, phase 1 and 2: 72, 73
+static const uint C_CL_OCC     = 74;   // clusters occluded after both phases
 static const uint C_CMD        = 16;   // md_gpu_draw_cmd_t [phase - 1][kind]: 16..31
 static const uint C_STCMD      = 32;   // [kind]: 32..39
 static const uint C_GRID_SMALL = 40;   // md_gpu_grid_t [phase - 1], 4 words apart: 40, 44
 static const uint C_GRID_OCC   = 48;
-static const uint C_COUNT      = 64;
+static const uint C_COUNT      = 80;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -488,7 +521,30 @@ bool hiz_occluded(ViewData v, DescriptorHandle<Texture2D<float>> hiz, Bounds bd)
 
 // ---------------------------------------------------------------------------
 // Cull
+//
+// Two levels. Clusters are tested first (frustum, depth pyramid); the
+// elements of the clusters that pass are tested one by one and sorted into
+// the hardware, small-primitive and occluded lists. Each phase of occlusion
+// does both levels:
+//
+//   phase 1   clusters against the previous raster's pyramid; elements of
+//             the visible ones likewise
+//   phase 2   clusters occluded in phase 1, and elements occluded in phase 1,
+//             against this raster's pyramid
+//   state     clusters with a state bit in the frustum, then their elements
+//             with one, into the state lists for the masks (occluded or not)
+//
+// Statistics count elements, each exactly once: elements of hidden clusters
+// and hidden elements of visible ones at the cluster level, the rest where
+// their fate is decided.
 // ---------------------------------------------------------------------------
+
+static const uint OUT_HIDDEN   = 0u;
+static const uint OUT_OUTSIDE  = 1u;
+static const uint OUT_OCCLUDED = 2u;
+static const uint OUT_HW       = 3u;
+static const uint OUT_SMALL    = 4u;
+static const uint OUT_NONE     = 5u;   // a lane without an element
 
 // Appends with one atomic per wave: the index for this lane (valid when it wants one)
 uint wave_append(uint* counter, bool want) {
@@ -499,137 +555,350 @@ uint wave_append(uint* counter, bool want) {
     return base + WavePrefixSum(want ? 1u : 0u);    // WavePrefixCountBits has no Metal lowering
 }
 
-void wave_count(uint* counter, bool want) {
-    uint n = WaveActiveCountBits(want);
+void wave_add(uint* counter, uint value) {
+    uint n = WaveActiveSum(value);
     if (WaveIsFirstLane() && n > 0u) ((Atomic<uint>*)counter)->add(n);
 }
 
-// Binary search for the batch of work item i: the last with work_offset <= i
-// (batches without work share their offset with the next one, which wins)
-uint find_batch(Batch* batches, uint count, uint i) {
+void wave_count(uint* counter, bool want) { wave_add(counter, want ? 1u : 0u); }
+
+uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
+uint grid_groups(uint n)  { return min(n, 65535u); }
+
+// The batch of work item i: the last with offset <= i (batches without work
+// share their offset with the next one, which wins)
+uint find_batch_work(Batch* batches, uint count, uint i) {
     uint lo = 0u, hi = count;
-    while (hi - lo > 1u) {
-        uint mid = (lo + hi) >> 1;
-        if (batches[mid].work_offset <= i) lo = mid; else hi = mid;
-    }
+    while (hi - lo > 1u) { uint mid = (lo + hi) >> 1; if (batches[mid].work_offset <= i) lo = mid; else hi = mid; }
+    return lo;
+}
+uint find_batch_cluster_work(Batch* batches, uint count, uint i) {
+    uint lo = 0u, hi = count;
+    while (hi - lo > 1u) { uint mid = (lo + hi) >> 1; if (batches[mid].cluster_work_offset <= i) lo = mid; else hi = mid; }
+    return lo;
+}
+uint find_batch_cluster(Batch* batches, uint count, uint i) {
+    uint lo = 0u, hi = count;
+    while (hi - lo > 1u) { uint mid = (lo + hi) >> 1; if (batches[mid].cluster_base <= i) lo = mid; else hi = mid; }
     return lo;
 }
 
-uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
+uint2 cluster_range(Batch b, uint c) {
+    if ((b.flags & F_CLUSTERS) != 0u) return uint2(b.cluster_offset[c], b.cluster_offset[c + 1u]);
+    uint beg = c * 64u;
+    return uint2(beg, min(beg + 64u, b.count));
+}
 
-static const uint OUT_HIDDEN   = 0u;
-static const uint OUT_OUTSIDE  = 1u;
-static const uint OUT_OCCLUDED = 2u;
-static const uint OUT_HW       = 3u;
-static const uint OUT_SMALL    = 4u;
-static const uint OUT_NONE     = 5u;   // phase 3: nothing but the state lists
+// An element in the batch's own space: the visibility test, the state bits and
+// the radius factor its style multiplies (spheres: the point radius, capsules:
+// the per-capsule scale)
+struct LocalElem {
+    bool   ok;
+    uint   st;
+    float3 a;
+    float3 b;
+    float  factor;
+};
 
-// Phase 1 (mode 1): every element of every batch, against the pyramid of the
-// previous raster. Phase 2 (mode 2): what phase 1 found occluded, against the
-// pyramid of phase 1's raster. Phase 3: the state lists alone, again, after a
-// change of state bits without a raster (the masks must follow the selection).
+LocalElem element_local(Batch b, uint e) {
+    LocalElem l;
+    l.ok = false; l.st = 0u; l.a = float3(0.0); l.b = float3(0.0); l.factor = 0.0;
+    if (b.kind == KIND_SPHERES) {
+        uint pi = point_of(b, e, 0u, 1u);
+        uint ai = attr_of(b, pi);
+        if (!attr_visible(b, ai)) return l;
+        l.st = attr_state(b, ai);
+        l.factor = ((b.flags & F_RADIUS) != 0u) ? b.radius[pi] : 0.0;
+        l.a = load_pos(b, pi);
+        l.b = l.a;
+        l.ok = sphere_radius(b, pi) > 0.0;
+    } else if (b.kind == KIND_CAPSULES) {
+        uint p0 = point_of(b, e, 0u, 2u);
+        uint p1 = point_of(b, e, 1u, 2u);
+        uint a0 = attr_of(b, p0);
+        uint a1 = attr_of(b, p1);
+        if (!attr_visible(b, a0) || !attr_visible(b, a1)) return l;
+        l.st = attr_state(b, a0) & attr_state(b, a1);
+        l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[e] : 1.0;
+        l.a = load_pos(b, p0);
+        l.b = load_pos(b, p1);
+        l.ok = capsule_radius(b, e) > 0.0;
+    }
+    return l;
+}
+
+// One thread per cluster: bounds of its visible elements, and its state bits.
+// Runs when the geometry changed (refit_mode 0), or when only the state bits
+// did (refit_mode 1). Batches sharing bounds with an earlier one are skipped.
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void cull(uint3 tid : SV_DispatchThreadID) {
+void refit(uint3 tid : SV_DispatchThreadID) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
-    Lists    L = *a.lists;
-    uint phase = a.mode;
-    uint n = phase == 2u ? L.counters[C_OCC] : v.total_work;
+    uint n = v.total_clusters;
     uint stride = grid_threads(n);
     for (uint i = tid.x; i < n; i += stride) {
-        uint slot, inst, e;
-        uint2 ent;
-        if (phase != 2u) {
-            slot = find_batch(a.batches, v.batch_count, i);
-            Batch bb = a.batches[slot];
-            uint local = i - bb.work_offset;
-            inst = local / max(bb.count, 1u);
-            e    = local - inst * bb.count;
-            ent  = encode_id(slot, 0u, uint64_t(inst) * uint64_t(bb.count) + uint64_t(e));
-        } else {
-            ent = L.occ[i];
-            Elem el = decode(a.batches, ent);
-            slot = el.slot; inst = el.inst; e = el.e;
-        }
-        Batch b = a.batches[slot];
-        Geo   g = element_geo(v, b, inst, e);
-        uint  out = OUT_HIDDEN;
-        if (g.ok) {
-            Bounds bd = geo_bounds(v, g);
-            if (bd.outside) {
-                out = OUT_OUTSIDE;
-            } else if (phase != 3u && v.occlusion != 0u && hiz_occluded(v, a.hiz, bd)) {
-                out = OUT_OCCLUDED;
-            } else {
-                float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;   // without the pad
-                out = (v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
+        uint  slot = find_batch_cluster(a.batches, v.batch_count, i);
+        Batch b    = a.batches[slot];
+        if ((b.flags & F_SHARED) != 0u) continue;
+        uint  c    = i - b.cluster_base;
+        uint2 rng  = cluster_range(b, c);
+        float3 lo = float3(3.0e38), hi = float3(-3.0e38);
+        float  fmax = 0.0;
+        uint   count = 0u, st = 0u;
+        for (uint e = rng.x; e < rng.y; ++e) {
+            LocalElem l = element_local(b, e);
+            if (!l.ok) continue;
+            st |= l.st;
+            if (v.refit_mode == 0u) {
+                lo = min(lo, min(l.a, l.b));
+                hi = max(hi, max(l.a, l.b));
+                fmax = max(fmax, l.factor);
+                count += 1u;
             }
         }
-        uint k = g.kind;
-
-        // State lists (phases 1 and 3): everything in the frustum, occluded or
-        // not, so the masks also show what is hidden.
-        bool st_any = phase != 2u && g.ok && out != OUT_OUTSIDE && g.st != 0u;
-        if (phase == 3u) out = OUT_NONE;
-        uint is0 = wave_append(L.counters + C_ST + 0u, st_any && k == 0u);
-        uint is1 = wave_append(L.counters + C_ST + 1u, st_any && k == 1u);
-        if (st_any) { if (k == 0u) L.st0[is0] = ent; else L.st1[is1] = ent; }
-
-        uint hw_base0 = phase == 2u ? L.counters[C_HW1 + 0u] : 0u;
-        uint hw_base1 = phase == 2u ? L.counters[C_HW1 + 1u] : 0u;
-        uint c_hw = phase == 2u ? C_HW2 : C_HW1;
-        uint ih0 = wave_append(L.counters + c_hw + 0u, out == OUT_HW && k == 0u);
-        uint ih1 = wave_append(L.counters + c_hw + 1u, out == OUT_HW && k == 1u);
-        if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else L.hw1[hw_base1 + ih1] = ent; }
-
-        uint sm_base = phase == 2u ? L.counters[C_SMALL1] : 0u;
-        uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL);
-        if (out == OUT_SMALL) L.small[sm_base + ism] = ent;
-
-        uint ioc = wave_append(L.counters + C_OCC, phase == 1u && out == OUT_OCCLUDED);
-        if (phase == 1u && out == OUT_OCCLUDED) L.occ[ioc] = ent;
-
-        wave_count(L.counters + C_HIDDEN,   out == OUT_HIDDEN && phase == 1u);
-        wave_count(L.counters + C_OUTSIDE,  out == OUT_OUTSIDE && phase != 3u);
-        wave_count(L.counters + C_OCCLUDED, phase == 2u && out == OUT_OCCLUDED);
+        b.cstate[c] = st;
+        if (v.refit_mode == 0u) {
+            b.bounds[2u * c + 0u] = float4(lo, fmax);
+            b.bounds[2u * c + 1u] = float4(hi, asfloat(count));
+        }
     }
 }
 
-// The indirect commands of a phase, from its counts. One thread.
+// The bounding sphere of cluster c of instance inst, in view space, padded by
+// the batch's style (scaled with the instance)
+struct ClusterSphere {
+    float3 c;
+    float  r;
+    uint   count;               // visible elements
+};
+
+ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
+    ClusterSphere cs;
+    float4 lo = b.bounds[2u * c + 0u];
+    float4 hi = b.bounds[2u * c + 1u];
+    cs.count = asuint(hi.w);
+    Mat   T  = load_transform(b.transforms, inst);
+    float s  = length(T.c0.xyz);
+    float3 ctr = 0.5 * (lo.xyz + hi.xyz);
+    float3 ext = 0.5 * (hi.xyz - lo.xyz);
+    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : lo.w * b.s0;
+    cs.c = mulp(M(v, view), mulp(T, ctr));
+    cs.r = (length(ext) + max(pad, 0.0)) * s;
+    return cs;
+}
+
+// mode 1: phase 1 over all cluster work. mode 2: phase 2 over the clusters
+// phase 1 found occluded. mode 3: the state pass (clusters with a state bit
+// in the frustum, occluded or not).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Lists    L = *a.lists;
+    uint mode = a.mode;
+    uint n = mode == 2u ? L.counters[C_COCC] : v.total_cluster_work;
+    uint stride = grid_threads(n);
+    for (uint i0 = group_start(tid, gi); i0 < n; i0 += stride) {
+        uint i = min(i0 + gi, n - 1u);
+        bool valid = i0 + gi < n;
+        uint slot, inst, c;
+        uint2 ent;
+        if (mode == 2u) {
+            ent  = L.cocc[i];
+            slot = (ent.y >> 20) - 1u;
+            Batch bb = a.batches[slot];
+            uint linear = ent.x;
+            inst = linear / max(bb.cluster_count, 1u);
+            c    = linear - inst * bb.cluster_count;
+        } else {
+            slot = find_batch_cluster_work(a.batches, v.batch_count, i);
+            Batch bb = a.batches[slot];
+            uint local = i - bb.cluster_work_offset;
+            inst = local / max(bb.cluster_count, 1u);
+            c    = local - inst * bb.cluster_count;
+            ent  = uint2(local, (slot + 1u) << 20);
+        }
+        Batch b = a.batches[slot];
+        uint2 rng = cluster_range(b, c);
+        ClusterSphere cs = cluster_sphere(v, b, inst, c);
+        if (!valid) cs.count = 0u;
+        uint hidden = (mode == 1u && valid) ? (rng.y - rng.x) - cs.count : 0u;
+        uint out = valid ? OUT_HIDDEN : OUT_NONE;
+        if (cs.count > 0u) {
+            Bounds bd = sphere_bounds(v, cs.c, cs.r);
+            if (bd.outside) out = OUT_OUTSIDE;
+            else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, a.hiz, bd)) out = OUT_OCCLUDED;
+            else out = OUT_HW;      // visible: expand
+        }
+        if (mode == 3u) {
+            bool want = valid && out != OUT_HIDDEN && out != OUT_OUTSIDE && b.cstate[c] != 0u;
+            uint k = wave_append(L.counters + C_CST, want);
+            if (want) L.cst[k] = ent;
+            continue;
+        }
+        uint vbase = mode == 2u ? L.counters[C_CVIS1] : 0u;
+        uint iv = wave_append(L.counters + (mode == 2u ? C_CVIS2 : C_CVIS1), out == OUT_HW);
+        if (out == OUT_HW) L.cvis[vbase + iv] = ent;
+        uint io = wave_append(L.counters + C_COCC, mode == 1u && out == OUT_OCCLUDED);
+        if (mode == 1u && out == OUT_OCCLUDED) L.cocc[io] = ent;
+
+        wave_add(L.counters + C_HIDDEN, hidden);
+        wave_add(L.counters + C_OUTSIDE, out == OUT_OUTSIDE ? cs.count : 0u);
+        wave_add(L.counters + C_OCCLUDED, mode == 2u && out == OUT_OCCLUDED ? cs.count : 0u);
+        wave_count(L.counters + C_CL_OCC, mode == 2u && out == OUT_OCCLUDED);
+        wave_count(L.counters + C_CL_VIS + (mode - 1u), out == OUT_HW);
+    }
+}
+
+// The fate of one element, in phase 1 or 2 (phase 2: occlusion is final).
+// Every lane of a wave calls this together, those without an element with
+// valid false: the wave operations inside run converged. (Divergent wave
+// operations are legal, and are where drivers have bugs: lavapipe faulted.)
+void element_pass(Args a, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
+    Geo   g;
+    g.ok = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
+    uint2 ent = uint2(0u);
+    if (valid) {
+        Batch b = a.batches[slot];
+        ent = encode_id(slot, 0u, uint64_t(inst) * uint64_t(b.count) + uint64_t(e));
+        g   = element_geo(v, b, inst, e);
+    }
+    uint  out = valid ? OUT_HIDDEN : OUT_NONE;
+    if (g.ok) {
+        Bounds bd = geo_bounds(v, g);
+        if (bd.outside) {
+            out = OUT_OUTSIDE;
+        } else if (!state_only && v.occlusion != 0u && hiz_occluded(v, a.hiz, bd)) {
+            out = OUT_OCCLUDED;
+        } else {
+            float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;   // without the pad
+            out = (v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
+        }
+    }
+    uint k = g.kind;
+    if (state_only) {
+        bool want = g.ok && out != OUT_OUTSIDE && g.st != 0u;
+        uint is0 = wave_append(L.counters + C_ST + 0u, want && k == 0u);
+        uint is1 = wave_append(L.counters + C_ST + 1u, want && k == 1u);
+        if (want) { if (k == 0u) L.st0[is0] = ent; else L.st1[is1] = ent; }
+        return;
+    }
+    uint hw_base0 = phase == 2u ? L.counters[C_HW1 + 0u] : 0u;
+    uint hw_base1 = phase == 2u ? L.counters[C_HW1 + 1u] : 0u;
+    uint c_hw = phase == 2u ? C_HW2 : C_HW1;
+    uint ih0 = wave_append(L.counters + c_hw + 0u, out == OUT_HW && k == 0u);
+    uint ih1 = wave_append(L.counters + c_hw + 1u, out == OUT_HW && k == 1u);
+    if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else L.hw1[hw_base1 + ih1] = ent; }
+
+    uint sm_base = phase == 2u ? L.counters[C_SMALL1] : 0u;
+    uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL);
+    if (out == OUT_SMALL) L.small[sm_base + ism] = ent;
+
+    uint ioc = wave_append(L.counters + C_OCC, phase == 1u && out == OUT_OCCLUDED);
+    if (phase == 1u && out == OUT_OCCLUDED) L.occ[ioc] = ent;
+
+    // hidden elements were counted with their cluster
+    wave_count(L.counters + C_OUTSIDE,  out == OUT_OUTSIDE);
+    wave_count(L.counters + C_OCCLUDED, phase == 2u && out == OUT_OCCLUDED);
+}
+
+// Uniform grid-stride iteration: the group's first item advances for all its
+// lanes together, so a lane past the end still takes part (valid false)
+uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
+
+// Elements. mode 1: of the clusters visible in phase 1 (a group per cluster).
+// mode 2: those phase 1 found occluded (a thread each). mode 4: of the
+// clusters phase 2 found visible. mode 3: the state lists, from the clusters
+// of the state pass.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Lists    L = *a.lists;
+    uint mode = a.mode;
+    if (mode == 2u) {
+        uint n = L.counters[C_OCC];
+        uint stride = grid_threads(n);
+        for (uint i0 = group_start(tid, gi); i0 < n; i0 += stride) {
+            uint i = i0 + gi;
+            bool valid = i < n;
+            Elem el;
+            el.slot = 0u; el.inst = 0u; el.e = 0u;
+            if (valid) el = decode(a.batches, L.occ[i]);
+            element_pass(a, v, L, 2u, false, valid, el.slot, el.inst, el.e);
+        }
+        return;
+    }
+    uint2* src  = mode == 3u ? L.cst : L.cvis;
+    uint   base = mode == 4u ? L.counters[C_CVIS1] : 0u;
+    uint   n    = mode == 1u ? L.counters[C_CVIS1] : mode == 4u ? L.counters[C_CVIS2] : L.counters[C_CST];
+    uint   groups = grid_groups(n);
+    for (uint ci = gid.x; ci < n; ci += groups) {
+        uint2 ent  = src[base + ci];
+        uint  slot = (ent.y >> 20) - 1u;
+        Batch b    = a.batches[slot];
+        uint  inst = ent.x / max(b.cluster_count, 1u);
+        uint  c    = ent.x - inst * b.cluster_count;
+        uint2 rng  = cluster_range(b, c);
+        for (uint e0 = rng.x; e0 < rng.y; e0 += 64u) {
+            uint e = e0 + gi;
+            element_pass(a, v, L, mode == 4u ? 2u : 1u, mode == 3u, e < rng.y, slot, inst, e);
+        }
+    }
+}
+
+// The indirect commands and grids made of the counts. One thread.
+//   11: after the phase 1 cluster cull: element grid, phase 2 cluster grid
+//   12: after the phase 1 element cull: draws, small grid, element retest grid
+//   21: after the phase 2 cluster cull: element grid
+//   22: after the phase 2 element culls: draws, small grid
+//   31: after the state cluster pass: its element grid
+//   32: after the state element pass: the state draws
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void finalize(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint* c = a.lists->counters;
-    uint phase = a.mode;
-    for (uint k = 0u; k < 2u; ++k) {
-        if (phase != 2u) {
+    uint mode = a.mode;
+    if (mode == 11u || mode == 21u || mode == 31u) {
+        uint n = mode == 11u ? c[C_CVIS1] : mode == 21u ? c[C_CVIS2] : c[C_CST];
+        uint* g = c + (mode == 31u ? C_GRID_CST : C_GRID_CVIS + (mode == 21u ? 4u : 0u));
+        g[0] = grid_groups(n); g[1] = 1u; g[2] = 1u;
+        if (mode == 11u) {
+            uint no = c[C_COCC];
+            uint* go = c + C_GRID_COCC;
+            go[0] = min((no + 63u) / 64u, 65535u); go[1] = 1u; go[2] = 1u;
+        }
+        return;
+    }
+    if (mode == 32u) {
+        for (uint k = 0u; k < 2u; ++k) {
             uint* sc = c + C_STCMD + k * 4u;
             sc[0] = k == 0u ? 6u : 36u;
             sc[1] = c[C_ST + k];
             sc[2] = 0u;
             sc[3] = 0u;
         }
-        if (phase == 3u) continue;
+        return;
+    }
+    uint phase = mode == 12u ? 1u : 2u;
+    for (uint k = 0u; k < 2u; ++k) {
         uint* cmd = c + C_CMD + ((phase - 1u) * 2u + k) * 4u;
         cmd[0] = k == 0u ? 6u : 36u;
         cmd[1] = phase == 1u ? c[C_HW1 + k] : c[C_HW2 + k];
         cmd[2] = 0u;
         cmd[3] = phase == 1u ? 0u : c[C_HW1 + k];
     }
-    if (phase == 3u) return;
     uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
     uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
-    gs[0] = min((ns + 63u) / 64u, 65535u);
-    gs[1] = 1u;
-    gs[2] = 1u;
+    gs[0] = min((ns + 63u) / 64u, 65535u); gs[1] = 1u; gs[2] = 1u;
     if (phase == 1u) {
         uint no = c[C_OCC];
         uint* go = c + C_GRID_OCC;
-        go[0] = min((no + 63u) / 64u, 65535u);
-        go[1] = 1u;
-        go[2] = 1u;
+        go[0] = min((no + 63u) / 64u, 65535u); go[1] = 1u; go[2] = 1u;
     }
 }
 

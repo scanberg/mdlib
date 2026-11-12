@@ -731,7 +731,8 @@ static void dense_scene(fix_t* fx, dense_t* d) {
     d->b[1].style.capsules.radius = 0.04f;
 }
 
-static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered) {
+/* ids and depths equal; with depth_only, depths (an index renumbers the elements) */
+static int compare_views_ex(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered, bool depth_only) {
     uint32_t* ia = malloc(W * H * 8); uint32_t* ib = malloc(W * H * 8);
     float* da = malloc(W * H * 4); float* db = malloc(W * H * 4);
     int bad = -1;
@@ -740,7 +741,7 @@ static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint
         bad = 0; *covered = 0;
         for (uint32_t i = 0; i < W * H; ++i) {
             if (ib[2 * i + 1]) (*covered)++;
-            if (ia[2 * i] != ib[2 * i] || ia[2 * i + 1] != ib[2 * i + 1] || da[i] != db[i]) {
+            if ((!depth_only && (ia[2 * i] != ib[2 * i] || ia[2 * i + 1] != ib[2 * i + 1])) || da[i] != db[i]) {
                 if (bad < 8) printf("    pixel (%u, %u): id %u/%x depth %.9g  vs reference %u/%x depth %.9g\n", i % W, i / W,
                                     ia[2 * i], ia[2 * i + 1], da[i], ib[2 * i], ib[2 * i + 1], db[i]);
                 bad++;
@@ -749,6 +750,10 @@ static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint
     }
     free(ia); free(ib); free(da); free(db);
     return bad;
+}
+
+static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered) {
+    return compare_views_ex(fx, a, b, W, H, covered, false);
 }
 
 UTEST(render, culling_and_compute_raster_change_nothing) {
@@ -787,6 +792,7 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     md_gpu_stream_sync(fx.gfx);
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
     EXPECT_EQ(2u, st.raster);
+    EXPECT_TRUE(st.refitted);                             /* the geometry was announced as changed */
     EXPECT_GT(st.occluded, (d.n_sph + d.n_cap) / 4);       /* most of a 12-deep stack */
     EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
@@ -805,8 +811,45 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     md_gpu_stream_sync(fx.gfx);
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
     EXPECT_GT(st.hardware[1] + st.compute[1], 0u);         /* phase 2 found some */
+    EXPECT_FALSE(st.refitted);                             /* only the camera moved: bounds kept */
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     printf("    moved:  occluded %u (retested %u), phase 2 drew %u + %u\n", st.occluded, st.occlusion_retested, st.hardware[1], st.compute[1]);
+
+    /* Explicit clusters over the same spheres, compact this time: 4 x 4 tiles
+       of each layer, through an index that orders the spheres tile by tile.
+       The same image, and the cluster level now culls. */
+    {
+        const uint32_t NX = 48, NY = 32, NZ = 12;
+        uint32_t* perm = malloc(d.n_sph * 4);
+        uint32_t* off  = malloc((d.n_sph + 1) * 4);
+        uint32_t ne = 0, nc = 0;
+        for (uint32_t z = 0; z < NZ; ++z) for (uint32_t ty = 0; ty < NY; ty += 4) for (uint32_t tx = 0; tx < NX; tx += 4) {
+            off[nc++] = ne;
+            for (uint32_t y = ty; y < ty + 4; ++y) for (uint32_t x = tx; x < tx + 4; ++x) perm[ne++] = (z * NY + y) * NX + x;
+        }
+        off[nc] = ne;
+        md_gpu_addr_t C = f_buf(&fx, off, (nc + 1) * 4);
+        md_gpu_addr_t I = f_buf(&fx, perm, ne * 4);
+        md_render_batch_t bc[2] = { d.b[0], d.b[1] };
+        bc[0].index          = I;
+        bc[0].cluster_offset = C;
+        bc[0].cluster_count  = nc;
+        f.batches = bc;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));     /* new clusters: a refit */
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));     /* with the pyramid */
+        md_gpu_stream_sync(fx.gfx);
+        ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+        EXPECT_EQ(nc + (d.n_cap + 63) / 64, st.clusters);
+        EXPECT_GT(st.clusters_occluded, nc / 5);           /* a quarter are outside; of the rest, the layers behind the wall */
+        EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
+        EXPECT_EQ(0, compare_views_ex(&fx, fx.view, ref, W, H, &covered, true));
+        printf("    tiles:  clusters %u, expanded %u + %u, occluded %u; elements occluded %u\n", st.clusters,
+               st.clusters_expanded[0], st.clusters_expanded[1], st.clusters_occluded, st.occluded);
+        f.batches = d.b;
+        free(off);
+        free(perm);
+    }
 
     /* Selection after culling: the state cull (phase 3) follows a change of
        the bits without a raster, hidden ones included */
