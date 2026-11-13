@@ -306,6 +306,17 @@ typedef struct md_render_batch_t {
        at the call; rigid or uniformly scaled. NULL: once, as it is. */
     const float*       transform;
     uint32_t           transform_count;
+
+    /* Size window: the batch draws only the elements where the projection's
+       scale, in pixels per view-space unit at the element's centre (a
+       capsule's midpoint), is in [lod_min, lod_max); 0 is no bound. A cull
+       test like the frustum's, and applied before it: whole clusters out of
+       the window are dropped by their bounds. What draws where (a
+       representation and its stand-in at a distance, in adjacent windows) is
+       the caller's. The instance transform's scale does not enter; with an
+       orthographic projection the scale is the same everywhere. Elements left
+       out are counted in md_render_stats_t.lod. */
+    float              lod_min, lod_max;
 } md_render_batch_t;
 
 /* =========================================================================
@@ -455,6 +466,7 @@ typedef struct md_render_stats_t {
     uint64_t elements;             /* submitted: count x instances over all batches */
     uint32_t hidden;               /* by visibility bits or a radius <= 0           */
     uint32_t outside;              /* the frustum                                   */
+    uint32_t lod;                  /* their batch's size window (lod_min, lod_max)  */
     uint32_t occluded;             /* by the depth pyramid, after both phases       */
     uint32_t hardware[2];          /* rasterised in hardware: phase 1, phase 2      */
     uint32_t compute[2];           /* rasterised in compute:  phase 1, phase 2      */

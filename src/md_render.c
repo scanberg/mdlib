@@ -31,7 +31,8 @@ typedef struct gpu_view_t {
     float         jitter_px;        /* how far this raster's jitter moves the image: max |jx|, |jy| */
     float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
-    uint32_t      _vpad[2];
+    float         lod_px;           /* the projection's scale: pixels per unit at depth 1 (ortho: everywhere) */
+    uint32_t      _vpad;
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
@@ -69,6 +70,7 @@ enum {
     F_CLUSTERS     = 1u << 12,
     F_SHARED       = 1u << 13,
     F_RADIUS_TABLE = 1u << 14,
+    F_LOD          = 1u << 15,
 };
 
 typedef struct gpu_batch_t {
@@ -84,8 +86,10 @@ typedef struct gpu_batch_t {
     uint32_t      work_offset, rad_stride;
     md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
+    float         lod_min, lod_max;
+    uint32_t      _bpad[2];
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 256, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 272, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -116,6 +120,7 @@ enum {
     C_GRID_CVIS = 52, C_GRID_COCC = 60, C_GRID_CST = 64, C_CL_VIS = 72, C_CL_OCC = 74,
     C_ICMD = 80,      /* md_gpu_draw_indexed_cmd_t: capsules, phase 1 and 2: 80..89 */
     C_STICMD = 90,    /* the state list's capsules: 90..94 */
+    C_LOD = 95,       /* elements outside their batch's size window */
     C_COUNT = 96,
 };
 #define IMPLICIT_CLUSTER 64u
@@ -518,6 +523,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
     }
     out->transform_count = b->transform ? b->transform_count : 0;
+    out->lod_min = b->lod_min > 0.0f ? b->lod_min : 0.0f;
+    out->lod_max = b->lod_max > 0.0f ? b->lod_max : 0.0f;
 }
 
 static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) {
@@ -644,6 +651,7 @@ static bool bounds_shared(const md_render_batch_t* a, const md_render_batch_t* b
     x.transform_count = y.transform_count = 0;
     x.points.velocity = y.points.velocity = 0;
     x.points.velocity_stride = y.points.velocity_stride = 0;
+    x.lod_min = y.lod_min = x.lod_max = y.lod_max = 0.0f;     /* the bounds do not depend on it */
     return memcmp(&x, &y, sizeof(x)) == 0;
 }
 
@@ -727,6 +735,7 @@ static bool geometry_unchanged(const md_render_view_t v, const md_render_frame_t
         canonical_geometry(&x, &f->batches[i]);
         canonical_geometry(&y, &v->batches[i]);
         x.transform_count = y.transform_count = 0;
+        x.lod_min = y.lod_min = x.lod_max = y.lod_max = 0.0f;   /* a raster, not a refit */
         if (memcmp(&x, &y, sizeof(x)) != 0) return false;
     }
     return true;
@@ -797,6 +806,9 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->radius_scale = b->style.capsules.radius_scale;
         if (b->style.capsules.radius_scale) f |= F_RADIUS_SCALE;
     }
+    g->lod_min = b->lod_min > 0.0f ? b->lod_min : 0.0f;
+    g->lod_max = b->lod_max > 0.0f ? b->lod_max : 0.0f;
+    if (g->lod_min > 0.0f || g->lod_max > 0.0f) f |= F_LOD;
     g->flags         = f;
     g->uniform_color = b->color.uniform;
     g->palette_count = b->color.palette_count;
@@ -1162,6 +1174,7 @@ bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
     out->elements    = v->stats[best].elements;
     out->hidden      = c[C_HIDDEN];
     out->outside     = c[C_OUTSIDE];
+    out->lod         = c[C_LOD];
     out->occluded    = c[C_OCCLUDED];
     out->hardware[0] = c[C_HW1] + c[C_HW1 + 1];
     out->hardware[1] = c[C_HW2] + c[C_HW2 + 1];
@@ -1294,6 +1307,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.jitter_px       = fabsf(jx) > fabsf(jy) ? fabsf(jx) : fabsf(jy);
         gv.occl_margin     = g_occl_margin;
         gv.occl_min_px     = g_occl_min_px;
+        gv.lod_px          = fabsf(f->camera.proj[5]) * 0.5f * (float)f->height;   /* unjittered: 1 / tan(fov / 2), or 1 / half the height (ortho) */
         if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_view_t)).gpu;
         if (!v->view_buf) return false;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));

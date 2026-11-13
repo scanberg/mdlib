@@ -1145,10 +1145,14 @@ static int run_gpu(int argc, char** argv) {
     }
     printf("\n");
 
-    const struct { const char* name; bool licorice; float dist; } looks[] = {
-        { "spacefill, near", false, 0.6f },
-        { "spacefill, far",  false, 6.0f },
-        { "licorice, near",  true,  0.6f },
+    /* standin: licorice drawn where a stick is at least a pixel wide (2.5
+       px/A for 0.2 A), spheres at 0.4 of the atoms' radii beyond (md_render_mol
+       only: two representations in adjacent size windows) */
+    const struct { const char* name; bool licorice; float dist; float standin; } looks[] = {
+        { "spacefill, near", false, 0.6f, 0.0f },
+        { "spacefill, far",  false, 6.0f, 0.0f },
+        { "licorice, near",  true,  0.6f, 0.0f },
+        { "licorice from 2.5 px/A, spheres beyond, near", true, 0.6f, 2.5f },
     };
     /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
        untested. Rows marked "x:" would be experiments with other settings
@@ -1275,6 +1279,7 @@ static int run_gpu(int argc, char** argv) {
         }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
             if (only_look && !strstr(looks[li].name, only_look)) continue;
+            if (looks[li].standin > 0.0f && src != SRC_MOL) continue;
             md_render_batch_t b[8];
             memset(b, 0, sizeof(b));
             uint32_t nb = 0;
@@ -1285,7 +1290,17 @@ static int run_gpu(int argc, char** argv) {
                 rep.atom_color = sc.color;
                 if (looks[li].licorice) { rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; }
                 else                    { rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f; }
+                rep.lod_min = looks[li].standin;
                 nb = md_render_mol_emit(&sc.topo, sc.dyn, &atoms, &rep, b, 8);
+                if (looks[li].standin > 0.0f) {
+                    md_render_mol_rep_t far = rep;
+                    far.key = 2;
+                    far.type = MD_RENDER_MOL_REP_SPACEFILL;
+                    far.params.spacefill.radius_scale = 0.4f;
+                    far.lod_min = 0.0f;
+                    far.lod_max = looks[li].standin;
+                    nb += md_render_mol_emit(&sc.topo, sc.dyn, &atoms, &far, b + nb, 8 - nb);
+                }
             }
             md_render_points_t pts = {0};
             pts.count = sc.atoms; pts.position = sc.pos; pts.radius = sc.rad; pts.color = sc.color; pts.state[0] = sc.sel;
@@ -1302,8 +1317,8 @@ static int run_gpu(int argc, char** argv) {
                 }
             }
             printf("-- %s\n", looks[li].name);
-            printf("  %-24s %6s | %17s %17s %17s %17s | %9s %9s %9s %9s %9s | %8s %8s %8s\n", "options", "small", "raster (refit)", "raster (camera)", "resolve", "mask",
-                   "outside", "occluded", "hw", "compute", "retested", "clusters", "expanded", "c.occl");
+            printf("  %-24s %6s | %17s %17s %17s %17s | %9s %9s %9s %9s %9s %9s | %8s %8s %8s\n", "options", "small", "raster (refit)", "raster (camera)", "resolve", "mask",
+                   "outside", "lod", "occluded", "hw", "compute", "retested", "clusters", "expanded", "c.occl");
             for (size_t oi = 0; oi < sizeof(opts) / sizeof(opts[0]); ++oi) {
                 for (uint32_t pi = 0; pi < (opts[oi].options & MD_RENDER_NO_COMPUTE_RASTER ? 1u : n_small); ++pi) {
                     md_render_debug_occlusion(opts[oi].margin, opts[oi].min_px);
@@ -1338,9 +1353,9 @@ static int run_gpu(int argc, char** argv) {
                     char small_s[16];
                     if (opts[oi].options & MD_RENDER_NO_COMPUTE_RASTER) snprintf(small_s, sizeof(small_s), "-");
                     else snprintf(small_s, sizeof(small_s), "%.0f", smalls[pi]);
-                    printf("  %-24s %6s | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %9u %9u %9u %9u %9u | %8u %8u %8u\n", opts[oi].name, small_s,
+                    printf("  %-24s %6s | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %9u %9u %9u %9u %9u %9u | %8u %8u %8u\n", opts[oi].name, small_s,
                            tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
-                           st.outside, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
+                           st.outside, st.lod, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
                            st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
                     if (oi == 0 && pi == 0) {
                         /* where a camera raster's time goes, pass by pass (each synced) */

@@ -54,7 +54,7 @@ struct ViewData {
     float  jitter_px;           // how far this raster's jitter moves the image (pixels)
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
     float  occl_min_px;         // elements no wider are not tested for occlusion
-    uint   _vpad1;
+    float  lod_px;              // the projection's scale: pixels per unit at depth 1 (ortho: everywhere)
     uint   _vpad2;
 };
 
@@ -77,6 +77,7 @@ static const uint F_PALETTE_IDX  = 1u << 11;
 static const uint F_CLUSTERS     = 1u << 12;  // explicit cluster offsets
 static const uint F_SHARED       = 1u << 13;  // bounds shared with an earlier batch: no refit
 static const uint F_RADIUS_TABLE = 1u << 14;  // `radius` holds a type per point (low 16 bits; high: flags)
+static const uint F_LOD          = 1u << 15;  // a size window: lod_min, lod_max
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -141,6 +142,11 @@ struct Batch {
     uint    cluster_work_offset;// first cluster work item (cluster x instance)
     uint    cluster_base;       // first cluster over all batches (refit)
     uint    radius_table_count;
+
+    float   lod_min;            // F_LOD: drawn where the scale (pixels per unit) is in [lod_min, lod_max)
+    float   lod_max;            // 0: no upper bound
+    uint    _bpad0;
+    uint    _bpad1;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -187,6 +193,7 @@ static const uint C_GRID_SMALL = 40;   // md_gpu_grid_t [phase - 1], 4 words apa
 static const uint C_GRID_OCC   = 48;
 static const uint C_ICMD       = 80;   // md_gpu_draw_indexed_cmd_t, capsules [phase - 1]: 80..89
 static const uint C_STICMD     = 90;   // the state list's capsules: 90..94
+static const uint C_LOD        = 95;   // elements outside their batch's size window
 static const uint C_COUNT      = 96;
 
 // One argument struct for every entry point (md_gpu shares one root between a
@@ -613,6 +620,25 @@ static const uint OUT_OCCLUDED = 2u;
 static const uint OUT_HW       = 3u;
 static const uint OUT_SMALL    = 4u;
 static const uint OUT_NONE     = 5u;   // a lane without an element
+static const uint OUT_LOD      = 6u;   // outside its batch's size window
+
+// The size window (md_render_batch_t.lod_min, lod_max): the projection's
+// scale at view-space depth d (> 0 in front of the eye), in pixels per unit.
+// At or behind the eye: unbounded.
+float lod_scale(ViewData v, float d) {
+    if (v.ortho != 0u) return v.lod_px;
+    return d > 0.0 ? v.lod_px / d : 3.0e38;
+}
+// Whether scales in [lo, hi] can meet the batch's window
+bool lod_meets(Batch b, float lo, float hi) {
+    return hi >= b.lod_min && (b.lod_max <= 0.0 || lo < b.lod_max);
+}
+// An element: its centre (view space), a capsule's midpoint
+bool lod_keeps(ViewData v, Batch b, float3 centre) {
+    if ((b.flags & F_LOD) == 0u) return true;
+    float sc = lod_scale(v, -centre.z);
+    return lod_meets(b, sc, sc);
+}
 
 // Appends with one atomic per wave: the index for this lane (valid when it wants one)
 uint wave_append(uint* counter, bool want) {
@@ -858,7 +884,16 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (!valid) cs.count = 0u;
         uint hidden = (mode == 1u && valid) ? (rng.y - rng.x) - cs.count : 0u;
         uint out = valid ? OUT_HIDDEN : OUT_NONE;
-        if (cs.count > 0u) {
+        // The size window first: over the cluster's depths (its bounding
+        // sphere's), the scales its element centres can have
+        bool lod_out = false;
+        if (cs.count > 0u && mode != 3u && (b.flags & F_LOD) != 0u) {
+            float d = -cs.c.z;
+            lod_out = !lod_meets(b, lod_scale(v, d + cs.r), lod_scale(v, d - cs.r));
+        }
+        if (cs.count > 0u && lod_out) {
+            out = OUT_LOD;
+        } else if (cs.count > 0u) {
             Bounds bd = sphere_bounds(v, cs.c, cs.r);
             if (bd.outside) out = OUT_OUTSIDE;
             else if (mode != 3u && v.occlusion != 0u && hiz_occluded(v, MD_ARGS.hiz, bd, mode == 1u)) out = OUT_OCCLUDED;
@@ -878,6 +913,7 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 
         wave_add(L.counters + C_HIDDEN, hidden);
         wave_add(L.counters + C_OUTSIDE, out == OUT_OUTSIDE ? cs.count : 0u);
+        wave_add(L.counters + C_LOD, out == OUT_LOD ? cs.count : 0u);
         wave_add(L.counters + C_OCCLUDED, mode == 2u && out == OUT_OCCLUDED ? cs.count : 0u);
         wave_count(L.counters + C_CL_OCC, mode == 2u && out == OUT_OCCLUDED);
         wave_count(L.counters + C_CL_VIS + (mode - 1u), out == OUT_HW);
@@ -895,13 +931,19 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
     Geo   g;
     g.ok = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint ent = 0u;                      // the list entry: global work index
+    bool lod_out = false;
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
         g   = element_geo(v, b, inst, e);
+        // the size window: not for the state lists, which do not depend on
+        // the camera (the mask's raster applies it)
+        lod_out = g.ok && !state_only && !lod_keeps(v, b, 0.5 * (g.a + g.b));
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
-    if (g.ok) {
+    if (lod_out) {
+        out = OUT_LOD;
+    } else if (g.ok) {
         Bounds bd = geo_bounds(v, g);
         float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;     // without the pad
         int4  rp  = reach_px(v, bd);
@@ -937,6 +979,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
 
     // hidden elements were counted with their cluster
     wave_count(L.counters + C_OUTSIDE,  out == OUT_OUTSIDE);
+    wave_count(L.counters + C_LOD,      out == OUT_LOD);
     wave_count(L.counters + C_OCCLUDED, phase == 2u && out == OUT_OCCLUDED);
 }
 
@@ -1265,6 +1308,7 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint2 ent    = elem_id(a.batches, el);
     Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
+    if (a.list >= 2u && !lod_keeps(v, a.batches[el.slot], g.a)) return o;   // the state lists: the size window here
     float3 c   = g.a;
     float  rad = g.r;
 
@@ -1373,6 +1417,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint2 ent = elem_id(a.batches, el);
     Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
+    if (a.list >= 2u && !lod_keeps(v, a.batches[el.slot], 0.5 * (g.a + g.b))) return o;   // the state lists: the size window here
     float3 pa  = g.a;
     float3 pb  = g.b;
     float  rad = g.r;

@@ -1061,6 +1061,169 @@ UTEST(render, radius_tables_change_nothing) {
     f_close(&fx);
 }
 
+/* The size window (lod_min, lod_max). Two batches over the same spheres in
+   adjacent windows draw what the same two batches draw with each sphere given
+   by visibility bits to the one whose window holds it: ids, depths and masks
+   to the bit, and each sphere counted out of exactly one window. The spheres
+   are in depth order, so whole clusters of 64 leave a window by their bounds
+   and the one across the boundary is decided sphere by sphere. A camera move
+   changes who draws what without a refit; a change of the window alone is a
+   raster without one. With an orthographic camera the scale is one number. */
+typedef struct lod_scene_t {
+    uint32_t      n;
+    float*        z;               /* view-space z of each sphere, camera at rest */
+    md_gpu_addr_t vis[2];          /* the reference's visibility bits, batch 0 and 1 */
+    md_render_batch_t b[2];        /* with windows */
+    md_render_batch_t r[2];        /* the reference: without, and visibility bits */
+} lod_scene_t;
+
+/* The reference's bits for a split at scale x, the camera moved by dz along
+   view z; how near (relative) the nearest sphere's scale is to x */
+static double lod_split(fix_t* fx, lod_scene_t* ls, float lod_px, float x, float dz, bool ortho) {
+    uint32_t words = (ls->n + 31) / 32;
+    uint32_t* bits = calloc(2 * words, 4);
+    double margin = 1e30;
+    for (uint32_t i = 0; i < ls->n; ++i) {
+        float d  = -(ls->z[i] + dz);
+        float sc = ortho ? lod_px : lod_px / d;
+        uint32_t k = sc >= x ? 0u : 1u;
+        bits[k * words + i / 32] |= 1u << (i % 32);
+        double m = fabs((double)sc - x) / x;
+        if (m < margin) margin = m;
+    }
+    md_gpu_upload(fx->gfx, ls->vis[0], bits, words * 4);
+    md_gpu_upload(fx->gfx, ls->vis[1], bits + words, words * 4);
+    free(bits);
+    return margin;
+}
+
+static int compare_masks(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* set) {
+    uint32_t* ma = malloc(W * H * 4); uint32_t* mb = malloc(W * H * 4);
+    int bad = -1;
+    if (f_read(fx, md_render_view_targets(a).mask, ma, W * H * 4) && f_read(fx, md_render_view_targets(b).mask, mb, W * H * 4)) {
+        bad = 0; *set = 0;
+        for (uint32_t i = 0; i < W * H; ++i) { if (mb[i]) (*set)++; if (ma[i] != mb[i]) bad++; }
+    }
+    free(ma); free(mb);
+    return bad;
+}
+
+UTEST(render, size_window_hands_over) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
+    enum { N = 512 };
+    lod_scene_t ls;
+    memset(&ls, 0, sizeof(ls));
+    ls.n = N;
+    ls.z = malloc(N * sizeof(float));
+    float* pos = malloc(N * 12);
+    float* rad = malloc(N * 4);
+    uint32_t sel[N / 32];
+    for (uint32_t i = 0; i < N / 32; ++i) sel[i] = 0x55555555u;   /* every other sphere selected: masks */
+    uint32_t seed = 99;
+    #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
+    for (uint32_t i = 0; i < N; ++i) {          /* farther with i: clusters of 64 by depth */
+        float z = -4.0f - 56.0f * (float)i / N;
+        pos[3 * i + 0] = (RND() * 2.0f - 1.0f) * 0.5f * -z * c.tan_half * c.aspect;
+        pos[3 * i + 1] = (RND() * 2.0f - 1.0f) * 0.5f * -z * c.tan_half;
+        pos[3 * i + 2] = z;
+        rad[i] = 0.05f + 0.15f * RND();
+        ls.z[i] = z;
+    }
+    #undef RND
+    md_gpu_addr_t P = f_buf(&fx, pos, N * 12), R = f_buf(&fx, rad, N * 4), S = f_buf(&fx, sel, sizeof(sel));
+    ls.vis[0] = f_buf(&fx, NULL, N / 8);
+    ls.vis[1] = f_buf(&fx, NULL, N / 8);
+    for (int k = 0; k < 2; ++k) {
+        md_render_batch_t b = {0};
+        b.key = 1 + k; b.kind = MD_RENDER_SPHERES; b.count = N; b.points.count = N;
+        b.points.position = P; b.points.radius = R; b.points.state[0] = S;
+        b.style.spheres.radius_scale = k ? 1.5f : 1.0f;         /* the stand-in: larger */
+        b.color.mode = MD_RENDER_COLOR_UNIFORM;
+        b.color.uniform = k ? 0xFFFF0000u : 0xFF0000FFu;
+        ls.b[k] = ls.r[k] = b;
+        ls.r[k].points.visible[0] = ls.vis[k];
+    }
+    md_render_camera_t cam = make_camera(&c);
+    const float lod_px = fabsf(cam.proj[5]) * 0.5f * (float)H;
+    /* the split between spheres 200 and 201: inside the cluster 192 .. 255 */
+    float x = lod_px / (0.5f * (-ls.z[200] - ls.z[201]));
+    ls.b[0].lod_min = x;
+    ls.b[1].lod_max = x;
+    EXPECT_GT(lod_split(&fx, &ls, lod_px, x, 0.0f, false), 1e-3);
+
+    md_render_view_t ref = md_render_view_create(fx.r, "visibility bits");
+    md_render_frame_t f  = frame_of(W, H, cam, ls.b, 2);
+    md_render_frame_t fr = frame_of(W, H, cam, ls.r, 2);
+    md_render_stats_t st;
+    int covered = 0, set = 0;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_EQ((uint32_t)N, st.lod);
+    EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.lod + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
+    EXPECT_GT(st.clusters_expanded[0] + st.clusters_expanded[1], 0u);
+    EXPECT_LT(st.clusters_expanded[0] + st.clusters_expanded[1], 16u);     /* 8 clusters a batch: most left whole */
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_GT(covered, (int)(W * H / 20));
+    EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
+    EXPECT_GT(set, 0);
+    printf("    %u spheres, split at %.2f px per unit: %d pixels covered, %d masked; lod %u, clusters expanded %u\n",
+           (unsigned)N, x, covered, set, st.lod, st.clusters_expanded[0] + st.clusters_expanded[1]);
+
+    /* The camera backs off: more spheres go to the stand-in. The bounds hold. */
+    float dz = 6.0f;
+    while (lod_split(&fx, &ls, lod_px, x, dz, false) < 1e-3) dz += 0.0137f;
+    f.camera.view[14] = fr.camera.view[14] = dz;
+    fr.content[MD_RENDER_CONTENT_GEOMETRY]++;           /* the reference's bits changed */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_FALSE(st.refitted);
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
+
+    /* The window alone moves: a raster, no refit */
+    float x2 = x * 0.8f;
+    while (lod_split(&fx, &ls, lod_px, x2, dz, false) < 1e-3) x2 *= 1.0013f;
+    ls.b[0].lod_min = ls.b[1].lod_max = x2;
+    fr.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    md_render_status_t rs;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &rs));
+    EXPECT_TRUE((rs.work & MD_RENDER_WORK_RASTER) != 0);
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_FALSE(st.refitted);
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
+
+    /* Orthographic: one scale for all. Below a batch's window: nothing of it. */
+    cam_t co = { .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 80.0f };
+    md_render_camera_t camo = make_camera(&co);
+    const float ortho_px = fabsf(camo.proj[5]) * 0.5f * (float)H;
+    ls.b[0].lod_min = ls.b[1].lod_max = ortho_px * 1.5f;      /* all to the stand-in */
+    lod_split(&fx, &ls, ortho_px, ortho_px * 1.5f, 0.0f, true);
+    f.camera = fr.camera = camo;
+    fr.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_EQ((uint32_t)N, st.lod);
+    EXPECT_EQ(0u, st.clusters_expanded[0] + st.clusters_expanded[1] - (uint32_t)(N / 64));   /* the stand-in's 8 only */
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_GT(covered, 0);
+
+    md_render_view_destroy(fx.gfx, ref);
+    free(pos); free(rad); free(ls.z);
+    f_close(&fx);
+}
+
 /* ---- The molecular layer ------------------------------------------------------- */
 
 static const char ethanol_pdb[] =
@@ -1126,6 +1289,15 @@ UTEST(render, mol_licorice_emit_and_pick) {
     EXPECT_EQ(8u, batches[0].count);
     /* emit is pure: asking with no room says how many it needs */
     EXPECT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rep, NULL, 0));
+    /* a representation's size window goes on every batch it emits */
+    {
+        md_render_mol_rep_t rw = rep;
+        rw.lod_min = 2.5f; rw.lod_max = 40.0f;
+        md_render_batch_t bw[8];
+        ASSERT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rw, bw, 8));
+        for (int k = 0; k < 2; ++k) { EXPECT_EQ(2.5f, bw[k].lod_min); EXPECT_EQ(40.0f, bw[k].lod_max); }
+        EXPECT_EQ(0.0f, batches[0].lod_min);
+    }
 
     /* Looking down -Z at the molecule from 6 Å, orthographic */
     const uint32_t W = 128, H = 96;
