@@ -57,6 +57,8 @@
 
 #include <md_gto.h>
 
+struct md_grid_t;
+
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #endif
@@ -243,12 +245,12 @@ void md_gto_int_potential_xyz(double* out_potential, double* out_field, const fl
 // Potential on the points of a grid, written as float, x fastest, like md_gto_grid_evaluate.
 // Point (i,j,k) is origin + orientation * (((i,j,k) + sample_offset) * spacing); sample_offset
 // NULL means (0,0,0), (0.5,0.5,0.5) puts the points at voxel centres as the GPU paths in viamd do.
-void md_gto_int_potential_grid(float* out_values, const md_grid_t* grid, const float sample_offset[3],
+void md_gto_int_potential_grid(float* out_values, const struct md_grid_t* grid, const float sample_offset[3],
                                const md_gto_int_charges_t* charges);
 
 // The same for the sub-box [idx_off, idx_off + idx_len) of the grid, writing only those values of
 // out_values (still indexed over the whole grid). The unit to hand out to worker threads.
-void md_gto_int_potential_grid_sub(float* out_values, const md_grid_t* grid, const float sample_offset[3],
+void md_gto_int_potential_grid_sub(float* out_values, const struct md_grid_t* grid, const float sample_offset[3],
                                    const int idx_off[3], const int idx_len[3], const md_gto_int_charges_t* charges);
 
 // ---------------------------------------------------------------------------
@@ -276,7 +278,7 @@ void md_gto_int_gpu_charges_destroy(md_gpu_stream_t stream, md_gto_int_gpu_charg
 typedef struct md_gto_int_gpu_potential_desc_t {
     md_gto_int_gpu_charges_t charges;
     md_gpu_texture_t out_tex;        // 3D, needs MD_GPU_TEX_STORAGE; mip 0 is written
-    const md_grid_t* grid;
+    const struct md_grid_t* grid;
     float            sample_offset[3];   // in index units, (0.5,0.5,0.5) = voxel centres
     md_gto_op_t      op;
 

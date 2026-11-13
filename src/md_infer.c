@@ -1,6 +1,10 @@
 ﻿#include <md_infer.h>
 #include <md_element.h>
 #include "md_infer_internal.h"
+#include <core/md_executor.h>
+#include <core/md_log.h>
+#include <md_chem.h>
+#include <md_system_fields.h>
 
 // The inference of a system: md_system_infer runs the steps of md_bond.c, md_ring.c, md_atom.c, md_hierarchy.c,
 // md_backbone.c, md_lipid.c, md_fragment.c and md_chem.c in order and gives the system what they infer.

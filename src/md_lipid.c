@@ -1,4 +1,5 @@
 ﻿#include "md_infer_internal.h"
+#include <core/md_arena_allocator.h>
 
 // Lipid inference: the lipids of a system, their heads and tails (md_util.h).
 

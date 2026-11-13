@@ -7,6 +7,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
+#include <core/md_grid.h>
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #endif

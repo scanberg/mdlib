@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include <md_types.h>
 #include <core/md_unit.h>
 #include <core/md_array.h>
 

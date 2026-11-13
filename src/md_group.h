@@ -3,8 +3,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <md_types.h>
-#include <core/md_bitset.h>
 #include <core/md_str.h>
+
+struct md_bitset_t;
 
 // Named groups of atoms the data gives (GROMACS index groups) and the roles they had.
 
@@ -34,7 +35,7 @@ typedef enum md_group_role_t {
 typedef struct md_group_data_t {
     size_t count;
     md_str_t*    name;                  // [count]
-    md_bitset_t* atoms;                 // [count] Each its own words, in the system's allocator
+    struct md_bitset_t* atoms;                 // [count] Each its own words, in the system's allocator
     uint32_t*    roles;                 // [count] Bit r: the group is one of role r's (md_group_role_t)
     // The groups of role r, in its order: role_group[role_offset[r] .. role_offset[r + 1]]. A role the data does not
     // give, or gives as one group of every atom it never named ('rest' of all), has none.

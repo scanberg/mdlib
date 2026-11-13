@@ -5,7 +5,8 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <core/md_bitset.h>
+
+struct md_bitset_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,7 +67,7 @@ bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filena
 //
 // The atoms of the default group of a name, matched without regard to case, as grompp matches the names of an mdp: false,
 // and out untouched, when there is no such group. The words of out are allocated with alloc.
-bool md_ndx_default_group(md_bitset_t* out, const struct md_system_t* sys, md_str_t name, struct md_allocator_i* alloc);
+bool md_ndx_default_group(struct md_bitset_t* out, const struct md_system_t* sys, md_str_t name, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

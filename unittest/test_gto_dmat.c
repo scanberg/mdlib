@@ -36,6 +36,7 @@
 #include <md_molden.h>
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
+#include <core/md_grid.h>
 
 #include <float.h>
 #include <math.h>

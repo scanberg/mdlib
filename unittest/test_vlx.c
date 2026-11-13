@@ -5,6 +5,7 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
+#include <core/md_grid.h>
 
 #include <math.h>
 #include <float.h>

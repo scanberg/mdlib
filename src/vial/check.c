@@ -10,6 +10,7 @@
 #include "check.h"
 
 #include <core/md_common.h>
+#include <core/md_array.h>
 
 #include <stdio.h>
 #include <string.h>

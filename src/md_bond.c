@@ -1,4 +1,10 @@
 ﻿#include "md_infer_internal.h"
+#include <core/md_coord_stream.h>
+#include <core/md_executor.h>
+#include <core/md_fifo.h>
+#include <core/md_log.h>
+#include <core/md_spatial_acc.h>
+#include <md_geom.h>
 
 // Bond inference: covalent and metallic bonds from the coordinates, coordination and elastic bonds, and the bonds
 // formed and broken in a state (md_util.h).

@@ -5,7 +5,8 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <md_types.h>
+
+struct md_atom_pair_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,12 +55,12 @@ typedef struct md_itp_moleculetype_t {
     // Connectivity in local, zero based atom indices, i < j, sorted and unique. The union of [ bonds ]
     // and [ constraints ] of the function types which connect, [ settles ] and virtual sites to their first
     // constructing atom: everything that says two atoms belong together, which is what structures need.
-    md_atom_pair_t* bonds;    // md_array
+    struct md_atom_pair_t* bonds;    // md_array
     // Elastic bonds, the same way: the [ bonds ] of function types 6 (harmonic potential), 9 (tabulated, no
     // exclusions) and 10 (restraint potential) and the [ constraints ] of type 2 (no connection), which make no
     // connection: the elastic network of a coarse grained protein or nucleic acid, a restraint. A pair which is also
     // in bonds is not repeated here.
-    md_atom_pair_t* elastic_bonds;    // md_array
+    struct md_atom_pair_t* elastic_bonds;    // md_array
 } md_itp_moleculetype_t;
 
 typedef struct md_itp_molecules_t {
