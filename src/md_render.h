@@ -172,12 +172,7 @@ typedef struct md_render_points_t {
                                       (x, y, z, radius or type): position with stride
                                       16 and radius = position + 12 with stride 16    */
     md_gpu_addr_t radius_table;    /* float per type: the radius of a point is
-                                      radius_table[type]; 0: `radius` holds radii.
-                                      A draw keeps up to 4 distinct tables of 512
-                                      entries in all next to the cull's threads
-                                      (group memory); a batch past that reads its
-                                      table from memory, slower on GPUs whose L1
-                                      does not hold such loads (Pascal)              */
+                                      radius_table[type]; 0: `radius` holds radii     */
     uint32_t      radius_table_count; /* entries; at most 65536 are read            */
 
     uint32_t      attr_count;      /* entries of the attribute arrays; 0: count       */
