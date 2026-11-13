@@ -57,7 +57,7 @@ set(MD_DEFINES MD_GL_BACKBONE_SEGMENT_COUNT=${MD_GL_BACKBONE_SEGMENT_COUNT} MD_G
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
 
-# The library is built in layers, a folder of src/ each, which depend only on the layers below them:
+# The sources are in a folder of src/ per layer, each depending only on the layers below it:
 #
 #   core      memory, strings, files, parsing, math, the geometry of coordinates and cells, the GPU
 #   system    a system: its atoms, bonds, residues, molecules, and all that is inferred of them, chemistry included
@@ -67,9 +67,9 @@ file(GLOB_RECURSE PROJ_FILES cmake/*)
 #   gfx       drawing a system (GL), vector graphics
 #   script    the script language, and VIAL (src/vial)
 #
-# analysis, qm and gfx depend on system, io on system and qm, script on analysis and io, and each on what those depend
-# on. A folder is on the include path of its own layer and those above it, not of those below, so a header of a layer
-# above does not compile there. The headers of core are included with the folder, <core/md_str.h>, the others without, <md_pdb.h>.
+# analysis, qm and gfx depend on system, io on system and qm, script on analysis and io. Nothing checks it: a header of
+# a layer above is not to be included below it. The headers of core are included with the folder, <core/md_str.h>,
+# the others without, <md_pdb.h>: every folder is on the include path.
 
 set(MD_CORE_FILES
   src/core/md_allocator.c
@@ -109,6 +109,7 @@ set(MD_CORE_FILES
   src/core/md_linear_allocator.h
   src/core/md_log.c
   src/core/md_log.h
+  src/core/md_lru_cache.inl
   src/core/md_os.c
   src/core/md_os.h
   src/core/md_parse.c
@@ -705,71 +706,50 @@ source_group("gen"      FILES ${GEN_FILES})
 source_group("shaders"  FILES ${SHADER_FILES})
 source_group("proj"     FILES ${PROJ_FILES})
 
-# What every layer is compiled with: the headers of ext/ and gen/, and of what is linked (Vulkan, HDF5, zlib)
-add_library(md_build INTERFACE)
-target_include_directories(md_build INTERFACE
+set(SRC_FILES ${MD_CORE_FILES} ${MD_SYSTEM_FILES} ${MD_ANALYSIS_FILES} ${MD_QM_FILES} ${MD_IO_FILES} ${MD_GFX_FILES} ${MD_SCRIPT_FILES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX src FILES ${SRC_FILES})
+
+add_library(mdlib ${SRC_FILES} ${EXT_FILES} ${GEN_FILES} ${SHADER_FILES} ${PROJ_FILES})
+
+target_include_directories(mdlib
+  PUBLIC
+  src/
+  src/system/
+  src/analysis/
+  src/qm/
+  src/io/
+  src/gfx/
+  src/script/
+  ext/gl3w/
+  ext/simde/
+  ext/xxhash/
+
+  PRIVATE
   ${GEN_DIR}
-  ${CMAKE_CURRENT_SOURCE_DIR}/gen
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/fastlz
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/dcd
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/xtc
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/svd3
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/pffft
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/stb
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/libdivide
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/hy36
+  gen/
+  ext/fastlz/
+  ext/dcd/
+  ext/xtc/
+  ext/svd3/
+  ext/pffft/
+  ext/stb/
+  ext/libdivide/
+  ext/hy36/
 )
-target_compile_definitions(md_build INTERFACE ${MD_DEFINES})
-target_compile_options(md_build INTERFACE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
-target_compile_features(md_build INTERFACE c_std_11)
-target_link_libraries(md_build INTERFACE ${MD_LIBS})
-
-# A layer: the sources of src/<layer>, compiled with its folder on the include path of its own and of the layers that
-# depend on it (DEPENDS: the layers it depends on)
-function(md_add_layer LAYER)
-  cmake_parse_arguments(ARG "" "" "DEPENDS" ${ARGN})
-  string(TOUPPER ${LAYER} UPPER)
-  add_library(md_${LAYER} OBJECT ${MD_${UPPER}_FILES})
-  target_include_directories(md_${LAYER} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/${LAYER})
-  target_link_libraries(md_${LAYER} PUBLIC ${ARG_DEPENDS} PRIVATE md_build)
-  set_target_properties(md_${LAYER} PROPERTIES POSITION_INDEPENDENT_CODE "${BUILD_SHARED_LIBS}" FOLDER mdlib ${MD_PROPERTIES})
-  source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX src FILES ${MD_${UPPER}_FILES})
-endfunction()
-
-# core is included with its folder (<core/md_str.h>), so it puts src/ on the path rather than src/core/
-md_add_layer(core)
-target_include_directories(md_core PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/simde
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/xxhash
-)
-md_add_layer(system   DEPENDS md_core)
-md_add_layer(analysis DEPENDS md_system)
-md_add_layer(qm       DEPENDS md_system)
-md_add_layer(gfx      DEPENDS md_system)
-target_include_directories(md_gfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w)
-md_add_layer(io       DEPENDS md_system md_qm)
-md_add_layer(script   DEPENDS md_analysis md_io)
-
-set(MD_LAYERS md_core md_system md_analysis md_qm md_gfx md_io md_script)
-
-# The library: the layers, and ext/
-add_library(mdlib ${EXT_FILES} ${GEN_FILES} ${SHADER_FILES} ${PROJ_FILES})
-target_link_libraries(mdlib PUBLIC ${MD_LAYERS} PRIVATE md_build)
 
 if (MD_ENABLE_GPU)
   # md_gpu needs no reflection, so each topo kernel is just its compiled blob.
   foreach(TOPO_SRC ${TOPO_SLANG_FILES})
     get_filename_component(TOPO_STEM ${TOPO_SRC} NAME_WE)
     compile_gpu_shaders(${TOPO_STEM}_shaders.inl
-      TARGET    md_qm
+      TARGET    mdlib
       NAMESPACE md_shader
       SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_SRC}
       ENTRIES   main
     )
   endforeach()
   compile_gpu_shaders(topo_gto_cube_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_GTO_SLANG_FILE}
     PRECISE_MATH      # the rounding margins of the certificate assume IEEE + - * (no fast-math rewrites)
@@ -793,7 +773,7 @@ if (MD_ENABLE_GPU)
   foreach(GTO_SRC ${GTO_SLANG_FILES})
     get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
     compile_gpu_shaders(${GTO_STEM}_shaders.inl
-      TARGET    md_qm
+      TARGET    mdlib
       NAMESPACE md_shader
       SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${GTO_SRC}
       ENTRIES   main
@@ -802,14 +782,14 @@ if (MD_ENABLE_GPU)
   endforeach()
   # The counting, Phi and D_b-gather passes of the two-pass (GEMM) path.
   compile_gpu_shaders(eval_gto_density_gemm_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )
   compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
     ENTRIES   count_main phi_main dgather_main
@@ -817,7 +797,7 @@ if (MD_ENABLE_GPU)
   )
   # md_gto_gpu_dmat: a density matrix in tiles, built from orbitals
   compile_gpu_shaders(gto_dmat_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat.slang
     ENTRIES   dmat_tiles
@@ -825,7 +805,7 @@ if (MD_ENABLE_GPU)
   # md_gto_int: the potential of a Hermite charge distribution. One entry point per Hermite order,
   # so each kernel is sized for its own unrolled recursion, and the resolve pass.
   compile_gpu_shaders(eval_gto_int_potential_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential.slang
     ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
@@ -835,7 +815,7 @@ if (MD_ENABLE_GPU)
   )
   # The same at arbitrary points (md_gto_int_gpu_potential_xyz_launch)
   compile_gpu_shaders(eval_gto_int_potential_xyz_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential_xyz.slang
     ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
@@ -845,7 +825,7 @@ if (MD_ENABLE_GPU)
   )
   # Both, for a distribution with a far field: a group of 64 points walks the tree together
   compile_gpu_shaders(eval_gto_int_potential_far_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential_far.slang
     ENTRIES   xyz_bounds xyz_keys xyz_bitonic grid_lists xyz_lists
@@ -859,7 +839,7 @@ if (MD_ENABLE_GPU)
   )
   # md_gto_iso: the gridless isosurface pipeline (md_gto_iso_gpu.inl)
   compile_gpu_shaders(gto_iso_gpu_shaders.inl
-    TARGET    md_qm
+    TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/iso/gto_iso_gpu.slang
     ENTRIES   iso_grid iso_scan iso_octree iso_octree_small iso_octree_dform iso_octree_emit iso_brick_slots iso_hash
@@ -884,6 +864,8 @@ if (MD_PROPERTIES)
   set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})
 endif()
 
+target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
+target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES} PROPERTIES COMPILE_OPTIONS "${MD_FLAGS_EXT}")
 
@@ -900,6 +882,7 @@ if (NOT (COMPILER_TYPE STREQUAL "MSVC"))
   endif()
 endif()
 
+target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PUBLIC ${MD_LIBS})
 
 get_directory_property(has_parent PARENT_DIRECTORY)
