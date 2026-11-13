@@ -1491,6 +1491,9 @@ static float half_to_float(uint32_t h) {
    the same quantized frames, minimum image included. `partial`: only some
    atoms resident (the residue, every third water, the oxygen of every
    fifth): only those are quantized, uploaded, regrouped and drawn. */
+/* in md_render_mol.c, not in its header: the frames' gather from at most `groups` groups */
+void md_render_mol_debug_frames(uint32_t groups, uint32_t probe);
+
 static void frames_case(int* utest_result, bool partial) {
     fix_t fx;
     if (!f_open(&fx)) { printf("    skipped: %s\n", f_skip_reason()); return; }
@@ -1678,6 +1681,17 @@ static void frames_case(int* utest_result, bool partial) {
         EXPECT_LT(pos_err, 1e-3);
         if (with_v) EXPECT_LT(vel_err, 1.0);
         EXPECT_EQ(0, rad_bad);
+        {
+            /* the same from one group, its threads striding over every point */
+            md_render_mol_debug_frames(1, 0);
+            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+            md_render_mol_debug_frames(0, 0);
+            uint8_t* blk1 = read_block(&fx, dyn, topo.dynamic_size_velocity);
+            const size_t po = (size_t)(b.points.position - dyn);
+            EXPECT_EQ(0, memcmp(blk + po, blk1 + po, (size_t)nres * 16));
+            if (with_v) { const size_t vo = (size_t)(b.points.velocity - dyn); EXPECT_EQ(0, memcmp(blk + vo, blk1 + vo, (size_t)nres * 8)); }
+            free(blk1);
+        }
         free(blk); free(ord);
     }
     /* the topology after the regroups: whole and consistent */
