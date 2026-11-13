@@ -1,7 +1,6 @@
 ﻿#include <md_geom.h>
 
-#include <md_system.h>
-#include "md_system_fields.h"
+#include <md_unitcell.h>
 
 #include <core/md_compiler.h>
 #include <core/md_common.h>
@@ -2283,16 +2282,13 @@ void md_geom_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count
     // Otherwise the cell has no periodic axes: nothing to wrap into
 }
 
-void md_geom_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol) {
-    MD_ASSERT(state);
-    MD_ASSERT(mol);
+void md_geom_unwrap(float* xyz, size_t stride, const int32_t* idx, const int32_t* parent, size_t count, const md_unitcell_t* cell) {
+    MD_ASSERT((xyz && idx && parent) || count == 0);
+    if (!cell || count == 0) return;
+    if (stride == 0) stride = 3 * sizeof(float);
 
-    if (mol->count == 0) {
-        return;
-    }
-
-    const bool is_ortho     = md_unitcell_is_orthorhombic(&state->unitcell);
-    const bool is_triclinic = md_unitcell_is_triclinic(&state->unitcell);
+    const bool is_ortho     = md_unitcell_is_orthorhombic(cell);
+    const bool is_triclinic = md_unitcell_is_triclinic(cell);
     if (!is_ortho && !is_triclinic) {
         // Nothing to unwrap against
         return;
@@ -2303,44 +2299,31 @@ void md_geom_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
     float box[3][3] = { 0 };
 
     if (is_ortho) {
-        md_unitcell_diag_extract_float(ext, &state->unitcell);
+        md_unitcell_diag_extract_float(ext, cell);
         min_image_inv_ext(inv_ext, ext);
     } else {
-        md_unitcell_A_extract_float(box, &state->unitcell);
+        md_unitcell_A_extract_float(box, cell);
     }
 
-    // md_molecule_data_t stores each molecule in BFS order, so a single forward pass places every
-    // atom after the one it was reached from. No queue, no visited set and no bond lookups: the
-    // traversal was already computed by md_molecule_infer.
-    // The seed is its own parent, so it deperiodizes against itself and stays put - no branch.
-    for (size_t i = 0; i < mol->count; ++i) {
-        const int32_t a = mol->atom_idx[i];
-        const int32_t p = mol->parent_idx[i];
-
-        const md_float3_t x = state->xyz[a];
-        const md_float3_t r = state->xyz[p];
-	    md_float3_t dx = {x.x - r.x, x.y - r.y, x.z - r.z};
+    // A single forward pass: the parent of each atom comes before it, so it has been placed already. A root is its own
+    // parent, so it deperiodizes against itself and stays put - no branch.
+    for (size_t i = 0; i < count; ++i) {
+        float* x = (float*)((char*)xyz + (size_t)idx[i] * stride);
+        const float* r = (const float*)((const char*)xyz + (size_t)parent[i] * stride);
+        float dx[3] = {x[0] - r[0], x[1] - r[1], x[2] - r[2]};
 
         if (is_ortho) {
-            min_image_ortho(dx.elem, ext, inv_ext);
+            min_image_ortho(dx, ext, inv_ext);
         } else {
-            min_image_triclinic(dx.elem, MD_AS_CONST_MAT3(box));
+            min_image_triclinic(dx, MD_AS_CONST_MAT3(box));
         }
 
         // The atom is placed relative to its PARENT, not relative to where it happened to sit:
         // dx is already the minimum image of (x - r), so the unwrapped position is r + dx.
         // Adding dx to x instead yields 2x - r, which is wrong even when no image correction applies.
-        state->xyz[a] = md_float3_add(r, dx);
-    }
-}
-
-void md_geom_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
-    MD_ASSERT(state);
-    MD_ASSERT(sys);
-
-    for (size_t i = 0; i < sys->molecule.count; ++i) {
-        const md_molecule_t mol = md_system_molecule(sys, i);
-        md_geom_unwrap_molecule(state, &mol);
+        x[0] = r[0] + dx[0];
+        x[1] = r[1] + dx[1];
+        x[2] = r[2] + dx[2];
     }
 }
 

@@ -3,6 +3,7 @@
 #include "md_run.h"
 #include <md_nonbonded.h>
 #include "md_system_fields.h"
+#include <md_geom.h>
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -485,6 +486,15 @@ const char* md_hybridization_name(md_hybridization_t hyb) {
     case MD_HYBRIDIZATION_SP2:      return "sp2";
     case MD_HYBRIDIZATION_SP3:      return "sp3";
     default:                        return "";
+    }
+}
+
+void md_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
+    MD_ASSERT(state);
+    MD_ASSERT(sys);
+    for (size_t i = 0; i < sys->molecule.count; ++i) {
+        const md_molecule_t mol = md_system_molecule(sys, i);
+        md_geom_unwrap((float*)state->xyz, sizeof(md_float3_t), mol.atom_idx, mol.parent_idx, mol.count, &state->unitcell);
     }
 }
 

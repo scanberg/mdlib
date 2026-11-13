@@ -8,7 +8,6 @@
 extern "C" {
 #endif
 
-struct md_tpr_data_t;
 struct md_allocator_i;
 
 // Non-bonded pair potentials as an MD engine evaluates them: Lennard-Jones and Coulomb between two particles,
@@ -74,11 +73,7 @@ typedef struct md_nb_potential_t {
 #define MD_NB_ONE_4PI_EPS0 138.93545764438198
 
 bool md_nb_potential_init(md_nb_potential_t* pot, const md_nb_desc_t* desc);
-
-// The potential mdrun used for a system: from the non-bonded settings of a tpr. Fails (and says why) for
-// what is not a sum over pairs or not modelled: LJ-PME, tabulated potentials, a repulsion other than r^-12,
-// Buckingham, and the group scheme's obsolete forms.
-bool md_nb_potential_init_from_tpr(md_nb_potential_t* pot, const struct md_tpr_data_t* tpr);
+// The potential mdrun used for a system is read from its tpr: md_tpr_nb_potential_init (md_tpr.h)
 
 // The furthest distance at which a pair interacts, nm
 double md_nb_potential_cutoff(const md_nb_potential_t* pot);
@@ -91,8 +86,9 @@ double md_nb_coulomb_energy(const md_nb_potential_t* pot, double qq, double r2);
 
 // ### FORCE FIELD OF A SYSTEM ###
 // The non-bonded force field of a system: what each particle is, how pairs of them interact, and which pairs do not.
-// A system carries one (md_system_t::nonbonded) when it was loaded with it, today from a tpr. It is NULL otherwise,
-// and then there are no energies: the parameters alone (an itp) do not say how the simulation cut them off.
+// A system carries one (md_system_t::nonbonded) when it was loaded with it, today from a tpr (md_tpr_nb_forcefield_init).
+// It is NULL otherwise, and then there are no energies: the parameters alone (an itp) do not say how the simulation cut
+// them off.
 typedef struct md_nb_forcefield_t {
     md_nb_potential_t potential;
 
@@ -120,8 +116,6 @@ typedef struct md_nb_forcefield_t {
     struct md_allocator_i* alloc;
 } md_nb_forcefield_t;
 
-// From a tpr. Fails, quietly, when its non-bonded interactions are not supported by md_nb_potential_t.
-bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const struct md_tpr_data_t* tpr, struct md_allocator_i* alloc);
 void md_nb_forcefield_free(md_nb_forcefield_t* ff);
 
 // Whether the force field excludes the pair from non-bonded interactions (same molecule, bonded neighbours)

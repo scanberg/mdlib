@@ -15,6 +15,8 @@ extern "C" {
 struct md_allocator_i;
 struct md_system_t;
 struct md_load_desc_t;
+struct md_nb_potential_t;
+struct md_nb_forcefield_t;
 typedef struct md_system_state_t md_system_state_t;
 
 // GROMACS portable run input (.tpr)
@@ -294,6 +296,15 @@ static inline md_tpr_lj_t md_tpr_lj_pair(const md_tpr_data_t* data, size_t type_
 // Whether the non-bonded interaction between two atoms (global, zero based indices) is excluded. Exclusions are
 // only ever between atoms of the same molecule, and an atom is excluded from itself.
 bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom_b);
+
+// The non-bonded potential mdrun used (md_nonbonded.h). Fails (and says why) for what is not a sum over pairs or not
+// modelled: LJ-PME, tabulated potentials, a repulsion other than r^-12, Buckingham, and the group scheme's obsolete
+// forms.
+bool md_tpr_nb_potential_init(struct md_nb_potential_t* pot, const md_tpr_data_t* data);
+
+// The non-bonded force field of the system (md_nb_forcefield_t). Fails, quietly, when its interactions are not
+// supported by md_nb_potential_t.
+bool md_tpr_nb_forcefield_init(struct md_nb_forcefield_t* ff, const md_tpr_data_t* data, struct md_allocator_i* alloc);
 
 // Builds a system from the tpr: atoms, residues, bonds (of origin MD_BOND_ORIGIN_TOPOLOGY), coordinates
 // and box. The elastic bonds of the topology (md_tpr_moltype_t::elastic_bonds) are bonds of the system with

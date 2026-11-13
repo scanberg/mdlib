@@ -1535,6 +1535,174 @@ static void tpr_system_add_groups(md_system_t* sys, const md_tpr_data_t* data) {
     }
 }
 
+// ### NON-BONDED ###
+// The non-bonded interactions of the simulation, as md_nonbonded.h evaluates them
+
+bool md_tpr_nb_potential_init(md_nb_potential_t* pot, const md_tpr_data_t* tpr) {
+    if (!pot || !tpr) return false;
+    md_memset(pot, 0, sizeof(md_nb_potential_t));
+    const md_tpr_nonbonded_t* nb = &tpr->nonbonded;
+    if (!nb->valid) {
+        MD_LOG_INFO("Non-bonded potential: the tpr has no readable simulation parameters");
+        return false;
+    }
+    if (!tpr->nb_is_lj) {
+        MD_LOG_INFO("Non-bonded potential: the force field is not Lennard-Jones");
+        return false;
+    }
+    if (tpr->repulsion_power != 12.0) {
+        MD_LOG_INFO("Non-bonded potential: a repulsion of r^-%g is not supported", tpr->repulsion_power);
+        return false;
+    }
+    const bool verlet = nb->cutoff_scheme == MD_TPR_CUTOFF_SCHEME_VERLET;
+
+    md_nb_desc_t desc = {
+        .lj_cutoff = nb->rvdw,
+        .lj_switch = nb->rvdw_switch,
+        .coulomb_cutoff = nb->rcoulomb,
+        .epsilon_r = nb->epsilon_r,
+        .epsilon_rf = nb->epsilon_rf,
+        .ewald_rtol = nb->ewald_rtol,
+    };
+
+    // The modifier as mdrun applies it. Before the Verlet scheme had modifiers, the default meant a shift for
+    // Verlet and nothing for the group scheme.
+    #define MAP_MODIFIER(out, in)                                                                       \
+        switch (in) {                                                                                   \
+        case MD_TPR_MODIFIER_POT_SHIFT_VERLET_UNSUPPORTED: out = verlet ? MD_NB_MODIFIER_POT_SHIFT : MD_NB_MODIFIER_NONE; break; \
+        case MD_TPR_MODIFIER_POT_SHIFT:    out = MD_NB_MODIFIER_POT_SHIFT; break;                      \
+        case MD_TPR_MODIFIER_NONE:                                                                      \
+        case MD_TPR_MODIFIER_EXACT_CUTOFF: out = MD_NB_MODIFIER_NONE; break;                           \
+        case MD_TPR_MODIFIER_POT_SWITCH:   out = MD_NB_MODIFIER_POT_SWITCH; break;                     \
+        case MD_TPR_MODIFIER_FORCE_SWITCH: out = MD_NB_MODIFIER_FORCE_SWITCH; break;                   \
+        default: MD_LOG_ERROR("Non-bonded potential: unknown modifier %d", (int)(in)); return false;    \
+        }
+
+    switch (nb->vdw_type) {
+    case MD_TPR_VDW_CUT:
+        MAP_MODIFIER(desc.lj_modifier, nb->vdw_modifier);
+        break;
+    case MD_TPR_VDW_SWITCH:     // Group scheme: what grompp turns into a potential switch for Verlet
+        desc.lj_modifier = MD_NB_MODIFIER_POT_SWITCH;
+        break;
+    case MD_TPR_VDW_SHIFT:      // Group scheme: what grompp turns into a force switch for Verlet
+        desc.lj_modifier = MD_NB_MODIFIER_FORCE_SWITCH;
+        break;
+    case MD_TPR_VDW_PME:
+        MD_LOG_INFO("Non-bonded potential: LJ-PME is not a sum over pairs (its grid part is not modelled)");
+        return false;
+    case MD_TPR_VDW_USER:
+        MD_LOG_INFO("Non-bonded potential: tabulated Lennard-Jones, the tables are not part of the tpr");
+        return false;
+    default:
+        MD_LOG_INFO("Non-bonded potential: van der Waals type %d is not supported", (int)nb->vdw_type);
+        return false;
+    }
+
+    md_nb_modifier_t coulomb_modifier = MD_NB_MODIFIER_NONE;
+    MAP_MODIFIER(coulomb_modifier, nb->coulomb_modifier);
+    #undef MAP_MODIFIER
+    desc.coulomb_modifier = coulomb_modifier;
+
+    switch (nb->coulomb_type) {
+    case MD_TPR_COULOMB_CUT:
+        desc.coulomb = MD_NB_COULOMB_CUTOFF;
+        if (!verlet) desc.coulomb_modifier = MD_NB_MODIFIER_NONE;
+        break;
+    case MD_TPR_COULOMB_RF:
+        desc.coulomb = MD_NB_COULOMB_REACTION_FIELD;
+        break;
+    case MD_TPR_COULOMB_PME:
+    case MD_TPR_COULOMB_EWALD:
+    case MD_TPR_COULOMB_P3M_AD:
+        desc.coulomb = MD_NB_COULOMB_EWALD;
+        break;
+    default:
+        MD_LOG_INFO("Non-bonded potential: Coulomb type %d is not supported", (int)nb->coulomb_type);
+        return false;
+    }
+    if (desc.coulomb_modifier != MD_NB_MODIFIER_NONE && desc.coulomb_modifier != MD_NB_MODIFIER_POT_SHIFT) {
+        MD_LOG_INFO("Non-bonded potential: switched Coulomb is not supported");
+        return false;
+    }
+
+    return md_nb_potential_init(pot, &desc);
+}
+
+bool md_tpr_nb_forcefield_init(md_nb_forcefield_t* ff, const md_tpr_data_t* tpr, md_allocator_i* alloc) {
+    if (!ff || !tpr || !alloc) return false;
+    md_memset(ff, 0, sizeof(md_nb_forcefield_t));
+    if (!md_tpr_nb_potential_init(&ff->potential, tpr)) return false;
+    if (tpr->num_atoms > UINT32_MAX - 1) return false;
+
+    const size_t T = tpr->num_nb_types, N = tpr->num_atoms, M = tpr->num_moltypes;
+    ff->alloc = alloc;
+    ff->num_types = T;
+    ff->num_atoms = N;
+    ff->num_mol_types = M;
+    ff->c6  = md_alloc(alloc, sizeof(float) * MD_MAX(T * T, 1));
+    ff->c12 = md_alloc(alloc, sizeof(float) * MD_MAX(T * T, 1));
+    for (size_t i = 0; i < T * T; ++i) {
+        ff->c6[i]  = tpr->lj[i].c6;
+        ff->c12[i] = tpr->lj[i].c12;
+    }
+
+    // Exclusions of the molecule types, concatenated
+    ff->off_base  = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(M, 1));
+    ff->excl_base = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(M, 1));
+    size_t num_off = 0, num_excl = 0;
+    for (size_t t = 0; t < M; ++t) {
+        const md_tpr_moltype_t* mt = &tpr->moltypes[t];
+        if (mt->excl_offset) {
+            num_off  += mt->num_atoms + 1;
+            num_excl += mt->excl_offset[mt->num_atoms];
+        }
+    }
+    ff->excl_off_count = num_off;
+    ff->excl_count = num_excl;
+    ff->excl_off = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(num_off, 1));
+    ff->excl     = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(num_excl, 1));
+    num_off = num_excl = 0;
+    for (size_t t = 0; t < M; ++t) {
+        const md_tpr_moltype_t* mt = &tpr->moltypes[t];
+        if (!mt->excl_offset) {
+            ff->off_base[t] = UINT32_MAX;
+            ff->excl_base[t] = 0;
+            continue;
+        }
+        ff->off_base[t] = (uint32_t)num_off;
+        ff->excl_base[t] = (uint32_t)num_excl;
+        md_memcpy(ff->excl_off + num_off, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
+        md_memcpy(ff->excl + num_excl, mt->excl, sizeof(uint32_t) * mt->excl_offset[mt->num_atoms]);
+        num_off  += mt->num_atoms + 1;
+        num_excl += mt->excl_offset[mt->num_atoms];
+    }
+
+    ff->type     = md_alloc(alloc, sizeof(uint16_t) * MD_MAX(N, 1));
+    ff->charge   = md_alloc(alloc, sizeof(float)    * MD_MAX(N, 1));
+    ff->mol_beg  = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(N, 1));
+    ff->mol_type = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(N, 1));
+    size_t n = 0;
+    for (size_t b = 0; b < tpr->num_molblocks; ++b) {
+        const uint32_t t = (uint32_t)tpr->molblocks[b].moltype;
+        const md_tpr_moltype_t* mt = &tpr->moltypes[t];
+        for (int32_t m = 0; m < tpr->molblocks[b].nmol; ++m) {
+            const uint32_t beg = (uint32_t)n;
+            for (size_t a = 0; a < mt->num_atoms && n < N; ++a, ++n) {
+                ff->type[n]     = mt->atoms[a].type_idx;
+                ff->charge[n]   = mt->atoms[a].charge;
+                ff->mol_beg[n]  = beg;
+                ff->mol_type[n] = t;
+            }
+        }
+    }
+    if (n != N) {
+        md_nb_forcefield_free(ff);
+        return false;
+    }
+    return true;
+}
+
 bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -1904,7 +2072,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // ## Non-bonded force field, when its interactions can be evaluated pair by pair
     {
         md_nb_forcefield_t* ff = md_alloc(alloc, sizeof(md_nb_forcefield_t));
-        if (md_nb_forcefield_init_from_tpr(ff, data, alloc)) {
+        if (md_tpr_nb_forcefield_init(ff, data, alloc)) {
             sys->nonbonded = ff;
         } else {
             md_free(alloc, ff, sizeof(md_nb_forcefield_t));

@@ -239,7 +239,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     EXPECT_NEAR(masses[7], 3885.336f, 0.01f);
 
     // Unwrap now makes each fibril whole: consecutive hubs 21.9 A apart along x
-    md_geom_unwrap_system(&state, &sys);
+    md_system_unwrap(&state, &sys);
     for (int m = 0; m < MOLS; ++m) {
         for (int s = 0; s + 1 < SLICES; ++s) {
             const size_t a = (size_t)(m * SLICES * 7 + s * 7);

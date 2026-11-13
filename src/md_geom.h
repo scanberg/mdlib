@@ -14,9 +14,6 @@
 #include <core/md_vec.h>
 
 struct md_unitcell_t;
-struct md_system_t;
-struct md_system_state_t;
-struct md_molecule_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,12 +55,12 @@ void md_geom_min_image(float* in_out_dx, size_t stride, size_t count, const stru
 // cell, or a cell without periodic axes, they are left as they are.
 void md_geom_pbc(float* in_out_xyz, size_t stride, const int32_t* in_idx, size_t count, const struct md_unitcell_t* cell);
 
-// Unwraps a single molecule by walking the parent hierarchy md_molecule_infer
-// already computed. Linear, allocation free, and does not consult bond connectivity.
-void md_geom_unwrap_molecule(struct md_system_state_t* state, const struct md_molecule_t* mol);
-
-// Unwraps all molecules in a system
-void md_geom_unwrap_system(struct md_system_state_t* state, const struct md_system_t* sys);
+// Makes connected atoms whole across the cell, in place: atom in_idx[i] is moved to the minimum image of itself
+// relative to atom in_parent[i], in order, so a parent has to come before the atoms reached from it. That is the tree
+// of a molecule (md_molecule_t: atom_idx and parent_idx, a root its own parent and left where it is), and
+// md_system_unwrap does it for every molecule of a system. Linear, allocation free, and without consulting bonds.
+// Without a cell, or a cell without periodic axes, nothing moves.
+void md_geom_unwrap(float* in_out_xyz, size_t stride, const int32_t* in_idx, const int32_t* in_parent, size_t count, const struct md_unitcell_t* cell);
 
 // PERIODIC IMAGE SELECTION
 //
@@ -73,7 +70,7 @@ void md_geom_unwrap_system(struct md_system_state_t* state, const struct md_syst
 // unrelated to the measurement. These do not need topology at all, which is also why they work for
 // sparse selections and for points which are not atoms.
 //
-// @NOTE: md_geom_unwrap_* remains the right tool for making a whole connected structure whole - for
+// @NOTE: md_geom_unwrap remains the right tool for making a whole connected structure whole - for
 // rendering or export - where there is no estimator and no reference to align against, and where the
 // structure may be more extended than half a cell. That is the only case it is for.
 

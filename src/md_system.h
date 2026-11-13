@@ -504,6 +504,9 @@ static inline md_molecule_t md_system_molecule(const md_system_t* sys, size_t mo
     return mol;
 }
 
+// Makes every molecule whole across the cell of state, in place, along the tree of each (md_geom_unwrap)
+void md_system_unwrap(md_system_state_t* state, const md_system_t* sys);
+
 // The slot of the atom in the arrays of the molecules (md_molecule_data_t). Requires the molecules
 // (md_molecule_infer).
 static inline int32_t md_system_molecule_atom_slot(const md_system_t* sys, size_t atom_idx) {

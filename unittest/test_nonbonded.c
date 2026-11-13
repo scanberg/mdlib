@@ -107,7 +107,7 @@ UTEST(nonbonded, systems_against_gromacs) {
         md_tpr_data_t tpr = {0};
         ASSERT_TRUE(md_tpr_data_parse_file(&tpr, md_str_from_cstr(path), arena));
         md_nb_potential_t pot;
-        ASSERT_TRUE(md_nb_potential_init_from_tpr(&pot, &tpr));
+        ASSERT_TRUE(md_tpr_nb_potential_init(&pot, &tpr));
         ASSERT_EQ(19u, tpr.num_atoms);
         ASSERT_TRUE(tpr.box[0][1] == 0 && tpr.box[0][2] == 0 && tpr.box[1][2] == 0);
 
@@ -164,12 +164,12 @@ UTEST(nonbonded, from_tpr) {
     md_tpr_data_t tpr = {0};
     ASSERT_TRUE(md_tpr_data_parse_file(&tpr, MD_STR_LIT(TPR_DIR "nb_ljpme.tpr"), arena));
     md_nb_potential_t pot;
-    EXPECT_FALSE(md_nb_potential_init_from_tpr(&pot, &tpr));
+    EXPECT_FALSE(md_tpr_nb_potential_init(&pot, &tpr));
     md_tpr_data_free(&tpr, arena);
 
     // Martini: reaction field with eps_r 15 and an infinite eps_rf, cut off at 1.1 nm, LJ potential shift at 1.1 nm
     ASSERT_TRUE(md_tpr_data_parse_file(&tpr, MD_STR_LIT(TPR_DIR "martini3.tpr"), arena));
-    ASSERT_TRUE(md_nb_potential_init_from_tpr(&pot, &tpr));
+    ASSERT_TRUE(md_tpr_nb_potential_init(&pot, &tpr));
     EXPECT_EQ((int)MD_NB_COULOMB_REACTION_FIELD, pot.coulomb);
     EXPECT_EQ((int)MD_NB_MODIFIER_POT_SHIFT, pot.lj_modifier);
     const double rc = 1.1;
@@ -181,7 +181,7 @@ UTEST(nonbonded, from_tpr) {
 
     // Without readable simulation parameters there is nothing to go by
     tpr = (md_tpr_data_t){0};
-    EXPECT_FALSE(md_nb_potential_init_from_tpr(&pot, &tpr));
+    EXPECT_FALSE(md_tpr_nb_potential_init(&pot, &tpr));
 
     md_arena_allocator_destroy(arena);
 }

@@ -419,7 +419,7 @@ static void make_chain_system(md_system_t* sys, md_allocator_i* alloc, int num_c
 }
 
 // The molecule hierarchy must be rooted at the graph center and every atom must appear after the
-// atom it was reached from. md_geom_unwrap_molecule depends on
+// atom it was reached from. md_geom_unwrap depends on
 // that ordering, and atom_slot must be a consistent inverse of atom_idx.
 UTEST(util, molecule_hierarchy) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -823,7 +823,7 @@ UTEST(util, unwrap_molecule_coarse_grained_without_bonds) {
     md_float3_t xyz[2 * N];
     md_system_state_t state = { .num_atoms = 2 * N, .xyz = pack_xyz(xyz, x, y, z, 2 * N), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
-    md_geom_unwrap_system(&state, &sys);
+    md_system_unwrap(&state, &sys);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i + 1 < N; ++i) {
@@ -2042,7 +2042,7 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
 }
 
 // A chain of nine atoms spaced 2A along x inside a 10A box, so the wrapped input folds back on
-// itself twice. md_geom_unwrap_molecule must recover a straight line.
+// itself twice. md_geom_unwrap must recover a straight line.
 //
 // @NOTE: this is the regression test for two bugs that were live together here. min_image_ortho was
 // being fed a half extent where it wants a reciprocal one, and the result was written as x + dx
@@ -2064,7 +2064,7 @@ UTEST(util, unwrap_molecule_ortho) {
 
     const md_molecule_t mol = md_system_molecule(&sys, 0);
     ASSERT_LT(0u, (unsigned)mol.count);
-    md_geom_unwrap_molecule(&state, &mol);
+    md_geom_unwrap((float*)state.xyz, sizeof(md_float3_t), mol.atom_idx, mol.parent_idx, mol.count, &state.unitcell);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i < 8; ++i) {
@@ -2108,7 +2108,7 @@ UTEST(util, unwrap_molecule_triclinic) {
 
     const md_molecule_t mol = md_system_molecule(&sys, 0);
     ASSERT_LT(0u, (unsigned)mol.count);
-    md_geom_unwrap_molecule(&state, &mol);
+    md_geom_unwrap((float*)state.xyz, sizeof(md_float3_t), mol.atom_idx, mol.parent_idx, mol.count, &state.unitcell);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     const float ox = x[0] - tx[0];
