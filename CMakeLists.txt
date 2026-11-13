@@ -25,7 +25,7 @@ if (APPLE)
   set(MD_ENABLE_GPU ON CACHE INTERNAL "GPU acceleration is required on Apple")
   enable_language(OBJC)
 else()
-  option(MD_ENABLE_GPU "Enable GPU acceleration" OFF)
+  option(MD_ENABLE_GPU "Enable GPU acceleration (Vulkan; the headers and loader are fetched where no SDK is found)" ON)
 endif()
 
 option(MD_ENABLE_AVX "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
