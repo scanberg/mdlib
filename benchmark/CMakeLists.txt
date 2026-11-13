@@ -28,6 +28,7 @@ target_link_libraries(md_benchmark PRIVATE mdlib)
 target_include_directories(md_benchmark
   PRIVATE
   gen/
+  ${CMAKE_CURRENT_BINARY_DIR}
   ../ext/xtc/
 )
 
@@ -56,6 +57,7 @@ target_compile_options(md_load_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_
 target_link_options(md_load_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_load_bench PRIVATE mdlib $<$<PLATFORM_ID:Windows>:psapi>)
 add_dependencies(md_load_bench md_topo_gto_bench_rev)
+add_dependencies(md_benchmark md_topo_gto_bench_rev)
 target_include_directories(md_load_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # What md_parse_f64 costs per number, by the shape the number is written in, against strtod on the same text (see

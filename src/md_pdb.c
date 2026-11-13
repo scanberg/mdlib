@@ -737,9 +737,9 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         uint32_t num_atoms = 0, num_inner_res = 0;
         bool ter = false, ter_first = false;
         pdb_res_fields_t prev = {0};
-        md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
+        md_parse_lines_t lines = md_parse_lines(L->text + piece->range.beg, L->text + piece->range.end);
         md_str_t line;
-        while (md_text_lines_next(&lines, &line)) {
+        while (md_parse_lines_next(&lines, &line)) {
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM) {
                 if (!L->atoms) continue;
@@ -1397,7 +1397,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
             size_t len = md_text_pass_len_of(block.ptr + taken, block.len - taken, pass_size);
             // A pass whose first line is longer than a pass is all of the block: of more than 32 bits of offsets (a
             // string of one), its first line alone
-            if (len > UINT32_MAX) len = MD_MIN(block.len - taken, (size_t)(md_text_find_newline(block.ptr + taken, block.ptr + block.len) - (block.ptr + taken)) + 1);
+            if (len > UINT32_MAX) len = MD_MIN(block.len - taken, (size_t)(md_parse_find_byte(block.ptr + taken, block.ptr + block.len, '\n') - (block.ptr + taken)) + 1);
             if (!pdb_read_pass(&L, block.ptr + taken, len, ex)) goto done;     // Cancelled
             taken += len;
         }

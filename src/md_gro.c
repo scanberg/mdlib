@@ -304,7 +304,7 @@ static void gro_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     gro_load_t* L = (gro_load_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         gro_piece_t* piece = &L->pieces[p];
-        size_t n = md_text_count_newlines(L->text + piece->range.beg, L->text + piece->range.end);
+        size_t n = md_parse_count_byte(L->text + piece->range.beg, L->text + piece->range.end, '\n');
         // The last line of the text may not end in one
         if (piece->range.end == L->len && piece->range.end > piece->range.beg && L->text[piece->range.end - 1] != '\n') ++n;
         piece->num_lines = n;
@@ -324,11 +324,11 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         gro_res_fields_t prev = gro_res_fields(piece->range.beg > 0 ? md_text_line_before(L->text, piece->range.beg) : L->prev);
 
         gro_residue_start_t* res = L->pass_res + piece->first_line;
-        md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
+        md_parse_lines_t lines = md_parse_lines(L->text + piece->range.beg, L->text + piece->range.end);
         size_t atom = L->atom_beg + piece->first_line;
         const size_t atom_end = atom + piece->num_atoms;
         md_str_t line;
-        while (atom < atom_end && md_text_lines_next(&lines, &line)) {
+        while (atom < atom_end && md_parse_lines_next(&lines, &line)) {
             const gro_res_fields_t fields = gro_res_fields(line);
             if (atom == 0 || !gro_res_fields_eq(prev, fields)) {
                 res->atom   = (uint32_t)atom;

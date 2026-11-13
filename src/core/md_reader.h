@@ -3,6 +3,7 @@
 #include <core/md_common.h>
 #include <core/md_str.h>
 #include <core/md_file.h>
+#include <core/md_parse_simd.h>
 #include <core/md_executor.h>
 
 #include <stdbool.h>
@@ -71,223 +72,7 @@ A reader is used by one thread at a time.
 
 #define MD_READER_PADDING 64
 
-// [beg, end[ without a carriage return at its end
-static inline md_str_t md_reader_strip_cr_raw(const char* beg, const char* end) {
-    if (end > beg && end[-1] == '\r') --end;
-    return (md_str_t){ beg, (size_t)(end - beg) };
-}
-
-// ### FINDING THE ENDS OF LINES ###
-//
-// md_text_find_newline: the first '\n' of [c, e), else e. What every line here is found by, so in place of memchr
-// (a call, and a setup for any length) a search inline, a register of bytes at a time: compared with '\n' at once and
-// the matches as a mask, one bit per byte (SSE2, AVX2), four per byte on arm64, where the narrowing shift of the
-// comparison (shrn) is what movemask is on x86.
-//
-// The loads are aligned, so none crosses a page: past e (or before c, in the register of c) is read only where a page
-// holds bytes of [c, e) as well, which may be read. Address sanitizers see the reads past the range: they are told not
-// to look.
-
-#if defined(__AVX2__)
-#   include <immintrin.h>
-#   define MD_TEXT_SCAN_WIDTH 32
-#   define MD_TEXT_SCAN_BITS  1
-#elif defined(__x86_64__) || defined(_M_X64) || defined(__SSE2__)
-#   include <emmintrin.h>
-#   define MD_TEXT_SCAN_WIDTH 16
-#   define MD_TEXT_SCAN_BITS  1
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#   include <arm_neon.h>
-#   define MD_TEXT_SCAN_WIDTH 16
-#   define MD_TEXT_SCAN_BITS  4
-#endif
-
-#if defined(__clang__) || defined(__GNUC__)
-#   define MD_TEXT_NO_SANITIZE __attribute__((no_sanitize_address))
-#elif defined(_MSC_VER)
-#   define MD_TEXT_NO_SANITIZE __declspec(no_sanitize_address)
-#else
-#   define MD_TEXT_NO_SANITIZE
-#endif
-
-#if defined(MD_TEXT_SCAN_WIDTH)
-// The newlines of the aligned register of bytes at p: MD_TEXT_SCAN_BITS bits of the mask per byte, the first byte lowest
-MD_TEXT_NO_SANITIZE static inline uint64_t md_text_newline_mask(const char* p) {
-#   if defined(__AVX2__)
-    return (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((const __m256i*)p), _mm256_set1_epi8('\n')));
-#   elif MD_TEXT_SCAN_BITS == 1
-    return (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_load_si128((const __m128i*)p), _mm_set1_epi8('\n')));
-#   else
-    const uint8x16_t eq = vceqq_u8(vld1q_u8((const uint8_t*)p), vdupq_n_u8('\n'));
-    return vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0);
-#   endif
-}
-#endif
-
-// THE LINES OF A RANGE, in bulk: md_text_lines_t takes the lines of [c, e) one after the other, from masks of the
-// newlines of a chunk of 64 bytes at a time, each line from the mask alone (its lowest bit,
-// cleared). Where md_text_find_newline searches from where the last line ended, a chain of loads which each wait for
-// the one before, the chunks are loaded one after the other whatever the lines are: twice as fast over lines of 80
-// characters (8 GB/s with AVX2, 6 with SSE2, against 4.4 for memchr or md_text_find_newline line by line).
-
-#if defined(MD_TEXT_SCAN_WIDTH)
-#   define MD_TEXT_CHUNK 64     // Bytes of a chunk: one bit of a 64 bit mask per byte, on every target
-
-// The newlines of the aligned chunk at p, one bit per byte. On arm64 the four comparisons of a chunk are not narrowed
-// one by one (four bits per byte, a chunk of 16 bytes: a refill every 16 bytes, which for lines of 80 characters is a
-// branch on whether the chunk had a newline that no predictor gets right), but together: each byte its bit of its
-// place (1 to 128, twice a register), summed in pairs three times to a byte of bits of each 8 bytes, in order (the
-// movemask of x86 as and + addp).
-MD_TEXT_NO_SANITIZE static inline uint64_t md_text_newline_chunk(const char* p) {
-#   if defined(__AVX2__)
-    return md_text_newline_mask(p) | (md_text_newline_mask(p + 32) << 32);
-#   elif MD_TEXT_SCAN_BITS == 1
-    return md_text_newline_mask(p) | (md_text_newline_mask(p + 16) << 16) | (md_text_newline_mask(p + 32) << 32) | (md_text_newline_mask(p + 48) << 48);
-#   else
-    static const uint8_t place[16] = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
-    const uint8x16_t bit = vld1q_u8(place);
-    const uint8x16_t nl  = vdupq_n_u8('\n');
-    const uint8_t* q = (const uint8_t*)p;
-    const uint8x16_t m0 = vandq_u8(vceqq_u8(vld1q_u8(q),      nl), bit);
-    const uint8x16_t m1 = vandq_u8(vceqq_u8(vld1q_u8(q + 16), nl), bit);
-    const uint8x16_t m2 = vandq_u8(vceqq_u8(vld1q_u8(q + 32), nl), bit);
-    const uint8x16_t m3 = vandq_u8(vceqq_u8(vld1q_u8(q + 48), nl), bit);
-    const uint8x16_t s  = vpaddq_u8(vpaddq_u8(m0, m1), vpaddq_u8(m2, m3));
-    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0);
-#   endif
-}
-#endif
-
-typedef struct md_text_lines_t {
-    const char* beg;        // Of the next line
-    const char* end;        // Of the range
-#if defined(MD_TEXT_SCAN_WIDTH)
-    const char* chunk;      // The aligned chunk of mask
-    uint64_t    mask;       // Its newlines not taken yet
-#endif
-} md_text_lines_t;
-
-MD_TEXT_NO_SANITIZE static inline md_text_lines_t md_text_lines(const char* c, const char* e) {
-    md_text_lines_t it = { .beg = c, .end = e };
-#if defined(MD_TEXT_SCAN_WIDTH)
-    it.chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
-    it.mask = c < e ? md_text_newline_chunk(it.chunk) & (~UINT64_C(0) << (uintptr_t)(c - it.chunk)) : 0;
-#endif
-    return it;
-}
-
-// The next line, without its newline (nor a carriage return before it): false after the last. The last line of the
-// range need not end in a newline.
-MD_TEXT_NO_SANITIZE static inline bool md_text_lines_next(md_text_lines_t* it, md_str_t* line) {
-    const char* nl = it->end;
-#if defined(MD_TEXT_SCAN_WIDTH)
-    for (;;) {
-        if (it->mask) {
-            const uint32_t bit = (uint32_t)md_ctz64(it->mask);
-            // The lowest newline: its bit
-            it->mask &= it->mask - 1;
-            nl = it->chunk + bit;
-            if (nl > it->end) nl = it->end;
-            break;
-        }
-        it->chunk += MD_TEXT_CHUNK;
-        if (it->chunk >= it->end) break;
-        it->mask = md_text_newline_chunk(it->chunk);
-    }
-#else
-    const char* found = (const char*)memchr(it->beg, '\n', (size_t)(it->end - it->beg));
-    if (found) nl = found;
-#endif
-    if (it->beg >= it->end) return false;
-    *line = md_reader_strip_cr_raw(it->beg, nl);
-    it->beg = nl < it->end ? nl + 1 : it->end;
-#if defined(MD_TEXT_SCAN_WIDTH)
-    if (it->beg >= it->end) it->mask = 0;
-#endif
-    return true;
-}
-
-// The newlines of [c, e): a count of the bits of the masks of its chunks
-MD_TEXT_NO_SANITIZE static inline size_t md_text_count_newlines(const char* c, const char* e) {
-    if (c >= e) return 0;
-#if defined(MD_TEXT_SCAN_WIDTH)
-    const char* chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
-    uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << (uintptr_t)(c - chunk));
-    size_t n = 0;
-    for (;;) {
-        const size_t past = (size_t)MD_MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
-        if (past) {
-            // The last chunk: not past e
-            m &= ~UINT64_C(0) >> past;
-            return n + (size_t)md_popcnt64(m);
-        }
-        n += (size_t)md_popcnt64(m);
-        chunk += MD_TEXT_CHUNK;
-        if (chunk >= e) return n;   // e at the end of a chunk: none past it is loaded
-        m = md_text_newline_chunk(chunk);
-    }
-#else
-    size_t n = 0;
-    while (c < e && (c = (const char*)memchr(c, '\n', (size_t)(e - c))) != NULL) { ++n; ++c; }
-    return n;
-#endif
-}
-
-// Past the n:th newline of [c, e), or e where there are fewer, with *n lessened by those there were: a count of the
-// bits of the masks of its chunks, as md_text_count_newlines, but for the chunk in which the n:th is
-MD_TEXT_NO_SANITIZE static inline const char* md_text_skip_newlines(const char* c, const char* e, size_t* n) {
-    if (c >= e || *n == 0) return c;
-#if defined(MD_TEXT_SCAN_WIDTH)
-    const char* chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
-    uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << (uintptr_t)(c - chunk));
-    for (;;) {
-        const size_t past = (size_t)MD_MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
-        if (past) m &= ~UINT64_C(0) >> past;
-        const size_t k = (size_t)md_popcnt64(m);
-        if (k >= *n) {
-            // The n:th of this chunk's: the lowest n - 1 cleared
-            for (size_t i = 1; i < *n; ++i) m &= m - 1;
-            *n = 0;
-            return chunk + md_ctz64(m) + 1;
-        }
-        *n -= k;
-        chunk += MD_TEXT_CHUNK;
-        if (past || chunk >= e) return e;
-        m = md_text_newline_chunk(chunk);
-    }
-#else
-    while (*n && c < e) {
-        const char* nl = (const char*)memchr(c, '\n', (size_t)(e - c));
-        if (!nl) return e;
-        c = nl + 1;
-        *n -= 1;
-    }
-    return c;
-#endif
-}
-
-MD_TEXT_NO_SANITIZE static inline const char* md_text_find_newline(const char* c, const char* e) {
-#if defined(MD_TEXT_SCAN_WIDTH)
-    if (c >= e) return e;
-    const char* a = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_SCAN_WIDTH - 1));
-    uint64_t m = md_text_newline_mask(a) >> ((uintptr_t)(c - a) * MD_TEXT_SCAN_BITS);
-    if (m) {
-        const char* nl = c + md_ctz64(m) / MD_TEXT_SCAN_BITS;
-        return nl < e ? nl : e;
-    }
-    for (a += MD_TEXT_SCAN_WIDTH; a < e; a += MD_TEXT_SCAN_WIDTH) {
-        m = md_text_newline_mask(a);
-        if (m) {
-            const char* nl = a + md_ctz64(m) / MD_TEXT_SCAN_BITS;
-            return nl < e ? nl : e;
-        }
-    }
-    return e;
-#else
-    const char* nl = (const char*)memchr(c, '\n', (size_t)(e - c));
-    return nl ? nl : e;
-#endif
-}
+// The ends of lines are found by md_parse_find_byte and the others of md_parse_simd.h: a chunk of 64 bytes at a time.
 
 // The default size of a file reader's buffer: lines of any format we read fit many times over
 #define MD_READER_DEFAULT_CAPACITY MD_MEGABYTES(1)
@@ -371,7 +156,7 @@ static inline md_str_t md_reader_strip_cr(md_str_t line) {
 
 // The next line, in line, and where the one after it begins: false at the end
 static inline bool md_reader_find_line(md_reader_i* r, md_str_t* line, const char** next) {
-    const char* nl = md_text_find_newline(r->cur, r->end);
+    const char* nl = md_parse_find_byte(r->cur, r->end, '\n');
     if (nl < r->end) {
         *line = md_reader_strip_cr((md_str_t){ r->cur, (size_t)(nl - r->cur) });
         *next = nl + 1;
@@ -426,7 +211,7 @@ static inline size_t md_reader_skip_lines(md_reader_i* r, size_t n) {
         const md_str_t block = md_reader_block(r);
         if (!block.len) break;
         const char* e = block.ptr + block.len;
-        const char* c = md_text_skip_newlines(block.ptr, e, &left);
+        const char* c = md_parse_after_nth_byte(block.ptr, e, '\n', &left);
         if (left && c == e && e[-1] != '\n' && (r->flags & MD_READER_FLAG_END) && e == r->end) {
             // The last line of the source, without a newline: md_reader_block gives it only at the end
             left -= 1;
@@ -523,7 +308,7 @@ static inline void md_text_split(md_text_piece_t* pieces, size_t num_pieces, con
     for (size_t p = 0; p < num_pieces; ++p) {
         size_t e = (p + 1 == num_pieces) ? len : MD_MAX(at, len * (p + 1) / num_pieces);
         if (e < len && e > 0 && text[e - 1] != '\n') {
-            const char* nl = md_text_find_newline(text + e, text + len);
+            const char* nl = md_parse_find_byte(text + e, text + len, '\n');
             e = nl < text + len ? (size_t)(nl - text) + 1 : len;
         }
         pieces[p] = (md_text_piece_t){ at, e };
@@ -542,7 +327,7 @@ static inline md_str_t md_text_line_before(const char* text, size_t at) {
 // The line at c, up to e, and where the next begins
 static inline md_str_t md_text_next_line(const char** c, const char* e) {
     const char* beg = *c;
-    const char* nl = md_text_find_newline(beg, e);
+    const char* nl = md_parse_find_byte(beg, e, '\n');
     const char* le = nl;
     *c = nl < e ? nl + 1 : e;
     return md_reader_strip_cr((md_str_t){ beg, (size_t)(le - beg) });

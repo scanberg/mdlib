@@ -967,7 +967,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
 // a byte which is not), all of them at once: the n:th token is from the n:th beginning to the n:th end. Not one token
 // after another, each from where the last ended, which is a chain of as many steps as the row has tokens.
 // The whitespace of the chunk at c, the bytes from end on counted as such
-MD_TEXT_NO_SANITIZE static inline uint64_t mmcif_ws_chunk(const char* c, const char* end) {
+MD_PARSE_SIMD_NO_SANITIZE static inline uint64_t mmcif_ws_chunk(const char* c, const char* end) {
     uint64_t ws = md_parse_whitespace_mask64(c);
     if (end - c < 64) ws |= ~UINT64_C(0) << (end - c);
     return ws;
@@ -979,7 +979,7 @@ static const uint8_t mmcif_first_char[256] = { ['#'] = 1, [';'] = 1, ['\''] = 2,
 // tok has room for MMCIF_SPLIT_SLACK tokens past num, which the loops below write ahead of the count
 #define MMCIF_SPLIT_SLACK 4
 
-MD_TEXT_NO_SANITIZE static bool mmcif_split_row(md_str_t* tok, size_t num, const char* beg, const char* end) {
+MD_PARSE_SIMD_NO_SANITIZE static bool mmcif_split_row(md_str_t* tok, size_t num, const char* beg, const char* end) {
     size_t n = 0;
     uint32_t first = 0;         // Of the tokens' first characters, what mmcif_first_char says of them
     size_t n_end = 0;
@@ -1131,7 +1131,7 @@ static void mmcif_rows_count(void* arg, uint32_t beg, uint32_t end, uint32_t thr
     const mmcif_rows_t* R = (const mmcif_rows_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         mmcif_rows_piece_t* piece = &R->pieces[p];
-        size_t n = md_text_count_newlines(R->text + piece->range.beg, R->text + piece->range.end);
+        size_t n = md_parse_count_byte(R->text + piece->range.beg, R->text + piece->range.end, '\n');
         // The last line of the text may not end in one
         if (piece->range.end == R->len && piece->range.end > piece->range.beg && R->text[R->len - 1] != '\n') ++n;
         piece->num_lines = n;
@@ -1147,9 +1147,9 @@ static void mmcif_rows_parse(void* arg, uint32_t beg, uint32_t end, uint32_t thr
         mmcif_atom_site_entry_t* out = R->entries + piece->first;
         size_t n = 0;
         piece->stop = piece->range.end;
-        md_text_lines_t lines = md_text_lines(R->text + piece->range.beg, R->text + piece->range.end);
+        md_parse_lines_t lines = md_parse_lines(R->text + piece->range.beg, R->text + piece->range.end);
         md_str_t line;
-        while (md_text_lines_next(&lines, &line)) {
+        while (md_parse_lines_next(&lines, &line)) {
             if (!mmcif_plain_row(tok, R->cols->num_cols, line)) {
                 piece->stop = (size_t)(line.ptr - R->text);
                 break;
