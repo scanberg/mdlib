@@ -94,8 +94,6 @@ set(MD_CORE_FILES
   src/core/md_format.h
   src/core/md_geom.c
   src/core/md_geom.h
-  src/core/md_gl_util.c
-  src/core/md_gl_util.h
   src/core/md_gpu.h
   src/core/md_grid.c
   src/core/md_grid.h
@@ -283,6 +281,8 @@ set(MD_IO_FILES
 set(MD_GFX_FILES
   src/gfx/md_gl.c
   src/gfx/md_gl.h
+  src/gfx/md_gl_util.c
+  src/gfx/md_gl_util.h
   src/gfx/md_vector_graphics.c
   src/gfx/md_vector_graphics.h
 )
@@ -350,22 +350,6 @@ set(GL_SHADER_FILES
   src/shaders/slab.frag
   src/shaders/spacefill.vert
   src/shaders/spacefill.frag
-)
-
-set(GTO_SHADER_FILES 
-  src/shaders/eval_alie.comp
-  src/shaders/eval_gto.comp
-  src/shaders/eval_gto_density.comp
-  src/shaders/eval_gto_density_grad.comp
-  src/shaders/voronoi_segment.comp
-)
-
-set(TOPO_SHADER_FILES
-  src/shaders/topo/critical_point_compaction.comp
-  src/shaders/topo/bidirectional_manifold.comp
-  src/shaders/topo/path_compression.comp
-  src/shaders/topo/critical_points.comp
-  src/shaders/topo/vertex_edge_extraction.comp
 )
 
 set(TOPO_SLANG_FILES
@@ -492,8 +476,6 @@ if (MD_ENABLE_HDF5)
 endif()
 
 create_resources("${GL_SHADER_FILES}"   "gen/gl_shaders.inl")
-create_resources("${GTO_SHADER_FILES}"  "gen/gto_shaders.inl")
-create_resources("${TOPO_SHADER_FILES}" "gen/topo_shaders.inl")
 create_resources("${CMAKE_CURRENT_SOURCE_DIR}/src/vial/prelude.vial" "gen/vial_prelude.inl")
 
 # Detect AppleClang vs other Clang
@@ -710,7 +692,7 @@ if (MD_ENABLE_HDF5 AND NOT MD_HAS_PARENT AND (TARGET md_unittest OR TARGET md_be
   endforeach()
 endif()
 
-set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
+set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
@@ -759,7 +741,6 @@ endfunction()
 md_add_layer(core)
 target_include_directories(md_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w
   ${CMAKE_CURRENT_SOURCE_DIR}/ext/simde
   ${CMAKE_CURRENT_SOURCE_DIR}/ext/xxhash
 )
@@ -767,6 +748,7 @@ md_add_layer(system   DEPENDS md_core)
 md_add_layer(analysis DEPENDS md_system)
 md_add_layer(qm       DEPENDS md_system)
 md_add_layer(gfx      DEPENDS md_system)
+target_include_directories(md_gfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ext/gl3w)
 md_add_layer(io       DEPENDS md_system md_qm)
 md_add_layer(script   DEPENDS md_analysis md_io)
 
