@@ -1313,6 +1313,57 @@ UTEST(render, mol_radii_follow_their_source) {
         if (wrong) printf("    %s: %d points with a wrong radius\n", steps[k].what, wrong);
         EXPECT_EQ(0, wrong);
     }
+    /* A topology written again at the same address, of the same system
+       version and the same number of points, but another one (the resident
+       set differs by an atom): the copy made for the first is not the
+       second's, nor are frames made for the first */
+    {
+        md_bitmask_t ra = md_bitmask_create(0, n, md_get_heap_allocator());
+        md_bitmask_t rb = md_bitmask_create(0, n, md_get_heap_allocator());
+        md_bitmask_set_range(&ra, 0, n); md_bitmask_clear_bit(&ra, 0);
+        md_bitmask_set_range(&rb, 0, n); md_bitmask_clear_bit(&rb, 1);
+        md_bitset_t sa = md_bitmask_view(&ra), sb = md_bitmask_view(&rb);
+        md_temp_scope_t t2 = md_temp_begin();
+        md_render_mol_plan_t pa, pb;
+        ASSERT_TRUE(md_render_mol_plan(&pa, &sys, &sa, t2));
+        ASSERT_TRUE(md_render_mol_plan(&pb, &sys, &sb, t2));
+        ASSERT_EQ(pa.size, pb.size);
+        ASSERT_EQ(pa.layout.point_count, pb.layout.point_count);
+        md_gpu_addr_t base = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, pa.size).gpu;
+        md_gpu_addr_t dyn2 = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, pa.layout.dynamic_size).gpu;
+        md_render_mol_topo_t ta, tb;
+        ASSERT_TRUE(md_render_mol_write(fx.gfx, &ta, &pa, base, NULL));
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &ta, dyn2, &types, 0, NULL));
+        EXPECT_EQ(0, radii_wrong(&fx, &ta, dyn2, &types, &rep, by_type));
+        md_render_mol_frames_t fr;
+        md_gpu_addr_t frb = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&ta, 1)).gpu;
+        ASSERT_TRUE(md_render_mol_frames_init(&fr, &ta, frb, 1));
+        {
+            /* a frame in its slot, so only the topology can refuse it below */
+            const float cell[9] = { 0 };
+            uint16_t* q = malloc((size_t)n * 6);
+            md_render_mol_frame_t f;
+            md_render_mol_frame_quantize(&f, q, (const float*)state.xyz, 0, n, cell, &sa);
+            ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &ta, dyn2, &fr, 0, &f, 0));
+            md_render_mol_atoms_t af = {0};
+            af.frames = &fr; af.frame_count = 1;
+            EXPECT_TRUE(md_render_mol_update(mol, fx.gfx, &ta, dyn2, &af, 0, NULL));
+            md_gpu_stream_sync(fx.gfx);
+            free(q);
+        }
+        ASSERT_TRUE(md_render_mol_write(fx.gfx, &tb, &pb, base, NULL));
+        EXPECT_NE(ta.instance, tb.instance);
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &tb, dyn2, &types, 0, NULL));
+        const int wrong = radii_wrong(&fx, &tb, dyn2, &types, &rep, by_type);
+        if (wrong) printf("    written again at the same base: %d points with a wrong radius\n", wrong);
+        EXPECT_EQ(0, wrong);
+        md_render_mol_atoms_t af = {0};
+        af.frames = &fr; af.frame_count = 1;
+        EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &tb, dyn2, &af, 0, NULL));   /* frames of the other one */
+        md_temp_end(t2);
+        md_gpu_free(fx.gfx, frb); md_gpu_free(fx.gfx, dyn2); md_gpu_free(fx.gfx, base);
+        md_bitmask_free(&ra); md_bitmask_free(&rb);
+    }
     free(by_type); free(own);
     md_gpu_free(fx.gfx, types.position); md_gpu_free(fx.gfx, mine.radius);
     md_gpu_free(fx.gfx, dyn); md_gpu_free(fx.gfx, topo.base);

@@ -83,7 +83,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
-    uint* marker;               // 7 words: whose radii `radii` holds, in which grouping, from which source (radii_valid)
+    uint* marker;               // 8 words: whose radii `radii` holds, in which grouping, from which source (radii_valid)
     uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
@@ -116,7 +116,7 @@ struct Args {
     uint  has_radius;           // radius_override given
     uint  mixed_count;
     uint  full;                 // gather: the radii from their source (the order or the radii changed)
-    uint  ident0;               // the topology the copy belongs to: its block address and version
+    uint  ident0;               // the topology the copy belongs to: its block address and version (and ident3)
     uint  ident1;
     uint  ident2;
     uint  fr_threads;           // fr_gather: the threads launched (its stride)
@@ -131,7 +131,7 @@ struct Args {
     uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
     uint  rsrc0;                // where the radii come from: radius_override's address | 1, or 0 for the
     uint  rsrc1;                // types (the marker keeps it: radii from one are not the other's)
-    uint  _pad1;
+    uint  ident3;               // the topology's instance (each md_render_mol_write its own)
 };
 MD_SHADER_ARGS(Args);
 
@@ -423,6 +423,10 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
     uint n = a.n_mol;
     uint4* cur = recs_cur(a);
     uint4* nxt = recs_next(a);
+    // the radii only when they are valid going in (and so stay valid): when
+    // not, the copy after the regroup fetches every one anyway, and here they
+    // would be one more array written scattered (the first regroup's)
+    const bool radii = radii_valid(a);
     for (uint j = tid.x; j < n; j += grid_threads(n)) {
         uint4 r = loadAligned<16>(cur + j);
         uint4 st = loadAligned<16>((uint4*)a.mol_slot + j);
@@ -432,8 +436,10 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
         for (uint i = 0u; i < k.x; ++i) {
             uint atom = r.x + a.kind_atom[k.z + i];
             if ((a.dbg & 1u) == 0u) a.atom_order[p0 + i] = atom;
-            uint t = a.kind_type[k.z + i];
-            a.radii[p0 + i] = a.has_radius != 0u ? a.radius_override[atom] : (t < a.type_count ? a.type_radius[t] : 0u);
+            if (radii) {
+                uint t = a.kind_type[k.z + i];
+                a.radii[p0 + i] = a.has_radius != 0u ? a.radius_override[atom] : (t < a.type_count ? a.type_radius[t] : 0u);
+            }
             if (a.has_src != 0u) a.src_point[p0 + i - a.static_atoms] = r.w + i;   // its point in the last grouping
             if ((r.z & REC_MIXED) != 0u) a.mixed_point[atom] = p0 + i;
         }
@@ -489,7 +495,7 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
 
 bool radii_valid(Args a) {
     return a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2 &&
-           a.marker[4] == a.regroups[0] && a.marker[5] == a.rsrc0 && a.marker[6] == a.rsrc1;
+           a.marker[4] == a.regroups[0] && a.marker[5] == a.rsrc0 && a.marker[6] == a.rsrc1 && a.marker[7] == a.ident3;
 }
 
 // An atom's radius from its source: the caller's array, or its type's
@@ -546,6 +552,7 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
     a.marker[4] = a.regroups[0];
     a.marker[5] = a.rsrc0;
     a.marker[6] = a.rsrc1;
+    a.marker[7] = a.ident3;
 }
 
 // ---- Frames --------------------------------------------------------------------

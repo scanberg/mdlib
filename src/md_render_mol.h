@@ -199,6 +199,10 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t mixed_point;             /* internal: atom -> point, valid for the
                                               static atoms and those of small molecules
                                               with mixed bonds                          */
+    uint32_t      instance;                /* internal: md_render_mol_write's, one per
+                                              write (a copy or frames made for another
+                                              topology written at the same base are
+                                              not this one's)                           */
 } md_render_mol_topo_t;
 
 /* Host side of a topology to be written: the block's image in the caller's
@@ -381,8 +385,9 @@ uint64_t md_render_mol_frame_size(const md_render_mol_topo_t* topo);
 typedef struct md_render_mol_frames_t {
     md_gpu_addr_t base;            /* the block; md_gpu_free(stream, base) frees it  */
     uint64_t      size;
-    md_gpu_addr_t topology_base;   /* whose point order: topo.base, topo.topology_version */
+    md_gpu_addr_t topology_base;   /* whose point order: topo.base, topo.topology_version, */
     uint64_t      topology_version;
+    uint32_t      topology_instance; /* topo.instance                                  */
     uint32_t      slots;
     uint32_t      point_count;
     uint32_t      valid;           /* bit k: slot k holds a frame                    */
