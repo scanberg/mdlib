@@ -1230,8 +1230,7 @@ static inline md_spatial_acc_t* get_spatial_acc(eval_context_t* ctx, double max_
 
         // Rounded up to a multiple of 6 A, so a few different cutoffs within one evaluation share a structure
 		const double cutoff = ceil(max_cutoff / 6.0) * 6.0;
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), NULL, ctx->sys->atom.count);
-        md_spatial_acc_init(&ctx->spatial_acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell });
+        md_spatial_acc_init(&ctx->spatial_acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)ctx->cur_state->xyz, .stride = sizeof(md_float3_t), .count = ctx->sys->atom.count, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell });
 		ctx->spatial_acc_cutoff = cutoff;
     }
 
@@ -2783,7 +2782,6 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_mask = as_bitset(arg[1]);
         }
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(md_float3_t), NULL, num_pos);
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
@@ -2800,7 +2798,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Fill atomset with indices
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, radius, within_float_cb, bf_dst, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, (const float*)in_pos, sizeof(md_float3_t), NULL, num_pos, radius, within_float_cb, bf_dst, 0);
             
         if (bf_mask) {
             MD_ASSERT(bf_dst);
@@ -2843,7 +2841,6 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), idx, num_idx);
         if (dst) {
             MD_ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
@@ -2860,7 +2857,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(acc, &stream, radius, within_float_cb, bf_dst, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(acc, (const float*)ctx->cur_state->xyz, sizeof(md_float3_t), idx, num_idx, radius, within_float_cb, bf_dst, 0);
 
         // Exclude the input atoms from the result
         md_bitmask_andnot(bf_dst, *ctx->mol_ctx);
@@ -2933,8 +2930,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             .bf = bf_dst,
             .min_r2 = rad_range.beg * rad_range.beg,
         };
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(md_float3_t), NULL, num_pos);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, rad_range.end, within_frng_cb, &payload, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, (const float*)in_pos, sizeof(md_float3_t), NULL, num_pos, rad_range.end, within_frng_cb, &payload, 0);
 
         if (bf_mask) {
             MD_ASSERT(bf_dst);
@@ -2974,7 +2970,6 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         (void)num_written;
         MD_ASSERT(num_written == num_idx);
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), idx, num_idx);
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
         
@@ -2998,7 +2993,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             .min_r2 = rad_range.beg * rad_range.beg,
         };
 
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, rad_range.end, within_frng_cb, &payload, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, (const float*)ctx->cur_state->xyz, sizeof(md_float3_t), idx, num_idx, rad_range.end, within_frng_cb, &payload, 0);
         
         // Exclude the input atoms from the result
         md_bitmask_andnot(bf_dst, *ctx->mol_ctx);
@@ -3100,9 +3095,8 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		md_bitset_iter_t it = md_bitset_iter(*bf_b);
 		md_bitset_iter_extract_indices(indices, num_indices, it);
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), indices, num_indices);
 		md_spatial_acc_t acc = { .alloc = ctx->temp_alloc };
-		md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
+		md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)ctx->cur_state->xyz, .stride = sizeof(md_float3_t), .idx = indices, .count = num_indices, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX });
 
 		md_array(int32_t) a_indices = 0;
 
@@ -3146,8 +3140,7 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 			md_bond_mask_grow(&exclusion_bf, &ctx->sys->bond, ctx->sys->atom.count, path_length, NULL);
 
             // Iterate over atoms in set A and exclude those potential contact points
-            md_coord_stream_t a_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), a_indices, a_length);
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &a_stream, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, (const float*)ctx->cur_state->xyz, sizeof(md_float3_t), a_indices, a_length, cutoff, cb, &data, MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX);
             if (out_counts) {
                 out_counts[i] = (float)data.count;
             }
@@ -6951,36 +6944,35 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     // IF we have multiple atomsets supplied as reference, we calculate a RDF based on the COM of each atomset and excluded *self* when counting.
     const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_ATOMSET) && (element_count(arg[0]) > 1);
 
-    md_coord_stream_t ref_stream = { 0 };
+    // The points: the atoms of an index, or positions of their own
+    const float* ref_xyz = (const float*)ctx->cur_state->xyz;
     md_spatial_acc_flags_t ref_flags = 0;
     if (ref_idx) {
         ref_len = md_array_size(ref_idx);
-        ref_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), ref_idx, ref_len);
-        ref_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
+        ref_flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX;
     } else {
         md_array(md_float3_t) ref_pos = coordinate_extract(arg[0], ctx);
         ref_len = md_array_size(ref_pos);
-        ref_stream = md_coord_stream_from_aos((const float*)ref_pos, sizeof(md_float3_t), NULL, ref_len);
+        ref_xyz = (const float*)ref_pos;
     }
 
     md_array(int32_t) trg_idx = coordinate_extract_indices(arg[1], ctx);
     size_t trg_len = 0;
 
-    md_coord_stream_t trg_stream = { 0 };
+    const float* trg_xyz = (const float*)ctx->cur_state->xyz;
     md_spatial_acc_flags_t trg_flags = 0;
     if (trg_idx) {
         trg_len = md_array_size(trg_idx);
-        trg_stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), trg_idx, trg_len);
-        trg_flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
+        trg_flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX;
     } else {
         md_array(md_float3_t) trg_pos = coordinate_extract(arg[1], ctx);
         trg_len = md_array_size(trg_pos);
-        trg_stream = md_coord_stream_from_aos((const float*)trg_pos, sizeof(md_float3_t), NULL, trg_len);
+        trg_xyz = (const float*)trg_pos;
     }
 
     {
         md_spatial_acc_t sa = { .alloc = ctx->temp_alloc };
-        md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .coords = &trg_stream, .cutoff = max_cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = trg_flags });
+        md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .xyz = trg_xyz, .stride = sizeof(md_float3_t), .idx = trg_idx, .count = trg_len, .cutoff = max_cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = trg_flags });
 
         rdf_payload_t payload = {
             .exclusion_masks = as_bitset(arg[0]),
@@ -6992,7 +6984,7 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
         };
 
         md_spatial_acc_pair_callback_t cb = use_exclusion_masks ? rdf_cb_excl_mask : rdf_cb;
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, &ref_stream, max_cutoff, cb, &payload, ref_flags);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, ref_xyz, sizeof(md_float3_t), ref_idx, ref_len, max_cutoff, cb, &payload, ref_flags);
 
         total_count = payload.total_count;
     }
@@ -7479,9 +7471,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int*    trg_idx = md_temp_alloc_array(temp, int, trg_size);
         md_bitset_iter_extract_indices(trg_idx, trg_size, md_bitset_iter(*trg_bf));
 
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(md_float3_t), trg_idx, trg_size);
 		md_spatial_acc_t spatial_acc = { .alloc = temp.arena };
-        md_spatial_acc_init(&spatial_acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
+        md_spatial_acc_init(&spatial_acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)ctx->cur_state->xyz, .stride = sizeof(md_float3_t), .idx = trg_idx, .count = trg_size, .cutoff = cutoff, .unitcell = &ctx->cur_state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX });
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         md_float3x3_eigen_t eigen = md_float3x3_eigen(md_float3x3_covariance_matrix_float4(ref_xyzw[0], 0, ref_size, ref_com[0]));

@@ -1,5 +1,4 @@
 ﻿#include "md_infer_internal.h"
-#include <core/md_coord_stream.h>
 #include <core/md_executor.h>
 #include <core/md_fifo.h>
 #include <core/md_log.h>
@@ -605,11 +604,10 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
 
     // The histogram of the pairs, then the pairs within the first shell
     uint32_t hist[METALLIC_HIST_BINS] = {0};
-    md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), metals, num_metals);
     {
         const double cutoff = 2.0 * max_rad * METALLIC_HIST_HI;
         md_spatial_acc_t acc = { .alloc = temp_arena };
-        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .idx = metals, .count = num_metals, .cutoff = cutoff, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX });
         metal_pair_search_t search = { .radius = radius, .hist = hist };
         md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, metal_pair_callback, &search);
     }
@@ -619,7 +617,7 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
     {
         const double cutoff = 2.0 * max_rad * shell;
         md_spatial_acc_t acc = { .alloc = temp_arena };
-        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .idx = metals, .count = num_metals, .cutoff = cutoff, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX });
         metal_pair_search_t search = { .radius = radius, .q_max = shell, .pairs = &pairs, .alloc = temp_arena };
         md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, metal_pair_callback, &search);
     }
@@ -729,9 +727,8 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
 
             // Build candidate list
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
-            md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .count = state->num_atoms, .cutoff = cutoff, .unitcell = &state->unitcell });
             cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
             md_temp_reset(temp_scope, before_acc);
         }
@@ -1264,9 +1261,8 @@ bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const m
         const double cutoff = MD_MAX(1.0, (double)(max_rad_scope + max_rad_all) * bond_k_coord);
 
         delta_search_t search = { .scope = scope, .alloc = temp_alloc };
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), NULL, num_atoms);
         md_spatial_acc_t acc = { .alloc = temp_alloc };
-        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .count = num_atoms, .cutoff = cutoff, .unitcell = &state->unitcell });
         if (!scope) {
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, delta_pair_callback, &search);
         } else {
@@ -1278,8 +1274,7 @@ bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const m
                 while (md_bitset_iter_next(&it) && n < num_scope) {
                     if (it.idx < num_atoms) idx[n++] = (int)it.idx;
                 }
-                md_coord_stream_t ext = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), idx, n);
-                md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, cutoff, delta_pair_callback, &search, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+                md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, (const float*)state->xyz, sizeof(md_float3_t), idx, n, cutoff, delta_pair_callback, &search, MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX);
             }
         }
 

@@ -14,7 +14,6 @@
 #include <md_dssp.h>
 #include <md_hbond.h>
 #include <md_script.h>
-#include <core/md_coord_stream.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_bitset.h>
@@ -226,12 +225,11 @@ UBENCH_EX(coords, spatial_acc_build_and_pairs) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
     if (load_big(&sys, &st, arena)) {
-        md_coord_stream_t stream = md_coord_stream_from_aos((const float*)st.xyz, sizeof(md_float3_t), NULL, st.num_atoms);
         size_t count = 0;
         UBENCH_DO_BENCHMARK() {
             md_allocator_i* tmp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
             md_spatial_acc_t acc = { .alloc = tmp };
-            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 3.0, .unitcell = &st.unitcell });
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)st.xyz, .stride = sizeof(md_float3_t), .count = st.num_atoms, .cutoff = 3.0, .unitcell = &st.unitcell });
             md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 3.0, count_pairs, &count);
             md_arena_allocator_destroy(tmp);
             UBENCH_DO_NOTHING(&count);
