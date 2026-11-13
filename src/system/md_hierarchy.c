@@ -1,5 +1,4 @@
 ﻿#include "md_infer_internal.h"
-#include <core/md_fifo.h>
 #include <core/md_format.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
@@ -394,46 +393,25 @@ bool md_part_infer(md_part_data_t* out, const md_system_t* sys, md_allocator_i* 
 
 // The molecules (md_molecule_data_t) are the connected components of the bond graph, joined where the bonds do not
 // hold a molecule together (see there).
-// Breadth first traversal of the connected component containing 'seed'.
-//
-// Marks every atom it reaches in 'visited' and never clears it; the caller supplies a bitfield which
-// is clear over the component. When out_atoms is supplied the atoms are written in BFS order and
-// out_count receives how many there were. When out_pred is supplied it records, per global atom
-// index, the atom each one was reached from, with the seed recording itself.
-//
-// Returns the last atom popped from the queue. BFS pops in non decreasing distance order, so that
-// atom is at maximum edge distance from the seed - which is what the double sweep below needs.
-static int bfs_traverse(int32_t* out_atoms, size_t* out_count, int32_t* out_pred, uint64_t* visited, md_fifo_t* queue, const md_bond_data_t* bond, int seed) {
-    md_fifo_clear(queue);
-
+// Breadth first from seed over the atoms not yet in visited, marking them: the atoms in the order they are reached into
+// order, which is the queue, and the atom each was reached from into pred where given (the seed its own). Returns how
+// many were reached. The order is by distance from the seed, so the last is as far from it as any.
+static size_t bfs_order(int32_t* order, int32_t* pred, uint64_t* visited, const md_bond_data_t* bond, int32_t seed) {
+    size_t n = 0;
     bitfield_set_bit(visited, seed);
-    if (out_pred) out_pred[seed] = seed;
-    md_fifo_push(queue, seed);
-
-    size_t count = 0;
-    int last = seed;
-
-    while (!md_fifo_empty(queue)) {
-        const int cur = md_fifo_pop(queue);
-        last = cur;
-        if (out_atoms) out_atoms[count] = cur;
-        count += 1;
-
-        md_bond_iter_t it = md_bond_iter(bond, cur);
-        while (md_bond_iter_has_next(&it)) {
-            const int next = md_bond_iter_atom_index(&it);
-            md_bond_iter_next(&it);
-
+    if (pred) pred[seed] = seed;
+    order[n++] = seed;
+    for (size_t h = 0; h < n; ++h) {
+        const int32_t cur = order[h];
+        for (md_bond_iter_t it = md_bond_iter(bond, cur); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int32_t next = md_bond_iter_atom_index(&it);
             if (bitfield_test_bit(visited, next)) continue;
-
             bitfield_set_bit(visited, next);
-            if (out_pred) out_pred[next] = cur;
-            md_fifo_push(queue, next);
+            if (pred) pred[next] = cur;
+            order[n++] = next;
         }
     }
-
-    if (out_count) *out_count = count;
-    return last;
+    return n;
 }
 
 // Whether a bond holds a molecule together (md_molecule_data_t): a bond of the graph, but not a coordination bond
@@ -830,11 +808,12 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
     const size_t atom_count = md_system_atom_count(sys);
 
     // Reverse map from atom to slot, one entry per atom in the system. Every atom is in one molecule: the slots are as
-    // many as the atoms, and reserved at once rather than grown (the system's allocator is often an arena, which keeps
-    // what a growing array leaves behind)
+    // many as the atoms, and made at once rather than grown (the system's allocator is often an arena, which keeps
+    // what a growing array leaves behind). The molecules are at most as many: their offsets are copied out at the end.
     md_array_resize(out->atom_slot, atom_count, alloc);
-    md_array_ensure(out->atom_idx, atom_count, alloc);
-    md_array_ensure(out->parent_idx, atom_count, alloc);
+    md_array_resize(out->atom_idx, atom_count, alloc);
+    md_array_resize(out->parent_idx, atom_count, alloc);
+    uint32_t* offset = md_temp_alloc_array(temp, uint32_t, atom_count + 1);
 
     // Which atoms have been assigned to a molecule. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
@@ -843,16 +822,11 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
     // stays proportional to the component rather than to the system.
     uint64_t* sweep_visited = make_bitfield(atom_count, temp_arena);
 
-    // Atoms of the residue currently being processed, and the predecessor of each atom as recorded
-    // by the second sweep. Only the entries belonging to the current component are meaningful.
-    int32_t* component = md_temp_alloc_zero_array(temp, int32_t, atom_count);
-    int32_t* pred      = md_temp_alloc_zero_array(temp, int32_t, atom_count);
-
-    // Parallel queues:
-    // - atom_queue   : global atom index to visit
-    // - parent_queue : global index of the atom it was reached from (the root is its own parent)
-    md_fifo_t atom_queue   = md_fifo_create(1024, temp_arena);
-    md_fifo_t parent_queue = md_fifo_create(1024, temp_arena);
+    // The atoms of the current component in the order of the first sweep and of the second, and the atom each was
+    // reached from in the second and the third. Only the entries of the current component are meaningful.
+    int32_t* component = md_temp_alloc_array(temp, int32_t, atom_count);
+    int32_t* sweep     = md_temp_alloc_array(temp, int32_t, atom_count);
+    int32_t* pred      = md_temp_alloc_array(temp, int32_t, atom_count);
 
     // The traversal runs over the bonds which hold molecules together (bond_holds_molecule: not the coordination of a
     // metal by other residues), plus hierarchy links for coarse grained systems where bonds leave beads disconnected
@@ -870,7 +844,7 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
             link_graph.count = num_held + num_links;
             md_array_resize(link_graph.pairs, link_graph.count, temp_arena);
             md_array_resize(link_graph.flags, link_graph.count, temp_arena);
-            md_memset(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
+            if (link_graph.count) md_memset(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
             size_t n = 0;
             for (size_t b = 0; b < sys->bond.count; ++b) {
                 if (!bond_holds_molecule(sys, b)) continue;
@@ -884,71 +858,51 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
         }
     }
 
-    // Sentinel start offset
-    md_array_push(out->offset, 0, alloc);
-
-    for (int i = 0; i < (int)atom_count; ++i) {
+    size_t num_slots = 0;
+    offset[0] = 0;
+    for (int32_t i = 0; i < (int32_t)atom_count; ++i) {
         if (bitfield_test_bit(visited, i)) continue;
 
         // Sweep 1: discover the component from an arbitrary seed and note an atom at maximum distance
         // from it. This is the sweep that claims the atoms in 'visited'; the atom list it produces is
         // what lets the following sweeps clear their bits without touching the rest of the system.
-        size_t component_size = 0;
-        const int far_a = bfs_traverse(component, &component_size, NULL, visited, &atom_queue, graph, i);
+        const size_t component_size = bfs_order(component, NULL, visited, graph, i);
 
         // Locate the graph center: the atom whose greatest distance to any other atom in the
         // component is smallest. Standard double sweep - the midpoint of a longest path. Exact for
         // acyclic structures, a close approximation in the presence of rings.
         // Components of two atoms or fewer are their own center.
-        int root = i;
+        int32_t root = i;
         if (component_size > 2) {
             // Sweep 2: from far_a, find the opposite end of the path and the chain leading back
+            const int32_t far_a = component[component_size - 1];
             for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
-            const int far_b = bfs_traverse(NULL, NULL, pred, sweep_visited, &atom_queue, graph, far_a);
+            const int32_t far_b = sweep[bfs_order(sweep, pred, sweep_visited, graph, far_a) - 1];
 
             int length = 0;
-            for (int a = far_b; a != pred[a]; a = pred[a]) length += 1;
+            for (int32_t a = far_b; a != pred[a]; a = pred[a]) length += 1;
 
             root = far_b;
             for (int k = 0; k < length / 2; ++k) root = pred[root];
         }
 
-        // Sweep 3: emit the component in BFS order from the root, which establishes the
-        // slot(parent) < slot(child) invariant md_molecule_data_t documents.
+        // Sweep 3: the component in breadth first order from the root, into its slots, which establishes the
+        // slot(parent) < slot(child) invariant md_molecule_data_t documents (the root is its own parent)
         for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
-
-        md_fifo_clear(&atom_queue);
-        md_fifo_clear(&parent_queue);
-
-        bitfield_set_bit(sweep_visited, root);
-        md_fifo_push(&atom_queue, root);
-        md_fifo_push(&parent_queue, root);   // the root is its own parent
-
-        while (!md_fifo_empty(&atom_queue)) {
-            const int cur        = md_fifo_pop(&atom_queue);
-            const int parent_idx = md_fifo_pop(&parent_queue);
-
-            out->atom_slot[cur] = (int32_t)md_array_size(out->atom_idx);
-            md_array_push(out->atom_idx, cur, alloc);
-            md_array_push(out->parent_idx, parent_idx, alloc);
-
-            md_bond_iter_t it = md_bond_iter(graph, cur);
-            while (md_bond_iter_has_next(&it)) {
-                const int next = md_bond_iter_atom_index(&it);
-                md_bond_iter_next(&it);
-
-                if (bitfield_test_bit(sweep_visited, next)) continue;
-
-                bitfield_set_bit(sweep_visited, next);
-                md_fifo_push(&atom_queue, next);
-                md_fifo_push(&parent_queue, cur);
-            }
+        int32_t* slot_atom = out->atom_idx + num_slots;
+        const size_t n = bfs_order(slot_atom, pred, sweep_visited, graph, root);
+        for (size_t k = 0; k < n; ++k) {
+            out->atom_slot[slot_atom[k]] = (int32_t)(num_slots + k);
+            out->parent_idx[num_slots + k] = pred[slot_atom[k]];
         }
-
+        num_slots += n;
         out->count += 1;
-        md_array_push(out->offset, (uint32_t)md_array_size(out->atom_idx), alloc);
+        offset[out->count] = (uint32_t)num_slots;
     }
-    
+    MD_ASSERT(num_slots == atom_count);
+    md_array_resize(out->offset, out->count + 1, alloc);
+    md_memcpy(out->offset, offset, (out->count + 1) * sizeof(uint32_t));
+
     md_temp_end(temp);
 
     infer_molecule_types(out, sys, alloc);
