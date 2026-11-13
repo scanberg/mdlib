@@ -537,6 +537,7 @@ typedef struct scene_t {
     md_bitmask_t         resident;       /* --resident F < 1: the resident atoms */
     bool                 partial;
     double               plan_ms, write_ms;  /* what a new plan costs (a change of the resident set) */
+    md_render_mol_plan_t plan;           /* a copy of the plan: written again, the first regroup is again the first */
 } scene_t;
 
 typedef struct mol_cell_t { uint32_t cell, m; } mol_cell_t;
@@ -668,6 +669,10 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         md_gpu_stream_sync(s);
         sc->plan_ms  = md_tick_to_milliseconds(t1 - t0);
         sc->write_ms = md_tick_to_milliseconds(md_tick_now() - t1);
+        if (ok) {
+            void* keep = malloc(plan.size);
+            if (keep) { memcpy(keep, plan.data, plan.size); sc->plan = plan; sc->plan.data = keep; }
+        }
         md_temp_end(temp);
         sc->dyn = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size_velocity).gpu : 0;
         free(moff); free(mats); free(pairs); free(types);
@@ -737,6 +742,7 @@ static void scene_free(md_gpu_stream_t s, scene_t* sc) {
     if (sc->rad) md_gpu_free(s, sc->rad);
     if (sc->bond_idx) md_gpu_free(s, sc->bond_idx);
     free(sc->host_pos);
+    free((void*)sc->plan.data);
     if (sc->partial) md_bitmask_free(&sc->resident);
 }
 
@@ -1083,6 +1089,49 @@ static int run_gpu(int argc, char** argv) {
                 qsort(tu, reps, sizeof(double), cmp_d);
                 printf("%s: %6.2f / %6.2f ms\n", ups[ui].name, tu[0], tu[reps / 2]);
             }
+            if (sc.host_pos && sc.plan.data) {
+                /* the regroup's other cases: after the molecules moved (by up to
+                   12 A along each axis since the last grouping: positions that
+                   alternate between the scene's and a copy so moved), and the
+                   first after the plan (from molecule order: scattered once;
+                   the topology written again before each) */
+                const float J = 12.0f;
+                float* hj = malloc((size_t)sc.atoms * 12);
+                uint32_t js = 4242;
+                #define JRND() (((js = js * 1664525u + 1013904223u) >> 8) / 16777216.0f)
+                for (uint32_t m = 0; m < sc.atoms / 3; ++m) {
+                    const float d[3] = { (2.0f * JRND() - 1.0f) * J, (2.0f * JRND() - 1.0f) * J, (2.0f * JRND() - 1.0f) * J };
+                    for (int k = 0; k < 9; ++k) hj[9 * (size_t)m + k] = sc.host_pos[9 * (size_t)m + k] + d[k % 3];
+                }
+                #undef JRND
+                md_gpu_addr_t pj = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc.atoms * 12).gpu;
+                md_gpu_upload(s, pj, hj, (size_t)sc.atoms * 12);
+                free(hj);
+                md_render_mol_atoms_t aj = atoms;
+                aj.position = pj;
+                for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+                    md_tick_t t0 = md_tick_now();
+                    md_render_mol_update(mol, s, &sc.topo, sc.dyn, (rr & 1) ? &aj : &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                    md_gpu_stream_sync(s);
+                    if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                qsort(tu, reps, sizeof(double), cmp_d);
+                printf("md_render_mol_update (regroup + copy, molecules moved up to %.0f A): %6.2f / %6.2f ms\n", J, tu[0], tu[reps / 2]);
+                const uint32_t nf = reps < 3 ? reps : 3;
+                for (uint32_t rr = 0; rr < nf; ++rr) {
+                    md_render_mol_write(s, &sc.topo, &sc.plan, sc.topo.base, NULL);
+                    md_gpu_stream_sync(s);
+                    md_tick_t t0 = md_tick_now();
+                    md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                    md_gpu_stream_sync(s);
+                    tu[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                qsort(tu, nf, sizeof(double), cmp_d);
+                printf("md_render_mol_update (the first regroup after the plan + copy): %6.2f / %6.2f ms\n", tu[0], tu[nf / 2]);
+                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                md_gpu_stream_sync(s);
+                md_gpu_free(s, pj);
+            }
             free(tu);
             /* where the regroup's time goes: each pass synced (so each carries a sync) */
             pass_prof_t prof = { .s = s };
@@ -1092,12 +1141,12 @@ static int run_gpu(int argc, char** argv) {
             printf("  passes, each synced:");
             for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
             {
-                /* the write pass leaving out one array's writes at a time (its
-                   scattered writes: the atoms' order, the bonds; atom_point is
-                   in molecule order), then all of them; best of 3 each. The
-                   topology is wrong meanwhile: a full regroup restores it. */
+                /* the write pass leaving out the atoms' order, the bonds, then
+                   both (the records it always writes: the next regroup reads
+                   them); best of 3 each. The topology is wrong meanwhile: a full
+                   regroup restores it. */
                 const struct { uint32_t mask; const char* name; } wp[] = {
-                    { 0, "all" }, { 1, "no atom_order" }, { 2, "no atom_point" }, { 4, "no bonds" }, { 7, "none" },
+                    { 0, "all" }, { 1, "no atom_order" }, { 4, "no bonds" }, { 5, "records only" },
                 };
                 printf("\n  the write pass by what it writes (ms):");
                 for (size_t wi = 0; wi < sizeof(wp) / sizeof(wp[0]); ++wi) {

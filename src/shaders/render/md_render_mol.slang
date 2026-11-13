@@ -5,19 +5,20 @@
 // a uniform grid when the caller asks (MD_RENDER_MOL_UPDATE_REGROUP), in O(n):
 //
 //     clear    the bounds and the per-cell counts
-//     bounds   of the molecules' first atoms (one atomic per wave and axis)
+//     bounds   of the molecules' first atoms (one atomic per wave and axis),
+//              each staged in mol_slot for the count
 //     dims     the cell edge: about CELL_TARGET atoms per cell at the bounds'
 //              mean density, at most `cells` cells (the capacity the plan
 //              allocated, so the host never reads back how many there are)
 //     count    each molecule's cell, and its place in it: the atomics return
-//              the atoms and bonds counted before it. Molecules in file order
-//              are often neighbours, so a group adds a run of molecules with
-//              the same cell in one atomic.
+//              the atoms, bonds and molecules counted before it; a group adds
+//              a run of molecules with the same cell in one atomic
 //     scan     exclusive, of the per-cell counts (blocks, sums, add)
 //     write    each molecule's atoms and bonds into the tails of the
-//              topology's arrays, at its cell's offset plus its place: the
-//              bonds between the points its atoms now are
-//     offsets  the cells' cluster offsets
+//              topology's arrays, at its cell's offset plus its place (the
+//              bonds between the points its atoms now are), and its record
+//              into the next grouping's order
+//     offsets  the cells' cluster offsets; the regroups counted
 //     mixed    the points of the other bonds touching small molecules
 //
 // And on every update, whatever else it does:
@@ -29,9 +30,15 @@
 //              the radii changed. A marker says `radii` is valid: written
 //              after a full gather, for this topology.
 //
-// Every pass reads the molecules in their own order (the order of the small
-// tables, close to the file order of the atoms): only the write lands
-// scattered. The order within a cell is the atomics', not reproducible.
+// The small molecules are records (first atom, its bonds' place among the
+// small bonds, kind, first point)
+// in the last grouping's order, and every regroup pass goes over them in that
+// order: after a short move the molecules of neighbouring slots are still in
+// the same or neighbouring cells, so the count's atomics come in runs and the
+// write's stores land near each other. Only the bounds read scattered (the
+// positions are in file order). The first regroup after the plan starts from
+// molecule order and scatters once. The order within a cell is the atomics',
+// not reproducible.
 //
 // A cell is one cluster. The grid spans the bounds, so a far outlier makes
 // the cells larger everywhere (still correct, only looser clusters).
@@ -50,20 +57,26 @@ struct Args {
     uint* radii;                // float per point: the radii, in point order (the copy's w)
     uint* vel_out;              // uint2 per point
     uint* params;               // 16 words: ordered bounds, then the grid
-    uint* mol_slot;             // uint4 per molecule: cell, its atoms' and bonds' place in it
-    uint* cnt;                  // uint4 per cell, [cells + 1]: atoms, bonds
+    uint* mol_slot;             // uint4 per slot (a molecule, the last grouping's order): its first
+                                // atom's position (bounds), then its cell and its atoms', bonds' and
+                                // molecules' place in it (count)
+    uint* cnt;                  // uint4 per cell, [cells + 1]: atoms, bonds, molecules
     uint* sums;                 // uint4 per scan block
     uint* types;                // uint16 per atom: particle type
     uint* type_radius;          // float per particle type (the topology's)
-    uint* mol_atom_offset;      // [n_mol + 1]
-    uint* mol_atoms;            // atom indices
-    uint* mol_bond_offset;      // [n_mol + 1]
-    uint* mol_bond_local;       // per bond: its atoms' places in the molecule, k0 | k1 << 16
-    uint* mol_bond_ids;
+    uint* kinds;                // uint4 per kind of small molecule: atoms, bonds, first of each below
+    uint* kind_atom;            // per atom of a kind: its atom less the molecule's first
+    uint* kind_bond_local;      // per bond of a kind: its atoms' places in the molecule, k0 | k1 << 16
+    uint* ids_old;              // the small bonds' ids of the last grouping (copied aside by the regroup)
+    uint* recs0;                // uint4 per small molecule, in cluster order: first atom, its bonds' place
+                                // among the small bonds,
+    uint* recs1;                // kind (bit 31: has mixed bonds), its first point. Two: one per parity
+                                // of regroups[0], the other the regroup's output
     uint* mixed_pos;            // per mixed bond: its place in bond_pairs
     uint* mixed_atoms;          // uint2 per mixed bond
     uint* atom_order;           // the topology's: the tail from static_atoms on
-    uint* atom_point;           // the topology's: atom -> point
+    uint* mixed_point;          // the topology's: atom -> point, for the static atoms and the atoms of
+                                // molecules with mixed bonds (sol_mixed's)
     uint* atom_cluster_offset;  // the topology's: from static_atom_clusters on
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
@@ -113,7 +126,7 @@ struct Args {
     uint  resident_words;       // words of the bits (the ranks follow them)
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
-    uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (2) atom_point, (4) the bonds, (8) src_point
+    uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
     uint  _pad1;
 };
 MD_SHADER_ARGS(Args);
@@ -176,12 +189,19 @@ uint upload_index(Args a, uint atom) {
     return a.resident[a.resident_words + w] + countbits(a.resident[w] & ((1u << (atom & 31u)) - 1u));
 }
 
-float3 first_pos(Args a, uint m) {
-    uint i = a.mol_atoms[a.mol_atom_offset[m]];
+// Atom i's position: from the uploaded frame (a frame's regroup), or the caller's
+float3 atom_pos(Args a, uint i) {
     if (a.quantized != 0u) return dequant(a.qsrc, a.qpar, upload_index(a, i));
     uint* p = a.position + i * (a.stride >> 2);
     return float3(asfloat(p[0]), asfloat(p[1]), asfloat(p[2]));
 }
+
+// The small molecules' records: those of the last grouping (by the parity of
+// the regroups so far: sol_offsets counts this one after the write), and
+// those this regroup writes
+uint4* recs_cur(Args a)  { return (uint4*)(((a.regroups[0] & 1u) != 0u) ? a.recs1 : a.recs0); }
+uint4* recs_next(Args a) { return (uint4*)(((a.regroups[0] & 1u) != 0u) ? a.recs0 : a.recs1); }
+static const uint REC_MIXED = 0x80000000u;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -201,11 +221,14 @@ void sol_bounds(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args a = MD_ARGS;
     uint n = a.n_mol;
     for (uint i0 = group_start(tid, gi); i0 < n; i0 += grid_threads(n)) {
-        uint m = i0 + gi;
-        bool valid = m < n;
+        uint j = i0 + gi;
+        bool valid = j < n;
         uint3 lo = uint3(0xFFFFFFFFu), hi = uint3(0u);
         if (valid) {
-            float3 p = first_pos(a, m);
+            // the one read that is scattered: atoms are in file order, slots in
+            // the last grouping's; the count reads it back in order
+            float3 p = atom_pos(a, loadAligned<16>(recs_cur(a) + j).x);
+            storeAligned<16>((uint4*)a.mol_slot + j, uint4(asuint(p), 0u));
             lo = uint3(ordered(p.x), ordered(p.y), ordered(p.z));
             hi = lo;
         }
@@ -261,35 +284,38 @@ uint cell_of(Args a, float3 p) {
 // the run's base plus its exclusive prefix within the run. Groupshared, not
 // wave operations: the same on every wave size.
 groupshared uint  g_key[64];
-groupshared uint2 g_inc[64];
-groupshared uint2 g_exc[64];
-groupshared uint2 g_base[64];
+groupshared uint3 g_inc[64];
+groupshared uint3 g_exc[64];
+groupshared uint3 g_base[64];
 
+// By slot, in the last grouping's order: after a short move most of a run of
+// slots is still in one cell, and its molecules count with one atomic.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void sol_count(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args a = MD_ARGS;
     uint n = a.n_mol;
     for (uint i0 = group_start(tid, gi); i0 < n; i0 += grid_threads(n)) {
-        uint m = i0 + gi;
-        bool valid = m < n;
+        uint j = i0 + gi;
+        bool valid = j < n;
         uint key = 0xFFFFFFFFu;
-        uint2 v = uint2(0u);
+        uint3 v = uint3(0u);
         if (valid) {
-            key = cell_of(a, first_pos(a, m));
-            v.x = a.mol_atom_offset[m + 1u] - a.mol_atom_offset[m];
-            if (a.has_bonds != 0u) v.y = a.mol_bond_offset[m + 1u] - a.mol_bond_offset[m];
+            uint4 st = loadAligned<16>((uint4*)a.mol_slot + j);
+            key = cell_of(a, asfloat(st.xyz));
+            uint4 k = loadAligned<16>((uint4*)a.kinds + (loadAligned<16>(recs_cur(a) + j).z & ~REC_MIXED));
+            v = uint3(k.x, a.has_bonds != 0u ? k.y : 0u, 1u);
         }
         g_key[gi] = key;
         g_inc[gi] = v;
         GroupMemoryBarrierWithGroupSync();
         for (uint off = 1u; off < 64u; off <<= 1u) {
-            uint2 x = gi >= off ? g_inc[gi - off] : uint2(0u);
+            uint3 x = gi >= off ? g_inc[gi - off] : uint3(0u);
             GroupMemoryBarrierWithGroupSync();
             g_inc[gi] += x;
             GroupMemoryBarrierWithGroupSync();
         }
-        uint2 exc = g_inc[gi] - v;
+        uint3 exc = g_inc[gi] - v;
         g_exc[gi] = exc;
         GroupMemoryBarrierWithGroupSync();
         uint h = gi;                                    // the run's first lane
@@ -297,17 +323,17 @@ void sol_count(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (valid && h == gi) {
             uint e = gi;                                // its last
             while (e + 1u < 64u && g_key[e + 1u] == key) e += 1u;
-            uint2 total = g_inc[e] - exc;
-            uint2 base;
+            uint3 total = g_inc[e] - exc;
+            uint3 base;
             base.x = ((Atomic<uint>*)(a.cnt + 4u * key + 0u))->add(total.x);
             base.y = total.y > 0u ? ((Atomic<uint>*)(a.cnt + 4u * key + 1u))->add(total.y) : 0u;
+            base.z = ((Atomic<uint>*)(a.cnt + 4u * key + 2u))->add(total.z);
             g_base[gi] = base;
         }
         GroupMemoryBarrierWithGroupSync();
         if (valid) {
-            uint2 place = g_base[h] + (exc - g_exc[h]);
-            uint* s = a.mol_slot + 4u * m;
-            s[0] = key; s[1] = place.x; s[2] = place.y; s[3] = 0u;
+            uint3 place = g_base[h] + (exc - g_exc[h]);
+            storeAligned<16>((uint4*)a.mol_slot + j, uint4(key, place));
         }
         GroupMemoryBarrierWithGroupSync();              // the arrays are free for the next run
     }
@@ -379,33 +405,43 @@ void sol_scan(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
 
 // ---- Write, offsets, radii --------------------------------------------------------
 
+// By slot, in the last grouping's order: each molecule's atoms and bonds
+// at its cell's offset plus its place, and its record at its new slot. In
+// the order of the last grouping the places of neighbouring slots are near
+// each other (most molecules stay in or next to their cell), so the writes
+// land near each other too; in file order they were scattered over the
+// whole arrays (GTX 1060, 10M atoms: 29 ms; 4.2 when the order is the last
+// grouping's and the molecules moved up to 12 A since).
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void sol_write(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.n_mol;
-    for (uint m = tid.x; m < n; m += grid_threads(n)) {
-        uint* s = a.mol_slot + 4u * m;
-        uint c = s[0];
-        uint p0 = a.static_atoms + a.cnt[4u * c] + s[1];      // the molecule's first point
-        uint at = p0;
-        for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) {
-            uint atom = a.mol_atoms[k];
-            if (a.has_src != 0u && (a.dbg & 8u) == 0u) a.src_point[at - a.static_atoms] = a.atom_point[atom];
-            if ((a.dbg & 1u) == 0u) a.atom_order[at] = atom;
-            if ((a.dbg & 2u) == 0u) a.atom_point[atom] = at;
-            at += 1u;
+    uint4* cur = recs_cur(a);
+    uint4* nxt = recs_next(a);
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        uint4 r = loadAligned<16>(cur + j);
+        uint4 st = loadAligned<16>((uint4*)a.mol_slot + j);
+        uint c = st.x;
+        uint4 k = loadAligned<16>((uint4*)a.kinds + (r.z & ~REC_MIXED));
+        uint p0 = a.static_atoms + a.cnt[4u * c] + st.y;      // the molecule's first point
+        for (uint i = 0u; i < k.x; ++i) {
+            uint atom = r.x + a.kind_atom[k.z + i];
+            if ((a.dbg & 1u) == 0u) a.atom_order[p0 + i] = atom;
+            if (a.has_src != 0u) a.src_point[p0 + i - a.static_atoms] = r.w + i;   // its point in the last grouping
+            if ((r.z & REC_MIXED) != 0u) a.mixed_point[atom] = p0 + i;
         }
         if (a.has_bonds != 0u && (a.dbg & 4u) == 0u) {
-            uint bt = a.static_bonds + a.cnt[4u * c + 1u] + s[2];
-            for (uint k = a.mol_bond_offset[m]; k < a.mol_bond_offset[m + 1u]; ++k) {
-                uint l = a.mol_bond_local[k];
-                a.bond_pairs[2u * bt]      = p0 + (l & 0xFFFFu);
-                a.bond_pairs[2u * bt + 1u] = p0 + (l >> 16u);
-                a.bond_ids[bt]             = a.mol_bond_ids[k];
-                bt += 1u;
+            uint bt = a.static_bonds + a.cnt[4u * c + 1u] + st.z;
+            for (uint b = 0u; b < k.y; ++b) {
+                uint l = a.kind_bond_local[k.w + b];
+                a.bond_pairs[2u * (bt + b)]      = p0 + (l & 0xFFFFu);
+                a.bond_pairs[2u * (bt + b) + 1u] = p0 + (l >> 16u);
+                a.bond_ids[bt + b]               = a.ids_old[r.y + b];
             }
         }
+        uint bt_new = a.cnt[4u * c + 1u] + st.z;                 // among the small bonds
+        storeAligned<16>(nxt + a.cnt[4u * c + 2u] + st.w, uint4(r.x, bt_new, r.z, p0));
     }
 }
 
@@ -432,8 +468,8 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
     uint n = a.mixed_count;
     for (uint i = tid.x; i < n; i += grid_threads(n)) {
         uint pos = a.mixed_pos[i];
-        a.bond_pairs[2u * pos]      = a.atom_point[a.mixed_atoms[2u * i]];
-        a.bond_pairs[2u * pos + 1u] = a.atom_point[a.mixed_atoms[2u * i + 1u]];
+        a.bond_pairs[2u * pos]      = a.mixed_point[a.mixed_atoms[2u * i]];
+        a.bond_pairs[2u * pos + 1u] = a.mixed_point[a.mixed_atoms[2u * i + 1u]];
     }
 }
 
