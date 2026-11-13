@@ -891,7 +891,8 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
            - the same slot for every frame: the frames past the first read what
              the first just read, from L2, not DRAM. Fast: the cost is the
              extra streams from memory. As slow: it is in the kernel.
-           - the minimum image left out, or written another way (probe kernels).
+           - probe kernels: the minimum image left out; the point stored
+             another way.
            - fewer groups, more points a thread: whatever a thread does once
              (its arguments and the frames' parameters, read through pointers)
              spread over more points. */
@@ -899,17 +900,21 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         printf("  probes: linear 0-1 %.2f, 0-0 %.2f; cubic+vel 0-1-2-3 %.2f, 0-0-0-0 %.2f ms\n",
                time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps), time_frames(s, mol, sc, &atoms, 2, s0000, 0.0f, t, reps),
                time_frames(s, mol, sc, &atoms, 4, s0123, 1.0f, t, reps), time_frames(s, mol, sc, &atoms, 4, s0000, 1.0f, t, reps));
-        /* the minimum image's variants (mi_if in the shader), each from the
-           kernel as built except in that */
-        const struct { uint32_t probe, count; float dt; const char* name; } mv[] = {
-            { 0, 2, 0.0f, "linear: as built (round)" },  { 1, 2, 0.0f, "none" },       { 2, 2, 0.0f, "floor(x + 0.5)" },
-            { 3, 2, 0.0f, "no rounding" },               { 4, 2, 0.0f, "diagonal" },   { 5, 2, 0.0f, "scalars" },
-            { 0, 4, 1.0f, "\n    cubic+vel: as built" }, { 6, 4, 1.0f, "floor(x + 0.5)" }, { 7, 4, 1.0f, "no rounding" },
+        /* the probe kernels (see md_render_mol_debug_frames), each from the
+           kernel as built except in one thing: the radius not read (a
+           constant), the point's xyz stored alone (the radius left in place),
+           the stores' alignment stated (16) */
+        const struct { uint32_t probe, count; float dt; const char* name; } pk[] = {
+            { 0, 1, 0.0f, "nearest: as built" },          { 2, 1, 0.0f, "xyz only" },
+            { 0, 2, 0.0f, "\n    linear: as built" },     { 1, 2, 0.0f, "no minimum image" }, { 3, 2, 0.0f, "radius constant" },
+            { 4, 2, 0.0f, "xyz only" },                   { 5, 2, 0.0f, "aligned" },
+            { 0, 4, 1.0f, "\n    cubic+vel: as built" },  { 6, 4, 1.0f, "radius constant" }, { 7, 4, 1.0f, "xyz only" },
+            { 8, 4, 1.0f, "aligned" },
         };
-        printf("  the minimum image (ms):\n    ");
-        for (size_t i = 0; i < sizeof(mv) / sizeof(mv[0]); ++i) {
-            md_render_mol_debug_frames(0, mv[i].probe);
-            printf("%s%s %.2f", i && mv[i].name[0] != '\n' ? ", " : "", mv[i].name, time_frames(s, mol, sc, &atoms, mv[i].count, s0123, mv[i].dt, t, reps));
+        printf("  probe kernels (ms):\n    ");
+        for (size_t i = 0; i < sizeof(pk) / sizeof(pk[0]); ++i) {
+            md_render_mol_debug_frames(0, pk[i].probe);
+            printf("%s%s %.2f", i && pk[i].name[0] != '\n' ? ", " : "", pk[i].name, time_frames(s, mol, sc, &atoms, pk[i].count, s0123, pk[i].dt, t, reps));
         }
         printf("\n");
         md_render_mol_debug_frames(0, 0);

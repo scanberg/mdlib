@@ -542,42 +542,15 @@ void fr_radii(uint3 tid : SV_DispatchThreadID) {
 // of frames (COUNT a constant): one kernel for all three kept every frame's
 // parameters and the cell live, and on Pascal the registers that cost made
 // the nearest frame twice the copy from positions.
-// The minimum image as written above (MV 0), or a probe's variant of it (the
-// bench's, not the API's): 1 floor(x + 0.5) for round, 2 no rounding at all,
-// 3 the diagonal only (independent, as a vector), 4 as 0 in scalars (no
-// vector written by component), 255 none.
+// The minimum image, or none (MI false: the bench's probe, not the API's)
 [ForceInline]
-float3 mi_if(CellP c, float3 d, const uint MV) {
-    if (MV == 255u) return d;
-    if (MV == 1u) {
-        float n2 = floor(d.z * c.r.z + 0.5);
-        d -= n2 * float3(c.cx, c.cy, c.cz);
-        float n1 = floor(d.y * c.r.y + 0.5);
-        d.xy -= n1 * float2(c.bx, c.by);
-        d.x  -= floor(d.x * c.r.x + 0.5) * c.ax;
-        return d;
-    }
-    if (MV == 2u) {
-        float n2 = d.z * c.r.z;
-        d -= n2 * float3(c.cx, c.cy, c.cz);
-        float n1 = d.y * c.r.y;
-        d.xy -= n1 * float2(c.bx, c.by);
-        d.x  -= d.x * c.r.x * c.ax;
-        return d;
-    }
-    if (MV == 3u) return d - float3(c.ax, c.by, c.cz) * round(d * c.r);
-    if (MV == 4u) {
-        float x = d.x, y = d.y, z = d.z;
-        float n2 = round(z * c.r.z); x -= n2 * c.cx; y -= n2 * c.cy; z -= n2 * c.cz;
-        float n1 = round(y * c.r.y); x -= n1 * c.bx; y -= n1 * c.by;
-        x -= round(x * c.r.x) * c.ax;
-        return float3(x, y, z);
-    }
-    return mi(c, d);
-}
+float3 mi_if(CellP c, float3 d, const bool MI) { return MI ? mi(c, d) : d; }
 
 [ForceInline]
-void fr_gather_body(uint3 tid, const uint COUNT, const uint MV) {
+// SM, how the point is stored (0 as built; the others the bench's probes):
+// 1 a constant radius (none read), 2 xyz only (the radius left where it is),
+// 3 as 0 with the alignment stated (16, and 8 for the velocity).
+void fr_gather_body(uint3 tid, const uint COUNT, const bool MI, const uint SM) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
     uint step = a.fr_threads;
@@ -586,7 +559,7 @@ void fr_gather_body(uint3 tid, const uint COUNT, const uint MV) {
     const FrameP f0 = frame_p(a.fpar0);
     FrameP f1 = f0, f2 = f0, f3 = f0;
     CellP  cell;
-    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); if (MV != 255u) cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
+    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); if (MI) cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
     if (COUNT == 4u) { f2 = frame_p(a.fpar2); f3 = frame_p(a.fpar3); }
     for (uint p = tid.x; p < n; p += step) {
         float3 pos, vel = float3(0.0);
@@ -594,44 +567,56 @@ void fr_gather_body(uint3 tid, const uint COUNT, const uint MV) {
         if (COUNT == 1u) {
             pos = x0;
         } else if (COUNT == 2u) {
-            float3 x1 = x0 + mi_if(cell, deq(a.frame1, f1, p) - x0, MV);
+            float3 x1 = x0 + mi_if(cell, deq(a.frame1, f1, p) - x0, MI);
             pos = a.w0 * x0 + a.w1 * x1;
             vel = a.dw0 * x0 + a.dw1 * x1;
         } else {
             float3 x1 = deq(a.frame1, f1, p);
-            x0 = x1 + mi_if(cell, x0 - x1, MV);
-            float3 x2 = x1 + mi_if(cell, deq(a.frame2, f2, p) - x1, MV);
-            float3 x3 = x2 + mi_if(cell, deq(a.frame3, f3, p) - x2, MV);
+            x0 = x1 + mi_if(cell, x0 - x1, MI);
+            float3 x2 = x1 + mi_if(cell, deq(a.frame2, f2, p) - x1, MI);
+            float3 x3 = x2 + mi_if(cell, deq(a.frame3, f3, p) - x2, MI);
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
-        uint r = points[4u * p + 3u];
-        ((uint4*)points)[p] = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
-        if (vel_out) ((uint2*)a.vel_out)[p] = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
+        if (SM == 2u) {
+            storeAligned<8>((uint2*)points + 2u * p, uint2(asuint(pos.x), asuint(pos.y)));
+            points[4u * p + 2u] = asuint(pos.z);
+        } else {
+            uint r = SM == 1u ? 0x3F800000u : points[4u * p + 3u];
+            uint4 v = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
+            if (SM == 3u) storeAligned<16>((uint4*)points + p, v);
+            else          ((uint4*)points)[p] = v;
+        }
+        if (vel_out) {
+            uint2 h = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
+            if (SM == 3u) storeAligned<8>((uint2*)a.vel_out + p, h);
+            else          ((uint2*)a.vel_out)[p] = h;
+        }
     }
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u, 0u); }
+void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u, true, 0u); }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, 0u); }
+void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 0u); }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, 0u); }
+void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 0u); }
 
-// Probes (the bench's, not the API's): the gathers with a variant of the
-// minimum image (see mi_if)
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2(uint3 tid : SV_DispatchThreadID)         { fr_gather_body(tid, 2u, 255u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2_floor(uint3 tid : SV_DispatchThreadID)   { fr_gather_body(tid, 2u, 1u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2_noround(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, 2u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2_diag(uint3 tid : SV_DispatchThreadID)    { fr_gather_body(tid, 2u, 3u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2_scalar(uint3 tid : SV_DispatchThreadID)  { fr_gather_body(tid, 2u, 4u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe4_floor(uint3 tid : SV_DispatchThreadID)   { fr_gather_body(tid, 4u, 1u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe4_noround(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, 2u); }
+// Probes (the bench's, not the API's): the gathers without the minimum image,
+// or storing another way (see fr_gather_body's SM)
+[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, false, 0u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p1_xyz(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u, true, 2u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p2_r0(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 1u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p2_xyz(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 2u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p2_a16(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 3u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p4_r0(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 1u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p4_xyz(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 2u); }
+[shader("compute")] [numthreads(64, 1, 1)] void fr_p4_a16(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 3u); }
 
 // An uploaded frame (qsrc: the resident atoms in atom order) into its slot
 // (qdst, point order).
