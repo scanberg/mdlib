@@ -2267,16 +2267,9 @@ static void pbc_triclinic(float* xyz, size_t stride, const int32_t* indices, siz
     }
 }
 
-bool md_geom_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    if (!xyz) {
-        MD_LOG_ERROR("Missing required input: xyz");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing unitcell");
-        return false;
-    }
+void md_geom_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+    MD_ASSERT(xyz || count == 0);
+    if (!cell || count == 0) return;
 
     if (stride == 0) stride = 3 * sizeof(float);
     uint32_t flags = md_unitcell_flags(cell);
@@ -2284,15 +2277,10 @@ bool md_geom_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count
         md_float3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
         pbc_ortho(xyz, stride, indices, count, ext);
-        return true;
     } else if (flags & MD_UNITCELL_TRICLINIC) {
         pbc_triclinic(xyz, stride, indices, count, cell);
-        return true;
     }
-
-    // The unit cell is not initialized or is simply not periodic
-    MD_LOG_ERROR("Unrecognized unit_cell type");
-    return false;
+    // Otherwise the cell has no periodic axes: nothing to wrap into
 }
 
 void md_geom_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol) {
@@ -2465,22 +2453,19 @@ static void pbc_image_restore(const pbc_image_t* im, md_float4_t* xyzw, size_t c
 // stable on the second pass. The cap only bounds pathological input.
 #define PBC_MAX_ITER 8
 
-bool md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_float3_t* out_com) {
-    if (!in_out_xyzw) {
-        MD_LOG_ERROR("Missing required input: in_out_xyzw");
-        return false;
-    }
+void md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_float3_t* out_com) {
+    MD_ASSERT(in_out_xyzw || count == 0);
 
     if (count == 0) {
         if (out_com) *out_com = md_float3_zero();
-        return true;
+        return;
     }
 
     const pbc_image_t im = pbc_image_init(cell);
 
     if (!im.periodic) {
         if (out_com) *out_com = md_geom_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
-        return true;
+        return;
     }
 
     // Where the input sits, before anything is moved. Only the image it implies is used - see
@@ -2514,7 +2499,6 @@ bool md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_u
     pbc_image_restore(&im, in_out_xyzw, count, input_com, &com);
 
     if (out_com) *out_com = com;
-    return true;
 }
 
 float md_geom_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com, md_float4_t* out_trg_xyzw,
@@ -2724,7 +2708,7 @@ static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv
 // atoms first so the loads are aligned and a partial group last, each through a small staging copy;
 // any count works. A triclinic cell couples the axes: that path splits eight atoms into x, y and z
 // and relies on the arrays being padded to a multiple of eight atoms.
-bool md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
+void md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
     MD_ASSERT(out_xyz);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_xyz[0]);
@@ -2766,7 +2750,7 @@ bool md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const i
             }
             i += n;
         }
-        return true;
+        return;
     }
 
     for (size_t i = 0; i < count; i += 8) {
@@ -2782,8 +2766,6 @@ bool md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const i
 
         md_mm256_store_xyz_packed_ps(dst + i * 3, x, y, z);
     }
-
-    return true;
 }
 
 void md_geom_cubic_spline_weights(float w[4], float t, float s) {
@@ -2814,7 +2796,7 @@ void md_geom_cubic_bspline_weights(float w[4], float t) {
 
 // As md_geom_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
 // split into x, y and z (and padded) in a triclinic one.
-bool md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
+void md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
     MD_ASSERT(out_xyz);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_xyz[0]);
@@ -2861,7 +2843,7 @@ bool md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t*
             }
             i += n;
         }
-        return true;
+        return;
     }
 
     for (size_t i = 0; i < count; i += 8) {
@@ -2885,6 +2867,4 @@ bool md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t*
 
         md_mm256_store_xyz_packed_ps(dst + i * 3, r[0], r[1], r[2]);
     }
-
-    return true;
 }

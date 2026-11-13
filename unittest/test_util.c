@@ -2217,7 +2217,7 @@ UTEST(util, pbc_deperiodize_self) {
     }
 
     md_float3_t com = {0};
-    ASSERT_TRUE(md_geom_deperiodize_self(pts, PBC_NP, &cell, &com));
+    md_geom_deperiodize_self(pts, PBC_NP, &cell, &com);
 
     // Every pairwise separation must match the original shape: the set is whole again
     for (int i = 0; i < PBC_NP; ++i) {
@@ -2242,7 +2242,7 @@ UTEST(util, pbc_deperiodize_self) {
     md_float4_t again[PBC_NP];
     md_memcpy(again, pts, sizeof(pts));
     md_float3_t com2 = {0};
-    ASSERT_TRUE(md_geom_deperiodize_self(again, PBC_NP, &cell, &com2));
+    md_geom_deperiodize_self(again, PBC_NP, &cell, &com2);
     for (int i = 0; i < PBC_NP; ++i) {
         EXPECT_NEAR(again[i].x, pts[i].x, 1.0e-4f);
         EXPECT_NEAR(again[i].w, pts[i].w, 1.0e-6f);  // weights carried through untouched
@@ -2274,7 +2274,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image) {
             }
 
             md_float3_t com = {0};
-            ASSERT_TRUE(md_geom_deperiodize_self(pts, PBC_NP, &cell, &com));
+            md_geom_deperiodize_self(pts, PBC_NP, &cell, &com);
 
             // Nothing was broken to begin with, so nothing may move
             for (int i = 0; i < PBC_NP; ++i) {
@@ -2375,7 +2375,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
             }
 
             md_float3_t com = {0};
-            ASSERT_TRUE(md_geom_deperiodize_self(pts, PBC_NP, &cell, &com));
+            md_geom_deperiodize_self(pts, PBC_NP, &cell, &com);
 
             const md_float3_t want_com = md_float3_add(shape_com, off);
             EXPECT_NEAR(com.x, want_com.x, 1.0e-2f);
@@ -2433,7 +2433,7 @@ UTEST(util, pbc_com_triclinic) {
     }
 
     md_float3_t com_wrapped = {0};
-    ASSERT_TRUE(md_geom_deperiodize_self(wrapped, PBC_NP, &cell, &com_wrapped));
+    md_geom_deperiodize_self(wrapped, PBC_NP, &cell, &com_wrapped);
     EXPECT_NEAR(com_wrapped.x, com_plain.x, 0.05f);
     EXPECT_NEAR(com_wrapped.y, com_plain.y, 0.05f);
     EXPECT_NEAR(com_wrapped.z, com_plain.z, 0.05f);
@@ -2741,9 +2741,12 @@ UTEST(util, pbc_optimal_rotation_degenerate) {
     EXPECT_LT(residual, 1.0e-3f);
     EXPECT_LT(pbc_angle_err(R, md_float3x3_ident()), 0.5f);
 
-    // A set with no coordinates to speak of
-    md_float3_t c = {0};
-    EXPECT_TRUE(md_geom_deperiodize_self(ref, 0, &cell, &c));
+    // A set with no coordinates to speak of: its center is the origin
+    md_float3_t c = md_float3_set(1, 2, 3);
+    md_geom_deperiodize_self(ref, 0, &cell, &c);
+    EXPECT_EQ(0.0f, c.x);
+    EXPECT_EQ(0.0f, c.y);
+    EXPECT_EQ(0.0f, c.z);
 }
 
 UTEST_F(util, rings_common) {
@@ -4096,7 +4099,7 @@ UTEST(util, interpolate_linear_across_boundary) {
         b[i] = md_float3_set(0.5f, 5.0f, 9.75f);
     }
     const md_float3_t* const in[2] = { a, b };
-    ASSERT_TRUE(md_geom_interpolate_linear(out, in, 16, &cell, 0.5f));
+    md_geom_interpolate_linear(out, in, 16, &cell, 0.5f);
     for (int i = 0; i < 16; ++i) {
         // Halfway is on the boundary: 10 or its image 0, never 5
         EXPECT_NEAR(0.0f, fabsf(fmodf(out[i].x + 5.0f, 10.0f) - 5.0f), 1.0e-4f);
@@ -4105,7 +4108,7 @@ UTEST(util, interpolate_linear_across_boundary) {
     }
 
     // Without a cell it is a plain blend
-    ASSERT_TRUE(md_geom_interpolate_linear(out, in, 16, NULL, 0.5f));
+    md_geom_interpolate_linear(out, in, 16, NULL, 0.5f);
     EXPECT_NEAR(5.0f, out[3].x, 1.0e-4f);
 }
 
@@ -4115,8 +4118,15 @@ UTEST(util, pbc_indexed) {
     const md_unitcell_t cell = md_unitcell_from_extent(10, 10, 10);
     md_float3_t xyz[20];
     for (int i = 0; i < 20; ++i) xyz[i] = md_float3_set(12.0f + i, -3.0f, 5.0f);
+
+    // Without a cell, or one without periodic axes, there is nothing to wrap into
+    const md_unitcell_t none = {0};
+    md_geom_pbc((float*)xyz, 0, NULL, 20, NULL);
+    md_geom_pbc((float*)xyz, 0, NULL, 20, &none);
+    for (int i = 0; i < 20; ++i) EXPECT_EQ(12.0f + i, xyz[i].x);
+
     const int32_t idx[3] = { 17, 4, 11 };
-    ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, idx, 3, &cell));
+    md_geom_pbc((float*)xyz, 0, idx, 3, &cell);
     for (int i = 0; i < 20; ++i) {
         const bool wrapped = (i == 17 || i == 4 || i == 11);
         const float ex = wrapped ? fmodf(12.0f + i, 10.0f) : 12.0f + i;
@@ -4126,7 +4136,7 @@ UTEST(util, pbc_indexed) {
 
     // All of them, through the eight wide path and its tail. An atom on the boundary may come out
     // at either end, which is the same place.
-    ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, NULL, 20, &cell));
+    md_geom_pbc((float*)xyz, 0, NULL, 20, &cell);
     for (int i = 0; i < 20; ++i) {
         EXPECT_GE(xyz[i].x, 0.0f);
         EXPECT_LE(xyz[i].x, 10.0f);
@@ -4138,7 +4148,7 @@ UTEST(util, pbc_indexed) {
     // Triclinic: every wrapped atom lands inside the cell
     const md_unitcell_t tri = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
     for (int i = 0; i < 20; ++i) xyz[i] = md_float3_set(12.0f + i, -3.0f - i, 25.0f);
-    ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, NULL, 20, &tri));
+    md_geom_pbc((float*)xyz, 0, NULL, 20, &tri);
     md_float3x3_t I = {0};
     md_unitcell_I_extract_float(I.elem, &tri);
     for (int i = 0; i < 20; ++i) {
@@ -4168,8 +4178,8 @@ UTEST(util, pbc_strided) {
             }
             const int32_t* ii = with_idx ? idx : NULL;
             const size_t   n  = with_idx ? 3 : 20;
-            ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, ii, n, &cells[ci]));
-            ASSERT_TRUE(md_geom_pbc((float*)xyzw, sizeof(md_float4_t), ii, n, &cells[ci]));
+            md_geom_pbc((float*)xyz, 0, ii, n, &cells[ci]);
+            md_geom_pbc((float*)xyzw, sizeof(md_float4_t), ii, n, &cells[ci]);
             for (int i = 0; i < 20; ++i) {
                 for (int k = 0; k < 3; ++k) {
                     EXPECT_NEAR(xyz[i].elem[k], xyzw[i].elem[k], 1.0e-4f);
@@ -4231,13 +4241,13 @@ UTEST(util, interpolate_cubic) {
     const md_float3_t* const in[4] = { f[0], f[1], f[2], f[3] };
     float w[4];
     md_geom_cubic_spline_weights(w, 0.0f, 0.5f);
-    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w);
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[1][i].x, out[i].x, 1.0e-4f);
         EXPECT_NEAR(f[1][i].z, out[i].z, 1.0e-4f);
     }
     md_geom_cubic_spline_weights(w, 1.0f, 0.5f);
-    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w);
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[2][i].y, out[i].y, 1.0e-4f);
     }
@@ -4250,7 +4260,7 @@ UTEST(util, interpolate_cubic) {
         }
     }
     md_geom_cubic_spline_weights(w, 0.5f, 0.5f);
-    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, &cell, w));
+    md_geom_interpolate_cubic_weighted(out, in, 16, &cell, w);
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
     }
@@ -4298,7 +4308,7 @@ UTEST(util, interpolate_cubic_weights) {
     const md_float3_t* const in[4] = { f[0], f[1], f[2], f[3] };
 
     md_geom_cubic_spline_weights(w, 0.0f, 0.5f);
-    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w);
     for (int i = 0; i < 16; ++i) {
         EXPECT_EQ(f[1][i].x, out[i].x);
         EXPECT_EQ(f[1][i].y, out[i].y);
@@ -4306,7 +4316,7 @@ UTEST(util, interpolate_cubic_weights) {
     }
 
     md_geom_cubic_bspline_weights(w, 0.0f);
-    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w);
     for (int i = 0; i < 16; ++i) {
         for (int c = 0; c < 3; ++c) {
             const float ref = (f[0][i].elem[c] + 4.0f * f[1][i].elem[c] + f[2][i].elem[c]) / 6.0f;
@@ -4326,7 +4336,7 @@ UTEST(util, interpolate_cubic_weights) {
     };
     for (int c = 0; c < 2; ++c) {
         md_geom_cubic_bspline_weights(w, 0.5f);
-        ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, &cells[c], w));
+        md_geom_interpolate_cubic_weighted(out, in, 16, &cells[c], w);
         for (int i = 0; i < 16; ++i) {
             EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
             EXPECT_NEAR(5.0f, out[i].y, 1.0e-3f);
@@ -4419,13 +4429,13 @@ UTEST(util, packed_kernels_any_alignment) {
         // Linear interpolation, no cell and orthorhombic, and nothing written past the end
         base_o[off + N] = md_float3_set(-1, -1, -1);
         const md_float3_t* const in[2] = { a, b };
-        ASSERT_TRUE(md_geom_interpolate_linear(o, in, N, NULL, 0.25f));
+        md_geom_interpolate_linear(o, in, N, NULL, 0.25f);
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 EXPECT_NEAR(a[i].elem[k] + 0.25f * (b[i].elem[k] - a[i].elem[k]), o[i].elem[k], 1.0e-4f);
             }
         }
-        ASSERT_TRUE(md_geom_interpolate_linear(o, in, N, &cell, 0.25f));
+        md_geom_interpolate_linear(o, in, N, &cell, 0.25f);
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 float d = b[i].elem[k] - a[i].elem[k];
@@ -4439,7 +4449,7 @@ UTEST(util, packed_kernels_any_alignment) {
         const md_float3_t* const in4[4] = { a, a, b, b };
         float w4[4];
         md_geom_cubic_spline_weights(w4, 1.0f, 0.5f);
-        ASSERT_TRUE(md_geom_interpolate_cubic_weighted(o, in4, N, NULL, w4));
+        md_geom_interpolate_cubic_weighted(o, in4, N, NULL, w4);
         for (int i = 0; i < N; ++i) {
             EXPECT_NEAR(b[i].y, o[i].y, 1.0e-4f);
         }
@@ -4447,7 +4457,7 @@ UTEST(util, packed_kernels_any_alignment) {
 
         // Wrapping
         md_memcpy(o, b, N * sizeof(md_float3_t));
-        ASSERT_TRUE(md_geom_pbc((float*)o, 0, NULL, N, &cell));
+        md_geom_pbc((float*)o, 0, NULL, N, &cell);
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 EXPECT_GE(o[i].elem[k], -1.0e-4f);
