@@ -4,7 +4,7 @@
 #include <md_hdf5_direct.h>
 #include <md_system.h>
 #include <md_run.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>

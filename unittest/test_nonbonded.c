@@ -3,7 +3,7 @@
 #include <md_nonbonded.h>
 #include <md_tpr.h>
 #include <md_system.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <core/md_vec_math.h>
 
 #include <core/md_allocator.h>

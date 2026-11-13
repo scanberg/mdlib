@@ -1,7 +1,7 @@
 #include <md_amber_rst7.h>
 
 #include <md_system.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 
 #include <core/md_allocator.h>
 #include <core/md_common.h>

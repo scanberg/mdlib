@@ -14,7 +14,7 @@
 #include <md_gro.h>
 #include <md_lammps.h>
 #include <md_system.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 
 #include <math.h>
 #include <stdlib.h>

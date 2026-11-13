@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 #include <core/md_str.h>
 
 struct md_atom_pair_t;

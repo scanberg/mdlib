@@ -54,11 +54,24 @@ set(MD_PROPERTIES)
 
 set(MD_DEFINES MD_GL_BACKBONE_SEGMENT_COUNT=${MD_GL_BACKBONE_SEGMENT_COUNT} MD_GL_BACKBONE_PROFILE_COUNT=${MD_GL_BACKBONE_PROFILE_COUNT})
 
-#file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
 
-set(CORE_FILES
+# The sources are in a folder of src/ per layer, each depending only on the layers below it:
+#
+#   core      memory, strings, files, parsing, math, the geometry of coordinates and cells, the GPU
+#   system    a system: its atoms, bonds, residues, molecules, and all that is inferred of them, chemistry included
+#   analysis  contacts, hydrogen bonds, ring puckers, common substructures
+#   qm        orbitals, densities and the topology of fields
+#   io        the formats and their table (md_io.h)
+#   gfx       drawing a system (GL), vector graphics
+#   script    the script language, and VIAL (src/vial)
+#
+# analysis, qm and gfx depend on system, io on system and qm, script on analysis and io. Nothing checks it: a header of
+# a layer above is not to be included below it. The headers of core are included with the folder, <core/md_str.h>,
+# the others without, <md_pdb.h>: every folder is on the include path.
+
+set(MD_CORE_FILES
   src/core/md_allocator.c
   src/core/md_allocator.h
   src/core/md_arena_allocator.c
@@ -68,17 +81,19 @@ set(CORE_FILES
   src/core/md_base64.h
   src/core/md_bitset.c
   src/core/md_bitset.h
-  src/core/md_coord_stream.h
   src/core/md_common.c
   src/core/md_common.h
   src/core/md_compiler.h
+  src/core/md_coord_stream.h
   src/core/md_executor.h
+  src/core/md_fft.c
+  src/core/md_fft.h
   src/core/md_fifo.c
   src/core/md_fifo.h
   src/core/md_file.h
   src/core/md_format.h
-  src/core/md_fft.c
-  src/core/md_fft.h
+  src/core/md_geom.c
+  src/core/md_geom.h
   src/core/md_gl_util.c
   src/core/md_gl_util.h
   src/core/md_gpu.h
@@ -89,6 +104,7 @@ set(CORE_FILES
   src/core/md_hash.h
   src/core/md_json.c
   src/core/md_json.h
+  src/core/md_label.h
   src/core/md_linalg.c
   src/core/md_linalg.h
   src/core/md_linear_allocator.c
@@ -100,208 +116,222 @@ set(CORE_FILES
   src/core/md_os.h
   src/core/md_parse.c
   src/core/md_parse.h
+  src/core/md_parse_simd.h
   src/core/md_path.c
   src/core/md_path.h
   src/core/md_platform.h
+  src/core/md_reader.c
+  src/core/md_reader.h
   src/core/md_ring_allocator.c
   src/core/md_ring_allocator.h
   src/core/md_simd.h
+  src/core/md_sort.c
+  src/core/md_sort.h
   src/core/md_spatial_acc.c
   src/core/md_spatial_acc.h
-  src/core/md_writer.c
-  src/core/md_reader.c
-  src/core/md_writer.h
-  src/core/md_reader.h
   src/core/md_str.h
-  src/core/md_label.h
   src/core/md_tracking_allocator.c
   src/core/md_tracking_allocator.h
   src/core/md_unit.c
   src/core/md_unit.h
+  src/core/md_unitcell.c
+  src/core/md_unitcell.h
   src/core/md_vec.h
   src/core/md_vec_math.c
   src/core/md_vec_math.h
   src/core/md_virtual_allocator.c
   src/core/md_virtual_allocator.h
+  src/core/md_writer.c
+  src/core/md_writer.h
 )
 
-set(SRC_FILES
-  src/md_element.c
-  src/md_element.h
-  src/md_chem.c
-  src/md_chem.h
-  src/md_contact.c
-  src/md_contact.h
-  src/md_hbond.c
-  src/md_hbond.h
-  src/md_nonbonded.c
-  src/md_nonbonded.h
-  src/md_csv.c
-  src/md_csv.h
-  src/md_cube.c
-  src/md_cube.h
-  src/md_edr.c
-  src/md_edr.h
-  src/md_filter.h
-  src/md_flow.c
-  src/md_flow.h
-  src/md_fragment.c
-  src/md_fragment.h
-  src/md_gl.c
-  src/md_gl.h
-  src/md_gro.c
-  src/md_gro.h
-  src/md_gto.c
-  src/md_gto.h
-  src/md_gto_int.c
-  src/md_gto_int.h
-  src/md_gto_iso.c
-  src/md_gto_iso.h
-  src/md_gto_iso_gpu.inl
-  src/md_itp.c
-  src/md_itp.h
-  src/md_ndx.c
-  src/md_gmx_restypes.inl
-  src/md_ndx.h
-  src/md_dcd.c
-  src/md_dcd.h
-  src/md_topology_build.c
-  src/md_topology_build.h
-  src/md_amber_netcdf.c
-  src/md_amber_netcdf.h
-  src/md_amber_prmtop.c
-  src/md_amber_prmtop.h
-  src/md_amber_rst7.c
-  src/md_amber_rst7.h
-  src/md_amber_energy.c
-  src/md_amber_energy.h
-  src/md_psf.c
-  src/md_psf.h
-  src/md_namdbin.c
-  src/md_namdbin.h
-  src/md_dssp.c
-  src/md_dssp.h
-  src/md_dssp_cg.inl
-  src/md_lammps.c
-  src/md_lammps.h
-  src/md_match.c
-  src/md_match.h
-  src/md_mcs.c
-  src/md_mcs.h
-  src/md_pucker.c
-  src/md_pucker.h
-  src/md_mmcif.c
-  src/md_mmcif.h
-  src/md_molden.c
-  src/md_molden.h
-  src/md_monomer.c
-  src/md_monomer.h
-  src/md_attributes.c
-  src/md_attributes.h
-  src/md_attributes_internal.h
-  src/md_system.c
-  src/md_system.h
-  src/md_atom.h
-  src/md_hierarchy.h
-  src/md_backbone.h
-  src/md_lipid.h
-  src/md_bond.h
-  src/md_ring.h
-  src/md_assembly.h
-  src/md_group.h
-  src/md_system_state.h
-  src/md_run.h
-  src/md_pdb.c
-  src/md_pdb.h
-  src/md_qm.c
-  src/md_qm_ct.c
-  src/md_qm_ct.h
-  src/md_qm.h
-  src/md_pot.c
-  src/md_pot.h
-  src/md_script.c
-  src/md_script.h
-  src/md_script_functions.inl
-  src/md_script_complete.inl
-  src/md_vial.h
-  src/vial/prelude.vial
-  src/vial/vial_internal.h
-  src/vial/diag.c
-  src/vial/lex.c
+set(MD_SYSTEM_FILES
+  src/system/md_assembly.h
+  src/system/md_atom.c
+  src/system/md_atom.h
+  src/system/md_attributes.c
+  src/system/md_attributes.h
+  src/system/md_attributes_internal.h
+  src/system/md_backbone.c
+  src/system/md_backbone.h
+  src/system/md_bond.c
+  src/system/md_bond.h
+  src/system/md_chem.c
+  src/system/md_chem.h
+  src/system/md_dssp.c
+  src/system/md_dssp.h
+  src/system/md_dssp_cg.inl
+  src/system/md_element.c
+  src/system/md_element.h
+  src/system/md_fragment.c
+  src/system/md_fragment.h
+  src/system/md_gmx_restypes.inl
+  src/system/md_group.h
+  src/system/md_hierarchy.c
+  src/system/md_hierarchy.h
+  src/system/md_infer.c
+  src/system/md_infer.h
+  src/system/md_infer_internal.h
+  src/system/md_lipid.c
+  src/system/md_lipid.h
+  src/system/md_martini.c
+  src/system/md_martini_db.inl
+  src/system/md_match.c
+  src/system/md_match.h
+  src/system/md_monomer.c
+  src/system/md_monomer.h
+  src/system/md_nonbonded.c
+  src/system/md_nonbonded.h
+  src/system/md_ring.c
+  src/system/md_ring.h
+  src/system/md_run.h
+  src/system/md_smiles.c
+  src/system/md_smiles.h
+  src/system/md_smiles_write.c
+  src/system/md_system.c
+  src/system/md_system.h
+  src/system/md_system_fields.h
+  src/system/md_system_state.h
+  src/system/md_topology_build.c
+  src/system/md_topology_build.h
+  src/system/md_types.h
+)
+
+set(MD_ANALYSIS_FILES
+  src/analysis/md_contact.c
+  src/analysis/md_contact.h
+  src/analysis/md_hbond.c
+  src/analysis/md_hbond.h
+  src/analysis/md_mcs.c
+  src/analysis/md_mcs.h
+  src/analysis/md_pucker.c
+  src/analysis/md_pucker.h
+)
+
+set(MD_QM_FILES
+  src/qm/md_flow.c
+  src/qm/md_flow.h
+  src/qm/md_gto.c
+  src/qm/md_gto.h
+  src/qm/md_gto_int.c
+  src/qm/md_gto_int.h
+  src/qm/md_gto_iso.c
+  src/qm/md_gto_iso.h
+  src/qm/md_gto_iso_gpu.inl
+  src/qm/md_qm.c
+  src/qm/md_qm.h
+  src/qm/md_qm_ct.c
+  src/qm/md_qm_ct.h
+  src/qm/md_topo.c
+  src/qm/md_topo.h
+)
+
+set(MD_IO_FILES
+  src/io/md_amber_energy.c
+  src/io/md_amber_energy.h
+  src/io/md_amber_netcdf.c
+  src/io/md_amber_netcdf.h
+  src/io/md_amber_prmtop.c
+  src/io/md_amber_prmtop.h
+  src/io/md_amber_rst7.c
+  src/io/md_amber_rst7.h
+  src/io/md_ase_traj.c
+  src/io/md_ase_traj.h
+  src/io/md_csv.c
+  src/io/md_csv.h
+  src/io/md_cube.c
+  src/io/md_cube.h
+  src/io/md_dcd.c
+  src/io/md_dcd.h
+  src/io/md_edr.c
+  src/io/md_edr.h
+  src/io/md_gro.c
+  src/io/md_gro.h
+  src/io/md_io.c
+  src/io/md_io.h
+  src/io/md_itp.c
+  src/io/md_itp.h
+  src/io/md_lammps.c
+  src/io/md_lammps.h
+  src/io/md_mmcif.c
+  src/io/md_mmcif.h
+  src/io/md_molden.c
+  src/io/md_molden.h
+  src/io/md_namdbin.c
+  src/io/md_namdbin.h
+  src/io/md_ndx.c
+  src/io/md_ndx.h
+  src/io/md_pdb.c
+  src/io/md_pdb.h
+  src/io/md_pot.c
+  src/io/md_pot.h
+  src/io/md_psf.c
+  src/io/md_psf.h
+  src/io/md_tpr.c
+  src/io/md_tpr.h
+  src/io/md_trr.c
+  src/io/md_trr.h
+  src/io/md_xdr.h
+  src/io/md_xtc.c
+  src/io/md_xtc.h
+  src/io/md_xvg.c
+  src/io/md_xvg.h
+  src/io/md_xyz.c
+  src/io/md_xyz.h
+)
+
+set(MD_GFX_FILES
+  src/gfx/md_gl.c
+  src/gfx/md_gl.h
+  src/gfx/md_vector_graphics.c
+  src/gfx/md_vector_graphics.h
+)
+
+set(MD_SCRIPT_FILES
+  src/script/md_filter.h
+  src/script/md_script.c
+  src/script/md_script.h
+  src/script/md_script_complete.inl
+  src/script/md_script_functions.inl
+  src/script/md_vial.h
+  src/vial/api.c
   src/vial/ast.h
-  src/vial/parse.c
-  src/vial/units.c
-  src/vial/types.h
-  src/vial/types.c
-  src/vial/builtins.h
   src/vial/builtins.c
-  src/vial/check.h
+  src/vial/builtins.h
   src/vial/check.c
-  src/vial/infer.h
-  src/vial/infer_internal.h
-  src/vial/infer.c
-  src/vial/infer_sets.c
-  src/vial/infer_geom.c
-  src/vial/infer_math.c
-  src/vial/infer_defs.c
-  src/vial/infer_comp.c
-  src/vial/infer_vol.c
-  src/vial/select.h
-  src/vial/select.c
-  src/vial/value.h
-  src/vial/value.c
-  src/vial/ir.h
-  src/vial/ir.c
+  src/vial/check.h
+  src/vial/diag.c
   src/vial/emit.c
-  src/vial/passes.c
-  src/vial/interp.h
+  src/vial/eval.c
+  src/vial/infer.c
+  src/vial/infer.h
+  src/vial/infer_comp.c
+  src/vial/infer_defs.c
+  src/vial/infer_geom.c
+  src/vial/infer_internal.h
+  src/vial/infer_math.c
+  src/vial/infer_sets.c
+  src/vial/infer_vol.c
   src/vial/interp.c
+  src/vial/interp.h
+  src/vial/ir.c
+  src/vial/ir.h
   src/vial/kernels.c
   src/vial/kernels_builtins.c
-  src/vial/volume.h
+  src/vial/lex.c
+  src/vial/parse.c
+  src/vial/passes.c
+  src/vial/prelude.vial
+  src/vial/select.c
+  src/vial/select.h
+  src/vial/types.c
+  src/vial/types.h
+  src/vial/units.c
+  src/vial/value.c
+  src/vial/value.h
+  src/vial/vial_internal.h
   src/vial/volume.c
-  src/vial/eval.c
-  src/vial/api.c
-  src/md_smiles.c
-  src/md_smiles_write.c
-  src/md_smiles.h
-  src/md_topo.c
-  src/md_topo.h
-  src/md_tpr.c
-  src/md_tpr.h
-  src/md_trr.c
-  src/md_trr.h
-  src/md_types.h
-  src/md_infer.c
-  src/md_io.c
-  src/md_io.h
-  src/md_infer_internal.h
-  src/md_bond.c
-  src/md_ring.c
-  src/md_atom.c
-  src/md_hierarchy.c
-  src/md_backbone.c
-  src/md_lipid.c
-  src/md_martini.c
-  src/md_martini_db.inl
-  src/md_infer.h
-  src/md_geom.c
-  src/md_geom.h
-  src/md_sort.c
-  src/md_sort.h
-  src/md_unitcell.h
-  src/md_unitcell.c
-  src/md_vector_graphics.c
-  src/md_vector_graphics.h
-  src/md_xtc.c
-  src/md_xtc.h
-  src/md_xdr.h
-  src/md_xvg.c
-  src/md_xvg.h
-  src/md_xyz.c
-  src/md_xyz.h
-  src/md_ase_traj.c
-  src/md_ase_traj.h
+  src/vial/volume.h
 )
 
 set(GL_SHADER_FILES 
@@ -379,18 +409,18 @@ if (MD_ENABLE_GPU)
     # under -Wall -Wextra -Wpedantic. The path can also point into a different SDK than the one the compiler uses.
     # By name, the compiler and linker take them from the active SDK, as system frameworks.
     list(APPEND MD_LIBS "-framework Metal" "-framework Foundation" "-framework QuartzCore")   # QuartzCore: CAMetalLayer, for surfaces
-    list(APPEND CORE_FILES src/core/md_gpu_metal.m)
+    list(APPEND MD_CORE_FILES src/core/md_gpu_metal.m)
     set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
     include(cmake/ResolveVulkan.cmake)
     resolve_vulkan()
     set(MD_GPU_BACKEND "VULKAN")
     list(APPEND MD_LIBS vulkan_backend)
-    list(APPEND CORE_FILES src/core/md_gpu_vulkan.c)
+    list(APPEND MD_CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
 
   # Backend-independent sub-allocator behind md_gpu_malloc.
-  list(APPEND CORE_FILES src/core/md_gpu_tlsf.c)
+  list(APPEND MD_CORE_FILES src/core/md_gpu_tlsf.c)
 
   include(cmake/ResolveSlang.cmake)
   resolve_slang(VERSION 2026.8.1)
@@ -435,19 +465,19 @@ if (MD_ENABLE_HDF5)
   find_package(ZLIB REQUIRED)
   list(APPEND MD_LIBS ZLIB::ZLIB)
 
-  list(APPEND SRC_FILES
-    src/md_vlx.c
-    src/md_vlx.h
-    src/md_trexio.c
-    src/md_trexio.h
-    src/md_h5md.c
-    src/md_h5md.h
-    src/md_hdf5.c
-    src/md_hdf5.h
-    src/md_amber_netcdf4.c
-    src/md_amber_netcdf4.h
-    src/md_hdf5_direct.c
-    src/md_hdf5_direct.h
+  list(APPEND MD_IO_FILES
+    src/io/md_vlx.c
+    src/io/md_vlx.h
+    src/io/md_trexio.c
+    src/io/md_trexio.h
+    src/io/md_h5md.c
+    src/io/md_h5md.h
+    src/io/md_hdf5.c
+    src/io/md_hdf5.h
+    src/io/md_amber_netcdf4.c
+    src/io/md_amber_netcdf4.h
+    src/io/md_hdf5_direct.c
+    src/io/md_hdf5_direct.h
   )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced
@@ -689,18 +719,25 @@ set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${T
     src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang
     src/shaders/gto/eval_gto_int_potential_far.slang)
 
-source_group("src"      FILES ${SRC_FILES}) 
-source_group("src/core" FILES ${CORE_FILES})
 source_group("ext"      FILES ${EXT_FILES})
 source_group("gen"      FILES ${GEN_FILES})
 source_group("shaders"  FILES ${SHADER_FILES})
 source_group("proj"     FILES ${PROJ_FILES})
 
-add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${GEN_FILES} ${SHADER_FILES} ${PROJ_FILES})
+set(SRC_FILES ${MD_CORE_FILES} ${MD_SYSTEM_FILES} ${MD_ANALYSIS_FILES} ${MD_QM_FILES} ${MD_IO_FILES} ${MD_GFX_FILES} ${MD_SCRIPT_FILES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX src FILES ${SRC_FILES})
+
+add_library(mdlib ${SRC_FILES} ${EXT_FILES} ${GEN_FILES} ${SHADER_FILES} ${PROJ_FILES})
 
 target_include_directories(mdlib
   PUBLIC
   src/
+  src/system/
+  src/analysis/
+  src/qm/
+  src/io/
+  src/gfx/
+  src/script/
   ext/gl3w/
   ext/simde/
   ext/xxhash/

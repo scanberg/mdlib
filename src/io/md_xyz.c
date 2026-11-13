@@ -4,8 +4,8 @@
 #include <md_io.h>
 #include <core/md_hash.h>
 #include <md_run.h>
-#include <md_sort.h>
-#include <md_unitcell.h>
+#include <core/md_sort.h>
+#include <core/md_unitcell.h>
 #include <md_element.h>
 
 #include <core/md_common.h>
