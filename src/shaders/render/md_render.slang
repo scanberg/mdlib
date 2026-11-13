@@ -54,7 +54,7 @@ struct ViewData {
     float  jitter_px;           // how far this raster's jitter moves the image (pixels)
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
     float  occl_min_px;         // elements no wider are not tested for occlusion
-    float  lod_px;              // the projection's scale: pixels per unit at depth 1 (ortho: everywhere)
+    uint   _vpad1;
     uint   _vpad2;
 };
 
@@ -77,7 +77,7 @@ static const uint F_PALETTE_IDX  = 1u << 11;
 static const uint F_CLUSTERS     = 1u << 12;  // explicit cluster offsets
 static const uint F_SHARED       = 1u << 13;  // bounds shared with an earlier batch: no refit
 static const uint F_RADIUS_TABLE = 1u << 14;  // `radius` holds a type per point (low 16 bits; high: flags)
-static const uint F_LOD          = 1u << 15;  // a size window: lod_min, lod_max
+static const uint F_LOD          = 1u << 15;  // a size window: lod_dnear, lod_dfar
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -143,8 +143,8 @@ struct Batch {
     uint    cluster_base;       // first cluster over all batches (refit)
     uint    radius_table_count;
 
-    float   lod_min;            // F_LOD: drawn where the scale (pixels per unit) is in [lod_min, lod_max)
-    float   lod_max;            // 0: no upper bound
+    float   lod_dnear;          // F_LOD: drawn where the view-space depth is in (lod_dnear, lod_dfar],
+    float   lod_dfar;           // the size window for this camera (md_render.c, lod_depths)
     uint    _bpad0;
     uint    _bpad1;
 };
@@ -622,22 +622,19 @@ static const uint OUT_SMALL    = 4u;
 static const uint OUT_NONE     = 5u;   // a lane without an element
 static const uint OUT_LOD      = 6u;   // outside its batch's size window
 
-// The size window (md_render_batch_t.lod_min, lod_max): the projection's
-// scale at view-space depth d (> 0 in front of the eye), in pixels per unit.
-// At or behind the eye: unbounded.
-float lod_scale(ViewData v, float d) {
-    if (v.ortho != 0u) return v.lod_px;
-    return d > 0.0 ? v.lod_px / d : 3.0e38;
-}
-// Whether scales in [lo, hi] can meet the batch's window
-bool lod_meets(Batch b, float lo, float hi) {
-    return hi >= b.lod_min && (b.lod_max <= 0.0 || lo < b.lod_max);
+// The size window (md_render_batch_t.lod_min, lod_max), as the depths it
+// holds for this camera: the host turns the scales into view-space depths
+// (lod_depths), so the test is two compares with nothing of the projection
+// in the shader. (Tested as scales, the cull measured 96 registers on the
+// GTX 1060 at 3cb6ff05, against 80 before the window.)
+// Whether depths in [d0, d1] can meet it:
+bool lod_meets(Batch b, float d0, float d1) {
+    return d1 > b.lod_dnear && d0 <= b.lod_dfar;
 }
 // An element: its centre (view space), a capsule's midpoint
-bool lod_keeps(ViewData v, Batch b, float3 centre) {
+bool lod_keeps(Batch b, float3 centre) {
     if ((b.flags & F_LOD) == 0u) return true;
-    float sc = lod_scale(v, -centre.z);
-    return lod_meets(b, sc, sc);
+    return lod_meets(b, -centre.z, -centre.z);
 }
 
 // Appends with one atomic per wave: the index for this lane (valid when it wants one)
@@ -889,7 +886,7 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         bool lod_out = false;
         if (cs.count > 0u && mode != 3u && (b.flags & F_LOD) != 0u) {
             float d = -cs.c.z;
-            lod_out = !lod_meets(b, lod_scale(v, d + cs.r), lod_scale(v, d - cs.r));
+            lod_out = !lod_meets(b, d - cs.r, d + cs.r);
         }
         if (cs.count > 0u && lod_out) {
             out = OUT_LOD;
@@ -938,7 +935,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
         g   = element_geo(v, b, inst, e);
         // the size window: not for the state lists, which do not depend on
         // the camera (the mask's raster applies it)
-        lod_out = g.ok && !state_only && !lod_keeps(v, b, 0.5 * (g.a + g.b));
+        lod_out = g.ok && !state_only && !lod_keeps(b, 0.5 * (g.a + g.b));
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
     if (lod_out) {
@@ -1308,7 +1305,7 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint2 ent    = elem_id(a.batches, el);
     Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
-    if (a.list >= 2u && !lod_keeps(v, a.batches[el.slot], g.a)) return o;   // the state lists: the size window here
+    if (a.list >= 2u && !lod_keeps(a.batches[el.slot], g.a)) return o;   // the state lists: the size window here
     float3 c   = g.a;
     float  rad = g.r;
 
@@ -1417,7 +1414,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint2 ent = elem_id(a.batches, el);
     Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
-    if (a.list >= 2u && !lod_keeps(v, a.batches[el.slot], 0.5 * (g.a + g.b))) return o;   // the state lists: the size window here
+    if (a.list >= 2u && !lod_keeps(a.batches[el.slot], 0.5 * (g.a + g.b))) return o;   // the state lists: the size window here
     float3 pa  = g.a;
     float3 pb  = g.b;
     float  rad = g.r;

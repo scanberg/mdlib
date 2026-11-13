@@ -31,8 +31,7 @@ typedef struct gpu_view_t {
     float         jitter_px;        /* how far this raster's jitter moves the image: max |jx|, |jy| */
     float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
-    float         lod_px;           /* the projection's scale: pixels per unit at depth 1 (ortho: everywhere) */
-    uint32_t      _vpad;
+    uint32_t      _vpad[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
@@ -86,7 +85,7 @@ typedef struct gpu_batch_t {
     uint32_t      work_offset, rad_stride;
     md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
-    float         lod_min, lod_max;
+    float         lod_dnear, lod_dfar;  /* F_LOD: the size window as depths for this camera (lod_depths) */
     uint32_t      _bpad[2];
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 272, "Batch mirror");
@@ -806,9 +805,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->radius_scale = b->style.capsules.radius_scale;
         if (b->style.capsules.radius_scale) f |= F_RADIUS_SCALE;
     }
-    g->lod_min = b->lod_min > 0.0f ? b->lod_min : 0.0f;
-    g->lod_max = b->lod_max > 0.0f ? b->lod_max : 0.0f;
-    if (g->lod_min > 0.0f || g->lod_max > 0.0f) f |= F_LOD;
+    if (b->lod_min > 0.0f || b->lod_max > 0.0f) f |= F_LOD;
     g->flags         = f;
     g->uniform_color = b->color.uniform;
     g->palette_count = b->color.palette_count;
@@ -834,6 +831,28 @@ static const float* prev_transforms(const md_render_view_t v, const md_render_fr
         }
     }
     return cur;
+}
+
+/* The size window of a batch as view-space depths for this camera. A scale
+   s (pixels per unit) is at depth lod_px / s, lod_px = |proj[5]| * height /
+   2 (unjittered), so the window [lod_min, lod_max) is the depths (lod_px /
+   lod_max, lod_px / lod_min]; without lod_max it holds what is at or behind
+   the eye too. Orthographic: one scale, the whole batch in or out. */
+static void lod_depths(gpu_batch_t* g, const md_render_batch_t* b, const md_render_frame_t* f) {
+    const float BIG = 3.0e38f;
+    g->lod_dnear = -BIG;
+    g->lod_dfar  = BIG;
+    if (!(g->flags & F_LOD)) return;
+    const float* P  = f->camera.proj;
+    const float  px = fabsf(P[5]) * 0.5f * (float)f->height;
+    const float  lo = b->lod_min > 0.0f ? b->lod_min : 0.0f;
+    const float  hi = b->lod_max > 0.0f ? b->lod_max : 0.0f;
+    if (P[3] == 0.0f && P[7] == 0.0f && P[11] == 0.0f && P[15] == 1.0f) {
+        if (!(px >= lo && (hi == 0.0f || px < hi))) { g->lod_dnear = BIG; g->lod_dfar = -BIG; }
+        return;
+    }
+    if (hi > 0.0f) g->lod_dnear = px / hi;
+    if (lo > 0.0f) g->lod_dfar  = px / lo;
 }
 
 /* Builds and uploads the batch table and transforms for `f`. At a raster the
@@ -891,6 +910,7 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         const md_render_batch_t* b = &f->batches[i];
         md_gpu_addr_t xf = v->table[i].transforms, xp = v->table[i].transforms_prev;
         fill_batch(&v->table[i], b, instance_count(b), xf, xp);
+        lod_depths(&v->table[i], b, f);
         gpu_batch_t* g = &v->table[i];
         g->work_offset         = work;
         g->cluster_count       = batch_clusters(b);
@@ -1307,7 +1327,6 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.jitter_px       = fabsf(jx) > fabsf(jy) ? fabsf(jx) : fabsf(jy);
         gv.occl_margin     = g_occl_margin;
         gv.occl_min_px     = g_occl_min_px;
-        gv.lod_px          = fabsf(f->camera.proj[5]) * 0.5f * (float)f->height;   /* unjittered: 1 / tan(fov / 2), or 1 / half the height (ortho) */
         if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_view_t)).gpu;
         if (!v->view_buf) return false;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
