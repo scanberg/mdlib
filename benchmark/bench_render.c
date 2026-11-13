@@ -721,6 +721,7 @@ bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stre
 /* md_render's per-pass hook and the phase-1 occlusion margin experiment: in
    md_render.c, not in its header */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
+void md_render_mol_debug_prefetch(uint32_t windows_ahead);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
 typedef struct pass_prof_t {
@@ -798,6 +799,25 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
     }
     f.q_gpu = up.gpu;
     print_times("frame quantize (host, one thread)   ", t, reps);
+    if (sc->partial) {
+        /* the read-ahead of a resident set's quantize, by its distance in
+           windows of 64 atoms (0: none); the default is 16 */
+        const uint32_t ahead[] = { 0, 2, 4, 8, 16, 32, 64 };
+        printf("  quantize by read-ahead (windows of 64 atoms):");
+        for (size_t ai = 0; ai < sizeof(ahead) / sizeof(ahead[0]); ++ai) {
+            md_render_mol_debug_prefetch(ahead[ai]);
+            for (uint32_t rr = 0; rr < reps; ++rr) {
+                md_tick_t t0 = md_tick_now();
+                md_render_mol_frame_quantize(&f, up.cpu, sc->host_pos, 0, n, cell, res);
+                t[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
+            }
+            qsort(t, reps, sizeof(double), cmp_d);
+            printf(" %u: %.2f", ahead[ai], t[0]);
+        }
+        printf(" ms\n");
+        md_render_mol_debug_prefetch(16);
+        f.q_gpu = up.gpu;
+    }
     md_render_mol_frame_quantize(&fh, host_q, sc->host_pos, 0, n, cell, res);
 
     for (uint32_t k = 0; k < 4; ++k) md_render_mol_frame_upload(mol, s, &sc->topo, 0, &fr, k, &f, 0);

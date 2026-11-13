@@ -766,15 +766,6 @@ static inline uint16_t quant1(float v, float lo, float inv) {
     return (uint16_t)t;
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#define PREFETCH(p) __builtin_prefetch(p)
-#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-#include <xmmintrin.h>
-#define PREFETCH(p) _mm_prefetch((const char*)(p), _MM_HINT_T0)
-#else
-#define PREFETCH(p) ((void)(p))
-#endif
-
 /* The quantize, in windows of 64 atoms: a window of members four atoms to
    three vectors (each its own pattern of axes: xyzx, yzxy, zxyz), a window
    with gaps member by member, each one vector (x, y, z, and a lane ignored).
@@ -851,28 +842,32 @@ static inline uint64_t window_members(md_bitset_t s, uint32_t base, uint32_t las
 }
 
 /* Windows read ahead: members with gaps between them are a pattern no
-   hardware prefetcher follows */
-#define WINDOWS_AHEAD 16u
+   hardware prefetcher follows. 0: none (md_render_mol_debug_prefetch, for
+   md_render_bench's sweep; not in the header) */
+static uint32_t g_windows_ahead = 16u;
+
+void md_render_mol_debug_prefetch(uint32_t windows_ahead) { g_windows_ahead = windows_ahead; }
 
 /* The lines that hold members of the window ahead, each once: a prefetch
    per line of the window would fill the slots for misses in flight with
    lines no member is on */
 static inline void prefetch_window(const quant_ctx_t* c, md_bitset_t s, uint32_t base, uint32_t last) {
-    const uint32_t ahead = base + WINDOWS_AHEAD * 64u;
+    if (!g_windows_ahead) return;
+    const uint32_t ahead = base + g_windows_ahead * 64u;
     if (ahead >= last) return;
     uint64_t m = window_members(s, ahead, last);
     if (m == ~0ull) {
         const char* w = (const char*)(c->xyz + c->step * ahead);
         const size_t bytes = 64u * c->step * sizeof(float);
-        for (size_t b = 0; b < bytes; b += 64) PREFETCH(w + b);
+        for (size_t b = 0; b < bytes; b += 64) md_prefetch(w + b);
         return;
     }
     uintptr_t prev = 0;
     for (; m; m &= m - 1) {
         const uint32_t i = ahead + (uint32_t)md_ctz64(m);
         const uintptr_t a = (uintptr_t)(c->xyz + c->step * i), b = a + 11;     /* the atom's first and last byte */
-        if ((a >> 6) != prev) PREFETCH((const void*)a);
-        if ((b >> 6) != (a >> 6)) PREFETCH((const void*)b);
+        if ((a >> 6) != prev) md_prefetch((const void*)a);
+        if ((b >> 6) != (a >> 6)) md_prefetch((const void*)b);
         prev = b >> 6;
     }
 }
