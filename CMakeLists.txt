@@ -520,11 +520,12 @@ if (COMPILER_TYPE MATCHES "Clang")
     list(APPEND MD_FLAGS "-Wno-format")
   endif()
 
-  # AVX/FMA flags
+  # AVX/FMA flags. Every x86 CPU with AVX2 has the bit manipulation instructions of Haswell (BMI1, BMI2, LZCNT), which
+  # MSVC's /arch:AVX2 assumes as well: TZCNT, BLSR and BLSI in place of BSF and its test for zero.
   if (MD_ENABLE_AVX512)
-    list(APPEND MD_FLAGS_AVX "-mavx512f" "-mavx512dq")
+    list(APPEND MD_FLAGS_AVX "-mavx512f" "-mavx512dq" "-mbmi" "-mbmi2" "-mlzcnt")
   elseif (MD_ENABLE_AVX2)
-    list(APPEND MD_FLAGS_AVX "-mavx2")
+    list(APPEND MD_FLAGS_AVX "-mavx2" "-mbmi" "-mbmi2" "-mlzcnt")
   elseif (MD_ENABLE_AVX)
     list(APPEND MD_FLAGS_AVX "-mavx")
   endif()
@@ -554,10 +555,11 @@ elseif (COMPILER_TYPE STREQUAL "GCC")
       "-Wno-unused-parameter"
       "-Wno-format-truncation")
 
+    # With AVX2 the bit manipulation instructions of Haswell, as for Clang above
     if (MD_ENABLE_AVX512)
-        list(APPEND MD_FLAGS_AVX "-mavx512f" "-mavx512dq")
+        list(APPEND MD_FLAGS_AVX "-mavx512f" "-mavx512dq" "-mbmi" "-mbmi2" "-mlzcnt")
     elseif (MD_ENABLE_AVX2)
-        list(APPEND MD_FLAGS_AVX "-mavx2")
+        list(APPEND MD_FLAGS_AVX "-mavx2" "-mbmi" "-mbmi2" "-mlzcnt")
     elseif (MD_ENABLE_AVX)
         list(APPEND MD_FLAGS_AVX "-mavx")
     endif()
