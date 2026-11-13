@@ -7,6 +7,15 @@
 
 #include <stddef.h>
 #include <string.h>
+#include <core/md_parse_simd.h>
+
+const char* md_text_find_byte(const char* beg, const char* end, char c) {
+    return md_parse_find_byte(beg, end, c);
+}
+
+const char* md_text_after_nth_byte(const char* beg, const char* end, char c, size_t* n) {
+    return md_parse_after_nth_byte(beg, end, c, n);
+}
 
 // The readers are handed over as &x.r, and their vtables cast r back to the reader
 MD_STATIC_ASSERT(offsetof(md_file_reader_t, r) == 0, "md_reader_i must be the first member");
