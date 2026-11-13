@@ -521,7 +521,7 @@ static const uint SPLINE_POINT = 0x3FFFFFFFu;
 struct SplinePart {
     bool   ok;
     float3 p0, p1, p2, p3, p4;  // control points e-2 .. e+2 in view space, mirrored past the ends
-    float3 w0, w1, w2, w3, w4;  // their axes, each sign-chained to its neighbour towards e
+    float3 w0, w1, w2, w3, w4;  // their axes, unit, the sign the caller gave
     float  u0, u1;              // the part's range of u
     float  a0, a1;              // half widths at u0 and u1 (scaled, shrunk)
     float  r0, r1;              // radii at u0 and u1 (scaled, shrunk)
@@ -551,10 +551,6 @@ float4 spline_profile_of(Batch b, uint e) {
 
 bool spline_visible(Batch b, uint ie) {
     return attr_visible(b, attr_of(b, ie & SPLINE_POINT));
-}
-
-float3 chain_sign(float3 w, float3 ref) {
-    return dot(w, ref) < 0.0 ? -w : w;
 }
 
 // Control point e's part, in view space. fade: the batch's SHRINK applies
@@ -596,10 +592,6 @@ SplinePart spline_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     sp.w0 = sp.w1; sp.w4 = sp.w3;
     if (hpp) sp.w0 = spline_axis_view(V, T, b, e - 2u);
     if (hnn) sp.w4 = spline_axis_view(V, T, b, e + 2u);
-    sp.w1 = chain_sign(sp.w1, sp.w2);
-    sp.w3 = chain_sign(sp.w3, sp.w2);
-    sp.w0 = chain_sign(sp.w0, sp.w1);
-    sp.w4 = chain_sign(sp.w4, sp.w3);
 
     float4 pf = spline_profile_of(b, e);
     float  f  = 1.0;

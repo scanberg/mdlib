@@ -257,10 +257,14 @@ typedef struct md_render_capsule_style_t {
    control point leaves a gap of its part. The spline passes near the
    control points (a B-spline smooths them) and through the first and the
    last (mirrored end points).
-   Axes: the profile's long axis at each control point, any length and
-   either sign (md_render normalises it, takes the sign of each next to its
-   neighbour, and makes it orthogonal to the curve), interpolated along the
-   spline as the positions are.
+   Axes: the profile's long axis at each control point, any length (md_render
+   normalises it and makes it orthogonal to the curve), interpolated along
+   the spline as the positions are. Its sign is the caller's: the ribbon
+   turns from one axis to the next the short way round only if they are
+   within 90 degrees, so keep neighbours' signs consistent. Deciding that
+   per frame from the axes alone flips pairs near 90 degrees apart back and
+   forth with thermal noise; the decision needs memory across frames, which
+   belongs above md_render (md_render_mol keeps it).
    Profile: a and r at the start and the end of each part, linear between:
    equal across a joint for a smooth spline (a coil tapering into a helix's
    ribbon over a part), unequal for a step (the base of an arrow). Ends are
