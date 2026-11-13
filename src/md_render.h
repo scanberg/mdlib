@@ -192,7 +192,7 @@ typedef enum md_render_kind_t {
     MD_RENDER_SPHERES,
     MD_RENDER_CAPSULES,
     MD_RENDER_POLYGONS,            /* not yet implemented */
-    MD_RENDER_SPLINES,             /* not yet implemented */
+    MD_RENDER_SPLINES,             /* tubes and ribbons along cubic splines: md_render_spline_style_t */
     MD_RENDER_TRIANGLES,           /* not yet implemented */
     MD_RENDER_EXTERNAL,            /* an id range for the caller's own renderer */
 } md_render_kind_t;
@@ -238,6 +238,51 @@ typedef struct md_render_capsule_style_t {
        nearest image of the other, drawn as two halves. All zero: none. */
     float           cell[9];
 } md_render_capsule_style_t;
+
+/* SPLINES: a profile swept along a uniform cubic B-spline through control
+   points, for cartoons, nucleic acid backbones, lipid tails and the like.
+   The profile is a stadium (a 2D capsule): a segment of half length `a`
+   along the profile's long axis, rounded by `radius`; a circle where a is 0
+   (a tube). Formally, a part is the union of the balls of `radius` around
+   the swept segments.
+
+   Control points: element e is control point e, at point index[e] & ~flags;
+   the control points of a spline are consecutive elements, the first marked
+   MD_RENDER_SPLINE_FIRST and the last MD_RENDER_SPLINE_LAST (both on one
+   that is alone: not drawn). index is required.
+   Parts: element e draws the part of its spline around its control point,
+   from halfway to the one before to halfway to the one after (the first
+   and the last only their inner half). A part takes the attribute of its
+   control point: its colour, state bits, visibility and pick, so a hidden
+   control point leaves a gap of its part. The spline passes near the
+   control points (a B-spline smooths them) and through the first and the
+   last (mirrored end points).
+   Axes: the profile's long axis at each control point, any length and
+   either sign (md_render normalises it, takes the sign of each next to its
+   neighbour, and makes it orthogonal to the curve), interpolated along the
+   spline as the positions are.
+   Widths: a at the start and the end of each part, linear between: equal
+   across a joint for a smooth ribbon, unequal for a step (the base of an
+   arrow). Ends are round: where a spline ends, next to a hidden part and
+   at a step, a cap closes the part (the ball of `radius` around its end's
+   segment).
+   Fades: SHRINK scales a and radius; THIN drops whole parts, which leaves
+   their joints open: for splines, shrink.
+   Not yet: a radius per control point, flat caps, splines through their
+   control points. */
+enum {
+    MD_RENDER_SPLINE_FIRST = 1u << 31,
+    MD_RENDER_SPLINE_LAST  = 1u << 30,
+};
+
+typedef struct md_render_spline_style_t {
+    float         radius;          /* the profile's: half its thickness, the
+                                      rounding of its edges; <= 0 not drawn     */
+    md_gpu_addr_t axis;            /* float4 per element (xyz), the long axis at
+                                      its control point. 0: none (tubes)        */
+    md_gpu_addr_t width;           /* float2 per element: a where its part
+                                      starts and where it ends. 0: all 0        */
+} md_render_spline_style_t;
 
 /* ---- Colour: only appearance; a change of it costs a resolve, not a raster */
 
@@ -329,6 +374,7 @@ typedef struct md_render_batch_t {
     union {
         md_render_sphere_style_t  spheres;
         md_render_capsule_style_t capsules;
+        md_render_spline_style_t  splines;
     } style;
 
     md_render_color_t  color;
