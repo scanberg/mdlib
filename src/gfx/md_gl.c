@@ -10,7 +10,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_handle.h>
-#include <core/md_gl_util.h>
+#include <md_gl_util.h>
 #include <core/md_bitset.h>
 
 

@@ -1,5 +1,4 @@
 #include "md_gl_util.h"
-#include <core/md_gl_util.h>
 #include <core/md_parse.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
