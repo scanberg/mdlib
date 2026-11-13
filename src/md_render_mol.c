@@ -568,7 +568,12 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
                          md_gpu_addr_t base, uint64_t content[MD_RENDER_CONTENT_COUNT]) {
     if (!s || !out || !plan || !base || !plan->data) return false;
     if (!md_gpu_upload(s, base, plan->data, (size_t)plan->size)) return false;
+    /* Each written topology its own instance: one written again where another
+       was (the same address, the same system version) is not the one a copy
+       or the frames were made for */
+    static volatile MD_U64 instances = 0;
     *out = plan->layout;
+    out->instance            = (uint32_t)md_atomic_fetch_add64(&instances, 1) + 1u;
     out->base                = base;
     out->atom_type           = base + plan->layout.atom_type;
     out->type_radius         = base + plan->layout.type_radius;
@@ -606,7 +611,7 @@ typedef struct gpu_mol_args_t {
     uint32_t full, ident0, ident1, ident2, fr_threads;
     uint32_t frame_count, quantized, has_src, has_fvel, has_resident, resident_words;
     float    w[4], dw[4];
-    uint32_t dbg, rsrc0, rsrc1, _pad1;
+    uint32_t dbg, rsrc0, rsrc1, ident3;
 } gpu_mol_args_t;
 _Static_assert(sizeof(gpu_mol_args_t) == 42 * 8 + 40 * 4, "gpu_mol_args_t mirrors Args");
 
@@ -743,6 +748,7 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->ident0              = (uint32_t)topo->base;
     a->ident1              = (uint32_t)(topo->base >> 32);
     a->ident2              = (uint32_t)topo->topology_version;
+    a->ident3              = topo->instance;
 }
 
 /* The small molecules into grid cells, by the positions `a` points at */
@@ -776,7 +782,8 @@ static bool run_regroup(md_render_mol_t r, md_gpu_stream_t s, gpu_mol_args_t* a,
 }
 
 static bool frames_match(const md_render_mol_frames_t* fr, const md_render_mol_topo_t* topo) {
-    return fr->base && fr->topology_base == topo->base && fr->topology_version == topo->topology_version && fr->point_count == topo->point_count;
+    return fr->base && fr->topology_base == topo->base && fr->topology_version == topo->topology_version &&
+           fr->topology_instance == topo->instance && fr->point_count == topo->point_count;
 }
 
 static md_gpu_addr_t frame_buffer(const md_render_mol_frames_t* fr, uint32_t b) {
@@ -1175,6 +1182,7 @@ bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_
     out->size             = md_render_mol_frames_size(topo, slots);
     out->topology_base    = topo->base;
     out->topology_version = topo->topology_version;
+    out->topology_instance= topo->instance;
     out->slots            = slots;
     out->point_count      = topo->point_count;
     for (uint32_t b = 0; b < slots; ++b) out->buffer[b] = b;
