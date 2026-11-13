@@ -850,18 +850,15 @@ void md_render_mol_debug_prefetch(uint32_t windows_ahead) { g_windows_ahead = wi
 
 /* The lines that hold members of the window ahead, each once: a prefetch
    per line of the window would fill the slots for misses in flight with
-   lines no member is on */
+   lines no member is on (on the M4, a scattered tenth: 12 ms that way, 4.2
+   this, 10.8 without). A window of members is a stream, the hardware's to
+   follow: none. */
 static inline void prefetch_window(const quant_ctx_t* c, md_bitset_t s, uint32_t base, uint32_t last) {
     if (!g_windows_ahead) return;
     const uint32_t ahead = base + g_windows_ahead * 64u;
     if (ahead >= last) return;
     uint64_t m = window_members(s, ahead, last);
-    if (m == ~0ull) {
-        const char* w = (const char*)(c->xyz + c->step * ahead);
-        const size_t bytes = 64u * c->step * sizeof(float);
-        for (size_t b = 0; b < bytes; b += 64) md_prefetch(w + b);
-        return;
-    }
+    if (m == ~0ull) return;
     uintptr_t prev = 0;
     for (; m; m &= m - 1) {
         const uint32_t i = ahead + (uint32_t)md_ctz64(m);
