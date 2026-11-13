@@ -651,18 +651,6 @@ static inline molecule_t* mol_lookup(uint32_t id) {
     return ctx.molecules + index;
 }
 
-static inline palette_t* pal_lookup(uint32_t id) {
-    if (id == MD_HANDLE_INVALID_ID) {
-        return NULL;
-    }
-    int index = md_handle_index(id);
-    if (index >= ctx.palette_pool.size || ctx.palettes[index].id != id) {
-        MD_LOG_ERROR("Invalid id");
-        return NULL;
-    }
-    return ctx.palettes + index;
-}
-
 static inline representation_t* rep_lookup(uint32_t id) {
     if (id == MD_HANDLE_INVALID_ID) {
         return NULL;

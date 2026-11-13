@@ -1191,10 +1191,6 @@ static size_t type_info_total_element_count(type_info_t ti) {
     return type_info_element_stride_count(ti) * type_info_array_len(ti);
 }
 
-static size_t bitfield_byte_size(size_t num_bits) {
-    return MD_DIV_UP(num_bits, 64) * sizeof(int64_t);
-}
-
 static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
@@ -1405,48 +1401,6 @@ static bool is_bitwise_operator(ast_type_t type) {
 
 static bool is_number(token_type_t type) {
     return type == TOKEN_INT || type == TOKEN_FLOAT;
-}
-
-// Returns if a token should be considered an operand
-// Mainly used to disambiguate unary operator from binary operator
-// Then we need to look at the previous token
-static bool is_operand(token_type_t type) {
-    switch (type) {
-    case ')':
-    case ']':
-    case ':':
-    case TOKEN_IDENT:
-    case TOKEN_OF:
-    case TOKEN_IN:
-    case TOKEN_FLOAT:
-    case TOKEN_INT:
-    case TOKEN_STRING:
-        return true;
-    case TOKEN_EQ:
-    case TOKEN_AND:
-    case TOKEN_OR:
-    case TOKEN_XOR:
-    case TOKEN_GE:
-    case TOKEN_NOT:
-    case TOKEN_LE:
-    case '+':
-    case '>':
-    case '*':
-    case '-':
-    case '=':
-    case '/':
-    case '<':
-    case '[':
-    case '(':
-    case ',':
-    case ';':
-    case TOKEN_UNDEF:
-    case TOKEN_END:
-        return false;
-    default:
-        MD_ASSERT(false);
-    }
-    return false;
 }
 
 
@@ -1755,21 +1709,6 @@ static inline int volume_count(type_info_t ti) {
 // ###   HELPER FUNCTIONS   ###
 // ############################
 
-// Returns if the value type can be operated on using logical operators
-static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
-    return type == TYPE_BOOL || type == TYPE_ATOMSET || type == TYPE_BONDSET;
-}
-
-static inline bool is_identifier_static_procedure(md_str_t ident) {
-    if (md_str_eq(ident, MD_STR_LIT("attr"))) {
-        return true;
-    }
-    else if (md_str_eq(ident, MD_STR_LIT("flatten"))) {
-        return true;
-    }
-    return false;
-}
-
 static inline bool is_identifier_procedure(md_str_t ident) {
     for (size_t i = 0; i < MD_COUNTOF(procedures); ++i) {
         if (md_str_eq(ident, procedures[i].name)) {
@@ -2064,10 +2003,6 @@ static identifier_t* create_identifier(md_script_ir_t* ir, md_str_t name) {
 
     md_array_push(ir->identifiers, ident, ir->arena);
     return md_array_last(ir->identifiers);
-}
-
-static inline bool is_token_type_comparison(token_type_t type) {
-    return type == '<' || type == TOKEN_LE || type == '>' || type == TOKEN_GE || type == TOKEN_EQ;
 }
 
 static bool expect_token_type(md_script_ir_t* ir, token_t token, token_type_t type) {
@@ -2698,148 +2633,6 @@ static void summarize_data(md_writer_i* w, data_t data, int subidx) {
 }
 
 #undef SUMMARY_MAX_VALUES
-
-#if MD_DEBUG
-
-
-static void print_label(md_file_t  file, const ast_node_t* node) {
-    char buf[1024];
-    switch(node->type) {
-    case AST_CONSTANT_VALUE:
-        print_data_value(buf, sizeof(buf), node->data);
-        md_file_printf(file, "%s", buf);
-        break;
-    case AST_PROC_CALL:
-        if (node->proc) {
-            md_file_printf(file, ""MD_STR_FMT"", (int)node->proc->name.len, node->proc->name.ptr);
-        }
-        else {
-            md_file_printf(file, "NULL");
-        }
-        md_file_printf(file, "(proc call)");
-        break;
-    case AST_ASSIGNMENT:
-        md_file_printf(file, "assignment =");
-        break;
-    case AST_CAST:
-        MD_ASSERT(node->children);
-        print_type_info(buf, MD_COUNTOF(buf), node->children[0]->data.type);
-        md_file_printf(file, "cast (%s) ->", buf);
-        break;
-    case AST_IDENTIFIER:
-        md_file_printf(file, ""MD_STR_FMT"", (int)node->ident.len, node->ident.ptr);
-        md_file_printf(file, " (identifier)");
-        break;
-    case AST_ARRAY:
-        md_file_printf(file, "array");
-        break;
-    case AST_ARRAY_SUBSCRIPT:
-        md_file_printf(file, "array subscript");
-        break;
-    case AST_AND:
-    case AST_OR:
-    case AST_NOT:
-        md_file_printf(file, "logical op %s", get_token_type_str(node->token.type));
-        break;
-    case AST_ADD:
-    case AST_SUB:
-    case AST_MUL:
-    case AST_DIV:
-        md_file_printf(file, "binary op %s", get_token_type_str(node->token.type));
-        break;
-    default:
-        md_file_printf(file, "%s", get_token_type_str(node->token.type));
-        break;
-    }
-
-    print_type_info(buf, sizeof(buf), node->data.type);
-    md_file_printf(file, " -> %s", buf);
-
-    if (node->flags) {
-        md_file_printf(file, " {");
-        if (node->flags & FLAG_DYNAMIC) md_file_printf(file, "D");
-        md_file_printf(file, "}");
-    }
-
-    if (node->type != AST_ASSIGNMENT) {
-        if (node->data.ptr) {
-            md_file_printf(file, " = ");
-            print_data_value(buf, sizeof(buf), node->data);
-            md_file_printf(file, "%s", buf);
-        }
-    }
-}
-
-
-static inline void indent(md_file_t  file, int amount) {
-    for (int i = 0; i < amount; ++i) {
-        md_file_printf(file, "\t");
-    }
-}
-
-static void print_node(md_file_t  file, const ast_node_t* node, int depth) {
-    if (!node || !md_file_valid(file)) return;
-
-    indent(file, depth);
-    md_file_printf(file, "{\"name\": \"");
-    print_label(file, node);
-    md_file_printf(file, "\",\n");
-
-    const size_t num_children = md_array_size(node->children);
-    if (num_children) {
-        indent(file, depth);
-        md_file_printf(file, "\"children\": [\n");
-        for (size_t i = 0; i < num_children; ++i) {
-            print_node(file, node->children[i], depth + 1);
-        }
-        indent(file, depth);
-        md_file_printf(file, "]\n");
-    }
-
-    indent(file, depth);
-    md_file_printf(file, "},\n");
-}
-
-static void print_expr(md_file_t  file, md_str_t str) {
-    // We need to add escape character to quotation marks, since they are not representable within a json string...
-    char buf[1024] = {0};
-    int len = 0;
-    for (const char* c = str.ptr; c != str.ptr + str.len; ++c) {
-        if (*c == '\"') {
-            buf[len++] = '\\';
-            buf[len++] = *c;
-        }
-        else if (*c == '\r') {
-
-        }
-        else if (*c == '\n') {
-            buf[len++] = '\\';
-            buf[len++] = 'n';
-        }
-        else {
-            buf[len++] = *c;
-        }
-    }
-    md_file_printf(file, "\""MD_STR_FMT"\"\n", len, buf);
-}
-
-static void ast_to_json(const ast_node_t* node, md_str_t filename) {
-    if (!node) return;
-    md_file_t file = {0};
-    if (md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        md_file_printf(file, "var treeData = [\n");
-        md_file_printf(file, "{\n\"node\" :\n");
-        print_node(file, node, 1);
-        md_file_printf(file, "\"flags\" : %u,\n", node->flags);
-        md_file_printf(file, "\"expr\" : ");
-        print_expr(file, node->token.str);
-        md_file_printf(file, "},\n");
-        md_file_printf(file, "];");
-        md_file_close(&file);
-    }
-}
-
-#endif
 
 // ###################
 // ###   PARSING   ###
@@ -9414,36 +9207,6 @@ static bool eval_expression(data_t* dst, md_str_t expr, md_system_t* sys, md_all
 
     return result;
 }
-
-#if MD_DEBUG
-static void parse_type_check_and_print_expression_to_json(md_str_t expr, const md_system_t* sys, md_str_t filename) {
-    md_temp_scope_t temp_scope = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    md_script_ir_t* ir = create_ir(temp_alloc);
-    ir->str = md_alloc_str(ir->arena, expr);
-
-    tokenizer_t tokenizer = tokenizer_init(ir->str);
-    ast_node_t* node = prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc}));
-    if (node) {
-        eval_context_t ctx = {
-            .ir = ir,
-            .compile_ir = ir,
-            .sys = sys,
-            .temp_alloc = temp_alloc,
-            .alloc = temp_alloc,
-            .cur_state = &sys->reference,
-            .ref_state = &sys->reference,
-            .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
-        };
-
-        if (static_check_node(node, &ctx)) {
-            ast_to_json(node, filename);
-        }
-    }
-
-    md_temp_end(temp_scope);
-}
-#endif
 
 // The front half shared by md_filter and md_filter_evaluate: parse expr and type check it in ctx.
 // Returns the checked node, or NULL if it did not compile. A variable length is left to the evaluation,

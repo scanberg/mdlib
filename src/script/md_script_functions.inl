@@ -1245,13 +1245,6 @@ static inline void visualize_atom_mask(const md_bitset_t* mask, eval_context_t* 
     }
 }
 
-static inline void visualize_atom_range(irange_t range, eval_context_t* ctx) {
-    MD_ASSERT(ctx->vis);
-    if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-        md_bitmask_set_range(ctx->vis_structure, (uint32_t)range.beg, (uint32_t)range.end);
-    }
-}
-
 static inline void visualize_atom_index(int64_t index, eval_context_t* ctx) {
     MD_ASSERT(ctx->vis);
     if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
@@ -1295,13 +1288,6 @@ static inline void push_sphere(md_float3_t xyz, float r, uint32_t color, md_scri
     md_script_vis_sphere_t sphere = {xyz, r, color};
     md_array_push(vis->spheres, sphere, vis->alloc);
 }
-
-static inline void push_text(md_float3_t xyz, const char* cstr, md_script_vis_t* vis) {
-    MD_ASSERT(vis);
-    MD_ASSERT(vis->alloc);
-    md_script_vis_text_t text = {xyz, md_alloc_str(vis->alloc, md_str_from_cstr(cstr)) };
-    md_array_push(vis->text, text, vis->alloc);
-} 
 
 // A label which is a quantity. 'str' is still filled in with the default spelling so the label can
 // be drawn without looking at anything else, but the value and its unit are carried alongside for a
@@ -7375,29 +7361,6 @@ static inline bool are_bitfields_equivalent(const md_bitset_t bitfields[], size_
     }
 
     return true;
-}
-
-static inline void populate_volume(float* vol, const md_float3_t* xyz, const int* idx, size_t count, const md_bitset_t* exclusion_mask, md_float4x4_t M) {
-    const md_float4_t dim = md_float4_set(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0);
-    for (size_t i = 0; i < count; ++i) {
-        if (exclusion_mask) {
-            if (md_bitset_test(*exclusion_mask, idx[i])) {
-                continue;
-            }
-        }
-
-        const md_float4_t coord = md_float4x4_mul_float4(M, md_float4_from_float3(xyz[i], 1.0f));
-        
-        const md_128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), md_mm_load_ps(coord.elem));
-        const md_128 b = md_mm_cmplt_ps(md_mm_load_ps(coord.elem), md_mm_load_ps(dim.elem));
-        const md_128 c = md_mm_and_ps(a, b);
-
-        // Count the number of lanes which is not zero
-        // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
-        if (md_mm_movemask_ps(c) == 0x7) {
-            vol[(uint32_t)coord.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)coord.y * MD_VOL_DIM + (uint32_t)coord.x] += 1.0f;
-        }
-    }
 }
 
 static inline md_float4x4_t compute_volume_matrix(float radius) {
