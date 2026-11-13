@@ -1128,6 +1128,20 @@ bool md_render_mol_frame_upload(md_render_mol_t r, md_gpu_stream_t s, const md_r
     return frame_upload_impl(r, s, topo, dynamic, fr, slot, f, flags, NULL, NULL);
 }
 
+/* For md_render_bench: the compiled kernels, by index, with what the driver
+   reports of each (registers, ...). False past the last. Not in the header. */
+bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
+    if (!r) return false;
+    const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
+        { "sol_count", r->k_count }, { "sol_write", r->k_write }, { "sol_gather", r->k_gather },
+        { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
+        { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
+    };
+    if (i >= sizeof(ks) / sizeof(ks[0])) return false;
+    if (name) *name = ks[i].n;
+    return info ? md_gpu_kernel_info(ks[i].k, info) : true;
+}
+
 /* Not in the header: for md_render_bench, as md_render_mol_update_hooked */
 bool md_render_mol_frame_upload_hooked(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                                        md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,

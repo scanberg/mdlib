@@ -1543,3 +1543,17 @@ void md_render_pack_velocity(const float v[3], uint32_t out[2]) {
     out[0] = (uint32_t)f32_to_f16(v[0]) | ((uint32_t)f32_to_f16(v[1]) << 16);
     out[1] = (uint32_t)f32_to_f16(v[2]);
 }
+
+/* For md_render_bench: the compiled kernels, by index, with what the driver
+   reports of each (registers, ...). False past the last. Not in the header. */
+bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
+    if (!r) return false;
+    const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
+        { "refit", r->k_refit }, { "cull_clusters", r->k_cull_clusters }, { "cull", r->k_cull }, { "finalize", r->k_finalize },
+        { "raster_small", r->k_raster_small }, { "hiz", r->k_hiz }, { "resolve", r->k_resolve },
+        { "mask_visible", r->k_mask_visible }, { "pick", r->k_pick },
+    };
+    if (i >= sizeof(ks) / sizeof(ks[0])) return false;
+    if (name) *name = ks[i].n;
+    return info ? md_gpu_kernel_info(ks[i].k, info) : true;
+}
