@@ -113,6 +113,8 @@ struct Args {
     uint  resident_words;       // words of the bits (the ranks follow them)
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
+    uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (2) atom_point, (4) the bonds, (8) src_point
+    uint  _pad1;
 };
 MD_SHADER_ARGS(Args);
 
@@ -389,12 +391,12 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
         uint at = p0;
         for (uint k = a.mol_atom_offset[m]; k < a.mol_atom_offset[m + 1u]; ++k) {
             uint atom = a.mol_atoms[k];
-            if (a.has_src != 0u) a.src_point[at - a.static_atoms] = a.atom_point[atom];
-            a.atom_order[at] = atom;
-            a.atom_point[atom] = at;
+            if (a.has_src != 0u && (a.dbg & 8u) == 0u) a.src_point[at - a.static_atoms] = a.atom_point[atom];
+            if ((a.dbg & 1u) == 0u) a.atom_order[at] = atom;
+            if ((a.dbg & 2u) == 0u) a.atom_point[atom] = at;
             at += 1u;
         }
-        if (a.has_bonds != 0u) {
+        if (a.has_bonds != 0u && (a.dbg & 4u) == 0u) {
             uint bt = a.static_bonds + a.cnt[4u * c + 1u] + s[2];
             for (uint k = a.mol_bond_offset[m]; k < a.mol_bond_offset[m + 1u]; ++k) {
                 uint l = a.mol_bond_local[k];
