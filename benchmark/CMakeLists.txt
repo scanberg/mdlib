@@ -78,3 +78,13 @@ target_link_options(md_render_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:$
 target_link_libraries(md_render_bench PRIVATE mdlib)
 add_dependencies(md_render_bench md_topo_gto_bench_rev)
 target_include_directories(md_render_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# md_render_snap: a structure through md_render_mol and md_render, written as PNG images (headless; see
+# render_snap.c): for looking at what the renderer draws on real data.
+add_executable(md_render_snap render_snap.c)
+target_compile_definitions(md_render_snap PRIVATE ${MD_DEFINES})
+target_compile_options(md_render_snap PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+target_link_options(md_render_snap PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+target_link_libraries(md_render_snap PRIVATE mdlib)
+add_dependencies(md_render_snap md_topo_gto_bench_rev)
+target_include_directories(md_render_snap PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
