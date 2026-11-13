@@ -68,16 +68,21 @@ typedef struct dyn_layout_t {
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
-/* The points in cluster order, what is drawn: their positions (x, y, z
-   packed: written whole by every update) and their radii (a stream of their
-   own: written only when they change). Then the scratch of the regroup.
-   Last, only in a block allocated with them, the points' velocities. */
+/* The points in cluster order, what is drawn: float4 (position, radius),
+   written whole by every update; then the radii again in a stream of their
+   own (in point order, written only when they change), which the updates
+   read the copy's w from. Then the scratch of the regroup. Last, only in a
+   block allocated with them, the points' velocities.
+   Not packed positions apart from the radii (1dd0efd6): fewer bytes per
+   update, but md_render reads the points several times a frame, much of it
+   scattered, and a 12-byte position straddles 32-byte sectors (raster after
+   positions changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
 static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t cells) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
-    L.points   = o; o = align256(o + (uint64_t)n_atoms * 12u);
+    L.points   = o; o = align256(o + (uint64_t)n_atoms * 16u);
     L.radii    = o; o = align256(o + (uint64_t)n_atoms * 4u);
     L.marker   = o; o = align256(o + 80u);       /* 5 words; at word 16 fr_check's grid */
     L.params   = o; o = align256(o + 16u * 4u);
@@ -1196,9 +1201,9 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     memset(&p, 0, sizeof(p));
     p.count           = topo->point_count;
     p.position        = dynamic + D.points;
-    p.stride          = 12;
-    p.radius          = dynamic + D.radii;
-    p.radius_stride   = 4;
+    p.stride          = 16;
+    p.radius          = dynamic + D.points + 12;
+    p.radius_stride   = 16;
     p.velocity        = has_velocity(atoms) ? dynamic + D.velocity : 0;
     p.velocity_stride = 8;
     p.attr_count      = topo->atom_count;

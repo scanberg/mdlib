@@ -23,10 +23,11 @@
 // And on every update, whatever else it does:
 //
 //     gather   the copy that is drawn: per point (cluster order), its atom's
-//              position (12 bytes, packed), and its velocity; its radius into
-//              a stream of its own only when the order or the radii changed
-//              (a scattered fetch like the position). A marker says the radii
-//              are valid: written after a full gather, for this topology.
+//              position and radius as a float4, and its velocity. The radius
+//              from `radii`, in point order, kept there by the gathers that
+//              fetched it (scattered, like the position) when the order or
+//              the radii changed. A marker says `radii` is valid: written
+//              after a full gather, for this topology.
 //
 // Every pass reads the molecules in their own order (the order of the small
 // tables, close to the file order of the atoms): only the write lands
@@ -45,8 +46,8 @@ struct Args {
     uint* position;             // float3 per atom, `stride` bytes apart
     uint* velocity;             // packed half3 per atom, `vel_stride` bytes apart
     uint* radius_override;      // float per atom
-    uint* points;               // x, y, z per point (packed, 12 bytes): the copy
-    uint* radii;                // float per point: the copy's radii
+    uint* points;               // float4 per point (x, y, z, radius): the copy
+    uint* radii;                // float per point: the radii, in point order (the copy's w)
     uint* vel_out;              // uint2 per point
     uint* params;               // 16 words: ordered bounds, then the grid
     uint* mol_slot;             // uint4 per molecule: cell, its atoms' and bonds' place in it
@@ -446,17 +447,15 @@ uint radius_of(Args a, uint atom) {
     return t < a.type_count ? a.type_radius[t] : 0u;
 }
 
-// A point's x, y, z into the copy: three words, packed, so a wave writes whole
-// lines and nothing else (the radii are a stream of their own). With the
-// radius beside them (float4) the gather had to read it back to complete a
-// 16-byte store (Slang marks it Aligned 4, NVIDIA splits it: the two-frame
-// gather 6.3 ms on a GTX 1060) or write 12 bytes of 16 (2.05 there, but 0.7
-// ms slower than the full store on the M4).
+// A point into the copy: one aligned 16-byte store, whole, so a wave writes
+// whole lines (the copy's block is 16-byte aligned). Not the store `*p`
+// makes: Slang marks it Aligned 4 and NVIDIA splits it in four (with the
+// radius read back from the copy to complete it, the two-frame gather was
+// 6.3 ms on a GTX 1060). Not 12 bytes of 16 either: 0.7 ms slower than the
+// whole store on the M4. The radius comes from `radii`, read in order.
 [ForceInline]
-void store_xyz(uint* points, uint p, uint3 v) {
-    points[3u * p + 0u] = v.x;
-    points[3u * p + 1u] = v.y;
-    points[3u * p + 2u] = v.z;
+void store_point(uint* points, uint p, uint3 v, uint r) {
+    storeAligned<16>((uint4*)points + p, uint4(v, r));
 }
 
 // The copy that is drawn: point p is atom atom_order[p]. Writes in order,
@@ -472,8 +471,10 @@ void sol_gather(uint3 tid : SV_DispatchThreadID) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
         uint3 x = uint3(q[0], q[1], q[2]);
-        store_xyz(a.points, p, x);
-        if (!reuse) a.radii[p] = radius_of(a, atom);
+        uint r;
+        if (reuse) r = a.radii[p];
+        else { r = radius_of(a, atom); a.radii[p] = r; }
+        store_point(a.points, p, x, r);
         if (a.has_velocity != 0u) {
             uint* w = a.velocity + atom * (a.vel_stride >> 2u);
             storeAligned<8>((uint2*)a.vel_out + p, uint2(w[0], w[1]));
@@ -551,7 +552,7 @@ void fr_radii(uint3 tid : SV_DispatchThreadID) {
 }
 
 // The copy that is drawn, from resident frames in point order: every read in
-// order, every write too; the radii are fr_radii's (when they were not valid). A
+// order, every write too; the radii fr_radii's (when they were not valid). A
 // kernel per number of frames (COUNT a constant): each frame's parameters
 // and the cell in registers for only the frames it combines.
 [ForceInline]
@@ -583,7 +584,7 @@ void fr_gather_body(uint3 tid, const uint COUNT) {
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
-        store_xyz(points, p, asuint(pos));
+        store_point(points, p, asuint(pos), a.radii[p]);
         if (vel_out) storeAligned<8>((uint2*)a.vel_out + p, uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z)));
     }
 }
