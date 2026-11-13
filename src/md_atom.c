@@ -158,13 +158,6 @@ static const particle_type_t predefined_particle_types[] = {
     {"C##", "C#?", 0, 1727.7f,   13.5f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
 };
 
-static inline uint64_t gen_key_from_names(md_str_t res_name, md_str_t atom_name) {
-    char buf[64];
-    int len = md_snprintf(buf, sizeof(buf), MD_STR_FMT "_" MD_STR_FMT, MD_STR_ARG(res_name), MD_STR_ARG(atom_name));
-    md_str_t str = {buf, (size_t)len};
-    return md_hash64_str(str, 0);
-}
-
 // Searches the predefined particle types for a matching atom name within a residue
 // We support simple pattern matching here like wildcards and numerical substitutes
 // * is supported to match any sequence of characters

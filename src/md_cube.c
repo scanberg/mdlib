@@ -10,7 +10,7 @@
 
 #include <string.h>
 
-bool md_cube_valid(const md_cube_t* cube) {
+static bool md_cube_valid(const md_cube_t* cube) {
 	if (!cube) return false;
 
 	md_float3_t x = md_float3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
@@ -55,78 +55,9 @@ bool md_cube_valid(const md_cube_t* cube) {
 	return true;
 }
 
-static bool open_file(md_file_t* file, md_str_t path) {
-	MD_ASSERT(file);
-
-	if (md_str_empty(path)) {
-		MD_LOG_ERROR("CUBE: Path was empty");
-		return false;
-	}
-
-	if (!md_file_open(file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-		MD_LOG_ERROR("CUBE: Could not open file: '%.*s'", path.len, path.ptr);
-		return false;
-	}
-
-	return true;
-}
-
 md_str_t tidy_comment(md_str_t comment) {
     comment = md_str_substr(comment, 0, md_str_find_char(comment, '\n'));
     return comment;
-}
-
-bool md_cube_write(md_writer_i* w, const md_cube_t* cube) {
-    MD_ASSERT(w);
-	if (!md_cube_valid(cube)) {
-		MD_LOG_ERROR("CUBE: cube-object was invalid");
-		return false;
-	}
-
-	md_write_str(w, tidy_comment(cube->title));   md_write_char(w, '\n');
-	md_write_str(w, tidy_comment(cube->comment)); md_write_char(w, '\n');
-
-	int atom_count = cube->data.id ? -cube->atom.count : cube->atom.count;
-	int num_val = cube->data.id ? 1 : cube->data.num_m;
-	md_writef(w, "%5d%12.6f%12.6f%12.6f%5d\n", atom_count, cube->origin[0], cube->origin[1], cube->origin[2], num_val);
-    md_writef(w, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_x, cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
-	md_writef(w, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_y, cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
-	md_writef(w, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_z, cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
-	
-	for (int i = 0; i < cube->atom.count; ++i) {
-		md_writef(w, "%5d%12.6f%12.6f%12.6f%12.6f\n", cube->atom.number[i], cube->atom.charge[i], cube->atom.coord[i][0], cube->atom.coord[i][1], cube->atom.coord[i][2]);
-	}
-
-	if (cube->data.id) {
-		md_writef(w, "%5d", cube->data.num_m);
-		for (int i = 0; i < cube->data.num_m; ++i) {
-			md_writef(w, "%5d", cube->data.id[i]);
-			if (i % 23 == 22) {
-				md_write_char(w, '\n');
-			}
-		}
-		md_write_char(w, '\n');
-	}
-	
-	// Every value of every voxel: data[x][y][z][m]
-	const int64_t data_count = (int64_t)cube->data.num_x * cube->data.num_y * cube->data.num_z * cube->data.num_m;
-	for (int64_t i = 0; i < data_count; ++i) {
-        md_writef(w, " %12.5E", cube->data.val[i]);
-        if (i % 6 == 5) {
-			md_write_char(w, '\n');
-		}
-	}
-	return true;
-}
-
-md_str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
-    MD_ASSERT(alloc);
-	md_str_writer_t sw = md_str_writer_create(alloc);
-	if (!md_cube_write(&sw.w, cube)) {
-		md_str_writer_free(&sw);
-		return (md_str_t){0};
-	}
-	return md_str_writer_release(&sw);
 }
 
 static inline bool str_extract_v3(md_cube_v3 v, md_str_t* str) {
@@ -281,25 +212,6 @@ bool md_cube_file_load(md_cube_t* cube, md_str_t path, md_allocator_i* alloc) {
         success = md_cube_deserialize(cube, str, alloc);
 	}
 	md_temp_end(temp_scope);
-	
-	return success;
-}
-
-bool md_cube_file_store(const md_cube_t* cube, md_str_t path) {
-	if (!md_cube_valid(cube)) {
-		MD_LOG_ERROR("CUBE: cube-object was invalid");
-		return false;
-	}
-
-	md_file_t file = {0};
-	bool success = false;
-	if (open_file(&file, path)) {
-		// Streamed through a staging buffer, rather than built whole in memory first
-		md_file_writer_t fw = md_file_writer_create(file, NULL, 0);
-		md_cube_write(&fw.w, cube);
-		success = md_file_writer_close(&fw);
-		md_file_close(&file);
-	}
 	
 	return success;
 }

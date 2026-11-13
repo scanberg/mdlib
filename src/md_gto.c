@@ -21,6 +21,8 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+static size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value);
+
 typedef struct {
     float coeff;
     float alpha;
@@ -1020,7 +1022,7 @@ static void gto_build_sparse_pairs(
 
     // Step 1: Morton-sort CGTO centers.
     // cgto_order[new_idx] = original_idx after the sort.
-    //md_util_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
+    //md_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
 
     //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
 
@@ -1746,6 +1748,7 @@ void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* g
 #include <gto_gpu_shaders.inl>
 
 
+
 static md_gpu_kernel_t gto_k_density = NULL;
 static md_gpu_kernel_t gto_k_mo      = NULL;
 
@@ -2415,7 +2418,9 @@ static bool gto_dmat_build_packed(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, 
     return md_gpu_launch(stream, gto_k_dmat_tiles, md_gpu_grid(gx, gy, 1), &a, sizeof(a));
 }
 
-bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, const double* coeff, size_t ld, const double* weight, size_t num_mo) {
+// The same from orbitals given as columns: coeff is [num_ao][ld], orbital k's coefficient of AO i at
+// coeff[i * ld + k] (an md_gto_iso field's functions), weight num_mo weights.
+static bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, const double* coeff, size_t ld, const double* weight, size_t num_mo) {
     if (!dm || ld < num_mo) {
         MD_LOG_ERROR("md_gto_gpu_dmat_build_columns: invalid arguments");
         return false;
@@ -2423,7 +2428,7 @@ bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm,
     return gto_dmat_build_packed(stream, dm, coeff, 1, ld, weight, num_mo);
 }
 
-void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dm) {
+static void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dm) {
     if (!out) return;
     md_memset(out, 0, sizeof(*out));
     if (!dm) return;
@@ -4489,7 +4494,10 @@ double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, dou
     return compute_distance_cutoff(cutoff, i, j, k, l, coeff, alpha);
 }
 
-size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
+// Compute the cutoff parameter within the supplied GTOs based on the given value
+// Typically this could be somewhere around 1.0e-6
+// returns the number of gtos left after this, as some may have no radius of influence and will be pruned away
+static size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
     if (value == 0) {
         for (size_t i = 0; i < count; ++i) {
             gtos[i].cutoff = FLT_MAX;

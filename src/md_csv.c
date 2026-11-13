@@ -1,4 +1,5 @@
 #include <md_csv.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_run.h>
 #include <core/md_unit.h>
@@ -144,7 +145,7 @@ bool md_csv_parse_str (md_csv_t* csv, md_str_t in_str, struct md_allocator_i* al
     return parse(csv, &reader, alloc);
 }
 
-bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc) {
+static bool md_csv_parse_file(md_csv_t* csv, md_str_t in_path, struct md_allocator_i* alloc) {
     md_file_t file = {0};
     if (md_file_open(&file, in_path, MD_FILE_READ)) {
         size_t cap = MD_MEGABYTES(1);
@@ -262,7 +263,8 @@ static md_str_t csv_group(char* buf, size_t cap, const char* kind, md_str_t file
     return (md_str_t){ buf, len };
 }
 
-bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run) {
+bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);

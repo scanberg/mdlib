@@ -7,7 +7,7 @@
 #include <string.h>
 
 // The predefined table of standard monomers (md_monomer_t), and the names residues of these go by in files.
-// What md_util_element_* is to the particle types, this is to the residue types.
+// What md_atomic_number_* is to the particle types, this is to the residue types.
 
 #define MONOMER_RGB(r,g,b) ((0xFFu << 24) | (((uint32_t)(b) & 255) << 16) | (((uint32_t)(g) & 255) << 8) | ((uint32_t)(r) & 255))
 

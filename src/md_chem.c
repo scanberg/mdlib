@@ -1,7 +1,7 @@
 #include <md_chem.h>
 
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_attributes.h>
 #include <md_element.h>
 
@@ -154,7 +154,7 @@ static inline int pi_sum(const chem_t* c, uint32_t i) {
 static inline md_float3_t bond_vec(const chem_t* c, uint32_t from, uint32_t to) {
     md_float3_t d = md_float3_sub(c->xyz[to], c->xyz[from]);
     // A bond is far shorter than 3 Å: only one split by the periodic boundary pays for the minimum image
-    if (md_float3_dot(d, d) > 9.0f) md_util_min_image(d.elem, 0, 1, c->cell);
+    if (md_float3_dot(d, d) > 9.0f) md_geom_min_image(d.elem, 0, 1, c->cell);
     return d;
 }
 

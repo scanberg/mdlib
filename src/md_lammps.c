@@ -1,6 +1,7 @@
 ﻿#include "md_lammps.h"
 
 #include <md_system.h>
+#include <md_io.h>
 #include <md_run.h>
 #include <md_element.h>
 
@@ -907,7 +908,9 @@ bool md_lammps_validate_atom_format(char* err_buf, size_t err_cap, const char* f
 	return interpret_format(mappings, format, err_buf, err_cap) > 0;
 }
 
-bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* format, struct md_allocator_i* alloc) {
+// DATA PARSING
+// atom_format is optional and will be used if supplied
+static bool md_lammps_data_parse_str(md_lammps_data_t* data, md_str_t str, const char* format, struct md_allocator_i* alloc) {
 	MD_ASSERT(data);
 	MD_ASSERT(alloc);
 
@@ -1216,7 +1219,19 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	return true;
 }
 
-bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const char* atom_format) {
+bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    // The atom style, as a C string for the parser
+    char atom_format_buf[512];
+    const char* atom_format = NULL;
+    if (desc && desc->format.len) {
+        if (desc->format.len >= sizeof(atom_format_buf)) {
+            MD_LOG_ERROR("LAMMPS atom format too long");
+            return false;
+        }
+        memcpy(atom_format_buf, desc->format.ptr, desc->format.len);
+        atom_format_buf[desc->format.len] = '\0';
+        atom_format = atom_format_buf;
+    }
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_str(str);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
@@ -1237,7 +1252,19 @@ bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
 	return success;
 }
 
-bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const char* atom_format) {
+bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    // The atom style, as a C string for the parser
+    char atom_format_buf[512];
+    const char* atom_format = NULL;
+    if (desc && desc->format.len) {
+        if (desc->format.len >= sizeof(atom_format_buf)) {
+            MD_LOG_ERROR("LAMMPS atom format too long");
+            return false;
+        }
+        memcpy(atom_format_buf, desc->format.ptr, desc->format.len);
+        atom_format_buf[desc->format.len] = '\0';
+        atom_format = atom_format_buf;
+    }
 	if (!atom_format) {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_file(filename);
 		if (format == MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {

@@ -1,4 +1,5 @@
 #include <md_h5md.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_run.h>
@@ -1099,7 +1100,8 @@ static void h5md_publish_str(md_attributes_t* attributes, const char* path, md_s
         .unit = md_unit_none(), .data = &value, .byte_size = sizeof(md_str_t)});
 }
 
-bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     MD_ASSERT(state);
     if (!sys->alloc) {

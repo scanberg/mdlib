@@ -47,14 +47,14 @@ static md_system_t* get_sys(sys_id_t id) {
         s->alloc  = alloc;
         st->alloc = alloc;
         switch (id) {
-        case SYS_ALA:      md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
+        case SYS_ALA:      md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL); break;
         case SYS_PFTAA:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL); break;
         case SYS_CENTERED: md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL); break;
         case SYS_DNA:      md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL); break;
-        case SYS_1K4R:     md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
+        case SYS_1K4R:     md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL); break;
         case SYS_1FEZ:     md_mmcif_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL); break;
         case SYS_2OR2:     md_mmcif_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL); break;
-        case SYS_TUBULIN:  md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL); break;
+        case SYS_TUBULIN:  md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL); break;
         case SYS_TIP4P:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
         default: break;
         }

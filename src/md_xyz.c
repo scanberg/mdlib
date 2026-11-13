@@ -1,9 +1,10 @@
 ﻿#include <md_xyz.h>
 
 #include <md_system.h>
+#include <md_io.h>
 #include <core/md_hash.h>
 #include <md_run.h>
-#include <md_util_sort.h>
+#include <md_sort.h>
 #include <md_unitcell.h>
 #include <md_element.h>
 
@@ -689,7 +690,7 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
     if (num_keys == 0) return;
 
     uint32_t* order = md_alloc(temp, num_keys * sizeof(uint32_t));
-    md_util_argsort_radix_u64(order, keys, num_keys);
+    md_argsort_radix_u64(order, keys, num_keys);
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
     md_array_ensure(sys->bond.pairs, num_keys, sys->alloc);
     md_array_ensure(sys->bond.flags, num_keys, sys->alloc);
@@ -767,11 +768,10 @@ static void xyz_builder_end(xyz_builder_t* b) {
     b->state->num_atoms = b->sys->atom.count;
 }
 
-bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data, md_xyz_options_t options) {
+bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
     MD_ASSERT(data);
-    (void)options;
 
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -814,7 +814,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
 // The system of the first model the reader reads. Its atoms go into the system as they are read, but for Tinker's,
 // whose bonds are made of all of them: those are read as data first.
-static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reader_i* reader, md_xyz_options_t options) {
+static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reader_i* reader) {
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
         return false;
@@ -836,7 +836,7 @@ static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reade
 
     if (flags & XYZ_TINKER) {
         md_xyz_data_t data = {0};
-        result = xyz_parse(&data, reader, temp_alloc, true) && md_xyz_system_init_from_data(sys, state, &data, options);
+        result = xyz_parse(&data, reader, temp_alloc, true) && md_xyz_system_init_from_data(sys, state, &data);
         goto done;
     }
 
@@ -870,14 +870,16 @@ done:
     return result;
 }
 
-bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, md_xyz_options_t options) {
+bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_reader_i reader = md_reader_from_str(str);
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
-    return xyz_system_load(sys, state, &reader, options);
+    return xyz_system_load(sys, state, &reader);
 }
 
-bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, md_xyz_options_t options) {
+bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     
     md_file_t file = {0};
@@ -891,7 +893,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md
     md_file_reader_init(&reader, file, MD_MEGABYTES(1), md_temp_allocator(temp_scope));
     
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
-    const bool result = xyz_system_load(sys, state, &reader.r, options);
+    const bool result = xyz_system_load(sys, state, &reader.r);
 
     md_file_reader_close(&reader);
     md_temp_end(temp_scope);

@@ -13,6 +13,7 @@
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
 #include <md_infer.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_element.h>
 
@@ -377,13 +378,6 @@ static inline bool mmcif_peek_token(md_str_t* tok, mmcif_parse_state_t* state) {
     return true;
 }
 
-// This is a bit wierd, since were mixing lines and token semantics.
-// But will return the current line within the state that is about to be tokenized
-static inline md_str_t mmcif_cur_line(mmcif_parse_state_t* s) {
-    MD_ASSERT(s);     
-    return s->line;
-}
-
 // Advances to the next line, which is not part of a multiline string token
 static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
     MD_ASSERT(s);
@@ -428,12 +422,6 @@ typedef struct {
     md_str_t* headers;
     md_str_t* values;
 } mmcif_section_t;
-
-// Help accessors for data in sections
-static inline md_str_t mmcif_section_header(const mmcif_section_t* sec, size_t col) {
-    if (!sec || col >= sec->num_fields) return (md_str_t){0};
-    return sec->headers[col];
-}
 
 static inline md_str_t mmcif_section_value(const mmcif_section_t* sec, size_t row, size_t col) {
     if (!sec || col >= sec->num_fields || row >= sec->num_rows) return (md_str_t){0};
@@ -1669,7 +1657,8 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
 
@@ -1697,7 +1686,8 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, m
     return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
 

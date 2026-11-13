@@ -440,8 +440,6 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile);
 // to cap). Returns the length written.
 size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* profile, char* buf, size_t cap);
 
-// The revision and the switches the extraction runs with, as one line
-const char* md_gto_iso_gpu_profile_variant(void);
 
 // The switches (also read from GTO_ISO_* in the environment at initialization)
 typedef struct md_gto_iso_gpu_switches_t {

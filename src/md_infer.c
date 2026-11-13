@@ -112,7 +112,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             md_molecule_data_free(&sys->molecule, sys->alloc);
             sys->molecule = molecules;
             // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
-            // (md_util_system_infer_fragments). Their types stay, for the colours to be kept.
+            // (md_system_infer_fragments). Their types stay, for the colours to be kept.
             sys->fragment.count = 0;
             sys->fragment.template_count = 0;
             md_array_shrink(sys->fragment.mol_template, 0);
@@ -167,7 +167,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
 
     if (flags & MD_SYSTEM_INFER_FRAGMENT_BIT) {
         // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails
-        md_util_system_infer_fragments(sys);
+        md_system_infer_fragments(sys);
     }
 
     // Record the state the topology above was inferred from. Written here, as part of performing

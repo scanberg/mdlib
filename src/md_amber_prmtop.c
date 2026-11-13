@@ -1,4 +1,5 @@
 #include <md_amber_prmtop.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_topology_build.h>
@@ -428,7 +429,8 @@ static md_topology_desc_t prmtop_desc(const prmtop_data_t* d) {
     };
 }
 
-bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     MD_ASSERT(state);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
@@ -445,7 +447,8 @@ bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* 
     return result;
 }
 
-bool md_amber_prmtop_system_supplement_from_file(md_system_t* sys, md_str_t filename) {
+bool md_amber_prmtop_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     prmtop_data_t d;

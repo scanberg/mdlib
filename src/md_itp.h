@@ -13,6 +13,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 
 // GROMACS topology (.top / .itp)
 //
@@ -83,7 +84,6 @@ typedef struct md_itp_instance_t {
 // Strings and arrays in 'data' are allocated from alloc. base_folder resolves #include in a string
 // (may be empty, in which case only absolute includes and $GMXLIB are tried).
 bool md_itp_data_parse_str (md_itp_data_t* data, md_str_t str, md_str_t base_folder, struct md_allocator_i* alloc);
-bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, struct md_allocator_i* alloc);
 void md_itp_data_free(md_itp_data_t* data, struct md_allocator_i* alloc);
 
 // Places the topology's molecules onto the system's atoms.
@@ -111,7 +111,7 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 //   reference coordinates).
 // Returns false if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);
-bool md_itp_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
+bool md_itp_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,7 @@
 // with every change of it) and the mdlib commit it was built from.
 
 #include <md_pdb.h>
+#include <md_io.h>
 #include <md_gro.h>
 #include <md_system.h>
 #include <core/md_arena_allocator.h>
@@ -247,9 +248,9 @@ static void unmap_file(mapped_file_t* m) {
 
 static bool load(md_system_t* sys, md_system_state_t* st, md_str_t path, md_str_t text, bool gro, const md_executor_t* ex) {
     if (text.len) {
-        return gro ? md_gro_system_init_from_str(sys, st, text, ex) : md_pdb_system_init_from_str(sys, st, text, MD_PDB_OPTION_NONE, ex);
+        return gro ? md_gro_system_init_from_str(sys, st, text, &(md_load_desc_t){ .executor = ex }) : md_pdb_system_init_from_str(sys, st, text, &(md_load_desc_t){ .executor = ex });
     }
-    return gro ? md_gro_system_init_from_file(sys, st, path, ex) : md_pdb_system_init_from_file(sys, st, path, MD_PDB_OPTION_NONE, ex);
+    return gro ? md_gro_system_init_from_file(sys, st, path, &(md_load_desc_t){ .executor = ex }) : md_pdb_system_init_from_file(sys, st, path, &(md_load_desc_t){ .executor = ex });
 }
 
 static int cmp_double(const void* a, const void* b) {

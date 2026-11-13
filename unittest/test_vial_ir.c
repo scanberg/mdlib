@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <md_io.h>
 #include "test_executor.h"
 
 #include <core/md_common.h>
@@ -90,7 +91,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <core/md_vec_math.h>
 
 typedef struct vial_ir__run_t {
@@ -196,7 +197,7 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         const md_str_t path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-        if (md_pdb_system_init_from_file(&sys, &state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) {
+        if (md_pdb_system_init_from_file(&sys, &state, path, NULL)) {
             md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
             if (md_pdb_system_publish_run(&sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
                 const md_attribute_t* t = md_attributes_find(&sys.attributes, MD_STR_LIT("run/time"));
@@ -262,7 +263,7 @@ UTEST(vial_ir, evaluates_frames) {
     for (int64_t f = 0; f < nf; ++f) {
         md_system_extract_frame(ex, f, &state);
         md_float3_t dx = md_float3_sub(state.xyz[ca[3]], state.xyz[ca[0]]);
-        md_util_min_image(dx.elem, 0, 1, &state.unitcell);
+        md_geom_min_image(dx.elem, 0, 1, &state.unitcell);
         const double want = sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
         EXPECT_NEAR(want, d[f], 1e-5);
     }
@@ -1439,7 +1440,7 @@ static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const ch
     *sys = (md_system_t){.alloc = alloc};
     *st = (md_system_state_t){.alloc = alloc};
     const md_str_t p = md_str_from_cstr(path);
-    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, NULL);
     return ok && md_system_infer(sys, st, MD_SYSTEM_INFER_ALL, NULL);
 }
 
@@ -2770,7 +2771,7 @@ UTEST(vial_ir, attr_draws_groups) {
     md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300), 0);
     md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400), 0);
     md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900), 0);
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), MD_STR_LIT("run/md")));
+    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
     const md_urange_t er = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
     ASSERT_EQ(5u, er.end - er.beg);
 

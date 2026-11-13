@@ -3,7 +3,7 @@
 #include <md_nonbonded.h>
 #include <md_tpr.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <core/md_vec_math.h>
 
 #include <core/md_allocator.h>
@@ -191,7 +191,7 @@ UTEST(nonbonded, system_forcefield) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), NULL));
     ASSERT_TRUE(sys.nonbonded != NULL);
     const md_nb_forcefield_t* ff = sys.nonbonded;
     ASSERT_EQ((size_t)19, ff->num_atoms);
@@ -205,7 +205,7 @@ UTEST(nonbonded, system_forcefield) {
     for (uint32_t i = 0; i < 19; ++i) {
         for (uint32_t j = i + 1; j < 19; ++j) {
             md_float3_t d = md_float3_sub(state.xyz[i], state.xyz[j]);
-            md_util_min_image(d.elem, 0, 1, &state.unitcell);
+            md_geom_min_image(d.elem, 0, 1, &state.unitcell);
             const double r2 = 0.01 * ((double)d.x * d.x + (double)d.y * d.y + (double)d.z * d.z);
             double elj, ec;
             md_nb_forcefield_pair_energy(ff, i, j, r2, &elj, &ec);
@@ -223,7 +223,7 @@ UTEST(nonbonded, system_forcefield) {
     // LJ-PME cannot be evaluated pair by pair: no force field, so no energies
     md_system_t sys2 = { .alloc = arena };
     md_system_state_t state2 = { .alloc = arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys2, &state2, MD_STR_LIT(TPR_DIR "nb_ljpme.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys2, &state2, MD_STR_LIT(TPR_DIR "nb_ljpme.tpr"), NULL));
     EXPECT_TRUE(sys2.nonbonded == NULL);
 
     md_arena_allocator_destroy(arena);

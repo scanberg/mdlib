@@ -27,7 +27,7 @@ typedef enum {
 	MD_SYSTEM_INFER_UNWRAP_MOLECULE_BIT = 1u << 7,
     MD_SYSTEM_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
     MD_SYSTEM_INFER_LIPID_BIT           = 1u << 9,     // The heads and tails of the lipids (md_lipid_infer), and the kinds of their residues
-    MD_SYSTEM_INFER_FRAGMENT_BIT        = 1u << 10,    // Ring systems, functional groups, backbones (md_util_system_infer_fragments, md_fragment.h), last
+    MD_SYSTEM_INFER_FRAGMENT_BIT        = 1u << 10,    // Ring systems, functional groups, backbones (md_system_infer_fragments, md_fragment.h), last
 
     MD_SYSTEM_INFER_ALL                 = -1,
 } md_infer_flags_t;

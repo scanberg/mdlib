@@ -268,7 +268,7 @@ typedef struct md_molecule_t {
 //   atom_slot[atom] -> the slot which holds that atom
 // It turns "what is the parent of this atom" into an O(1) lookup, which is what lets a caller walk
 // the hierarchy upwards from an arbitrary subset of atoms rather than only downwards from a root
-// (see md_util_unwrap_molecule).
+// (see md_geom_unwrap_molecule).
 //
 // ROOT SELECTION:
 //   The root is the most topologically central atom of the molecule - the atom whose greatest edge
@@ -283,7 +283,7 @@ typedef struct md_molecule_t {
 //   acyclic structures and a close approximation in the presence of rings, which are local and
 //   small in practice.
 //
-// INVARIANT - load bearing, md_util_unwrap_molecule depends on it:
+// INVARIANT - load bearing, md_geom_unwrap_molecule depends on it:
 //   Within a molecule, atoms are stored in BFS order from the root, so every atom appears after
 //   the one it was reached from: slot(parent) < slot(child). A single forward pass therefore always
 //   sees a placed parent, and sorting an arbitrary set of slots ascending yields a valid

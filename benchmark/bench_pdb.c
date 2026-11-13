@@ -23,7 +23,7 @@ UBENCH_EX(pdb, dppc64) {
         md_arena_allocator_reset(alloc);
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL);
+        md_pdb_system_init_from_str(&sys, &st, text, NULL);
     }
 
     md_arena_allocator_destroy(alloc);

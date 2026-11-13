@@ -1079,7 +1079,8 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (in->flood >= 0 && in->flood <= 2) isog_flood = in->flood;
 }
 
-const char* md_gto_iso_gpu_profile_variant(void) {
+// The revision and the switches the extraction runs with, as one line
+static const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[256];
     snprintf(buf, sizeof(buf), "%s | eval_eps 1e-%d dform %d flood %d", ISOG_REVISION, isog_eval_eps_exp, isog_dform, isog_flood);
     return buf;

@@ -148,7 +148,7 @@ UTEST_F_SETUP(script) {
 
     utest_fixture->ala.alloc = utest_fixture->arena;
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
     // Its models are the frames the evaluations below step through.
     ASSERT_TRUE(md_pdb_system_publish_run(&utest_fixture->ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), SCRIPT_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_infer(&utest_fixture->ala, &ala_state, MD_SYSTEM_INFER_ALL, NULL);
@@ -4076,7 +4076,7 @@ static void pbc_translate(md_system_state_t* dst, const md_system_state_t* src, 
         dst->xyz[i] = md_float3_add(src->xyz[i], shift);
     }
     if (wrap) {
-        md_util_pbc((float*)dst->xyz, 0, NULL, dst->num_atoms, &dst->unitcell);
+        md_geom_pbc((float*)dst->xyz, 0, NULL, dst->num_atoms, &dst->unitcell);
     }
 }
 
@@ -4326,7 +4326,7 @@ static float extent_reference(md_system_t* sys, const md_system_state_t* state, 
         md_bitset_iter_t it_b = md_bitset_iter(bf[1]);
         while (md_bitset_iter_next(&it_b)) {
             md_float3_t dx = md_float3_sub(state->xyz[it_a.idx], state->xyz[it_b.idx]);
-            md_util_min_image(dx.elem, 0, 1, &state->unitcell);
+            md_geom_min_image(dx.elem, 0, 1, &state->unitcell);
             const float d = md_float3_length(dx);
             ext = largest ? MD_MAX(ext, d) : MD_MIN(ext, d);
         }
@@ -7110,7 +7110,7 @@ UTEST(script, bondsets) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(bonds_site_pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
@@ -7288,7 +7288,7 @@ UTEST(script, bond_delta) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t ref = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, md_str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, md_str_from_cstr(bonds_water_pair_pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &ref, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(4, (int)sys.bond.count);
 

@@ -421,7 +421,7 @@ UTEST(attributes, extract_from_pdb) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
 
     const md_attribute_t* bfc = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/b_factor"));
     ASSERT_TRUE(bfc != NULL);
@@ -580,7 +580,7 @@ UTEST(attributes, pdb_occupancy_and_b_factor) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
 
     // 6942 coordinate records, 15 of them the 'B' alternate of a pair
     EXPECT_EQ(sys.atom.count, 6927u);
@@ -635,7 +635,7 @@ UTEST(attributes, pdb_uniform_column_is_not_published) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
 
     EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("atom/occupancy")) == NULL);
 
@@ -654,7 +654,7 @@ UTEST(attributes, pdb_without_useful_columns_publishes_nothing) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL));
 
     EXPECT_EQ(md_attributes_count(&sys.attributes), 0u);
     EXPECT_EQ(md_attributes_query(NULL, 0, &sys.attributes, MD_STR_LIT("atom")), 0u);

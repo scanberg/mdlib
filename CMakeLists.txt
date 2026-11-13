@@ -126,7 +126,6 @@ set(CORE_FILES
 )
 
 set(SRC_FILES
-  src/md_atomic_infer.c
   src/md_element.c
   src/md_element.h
   src/md_chem.c
@@ -145,11 +144,11 @@ set(SRC_FILES
   src/md_edr.h
   src/md_filter.h
   src/md_flow.c
+  src/md_flow.h
   src/md_fragment.c
   src/md_fragment.h
-  src/md_flow.h
-  src/md_gisaxs.c
-  src/md_gisaxs.h
+  src/md_gfx.c
+  src/md_gfx.h
   src/md_gl.c
   src/md_gl.h
   src/md_gro.c
@@ -276,6 +275,8 @@ set(SRC_FILES
   src/md_trr.h
   src/md_types.h
   src/md_infer.c
+  src/md_io.c
+  src/md_io.h
   src/md_infer_internal.h
   src/md_bond.c
   src/md_ring.c
@@ -286,10 +287,10 @@ set(SRC_FILES
   src/md_martini.c
   src/md_martini_db.inl
   src/md_infer.h
-  src/md_util_geom.c
-  src/md_util_geom.h
-  src/md_util_sort.c
-  src/md_util_sort.h
+  src/md_geom.c
+  src/md_geom.h
+  src/md_sort.c
+  src/md_sort.h
   src/md_unitcell.h
   src/md_unitcell.c
   src/md_vector_graphics.c

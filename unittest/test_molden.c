@@ -22,7 +22,7 @@
 
 static bool molden_load(qm_test_t* t, const char* path, size_t arena_bytes) {
     qm_test_init(t, arena_bytes);
-    return md_molden_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
+    return md_molden_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path), NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +439,7 @@ UTEST(molden, vibrational_blocks) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(4));
-    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file)));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file), NULL));
 
     EXPECT_EQ(3u, t.sys.atom.count);
 
@@ -514,7 +514,7 @@ UTEST(molden, malformed_files_are_declined) {
     for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
         qm_test_t t = {0};
         qm_test_init(&t, MD_MEGABYTES(1));
-        EXPECT_FALSE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(cases[i].text)));
+        EXPECT_FALSE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(cases[i].text), NULL));
         qm_test_free(&t);
     }
 }
@@ -545,7 +545,7 @@ UTEST(molden, vibrations_without_atoms) {
         "  5.0\n";
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(4));
-    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file)));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file), NULL));
     ASSERT_EQ(3u, t.sys.atom.count);
     EXPECT_EQ(8, t.sys.atom.type.z[t.sys.atom.type_idx[0]]);
     EXPECT_EQ(1, t.sys.atom.type.z[t.sys.atom.type_idx[2]]);
@@ -658,7 +658,7 @@ UTEST(molden, restricted_open_shell) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file)));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, md_str_from_cstr(file), NULL));
     double occ_a[6] = {0}, occ_b[6] = {0};
     ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, MD_STR_LIT("orbital/alpha/occupation")));
     ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, MD_STR_LIT("orbital/beta/occupation")));

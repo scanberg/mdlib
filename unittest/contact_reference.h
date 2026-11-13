@@ -5,7 +5,7 @@
 
 #include <md_contact.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>
@@ -30,11 +30,11 @@ typedef struct ref_pair_t {
 
 static inline float ref_distance(const md_system_state_t* state, uint32_t a, uint32_t b) {
     md_float3_t dx = md_float3_sub(state->xyz[b], state->xyz[a]);
-    md_util_min_image(dx.elem, 0, 1, &state->unitcell);
+    md_geom_min_image(dx.elem, 0, 1, &state->unitcell);
     return sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
 }
 
-// Atoms within max_bonds bonds of a, using md_util_mask_grow_by_bonds
+// Atoms within max_bonds bonds of a, using md_bond_mask_grow
 static inline bool ref_excluded(md_bitmask_t* cache, const md_system_t* sys, uint32_t max_bonds, uint32_t a, uint32_t b, md_allocator_i* alloc) {
     if (max_bonds == 0) return false;
     if (!cache[a].alloc) {

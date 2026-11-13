@@ -4,7 +4,7 @@
 #include "builtins.h"
 
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_mcs.h>
 #include <md_unitcell.h>
 #include <core/md_spatial_acc.h>
@@ -113,8 +113,6 @@ bool vial_mcs(vial_mcs_t* out, const md_system_t* sys, const vial_sets_t* st, bo
     return true;
 }
 
-static const vial_val_t* varg_k(const vial_val_t* const* args, const md_str_t* names, uint32_t n, const char* name, uint32_t pos);
-
 bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const md_str_t* names, uint32_t n, const float* xyz, vial_val_t* out) {
     // Every positional argument is structures; match= and least= are named
     const vial_sets_t* parts[64];
@@ -190,11 +188,6 @@ static const vial_val_t* varg(const vargs_t* a, const char* name, uint32_t pos) 
 }
 
 static bool is_none(const vial_val_t* v) { return !v || v->dtype == VIAL_DT_NONE; }
-
-static const vial_val_t* varg_k(const vial_val_t* const* args, const md_str_t* names, uint32_t n, const char* name, uint32_t pos) {
-    const vargs_t a = {args, names, n};
-    return varg(&a, name, pos);
-}
 
 static double num(const vial_val_t* v, size_t i) {
     switch (v->dtype) {
@@ -362,7 +355,7 @@ static bool kind_ref(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* re
         gather(kind->ref_xyzw, first->xyz, first->num_atoms, kind->atoms, kind->n, sys);
     }
     const md_unitcell_t cell = first ? first->cell : md_unitcell_none();
-    md_util_deperiodize_self(kind->ref_xyzw, kind->n, &cell, &kind->ref_com);
+    md_geom_deperiodize_self(kind->ref_xyzw, kind->n, &cell, &kind->ref_com);
     return true;
 }
 
@@ -498,7 +491,7 @@ const uint32_t* vial_volume_structure(const vial_volume_t* vol, uint32_t s, uint
 static bool fit_structure(const vial_sdf_kind_t* kind, uint32_t j, const float* xyz, size_t num_atoms, const md_unitcell_t* cell,
                           const md_system_t* sys, md_float4_t* scratch, md_float3x3_t* R, md_float3_t* com) {
     gather(scratch, xyz, num_atoms, kind->atoms + (size_t)j * kind->n, kind->n, sys);
-    const float residual = md_util_optimal_rotation_pbc(R, com, NULL, kind->ref_xyzw, kind->ref_com, scratch, kind->n, cell, 8, 1.0e-6f);
+    const float residual = md_geom_optimal_rotation_pbc(R, com, NULL, kind->ref_xyzw, kind->ref_com, scratch, kind->n, cell, 8, 1.0e-6f);
     // The residual is the margin to an ambiguous choice of images: near half a cell no choice per point represents
     // this copy, so it is left out rather than smeared into the volume in a wrong orientation
     float min_ext = FLT_MAX;
@@ -682,7 +675,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
             const float* q = (const float*)p.data + 3 * i;
             // The image nearest the box's centre
             md_float3_t d = {{(float)(q[0] - c[0]), (float)(q[1] - c[1]), (float)(q[2] - c[2])}};
-            if (periodic) md_util_min_image(d.elem, 0, 1, &cell);
+            if (periodic) md_geom_min_image(d.elem, 0, 1, &cell);
             const double gx = (c[0] + d.x - vol->lo[0]) * inv[0] - 0.5;
             const double gy = (c[1] + d.y - vol->lo[1]) * inv[1] - 0.5;
             const double gz = (c[2] + d.z - vol->lo[2]) * inv[2] - 0.5;

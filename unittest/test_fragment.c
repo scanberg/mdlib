@@ -168,7 +168,7 @@ typedef struct frag_case_t {
 static bool frag_case(frag_case_t* t, const char* smiles) {
     t->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     t->sys = (md_system_t){ .alloc = t->alloc };
-    return frag_system_from_smiles(&t->sys, smiles, NULL, NULL, 0) && md_util_system_infer_fragments(&t->sys);
+    return frag_system_from_smiles(&t->sys, smiles, NULL, NULL, 0) && md_system_infer_fragments(&t->sys);
 }
 
 static void frag_case_free(frag_case_t* t) {
@@ -380,7 +380,7 @@ UTEST(fragment, molecules_alike_share_a_template_whatever_order_their_bonds_came
     }
     md_bond_build_connectivity(bond, t.sys.atom.count, t.alloc);
     ASSERT_TRUE(test_infer_molecules(&t.sys));
-    ASSERT_TRUE(md_util_system_infer_fragments(&t.sys));
+    ASSERT_TRUE(md_system_infer_fragments(&t.sys));
     frag_check(utest_result, &t.sys);
     EXPECT_EQ(md_system_molecule_count(&t.sys), (size_t)3);
     EXPECT_EQ(t.sys.fragment.template_count, (size_t)1);
@@ -424,7 +424,7 @@ UTEST(fragment, the_backbone_of_a_peptide) {
         }
     }
     ASSERT_EQ(heavy_seen, (size_t)9);
-    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    ASSERT_TRUE(md_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
     EXPECT_EQ(md_system_fragment_count(&sys), (size_t)5);
     EXPECT_EQ(frag_count_named(&sys, "alpha carbon"), (size_t)2);
@@ -466,7 +466,7 @@ UTEST(fragment, the_alpha_carbon_is_of_the_backbone_alone) {
         if (h == 0 || h == 1 || h == 3 || h == 5 || h == 6 || h == 8) sys.atom.flags[a] |= MD_ATOM_FLAG_BACKBONE;
         if (h == 2 || h == 7) sys.atom.flags[a] |= MD_ATOM_FLAG_SIDE_CHAIN;
     }
-    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    ASSERT_TRUE(md_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
     EXPECT_EQ(md_system_fragment_count(&sys), (size_t)7);
     EXPECT_EQ(frag_count_named(&sys, "alpha carbon"), (size_t)2);
@@ -489,7 +489,7 @@ UTEST(fragment, a_group_across_residues_is_of_both) {
     const int heavy[] = { 4, 3 };
     ASSERT_TRUE(frag_system_from_smiles(&sys, "CCC(=O)OCC", names, heavy, 2));
     for (size_t r = 0; r < 2; ++r) md_system_set_residue_kind(&sys, r, MD_RESIDUE_KIND_OTHER);
-    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    ASSERT_TRUE(md_system_infer_fragments(&sys));
     frag_check(utest_result, &sys);
     const md_fragment_idx_t ester = frag_find(&sys, "ester");
     ASSERT_NE(ester, MD_FRAGMENT_NONE);
@@ -514,7 +514,7 @@ UTEST(fragment, inferring_again_keeps_the_colours) {
     ASSERT_NE(p, MD_FRAGMENT_NONE);
     t.sys.fragment.type.color[p] = 0xFF123456u;
     const uint64_t v = t.sys.topology_version;
-    ASSERT_TRUE(md_util_system_infer_fragments(&t.sys));
+    ASSERT_TRUE(md_system_infer_fragments(&t.sys));
     EXPECT_NE(t.sys.topology_version, v);
     const md_fragment_type_idx_t q = md_fragment_type_find(&t.sys, MD_STR_LIT("phenyl"), MD_FRAGMENT_RING_SYSTEM);
     ASSERT_NE(q, MD_FRAGMENT_NONE);
@@ -525,7 +525,7 @@ UTEST(fragment, inferring_again_keeps_the_colours) {
 UTEST(fragment, no_molecules_no_fragments) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
-    ASSERT_TRUE(md_util_system_infer_fragments(&sys));
+    ASSERT_TRUE(md_system_infer_fragments(&sys));
     EXPECT_EQ(md_system_fragment_count(&sys), (size_t)0);
     EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, 0), MD_FRAGMENT_NONE);
     md_arena_allocator_destroy(alloc);
@@ -595,7 +595,7 @@ static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_
     }
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, 0)) return 0;
+    if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, NULL)) return 0;
     if (!md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) return 0;
     const size_t n = md_system_fragment_count(&sys);
     md_array_resize(*out, n * FRAG_REF_LINE, alloc);
@@ -657,7 +657,7 @@ UTEST(fragment, the_residues_of_a_protein) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     // The side chain of each amino acid within a chain: its fragments of no backbone, by heavy atoms and name

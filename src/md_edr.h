@@ -8,6 +8,7 @@
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,10 +56,10 @@ void md_edr_energies_free(md_edr_energies_t* energies);
 // run. Without it the energies simply form the run. Frame times must not decrease.
 bool md_edr_system_supplement(struct md_system_t* sys, const md_edr_energies_t* energies, md_str_t run);
 
-// The same from a file, which additionally publishes "<run>/edr/source": the path it was loaded
+// The same from a file, along the run desc->run, which additionally publishes "<run>/edr/source": the path it was loaded
 // from, so that whoever saves the session can find what to load again. It lives and dies with the
 // energies it describes, so it can never name a file whose data is gone.
-bool md_edr_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run);
+bool md_edr_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 // THE GROUPS OF A TERM. GROMACS names the terms it writes for groups by the groups' names:
 //

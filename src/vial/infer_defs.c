@@ -21,7 +21,6 @@ typedef vial_type_t T;
 
 static T err(void) { return vial_type_error(); }
 
-static inline vial_node_kind_t kind_in(const vial_tree_t* t, vial_node_id id) { return (vial_node_kind_t)t->nodes[id].kind; }
 static inline md_str_t text_in(const vial_tree_t* t, md_str_t src, vial_node_id id) {
     const md_vial_span_t s = t->nodes[id].span;
     return (md_str_t){src.ptr + s.beg, s.end - s.beg};

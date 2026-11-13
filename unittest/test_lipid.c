@@ -107,7 +107,7 @@ UTEST(lipid, dppc_united_atom_pdb) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     EXPECT_EQ(64, (int)sys.lipid.count);
@@ -212,7 +212,7 @@ UTEST(lipid, martini3_membrane_tpr) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"), NULL));
     // The bonds are the topology's
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
     EXPECT_TRUE(martini_membrane_ok(&sys, 32 + 16 + 8, 16));
@@ -438,7 +438,7 @@ UTEST(lipid, script) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     const md_filter_context_t fctx = { &sys, &st, NULL };

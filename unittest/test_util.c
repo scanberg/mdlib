@@ -1,4 +1,5 @@
 ﻿#include "utest.h"
+#include <md_io.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -13,8 +14,8 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
-#include <md_util_sort.h>
+#include <md_geom.h>
+#include <md_sort.h>
 #include <md_dssp.h>
 #include <md_itp.h>
 #include <md_element.h>
@@ -69,7 +70,7 @@ static md_float3_t* pack_xyz(md_float3_t* dst, const float* x, const float* y, c
     return dst;
 }
 
-// md_util_com over planar inputs: packed first. With indices the source is as long as the
+// md_geom_com over planar inputs: packed first. With indices the source is as long as the
 // largest index reaches.
 static md_float3_t com_planar(const float* x, const float* y, const float* z, const float* w, const int32_t* idx, size_t n, const md_unitcell_t* cell) {
     size_t len = n;
@@ -80,7 +81,7 @@ static md_float3_t com_planar(const float* x, const float* y, const float* z, co
     md_temp_scope_t temp = md_temp_begin();
     md_float3_t* xyz = md_temp_alloc_array(temp, md_float3_t, MD_ALIGN_TO(len, 16));
     pack_xyz(xyz, x, y, z, len);
-    const md_float3_t com = md_util_com((const float*)xyz, 0, w, 0, idx, n, cell);
+    const md_float3_t com = md_geom_com((const float*)xyz, 0, w, 0, idx, n, cell);
     md_temp_end(temp);
     return com;
 }
@@ -115,7 +116,7 @@ UTEST_F_SETUP(util) {
 
     utest_fixture->mol_ala.alloc = alloc;
     md_system_state_t mol_ala_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&utest_fixture->mol_ala, &mol_ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    md_pdb_system_init_from_file(&utest_fixture->mol_ala, &mol_ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL);
     md_pdb_system_publish_run(&utest_fixture->mol_ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_STR_LIT("run/ala"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
     md_system_infer(&utest_fixture->mol_ala, &mol_ala_state, MD_SYSTEM_INFER_ALL, NULL);
 
@@ -161,7 +162,7 @@ UTEST_F_SETUP(util) {
 
     utest_fixture->mol_1k4r.alloc = alloc;
     md_system_state_t mol_1k4r_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&utest_fixture->mol_1k4r, &mol_1k4r_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL);
+    md_pdb_system_init_from_file(&utest_fixture->mol_1k4r, &mol_1k4r_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL);
     md_system_infer(&utest_fixture->mol_1k4r, &mol_1k4r_state, MD_SYSTEM_INFER_ALL, NULL);
 
     utest_fixture->mol_8g7u.alloc = alloc;
@@ -272,10 +273,10 @@ UTEST_F(util, rmsd) {
     const md_float4_t* const cxyzw[2] = { xyzw[0], xyzw[1] };
 
     md_float3_t com[2] = {
-        md_util_com((const float*)xyz[0], 0, w, 0, 0, N, 0),
-        md_util_com((const float*)xyz[1], 0, w, 0, 0, N, 0),
+        md_geom_com((const float*)xyz[0], 0, w, 0, 0, N, 0),
+        md_geom_com((const float*)xyz[1], 0, w, 0, 0, N, 0),
     };
-    double rmsd = md_util_rmsd(cxyzw, 0, N, com);
+    double rmsd = md_geom_rmsd(cxyzw, 0, N, com);
 
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
@@ -309,7 +310,7 @@ UTEST(util, com) {
             {4,0,0,1},
         };
 
-        md_float3_t com = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, MD_COUNTOF(xyzw), &cell);
+        md_float3_t com = md_geom_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, MD_COUNTOF(xyzw), &cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -321,7 +322,7 @@ UTEST(util, com) {
             {5,0,0,1},
         };
 
-        md_float3_t com = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, MD_COUNTOF(xyzw), &cell);
+        md_float3_t com = md_geom_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, MD_COUNTOF(xyzw), &cell);
 		com = md_float3_deperiodize_ortho(com, (md_float3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -340,7 +341,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        md_float3_t com = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, MD_COUNTOF(xyzw), &cell);
+        md_float3_t com = md_geom_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), 0, MD_COUNTOF(xyzw), &cell);
         com = md_float3_deperiodize_ortho(com, md_float3_mul1(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -371,9 +372,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        md_float3_t com0 = md_util_com((const float*)pos0, sizeof(md_float4_t), (const float*)pos0 + 3, sizeof(md_float4_t), 0, MD_COUNTOF(pos0), &cell);
-        md_float3_t com1 = md_util_com((const float*)pos1, sizeof(md_float4_t), (const float*)pos1 + 3, sizeof(md_float4_t), 0, MD_COUNTOF(pos1), &cell);
-        md_float3_t com2 = md_util_com((const float*)pos2, sizeof(md_float4_t), (const float*)pos2 + 3, sizeof(md_float4_t), 0, MD_COUNTOF(pos2), &cell);
+        md_float3_t com0 = md_geom_com((const float*)pos0, sizeof(md_float4_t), (const float*)pos0 + 3, sizeof(md_float4_t), 0, MD_COUNTOF(pos0), &cell);
+        md_float3_t com1 = md_geom_com((const float*)pos1, sizeof(md_float4_t), (const float*)pos1 + 3, sizeof(md_float4_t), 0, MD_COUNTOF(pos1), &cell);
+        md_float3_t com2 = md_geom_com((const float*)pos2, sizeof(md_float4_t), (const float*)pos2 + 3, sizeof(md_float4_t), 0, MD_COUNTOF(pos2), &cell);
 
         com0 = md_float3_deperiodize_ortho(com0, (md_float3_t){ 0,0,0 }, pbc_ext);
         com1 = md_float3_deperiodize_ortho(com1, (md_float3_t){ 0,0,0 }, pbc_ext);
@@ -418,7 +419,7 @@ static void make_chain_system(md_system_t* sys, md_allocator_i* alloc, int num_c
 }
 
 // The molecule hierarchy must be rooted at the graph center and every atom must appear after the
-// atom it was reached from. md_util_unwrap_molecule depends on
+// atom it was reached from. md_geom_unwrap_molecule depends on
 // that ordering, and atom_slot must be a consistent inverse of atom_idx.
 UTEST(util, molecule_hierarchy) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -639,7 +640,7 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
         // The Mg of tubulin, between the phosphates of its GTP and four waters
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         size_t num_mg = 0;
@@ -757,7 +758,7 @@ UTEST(util, molecules_hold_residues_and_chains) {
             "END\n";
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         ASSERT_EQ(sys.atom.count, 34u);
@@ -783,7 +784,7 @@ UTEST(util, molecules_hold_residues_and_chains) {
             "END\n";
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_EQ(md_system_bond_count(&sys), 0u);
@@ -822,7 +823,7 @@ UTEST(util, unwrap_molecule_coarse_grained_without_bonds) {
     md_float3_t xyz[2 * N];
     md_system_state_t state = { .num_atoms = 2 * N, .xyz = pack_xyz(xyz, x, y, z, 2 * N), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
-    md_util_unwrap_system(&state, &sys);
+    md_geom_unwrap_system(&state, &sys);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i + 1 < N; ++i) {
@@ -982,7 +983,7 @@ UTEST(util, martini3_peptide_pdb) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     check_martini_peptide(utest_result, &sys, &state, 9);
     md_vm_arena_destroy(alloc);
@@ -1099,7 +1100,7 @@ UTEST(util, martini3_peptide_bonds) {
     {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, MD_COUNTOF(topology), NULL, 0);
         EXPECT_EQ(1u, md_bond_conn_count(&sys.bond, 23));
@@ -1115,7 +1116,7 @@ UTEST(util, martini3_peptide_bonds) {
         len += snprintf(text + len, sizeof(text) - len, "END\n");
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){text, (size_t)len}, MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){text, (size_t)len}, NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, MD_COUNTOF(topology), NULL, 0);
         EXPECT_EQ(MD_COUNTOF(topology), sys.bond.count);
@@ -1153,7 +1154,7 @@ UTEST(util, martini22p_peptide) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini22p_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini22p_peptide_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
 
     static const int topology[][2] = {
@@ -1247,7 +1248,7 @@ UTEST(util, branched_molecule_is_one_instance) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(5u, md_system_residue_count(&sys));
@@ -1290,7 +1291,7 @@ UTEST(util, caps_are_of_their_strand) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(3u, md_system_residue_count(&sys));
@@ -1471,7 +1472,7 @@ UTEST(util, amino_acid_of_any_size) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(palmitoyl_cys_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(palmitoyl_cys_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
@@ -1497,7 +1498,7 @@ UTEST(util, atom_roles_stay_in_their_residue) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         size_t num_pro = 0, num_with_side_chain = 0, num_aa = 0;
@@ -1606,7 +1607,7 @@ UTEST(util, martini2_dna) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_EQ(4u, md_system_residue_count(&sys));
 
@@ -1682,7 +1683,7 @@ UTEST(util, martini2_dna_strands_under_one_chain_id) {
     memcpy(text + first_len, martini2_dna_second_strand_pdb, sizeof(martini2_dna_second_strand_pdb));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(text), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(8u, md_system_residue_count(&sys));
@@ -1794,7 +1795,7 @@ UTEST(util, martini_reference_systems) {
         snprintf(gro_path, sizeof(gro_path), MD_UNITTEST_DATA_DIR "/martini/%s.gro", names[n]);
         md_system_t top = { .alloc = alloc }, gro = { .alloc = alloc };
         md_system_state_t top_state = { .alloc = alloc }, gro_state = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, md_str_from_cstr(tpr_path)));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, md_str_from_cstr(tpr_path), NULL));
         ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, md_str_from_cstr(gro_path), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&gro, &gro_state));
         ASSERT_EQ(top.atom.count, gro.atom.count);
@@ -1851,7 +1852,7 @@ UTEST(util, martini_nucleic_backbones) {
             snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.%s", systems[n].name, with_tpr ? "tpr" : "gro");
             md_system_t sys = { .alloc = alloc };
             md_system_state_t state = { .alloc = alloc };
-            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path)) : md_gro_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
+            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL) : md_gro_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
             ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
             const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
@@ -1933,7 +1934,7 @@ UTEST(util, martini_nucleic_break) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_gap_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ((size_t)6, md_system_residue_count(&sys));
@@ -2041,7 +2042,7 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
 }
 
 // A chain of nine atoms spaced 2A along x inside a 10A box, so the wrapped input folds back on
-// itself twice. md_util_unwrap_molecule must recover a straight line.
+// itself twice. md_geom_unwrap_molecule must recover a straight line.
 //
 // @NOTE: this is the regression test for two bugs that were live together here. min_image_ortho was
 // being fed a half extent where it wants a reciprocal one, and the result was written as x + dx
@@ -2063,7 +2064,7 @@ UTEST(util, unwrap_molecule_ortho) {
 
     const md_molecule_t mol = md_system_molecule(&sys, 0);
     ASSERT_LT(0u, (unsigned)mol.count);
-    md_util_unwrap_molecule(&state, &mol);
+    md_geom_unwrap_molecule(&state, &mol);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i < 8; ++i) {
@@ -2107,7 +2108,7 @@ UTEST(util, unwrap_molecule_triclinic) {
 
     const md_molecule_t mol = md_system_molecule(&sys, 0);
     ASSERT_LT(0u, (unsigned)mol.count);
-    md_util_unwrap_molecule(&state, &mol);
+    md_geom_unwrap_molecule(&state, &mol);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     const float ox = x[0] - tx[0];
@@ -2123,7 +2124,7 @@ UTEST(util, unwrap_molecule_triclinic) {
     md_system_free(&sys);
 }
 
-// md_util_min_image, packed and of md_float4_t, reduces a separation vector to its shortest periodic image, so no
+// md_geom_min_image, packed and of md_float4_t, reduces a separation vector to its shortest periodic image, so no
 // residue may exceed half the box and the result must differ from the input by whole box lengths.
 UTEST(util, min_image) {
     const float e = 10.0f;
@@ -2137,7 +2138,7 @@ UTEST(util, min_image) {
     };
     const md_float3_t in3[4] = { dx3[0], dx3[1], dx3[2], dx3[3] };
 
-    md_util_min_image((float*)dx3, 0, 4, &cell);
+    md_geom_min_image((float*)dx3, 0, 4, &cell);
 
     for (int i = 0; i < 4; ++i) {
         for (int c = 0; c < 3; ++c) {
@@ -2154,7 +2155,7 @@ UTEST(util, min_image) {
     EXPECT_NEAR(dx3[3].x,  4.9f, 1.0e-4f);
 
     md_float4_t dx4[2] = { {12.0f, 0.0f, 0.0f, 7.0f}, {-27.0f, 41.0f, -8.0f, 8.0f} };
-    md_util_min_image((float*)dx4, sizeof(md_float4_t), 2, &cell);
+    md_geom_min_image((float*)dx4, sizeof(md_float4_t), 2, &cell);
     EXPECT_NEAR(dx4[0].x, 2.0f, 1.0e-4f);
     EXPECT_NEAR(dx4[1].x, 3.0f, 1.0e-4f);
     EXPECT_NEAR(dx4[1].y, 1.0f, 1.0e-4f);
@@ -2216,7 +2217,7 @@ UTEST(util, pbc_deperiodize_self) {
     }
 
     md_float3_t com = {0};
-    ASSERT_TRUE(md_util_deperiodize_self(pts, PBC_NP, &cell, &com));
+    ASSERT_TRUE(md_geom_deperiodize_self(pts, PBC_NP, &cell, &com));
 
     // Every pairwise separation must match the original shape: the set is whole again
     for (int i = 0; i < PBC_NP; ++i) {
@@ -2228,7 +2229,7 @@ UTEST(util, pbc_deperiodize_self) {
     }
 
     // The centre must sit inside the reassembled set, not at some average of scattered images
-    const md_float3_t shape_com = md_util_com((const float*)shape, sizeof(md_float4_t), (const float*)shape + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t shape_com = md_geom_com((const float*)shape, sizeof(md_float4_t), (const float*)shape + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
     for (int i = 0; i < PBC_NP; ++i) {
         const md_float3_t d = md_float3_sub(md_float3_from_float4(pts[i]), com);
         const md_float3_t r = md_float3_sub(md_float3_from_float4(shape[i]), shape_com);
@@ -2241,7 +2242,7 @@ UTEST(util, pbc_deperiodize_self) {
     md_float4_t again[PBC_NP];
     md_memcpy(again, pts, sizeof(pts));
     md_float3_t com2 = {0};
-    ASSERT_TRUE(md_util_deperiodize_self(again, PBC_NP, &cell, &com2));
+    ASSERT_TRUE(md_geom_deperiodize_self(again, PBC_NP, &cell, &com2));
     for (int i = 0; i < PBC_NP; ++i) {
         EXPECT_NEAR(again[i].x, pts[i].x, 1.0e-4f);
         EXPECT_NEAR(again[i].w, pts[i].w, 1.0e-6f);  // weights carried through untouched
@@ -2261,7 +2262,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image) {
 
     md_float4_t shape[PBC_NP];
     pbc_make_shape(shape, 3.0f);
-    const md_float3_t shape_com = md_util_com((const float*)shape, sizeof(md_float4_t), (const float*)shape + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t shape_com = md_geom_com((const float*)shape, sizeof(md_float4_t), (const float*)shape + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
 
     for (int nx = -2; nx <= 2; ++nx) {
         for (int nz = -1; nz <= 1; ++nz) {
@@ -2273,7 +2274,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image) {
             }
 
             md_float3_t com = {0};
-            ASSERT_TRUE(md_util_deperiodize_self(pts, PBC_NP, &cell, &com));
+            ASSERT_TRUE(md_geom_deperiodize_self(pts, PBC_NP, &cell, &com));
 
             // Nothing was broken to begin with, so nothing may move
             for (int i = 0; i < PBC_NP; ++i) {
@@ -2302,7 +2303,7 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
 
     md_float4_t ref[PBC_NP];
     pbc_make_shape(ref, 3.0f);
-    const md_float3_t ref_com = md_util_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t ref_com = md_geom_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
 
     const md_float3x3_t R_true = pbc_rot(40.0f * 3.14159265f / 180.0f);
 
@@ -2318,7 +2319,7 @@ UTEST(util, pbc_optimal_rotation_keeps_image) {
         md_float3x3_t R = {0};
         md_float3_t com = {0};
         md_float4_t placed[PBC_NP];
-        const float residual = md_util_optimal_rotation_pbc(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
+        const float residual = md_geom_optimal_rotation_pbc(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
         EXPECT_NEAR(com.x, c_true.x, 1.0e-2f);
@@ -2361,7 +2362,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
 
     md_float4_t shape[PBC_NP];
     pbc_make_shape(shape, 5.0f);
-    const md_float3_t shape_com = md_util_com((const float*)shape, sizeof(md_float4_t), (const float*)shape + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t shape_com = md_geom_com((const float*)shape, sizeof(md_float4_t), (const float*)shape + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
     const md_float3_t base = md_float3x3_mul_float3(A, md_float3_set(0.5f, 0.5f, 0.5f));
 
     for (int nx = -1; nx <= 1; ++nx) {
@@ -2374,7 +2375,7 @@ UTEST(util, pbc_deperiodize_self_keeps_image_triclinic) {
             }
 
             md_float3_t com = {0};
-            ASSERT_TRUE(md_util_deperiodize_self(pts, PBC_NP, &cell, &com));
+            ASSERT_TRUE(md_geom_deperiodize_self(pts, PBC_NP, &cell, &com));
 
             const md_float3_t want_com = md_float3_add(shape_com, off);
             EXPECT_NEAR(com.x, want_com.x, 1.0e-2f);
@@ -2414,8 +2415,8 @@ UTEST(util, pbc_com_triclinic) {
 
     // Nothing is wrapped, so the periodic mean must agree with the plain mean. It is the same set
     // of points either way.
-    const md_float3_t com_plain = md_util_com((const float*)pts, sizeof(md_float4_t), (const float*)pts + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
-    const md_float3_t com_pbc   = md_util_com((const float*)pts, sizeof(md_float4_t), (const float*)pts + 3, sizeof(md_float4_t), 0, PBC_NP, &cell);
+    const md_float3_t com_plain = md_geom_com((const float*)pts, sizeof(md_float4_t), (const float*)pts + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t com_pbc   = md_geom_com((const float*)pts, sizeof(md_float4_t), (const float*)pts + 3, sizeof(md_float4_t), 0, PBC_NP, &cell);
     EXPECT_NEAR(com_pbc.x, com_plain.x, 0.2f);
     EXPECT_NEAR(com_pbc.y, com_plain.y, 0.2f);
     EXPECT_NEAR(com_pbc.z, com_plain.z, 0.2f);
@@ -2432,7 +2433,7 @@ UTEST(util, pbc_com_triclinic) {
     }
 
     md_float3_t com_wrapped = {0};
-    ASSERT_TRUE(md_util_deperiodize_self(wrapped, PBC_NP, &cell, &com_wrapped));
+    ASSERT_TRUE(md_geom_deperiodize_self(wrapped, PBC_NP, &cell, &com_wrapped));
     EXPECT_NEAR(com_wrapped.x, com_plain.x, 0.05f);
     EXPECT_NEAR(com_wrapped.y, com_plain.y, 0.05f);
     EXPECT_NEAR(com_wrapped.z, com_plain.z, 0.05f);
@@ -2454,7 +2455,7 @@ UTEST(util, pbc_com_triclinic) {
 // Everything below therefore runs against both a cube and a rhombic dodecahedron - the shape
 // GROMACS writes for -bt dodecahedron, and the shape that surfaced this.
 //
-// md_util_com (packed) dispatches to one of four internal variants depending on whether weights and
+// md_geom_com (packed) dispatches to one of four internal variants depending on whether weights and
 // indices are present, and each of those has an AVX512, an AVX2, an SSE2 and a scalar remainder
 // path. The counts below straddle the block sizes (4 / 8 / 16) so that on any given build both the
 // vector body and the remainder loop are exercised, and every variant is called for each count.
@@ -2519,8 +2520,8 @@ UTEST(util, com_pbc_matches_plain_mean) {
             const md_float3_t pbc_iw = com_planar(x, y, z, w,    idx,  n, &cells[ci]);
 
             // and strided, points of md_float4_t carrying their weight in w
-            const md_float3_t pbc_v4 = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), NULL, n, &cells[ci]);
-            const md_float3_t pbc_v4i = md_util_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), idx, n, &cells[ci]);
+            const md_float3_t pbc_v4 = md_geom_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), NULL, n, &cells[ci]);
+            const md_float3_t pbc_v4i = md_geom_com((const float*)xyzw, sizeof(md_float4_t), (const float*)xyzw + 3, sizeof(md_float4_t), idx, n, &cells[ci]);
 
             for (int e = 0; e < 3; ++e) {
                 EXPECT_NEAR(pbc.elem[e],     plain_u.elem[e], 0.1f);
@@ -2664,7 +2665,7 @@ UTEST(util, pbc_optimal_rotation) {
     for (int deg = 0; deg <= 180; deg += 20) {
         md_float4_t ref[PBC_NP];
         pbc_make_shape(ref, 3.0f);
-        const md_float3_t ref_com = md_util_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+        const md_float3_t ref_com = md_geom_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
 
         const md_float3x3_t R_true = pbc_rot(deg * 3.14159265f / 180.0f);
         const md_float3_t c_true = { 3.0f, 17.0f, 9.0f };   // deliberately near two boundaries
@@ -2678,7 +2679,7 @@ UTEST(util, pbc_optimal_rotation) {
         md_float3x3_t R = {0};
         md_float3_t com = {0};
         md_float4_t placed[PBC_NP];
-        const float residual = md_util_optimal_rotation_pbc(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
+        const float residual = md_geom_optimal_rotation_pbc(&R, &com, placed, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
         EXPECT_LT(residual, 1.0e-2f);
         EXPECT_LT(pbc_angle_err(R, R_true), 0.5f);
@@ -2703,7 +2704,7 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
 
     md_float4_t ref[PBC_NP];
     pbc_make_shape(ref, 8.5f);
-    const md_float3_t ref_com = md_util_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t ref_com = md_geom_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
 
     const md_float3x3_t R_true = pbc_rot(3.14159265f);
     const md_float3_t c_true = { 3.0f, 17.0f, 9.0f };
@@ -2716,7 +2717,7 @@ UTEST(util, pbc_optimal_rotation_reports_ambiguity) {
 
     md_float3x3_t R = {0};
     md_float3_t com = {0};
-    const float residual = md_util_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
+    const float residual = md_geom_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, trg, PBC_NP, &cell, 8, 1.0e-6f);
 
     // The certificate is the whole point: a residual on the order of half a cell means do not trust it
     EXPECT_GT(residual, 0.25f * L);
@@ -2727,22 +2728,22 @@ UTEST(util, pbc_optimal_rotation_degenerate) {
     md_unitcell_t cell = md_unitcell_from_extent(20, 20, 20);
     md_float4_t ref[PBC_NP];
     pbc_make_shape(ref, 3.0f);
-    const md_float3_t ref_com = md_util_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
+    const md_float3_t ref_com = md_geom_com((const float*)ref, sizeof(md_float4_t), (const float*)ref + 3, sizeof(md_float4_t), 0, PBC_NP, 0);
 
     md_float3x3_t R = {0};
     md_float3_t com = {0};
 
     // Empty set
-    EXPECT_NEAR(md_util_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, ref, 0, &cell, 8, 1.0e-6f), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(md_geom_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, ref, 0, &cell, 8, 1.0e-6f), 0.0f, 1.0e-6f);
 
     // No cell at all: still a plain Kabsch fit, identity here since target == reference
-    const float residual = md_util_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL, 8, 1.0e-6f);
+    const float residual = md_geom_optimal_rotation_pbc(&R, &com, NULL, ref, ref_com, ref, PBC_NP, NULL, 8, 1.0e-6f);
     EXPECT_LT(residual, 1.0e-3f);
     EXPECT_LT(pbc_angle_err(R, md_float3x3_ident()), 0.5f);
 
     // A set with no coordinates to speak of
     md_float3_t c = {0};
-    EXPECT_TRUE(md_util_deperiodize_self(ref, 0, &cell, &c));
+    EXPECT_TRUE(md_geom_deperiodize_self(ref, 0, &cell, &c));
 }
 
 UTEST_F(util, rings_common) {
@@ -2766,7 +2767,7 @@ UTEST(util, rings_c60) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 	md_system_t sys = { .alloc = alloc };
 	md_system_state_t sys_state = { .alloc = alloc };
-	md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE, NULL);
+	md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL);
 	md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
 	EXPECT_EQ(sys.atom.count, 60);
@@ -2786,7 +2787,7 @@ UTEST(util, rings_c720) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), MD_XYZ_OPTION_NONE);
+    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL);
     md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     EXPECT_EQ(sys.atom.count, 720);
@@ -2806,7 +2807,7 @@ UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL);
+    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL);
     md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -2820,7 +2821,7 @@ UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE, NULL);
+    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL);
     md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -2837,7 +2838,7 @@ UTEST(util, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), MD_XYZ_OPTION_NONE);
+    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL);
     md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -2854,7 +2855,7 @@ UTEST(util, rings_full) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), MD_XYZ_OPTION_NONE);
+    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL);
     md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -2871,7 +2872,7 @@ UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE, NULL);
+    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL);
     md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
 
     const int64_t num_rings = md_ring_data_count(&sys.ring);
@@ -2897,7 +2898,7 @@ UTEST(util, rings_coarse_grained) {
         md_system_state_t sys_state = { .alloc = alloc };
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s", files[f]);
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, md_str_from_cstr(path)));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, md_str_from_cstr(path), NULL));
         ASSERT_TRUE(md_system_is_coarse_grained(&sys));
         // The bonds of the topology close cycles: more bonds than a forest of the molecules has
         EXPECT_GT(sys.bond.count + sys.instance.count, sys.atom.count);
@@ -3021,7 +3022,7 @@ UTEST(util, radix_sort_u32) {
 
             memcpy(sorted, keys, n * sizeof(uint32_t));
             sorted[n] = RADIX_TEST_GUARD;
-            md_util_sort_radix_u32(sorted, n);
+            md_sort_radix_u32(sorted, n);
             bool same = true;
             for (size_t i = 0; i < n; ++i) {
                 same &= sorted[i] == (uint32_t)ref_sorted[i];
@@ -3030,7 +3031,7 @@ UTEST(util, radix_sort_u32) {
             EXPECT_EQ(RADIX_TEST_GUARD, sorted[n]);
 
             idx[n] = RADIX_TEST_GUARD;
-            md_util_argsort_radix_u32(idx, keys, n);
+            md_argsort_radix_u32(idx, keys, n);
             EXPECT_TRUE_MSG(n == 0 || memcmp(idx, ref_idx, n * sizeof(uint32_t)) == 0, msg);
             EXPECT_EQ(RADIX_TEST_GUARD, idx[n]);
         }
@@ -3063,12 +3064,12 @@ UTEST(util, radix_sort_u64) {
 
             memcpy(sorted, keys, n * sizeof(uint64_t));
             sorted[n] = RADIX_TEST_GUARD;
-            md_util_sort_radix_u64(sorted, n);
+            md_sort_radix_u64(sorted, n);
             EXPECT_TRUE_MSG(n == 0 || memcmp(sorted, ref_sorted, n * sizeof(uint64_t)) == 0, msg);
             EXPECT_EQ((uint64_t)RADIX_TEST_GUARD, sorted[n]);
 
             idx[n] = RADIX_TEST_GUARD;
-            md_util_argsort_radix_u64(idx, keys, n);
+            md_argsort_radix_u64(idx, keys, n);
             EXPECT_TRUE_MSG(n == 0 || memcmp(idx, ref_idx, n * sizeof(uint32_t)) == 0, msg);
             EXPECT_EQ(RADIX_TEST_GUARD, idx[n]);
         }
@@ -3084,12 +3085,12 @@ UTEST(util, radix_sort) {
 
     uint32_t idx[16];
 
-    md_util_argsort_radix_u32(idx, arr, len);
+    md_argsort_radix_u32(idx, arr, len);
     for (size_t i = 0; i < len - 1; ++i) {
         EXPECT_LE(arr[idx[i]], arr[idx[i+1]]);
     }
 
-    md_util_sort_radix_u32(arr, len);
+    md_sort_radix_u32(arr, len);
 
     for (size_t i = 0; i < len - 1; ++i) {
     	EXPECT_LE(arr[i], arr[i+1]);
@@ -3109,7 +3110,7 @@ UTEST(util, radix_sort) {
     bool ordered;
 
     t0 = md_tick_now();
-    md_util_argsort_radix_u32(indices, values, N);
+    md_argsort_radix_u32(indices, values, N);
     t1 = md_tick_now();
 
     printf("Time for radix argsort (u32): %.4f ms\n", md_tick_to_milliseconds(t1 - t0));
@@ -3118,7 +3119,7 @@ UTEST(util, radix_sort) {
     EXPECT_TRUE(ordered);
 
     t0 = md_tick_now();
-    md_util_sort_radix_u32(values, N);
+    md_sort_radix_u32(values, N);
     t1 = md_tick_now();
 
     printf("Time for radix sort (u32): %.4f ms\n", md_tick_to_milliseconds(t1 - t0));
@@ -3133,7 +3134,7 @@ UTEST(util, radix_sort) {
     }
 
     t0 = md_tick_now();
-    md_util_argsort_radix_u64(indices, values64, N);
+    md_argsort_radix_u64(indices, values64, N);
     t1 = md_tick_now();
 
     printf("Time for radix argsort (u64): %.4f ms\n", md_tick_to_milliseconds(t1 - t0));
@@ -3142,7 +3143,7 @@ UTEST(util, radix_sort) {
     EXPECT_TRUE(ordered);
 
     t0 = md_tick_now();
-    md_util_sort_radix_u64(values64, N);
+    md_sort_radix_u64(values64, N);
     t1 = md_tick_now();
 
     printf("Time for radix sort (u64): %.4f ms\n", md_tick_to_milliseconds(t1 - t0));
@@ -3160,7 +3161,7 @@ static inline bool init_system(md_system_t* sys, md_system_state_t* sys_state, m
     }
 
     if (md_str_eq_ignore_case(ext, MD_STR_LIT("pdb"))) {
-        return md_pdb_system_init_from_file(sys, sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) && test_infer_as_loaded(sys, sys_state);
+        return md_pdb_system_init_from_file(sys, sys_state, path, NULL) && test_infer_as_loaded(sys, sys_state);
     } else
     if (md_str_eq_ignore_case(ext, MD_STR_LIT("gro"))) {
         return md_gro_system_init_from_file(sys, sys_state, path, NULL) && test_infer_as_loaded(sys, sys_state);
@@ -3642,7 +3643,7 @@ UTEST(util, chains) {
         // A topology names no chains either: the peptide is a polymer part, the waters and ions parts of their own
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr")));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr"), NULL));
         ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
         EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(&sys, 0));
@@ -3654,7 +3655,7 @@ UTEST(util, chains) {
         // two parts, a strand each, as the .gro of the same system gives them
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.tpr")));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.tpr"), NULL));
         ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
         EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         const md_urange_t duplex = md_system_instance_residue_range(&sys, 0);
@@ -3688,7 +3689,7 @@ UTEST(util, topology_molecules_are_whole) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
     const size_t num_inst = md_system_instance_count(&sys);
     EXPECT_EQ(num_inst, md_system_molecule_count(&sys));
@@ -3724,7 +3725,7 @@ UTEST(util, molecule_type_topology) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr")));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr"), NULL));
 
         static const struct { md_part_kind_t kind; const char* name; size_t count; } types[] = {
             {MD_PART_KIND_PEPTIDE, "Protein_chain_U", 1}, {MD_PART_KIND_WATER, "SOL", 506}, {MD_PART_KIND_NON_POLYMER, "NA", 2}, {MD_PART_KIND_NON_POLYMER, "CL", 2},
@@ -3762,7 +3763,7 @@ UTEST(util, molecule_type_topology) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/martini3.tpr")));
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/martini3.tpr"), NULL));
         // The peptide, two lipids, four ions and 583 waters, as the structures are
         ASSERT_EQ(md_system_molecule_type_count(&sys), 5);
         EXPECT_EQ(md_system_instance_count(&sys), 1 + 2 + 4 + 583);
@@ -3779,7 +3780,7 @@ UTEST(util, molecule_type_topology) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
-        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), atom_format));
+        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), &(md_load_desc_t){ .format = md_str_from_cstr(atom_format) }));
         ASSERT_EQ(md_system_molecule_type_count(&sys), 2);
         EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 0), MD_STR_LIT("C2H6")));
         EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 1), MD_STR_LIT("H2O")));
@@ -3828,7 +3829,7 @@ UTEST(util, molecule_type_inferred) {
         // No residues, no parts: the type is named by the formula
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), MD_XYZ_OPTION_NONE));
+        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), NULL));
         ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         ASSERT_EQ(md_system_molecule_count(&sys), 1u);
         ASSERT_EQ(md_system_molecule_type_count(&sys), 1u);
@@ -3851,7 +3852,7 @@ UTEST(util, coarse_grained_strand_over_a_gap) {
     md_str_writer_push_cstr(&sb, "END\n");
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     EXPECT_TRUE(md_system_is_coarse_grained(&sys));
@@ -3968,7 +3969,7 @@ UTEST(util, state_backbone) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &st));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const size_t n = sys.protein_backbone.segment.count;
@@ -4095,7 +4096,7 @@ UTEST(util, interpolate_linear_across_boundary) {
         b[i] = md_float3_set(0.5f, 5.0f, 9.75f);
     }
     const md_float3_t* const in[2] = { a, b };
-    ASSERT_TRUE(md_util_interpolate_linear(out, in, 16, &cell, 0.5f));
+    ASSERT_TRUE(md_geom_interpolate_linear(out, in, 16, &cell, 0.5f));
     for (int i = 0; i < 16; ++i) {
         // Halfway is on the boundary: 10 or its image 0, never 5
         EXPECT_NEAR(0.0f, fabsf(fmodf(out[i].x + 5.0f, 10.0f) - 5.0f), 1.0e-4f);
@@ -4104,7 +4105,7 @@ UTEST(util, interpolate_linear_across_boundary) {
     }
 
     // Without a cell it is a plain blend
-    ASSERT_TRUE(md_util_interpolate_linear(out, in, 16, NULL, 0.5f));
+    ASSERT_TRUE(md_geom_interpolate_linear(out, in, 16, NULL, 0.5f));
     EXPECT_NEAR(5.0f, out[3].x, 1.0e-4f);
 }
 
@@ -4115,7 +4116,7 @@ UTEST(util, pbc_indexed) {
     md_float3_t xyz[20];
     for (int i = 0; i < 20; ++i) xyz[i] = md_float3_set(12.0f + i, -3.0f, 5.0f);
     const int32_t idx[3] = { 17, 4, 11 };
-    ASSERT_TRUE(md_util_pbc((float*)xyz, 0, idx, 3, &cell));
+    ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, idx, 3, &cell));
     for (int i = 0; i < 20; ++i) {
         const bool wrapped = (i == 17 || i == 4 || i == 11);
         const float ex = wrapped ? fmodf(12.0f + i, 10.0f) : 12.0f + i;
@@ -4125,7 +4126,7 @@ UTEST(util, pbc_indexed) {
 
     // All of them, through the eight wide path and its tail. An atom on the boundary may come out
     // at either end, which is the same place.
-    ASSERT_TRUE(md_util_pbc((float*)xyz, 0, NULL, 20, &cell));
+    ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, NULL, 20, &cell));
     for (int i = 0; i < 20; ++i) {
         EXPECT_GE(xyz[i].x, 0.0f);
         EXPECT_LE(xyz[i].x, 10.0f);
@@ -4137,7 +4138,7 @@ UTEST(util, pbc_indexed) {
     // Triclinic: every wrapped atom lands inside the cell
     const md_unitcell_t tri = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
     for (int i = 0; i < 20; ++i) xyz[i] = md_float3_set(12.0f + i, -3.0f - i, 25.0f);
-    ASSERT_TRUE(md_util_pbc((float*)xyz, 0, NULL, 20, &tri));
+    ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, NULL, 20, &tri));
     md_float3x3_t I = {0};
     md_unitcell_I_extract_float(I.elem, &tri);
     for (int i = 0; i < 20; ++i) {
@@ -4167,8 +4168,8 @@ UTEST(util, pbc_strided) {
             }
             const int32_t* ii = with_idx ? idx : NULL;
             const size_t   n  = with_idx ? 3 : 20;
-            ASSERT_TRUE(md_util_pbc((float*)xyz, 0, ii, n, &cells[ci]));
-            ASSERT_TRUE(md_util_pbc((float*)xyzw, sizeof(md_float4_t), ii, n, &cells[ci]));
+            ASSERT_TRUE(md_geom_pbc((float*)xyz, 0, ii, n, &cells[ci]));
+            ASSERT_TRUE(md_geom_pbc((float*)xyzw, sizeof(md_float4_t), ii, n, &cells[ci]));
             for (int i = 0; i < 20; ++i) {
                 for (int k = 0; k < 3; ++k) {
                     EXPECT_NEAR(xyz[i].elem[k], xyzw[i].elem[k], 1.0e-4f);
@@ -4207,9 +4208,9 @@ UTEST(util, aabb_paths) {
         }
         float got_min[3], got_max[3];
         if (strided) {
-            md_util_aabb(got_min, got_max, (const float*)xyzw, sizeof(md_float4_t), ii, n);
+            md_geom_aabb(got_min, got_max, (const float*)xyzw, sizeof(md_float4_t), ii, n);
         } else {
-            md_util_aabb(got_min, got_max, (const float*)xyz, 0, ii, n);
+            md_geom_aabb(got_min, got_max, (const float*)xyz, 0, ii, n);
         }
         for (int c = 0; c < 3; ++c) {
             EXPECT_EQ(ref_min[c], got_min[c]);
@@ -4229,14 +4230,14 @@ UTEST(util, interpolate_cubic) {
     }
     const md_float3_t* const in[4] = { f[0], f[1], f[2], f[3] };
     float w[4];
-    md_util_cubic_spline_weights(w, 0.0f, 0.5f);
-    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_cubic_spline_weights(w, 0.0f, 0.5f);
+    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[1][i].x, out[i].x, 1.0e-4f);
         EXPECT_NEAR(f[1][i].z, out[i].z, 1.0e-4f);
     }
-    md_util_cubic_spline_weights(w, 1.0f, 0.5f);
-    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_cubic_spline_weights(w, 1.0f, 0.5f);
+    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(f[2][i].y, out[i].y, 1.0e-4f);
     }
@@ -4248,8 +4249,8 @@ UTEST(util, interpolate_cubic) {
             f[k][i] = md_float3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);   // 8, 9, 0, 1
         }
     }
-    md_util_cubic_spline_weights(w, 0.5f, 0.5f);
-    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, &cell, w));
+    md_geom_cubic_spline_weights(w, 0.5f, 0.5f);
+    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, &cell, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
     }
@@ -4262,8 +4263,8 @@ UTEST(util, interpolate_cubic_weights) {
     for (int i = 0; i <= 16; ++i) {
         const float t = i / 16.0f;
         float wc[4], wb[4];
-        md_util_cubic_spline_weights(wc, t, 0.5f);
-        md_util_cubic_bspline_weights(wb, t);
+        md_geom_cubic_spline_weights(wc, t, 0.5f);
+        md_geom_cubic_bspline_weights(wb, t);
         EXPECT_NEAR(1.0f, wc[0] + wc[1] + wc[2] + wc[3], 1.0e-6f);
         EXPECT_NEAR(1.0f, wb[0] + wb[1] + wb[2] + wb[3], 1.0e-6f);
         // Frames at 0, 1, 2 and 3: the interval between the middle two is at 1 + t
@@ -4272,17 +4273,17 @@ UTEST(util, interpolate_cubic_weights) {
     }
 
     float w[4];
-    md_util_cubic_spline_weights(w, 0.0f, 0.5f);
+    md_geom_cubic_spline_weights(w, 0.0f, 0.5f);
     EXPECT_EQ(0.0f, fabsf(w[0]));
     EXPECT_EQ(1.0f, w[1]);
     EXPECT_EQ(0.0f, fabsf(w[2]));
     EXPECT_EQ(0.0f, fabsf(w[3]));
-    md_util_cubic_spline_weights(w, 1.0f, 0.5f);
+    md_geom_cubic_spline_weights(w, 1.0f, 0.5f);
     EXPECT_EQ(0.0f, fabsf(w[0]));
     EXPECT_EQ(0.0f, fabsf(w[1]));
     EXPECT_EQ(1.0f, w[2]);
     EXPECT_EQ(0.0f, fabsf(w[3]));
-    md_util_cubic_bspline_weights(w, 0.0f);
+    md_geom_cubic_bspline_weights(w, 0.0f);
     EXPECT_NEAR(1.0f / 6.0f, w[0], 1.0e-7f);
     EXPECT_NEAR(4.0f / 6.0f, w[1], 1.0e-7f);
     EXPECT_NEAR(1.0f / 6.0f, w[2], 1.0e-7f);
@@ -4296,16 +4297,16 @@ UTEST(util, interpolate_cubic_weights) {
     }
     const md_float3_t* const in[4] = { f[0], f[1], f[2], f[3] };
 
-    md_util_cubic_spline_weights(w, 0.0f, 0.5f);
-    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_cubic_spline_weights(w, 0.0f, 0.5f);
+    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
     for (int i = 0; i < 16; ++i) {
         EXPECT_EQ(f[1][i].x, out[i].x);
         EXPECT_EQ(f[1][i].y, out[i].y);
         EXPECT_EQ(f[1][i].z, out[i].z);
     }
 
-    md_util_cubic_bspline_weights(w, 0.0f);
-    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    md_geom_cubic_bspline_weights(w, 0.0f);
+    ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, NULL, w));
     for (int i = 0; i < 16; ++i) {
         for (int c = 0; c < 3; ++c) {
             const float ref = (f[0][i].elem[c] + 4.0f * f[1][i].elem[c] + f[2][i].elem[c]) / 6.0f;
@@ -4324,8 +4325,8 @@ UTEST(util, interpolate_cubic_weights) {
         md_unitcell_from_basis_parameters(10, 10, 10, 2, 0, 0),
     };
     for (int c = 0; c < 2; ++c) {
-        md_util_cubic_bspline_weights(w, 0.5f);
-        ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, &cells[c], w));
+        md_geom_cubic_bspline_weights(w, 0.5f);
+        ASSERT_TRUE(md_geom_interpolate_cubic_weighted(out, in, 16, &cells[c], w));
         for (int i = 0; i < 16; ++i) {
             EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
             EXPECT_NEAR(5.0f, out[i].y, 1.0e-3f);
@@ -4342,7 +4343,7 @@ UTEST(util, sort_spatial) {
         xyz[i] = md_float3_set(cluster * 20.0f, cluster * 20.0f, 0.0f);
     }
     uint32_t order[N];
-    md_util_sort_spatial(order, (const float*)xyz, sizeof(md_float3_t), N);
+    md_sort_spatial(order, (const float*)xyz, sizeof(md_float3_t), N);
     bool seen[N] = {0};
     for (int i = 0; i < N; ++i) {
         ASSERT_LT(order[i], (uint32_t)N);
@@ -4385,8 +4386,8 @@ UTEST(util, packed_kernels_any_alignment) {
             }
             sw += w[i];
         }
-        const md_float3_t c  = md_util_com((const float*)a, 0, NULL, 0, NULL, N, NULL);
-        const md_float3_t cw = md_util_com((const float*)a, 0, w, 0, NULL, N, NULL);
+        const md_float3_t c  = md_geom_com((const float*)a, 0, NULL, 0, NULL, N, NULL);
+        const md_float3_t cw = md_geom_com((const float*)a, 0, w, 0, NULL, N, NULL);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(ref[k] / N, c.elem[k], 1.0e-4);
             EXPECT_NEAR(ref_w[k] / sw, cw.elem[k], 1.0e-4);
@@ -4396,10 +4397,10 @@ UTEST(util, packed_kernels_any_alignment) {
         md_float3_t near_center[N];
         for (int i = 0; i < N; ++i) near_center[i] = md_float3_add(md_float3_set(5, 6, 7), md_float3_mul1(md_float3_sub(a[i], md_float3_set(5, 6, 7)), 0.1f));
         md_memcpy(o, near_center, sizeof(near_center));
-        const md_float3_t pc  = md_util_com((const float*)o, 0, NULL, 0, NULL, N, &cell);
-        const md_float3_t pcw = md_util_com((const float*)o, 0, w, 0, NULL, N, &cell);
-        const md_float3_t mc  = md_util_com((const float*)o, 0, NULL, 0, NULL, N, NULL);
-        const md_float3_t mcw = md_util_com((const float*)o, 0, w, 0, NULL, N, NULL);
+        const md_float3_t pc  = md_geom_com((const float*)o, 0, NULL, 0, NULL, N, &cell);
+        const md_float3_t pcw = md_geom_com((const float*)o, 0, w, 0, NULL, N, &cell);
+        const md_float3_t mc  = md_geom_com((const float*)o, 0, NULL, 0, NULL, N, NULL);
+        const md_float3_t mcw = md_geom_com((const float*)o, 0, w, 0, NULL, N, NULL);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(mc.elem[k],  pc.elem[k],  2.0e-2);
             EXPECT_NEAR(mcw.elem[k], pcw.elem[k], 2.0e-2);
@@ -4407,7 +4408,7 @@ UTEST(util, packed_kernels_any_alignment) {
 
         // AABB
         float mn[3], mx[3];
-        md_util_aabb(mn, mx, (const float*)a, 0, NULL, N);
+        md_geom_aabb(mn, mx, (const float*)a, 0, NULL, N);
         for (int k = 0; k < 3; ++k) {
             float lo = FLT_MAX, hi = -FLT_MAX;
             for (int i = 0; i < N; ++i) { lo = MD_MIN(lo, a[i].elem[k]); hi = MD_MAX(hi, a[i].elem[k]); }
@@ -4418,13 +4419,13 @@ UTEST(util, packed_kernels_any_alignment) {
         // Linear interpolation, no cell and orthorhombic, and nothing written past the end
         base_o[off + N] = md_float3_set(-1, -1, -1);
         const md_float3_t* const in[2] = { a, b };
-        ASSERT_TRUE(md_util_interpolate_linear(o, in, N, NULL, 0.25f));
+        ASSERT_TRUE(md_geom_interpolate_linear(o, in, N, NULL, 0.25f));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 EXPECT_NEAR(a[i].elem[k] + 0.25f * (b[i].elem[k] - a[i].elem[k]), o[i].elem[k], 1.0e-4f);
             }
         }
-        ASSERT_TRUE(md_util_interpolate_linear(o, in, N, &cell, 0.25f));
+        ASSERT_TRUE(md_geom_interpolate_linear(o, in, N, &cell, 0.25f));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 float d = b[i].elem[k] - a[i].elem[k];
@@ -4437,8 +4438,8 @@ UTEST(util, packed_kernels_any_alignment) {
         // Cubic through the middle frames at the ends of the interval
         const md_float3_t* const in4[4] = { a, a, b, b };
         float w4[4];
-        md_util_cubic_spline_weights(w4, 1.0f, 0.5f);
-        ASSERT_TRUE(md_util_interpolate_cubic_weighted(o, in4, N, NULL, w4));
+        md_geom_cubic_spline_weights(w4, 1.0f, 0.5f);
+        ASSERT_TRUE(md_geom_interpolate_cubic_weighted(o, in4, N, NULL, w4));
         for (int i = 0; i < N; ++i) {
             EXPECT_NEAR(b[i].y, o[i].y, 1.0e-4f);
         }
@@ -4446,7 +4447,7 @@ UTEST(util, packed_kernels_any_alignment) {
 
         // Wrapping
         md_memcpy(o, b, N * sizeof(md_float3_t));
-        ASSERT_TRUE(md_util_pbc((float*)o, 0, NULL, N, &cell));
+        ASSERT_TRUE(md_geom_pbc((float*)o, 0, NULL, N, &cell));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
                 EXPECT_GE(o[i].elem[k], -1.0e-4f);
@@ -4572,9 +4573,9 @@ UTEST(util, min_max_distance_groups) {
 
             for (int largest = 0; largest < 2; ++largest) {
                 if (largest) {
-                    md_util_max_distance_groups(dist, ia, ib, a, off, ng, b, nb, cell);
+                    md_geom_max_distance_groups(dist, ia, ib, a, off, ng, b, nb, cell);
                 } else {
-                    md_util_min_distance_groups(dist, ia, ib, a, off, ng, b, nb, cell);
+                    md_geom_min_distance_groups(dist, ia, ib, a, off, ng, b, nb, cell);
                 }
                 for (size_t g = 0; g < ng; ++g) {
                     if (off[g] == off[g + 1] || nb == 0) {
@@ -4608,18 +4609,18 @@ UTEST(util, min_max_distance_groups) {
     const size_t none[2] = { 0, 0 }, one[2] = { 0, 1 };
     float dd = -1.0f;
     int64_t i0 = 7, i1 = 7;
-    md_util_min_distance_groups(&dd, &i0, &i1, &p, none, 1, &p, 1, &cell);
+    md_geom_min_distance_groups(&dd, &i0, &i1, &p, none, 1, &p, 1, &cell);
     EXPECT_EQ(0.0f, dd);
     EXPECT_EQ(-1, i0);
     EXPECT_EQ(-1, i1);
-    md_util_max_distance_groups(&dd, &i0, &i1, &p, one, 1, &p, 0, &cell);
+    md_geom_max_distance_groups(&dd, &i0, &i1, &p, one, 1, &p, 0, &cell);
     EXPECT_EQ(0.0f, dd);
     EXPECT_EQ(-1, i0);
     EXPECT_EQ(-1, i1);
     const md_float3_t q = md_float3_set(9.5f, 2, 3);
-    md_util_min_distance_groups(&dd, &i0, &i1, &p, one, 1, &q, 1, &cell);
+    md_geom_min_distance_groups(&dd, &i0, &i1, &p, one, 1, &q, 1, &cell);
     EXPECT_NEAR(1.5f, dd, 1.0e-5f);
-    md_util_min_distance_groups(&dd, &i0, &i1, &p, one, 1, &q, 1, NULL);
+    md_geom_min_distance_groups(&dd, &i0, &i1, &p, one, 1, &q, 1, NULL);
     EXPECT_NEAR(8.5f, dd, 1.0e-5f);
     EXPECT_EQ(0, i0);
     EXPECT_EQ(0, i1);
@@ -4664,8 +4665,8 @@ UTEST(util, min_max_distance_near) {
                         ref = largest ? MD_MAX(ref, r) : MD_MIN(ref, r);
                     }
                 }
-                const size_t cnt = largest ? md_util_max_distance_near(na_idx, nb_idx, CAP, tol, a, na, b, nb, cell)
-                                           : md_util_min_distance_near(na_idx, nb_idx, CAP, tol, a, na, b, nb, cell);
+                const size_t cnt = largest ? md_geom_max_distance_near(na_idx, nb_idx, CAP, tol, a, na, b, nb, cell)
+                                           : md_geom_min_distance_near(na_idx, nb_idx, CAP, tol, a, na, b, nb, cell);
                 ASSERT_LE(cnt, (size_t)CAP);
                 ASSERT_GE(cnt, (size_t)1);
                 memset(in_set, 0, CAP);
@@ -4688,15 +4689,15 @@ UTEST(util, min_max_distance_near) {
                 }
                 // Too small a cap: more than it
                 if (cnt > 1) {
-                    const size_t c2 = largest ? md_util_max_distance_near(na_idx, nb_idx, cnt - 1, tol, a, na, b, nb, cell)
-                                              : md_util_min_distance_near(na_idx, nb_idx, cnt - 1, tol, a, na, b, nb, cell);
+                    const size_t c2 = largest ? md_geom_max_distance_near(na_idx, nb_idx, cnt - 1, tol, a, na, b, nb, cell)
+                                              : md_geom_min_distance_near(na_idx, nb_idx, cnt - 1, tol, a, na, b, nb, cell);
                     EXPECT_GT(c2, cnt - 1);
                 }
             }
         }
     }
     int64_t i0 = 0, i1 = 0;
-    EXPECT_EQ((size_t)0, md_util_min_distance_near(&i0, &i1, 1, 0.0f, a, 0, b, 1, NULL));
+    EXPECT_EQ((size_t)0, md_geom_min_distance_near(&i0, &i1, 1, 0.0f, a, 0, b, 1, NULL));
     free(na_idx);
     free(nb_idx);
     free(in_set);
@@ -4788,7 +4789,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     md_system_state_t ref_state = { .alloc = alloc };
     const md_str_t file = md_str_from_cstr(path);
     bool loaded = false;
-    if (md_str_ends_with(file, MD_STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL);
+    if (md_str_ends_with(file, MD_STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&ref, &ref_state, file, NULL);
     if (md_str_ends_with(file, MD_STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&ref, &ref_state, file, NULL);
     if (md_str_ends_with(file, MD_STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&ref, &ref_state, file, NULL);
     ASSERT_TRUE(loaded);
@@ -4799,7 +4800,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     const size_t num_xyz = xyz_text_of(&text, xyz_to_ref, &ref, &ref_state, by_element, alloc);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, NULL));
     ASSERT_EQ(num_xyz, sys.atom.count);
     ASSERT_EQ(0, sys.residue.count);
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
@@ -4939,8 +4940,8 @@ UTEST(util, backbones_from_bonds_with_residues) {
             md_system_state_t ref_state = { .alloc = alloc }, state = { .alloc = alloc };
             const md_str_t file = md_str_from_cstr(files[i]);
             const bool gro = md_str_ends_with(file, MD_STR_LIT(".gro"));
-            ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL));
-            ASSERT_TRUE(gro ? md_gro_system_init_from_file(&sys, &state, file, NULL) : md_pdb_system_init_from_file(&sys, &state, file, MD_PDB_OPTION_NONE, NULL));
+            ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, NULL));
+            ASSERT_TRUE(gro ? md_gro_system_init_from_file(&sys, &state, file, NULL) : md_pdb_system_init_from_file(&sys, &state, file, NULL));
             for (size_t t = 0; t < sys.atom.type.count; ++t) {
                 char buf[16];
                 snprintf(buf, sizeof(buf), "%u", (unsigned)(t + 1));
@@ -4977,7 +4978,7 @@ static void expect_segment_atoms_by_roles(int* utest_result, const char* path, b
     md_system_state_t ref_state = { .alloc = alloc };
     const md_str_t file = md_str_from_cstr(path);
     const bool gro = md_str_ends_with(file, MD_STR_LIT(".gro"));
-    ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, NULL));
     ASSERT_TRUE(md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL, NULL));
 
     int32_t* xyz_to_ref = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
@@ -4985,7 +4986,7 @@ static void expect_segment_atoms_by_roles(int* utest_result, const char* path, b
     xyz_text_of(&text, xyz_to_ref, &ref, &ref_state, by_element, alloc);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, NULL));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(ref.protein_backbone.segment.count, sys.protein_backbone.segment.count);
 
@@ -5061,7 +5062,7 @@ UTEST(util, backbones_named_as_their_atoms) {
         md_system_state_t state = { .alloc = alloc };
         const md_str_t file = md_str_from_cstr(refs[i].file);
         bool loaded = false;
-        if (md_str_ends_with(file, MD_STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&sys, &state, file, MD_PDB_OPTION_NONE, NULL);
+        if (md_str_ends_with(file, MD_STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&sys, &state, file, NULL);
         if (md_str_ends_with(file, MD_STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&sys, &state, file, NULL);
         if (md_str_ends_with(file, MD_STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&sys, &state, file, NULL);
         ASSERT_TRUE(loaded);
@@ -5113,7 +5114,7 @@ UTEST(util, lone_atom_ion_only_without_covalent_bonds) {
     #undef ATOM
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){ text, (size_t)len }, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){ text, (size_t)len }, NULL));
     ASSERT_EQ(10u, sys.residue.count);
     ASSERT_EQ(0u, sys.bond.count);
 
@@ -5167,7 +5168,7 @@ UTEST(util, backbones_from_bonds_none) {
         md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, md_str_from_cstr(files[i]), MD_XYZ_OPTION_NONE));
+        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, md_str_from_cstr(files[i]), NULL));
         ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
         EXPECT_TRUE(sys.bond.count > 0);
         EXPECT_EQ(0, sys.protein_backbone.range.count);
@@ -5204,16 +5205,16 @@ UTEST(util, packed_kernels_independent_of_address) {
         md_float3_t* p = (md_float3_t*)(base + o);
         memcpy(p, src, sizeof(src));
         const md_float3_t com[4] = {
-            md_util_com((const float*)p, 0, NULL, 0, NULL, N, &none),
-            md_util_com((const float*)p, 0, w, 0, NULL, N, &none),
-            md_util_com((const float*)p, 0, NULL, 0, NULL, N, &cell),
-            md_util_com((const float*)p, 0, w, 0, NULL, N, &cell),
+            md_geom_com((const float*)p, 0, NULL, 0, NULL, N, &none),
+            md_geom_com((const float*)p, 0, w, 0, NULL, N, &none),
+            md_geom_com((const float*)p, 0, NULL, 0, NULL, N, &cell),
+            md_geom_com((const float*)p, 0, w, 0, NULL, N, &cell),
         };
         float mn[3], mx[3];
-        md_util_aabb(mn, mx, (const float*)p, 0, NULL, N);
+        md_geom_aabb(mn, mx, (const float*)p, 0, NULL, N);
         // pbc and interpolation write in place or to out: the result at this offset against the first offset's
         memcpy(p, src, sizeof(src));
-        md_util_pbc((float*)p, 0, NULL, N, &cell);
+        md_geom_pbc((float*)p, 0, NULL, N, &cell);
         md_float3_t pbc[N];
         memcpy(pbc, p, sizeof(pbc));
         memcpy(p, src, sizeof(src));
@@ -5221,7 +5222,7 @@ UTEST(util, packed_kernels_independent_of_address) {
         for (int i = 0; i < N; ++i) q[i] = md_float3_add(src[i], (md_float3_t){{0.5f, -0.25f, 0.125f}});
         const md_float3_t* frames[2] = {p, q};
         md_float3_t lin[N];
-        md_util_interpolate_linear(lin, frames, N, &cell, 0.37f);
+        md_geom_interpolate_linear(lin, frames, N, &cell, 0.37f);
         if (o == 0) {
             memcpy(ref_com, com, sizeof(com));
             memcpy(ref_min, mn, sizeof(mn));

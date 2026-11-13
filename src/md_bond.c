@@ -195,11 +195,6 @@ static const uint64_t element_covalent_mask[2] = {
 };
 #endif
 
-static const uint64_t element_aromatic_ring[2] = {
-    0x000c00030001c1e0,
-    0x0000000000080000,
-};
-
 // This is a macro to generate test functions of the bitmasks above
 // This seems to generate decent assembly across Clang, GCC and MSVC
 // If this is a static inline function, it fails to represent the raw values of the mask in assembly
@@ -224,8 +219,6 @@ GENERATE_MASK_FUNC(is_transition_metal, element_transition_metal_mask)
 
 GENERATE_MASK_FUNC(is_halogen, element_halogen_mask)
 
-GENERATE_MASK_FUNC(is_aromatic, element_aromatic_ring)
-
 static inline bool is_metal_donor(size_t atomic_nr) {
     switch(atomic_nr) {
     case O:
@@ -245,195 +238,6 @@ static inline bool is_metal_donor(size_t atomic_nr) {
 // The covalent radius of md_element.h, in the bond rules
 static inline float element_covalent_radius(md_atomic_number_t element) {
     return md_atomic_number_covalent_radius(element);
-}
-
-static inline int build_key(char* buf, md_str_t res, md_str_t a, md_str_t b) {
-    int len = 0;
-    while (res.len) {
-        buf[len++] = *res.ptr++;
-        res.len--;
-    }
-    buf[len++] = '|';
-    while (a.len) {
-        buf[len++] = *a.ptr++;
-        a.len--;
-    }
-    buf[len++] = '|';
-    while (b.len) {
-        buf[len++] = *b.ptr++;
-        b.len--;
-    }
-    buf[len] = '\0';
-    return len;
-}
-
-static const int max_valence_bonds[] = {
-    0,  // Z = 0 (placeholder, no element with Z = 0)
-    1,  // H
-    0,  // He
-    1,  // Li
-    2,  // Be
-    3,  // B
-    4,  // C
-    4,  // N
-    3,  // O
-    1,  // F
-    0,  // Ne
-    1,  // Na
-    2,  // Mg
-    4,  // Al
-    4,  // Si
-    5,  // P
-    6,  // S
-    7,  // Cl
-    4,  // Ar
-    1,  // K
-    2,  // Ca
-    6,  // Sc
-    6,  // Ti
-    6,  // V
-    6,  // Cr
-    6,  // Mn
-    6,  // Fe
-    6,  // Co
-    6,  // Ni
-    4,  // Cu
-    4,  // Zn
-    3,  // Ga
-    4,  // Ge
-    5,  // As
-    6,  // Se
-    7,  // Br
-    4,  // Kr
-    1,  // Rb
-    2,  // Sr
-    6,  // Y
-    6,  // Zr
-    6,  // Nb
-    6,  // Mo
-    6,  // Tc
-    6,  // Ru
-    6,  // Rh
-    6,  // Pd
-    4,  // Ag
-    4,  // Cd
-    3,  // In
-    4,  // Sn
-    5,  // Sb
-    6,  // Te
-    7,  // I
-    4,  // Xe
-    1,  // Cs
-    2,  // Ba
-    6,  // La
-    6,  // Ce
-    6,  // Pr
-    6,  // Nd
-    6,  // Pm
-    6,  // Sm
-    6,  // Eu
-    6,  // Gd
-    6,  // Tb
-    6,  // Dy
-    6,  // Ho
-    6,  // Er
-    6,  // Tm
-    6,  // Yb
-    6,  // Lu
-    6,  // Hf
-    6,  // Ta
-    6,  // W
-    6,  // Re
-    6,  // Os
-    6,  // Ir
-    6,  // Pt
-    4,  // Au
-    4,  // Hg
-    3,  // Tl
-    4,  // Pb
-    5,  // Bi
-    6,  // Po
-    7,  // At
-    4,  // Rn
-    1,  // Fr
-    2,  // Ra
-    6,  // Ac
-    6,  // Th
-    6,  // Pa
-    6,  // U
-    6,  // Np
-    6,  // Pu
-    6,  // Am
-    6,  // Cm
-    6,  // Bk
-    6,  // Cf
-    6,  // Es
-    6,  // Fm
-    6,  // Md
-    6,  // No
-    6,  // Lr
-    6,  // Rf
-    6,  // Db
-    6,  // Sg
-    6,  // Bh
-    6,  // Hs
-    6,  // Mt
-    6,  // Ds
-    6,  // Rg
-    6,  // Cn
-    6,  // Nh
-    6,  // Fl
-    6,  // Mc
-    6,  // Lv
-    6,  // Ts
-    6   // Og
-};
-
-static inline int max_neighbors_element(md_atomic_number_t elem) {
-    if (elem < Num_Elements)
-        return max_valence_bonds[elem];
-    return 0;
-}
-
-static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_cap, const md_bond_data_t* bond, size_t atom_idx, size_t depth) {
-    MD_ASSERT(out_idx);
-    MD_ASSERT(out_cap > 0);
-
-#if MD_DEBUG
-    md_memset(out_idx, -1, sizeof(md_atom_idx_t) * out_cap);
-#endif
-
-    size_t out_len = 0;
-    out_idx[out_len++] = (md_atom_idx_t)atom_idx;
-    if (depth == 0) return out_len;
-
-    size_t beg = 0;
-    size_t end = 1;
-    md_atom_idx_t parent = -1;
-
-    while (depth-- > 0) {
-        size_t pre = out_len;
-        for (size_t i = beg; i < end; ++i) {
-            md_atom_idx_t cur_idx = out_idx[i];
-            uint32_t conn_len = (uint32_t)md_bond_conn_count(bond, cur_idx);
-            if (conn_len == 1) continue;
-            uint32_t conn_i   = bond->conn.offset[cur_idx];
-            for (uint32_t j = 0; j < conn_len; ++j) {
-                md_atom_idx_t idx = md_bond_conn_atom_idx(bond, conn_i, j);
-                if (idx != parent) {
-                    out_idx[out_len++] = idx;
-                    if (out_len == out_cap) {
-                        MD_LOG_DEBUG("Maximum capacity was reached, but perhaps not all of the neighborhood was written");
-                        return out_len;
-                    }
-                }
-            }
-        }
-        parent = out_idx[0];
-        beg = pre;
-        end = out_len;
-    }
-    return out_len;
 }
 
 typedef struct {
@@ -1337,7 +1141,7 @@ static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, f
 
 static inline float delta_distance(const md_system_state_t* state, uint32_t i, uint32_t j) {
     md_float3_t dx = md_float3_sub(state->xyz[j], state->xyz[i]);
-    md_util_min_image(dx.elem, 0, 1, &state->unitcell);
+    md_geom_min_image(dx.elem, 0, 1, &state->unitcell);
     return md_float3_length(dx);
 }
 

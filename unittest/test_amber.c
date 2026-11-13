@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <md_io.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -473,7 +474,7 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys, &state, path));
+    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys, &state, path, NULL));
     EXPECT_EQ(10u, sys.atom.count);
     EXPECT_EQ(2u, sys.residue.count);
     EXPECT_FALSE(md_system_state_has_coords(&state));
@@ -498,7 +499,7 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
     snprintf(chamber, sizeof(chamber), "%s%%FLAG CHARMM_UREY_BRADLEY_COUNT\n%%FORMAT(2I8)\n       0       0\n", prmtop_text);
     ASSERT_TRUE(write_text(path, chamber));
     md_system_t sys2 = { .alloc = arena };
-    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys2, &state, path));
+    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys2, &state, path, NULL));
     EXPECT_EQ(10u, sys2.atom.count);
 
     md_system_free(&sys);
@@ -513,11 +514,11 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
     ASSERT_TRUE(write_text(path, prmtop_text));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys, &state, path));
+    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys, &state, path, NULL));
     md_bond_data_clear(&sys.bond);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, arena);
     EXPECT_EQ(0u, sys.bond.count);
-    ASSERT_TRUE(md_amber_prmtop_system_supplement_from_file(&sys, path));
+    ASSERT_TRUE(md_amber_prmtop_system_supplement_from_file(&sys, path, NULL));
     EXPECT_EQ(8u, sys.bond.count);
 
     // Other atoms: refused, nothing changed
@@ -526,7 +527,7 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
     char* name = strstr(other, "HO1 ");
     md_memcpy(name, "XX1 ", 4);
     ASSERT_TRUE(write_text(path, other));
-    EXPECT_FALSE(md_amber_prmtop_system_supplement_from_file(&sys, path));
+    EXPECT_FALSE(md_amber_prmtop_system_supplement_from_file(&sys, path, NULL));
     EXPECT_EQ(8u, sys.bond.count);
 
     md_system_free(&sys);
@@ -631,7 +632,7 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
 
     md_system_t sys = { .alloc = arena };
     ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, nc, MD_STR_LIT("run/a"), 0));
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, MD_STR_LIT("run/a")));
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
     const md_attribute_t* ep = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/eptot"));
     const md_attribute_t* nb = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/1_4_nb"));
     const md_attribute_t* tk = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/temp_k"));
@@ -654,7 +655,7 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
         "L2 -.1102000000E+04  -.2550000000E+00  -.1127330000E+02\n";
     ASSERT_TRUE(write_text(out, mden));
     EXPECT_TRUE(md_amber_energy_file_is_mden(out));
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, MD_STR_LIT("run/a")));
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
     ep = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/eptot"));
     ASSERT_TRUE(ep != NULL);
     EXPECT_EQ(-1102.0, ((const double*)ep->data)[1]);
@@ -665,7 +666,7 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
     ncw_t w3 = amber_trajectory(2, 3);
     ASSERT_TRUE(ncw_write(&w3, nc, 0));
     ASSERT_TRUE(md_amber_netcdf_system_publish_run(&other, nc, MD_STR_LIT("run/b"), 0));
-    EXPECT_FALSE(md_amber_energy_system_supplement_from_file(&other, out, MD_STR_LIT("run/b")));
+    EXPECT_FALSE(md_amber_energy_system_supplement_from_file(&other, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/b") }));
     EXPECT_TRUE(md_attributes_find(&other.attributes, MD_STR_LIT("run/b/amber_energy/time")) == NULL);
 
     md_system_free(&sys);
@@ -743,7 +744,7 @@ UTEST(amber_energy, ti_regions_are_one_record) {
         "   5.  TIMINGS\n";
     ASSERT_TRUE(write_text(out, text));
     md_system_t sys = { .alloc = arena };
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, MD_STR_LIT("run/ti")));
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/ti") }));
     const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/time"));
     const md_attribute_t* e1   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/etot"));
     const md_attribute_t* e2   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/etot_ti_region_2"));

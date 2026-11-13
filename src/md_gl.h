@@ -259,18 +259,6 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // are plain, without delta those of the system are drawn as they are.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys, const struct md_bond_delta_t* delta, const struct md_chem_delta_t* chem);
 
-// The gaps of the chains, from the chain breaks of the system (MD_RESIDUE_FLAG_BREAK_AFTER, CHAIN BREAKS in md_backbone.h):
-// for the representations with chain_gaps set, a straight dashed line over each break, from the residue before it to
-// the one after it. Where the missing residues went is not known, so the line claims no more than that the chain goes
-// on. The cartoon and ribbons draw it between the ends of the cartoon of the chain on either side (near the CA of the
-// residue, where the spline ends) for the breaks of protein chains; licorice and ball and stick draw it between the
-// atoms a link would join (md_system_chain_break_atoms: C and N, O3' and P, the backbone beads). Its dashes are long, a
-// length of their own in proportion to its thickness, as many as fit (see the weak bonds below), so that a long gap
-// reads as a gap and not as a bond, nor as one of the shorter dashed lines (delocalized bonds). It takes the colors
-// of its two ends (the atoms it is drawn between), is shown when both of them are, and is drawn at any length: its
-// ends are where the atoms are, not their minimum image. It picks as the residue before the break
-// (md_gl_picking_offset_t gap_base). The system must be the one of the molecule. md_gl_mol_create sets them.
-void md_gl_mol_set_chain_gaps(md_gl_mol_t mol, const struct md_system_t* sys);
 
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 

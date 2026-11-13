@@ -4,7 +4,7 @@
 // md_hierarchy.c, md_backbone.c, md_lipid.c and md_martini.c) shares between its files. Not a public header.
 
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_system.h>
 #include "md_system_fields.h"
 #include <md_chem.h>
