@@ -350,7 +350,7 @@ typedef struct sym_t {
     double              best_rmsd;
 } sym_t;
 
-// Called from within md_match_for_each, whose temp scope is open above ours: it allocates nothing
+// Called from within md_match_for_each, given no callback_alloc: it allocates nothing
 static bool sym_cb(const int32_t* atom_idx, size_t width, uint32_t unit, void* user) {
     (void)unit;
     sym_t* s = user;
@@ -380,7 +380,7 @@ static void least_rmsd(const md_mcs_desc_t* desc, const int32_t* a, int32_t* b, 
 
     const md_match_desc_t md = {.query = &q, .mode = MD_MATCH_MODE_ALL, .hydrogens = MD_MATCH_RESOLVE_NEVER, .bond_orders = MD_MATCH_RESOLVE_NEVER,
                                 .charges = MD_MATCH_RESOLVE_NEVER, .units = &unit, .num_units = 1, .limit = 4096, .max_steps = 1000000};
-    md_match_for_each(NULL, NULL, &md, desc->b.sys, sym_cb, &s);
+    md_match_for_each(NULL, NULL, &md, desc->b.sys, sym_cb, &s, NULL);
     md_memcpy(b, s.best, n * sizeof(int32_t));
 }
 

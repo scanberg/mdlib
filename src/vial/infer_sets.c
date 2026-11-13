@@ -1441,7 +1441,7 @@ static T call_smiles(infer_t* x, vial_node_id call, bool atoms) {
     }
     md_array_push(m.offset, 0, x->alloc);
     bool incomplete = false;
-    const bool ok = md_match_for_each(NULL, &incomplete, &desc, x->sys->sys, on_match, &m);
+    const bool ok = md_match_for_each(NULL, &incomplete, &desc, x->sys->sys, on_match, &m, x->alloc);
     md_match_query_free(&q);
     if (!ok) {
         vx_diag_fix(x, "E0206", a[0], NULL, "`%s` cannot search for this pattern", fname);

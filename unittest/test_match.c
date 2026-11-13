@@ -89,7 +89,7 @@ static size_t count_smiles_ex(const char* smiles, const md_match_desc_t* base, c
     md_match_desc_t desc = *base;
     desc.query = &query;
     size_t count = 0;
-    const bool ok = md_match_for_each(&count, NULL, &desc, sys, NULL, NULL);
+    const bool ok = md_match_for_each(&count, NULL, &desc, sys, NULL, NULL, NULL);
     md_match_query_free(&query);
     return ok ? count : SIZE_MAX;
 }
@@ -102,7 +102,7 @@ static size_t count_smiles(const char* smiles, md_match_level_t level, md_match_
 // md_match_for_each as a count, SIZE_MAX for an invalid query or description
 static size_t count_matches(const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param) {
     size_t count = 0;
-    return md_match_for_each(&count, NULL, desc, sys, callback, user_param) ? count : SIZE_MAX;
+    return md_match_for_each(&count, NULL, desc, sys, callback, user_param, NULL) ? count : SIZE_MAX;
 }
 
 static bool atoms_bonded(const md_system_t* sys, int32_t a, int32_t b) {
@@ -362,14 +362,14 @@ UTEST(match, query_validation) {
     desc.query = &empty;
     EXPECT_FALSE(md_match_find(&res, &desc, sys, alloc));
     size_t count = 7;
-    EXPECT_FALSE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL));
+    EXPECT_FALSE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL, NULL));
     EXPECT_EQ(0, (int)count);
 
     // A valid search which finds nothing is not a failure
     md_match_atom_t gold = {.flags = MD_MATCH_ATOM_ELEMENT, .z = 79};
     md_match_query_t none = {.num_atoms = 1, .atoms = &gold};
     desc.query = &none;
-    EXPECT_TRUE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL));
+    EXPECT_TRUE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL, NULL));
     EXPECT_EQ(0, (int)count);
 }
 
@@ -485,17 +485,17 @@ UTEST(match, max_steps) {
 
     size_t count = 0;
     bool incomplete = true;
-    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL, NULL));
     EXPECT_FALSE(incomplete);
     EXPECT_EQ((size_t)(45 * 44 / 2), count);
 
     desc.max_steps = 1000000000;
-    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL, NULL));
     EXPECT_FALSE(incomplete);
     EXPECT_EQ((size_t)(45 * 44 / 2), count);
 
     desc.max_steps = 100;
-    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL, NULL));
     EXPECT_TRUE(incomplete);
     EXPECT_LT(count, (size_t)(45 * 44 / 2));
 

@@ -1879,8 +1879,21 @@ static void report(search_t* s) {
     }
 
     s->count++;
-    if (s->callback && !s->callback(s->row, pl->num_atoms, (uint32_t)s->unit, s->user_param)) {
-        s->stop = true;
+    if (s->callback) {
+#if MD_DEBUG
+        // What the callback allocates must not land in the search's scratch, which is rewound when the search ends:
+        // md_match_for_each's callback_alloc names the allocator it allocates from
+        const size_t pos = md_vm_arena_get_pos(s->arena);
+#endif
+        if (!s->callback(s->row, pl->num_atoms, (uint32_t)s->unit, s->user_param)) {
+            s->stop = true;
+        }
+#if MD_DEBUG
+        if (md_vm_arena_get_pos(s->arena) != pos) {
+            MD_LOG_ERROR("md_match: the callback allocated from the search's scratch arena: pass its allocator as callback_alloc");
+            MD_ASSERT(false);
+        }
+#endif
     }
     if (s->limit && s->count >= s->limit) {
         s->stop = true;
@@ -2348,15 +2361,16 @@ static bool elements_suffice(const md_match_query_t* q, const md_system_t* sys) 
     return true;
 }
 
-static bool match_run(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param) {
+static bool match_run(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param, md_allocator_i* callback_alloc) {
     if (out_count) *out_count = 0;
     if (out_incomplete) *out_incomplete = false;
     if (!desc_validate(desc, sys)) return false;
     if (sys->atom.count == 0 || !elements_suffice(desc->query, sys)) return true;
 
-    // The scratch memory lives in an arena of its own: the callback may allocate from any allocator, temp arenas
-    // included, without interleaving with it.
-    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
+    // The scratch is a temp scope of an arena other than the one the callback allocates from: what the callback
+    // keeps does not interleave with it
+    md_temp_scope_t temp = md_temp_begin_avoid(callback_alloc);
+    md_allocator_i* arena = md_temp_allocator(temp);
 
     target_t tg;
     target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, query_states_charge(desc->query)), arena);
@@ -2389,7 +2403,7 @@ static bool match_run(size_t* out_count, bool* out_incomplete, const md_match_de
 
     if (out_count) *out_count = s.count;
     if (out_incomplete) *out_incomplete = s.incomplete;
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp);
     return true;
 }
 
@@ -2556,7 +2570,8 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
         return false;
     }
 
-    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* arena = md_temp_allocator(temp);
     target_t tg;
     target_build(&tg, sys, TARGET_RESOLUTION, arena);
 
@@ -2567,7 +2582,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
         const int32_t a = atom_idx[i];
         if (a < 0 || (size_t)a >= tg.num_atoms) {
             MD_LOG_ERROR("md_match: atom index %d out of range", a);
-            md_vm_arena_destroy(arena);
+            md_temp_end(temp);
             return false;
         }
         lookup[i] = ((uint64_t)(uint32_t)a << 32) | (uint64_t)i;
@@ -2577,7 +2592,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
     for (size_t i = 1; i < count; ++i) {
         if ((lookup[i] >> 32) == (lookup[i - 1] >> 32)) {
             MD_LOG_ERROR("md_match: atom %u given twice", (uint32_t)(lookup[i] >> 32));
-            md_vm_arena_destroy(arena);
+            md_temp_end(temp);
             return false;
         }
     }
@@ -2684,7 +2699,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp);
     return true;
 }
 
@@ -2697,8 +2712,8 @@ void md_match_query_free(md_match_query_t* query) {
     md_memset(query, 0, sizeof(md_match_query_t));
 }
 
-bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param) {
-    return match_run(out_count, out_incomplete, desc, sys, callback, user_param);
+bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param, struct md_allocator_i* callback_alloc) {
+    return match_run(out_count, out_incomplete, desc, sys, callback, user_param, callback_alloc);
 }
 
 typedef struct collect_t {
@@ -2722,7 +2737,7 @@ bool md_match_find(md_match_result_t* out, const md_match_desc_t* desc, const st
     collect_t c = {.alloc = alloc};
     size_t count = 0;
     bool incomplete = false;
-    if (!match_run(&count, &incomplete, desc, sys, collect_callback, &c)) {
+    if (!match_run(&count, &incomplete, desc, sys, collect_callback, &c, alloc)) {
         md_array_free(c.atom_idx, alloc);
         md_array_free(c.unit, alloc);
         return false;
@@ -2981,7 +2996,8 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
     const size_t num_entries = md_array_size(lib->entries);
     if (sys->atom.count == 0 || num_entries == 0) return true;
 
-    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* arena = md_temp_allocator(temp);
 
     bool has_charge = false;
     for (size_t e = 0; e < num_entries; ++e) has_charge |= query_states_charge(&lib->entries[e].query);
@@ -3108,7 +3124,7 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
         }
     }
 
-    md_vm_arena_destroy(arena);
+    md_temp_end(temp);
     return true;
 }
 

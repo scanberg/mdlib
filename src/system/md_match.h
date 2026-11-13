@@ -419,7 +419,11 @@ void md_match_query_free(md_match_query_t* query);
 // seen so far). The number of matches goes to out_count (optional), and whether the search gave up at
 // md_match_desc_t.max_steps to out_incomplete (optional). Returns false if the query or the description is invalid
 // (logged), true otherwise, also when nothing is found.
-bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param);
+// The search's scratch is a temp scope, of a temp arena other than callback_alloc: the allocator the callback keeps
+// what it allocates in, NULL for a callback that allocates nothing (or only within a temp scope of its own). A
+// callback that keeps something in the search's arena would lose it when the search ends (asserted in debug).
+bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param,
+                       struct md_allocator_i* callback_alloc);
 
 // Collects the matches. Returns false if the query or the description is invalid (logged), true otherwise, also when
 // nothing is found.
