@@ -115,8 +115,6 @@ void md_topo_gpu_record(md_gpu_stream_t stream, md_topo_gpu_context_t* context,
 // Returns false if zero critical points were found (out_graph left unchanged).
 bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gpu_context_t* context);
 
-#else
-bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uint32_t vol_tex, const struct md_grid_t* grid, float scalar_threshold);
 #endif
 
 // ---------------------------------------------------------------------------

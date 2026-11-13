@@ -290,31 +290,6 @@ size_t md_gto_pgto_count(const md_gto_basis_t* basis);
 size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
     const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff);
 
-// GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
-void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const struct md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-	const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op);
-
-// mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
-void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const struct md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-	const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op);
-
-// Basis-centric GL density evaluation.
-// Expands the basis, converts the NxN double density matrix to upper-triangular float,
-// and dispatches the existing GL density compute shader.
-// density_matrix: full N×N row-major doubles, N = number of spherical AOs in basis.
-void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const struct md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-	const double* density_matrix, bool include_gradients, md_gto_op_t op);
-
-// The same over a density matrix already packed: its upper triangle as float, row i holding columns
-// i..N-1, N(N+1)/2 values (md_qm_extract_packed_symmetric_f32 gives it). The form the shader takes, so
-// a caller holding it this way never has to make the full double matrix only for it to be packed here.
-void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const struct md_grid_t* grid,
-    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-	const float* upper_tri, bool include_gradients, md_gto_op_t op);
-
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	uint32_t res = 0;
 	res |= ((uint32_t)i) <<  0;
