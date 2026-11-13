@@ -869,6 +869,32 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         print_times(ints[ii].name, t, reps);
     }
     {
+        /* by which slots: nearest from each (is a buffer slow?), linear between
+           pairs of them (does where the two streams lie matter?) */
+        printf("  slots in buffers: %u %u %u %u; nearest by slot:", fr.buffer[0], fr.buffer[1], fr.buffer[2], fr.buffer[3]);
+        const uint32_t pairs[][2] = { {0, 1}, {1, 2}, {2, 3}, {0, 2}, {0, 3}, {1, 3} };
+        for (int pass = 0; pass < 2; ++pass) {
+            const uint32_t m = pass == 0 ? 4 : (uint32_t)(sizeof(pairs) / sizeof(pairs[0]));
+            if (pass == 1) printf("\n  linear by slots:");
+            for (uint32_t j = 0; j < m; ++j) {
+                atoms.frame_count = pass == 0 ? 1 : 2;
+                atoms.frame_slot[0] = pass == 0 ? j : pairs[j][0];
+                atoms.frame_slot[1] = pass == 0 ? j : pairs[j][1];
+                for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+                    md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, atoms.frame_count, 0.5f, 0.0f, 0.5f);
+                    md_tick_t t0 = md_tick_now();
+                    md_render_mol_update(mol, s, &sc->topo, sc->dyn, &atoms, 0, NULL);
+                    md_gpu_stream_sync(s);
+                    if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                qsort(t, reps, sizeof(double), cmp_d);
+                if (pass == 0) printf(" %u: %.2f", j, t[0]);
+                else           printf(" %u-%u: %.2f", pairs[j][0], pairs[j][1], t[0]);
+            }
+        }
+        printf(" ms\n");
+    }
+    {
         /* the copy from positions again, beside the frames' (the same state of the GPU's clocks) */
         md_render_mol_atoms_t ap = {0};
         ap.position = sc->pos;
