@@ -14,6 +14,7 @@
 
 #define SPATIAL_ACC_BUFLEN 1024
 #define SPATIAL_ACC_MAX_NEIGHBOR_CELLS 5
+#define SPATIAL_ACC_MAX_STENCIL (SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS)
 
 typedef md_128i ivec4_t;
 
@@ -838,6 +839,39 @@ static inline void neighbor_cell_extent(int out_ncell[3], double cutoff, const m
     }
 }
 
+// How far the cutoff reaches along each axis, in cells: the cutoff over the distance between the faces of a cell (as
+// neighbor_cell_extent). A little generous, as the kernels compare squared distances in float: a point is skipped by the
+// bounds below only when it has no pair within the cutoff.
+static inline void reach_in_cells(float out_r[3], double cutoff, const md_spatial_acc_t* acc) {
+    for (int a = 0; a < 3; ++a) {
+        const double dim = (double)acc->cell_dim[a];
+        out_r[a] = (float)(cutoff * acc->inv_cell_ext[a] * dim * 1.00001 + 1e-6 * dim + 1e-4);
+    }
+}
+
+// The places u of points in a cell (in cells, from its corner) from which the cells at offset o along an axis are
+// within the reach r: lo <= u <= hi. They lie o - u above (o > 0) and u - (o + 1) below (o < 0).
+static inline void reach_bounds(float* lo, float* hi, int o, float r) {
+    *lo = o > 0 ? (float)o - r : -INFINITY;
+    *hi = o < 0 ? (float)o + 1.0f + r : INFINITY;
+}
+
+// The bounds of each offset of a stencil, and whether they are worth testing: where they leave more than half of a cell
+// in (a cutoff of about the cell), testing costs more than it saves, and the offset is visited from every point
+static inline void stencil_bounds(md_float4_t* lo, md_float4_t* hi, bool* cull, int nbr[][4], size_t num_nbr, double cutoff, const md_spatial_acc_t* acc) {
+    float r[3];
+    reach_in_cells(r, cutoff, acc);
+    for (size_t n = 0; n < num_nbr; ++n) {
+        lo[n] = hi[n] = md_float4_zero();
+        float in = 1.0f;
+        for (int a = 0; a < 3; ++a) {
+            reach_bounds(&lo[n].elem[a], &hi[n].elem[a], nbr[n][a], r[a]);
+            in *= MD_CLAMP(MD_MIN(hi[n].elem[a], 1.0f) - MD_MAX(lo[n].elem[a], 0.0f), 0.0f, 1.0f);
+        }
+        cull[n] = in <= 0.5f;
+    }
+}
+
 static float calc_r2(double cutoff) {
     float r2 = (float)(cutoff * cutoff);
     return nextafterf(r2, r2 + 1.0f); // Round up to ensure we don't miss neighbors due to floating point precision
@@ -1142,18 +1176,38 @@ static MD_FORCE_INLINE size_t cell_self(pair_out_t* out, size_t count, const met
     return count;
 }
 
-// The elements of cell i, moved by shift (in periods), against those of cell j
-static MD_FORCE_INLINE size_t cell_vs_cell(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off_i, uint32_t len_i, uint32_t off_j, uint32_t len_j, md_float4_t shift, const bool tri) {
+// Element k, moved by (sx, sy, sz), against the elements [beg, beg + len)
+static MD_FORCE_INLINE size_t moved_vs_range(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t k, md_256 sx, md_256 sy, md_256 sz, uint32_t beg, uint32_t len, const bool tri) {
+    return point_vs_range(out, count, m, e, md_mm256_add_ps(md_mm256_set1_ps(e.x[k]), sx), md_mm256_add_ps(md_mm256_set1_ps(e.y[k]), sy),
+                          md_mm256_add_ps(md_mm256_set1_ps(e.z[k]), sz), md_mm256_set1_epi32((int)e.idx[k]), beg, len, tri);
+}
+
+// The elements of cell i, moved by shift (in periods), against those of cell j. When culled, of cell i only those within
+// [lo, hi] of its corner (in cells, fdim cells per period), which reach cell j (stencil_bounds): the others have no pair
+// there. Not culled, they are all tested, without the bounds.
+static MD_FORCE_INLINE size_t cell_vs_cell(pair_out_t* out, size_t count, const metric_t* m, elems_t e, uint32_t off_i, uint32_t len_i, uint32_t off_j, uint32_t len_j, md_float4_t shift,
+                                           bool cull, md_float4_t corner, md_float4_t fdim, md_float4_t lo, md_float4_t hi, const bool tri) {
     const md_256 sx = md_mm256_set1_ps(shift.x);
     const md_256 sy = md_mm256_set1_ps(shift.y);
     const md_256 sz = md_mm256_set1_ps(shift.z);
-    for (uint32_t i = 0; i < len_i; ++i) {
-        const uint32_t k = off_i + i;
-        count = point_vs_range(out, count, m, e,
-                               md_mm256_add_ps(md_mm256_set1_ps(e.x[k]), sx),
-                               md_mm256_add_ps(md_mm256_set1_ps(e.y[k]), sy),
-                               md_mm256_add_ps(md_mm256_set1_ps(e.z[k]), sz),
-                               md_mm256_set1_epi32((int)e.idx[k]), off_j, len_j, tri);
+    if (!cull) {
+        for (uint32_t k = off_i; k < off_i + len_i; ++k) count = moved_vs_range(out, count, m, e, k, sx, sy, sz, off_j, len_j, tri);
+        return count;
+    }
+    for (uint32_t i0 = 0; i0 < len_i; i0 += 8) {
+        const uint32_t k0 = off_i + i0;
+        const md_256 ux = md_mm256_fmsub_ps(md_mm256_loadu_ps(e.x + k0), md_mm256_set1_ps(fdim.x), md_mm256_set1_ps(corner.x));
+        const md_256 uy = md_mm256_fmsub_ps(md_mm256_loadu_ps(e.y + k0), md_mm256_set1_ps(fdim.y), md_mm256_set1_ps(corner.y));
+        const md_256 uz = md_mm256_fmsub_ps(md_mm256_loadu_ps(e.z + k0), md_mm256_set1_ps(fdim.z), md_mm256_set1_ps(corner.z));
+        md_256 in = md_mm256_and_ps(md_mm256_cmpge_ps(ux, md_mm256_set1_ps(lo.x)), md_mm256_cmple_ps(ux, md_mm256_set1_ps(hi.x)));
+        in = md_mm256_and_ps(in, md_mm256_and_ps(md_mm256_cmpge_ps(uy, md_mm256_set1_ps(lo.y)), md_mm256_cmple_ps(uy, md_mm256_set1_ps(hi.y))));
+        in = md_mm256_and_ps(in, md_mm256_and_ps(md_mm256_cmpge_ps(uz, md_mm256_set1_ps(lo.z)), md_mm256_cmple_ps(uz, md_mm256_set1_ps(hi.z))));
+        int mask = md_mm256_movemask_ps(in) & (len_i - i0 >= 8 ? 0xFF : (1 << (len_i - i0)) - 1);
+        while (mask) {
+            const uint32_t k = k0 + (uint32_t)md_ctz32((uint32_t)mask);
+            mask &= mask - 1;
+            count = moved_vs_range(out, count, m, e, k, sx, sy, sz, off_j, len_j, tri);
+        }
     }
     return count;
 }
@@ -1377,6 +1431,10 @@ static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double c
 
     int nbr[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
     const size_t num_nbr = generate_forward_neighbors4(nbr, ncell);
+    md_float4_t nbr_lo[SPATIAL_ACC_MAX_STENCIL], nbr_hi[SPATIAL_ACC_MAX_STENCIL];
+    bool        nbr_cull[SPATIAL_ACC_MAX_STENCIL];
+    stencil_bounds(nbr_lo, nbr_hi, nbr_cull, nbr, num_nbr, cutoff, acc);
+    const md_float4_t fdim = md_float4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
 
     const metric_t    m = metric_init(acc, cutoff);
     const grid_wrap_t g = grid_wrap_init(acc);
@@ -1412,6 +1470,7 @@ static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double c
         count = cell_self(&out, count, &m, e, off_i, len_i, tri);
 
         const ivec4_t c_v = ivec4_set((int)cc[0], (int)cc[1], (int)cc[2], 0);
+        const md_float4_t corner = vec4_from_ivec4(c_v);
         for (size_t n = 0; n < num_nbr; ++n) {
             const ivec4_t n_v = ivec4_add(c_v, ivec4_load(nbr[n]));
             uint32_t nc[3];
@@ -1436,7 +1495,7 @@ static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double c
             }
             const uint32_t off_j = acc->cell_off[cj];
             const uint32_t len_j = acc->cell_off[cj + 1] - off_j;
-            count = cell_vs_cell(&out, count, &m, e, off_i, len_i, off_j, len_j, vec4_from_ivec4(shift), tri);
+            count = cell_vs_cell(&out, count, &m, e, off_i, len_i, off_j, len_j, vec4_from_ivec4(shift), nbr_cull[n], corner, fdim, nbr_lo[n], nbr_hi[n], tri);
         }
     }
     out.count = count;
@@ -1460,6 +1519,9 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
 
     int nbr[SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS * SPATIAL_ACC_MAX_NEIGHBOR_CELLS][4];
     const size_t num_nbr = generate_neighbors4(nbr, ncell);
+    md_float4_t nbr_lo[SPATIAL_ACC_MAX_STENCIL], nbr_hi[SPATIAL_ACC_MAX_STENCIL];
+    bool        nbr_cull[SPATIAL_ACC_MAX_STENCIL];
+    stencil_bounds(nbr_lo, nbr_hi, nbr_cull, nbr, num_nbr, cutoff, acc);
 
     const metric_t    m = metric_init(acc, cutoff);
     const grid_wrap_t g = grid_wrap_init(acc);
@@ -1485,8 +1547,11 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
         f = md_float4_blend(f, md_float4_fract(f), fract_mask);
         const ivec4_t c_v = ivec4_from_vec4(md_float4_floor(md_float4_mul(f, fcell_dim)));
         const md_256i v_idx = md_mm256_set1_epi32((int)idx);
+        // The place of the point in its cell, in cells: only the cells it reaches are visited
+        const md_float4_t u = md_float4_sub(md_float4_mul(f, fcell_dim), vec4_from_ivec4(c_v));
 
         for (size_t n = 0; n < num_nbr; ++n) {
+            if (nbr_cull[n] && (u.x < nbr_lo[n].x || u.x > nbr_hi[n].x || u.y < nbr_lo[n].y || u.y > nbr_hi[n].y || u.z < nbr_lo[n].z || u.z > nbr_hi[n].z)) continue;
             uint32_t nc[3];
             ivec4_t shift;
             if (!grid_wrap(&g, ivec4_add(c_v, ivec4_load(nbr[n])), nc, &shift)) continue;
