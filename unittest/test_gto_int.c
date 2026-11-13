@@ -16,6 +16,7 @@
 #include <md_gto.h>
 #include <md_gto_int.h>
 #include <md_molden.h>
+#include <core/md_grid.h>
 
 #include <float.h>
 #include <math.h>

@@ -1,4 +1,8 @@
 ﻿#include "md_infer_internal.h"
+#include <core/md_arena_allocator.h>
+#include <core/md_log.h>
+#include <md_dssp.h>
+#include <md_geom.h>
 
 // Polymer inference: the roles of the atoms of amino acids and nucleotides, the classification of residues, the
 // protein and nucleic acid backbones and their chain breaks, and the backbone of a state (md_util.h).

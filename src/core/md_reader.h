@@ -4,12 +4,13 @@
 #include <core/md_str.h>
 #include <core/md_file.h>
 #include <core/md_parse_simd.h>
-#include <core/md_executor.h>
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+struct md_executor_t;
 
 struct md_allocator_i;
 
@@ -195,7 +196,7 @@ static inline bool md_reader_skip_line(md_reader_i* r) {
 md_str_t md_reader_block(md_reader_i* r);
 
 // md_reader_block, reading what more there is over the threads of ex where the source reads at offsets (a file)
-md_str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex);
+md_str_t md_reader_block_parallel(md_reader_i* r, const struct md_executor_t* ex);
 
 static inline void md_reader_advance(md_reader_i* r, size_t bytes) {
     MD_ASSERT(r && bytes <= (size_t)(r->end - r->cur));

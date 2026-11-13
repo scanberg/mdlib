@@ -14,6 +14,7 @@
 #include <core/md_common.h>
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
+#include <core/md_grid.h>
 
 #include <stdbool.h>
 #include <float.h>

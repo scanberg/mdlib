@@ -10,6 +10,7 @@
 
 #include <md_cube.h>
 #include <md_gto.h>
+#include <core/md_grid.h>
 #include "test_executor.h"
 
 #include <float.h>

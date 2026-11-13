@@ -3,6 +3,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_log.h>
+#include <core/md_executor.h>
 
 #include <stddef.h>
 #include <string.h>

@@ -11,7 +11,8 @@
 #include "select.h"
 
 #include <md_unitcell.h>
-#include <core/md_executor.h>
+
+struct md_executor_t;
 
 struct md_system_t;
 struct md_float3_t;
@@ -92,7 +93,7 @@ typedef struct vial_interp_t {
     // a sweep stay here. None: every frame here, in order. A sweep with a fold runs here too, its frames in order.
     struct vial_interp_t*       workers;
     size_t                      num_workers;
-    const md_executor_t*        executor;
+    const struct md_executor_t*        executor;
     // Values written out as each frame computes them (vial_interp_run): by ssa, NULL or where frame f's value goes,
     // f * stream_count[v] elements of its dtype in; a missing float as NaN. Disjoint per frame, so any thread writes.
     uint8_t**                   stream;

@@ -16,6 +16,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
+#include <core/md_executor.h>
 
 #include <math.h>
 #include <stdarg.h>

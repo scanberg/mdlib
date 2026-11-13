@@ -24,6 +24,7 @@
 #include <hdf5.h>
 #include "md_hdf5.h"
 #include <md_element.h>
+#include <core/md_executor.h>
 
 
 // ---------------------------------------------------------------------------

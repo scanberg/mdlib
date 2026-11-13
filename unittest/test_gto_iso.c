@@ -51,6 +51,7 @@
 #include "vlx_test_util.h"
 
 #include <md_gto.h>
+#include <core/md_grid.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_os.h>

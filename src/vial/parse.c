@@ -15,6 +15,7 @@
 #include "ast.h"
 
 #include <core/md_common.h>
+#include <core/md_array.h>
 
 #include <string.h>
 #include <stdio.h>

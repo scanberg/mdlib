@@ -1,4 +1,6 @@
 ﻿#include "md_infer_internal.h"
+#include <core/md_fifo.h>
+#include <core/md_hash.h>
 
 // Ring inference: the rings of the bond graph and their flags (md_util.h).
 
