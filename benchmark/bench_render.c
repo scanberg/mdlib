@@ -16,8 +16,9 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       masks on the GPU stream, with the cull statistics beside them. By
       default the scene goes through md_render_mol (molecules in random
       order, clustered by md_render_mol_update, which is timed too, and
-      the frame pipeline: a frame quantized on the host, its upload into a
-      slot of four with and without the regroup, and the copy from 1, 2 or 4
+      the frame pipeline: a frame quantized on the host into GPU-visible
+      memory, its upload into a slot of four with and without the regroup
+      (and from host memory, for comparison), and the copy from 1, 2 or 4
       resident frames in a periodic box);
       --host-grid sorts and clusters by grid cell on the host instead, and
       --implicit sorts on the host and leaves md_render its runs of 64.
@@ -734,38 +735,47 @@ static void print_times(const char* name, double* t, uint32_t reps) {
 /* The frame pipeline: a frame quantized on the host, uploaded into a slot of
    four (with and without the regroup, which reorders the three others), and
    the copy interpolated from 1, 2 or 4 resident frames. The box is periodic,
-   so the minimum image is part of every interpolation. */
+   so the minimum image is part of every interpolation. The frame is
+   quantized straight into GPU-visible memory and read from there (on
+   unified memory, nothing is copied); the upload from host memory, through
+   the stream, is timed beside it. */
 static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, uint32_t reps) {
     const uint32_t n = sc->atoms;
-    uint16_t* q[3] = { malloc((size_t)n * 2), malloc((size_t)n * 2), malloc((size_t)n * 2) };
     float cell[9] = { sc->box, 0, 0, 0, sc->box, 0, 0, 0, sc->box };
-    md_render_mol_frame_t f;
-    double* t = malloc((reps + 2) * sizeof(double));
-    for (uint32_t rr = 0; rr < reps; ++rr) {
-        md_tick_t t0 = md_tick_now();
-        md_render_mol_frame_quantize(&f, q[0], q[1], q[2], sc->host_pos, 0, n, cell);
-        t[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
-    }
-    print_times("frame quantize (host, one thread)   ", t, reps);
-
+    md_gpu_mem_t up = md_gpu_malloc(s, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&sc->topo));
+    uint16_t* host_q = malloc((size_t)n * 6);
     const uint64_t size = md_render_mol_frames_size(&sc->topo, 4);
-    md_render_mol_frames_t fr;
     md_gpu_addr_t base = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, size).gpu;
-    if (!base || !md_render_mol_frames_init(&fr, &sc->topo, base, 4)) {
+    md_render_mol_frames_t fr;
+    double* t = malloc((reps + 2) * sizeof(double));
+    if (!up.cpu || !base || !host_q || !md_render_mol_frames_init(&fr, &sc->topo, base, 4)) {
         printf("  frames: no memory for %.1f MB\n", size / 1048576.0);
-        free(q[0]); free(q[1]); free(q[2]); free(t);
+        if (up.gpu) md_gpu_free(s, up.gpu);
+        if (base) md_gpu_free(s, base);
+        free(host_q); free(t);
         return;
     }
+    md_render_mol_frame_t f, fh;
+    for (uint32_t rr = 0; rr < reps; ++rr) {
+        md_tick_t t0 = md_tick_now();
+        md_render_mol_frame_quantize(&f, up.cpu, sc->host_pos, 0, n, cell);
+        t[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
+    }
+    f.q_gpu = up.gpu;
+    print_times("frame quantize (host, one thread)   ", t, reps);
+    md_render_mol_frame_quantize(&fh, host_q, sc->host_pos, 0, n, cell);
+
     for (uint32_t k = 0; k < 4; ++k) md_render_mol_frame_upload(mol, s, &sc->topo, 0, &fr, k, &f, 0);
     md_gpu_stream_sync(s);
-    const struct { const char* name; md_render_mol_update_flags_t flags; } ups[] = {
-        { "frame upload (reorder)               ", 0 },
-        { "frame upload (regroup, 3 permutes)   ", MD_RENDER_MOL_UPDATE_REGROUP },
+    const struct { const char* name; const md_render_mol_frame_t* f; md_render_mol_update_flags_t flags; } ups[] = {
+        { "frame upload (reorder)               ", &f,  0 },
+        { "frame upload from host (copy, reorder)", &fh, 0 },
+        { "frame upload (regroup, 3 permutes)   ", &f,  MD_RENDER_MOL_UPDATE_REGROUP },
     };
-    for (int ui = 0; ui < 2; ++ui) {
+    for (int ui = 0; ui < 3; ++ui) {
         for (uint32_t rr = 0; rr < reps + 2; ++rr) {
             md_tick_t t0 = md_tick_now();
-            md_render_mol_frame_upload(mol, s, &sc->topo, sc->dyn, &fr, rr % 4, &f, ups[ui].flags);
+            md_render_mol_frame_upload(mol, s, &sc->topo, sc->dyn, &fr, rr % 4, ups[ui].f, ups[ui].flags);
             md_gpu_stream_sync(s);
             if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
         }
@@ -775,7 +785,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
     md_gpu_stream_sync(s);
     prof.t = md_tick_now();
     md_render_mol_frame_upload_hooked(mol, s, &sc->topo, sc->dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
-    printf("  passes, each synced (the first: the planes' transfer and the clear):");
+    printf("  passes, each synced (the first: the parameters and the clear):");
     for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
     printf("\n");
 
@@ -799,9 +809,11 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         }
         print_times(ints[ii].name, t, reps);
     }
-    printf("  frames block: %.1f MB for 4 slots (%.1f bytes per atom)\n", size / 1048576.0, (double)size / n);
+    printf("  frames block: %.1f MB for 4 slots (%.1f bytes per atom), the upload buffer %.1f MB\n",
+           size / 1048576.0, (double)size / n, md_render_mol_frame_size(&sc->topo) / 1048576.0);
     md_gpu_free(s, base);
-    free(q[0]); free(q[1]); free(q[2]); free(t);
+    md_gpu_free(s, up.gpu);
+    free(host_q); free(t);
 }
 
 static int run_gpu(int argc, char** argv) {

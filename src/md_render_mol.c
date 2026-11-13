@@ -5,6 +5,7 @@
 #include <md_system_state.h>
 #include <md_unitcell.h>
 #include <core/md_log.h>
+#include <core/md_simd.h>
 
 #include <float.h>
 #include <string.h>
@@ -87,20 +88,21 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t cells)
     return L;
 }
 
-/* The frames block: each slot's parameters (32 words), the buffers (the
-   slots', then the upload's), each three planes of 16-bit values two to a
-   word, then the old points of the small atoms (a regroup's) */
+/* The frames block: each slot's parameters (32 words), the slots' frames
+   (x, y, z per point in 16 bits each, three words to two points), then the
+   old points of the small atoms (a regroup's) */
 typedef struct frames_layout_t {
-    uint64_t params, plane, buffer, buffers, src_point, size;
+    uint64_t params, frame, buffers, src_point, size;
 } frames_layout_t;
+
+static uint64_t frame_bytes(uint32_t n_atoms) { return ((3ull * n_atoms + 1u) / 2u) * 4u; }
 
 static frames_layout_t frames_layout(uint32_t n_atoms, uint32_t n_small, uint32_t slots) {
     frames_layout_t L;
     uint64_t o = 0;
     L.params    = o; o = align256(o + (uint64_t)slots * 128u);
-    L.plane     = align256((uint64_t)((n_atoms + 1u) / 2u) * 4u);
-    L.buffer    = 3u * L.plane;
-    L.buffers   = o; o += (uint64_t)(slots + 1u) * L.buffer;
+    L.frame     = align256(frame_bytes(n_atoms));
+    L.buffers   = o; o += (uint64_t)slots * L.frame;
     L.src_point = o; o = align256(o + (uint64_t)n_small * 4u);
     L.size = o;
     return L;
@@ -453,10 +455,10 @@ typedef struct gpu_mol_args_t {
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t full, ident0, ident1, ident2, _pad;
-    uint32_t plane_words, frame_count, quantized, has_src, has_fvel, _pad2;
+    uint32_t frame_count, quantized, has_src, has_fvel;
     float    w[4], dw[4];
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 37 * 8 + 36 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 37 * 8 + 34 * 4, "gpu_mol_args_t mirrors Args");
 
 md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
     if (!device) return NULL;
@@ -590,15 +592,11 @@ static bool frames_match(const md_render_mol_frames_t* fr, const md_render_mol_t
 
 static md_gpu_addr_t frame_buffer(const md_render_mol_frames_t* fr, uint32_t b) {
     const frames_layout_t L = frames_layout(fr->atom_count, 0, fr->slots);
-    return fr->base + L.buffers + (uint64_t)b * L.buffer;
+    return fr->base + L.buffers + (uint64_t)b * L.frame;
 }
 
 static md_gpu_addr_t frame_params(const md_render_mol_frames_t* fr, uint32_t slot) {
     return fr->base + frames_layout(fr->atom_count, 0, fr->slots).params + (uint64_t)slot * 128u;
-}
-
-static uint32_t plane_words(uint32_t n_atoms) {
-    return (uint32_t)(frames_layout(n_atoms, 0, 1).plane / 4u);
 }
 
 /* Velocities are written (and drawn) when given, or from frames with a
@@ -663,7 +661,6 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     if (topo->atom_count) {
         if (fr) {
             a.frame_count = atoms->frame_count;
-            a.plane_words = plane_words(topo->atom_count);
             for (uint32_t k = 0; k < 4; ++k) {
                 uint32_t sl = atoms->frame_slot[k < atoms->frame_count ? k : 0];
                 a.frame[k] = frame_buffer(fr, fr->buffer[sl]);
@@ -709,17 +706,47 @@ bool md_render_mol_upload_state(md_gpu_stream_t s, md_gpu_addr_t dst, const md_s
 
 /* ---- Frames ---------------------------------------------------------------------- */
 
-void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* x, uint16_t* y, uint16_t* z,
-                                  const float* xyz, uint32_t stride, uint32_t count, const float cell[9]) {
+static inline uint16_t quant1(float v, float lo, float inv) {
+    float t = (v - lo) * inv + 0.5f;
+    if (!(t >= 0.0f)) t = 0.0f;                 /* NaN too */
+    if (t > 65535.0f) t = 65535.0f;
+    return (uint16_t)t;
+}
+
+void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* q, const float* xyz, uint32_t stride,
+                                  uint32_t count, const float cell[9]) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    out->q[0] = x; out->q[1] = y; out->q[2] = z;
+    out->q = q;
     if (cell) memcpy(out->cell, cell, sizeof(out->cell));
-    if (!x || !y || !z || (count && !xyz)) return;
-    const size_t step = (stride ? stride : 12u) / sizeof(float);
+    if (!q || (count && !xyz)) return;
+    stride = stride ? stride : 12u;
+    const size_t step = stride / sizeof(float);
+    const bool packed = stride == 12u;
     float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-    const float* p = xyz;
-    for (uint32_t i = 0; i < count; ++i, p += step) {
+    uint32_t i = 0;
+    if (packed) {
+        /* four atoms at a time: three vectors, each of its own pattern of axes
+           (xyzx, yzxy, zxyz); min and max ignore a NaN in their first operand */
+        md_128 mn[3], mx[3];
+        for (int k = 0; k < 3; ++k) { mn[k] = md_mm_set1_ps(FLT_MAX); mx[k] = md_mm_set1_ps(-FLT_MAX); }
+        for (; i + 4 <= count; i += 4) {
+            const float* p = xyz + 3 * (size_t)i;
+            for (int k = 0; k < 3; ++k) {
+                md_128 v = md_mm_loadu_ps(p + 4 * k);
+                mn[k] = md_mm_min_ps(v, mn[k]);
+                mx[k] = md_mm_max_ps(v, mx[k]);
+            }
+        }
+        float a[3][4], b[3][4];
+        for (int k = 0; k < 3; ++k) { md_mm_storeu_ps(a[k], mn[k]); md_mm_storeu_ps(b[k], mx[k]); }
+        for (int k = 0; k < 3; ++k) for (int l = 0; l < 4; ++l) {
+            const int d = (4 * k + l) % 3;
+            if (a[k][l] < lo[d]) lo[d] = a[k][l];
+            if (b[k][l] > hi[d]) hi[d] = b[k][l];
+        }
+    }
+    for (const float* p = xyz + step * i; i < count; ++i, p += step) {
         for (int d = 0; d < 3; ++d) {          /* NaN compares false: skipped */
             if (p[d] < lo[d]) lo[d] = p[d];
             if (p[d] > hi[d]) hi[d] = p[d];
@@ -732,16 +759,34 @@ void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* x, uint1
         out->scale[d]  = (hi[d] - lo[d]) / 65535.0f;
         inv[d] = out->scale[d] > 0.0f ? 65535.0f / (hi[d] - lo[d]) : 0.0f;
     }
-    uint16_t* planes[3] = { x, y, z };
-    p = xyz;
-    for (uint32_t i = 0; i < count; ++i, p += step) {
-        for (int d = 0; d < 3; ++d) {
-            float t = (p[d] - lo[d]) * inv[d] + 0.5f;
-            if (!(t >= 0.0f)) t = 0.0f;
-            if (t > 65535.0f) t = 65535.0f;
-            planes[d][i] = (uint16_t)t;
+    i = 0;
+    if (packed) {
+        md_128 L[3], I[3];
+        for (int k = 0; k < 3; ++k) {
+            L[k] = md_mm_set_ps(lo[(4 * k + 3) % 3], lo[(4 * k + 2) % 3], lo[(4 * k + 1) % 3], lo[(4 * k) % 3]);
+            I[k] = md_mm_set_ps(inv[(4 * k + 3) % 3], inv[(4 * k + 2) % 3], inv[(4 * k + 1) % 3], inv[(4 * k) % 3]);
+        }
+        const md_128 half = md_mm_set1_ps(0.5f), zero = md_mm_set1_ps(0.0f), top = md_mm_set1_ps(65535.0f);
+        for (; i + 4 <= count; i += 4) {
+            const float* p = xyz + 3 * (size_t)i;
+            md_128i r[3];
+            for (int k = 0; k < 3; ++k) {
+                md_128 t = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p + 4 * k), L[k]), I[k]), half);
+                t = md_mm_min_ps(md_mm_max_ps(t, zero), top);       /* max first: a NaN becomes 0 */
+                r[k] = md_mm_cvttps_epi32(t);
+            }
+            uint16_t* o = q + 3 * (size_t)i;
+            md_mm_storeu_si128((md_128i*)o, simde_mm_packus_epi32(r[0], r[1]));
+            md_mm_storel_epi64((md_128i*)(o + 8), simde_mm_packus_epi32(r[2], r[2]));
         }
     }
+    for (const float* p = xyz + step * i; i < count; ++i, p += step) {
+        for (int d = 0; d < 3; ++d) q[3 * (size_t)i + d] = quant1(p[d], lo[d], inv[d]);
+    }
+}
+
+uint64_t md_render_mol_frame_size(const md_render_mol_topo_t* topo) {
+    return topo ? frame_bytes(topo->atom_count) : 0;
 }
 
 void md_render_mol_frame_cell(float out[9], const md_unitcell_t* cell) {
@@ -809,19 +854,23 @@ bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_
     out->topology_version = topo->topology_version;
     out->slots            = slots;
     out->atom_count       = topo->atom_count;
-    for (uint32_t b = 0; b <= slots; ++b) out->buffer[b] = b;
+    for (uint32_t b = 0; b < slots; ++b) out->buffer[b] = b;
     return true;
 }
 
 static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                               md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
                               md_render_mol_update_flags_t flags, pass_hook_t hook, void* user) {
-    if (!r || !s || !topo || !topo->base || !fr || !f || (topo->atom_count && (!f->q[0] || !f->q[1] || !f->q[2]))) {
-        MD_LOG_ERROR("md_render_mol_frame_upload: missing context, stream, topology, frames or planes");
+    if (!r || !s || !topo || !topo->base || !fr || !f || (topo->atom_count && !f->q && !f->q_gpu)) {
+        MD_LOG_ERROR("md_render_mol_frame_upload: missing context, stream, topology, frames or frame data");
         return false;
     }
     if (!frames_match(fr, topo) || slot >= fr->slots) {
         MD_LOG_ERROR("md_render_mol_frame_upload: frames not of this topology, or slot %u not in [0, %u)", slot, fr->slots);
+        return false;
+    }
+    if (f->q_gpu & 3u) {
+        MD_LOG_ERROR("md_render_mol_frame_upload: q_gpu must be 4-byte aligned");
         return false;
     }
     const bool regroup = (flags & MD_RENDER_MOL_UPDATE_REGROUP) && topo->grid_cells;
@@ -831,24 +880,36 @@ static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_ren
     }
     const uint32_t n = topo->atom_count;
     const frames_layout_t L = frames_layout(n, topo->small_atom_count, fr->slots);
-    const md_gpu_addr_t staging = frame_buffer(fr, fr->buffer[fr->slots]);
     uint32_t par[32];
     frame_param_words(par, f);
     bool ok = md_gpu_upload(s, frame_params(fr, slot), par, sizeof(par));
-    for (uint32_t k = 0; k < 3 && n; ++k) ok = ok && md_gpu_upload(s, staging + k * L.plane, f->q[k], (size_t)n * 2u);
     if (!ok || !n) {
         if (ok) fr->valid |= 1u << slot;
         return ok;
     }
 
+    /* The frame where the GPU reads it: the caller's, or a copy of the host's,
+       freed in stream order once the reorder has read it */
+    md_gpu_addr_t src = f->q_gpu, tmp = 0;
+    if (!src) {
+        const size_t bytes = (size_t)n * 6u, head = bytes & ~(size_t)3u;
+        tmp = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, frame_bytes(n)).gpu;
+        if (!tmp) return false;
+        ok = md_gpu_upload(s, tmp, f->q, head);
+        if (ok && head < bytes) {                  /* an odd count: the last value in a word of its own */
+            uint32_t last = f->q[3 * (size_t)n - 1];
+            ok = md_gpu_upload(s, tmp + head, &last, 4);
+        }
+        src = tmp;
+    }
+
     gpu_mol_args_t a;
     base_args(&a, topo, dynamic);
-    a.plane_words = (uint32_t)(L.plane / 4u);
     uint32_t free_buf = fr->buffer[slot];          /* its frame is replaced: free */
-    if (regroup) {
+    if (ok && regroup) {
         const uint32_t others = fr->valid & ~(1u << slot);
         a.quantized = 1;
-        a.qsrc      = staging;
+        a.qsrc      = src;
         a.qpar      = frame_params(fr, slot);
         a.has_src   = others ? 1u : 0u;
         a.src_point = fr->base + L.src_point;
@@ -862,10 +923,11 @@ static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_ren
             uint32_t t = fr->buffer[j]; fr->buffer[j] = free_buf; free_buf = t;
         }
     }
-    a.qsrc = staging;
+    a.qsrc = src;
     a.qdst = frame_buffer(fr, free_buf);
     ok = ok && launch(s, r->k_fr_reorder, groups_for((n + 1) / 2, 64), &a, hook, user, "reorder");
     fr->buffer[slot] = free_buf;
+    if (tmp) md_gpu_free(s, tmp);
     if (ok) fr->valid |= 1u << slot;
     else    fr->valid = 0;                         /* the slots' contents are unknown */
     return ok;
