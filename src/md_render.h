@@ -22,8 +22,8 @@ The model, in full
         CAPSULES    two points: a cylinder between them           [implemented: round caps]
                     (cones, flat caps, dashes, periodic halves,
                     offsets: declared, not yet implemented)
-        POLYGONS    2..7 points around: rounded slab or ring      [declared]
-        SPLINES     chains of control points, swept stadium       [declared]
+        POLYGONS    3..8 points around: a rounded slab            [implemented]
+        SPLINES     chains of control points, swept stadium       [implemented]
         TRIANGLES   meshes                                        [declared]
         EXTERNAL    no primitives: a reserved id range for
                     something the caller renders itself           [implemented]
@@ -191,7 +191,7 @@ typedef enum md_render_kind_t {
     MD_RENDER_KIND_INVALID = 0,    /* a zero-initialised batch is an error */
     MD_RENDER_SPHERES,
     MD_RENDER_CAPSULES,
-    MD_RENDER_POLYGONS,            /* not yet implemented */
+    MD_RENDER_POLYGONS,            /* rounded flat polygons: md_render_polygon_style_t */
     MD_RENDER_SPLINES,             /* tubes and ribbons along cubic splines: md_render_spline_style_t */
     MD_RENDER_TRIANGLES,           /* not yet implemented */
     MD_RENDER_EXTERNAL,            /* an id range for the caller's own renderer */
@@ -288,6 +288,26 @@ typedef struct md_render_spline_style_t {
     float         radius;          /* without a profile: a tube of this r       */
 } md_render_spline_style_t;
 
+/* POLYGONS: a flat convex polygon made solid by a ball of `radius`: the
+   Minkowski sum, a plate twice the radius thick with round edges (the rings
+   of a cartoon, the sugars and bases of nucleic acids).
+   Every polygon of a batch has n = `corners` corners (3 to 8): element e's
+   are points n e .. n e + n - 1 in order around it (through index when it is
+   given, as a capsule's two are). Rings of 5 and of 6 are two batches. Its plane is the corners' fit (Newell's normal, through
+   their centroid); corners off it are projected onto it. The polygon is
+   taken to be convex, as a ring is. A stick joining two polygons is a
+   capsule of the same radius: the same surface as their edges.
+   A polygon is visible, has a state bit, and survives a THIN fade when all
+   its corners do; it takes its colour from its first corner, and a pick
+   reports the corner nearest the hit as its attribute. SHRINK scales it
+   about its centroid, radius and all.
+   Raycast exactly: the plate's two faces, and a capsule along each edge. */
+typedef struct md_render_polygon_style_t {
+    uint32_t corners;              /* 3 .. 8, the same for every polygon of the batch */
+    float    radius;               /* half the thickness, the rounding of the edges;
+                                      <= 0 not drawn                                 */
+} md_render_polygon_style_t;
+
 /* ---- Colour: only appearance; a change of it costs a resolve, not a raster */
 
 typedef enum md_render_color_mode_t {
@@ -355,6 +375,8 @@ typedef struct md_render_batch_t {
     /* uint32 points per element:
            SPHERES     1    0: sphere i is point i
            CAPSULES    2    0: points 2i and 2i + 1
+           POLYGONS    n    0: points n i .. n i + n - 1 (n: style.polygons.corners)
+           SPLINES     1    required: the control point and its flags
        A subset of the points is an index range or a visibility bitset. */
     md_gpu_addr_t      index;
 
@@ -379,6 +401,7 @@ typedef struct md_render_batch_t {
         md_render_sphere_style_t  spheres;
         md_render_capsule_style_t capsules;
         md_render_spline_style_t  splines;
+        md_render_polygon_style_t polygons;
     } style;
 
     md_render_color_t  color;

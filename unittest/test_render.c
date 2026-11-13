@@ -1119,6 +1119,487 @@ UTEST(render, spline_curves_match_the_sweep) {
     f_close(&fx);
 }
 
+/* ---- Polygons ------------------------------------------------------------------ */
+
+/* A polygon as md_render.h defines it, in double: the corners' centroid,
+   Newell's normal, the corners projected onto that plane; rounded by r. On a
+   line: its edges alone. */
+typedef struct poly_ref_t {
+    double q[8][3], c[3], n[3], r, bound;
+    int    corners;
+    bool   plate;
+    uint32_t key, linear;                /* its batch, and its id's element (instance * count + element) */
+    uint32_t point[8];                   /* its corners' points: their attributes */
+} poly_ref_t;
+
+static void cross3(const double* a, const double* b, double* o) {
+    o[0] = a[1] * b[2] - a[2] * b[1]; o[1] = a[2] * b[0] - a[0] * b[2]; o[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static void poly_ref_build(poly_ref_t* p, const double (*q)[3], int n, double r) {
+    p->corners = n;
+    p->r = r;
+    for (int i = 0; i < 3; ++i) { p->c[i] = 0; for (int k = 0; k < n; ++k) p->c[i] += q[k][i] / n; }
+    double nv[3] = { 0, 0, 0 }, sz = 0;
+    for (int k = 0; k < n; ++k) {
+        const double* b = q[(k + 1) % n];
+        double u[3] = { q[k][0] - p->c[0], q[k][1] - p->c[1], q[k][2] - p->c[2] }, v[3] = { b[0] - p->c[0], b[1] - p->c[1], b[2] - p->c[2] }, x[3];
+        cross3(u, v, x);
+        for (int i = 0; i < 3; ++i) nv[i] += x[i];
+        sz = fmax(sz, sqrt(dot3(u, u)));
+    }
+    double nl = sqrt(dot3(nv, nv));
+    p->plate = nl > 1e-6 * sz * sz;
+    for (int i = 0; i < 3; ++i) p->n[i] = p->plate ? nv[i] / nl : 0.0;
+    p->bound = 0;
+    for (int k = 0; k < n; ++k) {
+        double d[3] = { q[k][0] - p->c[0], q[k][1] - p->c[1], q[k][2] - p->c[2] }, h = dot3(d, p->n);
+        for (int i = 0; i < 3; ++i) p->q[k][i] = q[k][i] - p->n[i] * h;
+        double e[3] = { p->q[k][0] - p->c[0], p->q[k][1] - p->c[1], p->q[k][2] - p->c[2] };
+        p->bound = fmax(p->bound, sqrt(dot3(e, e)));
+    }
+    p->bound += r;
+}
+
+/* Whether x, on the plane, is inside the polygon */
+static bool poly_ref_inside(const poly_ref_t* p, const double x[3]) {
+    if (!p->plate) return false;
+    for (int k = 0; k < p->corners; ++k) {
+        const double* a = p->q[k]; const double* b = p->q[(k + 1) % p->corners];
+        double e[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, d[3] = { x[0] - a[0], x[1] - a[1], x[2] - a[2] }, s[3];
+        cross3(e, d, s);
+        if (dot3(s, p->n) < 0) return false;
+    }
+    return true;
+}
+
+/* Distance from x to the flat polygon (not rounded), and its nearest point */
+static double poly_ref_dist(const poly_ref_t* p, const double x[3], double cp[3]) {
+    double d[3] = { x[0] - p->c[0], x[1] - p->c[1], x[2] - p->c[2] }, h = dot3(d, p->n);
+    double xp[3] = { x[0] - p->n[0] * h, x[1] - p->n[1] * h, x[2] - p->n[2] * h };
+    if (poly_ref_inside(p, xp)) { memcpy(cp, xp, sizeof(xp)); return fabs(h); }
+    double best = 1e30;
+    for (int k = 0; k < p->corners; ++k) {
+        const double* a = p->q[k]; const double* b = p->q[(k + 1) % p->corners];
+        double ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, ax[3] = { x[0] - a[0], x[1] - a[1], x[2] - a[2] };
+        double ll = dot3(ab, ab), s = ll > 0 ? dot3(ax, ab) / ll : 0;
+        s = s < 0 ? 0 : s > 1 ? 1 : s;
+        double q[3] = { a[0] + ab[0] * s, a[1] + ab[1] * s, a[2] + ab[2] * s }, e[3] = { x[0] - q[0], x[1] - q[1], x[2] - q[2] };
+        double dd = sqrt(dot3(e, e));
+        if (dd < best) { best = dd; memcpy(cp, q, sizeof(q)); }
+    }
+    return best;
+}
+
+/* The signed distance to the nearest polygon, which, and how much farther the next one is */
+static double polys_sdf(const poly_ref_t* P, int count, const double x[3], int* who, double* gap) {
+    double best = 1e30, second = 1e30, cp[3];
+    *who = -1;
+    for (int k = 0; k < count; ++k) {
+        double d = poly_ref_dist(&P[k], x, cp) - P[k].r;
+        if (d < best) { second = best; best = d; *who = k; }
+        else if (d < second) second = d;
+    }
+    *gap = second - best;
+    return best;
+}
+
+/* How far the ray (t in [0, tmax]) passes outside every polygon: < 0, through one */
+static double polys_ray_clearance(const poly_ref_t* P, int count, ray_t r, double tmax) {
+    double q[3] = { r.o[0] + r.d[0] * tmax, r.o[1] + r.d[1] * tmax, r.o[2] + r.d[2] * tmax }, cp[3];
+    double best = 1e30;
+    for (int k = 0; k < count; ++k) {
+        const poly_ref_t* p = &P[k];
+        if (pt_seg_dist(p->c, r.o, q) - p->bound > best) continue;
+        /* the segment and the convex polygon: through it, or nearest at an edge or an end */
+        double d = fmin(poly_ref_dist(p, r.o, cp), poly_ref_dist(p, q, cp));
+        double o[3] = { r.o[0] - p->c[0], r.o[1] - p->c[1], r.o[2] - p->c[2] }, e[3] = { q[0] - p->c[0], q[1] - p->c[1], q[2] - p->c[2] };
+        double h0 = dot3(o, p->n), h1 = dot3(e, p->n);
+        if (p->plate && (h0 > 0) != (h1 > 0)) {
+            double s = h0 / (h0 - h1), x[3] = { r.o[0] + (q[0] - r.o[0]) * s, r.o[1] + (q[1] - r.o[1]) * s, r.o[2] + (q[2] - r.o[2]) * s };
+            if (poly_ref_inside(p, x)) d = 0;
+        }
+        for (int j = 0; j < p->corners && d > 0; ++j) d = fmin(d, seg_seg_dist(r.o, q, p->q[j], p->q[(j + 1) % p->corners]));
+        best = fmin(best, d - p->r);
+    }
+    return best;
+}
+
+/* A regular polygon of n corners and circumradius rho about ctr, its plane
+   tilted by `tilt` degrees from facing the camera about the axis at `spin`
+   degrees in the image, wound either way; corners off the plane by +-bump
+   in turn */
+static void poly_corners(double (*out)[3], int n, const double ctr[3], double rho, double tilt, double spin, bool reverse, double bump) {
+    double tl = tilt * 3.14159265358979 / 180, sp = spin * 3.14159265358979 / 180;
+    double ax[3] = { cos(sp), sin(sp), 0 };                  /* the tilt's axis, in the image plane */
+    double nz[3] = { 0, 0, 1 }, w[3];
+    cross3(nz, ax, w);                                       /* in the image plane, across the axis */
+    double u[3], v[3], nn[3];
+    for (int i = 0; i < 3; ++i) { u[i] = ax[i]; v[i] = w[i] * cos(tl) + nz[i] * sin(tl); }
+    cross3(u, v, nn);
+    for (int k = 0; k < n; ++k) {
+        int j = reverse ? n - 1 - k : k;
+        double th = 2 * 3.14159265358979 * j / n + 0.3;
+        double z = (k % 2 ? 1.0 : -1.0) * bump;
+        for (int i = 0; i < 3; ++i) out[k][i] = ctr[i] + rho * (cos(th) * u[i] + sin(th) * v[i]) + z * nn[i];
+    }
+}
+
+UTEST(render, polygons_match_their_solids) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144;
+    cam_t c = { .tan_half = 0.45f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+
+    /* Hexagons through an index, one bent out of its plane, one edge-on,
+       one with a hidden corner; pentagons in order, twice (an instance
+       behind, turned and scaled 1.1); two triangles, one on a line; an
+       octagon */
+    enum { NH = 6, NP = 4, NT = 2, NO = 1 };
+    double hc[NH][3] = { { -6.0, 3.4, -15.0 }, { -2.2, 3.6, -14.0 }, { 1.8, 3.4, -15.5 }, { -6.0, 0.2, -14.5 }, { -2.0, 0.0, -15.0 }, { 2.0, 0.2, -14.0 } };
+    double htilt[NH] = { 0, 35, 60, 80, 90, 50 }, hspin[NH] = { 0, 0, 90, 30, 0, 120 };
+    double pc[NP][3] = { { -6.5, -3.4, -15.0 }, { -3.0, -3.3, -14.5 }, { 0.5, -3.5, -15.5 }, { 4.0, -3.2, -15.0 } };
+    double ptilt[NP] = { 20, 70, 0, 45 }, pspin[NP] = { 60, 10, 0, 200 };
+    float  hpos[NH * 6 * 3], ppos[NP * 5 * 3], tpos[NT * 3 * 3], opos[NO * 8 * 3];
+    uint32_t hindex[NH * 6];
+    double q[8][3];
+    for (int k = 0; k < NH; ++k) {
+        poly_corners(q, 6, hc[k], 1.3, htilt[k], hspin[k], k == 2, k == 0 ? 0.12 : 0.0);
+        for (int j = 0; j < 6; ++j) {
+            uint32_t pnt = (uint32_t)(NH * 6 - 1 - (k * 6 + j));    /* stored backwards: the index finds them */
+            hindex[k * 6 + j] = pnt;
+            for (int i = 0; i < 3; ++i) hpos[3 * pnt + i] = (float)q[j][i];
+        }
+    }
+    for (int k = 0; k < NP; ++k) {
+        poly_corners(q, 5, pc[k], 1.0, ptilt[k], pspin[k], k == 1, 0.0);
+        for (int j = 0; j < 5; ++j) for (int i = 0; i < 3; ++i) ppos[3 * (k * 5 + j) + i] = (float)q[j][i];
+    }
+    {
+        double tc[3] = { 6.4, 3.5, -14.5 };
+        poly_corners(q, 3, tc, 1.2, 25, 45, false, 0.0);
+        for (int j = 0; j < 3; ++j) for (int i = 0; i < 3; ++i) tpos[3 * j + i] = (float)q[j][i];
+        const float line[9] = { 5.4f, 0.0f, -15.0f,  7.4f, 0.9f, -14.6f,  6.4f, 0.45f, -14.8f };   /* the third between the others */
+        memcpy(tpos + 9, line, sizeof(line));
+        double oc[3] = { 7.4f, -3.0f, -16.0f };
+        poly_corners(q, 8, oc, 1.1, 30, 75, false, 0.0);
+        for (int j = 0; j < 8; ++j) for (int i = 0; i < 3; ++i) opos[3 * j + i] = (float)q[j][i];
+    }
+    const int hidden_hex = 5;
+    uint32_t hvis[2] = { ~0u, ~0u };
+    { uint32_t pnt = hindex[hidden_hex * 6 + 2]; hvis[pnt >> 5] &= ~(1u << (pnt & 31)); }
+    /* the pentagons' second instance: turned 25 degrees about y, scaled 1.1, behind and aside */
+    const double ang = 25 * 3.14159265358979 / 180, sc = 1.1;
+    const double tx[3] = { 0.8, 0.5, -3.0 };
+    float xf[32] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    xf[16] = (float)(sc * cos(ang)); xf[17] = 0; xf[18] = (float)(-sc * sin(ang)); xf[19] = 0;
+    xf[20] = 0; xf[21] = (float)sc; xf[22] = 0; xf[23] = 0;
+    xf[24] = (float)(sc * sin(ang)); xf[25] = 0; xf[26] = (float)(sc * cos(ang)); xf[27] = 0;
+    /* about the pentagons' middle, so the copy stays in view */
+    const double mid[3] = { -1.25, -3.35, -15.0 };
+    xf[28] = (float)(mid[0] + tx[0] - (xf[16] * mid[0] + xf[24] * mid[2]));
+    xf[29] = (float)(mid[1] + tx[1] - xf[21] * mid[1]);
+    xf[30] = (float)(mid[2] + tx[2] - (xf[18] * mid[0] + xf[26] * mid[2]));
+    xf[31] = 1;
+
+    md_render_batch_t bp[4];
+    memset(bp, 0, sizeof(bp));
+    bp[0].key = 21; bp[0].kind = MD_RENDER_POLYGONS; bp[0].count = NH; bp[0].points.count = NH * 6;
+    bp[0].points.position = f_buf(&fx, hpos, sizeof(hpos));
+    bp[0].points.visible[0] = f_buf(&fx, hvis, sizeof(hvis));
+    bp[0].index = f_buf(&fx, hindex, sizeof(hindex));
+    bp[0].style.polygons.corners = 6; bp[0].style.polygons.radius = 0.22f;
+    bp[1].key = 22; bp[1].kind = MD_RENDER_POLYGONS; bp[1].count = NP; bp[1].points.count = NP * 5;
+    bp[1].points.position = f_buf(&fx, ppos, sizeof(ppos));
+    bp[1].style.polygons.corners = 5; bp[1].style.polygons.radius = 0.15f;
+    bp[1].transform = xf; bp[1].transform_count = 2;
+    bp[2].key = 23; bp[2].kind = MD_RENDER_POLYGONS; bp[2].count = NT; bp[2].points.count = NT * 3;
+    bp[2].points.position = f_buf(&fx, tpos, sizeof(tpos));
+    bp[2].style.polygons.corners = 3; bp[2].style.polygons.radius = 0.3f;
+    bp[3].key = 24; bp[3].kind = MD_RENDER_POLYGONS; bp[3].count = NO; bp[3].points.count = NO * 8;
+    bp[3].points.position = f_buf(&fx, opos, sizeof(opos));
+    bp[3].style.polygons.corners = 8; bp[3].style.polygons.radius = 0.2f;
+    md_render_frame_t f = frame_of(W, H, cam, bp, 4);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    /* the reference, view space (the view is the identity) */
+    enum { NREF = NH + 2 * NP + NT + NO };
+    poly_ref_t ref[NREF];
+    int nref = 0;
+    for (int k = 0; k < NH; ++k) {
+        if (k == hidden_hex) continue;
+        double qq[8][3];
+        for (int j = 0; j < 6; ++j) for (int i = 0; i < 3; ++i) qq[j][i] = hpos[3 * hindex[k * 6 + j] + i];
+        poly_ref_build(&ref[nref], (const double (*)[3])qq, 6, 0.22f);
+        ref[nref].key = 21; ref[nref].linear = (uint32_t)k;
+        for (int j = 0; j < 6; ++j) ref[nref].point[j] = hindex[k * 6 + j];
+        nref++;
+    }
+    for (int in = 0; in < 2; ++in) {
+        for (int k = 0; k < NP; ++k) {
+            double qq[8][3];
+            for (int j = 0; j < 5; ++j) {
+                const float* p = ppos + 3 * (k * 5 + j);
+                const float* m = xf + 16 * in;
+                for (int i = 0; i < 3; ++i) qq[j][i] = (double)m[i] * p[0] + (double)m[4 + i] * p[1] + (double)m[8 + i] * p[2] + m[12 + i];
+            }
+            poly_ref_build(&ref[nref], (const double (*)[3])qq, 5, 0.15f * (in ? sc : 1.0));
+            ref[nref].key = 22; ref[nref].linear = (uint32_t)(in * NP + k);
+            for (int j = 0; j < 5; ++j) ref[nref].point[j] = (uint32_t)(k * 5 + j);
+            nref++;
+        }
+    }
+    for (int k = 0; k < NT; ++k) {
+        double qq[8][3];
+        for (int j = 0; j < 3; ++j) for (int i = 0; i < 3; ++i) qq[j][i] = tpos[3 * (k * 3 + j) + i];
+        poly_ref_build(&ref[nref], (const double (*)[3])qq, 3, 0.3f);
+        ref[nref].key = 23; ref[nref].linear = (uint32_t)k;
+        for (int j = 0; j < 3; ++j) ref[nref].point[j] = (uint32_t)(k * 3 + j);
+        nref++;
+    }
+    {
+        double qq[8][3];
+        for (int j = 0; j < 8; ++j) for (int i = 0; i < 3; ++i) qq[j][i] = opos[3 * j + i];
+        poly_ref_build(&ref[nref], (const double (*)[3])qq, 8, 0.2f);
+        ref[nref].key = 24; ref[nref].linear = 0;
+        for (int j = 0; j < 8; ++j) ref[nref].point[j] = (uint32_t)j;
+        nref++;
+    }
+    EXPECT_FALSE(ref[NH - 1 + 2 * NP + 1].plate);         /* the triangle on a line */
+
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    uint32_t* nb = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4) && f_read(&fx, tg.normal, nb, W * H * 4));
+    const uint32_t keys[4] = { 21, 22, 23, 24 };
+    int bad = 0, covered = 0, judged = 0, nerr = 0;
+    double worst = 0;
+    double* errs = malloc(W * H * sizeof(double));
+    int per_ref[NREF] = { 0 };
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            uint32_t i = y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            uint32_t ix = id[2 * i], iy = id[2 * i + 1];
+            double clr = polys_ray_clearance(ref, nref, r, 100.0);
+            double px15 = 15.0 * 2.0 * c.tan_half / H;
+            if (iy == 0) {
+                if (clr < -0.5 * px15) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, a polygon %.3f px inside\n", x, y, -clr / px15); }
+                continue;
+            }
+            covered++;
+            if (clr > 0.5 * px15) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, the polygons %.3f px away\n", x, y, clr / px15); continue; }
+            double zv = -c.n / dp[i], tp = zv / r.d[2];
+            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            double pxw = -P[2] * 2.0 * c.tan_half / H;
+            int who; double gap;
+            double sd = polys_sdf(ref, nref, P, &who, &gap);
+            worst = fmax(worst, fabs(sd) / pxw);
+            if (fabs(sd) > 0.05 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the surface\n", x, y, sd / pxw); continue; }
+            if (gap > pxw) {
+                judged++;
+                per_ref[who]++;
+                uint32_t slot = (iy >> 20) - 1u;
+                if (slot >= 4 || keys[slot] != ref[who].key || ix != ref[who].linear) {
+                    bad++;
+                    if (bad < 8) printf("    pixel (%u, %u): batch slot %u element %u, expected key %u element %u\n", x, y, slot, ix, ref[who].key, ref[who].linear);
+                    continue;
+                }
+                /* the normal: the distance's gradient */
+                double cp[3], nr[3], ng[3];
+                poly_ref_dist(&ref[who], P, cp);
+                for (int k = 0; k < 3; ++k) nr[k] = P[k] - cp[k];
+                double nl = sqrt(dot3(nr, nr));
+                if (nl > 0.5 * ref[who].r && fabs(dot3(nr, r.d)) > 0.3 * nl) {
+                    for (int k = 0; k < 3; ++k) nr[k] /= nl;
+                    oct_decode(nb[i], ng);
+                    double cs = dot3(nr, ng);
+                    errs[nerr++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+                }
+            }
+            /* nothing in front of it */
+            double tt = 0.0;
+            for (int it = 0; it < 400 && tt < tp; ++it) {
+                double qv[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+                double d = polys_sdf(ref, nref, qv, &who, &gap);
+                double qw = -qv[2] * 2.0 * c.tan_half / H;
+                if (d < -0.05 * qw) { bad++; if (bad < 8) printf("    pixel (%u, %u): a polygon %.3f px in front\n", x, y, (tp - tt) / qw); break; }
+                tt += fmax(fabs(d), 0.05 * qw);
+            }
+        }
+    }
+    qsort(errs, (size_t)nerr, sizeof(double), cmp_double);
+    double p50 = nerr ? errs[nerr / 2] : 0, p99 = nerr ? errs[(nerr * 99) / 100] : 0;
+    printf("    %d pixels covered, %d with a clear polygon; the farthest %.4f px from the solid; normals over %d: median %.3f, 99th %.3f degrees\n",
+           covered, judged, worst, nerr, p50, p99);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered, (int)(W * H / 6));
+    EXPECT_GT(judged, covered * 3 / 4);
+    for (int k = 0; k < nref; ++k) EXPECT_GT(per_ref[k], 20);  /* every polygon seen, the instance behind and the line too */
+    EXPECT_LT(p50, 0.2);
+    EXPECT_LT(p99, 1.0);
+    free(errs);
+
+    /* picks: at 70% of the way from each polygon's centroid to its second
+       corner, what the raster drew there; its attribute the corner nearest
+       the hit */
+    int picks = 0;
+    for (int k = 0; k < nref; ++k) {
+        double pq[3];
+        for (int i = 0; i < 3; ++i) pq[i] = ref[k].c[i] + 0.7 * (ref[k].q[1][i] - ref[k].c[i]);
+        int32_t qx = (int32_t)((pq[0] / -pq[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        int32_t qy = (int32_t)((0.5 - pq[1] / -pq[2] / c.tan_half * 0.5) * H);
+        if (qx < 0 || qy < 0 || qx >= (int32_t)W || qy >= (int32_t)H) continue;
+        uint32_t i = (uint32_t)qy * W + (uint32_t)qx;
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, (uint32_t)qx, (uint32_t)qy, &pk));
+        if (id[2 * i + 1] == 0) { EXPECT_EQ(0u, (unsigned)pk.key); continue; }
+        uint32_t slot = (id[2 * i + 1] >> 20) - 1u;
+        ASSERT_LT(slot, 4u);
+        EXPECT_EQ(keys[slot], (uint32_t)pk.key);
+        EXPECT_EQ(MD_RENDER_POLYGONS, pk.kind);
+        EXPECT_EQ(id[2 * i] % bp[slot].count, pk.element);
+        EXPECT_EQ(id[2 * i] / bp[slot].count, pk.instance);
+        ray_t r = pixel_ray(&c, W, H, qx + 0.5, qy + 0.5);
+        double zv = -c.n / dp[i], tp = zv / r.d[2];
+        for (int j = 0; j < 3; ++j) EXPECT_NEAR(r.o[j] + r.d[j] * tp, pk.position[j], 1e-4 * 15.0);
+        int hit = -1;
+        for (int j = 0; j < nref; ++j) if (ref[j].key == keys[slot] && ref[j].linear == id[2 * i]) hit = j;
+        ASSERT_GE(hit, 0);
+        double P[3] = { pk.position[0], pk.position[1], pk.position[2] }, bd = 1e30;
+        uint32_t near = 0;
+        for (int j = 0; j < ref[hit].corners; ++j) {
+            double e[3] = { P[0] - ref[hit].q[j][0], P[1] - ref[hit].q[j][1], P[2] - ref[hit].q[j][2] };
+            if (dot3(e, e) < bd) { bd = dot3(e, e); near = ref[hit].point[j]; }
+        }
+        EXPECT_EQ(near, pk.attr);
+        picks++;
+    }
+    EXPECT_GT(picks, nref / 2);
+
+    /* state: hexagons 0 and 2 with all their corners, 1 with all but one;
+       pentagon 0 (both instances). The mask where the raster shows those. */
+    uint32_t hsel[2] = { 0, 0 }, psel = 0x1Fu;
+    for (int k = 0; k < 3; ++k) {
+        for (int j = 0; j < 6; ++j) {
+            if (k == 1 && j == 4) continue;
+            uint32_t pnt = hindex[k * 6 + j];
+            hsel[pnt >> 5] |= 1u << (pnt & 31);
+        }
+    }
+    bp[0].points.state[0] = f_buf(&fx, hsel, sizeof(hsel));
+    bp[1].points.state[0] = f_buf(&fx, &psel, 4);
+    f.content[MD_RENDER_CONTENT_STATE]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    uint32_t* m = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.mask, m, W * H * 4));
+    int mbad = 0, mvis = 0, many = 0;
+    for (uint32_t i = 0; i < W * H; ++i) {
+        uint32_t slot = id[2 * i + 1] ? (id[2 * i + 1] >> 20) - 1u : 99u, e = id[2 * i];
+        bool want = (slot == 0 && (e == 0 || e == 2)) || (slot == 1 && e % NP == 0);
+        bool vis = (m[i] & 0xFFu) != 0, any = (m[i] & 0xFF00u) != 0;
+        mvis += vis; many += any;
+        if (vis != want || (vis && !any) || (m[i] & 0xFFFF0000u)) {
+            if (mbad < 6) printf("    pixel (%u, %u): mask %08x, slot %u element %u\n", i % W, i / W, m[i], slot, e);
+            mbad++;
+        }
+    }
+    EXPECT_EQ(0, mbad);
+    EXPECT_GT(mvis, 300);
+    EXPECT_GE(many, mvis);
+    printf("    selected: %d pixels in view, %d in all\n", mvis, many);
+    free(m);
+    bp[0].points.state[0] = 0;
+    bp[1].points.state[0] = 0;
+
+    /* shrunk across a fade band: fewer pixels; past it, nothing */
+    for (int k = 0; k < 4; ++k) { bp[k].fade.mode = MD_RENDER_FADE_SHRINK; bp[k].fade.out[0] = 14.0f; bp[k].fade.out[1] = 8.0f; }
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8));
+    int shrunk = 0;
+    for (uint32_t i = 0; i < W * H; ++i) shrunk += id[2 * i + 1] != 0;
+    EXPECT_GT(shrunk, covered / 8);
+    EXPECT_LT(shrunk, covered * 3 / 4);
+    for (int k = 0; k < 4; ++k) { bp[k].fade.out[0] = 40.0f; bp[k].fade.out[1] = 30.0f; }
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_EQ((uint32_t)nref, st.faded);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8));
+    int left = 0;
+    for (uint32_t i = 0; i < W * H; ++i) left += id[2 * i + 1] != 0;
+    EXPECT_EQ(0, left);
+    printf("    shrunk: %d pixels; past the band: %d\n", shrunk, left);
+    for (int k = 0; k < 4; ++k) memset(&bp[k].fade, 0, sizeof(bp[k].fade));
+
+    /* with spheres (the main kernels) and a spline (the same twin) in one
+       frame: every pixel as the nearest of the three drawn alone */
+    enum { NS = 16, NC = 6 };
+    float spos[NS * 3];
+    for (int k = 0; k < NS; ++k) {
+        const poly_ref_t* p = &ref[(k * 5) % nref];
+        for (int i = 0; i < 3; ++i) spos[3 * k + i] = (float)p->q[k % p->corners][i];
+        spos[3 * k + 2] += (k % 2) ? 0.5f : -0.5f;
+    }
+    float cpos[NC * 3];
+    uint32_t cidx[NC];
+    for (int k = 0; k < NC; ++k) {
+        cpos[3 * k + 0] = -7.0f + 2.8f * k; cpos[3 * k + 1] = 1.8f + 0.6f * (float)sin(1.7 * k); cpos[3 * k + 2] = -14.8f + 0.8f * (float)cos(1.1 * k);
+        cidx[k] = (uint32_t)k;
+    }
+    cidx[0] |= MD_RENDER_SPLINE_FIRST; cidx[NC - 1] |= MD_RENDER_SPLINE_LAST;
+    md_render_batch_t bs = {0}, bc = {0};
+    bs.key = 31; bs.kind = MD_RENDER_SPHERES; bs.count = NS; bs.points.count = NS;
+    bs.points.position = f_buf(&fx, spos, sizeof(spos));
+    bs.style.spheres.radius_add = 0.4f;
+    bs.color.mode = MD_RENDER_COLOR_UNIFORM; bs.color.uniform = 0xFF30C030u;
+    bc.key = 32; bc.kind = MD_RENDER_SPLINES; bc.count = NC; bc.points.count = NC;
+    bc.points.position = f_buf(&fx, cpos, sizeof(cpos));
+    bc.index = f_buf(&fx, cidx, sizeof(cidx));
+    bc.style.splines.radius = 0.35f;
+    bc.color.mode = MD_RENDER_COLOR_UNIFORM; bc.color.uniform = 0xFFC03030u;
+    md_render_batch_t all[6] = { bs, bp[0], bp[1], bp[2], bp[3], bc };
+    md_render_view_t vw[4] = { md_render_view_create(fx.r, "spheres"), md_render_view_create(fx.r, "polygons"),
+                               md_render_view_create(fx.r, "spline"), md_render_view_create(fx.r, "all") };
+    md_render_frame_t fr[4] = { frame_of(W, H, cam, &bs, 1), frame_of(W, H, cam, bp, 4), frame_of(W, H, cam, &bc, 1), frame_of(W, H, cam, all, 6) };
+    const uint32_t slot0[3] = { 0, 1, 5 };      /* each one's first slot in `all` */
+    for (int k = 0; k < 4; ++k) ASSERT_TRUE(md_render_view_draw(fx.gfx, vw[k], &fr[k], NULL));
+    md_gpu_stream_sync(fx.gfx);
+    uint32_t* ids[4]; float* dps[4]; uint32_t* cols[4]; uint32_t* nrms[4];
+    for (int k = 0; k < 4; ++k) {
+        md_render_targets_t t = md_render_view_targets(vw[k]);
+        ids[k] = malloc(W * H * 8); dps[k] = malloc(W * H * 4); cols[k] = malloc(W * H * 4); nrms[k] = malloc(W * H * 4);
+        ASSERT_TRUE(f_read(&fx, t.id, ids[k], W * H * 8) && f_read(&fx, t.depth, dps[k], W * H * 4) &&
+                    f_read(&fx, t.color, cols[k], W * H * 4) && f_read(&fx, t.normal, nrms[k], W * H * 4));
+    }
+    int mixed_bad = 0, from[3] = { 0, 0, 0 };
+    for (uint32_t i = 0; i < W * H; ++i) {
+        int w = -1;
+        for (int k = 0; k < 3; ++k) if (ids[k][2 * i + 1] != 0 && (w < 0 || dps[k][i] > dps[w][i])) w = k;   /* reverse Z: the larger is nearer */
+        if (w < 0) { if (ids[3][2 * i + 1] != 0) mixed_bad++; continue; }
+        from[w]++;
+        uint32_t ay = ids[w][2 * i + 1];
+        uint32_t ey = (ay & 0xFFFFFu) | ((slot0[w] + (ay >> 20)) << 20);
+        if (ids[3][2 * i] != ids[w][2 * i] || ids[3][2 * i + 1] != ey || dps[3][i] != dps[w][i] || cols[3][i] != cols[w][i] || nrms[3][i] != nrms[w][i]) {
+            if (mixed_bad < 6) printf("    pixel (%u, %u): all %u/%x, alone (%d) %u/%x\n", i % W, i / W, ids[3][2 * i], ids[3][2 * i + 1], w, ids[w][2 * i], ids[w][2 * i + 1]);
+            mixed_bad++;
+        }
+    }
+    EXPECT_EQ(0, mixed_bad);
+    EXPECT_GT(from[0], 100);
+    EXPECT_GT(from[1], 1000);
+    EXPECT_GT(from[2], 100);
+    printf("    with spheres and a spline: %d, %d and %d pixels\n", from[0], from[1], from[2]);
+    for (int k = 0; k < 4; ++k) { free(ids[k]); free(dps[k]); free(cols[k]); free(nrms[k]); md_render_view_destroy(fx.gfx, vw[k]); }
+    free(id); free(dp); free(nb);
+    f_close(&fx);
+}
+
 UTEST(render, index_visibility_instances) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

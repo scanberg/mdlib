@@ -88,6 +88,7 @@ static const uint F_SPL_PROFILE  = 1u << 20;  // SPLINES: spl_profile
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
 static const uint KIND_CAPSULES = 2u;
+static const uint KIND_POLYGONS = 3u;
 static const uint KIND_SPLINES  = 4u;
 static const uint KIND_EXTERNAL = 6u;
 
@@ -159,6 +160,10 @@ struct Batch {
 
     float4* spl_axis;           // SPLINES: per control point, the profile's long axis (xyz)
     float4* spl_profile;        // SPLINES: per control point, its part's half widths and radii at its start and end
+    uint    poly_n;             // POLYGONS: corners of each
+    uint    _pad_b0;            // to the float4 alignment
+    uint    _pad_b1;
+    uint    _pad_b2;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -179,6 +184,8 @@ struct Lists {
     uint64_t* vis64;            // compute raster: depth << 32 | index into small
     uint*     hw2;              // spline parts for the hardware raster (they have no compute raster)
     uint*     st2;              // spline parts with a state bit
+    uint*     hw3;              // polygons for the hardware raster (nor have they)
+    uint*     st3;              // polygons with a state bit
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -213,12 +220,17 @@ static const uint C_HWS2       = 97;   // and phase 2
 static const uint C_STS        = 98;   // spline parts with a state bit
 static const uint C_ICMDS      = 100;  // md_gpu_draw_indexed_cmd_t, spline parts [phase - 1]: 100..109
 static const uint C_STICMDS    = 110;  // the state list's spline parts: 110..114
-static const uint C_COUNT      = 116;
+static const uint C_HWP1       = 116;  // polygons for the hardware raster, phase 1
+static const uint C_HWP2       = 117;  // and phase 2
+static const uint C_STP        = 118;  // polygons with a state bit
+static const uint C_ICMDP      = 120;  // md_gpu_draw_indexed_cmd_t, polygons [phase - 1]: 120..129
+static const uint C_STICMDP    = 130;  // the state list's polygons: 130..134
+static const uint C_COUNT      = 136;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
-//   raster:      view, batches, lists, mode (0 visibility, 1 mask), list (0..3:
-//                hw0, hw1, st0, st1)
+//   raster:      view, batches, lists, mode (0 visibility, 1 mask), list (0..7:
+//                hw0, hw1, st0, st1, hw2, st2, hw3, st3)
 //   cull, finalize, raster_small: view, batches, lists, mode = phase (1, 2)
 //   resolve, mask_visible, pick: view, batches, the targets, size, px, py, pick_out
 //   hiz_reduce:  src (mip src_mip, src_w x src_h), dst (dst_w x dst_h)
@@ -254,6 +266,13 @@ MD_SHADER_ARGS(Args);
 // Fetch
 // ---------------------------------------------------------------------------
 
+// No pointer of a batch is null (md_render.c, no_null): an absent array
+// points at a block of zeros, and its index is gated by its flag to 0. A load
+// executed in a branch not taken reads that block. (lavapipe executes such
+// loads at its first lane's address whatever the mask; a driver that
+// speculates loads out of branches would too.)
+uint gated(Batch b, uint flag, uint i) { return (b.flags & flag) != 0u ? i : 0u; }
+
 float3 load_pos(Batch b, uint i) {
     uint* p = b.position + i * (b.stride >> 2);
     return float3(asfloat(p[0]), asfloat(p[1]), asfloat(p[2]));
@@ -261,14 +280,14 @@ float3 load_pos(Batch b, uint i) {
 
 float3 load_vel(Batch b, uint i) {
     if ((b.flags & F_VELOCITY) == 0u) return float3(0.0);
-    uint* p = b.velocity + i * (b.vel_stride >> 2);
+    uint* p = b.velocity + gated(b, F_VELOCITY, i) * (b.vel_stride >> 2);
     uint w0 = p[0];
     uint w1 = p[1];
     return float3(f16tof32(w0 & 0xFFFFu), f16tof32(w0 >> 16), f16tof32(w1 & 0xFFFFu));
 }
 
 uint attr_of(Batch b, uint pi) {
-    return ((b.flags & F_ATTR_INDEX) != 0u) ? b.attr_index[pi] : pi;
+    return ((b.flags & F_ATTR_INDEX) != 0u) ? b.attr_index[gated(b, F_ATTR_INDEX, pi)] : pi;
 }
 
 bool test_bit(uint* set, uint i) {
@@ -276,22 +295,22 @@ bool test_bit(uint* set, uint i) {
 }
 
 bool attr_visible(Batch b, uint a) {
-    if ((b.flags & F_VISIBLE0) != 0u && !test_bit(b.visible0, a)) return false;
-    if ((b.flags & F_VISIBLE1) != 0u && !test_bit(b.visible1, a)) return false;
+    if ((b.flags & F_VISIBLE0) != 0u && !test_bit(b.visible0, gated(b, F_VISIBLE0, a))) return false;
+    if ((b.flags & F_VISIBLE1) != 0u && !test_bit(b.visible1, gated(b, F_VISIBLE1, a))) return false;
     return true;
 }
 
 uint attr_state(Batch b, uint a) {
     uint s = 0u;
-    if ((b.flags & F_STATE0) != 0u && test_bit(b.state0, a)) s |= 1u;
-    if ((b.flags & F_STATE1) != 0u && test_bit(b.state1, a)) s |= 2u;
+    if ((b.flags & F_STATE0) != 0u && test_bit(b.state0, gated(b, F_STATE0, a))) s |= 1u;
+    if ((b.flags & F_STATE1) != 0u && test_bit(b.state1, gated(b, F_STATE1, a))) s |= 2u;
     return s;
 }
 
 // Point k (0 or 1) of element e with `per` points per element
 uint point_of(Batch b, uint e, uint k, uint per) {
     uint i = e * per + k;
-    return ((b.flags & F_INDEX) != 0u) ? b.index[i] : i;
+    return ((b.flags & F_INDEX) != 0u) ? b.index[gated(b, F_INDEX, i)] : i;
 }
 
 Mat load_transform(float4* t, uint inst) {
@@ -312,10 +331,10 @@ Mat load_transform(float4* t, uint inst) {
 // raster 80 -> 96).
 float point_radius(Batch b, uint pi) {
     if ((b.flags & F_RADIUS) == 0u) return 0.0;
-    float v = b.radius[pi * (b.rad_stride >> 2)];
+    float v = b.radius[gated(b, F_RADIUS, pi) * (b.rad_stride >> 2)];
     if ((b.flags & F_RADIUS_TABLE) == 0u) return v;
     uint t = asuint(v) & 0xFFFFu;
-    return t < b.radius_table_count ? b.radius_table[t] : 0.0;
+    return t < b.radius_table_count ? b.radius_table[t < b.radius_table_count ? t : 0u] : 0.0;
 }
 
 float sphere_radius(Batch b, uint pi) {
@@ -325,7 +344,7 @@ float sphere_radius(Batch b, uint pi) {
 
 float capsule_radius(Batch b, uint e) {
     float r = b.s0;
-    if ((b.flags & F_RADIUS_SCALE) != 0u) r *= b.radius_scale[e];
+    if ((b.flags & F_RADIUS_SCALE) != 0u) r *= b.radius_scale[gated(b, F_RADIUS_SCALE, e)];
     return r;
 }
 
@@ -445,21 +464,22 @@ Elem decode(Batch* batches, uint2 ent) {
 }
 
 // An element in view space: spheres a = b = centre; capsules a, b the ends.
-// Splines are heavy code: in a kernel that also takes spheres and capsules
-// they would set its registers, and so its occupancy, for all of them
-// (resolve went from 168 to 242 on Pascal, the compute raster from 80 to
-// 168). So the kernels that run per element or per pixel come in twins: the
-// main one takes every kind but splines, its spline twin (SPL 1) only
-// splines, and the twin is dispatched only for frames that have splines.
-// Both walk the same work; each passes over what is the other's.
+// Splines and polygons are heavy code: in a kernel that also takes spheres
+// and capsules they would set its registers, and so its occupancy, for all
+// of them (splines took resolve from 168 to 242 on Pascal, the compute
+// raster from 80 to 168). So the kernels that run per element or per pixel
+// come in twins: the main one takes spheres and capsules, its twin (SPL 1)
+// splines and polygons, and the twin is dispatched only for frames that
+// have those. Both walk the same work; each passes over what is the other's.
+bool heavy_kind(uint kind) { return kind == KIND_SPLINES || kind == KIND_POLYGONS; }
 bool kind_taken<let SPL : int>(uint kind) {
-    return SPL != 0 ? kind == KIND_SPLINES : kind != KIND_SPLINES;
+    return SPL != 0 ? heavy_kind(kind) : !heavy_kind(kind);
 }
 
 struct Geo {
     bool   ok;                  // visible, of positive radius, not faded
     bool   faded;               // would be drawn but for its batch's fade
-    uint   kind;                // the hardware raster's: 0 spheres, 1 capsules, 2 spline parts
+    uint   kind;                // the hardware raster's: 0 spheres, 1 capsules, 2 spline parts, 3 polygons
     uint   st;                  // state bits
     float3 a;
     float3 b;
@@ -532,7 +552,7 @@ struct SplinePart {
 };
 
 float3 spline_axis_of(Batch b, uint e) {
-    return (b.flags & F_SPL_AXIS) != 0u ? b.spl_axis[e].xyz : float3(0.0);
+    return (b.flags & F_SPL_AXIS) != 0u ? b.spl_axis[gated(b, F_SPL_AXIS, e)].xyz : float3(0.0);
 }
 
 // e's axis in view space, of unit length (0 stays 0): the blend weighs every
@@ -546,7 +566,7 @@ float3 spline_axis_view(Mat V, Mat T, Batch b, uint e) {
 // e's part's profile: half width at its start and end, radius at its start
 // and end; without a profile a tube of the batch's radius
 float4 spline_profile_of(Batch b, uint e) {
-    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[e] : float4(0.0, 0.0, b.s0, b.s0);
+    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[gated(b, F_SPL_PROFILE, e)] : float4(0.0, 0.0, b.s0, b.s0);
 }
 
 bool spline_visible(Batch b, uint ie) {
@@ -1152,6 +1172,186 @@ Geo spline_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     return g;
 }
 
+// ---------------------------------------------------------------------------
+// Polygons (md_render_polygon_style_t): a flat convex polygon of n corners
+// (3 .. 8, the same for a whole batch), made solid by a ball of the radius.
+// Its plane: Newell's normal of the corners about their centroid (the fit of
+// a polygon given in order, oriented by its winding); the corners projected
+// onto it. The solid is the plate, the polygon moved out by the radius to
+// either side, and a capsule along each edge: the Minkowski sum, for a
+// convex polygon. Every stage builds the polygon with poly_part, so they
+// agree to the bit. The corners live in registers: every index into q is a
+// constant of a loop Slang unrolls ([unroll] is only a hint to the driver:
+// lavapipe's pick kernel crashed on the array indexed at run time, and
+// elsewhere it would have been local memory).
+// ---------------------------------------------------------------------------
+
+static const uint POLY_MAX = 8u;
+
+struct PolyPart {
+    bool   ok;
+    bool   plate;               // a plane: corners not on a line
+    uint   n;
+    float3 q[POLY_MAX];         // projected onto the plane, scaled about c (shrink)
+    float3 c;                   // centroid
+    float3 nrm;                 // unit normal, by the winding
+    float  r;
+};
+
+uint poly_n(Batch b) { return clamp(b.poly_n, 3u, POLY_MAX); }
+
+// The corner after k (constant k)
+float3 poly_next(PolyPart pp, uint k) {
+    return k + 1u < pp.n ? pp.q[min(k + 1u, POLY_MAX - 1u)] : pp.q[0];
+}
+
+float3 poly_any_perpendicular(float3 t) {
+    float3 v = abs(t.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
+    return normalize(cross(t, v));
+}
+
+// Centroid, plane, projection: of corners q[0 .. n) in any space (a
+// similarity maps the plane of one space to the plane of the other)
+void poly_plane(inout PolyPart pp) {
+    float3 c = float3(0.0);
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) if (k < pp.n) c += pp.q[k];
+    c /= float(pp.n);
+    float3 nv = float3(0.0);
+    float  sz = 0.0;
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+        if (k < pp.n) {
+            nv += cross(pp.q[k] - c, poly_next(pp, k) - c);
+            sz = max(sz, length(pp.q[k] - c));
+        }
+    }
+    float nl = length(nv);
+    pp.plate = nl > 1e-6 * sz * sz;
+    if (pp.plate) {
+        pp.nrm = nv / nl;
+        [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) if (k < pp.n) pp.q[k] -= pp.nrm * dot(pp.q[k] - c, pp.nrm);
+    } else {
+        // on a line (or a point): the capsules of its edges alone
+        float3 d = pp.q[0] - c;
+        pp.nrm = poly_any_perpendicular(dot(d, d) > 0.0 ? normalize(d) : float3(0.0, 0.0, 1.0));
+    }
+    pp.c = c;
+}
+
+PolyPart poly_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
+    PolyPart pp;
+    pp.ok = false; pp.plate = false; pp.r = 0.0;
+    pp.n  = poly_n(b);
+    Mat T = load_transform(b.transforms, inst);
+    Mat V = M(v, view);
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+        pp.q[k] = float3(0.0);
+        if (k < pp.n) pp.q[k] = mulp(V, mulp(T, load_pos(b, point_of(b, e, k, pp.n))));
+    }
+    poly_plane(pp);
+    float f = 1.0;
+    if (fade && (b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) f = fade_size(fade_ts(b, -pp.c.z));
+    if (f != 1.0) {
+        [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) if (k < pp.n) pp.q[k] = pp.c + (pp.q[k] - pp.c) * f;
+    }
+    pp.r  = b.s0 * length(T.c0.xyz) * f;
+    pp.ok = pp.r > 0.0;
+    return pp;
+}
+
+// Visible when all its corners are, its state bits all theirs
+bool poly_visible(Batch b, uint e, out uint st) {
+    uint n = poly_n(b);
+    bool vis = true;
+    st = 0xFFFFFFFFu;
+    for (uint k = 0u; k < n; ++k) {
+        uint ai = attr_of(b, point_of(b, e, k, n));
+        vis = vis && attr_visible(b, ai);
+        st &= attr_state(b, ai);
+    }
+    return vis;
+}
+
+// The ray against the polygon: the plate's faces, then a capsule per edge
+SplineHit poly_hit(Ray r, PolyPart pp) {
+    SplineHit h;
+    h.t = -1.0;
+    h.n = float3(0.0, 0.0, 1.0);
+    float dn = dot(r.d, pp.nrm);
+    if (pp.plate && abs(dn) > 1e-12) {
+        float sg = dn < 0.0 ? 1.0 : -1.0;           // the face towards the ray
+        float t  = dot(pp.c + pp.nrm * (pp.r * sg) - r.o, pp.nrm) / dn;
+        if (t >= 0.0) {
+            float3 p = r.o + r.d * t - pp.nrm * (pp.r * sg);     // onto the polygon's plane
+            bool inside = true;
+            [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+                if (k < pp.n) inside = inside && dot(cross(poly_next(pp, k) - pp.q[k], p - pp.q[k]), pp.nrm) >= 0.0;
+            }
+            if (inside) { h.t = t; h.n = pp.nrm * sg; }
+        }
+    }
+    if (h.t >= 0.0) return h;                       // a face, where it is, is nearer than any rim
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+        if (k < pp.n) spline_take_capsule(r, h, pp.q[k], poly_next(pp, k), pp.r);
+    }
+    return h;
+}
+
+// Its bounding sphere: as a capsule of length 0
+Geo poly_geo_part(ViewData v, Batch b, uint inst, uint e, bool fade, out PolyPart pp) {
+    Geo g;
+    g.ok = false; g.faded = false; g.kind = 3u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
+    pp = poly_part(v, b, inst, e, fade);
+    uint st;
+    if (!poly_visible(b, e, st)) return g;
+    g.st = st;
+    if (fade && (b.flags & F_FADE) != 0u) {
+        float2 t = fade_ts(b, -pp.c.z);
+        bool keep = true;
+        if ((b.flags & F_FADE_THIN) != 0u) {
+            for (uint k = 0u; k < pp.n; ++k) keep = keep && fade_keeps(t, attr_of(b, point_of(b, e, k, pp.n)));
+        }
+        g.faded = ((b.flags & F_FADE_SHRINK) != 0u && fade_size(t) <= 0.0) || !keep;
+    }
+    if (!pp.ok || g.faded) return g;
+    float d = 0.0;
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) if (k < pp.n) d = max(d, length(pp.q[k] - pp.c));
+    g.a  = pp.c;
+    g.b  = pp.c;
+    g.r  = d + pp.r;
+    g.ok = true;
+    return g;
+}
+
+Geo poly_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
+    PolyPart pp;
+    return poly_geo_part(v, b, inst, e, fade, pp);
+}
+
+// Corner c of the box around the polygon, in clip space: in its plane the
+// rectangle of its corners along u (towards the first) and w = n x u,
+// widened by the radius; across it, the radius. (u, w, n) is right-handed,
+// as the capsules' box frame: the same indices face out.
+float4 poly_box_corner(ViewData v, PolyPart pp, uint c) {
+    float3 u  = pp.q[0] - pp.c;
+    u -= pp.nrm * dot(u, pp.nrm);
+    float  ul = length(u);
+    u = ul > 1e-20 ? u / ul : poly_any_perpendicular(pp.nrm);
+    float3 w  = cross(pp.nrm, u);
+    float2 lo = float2(0.0), hi = float2(0.0);     // the centroid is inside
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+        if (k < pp.n) {
+            float2 x = float2(dot(pp.q[k] - pp.c, u), dot(pp.q[k] - pp.c, w));
+            lo = min(lo, x); hi = max(hi, x);
+        }
+    }
+    float  br = pp.r * 1.002;               // see sphere_vs: not just touching
+    float3 p  = pp.c
+              + u * (((c & 1u) != 0u) ? hi.x + br : lo.x - br)
+              + w * (((c & 2u) != 0u) ? hi.y + br : lo.y - br)
+              + pp.nrm * (((c & 4u) != 0u) ? br : -br);
+    return mul4(M(v, proj), float4(p, 1.0));
+}
+
 // Screen bounds of a view-space sphere (the bounding sphere of an element),
 // from the unjittered projection, padded by a pixel for the jitter.
 struct Bounds {
@@ -1360,7 +1560,8 @@ uint find_batch_cluster(Batch* batches, uint count, uint i) {
 }
 
 uint2 cluster_range(Batch b, uint c) {
-    if ((b.flags & F_CLUSTERS) != 0u) return uint2(b.cluster_offset[c], b.cluster_offset[c + 1u]);
+    uint cg = gated(b, F_CLUSTERS, c);
+    if ((b.flags & F_CLUSTERS) != 0u) return uint2(b.cluster_offset[cg], b.cluster_offset[cg + 1u]);
     uint beg = c * 64u;
     return uint2(beg, min(beg + 64u, b.count));
 }
@@ -1401,7 +1602,7 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         uint a1 = attr_of(b, p1);
         if (!attr_visible(b, a0) || !attr_visible(b, a1)) return l;
         l.st = attr_state(b, a0) & attr_state(b, a1);
-        l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[e] : 1.0;
+        l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[gated(b, F_RADIUS_SCALE, e)] : 1.0;
         if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
         l.ok = capsule_radius(b, e) > 0.0;
     }
@@ -1449,6 +1650,31 @@ LocalElem spline_local(Batch b, uint e, bool geo) {
     return l;
 }
 
+// A polygon's: the box of its corners on its plane (factor 1: the pad is
+// the radius)
+LocalElem poly_local(Batch b, uint e, bool geo) {
+    LocalElem l;
+    l.ok = false; l.st = 0u; l.a = float3(0.0); l.b = float3(0.0); l.factor = 1.0;
+    uint st;
+    if (!poly_visible(b, e, st)) return l;
+    l.st = st;
+    if (geo) {
+        PolyPart pp;
+        pp.ok = false; pp.plate = false; pp.r = 0.0;
+        pp.n  = poly_n(b);
+        [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+            pp.q[k] = float3(0.0);
+            if (k < pp.n) pp.q[k] = load_pos(b, point_of(b, e, k, pp.n));
+        }
+        poly_plane(pp);
+        l.a = pp.q[0];
+        l.b = pp.q[0];
+        [ForceUnroll] for (uint k = 1u; k < POLY_MAX; ++k) if (k < pp.n) { l.a = min(l.a, pp.q[k]); l.b = max(l.b, pp.q[k]); }
+    }
+    l.ok = b.s0 > 0.0;
+    return l;
+}
+
 // Bounds of each cluster's visible elements, and its state bits. Eight
 // threads per cluster, eight clusters per group: a thread takes every eighth
 // element (several independent loads in flight), eight adjacent elements
@@ -1488,7 +1714,7 @@ void refit_body<let SPL : int>(uint3 gid, uint gi) {
             uint2 rng = cluster_range(b, c);
             for (uint e = rng.x + lane; e < rng.y; e += RF_LANES) {
                 LocalElem l;
-                if (SPL != 0) l = spline_local(b, e, geo);
+                if (SPL != 0) l = b.kind == KIND_POLYGONS ? poly_local(b, e, geo) : spline_local(b, e, geo);
                 else          l = element_local(b, e, geo);
                 if (!l.ok) continue;
                 st |= l.st;
@@ -1535,7 +1761,7 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { refit_body<0>(gid,
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void refit_splines(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { refit_body<1>(gid, gi); }
+void refit_heavy(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { refit_body<1>(gid, gi); }
 
 // The bounding sphere of cluster c of instance inst, in view space, padded by
 // the batch's style (scaled with the instance)
@@ -1661,7 +1887,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         ent = b.work_offset + inst * b.count + e;
         // the fade: not for the state lists, which do not depend on the
         // camera (the mask's raster applies it)
-        if (SPL != 0) g = spline_geo(v, b, inst, e, !state_only);
+        if (SPL != 0) g = b.kind == KIND_POLYGONS ? poly_geo(v, b, inst, e, !state_only) : spline_geo(v, b, inst, e, !state_only);
         else          g = element_geo(v, b, inst, e, !state_only);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
@@ -1680,15 +1906,19 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         }
     }
     if (SPL != 0) {
+        bool poly = g.kind == 3u;
         if (state_only) {
             bool want = g.ok && g.st != 0u;
-            uint is = wave_append(L.counters + C_STS, want);
-            if (want) L.st2[is] = ent;
+            uint is2 = wave_append(L.counters + C_STS, want && !poly);
+            uint is3 = wave_append(L.counters + C_STP, want && poly);
+            if (want) { if (poly) L.st3[is3] = ent; else L.st2[is2] = ent; }
             return;
         }
-        uint base = phase == 2u ? L.counters[C_HWS1] : 0u;
-        uint ih = wave_append(L.counters + (phase == 2u ? C_HWS2 : C_HWS1), out == OUT_HW);
-        if (out == OUT_HW) L.hw2[base + ih] = ent;
+        uint base2 = phase == 2u ? L.counters[C_HWS1] : 0u;
+        uint base3 = phase == 2u ? L.counters[C_HWP1] : 0u;
+        uint ih2 = wave_append(L.counters + (phase == 2u ? C_HWS2 : C_HWS1), out == OUT_HW && !poly);
+        uint ih3 = wave_append(L.counters + (phase == 2u ? C_HWP2 : C_HWP1), out == OUT_HW && poly);
+        if (out == OUT_HW) { if (poly) L.hw3[base3 + ih3] = ent; else L.hw2[base2 + ih2] = ent; }
         wave_count(L.counters + C_OUTSIDE, out == OUT_OUTSIDE);
         wave_count(L.counters + C_LOD,     out == OUT_LOD);
         return;
@@ -1742,7 +1972,7 @@ void cull_body<let SPL : int>(uint3 tid, uint3 gid, uint gi) {
     Lists    L = *a.lists;
     uint mode = a.mode;
     if (mode == 2u) {
-        if (SPL != 0) return;                               // spline parts are not in the retest list
+        if (SPL != 0) return;                               // spline parts and polygons are not in the retest list
         uint n = L.counters[C_OCC];
         uint stride = grid_threads(n);
         for (uint i0 = group_start(tid, gi); i0 < n; i0 += stride) {
@@ -1802,7 +2032,7 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void cull_splines(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { cull_body<1>(tid, gid, gi); }
+void cull_heavy(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { cull_body<1>(tid, gid, gi); }
 
 // The indirect commands and grids made of the counts. One thread.
 //   11: after the phase 1 cluster cull: element grid, phase 2 cluster grid
@@ -1835,6 +2065,8 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
         si[0] = 36u; si[1] = c[C_ST + 1u]; si[2] = 0u; si[3] = 0u; si[4] = 0u;
         uint* ss = c + C_STICMDS;               // spline parts: the same boxes
         ss[0] = 36u; ss[1] = c[C_STS]; ss[2] = 0u; ss[3] = 0u; ss[4] = 0u;
+        uint* sp = c + C_STICMDP;               // polygons: boxes too
+        sp[0] = 36u; sp[1] = c[C_STP]; sp[2] = 0u; sp[3] = 0u; sp[4] = 0u;
         return;
     }
     uint phase = mode == 12u ? 1u : 2u;
@@ -1855,6 +2087,12 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     scmd[2] = 0u;
     scmd[3] = 0u;
     scmd[4] = phase == 1u ? 0u : c[C_HWS1];
+    uint* pcmd = c + C_ICMDP + (phase - 1u) * 5u;   // polygons: boxes too
+    pcmd[0] = 36u;
+    pcmd[1] = phase == 1u ? c[C_HWP1] : c[C_HWP2];
+    pcmd[2] = 0u;
+    pcmd[3] = 0u;
+    pcmd[4] = phase == 1u ? 0u : c[C_HWP1];
     uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
     uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
     gs[0] = min((ns + 63u) / 64u, 65535u); gs[1] = 1u; gs[2] = 1u;
@@ -2038,7 +2276,9 @@ uint list_entry(Args a, uint i) {
     case 2u: return L.st0[i];
     case 3u: return L.st1[i];
     case 4u: return L.hw2[i];
-    default: return L.st2[i];
+    case 5u: return L.st2[i];
+    case 6u: return L.hw3[i];
+    default: return L.st3[i];
     }
 }
 
@@ -2289,6 +2529,60 @@ MaskOut spline_mask_fs(SplineV i) {
     return o;
 }
 
+// Polygons: the box around the polygon (poly_box_corner), a fragment casting
+// its ray against the polygon rebuilt from its corners. SplineV's layout,
+// pe.x unused.
+[shader("vertex")]
+SplineV polygon_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+                   uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    SplineV  o;
+    o.pos   = CULLED;
+    o.pe    = uint4(0u);
+    o.idv   = uint2(0u);
+    o.state = 0u;
+    uint  vk  = md_draw_vertex(vid, base_vertex);
+    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
+    Batch b   = a.batches[el.slot];
+    PolyPart pp;
+    Geo   g   = poly_geo_part(v, b, el.inst, el.e, true, pp);     // the state lists' fade here
+    if (!g.ok) return o;
+    o.pos   = poly_box_corner(v, pp, vk);
+    o.pe    = uint4(0u, el.inst, el.e, el.slot);
+    o.idv   = elem_id(a.batches, el);
+    o.state = g.st;
+    return o;
+}
+
+float poly_fragment_hit(ViewData v, Ray r, SplineV i) {
+    return poly_hit(r, poly_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true)).t;
+}
+
+[shader("fragment")]
+VisOut polygon_fs(SplineV i) {
+    ViewData v = *MD_ARGS.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = poly_fragment_hit(v, r, i);
+    if (t < 0.0) discard;
+    VisOut o;
+    o.id    = i.idv;
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    return o;
+}
+
+[shader("fragment")]
+MaskOut polygon_mask_fs(SplineV i) {
+    ViewData v = *MD_ARGS.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = poly_fragment_hit(v, r, i);
+    if (t < 0.0) discard;
+    MaskOut o;
+    o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    return o;
+}
+
 // ---------------------------------------------------------------------------
 // Resolve
 // ---------------------------------------------------------------------------
@@ -2318,13 +2612,13 @@ float4 attr_color(Batch b, uint ai) {
     } else if (b.color_mode == COLOR_PALETTE) {
         uint idx = 0u;
         if ((b.flags & F_PALETTE_IDX) != 0u) {
-            uint w = b.palette_index[ai >> 1];
+            uint w = b.palette_index[gated(b, F_PALETTE_IDX, ai) >> 1];
             idx = ((ai & 1u) != 0u) ? (w >> 16) : (w & 0xFFFFu);
         }
         if (idx >= b.palette_count) idx = 0u;
-        c = b.palette_count > 0u ? b.palette[idx] : 0xFFFFFFFFu;
+        c = b.palette_count > 0u ? b.palette[idx] : 0xFFFFFFFFu;     // idx < palette_count, else 0
     } else {
-        c = ((b.flags & F_COLOR) != 0u) ? b.color[ai] : 0xFFFFFFFFu;
+        c = ((b.flags & F_COLOR) != 0u) ? b.color[gated(b, F_COLOR, ai)] : 0xFFFFFFFFu;
     }
     return unpack_rgba8(c);
 }
@@ -2347,7 +2641,8 @@ float2 oct_encode(float3 n) {
     return p;
 }
 
-// SPL 0: every kind but splines (a spline pixel comes back invalid); 1: all
+// SPL 0: spheres and capsules; 1: splines and polygons (the other's pixels
+// come back invalid)
 Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     Hit h;
     h.valid = false;
@@ -2359,7 +2654,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     uint cnt = max(b.count, 1u);
     h.instance = uint(linear / uint64_t(cnt));
     h.element  = uint(linear - uint64_t(h.instance) * uint64_t(cnt));
-    h.id       = ((b.flags & F_ID) != 0u) ? b.id[h.element] : h.element;
+    h.id       = ((b.flags & F_ID) != 0u) ? b.id[gated(b, F_ID, h.element)] : h.element;
     h.attr     = 0xFFFFFFFFu;
     if (b.kind == KIND_EXTERNAL) return h;
 
@@ -2368,7 +2663,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     float s  = length(T.c0.xyz);
     Ray   r  = pixel_ray(v, pix);
 
-    if (b.kind == KIND_SPHERES) {
+    if (SPL == 0 && b.kind == KIND_SPHERES) {
         uint   pi  = point_of(b, h.element, 0u, 1u);
         float3 lc  = load_pos(b, pi);
         float3 cw  = mulp(T, lc);
@@ -2384,7 +2679,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         h.attr     = attr_of(b, pi);
         h.color    = attr_color(b, h.attr);
         h.valid    = true;
-    } else if (b.kind == KIND_CAPSULES) {
+    } else if (SPL == 0 && b.kind == KIND_CAPSULES) {
         uint   p0  = point_of(b, h.element, 0u, 2u);
         uint   p1  = point_of(b, h.element, 1u, 2u);
         float3 l0  = load_pos(b, p0);
@@ -2442,6 +2737,31 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         h.attr     = attr_of(b, pi);
         h.color    = attr_color(b, h.attr);
         h.valid    = true;
+    } else if (SPL != 0 && b.kind == KIND_POLYGONS) {
+        PolyPart  pp = poly_part(v, b, h.instance, h.element, true);
+        SplineHit ph = poly_hit(r, pp);
+        if (ph.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its centroid
+            ph.t = max(dot(pp.c - r.o, r.d), 0.0);
+            ph.n = -r.d;
+        }
+        float3 dm = float3(0.0);                        // its motion: its corners' mean
+        for (uint k = 0u; k < pp.n; ++k) {
+            uint   pk = point_of(b, h.element, k, pp.n);
+            float3 lk = load_pos(b, pk);
+            dm += mulp(T, lk) - mulp(Tp, lk - load_vel(b, pk) * v.dt);
+        }
+        h.p_view   = r.o + r.d * ph.t;
+        h.n_view   = ph.n;
+        h.p_world  = mulp(M(v, inv_view), h.p_view);
+        h.p_world_prev = h.p_world - dm / float(pp.n);
+        uint  kn = 0u;                                  // its attribute: the corner nearest the hit
+        float dn = 3.0e38;
+        [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+            if (k < pp.n) { float d = length(pp.q[k] - h.p_view); if (d < dn) { dn = d; kn = k; } }
+        }
+        h.attr     = attr_of(b, point_of(b, h.element, kn, pp.n));
+        h.color    = attr_color(b, attr_of(b, point_of(b, h.element, 0u, pp.n)));   // its colour: the first's
+        h.valid    = true;
     }
     return h;
 }
@@ -2452,8 +2772,8 @@ float2 to_pixels(ViewData v, float4 clip) {
 }
 
 // Each pixel by the twin that takes its kind: the main one clears the empty
-// ones, the spline twin (run after it, when the frame has splines) passes
-// over all but spline pixels
+// ones, the heavy twin (run after it, when the frame has splines or
+// polygons) passes over all but theirs
 void resolve_body<let SPL : int>(uint3 tid) {
     Args a = MD_ARGS;
     if (tid.x >= a.width || tid.y >= a.height) return;
@@ -2490,7 +2810,7 @@ void resolve(uint3 tid : SV_DispatchThreadID) { resolve_body<0>(tid); }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void resolve_splines(uint3 tid : SV_DispatchThreadID) { resolve_body<1>(tid); }
+void resolve_heavy(uint3 tid : SV_DispatchThreadID) { resolve_body<1>(tid); }
 
 // The visible part of the masks, from the ids: r state 0, b state 1. The
 // raster pass that follows adds g and a (anywhere, hidden too) by max.
@@ -2505,7 +2825,7 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
     uint slot1 = idv.y >> 20;
     if (slot1 != 0u) {
         Batch b = a.batches[slot1 - 1u];
-        if (b.kind == KIND_SPHERES || b.kind == KIND_CAPSULES || b.kind == KIND_SPLINES) {
+        if (b.kind == KIND_SPHERES || b.kind == KIND_CAPSULES || b.kind == KIND_POLYGONS || b.kind == KIND_SPLINES) {
             uint64_t linear = (uint64_t(idv.y & 0x3FFFFu) << 32) | uint64_t(idv.x);
             uint cnt = max(b.count, 1u);
             uint e   = uint(linear % uint64_t(cnt));
@@ -2514,6 +2834,8 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
                 st = attr_state(b, attr_of(b, point_of(b, e, 0u, 1u)));
             } else if (b.kind == KIND_SPLINES) {
                 st = attr_state(b, attr_of(b, b.index[e] & SPLINE_POINT));
+            } else if (b.kind == KIND_POLYGONS) {
+                poly_visible(b, e, st);
             } else {
                 st = attr_state(b, attr_of(b, point_of(b, e, 0u, 2u))) & attr_state(b, attr_of(b, point_of(b, e, 1u, 2u)));
             }
@@ -2527,16 +2849,20 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void pick(uint3 tid : SV_DispatchThreadID) {
-    Args a = MD_ARGS;
+    Args  a = MD_ARGS;
     uint* o = a.pick_out;
     for (uint i = 0u; i < 12u; ++i) o[i] = 0u;
-    if (a.px >= a.width || a.py >= a.height) return;
-    uint2 idv = a.id.Load(int3(int(a.px), int(a.py), 0));
+    uint px = a.px, py = a.py;
+    if (px >= a.width || py >= a.height) return;
+    uint2 idv = a.id.Load(int3(int(px), int(py), 0));
     o[0] = idv.x;
     o[1] = idv.y;
     if ((idv.y >> 20) == 0u) return;
-    ViewData v = *a.view;
-    Hit h = eval_hit<1>(v, a.batches, idv, float2(float(a.px), float(a.py)) + 0.5);
+    ViewData v   = *a.view;
+    float2   pix = float2(float(px), float(py)) + 0.5;
+    Hit h;
+    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix);
+    else                                                h = eval_hit<0>(v, a.batches, idv, pix);
     o[2] = h.id;
     o[3] = h.attr;
     if (h.valid) {
