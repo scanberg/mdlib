@@ -147,8 +147,6 @@ set(SRC_FILES
   src/md_flow.h
   src/md_fragment.c
   src/md_fragment.h
-  src/md_gfx.c
-  src/md_gfx.h
   src/md_gl.c
   src/md_gl.h
   src/md_gro.c

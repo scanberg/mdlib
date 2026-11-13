@@ -12,11 +12,11 @@
 #include <stdbool.h>
 
 #include <core/md_vec.h>
-#include <md_unitcell.h>
-#include <md_system_state.h>
-#include <md_hierarchy.h>
 
+struct md_unitcell_t;
 struct md_system_t;
+struct md_system_state_t;
+struct md_molecule_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,7 +29,7 @@ extern "C" {
 // coord_b:   Array of coordinates (b)
 // num_b:     Length of coord_b
 // cell:      Periodic boundary cell
-void md_geom_distance_array(float* out_dist_arr, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_geom_distance_array(float* out_dist_arr, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const struct md_unitcell_t* cell);
 
 // The minimum (maximum) distance between each group of points of a and the points of b, under the minimum image
 // convention of cell (NULL, or a cell without periodic axes: plain euclidean). The minimum image is exact in triclinic
@@ -39,31 +39,31 @@ void md_geom_distance_array(float* out_dist_arr, const md_float3_t* coord_a, siz
 // out_idx_a:  (optional) Per group, the index into coord_a of the nearest (farthest) pair, -1 where there is none
 // out_idx_b:  (optional) Per group, the index into coord_b of the pair, -1 where there is none
 // Each group starts from the pair of the one before, so groups which follow each other in space are cheaper.
-void md_geom_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
-void md_geom_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_geom_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const struct md_unitcell_t* cell);
+void md_geom_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const struct md_unitcell_t* cell);
 
 // Every pair whose distance is within tol of the minimum (maximum), in one pass with the same culling: for a caller
 // which computes the distances another way, where they may differ from these by some ulps, and wants the extreme by
 // its own. Up to cap pairs are written, as indices into coord_a and coord_b, in no particular order. Returns how many
 // there are, or more than cap when they do not all fit (the ones written are then only some of them); 0 when a or b
 // is empty.
-size_t md_geom_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
-size_t md_geom_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+size_t md_geom_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const struct md_unitcell_t* cell);
+size_t md_geom_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const struct md_unitcell_t* cell);
 
 // Reduces separation vectors to their shortest periodic image in cell, in place. Without a cell, or a cell without
 // periodic axes, they are left as they are. The image of x relative to a reference r is r + min_image(x - r).
-void md_geom_min_image(float* in_out_dx, size_t stride, size_t count, const md_unitcell_t* cell);
+void md_geom_min_image(float* in_out_dx, size_t stride, size_t count, const struct md_unitcell_t* cell);
 
 // Wraps coordinates into the cell, in place: all of them, or those of in_idx (count of them) when given. False, with
 // nothing done, without a periodic cell.
-bool md_geom_pbc(float* in_out_xyz, size_t stride, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+bool md_geom_pbc(float* in_out_xyz, size_t stride, const int32_t* in_idx, size_t count, const struct md_unitcell_t* cell);
 
 // Unwraps a single molecule by walking the parent hierarchy md_molecule_infer
 // already computed. Linear, allocation free, and does not consult bond connectivity.
-void md_geom_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol);
+void md_geom_unwrap_molecule(struct md_system_state_t* state, const struct md_molecule_t* mol);
 
 // Unwraps all molecules in a system
-void md_geom_unwrap_system(md_system_state_t* state, const struct md_system_t* sys);
+void md_geom_unwrap_system(struct md_system_state_t* state, const struct md_system_t* sys);
 
 // PERIODIC IMAGE SELECTION
 //
@@ -90,7 +90,7 @@ void md_geom_unwrap_system(md_system_state_t* state, const struct md_system_t* s
 //
 // Correct while the set spans less than half a cell. Beyond that no per point image choice can
 // represent it and the structure has to be unwrapped topologically instead.
-bool md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_float3_t* out_com);
+bool md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const struct md_unitcell_t* cell, md_float3_t* out_com);
 
 // Optimal rigid rotation between a reference set and a target set under periodic boundaries.
 //
@@ -114,7 +114,7 @@ bool md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_u
 float md_geom_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com, md_float4_t* out_trg_xyzw,
                                    const md_float4_t* ref_xyzw, md_float3_t ref_com,
                                    const md_float4_t* trg_xyzw, size_t count,
-                                   const md_unitcell_t* cell, int max_iter, float tol);
+                                   const struct md_unitcell_t* cell, int max_iter, float tol);
 
 // The optimal rotation (Kabsch) of two sets of points already relative to their centres, weighted by w
 md_float3x3_t md_geom_optimal_rotation_rel(const md_float4_t* ref_rel_xyzw, const md_float4_t* trg_rel_xyzw, size_t count);
@@ -125,7 +125,7 @@ void md_geom_aabb(float out_min[3], float out_max[3], const float* in_xyz, size_
 
 // The center of mass of points: all of them, or those of in_idx (count of them) when given, by their weights in_w
 // (NULL: equal weights). In a periodic cell it is the circular mean, which needs no image of the points to be chosen.
-md_float3_t md_geom_com(const float* in_xyz, size_t xyz_stride, const float* in_w, size_t w_stride, const int32_t* in_idx, size_t count, const md_unitcell_t* cell);
+md_float3_t md_geom_com(const float* in_xyz, size_t xyz_stride, const float* in_w, size_t w_stride, const int32_t* in_idx, size_t count, const struct md_unitcell_t* cell);
 
 // The root mean square deviation of two sets of points, the second rotated optimally onto the first about the
 // centres in_com, by the mean of the weights (w) of each pair. With in_idx, pair i is in_idx[0][i] and in_idx[1][i].
@@ -141,7 +141,7 @@ md_float3_t md_geom_shape_weights(const md_float3x3_t* covariance_matrix);
 // unit_cell:   The unit_cell of the system [Optional]
 // t: interpolation factor (0..1)
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t);
+bool md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const struct md_unitcell_t* cell, float t);
 
 // The weights of four consecutive frames at t (0..1) for a cubic scheme over them, on the interval between the
 // two middle ones: out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]. They sum to one.
@@ -155,7 +155,7 @@ void md_geom_cubic_bspline_weights(float out_w[4], float t);
 // any cubic scheme over them at a given t (see the weights above). In a periodic cell in[0] and in[2] are taken at
 // the minimum image of in[1], and in[3] at that of in[2].
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]);
+bool md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const struct md_unitcell_t* cell, const float w[4]);
 
 #ifdef __cplusplus
 }
