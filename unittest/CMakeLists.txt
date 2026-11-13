@@ -7,6 +7,16 @@ target_compile_options(md_unittest PRIVATE ${MD_FLAGS_EXT} ${MD_FLAGS_AVX} $<$<C
 target_link_options(md_unittest PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_unittest PRIVATE mdlib ${MD_LIBS})
 
+# The revision the tests were built from (MD_BENCH_SOURCE_REV, as the benchmarks report it): the GPU
+# tests print it, so a run from a stale build shows as one
+add_custom_target(md_unittest_rev
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/.. -DOUT=${CMAKE_CURRENT_BINARY_DIR}/bench_rev.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/../benchmark/bench_version.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/bench_rev.h
+)
+add_dependencies(md_unittest md_unittest_rev)
+target_include_directories(md_unittest PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
 set (SRC_FILES
     test_allocator.c
     test_array.c
