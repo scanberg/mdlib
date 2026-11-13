@@ -250,6 +250,11 @@ typedef struct {
 	const float* radius; // Bonding radius for each atom
     float k_min;
     float k_max;
+    // The metals, which reach further than the other atoms and are searched for on their own (cov_bond_candidates):
+    // NULL for none. The pass over all pairs leaves out the pairs with a metal, the pass from the metals ('i') keeps
+    // a pair of metals once and no metal with itself.
+    const uint8_t* metal;
+    bool from_metals;
     md_array(bond_pair_t)* candidates;
     md_allocator_i* alloc;
 } cov_bond_callback_param_t;
@@ -295,6 +300,10 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
                 int bit_idx = md_ctz32(mask);
                 mask = mask & ~(1 << bit_idx);
                 int idx = (int)i + bit_idx;
+                if (data->metal) {
+                    const uint32_t a = i_idx[idx], b = j_idx[idx];
+                    if (data->from_metals ? (a == b || (data->metal[b] && b < a)) : (data->metal[a] || data->metal[b])) continue;
+                }
                 bond_pair_t cp = {
                     .atom_i = i_idx[idx],
                     .atom_j = j_idx[idx],
@@ -320,16 +329,29 @@ typedef struct cov_bond_segment_t {
 typedef struct cov_bond_pass_t {
     const md_spatial_acc_t*     acc;
     double                      cutoff;
+    // The pass from the metals: their coordinates and atoms, METAL_PIECE of them a piece. NULL for the pass over all pairs.
+    const md_float3_t*          xyz;
+    const int*                  metals;
+    size_t                      num_metals;
     cov_bond_callback_param_t*  param;      // [num_threads], each with its own candidates
     md_array(cov_bond_segment_t)* segments; // [num_threads]
     md_allocator_i*             heap;
 } cov_bond_pass_t;
 
+#define METAL_PIECE 64
+
 static void cov_bond_pass_range(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
     cov_bond_pass_t* pass = (cov_bond_pass_t*)arg;
     cov_bond_callback_param_t* param = &pass->param[thread_idx];
     const size_t offset = md_array_size(*param->candidates);
-    md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(pass->acc, pass->cutoff, beg, end, test_cov_bond_pair_callback, param);
+    if (pass->metals) {
+        const size_t m_beg = (size_t)beg * METAL_PIECE;
+        const size_t m_end = MD_MIN((size_t)end * METAL_PIECE, pass->num_metals);
+        md_coord_stream_t ext = md_coord_stream_from_aos((const float*)pass->xyz, sizeof(md_float3_t), pass->metals + m_beg, m_end - m_beg);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(pass->acc, &ext, pass->cutoff, test_cov_bond_pair_callback, param, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+    } else {
+        md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(pass->acc, pass->cutoff, beg, end, test_cov_bond_pair_callback, param);
+    }
     const cov_bond_segment_t seg = { beg, thread_idx, offset, md_array_size(*param->candidates) - offset };
     if (seg.count) md_array_push(pass->segments[thread_idx], seg, pass->heap);
 }
@@ -340,11 +362,14 @@ static int compare_cov_bond_segment(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-// The pairs within the bonding range of their radii, in the order of md_spatial_acc_for_each_internal_pair_within_cutoff
-static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const cov_bond_callback_param_t* proto, const md_executor_t* ex, md_allocator_i* alloc) {
+// The pairs within the bonding range of their radii: of all pairs in the order of
+// md_spatial_acc_for_each_internal_pair_within_cutoff, or (metals given) from the metals in their order, each metal's
+// pairs in the order of md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff
+static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const md_float3_t* xyz, const int* metals, size_t num_metals,
+                                const cov_bond_callback_param_t* proto, const md_executor_t* ex, md_allocator_i* alloc) {
     md_allocator_i* heap = md_get_heap_allocator();
     const uint32_t num_threads = md_executor_num_threads(ex);
-    const size_t num_pieces = md_spatial_acc_num_pieces(acc);
+    const size_t num_pieces = metals ? (num_metals + METAL_PIECE - 1) / METAL_PIECE : md_spatial_acc_num_pieces(acc);
     if (num_pieces == 0) return;
 
     md_array(bond_pair_t)*        cand = md_alloc(heap, num_threads * sizeof(md_array(bond_pair_t)));
@@ -356,9 +381,10 @@ static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc
         param[t] = *proto;
         param[t].candidates = &cand[t];
         param[t].alloc = heap;
+        param[t].from_metals = metals != NULL;
     }
-    cov_bond_pass_t pass = { .acc = acc, .cutoff = cutoff, .param = param, .segments = segs, .heap = heap };
-    const uint32_t grain = (uint32_t)MD_MAX(1, num_pieces / ((size_t)num_threads * 32));
+    cov_bond_pass_t pass = { .acc = acc, .cutoff = cutoff, .xyz = xyz, .metals = metals, .num_metals = num_metals, .param = param, .segments = segs, .heap = heap };
+    const uint32_t grain = metals ? 1 : (uint32_t)MD_MAX(1, num_pieces / ((size_t)num_threads * 32));
     md_parallel_for(ex, (uint32_t)num_pieces, grain, cov_bond_pass_range, &pass);
 
     md_array(cov_bond_segment_t) all = 0;
@@ -683,16 +709,24 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             bond->count += 1;
         }
 	} else {
-        double max_atom_rad = 0.0;
+        // The largest radius of the metals and of the other atoms: a metal reaches further than the rest (2.0 Å for
+        // potassium against 1.1 Å for sulfur), and a few ions are not to set how far every atom of the system is
+        // searched from (cov_bond_candidates)
+        double max_metal_rad = 0.0, max_other_rad = 0.0;
+        size_t num_metals = 0;
 
         float* atom_radius = md_temp_alloc_array(temp_scope, float, num_atoms);
         md_atomic_number_t* atomic_nr = md_temp_alloc_array(temp_scope, md_atomic_number_t, num_atoms);
+        uint8_t* metal = md_temp_alloc_array(temp_scope, uint8_t, num_atoms);
         for (size_t i = 0; i < num_atoms; ++i) {
             atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
             // The covalent radius for metals too: the ionic radius of the metal plus the covalent radius of the
             // ligand mixes two scales and comes out 0.4-0.6 Å short of real metal-ligand distances.
             atom_radius[i] = element_covalent_radius(atomic_nr[i]);
-            max_atom_rad = MD_MAX(max_atom_rad, atom_radius[i]);
+            metal[i] = is_metal(atomic_nr[i]);
+            num_metals += metal[i];
+            if (metal[i]) max_metal_rad = MD_MAX(max_metal_rad, atom_radius[i]);
+            else          max_other_rad = MD_MAX(max_other_rad, atom_radius[i]);
         }
 
         int* comp_id = md_temp_alloc_array(temp_scope, int, num_atoms);
@@ -722,17 +756,28 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
                 .radius = atom_radius,
                 .k_min = bond_k_min,
                 .k_max = bond_k_coord,
+                .metal = num_metals ? metal : NULL,
             };
 
-            // Candidates within reach of the largest covalent radius of the set: about 2.7 Å for organic matter
-            const double cutoff = MD_MAX(1.0, 2.0 * max_atom_rad * bond_k_coord);
+            // The pairs of other atoms within reach of their largest covalent radius: about 2.7 Å for organic matter.
+            // Then the pairs of the metals, from each metal within reach of its radius and the largest of all, which
+            // is at most twice as far as the structure is built for.
+            const double cutoff       = MD_MAX(1.0, 2.0 * max_other_rad * bond_k_coord);
+            const double metal_cutoff = (max_metal_rad + MD_MAX(max_metal_rad, max_other_rad)) * bond_k_coord;
+            const double acc_cutoff   = num_metals ? MD_MAX(cutoff, 0.51 * metal_cutoff) : cutoff;
 
             // Build candidate list
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
-            cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = acc_cutoff, .unitcell = &state->unitcell });
+            cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, executor, heap);
+            if (num_metals) {
+                int* metals = md_temp_alloc_array(temp_scope, int, num_metals);
+                size_t k = 0;
+                for (size_t i = 0; i < num_atoms; ++i) if (metal[i]) metals[k++] = (int)i;
+                cov_bond_candidates(&candidates, &acc, metal_cutoff, state->xyz, metals, num_metals, &param, executor, heap);
+            }
             md_temp_reset(temp_scope, before_acc);
         }
 
