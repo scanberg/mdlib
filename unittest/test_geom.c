@@ -717,7 +717,7 @@ UTEST(geom, com_pbc_matches_plain_mean) {
             const md_float3_t plain_u = com_planar(x, y, z, NULL, NULL, n, NULL);
             const md_float3_t plain_w = com_planar(x, y, z, w,    NULL, n, NULL);
 
-            // the four internal variants, in order: _com_pbc, _com_pbc_w, _com_pbc_i, _com_pbc_iw
+            // with weights and an index, and without: the packed kernel and the general one
             const md_float3_t pbc    = com_planar(x, y, z, NULL, NULL, n, &cells[ci]);
             const md_float3_t pbc_w  = com_planar(x, y, z, w,    NULL, n, &cells[ci]);
             const md_float3_t pbc_i  = com_planar(x, y, z, NULL, idx,  n, &cells[ci]);

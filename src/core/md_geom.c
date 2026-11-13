@@ -347,7 +347,7 @@ static void com_packed(float out_com[3], const md_float3_t* in_xyz, const float*
 
 // The periodic mean in an orthorhombic cell, contiguous atoms without an index. The angle of each
 // coordinate is its own axis scaled (M is diagonal), so the sines and cosines are taken on the
-// packed floats as they lie and summed per lane; the same angles and the same epilogue as _com_pbc.
+// packed floats as they lie and summed per lane; the same angles and the same epilogue as com_pbc_general.
 static void com_pbc_ortho_packed(float out_com[3], const md_float3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
     const float* f = (const float*)in_xyz;
     double acc_c[3] = {0};
@@ -484,1050 +484,122 @@ static void com_pbc_ortho_packed(float out_com[3], const md_float3_t* in_xyz, co
     }
 }
 
-static void com(float* out_com, const md_float3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count) {
-    if (!in_idx) {
-        com_packed(out_com, in_xyz, in_w, count);
-        return;
-    }
-    size_t i = 0;
-    double acc_x = 0;
-    double acc_y = 0;
-    double acc_z = 0;
-    double acc_w = 0;
-#if defined(__AVX512F__)
-    __m512 vx = _mm512_setzero_ps();
-    __m512 vy = _mm512_setzero_ps();
-    __m512 vz = _mm512_setzero_ps();
-    __m512 vw = _mm512_setzero_ps();
-
-    const size_t simd_count = MD_ROUND_DOWN(count, 16);
-
-    if (in_idx) {
-        if (in_w) {
-            for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_si512(in_idx + i);
-                __m512 x, y, z;
-                md_mm512_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
-                __m512 w    = _mm512_i32gather_ps(idx, in_w, 4);
-
-                vx = _mm512_add_ps(vx, _mm512_mul_ps(x, w));
-                vy = _mm512_add_ps(vy, _mm512_mul_ps(y, w));
-                vz = _mm512_add_ps(vz, _mm512_mul_ps(z, w));
-                vw = _mm512_add_ps(vw, w);
-            }
-        } else {
-            for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_si512(in_idx + i);
-                __m512 x, y, z;
-                md_mm512_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
-
-                vx = _mm512_add_ps(vx, x);
-                vy = _mm512_add_ps(vy, y);
-                vz = _mm512_add_ps(vz, z);
-            }
-        }
+// MD_XV_WIDTH points of any layout as x, y, z and w: from xyz with a stride of xs floats and weights with a stride of
+// ws floats (or each of one), of the indices idx (or i, i + 1, ...). Native width: eight lanes are two halves on NEON.
+static inline void com_loadv(md_xv* x, md_xv* y, md_xv* z, md_xv* w, const float* xyz, int32_t xs, const float* in_w, int32_t ws, const int32_t* idx, size_t i) {
+    if (!idx && xs == 3) {
+        md_xv_load_xyz_packed_ps(x, y, z, xyz + i * 3);
+    } else if (idx && xs == 3) {
+        md_xv_i32gather_xyz_ps(x, y, z, xyz, md_xv_loadu_si((const md_xvi*)(idx + i)));
     } else {
-        if (in_w) {
-            for (; i < simd_count; i += 16) {
-                __m512 x, y, z;
-                md_mm512_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
-                __m512 w = _mm512_loadu_ps(in_w + i);
-
-                vx = _mm512_add_ps(vx, _mm512_mul_ps(x, w));
-                vy = _mm512_add_ps(vy, _mm512_mul_ps(y, w));
-                vz = _mm512_add_ps(vz, _mm512_mul_ps(z, w));
-                vw = _mm512_add_ps(vw, w);
-            }
-        } else {
-            for (; i < simd_count; i += 16) {
-                __m512 x, y, z;
-                md_mm512_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
-
-                vx = _mm512_add_ps(vx, x);
-                vy = _mm512_add_ps(vy, y);
-                vz = _mm512_add_ps(vz, z);
-            }
-        }
+        int32_t off[MD_XV_WIDTH];
+        for (int k = 0; k < MD_XV_WIDTH; ++k) off[k] = (idx ? idx[i + k] : (int32_t)(i + k)) * xs;
+        const md_xvi o = md_xv_loadu_si((const md_xvi*)off);
+        *x = md_xv_i32gather_ps(xyz + 0, o);
+        *y = md_xv_i32gather_ps(xyz + 1, o);
+        *z = md_xv_i32gather_ps(xyz + 2, o);
     }
-
-    acc_x = _mm512_reduce_add_ps(vx);
-    acc_y = _mm512_reduce_add_ps(vy);
-    acc_z = _mm512_reduce_add_ps(vz);
-    acc_w = _mm512_reduce_add_ps(vw);
-#elif defined (__AVX__)
-    md_256 vx = md_mm256_setzero_ps();
-    md_256 vy = md_mm256_setzero_ps();
-    md_256 vz = md_mm256_setzero_ps();
-    md_256 vw = md_mm256_setzero_ps();
-
-    const size_t simd_count = MD_ROUND_DOWN(count, 8);
-
-    if (in_idx) {
-        if (in_w) {
-            for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_si256(in_idx + i);
-                md_256 x, y, z;
-                md_mm256_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
-                md_256 w    = md_mm256_i32gather_ps(in_w, idx, 4);
-
-                vx = md_mm256_add_ps(vx, md_mm256_mul_ps(x, w));
-                vy = md_mm256_add_ps(vy, md_mm256_mul_ps(y, w));
-                vz = md_mm256_add_ps(vz, md_mm256_mul_ps(z, w));
-                vw = md_mm256_add_ps(vw, w);
-            }
-        } else {
-            for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_si256(in_idx + i);
-                md_256 x, y, z;
-                md_mm256_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
-
-                vx = md_mm256_add_ps(vx, x);
-                vy = md_mm256_add_ps(vy, y);
-                vz = md_mm256_add_ps(vz, z);
-            }
-        }
+    if (!in_w) {
+        *w = md_xv_set1_ps(1.0f);
+    } else if (!idx && ws == 1) {
+        *w = md_xv_loadu_ps(in_w + i);
+    } else if (idx && ws == 1) {
+        *w = md_xv_i32gather_ps(in_w, md_xv_loadu_si((const md_xvi*)(idx + i)));
     } else {
-        if (in_w) {
-            for (; i < simd_count; i += 8) {
-                md_256 x, y, z;
-                md_mm256_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
-                md_256 w = md_mm256_loadu_ps(in_w + i);
-
-                vx = md_mm256_add_ps(vx, md_mm256_mul_ps(x, w));
-                vy = md_mm256_add_ps(vy, md_mm256_mul_ps(y, w));
-                vz = md_mm256_add_ps(vz, md_mm256_mul_ps(z, w));
-                vw = md_mm256_add_ps(vw, w);
-            }
-        } else {
-            for (; i < simd_count; i += 8) {
-                md_256 x, y, z;
-                md_mm256_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
-
-                vx = md_mm256_add_ps(vx, x);
-                vy = md_mm256_add_ps(vy, y);
-                vz = md_mm256_add_ps(vz, z);
-            }
-        }
+        int32_t off[MD_XV_WIDTH];
+        for (int k = 0; k < MD_XV_WIDTH; ++k) off[k] = (idx ? idx[i + k] : (int32_t)(i + k)) * ws;
+        *w = md_xv_i32gather_ps(in_w, md_xv_loadu_si((const md_xvi*)off));
     }
-
-    acc_x = md_mm256_reduce_add_ps(vx);
-    acc_y = md_mm256_reduce_add_ps(vy);
-    acc_z = md_mm256_reduce_add_ps(vz);
-    acc_w = md_mm256_reduce_add_ps(vw);
-
-#else
-    md_128 vx = md_mm_setzero_ps();
-    md_128 vy = md_mm_setzero_ps();
-    md_128 vz = md_mm_setzero_ps();
-    md_128 vw = md_mm_setzero_ps();
-
-    const size_t simd_count = MD_ROUND_DOWN(count, 4);
-
-    if (in_idx) {
-        if (in_w) {
-            for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_si128(in_idx + i);
-                md_128 x, y, z;
-                md_mm_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
-                md_128 w    = md_mm_i32gather_ps(in_w, idx, 4);
-
-                vx = md_mm_add_ps(vx, md_mm_mul_ps(x, w));
-                vy = md_mm_add_ps(vy, md_mm_mul_ps(y, w));
-                vz = md_mm_add_ps(vz, md_mm_mul_ps(z, w));
-                vw = md_mm_add_ps(vw, w);
-            }
-        } else {
-            for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_si128(in_idx + i);
-                md_128 x, y, z;
-                md_mm_i32gather_xyz_ps(&x, &y, &z, (const float*)in_xyz, idx);
-
-                vx = md_mm_add_ps(vx, x);
-                vy = md_mm_add_ps(vy, y);
-                vz = md_mm_add_ps(vz, z);
-            }
-        }
-    } else {
-        if (in_w) {
-            for (; i < simd_count; i += 4) {
-                md_128 x, y, z;
-                md_mm_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
-                md_128 w = md_mm_loadu_ps(in_w + i);
-
-                vx = md_mm_add_ps(vx, md_mm_mul_ps(x, w));
-                vy = md_mm_add_ps(vy, md_mm_mul_ps(y, w));
-                vz = md_mm_add_ps(vz, md_mm_mul_ps(z, w));
-                vw = md_mm_add_ps(vw, w);
-            }
-        } else {
-            for (; i < simd_count; i += 4) {
-                md_128 x, y, z;
-                md_mm_load_xyz_packed_ps(&x, &y, &z, (const float*)(in_xyz + i));
-
-                vx = md_mm_add_ps(vx, x);
-                vy = md_mm_add_ps(vy, y);
-                vz = md_mm_add_ps(vz, z);
-            }
-        }
-    }
-
-    acc_x = md_mm_reduce_add_ps(vx);
-    acc_y = md_mm_reduce_add_ps(vy);
-    acc_z = md_mm_reduce_add_ps(vz);
-    acc_w = md_mm_reduce_add_ps(vw);
-#endif
-
-    if (in_idx) {
-        if (in_w) {
-            for (; i < count; ++i) {
-                int64_t idx = in_idx[i];
-                float w = in_w[idx];
-                acc_x += in_xyz[idx].x * w;
-                acc_y += in_xyz[idx].y * w;
-                acc_z += in_xyz[idx].z * w;
-                acc_w += w;
-            }
-        } else {
-            for (; i < count; ++i) {
-                int64_t idx = in_idx[i];
-                acc_x += in_xyz[idx].x;
-                acc_y += in_xyz[idx].y;
-                acc_z += in_xyz[idx].z;
-            }
-            acc_w = (double)count;
-        }
-    } else {
-        if (in_w) {
-            for (; i < count; ++i) {
-                float w = in_w[i];
-                acc_x += in_xyz[i].x * w;
-                acc_y += in_xyz[i].y * w;
-                acc_z += in_xyz[i].z * w;
-                acc_w += w;
-            }
-        } else {
-            for (; i < count; ++i) {
-                acc_x += in_xyz[i].x;
-                acc_y += in_xyz[i].y;
-                acc_z += in_xyz[i].z;
-            }
-            acc_w = (double)count;
-        }
-    }
-
-    out_com[0] = (float)(acc_x / acc_w);
-    out_com[1] = (float)(acc_y / acc_w);
-    out_com[2] = (float)(acc_z / acc_w);
 }
 
-// Internal versions for COM computation supporting triclinic and ortho PBC
-static void _com_pbc_w(float out_com[3], const md_float3_t* in_xyz, const float* in_w, size_t count, const float M[3][3], const float I[3][3]) {
-    MD_ASSERT(out_com);
-    MD_ASSERT(in_xyz);
-    MD_ASSERT(in_w);
-    MD_ASSERT(M);
-    MD_ASSERT(I);
+// Point i of any layout, as com_loadv
+static inline void com_load1(double p[4], const float* xyz, int32_t xs, const float* in_w, int32_t ws, const int32_t* idx, size_t i) {
+    const size_t k = idx ? (size_t)idx[i] : i;
+    p[0] = xyz[k * xs + 0];
+    p[1] = xyz[k * xs + 1];
+    p[2] = xyz[k * xs + 2];
+    p[3] = in_w ? in_w[k * ws] : 1.0;
+}
 
-    size_t i = 0;
-    double acc_c[3] = {0};
-    double acc_s[3] = {0};
-    double acc_w = 0;
+// The mean of points of any layout, an index or none, weights or none. MD_XV_WIDTH at a time, summed in float lanes,
+// and the last few on their own.
+static void com_general(float out_com[3], const float* xyz, int32_t xs, const float* in_w, int32_t ws, const int32_t* idx, size_t count) {
+    md_xv sx = md_xv_setzero_ps(), sy = md_xv_setzero_ps(), sz = md_xv_setzero_ps(), sw = md_xv_setzero_ps();
+    const size_t body = MD_ROUND_DOWN(count, MD_XV_WIDTH);
+    for (size_t i = 0; i < body; i += MD_XV_WIDTH) {
+        md_xv x, y, z, w;
+        com_loadv(&x, &y, &z, &w, xyz, xs, in_w, ws, idx, i);
+        sx = md_xv_fmadd_ps(x, w, sx);
+        sy = md_xv_fmadd_ps(y, w, sy);
+        sz = md_xv_fmadd_ps(z, w, sz);
+        sw = md_xv_add_ps(sw, w);
+    }
+    double acc[4] = { md_xv_reduce_add_ps(sx), md_xv_reduce_add_ps(sy), md_xv_reduce_add_ps(sz), md_xv_reduce_add_ps(sw) };
+    for (size_t i = body; i < count; ++i) {
+        double p[4];
+        com_load1(p, xyz, xs, in_w, ws, idx, i);
+        acc[0] += p[0] * p[3];
+        acc[1] += p[1] * p[3];
+        acc[2] += p[2] * p[3];
+        acc[3] += p[3];
+    }
+    out_com[0] = (float)(acc[0] / acc[3]);
+    out_com[1] = (float)(acc[1] / acc[3]);
+    out_com[2] = (float)(acc[2] / acc[3]);
+}
 
-#if defined(__AVX512F__)
-    md_512 v_acc_c[3] = { 0 };
-    md_512 v_acc_s[3] = { 0 };
-    md_512 v_acc_w = _mm512_setzero_ps();
-    const size_t simd_count = MD_ROUND_DOWN(count, 16);
-    for (; i < simd_count; i += 16) {
-        // Load
-        md_512 v_x, v_y, v_z;
-        md_mm512_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
-        md_512 v_w = _mm512_loadu_ps(in_w + i);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = _mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = _mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = _mm512_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = _mm512_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = _mm512_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = _mm512_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = _mm512_add_ps(v_acc_w, v_w);
+// The periodic mean (the trigonometric mean of each fractional coordinate) of points of any layout, as com_general.
+// M takes a point to its fractional coordinates times two pi, I the mean angles back: column major, M[col][row].
+static void com_pbc_general(float out_com[3], const float* xyz, int32_t xs, const float* in_w, int32_t ws, const int32_t* idx, size_t count, const float M[3][3], const float I[3][3]) {
+    md_xv vc[3], vs[3], sw = md_xv_setzero_ps();
+    for (int j = 0; j < 3; ++j) vc[j] = vs[j] = md_xv_setzero_ps();
+    md_xv m[3][3];
+    for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) m[c][r] = md_xv_set1_ps(M[c][r]);
+
+    const size_t body = MD_ROUND_DOWN(count, MD_XV_WIDTH);
+    for (size_t i = 0; i < body; i += MD_XV_WIDTH) {
+        md_xv x, y, z, w;
+        com_loadv(&x, &y, &z, &w, xyz, xs, in_w, ws, idx, i);
+        // Every component of theta draws on all three Cartesian components, as a triclinic M is not diagonal
+        for (int r = 0; r < 3; ++r) {
+            const md_xv t = md_xv_fmadd_ps(x, m[0][r], md_xv_fmadd_ps(y, m[1][r], md_xv_mul_ps(z, m[2][r])));
+            md_xv sn, cs;
+            md_xv_sincos_ps(t, &sn, &cs);
+            vs[r] = md_xv_fmadd_ps(sn, w, vs[r]);
+            vc[r] = md_xv_fmadd_ps(cs, w, vc[r]);
+        }
+        sw = md_xv_add_ps(sw, w);
     }
-    // Reduce
-    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
-    acc_w    = _mm512_reduce_add_ps(v_acc_w);
-#elif defined(__AVX2__)
-    md_256 v_acc_c[3] = { 0 };
-    md_256 v_acc_s[3] = { 0 };
-    md_256 v_acc_w = md_mm256_setzero_ps();
-    const size_t simd_count = MD_ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        // Load
-        md_256 v_x, v_y, v_z;
-        md_mm256_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
-        md_256 v_w = md_mm256_loadu_ps(in_w + i);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm256_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm256_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm256_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = md_mm256_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = md_mm256_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = md_mm256_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = md_mm256_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = md_mm256_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = md_mm256_add_ps(v_acc_w, v_w);
+    double acc_c[3], acc_s[3];
+    for (int j = 0; j < 3; ++j) {
+        acc_c[j] = md_xv_reduce_add_ps(vc[j]);
+        acc_s[j] = md_xv_reduce_add_ps(vs[j]);
     }
-    // Reduce
-    acc_s[0] = md_mm256_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm256_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm256_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm256_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
-    acc_w    = md_mm256_reduce_add_ps(v_acc_w);
-#else
-    md_128 v_acc_c[3] = { 0 };
-    md_128 v_acc_s[3] = { 0 };
-    md_128 v_acc_w = md_mm_setzero_ps();
-    const size_t simd_count = MD_ROUND_DOWN(count, 4);
-    for (; i < simd_count; i += 4) {
-        // Load
-        md_128 v_x, v_y, v_z;
-        md_mm_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
-        md_128 v_w = md_mm_loadu_ps(in_w + i);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = md_mm_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = md_mm_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = md_mm_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = md_mm_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = md_mm_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = md_mm_add_ps(v_acc_w, v_w);
-    }
-    // Reduce
-    acc_s[0] = md_mm_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm_reduce_add_ps(v_acc_c[2]);
-    acc_w    = md_mm_reduce_add_ps(v_acc_w);
-#endif
-    // Scalar remainder
-    for (; i < count; ++i) {
-        double x = in_xyz[i].x;
-        double y = in_xyz[i].y;
-        double z = in_xyz[i].z;
-        double w = in_w[i];
-        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
-        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
-        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
-        acc_c[0] += w * cos(tx);
-        acc_s[0] += w * sin(tx);
-        acc_c[1] += w * cos(ty);
-        acc_s[1] += w * sin(ty);
-        acc_c[2] += w * cos(tz);
-        acc_s[2] += w * sin(tz);
-        acc_w    += w;
+    double acc_w = md_xv_reduce_add_ps(sw);
+    for (size_t i = body; i < count; ++i) {
+        double p[4];
+        com_load1(p, xyz, xs, in_w, ws, idx, i);
+        for (int r = 0; r < 3; ++r) {
+            const float t = (float)p[0] * M[0][r] + (float)p[1] * M[1][r] + (float)p[2] * M[2][r];
+            acc_s[r] += sinf(t) * p[3];
+            acc_c[r] += cosf(t) * p[3];
+        }
+        acc_w += p[3];
     }
 
-    const double inv_w = 1.0 / acc_w;
     double theta[3];
     for (int j = 0; j < 3; ++j) {
         double t = MD_PI;
-        double x = acc_c[j] * inv_w;
-        double y = acc_s[j] * inv_w;
-        double r2 = x * x + y * y;
-        if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
+        const double x = acc_c[j] / acc_w;
+        const double y = acc_s[j] / acc_w;
+        if (x * x + y * y > TRIG_ATAN2_R2_THRESHOLD) {
             t += atan2(-y, -x);
         }
         theta[j] = t;
     }
-
-    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
-    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
-    // on its own. I is column major, so I[col][row].
+    // The three mean angles are a fractional coordinate (times two pi): component j of the result draws on all three
     for (int j = 0; j < 3; ++j) {
         out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
-    }
-}
-
-// Internal versions for COM computation supporting triclinic and ortho PBC
-static void _com_pbc(float out_com[3], const md_float3_t* in_xyz, size_t count, const float M[3][3], const float I[3][3]) {
-    MD_ASSERT(out_com);
-    MD_ASSERT(in_xyz);
-    MD_ASSERT(M);
-    MD_ASSERT(I);
-
-    size_t i = 0;
-    double acc_c[3] = {0};
-    double acc_s[3] = {0};
-
-#if defined(__AVX512F__)
-    md_512 v_acc_c[3] = { 0 };
-    md_512 v_acc_s[3] = { 0 };
-    const size_t simd_count = MD_ROUND_DOWN(count, 16);
-    for (; i < simd_count; i += 16) {
-        // Load
-        md_512 v_x, v_y, v_z;
-        md_mm512_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = _mm512_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = _mm512_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = _mm512_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = _mm512_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = _mm512_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = _mm512_add_ps(v_acc_c[2], v_cz);
-    }
-    // Reduce
-    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
-#elif defined(__AVX2__)
-    md_256 v_acc_c[3] = { 0 };
-    md_256 v_acc_s[3] = { 0 };
-    const size_t simd_count = MD_ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        // Load
-        md_256 v_x, v_y, v_z;
-        md_mm256_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm256_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm256_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm256_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = md_mm256_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = md_mm256_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = md_mm256_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = md_mm256_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = md_mm256_add_ps(v_acc_c[2], v_cz);
-    }
-    // Reduce
-    acc_s[0] = md_mm256_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm256_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm256_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm256_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
-#else
-    md_128 v_acc_c[3] = { 0 };
-    md_128 v_acc_s[3] = { 0 };
-    const size_t simd_count = MD_ROUND_DOWN(count, 4);
-    for (; i < simd_count; i += 4) {
-        // Load
-        md_128 v_x, v_y, v_z;
-        md_mm_load_xyz_packed_ps(&v_x, &v_y, &v_z, (const float*)(in_xyz + i));
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = md_mm_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = md_mm_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = md_mm_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = md_mm_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = md_mm_add_ps(v_acc_c[2], v_cz);
-    }
-    // Reduce
-    acc_s[0] = md_mm_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm_reduce_add_ps(v_acc_c[2]);
-#endif
-    // Scalar remainder
-    for (; i < count; ++i) {
-        double x = in_xyz[i].x;
-        double y = in_xyz[i].y;
-        double z = in_xyz[i].z;
-        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
-        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
-        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
-        acc_c[0] += cos(tx);
-        acc_s[0] += sin(tx);
-        acc_c[1] += cos(ty);
-        acc_s[1] += sin(ty);
-        acc_c[2] += cos(tz);
-        acc_s[2] += sin(tz);
-    }
-
-    const double inv_w = 1.0 / (double)count;
-    double theta[3];
-    for (int j = 0; j < 3; ++j) {
-        double t = MD_PI;
-        double x = acc_c[j] * inv_w;
-        double y = acc_s[j] * inv_w;
-        double r2 = x * x + y * y;
-        if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            t += atan2(-y, -x);
-        }
-        theta[j] = t;
-    }
-
-    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
-    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
-    // on its own. I is column major, so I[col][row].
-    for (int j = 0; j < 3; ++j) {
-        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
-    }
-}
-
-
-static void _com_pbc_i(float out_com[3], const md_float3_t* in_xyz, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
-    MD_ASSERT(out_com);
-    MD_ASSERT(in_xyz);
-    MD_ASSERT(M);
-    MD_ASSERT(I);
-
-    size_t i = 0;
-    double acc_c[3] = {0};
-    double acc_s[3] = {0};
-
-#if defined(__AVX512F__)
-    md_512 v_acc_c[3] = { 0 };
-    md_512 v_acc_s[3] = { 0 };
-    const size_t simd_count = MD_ROUND_DOWN(count, 16);
-    for (; i < simd_count; i += 16) {
-        // Load
-        md_512i idx = _mm512_loadu_si512(in_idx + i);
-        md_512 v_x, v_y, v_z;
-        md_mm512_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = _mm512_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = _mm512_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = _mm512_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = _mm512_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = _mm512_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = _mm512_add_ps(v_acc_c[2], v_cz);
-    }
-    // Reduce
-    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
-#elif defined(__AVX2__)
-    md_256 v_acc_c[3] = { 0 };
-    md_256 v_acc_s[3] = { 0 };
-    const size_t simd_count = MD_ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        // Load
-        md_256i idx = md_mm256_loadu_si256(in_idx + i);
-        md_256 v_x, v_y, v_z;
-        md_mm256_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm256_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm256_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm256_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = md_mm256_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = md_mm256_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = md_mm256_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = md_mm256_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = md_mm256_add_ps(v_acc_c[2], v_cz);
-    }
-    // Reduce
-    acc_s[0] = md_mm256_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm256_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm256_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm256_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
-#else
-    md_128 v_acc_c[3] = { 0 };
-    md_128 v_acc_s[3] = { 0 };
-    const size_t simd_count = MD_ROUND_DOWN(count, 4);
-    for (; i < simd_count; i += 4) {
-        // Load
-        md_128i idx = md_mm_loadu_si128(in_idx + i);
-        md_128 v_x, v_y, v_z;
-        md_mm_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = md_mm_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = md_mm_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = md_mm_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = md_mm_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = md_mm_add_ps(v_acc_c[2], v_cz);
-    }
-    // Reduce
-    acc_s[0] = md_mm_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm_reduce_add_ps(v_acc_c[2]);
-#endif
-    // Scalar remainder
-    for (; i < count; ++i) {
-        int32_t idx = in_idx[i];
-        double x = in_xyz[idx].x;
-        double y = in_xyz[idx].y;
-        double z = in_xyz[idx].z;
-        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
-        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
-        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
-        acc_c[0] += cos(tx);
-        acc_s[0] += sin(tx);
-        acc_c[1] += cos(ty);
-        acc_s[1] += sin(ty);
-        acc_c[2] += cos(tz);
-        acc_s[2] += sin(tz);
-    }
-
-    const double inv_w = 1.0 / (double)count;
-    double theta[3];
-    for (int j = 0; j < 3; ++j) {
-        double t = MD_PI;
-        double x = acc_c[j] * inv_w;
-        double y = acc_s[j] * inv_w;
-        double r2 = x * x + y * y;
-        if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            t += atan2(-y, -x);
-        }
-        theta[j] = t;
-    }
-
-    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
-    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
-    // on its own. I is column major, so I[col][row].
-    for (int j = 0; j < 3; ++j) {
-        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
-    }
-}
-
-static void _com_pbc_iw(float out_com[3], const md_float3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const float M[3][3], const float I[3][3]) {
-    MD_ASSERT(out_com);
-    MD_ASSERT(in_xyz);
-    MD_ASSERT(in_w);
-    MD_ASSERT(M);
-    MD_ASSERT(I);
-
-    size_t i = 0;
-    double acc_c[3] = {0};
-    double acc_s[3] = {0};
-    double acc_w = 0;
-
-#if defined(__AVX512F__)
-    md_512 v_acc_c[3] = { 0 };
-    md_512 v_acc_s[3] = { 0 };
-    md_512 v_acc_w = _mm512_setzero_ps();
-    const size_t simd_count = MD_ROUND_DOWN(count, 16);
-    for (; i < simd_count; i += 16) {
-        // Load
-        md_512i idx = _mm512_loadu_si512(in_idx + i);
-        md_512 v_x, v_y, v_z;
-        md_mm512_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
-        md_512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][0]))));
-        md_512 v_ty = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][1]))));
-        md_512 v_tz = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][2]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][2]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = _mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = _mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = _mm512_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = _mm512_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = _mm512_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = _mm512_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = _mm512_add_ps(v_acc_w, v_w);
-    }
-    // Reduce
-    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
-    acc_w    = _mm512_reduce_add_ps(v_acc_w);
-#elif defined(__AVX2__)
-    md_256 v_acc_c[3] = { 0 };
-    md_256 v_acc_s[3] = { 0 };
-    md_256 v_acc_w = md_mm256_setzero_ps();
-    const size_t simd_count = MD_ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
-        // Load
-        md_256i idx = md_mm256_loadu_si256(in_idx + i);
-        md_256 v_x, v_y, v_z;
-        md_mm256_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
-        md_256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_256 v_tx = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][0]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][0]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][0]))));
-        md_256 v_ty = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][1]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][1]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][1]))));
-        md_256 v_tz = md_mm256_fmadd_ps(v_x, md_mm256_set1_ps(M[0][2]), md_mm256_fmadd_ps(v_y, md_mm256_set1_ps(M[1][2]), md_mm256_mul_ps(v_z, md_mm256_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_256 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm256_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm256_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm256_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm256_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = md_mm256_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = md_mm256_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = md_mm256_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = md_mm256_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = md_mm256_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = md_mm256_add_ps(v_acc_w, v_w);
-    }
-    // Reduce
-    acc_s[0] = md_mm256_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm256_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm256_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm256_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm256_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm256_reduce_add_ps(v_acc_c[2]);
-    acc_w    = md_mm256_reduce_add_ps(v_acc_w);
-#else
-    md_128 v_acc_c[3] = { 0 };
-    md_128 v_acc_s[3] = { 0 };
-    md_128 v_acc_w = md_mm_setzero_ps();
-    const size_t simd_count = MD_ROUND_DOWN(count, 4);
-    for (; i < simd_count; i += 4) {
-        // Load
-        md_128i idx = md_mm_loadu_si128(in_idx + i);
-        md_128 v_x, v_y, v_z;
-        md_mm_i32gather_xyz_ps(&v_x, &v_y, &v_z, (const float*)in_xyz, idx);
-        md_128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
-        // Compute thetas: theta = 2*pi * Ai * p, the fractional coordinate carried into angle space.
-        // Every component of theta draws on all three Cartesian components, because a triclinic Ai is
-        // not diagonal. Resolving an axis against itself alone is only correct for an ortho cell.
-        md_128 v_tx = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][0]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][0]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][0]))));
-        md_128 v_ty = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][1]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][1]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][1]))));
-        md_128 v_tz = md_mm_fmadd_ps(v_x, md_mm_set1_ps(M[0][2]), md_mm_fmadd_ps(v_y, md_mm_set1_ps(M[1][2]), md_mm_mul_ps(v_z, md_mm_set1_ps(M[2][2]))));
-        // Compute sin cos
-        md_128 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm_sincos_ps(v_tz, &v_sz, &v_cz);
-        // Accumulate
-        v_acc_s[0] = md_mm_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = md_mm_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = md_mm_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = md_mm_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = md_mm_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = md_mm_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = md_mm_add_ps(v_acc_w, v_w);
-    }
-    // Reduce
-    acc_s[0] = md_mm_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm_reduce_add_ps(v_acc_c[2]);
-    acc_w    = md_mm_reduce_add_ps(v_acc_w);
-#endif
-    // Scalar remainder
-    for (; i < count; ++i) {
-        int32_t idx = in_idx[i];
-        double x = in_xyz[idx].x;
-        double y = in_xyz[idx].y;
-        double z = in_xyz[idx].z;
-        double w = in_w[idx];
-        double tx = x * M[0][0] + y * M[1][0] + z * M[2][0];
-        double ty = x * M[0][1] + y * M[1][1] + z * M[2][1];
-        double tz = x * M[0][2] + y * M[1][2] + z * M[2][2];
-        acc_c[0] += w * cos(tx);
-        acc_s[0] += w * sin(tx);
-        acc_c[1] += w * cos(ty);
-        acc_s[1] += w * sin(ty);
-        acc_c[2] += w * cos(tz);
-        acc_s[2] += w * sin(tz);
-        acc_w    += w;
-    }
-
-    const double inv_w = 1.0 / acc_w;
-    double theta[3];
-    for (int j = 0; j < 3; ++j) {
-        double t = MD_PI;
-        double x = acc_c[j] * inv_w;
-        double y = acc_s[j] * inv_w;
-        double r2 = x * x + y * y;
-        if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-            t += atan2(-y, -x);
-        }
-        theta[j] = t;
-    }
-
-    // The three mean angles ARE a fractional coordinate (times two pi). Carrying it back out to
-    // Cartesian is a full matrix vector product - component j draws on all three angles, not only
-    // on its own. I is column major, so I[col][row].
-    for (int j = 0; j < 3; ++j) {
-        out_com[j] = (float)(theta[0] * I[0][j] + theta[1] * I[1][j] + theta[2] * I[2][j]);
-    }
-}
-
-// This is uses the trigonometric com algorithm presented in: INSERT REF HERE
-static void com_pbc(float out_com[3], const md_float3_t* in_xyz, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
-
-    md_float3x3_t A = { 0 };
-    md_unitcell_A_extract_float(A.elem, cell);
-
-    md_float3x3_t Ai = { 0 };
-    md_unitcell_I_extract_float(Ai.elem, cell);
-
-    // Should transform cartesian coordinates to fractional coordinates and scale by 2 pi
-    md_float3x3_t M = md_float3x3_mul(md_float3x3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai);
-    // Inverse transform
-    md_float3x3_t I = md_float3x3_mul(A, md_float3x3_scale(1.0/MD_TWO_PI, 1.0/MD_TWO_PI, 1.0/MD_TWO_PI));
-
-    if (!in_idx && md_unitcell_is_orthorhombic(cell)) {
-        com_pbc_ortho_packed(out_com, in_xyz, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
-        return;
-    }
-
-    // Here we select the correct internal version based on the available inputs
-    if (in_w) {
-        if (in_idx) {
-            _com_pbc_iw(out_com, in_xyz, in_w, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
-        } else {
-            _com_pbc_w(out_com, in_xyz, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
-        }
-    } else {
-        if (in_idx) {
-            _com_pbc_i(out_com, in_xyz, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
-        } else {
-            _com_pbc(out_com, in_xyz, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
-        }
-    }
-}
-
-// Point i of a strided set as (x, y, z, w), w one without weights
-static inline md_float4_t com_load_xyzw(const float* xyz, size_t xyz_stride, const float* w, size_t w_stride, size_t i) {
-    const float* p = (const float*)((const char*)xyz + i * xyz_stride);
-    return md_float4_set(p[0], p[1], p[2], w ? *(const float*)((const char*)w + i * w_stride) : 1.0f);
-}
-
-// Any strides: a point at a time
-static void com_strided(float out_com[3], const float* xyz, size_t xyz_stride, const float* w, size_t w_stride, const int32_t* in_idx, size_t count) {
-    md_float4_t acc = {0,0,0,0};
-    for (size_t i = 0; i < count; ++i) {
-        const size_t idx = in_idx ? (size_t)in_idx[i] : i;
-        md_float4_t xyzw = com_load_xyzw(xyz, xyz_stride, w, w_stride, idx);
-        md_float4_t www1 = md_float4_blend_mask(md_float4_splat_w(xyzw), md_float4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-        acc = md_float4_add(acc, md_float4_mul(xyzw, www1));
-    }
-
-    acc = md_float4_div(acc, md_float4_splat_w(acc));
-    md_memcpy(out_com, &acc, sizeof(float) * 3);
-}
-
-static void com_pbc_strided(float* out_com, const float* xyz, size_t xyz_stride, const float* w, size_t w_stride, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
-    MD_ASSERT(out_com);
-    MD_ASSERT(xyz);
-    MD_ASSERT(cell);
-
-    md_float4_t acc_c = {0};
-    md_float4_t acc_s = {0};
-    md_float4_t acc_xyzw = {0};
-
-    uint32_t flags = md_unitcell_flags(cell);
-    if (flags & MD_UNITCELL_ORTHO) {
-        md_float3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, cell);
-        const md_float4_t scl = md_float4_div(md_float4_set1(MD_TWO_PI), md_float4_from_float3(ext, MD_TWO_PI));
-
-        if (in_idx) {
-            for (size_t i = 0; i < count; ++i) {
-                int32_t idx  = in_idx[i];
-                md_float4_t xyzw  = com_load_xyzw(xyz, xyz_stride, w, w_stride, (size_t)idx);
-                md_float4_t www1  = md_float4_blend_mask(md_float4_splat_w(xyzw), md_float4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                md_float4_t theta = md_float4_mul(xyzw, scl);
-                md_float4_t s,c;
-                md_float4_sincos(theta, &s, &c);
-                acc_s = md_float4_add(acc_s, md_float4_mul(s, www1));
-                acc_c = md_float4_add(acc_c, md_float4_mul(c, www1));
-                acc_xyzw = md_float4_add(acc_xyzw, md_float4_mul(xyzw, www1));
-            }
-        } else {
-            for (size_t i = 0; i < count; ++i) {
-                md_float4_t xyzw  = com_load_xyzw(xyz, xyz_stride, w, w_stride, i);
-                md_float4_t www1  = md_float4_blend_mask(md_float4_splat_w(xyzw), md_float4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                md_float4_t theta = md_float4_mul(xyzw, scl);
-                md_float4_t s,c;
-                md_float4_sincos(theta, &s, &c);
-                acc_s = md_float4_add(acc_s, md_float4_mul(s, www1));
-                acc_c = md_float4_add(acc_c, md_float4_mul(c, www1));
-                acc_xyzw = md_float4_add(acc_xyzw, md_float4_mul(xyzw, www1));
-            }
-        }
-
-        const float w = acc_xyzw.w;
-        for (int i = 0; i < 3; ++i) {
-            const double y = acc_s.elem[i] / w;
-            const double x = acc_c.elem[i] / w;
-            const double r2 = x*x + y*y;
-            double theta_prim = MD_PI;
-            if (r2 > 1.0e-15) {
-                theta_prim += atan2(-y, -x);
-            }
-            out_com[i] = (float)((theta_prim / MD_TWO_PI) * ext.elem[i]);
-        }
-    } else {
-        MD_ASSERT(flags & MD_UNITCELL_TRICLINIC);
-        md_float3x3_t Ai = { 0 };
-        md_unitcell_I_extract_float(Ai.elem, cell);
-
-        md_float3x3_t A = { 0 };
-        md_unitcell_A_extract_float(A.elem, cell);
-
-        // Cartesian -> fractional, scaled into angle space, and the inverse which takes the mean
-        // angle back out to a Cartesian position. A triclinic basis mixes the components, so both
-        // directions have to be full matrix products: resolving an axis on its own is only valid
-        // when the basis is diagonal, which is why the orthorhombic branch above can get away with
-        // per component scalars and this one cannot.
-        const md_float4x3_t M = md_float4x3_from_float3x3(md_float3x3_mul(md_float3x3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai));
-        const md_float3x3_t   I = md_float3x3_mul(A, md_float3x3_scale(1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI));
-
-        if (in_idx) {
-            for (size_t i = 0; i < count; ++i) {
-                int32_t idx  = in_idx[i];
-                md_float4_t xyzw  = com_load_xyzw(xyz, xyz_stride, w, w_stride, (size_t)idx);
-                md_float4_t www1  = md_float4_blend_mask(md_float4_splat_w(xyzw), md_float4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                md_float4_t theta = md_float4x3_mul_float4(M, xyzw);
-                md_float4_t s,c;
-                md_float4_sincos(theta, &s, &c);
-                acc_s = md_float4_add(acc_s, md_float4_mul(s, www1));
-                acc_c = md_float4_add(acc_c, md_float4_mul(c, www1));
-                acc_xyzw = md_float4_add(acc_xyzw, md_float4_mul(xyzw, www1));
-            }
-        } else {
-            for (size_t i = 0; i < count; ++i) {
-                md_float4_t xyzw  = com_load_xyzw(xyz, xyz_stride, w, w_stride, i);
-                md_float4_t www1  = md_float4_blend_mask(md_float4_splat_w(xyzw), md_float4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                md_float4_t theta = md_float4x3_mul_float4(M, xyzw);
-                md_float4_t s,c;
-                md_float4_sincos(theta, &s, &c);
-                acc_s = md_float4_add(acc_s, md_float4_mul(s, www1));
-                acc_c = md_float4_add(acc_c, md_float4_mul(c, www1));
-                acc_xyzw = md_float4_add(acc_xyzw, md_float4_mul(xyzw, www1));
-            }
-        }
-
-        md_float3_t theta_vec = { 0 };
-        for (int i = 0; i < 3; ++i) {
-            const double y = acc_s.elem[i] / acc_xyzw.w;
-            const double x = acc_c.elem[i] / acc_xyzw.w;
-            const double r2 = x*x + y*y;
-            double theta_prim = MD_PI;
-            if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
-                theta_prim += atan2(-y, -x);
-            }
-            theta_vec.elem[i] = (float)theta_prim;
-        }
-
-        // The three mean angles ARE a fractional coordinate (times two pi). Carry it back to
-        // Cartesian as one vector - component i of the result draws on all three angles.
-        const md_float3_t com = md_float3x3_mul_float3(I, theta_vec);
-        out_com[0] = com.x;
-        out_com[1] = com.y;
-        out_com[2] = com.z;
     }
 }
 
@@ -1547,18 +619,29 @@ md_float3_t md_geom_com(const float* xyz, size_t xyz_stride, const float* w, siz
         return com_xyz;
     }
 
-    // Packed coordinates and weights: the vectorized kernels
-    if (xyz_stride == 3 * sizeof(float) && (!w || w_stride == sizeof(float))) {
-        if (periodic) {
-            com_pbc(com_xyz.elem, (const md_float3_t*)xyz, w, idx, count, cell);
+    MD_ASSERT(xyz_stride % sizeof(float) == 0 && w_stride % sizeof(float) == 0);
+    const int32_t xs = (int32_t)(xyz_stride / sizeof(float));
+    const int32_t ws = (int32_t)(w_stride / sizeof(float));
+    // Contiguous points without an index: the kernels which give the same bits from any buffer
+    const bool packed = !idx && xs == 3 && (!w || ws == 1);
+
+    if (periodic) {
+        md_float3x3_t A = { 0 }, Ai = { 0 };
+        md_unitcell_A_extract_float(A.elem, cell);
+        md_unitcell_I_extract_float(Ai.elem, cell);
+        // Cartesian -> fractional, scaled into angle space, and back
+        const md_float3x3_t M = md_float3x3_mul(md_float3x3_scale(MD_TWO_PI, MD_TWO_PI, MD_TWO_PI), Ai);
+        const md_float3x3_t I = md_float3x3_mul(A, md_float3x3_scale(1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI, 1.0f / MD_TWO_PI));
+        if (packed && md_unitcell_is_orthorhombic(cell)) {
+            com_pbc_ortho_packed(com_xyz.elem, (const md_float3_t*)xyz, w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         } else {
-            com(com_xyz.elem, (const md_float3_t*)xyz, w, idx, count);
+            com_pbc_general(com_xyz.elem, xyz, xs, w, ws, idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         }
     } else {
-        if (periodic) {
-            com_pbc_strided(com_xyz.elem, xyz, xyz_stride, w, w_stride, idx, count, cell);
+        if (packed) {
+            com_packed(com_xyz.elem, (const md_float3_t*)xyz, w, count);
         } else {
-            com_strided(com_xyz.elem, xyz, xyz_stride, w, w_stride, idx, count);
+            com_general(com_xyz.elem, xyz, xs, w, ws, idx, count);
         }
     }
     return com_xyz;
