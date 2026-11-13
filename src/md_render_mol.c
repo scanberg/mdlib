@@ -64,19 +64,21 @@ static small_layout_t small_layout(uint32_t n_mol, uint32_t n_atoms, uint32_t n_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, velocity, marker, params, mol_slot, cnt, sums, size, size_velocity;
+    uint64_t points, radii, velocity, marker, params, mol_slot, cnt, sums, size, size_velocity;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
-/* The points (float4: position, radius) in cluster order: what is drawn.
-   Then the scratch of the regroup. Last, only in a block allocated with
-   them, the points' velocities. */
+/* The points in cluster order, what is drawn: their positions (x, y, z
+   packed: written whole by every update) and their radii (a stream of their
+   own: written only when they change). Then the scratch of the regroup.
+   Last, only in a block allocated with them, the points' velocities. */
 static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t cells) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
-    L.points   = o; o = align256(o + (uint64_t)n_atoms * 16u);
+    L.points   = o; o = align256(o + (uint64_t)n_atoms * 12u);
+    L.radii    = o; o = align256(o + (uint64_t)n_atoms * 4u);
     L.marker   = o; o = align256(o + 80u);       /* 5 words; at word 16 fr_check's grid */
     L.params   = o; o = align256(o + 16u * 4u);
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
@@ -497,7 +499,7 @@ struct md_render_mol {
 
 /* Mirrors Args of md_render_mol.slang */
 typedef struct gpu_mol_args_t {
-    md_gpu_addr_t position, velocity, radius_override, points, vel_out;
+    md_gpu_addr_t position, velocity, radius_override, points, radii, vel_out;
     md_gpu_addr_t params, mol_slot, cnt, sums, types, type_radius;
     md_gpu_addr_t mol_atom_offset, mol_atoms, mol_bond_offset, mol_bond_local, mol_bond_ids, mixed_pos, mixed_atoms;
     md_gpu_addr_t atom_order, atom_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, marker;
@@ -508,7 +510,7 @@ typedef struct gpu_mol_args_t {
     uint32_t frame_count, quantized, has_src, has_fvel, has_resident, resident_words;
     float    w[4], dw[4];
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 39 * 8 + 36 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 40 * 8 + 36 * 4, "gpu_mol_args_t mirrors Args");
 
 md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
     if (!device) return NULL;
@@ -584,6 +586,7 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     memset(a, 0, sizeof(*a));
     if (dynamic) {
         a->points         = dynamic + D.points;
+        a->radii          = dynamic + D.radii;
         a->vel_out        = dynamic + D.velocity;
         a->params         = dynamic + D.params;
         a->mol_slot       = dynamic + D.mol_slot;
@@ -755,7 +758,7 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
             ok = ok && launch(s, r->k_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         }
         /* Every gather reads the radii from their source until a full one has
-           marked the copy's w valid; after that only the flags make it full */
+           marked the copy's radii valid; after that only the flags make it full */
         ok = ok && launch(s, r->k_mark, md_gpu_grid(1, 1, 1), &a, hook, user, "mark");
     }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
@@ -1193,9 +1196,9 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     memset(&p, 0, sizeof(p));
     p.count           = topo->point_count;
     p.position        = dynamic + D.points;
-    p.stride          = 16;
-    p.radius          = dynamic + D.points + 12;
-    p.radius_stride   = 16;
+    p.stride          = 12;
+    p.radius          = dynamic + D.radii;
+    p.radius_stride   = 4;
     p.velocity        = has_velocity(atoms) ? dynamic + D.velocity : 0;
     p.velocity_stride = 8;
     p.attr_count      = topo->atom_count;

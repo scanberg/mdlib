@@ -53,8 +53,9 @@ lifetime:
     molecules are grouped in molecule order.
 
   * What md_render draws is a copy of the atoms in cluster order, in the
-    per-frame block: float4 (position, radius) and the velocity per point,
-    gathered by every md_render_mol_update. Read through the cluster order
+    per-frame block: position, radius and velocity per point, each a stream
+    of its own, gathered by every md_render_mol_update (the radii only when
+    they change). Read through the cluster order
     instead, the caller's arrays in file order cost a scattered fetch in
     every pass over the elements; the copy costs one per position change.
     Everything per atom that is not geometry (colours, palette indices,

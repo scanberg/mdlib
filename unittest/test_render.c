@@ -1647,6 +1647,9 @@ static void frames_case(int* utest_result, bool partial) {
         uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size_velocity);
         uint8_t* ord = read_block(&fx, topo.atom_order, (size_t)nres * 4);
         const float* pts = (const float*)(blk + (b.points.position - dyn));
+        const float* rad = (const float*)(blk + (b.points.radius - dyn));
+        EXPECT_EQ(12u, b.points.stride);
+        EXPECT_EQ(4u, b.points.radius_stride);
         const uint32_t* vel = with_v ? (const uint32_t*)(blk + (b.points.velocity - dyn)) : NULL;
         const uint32_t* order = (const uint32_t*)ord;
         double pos_err = 0, vel_err = 0, vmax = 0;
@@ -1664,7 +1667,7 @@ static void frames_case(int* utest_result, bool partial) {
                 #undef MI
                 double pr = 0, vr = 0;
                 for (uint32_t k = 0; k < cases[ci].count; ++k) { pr += atoms.frame_w[k] * x[k][d]; vr += atoms.frame_dw[k] * x[k][d]; }
-                double e = fabs(pts[4 * p + d] - pr);
+                double e = fabs(pts[3 * p + d] - pr);
                 if (e > pos_err) pos_err = e;
                 if (with_v) {
                     uint32_t h = d == 0 ? vel[2 * p] & 0xFFFFu : d == 1 ? vel[2 * p] >> 16 : vel[2 * p + 1] & 0xFFFFu;
@@ -1674,7 +1677,7 @@ static void frames_case(int* utest_result, bool partial) {
                     if (fabs(vr) > vmax) vmax = fabs(vr);
                 }
             }
-            rad_bad += pts[4 * p + 3] != sys.atom.type.radius[sys.atom.type_idx[i]];
+            rad_bad += rad[p] != sys.atom.type.radius[sys.atom.type_idx[i]];
         }
         printf("    %u frame(s), t %.1f: position error %.2g A, velocity error %.2g of the tolerance (max |v| %.2f)\n",
                cases[ci].count, cases[ci].t, pos_err, vel_err, vmax);
@@ -1688,7 +1691,7 @@ static void frames_case(int* utest_result, bool partial) {
             md_render_mol_debug_frame_groups(0);
             uint8_t* blk1 = read_block(&fx, dyn, topo.dynamic_size_velocity);
             const size_t po = (size_t)(b.points.position - dyn);
-            EXPECT_EQ(0, memcmp(blk + po, blk1 + po, (size_t)nres * 16));
+            EXPECT_EQ(0, memcmp(blk + po, blk1 + po, (size_t)nres * 12));
             if (with_v) { const size_t vo = (size_t)(b.points.velocity - dyn); EXPECT_EQ(0, memcmp(blk + vo, blk1 + vo, (size_t)nres * 8)); }
             free(blk1);
         }

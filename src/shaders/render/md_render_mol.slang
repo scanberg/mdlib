@@ -23,11 +23,10 @@
 // And on every update, whatever else it does:
 //
 //     gather   the copy that is drawn: per point (cluster order), its atom's
-//              position and radius as a float4, and its velocity. The radius
-//              is a scattered fetch like the position; when neither the order
-//              nor the radii changed it is the old copy's w instead, read in
-//              order. A marker says the w are valid: written after a full
-//              gather, for this topology.
+//              position (12 bytes, packed), and its velocity; its radius into
+//              a stream of its own only when the order or the radii changed
+//              (a scattered fetch like the position). A marker says the radii
+//              are valid: written after a full gather, for this topology.
 //
 // Every pass reads the molecules in their own order (the order of the small
 // tables, close to the file order of the atoms): only the write lands
@@ -46,7 +45,8 @@ struct Args {
     uint* position;             // float3 per atom, `stride` bytes apart
     uint* velocity;             // packed half3 per atom, `vel_stride` bytes apart
     uint* radius_override;      // float per atom
-    uint* points;               // float4 per point: the copy
+    uint* points;               // x, y, z per point (packed, 12 bytes): the copy
+    uint* radii;                // float per point: the copy's radii
     uint* vel_out;              // uint2 per point
     uint* params;               // 16 words: ordered bounds, then the grid
     uint* mol_slot;             // uint4 per molecule: cell, its atoms' and bonds' place in it
@@ -67,7 +67,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
-    uint* marker;               // 5 words: whose radii the copy's w holds, in which grouping (see sol_gather)
+    uint* marker;               // 5 words: whose radii `radii` holds, in which grouping (see sol_gather)
     uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
@@ -446,15 +446,17 @@ uint radius_of(Args a, uint atom) {
     return t < a.type_count ? a.type_radius[t] : 0u;
 }
 
-// A point's x, y, z into the copy, its radius left as it is: one store of
-// eight bytes and one of four. Slang marks a vector's store through a pointer
-// aligned to its element (4), and NVIDIA then splits a uint4 into four; with
-// the radius read back to complete it, the frames' gather on the GTX 1060 was
-// 6.3 ms for two frames, 2.05 like this (the copy's block is 16-byte aligned).
+// A point's x, y, z into the copy: three words, packed, so a wave writes whole
+// lines and nothing else (the radii are a stream of their own). With the
+// radius beside them (float4) the gather had to read it back to complete a
+// 16-byte store (Slang marks it Aligned 4, NVIDIA splits it: the two-frame
+// gather 6.3 ms on a GTX 1060) or write 12 bytes of 16 (2.05 there, but 0.7
+// ms slower than the full store on the M4).
 [ForceInline]
 void store_xyz(uint* points, uint p, uint3 v) {
-    storeAligned<8>((uint2*)points + 2u * p, v.xy);
-    points[4u * p + 2u] = v.z;
+    points[3u * p + 0u] = v.x;
+    points[3u * p + 1u] = v.y;
+    points[3u * p + 2u] = v.z;
 }
 
 // The copy that is drawn: point p is atom atom_order[p]. Writes in order,
@@ -470,8 +472,8 @@ void sol_gather(uint3 tid : SV_DispatchThreadID) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
         uint3 x = uint3(q[0], q[1], q[2]);
-        if (reuse) store_xyz(a.points, p, x);
-        else       storeAligned<16>((uint4*)a.points + p, uint4(x, radius_of(a, atom)));
+        store_xyz(a.points, p, x);
+        if (!reuse) a.radii[p] = radius_of(a, atom);
         if (a.has_velocity != 0u) {
             uint* w = a.velocity + atom * (a.vel_stride >> 2u);
             storeAligned<8>((uint2*)a.vel_out + p, uint2(w[0], w[1]));
@@ -527,7 +529,7 @@ float3 mi(CellP c, float3 d) {
 }
 
 // Before the frames' gather, when the copy's radii are not valid: each
-// point's radius from its source, into the copy's w. fr_check sizes its
+// point's radius from its source, into `radii`. fr_check sizes its
 // launch (none when they are), so the gathers need not carry that path.
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -545,11 +547,11 @@ void fr_check(uint3 tid : SV_DispatchThreadID) {
 void fr_radii(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
-    for (uint p = tid.x; p < n; p += grid_threads(n)) a.points[4u * p + 3u] = radius_of(a, a.atom_order[p]);
+    for (uint p = tid.x; p < n; p += grid_threads(n)) a.radii[p] = radius_of(a, a.atom_order[p]);
 }
 
 // The copy that is drawn, from resident frames in point order: every read in
-// order, the radius the copy's own (fr_radii saw to it) and not touched. A
+// order, every write too; the radii are fr_radii's (when they were not valid). A
 // kernel per number of frames (COUNT a constant): each frame's parameters
 // and the cell in registers for only the frames it combines.
 [ForceInline]
