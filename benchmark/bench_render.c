@@ -10,7 +10,7 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       occlusion around it).
 
   md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME]
-                     [--resident F | --resident-random F] [--mol-order cells]
+                     [--resident F | --resident-random F] [--mol-order cells [--jitter A]]
       Renders generated scenes (water-like boxes of three-atom molecules, in
       spacefill and licorice, near and far) through md_render, with each of
       the culling and raster options, and times full rasters, resolves and
@@ -30,6 +30,8 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       the worst case for the host's quantize (a set no representation makes).
       --mol-order cells generates the molecules in md_render_mol's grid-cell
       order instead of at random: the regroup's writes land in order.
+      --jitter A then moves each molecule by up to A along each axis: the
+      order of the last grouping, regrouped after the molecules moved.
       After each look's first row, one camera raster is profiled pass by
       pass (each pass synced, so each number carries a sync), with the cull
       by phase. MD_BENCH_SEQ=1 adds a sequence of rasters (a camera c0
@@ -555,7 +557,7 @@ static int cmp_mol_key(const void* a, const void* b) {
     return x->key < y->key ? -1 : x->key > y->key ? 1 : (x->m < y->m ? -1 : x->m > y->m);
 }
 
-static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, cluster_src_t src, float resident, bool scattered, bool cell_order) {
+static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, cluster_src_t src, float resident, bool scattered, bool cell_order, float jitter) {
     memset(sc, 0, sizeof(*sc));
     sc->atoms = molecules * 3;
     sc->bonds = molecules * 2;
@@ -604,6 +606,18 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         }
         free(pos); free(rad); free(col); free(k);
         pos = p2; rad = r2; col = c2;
+        if (jitter > 0.0f) {
+            /* --jitter A: then each molecule moved by up to A along each axis,
+               after the sort: the order of a grouping, molecules since moved
+               (what a regroup sees at the next) */
+            uint32_t js = 12345;
+            #define JRND() (((js = js * 1664525u + 1013904223u) >> 8) / 16777216.0f)
+            for (uint32_t m = 0; m < molecules; ++m) {
+                const float d[3] = { (2.0f * JRND() - 1.0f) * jitter, (2.0f * JRND() - 1.0f) * jitter, (2.0f * JRND() - 1.0f) * jitter };
+                for (int a = 0; a < 3; ++a) for (int j = 0; j < 3; ++j) pos[9 * (size_t)m + 3 * a + j] += d[j];
+            }
+            #undef JRND
+        }
     }
     if (src == SRC_MOL) {
         /* A system of waters for md_render_mol: molecules and bonds, nothing else */
@@ -969,6 +983,7 @@ static int run_gpu(int argc, char** argv) {
     float resident = 1.0f;            /* --resident F: md_render_mol plans that fraction of the molecules */
     bool  resident_scattered = false; /* --resident-random F: ... spread at random */
     bool  cell_order = false;         /* --mol-order cells: the molecules in grid-cell order, not at random */
+    float jitter = 0.0f;              /* --jitter A: with --mol-order cells, then moved by up to A along each axis */
     for (int i = 0; i < argc; ++i) {
         if (!strcmp(argv[i], "--atoms") && i + 1 < argc) {
             n_atoms = 0;
@@ -985,6 +1000,8 @@ static int run_gpu(int argc, char** argv) {
             only_look = argv[++i];
         } else if (!strcmp(argv[i], "--resident") && i + 1 < argc) {
             resident = strtof(argv[++i], NULL);
+        } else if (!strcmp(argv[i], "--jitter") && i + 1 < argc) {
+            jitter = (float)atof(argv[++i]);
         } else if (!strcmp(argv[i], "--mol-order") && i + 1 < argc) {
             cell_order = !strcmp(argv[++i], "cells");
         } else if (!strcmp(argv[i], "--resident-random") && i + 1 < argc) {
@@ -1038,10 +1055,11 @@ static int run_gpu(int argc, char** argv) {
 
     for (uint32_t ai = 0; ai < n_atoms; ++ai) {
         scene_t sc;
-        if (!scene_make(s, &sc, atoms_list[ai] / 3, src, resident, resident_scattered, cell_order)) { fprintf(stderr, "scene of %u atoms failed (memory?)\n", atoms_list[ai]); continue; }
+        if (!scene_make(s, &sc, atoms_list[ai] / 3, src, resident, resident_scattered, cell_order, jitter)) { fprintf(stderr, "scene of %u atoms failed (memory?)\n", atoms_list[ai]); continue; }
         printf("== %u atoms, %u bonds, box %.0f A, %s\n", sc.atoms, sc.bonds, sc.box,
                src == SRC_IMPLICIT ? "implicit clusters (runs of 64 in grid-cell order)" :
                src == SRC_HOST_GRID ? "clusters by grid cell, built on the host" : (cell_order ? "md_render_mol (molecules in grid-cell order, GPU grid)" : "md_render_mol (molecules in random order, GPU grid)"));
+        if (cell_order && jitter > 0.0f) printf("   then each molecule moved by up to %.1f A along each axis\n", jitter);
         if (src == SRC_MOL) printf("   %u atoms resident (%.1f %%%s), %u bonds; md_render_mol_plan %.1f ms (host, one thread), write %.1f ms\n",
                                    sc.topo.point_count, 100.0 * sc.topo.point_count / sc.atoms,
                                    !sc.partial ? "" : resident_scattered ? ", molecules at random" : ", one block of molecules",
@@ -1253,7 +1271,7 @@ int main(int argc, char** argv) {
 #endif
     fprintf(stderr, "usage:\n  md_render_bench clusters <structure> [<trajectory>] [--frames N] [--size N]\n"
 #if MD_ENABLE_GPU
-                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME] [--resident F | --resident-random F] [--mol-order cells]\n"
+                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME] [--resident F | --resident-random F] [--mol-order cells [--jitter A]]\n"
 #endif
            );
     return 1;
