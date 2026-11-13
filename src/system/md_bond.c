@@ -778,7 +778,36 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             md_temp_reset(temp_scope, before_acc);
         }
 
-        size_t num_candidates = md_array_size(candidates);
+        // The candidates by their atoms, the lower of each pair first: the passes below then read the atoms nearly in
+        // order rather than in the order of the cells of the search, and the bonds (but the metallic ones, after them)
+        // come out in an order of their atoms alone, whatever the cells, the threads or the metals of the search
+        const size_t num_candidates = md_array_size(candidates);
+        bond_pair_t* cand = md_temp_alloc_array(temp_scope, bond_pair_t, MD_MAX(num_candidates, 1));
+        {
+            // By the lower atom, counted into its place, then each atom's few by the higher one
+            const md_temp_mark_t before_sort = md_temp_mark(temp_scope);
+            uint32_t* end = md_temp_alloc_zero_array(temp_scope, uint32_t, num_atoms + 1);
+            for (size_t i = 0; i < num_candidates; ++i) {
+                end[MD_MIN(candidates[i].atom_i, candidates[i].atom_j) + 1] += 1;
+            }
+            for (size_t a = 0; a < num_atoms; ++a) end[a + 1] += end[a];
+            for (size_t i = 0; i < num_candidates; ++i) {
+                const bond_pair_t c = candidates[i];
+                const bool swap = c.atom_j < c.atom_i;
+                cand[end[swap ? c.atom_j : c.atom_i]++] = (bond_pair_t){ .atom_i = swap ? c.atom_j : c.atom_i, .atom_j = swap ? c.atom_i : c.atom_j, .dist = c.dist };
+            }
+            // end[a] is now where the candidates of atom a end, and those of a + 1 begin
+            for (size_t a = 0, beg = 0; a < num_atoms; beg = end[a++]) {
+                for (uint32_t k = (uint32_t)beg + 1; k < end[a]; ++k) {
+                    const bond_pair_t c = cand[k];
+                    uint32_t j = k;
+                    for (; j > beg && cand[j - 1].atom_j > c.atom_j; --j) cand[j] = cand[j - 1];
+                    cand[j] = c;
+                }
+            }
+            md_temp_reset(temp_scope, before_sort);
+        }
+        md_array_free(candidates, heap);
 
         //MD_LOG_DEBUG("Found %zu candidates", num_candidates);
 
@@ -787,14 +816,14 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         bond_rule_t* rules = md_temp_alloc_zero_array(temp_scope, bond_rule_t, MD_MAX(num_candidates, 1));
         uint8_t* organohalogen = md_temp_alloc_zero_array(temp_scope, uint8_t, num_atoms);
         for (size_t i = 0; i < num_candidates; ++i) {
-            const int ai = candidates[i].atom_i;
-            const int aj = candidates[i].atom_j;
+            const int ai = cand[i].atom_i;
+            const int aj = cand[i].atom_j;
             if (md_atom_particle_kind(&sys->atom, ai) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, aj) == MD_PARTICLE_VIRTUAL_SITE) continue;
             const int ci = comp_id[ai];
             const int cj = comp_id[aj];
             const bool is_water = (ci >= 0 && res_water[ci]) || (cj >= 0 && res_water[cj]);
             const bond_rule_t rule = bond_rule(atomic_nr[ai], atomic_nr[aj], ci == cj, is_water);
-            if (rule.factor <= 0.0f || candidates[i].dist >= rule.factor * (atom_radius[ai] + atom_radius[aj])) continue;
+            if (rule.factor <= 0.0f || cand[i].dist >= rule.factor * (atom_radius[ai] + atom_radius[aj])) continue;
             rules[i] = rule;
             if (!rule.coordinate && !is_metal(atomic_nr[ai]) && !is_metal(atomic_nr[aj])) {
                 if (is_halogen(atomic_nr[ai])) organohalogen[ai] = 1;
@@ -803,7 +832,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         }
         // An organohalogen coordinates nothing
         for (size_t i = 0; i < num_candidates; ++i) {
-            if (rules[i].coordinate && (organohalogen[candidates[i].atom_i] || organohalogen[candidates[i].atom_j])) {
+            if (rules[i].coordinate && (organohalogen[cand[i].atom_i] || organohalogen[cand[i].atom_j])) {
                 rules[i].factor = 0.0f;
             }
         }
@@ -811,15 +840,15 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         // The metallic phases, from the metal atoms and the non-metals within reach of each (METALLIC PHASES)
         uint32_t* contacts = md_temp_alloc_zero_array(temp_scope, uint32_t, num_atoms);
         for (size_t i = 0; i < num_candidates; ++i) {
-            const int ai = candidates[i].atom_i;
-            const int aj = candidates[i].atom_j;
+            const int ai = cand[i].atom_i;
+            const int aj = cand[i].atom_j;
             if (is_metal(atomic_nr[ai]) == is_metal(atomic_nr[aj])) continue;
             const int metal = is_metal(atomic_nr[ai]) ? ai : aj;
             const int other = metal == ai ? aj : ai;
             if (md_atom_particle_kind(&sys->atom, other) == MD_PARTICLE_VIRTUAL_SITE) continue;
             const int z = atomic_nr[other];
             const float factor = z == C ? bond_k_carbon : is_metal_donor(z) ? bond_k_ligand : 0.0f;
-            if (candidates[i].dist < factor * (atom_radius[ai] + atom_radius[aj])) contacts[metal] += 1;
+            if (cand[i].dist < factor * (atom_radius[ai] + atom_radius[aj])) contacts[metal] += 1;
         }
         uint8_t* metallic = md_temp_alloc_array(temp_scope, uint8_t, num_atoms);
         md_array(bond_pair_t) metallic_pairs = 0;
@@ -839,15 +868,14 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
 
         for (size_t i = 0; i < num_candidates; ++i) {
             if (rules[i].factor <= 0.0f) continue;
-            const int ai = candidates[i].atom_i;
-            const int aj = candidates[i].atom_j;
+            const int ai = cand[i].atom_i;
+            const int aj = cand[i].atom_j;
             // An atom of a metallic phase has its metallic bonds, below, and no other: what touches a metal moves
             // across it, and has its contacts in a frame (md_bond_delta_compute)
             if (metallic[ai] || metallic[aj]) continue;
             md_bond_insert(&temp_bond, ai, aj, rules[i].coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
-            md_array_push(temp_bond_dist, candidates[i].dist, temp_arena);
+            md_array_push(temp_bond_dist, cand[i].dist, temp_arena);
         }
-        md_array_free(candidates, heap);
         {
             const md_bond_flags_t flags = md_bond_flags_set_kind(inferred, MD_BOND_KIND_METALLIC);
             for (size_t k = 0; k < md_array_size(metallic_pairs); ++k) {
