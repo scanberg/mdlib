@@ -766,92 +766,100 @@ static inline uint16_t quant1(float v, float lo, float inv) {
     return (uint16_t)t;
 }
 
-/* The quantize goes over runs of consecutive members: a run of float3
-   positions is four atoms to three vectors (each with its own pattern of
-   axes: xyzx, yzxy, zxyz), the rest one by one */
+#if defined(__GNUC__) || defined(__clang__)
+#define PREFETCH(p) __builtin_prefetch(p)
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <xmmintrin.h>
+#define PREFETCH(p) _mm_prefetch((const char*)(p), _MM_HINT_T0)
+#else
+#define PREFETCH(p) ((void)(p))
+#endif
+
+/* The quantize, in windows of 64 atoms: a window of members four atoms to
+   three vectors (each its own pattern of axes: xyzx, yzxy, zxyz), a window
+   with gaps member by member, each one vector (x, y, z, and a lane ignored).
+   min and max ignore a NaN in their first operand; max(t, 0) takes a NaN to
+   0. */
 typedef struct quant_ctx_t {
     const float* xyz;
-    size_t       step;              /* floats from one position to the next */
-    md_128       mn[3], mx[3];      /* the bounds, in the vector patterns    */
-    float        lo[3], hi[3];      /* and one by one                        */
-    md_128       L[3], I[3];        /* origin and 1 / scale, in the patterns */
-    float        inv[3];
-    uint16_t*    q;                 /* next value out                        */
+    size_t       step;               /* floats from one position to the next */
+    uint32_t     count;              /* positions in xyz                      */
+    md_128       mn[3], mx[3];       /* bounds in the patterns of four atoms  */
+    md_128       mn1, mx1;           /* and of one                            */
+    md_128       L[3], I[3];         /* origin and 1 / scale, patterns of four */
+    md_128       L1, I1;             /* and of one                            */
 } quant_ctx_t;
 
-static inline void run_bounds(quant_ctx_t* c, uint32_t beg, uint32_t end) {
-    uint32_t i = beg;
-    if (c->step == 3 && end - beg >= 4) {
-        md_128 mn0 = c->mn[0], mn1 = c->mn[1], mn2 = c->mn[2];     /* in registers: c may alias */
-        md_128 mx0 = c->mx[0], mx1 = c->mx[1], mx2 = c->mx[2];
-        for (; i + 4 <= end; i += 4) {
-            const float* p = c->xyz + 3 * (size_t)i;
-            md_128 v0 = md_mm_loadu_ps(p), v1 = md_mm_loadu_ps(p + 4), v2 = md_mm_loadu_ps(p + 8);
-            mn0 = md_mm_min_ps(v0, mn0); mn1 = md_mm_min_ps(v1, mn1); mn2 = md_mm_min_ps(v2, mn2);   /* a NaN in the first operand is ignored */
-            mx0 = md_mm_max_ps(v0, mx0); mx1 = md_mm_max_ps(v1, mx1); mx2 = md_mm_max_ps(v2, mx2);
-        }
-        c->mn[0] = mn0; c->mn[1] = mn1; c->mn[2] = mn2;
-        c->mx[0] = mx0; c->mx[1] = mx1; c->mx[2] = mx2;
-    }
-    for (; i < end; ++i) {
-        const float* p = c->xyz + c->step * i;
-        for (int d = 0; d < 3; ++d) {                /* NaN compares false: skipped */
-            if (p[d] < c->lo[d]) c->lo[d] = p[d];
-            if (p[d] > c->hi[d]) c->hi[d] = p[d];
-        }
-    }
+/* Atom i as (x, y, z, *): four floats when they are all inside xyz */
+static inline md_128 load_one(const quant_ctx_t* c, uint32_t i) {
+    const float* p = c->xyz + c->step * i;
+    if (c->step >= 4 || i + 1 < c->count) return md_mm_loadu_ps(p);
+    return md_mm_set_ps(0.0f, p[2], p[1], p[0]);
 }
 
-static inline void run_quant(quant_ctx_t* c, uint32_t beg, uint32_t end) {
-    uint32_t i = beg;
-    uint16_t* q = c->q;
-    if (c->step == 3 && end - beg >= 4) {
-        const md_128 half = md_mm_set1_ps(0.5f), zero = md_mm_set1_ps(0.0f), top = md_mm_set1_ps(65535.0f);
-        const md_128 L0 = c->L[0], L1 = c->L[1], L2 = c->L[2], I0 = c->I[0], I1 = c->I[1], I2 = c->I[2];
-        for (; i + 4 <= end; i += 4) {
-            const float* p = c->xyz + 3 * (size_t)i;
-            md_128 t0 = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p),     L0), I0), half);
-            md_128 t1 = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p + 4), L1), I1), half);
-            md_128 t2 = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p + 8), L2), I2), half);
-            t0 = md_mm_min_ps(md_mm_max_ps(t0, zero), top);              /* max first: a NaN becomes 0 */
-            t1 = md_mm_min_ps(md_mm_max_ps(t1, zero), top);
-            t2 = md_mm_min_ps(md_mm_max_ps(t2, zero), top);
-            md_128i r0 = md_mm_cvttps_epi32(t0), r1 = md_mm_cvttps_epi32(t1), r2 = md_mm_cvttps_epi32(t2);
-            md_mm_storeu_si128((md_128i*)q, simde_mm_packus_epi32(r0, r1));
-            md_mm_storel_epi64((md_128i*)(q + 8), simde_mm_packus_epi32(r2, r2));
-            q += 12;
-        }
+static inline void bounds_four(quant_ctx_t* c, uint32_t beg, uint32_t end) {      /* step 3, (end - beg) % 4 == 0 */
+    md_128 mn0 = c->mn[0], mn1 = c->mn[1], mn2 = c->mn[2], mx0 = c->mx[0], mx1 = c->mx[1], mx2 = c->mx[2];
+    for (uint32_t i = beg; i < end; i += 4) {
+        const float* p = c->xyz + 3 * (size_t)i;
+        md_128 v0 = md_mm_loadu_ps(p), v1 = md_mm_loadu_ps(p + 4), v2 = md_mm_loadu_ps(p + 8);
+        mn0 = md_mm_min_ps(v0, mn0); mn1 = md_mm_min_ps(v1, mn1); mn2 = md_mm_min_ps(v2, mn2);
+        mx0 = md_mm_max_ps(v0, mx0); mx1 = md_mm_max_ps(v1, mx1); mx2 = md_mm_max_ps(v2, mx2);
     }
-    const float lo0 = c->lo[0], lo1 = c->lo[1], lo2 = c->lo[2], in0 = c->inv[0], in1 = c->inv[1], in2 = c->inv[2];
-    for (; i < end; ++i) {
-        const float* p = c->xyz + c->step * i;
-        q[0] = quant1(p[0], lo0, in0); q[1] = quant1(p[1], lo1, in1); q[2] = quant1(p[2], lo2, in2);
-        q += 3;
-    }
-    c->q = q;
+    c->mn[0] = mn0; c->mn[1] = mn1; c->mn[2] = mn2; c->mx[0] = mx0; c->mx[1] = mx1; c->mx[2] = mx2;
 }
 
-/* fn over the maximal runs of members of s below count, in order (inlined
-   with its fn: a run of three atoms is one call of nothing) */
-static inline void each_run(md_bitset_t s, uint32_t count, quant_ctx_t* c, void (*fn)(quant_ctx_t*, uint32_t, uint32_t)) {
-    const uint32_t last = s.end < count ? s.end : count;
-    if (s.beg >= last) return;
-    if (md_bitset_is_run(s)) { fn(c, s.beg, last); return; }
-    uint32_t rb = 0, re = 0;                         /* the run being gathered */
-    for (uint32_t base = s.beg & ~63u; base < last; base += 64) {
-        uint64_t m = md_bitset_word(s, base);
-        if (last - base < 64) m &= (1ull << (last - base)) - 1;
-        while (m) {
-            const uint32_t b = (uint32_t)md_ctz64(m);
-            const uint64_t gap = ~(m >> b);          /* ones from the first non-member on */
-            const uint32_t len = gap ? (uint32_t)md_ctz64(gap) : 64 - b;
-            const uint32_t sb = base + b, se = sb + len;
-            if (sb == re) re = se;
-            else { if (re > rb) fn(c, rb, re); rb = sb; re = se; }
-            m = b + len >= 64 ? 0 : m & (~0ull << (b + len));
-        }
+static inline uint16_t* quant_four(const quant_ctx_t* c, uint16_t* q, uint32_t beg, uint32_t end) {
+    const md_128 half = md_mm_set1_ps(0.5f), zero = md_mm_set1_ps(0.0f), top = md_mm_set1_ps(65535.0f);
+    const md_128 L0 = c->L[0], L1 = c->L[1], L2 = c->L[2], I0 = c->I[0], I1 = c->I[1], I2 = c->I[2];
+    for (uint32_t i = beg; i < end; i += 4) {
+        const float* p = c->xyz + 3 * (size_t)i;
+        md_128 t0 = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p),     L0), I0), half);
+        md_128 t1 = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p + 4), L1), I1), half);
+        md_128 t2 = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(md_mm_loadu_ps(p + 8), L2), I2), half);
+        t0 = md_mm_min_ps(md_mm_max_ps(t0, zero), top);
+        t1 = md_mm_min_ps(md_mm_max_ps(t1, zero), top);
+        t2 = md_mm_min_ps(md_mm_max_ps(t2, zero), top);
+        md_128i r0 = md_mm_cvttps_epi32(t0), r1 = md_mm_cvttps_epi32(t1), r2 = md_mm_cvttps_epi32(t2);
+        md_mm_storeu_si128((md_128i*)q, simde_mm_packus_epi32(r0, r1));
+        md_mm_storel_epi64((md_128i*)(q + 8), simde_mm_packus_epi32(r2, r2));
+        q += 12;
     }
-    if (re > rb) fn(c, rb, re);
+    return q;
+}
+
+/* One atom's three values; `last`: the frame's last, whose fourth value
+   would land past the end */
+static inline uint16_t* quant_one(const quant_ctx_t* c, uint16_t* q, uint32_t i, bool last) {
+    md_128 t = md_mm_add_ps(md_mm_mul_ps(md_mm_sub_ps(load_one(c, i), c->L1), c->I1), md_mm_set1_ps(0.5f));
+    t = md_mm_min_ps(md_mm_max_ps(t, md_mm_set1_ps(0.0f)), md_mm_set1_ps(65535.0f));
+    md_128i r = simde_mm_packus_epi32(md_mm_cvttps_epi32(t), md_mm_cvttps_epi32(t));
+    if (!last) {
+        md_mm_storel_epi64((md_128i*)q, r);      /* four values: the fourth is the next atom's first */
+    } else {
+        uint16_t v[8];
+        md_mm_storeu_si128((md_128i*)v, r);
+        q[0] = v[0]; q[1] = v[1]; q[2] = v[2];
+    }
+    return q + 3;
+}
+
+/* The members of window [base, base + 64) below `last` */
+static inline uint64_t window_members(md_bitset_t s, uint32_t base, uint32_t last) {
+    uint64_t m = md_bitset_word(s, base);
+    if (last - base < 64) m &= (1ull << (last - base)) - 1;
+    return m;
+}
+
+/* Windows read ahead: members with gaps between them are a pattern no
+   hardware prefetcher follows */
+#define WINDOWS_AHEAD 16u
+
+static inline void prefetch_window(const quant_ctx_t* c, md_bitset_t s, uint32_t base, uint32_t last) {
+    const uint32_t ahead = base + WINDOWS_AHEAD * 64u;
+    if (ahead >= last || !md_bitset_word(s, ahead)) return;
+    const char* w = (const char*)(c->xyz + c->step * ahead);
+    const size_t bytes = 64u * c->step * sizeof(float);
+    for (size_t b = 0; b < bytes; b += 64) PREFETCH(w + b);
 }
 
 void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* q, const float* xyz, uint32_t stride,
@@ -861,35 +869,94 @@ void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* q, const
     out->q = q;
     if (cell) memcpy(out->cell, cell, sizeof(out->cell));
     if (!q || (count && !xyz)) return;
-    const md_bitset_t set = resident ? *resident : md_bitset_range(0, count);
+    md_bitset_t set = resident ? *resident : md_bitset_range(0, count);
+    const uint32_t last = set.end < count ? set.end : count;
+    if (set.beg >= last) set = md_bitset_empty_set();
     quant_ctx_t c;
     memset(&c, 0, sizeof(c));
-    c.xyz  = xyz;
-    c.step = (stride ? stride : 12u) / sizeof(float);
-    for (int k = 0; k < 3; ++k) {
-        c.mn[k] = md_mm_set1_ps(FLT_MAX); c.mx[k] = md_mm_set1_ps(-FLT_MAX);
-        c.lo[k] = FLT_MAX; c.hi[k] = -FLT_MAX;
+    c.xyz   = xyz;
+    c.step  = (stride ? stride : 12u) / sizeof(float);
+    c.count = count;
+    const bool four = c.step == 3;                  /* packed float3: four atoms to three vectors */
+    for (int k = 0; k < 3; ++k) { c.mn[k] = md_mm_set1_ps(FLT_MAX); c.mx[k] = md_mm_set1_ps(-FLT_MAX); }
+    c.mn1 = md_mm_set1_ps(FLT_MAX); c.mx1 = md_mm_set1_ps(-FLT_MAX);
+
+    /* the bounds, and the members */
+    uint64_t members = 0;
+    if (md_bitset_is_run(set)) {
+        uint32_t i = set.beg, e = last;
+        if (four) { bounds_four(&c, i, i + (e - i) / 4 * 4); i += (e - i) / 4 * 4; }
+        for (; i < e; ++i) { md_128 v = load_one(&c, i); c.mn1 = md_mm_min_ps(v, c.mn1); c.mx1 = md_mm_max_ps(v, c.mx1); }
+        members = e - set.beg;
+    } else if (!md_bitset_empty(set)) {
+        for (uint32_t base = set.beg & ~63u; base < last; base += 64) {
+            prefetch_window(&c, set, base, last);
+            uint64_t m = window_members(set, base, last);
+            members += (uint64_t)md_popcnt64(m);
+            /* the window's runs of members: four atoms at a time within one */
+            while (m) {
+                const uint32_t b = (uint32_t)md_ctz64(m);
+                const uint64_t gap = ~(m >> b);
+                const uint32_t len = gap ? (uint32_t)md_ctz64(gap) : 64 - b;
+                uint32_t i = base + b, e = i + len;
+                if (four && len >= 4) { bounds_four(&c, i, i + len / 4 * 4); i += len / 4 * 4; }
+                md_128 mn = c.mn1, mx = c.mx1;
+                for (; i < e; ++i) { md_128 v = load_one(&c, i); mn = md_mm_min_ps(v, mn); mx = md_mm_max_ps(v, mx); }
+                c.mn1 = mn; c.mx1 = mx;
+                m = b + len >= 64 ? 0 : m & (~0ull << (b + len));
+            }
+        }
     }
-    each_run(set, count, &c, run_bounds);
-    float a[3][4], b[3][4];
-    for (int k = 0; k < 3; ++k) { md_mm_storeu_ps(a[k], c.mn[k]); md_mm_storeu_ps(b[k], c.mx[k]); }
-    for (int k = 0; k < 3; ++k) for (int l = 0; l < 4; ++l) {
-        const int d = (4 * k + l) % 3;
-        if (a[k][l] < c.lo[d]) c.lo[d] = a[k][l];
-        if (b[k][l] > c.hi[d]) c.hi[d] = b[k][l];
+    float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    {
+        float a[4][4], b[4][4];
+        for (int k = 0; k < 3; ++k) { md_mm_storeu_ps(a[k], c.mn[k]); md_mm_storeu_ps(b[k], c.mx[k]); }
+        md_mm_storeu_ps(a[3], c.mn1); md_mm_storeu_ps(b[3], c.mx1);
+        for (int k = 0; k < 3; ++k) for (int l = 0; l < 4; ++l) {
+            const int d = (4 * k + l) % 3;
+            if (a[k][l] < lo[d]) lo[d] = a[k][l];
+            if (b[k][l] > hi[d]) hi[d] = b[k][l];
+        }
+        for (int d = 0; d < 3; ++d) {
+            if (a[3][d] < lo[d]) lo[d] = a[3][d];
+            if (b[3][d] > hi[d]) hi[d] = b[3][d];
+        }
     }
+    float inv[3];
     for (int d = 0; d < 3; ++d) {
-        if (!(c.lo[d] <= c.hi[d])) c.lo[d] = c.hi[d] = 0.0f;
-        out->origin[d] = c.lo[d];
-        out->scale[d]  = (c.hi[d] - c.lo[d]) / 65535.0f;
-        c.inv[d] = out->scale[d] > 0.0f ? 65535.0f / (c.hi[d] - c.lo[d]) : 0.0f;
+        if (!(lo[d] <= hi[d])) lo[d] = hi[d] = 0.0f;
+        out->origin[d] = lo[d];
+        out->scale[d]  = (hi[d] - lo[d]) / 65535.0f;
+        inv[d] = out->scale[d] > 0.0f ? 65535.0f / (hi[d] - lo[d]) : 0.0f;
     }
     for (int k = 0; k < 3; ++k) {
-        c.L[k] = md_mm_set_ps(c.lo[(4 * k + 3) % 3], c.lo[(4 * k + 2) % 3], c.lo[(4 * k + 1) % 3], c.lo[(4 * k) % 3]);
-        c.I[k] = md_mm_set_ps(c.inv[(4 * k + 3) % 3], c.inv[(4 * k + 2) % 3], c.inv[(4 * k + 1) % 3], c.inv[(4 * k) % 3]);
+        c.L[k] = md_mm_set_ps(lo[(4 * k + 3) % 3], lo[(4 * k + 2) % 3], lo[(4 * k + 1) % 3], lo[(4 * k) % 3]);
+        c.I[k] = md_mm_set_ps(inv[(4 * k + 3) % 3], inv[(4 * k + 2) % 3], inv[(4 * k + 1) % 3], inv[(4 * k) % 3]);
     }
-    c.q = q;
-    each_run(set, count, &c, run_quant);
+    c.L1 = md_mm_set_ps(0.0f, lo[2], lo[1], lo[0]);
+    c.I1 = md_mm_set_ps(0.0f, inv[2], inv[1], inv[0]);
+
+    /* the values, in order */
+    uint64_t k = 0;                                  /* members written */
+    if (md_bitset_is_run(set)) {
+        uint32_t i = set.beg, e = last;
+        if (four) { q = quant_four(&c, q, i, i + (e - i) / 4 * 4); i += (e - i) / 4 * 4; }
+        for (; i < e; ++i) q = quant_one(&c, q, i, i + 1 == e);
+    } else if (!md_bitset_empty(set)) {
+        for (uint32_t base = set.beg & ~63u; base < last; base += 64) {
+            prefetch_window(&c, set, base, last);
+            uint64_t m = window_members(set, base, last);
+            while (m) {
+                const uint32_t b = (uint32_t)md_ctz64(m);
+                const uint64_t gap = ~(m >> b);
+                const uint32_t len = gap ? (uint32_t)md_ctz64(gap) : 64 - b;
+                uint32_t i = base + b, e = i + len;
+                if (four && len >= 4) { q = quant_four(&c, q, i, i + len / 4 * 4); k += len / 4 * 4; i += len / 4 * 4; }
+                for (; i < e; ++i, ++k) q = quant_one(&c, q, i, k + 1 == members);
+                m = b + len >= 64 ? 0 : m & (~0ull << (b + len));
+            }
+        }
+    }
 }
 
 uint64_t md_render_mol_frame_size(const md_render_mol_topo_t* topo) {
