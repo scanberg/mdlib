@@ -1157,6 +1157,7 @@ static int run_gpu(int argc, char** argv) {
         { "licorice thinning out over 2.5 to 1.25 px/A, near",        true, 0.6f, FADE_THIN },
         { "licorice shrinking out over 2.5 to 1.25 px/A, near",       true, 0.6f, FADE_SHRINK },
         { "licorice thinning into spacefill over 2.5 to 1.25 px/A, near", true, 0.6f, FADE_TO_SPACEFILL },
+        { "licorice thinning into spacefill over 2.5 to 1.25 px/A, far",  true, 6.0f, FADE_TO_SPACEFILL },   /* licorice gone by its clusters */
     };
     /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
        untested. Rows marked "x:" would be experiments with other settings
