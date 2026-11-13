@@ -75,6 +75,7 @@ enum {
     F_FADE_THIN    = 1u << 18,
     F_SPL_AXIS     = 1u << 19,
     F_SPL_PROFILE  = 1u << 20,
+    F_SPL_THROUGH  = 1u << 21,
 };
 
 typedef struct gpu_batch_t {
@@ -902,6 +903,8 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         if (b->style.capsules.radius_scale) f |= F_RADIUS_SCALE;
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;
+        g->s1        = b->style.splines.flat;
+        if (b->style.splines.through) f |= F_SPL_THROUGH;
         g->spl_axis  = b->style.splines.axis;
         g->spl_profile = b->style.splines.profile;
         if (g->spl_axis)    f |= F_SPL_AXIS;

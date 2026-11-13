@@ -805,6 +805,49 @@ static double sweep_ray_clearance(const sweep_t* sw, ray_t r, double tmax) {
     return best;
 }
 
+/* Every pixel of a view of splines against their sweep: empty where the rays
+   miss it, its surface where they hit, nothing of it in front, the part
+   that is nearest where that is clear */
+static void sweep_check_pixels(const cam_t* c, uint32_t W, uint32_t H, const sweep_t* sw, const uint32_t* id, const float* dp,
+                               int* bad, int* covered, int* judged_parts, double* worst_surface) {
+    *bad = 0; *covered = 0; *judged_parts = 0; *worst_surface = 0;
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            ray_t r = pixel_ray(c, W, H, x + 0.5, y + 0.5);
+            uint32_t ix = id[2 * (y * W + x)], iy = id[2 * (y * W + x) + 1];
+            double clr = sweep_ray_clearance(sw, r, 100.0);
+            /* a pixel's size in world at depth z, from the ray through the scene's middle */
+            double px_at15 = 15.0 * 2.0 * c->tan_half / H;
+            if (iy == 0) {
+                if (clr < -0.75 * px_at15) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): empty, the sweep %.3f px inside\n", x, y, -clr / px_at15); }
+                continue;
+            }
+            (*covered)++;
+            if (clr > 0.75 * px_at15) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): covered, the sweep %.3f px away\n", x, y, clr / px_at15); continue; }
+            double zv = -c->n / dp[y * W + x], tp = zv / r.d[2];
+            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            double pxw = -P[2] * 2.0 * c->tan_half / H;
+            int who; double gap;
+            double sd = sweep_sdf(sw, P, &who, &gap);
+            *worst_surface = fmax(*worst_surface, fabs(sd) / pxw);
+            if (fabs(sd) > 0.5 * pxw) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): %.3f px off the surface\n", x, y, sd / pxw); continue; }
+            if (gap > pxw) {
+                (*judged_parts)++;
+                if (ix != (uint32_t)who) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): part %u, expected %d\n", x, y, ix, who); continue; }
+            }
+            /* nothing of the sweep in front: the ray before P stays outside but for a pixel */
+            double tt = 0.0;
+            for (int it = 0; it < 400 && tt < tp; ++it) {
+                double q[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+                double d = sweep_sdf(sw, q, &who, &gap);
+                double qw = -q[2] * 2.0 * c->tan_half / H;
+                if (d < -0.5 * qw) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): the sweep %.3f px in front\n", x, y, (tp - tt) / qw); break; }
+                tt += fmax(fabs(d), 0.25 * qw);
+            }
+        }
+    }
+}
+
 UTEST(render, spline_curves_match_the_sweep) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -892,41 +935,7 @@ UTEST(render, spline_curves_match_the_sweep) {
     ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4));
     int bad = 0, covered = 0, judged_parts = 0;
     double worst_surface = 0;    /* in pixels */
-    for (uint32_t y = 0; y < H; ++y) {
-        for (uint32_t x = 0; x < W; ++x) {
-            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
-            uint32_t ix = id[2 * (y * W + x)], iy = id[2 * (y * W + x) + 1];
-            double clr = sweep_ray_clearance(&sw, r, 100.0);
-            /* a pixel's size in world at depth z, from the ray through the scene's middle */
-            double px_at15 = 15.0 * 2.0 * c.tan_half / H;
-            if (iy == 0) {
-                if (clr < -0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, the sweep %.3f px inside\n", x, y, -clr / px_at15); }
-                continue;
-            }
-            covered++;
-            if (clr > 0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, the sweep %.3f px away\n", x, y, clr / px_at15); continue; }
-            double zv = -c.n / dp[y * W + x], tp = zv / r.d[2];
-            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
-            double pxw = -P[2] * 2.0 * c.tan_half / H;
-            int who; double gap;
-            double sd = sweep_sdf(&sw, P, &who, &gap);
-            worst_surface = fmax(worst_surface, fabs(sd) / pxw);
-            if (fabs(sd) > 0.5 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the surface\n", x, y, sd / pxw); continue; }
-            if (gap > pxw) {
-                judged_parts++;
-                if (ix != (uint32_t)who) { bad++; if (bad < 8) printf("    pixel (%u, %u): part %u, expected %d\n", x, y, ix, who); continue; }
-            }
-            /* nothing of the sweep in front: the ray before P stays outside but for a pixel */
-            double tt = 0.0;
-            for (int it = 0; it < 400 && tt < tp; ++it) {
-                double q[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
-                double d = sweep_sdf(&sw, q, &who, &gap);
-                double qw = -q[2] * 2.0 * c.tan_half / H;
-                if (d < -0.5 * qw) { bad++; if (bad < 8) printf("    pixel (%u, %u): the sweep %.3f px in front\n", x, y, (tp - tt) / qw); break; }
-                tt += fmax(fabs(d), 0.25 * qw);
-            }
-        }
-    }
+    sweep_check_pixels(&c, W, H, &sw, id, dp, &bad, &covered, &judged_parts, &worst_surface);
     printf("    %d pixels covered, %d with a clear part; the farthest %.3f px from the sweep\n", covered, judged_parts, worst_surface);
 
     /* Normals against the sweep's, where the part is clear: smooth across
@@ -1010,6 +1019,45 @@ UTEST(render, spline_curves_match_the_sweep) {
         for (int k = 0; k < 3; ++k) EXPECT_NEAR(r.o[k] + r.d[k] * tp, pk.position[k], 1e-4 * 15.0);
     }
     EXPECT_GT(picks, N / 2);
+
+    /* Through its control points: each moved first, as md_render does
+       (c = (8 q - q- - q+) / 6, the ends staying), and the sweep of those */
+    {
+        double tpos[N][3], before = 0, after = 0;
+        for (int k = 0; k < N; ++k) {
+            bool end = (index[k] & (MD_RENDER_SPLINE_FIRST | MD_RENDER_SPLINE_LAST)) != 0;
+            for (int i = 0; i < 3; ++i) tpos[k][i] = end ? vpos[k][i] : (8.0 * vpos[k][i] - vpos[k - 1][i] - vpos[k + 1][i]) / 6.0;
+        }
+        for (int k = 1; k < NA - 1; ++k) {       /* the helix: how far its knots are from its points */
+            double d0[3], d1[3];
+            for (int i = 0; i < 3; ++i) {
+                d0[i] = (vpos[k - 1][i] + 4.0 * vpos[k][i] + vpos[k + 1][i]) / 6.0 - vpos[k][i];
+                d1[i] = (tpos[k - 1][i] + 4.0 * tpos[k][i] + tpos[k + 1][i]) / 6.0 - vpos[k][i];
+            }
+            before = fmax(before, sqrt(dot3(d0, d0)));
+            after  = fmax(after, sqrt(dot3(d1, d1)));
+        }
+        printf("    through: the helix's knots off its points by %.3f A at most, %.3f near them\n", after, before);
+        EXPECT_LT(after, 0.45 * before);
+        b.style.splines.through = true;
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        sweep_t tsw;
+        sweep_build(&tsw, (const double (*)[3])tpos, (const double (*)[3])vaxis, profile, index, visible, N);
+        uint32_t* tid = malloc(W * H * 8);
+        float*    tdp = malloc(W * H * 4);
+        ASSERT_TRUE(f_read(&fx, tg.id, tid, W * H * 8) && f_read(&fx, tg.depth, tdp, W * H * 4));
+        int tbad = 0, tcov = 0, tjudged = 0;
+        double tworst = 0;
+        sweep_check_pixels(&c, W, H, &tsw, tid, tdp, &tbad, &tcov, &tjudged, &tworst);
+        printf("    through: %d pixels covered, %d with a clear part; the farthest %.3f px from the sweep\n", tcov, tjudged, tworst);
+        EXPECT_EQ(0, tbad);
+        EXPECT_GT(tcov, covered * 3 / 4);
+        EXPECT_GT(tjudged, tcov / 2);
+        free(tid); free(tdp); free(tsw.part);
+        b.style.splines.through = false;
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    }
 
     /* every other part of the helix selected: its mask where the raster
        shows them, its outline around more (where the turn in front covers
@@ -3781,6 +3829,213 @@ UTEST(render, mol_cartoon_backbone) {
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, prof);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* The cartoon of a nucleic acid (a nucleosome: 294 nucleotides of DNA in two
+   strands, and its histones): the band through the C4', the rings of each
+   nucleotide as polygons from their colour's corner, the sticks; the band's
+   axes towards the bases; picks of a ring and of the band */
+UTEST(render, mol_cartoon_nucleic) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    const md_nucleic_backbone_data_t* NB = &sys.nucleic_backbone;
+    const uint32_t nseg = (uint32_t)NB->segment.count;
+    ASSERT_GT(nseg, 200u);
+    uint32_t purines = 0;
+    for (uint32_t g = 0; g < nseg; ++g) {
+        md_str_t rn = md_system_residue_name(&sys, (size_t)NB->segment.res_idx[g]);
+        purines += (md_str_contains_char(rn, 'A') || md_str_contains_char(rn, 'G')) ? 1u : 0u;
+    }
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    const md_render_mol_topo_t* L = &plan.layout;
+    const uint8_t*  img   = (const uint8_t*)plan.data;
+    const uint32_t* order = (const uint32_t*)(img + L->atom_order);
+    printf("    %u nucleotides (%u purines) in %u strands: band %u, rings of 5 %u, of 6 %u, sticks %u\n", nseg, purines,
+           (uint32_t)NB->range.count, L->nucleic_count, L->ring_count[2], L->ring_count[3], L->stick_count);
+    /* Every nucleotide: a control point, a sugar, a ring of six, a purine's
+       ring of five, a stick; the pieces the strands */
+    EXPECT_EQ(nseg, L->nucleic_count);
+    EXPECT_EQ(nseg + purines, L->ring_count[2]);
+    EXPECT_EQ(nseg, L->ring_count[3]);
+    EXPECT_EQ(nseg, L->stick_count);
+    EXPECT_EQ(0u, L->ring_count[0] + L->ring_count[1] + L->ring_count[4]);
+    {
+        const uint32_t* idx  = (const uint32_t*)(img + L->nucleic_index);
+        const uint32_t* seg  = (const uint32_t*)(img + L->nucleic_segment);
+        const uint32_t* face = (const uint32_t*)(img + L->nucleic_face);
+        int bad = 0, pieces = 0;
+        for (uint32_t j = 0; j < L->nucleic_count; ++j) {
+            const md_nucleic_acid_atoms_t at = NB->segment.atoms[seg[j]];
+            if (order[idx[j] & 0x3FFFFFFFu] != (uint32_t)at.c4) bad++;
+            uint32_t f = order[face[j]];        /* the glycosidic N: bonded to the C1', a nitrogen */
+            if (md_bond_find(&sys.bond, (md_atom_idx_t)f, at.c1) < 0 || md_atom_atomic_number(&sys.atom, f) != 7) bad++;
+            pieces += (idx[j] & MD_RENDER_SPLINE_FIRST) ? 1 : 0;
+        }
+        EXPECT_EQ(0, bad);
+        EXPECT_EQ((int)NB->range.count, pieces);
+        /* the rings: around, from the C1' of a sugar or a carbon of a base */
+        for (uint32_t k = 2; k <= 3; ++k) {
+            const uint32_t  nc  = 3 + k;
+            const uint32_t* pts = (const uint32_t*)(img + L->ring_points[k]);
+            const uint32_t* rs  = (const uint32_t*)(img + L->ring_segment[k]);
+            int rbad = 0, sugars = 0;
+            for (uint32_t r = 0; r < L->ring_count[k]; ++r) {
+                const md_nucleic_acid_atoms_t at = NB->segment.atoms[rs[r]];
+                for (uint32_t l = 0; l < nc; ++l) {
+                    if (md_bond_find(&sys.bond, (md_atom_idx_t)order[pts[nc * r + l]], (md_atom_idx_t)order[pts[nc * r + (l + 1) % nc]]) < 0) rbad++;
+                }
+                uint32_t a0 = order[pts[nc * r]];
+                bool sugar = false;
+                for (uint32_t l = 0; l < nc; ++l) sugar |= order[pts[nc * r + l]] == (uint32_t)at.o4;
+                sugars += sugar;
+                if (sugar ? a0 != (uint32_t)at.c1 : md_atom_atomic_number(&sys.atom, a0) != 6) rbad++;
+            }
+            EXPECT_EQ(0, rbad);
+            EXPECT_EQ(k == 2 ? (int)nseg : 0, sugars);
+        }
+        const uint32_t* sp = (const uint32_t*)(img + L->stick_points);
+        const uint32_t* ss = (const uint32_t*)(img + L->stick_segment);
+        int sbad = 0;
+        for (uint32_t i = 0; i < L->stick_count; ++i) {
+            if (order[sp[2 * i]] != (uint32_t)NB->segment.atoms[ss[i]].c1) sbad++;
+            if (md_atom_atomic_number(&sys.atom, order[sp[2 * i + 1]]) != 7) sbad++;
+        }
+        EXPECT_EQ(0, sbad);
+    }
+    md_gpu_mem_t mem = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size);
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, mem.gpu, content));
+    md_temp_end(temp);
+
+    const uint32_t na = (uint32_t)sys.atom.count;
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)na * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+
+    /* The batches: the protein's band, the nucleic band, rings of 5 and 6, sticks */
+    md_render_mol_rep_t rep = {0};
+    rep.key  = 9;
+    rep.type = MD_RENDER_MOL_REP_CARTOON;
+    md_render_batch_t bt[8];
+    ASSERT_EQ(5u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
+    EXPECT_EQ(MD_RENDER_SPLINES, bt[1].kind);
+    EXPECT_TRUE(bt[1].style.splines.through);
+    EXPECT_EQ(MD_RENDER_POLYGONS, bt[2].kind);
+    EXPECT_EQ(5u, bt[2].style.polygons.corners);
+    EXPECT_EQ(6u, bt[3].style.polygons.corners);
+    EXPECT_EQ(MD_RENDER_CAPSULES, bt[4].kind);
+
+    /* The axes: unit, across the chord, across the way to the base (so the
+       faces face it) */
+    {
+        const uint32_t n = topo.nucleic_count;
+        float*    ax   = (float*)read_block(&fx, bt[1].style.splines.axis, (uint64_t)n * 16);
+        uint32_t* idx  = (uint32_t*)read_block(&fx, topo.nucleic_index, (uint64_t)n * 4);
+        uint32_t* face = (uint32_t*)read_block(&fx, topo.nucleic_face, (uint64_t)n * 4);
+        uint32_t* ord  = (uint32_t*)read_block(&fx, topo.atom_order, (uint64_t)topo.point_count * 4);
+        int bad = 0;
+        float worst = 0;
+        for (uint32_t j = 0; j < n; ++j) {
+            const float* a = ax + 4 * j;
+            uint32_t jp = (idx[j] & MD_RENDER_SPLINE_FIRST) ? j : j - 1, jn = (idx[j] & MD_RENDER_SPLINE_LAST) ? j : j + 1;
+            const float* xp = &state.xyz[ord[idx[jp] & 0x3FFFFFFFu]].x;
+            const float* xn = &state.xyz[ord[idx[jn] & 0x3FFFFFFFu]].x;
+            const float* c4 = &state.xyz[ord[idx[j] & 0x3FFFFFFFu]].x;
+            const float* fc = &state.xyz[ord[face[j]]].x;
+            float t[3] = { xn[0] - xp[0], xn[1] - xp[1], xn[2] - xp[2] }, F[3] = { fc[0] - c4[0], fc[1] - c4[1], fc[2] - c4[2] };
+            float l  = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            float tl = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]), fl = sqrtf(F[0] * F[0] + F[1] * F[1] + F[2] * F[2]);
+            float at = fabsf(a[0] * t[0] + a[1] * t[1] + a[2] * t[2]) / tl, af = fabsf(a[0] * F[0] + a[1] * F[1] + a[2] * F[2]) / fl;
+            worst = fmaxf(worst, fmaxf(at, af));
+            if (fabsf(l - 1.0f) > 1e-4f || at > 1e-3f || af > 1e-3f) bad++;
+        }
+        EXPECT_EQ(0, bad);
+        printf("    axes: across the chord and the way to the base within %.1e\n", worst);
+        free(ax); free(idx); free(face); free(ord);
+    }
+
+    /* Picks: of one nucleotide alone (the representation's filter), viewed
+       from +z: its ring of six at its centre, the band at its C4' */
+    {
+        const uint32_t g = nseg / 3;
+        const md_nucleic_acid_atoms_t at = NB->segment.atoms[g];
+        uint32_t words = (na + 31) / 32;
+        uint32_t* bits = calloc(words, 4);
+        const md_residue_idx_t res = NB->segment.res_idx[g];
+        md_urange_t rr = md_system_residue_atom_range(&sys, (size_t)res);
+        for (uint32_t i = (uint32_t)rr.beg; i < (uint32_t)rr.end; ++i) bits[i >> 5] |= 1u << (i & 31);
+        rep.visible = f_buf(&fx, bits, (size_t)words * 4);
+        ASSERT_EQ(5u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
+        /* the ring of six: its atoms, its centre */
+        uint32_t* pts = (uint32_t*)read_block(&fx, topo.ring_points[3], (uint64_t)topo.ring_count[3] * 24);
+        uint32_t* rs  = (uint32_t*)read_block(&fx, topo.ring_segment[3], (uint64_t)topo.ring_count[3] * 4);
+        uint32_t* ord = (uint32_t*)read_block(&fx, topo.atom_order, (uint64_t)topo.point_count * 4);
+        int32_t ring = -1;
+        for (uint32_t r = 0; r < topo.ring_count[3]; ++r) if (rs[r] == g) ring = (int32_t)r;
+        ASSERT_GE(ring, 0);
+        float cen[3] = { 0, 0, 0 }, lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+        for (uint32_t l = 0; l < 6; ++l) for (int k = 0; k < 3; ++k) cen[k] += (&state.xyz[ord[pts[6 * ring + l]]].x)[k] / 6.0f;
+        for (uint32_t i = (uint32_t)rr.beg; i < (uint32_t)rr.end; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], (&state.xyz[i].x)[k]); hi[k] = fmaxf(hi[k], (&state.xyz[i].x)[k]); }
+        const uint32_t W = 128, H = 128;
+        float ext = fmaxf(hi[0] - lo[0], hi[1] - lo[1]) * 0.6f + 2.0f;
+        cam_t c = { .ortho = true, .half_h = ext, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+        md_render_camera_t cam = make_camera(&c);
+        float ctr[3] = { 0.5f * (lo[0] + hi[0]), 0.5f * (lo[1] + hi[1]), hi[2] + 20.0f };
+        cam.view[12] = -ctr[0]; cam.view[13] = -ctr[1]; cam.view[14] = -ctr[2];
+        #define PX(x) ((uint32_t)((((x) - ctr[0]) / ext * 0.5f + 0.5f) * W))
+        #define PY(y) ((uint32_t)((0.5f - ((y) - ctr[1]) / ext * 0.5f) * H))
+        md_render_frame_t f = frame_of(W, H, cam, &bt[3], 1);       /* the rings of six */
+        memcpy(f.content, content, sizeof(content));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        md_render_pick_t pk;
+        md_render_mol_hit_t hit;
+        ASSERT_TRUE(f_pick(&fx, PX(cen[0]), PY(cen[1]), &pk));
+        ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+        EXPECT_EQ(MD_RENDER_MOL_HIT_NUCLEOTIDE, hit.kind);
+        EXPECT_EQ(9u, (unsigned)hit.rep_key);
+        EXPECT_EQ(g, hit.segment);
+        uint32_t near = 0;
+        float bd = 1e30f;
+        for (uint32_t l = 0; l < 6; ++l) {
+            const float* q = &state.xyz[ord[pts[6 * ring + l]]].x;
+            float d = (q[0] - hit.position[0]) * (q[0] - hit.position[0]) + (q[1] - hit.position[1]) * (q[1] - hit.position[1]) + (q[2] - hit.position[2]) * (q[2] - hit.position[2]);
+            if (d < bd) { bd = d; near = ord[pts[6 * ring + l]]; }
+        }
+        EXPECT_EQ(near, hit.atom);
+        /* the band at the C4': through it */
+        f = frame_of(W, H, cam, &bt[1], 1);
+        memcpy(f.content, content, sizeof(content));
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        const float* c4 = &state.xyz[at.c4].x;
+        ASSERT_TRUE(f_pick(&fx, PX(c4[0]), PY(c4[1]), &pk));
+        ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+        EXPECT_EQ(MD_RENDER_MOL_HIT_NUCLEOTIDE, hit.kind);
+        EXPECT_EQ(g, hit.segment);
+        EXPECT_EQ((uint32_t)at.c4, hit.atom);
+        #undef PX
+        #undef PY
+        free(pts); free(rs); free(ord); free(bits);
+    }
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
     md_render_mol_destroy(mol);
     md_system_free(&sys);

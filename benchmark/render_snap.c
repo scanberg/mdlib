@@ -424,9 +424,10 @@ static int run(int argc, char** argv) {
 
     /* The cartoon: the secondary structure (the state's, else computed), the
        profile per scale asked for, and its own colours: helix red, sheet
-       yellow, coil grey (by the CA atoms) */
+       yellow, coil grey (by the CA atoms); a nucleotide by its base, A red,
+       C yellow, G green, T and U blue (all its atoms) */
     md_gpu_addr_t SSB = 0, CC = 0;
-    if (topo.backbone_count) {
+    if (topo.backbone_count || topo.nucleic_count) {
         const md_secondary_structure_t* ss = md_system_state_secondary_structure(&state, &sys);
         if (!ss && md_system_state_backbone_compute(&state, &sys)) ss = md_system_state_secondary_structure(&state, &sys);
         const size_t nseg = sys.protein_backbone.segment.count;
@@ -442,6 +443,17 @@ static int run(int argc, char** argv) {
             int t = ss ? (int)ss[g] : 0;
             cc[ca] = (t >= MD_SECONDARY_STRUCTURE_HELIX_310 && t <= MD_SECONDARY_STRUCTURE_HELIX_PI) ? 0xFF4040E0u
                    : (t == MD_SECONDARY_STRUCTURE_BETA_SHEET || t == MD_SECONDARY_STRUCTURE_BETA_BRIDGE) ? 0xFF30C8F0u : 0xFFC8C8C8u;
+        }
+        const md_nucleic_backbone_data_t* NB = &sys.nucleic_backbone;
+        for (size_t g = 0; g < NB->segment.count; ++g) {
+            const int32_t res = NB->segment.res_idx ? NB->segment.res_idx[g] : -1;
+            if (res < 0) continue;
+            md_str_t rn = md_system_residue_name(&sys, (size_t)res);
+            char base = 0;
+            for (size_t k = 0; k < rn.len; ++k) if (strchr("ACGTU", rn.ptr[k])) base = rn.ptr[k];
+            const uint32_t col = base == 'A' ? 0xFF4040E0u : base == 'C' ? 0xFF30C8F0u : base == 'G' ? 0xFF50C850u : base ? 0xFFE08040u : 0xFFC8C8C8u;
+            md_urange_t ar = md_system_residue_atom_range(&sys, (size_t)res);
+            for (uint32_t i = (uint32_t)ar.beg; i < (uint32_t)ar.end && i < n; ++i) cc[i] = col;
         }
         CC = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
         md_gpu_upload(s, CC, cc, (size_t)n * 4);

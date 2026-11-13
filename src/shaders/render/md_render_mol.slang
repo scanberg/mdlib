@@ -107,6 +107,9 @@ struct Args {
                                 // then the stamp of the update that wrote them
     uint* bb_ss;                // int32 per segment: md_secondary_structure_t (has_ss)
     uint* bb_out;               // float4 per control point: the profile (md_render's)
+    uint* na_index;             // the nucleic band: per control point its C4''s point | flags
+    uint* na_face;              // the point it faces (UINT32_MAX for none)
+    uint* na_axis;              // float4 per control point: the band's axis (md_render's)
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -141,7 +144,7 @@ struct Args {
     float bb_helix;
     float bb_sheet;
     uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
-    uint  _pad0;
+    uint  na_count;             // control points of the nucleic band
     uint  _pad1;
 };
 MD_SHADER_ARGS(Args);
@@ -810,5 +813,36 @@ void bb_profile(uint3 tid : SV_DispatchThreadID) {
         float2 s0 = bb_shape(a, f0), s1 = bb_shape(a, f1);
         uint* o = a.bb_out + 4u * j;
         o[0] = asuint(s0.x); o[1] = asuint(s1.x); o[2] = asuint(s0.y); o[3] = asuint(s1.y);
+    }
+}
+
+// The nucleic band (viamd's cartoon_glyphs, after Lindow et al.): per
+// control point (a C4'), the long axis of its profile across the curve and
+// the way to the base, cross(T, F), F from the C4' to the point it faces (the
+// glycosidic N, else the C1'). Its flat faces then face the base. F is on the
+// same side all along a strand: the signs need no deciding, no memory. T: the
+// chord over its neighbours (one-sided at an end), as the curve's direction
+// through it (md_render makes the axis orthogonal to the curve itself).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void na_axis(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.na_count;
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        uint ie = a.na_index[j];
+        uint jp = j, jn = j;
+        if ((ie & BB_FIRST) == 0u) jp = j - 1u;
+        if ((ie & BB_LAST)  == 0u) jn = j + 1u;
+        float3 c  = ld3(a.points, 4u * (ie & BB_POINT));
+        float3 T  = ld3(a.points, 4u * (a.na_index[jn] & BB_POINT)) - ld3(a.points, 4u * (a.na_index[jp] & BB_POINT));
+        float  tt = dot(T, T);
+        float3 tg = tt > 0.0 ? T * rsqrt(tt) : float3(0.0, 0.0, 1.0);
+        uint   f  = a.na_face[j];
+        float3 F  = ld3(a.points, 4u * (f != 0xFFFFFFFFu ? f : (ie & BB_POINT))) - c;   // no face: none
+        float3 s  = cross(tg, F - tg * dot(F, tg));
+        float  ls = length(s);
+        s = ls > 1.0e-4 ? s / ls : bb_any_perpendicular(tg);
+        uint* o = a.na_axis + 4u * j;
+        o[0] = asuint(s.x); o[1] = asuint(s.y); o[2] = asuint(s.z); o[3] = 0u;
     }
 }
