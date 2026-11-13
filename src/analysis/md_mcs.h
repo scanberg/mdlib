@@ -27,8 +27,9 @@
 //
 // SYMMETRY. The bonds alone do not tell the oxygens of a phosphate apart, or the two sides of a phenyl ring, and the
 // mapping the search gives first is any of them. With positions for both (md_mcs_side_t.xyz), every mapping of a's
-// common atoms onto b's that the bonds allow is tried (md_match, ALL), and the one that superposes with the least
-// RMSD is kept: GTP onto GDP fits at 0.29 Å, the first mapping found at 1.00 Å. Without positions it is the first.
+// common atoms onto b's that the bonds (and with MD_MCS_FLAG_BY_NAME the names) allow is tried (md_match, ALL), and
+// the one that superposes with the least RMSD is kept: GTP onto GDP fits at 0.29 Å, the first mapping found at
+// 1.00 Å. Without positions it is the first.
 // BY RESIDUE takes the atom names as they are.
 //
 // HOW MUCH IS COMMON. Two structures always have something in common, an atom of carbon at least: GTP and vinblastine

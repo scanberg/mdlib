@@ -87,6 +87,18 @@ UTEST(mcs, ligands) {
     for (size_t i = 0; i < v.count; ++i) EXPECT_EQ(v.a[i], v.b[i]);
     EXPECT_LT(v.rmsd, 1e-3);
     md_mcs_result_free(&v);
+    // By name, with positions: the mappings of the least RMSD keep each pair's names alike
+    {
+        int32_t a[256], b[256];
+        const size_t ca = mcs_residue(a, &f->sys, "GTP", 0), cb = mcs_residue(b, &f->sys, "GDP", 0);
+        md_mcs_desc_t d = {.a = {.sys = &f->sys, .atoms = a, .count = ca, .xyz = f->state.xyz},
+                           .b = {.sys = &f->sys, .atoms = b, .count = cb, .xyz = f->state.xyz}, .flags = MD_MCS_FLAG_BY_NAME};
+        md_mcs_result_t n;
+        ASSERT_TRUE(md_mcs(&n, &d, md_get_heap_allocator()));
+        EXPECT_EQ(28u, (unsigned)n.count);
+        for (size_t i = 0; i < n.count; ++i) EXPECT_TRUE(md_str_eq(md_atom_name(&f->sys.atom, n.a[i]), md_atom_name(&f->sys.atom, n.b[i])));
+        md_mcs_result_free(&n);
+    }
     // Unrelated molecules still share something; the caller judges how much is enough
     md_mcs_result_t u = mcs_of(f, "GTP", 0, "VLB", 0, false);
     EXPECT_GT(u.count, 3u);
