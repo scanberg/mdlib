@@ -25,10 +25,11 @@
 //
 //     gather   the copy that is drawn: per point (cluster order), its atom's
 //              position and radius as a float4, and its velocity. The radius
-//              from `radii`, in point order, kept there by the gathers that
-//              fetched it (scattered, like the position) when the order or
-//              the radii changed. A marker says `radii` is valid: written
-//              after a full gather, for this topology.
+//              from `radii`, in point order, kept there by a gather that
+//              fetched it (scattered, like the position) when the radii were
+//              not valid, and by the regroup's write for the small molecules
+//              (from their kinds' types). A marker says `radii` is valid: for
+//              this topology, this grouping, this source of radii.
 //
 // The small molecules are records (first atom, its bonds' place among the
 // small bonds, kind, first point)
@@ -66,6 +67,7 @@ struct Args {
     uint* type_radius;          // float per particle type (the topology's)
     uint* kinds;                // uint4 per kind of small molecule: atoms, bonds, first of each below
     uint* kind_atom;            // per atom of a kind: its atom less the molecule's first
+    uint* kind_type;            // and its particle type
     uint* kind_bond_local;      // per bond of a kind: its atoms' places in the molecule, k0 | k1 << 16
     uint* ids_old;              // the small bonds' ids of the last grouping (copied aside by the regroup)
     uint* recs0;                // uint4 per small molecule, in cluster order: first atom, its bonds' place
@@ -81,7 +83,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
-    uint* marker;               // 5 words: whose radii `radii` holds, in which grouping (see sol_gather)
+    uint* marker;               // 7 words: whose radii `radii` holds, in which grouping, from which source (radii_valid)
     uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
@@ -127,6 +129,8 @@ struct Args {
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
     uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
+    uint  rsrc0;                // where the radii come from: radius_override's address | 1, or 0 for the
+    uint  rsrc1;                // types (the marker keeps it: radii from one are not the other's)
     uint  _pad1;
 };
 MD_SHADER_ARGS(Args);
@@ -428,6 +432,8 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
         for (uint i = 0u; i < k.x; ++i) {
             uint atom = r.x + a.kind_atom[k.z + i];
             if ((a.dbg & 1u) == 0u) a.atom_order[p0 + i] = atom;
+            uint t = a.kind_type[k.z + i];
+            a.radii[p0 + i] = a.has_radius != 0u ? a.radius_override[atom] : (t < a.type_count ? a.type_radius[t] : 0u);
             if (a.has_src != 0u) a.src_point[p0 + i - a.static_atoms] = r.w + i;   // its point in the last grouping
             if ((r.z & REC_MIXED) != 0u) a.mixed_point[atom] = p0 + i;
         }
@@ -455,7 +461,15 @@ void sol_offsets(uint3 tid : SV_DispatchThreadID) {
         a.atom_cluster_offset[a.static_atom_clusters + c] = a.static_atoms + a.cnt[4u * c];
         if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + c] = a.static_bonds + a.cnt[4u * c + 1u];
     }
-    if (tid.x == 0u) a.regroups[0] = a.regroups[0] + 1u;  // every copy gathered before is in the old order
+    if (tid.x == 0u) {
+        // Every copy gathered before is in the old order. The radii are not:
+        // the static points' stay where they were and the write put the small
+        // molecules' (from the kinds' types or the caller's array); valid if
+        // they were before, from this source.
+        bool kept = radii_valid(a);
+        a.regroups[0] = a.regroups[0] + 1u;
+        if (kept) a.marker[4] = a.regroups[0];
+    }
 }
 
 
@@ -475,7 +489,7 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
 
 bool radii_valid(Args a) {
     return a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2 &&
-           a.marker[4] == a.regroups[0];
+           a.marker[4] == a.regroups[0] && a.marker[5] == a.rsrc0 && a.marker[6] == a.rsrc1;
 }
 
 // An atom's radius from its source: the caller's array, or its type's
@@ -530,6 +544,8 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
     a.marker[2] = a.ident1;
     a.marker[3] = a.ident2;
     a.marker[4] = a.regroups[0];
+    a.marker[5] = a.rsrc0;
+    a.marker[6] = a.rsrc1;
 }
 
 // ---- Frames --------------------------------------------------------------------
