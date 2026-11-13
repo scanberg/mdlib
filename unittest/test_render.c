@@ -1251,6 +1251,77 @@ static double grid_cluster_extent(const md_render_mol_topo_t* T, const uint8_t* 
 /* Tryptophan in water, the waters shuffled (whole molecules swap places) so
    their order says nothing of where they are: the update must regroup them,
    and the clustered licorice must give the depths and picks of a plain one. */
+/* The copy's radii follow their source across regroups: the types' (the
+   regroup writes the small molecules' from their kinds) or the caller's
+   array, switched with and without a regroup, no flags */
+static int radii_wrong(fix_t* fx, const md_render_mol_topo_t* topo, md_gpu_addr_t dyn, const md_render_mol_atoms_t* atoms,
+                       const md_render_mol_rep_t* rep, const float* expect) {
+    md_render_batch_t b;
+    if (md_render_mol_emit(topo, dyn, atoms, rep, &b, 1) != 1) return -1;
+    uint8_t* blk = read_block(fx, dyn, topo->dynamic_size);
+    uint8_t* ord = read_block(fx, topo->atom_order, (size_t)topo->point_count * 4);
+    const float* r = (const float*)(blk + (b.points.radius - dyn));
+    const uint32_t* order = (const uint32_t*)ord;
+    int wrong = 0;
+    for (uint32_t p = 0; p < topo->point_count; ++p) wrong += r[4 * (size_t)p] != expect[order[p]];
+    free(blk); free(ord);
+    return wrong;
+}
+
+UTEST(render, mol_radii_follow_their_source) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
+    md_temp_end(temp);
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_render_mol_rep_t rep = {0};
+    rep.key = 1; rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f;
+
+    float* by_type = malloc(n * 4), *own = malloc(n * 4);
+    for (uint32_t i = 0; i < n; ++i) {
+        by_type[i] = sys.atom.type.radius[sys.atom.type_idx[i]];
+        own[i] = 0.5f + 0.001f * (float)(i % 997);          /* no type's */
+    }
+    md_render_mol_atoms_t types = {0}, mine = {0};
+    types.position = f_buf(&fx, state.xyz, n * 12);
+    mine = types;
+    mine.radius = f_buf(&fx, own, n * 4);
+    const md_render_mol_update_flags_t RG = MD_RENDER_MOL_UPDATE_REGROUP;
+    const struct { const md_render_mol_atoms_t* atoms; md_render_mol_update_flags_t flags; const float* expect; const char* what; } steps[] = {
+        { &types, RG, by_type, "types, regroup" },
+        { &types, 0,  by_type, "types" },
+        { &mine,  0,  own,     "own, no regroup (the source changed)" },
+        { &mine,  RG, own,     "own, regroup (the write's from the array)" },
+        { &mine,  RG, own,     "own, regroup again" },
+        { &types, 0,  by_type, "types, no regroup (the source changed back)" },
+        { &types, RG, by_type, "types, regroup" },
+    };
+    for (size_t k = 0; k < sizeof(steps) / sizeof(steps[0]); ++k) {
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, steps[k].atoms, steps[k].flags, NULL));
+        const int wrong = radii_wrong(&fx, &topo, dyn, steps[k].atoms, &rep, steps[k].expect);
+        if (wrong) printf("    %s: %d points with a wrong radius\n", steps[k].what, wrong);
+        EXPECT_EQ(0, wrong);
+    }
+    free(by_type); free(own);
+    md_gpu_free(fx.gfx, types.position); md_gpu_free(fx.gfx, mine.radius);
+    md_gpu_free(fx.gfx, dyn); md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
 UTEST(render, mol_clusters_follow_the_solvent) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

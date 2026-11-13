@@ -40,14 +40,15 @@ typedef struct topo_layout_t {
 
 /* The small tables, as offsets from small_tables */
 typedef struct small_layout_t {
-    uint64_t kinds, kind_atom, kind_bond_local, recs0, recs1, mixed_pos, mixed_atoms, size;
+    uint64_t kinds, kind_atom, kind_type, kind_bond_local, recs0, recs1, mixed_pos, mixed_atoms, size;
 } small_layout_t;
 
 /* The kinds of small molecule: per kind its atom and bond counts and where
    its entries start (uint4), then per atom of a kind its atom less the
-   molecule's first, and per bond its atoms' places in the molecule (k0 | k1
-   << 16; a molecule's bonds sorted by that). A box of water is one kind or
-   a few. Not the bonds' ids: inferred bonds are in no order a kind could
+   molecule's first and its particle type (the regroup's write fills the
+   radii from those, in order), and per bond its atoms' places in the
+   molecule (k0 | k1 << 16; a molecule's bonds sorted by that). A box of
+   water is one kind or a few. Not the bonds' ids: inferred bonds are in no order a kind could
    share (tryptophan-md.gro's 2156 molecules were 339 kinds with them). Then
    the molecules' records (uint4: first atom, first bond's place in the
    small bonds of the last grouping, kind with bit 31 for one with mixed
@@ -61,6 +62,7 @@ static small_layout_t small_layout(uint32_t n_mol, uint32_t n_kinds, uint32_t n_
     uint64_t o = 0;
     L.kinds           = o; o = align256(o + (uint64_t)n_kinds * 16u);
     L.kind_atom       = o; o = align256(o + (uint64_t)n_katoms * 4u);
+    L.kind_type       = o; o = align256(o + (uint64_t)n_katoms * 4u);
     L.kind_bond_local = o; o = align256(o + (uint64_t)n_kbonds * 4u);
     L.recs0           = o; o = align256(o + (uint64_t)n_mol * 16u);
     L.recs1           = o; o = align256(o + (uint64_t)n_mol * 16u);
@@ -70,11 +72,12 @@ static small_layout_t small_layout(uint32_t n_mol, uint32_t n_kinds, uint32_t n_
     return L;
 }
 
-/* A kind's identity: its atoms relative to the first, its bonds' places */
-static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const uint32_t* local, uint32_t nb) {
+/* A kind's identity: its atoms relative to the first and their types, its bonds' places */
+static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_type_idx_t* types, const uint32_t* local, uint32_t nb) {
     uint32_t h = 0x811C9DC5u ^ (na * 0x9E3779B1u) ^ (nb * 0x85EBCA77u);
     #define MIX(w) do { h ^= (w); h *= 0x01000193u; h ^= h >> 15; } while (0)
     for (uint32_t i = 1; i < na; ++i) MIX(atoms[i] - atoms[0]);
+    if (types) for (uint32_t i = 0; i < na; ++i) MIX((uint32_t)types[atoms[i]]);
     for (uint32_t j = 0; j < nb; ++j) MIX(local[j]);
     #undef MIX
     return h;
@@ -401,24 +404,28 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     uint32_t* kind_of = md_temp_alloc(temp, ((size_t)small_mols + 1) * 4u);
     uint32_t* kinfo   = md_temp_alloc(temp, ((size_t)small_mols + 1) * 16u);
     uint32_t* katom   = md_temp_alloc(temp, ((size_t)small_atoms + 1) * 4u);
+    uint32_t* ktype   = md_temp_alloc(temp, ((size_t)small_atoms + 1) * 4u);
     uint32_t* kblocal = md_temp_alloc(temp, ((size_t)small_bonds + 1) * 4u);
     uint32_t  hsize   = 16;
     while (hsize < 2u * small_mols) hsize <<= 1;
     uint32_t* htab    = md_temp_alloc_zero(temp, (size_t)hsize * 4u);
-    if (!kind_of || !kinfo || !katom || !kblocal || !htab) return false;
+    if (!kind_of || !kinfo || !katom || !ktype || !kblocal || !htab) return false;
+    const md_particle_type_idx_t* tidx = sys->atom.type_idx;
+    #define TYPE_OF(a) (tidx ? (uint32_t)tidx[a] : 0u)
     uint32_t n_kinds = 0, n_katoms = 0, n_kbonds = 0;
     for (uint32_t k = 0; k < small_mols; ++k) {
         const uint32_t* at = sm_atoms + sm_aoff[k];
         const uint32_t  na = sm_aoff[k + 1] - sm_aoff[k];
         const uint32_t* bl = sm_blocal + sm_boff[k];
         const uint32_t  nbk = sm_boff[k + 1] - sm_boff[k];
-        uint32_t slot = kind_hash(at, na, bl, nbk) & (hsize - 1);
+        uint32_t slot = kind_hash(at, na, tidx, bl, nbk) & (hsize - 1);
         uint32_t kind = UINT32_MAX;
         for (; htab[slot]; slot = (slot + 1) & (hsize - 1)) {
             const uint32_t c = htab[slot] - 1, *ki = kinfo + 4 * (size_t)c;
             if (ki[0] != na || ki[1] != nbk) continue;
             bool same = true;
             for (uint32_t i = 1; same && i < na; ++i) same = katom[ki[2] + i] == at[i] - at[0];
+            for (uint32_t i = 0; same && i < na; ++i) same = ktype[ki[2] + i] == TYPE_OF(at[i]);
             for (uint32_t j = 0; same && j < nbk; ++j) same = kblocal[ki[3] + j] == bl[j];
             if (same) { kind = c; break; }
         }
@@ -427,11 +434,12 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
             htab[slot] = kind + 1;
             uint32_t* ki = kinfo + 4 * (size_t)kind;
             ki[0] = na; ki[1] = nbk; ki[2] = n_katoms; ki[3] = n_kbonds;
-            for (uint32_t i = 0; i < na; ++i) katom[n_katoms++] = at[i] - at[0];
+            for (uint32_t i = 0; i < na; ++i) { ktype[n_katoms] = TYPE_OF(at[i]); katom[n_katoms++] = at[i] - at[0]; }
             for (uint32_t j = 0; j < nbk; ++j) kblocal[n_kbonds++] = bl[j];
         }
         kind_of[k] = kind;
     }
+    #undef TYPE_OF
 
     T->atom_cluster_count   = static_clusters + cells;
     T->mixed_bond_count     = n_mixed;
@@ -521,6 +529,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         uint8_t* st = img + L.small_tables;
         memcpy(st + SL.kinds,           kinfo,   (size_t)n_kinds * 16u);
         memcpy(st + SL.kind_atom,       katom,   (size_t)n_katoms * 4u);
+        memcpy(st + SL.kind_type,       ktype,   (size_t)n_katoms * 4u);
         memcpy(st + SL.kind_bond_local, kblocal, (size_t)n_kbonds * 4u);
         /* the records in the initial grouping: molecule order (recs1 is the
            first regroup's output) */
@@ -589,7 +598,7 @@ struct md_render_mol {
 typedef struct gpu_mol_args_t {
     md_gpu_addr_t position, velocity, radius_override, points, radii, vel_out;
     md_gpu_addr_t params, mol_slot, cnt, sums, types, type_radius;
-    md_gpu_addr_t kinds, kind_atom, kind_bond_local, ids_old, recs0, recs1, mixed_pos, mixed_atoms;
+    md_gpu_addr_t kinds, kind_atom, kind_type, kind_bond_local, ids_old, recs0, recs1, mixed_pos, mixed_atoms;
     md_gpu_addr_t atom_order, mixed_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, marker;
     md_gpu_addr_t frame[4], fpar[4], qsrc, qdst, qpar, src_point, resident, regroups;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
@@ -597,9 +606,9 @@ typedef struct gpu_mol_args_t {
     uint32_t full, ident0, ident1, ident2, fr_threads;
     uint32_t frame_count, quantized, has_src, has_fvel, has_resident, resident_words;
     float    w[4], dw[4];
-    uint32_t dbg, _pad1;
+    uint32_t dbg, rsrc0, rsrc1, _pad1;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 41 * 8 + 38 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 42 * 8 + 40 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -708,6 +717,7 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     if (topo->small_tables) {
         a->kinds           = topo->small_tables + SL.kinds;
         a->kind_atom       = topo->small_tables + SL.kind_atom;
+        a->kind_type       = topo->small_tables + SL.kind_type;
         a->kind_bond_local = topo->small_tables + SL.kind_bond_local;
         a->recs0           = topo->small_tables + SL.recs0;
         a->recs1           = topo->small_tables + SL.recs1;
@@ -836,7 +846,9 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     a.has_velocity        = !fr && atoms->velocity ? 1u : 0u;
     a.radius_override     = atoms->radius;
     a.has_radius          = atoms->radius ? 1u : 0u;
-    a.full                = (regroup || radii) ? 1u : 0u;
+    a.rsrc0               = atoms->radius ? (uint32_t)atoms->radius | 1u : 0u;   /* where the radii come from (the marker keeps it) */
+    a.rsrc1               = atoms->radius ? (uint32_t)(atoms->radius >> 32) : 0u;
+    a.full                = radii ? 1u : 0u;      /* a regroup writes the small molecules' radii itself */
 
     bool ok = true;
     if (radii && atoms->radius_table && topo->type_count) ok = md_gpu_copy(s, topo->type_radius, atoms->radius_table, (size_t)topo->type_count * 4u);
