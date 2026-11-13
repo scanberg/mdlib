@@ -520,7 +520,7 @@ typedef struct md_gl_draw_args_t {
 	float max_bond_length;	// Maximum bond length for rendering bonds, covalent and weak (in Ångström)
 } md_gl_draw_args_t;
 
-bool md_gl_draw(const md_gl_draw_args_t* args);
+void md_gl_draw(const md_gl_draw_args_t* args);
 
 #ifdef __cplusplus
 }
