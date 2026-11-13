@@ -437,8 +437,8 @@ bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* 
     prmtop_data_t d;
     bool result = prmtop_read(&d, filename, md_temp_allocator(temp));
     if (result) {
-        const md_topology_desc_t desc = prmtop_desc(&d);
-        result = md_topology_system_init(sys, state, &desc);
+        const md_topology_desc_t top_desc = prmtop_desc(&d);
+        result = md_topology_system_init(sys, state, &top_desc);
         if (result && d.chamber) {
             MD_LOG_INFO("Amber topology: '" MD_STR_FMT "' is a CHAMBER topology (a CHARMM force field); its CHARMM terms are not read", MD_STR_ARG(filename));
         }
@@ -454,8 +454,8 @@ bool md_amber_prmtop_system_supplement_from_file(md_system_t* sys, md_str_t file
     prmtop_data_t d;
     bool result = prmtop_read(&d, filename, md_temp_allocator(temp));
     if (result) {
-        const md_topology_desc_t desc = prmtop_desc(&d);
-        result = md_topology_system_supplement(sys, &desc, filename);
+        const md_topology_desc_t top_desc = prmtop_desc(&d);
+        result = md_topology_system_supplement(sys, &top_desc, filename);
     }
     md_temp_end(temp);
     return result;

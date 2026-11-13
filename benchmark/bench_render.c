@@ -47,6 +47,7 @@ Every run prints the mdlib revision it was built from, first.
 #include <md_xtc.h>
 #include <md_trr.h>
 #include <md_run.h>
+#include <md_io.h>
 #include <md_attributes.h>
 #include <md_unitcell.h>
 #include <core/md_allocator.h>
@@ -379,7 +380,7 @@ static quality_t evaluate(const clusters_t* c, const md_float3_t* xyz, const cel
         }
         r += ATOM_RADIUS;
         rad[k] = r;
-        area += 4.0 * M_PI * r * r;
+        area += 4.0 * MD_PI * r * r;
         sum += r;
         q.atoms += e - b;
     }
@@ -418,7 +419,7 @@ static int run_clusters(int argc, char** argv) {
     bool ok = false;
     md_str_t path = md_str_from_cstr(structure);
     if (has_ext(structure, ".gro"))      ok = md_gro_system_init_from_file(&sys, &state, path, NULL);
-    else if (has_ext(structure, ".pdb")) ok = md_pdb_system_init_from_file(&sys, &state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    else if (has_ext(structure, ".pdb")) ok = md_pdb_system_init_from_file(&sys, &state, path, NULL);
     if (!ok) { fprintf(stderr, "could not load %s (gro or pdb)\n", structure); return 1; }
     md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
 
