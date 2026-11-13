@@ -461,6 +461,9 @@ bool md_gto_gpu_dmat_pattern_valid(md_gto_gpu_dmat_t dmat, const float* atom_xyz
 // uploaded, and the tiles built on the device in float (stream-ordered). Returns false when out of memory.
 bool md_gto_gpu_dmat_build(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* coeff, const double* weight, size_t num_mo);
 
+// The same from orbitals given as columns: coeff is [num_ao][ld], orbital k's coefficient of AO i at
+// coeff[i * ld + k] (an md_gto_iso field's functions), weight num_mo weights.
+bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* coeff, size_t ld, const double* weight, size_t num_mo);
 
 // The kept tiles of a matrix on the host (num_ao x num_ao, row major; its symmetric part), gathered and
 // uploaded: for a density that is at hand as a matrix.
@@ -485,6 +488,7 @@ typedef struct md_gto_gpu_dmat_view_t {
     md_gpu_addr_t tao, map, tiles;
 } md_gto_gpu_dmat_view_t;
 
+void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dmat);
 
 // Density evaluation algorithm.
 typedef enum md_gto_gpu_density_algo_t {
