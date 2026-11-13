@@ -6,7 +6,10 @@
 //   md_render_snap <structure> [options]
 //     --coords FILE        coordinates for it (a coordinate file, or a trajectory's first frame)
 //     --rep TYPE[:P]       spacefill[:radius scale], licorice[:radius], ball[:ball scale],
-//                          bonds[:radius]; repeatable, in draw order (default spacefill)
+//                          bonds[:radius], cartoon[:scale]; repeatable, in draw order
+//                          (default spacefill). The cartoon takes the state's secondary
+//                          structure (computed when it has none) and its own colours:
+//                          helix red, sheet yellow, coil grey
 //     --fade MODE S0 S1    the last --rep fades out across scales S0 > S1 (pixels per A),
 //                          MODE thin, shrink or both
 //     --fade-in MODE S0 S1 the last --rep fades in across S0 > S1
@@ -14,6 +17,8 @@
 //     --zoom Z             camera distance, 1 = the scene just fits (default 1)
 //     --replicate N        N x N x N copies along the cell (its box, or the bounds), as instances
 //     --select A:B         atoms A .. B-1 selected (the mask)
+//     --time N             N draws after a geometry change per view, best and median ms,
+//                          then one with every pass synced and timed
 //     --res WxH            (default 1280x720)
 //     --out PREFIX         files PREFIX_<view>.png (default snap)
 //
@@ -27,6 +32,7 @@
 #include <md_io.h>
 #include <md_unitcell.h>
 #include <md_element.h>
+#include <md_backbone.h>
 #include <md_render.h>
 #include <md_render_mol.h>
 #include <core/md_gpu.h>
@@ -190,6 +196,31 @@ static bool compose(md_gpu_stream_t s, md_render_view_t v, uint32_t W, uint32_t 
     return ok;
 }
 
+/* md_render's per-pass hook: in md_render.c, not in its header (the bench's) */
+void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
+
+typedef struct pass_prof_t {
+    md_gpu_stream_t s;
+    md_tick_t       t;
+    uint32_t        n;
+    const char*     name[32];
+    double          ms[32];
+} pass_prof_t;
+
+/* Each pass synced and timed on the host: the sync's own cost is in every number */
+static void pass_hook(void* user, const char* pass) {
+    pass_prof_t* p = user;
+    md_gpu_stream_sync(p->s);
+    md_tick_t now = md_tick_now();
+    if (p->n < 32) { p->name[p->n] = pass; p->ms[p->n] = md_tick_to_milliseconds(now - p->t); p->n++; }
+    p->t = now;
+}
+
+static int cmp_double(const void* a, const void* b) {
+    double x = *(const double*)a, y = *(const double*)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
 /* ---- Scene ----------------------------------------------------------------------- */
 
 typedef struct rep_arg_t {
@@ -241,7 +272,7 @@ static int run(int argc, char** argv) {
     const char* structure = argv[0];
     const char* coords = NULL;
     const char* out_prefix = "snap";
-    uint32_t W = 1280, H = 720, replicate = 1;
+    uint32_t W = 1280, H = 720, replicate = 1, timed = 0;
     double zoom = 1.0;
     int64_t sel_beg = -1, sel_end = -1;
     rep_arg_t reps[8];
@@ -255,6 +286,7 @@ static int run(int argc, char** argv) {
         else if (!strcmp(a, "--res") && i + 1 < argc) { if (sscanf(argv[++i], "%ux%u", &W, &H) != 2) return 2; }
         else if (!strcmp(a, "--zoom") && i + 1 < argc) zoom = atof(argv[++i]);
         else if (!strcmp(a, "--replicate") && i + 1 < argc) replicate = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(a, "--time") && i + 1 < argc) timed = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(a, "--select") && i + 1 < argc) { long long x, y; if (sscanf(argv[++i], "%lld:%lld", &x, &y) != 2) return 2; sel_beg = x; sel_end = y; }
         else if (!strcmp(a, "--view") && i + 1 < argc) { if (n_views < 8) views[n_views++] = argv[++i]; else ++i; }
         else if (!strcmp(a, "--rep") && i + 1 < argc) {
@@ -274,6 +306,7 @@ static int run(int argc, char** argv) {
             else if (!strcmp(name, "licorice"))  r.type = MD_RENDER_MOL_REP_LICORICE;
             else if (!strcmp(name, "ball"))      r.type = MD_RENDER_MOL_REP_BALL_AND_STICK;
             else if (!strcmp(name, "bonds"))     r.type = MD_RENDER_MOL_REP_BONDS;
+            else if (!strcmp(name, "cartoon"))   r.type = MD_RENDER_MOL_REP_CARTOON;
             else { fprintf(stderr, "unknown representation '%s'\n", name); return 2; }
             reps[n_reps++] = r;
         } else if ((!strcmp(a, "--fade") || !strcmp(a, "--fade-in")) && i + 3 < argc) {
@@ -389,6 +422,33 @@ static int run(int argc, char** argv) {
     rad = sqrt(rad);
     printf("%u instance(s), %llu atoms drawn; bounding radius %.1f A\n", n_inst, (unsigned long long)n * n_inst, rad);
 
+    /* The cartoon: the secondary structure (the state's, else computed), the
+       profile per scale asked for, and its own colours: helix red, sheet
+       yellow, coil grey (by the CA atoms) */
+    md_gpu_addr_t SSB = 0, CC = 0;
+    if (topo.backbone_count) {
+        const md_secondary_structure_t* ss = md_system_state_secondary_structure(&state, &sys);
+        if (!ss && md_system_state_backbone_compute(&state, &sys)) ss = md_system_state_secondary_structure(&state, &sys);
+        const size_t nseg = sys.protein_backbone.segment.count;
+        if (ss) {
+            SSB = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, nseg * 4).gpu;
+            md_gpu_upload(s, SSB, ss, nseg * 4);
+        }
+        uint32_t* cc = malloc((size_t)n * 4);
+        for (uint32_t i = 0; i < n; ++i) cc[i] = colors[i];
+        for (size_t g = 0; g < nseg; ++g) {
+            int32_t ca = sys.protein_backbone.segment.atoms[g].ca;
+            if (ca < 0 || (uint32_t)ca >= n) continue;
+            int t = ss ? (int)ss[g] : 0;
+            cc[ca] = (t >= MD_SECONDARY_STRUCTURE_HELIX_310 && t <= MD_SECONDARY_STRUCTURE_HELIX_PI) ? 0xFF4040E0u
+                   : (t == MD_SECONDARY_STRUCTURE_BETA_SHEET || t == MD_SECONDARY_STRUCTURE_BETA_BRIDGE) ? 0xFF30C8F0u : 0xFFC8C8C8u;
+        }
+        CC = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
+        md_gpu_upload(s, CC, cc, (size_t)n * 4);
+        free(cc);
+        printf("cartoon: %u residues in %u pieces, secondary structure %s\n", topo.backbone_count, topo.backbone_chain_count, ss ? "given or computed" : "none (all coil)");
+    }
+
     md_render_batch_t batches[64];
     uint32_t nb = 0;
     for (uint32_t k = 0; k < n_reps; ++k) {
@@ -402,10 +462,17 @@ static int run(int argc, char** argv) {
         case MD_RENDER_MOL_REP_LICORICE:       rep.params.licorice.radius = p >= 0 ? p : 0.2f; break;
         case MD_RENDER_MOL_REP_BALL_AND_STICK: rep.params.ball_and_stick.ball_scale = p >= 0 ? p : 0.3f; rep.params.ball_and_stick.stick_radius = 0.12f; break;
         case MD_RENDER_MOL_REP_BONDS:          rep.params.bonds.radius = p >= 0 ? p : 0.15f; break;
+        case MD_RENDER_MOL_REP_CARTOON: {
+            const float sc = p >= 0 ? p : 1.0f, scale[3] = { sc, sc, sc };
+            md_gpu_addr_t prof = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, md_render_mol_cartoon_size(&topo) ? md_render_mol_cartoon_size(&topo) : 256).gpu;
+            if (topo.backbone_count && !md_render_mol_cartoon_profile(mol, s, &topo, prof, SSB, scale, content)) { fprintf(stderr, "md_render_mol_cartoon_profile failed\n"); return 1; }
+            rep.params.cartoon.profile = prof;
+            break;
+        }
         default: break;
         }
         rep.color.mode = MD_RENDER_COLOR_POINTS;
-        rep.atom_color = C;
+        rep.atom_color = rep.type == MD_RENDER_MOL_REP_CARTOON && CC ? CC : C;
         rep.fade = reps[k].fade;
         if (n_inst > 1) { rep.transform = xf; rep.transform_count = n_inst; }
         nb += md_render_mol_emit(&topo, dyn, &atoms, &rep, batches + nb, 64 - nb);
@@ -443,6 +510,32 @@ static int run(int argc, char** argv) {
         ok = ok && md_render_view_draw(s, v, &f, NULL);
         md_gpu_stream_sync(s);
         double ms1 = md_tick_to_milliseconds(md_tick_now() - t0);
+        if (ok && timed) {
+            /* `timed` draws after the geometry changed (the refit raster), best and
+               median; then one with each pass synced and timed */
+            double* ts = malloc(sizeof(double) * timed);
+            for (uint32_t k = 0; k < timed; ++k) {
+                f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+                md_tick_t tk = md_tick_now();
+                ok = ok && md_render_view_draw(s, v, &f, NULL);
+                md_gpu_stream_sync(s);
+                ts[k] = md_tick_to_milliseconds(md_tick_now() - tk);
+            }
+            qsort(ts, timed, sizeof(double), cmp_double);
+            printf("%s: %u draws after a geometry change: best %.2f, median %.2f ms\n", vn, timed, ts[0], ts[timed / 2]);
+            free(ts);
+            pass_prof_t prof = { .s = s };
+            f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+            md_gpu_stream_sync(s);
+            prof.t = md_tick_now();
+            md_render_debug_pass_hook(pass_hook, &prof);
+            ok = ok && md_render_view_draw(s, v, &f, NULL);
+            md_render_debug_pass_hook(NULL, NULL);
+            md_gpu_stream_sync(s);
+            printf("  passes, each synced:");
+            for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
+            printf("\n");
+        }
         md_render_stats_t st = {0};
         md_render_view_stats(v, &st);
         char file[1024];
@@ -470,7 +563,7 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: md_render_snap <structure> [--coords FILE] [--rep TYPE[:P]] [--fade MODE S0 S1] [--fade-in MODE S0 S1]\n"
                         "                      [--view front|back|side|top|iso] [--zoom Z] [--replicate N] [--select A:B]\n"
-                        "                      [--res WxH] [--out PREFIX]\n");
+                        "                      [--res WxH] [--out PREFIX] [--time N]\n");
         return 2;
     }
     int rc = run(argc - 1, argv + 1);

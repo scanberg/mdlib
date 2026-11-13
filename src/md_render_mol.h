@@ -82,10 +82,19 @@ lifetime:
     radius per atom (size by a property) is the caller's array,
     md_render_mol_atoms_t.radius, gathered into the copy by every update.
 
+  * The cartoon is md_render's splines through the protein backbone: a
+    control point per residue (its CA), the ribbon's axis per control point
+    computed by every update (with memory across updates, so it does not flip
+    with thermal noise), and its profile per control point from the
+    secondary structure and the representation's scales
+    (md_render_mol_cartoon_profile, when either changes). As md_gl's
+    cartoon: a coil tube, helix and sheet bands, blended over the residues
+    where the structure changes.
+
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
-kind, solid (dashes per kind wait for capsule dashes in md_render). Declared
-for the next phases: CARTOON, RIBBONS, lipid/nucleic glyphs, bond orders,
-chain gaps, ring circles.
+kind, solid (dashes per kind wait for capsule dashes in md_render); CARTOON
+of proteins. Declared for the next phases: RIBBONS, nucleic acid and lipid
+backbones, glyphs, bond orders, chain gaps, ring circles.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -189,6 +198,22 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];  /* uint32 [count + 1],
                                                        relative to the class's first bond */
 
+    /* The protein backbone, for the cartoon: a control point per residue
+       whose CA, C and O are resident (not in a small molecule), in the order
+       of sys->protein_backbone; a range of it cut where a residue lacks them.
+       backbone_index is an md_render SPLINES index over the points: the CA's
+       point, MD_RENDER_SPLINE_FIRST and _LAST on each piece's ends (a piece
+       of one residue is left out). The points never move with a regroup. */
+    uint32_t      backbone_count;          /* control points                           */
+    uint32_t      backbone_chain_count;    /* pieces                                   */
+    md_gpu_addr_t backbone_index;          /* uint32 [backbone_count]: point | flags   */
+    md_gpu_addr_t backbone_segment;        /* uint32 [backbone_count]: index in
+                                              sys->protein_backbone.segment            */
+    md_gpu_addr_t backbone_carbonyl;       /* internal: uint2 per control point, the
+                                              points of its C and O                    */
+    md_gpu_addr_t backbone_chain;          /* internal: uint32 [backbone_chain_count + 1],
+                                              each piece's first control point         */
+
     /* The small molecules, regrouped by md_render_mol_update */
     uint32_t      small_molecule_count;
     uint32_t      small_atom_count;        /* the tail of atom_order                    */
@@ -282,6 +307,10 @@ enum {
        point changes). A radius per atom (atoms->radius) is read by every
        update, without the flag. */
     MD_RENDER_MOL_UPDATE_RADII   = 1u << 1,
+    /* The positions jumped (a seek, another trajectory): the cartoon's
+       orientation forgets the last update's (see below) and starts from the
+       structure alone. */
+    MD_RENDER_MOL_UPDATE_RESET_BACKBONE = 1u << 2,
 };
 
 /* A regroup reorders the topology: every per-frame block gathered from it
@@ -295,10 +324,40 @@ enum {
    bytes, 16-byte aligned as md_gpu_malloc's are, caller-owned, kept for the
    batches emitted from it), after what
    the flags ask. GPU work only, no readback, ordered in `stream` like any
-   other. Bumps content[MD_RENDER_CONTENT_GEOMETRY]. */
+   other. Bumps content[MD_RENDER_CONTENT_GEOMETRY].
+
+   With a protein backbone the update also orients it, as md_gl's cartoon
+   does: the ribbon's axis at each CA is the binormal of the CA trace there
+   (the CA virtual bond angle stays well below 180 degrees, so it does not
+   vanish; the carbonyl, O - C, where it does), and whether each axis is
+   turned against the one before is decided with hysteresis: kept from the
+   last update until the angle under it passes 90 degrees by 40. Decided
+   afresh every update, pairs near 90 degrees apart flip back and forth with
+   thermal noise. The memory is in `dynamic`: keep one per-frame block per
+   view of a trajectory, and reset it on a jump
+   (MD_RENDER_MOL_UPDATE_RESET_BACKBONE). */
 bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                           md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]);
+
+/* The cartoon's profile: per control point (float4: md_render_spline_style_t
+   .profile), from the secondary structure of its residue and its
+   neighbours' and the scales of the coil, helix and sheet shapes. The
+   shapes are md_gl's: half width and half thickness 0.2 and 0.2 (a coil is
+   a tube), 1.2 and 0.2, 1.5 and 0.1 Angstrom times the scales; the
+   structure's fractions (helix, sheet; coil the rest) are blended at the
+   joints between residues (Catmull-Rom, as md_gl), and the profile is
+   linear between joints. Into `out` (md_render_mol_cartoon_size bytes,
+   caller-owned, kept for the batches emitted with it); GPU work. When the
+   structure or the scales change, not per frame.
+   secondary_structure: int32 per segment of sys->protein_backbone, its
+   md_secondary_structure_t (as a state's MD_BACKBONE_SECONDARY_STRUCTURE_PATH
+   holds it), in GPU memory; 0: all coil. Bumps
+   content[MD_RENDER_CONTENT_GEOMETRY]. */
+uint64_t md_render_mol_cartoon_size(const md_render_mol_topo_t* topo);
+bool     md_render_mol_cartoon_profile(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+                                       md_gpu_addr_t out, md_gpu_addr_t secondary_structure, const float scale[3],
+                                       uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
 /* =========================================================================
    Frames: a trajectory resident on the GPU, interpolated there
@@ -435,7 +494,8 @@ typedef enum md_render_mol_rep_type_t {
     MD_RENDER_MOL_REP_BALL_AND_STICK,
     MD_RENDER_MOL_REP_BONDS,       /* sticks only, no atoms                          */
     MD_RENDER_MOL_REP_RIBBONS,     /* not yet implemented                            */
-    MD_RENDER_MOL_REP_CARTOON,     /* not yet implemented                            */
+    MD_RENDER_MOL_REP_CARTOON,     /* the protein backbone (see the update and
+                                      md_render_mol_cartoon_profile)                */
 } md_render_mol_rep_type_t;
 
 typedef struct md_render_mol_rep_t {
@@ -447,6 +507,8 @@ typedef struct md_render_mol_rep_t {
         struct { float radius; } licorice;
         struct { float ball_scale; float stick_radius; } ball_and_stick;
         struct { float radius; } bonds;
+        /* md_render_mol_cartoon_profile's output; 0: a coil tube throughout */
+        struct { md_gpu_addr_t profile; } cartoon;
     } params;
 
     /* Which bond classes the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
@@ -474,8 +536,9 @@ typedef struct md_render_mol_rep_t {
 
 /* What emit writes, as the low byte of batch keys */
 enum {
-    MD_RENDER_MOL_PART_ATOMS = 0,
-    MD_RENDER_MOL_PART_BONDS = 1,   /* + bond class */
+    MD_RENDER_MOL_PART_ATOMS    = 0,
+    MD_RENDER_MOL_PART_BONDS    = 1,    /* + bond class */
+    MD_RENDER_MOL_PART_BACKBONE = 16,   /* the cartoon */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -492,14 +555,18 @@ typedef enum md_render_mol_hit_kind_t {
     MD_RENDER_MOL_HIT_NONE = 0,
     MD_RENDER_MOL_HIT_ATOM,
     MD_RENDER_MOL_HIT_BOND,
+    MD_RENDER_MOL_HIT_BACKBONE,    /* a residue's part of the cartoon               */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {
     md_render_mol_hit_kind_t kind;
     uint64_t rep_key;              /* the representation's key                        */
     uint32_t instance;
-    uint32_t atom;                 /* the atom, or the bond's atom nearer the hit     */
-    uint32_t bond;                 /* index in sys->bond; UINT32_MAX for an atom      */
+    uint32_t atom;                 /* the atom, the bond's atom nearer the hit, or the
+                                      residue's CA                                    */
+    uint32_t bond;                 /* index in sys->bond; UINT32_MAX for others       */
+    uint32_t segment;              /* index in sys->protein_backbone.segment of a
+                                      BACKBONE hit; UINT32_MAX for others            */
     float    position[3];
 } md_render_mol_hit_t;
 

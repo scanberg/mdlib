@@ -35,6 +35,7 @@ static uint64_t align256(uint64_t x) { return (x + 255u) & ~(uint64_t)255u; }
 typedef struct topo_layout_t {
     uint64_t state, atom_type, type_radius, atom_order, point_type, mixed_point, resident, atom_cluster_offset, bond_pairs, bond_ids;
     uint64_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];
+    uint64_t backbone_index, backbone_segment, backbone_carbonyl, backbone_chain;
     uint64_t small_tables, size;
 } topo_layout_t;
 
@@ -86,20 +87,23 @@ static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, size, size_velocity;
+    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, size, size_velocity;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
 /* The points in cluster order, what is drawn: float4 (position, w),
    written whole by every update; w is the point's type and flags (the
    topology's point_type) or the caller's radius for its atom. Then the
-   scratch of the regroup. Last, only in a block allocated with them, the
-   points' velocities.
+   scratch of the regroup. Then the backbone's axes (float4 per control
+   point, md_render's) and the orientation's memory: per control point
+   whether the next one's axis is turned against it, then a word naming the
+   topology instance that wrote them (none yet: no memory). Last, only in a
+   block allocated with them, the points' velocities.
    Not packed positions apart (1dd0efd6): fewer bytes per update, but
    md_render reads the points several times a frame, much of it scattered,
    and a 12-byte position straddles 32-byte sectors (raster after positions
    changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
-static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells) {
+static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
@@ -110,6 +114,8 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.ids_old  = o; o = align256(o + (uint64_t)n_sbonds * 4u);   /* the regroup's: the small bonds' ids before it */
     L.cnt      = o; o = align256(o + (uint64_t)L.scan_n * 16u);
     L.sums     = o; o = align256(o + (uint64_t)L.scan_blocks * 16u);
+    L.bb_axis  = o; o = align256(o + (uint64_t)n_cp * 16u);
+    L.bb_flip  = o; o = align256(o + ((uint64_t)n_cp + 1u) * 4u);
     L.size = o;
     L.velocity = o; o = align256(o + (uint64_t)n_atoms * 8u);
     L.size_velocity = o;
@@ -386,6 +392,54 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     if (!inv) return false;
     for (uint32_t k = 0; k < n; ++k) inv[k] = UINT32_MAX;          /* not resident: no point */
     for (uint32_t k = 0; k < n_res; ++k) inv[order[k]] = k;
+
+    /* The protein backbone's control points: a residue whose CA, C and O have
+       points that stay (not in a small molecule), in pieces of consecutive
+       such residues within a range of sys->protein_backbone; a piece of one
+       is left out (a spline needs two) */
+    const md_protein_backbone_data_t* PB = &sys->protein_backbone;
+    const uint32_t n_seg = (uint32_t)PB->segment.count;
+    uint32_t* cp_index = md_temp_alloc(temp, ((size_t)n_seg + 1) * 4u);
+    uint32_t* cp_seg   = md_temp_alloc(temp, ((size_t)n_seg + 1) * 4u);
+    uint32_t* cp_co    = md_temp_alloc(temp, ((size_t)n_seg + 1) * 8u);
+    uint32_t* cp_chain = md_temp_alloc(temp, ((size_t)n_seg + 2) * 4u);
+    if (!cp_index || !cp_seg || !cp_co || !cp_chain) return false;
+    uint32_t n_cp = 0, n_chain = 0;
+    {
+        #define BB_ATOM_OK(x) ((x) >= 0 && (uint32_t)(x) < n && inv[(x)] != UINT32_MAX && !IS_SMALL((uint32_t)(x)))
+        uint32_t start = 0;
+        for (size_t r = 0; r < PB->range.count; ++r) {
+            const uint32_t b = PB->range.offset[r], e = PB->range.offset[r + 1];
+            for (uint32_t g = b; g <= e; ++g) {
+                bool ok = false;
+                if (g < e && g < n_seg) {
+                    const md_amino_acid_atoms_t at = PB->segment.atoms[g];
+                    ok = BB_ATOM_OK(at.ca) && BB_ATOM_OK(at.c) && BB_ATOM_OK(at.o);
+                    if (ok) {
+                        cp_index[n_cp]       = inv[at.ca];
+                        cp_seg[n_cp]         = g;
+                        cp_co[2 * n_cp + 0]  = inv[at.c];
+                        cp_co[2 * n_cp + 1]  = inv[at.o];
+                        n_cp++;
+                    }
+                }
+                if (!ok) {                       /* the piece so far ends here */
+                    if (n_cp - start >= 2) {
+                        cp_index[start]    |= MD_RENDER_SPLINE_FIRST;
+                        cp_index[n_cp - 1] |= MD_RENDER_SPLINE_LAST;
+                        cp_chain[n_chain++] = start;
+                    } else {
+                        n_cp = start;            /* one residue: no spline */
+                    }
+                    start = n_cp;
+                }
+            }
+        }
+        cp_chain[n_chain] = n_cp;
+        #undef BB_ATOM_OK
+    }
+    T->backbone_count       = n_cp;
+    T->backbone_chain_count = n_chain;
     uint32_t n_mixed = 0;
     for (uint32_t i = 0; i < nb; ++i) {
         if (key[i] != SMALL_KEY && (IS_SMALL(BA(i)) || IS_SMALL(BB(i)))) n_mixed++;
@@ -467,6 +521,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.bond_ids            = o; o = align256(o + (uint64_t)nb * 4u);
     for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) L.bond_cluster_offset[c] = o + (uint64_t)boff_base[c] * 4u;
     o = align256(o + (uint64_t)nboff * 4u);
+    L.backbone_index      = o; o = align256(o + (uint64_t)n_cp * 4u);
+    L.backbone_segment    = o; o = align256(o + (uint64_t)n_cp * 4u);
+    L.backbone_carbonyl   = o; o = align256(o + (uint64_t)n_cp * 8u);
+    L.backbone_chain      = o; o = align256(o + ((uint64_t)n_chain + 1u) * 4u);
     L.small_tables = o; o += small_mols ? SL.size : 0;
     L.size = o ? o : 256;
 
@@ -530,6 +588,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         }
     }
     memcpy(img + L.bond_cluster_offset[0], boff, (size_t)nboff * 4u);
+    memcpy(img + L.backbone_index,    cp_index, (size_t)n_cp * 4u);
+    memcpy(img + L.backbone_segment,  cp_seg,   (size_t)n_cp * 4u);
+    memcpy(img + L.backbone_carbonyl, cp_co,    (size_t)n_cp * 8u);
+    memcpy(img + L.backbone_chain,    cp_chain, ((size_t)n_chain + 1u) * 4u);
     if (small_mols) {
         uint8_t* st = img + L.small_tables;
         memcpy(st + SL.kinds,           kinfo,   (size_t)n_kinds * 16u);
@@ -548,8 +610,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
 
     T->size                = L.size;
-    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells).size;
-    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells).size_velocity;
+    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp).size;
+    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp).size_velocity;
     T->resident            = L.resident;
     T->regroups            = L.state;
     T->atom_type           = L.atom_type;
@@ -561,6 +623,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->bond_pairs          = L.bond_pairs;
     T->bond_ids            = L.bond_ids;
     for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) T->bond_cluster_offset[c] = L.bond_cluster_offset[c];
+    T->backbone_index      = L.backbone_index;
+    T->backbone_segment    = L.backbone_segment;
+    T->backbone_carbonyl   = L.backbone_carbonyl;
+    T->backbone_chain      = L.backbone_chain;
     T->small_tables        = small_mols ? L.small_tables : 0;
     #undef RES
     #undef BA
@@ -592,6 +658,10 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->bond_pairs          = base + plan->layout.bond_pairs;
     out->bond_ids            = base + plan->layout.bond_ids;
     for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) out->bond_cluster_offset[c] = base + plan->layout.bond_cluster_offset[c];
+    out->backbone_index      = base + plan->layout.backbone_index;
+    out->backbone_segment    = base + plan->layout.backbone_segment;
+    out->backbone_carbonyl   = base + plan->layout.backbone_carbonyl;
+    out->backbone_chain      = base + plan->layout.backbone_chain;
     out->small_tables        = plan->layout.small_molecule_count ? base + plan->layout.small_tables : 0;
     if (content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return true;
@@ -603,6 +673,7 @@ struct md_render_mol {
     md_allocator_i* alloc;
     md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather;
     md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
+    md_gpu_kernel_t k_bb_support, k_bb_orient, k_bb_profile;        /* the cartoon */
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -612,14 +683,17 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t kinds, kind_atom, kind_type, kind_bond_local, ids_old, recs0, recs1, mixed_pos, mixed_atoms;
     md_gpu_addr_t atom_order, mixed_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, point_type;
     md_gpu_addr_t frame[4], fpar[4], qsrc, qdst, qpar, src_point, resident, regroups;
+    md_gpu_addr_t bb_index, bb_segment, bb_carbonyl, bb_chain, bb_axis, bb_flip, bb_ss, bb_out;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t fr_threads;
     uint32_t frame_count, quantized, has_src, has_fvel, has_resident, resident_words;
     float    w[4], dw[4];
-    uint32_t dbg, _pad0;
+    uint32_t bb_count, bb_chains, bb_history, has_ss;
+    float    bb_scale[3];                                           /* coil, helix, sheet */
+    uint32_t dbg, _pad0, _pad1;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 41 * 8 + 34 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 49 * 8 + 42 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -650,9 +724,12 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_fr_gather4_kernel();  r->k_fr_gather[2] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_reorder_kernel();  r->k_fr_reorder = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_permute_kernel();  r->k_fr_permute = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_bb_support_kernel();  r->k_bb_support = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_bb_orient_kernel();   r->k_bb_orient  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_bb_profile_kernel();  r->k_bb_profile = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -664,7 +741,7 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -699,7 +776,7 @@ static bool launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t g, const 
 /* The arguments every kernel shares: the topology, the per-frame block */
 static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic) {
     const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
-    const dyn_layout_t   D  = dyn_layout(topo->point_count, n_mol, topo->small_bond_count, cells);
+    const dyn_layout_t   D  = dyn_layout(topo->point_count, n_mol, topo->small_bond_count, cells, topo->backbone_count);
     const small_layout_t SL = small_layout(n_mol, topo->kind_count, topo->kind_atom_count, topo->kind_bond_count, topo->mixed_bond_count);
     memset(a, 0, sizeof(*a));
     a->dbg = g_write_dbg;
@@ -747,12 +824,22 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->static_bond_clusters= a->has_bonds ? topo->bond_cluster_count[MD_RENDER_MOL_BOND_COVALENT] - cells : 0;
     a->mixed_count         = topo->mixed_bond_count;
     a->n                   = D.scan_n;
+    a->bb_index            = topo->backbone_index;
+    a->bb_segment          = topo->backbone_segment;
+    a->bb_carbonyl         = topo->backbone_carbonyl;
+    a->bb_chain            = topo->backbone_chain;
+    a->bb_count            = topo->backbone_count;
+    a->bb_chains           = topo->backbone_chain_count;
+    if (dynamic) {
+        a->bb_axis = dynamic + D.bb_axis;
+        a->bb_flip = dynamic + D.bb_flip;
+    }
 }
 
 /* The small molecules into grid cells, by the positions `a` points at */
 static bool run_regroup(md_render_mol_t r, md_gpu_stream_t s, gpu_mol_args_t* a, const md_render_mol_topo_t* topo, pass_hook_t hook, void* user) {
     const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
-    const dyn_layout_t D = dyn_layout(topo->point_count, n_mol, topo->small_bond_count, cells);
+    const dyn_layout_t D = dyn_layout(topo->point_count, n_mol, topo->small_bond_count, cells, topo->backbone_count);
     bool ok = true;
     ok = ok && launch(s, r->k_clear,  groups_for(4 * (cells + 1) > 16 ? 4 * (cells + 1) : 16, 64), a, hook, user, "clear");
     ok = ok && launch(s, r->k_bounds, groups_for(n_mol, 64), a, hook, user, "bounds");
@@ -877,8 +964,41 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
             ok = ok && launch(s, r->k_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         }
     }
+    if (ok && topo->backbone_count) {
+        /* The backbone's axes, from the copy just gathered; whether each is
+           turned against the one before with the last update's decision as
+           memory, when that update's stamp is this topology's */
+        const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells, topo->backbone_count);
+        a.bb_history = (flags & MD_RENDER_MOL_UPDATE_RESET_BACKBONE) ? 0u : topo->instance;
+        ok = launch(s, r->k_bb_support, groups_for(topo->backbone_count, 64), &a, hook, user, "backbone axes") &&
+             launch(s, r->k_bb_orient, groups_for(topo->backbone_chain_count, 64), &a, hook, user, "backbone sides") &&
+             md_gpu_upload(s, dynamic + D.bb_flip + (uint64_t)topo->backbone_count * 4u, &topo->instance, 4);
+    }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return ok;
+}
+
+uint64_t md_render_mol_cartoon_size(const md_render_mol_topo_t* topo) {
+    return topo ? align256((uint64_t)topo->backbone_count * 16u) : 0;
+}
+
+bool md_render_mol_cartoon_profile(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
+                                   md_gpu_addr_t out, md_gpu_addr_t secondary_structure, const float scale[3],
+                                   uint64_t content[MD_RENDER_CONTENT_COUNT]) {
+    if (!r || !s || !topo || !out || !scale) {
+        MD_LOG_ERROR("md_render_mol_cartoon_profile: missing context, stream, topology, output or scales");
+        return false;
+    }
+    if (!topo->backbone_count) return true;
+    gpu_mol_args_t a;
+    base_args(&a, topo, 0);
+    a.bb_out = out;
+    a.bb_ss  = secondary_structure;
+    a.has_ss = secondary_structure ? 1u : 0u;
+    for (int k = 0; k < 3; ++k) a.bb_scale[k] = scale[k];
+    if (!launch(s, r->k_bb_profile, groups_for(topo->backbone_count, 64), &a, NULL, NULL, "backbone profile")) return false;
+    if (content) content[MD_RENDER_CONTENT_GEOMETRY]++;
+    return true;
 }
 
 bool md_render_mol_update(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
@@ -1267,6 +1387,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
         { "sol_count", r->k_count }, { "sol_write", r->k_write }, { "sol_gather", r->k_gather },
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
         { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
+        { "bb_support", r->k_bb_support }, { "bb_orient", r->k_bb_orient }, { "bb_profile", r->k_bb_profile },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -1308,7 +1429,7 @@ void md_render_mol_frame_weights(float w[4], float dw[4], uint32_t frame_count, 
 /* The copy in the per-frame block: points in cluster order, each its atom's
    attributes through atom_order */
 static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms, const md_render_mol_rep_t* rep) {
-    const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells);
+    const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells, topo->backbone_count);
     md_render_points_t p;
     memset(&p, 0, sizeof(p));
     p.count           = topo->point_count;
@@ -1383,6 +1504,27 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
         stick_radius = rep->params.bonds.radius;
         if (!classes) classes = MD_RENDER_MOL_BONDS_ALL;
         break;
+    case MD_RENDER_MOL_REP_CARTOON: {
+        /* The protein backbone's splines over the copy: the CA's point is
+           the control point, its atom the part's attribute (colour,
+           selection, visibility); the axes this block's (the update's); the
+           pick's id the residue's segment */
+        uint32_t n = 0;
+        if (topo->backbone_count) {
+            const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells, topo->backbone_count);
+            md_render_batch_t b = base;
+            b.key   = (rep->key << 8) | MD_RENDER_MOL_PART_BACKBONE;
+            b.kind  = MD_RENDER_SPLINES;
+            b.count = topo->backbone_count;
+            b.index = topo->backbone_index;
+            b.id    = topo->backbone_segment;
+            b.style.splines.axis    = dynamic + D.bb_axis;
+            b.style.splines.profile = rep->params.cartoon.profile;
+            b.style.splines.radius  = 0.2f;     /* without a profile: the coil */
+            put(out, cap, &n, &b);
+        }
+        return n;
+    }
     default:
         MD_LOG_ERROR("md_render_mol: representation type %d is not implemented yet", (int)rep->type);
         return 0;
@@ -1427,6 +1569,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     if (!pick || !hit) return false;
     memset(hit, 0, sizeof(*hit));
     hit->bond = UINT32_MAX;
+    hit->segment = UINT32_MAX;
     if (pick->key == 0) return false;
     uint32_t part = (uint32_t)(pick->key & 0xFFu);
     hit->rep_key  = pick->key >> 8;
@@ -1435,6 +1578,12 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     if (part == MD_RENDER_MOL_PART_ATOMS && pick->kind == MD_RENDER_SPHERES) {
         hit->kind = MD_RENDER_MOL_HIT_ATOM;
         hit->atom = pick->attr;
+        return true;
+    }
+    if (part == MD_RENDER_MOL_PART_BACKBONE && pick->kind == MD_RENDER_SPLINES) {
+        hit->kind    = MD_RENDER_MOL_HIT_BACKBONE;
+        hit->segment = pick->id;
+        hit->atom    = pick->attr;
         return true;
     }
     if (part >= MD_RENDER_MOL_PART_BONDS && part < MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_CLASS_COUNT && pick->kind == MD_RENDER_CAPSULES) {
