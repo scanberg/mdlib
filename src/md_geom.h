@@ -54,9 +54,9 @@ size_t md_geom_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t 
 // periodic axes, they are left as they are. The image of x relative to a reference r is r + min_image(x - r).
 void md_geom_min_image(float* in_out_dx, size_t stride, size_t count, const struct md_unitcell_t* cell);
 
-// Wraps coordinates into the cell, in place: all of them, or those of in_idx (count of them) when given. False, with
-// nothing done, without a periodic cell.
-bool md_geom_pbc(float* in_out_xyz, size_t stride, const int32_t* in_idx, size_t count, const struct md_unitcell_t* cell);
+// Wraps coordinates into the cell, in place: all of them, or those of in_idx (count of them) when given. Without a
+// cell, or a cell without periodic axes, they are left as they are.
+void md_geom_pbc(float* in_out_xyz, size_t stride, const int32_t* in_idx, size_t count, const struct md_unitcell_t* cell);
 
 // Unwraps a single molecule by walking the parent hierarchy md_molecule_infer
 // already computed. Linear, allocation free, and does not consult bond connectivity.
@@ -90,7 +90,7 @@ void md_geom_unwrap_system(struct md_system_state_t* state, const struct md_syst
 //
 // Correct while the set spans less than half a cell. Beyond that no per point image choice can
 // represent it and the structure has to be unwrapped topologically instead.
-bool md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const struct md_unitcell_t* cell, md_float3_t* out_com);
+void md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const struct md_unitcell_t* cell, md_float3_t* out_com);
 
 // Optimal rigid rotation between a reference set and a target set under periodic boundaries.
 //
@@ -141,7 +141,7 @@ md_float3_t md_geom_shape_weights(const md_float3x3_t* covariance_matrix);
 // unit_cell:   The unit_cell of the system [Optional]
 // t: interpolation factor (0..1)
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const struct md_unitcell_t* cell, float t);
+void md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const struct md_unitcell_t* cell, float t);
 
 // The weights of four consecutive frames at t (0..1) for a cubic scheme over them, on the interval between the
 // two middle ones: out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]. They sum to one.
@@ -155,7 +155,7 @@ void md_geom_cubic_bspline_weights(float out_w[4], float t);
 // any cubic scheme over them at a given t (see the weights above). In a periodic cell in[0] and in[2] are taken at
 // the minimum image of in[1], and in[3] at that of in[2].
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
-bool md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const struct md_unitcell_t* cell, const float w[4]);
+void md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const struct md_unitcell_t* cell, const float w[4]);
 
 #ifdef __cplusplus
 }
