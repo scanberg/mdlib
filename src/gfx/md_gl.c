@@ -4389,17 +4389,17 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
     ubo_data->backbone_index_base = args->picking_offset.backbone_base;
 }
 
-bool md_gl_draw(const md_gl_draw_args_t* args) {
+void md_gl_draw(const md_gl_draw_args_t* args) {
     if (!args) {
         MD_LOG_ERROR("draw args object was NULL");
-        return false;
+        return;
     }
-    if (!validate_context()) return false;
+    if (!validate_context()) return;
 
     shaders_t* shaders = shad_lookup(args->shaders.id);
     if (!shaders) {
         MD_LOG_ERROR("shaders object was invalid");
-        return false;
+        return;
     }
 
     PUSH_GPU_SECTION("MOLD DRAW")
@@ -4411,7 +4411,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
-    bool result = false;
 
     // Valid draw operations to issue
     md_array(md_gl_draw_op_t const*) draw_ops = 0;
@@ -4674,7 +4673,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 #undef RANGE
     }
 
-    result = true;
 
 done:
     POP_GPU_SECTION()
@@ -4691,8 +4689,6 @@ done:
     POP_GPU_SECTION()
 
     md_temp_end(temp);
-
-    return result;
 }
 
 // Draws the quads [offset, offset + count) of a kind (QUADS) with the program in use, its textures bound, for the
