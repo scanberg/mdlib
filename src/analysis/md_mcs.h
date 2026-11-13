@@ -16,14 +16,15 @@
 //                maximum common connected induced subgraph), found exactly by McSplit (McCreesh, Prosser and
 //                Trimble, IJCAI 2017). What it costs grows with the size of what is common and how symmetric it is:
 //                microseconds for residues, a fraction of a millisecond for nucleotides and ligands of 60 heavy atoms
-//                (GTP and GDP: 0.2 ms), and beyond a few hundred atoms the search may not finish, so it gives up after
+//                (GTP and GDP: 0.07 ms), and beyond a few hundred atoms the search may not finish, so it gives up after
 //                max_steps (incomplete) with the largest it found. More than MD_MCS_GRAPH_MAX heavy atoms is not
 //                searched at all.
 //   BY RESIDUE   Polymers: when both sets span two residues or more, all of them amino acids or nucleotides. The
 //                residues are aligned by name, in order (Needleman-Wunsch: a residue of the same name scores 4, of
 //                another -1, a gap -3), and each aligned pair is matched by atom name when the two are of one name,
-//                by GRAPH when not (once per pair of names). Linear in the residues: α against β tubulin, 433
-//                residues each, in 2.4 ms. MD_MCS_FLAG_GRAPH matches polymers as one graph instead.
+//                by GRAPH when not (once per pair of names); an atom is paired once, and of a name a residue has
+//                twice, the first with the first. Linear in the residues: α against β tubulin, 433 residues each,
+//                in 0.5 ms. MD_MCS_FLAG_GRAPH matches polymers as one graph instead.
 //
 // SYMMETRY. The bonds alone do not tell the oxygens of a phosphate apart, or the two sides of a phenyl ring, and the
 // mapping the search gives first is any of them. With positions for both (md_mcs_side_t.xyz), every mapping of a's
@@ -71,7 +72,7 @@ typedef struct md_mcs_result_t {
     size_t      count;              // Pairs
     int32_t*    a;                  // [count] Atoms of a, ascending
     int32_t*    b;                  // [count] The atom of b that plays the part of each
-    size_t      a_heavy;            // Heavy atoms of each set: what count is out of
+    size_t      a_heavy;            // Heavy atoms of each set, each once: what count is out of
     size_t      b_heavy;
     bool        by_residue;         // Matched residue by residue
     bool        incomplete;         // The graph search gave up at max_steps: count is the largest found by then

@@ -99,6 +99,19 @@ UTEST(mcs, ligands) {
         for (size_t i = 0; i < n.count; ++i) EXPECT_TRUE(md_str_eq(md_atom_name(&f->sys.atom, n.a[i]), md_atom_name(&f->sys.atom, n.b[i])));
         md_mcs_result_free(&n);
     }
+    // An atom given twice is one atom: of the pairs, and of the heavy atoms counted
+    {
+        int32_t a[256], b[256];
+        size_t ca = mcs_residue(a, &f->sys, "GTP", 0);
+        const size_t cb = mcs_residue(b, &f->sys, "GDP", 0);
+        for (size_t i = 0, n = ca; i < n; ++i) a[ca++] = a[i];
+        md_mcs_desc_t d = {.a = {.sys = &f->sys, .atoms = a, .count = ca}, .b = {.sys = &f->sys, .atoms = b, .count = cb}};
+        md_mcs_result_t t;
+        ASSERT_TRUE(md_mcs(&t, &d, md_get_heap_allocator()));
+        EXPECT_EQ(28u, (unsigned)t.count);
+        EXPECT_EQ(32u, (unsigned)t.a_heavy);
+        md_mcs_result_free(&t);
+    }
     // Unrelated molecules still share something; the caller judges how much is enough
     md_mcs_result_t u = mcs_of(f, "GTP", 0, "VLB", 0, false);
     EXPECT_GT(u.count, 3u);

@@ -528,9 +528,10 @@ static bool residues_of(res_list_t* out, const md_mcs_side_t* s, md_temp_scope_t
     return true;
 }
 
-// The first atom of atoms [beg, end) of a residue list of the name, -1 when none is
-static int32_t atom_of_name(const res_list_t* rl, uint32_t beg, uint32_t end, uint64_t name) {
-    for (uint32_t p = beg; p < end; ++p) if (rl->name[p] == name) return rl->atoms[p];
+// The first atom of atoms [beg, end) of a residue list of the name not yet paired (used), as its place in the list;
+// -1 when none is. Of a residue with two atoms of one name, the first of each is paired with the first.
+static int64_t atom_of_name(const res_list_t* rl, uint32_t beg, uint32_t end, uint64_t name, const bool* used) {
+    for (uint32_t p = beg; p < end; ++p) if (rl->name[p] == name && !used[p]) return p;
     return -1;
 }
 
@@ -627,6 +628,9 @@ static size_t by_residue(int32_t* pa, int32_t* pb, bool* incomplete, const md_mc
     uint64_t* cache_b = md_temp_alloc_array(temp, uint64_t, max_pairs);
     uint32_t num_cache = 0, num_cached = 0;
     size_t count = 0;
+    // The atoms paired, by their place in the lists: each atom is in one residue, and each residue in one pair at most
+    bool* used_a = md_temp_alloc_zero_array(temp, bool, ra->beg[na]);
+    bool* used_b = md_temp_alloc_zero_array(temp, bool, rb->beg[nb]);
     const bool by_name = desc->flags & MD_MCS_FLAG_BY_NAME;
     const uint64_t max_steps = desc->max_steps ? desc->max_steps : MCS_DEFAULT_MAX_STEPS;
 
@@ -639,7 +643,8 @@ static size_t by_residue(int32_t* pa, int32_t* pb, bool* incomplete, const md_mc
             for (uint32_t p = xb; p < xe; ++p) {
                 if (!ra->heavy[p]) continue;
                 for (uint32_t q = yb; q < ye; ++q) {
-                    if (!rb->heavy[q] || rb->name[q] != ra->name[p]) continue;
+                    if (used_b[q] || !rb->heavy[q] || rb->name[q] != ra->name[p]) continue;
+                    used_b[q] = true;
                     pa[count] = ra->atoms[p];
                     pb[count] = rb->atoms[q];
                     count++;
@@ -673,11 +678,12 @@ static size_t by_residue(int32_t* pa, int32_t* pb, bool* incomplete, const md_mc
             hit = e;
         }
         for (uint32_t c = hit->beg; c < hit->end; ++c) {
-            const int32_t a = atom_of_name(ra, xb, xe, cache_a[c]);
-            const int32_t b = atom_of_name(rb, yb, ye, cache_b[c]);
-            if (a < 0 || b < 0) continue;
-            pa[count] = a;
-            pb[count] = b;
+            const int64_t p = atom_of_name(ra, xb, xe, cache_a[c], used_a);
+            const int64_t q = atom_of_name(rb, yb, ye, cache_b[c], used_b);
+            if (p < 0 || q < 0) continue;
+            used_a[p] = used_b[q] = true;
+            pa[count] = ra->atoms[p];
+            pb[count] = rb->atoms[q];
             count++;
         }
     }
@@ -687,9 +693,15 @@ static size_t by_residue(int32_t* pa, int32_t* pb, bool* incomplete, const md_mc
 
 // ### THE CALL ###
 
-static size_t count_heavy(const md_mcs_side_t* s) {
+// The heavy atoms of a side, each once
+static size_t count_heavy(const md_mcs_side_t* s, md_temp_scope_t temp) {
+    const md_temp_mark_t mark = md_temp_mark(temp);
+    uint32_t* h = md_temp_alloc_array(temp, uint32_t, s->count);
     size_t n = 0;
-    for (size_t i = 0; i < s->count; ++i) if (in_range(s->sys, s->atoms[i]) && heavy(s->sys, s->atoms[i])) n++;
+    for (size_t i = 0; i < s->count; ++i) if (in_range(s->sys, s->atoms[i]) && heavy(s->sys, s->atoms[i])) h[n++] = (uint32_t)s->atoms[i];
+    md_sort_radix_u32(h, n);
+    n = unique_u32(h, n);
+    md_temp_reset(temp, mark);
     return n;
 }
 
@@ -702,12 +714,12 @@ bool md_mcs(md_mcs_result_t* out, const md_mcs_desc_t* desc, md_allocator_i* all
         return false;
     }
     out->alloc = alloc;
-    out->a_heavy = count_heavy(&desc->a);
-    out->b_heavy = count_heavy(&desc->b);
     const bool by_name = desc->flags & MD_MCS_FLAG_BY_NAME;
     const bool xyz = desc->a.xyz && desc->b.xyz;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    out->a_heavy = count_heavy(&desc->a, temp);
+    out->b_heavy = count_heavy(&desc->b, temp);
     int32_t* pa = NULL;
     int32_t* pb = NULL;
     size_t n = 0;
