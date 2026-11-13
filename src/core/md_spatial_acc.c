@@ -679,6 +679,8 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     double norm_b = sqrt(G11);
     double norm_c = sqrt(G22);
 
+    // The distance between the faces of the box across each axis: the length of the box vector, unless it is skewed
+    double width[3] = { norm_a, norm_b, norm_c };
     float inv_cell_ext[3] = {
         (float)(norm_a > 0.0 ? 1.0 / norm_a : 0.0),
         (float)(norm_b > 0.0 ? 1.0 / norm_b : 0.0),
@@ -705,15 +707,17 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
         inv_cell_ext[0] = (float)sqrt(GI00);
         inv_cell_ext[1] = (float)sqrt(GI11);
         inv_cell_ext[2] = (float)sqrt(GI22);
+        width[0] = 1.0 / sqrt(GI00);
+        width[1] = 1.0 / sqrt(GI11);
+        width[2] = 1.0 / sqrt(GI22);
     }
 
-    // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
-    // This is only a heuristic for bin counts; the grid is still in fractional space.
-    uint32_t cell_dim[3] = {
-        (uint32_t)MD_CLAMP(floor(norm_a / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
-        (uint32_t)MD_CLAMP(floor(norm_b / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
-        (uint32_t)MD_CLAMP(floor(norm_c / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM),
-    };
+    // The cells along each axis: as many as fit the width of the box, so that the faces of a cell are at least CELL_EXT
+    // apart and a query of the cutoff reaches one cell around (neighbor_cell_extent)
+    uint32_t cell_dim[3];
+    for (int i = 0; i < 3; ++i) {
+        cell_dim[i] = (uint32_t)MD_CLAMP(floor(width[i] / CELL_EXT), 1.0, (double)SPATIAL_ACC_MAX_CELLS_PER_DIM);
+    }
 
 #if MD_DEBUG
     MD_LOG_DEBUG("cell_dim: %i %i %i", cell_dim[0], cell_dim[1], cell_dim[2]);
