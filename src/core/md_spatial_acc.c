@@ -6,8 +6,9 @@
 #include <core/md_log.h>
 #include <core/md_common.h>
 #include <core/md_vec_math.h>
-#include <md_system.h>
+#include <core/md_array.h>
 #include <md_types.h>
+#include <md_unitcell.h>
 
 #include <float.h>
 #include <math.h>

@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include <md_types.h>
 #include <core/md_label.h>
-#include <core/md_vec.h>
+
+struct md_float4x4_t;
 
 // The biological assemblies of a deposited structure.
 
@@ -33,7 +34,7 @@ typedef struct md_assembly_data_t {
 
     size_t              oper_count;
     md_label_t*         oper_id;            // [oper_count] As the file names it ("1", "X0"); a product its factors ("1x61")
-    md_float4x4_t*             oper_transform;     // [oper_count] Rigid: a rotation (possibly improper) and a translation
+    struct md_float4x4_t*             oper_transform;     // [oper_count] Rigid: a rotation (possibly improper) and a translation
 } md_assembly_data_t;
 
 // One row of the description of an assembly, as the files give them: the instances which each of the operators copies

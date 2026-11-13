@@ -16,6 +16,7 @@
 #include <md_gto.h>
 #include <md_gto_int.h>
 #include <md_molden.h>
+#include <core/md_grid.h>
 
 #include <float.h>
 #include <math.h>
@@ -294,7 +295,7 @@ static const double h2o_ccpvdz_dipole_ref[3] = { -0.39479203722594036, -0.325035
 UTEST(gto_int, h2o_molden_matches_pyscf) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
 
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
@@ -335,7 +336,7 @@ UTEST(gto_int, h2o_molden_matches_pyscf) {
 UTEST(gto_int, screening_error_is_bounded) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
 
@@ -367,7 +368,7 @@ UTEST(gto_int, screening_error_is_bounded) {
 UTEST(gto_int, antisymmetric_part_is_ignored) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
 
@@ -397,7 +398,7 @@ UTEST(gto_int, antisymmetric_part_is_ignored) {
 UTEST(gto_int, field_is_minus_gradient) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -489,7 +490,7 @@ static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int 
 UTEST(gto_int, far_field_matches_exact) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(256));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     int_test_cluster_t c;
@@ -560,7 +561,7 @@ UTEST(gto_int, far_field_matches_exact) {
 UTEST(gto_int, grid_matches_points) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -758,7 +759,7 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(32));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     md_gto_int_charges_t q = {0};
@@ -1026,7 +1027,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
 
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(128));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
     int_test_cluster_t c;

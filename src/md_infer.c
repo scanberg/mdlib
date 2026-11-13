@@ -1,6 +1,10 @@
 ﻿#include <md_infer.h>
 #include <md_element.h>
 #include "md_infer_internal.h"
+#include <core/md_executor.h>
+#include <core/md_log.h>
+#include <md_chem.h>
+#include <md_system_fields.h>
 
 // The inference of a system: md_system_infer runs the steps of md_bond.c, md_ring.c, md_atom.c, md_hierarchy.c,
 // md_backbone.c, md_lipid.c, md_fragment.c and md_chem.c in order and gives the system what they infer.
@@ -112,7 +116,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             md_molecule_data_free(&sys->molecule, sys->alloc);
             sys->molecule = molecules;
             // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
-            // (md_util_system_infer_fragments). Their types stay, for the colours to be kept.
+            // (md_system_infer_fragments). Their types stay, for the colours to be kept.
             sys->fragment.count = 0;
             sys->fragment.template_count = 0;
             md_array_shrink(sys->fragment.mol_template, 0);
@@ -167,7 +171,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
 
     if (flags & MD_SYSTEM_INFER_FRAGMENT_BIT) {
         // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails
-        md_util_system_infer_fragments(sys);
+        md_system_infer_fragments(sys);
     }
 
     // Record the state the topology above was inferred from. Written here, as part of performing

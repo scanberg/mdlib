@@ -3,32 +3,20 @@
 // What the inference of a system (md_system_infer and its steps, in md_infer.c, md_bond.c, md_ring.c, md_atom.c,
 // md_hierarchy.c, md_backbone.c, md_lipid.c and md_martini.c) shares between its files. Not a public header.
 
-#include <md_infer.h>
-#include <md_util_geom.h>
 #include <md_system.h>
-#include "md_system_fields.h"
-#include <md_chem.h>
-#include <md_dssp.h>
 #include <md_element.h>
-#include <core/md_coord_stream.h>
-#include <core/md_format.h>
 #include <core/md_compiler.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
-#include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_log.h>
 #include <core/md_vec_math.h>
-#include <core/md_simd.h>
-#include <core/md_spatial_acc.h>
-#include <core/md_executor.h>
 #include <core/md_bitset.h>
-#include <core/md_hash.h>
-#include <core/md_fifo.h>
 #include <math.h>
 #include <string.h>
 #include <float.h>
 #include <stdlib.h>
+
+struct md_executor_t;
 
 // Tables
 // The zero slot is 'Xx', not 'Unknown': winioctl.h declares an enumerator by the latter name at
@@ -240,6 +228,6 @@ const martini_db_residue_t* mdi_martini_db_match_beads(uint32_t version, const m
 const martini_db_residue_t* mdi_martini_db_unknown_variant(md_str_t res_name, const md_str_t labels[], size_t num_labels);
 bool mdi_martini_db_linked(md_str_t name);
 const martini_db_bead_t* mdi_martini_db_biopolymer_bead(uint32_t version, md_str_t res_name, const md_str_t labels[], size_t num_labels, size_t idx);
-martini_system_t mdi_martini_system_ex(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data, const md_executor_t* ex);
+martini_system_t mdi_martini_system_ex(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data, const struct md_executor_t* ex);
 martini_system_t mdi_martini_system(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data);
 void mdi_infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc);

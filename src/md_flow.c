@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool md_flow_cut_is_other_expanded(const md_flow_cut_t* cut, uint32_t column);
+
 // Key namespace for the synthesized "Others" nodes, kept clear of any caller's key scheme so the
 // cut can be keyed by node identity without colliding with the graph's own keys.
 #define MD_FLOW_OTHER_KEY_TAG 0xF10A0000ULL
@@ -328,7 +330,7 @@ void md_flow_cut_set_other_expanded(md_flow_cut_t* cut, uint32_t column, bool ex
     else          cut->other_expanded &= ~(1u << column);
 }
 
-bool md_flow_cut_is_other_expanded(const md_flow_cut_t* cut, uint32_t column) {
+static bool md_flow_cut_is_other_expanded(const md_flow_cut_t* cut, uint32_t column) {
     MD_ASSERT(cut);
     return column < MD_FLOW_MAX_COLUMNS && (cut->other_expanded & (1u << column)) != 0;
 }

@@ -5,7 +5,8 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <core/md_bitset.h>
+
+struct md_bitset_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +14,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 
 // GROMACS index files (.ndx): named groups of atoms, what grompp and the gmx tools are given with -n. A topology never
 // refers to one; an mdp names its groups (energygrps = Protein SOL) and grompp finds them in the index file it is given.
@@ -48,7 +50,7 @@ void md_ndx_data_free(md_ndx_data_t* data, struct md_allocator_i* alloc);
 // system (from the tpr of the same run) gains nothing. False, and nothing added, when the file names an atom the system
 // does not have: it is of another system.
 bool md_ndx_system_supplement(struct md_system_t* sys, const md_ndx_data_t* data);
-bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filename);
+bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 // GROMACS' DEFAULT GROUPS. Without an index file, grompp (and gmx make_ndx, which starts from them) makes groups of the
 // topology by its residue types (share/top/residuetypes.dat) and atom names, and an mdp names those: tc-grps = Protein
@@ -65,7 +67,7 @@ bool md_ndx_system_supplement_from_file(struct md_system_t* sys, md_str_t filena
 //
 // The atoms of the default group of a name, matched without regard to case, as grompp matches the names of an mdp: false,
 // and out untouched, when there is no such group. The words of out are allocated with alloc.
-bool md_ndx_default_group(md_bitset_t* out, const struct md_system_t* sys, md_str_t name, struct md_allocator_i* alloc);
+bool md_ndx_default_group(struct md_bitset_t* out, const struct md_system_t* sys, md_str_t name, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

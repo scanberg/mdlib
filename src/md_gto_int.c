@@ -7,6 +7,7 @@
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_grid.h>
 
 #include <math.h>
 #include <string.h>

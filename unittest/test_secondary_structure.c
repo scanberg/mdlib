@@ -4,7 +4,7 @@
 #include <md_pdb.h>
 #include <md_system.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_dssp.h>
 
 #include <core/md_allocator.h>
@@ -205,7 +205,7 @@ static const char martini3_ubiquitin_pdb[] =
 static const char ubiquitin_atomistic_ss[] = "EEEEEEECCCCEEEEEECCCCEHHHHHHHHHHHHCCCHHHEEEEECCEECCCCCECHHHCCCCCCEEEEEECCCCC";
 
 static bool load_martini3_ubiquitin(md_system_t* sys, md_system_state_t* state) {
-    if (!md_pdb_system_init_from_str(sys, state, md_str_from_cstr(martini3_ubiquitin_pdb), MD_PDB_OPTION_NONE, NULL)) return false;
+    if (!md_pdb_system_init_from_str(sys, state, md_str_from_cstr(martini3_ubiquitin_pdb), NULL)) return false;
     return md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
 }
 
@@ -294,7 +294,7 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
     com = md_float3_mul1(com, 1.0f / (float)state.num_atoms);
     for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = md_float3_sub(state.xyz[i], com);
     const md_unitcell_t cell = md_unitcell_from_extent(60.0, 60.0, 60.0);
-    ASSERT_TRUE(md_util_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell));
+    md_geom_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell);
 
     md_secondary_structure_t split[76];
     ASSERT_TRUE(md_dssp_compute(split, n, state.xyz, &cell, &sys.protein_backbone));
@@ -310,7 +310,7 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
 
     static const char expected[] = "CCCCEEEEEECCCBTTTBBBSTTTSBBSHHHHHHHHHHHHHTTEEEEEESSGGGHHHHHHTTTCCBBCCCCBSSHHHHHHTBBCCCCBCCCEEEEEETTTCCCSSHHHHTTTEEEEETTTHHHHHHIIIIIGGTTEEEEECCHHHHHHHHHTTTCCEEEEEHHHHIIIIITTGGGGGEEECCCCBCSHHHHTCCBCCBBSTTTHHHHHHHHHHHHHHHHHTHHHHHHHGTTSCCTTTC";
@@ -334,7 +334,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     const size_t n = sys.protein_backbone.segment.count;
     ASSERT_GT(n, (size_t)200);
@@ -350,7 +350,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     com = md_float3_mul1(com, 1.0f / (float)state.num_atoms);
     for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = md_float3_sub(state.xyz[i], com);
     const md_unitcell_t cell = md_unitcell_from_extent(120.0, 120.0, 120.0);
-    ASSERT_TRUE(md_util_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell));
+    md_geom_pbc((float*)state.xyz, 0, NULL, state.num_atoms, &cell);
 
     ASSERT_TRUE(md_dssp_compute(split, n, state.xyz, &cell, &sys.protein_backbone));
     size_t differ = 0;
@@ -369,7 +369,7 @@ UTEST(secondary_structure, mixed_trace_and_atomistic) {
     ASSERT_TRUE(load_martini3_ubiquitin(&cg, &cg_state));
     md_system_t aa = { .alloc = alloc };
     md_system_state_t aa_state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&aa, &aa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&aa, &aa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&aa, &aa_state, MD_SYSTEM_INFER_ALL, NULL));
 
     const md_protein_backbone_data_t* cg_bb = &cg.protein_backbone;

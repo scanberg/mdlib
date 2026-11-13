@@ -597,8 +597,8 @@ bool md_parse_next_i32(int32_t* val, md_str_t* str) {
     md_str_t tok;
     if (!md_parse_next_token(&tok, str)) return false;
     tok = md_str_trim(tok);
-    if (!is_int(tok)) return false;
-    *val = (int)parse_int(tok);
+    if (!md_parse_is_int(tok)) return false;
+    *val = (int)md_parse_int(tok);
     
     return true;
 }
@@ -610,8 +610,8 @@ bool md_parse_next_i64(int64_t* val, md_str_t* str) {
     md_str_t tok;
     if (!md_parse_next_token(&tok, str)) return false;
     tok = md_str_trim(tok);
-    if (!is_int(tok)) return false;
-    *val = parse_int(tok);
+    if (!md_parse_is_int(tok)) return false;
+    *val = md_parse_int(tok);
 
     return true;
 }
@@ -623,8 +623,8 @@ bool md_parse_next_f32(float* val, md_str_t* str) {
     md_str_t tok;
     if (!md_parse_next_token(&tok, str)) return false;
     tok = md_str_trim(tok);
-    if (!is_float(tok)) return false;
-    *val = (float)parse_float(tok);
+    if (!md_parse_is_float(tok)) return false;
+    *val = (float)md_parse_float(tok);
 
     return true;
 }
@@ -636,8 +636,8 @@ bool md_parse_next_f64(double* val, md_str_t* str) {
     md_str_t tok;
     if (!md_parse_next_token(&tok, str)) return false;
     tok = md_str_trim(tok);
-    if (!is_float(tok)) return false;
-    *val = parse_float(tok);
+    if (!md_parse_is_float(tok)) return false;
+    *val = md_parse_float(tok);
 
     return true;
 }

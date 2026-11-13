@@ -1,4 +1,5 @@
 #include <md_xvg.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_run.h>
 #include <core/md_unit.h>
@@ -213,12 +214,12 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 		if (!fields) {
 			// The first line of values makes the fields: every following one is expected to have as many
 			while (md_parse_next_token(&tok, &line)) {
-				if (!is_float(tok)) {
+				if (!md_parse_is_float(tok)) {
 					MD_LOG_ERROR("XVG: Invalid float among field values: '"MD_STR_FMT"'", MD_STR_ARG(tok));
 					return false;
 				}
 				md_array(float) values = 0;
-				md_array_push(values, (float)parse_float(tok), alloc);
+				md_array_push(values, (float)md_parse_float(tok), alloc);
 				md_array_push(fields, values, alloc);
 			}
 			num_fields = md_array_size(fields);
@@ -230,12 +231,12 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 				return false;
 			}
 
-			if (!is_float(tok)) {
+			if (!md_parse_is_float(tok)) {
 				MD_LOG_ERROR("XVG: Invalid float: '"MD_STR_FMT"'", MD_STR_ARG(tok));
 				return false;
 			}
 
-			md_array_push(fields[i], (float)parse_float(tok), alloc);
+			md_array_push(fields[i], (float)md_parse_float(tok), alloc);
 		}
 	}
 
@@ -326,7 +327,8 @@ static md_str_t xvg_group(char* buf, size_t cap, const char* kind, md_str_t file
     return (md_str_t){ buf, len };
 }
 
-bool md_xvg_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, md_str_t run) {
+bool md_xvg_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);

@@ -1,4 +1,4 @@
-﻿#include <md_util_geom.h>
+﻿#include <md_geom.h>
 
 #include <md_system.h>
 #include "md_system_fields.h"
@@ -219,7 +219,7 @@ static inline void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], c
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
 }
 
-void md_util_aabb(float out_min[3], float out_max[3], const float* xyz, size_t stride, const int32_t* idx, size_t count) {
+void md_geom_aabb(float out_min[3], float out_max[3], const float* xyz, size_t stride, const int32_t* idx, size_t count) {
     MD_ASSERT(out_min);
     MD_ASSERT(out_max);
     MD_ASSERT(xyz || count == 0);
@@ -1532,7 +1532,7 @@ static void com_pbc_strided(float* out_com, const float* xyz, size_t xyz_stride,
     }
 }
 
-md_float3_t md_util_com(const float* xyz, size_t xyz_stride, const float* w, size_t w_stride, const int32_t* idx, size_t count, const md_unitcell_t* cell) {
+md_float3_t md_geom_com(const float* xyz, size_t xyz_stride, const float* w, size_t w_stride, const int32_t* idx, size_t count, const md_unitcell_t* cell) {
     MD_ASSERT(xyz || count == 0);
 
     md_float3_t com_xyz = {0};
@@ -1570,7 +1570,7 @@ md_float3_t md_util_com(const float* xyz, size_t xyz_stride, const float* w, siz
 #   pragma warning( disable : 4244 )
 #endif
 
-void md_util_distance_array(float* out_dist, const md_float3_t* coord_a, size_t len_a, const md_float3_t* coord_b, size_t len_b, const md_unitcell_t* cell) {
+void md_geom_distance_array(float* out_dist, const md_float3_t* coord_a, size_t len_a, const md_float3_t* coord_b, size_t len_b, const md_unitcell_t* cell) {
     if (cell->flags == 0) {
         for (size_t i = 0; i < len_a; ++i) {
             for (size_t j = 0; j < len_b; ++j) {
@@ -1624,7 +1624,7 @@ void md_util_distance_array(float* out_dist, const md_float3_t* coord_a, size_t 
 // comparison at hand, the minimum image is searched for (dist_search_d2). That takes a group about as far from b as
 // half the cell, or the farthest pair.
 //
-// The search is bounded rather than assumed: md_util_min_image looks one lattice vector either way of the reduced
+// The search is bounded rather than assumed: md_geom_min_image looks one lattice vector either way of the reduced
 // image, which is the minimum image for a cell of a sensible shape but not for every cell. The bound is two at most for
 // the usual cells (a reduced triclinic box, a rhombic dodecahedron, a truncated octahedron), and only a degenerate cell
 // would reach DIST_MAX_SEARCH.
@@ -2096,11 +2096,11 @@ static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t*
     md_temp_end(temp);
 }
 
-void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+void md_geom_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, false, NULL);
 }
 
-void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+void md_geom_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const md_float3_t* coord_a, const size_t* a_offsets, size_t num_groups, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, true, NULL);
 }
 
@@ -2124,11 +2124,11 @@ static size_t distance_extent_near(int64_t* out_idx_a, int64_t* out_idx_b, size_
     return nr.overflow ? cap + 1 : nr.count;
 }
 
-size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+size_t md_geom_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     return distance_extent_near(out_idx_a, out_idx_b, cap, tol, coord_a, num_a, coord_b, num_b, cell, false);
 }
 
-size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+size_t md_geom_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const md_float3_t* coord_a, size_t num_a, const md_float3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     return distance_extent_near(out_idx_a, out_idx_b, cap, tol, coord_a, num_a, coord_b, num_b, cell, true);
 }
 
@@ -2151,7 +2151,7 @@ static inline void min_image_inv_ext(float out_inv_ext[3], const float ext[3]) {
     out_inv_ext[2] = ext[2] != 0.0f ? 1.0f / ext[2] : 0.0f;
 }
 
-void md_util_min_image(float* dx, size_t stride, size_t count, const md_unitcell_t* cell) {
+void md_geom_min_image(float* dx, size_t stride, size_t count, const md_unitcell_t* cell) {
     MD_ASSERT(dx || count == 0);
     if (!cell) return;
     if (stride == 0) stride = 3 * sizeof(float);
@@ -2267,16 +2267,9 @@ static void pbc_triclinic(float* xyz, size_t stride, const int32_t* indices, siz
     }
 }
 
-bool md_util_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
-    if (!xyz) {
-        MD_LOG_ERROR("Missing required input: xyz");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing unitcell");
-        return false;
-    }
+void md_geom_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+    MD_ASSERT(xyz || count == 0);
+    if (!cell || count == 0) return;
 
     if (stride == 0) stride = 3 * sizeof(float);
     uint32_t flags = md_unitcell_flags(cell);
@@ -2284,18 +2277,13 @@ bool md_util_pbc(float* xyz, size_t stride, const int32_t* indices, size_t count
         md_float3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, cell);
         pbc_ortho(xyz, stride, indices, count, ext);
-        return true;
     } else if (flags & MD_UNITCELL_TRICLINIC) {
         pbc_triclinic(xyz, stride, indices, count, cell);
-        return true;
     }
-
-    // The unit cell is not initialized or is simply not periodic
-    MD_LOG_ERROR("Unrecognized unit_cell type");
-    return false;
+    // Otherwise the cell has no periodic axes: nothing to wrap into
 }
 
-void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol) {
+void md_geom_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol) {
     MD_ASSERT(state);
     MD_ASSERT(mol);
 
@@ -2346,13 +2334,13 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol)
     }
 }
 
-void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
+void md_geom_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
     MD_ASSERT(state);
     MD_ASSERT(sys);
 
     for (size_t i = 0; i < sys->molecule.count; ++i) {
         const md_molecule_t mol = md_system_molecule(sys, i);
-        md_util_unwrap_molecule(state, &mol);
+        md_geom_unwrap_molecule(state, &mol);
     }
 }
 
@@ -2465,31 +2453,28 @@ static void pbc_image_restore(const pbc_image_t* im, md_float4_t* xyzw, size_t c
 // stable on the second pass. The cap only bounds pathological input.
 #define PBC_MAX_ITER 8
 
-bool md_util_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_float3_t* out_com) {
-    if (!in_out_xyzw) {
-        MD_LOG_ERROR("Missing required input: in_out_xyzw");
-        return false;
-    }
+void md_geom_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell, md_float3_t* out_com) {
+    MD_ASSERT(in_out_xyzw || count == 0);
 
     if (count == 0) {
         if (out_com) *out_com = md_float3_zero();
-        return true;
+        return;
     }
 
     const pbc_image_t im = pbc_image_init(cell);
 
     if (!im.periodic) {
-        if (out_com) *out_com = md_util_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
-        return true;
+        if (out_com) *out_com = md_geom_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
+        return;
     }
 
     // Where the input sits, before anything is moved. Only the image it implies is used - see
     // pbc_image_restore.
-    const md_float3_t input_com = md_util_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
+    const md_float3_t input_com = md_geom_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
 
     // Seed with the circular mean. It needs no image assignment to compute, so unlike an arbitrary
     // reference point it cannot be biased by whichever images the coordinates happened to arrive in.
-    md_float3_t com = md_util_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, cell);
+    md_float3_t com = md_geom_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, cell);
 
     for (int iter = 0; iter < PBC_MAX_ITER; ++iter) {
         bool stable = true;
@@ -2503,7 +2488,7 @@ bool md_util_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_u
         }
 
         // Recompute the centre from the placed points. Both halves decrease the same objective.
-        com = md_util_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
+        com = md_geom_com((const float*)in_out_xyzw, sizeof(md_float4_t), (const float*)in_out_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
 
         if (stable) {
             break;
@@ -2514,10 +2499,9 @@ bool md_util_deperiodize_self(md_float4_t* in_out_xyzw, size_t count, const md_u
     pbc_image_restore(&im, in_out_xyzw, count, input_com, &com);
 
     if (out_com) *out_com = com;
-    return true;
 }
 
-float md_util_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com, md_float4_t* out_trg_xyzw,
+float md_geom_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com, md_float4_t* out_trg_xyzw,
                                              const md_float4_t* ref_xyzw, md_float3_t ref_com,
                                              const md_float4_t* trg_xyzw, size_t count,
                                              const md_unitcell_t* cell, int max_iter, float tol) {
@@ -2540,10 +2524,10 @@ float md_util_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com,
 
     // Where the target sits before anything is moved. Read now: 'cur' is allowed to alias trg_xyzw
     // and the loop below writes through it.
-    const md_float3_t input_com = md_util_com((const float*)trg_xyzw, sizeof(md_float4_t), (const float*)trg_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
+    const md_float3_t input_com = md_geom_com((const float*)trg_xyzw, sizeof(md_float4_t), (const float*)trg_xyzw + 3, sizeof(md_float4_t), NULL, count, NULL);
 
     // Image free seed, safe to compute before any assignment exists.
-    md_float3_t com = md_util_com((const float*)trg_xyzw, sizeof(md_float4_t), (const float*)trg_xyzw + 3, sizeof(md_float4_t), NULL, count, im.periodic ? cell : NULL);
+    md_float3_t com = md_geom_com((const float*)trg_xyzw, sizeof(md_float4_t), (const float*)trg_xyzw + 3, sizeof(md_float4_t), NULL, count, im.periodic ? cell : NULL);
     md_float3x3_t rot = md_float3x3_ident();
 
     // Alternating minimisation of  sum_k w_k |R (q_k + A n_k - c) - p_k|^2  over R, c and n_k.
@@ -2568,7 +2552,7 @@ float md_util_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com,
         }
 
         // Refit. Both are the exact optimum for this assignment.
-        com = md_util_com((const float*)cur, sizeof(md_float4_t), (const float*)cur + 3, sizeof(md_float4_t), NULL, count, NULL);
+        com = md_geom_com((const float*)cur, sizeof(md_float4_t), (const float*)cur + 3, sizeof(md_float4_t), NULL, count, NULL);
 
         const md_float4_t* const sets[2] = { ref_xyzw, cur };
         const md_float3_t        coms[2] = { ref_com,  com };
@@ -2597,7 +2581,7 @@ float md_util_optimal_rotation_pbc(md_float3x3_t* out_rot, md_float3_t* out_com,
     return sqrtf(max_dist_sq);
 }
 
-md_float3x3_t md_util_optimal_rotation_rel(const md_float4_t* ref_rel_xyzw, const md_float4_t* trg_rel_xyzw, size_t count) {
+md_float3x3_t md_geom_optimal_rotation_rel(const md_float4_t* ref_rel_xyzw, const md_float4_t* trg_rel_xyzw, size_t count) {
     MD_ASSERT(ref_rel_xyzw);
     MD_ASSERT(trg_rel_xyzw);
 
@@ -2647,7 +2631,7 @@ md_float3x3_t md_util_optimal_rotation_rel(const md_float4_t* ref_rel_xyzw, cons
     return md_float3x3_extract_rotation(C);
 }
 
-double md_util_rmsd(const md_float4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_float3_t in_com[2]) {
+double md_geom_rmsd(const md_float4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const md_float3_t in_com[2]) {
     const md_float3x3_t R = md_float3x3_optimal_rotation_float4(in_xyzw, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
@@ -2678,7 +2662,7 @@ double md_util_rmsd(const md_float4_t* const in_xyzw[2], const int32_t* const in
     return sqrt(d_sum / w_sum);
 }
 
-md_float3_t md_util_shape_weights(const md_float3x3_t* covariance_matrix) {
+md_float3_t md_geom_shape_weights(const md_float3x3_t* covariance_matrix) {
     MD_ASSERT(covariance_matrix);
     md_float3x3_eigen_t eigen = md_float3x3_eigen(*covariance_matrix);
     float scl = 1.0f / (eigen.values.x + eigen.values.y + eigen.values.z);
@@ -2697,7 +2681,7 @@ static inline void lerp_xyz8(float* dst, const float* a, const float* b, const m
     }
 }
 
-// One group of eight atoms over four frames, weighted (see md_util_interpolate_cubic_weighted). The weights are applied
+// One group of eight atoms over four frames, weighted (see md_geom_interpolate_cubic_weighted). The weights are applied
 // in order, so a weight of exactly one with the others zero gives that frame back exactly: an interpolating scheme
 // lands on its frames.
 static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, const md_xv w[4]) {
@@ -2724,7 +2708,7 @@ static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv
 // atoms first so the loads are aligned and a partial group last, each through a small staging copy;
 // any count works. A triclinic cell couples the axes: that path splits eight atoms into x, y and z
 // and relies on the arrays being padded to a multiple of eight atoms.
-bool md_util_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
+void md_geom_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const in_xyz[2], size_t count, const md_unitcell_t* cell, float t) {
     MD_ASSERT(out_xyz);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_xyz[0]);
@@ -2766,7 +2750,7 @@ bool md_util_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const i
             }
             i += n;
         }
-        return true;
+        return;
     }
 
     for (size_t i = 0; i < count; i += 8) {
@@ -2782,11 +2766,9 @@ bool md_util_interpolate_linear(md_float3_t* out_xyz, const md_float3_t* const i
 
         md_mm256_store_xyz_packed_ps(dst + i * 3, x, y, z);
     }
-
-    return true;
 }
 
-void md_util_cubic_spline_weights(float w[4], float t, float s) {
+void md_geom_cubic_spline_weights(float w[4], float t, float s) {
     MD_ASSERT(w);
     // The Hermite form, p(t) = h00 p1 + h10 m1 + h01 p2 + h11 m2, with the tangents m1 = s (p2 - p0) and m2 = s (p3 - p1)
     const float t2 = t * t;
@@ -2801,7 +2783,7 @@ void md_util_cubic_spline_weights(float w[4], float t, float s) {
     w[3] = s * h11;
 }
 
-void md_util_cubic_bspline_weights(float w[4], float t) {
+void md_geom_cubic_bspline_weights(float w[4], float t) {
     MD_ASSERT(w);
     const float t2 = t * t;
     const float t3 = t2 * t;
@@ -2812,9 +2794,9 @@ void md_util_cubic_bspline_weights(float w[4], float t) {
     w[3] = t3 * (1.0f / 6.0f);
 }
 
-// As md_util_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
+// As md_geom_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
 // split into x, y and z (and padded) in a triclinic one.
-bool md_util_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
+void md_geom_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
     MD_ASSERT(out_xyz);
     MD_ASSERT(in_xyz);
     MD_ASSERT(in_xyz[0]);
@@ -2861,7 +2843,7 @@ bool md_util_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t*
             }
             i += n;
         }
-        return true;
+        return;
     }
 
     for (size_t i = 0; i < count; i += 8) {
@@ -2885,6 +2867,4 @@ bool md_util_interpolate_cubic_weighted(md_float3_t* out_xyz, const md_float3_t*
 
         md_mm256_store_xyz_packed_ps(dst + i * 3, r[0], r[1], r[2]);
     }
-
-    return true;
 }

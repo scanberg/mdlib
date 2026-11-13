@@ -5,7 +5,8 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <md_types.h>
+
+struct md_atom_pair_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +14,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_load_desc_t;
 typedef struct md_system_state_t md_system_state_t;
 
 // GROMACS portable run input (.tpr)
@@ -169,13 +171,13 @@ typedef struct md_tpr_moltype_t {
     // SETTLE), plus every virtual site to its first constructing atom, so a virtual site belongs to
     // the structure of the molecule it is part of.
     size_t num_bonds;
-    md_atom_pair_t* bonds;
+    struct md_atom_pair_t* bonds;
     // Elastic bonds in local, zero based atom indices, idx[0] < idx[1], sorted and unique: the pairs held at a distance
     // by an interaction GROMACS does not count as a chemical bond (bond types 6, 9 and 10, constraints of type 2): the
     // elastic network of a coarse grained protein or nucleic acid, a restraint. A pair which is also in bonds is not
     // repeated here.
     size_t num_elastic_bonds;
-    md_atom_pair_t* elastic_bonds;
+    struct md_atom_pair_t* elastic_bonds;
     // Non-bonded exclusions in local, zero based atom indices, as grompp wrote them: the atoms within nrexcl
     // bonds and the explicit [ exclusions ]. The atoms excluded from atom i are excl[excl_offset[i]] ..
     // excl[excl_offset[i + 1] - 1], ascending, without i itself. Symmetric. NULL when the molecule type has none.
@@ -248,9 +250,9 @@ typedef struct md_tpr_data_t {
     // Bonds between atoms of different molecules ([ intermolecular_interactions ]), in global atom indices, and the
     // elastic bonds among those interactions (restraints between molecules)
     size_t num_intermolecular_bonds;
-    md_atom_pair_t* intermolecular_bonds;
+    struct md_atom_pair_t* intermolecular_bonds;
     size_t num_intermolecular_elastic_bonds;
-    md_atom_pair_t* intermolecular_elastic_bonds;
+    struct md_atom_pair_t* intermolecular_elastic_bonds;
 
     // The atom groups of the simulation: the index groups the mdp options named, by type. Their names are one list,
     // which the types index: a name in two types is one index group of the index file grompp was given ('rest' aside,
@@ -324,7 +326,7 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // The bonds are the topology's and are complete, so a caller should not infer covalent bonds on
 // top of them.
 bool md_tpr_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data);
-bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename);
+bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

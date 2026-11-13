@@ -13,6 +13,7 @@
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
 #include <md_infer.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_element.h>
 
@@ -261,14 +262,14 @@ static inline float mmcif_optional_float(const md_str_t tok[], const int table[]
     if (t.len == 0 || (t.len == 1 && (t.ptr[0] == '.' || t.ptr[0] == '?'))) {
         return NAN;
     }
-    return (float)parse_float(t);
+    return (float)md_parse_float(t);
 }
 
 static inline int parse_int_with_default(md_str_t tok, int def) {
     if (tok.len == 0 || tok.ptr[0] == '.' || tok.ptr[0] == '?') {
         return def;
     }
-    return (int)parse_int(tok);
+    return (int)md_parse_int(tok);
 }
 
 typedef struct {
@@ -377,13 +378,6 @@ static inline bool mmcif_peek_token(md_str_t* tok, mmcif_parse_state_t* state) {
     return true;
 }
 
-// This is a bit wierd, since were mixing lines and token semantics.
-// But will return the current line within the state that is about to be tokenized
-static inline md_str_t mmcif_cur_line(mmcif_parse_state_t* s) {
-    MD_ASSERT(s);     
-    return s->line;
-}
-
 // Advances to the next line, which is not part of a multiline string token
 static inline bool mmcif_advance_to_next_line(mmcif_parse_state_t* s) {
     MD_ASSERT(s);
@@ -428,12 +422,6 @@ typedef struct {
     md_str_t* headers;
     md_str_t* values;
 } mmcif_section_t;
-
-// Help accessors for data in sections
-static inline md_str_t mmcif_section_header(const mmcif_section_t* sec, size_t col) {
-    if (!sec || col >= sec->num_fields) return (md_str_t){0};
-    return sec->headers[col];
-}
 
 static inline md_str_t mmcif_section_value(const mmcif_section_t* sec, size_t row, size_t col) {
     if (!sec || col >= sec->num_fields || row >= sec->num_rows) return (md_str_t){0};
@@ -767,9 +755,9 @@ static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_sta
         mmcif_oper_t op = {.id = md_alloc_str(alloc, mmcif_section_value(&sec, i, id_col)), .transform = md_float4x4_ident()};
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
-                op.transform.elem[c][r] = (float)parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
+                op.transform.elem[c][r] = (float)md_parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
             }
-            op.transform.elem[3][r] = (float)parse_float(mmcif_section_value(&sec, i, v_col[r]));
+            op.transform.elem[3][r] = (float)md_parse_float(mmcif_section_value(&sec, i, v_col[r]));
         }
         md_array_push(*opers, op, alloc);
     }
@@ -818,15 +806,15 @@ static bool mmcif_oper_expression(md_array(uint32_t)* out, md_str_t expr, md_arr
             md_str_t lo_str, hi_str;
             int64_t lo = 0, hi = -1;
             if (md_str_cut(&lo_str, &hi_str, item, md_str_find_char(item, '-')) && lo_str.len > 0) {
-                lo = parse_int(md_str_trim(lo_str));
-                hi = parse_int(md_str_trim(hi_str));
+                lo = md_parse_int(md_str_trim(lo_str));
+                hi = md_parse_int(md_str_trim(hi_str));
             }
             if (hi >= lo) {
                 for (int64_t v = lo; v <= hi; ++v) {
                     size_t k = 0;
                     for (; k < base_count; ++k) {
                         const md_str_t id = (*opers)[k].id;
-                        if (!md_str_empty(id) && md_ascii_is_digit(id.ptr[0]) && parse_int(id) == v) break;
+                        if (!md_str_empty(id) && md_ascii_is_digit(id.ptr[0]) && md_parse_int(id) == v) break;
                     }
                     if (k == base_count) {
                         MD_LOG_ERROR("Operator %" PRId64 " of the expression is not in _pdbx_struct_oper_list", v);
@@ -967,7 +955,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
 // a byte which is not), all of them at once: the n:th token is from the n:th beginning to the n:th end. Not one token
 // after another, each from where the last ended, which is a chain of as many steps as the row has tokens.
 // The whitespace of the chunk at c, the bytes from end on counted as such
-MD_TEXT_NO_SANITIZE static inline uint64_t mmcif_ws_chunk(const char* c, const char* end) {
+MD_PARSE_SIMD_NO_SANITIZE static inline uint64_t mmcif_ws_chunk(const char* c, const char* end) {
     uint64_t ws = md_parse_whitespace_mask64(c);
     if (end - c < 64) ws |= ~UINT64_C(0) << (end - c);
     return ws;
@@ -979,7 +967,7 @@ static const uint8_t mmcif_first_char[256] = { ['#'] = 1, [';'] = 1, ['\''] = 2,
 // tok has room for MMCIF_SPLIT_SLACK tokens past num, which the loops below write ahead of the count
 #define MMCIF_SPLIT_SLACK 4
 
-MD_TEXT_NO_SANITIZE static bool mmcif_split_row(md_str_t* tok, size_t num, const char* beg, const char* end) {
+MD_PARSE_SIMD_NO_SANITIZE static bool mmcif_split_row(md_str_t* tok, size_t num, const char* beg, const char* end) {
     size_t n = 0;
     uint32_t first = 0;         // Of the tokens' first characters, what mmcif_first_char says of them
     size_t n_end = 0;
@@ -1063,9 +1051,9 @@ static inline void mmcif_atom_site_entry(mmcif_atom_site_entry_t* out, const md_
     const int default_value = INT32_MIN;
 
     mmcif_atom_site_entry_t entry = {
-        .x = (float)parse_float(cartn_x),
-        .y = (float)parse_float(cartn_y),
-        .z = (float)parse_float(cartn_z),
+        .x = (float)md_parse_float(cartn_x),
+        .y = (float)md_parse_float(cartn_y),
+        .z = (float)md_parse_float(cartn_z),
         .label_seq_id = parse_int_with_default(label_seq_id, default_value),
         .auth_seq_id = parse_int_with_default(auth_seq_id, default_value),
         .label_alt_id   = label_alt_id.len > 0 ? label_alt_id.ptr[0] : '.',
@@ -1131,7 +1119,7 @@ static void mmcif_rows_count(void* arg, uint32_t beg, uint32_t end, uint32_t thr
     const mmcif_rows_t* R = (const mmcif_rows_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         mmcif_rows_piece_t* piece = &R->pieces[p];
-        size_t n = md_text_count_newlines(R->text + piece->range.beg, R->text + piece->range.end);
+        size_t n = md_parse_count_byte(R->text + piece->range.beg, R->text + piece->range.end, '\n');
         // The last line of the text may not end in one
         if (piece->range.end == R->len && piece->range.end > piece->range.beg && R->text[R->len - 1] != '\n') ++n;
         piece->num_lines = n;
@@ -1147,9 +1135,9 @@ static void mmcif_rows_parse(void* arg, uint32_t beg, uint32_t end, uint32_t thr
         mmcif_atom_site_entry_t* out = R->entries + piece->first;
         size_t n = 0;
         piece->stop = piece->range.end;
-        md_text_lines_t lines = md_text_lines(R->text + piece->range.beg, R->text + piece->range.end);
+        md_parse_lines_t lines = md_parse_lines(R->text + piece->range.beg, R->text + piece->range.end);
         md_str_t line;
-        while (md_text_lines_next(&lines, &line)) {
+        while (md_parse_lines_next(&lines, &line)) {
             if (!mmcif_plain_row(tok, R->cols->num_cols, line)) {
                 piece->stop = (size_t)(line.ptr - R->text);
                 break;
@@ -1367,7 +1355,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
                 return false;
             }
 
-            double val = parse_float(val_tok);
+            double val = md_parse_float(val_tok);
 
             if (md_str_eq_cstr(tok, "_cell.angle_alpha")) {
                 cell->alpha = val;
@@ -1669,7 +1657,8 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
 
@@ -1697,7 +1686,8 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, m
     return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
+bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
 

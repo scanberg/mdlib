@@ -14,6 +14,7 @@
 #include <core/md_vec_math.h>
 
 #include <md_types.h>
+#include <md_io.h>
 #include <md_system.h>
 #include <md_gto.h>
 #include <md_qm.h>
@@ -23,6 +24,7 @@
 #include <hdf5.h>
 #include "md_hdf5.h"
 #include <md_element.h>
+#include <core/md_executor.h>
 
 
 // ---------------------------------------------------------------------------
@@ -757,7 +759,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 
 				return false;
 			}
-			int count = (int)parse_int(tok[1]);
+			int count = (int)md_parse_int(tok[1]);
 			if (count == 0 || count > 255) {
 				MD_LOG_ERROR("Invalid number of coefficients in atom basis in basis set");
 				return false;
@@ -790,8 +792,8 @@ static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allo
 				char buf[64];
 				md_str_copy_to_char_buf(buf, sizeof(buf), tok[0]);
 
-				double exponent = parse_float(tok[0]);
-				double coeff    = parse_float(tok[1]);
+				double exponent = md_parse_float(tok[0]);
+				double coeff    = md_parse_float(tok[1]);
 				
 				md_array_push(basis_set->param.exponents, exponent, alloc);
 				md_array_push(basis_set->param.normalization_coefficients, coeff, alloc);
@@ -6077,7 +6079,8 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	}
 }
 
-bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_executor_t* executor) {
+bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* executor = desc ? desc->executor : NULL;
 	MD_ASSERT(sys);
 
 	// Heap backed, not temp backed - see vlx_create.
@@ -6103,7 +6106,8 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 	return success;
 }
 
-bool md_vlx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const struct md_executor_t* executor) {
+bool md_vlx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* executor = desc ? desc->executor : NULL;
 	MD_ASSERT(sys);
 
 	if (!sys->attributes.alloc) {

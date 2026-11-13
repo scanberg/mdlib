@@ -34,7 +34,7 @@ uint64_t md_system_topology_changed(md_system_t* sys) {
 
 // ### ASSEMBLIES ###
 
-void md_system_assemblies_free(md_system_t* sys) {
+static void md_system_assemblies_free(md_system_t* sys) {
     MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
     md_assembly_data_t* a = &sys->assembly;
@@ -66,7 +66,7 @@ const char* md_group_role_name(md_group_role_t role) {
     return (uint32_t)role < MD_GROUP_ROLE_COUNT ? group_role_names[role] : NULL;
 }
 
-void md_system_groups_free(md_system_t* sys) {
+static void md_system_groups_free(md_system_t* sys) {
     MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
     md_group_data_t* g = &sys->group;

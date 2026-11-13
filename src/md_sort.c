@@ -1,4 +1,4 @@
-﻿#include <md_util_sort.h>
+﻿#include <md_sort.h>
 
 #include <core/md_compiler.h>
 #include <core/md_common.h>
@@ -395,7 +395,7 @@ static void radixPass10(uint32_t* destination, const uint32_t* source, const uin
 
 // Packed coordinates: the bounds come from the packed AABB, which reads them as they lie, and the
 // keys from each atom in turn.
-void md_util_sort_spatial(uint32_t* out_order, const float* xyz, size_t stride_in_bytes, size_t count) {
+void md_sort_spatial(uint32_t* out_order, const float* xyz, size_t stride_in_bytes, size_t count) {
     if (!out_order || !xyz || count == 0) return;
     const size_t stride = stride_in_bytes ? stride_in_bytes : 3 * sizeof(float);
 #define XYZ(i) ((const float*)((const char*)xyz + stride * (i)))
@@ -441,7 +441,7 @@ void md_util_sort_spatial(uint32_t* out_order, const float* xyz, size_t stride_i
     md_temp_end(temp_scope);
 }
 
-void md_util_sort_radix_u32(uint32_t* data, size_t count) {
+void md_sort_radix_u32(uint32_t* data, size_t count) {
     if (!data || count <= 1) return;
     MD_ASSERT(count <= UINT32_MAX);
 
@@ -456,7 +456,7 @@ void md_util_sort_radix_u32(uint32_t* data, size_t count) {
     md_temp_end(temp_scope);
 }
 
-void md_util_sort_radix_u64(uint64_t* data, size_t count) {
+void md_sort_radix_u64(uint64_t* data, size_t count) {
     if (!data || count <= 1) return;
     MD_ASSERT(count <= UINT32_MAX);
 
@@ -471,7 +471,7 @@ void md_util_sort_radix_u64(uint64_t* data, size_t count) {
     md_temp_end(temp_scope);
 }
 
-void md_util_argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count) {
+void md_argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count) {
     if (count == 0) return;
     MD_ASSERT(out_indices);
     MD_ASSERT(keys);
@@ -491,7 +491,7 @@ void md_util_argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size
     md_temp_end(temp_scope);
 }
 
-void md_util_argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count) {
+void md_argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count) {
     if (count == 0) return;
     MD_ASSERT(out_indices);
     MD_ASSERT(keys);

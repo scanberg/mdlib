@@ -3,7 +3,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#include <core/md_grid.h>
+struct md_grid_t;
+
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -290,12 +291,12 @@ size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
     const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff);
 
 // GPU-accelerated versions of the above evaluation functions.  See md_gto.c for details on the expected data layout and GPU buffer formats.
-void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
+void md_gto_grid_evaluate_mo_GL(uint32_t vol_tex, const struct md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
 	const double* mo_coeffs, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op);
 
 // mo_scl is optional and if null is supplied, then it is assumed that all orbitals should be scaled by 1.0 (i.e. no relative scaling between orbitals).
-void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
+void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const struct md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
 	const double* mo_coeffs[], const double mo_scl[], size_t num_mos, double cutoff, md_gto_eval_mode_t mode, md_gto_op_t op);
 
@@ -303,14 +304,14 @@ void md_gto_grid_evaluate_multi_mo_GL(uint32_t vol_tex, const md_grid_t* grid,
 // Expands the basis, converts the NxN double density matrix to upper-triangular float,
 // and dispatches the existing GL density compute shader.
 // density_matrix: full N×N row-major doubles, N = number of spherical AOs in basis.
-void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
+void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const struct md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
 	const double* density_matrix, bool include_gradients, md_gto_op_t op);
 
 // The same over a density matrix already packed: its upper triangle as float, row i holding columns
 // i..N-1, N(N+1)/2 values (md_qm_extract_packed_symmetric_f32 gives it). The form the shader takes, so
 // a caller holding it this way never has to make the full double matrix only for it to be packed here.
-void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* grid,
+void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const struct md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
 	const float* upper_tri, bool include_gradients, md_gto_op_t op);
 
@@ -337,7 +338,7 @@ static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, i
 // - gtos: The gtos to evaluate
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+void md_gto_grid_evaluate(float* out_grid_values, const struct md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 #if MD_ENABLE_GPU
 
@@ -519,7 +520,7 @@ typedef struct md_gto_gpu_density_desc_t {
     md_gto_gpu_dmat_t dmat;       // D in tiles instead of coeff (made with the cutoff of basis)
     md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
 
-    const md_grid_t* grid;
+    const struct md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
 	float sample_offset[3];
 
@@ -605,7 +606,7 @@ typedef struct md_gto_gpu_localization_desc_t {
     double             rho_min;       // where rho (both spins) is below it, 0 (md_qm_elf)
     double             d_min;         // ELF: added to D (md_qm_elf; MD_QM_ELF_D_MIN), 0: none
     md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
-    const md_grid_t*   grid;
+    const struct md_grid_t*   grid;
     float              sample_offset[3];
     uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30
 } md_gto_gpu_localization_desc_t;
@@ -662,7 +663,7 @@ typedef struct md_gto_gpu_orbital_desc_t {
     md_gpu_addr_t    coeff;
     md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
 
-    const md_grid_t* grid;
+    const struct md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
 	float sample_offset[3];
 
@@ -704,7 +705,7 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
 // @NOTE: It is strongly recommended that the evaluation occurs over a 8x8x8 blocks as this will get a vectorized fastpath
-void md_gto_grid_evaluate_sub(float* out_grid_values, const md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
+void md_gto_grid_evaluate_sub(float* out_grid_values, const struct md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
 
 // Evaluates GTOs over a set of given XYZ coordinates
 // - out_xyz_values: Array of values to write evaluated values to, should have length 'num_xyz'
@@ -719,10 +720,6 @@ void md_gto_xyz_evaluate(float* out_xyz_values, const float* xyz, size_t num_xyz
 // Evaluates GTOs over space 
 //void md_gto_xyz_voronoi_evaluate(float* out_val, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t)
 
-// Compute the cutoff parameter within the supplied GTOs based on the given value
-// Typically this could be somewhere around 1.0e-6
-// returns the number of gtos left after this, as some may have no radius of influence and will be pruned away
-size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t num_gtos, double value);
 
 // Calculate the radius of influence for a single GTO
 double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, double alpha, double cutoff);

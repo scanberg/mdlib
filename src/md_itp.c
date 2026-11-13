@@ -1,4 +1,5 @@
 #include <md_itp.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_infer.h>
@@ -73,15 +74,15 @@ static bool is_defined(const itp_parser_t* p, md_str_t name) {
 
 // A number of an [ atoms ] line, which may be a macro that stands for one ("NL_CHARGE"), as grompp substitutes them
 static bool itp_number(float* out, const itp_parser_t* p, md_str_t tok) {
-    if (is_float(tok)) {
-        *out = (float)parse_float(tok);
+    if (md_parse_is_float(tok)) {
+        *out = (float)md_parse_float(tok);
         return true;
     }
     for (size_t i = 0; i < md_array_size(p->defines); ++i) {
         if (md_str_eq(p->defines[i], tok)) {
             const md_str_t v = p->define_values[i];
-            if (!is_float(v)) return false;
-            *out = (float)parse_float(v);
+            if (!md_parse_is_float(v)) return false;
+            *out = (float)md_parse_float(v);
             return true;
         }
     }
@@ -148,13 +149,13 @@ static bool itp_elastic_funct(section_t section, int64_t funct) {
 }
 
 static bool parse_i64(int64_t* out, md_str_t tok) {
-    if (!is_int(tok)) return false;
-    *out = parse_int(tok);
+    if (!md_parse_is_int(tok)) return false;
+    *out = md_parse_int(tok);
     return true;
 }
 
 static float parse_f32(md_str_t tok) {
-    return (float)parse_float(tok);
+    return (float)md_parse_float(tok);
 }
 
 static void parse_data_line(itp_parser_t* p, md_str_t line) {
@@ -177,7 +178,7 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
                 break;
             }
         }
-        if (pt == 0 || !is_float(tok[pt - 1]) || !is_float(tok[pt - 2])) {
+        if (pt == 0 || !md_parse_is_float(tok[pt - 1]) || !md_parse_is_float(tok[pt - 2])) {
             MD_LOG_INFO("itp: could not interpret atomtype line '" MD_STR_FMT "'", MD_STR_ARG(line));
             return;
         }
@@ -187,8 +188,8 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
             .mass   = parse_f32(tok[pt - 2]),
             .charge = parse_f32(tok[pt - 1]),
         };
-        if (pt >= 4 && is_int(tok[pt - 3])) {
-            type.atomic_number = (int32_t)parse_int(tok[pt - 3]);
+        if (pt >= 4 && md_parse_is_int(tok[pt - 3])) {
+            type.atomic_number = (int32_t)md_parse_int(tok[pt - 3]);
         }
         md_array_push(p->data->atomtypes, type, p->alloc);
         break;
@@ -196,7 +197,7 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
     case SECTION_MOLECULETYPE: {
         md_itp_moleculetype_t mol = {
             .name   = md_alloc_str(p->alloc, tok[0]),
-            .nrexcl = num_tok > 1 ? (int32_t)parse_int(tok[1]) : 0,
+            .nrexcl = num_tok > 1 ? (int32_t)md_parse_int(tok[1]) : 0,
         };
         md_array_push(p->data->moleculetypes, mol, p->alloc);
         p->mol = (int64_t)md_array_size(p->data->moleculetypes) - 1;
@@ -219,7 +220,7 @@ static void parse_data_line(itp_parser_t* p, md_str_t line) {
         }
         md_itp_atom_t atom = {
             .type     = md_alloc_str(p->alloc, tok[1]),
-            .res_nr   = (int32_t)parse_int(tok[2]),
+            .res_nr   = (int32_t)md_parse_int(tok[2]),
             .res_name = md_alloc_str(p->alloc, tok[3]),
             .name     = md_alloc_str(p->alloc, tok[4]),
         };
@@ -526,7 +527,7 @@ bool md_itp_data_parse_str(md_itp_data_t* data, md_str_t str, md_str_t base_fold
     return ok;
 }
 
-bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, md_allocator_i* alloc) {
+static bool md_itp_data_parse_file(md_itp_data_t* data, md_str_t filename, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
 
@@ -1054,7 +1055,8 @@ done:
     return result;
 }
 
-bool md_itp_system_supplement_from_file(md_system_t* sys, md_str_t filename) {
+bool md_itp_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);

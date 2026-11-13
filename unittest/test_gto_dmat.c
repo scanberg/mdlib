@@ -36,6 +36,7 @@
 #include <md_molden.h>
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
+#include <core/md_grid.h>
 
 #include <float.h>
 #include <math.h>
@@ -471,7 +472,7 @@ static bool loc_load(loc_src_t* s, const char* file) {
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/%s/%s", molden ? "molden" : "vlx", file);
     if (molden) {
         qm_test_init(&s->t, MD_MEGABYTES(256));
-        if (!md_molden_system_init_from_file(&s->t.sys, &s->t.state, md_str_from_cstr(path))) return false;
+        if (!md_molden_system_init_from_file(&s->t.sys, &s->t.state, md_str_from_cstr(path), NULL)) return false;
     } else if (!vlx_test_load(&s->t, md_str_from_cstr(path), MD_MEGABYTES(1024))) {
         return false;
     }

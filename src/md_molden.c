@@ -1,4 +1,5 @@
 #include <md_molden.h>
+#include <md_io.h>
 
 #include <md_system.h>
 #include <md_types.h>
@@ -166,7 +167,7 @@ static size_t molden_num_file_ao(const molden_t* molden) {
 // Parsing
 // ---------------------------------------------------------------------------
 
-// A Molden number may carry a Fortran 'D' exponent (1.0D-03). parse_float does not know about it,
+// A Molden number may carry a Fortran 'D' exponent (1.0D-03). md_parse_float does not know about it,
 // and the alternative - rewriting the buffer - would mutate the caller's string.
 static double molden_parse_float(md_str_t tok) {
     char buf[64];
@@ -174,7 +175,7 @@ static double molden_parse_float(md_str_t tok) {
     for (size_t i = 0; i < n; ++i) {
         if (buf[i] == 'D' || buf[i] == 'd') buf[i] = 'e';
     }
-    return parse_float(md_str_from_cstrn(buf, n));
+    return md_parse_float(md_str_from_cstrn(buf, n));
 }
 
 // "[Atoms] (Angs)" -> section "atoms", argument "(Angs)". Returns false for anything that is not a
@@ -245,7 +246,7 @@ static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, md_str_t a
             continue;
         }
         // symbol index atomic_number x y z
-        md_atomic_number_t z = (md_atomic_number_t)parse_int(tok[2]);
+        md_atomic_number_t z = (md_atomic_number_t)md_parse_int(tok[2]);
         if (z == 0) {
             z = md_atomic_number_from_symbol(tok[0], true);
         }
@@ -311,11 +312,11 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
         // header of the next atom's block. Nothing else is legal here, and an unknown letter is a
         // shell type this library cannot evaluate rather than something to skip past quietly.
         if (l < 0 && !is_sp) {
-            if (!is_int(tok[0])) {
+            if (!md_parse_is_int(tok[0])) {
                 MD_LOG_ERROR("MOLDEN: [GTO] shell type '" MD_STR_FMT "' is not one this library evaluates (s, p, d, f, g and sp)", MD_STR_ARG(tok[0]));
                 return false;
             }
-            const int64_t idx = parse_int(tok[0]) - 1;
+            const int64_t idx = md_parse_int(tok[0]) - 1;
             if (idx < 0 || (size_t)idx >= num_atoms) {
                 MD_LOG_ERROR("MOLDEN: [GTO] names atom %d, the file has %zu", (int)(idx + 1), num_atoms);
                 return false;
@@ -334,7 +335,7 @@ static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
             MD_LOG_ERROR("MOLDEN: malformed shell line '" MD_STR_FMT "'", MD_STR_ARG(rest));
             return false;
         }
-        const size_t num_prim = (size_t)parse_int(tok[1]);
+        const size_t num_prim = (size_t)md_parse_int(tok[1]);
         if (num_prim == 0 || num_prim > MOLDEN_MAX_PRIMITIVES) {
             MD_LOG_ERROR("MOLDEN: shell with %zu primitives, which is outside 1..%d", num_prim, MOLDEN_MAX_PRIMITIVES);
             return false;
@@ -435,7 +436,7 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
         if (md_parse_next_tokens(tok, MD_COUNTOF(tok), &scan) < 2) {
             continue;
         }
-        const int64_t ao = parse_int(tok[0]) - 1;
+        const int64_t ao = md_parse_int(tok[0]) - 1;
         if (ao < 0 || (size_t)ao >= num_ao) {
             MD_LOG_ERROR("MOLDEN: [MO] names atomic orbital %d, the basis has %zu", (int)(ao + 1), num_ao);
             return false;
@@ -1155,7 +1156,8 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str) {
+bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
@@ -1171,7 +1173,8 @@ bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
     return result;
 }
 
-bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
 
     md_file_t file = {0};
@@ -1190,7 +1193,7 @@ bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state,
         MD_LOG_ERROR("MOLDEN: failed to read '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         buf[size] = '\0';
-        result = md_molden_system_init_from_str(sys, state, (md_str_t){ buf, size });
+        result = md_molden_system_init_from_str(sys, state, (md_str_t){ buf, size }, desc);
     }
 
     if (buf) {

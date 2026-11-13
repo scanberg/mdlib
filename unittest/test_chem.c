@@ -235,7 +235,7 @@ UTEST(chem, ions) {
         "HETATM   16 CL    CL A   5      40.000   0.000   0.000  1.00  0.00          CL\n"
         "HETATM   17 MG    MG A   6      50.000   0.000   0.000  1.00  0.00          MG\n"
         "HETATM   18  O   HOH A   7      60.000   0.000   0.000  1.00  0.00           O\n";
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
 
     int q[8] = { 0 };
@@ -921,8 +921,8 @@ static void delta_load(delta_fixture_chem_t* f, const char* before, const char* 
     f->before_state = (md_system_state_t){ .alloc = f->alloc };
     f->after_state  = (md_system_state_t){ .alloc = f->alloc };
     f->frame        = (md_system_state_t){ .alloc = f->alloc };
-    if (!md_xyz_system_init_from_str(&f->before, &f->before_state, md_str_from_cstr(before), MD_XYZ_OPTION_NONE)) return;
-    if (!md_xyz_system_init_from_str(&f->after, &f->after_state, md_str_from_cstr(after), MD_XYZ_OPTION_NONE)) return;
+    if (!md_xyz_system_init_from_str(&f->before, &f->before_state, md_str_from_cstr(before), NULL)) return;
+    if (!md_xyz_system_init_from_str(&f->after, &f->after_state, md_str_from_cstr(after), NULL)) return;
     if (!md_system_infer(&f->before, &f->before_state, MD_SYSTEM_INFER_ALL, NULL)) return;
     if (!md_system_infer(&f->after, &f->after_state, MD_SYSTEM_INFER_ALL, NULL)) return;
     const size_t n = f->before.atom.count;
@@ -1173,7 +1173,7 @@ UTEST(chem, delta_metal_contact) {
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const size_t n = sys.atom.count;
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };

@@ -75,56 +75,6 @@ UTEST(cube, read_A2B2) {
 	md_cube_free(&cube, md_get_heap_allocator());
 }
 
-static bool cmp_cube_v3(md_cube_v3 a, md_cube_v3 b) {
-	return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
-}
-
-UTEST(cube, serialize_deserialize) {
-	md_cube_t cube_a = {0};
-	md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
-	ASSERT_TRUE(md_cube_file_load(&cube_a, path, md_get_heap_allocator()));
-	
-	md_str_t str = md_cube_serialize(&cube_a, md_get_heap_allocator());
-    ASSERT_FALSE(md_str_empty(str));
-
-	md_cube_t cube_b = {0};
-	ASSERT_TRUE(md_cube_deserialize(&cube_b, str, md_get_heap_allocator()));
-
-	EXPECT_STREQ(cube_a.title.ptr, cube_b.title.ptr);
-	EXPECT_STREQ(cube_a.comment.ptr, cube_b.comment.ptr);
-
-	EXPECT_TRUE(cmp_cube_v3(cube_a.origin, cube_b.origin));
-	EXPECT_TRUE(cmp_cube_v3(cube_a.xaxis, cube_b.xaxis));
-	EXPECT_TRUE(cmp_cube_v3(cube_a.yaxis, cube_b.yaxis));
-	EXPECT_TRUE(cmp_cube_v3(cube_a.zaxis, cube_b.zaxis));
-
-	EXPECT_EQ(cube_a.data.num_x, cube_b.data.num_x);
-	EXPECT_EQ(cube_a.data.num_y, cube_b.data.num_y);
-	EXPECT_EQ(cube_a.data.num_z, cube_b.data.num_z);
-	EXPECT_EQ(cube_a.data.num_m, cube_b.data.num_m);
-
-	if (cube_a.data.id) {
-		EXPECT_NE(cube_b.data.id, NULL);
-		int size_a = cube_a.data.num_x * cube_a.data.num_y * cube_a.data.num_z * cube_a.data.num_m;
-		int size_b = cube_b.data.num_x * cube_b.data.num_y * cube_b.data.num_z * cube_b.data.num_m;
-		ASSERT_EQ(size_a, size_b);
-		for (int i = 0; i < size_a; ++i) {
-			EXPECT_NEAR(cube_a.data.val[i], cube_b.data.val[i], 1.0e-9);
-		}
-	}
-
-	ASSERT_EQ(cube_a.atom.count, cube_b.atom.count);
-	for (int i = 0; i < cube_a.atom.count; ++i) {
-        EXPECT_EQ(cube_a.atom.number[i], cube_b.atom.number[i]);
-        EXPECT_NEAR(cube_a.atom.charge[i], cube_b.atom.charge[i], 1.0e-9);
-        EXPECT_TRUE(cmp_cube_v3(cube_a.atom.coord[i], cube_b.atom.coord[i]));
-	}
-
-	md_free_str(md_get_heap_allocator(), str);
-	md_cube_free(&cube_a, md_get_heap_allocator());
-	md_cube_free(&cube_b, md_get_heap_allocator());
-}
-
 UTEST(cube, nonexistent_file) {
 	md_cube_t cube = {0};
 	bool result = md_cube_file_load(&cube, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nonexistent.cube"), md_get_heap_allocator());
@@ -166,8 +116,7 @@ UTEST(cube, angstrom_header) {
     md_cube_free(&cube, md_get_heap_allocator());
 }
 
-// A grid without atoms, and a grid of two values per point (NVAL 2): the first was refused for having no atoms, the
-// second written with only one value in two.
+// A grid without atoms, and a grid of two values per point (NVAL 2): the first was refused for having no atoms.
 UTEST(cube, no_atoms_and_values_per_point) {
     md_allocator_i* alloc = md_get_heap_allocator();
     const md_str_t text = MD_STR_LIT(
@@ -184,16 +133,5 @@ UTEST(cube, no_atoms_and_values_per_point) {
     EXPECT_EQ(0, a.atom.count);
     EXPECT_EQ(2, a.data.num_m);
     EXPECT_EQ(8.0f, a.data.val[7]);
-
-    md_str_t str = md_cube_serialize(&a, alloc);
-    ASSERT_FALSE(md_str_empty(str));
-    md_cube_t b = {0};
-    ASSERT_TRUE(md_cube_deserialize(&b, str, alloc));
-    EXPECT_EQ(2, b.data.num_m);
-    for (int i = 0; i < 8; ++i) {
-        EXPECT_EQ(a.data.val[i], b.data.val[i]);
-    }
-    md_free_str(alloc, str);
     md_cube_free(&a, alloc);
-    md_cube_free(&b, alloc);
 }

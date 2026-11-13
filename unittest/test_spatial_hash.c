@@ -1,4 +1,5 @@
 ﻿#include "utest.h"
+#include <md_io.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
@@ -13,7 +14,7 @@
 #include <md_gro.h>
 #include <md_lammps.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -951,7 +952,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
 
     srand(31);
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
@@ -1061,7 +1062,7 @@ UTEST_F(spatial_hash, test_correctness_water_ethane_triclinic) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), atom_format));
+    ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Triclinic_Init.data"), &(md_load_desc_t){ .format = md_str_from_cstr(atom_format) }));
 
     srand(31);
 
@@ -1196,7 +1197,7 @@ UTEST_F(spatial_hash, npt_triclinic) {
         double d2_ref = distance_ref_mic27(G, s0, s1);
 
 		md_float3_t dx = { x1[0] - x0[0], x1[1] - x0[1], x1[2] - x0[2] };
-        md_util_min_image(dx.elem, 0, 1, &sys_state.unitcell);
+        md_geom_min_image(dx.elem, 0, 1, &sys_state.unitcell);
         double d2 = dx.x * dx.x + dx.y * dx.y + dx.z * dx.z;
 
 		EXPECT_NEAR(d2_ref, d2, 1.0e-4);

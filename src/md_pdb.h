@@ -11,20 +11,12 @@ extern "C" {
 #endif
 
 struct md_system_t;
+struct md_load_desc_t;
 // Coordinates are handed back through a state; only passed by pointer here.
 typedef struct md_system_state_t md_system_state_t;
 
 struct md_allocator_i;
-struct md_system_loader_i;
 struct md_executor_t;
-
-enum {
-    MD_PDB_OPTION_NONE                      = 0,
-    MD_PDB_OPTION_CONCAT_MODELS             = 1,
-    MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE  = 2, // Unused: a run is published with md_pdb_system_publish_run, which takes its own flags
-};
-
-typedef uint32_t md_pdb_options_t;
 
 // A PDB file is read into a system, and nothing else: there is no representation of the file of its own. What the
 // system has of it is the atoms (ATOM, HETATM) of the first model, the chains (and where TER records end them), the
@@ -32,14 +24,14 @@ typedef uint32_t md_pdb_options_t;
 // records are passed over: this is a loader of systems, not a reader of every record of the format.
 
 // SYSTEM
-// The system: the atoms (of the first model, or of all with MD_PDB_OPTION_CONCAT_MODELS), where they are, their types,
+// The system: the atoms (of the first model, or of all with MD_LOAD_FLAG_ALL_MODELS), where they are, their types,
 // the residues, the units of the file (its chains, by the character of column 22 as the file has it: a digit is an id as
 // a letter is, a blank none), the bonds of the CONECT records, the cell and the assemblies. No bonds beyond the file's,
-// nor what the residues are by them: md_system_infer derives those, when the caller wants them. The executor
+// nor what the residues are by them: md_system_infer derives those, when the caller wants them. The executor of desc
 // (NULL: the calling thread) reads a file and its lines in parallel; of a file of several models, the first model and
 // the CONECT records after the last are read, not the models between.
-bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, md_pdb_options_t options, const struct md_executor_t* executor);
-bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,      md_pdb_options_t options, const struct md_executor_t* executor);
+bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,      const struct md_load_desc_t* desc);
 
 // EXPORT
 bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num);

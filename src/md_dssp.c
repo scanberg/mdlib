@@ -2,8 +2,8 @@
 
 #include <md_system.h>
 #include <md_unitcell.h>
-#include <md_util_geom.h>
-#include <md_util_sort.h>
+#include <md_geom.h>
+#include <md_sort.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -273,7 +273,7 @@ static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, c
             const md_float4_t raw = md_float4_sub(param->res_coords[j].CA, param->res_coords[i].CA);
             if (md_float4_dot(raw, raw) > ij_dist2[idx] * 1.0001f + 1.0e-4f) {
                 md_float4_t img = raw;
-                md_util_min_image(img.elem, sizeof(md_float4_t), 1, param->cell);
+                md_geom_min_image(img.elem, sizeof(md_float4_t), 1, param->cell);
                 shift = md_float4_sub(img, raw);
             }
         }
@@ -295,7 +295,7 @@ static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, c
 static inline md_float4_t dssp_whole_about(md_float4_t ref, md_float4_t p, const md_unitcell_t* cell) {
     md_float4_t d = md_float4_sub(p, ref);
     if (md_float4_dot(d, d) <= 3.0f * 3.0f) return p;
-    md_util_min_image(d.elem, sizeof(md_float4_t), 1, cell);
+    md_geom_min_image(d.elem, sizeof(md_float4_t), 1, cell);
     return md_float4_add(ref, d);
 }
 
@@ -354,8 +354,8 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
             md_float4_t v1 = md_float4_sub(res_coords[i - 2].CA, res_coords[i].CA);
             md_float4_t v2 = md_float4_sub(res_coords[i + 2].CA, res_coords[i].CA);
             if ((res_key[i - 2] | res_key[i] | res_key[i + 2]) & 1) {
-                if (md_float4_dot(v1, v1) > 8.0f * 8.0f) md_util_min_image(v1.elem, sizeof(md_float4_t), 1, cell);
-                if (md_float4_dot(v2, v2) > 8.0f * 8.0f) md_util_min_image(v2.elem, sizeof(md_float4_t), 1, cell);
+                if (md_float4_dot(v1, v1) > 8.0f * 8.0f) md_geom_min_image(v1.elem, sizeof(md_float4_t), 1, cell);
+                if (md_float4_dot(v2, v2) > 8.0f * 8.0f) md_geom_min_image(v2.elem, sizeof(md_float4_t), 1, cell);
             }
             res_bend[i] = dssp_bend(v1, v2);
         }
@@ -387,7 +387,7 @@ static inline md_float3_t min_image_diff(md_float3_t a, md_float3_t b, float dis
     md_float3_t d = md_float3_sub(b, a);
     const float l2 = md_float3_dot(d, d);
     const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
-    if (l2 > ref2) md_util_min_image(d.elem, 0, 1, cell);
+    if (l2 > ref2) md_geom_min_image(d.elem, 0, 1, cell);
     return d;
 }
 
@@ -921,7 +921,7 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
             for (size_t c = 0; c < n; ++c) {
                 keys[c] = ((uint64_t)sheet_candidates[c].i << 32) | sheet_candidates[c].j;
             }
-            md_util_sort_radix_u64(keys, n);
+            md_sort_radix_u64(keys, n);
             size_t u = 0;
             for (size_t c = 0; c < n; ++c) {
                 if (c > 0 && keys[c] == keys[c - 1]) continue;

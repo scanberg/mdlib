@@ -35,7 +35,7 @@ static void check_file(int* utest_result, sys_load_fn load, md_str_t path) {
 }
 
 static bool load_pdb(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_pdb_system_init_from_file(sys, state, path, MD_PDB_OPTION_NONE, NULL);
+    return md_pdb_system_init_from_file(sys, state, path, NULL);
 }
 
 static bool load_mmcif(md_system_t* sys, md_system_state_t* state, md_str_t path) {
@@ -78,7 +78,7 @@ UTEST(system_invariants, copy) {
     md_allocator_i* a2 = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = a1 };
     md_system_state_t state = { .alloc = a1 };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
 
     // The core, copied and inferred on, as viamd does in the background
     md_system_t core = { .alloc = a2 };

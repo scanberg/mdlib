@@ -49,10 +49,10 @@ UBENCH_EX(str, parse_int) {
 
     size_t acc = 0;
     UBENCH_DO_BENCHMARK() {
-		acc += parse_int(str[0]);
-        acc += parse_int(str[1]);
-        acc += parse_int(str[2]);
-        acc += parse_int(str[3]);
+		acc += md_parse_int(str[0]);
+        acc += md_parse_int(str[1]);
+        acc += md_parse_int(str[2]);
+        acc += md_parse_int(str[3]);
     }
     UBENCH_DO_NOTHING(&acc);
 }
@@ -98,10 +98,10 @@ UBENCH_EX(str, parse_float) {
 
     double acc = 0;
     UBENCH_DO_BENCHMARK() {
-        acc += parse_float(str[0]);
-        acc += parse_float(str[1]);
-        acc += parse_float(str[2]);
-        acc += parse_float(str[3]);
+        acc += md_parse_float(str[0]);
+        acc += md_parse_float(str[1]);
+        acc += md_parse_float(str[2]);
+        acc += md_parse_float(str[3]);
     }
     UBENCH_DO_NOTHING(&acc);
 }

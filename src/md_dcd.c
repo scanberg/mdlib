@@ -727,12 +727,6 @@ static inline float dcd_load_f32(const uint8_t* p, bool rev) {
     return f;
 }
 
-static inline int32_t dcd_load_i32(const uint8_t* p, bool rev) {
-    int32_t v;
-    md_memcpy(&v, p, 4);
-    return dcd_swap32(v, rev);
-}
-
 // source/layout: how a frame of this file is laid out
 enum { DCD_LAYOUT_CHARMM, DCD_LAYOUT_REVERSE_ENDIAN, DCD_LAYOUT_NFIXED, DCD_LAYOUT_MARKER, DCD_LAYOUT_VERSION, DCD_LAYOUT_COUNT };
 

@@ -3,7 +3,7 @@
 #include <md_mcs.h>
 #include <md_system.h>
 #include <md_match.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -255,7 +255,7 @@ static double pairs_rmsd(const md_float3_t* xa, const int32_t* a, const md_float
         pa[i] = md_float4_set((float)(xa[a[i]].x - ca[0]), (float)(xa[a[i]].y - ca[1]), (float)(xa[a[i]].z - ca[2]), 1.0f);
         pb[i] = md_float4_set((float)(xb[b[i]].x - cb[0]), (float)(xb[b[i]].y - cb[1]), (float)(xb[b[i]].z - cb[2]), 1.0f);
     }
-    const md_float3x3_t R = md_util_optimal_rotation_rel(pa, pb, n);
+    const md_float3x3_t R = md_geom_optimal_rotation_rel(pa, pb, n);
     double ss = 0.0;
     for (size_t i = 0; i < n; ++i) {
         const md_float3_t q = md_float3x3_mul_float3(R, md_float3_from_float4(pb[i]));

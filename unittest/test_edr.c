@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <md_io.h>
 #include <math.h>
 
 #include <md_edr.h>
@@ -219,14 +220,14 @@ UTEST(edr, supplement_replaces_the_previous_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = {.alloc = alloc};
 
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ener.edr"), MD_STR_LIT("run/test")));
+    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ener.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/test") }));
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/box") != NULL);
 
     const md_attribute_t* src = edr_attr(&sys, "run/test/edr/source");
     ASSERT_TRUE(src != NULL);
     EXPECT_TRUE(md_str_eq_cstr(md_attribute_str(&sys.attributes, src, 0), MD_UNITTEST_DATA_DIR "/ener.edr"));
 
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dhdl.edr"), MD_STR_LIT("run/test")));
+    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dhdl.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/test") }));
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/box") == NULL);
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/dvcoul_dl") != NULL);
     EXPECT_EQ(101u, edr_attr(&sys, "run/test/edr/time")->format.shape[0]);
@@ -465,7 +466,7 @@ UTEST(edr, supplement_infers_group_roles) {
     md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(5, 30), 0);
     md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(30, 40), 0);
     md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(40, 80), 0);
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), MD_STR_LIT("run/md")));
+    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
     md_urange_t r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
     EXPECT_EQ(5u, r.end - r.beg);
 

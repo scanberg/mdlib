@@ -1039,7 +1039,7 @@ UTEST_F(vial_check, groups) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL));
     md_ndx_data_t ndx = {0};
     ASSERT_TRUE(md_ndx_data_parse_str(&ndx, MD_STR_LIT("[ SOL ]\n16 17 18 19\n[ Ends ]\n1 19\n[ Odd ]\n1 3 5\n[ Odd ]\n2 4\n[ Z_first ]\n16\n"), alloc));
     ASSERT_TRUE(md_ndx_system_supplement(&sys, &ndx));

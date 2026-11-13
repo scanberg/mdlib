@@ -1,30 +1,10 @@
 ﻿#include "md_infer_internal.h"
+#include <core/md_fifo.h>
+#include <core/md_hash.h>
 
 // Ring inference: the rings of the bond graph and their flags (md_util.h).
 
 static void ring_flags(md_ring_data_t* rings, const md_system_t* sys);
-
-static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* ring_b, int ring_b_size) {
-    if (ring_a_size != ring_b_size) {
-        return false;
-    }
-    for (int i = 0; i < ring_a_size; ++i) {
-        if (ring_a[i] != ring_b[i]) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static inline bool has_ring(const md_ring_data_t* ring_data, const int* ring, int ring_size) {
-    const int64_t num_rings = md_ring_data_count(ring_data);
-    for (int64_t i = 0; i < num_rings; ++i) {
-        const int* ring_i     = md_ring_atoms(ring_data, i);
-        const int ring_i_size = (int)md_ring_size(ring_data, i);
-        if (compare_ring(ring_i, ring_i_size, ring, ring_size)) return true;
-    }
-    return false;
-}
 
 #define SORT_RING_PRINT 0
 

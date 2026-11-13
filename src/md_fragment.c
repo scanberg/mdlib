@@ -62,11 +62,6 @@ const char* md_fragment_kind_str(md_fragment_kind_t kind) {
     }
 }
 
-static int frag_cmp_u64(const void* a, const void* b) {
-    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
-    return (x > y) - (x < y);
-}
-
 static int frag_cmp_u32(const void* a, const void* b) {
     const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
     return (x > y) - (x < y);
@@ -872,7 +867,7 @@ void md_fragment_data_free(md_fragment_data_t* d, md_allocator_i* alloc) {
 // Inference
 // ---------------------------------------------------------------------------
 
-bool md_util_system_infer_fragments(md_system_t* sys) {
+bool md_system_infer_fragments(md_system_t* sys) {
     if (!sys || !sys->alloc) return false;
     md_allocator_i* alloc = sys->alloc;
 

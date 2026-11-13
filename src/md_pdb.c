@@ -1,10 +1,11 @@
 #include <md_pdb.h>
+#include <md_io.h>
 #include <math.h>
 
 #include <md_system.h>
 #include <md_run.h>
 #include <md_infer.h>
-#include <md_util_sort.h>
+#include <md_sort.h>
 #include <md_element.h>
 
 #include <core/md_common.h>
@@ -45,7 +46,7 @@ extern "C" {
 // The columns [beg, end], 1 based, of which a line cut short (trailing blanks trimmed) may hold only the first
 static inline float extract_float(md_str_t line, size_t beg, size_t end) {
     if (line.len < beg) return 0.0f;
-    return (float)parse_float(md_str_substr(line, beg - 1, MD_MIN(end, line.len) - beg + 1));
+    return (float)md_parse_float(md_str_substr(line, beg - 1, MD_MIN(end, line.len) - beg + 1));
 }
 
 // A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
@@ -55,7 +56,7 @@ static MD_FORCE_INLINE float extract_fixed_float(md_str_t line, size_t beg, size
     if (line.len < end) return 0.0f;
     const md_str_t field = md_str_substr(line, beg - 1, end-beg + 1);
     float value;
-    return md_parse_fixed_f32(&value, field, decimals) ? value : (float)parse_float(field);
+    return md_parse_fixed_f32(&value, field, decimals) ? value : (float)md_parse_float(field);
 }
 
 static inline char extract_char(md_str_t line, size_t idx) {
@@ -237,7 +238,7 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
         // A biomolecule is one or more groups of chains, each followed by the BIOMT transforms which copy them
         const md_str_t rest = md_str_substr(line, 11, SIZE_MAX);
         if (md_str_begins_with(rest, MD_STR_LIT("BIOMOLECULE:"))) {
-            x->biomolecule = (int32_t)parse_int(md_str_trim(md_str_substr(rest, 12, SIZE_MAX)));
+            x->biomolecule = (int32_t)md_parse_int(md_str_trim(md_str_substr(rest, 12, SIZE_MAX)));
         }
         else if (md_str_begins_with(rest, MD_STR_LIT("APPLY THE FOLLOWING TO CHAINS:")) || md_str_begins_with(md_str_trim(rest), MD_STR_LIT("AND CHAINS:"))) {
             // A group begins with the chains to apply to, which AND CHAINS lines continue
@@ -280,9 +281,9 @@ static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t li
                 }
                 md_float4x4_t* transform = md_array_last(x->transforms);
                 for (int c = 0; c < 3; ++c) {
-                    transform->elem[c][row] = (float)parse_float(tok[1 + c]);
+                    transform->elem[c][row] = (float)md_parse_float(tok[1 + c]);
                 }
-                transform->elem[3][row] = (float)parse_float(tok[4]);
+                transform->elem[3][row] = (float)md_parse_float(tok[4]);
             }
         }
         break;
@@ -387,7 +388,7 @@ static void pdb_serial_index_init(pdb_serial_index_t* idx, const int32_t* serial
         return;
     }
     idx->order = md_alloc(alloc, num_atoms * sizeof(uint32_t));
-    md_util_argsort_radix_u32(idx->order, (const uint32_t*)serial, num_atoms);
+    md_argsort_radix_u32(idx->order, (const uint32_t*)serial, num_atoms);
 }
 
 // The atom of a serial, or UINT32_MAX for none
@@ -428,7 +429,7 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
 
     // Stable: of the keys of one pair, the first record's comes first
     uint32_t* order = md_alloc(temp_arena, num_keys * sizeof(uint32_t));
-    md_util_argsort_radix_u64(order, key, num_keys);
+    md_argsort_radix_u64(order, key, num_keys);
     uint8_t* keep = md_alloc(temp_arena, num_keys);
     md_memset(keep, 0, num_keys);
     size_t num_bonds = 0;
@@ -494,7 +495,7 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
 // makes the types of their tables the system's, piece by piece, which is the order the atoms first have them, and reads
 // the few records of interest in order.
 //
-// Of a file of several models the atoms of the first are loaded (all of them with MD_PDB_OPTION_CONCAT_MODELS). Once
+// Of a file of several models the atoms of the first are loaded (all of them with MD_LOAD_FLAG_ALL_MODELS). Once
 // it has ended the load goes to the end of the file, past the last MODEL or ENDMDL record, for the CONECT records.
 
 #define PDB_RES_FIELDS_BEG  17      // The residue name, the chain id, the sequence number and the insertion code:
@@ -553,7 +554,7 @@ static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t
 }
 
 // The three coordinates of an atom line, "%8.3f" each from column 31: at once (md_parse_fixed_float3_w8), and one by one
-// (md_parse_fixed_f32, else parse_float) where any is laid out otherwise or the line is too short for them
+// (md_parse_fixed_f32, else md_parse_float) where any is laid out otherwise or the line is too short for them
 static inline void pdb_coords_scalar(float out[3], md_str_t line) {
     out[0] = extract_fixed_float(line, 31, 38, 3);
     out[1] = extract_fixed_float(line, 39, 46, 3);
@@ -737,9 +738,9 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         uint32_t num_atoms = 0, num_inner_res = 0;
         bool ter = false, ter_first = false;
         pdb_res_fields_t prev = {0};
-        md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
+        md_parse_lines_t lines = md_parse_lines(L->text + piece->range.beg, L->text + piece->range.end);
         md_str_t line;
-        while (md_text_lines_next(&lines, &line)) {
+        while (md_parse_lines_next(&lines, &line)) {
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM) {
                 if (!L->atoms) continue;
@@ -1321,7 +1322,8 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     return true;
 }
 
-static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, md_pdb_options_t options, const md_executor_t* ex) {
+static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -1349,7 +1351,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         .sys = sys,
         .state = state,
         .temp = temp,
-        .concat_models = (options & MD_PDB_OPTION_CONCAT_MODELS) != 0,
+        .concat_models = desc && (desc->flags & MD_LOAD_FLAG_ALL_MODELS),
         .atoms = true,
         .type_map = { .allocator = temp },
         .extras = { .alloc = temp },
@@ -1397,7 +1399,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
             size_t len = md_text_pass_len_of(block.ptr + taken, block.len - taken, pass_size);
             // A pass whose first line is longer than a pass is all of the block: of more than 32 bits of offsets (a
             // string of one), its first line alone
-            if (len > UINT32_MAX) len = MD_MIN(block.len - taken, (size_t)(md_text_find_newline(block.ptr + taken, block.ptr + block.len) - (block.ptr + taken)) + 1);
+            if (len > UINT32_MAX) len = MD_MIN(block.len - taken, (size_t)(md_parse_find_byte(block.ptr + taken, block.ptr + block.len, '\n') - (block.ptr + taken)) + 1);
             if (!pdb_read_pass(&L, block.ptr + taken, len, ex)) goto done;     // Cancelled
             taken += len;
         }
@@ -1426,23 +1428,23 @@ done:
 
 #undef PDB_ROOM
 
-bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, md_pdb_options_t options, const md_executor_t* executor) {
+bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
     md_reader_i src = md_reader_from_str(str);
-    return pdb_load(sys, state, &src, options, executor);
+    return pdb_load(sys, state, &src, desc);
 }
 
-bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
+bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     // The reader's buffer in a temp scope, below the one of the load (pdb_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
-    const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(executor)));
+    const size_t cap = MD_MAX((size_t)MD_TEXT_BLOCK_SIZE, 2 * md_text_pass_size(md_executor_num_threads(desc ? desc->executor : NULL)));
     if (!md_file_reader_open(&fr, filename, cap, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Could not open file '" MD_STR_FMT "'", MD_STR_ARG(filename));
         md_temp_end(temp);
         return false;
     }
     // Several models are a trajectory as well: md_pdb_system_publish_run makes them a run.
-    const bool result = pdb_load(sys, state, &fr.r, options, executor);
+    const bool result = pdb_load(sys, state, &fr.r, desc);
     md_file_reader_close(&fr);
     md_temp_end(temp);
     return result;

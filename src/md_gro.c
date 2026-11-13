@@ -1,6 +1,7 @@
 ﻿#include <md_gro.h>
 
 #include <md_infer.h>
+#include <md_io.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -100,21 +101,21 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], md_str_t line, boo
     const int64_t num_tokens = extract_float_tokens(tokens, MD_COUNTOF(tokens), md_str_substr(line, 20, SIZE_MAX));
     if (num_tokens < 3) {
         // Fallback to fixed width format
-        xyz[0] = (float)parse_float(md_str_substr(line, 20, 8));
-        xyz[1] = (float)parse_float(md_str_substr(line, 28, 8));
-        xyz[2] = (float)parse_float(md_str_substr(line, 36, 8));
+        xyz[0] = (float)md_parse_float(md_str_substr(line, 20, 8));
+        xyz[1] = (float)md_parse_float(md_str_substr(line, 28, 8));
+        xyz[2] = (float)md_parse_float(md_str_substr(line, 36, 8));
         return false;
     }
-    xyz[0] = (float)parse_float(tokens[0]);
-    xyz[1] = (float)parse_float(tokens[1]);
-    xyz[2] = (float)parse_float(tokens[2]);
+    xyz[0] = (float)md_parse_float(tokens[0]);
+    xyz[1] = (float)md_parse_float(tokens[1]);
+    xyz[2] = (float)md_parse_float(tokens[2]);
 
     // Velocities are all three or none: a line carrying only part of them is malformed, and
     // guessing which residue was meant is worse than reading none.
     if (num_tokens >= 6) {
-        vel[0] = (float)parse_float(tokens[3]);
-        vel[1] = (float)parse_float(tokens[4]);
-        vel[2] = (float)parse_float(tokens[5]);
+        vel[0] = (float)md_parse_float(tokens[3]);
+        vel[1] = (float)md_parse_float(tokens[4]);
+        vel[2] = (float)md_parse_float(tokens[5]);
     }
     return true;
 }
@@ -211,8 +212,8 @@ static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
     return md_label_make(md_str_trim(md_str_substr(line, offset, 5)));
 }
 
-// The residue number of a line (columns 0 to 4): parse_int(md_str_trim()) of it. Blanks and then digits up to its end
-// without a scan of what is around; else as parse_int(md_str_trim()).
+// The residue number of a line (columns 0 to 4): md_parse_int(md_str_trim()) of it. Blanks and then digits up to its end
+// without a scan of what is around; else as md_parse_int(md_str_trim()).
 static MD_FORCE_INLINE int64_t gro_res_number(md_str_t line) {
     if (line.len >= 5) {
         const char* c = line.ptr;
@@ -223,7 +224,7 @@ static MD_FORCE_INLINE int64_t gro_res_number(md_str_t line) {
         while (j < 5 && md_ascii_is_digit(c[j])) value = value * 10 + (c[j++] - '0');
         if (j == 5) return value;
     }
-    return parse_int(md_str_trim(md_str_substr(line, 0, 5)));
+    return md_parse_int(md_str_trim(md_str_substr(line, 0, 5)));
 }
 
 // The velocities, in the file's own nm/ps rather than converted the way the coordinates are, because a velocity has a
@@ -241,16 +242,16 @@ static bool gro_parse_box(md_unitcell_t* cell, md_str_t line) {
         return false;
     }
     float box[3][3] = {0};
-    box[0][0] = (float)parse_float(tokens[0]);
-    box[1][1] = (float)parse_float(tokens[1]);
-    box[2][2] = (float)parse_float(tokens[2]);
+    box[0][0] = (float)md_parse_float(tokens[0]);
+    box[1][1] = (float)md_parse_float(tokens[1]);
+    box[2][2] = (float)md_parse_float(tokens[2]);
     if (num_tokens > 3) {
-        box[0][1] = (float)parse_float(tokens[3]);
-        box[0][2] = (float)parse_float(tokens[4]);
-        box[1][0] = (float)parse_float(tokens[5]);
-        box[1][2] = (float)parse_float(tokens[6]);
-        box[2][0] = (float)parse_float(tokens[7]);
-        box[2][1] = (float)parse_float(tokens[8]);
+        box[0][1] = (float)md_parse_float(tokens[3]);
+        box[0][2] = (float)md_parse_float(tokens[4]);
+        box[1][0] = (float)md_parse_float(tokens[5]);
+        box[1][2] = (float)md_parse_float(tokens[6]);
+        box[2][0] = (float)md_parse_float(tokens[7]);
+        box[2][1] = (float)md_parse_float(tokens[8]);
     }
     // nm to Ångström
     for (int i = 0; i < 3; ++i) {
@@ -304,7 +305,7 @@ static void gro_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     gro_load_t* L = (gro_load_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         gro_piece_t* piece = &L->pieces[p];
-        size_t n = md_text_count_newlines(L->text + piece->range.beg, L->text + piece->range.end);
+        size_t n = md_parse_count_byte(L->text + piece->range.beg, L->text + piece->range.end, '\n');
         // The last line of the text may not end in one
         if (piece->range.end == L->len && piece->range.end > piece->range.beg && L->text[piece->range.end - 1] != '\n') ++n;
         piece->num_lines = n;
@@ -324,11 +325,11 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         gro_res_fields_t prev = gro_res_fields(piece->range.beg > 0 ? md_text_line_before(L->text, piece->range.beg) : L->prev);
 
         gro_residue_start_t* res = L->pass_res + piece->first_line;
-        md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
+        md_parse_lines_t lines = md_parse_lines(L->text + piece->range.beg, L->text + piece->range.end);
         size_t atom = L->atom_beg + piece->first_line;
         const size_t atom_end = atom + piece->num_atoms;
         md_str_t line;
-        while (atom < atom_end && md_text_lines_next(&lines, &line)) {
+        while (atom < atom_end && md_parse_lines_next(&lines, &line)) {
             const gro_res_fields_t fields = gro_res_fields(line);
             if (atom == 0 || !gro_res_fields_eq(prev, fields)) {
                 res->atom   = (uint32_t)atom;
@@ -485,7 +486,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
     }
-    const int64_t num_atoms_in_file = parse_int(md_str_trim(md_text_next_line(&c, e)));
+    const int64_t num_atoms_in_file = md_parse_int(md_str_trim(md_text_next_line(&c, e)));
     if (num_atoms_in_file <= 0 || num_atoms_in_file >= UINT32_MAX) {
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
@@ -596,7 +597,8 @@ done:
 
 #undef GRO_ROOM
 
-bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_executor_t* ex) {
+bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     // The reader's buffer in a temp scope, below the one of the load (gro_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
@@ -612,7 +614,8 @@ bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, md
     return result;
 }
 
-bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_executor_t* ex) {
+bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    const md_executor_t* ex = desc ? desc->executor : NULL;
     md_reader_i src = md_reader_from_str(str);
     return gro_load(sys, state, &src, ex);
 }

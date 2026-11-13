@@ -20,7 +20,7 @@
 
 static bool trexio_load(qm_test_t* t, const char* path, size_t arena_bytes) {
     qm_test_init(t, arena_bytes);
-    return md_trexio_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
+    return md_trexio_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path), NULL);
 }
 
 UTEST(trexio, parse) {
@@ -152,7 +152,7 @@ UTEST(trexio, agrees_with_the_same_calculation_in_molden) {
     qm_test_t md = {0};
     ASSERT_TRUE(trexio_load(&tx, MD_UNITTEST_DATA_DIR "/trexio/h2o.trexio", MD_MEGABYTES(32)));
     qm_test_init(&md, MD_MEGABYTES(32));
-    ASSERT_TRUE(md_molden_system_init_from_file(&md.sys, &md.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    ASSERT_TRUE(md_molden_system_init_from_file(&md.sys, &md.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
 
     ASSERT_EQ(tx.sys.atom.count, md.sys.atom.count);
 
@@ -216,7 +216,7 @@ UTEST(trexio, file_recognition) {
 UTEST(trexio, a_file_that_is_not_hdf5_is_declined) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(1));
-    EXPECT_FALSE(md_trexio_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    EXPECT_FALSE(md_trexio_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     qm_test_free(&t);
 }
 

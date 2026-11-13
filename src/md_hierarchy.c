@@ -1,4 +1,8 @@
 ﻿#include "md_infer_internal.h"
+#include <core/md_fifo.h>
+#include <core/md_format.h>
+#include <core/md_hash.h>
+#include <core/md_log.h>
 
 // Inference of the levels of a system above its atoms: chains, instances, parts, molecules and residue types
 // (md_util.h).

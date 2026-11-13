@@ -1,6 +1,5 @@
 #pragma once
 
-#include <core/md_common.h>
 
 // @TODO: Use a selection macro which picks the correct version to use based on the number of arguments...
 

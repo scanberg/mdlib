@@ -47,7 +47,7 @@ UTEST(psf, builds_a_system_without_coordinates) {
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path));
+    ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path, NULL));
     EXPECT_EQ(4u, sys.atom.count);
     EXPECT_EQ(2u, sys.residue.count);
     EXPECT_EQ(3u, sys.bond.count);
@@ -64,7 +64,7 @@ UTEST(psf, builds_a_system_without_coordinates) {
     // Applied to the same atoms: the bonds of the file
     md_bond_data_clear(&sys.bond);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, arena);
-    ASSERT_TRUE(md_psf_system_supplement_from_file(&sys, path));
+    ASSERT_TRUE(md_psf_system_supplement_from_file(&sys, path, NULL));
     EXPECT_EQ(3u, sys.bond.count);
 
     ASSERT_TRUE(psf_write_text(path, "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n"));
@@ -140,7 +140,7 @@ UTEST(psf, blank_segment_ids) {
         ASSERT_TRUE(psf_write_text(path, texts[k]));
         md_system_t sys = { .alloc = arena };
         md_system_state_t state = { .alloc = arena };
-        ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path));
+        ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path, NULL));
         ASSERT_EQ(2u, sys.atom.count);
         ASSERT_EQ(1u, sys.residue.count);
         EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 0), "ALA"));

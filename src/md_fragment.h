@@ -167,7 +167,7 @@ extern "C" {
 // it); without them the system has no fragments. Reads the bond orders and aromaticity (md_chem_perceive), without
 // which every C=O reads as single, the rings, the residue flags and atom roles (md_system_infer_residue_flags)
 // and the lipid tails. Done by md_system_infer with MD_SYSTEM_INFER_FRAGMENT_BIT.
-bool md_util_system_infer_fragments(struct md_system_t* sys);
+bool md_system_infer_fragments(struct md_system_t* sys);
 void md_fragment_data_free(md_fragment_data_t* data, struct md_allocator_i* alloc);
 
 size_t md_system_fragment_count(const struct md_system_t* sys);

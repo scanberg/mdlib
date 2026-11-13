@@ -6,6 +6,7 @@
 #include <core/md_allocator.h>
 #include <core/md_file.h>
 
+#include <core/md_array.h>
 #include <vial/vial_internal.h>
 
 #include <stdio.h>

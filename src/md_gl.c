@@ -1,6 +1,6 @@
 ﻿#include <md_gl.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_chem.h>
 
 #include <core/md_common.h>
@@ -1070,7 +1070,7 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t c
         // The box of the positions, for the culling of copies: of all of them, or grown by a part of them
         if (count > 0) {
             md_float3_t mn, mx;
-            md_util_aabb(mn.elem, mx.elem, (const float*)xyz, 0, NULL, count);
+            md_geom_aabb(mn.elem, mx.elem, (const float*)xyz, 0, NULL, count);
             if (offset == 0 && count == mol->atom_count) {
                 mol->aabb_min = mn;
                 mol->aabb_max = mx;
@@ -2315,7 +2315,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
 // protein backbone on either side, or where a side has no cartoon (a piece of chain too short for one), from the atom
 // of the link there. Then those of licorice and ball and stick (link): between the atoms a link would join
 // (md_system_chain_break_atoms), each its own neighbour.
-void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
+static void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
     molecule_t* mol = mol_lookup(handle.id);
     if (!mol) {
         MD_LOG_ERROR("Invalid molecule");

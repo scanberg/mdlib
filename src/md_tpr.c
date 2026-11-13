@@ -1,4 +1,5 @@
 #include <md_tpr.h>
+#include <md_io.h>
 #include <md_xdr.h>
 
 #include <md_system.h>
@@ -251,7 +252,6 @@ static inline void skip_bytes(tpr_reader_t* r, size_t count, size_t size) {
 
 static inline void skip_ints (tpr_reader_t* r, size_t count) { skip_bytes(r, count, 4); }
 static inline void skip_reals(tpr_reader_t* r, size_t count) { skip_bytes(r, count, r->dbl ? 8 : 4); }
-static inline void skip_uchars(tpr_reader_t* r, size_t count) { skip_bytes(r, count, r->in_memory ? 1 : 4); }
 
 // Reads count reals into dst as floats
 static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {
@@ -1915,7 +1915,8 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     return true;
 }
 
-bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename) {
+bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);

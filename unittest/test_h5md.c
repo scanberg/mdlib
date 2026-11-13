@@ -41,7 +41,7 @@ static bool h5md_test_load(h5md_test_t* t, const char* path) {
     t->arena = md_vm_arena_create(MD_GIGABYTES(1));
     t->sys.alloc = t->arena;
     t->state.alloc = t->arena;
-    return md_h5md_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path));
+    return md_h5md_system_init_from_file(&t->sys, &t->state, md_str_from_cstr(path), NULL);
 }
 
 static void h5md_test_free(h5md_test_t* t) {
@@ -87,7 +87,7 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     md_system_t tpr = { .alloc = h.arena };
     md_system_state_t tpr_state = { .alloc = h.arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&tpr, &tpr_state, md_str_from_cstr(tpr_path)));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&tpr, &tpr_state, md_str_from_cstr(tpr_path), NULL));
 
     ASSERT_EQ(tpr.atom.count, h.sys.atom.count);
     EXPECT_TRUE(md_str_eq(tpr.description, h.sys.description));

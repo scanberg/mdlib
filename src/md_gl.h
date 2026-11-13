@@ -13,10 +13,11 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <core/md_vec.h>
 #include <md_types.h>
 #include <md_bond.h>
 #include <md_backbone.h>
+
+struct md_float3_t;
 
 // Forward declarations
 struct md_system_t;
@@ -163,7 +164,7 @@ void md_gl_mol_set_derived(md_gl_mol_t mol, md_gl_mol_t source, const uint32_t* 
 //  source_xyz: (optional) the positions of the atoms of the source on the CPU, the same as on the GPU. They place the
 //              tubes (md_gl_mol_set_tubes) for their culling and level of detail; without them the tubes are drawn in
 //              full detail and never culled.
-void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell, const md_float3_t* source_xyz);
+void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell, const struct md_float3_t* source_xyz);
 
 // ### TUBES ###
 // Splines through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_TUBES: the backbone of a
@@ -211,8 +212,8 @@ void md_gl_mol_set_slabs(md_gl_mol_t mol, uint32_t count, const uint32_t* offset
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
 // Packed xyz, the buffers' own layout. Setting positions keeps the current ones as the previous.
-void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const md_float3_t* xyz);
-void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const md_float3_t* xyz);
+void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const struct md_float3_t* xyz);
+void md_gl_mol_set_atom_velocity(md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const struct md_float3_t* xyz);
 void md_gl_mol_set_atom_radius  (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const float* radius,  uint32_t byte_stride);
 void md_gl_mol_set_atom_flags   (md_gl_mol_t handle, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
 
@@ -259,18 +260,6 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // are plain, without delta those of the system are drawn as they are.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys, const struct md_bond_delta_t* delta, const struct md_chem_delta_t* chem);
 
-// The gaps of the chains, from the chain breaks of the system (MD_RESIDUE_FLAG_BREAK_AFTER, CHAIN BREAKS in md_backbone.h):
-// for the representations with chain_gaps set, a straight dashed line over each break, from the residue before it to
-// the one after it. Where the missing residues went is not known, so the line claims no more than that the chain goes
-// on. The cartoon and ribbons draw it between the ends of the cartoon of the chain on either side (near the CA of the
-// residue, where the spline ends) for the breaks of protein chains; licorice and ball and stick draw it between the
-// atoms a link would join (md_system_chain_break_atoms: C and N, O3' and P, the backbone beads). Its dashes are long, a
-// length of their own in proportion to its thickness, as many as fit (see the weak bonds below), so that a long gap
-// reads as a gap and not as a bond, nor as one of the shorter dashed lines (delocalized bonds). It takes the colors
-// of its two ends (the atoms it is drawn between), is shown when both of them are, and is drawn at any length: its
-// ends are where the atoms are, not their minimum image. It picks as the residue before the break
-// (md_gl_picking_offset_t gap_base). The system must be the one of the molecule. md_gl_mol_create sets them.
-void md_gl_mol_set_chain_gaps(md_gl_mol_t mol, const struct md_system_t* sys);
 
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 

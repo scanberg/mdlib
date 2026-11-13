@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <md_io.h>
 
 #include <md_ndx.h>
 #include <md_tpr.h>
@@ -51,7 +52,7 @@ UTEST(ndx, supplement_tpr_system) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), NULL));
     ASSERT_EQ(2u, sys.group.count);
     const uint64_t version = sys.topology_version;
 
@@ -133,7 +134,7 @@ UTEST(ndx, energy_file_names_default_groups) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
     ASSERT_EQ(0u, sys.group.count);
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), MD_STR_LIT("run/md")));
+    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
 
     const md_urange_t er = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
     ASSERT_EQ(5u, er.end - er.beg);

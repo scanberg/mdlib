@@ -158,11 +158,11 @@ UTEST(parse, f64_reads_only_its_view) {
     EXPECT_EQ(3u, md_parse_f64(&v, (md_str_t){ inf, 5 }));     // "infin" reads as "inf"
     EXPECT_EQ(0u, md_parse_f64(&v, (md_str_t){ inf, 2 }));
 
-    EXPECT_TRUE(is_float((md_str_t){ text, 3 }));
-    EXPECT_TRUE(is_float((md_str_t){ text, 4 }));
-    EXPECT_FALSE(is_float((md_str_t){ text, 8 }));
-    EXPECT_TRUE(is_int((md_str_t){ text, 3 }));
-    EXPECT_FALSE(is_int((md_str_t){ text, 4 }));
+    EXPECT_TRUE(md_parse_is_float((md_str_t){ text, 3 }));
+    EXPECT_TRUE(md_parse_is_float((md_str_t){ text, 4 }));
+    EXPECT_FALSE(md_parse_is_float((md_str_t){ text, 8 }));
+    EXPECT_TRUE(md_parse_is_int((md_str_t){ text, 3 }));
+    EXPECT_FALSE(md_parse_is_int((md_str_t){ text, 4 }));
 }
 
 // Inputs where a parser that is merely close gets the last bit wrong: half way cases, the subnormal
@@ -364,46 +364,46 @@ UTEST(parse, i64_matches_strtoll) {
 // ---------------------------------------------------------------------------
 
 UTEST(parse, parse_float_and_parse_int) {
-    EXPECT_EQ(-125.0, parse_float(MD_STR_LIT("  -12.5e1  ")));
-    EXPECT_EQ(1.5, parse_float(MD_STR_LIT("\t+1.5")));
-    EXPECT_EQ(0.0, parse_float(MD_STR_LIT("abc")));
-    EXPECT_EQ(0.0, parse_float(MD_STR_LIT("")));
-    EXPECT_EQ(0.0, parse_float((md_str_t){0}));
-    EXPECT_EQ(1023.2231128379817, parse_float(MD_STR_LIT("1023.22311283798172389718923789172389")));
-    EXPECT_EQ(1232326745e10, parse_float(MD_STR_LIT("1232326745e10")));
-    EXPECT_EQ(1.0e-29, parse_float(MD_STR_LIT("1.0e-29")));
-    EXPECT_EQ(0.02e+10, parse_float(MD_STR_LIT("0.02e+10")));
-    EXPECT_EQ(0.273, parse_float(MD_STR_LIT("0000000000000.273")));
+    EXPECT_EQ(-125.0, md_parse_float(MD_STR_LIT("  -12.5e1  ")));
+    EXPECT_EQ(1.5, md_parse_float(MD_STR_LIT("\t+1.5")));
+    EXPECT_EQ(0.0, md_parse_float(MD_STR_LIT("abc")));
+    EXPECT_EQ(0.0, md_parse_float(MD_STR_LIT("")));
+    EXPECT_EQ(0.0, md_parse_float((md_str_t){0}));
+    EXPECT_EQ(1023.2231128379817, md_parse_float(MD_STR_LIT("1023.22311283798172389718923789172389")));
+    EXPECT_EQ(1232326745e10, md_parse_float(MD_STR_LIT("1232326745e10")));
+    EXPECT_EQ(1.0e-29, md_parse_float(MD_STR_LIT("1.0e-29")));
+    EXPECT_EQ(0.02e+10, md_parse_float(MD_STR_LIT("0.02e+10")));
+    EXPECT_EQ(0.273, md_parse_float(MD_STR_LIT("0000000000000.273")));
 
-    EXPECT_EQ(42, parse_int(MD_STR_LIT(" 42")));
-    EXPECT_EQ(42, parse_int(MD_STR_LIT("+42")));
-    EXPECT_EQ(-1, parse_int(MD_STR_LIT("-1.9")));
-    EXPECT_EQ(0, parse_int(MD_STR_LIT("abc")));
-    EXPECT_EQ(0, parse_int(MD_STR_LIT("")));
-    EXPECT_EQ(1232326745, parse_int(MD_STR_LIT("1232326745")));
+    EXPECT_EQ(42, md_parse_int(MD_STR_LIT(" 42")));
+    EXPECT_EQ(42, md_parse_int(MD_STR_LIT("+42")));
+    EXPECT_EQ(-1, md_parse_int(MD_STR_LIT("-1.9")));
+    EXPECT_EQ(0, md_parse_int(MD_STR_LIT("abc")));
+    EXPECT_EQ(0, md_parse_int(MD_STR_LIT("")));
+    EXPECT_EQ(1232326745, md_parse_int(MD_STR_LIT("1232326745")));
 }
 
 UTEST(parse, is_float_and_is_int) {
     static const char* floats[] = { "1", "-1", "+1", "1.", ".5", "-.5", "1e5", "1.5E-3", "007", "0.0", "1e+05" };
     static const char* not_floats[] = { "", "-", "+", ".", "e5", "1e", "1e+", "1.5x", " 1", "1 ", "inf", "nan", "Infinity", "1,5", "--1", "1.2.3", "0x10", "1e5.5" };
     for (size_t i = 0; i < MD_COUNTOF(floats); ++i) {
-        EXPECT_TRUE(is_float(str_of(floats[i])));
+        EXPECT_TRUE(md_parse_is_float(str_of(floats[i])));
     }
     for (size_t i = 0; i < MD_COUNTOF(not_floats); ++i) {
-        EXPECT_FALSE(is_float(str_of(not_floats[i])));
-        if (is_float(str_of(not_floats[i]))) printf("  is_float('%s')\n", not_floats[i]);
+        EXPECT_FALSE(md_parse_is_float(str_of(not_floats[i])));
+        if (md_parse_is_float(str_of(not_floats[i]))) printf("  md_parse_is_float('%s')\n", not_floats[i]);
     }
-    EXPECT_FALSE(is_float((md_str_t){0}));
+    EXPECT_FALSE(md_parse_is_float((md_str_t){0}));
 
     static const char* ints[] = { "0", "-0", "+42", "123456789012345678901234567890" };
     static const char* not_ints[] = { "", "-", "+", "1.0", "1e5", " 1", "1 ", "1-" };
     for (size_t i = 0; i < MD_COUNTOF(ints); ++i) {
-        EXPECT_TRUE(is_int(str_of(ints[i])));
+        EXPECT_TRUE(md_parse_is_int(str_of(ints[i])));
     }
     for (size_t i = 0; i < MD_COUNTOF(not_ints); ++i) {
-        EXPECT_FALSE(is_int(str_of(not_ints[i])));
+        EXPECT_FALSE(md_parse_is_int(str_of(not_ints[i])));
     }
-    EXPECT_FALSE(is_int((md_str_t){0}));
+    EXPECT_FALSE(md_parse_is_int((md_str_t){0}));
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +646,7 @@ static uint32_t bits_of_f32(float f) {
 
 // What the fixed width path must agree with: the float of the correctly rounded double
 static float general_f32(md_str_t field) {
-    return (float)parse_float(field);
+    return (float)md_parse_float(field);
 }
 
 // Formats m / 10^decimals right aligned in 'width' characters, as "%*.*f" does, without printf
@@ -816,7 +816,7 @@ UTEST(parse, perf) {
         md_tick_to_milliseconds(t3 - t2) * 1e6 / ni, md_tick_to_milliseconds(t4 - t3) * 1e6 / ni, facc, (long long)iacc);
 }
 
-// The lines of a range in bulk (md_text_lines_t) are those of a plain split, for every start and end in a text of
+// The lines of a range in bulk (md_parse_lines_t) are those of a plain split, for every start and end in a text of
 // empty lines, CRLF ends, long lines, and none at its end: the masks of the chunks before the start and past the end
 // see bytes of the text which are not of the range.
 static size_t text_lines_reference(md_str_t* out, size_t cap, const char* c, const char* e) {
@@ -847,10 +847,10 @@ UTEST(parse, text_lines) {
     for (size_t beg = 0; beg < 200; beg += 1) {
         for (size_t end = beg; end <= 512; end += 7) {
             const size_t n = text_lines_reference(want, MD_COUNTOF(want), text + beg, text + end);
-            md_text_lines_t it = md_text_lines(text + beg, text + end);
+            md_parse_lines_t it = md_parse_lines(text + beg, text + end);
             size_t m = 0;
             md_str_t line;
-            while (m < MD_COUNTOF(got) && md_text_lines_next(&it, &line)) got[m++] = line;
+            while (m < MD_COUNTOF(got) && md_parse_lines_next(&it, &line)) got[m++] = line;
             if (m != n) { mismatches += 1; continue; }
             for (size_t k = 0; k < n; ++k) {
                 if (got[k].ptr != want[k].ptr || got[k].len != want[k].len) { mismatches += 1; break; }
@@ -862,6 +862,34 @@ UTEST(parse, text_lines) {
 
 // Skipping lines lands where extracting them would: by the chunks of what is read, through a buffer that holds a few
 // lines at a time and through a string, of any count, the last line without its newline, past the end
+// The searches for any byte against memchr: of every range of a buffer which starts and ends anywhere in its chunks, for
+// a byte that is frequent, one that is rare and one that is absent
+UTEST(parse, byte_searches) {
+    MD_ALIGNAS(64) char text[512];
+    uint64_t state = 3;
+    for (size_t i = 0; i < sizeof(text); ++i) {
+        const uint64_t r = rng_next(&state) % 23;
+        text[i] = r < 3 ? ',' : r == 3 ? '#' : (char)('a' + r);
+    }
+    const char cs[3] = { ',', '#', '\n' };
+    size_t mismatches = 0;
+    for (int ci = 0; ci < 3; ++ci) {
+        const char c = cs[ci];
+        for (size_t beg = 0; beg < 200; ++beg) {
+            for (size_t end = beg; end <= sizeof(text); end += 5) {
+                const char* b = text + beg;
+                const char* e = text + end;
+                const char* ref = memchr(b, c, end - beg);
+                if (md_parse_find_byte(b, e, c) != (ref ? ref : e)) mismatches += 1;
+                size_t count = 0;
+                for (const char* p = b; (p = memchr(p, c, (size_t)(e - p))) != NULL; ++p) count += 1;
+                if (md_parse_count_byte(b, e, c) != count) mismatches += 1;
+            }
+        }
+    }
+    EXPECT_EQ((size_t)0, mismatches);
+}
+
 UTEST(parse, reader_skip_lines) {
     md_allocator_i* heap = md_get_heap_allocator();
     const md_str_t path = MD_STR_LIT("md_unittest_skip_lines.txt");
@@ -891,7 +919,7 @@ UTEST(parse, reader_skip_lines) {
         for (size_t beg = 0; beg < 300; ++beg) {
             for (size_t n = 0; n < 40; n += 3) {
                 size_t left = n;
-                const char* got = md_text_skip_newlines(text + beg, text + len, &left);
+                const char* got = md_parse_after_nth_byte(text + beg, text + len, '\n', &left);
                 const char* ref = text + beg;
                 size_t ref_left = n;
                 while (ref_left) {

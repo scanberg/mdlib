@@ -10,6 +10,7 @@
 #include "check.h"
 
 #include <core/md_common.h>
+#include <core/md_array.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -47,10 +48,6 @@ static inline uint32_t num_children(const resolver_t* r, vial_node_id id) { retu
 static inline md_str_t text(const resolver_t* r, vial_node_id id) {
     const md_vial_span_t s = r->t->nodes[id].span;
     return (md_str_t){r->src.ptr + s.beg, s.end - s.beg};
-}
-
-static inline uint32_t line_of(const resolver_t* r, vial_node_id id) {
-    return vial_line_of(r->diags, r->t->nodes[id].span.beg);
 }
 
 static uint64_t name_key(md_str_t name) {

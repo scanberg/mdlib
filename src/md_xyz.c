@@ -1,9 +1,10 @@
 ﻿#include <md_xyz.h>
 
 #include <md_system.h>
+#include <md_io.h>
 #include <core/md_hash.h>
 #include <md_run.h>
-#include <md_util_sort.h>
+#include <md_sort.h>
 #include <md_unitcell.h>
 #include <md_element.h>
 
@@ -131,7 +132,7 @@ static bool xyz_extended_columns(uint32_t* flags, md_str_t comment) {
             MD_LOG_ERROR("XYZ: Invalid Properties in the extended XYZ comment line: '" MD_STR_FMT "'", MD_STR_ARG(value));
             return false;
         }
-        const int count = (int)parse_int(field[2]);
+        const int count = (int)md_parse_int(field[2]);
         const char type = field[1].ptr[0];
         if (count == 1 && (type == 'S' || type == 's') && md_str_eq_ignore_case(field[0], MD_STR_LIT("species")) && species < 0) {
             species = col;
@@ -175,7 +176,7 @@ static bool xyz_parse_fortran_f64(double* out, md_str_t tok) {
 // A coordinate: a number, of a Fortran exponent as well
 static bool xyz_is_float(md_str_t tok) {
     double v;
-    return is_float(tok) || xyz_parse_fortran_f64(&v, tok);
+    return md_parse_is_float(tok) || xyz_parse_fortran_f64(&v, tok);
 }
 
 static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
@@ -234,8 +235,8 @@ static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
         const int64_t num_tokens = md_parse_next_tokens(token, MD_COUNTOF(token), &line);
 
         if (num_tokens == 6 &&
-            is_float(token[0]) && is_float(token[1]) && is_float(token[2]) &&
-            is_float(token[3]) && is_float(token[4]) && is_float(token[5]))
+            md_parse_is_float(token[0]) && md_parse_is_float(token[1]) && md_parse_is_float(token[2]) &&
+            md_parse_is_float(token[3]) && md_parse_is_float(token[4]) && md_parse_is_float(token[5]))
         {
             *flags |= XYZ_ARC;
         }
@@ -369,7 +370,7 @@ static md_atomic_number_t xyz_element(md_str_t sym, bool tinker) {
 // The element column of a line: a symbol or name, else an atomic number
 static void xyz_set_element(md_xyz_coordinate_t* coord, md_str_t tok, uint32_t flags) {
     if ((flags & XYZ_ELEMENT_Z) || !md_ascii_is_alpha(tok.ptr[0])) {
-        const int64_t z = parse_int(tok);
+        const int64_t z = md_parse_int(tok);
         coord->atomic_number = (0 < z && z < 119) ? (int)z : 0;
         const md_str_t sym = coord->atomic_number ? md_atomic_number_symbol((md_atomic_number_t)coord->atomic_number) : tok;
         md_str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), sym);
@@ -392,13 +393,13 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, md_str_t line, uint
             MD_LOG_ERROR("Invalid number of tokens in Tinker XYZ coordinate when parsing line: '" MD_STR_FMT "', expected >= 5, got %i", MD_STR_ARG(original), (int)num_tokens);
             return false;
         }
-        coord->atom_index = (int)parse_int(tok[0]);
+        coord->atom_index = (int)md_parse_int(tok[0]);
         xyz_set_element(coord, tok[1], flags);
-        coord->x = (float)parse_float(tok[2]);
-        coord->y = (float)parse_float(tok[3]);
-        coord->z = (float)parse_float(tok[4]);
+        coord->x = (float)md_parse_float(tok[2]);
+        coord->y = (float)md_parse_float(tok[3]);
+        coord->z = (float)md_parse_float(tok[4]);
         if (num_tokens > 5) {
-            coord->particle_type = (int)parse_int(tok[5]);
+            coord->particle_type = (int)md_parse_int(tok[5]);
         }
         for (size_t i = 6; i < num_tokens; ++i) {
             if (!is_unsigned_int(tok[i])) {
@@ -406,7 +407,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, md_str_t line, uint
                 return false;
             }
             if (i - 6 < (size_t)XYZ_MAX_CONN) {
-                coord->connectivity[i - 6] = (int)parse_int(tok[i]);
+                coord->connectivity[i - 6] = (int)md_parse_int(tok[i]);
             }
         }
         if (md_parse_next_token(&(md_str_t){0}, &line)) {
@@ -473,7 +474,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
         MD_LOG_ERROR("Failed to extract coordinate count in XYZ header: '" MD_STR_FMT "'", MD_STR_ARG(line));
         return false;
     }
-    const int64_t count = parse_int(count_tok);
+    const int64_t count = md_parse_int(count_tok);
     if (count <= 0) {
         MD_LOG_ERROR("Failed to extract coordinate count in XYZ header");
         return false;
@@ -509,12 +510,12 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* re
             return false;
         }
 
-        const double a = parse_float(tokens[0]);
-        const double b = parse_float(tokens[1]);
-        const double c = parse_float(tokens[2]);
-        const double alpha = parse_float(tokens[3]);
-        const double beta  = parse_float(tokens[4]);
-        const double gamma = parse_float(tokens[5]);
+        const double a = md_parse_float(tokens[0]);
+        const double b = md_parse_float(tokens[1]);
+        const double c = md_parse_float(tokens[2]);
+        const double alpha = md_parse_float(tokens[3]);
+        const double beta  = md_parse_float(tokens[4]);
+        const double gamma = md_parse_float(tokens[5]);
 
         md_unitcell_t cell = md_unitcell_from_extent_and_angles(a, b, c, alpha, beta, gamma);
         md_unitcell_A_extract_double(model->cell, &cell);
@@ -689,7 +690,7 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
     if (num_keys == 0) return;
 
     uint32_t* order = md_alloc(temp, num_keys * sizeof(uint32_t));
-    md_util_argsort_radix_u64(order, keys, num_keys);
+    md_argsort_radix_u64(order, keys, num_keys);
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
     md_array_ensure(sys->bond.pairs, num_keys, sys->alloc);
     md_array_ensure(sys->bond.flags, num_keys, sys->alloc);
@@ -767,11 +768,10 @@ static void xyz_builder_end(xyz_builder_t* b) {
     b->state->num_atoms = b->sys->atom.count;
 }
 
-bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data, md_xyz_options_t options) {
+bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
     MD_ASSERT(data);
-    (void)options;
 
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -814,7 +814,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
 // The system of the first model the reader reads. Its atoms go into the system as they are read, but for Tinker's,
 // whose bonds are made of all of them: those are read as data first.
-static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reader_i* reader, md_xyz_options_t options) {
+static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reader_i* reader) {
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
         return false;
@@ -836,7 +836,7 @@ static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reade
 
     if (flags & XYZ_TINKER) {
         md_xyz_data_t data = {0};
-        result = xyz_parse(&data, reader, temp_alloc, true) && md_xyz_system_init_from_data(sys, state, &data, options);
+        result = xyz_parse(&data, reader, temp_alloc, true) && md_xyz_system_init_from_data(sys, state, &data);
         goto done;
     }
 
@@ -870,14 +870,16 @@ done:
     return result;
 }
 
-bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, md_xyz_options_t options) {
+bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     md_reader_i reader = md_reader_from_str(str);
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
-    return xyz_system_load(sys, state, &reader, options);
+    return xyz_system_load(sys, state, &reader);
 }
 
-bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, md_xyz_options_t options) {
+bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
     MD_ASSERT(sys);
     
     md_file_t file = {0};
@@ -891,7 +893,7 @@ bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, md
     md_file_reader_init(&reader, file, MD_MEGABYTES(1), md_temp_allocator(temp_scope));
     
     // The structure is the first model: of a trajectory, the rest are its frames (md_xyz_system_publish_run)
-    const bool result = xyz_system_load(sys, state, &reader.r, options);
+    const bool result = xyz_system_load(sys, state, &reader.r);
 
     md_file_reader_close(&reader);
     md_temp_end(temp_scope);

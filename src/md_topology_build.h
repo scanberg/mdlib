@@ -4,9 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <md_types.h>
 #include <md_unitcell.h>
 #include <core/md_str.h>
+
+struct md_atom_pair_t;
 
 struct md_system_t;
 struct md_system_state_t;
@@ -38,7 +39,7 @@ typedef struct md_topology_desc_t {
     const md_str_t*    res_chain;      // the chain or segment of each residue, NULL for none
 
     size_t num_bonds;
-    const md_atom_pair_t* bonds;
+    const struct md_atom_pair_t* bonds;
 
     md_unitcell_t cell;             // the topology's own box, if any
     md_str_t         title;

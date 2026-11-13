@@ -140,7 +140,7 @@ static bool input_load(input_t* in, const char* path) {
     const md_str_t file = md_str_from_cstr(path);
     bool ok = false;
     if (ends_with(path, ".molden")) {
-        ok = md_molden_system_init_from_file(&in->sys, &in->state, file);
+        ok = md_molden_system_init_from_file(&in->sys, &in->state, file, NULL);
     }
 #if defined(MD_HDF5)
     else if (ends_with(path, ".h5")) {

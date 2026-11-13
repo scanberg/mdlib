@@ -7,6 +7,8 @@
 // small molecules, sugars and polymers (polyply) of Martini 2 and 3, read from their topology files by
 // tools/gen_martini_db.py, and the links between the residues of the polymers.
 #include "md_martini_db.inl"
+#include <core/md_executor.h>
+#include <md_geom.h>
 
 const martini_db_bead_t* mdi_martini_db_bead(const martini_db_residue_t* res, size_t k) {
     return &martini_db_beads[martini_db_residue_beads[res->bead_offset + k]];
@@ -295,7 +297,7 @@ bool md_resname_lipid(md_str_t str) {
 // secondary structure, which are not chemical bonds.
 static inline float cg_bead_distance(const md_system_state_t* state, int i, int j) {
     md_float3_t d = md_float3_sub(state->xyz[i], state->xyz[j]);
-    md_util_min_image(d.elem, 0, 1, &state->unitcell);
+    md_geom_min_image(d.elem, 0, 1, &state->unitcell);
     return md_float3_length(d);
 }
 

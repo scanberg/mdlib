@@ -17,7 +17,7 @@ UTEST(ase_traj, fixed_atoms_and_time) {
     md_system_state_t initial = {.alloc = alloc};
     const md_str_t path = ASE_FILE("ase_fixed.traj");
 
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path, NULL));
     ASSERT_EQ(3u, sys.atom.count);
     EXPECT_EQ(1, md_atom_atomic_number(&sys.atom, 0));
     EXPECT_EQ(8, md_atom_atomic_number(&sys.atom, 2));
@@ -65,7 +65,7 @@ UTEST(ase_traj, float32_positions) {
     md_system_state_t initial = {.alloc = alloc};
     const md_str_t path = ASE_FILE("ase_float32.traj");
 
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path, NULL));
     ASSERT_EQ(2u, sys.atom.count);
     EXPECT_EQ(0, md_atom_atomic_number(&sys.atom, 0));
     EXPECT_EQ(8, md_atom_atomic_number(&sys.atom, 1));
@@ -104,7 +104,7 @@ UTEST(ase_traj, single_frame_is_a_structure) {
     const md_str_t path = ASE_FILE("ase_single_frame.traj");
 
     // As a PDB of one model: the system, and no run
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path, NULL));
     EXPECT_EQ(3u, sys.atom.count);
     EXPECT_FALSE(md_ase_traj_system_publish_run(&sys, path, ASE_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(0u, run_num_frames(&sys, ASE_RUN));
@@ -120,7 +120,7 @@ UTEST(ase_traj, rejects_unsupported_input) {
     for (size_t i = 0; i < MD_COUNTOF(invalid); ++i) {
         md_system_t sys = {.alloc = md_get_heap_allocator()};
         md_system_state_t state = {.alloc = md_get_heap_allocator()};
-        EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, invalid[i]));
+        EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, invalid[i], NULL));
         md_system_state_free(&state);
         md_system_free(&sys);
     }
@@ -132,7 +132,7 @@ UTEST(ase_traj, rotated_cell_is_turned) {
     md_system_t sys = {.alloc = md_get_heap_allocator()};
     md_system_state_t state = {.alloc = md_get_heap_allocator()};
     // cell [[9, 1, 0], [-1, 9, 0], [0, 0, 10]], H at (1, 2, 3)
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_rotated_cell.traj")));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_rotated_cell.traj"), NULL));
     const double l = sqrt(82.0);
     EXPECT_NEAR(l, state.unitcell.x, 1e-5);
     EXPECT_NEAR(l, state.unitcell.y, 1e-5);
@@ -150,7 +150,7 @@ UTEST(ase_traj, partial_periodicity) {
     md_system_t sys = {.alloc = md_get_heap_allocator()};
     md_system_state_t state = {.alloc = md_get_heap_allocator()};
     // cell 10 x 10 x 10, pbc [T, F, T]
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_partial_pbc.traj")));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_partial_pbc.traj"), NULL));
     EXPECT_EQ(MD_UNITCELL_PBC_X | MD_UNITCELL_PBC_Z, state.unitcell.flags & MD_UNITCELL_PBC_ALL);
     EXPECT_NEAR(10.0, state.unitcell.x, 1e-6);
     EXPECT_NEAR(0.0, state.unitcell.y, 1e-6);
@@ -165,7 +165,7 @@ UTEST(ase_traj, changing_atoms_rejected_when_published) {
     md_system_state_t state = {.alloc = md_get_heap_allocator()};
     const md_str_t path = ASE_FILE("ase_changing_atoms.traj");
     // Initialization reads only frame 0; run publication validates every frame.
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, path));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, path, NULL));
     EXPECT_FALSE(md_ase_traj_system_publish_run(&sys, path, ASE_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(0u, run_num_frames(&sys, ASE_RUN));
     md_system_state_free(&state);
@@ -179,7 +179,7 @@ UTEST(ase_traj, cell_without_periodicity_is_dropped) {
     const md_str_t path = ASE_FILE("ase_vacuum_box.traj");
 
     // ASE keeps a box around the molecule, which is not periodic: no cell, rather than one to wrap in
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path, NULL));
     ASSERT_EQ(3u, sys.atom.count);
     EXPECT_EQ(MD_UNITCELL_NONE, initial.unitcell.flags);
     EXPECT_NEAR(4.0, initial.xyz[0].z, 1.0e-6);
@@ -206,7 +206,7 @@ UTEST(ase_traj, header_written_again_for_the_same_atoms) {
 
     // ASE writes the header again for a new constraint and for new pbc: the atoms are the same, so it
     // is one run, and the frames after pbc is turned off have no cell
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &initial, path, NULL));
     ASSERT_TRUE(md_ase_traj_system_publish_run(&sys, path, ASE_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     ASSERT_EQ(3u, run_num_frames(&sys, ASE_RUN));
 
@@ -227,8 +227,8 @@ UTEST(ase_traj, failed_load_leaves_the_system_alone) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_fixed.traj")));
-    EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("make_fixtures.py")));
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_fixed.traj"), NULL));
+    EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("make_fixtures.py"), NULL));
     EXPECT_EQ(3u, sys.atom.count);
     EXPECT_EQ(3u, state.num_atoms);
     md_system_state_free(&state);

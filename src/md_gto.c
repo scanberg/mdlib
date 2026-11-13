@@ -14,12 +14,15 @@
 #include <core/md_common.h>
 #include <core/md_executor.h>
 #include <core/md_vec_math.h>
+#include <core/md_grid.h>
 
 #include <stdbool.h>
 #include <float.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
+
+static size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value);
 
 typedef struct {
     float coeff;
@@ -1020,7 +1023,7 @@ static void gto_build_sparse_pairs(
 
     // Step 1: Morton-sort CGTO centers.
     // cgto_order[new_idx] = original_idx after the sort.
-    //md_util_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
+    //md_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
 
     //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
 
@@ -4489,7 +4492,10 @@ double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, dou
     return compute_distance_cutoff(cutoff, i, j, k, l, coeff, alpha);
 }
 
-size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
+// Compute the cutoff parameter within the supplied GTOs based on the given value
+// Typically this could be somewhere around 1.0e-6
+// returns the number of gtos left after this, as some may have no radius of influence and will be pruned away
+static size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
     if (value == 0) {
         for (size_t i = 0; i < count; ++i) {
             gtos[i].cutoff = FLT_MAX;

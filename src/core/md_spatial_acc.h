@@ -134,7 +134,7 @@ void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const do
 
 // The image of an AABB query centre the query works in: folded into the cell along the periodic axes.
 // A caller which relates the returned coordinates to its own centre offsets them by (center - out_center),
-// a lattice vector. Deriving it independently (e.g. wrapping with md_util_pbc) can disagree by a whole cell
+// a lattice vector. Deriving it independently (e.g. wrapping with md_geom_pbc) can disagree by a whole cell
 // for a centre on a cell face.
 void md_spatial_acc_aabb_query_center(double out_center[3], const md_spatial_acc_t* acc, const double center[3]);
 

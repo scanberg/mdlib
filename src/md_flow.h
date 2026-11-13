@@ -189,7 +189,6 @@ bool md_flow_cut_is_other_open_for(const md_flow_cut_t* cut, const md_flow_node_
 // Open or close a column's "Others". An open one folds nothing, so its members are drawn
 // individually however small they are.
 void md_flow_cut_set_other_expanded(md_flow_cut_t* cut, uint32_t column, bool expanded);
-bool md_flow_cut_is_other_expanded(const md_flow_cut_t* cut, uint32_t column);
 bool md_flow_cut_is_expanded (const md_flow_cut_t* cut, uint32_t node_idx);
 void md_flow_cut_collapse_all(md_flow_cut_t* cut);
 void md_flow_cut_expand_all  (md_flow_cut_t* cut, const md_flow_graph_t* graph);

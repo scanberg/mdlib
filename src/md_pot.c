@@ -163,7 +163,7 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
                 goto fail;
             }
             for (int i = 1; i < 4; ++i) {
-                if (!is_float(tok[i])) {
+                if (!md_parse_is_float(tok[i])) {
                     MD_LOG_ERROR("POT: line %i: coordinate field %i is not a number: '%.*s'", line_num, i, (int)tok[i].len, tok[i].ptr);
                     goto fail;
                 }
@@ -171,20 +171,20 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
 
             md_pot_site_t site = {0};
             pot_copy_symbol(site.element, tok[0], line_num);
-            site.coord[0]   = parse_float(tok[1]);
-            site.coord[1]   = parse_float(tok[2]);
-            site.coord[2]   = parse_float(tok[3]);
+            site.coord[0]   = md_parse_float(tok[1]);
+            site.coord[1]   = md_parse_float(tok[2]);
+            site.coord[2]   = md_parse_float(tok[3]);
             site.fragment_id = -1;
 
             if (num_tok > 4) {
                 site.fragment_name = pot_intern(pot, tok[4], alloc);
             }
             if (num_tok > 5) {
-                if (!is_int(tok[5])) {
+                if (!md_parse_is_int(tok[5])) {
                     MD_LOG_ERROR("POT: line %i: fragment number is not an integer: '%.*s'", line_num, (int)tok[5].len, tok[5].ptr);
                     goto fail;
                 }
-                site.fragment_id = (int)parse_int(tok[5]);
+                site.fragment_id = (int)md_parse_int(tok[5]);
             }
             if (num_tok > 6) {
                 site.atom_name = pot_intern(pot, tok[6], alloc);
@@ -202,14 +202,14 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
                 MD_LOG_ERROR("POT: line %i: expected at least 2 fields in @charges, got %i", line_num, (int)num_tok);
                 goto fail;
             }
-            if (!is_float(tok[1])) {
+            if (!md_parse_is_float(tok[1])) {
                 MD_LOG_ERROR("POT: line %i: charge is not a number: '%.*s'", line_num, (int)tok[1].len, tok[1].ptr);
                 goto fail;
             }
 
             md_pot_charge_t charge = {0};
             pot_copy_symbol(charge.element, tok[0], line_num);
-            charge.charge = parse_float(tok[1]);
+            charge.charge = md_parse_float(tok[1]);
             if (num_tok > 2) {
                 charge.fragment_name = pot_intern(pot, tok[2], alloc);
             }
@@ -227,7 +227,7 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
                 goto fail;
             }
             for (int i = 1; i < 7; ++i) {
-                if (!is_float(tok[i])) {
+                if (!md_parse_is_float(tok[i])) {
                     MD_LOG_ERROR("POT: line %i: polarizability field %i is not a number: '%.*s'", line_num, i, (int)tok[i].len, tok[i].ptr);
                     goto fail;
                 }
@@ -236,7 +236,7 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
             md_pot_polarizability_t pol = {0};
             pot_copy_symbol(pol.element, tok[0], line_num);
             for (int i = 0; i < 6; ++i) {
-                pol.alpha[i] = parse_float(tok[i + 1]);
+                pol.alpha[i] = md_parse_float(tok[i + 1]);
             }
             if (num_tok > 7) {
                 pol.fragment_name = pot_intern(pot, tok[7], alloc);

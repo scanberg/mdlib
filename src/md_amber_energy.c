@@ -1,4 +1,5 @@
 #include <md_amber_energy.h>
+#include <md_io.h>
 
 #include <md_system.h>
 
@@ -365,7 +366,8 @@ static md_str_t amber_join(char* buf, size_t cap, md_str_t a, const char* b) {
     return (md_str_t){buf, a.len + 1 + b_len};
 }
 
-bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t filename, md_str_t run) {
+bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
     MD_ASSERT(sys);
     if (md_str_empty(run)) {
         MD_LOG_ERROR("Amber energy: no run to publish the energies under; load the trajectory first");

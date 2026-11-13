@@ -38,7 +38,7 @@ typedef struct md_system_t {
     // equality only: it is not a count of changes. 0 is a system no mdlib function has built.
     //
     // Every mdlib function which changes the topology bumps it: md_system_reset (and so every loader),
-    // md_system_infer and the md_util_system_infer_* functions, md_chem_perceive, md_system_bond_insert and
+    // md_system_infer and the md_system_infer_* functions, md_chem_perceive, md_system_bond_insert and
     // md_system_bond_remove, md_itp_system_supplement. Code which changes the arrays by hand calls
     // md_system_topology_changed afterwards.
     uint64_t                    topology_version;
@@ -104,7 +104,6 @@ uint64_t md_system_topology_changed(md_system_t* sys);
 // they first appear. Instances out of range are left out; a row without instances or operators adds nothing.
 // An operator which is not rigid is logged, and kept. Replaces the previous assemblies; false (and none) on bad input.
 bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const md_float4x4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
-void md_system_assemblies_free(md_system_t* sys);
 
 // GROUPS (md_group_data_t)
 
@@ -116,7 +115,6 @@ size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, u
 // Sets the groups of a role, in its order, replacing what it had: indices of groups, which gain the role
 void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint32_t* group_idx, size_t count);
 
-void md_system_groups_free(md_system_t* sys);
 
 // RESIDUES (md_residue_data_t)
 

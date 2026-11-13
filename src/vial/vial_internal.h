@@ -4,7 +4,6 @@
 
 #include <md_vial.h>
 #include <core/md_allocator.h>
-#include <core/md_array.h>
 #include <core/md_str.h>
 
 #include <stdarg.h>
