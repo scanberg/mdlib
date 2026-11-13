@@ -208,6 +208,9 @@ extern "C" {
 #if defined(_M_X64)
     unsigned int __cdecl        __popcnt  (unsigned int);
     unsigned __int64 __cdecl    __popcnt64(unsigned __int64);
+    void __cdecl                _mm_prefetch(char const* p, int sel);   // as xmmintrin.h
+#else
+    void __cdecl                __prefetch(const void* p);              // as arm64intr.h
 #endif
 
 #ifdef __cplusplus
@@ -232,6 +235,9 @@ extern "C" {
 #if defined(_M_X64)
 #pragma intrinsic(__popcnt)
 #pragma intrinsic(__popcnt64)
+#pragma intrinsic(_mm_prefetch)
+#else
+#pragma intrinsic(__prefetch)
 #endif
 
 #define md_memcpy  memcpy
@@ -242,6 +248,11 @@ extern "C" {
 #define md_bswap32 _byteswap_ulong
 #define md_bswap64 _byteswap_uint64
 #define md_debug_break() __debugbreak()
+#if defined(_M_X64)
+#   define md_prefetch(p) _mm_prefetch((char const*)(p), 1 /* _MM_HINT_T0 */)
+#else
+#   define md_prefetch(p) __prefetch((const void*)(p))
+#endif
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 
@@ -252,6 +263,7 @@ extern "C" {
 #define md_bswap16  __builtin_bswap16
 #define md_bswap32  __builtin_bswap32
 #define md_bswap64  __builtin_bswap64
+#define md_prefetch(p) __builtin_prefetch((const void*)(p))
 #if defined(__x86_64__) || defined(__i386__)
 #   define md_debug_break() __asm__ volatile("int3")
 #else
@@ -259,6 +271,11 @@ extern "C" {
 #endif
 
 #endif
+
+// md_prefetch(p): a hint that the line holding p is read soon, fetched into the caches ahead of the read. Any address,
+// valid or not: it never faults. Worth it where the hardware's own prefetcher cannot follow the reads (short runs with
+// gaps between them, a gather in increasing order); not where it can (a stream), and it cannot make a core keep more
+// misses in flight than it does.
 
 // ### Bits
 // The same results on every compiler and every CPU, for every input: clz and ctz of 0 are the width, popcnt, bsf and
