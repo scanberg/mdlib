@@ -782,6 +782,7 @@ void md_render_mol_debug_frame_groups(uint32_t groups);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
+void md_render_debug_stage_radii(bool on);
 
 typedef struct pass_prof_t {
     md_gpu_stream_t s;
@@ -976,6 +977,124 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
     md_gpu_free(s, base);
     md_gpu_free(s, up.gpu);
     free(host_q); free(t);
+}
+
+/* What reading the radii from the types' table costs, spacefill near and
+   far, all options: the table in group memory (md_render's default), the
+   table read from memory, a float radius per atom in the points instead
+   (md_render_mol's override; the copy writes it), and a table of 300 types
+   in group memory (the scene's three, then unused ones: what an all-atom
+   system's types cost the kernels that copy them in). Three rounds of the
+   four, their draws pooled: a GPU clock that drifts during the run moves all
+   of them. */
+static void bench_radii(md_gpu_stream_t s, md_render_t r, md_render_mol_t mol, scene_t* sc, const md_render_mol_atoms_t* atoms, uint32_t W, uint32_t H, uint32_t reps) {
+    float* hr = malloc((size_t)sc->atoms * 4);
+    md_gpu_addr_t arad = hr ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu : 0;
+    if (!arad) { free(hr); return; }
+    for (uint32_t i = 0; i < sc->atoms; ++i) hr[i] = (i % 3) ? 1.1f : 1.52f;   /* the scene's types' radii */
+    md_gpu_upload(s, arad, hr, (size_t)sc->atoms * 4);
+    enum { BIG = 300 };
+    float big[BIG];
+    for (uint32_t i = 0; i < BIG; ++i) big[i] = 1.0f + 0.001f * i;
+    big[0] = 0.0f; big[1] = 1.52f; big[2] = 1.1f;
+    md_gpu_addr_t big_table = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(big)).gpu;
+    if (big_table) md_gpu_upload(s, big_table, big, sizeof(big));
+    md_gpu_stream_sync(s);
+    free(hr);
+    enum { ROUNDS = 3, VARS = 4, MEAS = 4 };
+    const char* var[VARS] = { "table in group memory", "table from memory", "radius per atom", "300 types, group memory" };
+    const char* meas[MEAS] = { "raster (refit)", "raster (camera)", "state change", "refit pass" };
+    const struct { const char* name; float dist; } looks[] = { { "near", 0.6f }, { "far", 6.0f } };
+    double* t = malloc((size_t)VARS * MEAS * ROUNDS * reps * sizeof(double));
+    printf("-- radii, spacefill (all options), %u rounds of %u draws: ms (best / median)\n", (unsigned)ROUNDS, reps);
+    printf("  %-5s %-23s |", "", "");
+    for (int m = 0; m < MEAS; ++m) printf(" %17s", meas[m]);
+    printf("\n");
+    for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]) && t; ++li) {
+        md_render_view_t views[VARS];
+        for (int vi = 0; vi < VARS; ++vi) views[vi] = md_render_view_create(r, "radii");
+        for (uint32_t round = 0; round < ROUNDS; ++round) {
+            for (int vi = 0; vi < VARS; ++vi) {
+                md_render_mol_atoms_t at = *atoms;
+                if (vi == 2) at.radius = arad;
+                md_render_mol_update(mol, s, &sc->topo, sc->dyn, &at, 0, NULL);     /* the copy: w a type, or a radius */
+                md_render_debug_stage_radii(vi != 1);
+                md_render_mol_rep_t rep = {0};
+                rep.key = 1;
+                rep.type = MD_RENDER_MOL_REP_SPACEFILL;
+                rep.params.spacefill.radius_scale = 1.0f;
+                rep.color.mode = MD_RENDER_COLOR_POINTS;
+                rep.atom_color = sc->color;
+                md_render_batch_t b[8];
+                uint32_t nb = md_render_mol_emit(&sc->topo, sc->dyn, &at, &rep, b, 8);
+                for (uint32_t k = 0; vi == 3 && k < nb; ++k) {
+                    if (!b[k].points.radius_table) continue;
+                    b[k].points.radius_table = big_table;
+                    b[k].points.radius_table_count = BIG;
+                }
+                md_render_frame_t f;
+                memset(&f, 0, sizeof(f));
+                f.width = W; f.height = H;
+                f.camera = camera_at(sc, looks[li].dist, (float)W / H);
+                f.batches = b; f.batch_count = nb;
+                f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
+                md_render_view_t v = views[vi];
+                time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);          /* the new copy: a refit */
+                double* o = t + ((size_t)vi * MEAS) * ROUNDS * reps + (size_t)round * reps;
+                const size_t stride = (size_t)ROUNDS * reps;
+                for (uint32_t k = 0; k < reps; ++k) {
+                    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+                    md_tick_t t0 = md_tick_now();
+                    md_render_view_draw(s, v, &f, NULL);
+                    md_gpu_stream_sync(s);
+                    o[k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                for (uint32_t k = 0; k < reps; ++k) {
+                    f.camera.view[12] += 0.01f * sc->box / (float)reps * ((k & 1) ? -1.0f : 1.0f);
+                    md_tick_t t0 = md_tick_now();
+                    md_render_view_draw(s, v, &f, NULL);
+                    md_gpu_stream_sync(s);
+                    o[stride + k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                for (uint32_t k = 0; k < reps; ++k) {
+                    f.content[MD_RENDER_CONTENT_STATE]++;
+                    md_tick_t t0 = md_tick_now();
+                    md_render_view_draw(s, v, &f, NULL);
+                    md_gpu_stream_sync(s);
+                    o[2 * stride + k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
+                for (uint32_t k = 0; k < reps; ++k) {
+                    pass_prof_t prof = { .s = s };
+                    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+                    md_gpu_stream_sync(s);
+                    prof.t = md_tick_now();
+                    md_render_debug_pass_hook(pass_hook, &prof);
+                    md_render_view_draw(s, v, &f, NULL);
+                    md_render_debug_pass_hook(NULL, NULL);
+                    md_gpu_stream_sync(s);
+                    o[3 * stride + k] = 0.0;
+                    for (uint32_t q = 0; q < prof.n; ++q) if (!strcmp(prof.name[q], "refit")) o[3 * stride + k] = prof.ms[q];
+                }
+            }
+        }
+        for (int vi = 0; vi < VARS; ++vi) {
+            printf("  %-5s %-23s |", vi == 0 ? looks[li].name : "", var[vi]);
+            for (int m = 0; m < MEAS; ++m) {
+                double* o = t + ((size_t)vi * MEAS + m) * ROUNDS * reps;
+                const size_t n = (size_t)ROUNDS * reps;
+                qsort(o, n, sizeof(double), cmp_d);
+                printf("   %6.2f / %6.2f", o[0], o[n / 2]);
+            }
+            printf("\n");
+        }
+        for (int vi = 0; vi < VARS; ++vi) md_render_view_destroy(s, views[vi]);
+    }
+    free(t);
+    md_render_debug_stage_radii(true);
+    md_render_mol_update(mol, s, &sc->topo, sc->dyn, atoms, 0, NULL);
+    md_gpu_stream_sync(s);
+    md_gpu_free(s, arad);
+    if (big_table) md_gpu_free(s, big_table);
 }
 
 static int run_gpu(int argc, char** argv) {
@@ -1300,6 +1419,7 @@ static int run_gpu(int argc, char** argv) {
                 }
             }
         }
+        if (src == SRC_MOL && (!only_look || strstr("radii", only_look))) bench_radii(s, r, mol, &sc, &atoms, W, H, reps);
         md_gpu_memory_stats_t ms;
         if (md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &ms)) printf("device memory peak: %.0f MB\n", ms.bytes_peak_in_use / 1048576.0);
         printf("\n");

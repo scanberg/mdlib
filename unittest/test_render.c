@@ -976,6 +976,104 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     f_close(&fx);
 }
 
+/* md_render's radius tables in group memory, or where they are (in
+   md_render.c, not in its header) */
+void md_render_debug_stage_radii(bool on);
+
+/* Radii from tables, staged in group memory by the cull's kernels: four
+   distinct tables of a draw are (one of them read by two batches), a table
+   past the 512 entries and a fifth are read from memory. Each draws what
+   float radii draw, to the bit, as do all tables read from memory; a sphere
+   style that ignores radii (radius_scale 0, licorice's) draws what no radii
+   do. */
+UTEST(render, radius_tables_change_nothing) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
+    enum { NB = 7, PER = 48, NT = 6 };
+    /* the tables in the order the batches meet them: 0 staged, 1 too large,
+       2..4 staged (four now), 5 a fifth; the last batch reads table 0 again */
+    const uint32_t tsize[NT] = { 8, 600, 13, 5, 300, 7 };
+    const uint32_t which[NB] = { 0, 1, 2, 3, 4, 5, 0 };
+    float* table[NT];
+    md_gpu_addr_t T[NT];
+    uint32_t seed = 4711;
+    #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
+    for (uint32_t t = 0; t < NT; ++t) {
+        table[t] = malloc(tsize[t] * sizeof(float));
+        for (uint32_t i = 0; i < tsize[t]; ++i) table[t][i] = 0.05f + 0.6f * RND() * RND();
+        T[t] = f_buf(&fx, table[t], tsize[t] * sizeof(float));
+    }
+    md_render_batch_t bt[NB + 1], bf[NB + 1];         /* by table, by float radius; and one more, licorice's style */
+    memset(bt, 0, sizeof(bt));
+    memset(bf, 0, sizeof(bf));
+    float pts[PER * 4], rad[PER];
+    for (uint32_t k = 0; k <= NB; ++k) {
+        const uint32_t t = which[k < NB ? k : 0];
+        for (uint32_t i = 0; i < PER; ++i) {
+            float z = -6.0f - 24.0f * RND();
+            pts[4 * i + 0] = (RND() * 2.0f - 1.0f) * 0.55f * -z * c.aspect;
+            pts[4 * i + 1] = (RND() * 2.0f - 1.0f) * 0.55f * -z;
+            pts[4 * i + 2] = z;
+            uint32_t type = i % 11 == 10 ? tsize[t] + i : (uint32_t)(RND() * tsize[t]) % tsize[t];   /* some past the end: radius 0 */
+            uint32_t word = type | ((i * 2654435761u) & 0xFFFF0000u);                           /* flags above, ignored */
+            memcpy(&pts[4 * i + 3], &word, 4);
+            rad[i] = type < tsize[t] ? table[t][type] : 0.0f;
+        }
+        md_gpu_addr_t P = f_buf(&fx, pts, sizeof(pts));
+        md_render_batch_t b = {0};
+        b.key = 10 + k; b.kind = MD_RENDER_SPHERES; b.count = PER; b.points.count = PER;
+        b.points.position = P; b.points.stride = 16;
+        b.style.spheres.radius_scale = 1.0f;
+        bt[k] = bf[k] = b;
+        bt[k].points.radius = P + 12; bt[k].points.radius_stride = 16;
+        bt[k].points.radius_table = T[t]; bt[k].points.radius_table_count = tsize[t];
+        if (k < NB) {
+            bf[k].points.radius = f_buf(&fx, rad, sizeof(rad));
+        } else {
+            bt[k].style.spheres.radius_scale = bf[k].style.spheres.radius_scale = 0.0f;
+            bt[k].style.spheres.radius_add   = bf[k].style.spheres.radius_add   = 0.12f;
+        }
+    }
+    #undef RND
+
+    md_render_view_t ref = md_render_view_create(fx.r, "float radii");
+    md_render_frame_t fr = frame_of(W, H, make_camera(&c), bf, NB + 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), bt, NB + 1);
+    md_render_stats_t st;
+    int covered = 0;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_GT(st.hardware[0] + st.hardware[1], 0u);
+    if (info.supports_atomic_int64) EXPECT_GT(st.compute[0] + st.compute[1], 0u);
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_GT(covered, (int)(W * H / 20));
+    /* again, the positions announced as changed: a refit, and phase 1
+       against the first raster's pyramid */
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+
+    md_render_debug_stage_radii(false);
+    md_render_view_t mem = md_render_view_create(fx.r, "tables from memory");
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, mem, &f, NULL));
+    md_render_debug_stage_radii(true);
+    EXPECT_EQ(0, compare_views(&fx, mem, ref, W, H, &covered));
+    printf("    %u spheres in %u batches, %u tables (4 in group memory): %d pixels covered, hardware %u + %u, compute %u + %u\n",
+           (NB + 1) * PER, NB + 1, NT, covered, st.hardware[0], st.hardware[1], st.compute[0], st.compute[1]);
+
+    md_render_view_destroy(fx.gfx, mem);
+    md_render_view_destroy(fx.gfx, ref);
+    for (uint32_t t = 0; t < NT; ++t) free(table[t]);
+    f_close(&fx);
+}
+
 /* ---- The molecular layer ------------------------------------------------------- */
 
 static const char ethanol_pdb[] =
