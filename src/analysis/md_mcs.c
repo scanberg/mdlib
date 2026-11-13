@@ -146,7 +146,7 @@ static bool graph_init(mcs_graph_t* g, const md_system_t* sys, const int32_t* at
 //
 // The two sides of a class are sets of vertices, a bit each: splitting a class by its adjacency to a pair is two ANDs
 // a word, the lowest vertex of a side is its first bit, and what the search tries is in ascending order of vertex,
-// as McSplit's. A class is a record of words, its sizes then its two sides of W words each; W is a constant of each
+// as McSplit's. A class is a record of words, its first word then its two sides of W words each; W is a constant of each
 // instance of the search (1, 2, 4, 8 or 16: up to 64, 128, 256, 512 and 1024 vertices).
 
 typedef struct vpair_t { int v, w; } vpair_t;
@@ -168,16 +168,31 @@ typedef struct search_t {
 } search_t;
 
 // The first word of a class: how many on the left, on the right, and whether it is adjacent to a pair matched (so
-// that what is matched stays connected through it)
+// that what is matched stays connected through it). The sizes are kept for sides of more than one word; a side of one
+// is counted when its size is wanted, a POPCNT, which is less than keeping it up to date.
+#define KEEP_SIZES(W) ((W) > 1)
+
 static inline uint64_t cls_head(uint32_t left, uint32_t right, bool adjacent) {
     return (uint64_t)left | ((uint64_t)right << 16) | ((uint64_t)adjacent << 32);
 }
-static inline int  cls_left (uint64_t h) { return (int)(h & 0xFFFF); }
-static inline int  cls_right(uint64_t h) { return (int)((h >> 16) & 0xFFFF); }
-static inline bool cls_adj  (uint64_t h) { return (h >> 32) != 0; }
+static inline bool cls_adj(uint64_t h) { return (h >> 32) != 0; }
 
 static MD_FORCE_INLINE uint64_t* cls_at(const search_t* s, size_t c, const int W) {
     return s->cls + c * (size_t)(1 + 2 * W);
+}
+
+static MD_FORCE_INLINE int set_count(const uint64_t* set, const int W) {
+    int n = 0;
+    for (int j = 0; j < W; ++j) n += (int)md_popcnt64(set[j]);
+    return n;
+}
+
+// The sizes of the two sides of class c
+static MD_FORCE_INLINE int cls_left(const uint64_t* c, const int W) {
+    return KEEP_SIZES(W) ? (int)(c[0] & 0xFFFF) : set_count(c + 1, W);
+}
+static MD_FORCE_INLINE int cls_right(const uint64_t* c, const int W) {
+    return KEEP_SIZES(W) ? (int)((c[0] >> 16) & 0xFFFF) : set_count(c + 1 + W, W);
 }
 
 static MD_FORCE_INLINE int first_bit(const uint64_t* set, const int W) {
@@ -206,20 +221,27 @@ static MD_FORCE_INLINE int filter(search_t* s, size_t d, int nd, int v, int w, c
         const uint64_t* L = c + 1;
         const uint64_t* R = c + 1 + W;
         uint64_t* o = cls_at(s, out + k, W);
-        int ln = 0, rn = 0;
-        for (int j = 0; j < W; ++j) { o[1 + j]     = L[j] & ~av[j]; ln += (int)md_popcnt64(o[1 + j]); }
-        for (int j = 0; j < W; ++j) { o[1 + W + j] = R[j] & ~aw[j]; rn += (int)md_popcnt64(o[1 + W + j]); }
+        // ln, rn: the sizes where they are kept, otherwise not zero where the side is not empty
+        uint64_t ln = 0, rn = 0;
+        for (int j = 0; j < W; ++j) { o[1 + j]     = L[j] & ~av[j]; ln = KEEP_SIZES(W) ? ln + md_popcnt64(o[1 + j])     : (ln | o[1 + j]); }
+        for (int j = 0; j < W; ++j) { o[1 + W + j] = R[j] & ~aw[j]; rn = KEEP_SIZES(W) ? rn + md_popcnt64(o[1 + W + j]) : (rn | o[1 + W + j]); }
         if (ln && rn) {
-            o[0] = cls_head((uint32_t)ln, (uint32_t)rn, cls_adj(c[0]));
+            o[0] = KEEP_SIZES(W) ? cls_head((uint32_t)ln, (uint32_t)rn, cls_adj(c[0])) : c[0];
             o = cls_at(s, out + ++k, W);
         }
-        // The rest of each side is adjacent
-        const int la = cls_left(c[0]) - ln, ra = cls_right(c[0]) - rn;
-        if (la && ra) {
+        // The rest of each side is adjacent; with the sizes kept, whether it is empty is known before it is made
+        if (KEEP_SIZES(W)) {
+            const int la = cls_left(c, W) - (int)ln, ra = cls_right(c, W) - (int)rn;
+            if (!la || !ra) continue;
             for (int j = 0; j < W; ++j) o[1 + j]     = L[j] & av[j];
             for (int j = 0; j < W; ++j) o[1 + W + j] = R[j] & aw[j];
             o[0] = cls_head((uint32_t)la, (uint32_t)ra, true);
             k++;
+        } else {
+            uint64_t la = 0, ra = 0;
+            for (int j = 0; j < W; ++j) { o[1 + j]     = L[j] & av[j]; la |= o[1 + j]; }
+            for (int j = 0; j < W; ++j) { o[1 + W + j] = R[j] & aw[j]; ra |= o[1 + W + j]; }
+            if (la && ra) { o[0] = cls_head(0, 0, true); k++; }
         }
     }
     return k;
@@ -232,7 +254,7 @@ static MD_FORCE_INLINE int select_class(const search_t* s, size_t d, int nd, con
     for (int i = 0; i < nd; ++i) {
         const uint64_t* c = cls_at(s, d + i, W);
         if (s->cur_n > 0 && !cls_adj(c[0])) continue;
-        const int len = MD_MAX(cls_left(c[0]), cls_right(c[0]));
+        const int len = MD_MAX(cls_left(c, W), cls_right(c, W));
         if (len > min_size) continue;
         const int tie = first_bit(c + 1, W);
         if (len < min_size || tie < min_tie) { min_size = len; min_tie = tie; best = i; }
@@ -251,8 +273,8 @@ static MD_FORCE_INLINE void solve_w(search_t* s, size_t d, int nd, const int W, 
         if (s->cur_n > s->best_n) { md_memcpy(s->best, s->cur, s->cur_n * sizeof(vpair_t)); s->best_n = s->cur_n; }
         int bound = 0;
         for (int i = 0; i < nd; ++i) {
-            const uint64_t h = cls_at(s, d + i, W)[0];
-            bound += MD_MIN(cls_left(h), cls_right(h));
+            const uint64_t* c = cls_at(s, d + i, W);
+            bound += MD_MIN(cls_left(c, W), cls_right(c, W));
         }
         if (s->cur_n + bound <= s->best_n) return;
         const int bi = select_class(s, d, nd, W);
@@ -263,7 +285,7 @@ static MD_FORCE_INLINE void solve_w(search_t* s, size_t d, int nd, const int W, 
         uint64_t* c = cls_at(s, b, W);
         const int v = first_bit(c + 1, W);
         c[1 + v / 64] &= ~(1ull << (v % 64));
-        c[0] -= 1 + (1 << 16);
+        if (KEEP_SIZES(W)) c[0] -= 1 + (1 << 16);
         uint64_t todo[MCS_MAX_WORDS];
         for (int j = 0; j < W; ++j) todo[j] = c[1 + W + j];
         for (int j = 0; j < W; ++j) {
@@ -284,8 +306,8 @@ static MD_FORCE_INLINE void solve_w(search_t* s, size_t d, int nd, const int W, 
             }
         }
         c = cls_at(s, b, W);
-        c[0] += 1 << 16;
-        if (cls_left(c[0]) == 0) {
+        if (KEEP_SIZES(W)) c[0] += 1 << 16;
+        if (cls_left(c, W) == 0) {
             // The last class in its place
             const size_t last = d + (size_t)--nd;
             if (b != last) md_memcpy(c, cls_at(s, last, W), (size_t)(1 + 2 * W) * sizeof(uint64_t));
