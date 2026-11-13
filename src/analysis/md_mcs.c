@@ -67,11 +67,17 @@ static int find_u32(const uint32_t* arr, int n, uint32_t x) {
 
 // ### GRAPHS ###
 
+// A set of vertices: a bit for each, in words of 64
+#define MCS_MAX_WORDS ((MD_MCS_GRAPH_MAX + 63) / 64)
+
+static inline int words_of(int n) { return (n + 63) / 64; }
+
 typedef struct mcs_graph_t {
     int             n;
+    int             words;      // of a set of its vertices
     int32_t*        atom;       // [n] the atom of each vertex, by degree, highest first
     mcs_label_t*    label;      // [n]
-    uint8_t*        adj;        // [n * n]
+    uint64_t*       adj;        // [n * words] the neighbours of each vertex, as a set
 } mcs_graph_t;
 
 // The heavy atoms of atoms[count], each once, and the bonds between them. The vertices are by their degree within the
@@ -115,145 +121,183 @@ static bool graph_init(mcs_graph_t* g, const md_system_t* sys, const int32_t* at
     int* pos = md_temp_alloc_array(temp, int, n);
     for (int i = 0; i < n; ++i) pos[i] = (int)first[off[i + 1] - off[i]]++;
 
+    const int w = words_of(n);
     g->n     = n;
+    g->words = w;
     g->atom  = md_temp_alloc_array(temp, int32_t, n);
     g->label = md_temp_alloc_array(temp, mcs_label_t, n);
-    g->adj   = md_temp_alloc_zero(temp, (size_t)n * n);
+    g->adj   = md_temp_alloc_zero_array(temp, uint64_t, (size_t)n * w);
     for (int i = 0; i < n; ++i) {
         const int p = pos[i];
         g->atom[p]  = (int32_t)h[i];
         g->label[p] = atom_label(sys, (int32_t)h[i], by_name);
         for (uint32_t m = off[i]; m < off[i + 1]; ++m) {
             const int q = pos[nbr[m]];
-            g->adj[(size_t)p * n + q] = g->adj[(size_t)q * n + p] = 1;
+            g->adj[(size_t)p * w + q / 64] |= 1ull << (q % 64);
+            g->adj[(size_t)q * w + p / 64] |= 1ull << (p % 64);
         }
     }
     return true;
 }
 
 // ### McSPLIT ###
-// Bidomains: a class of vertices of each graph that may still be matched to each other, alike in label and in their
-// adjacency to every pair matched so far. A bound is the matched pairs and the least of each class's two sides.
+// Classes (bidomains): the vertices of each graph that may still be matched to each other, alike in label and in
+// their adjacency to every pair matched so far. A bound is the matched pairs and the least of each class's two sides.
+//
+// The two sides of a class are sets of vertices, a bit each: splitting a class by its adjacency to a pair is two ANDs
+// a word, the lowest vertex of a side is its first bit, and what the search tries is in ascending order of vertex,
+// as McSplit's. A class is a record of words, its sizes then its two sides of W words each; W is a constant of each
+// instance of the search (1, 2, 4, 8 or 16: up to 64, 128, 256, 512 and 1024 vertices).
 
-typedef struct bidomain_t { int l, r, left_len, right_len; bool adjacent; } bidomain_t;
 typedef struct vpair_t { int v, w; } vpair_t;
 
 typedef struct search_t {
     const mcs_graph_t*  g0;
     const mcs_graph_t*  g1;
-    int*        left;       // [g0->n] the vertices of the classes, each class's a range
-    int*        right;      // [g1->n]
+    const uint64_t* adj0;       // [g0->n * W] the neighbours of each vertex of g0, as sets of W words
+    const uint64_t* adj1;       // [g1->n * W]
+    uint64_t*   cls;            // The classes of each level of the search, a stack of records of 1 + 2W words
+    size_t      top, cap;       // In classes
     vpair_t*    cur;
     int         cur_n;
     vpair_t*    best;
     int         best_n;
     uint64_t    steps, max_steps;
     bool        gave_up;
-    bidomain_t* pool;       // The classes of each level of the search, a stack
-    size_t      pool_top, pool_cap;
+    md_allocator_i* arena;      // What the stack grows in
 } search_t;
 
-static int calc_bound(const bidomain_t* d, int nd) {
-    int b = 0;
-    for (int i = 0; i < nd; ++i) b += MD_MIN(d[i].left_len, d[i].right_len);
-    return b;
+// The first word of a class: how many on the left, on the right, and whether it is adjacent to a pair matched (so
+// that what is matched stays connected through it)
+static inline uint64_t cls_head(uint32_t left, uint32_t right, bool adjacent) {
+    return (uint64_t)left | ((uint64_t)right << 16) | ((uint64_t)adjacent << 32);
+}
+static inline int  cls_left (uint64_t h) { return (int)(h & 0xFFFF); }
+static inline int  cls_right(uint64_t h) { return (int)((h >> 16) & 0xFFFF); }
+static inline bool cls_adj  (uint64_t h) { return (h >> 32) != 0; }
+
+static MD_FORCE_INLINE uint64_t* cls_at(const search_t* s, size_t c, const int W) {
+    return s->cls + c * (size_t)(1 + 2 * W);
 }
 
-static int min_value(const int* arr, int len) {
-    int m = INT_MAX;
-    for (int i = 0; i < len; ++i) m = MD_MIN(m, arr[i]);
-    return m;
+static MD_FORCE_INLINE int first_bit(const uint64_t* set, const int W) {
+    for (int j = 0; j < W; ++j) if (set[j]) return j * 64 + (int)md_ctz64(set[j]);
+    return -1;
+}
+
+// Room for need classes; the stack is addressed by index, so it may move
+static void reserve(search_t* s, size_t need, int W) {
+    if (need <= s->cap) return;
+    const size_t cap = MD_MAX(need, 2 * s->cap);
+    const size_t rec = (size_t)(1 + 2 * W) * sizeof(uint64_t);
+    s->cls = md_realloc(s->arena, s->cls, s->cap * rec, cap * rec);
+    s->cap = cap;
+}
+
+// The classes d[nd] split by adjacency to v and to w, onto the top of the stack; how many. Each class gives its part
+// adjacent to neither, then its part adjacent to both, where each has vertices on either side.
+static MD_FORCE_INLINE int filter(search_t* s, size_t d, int nd, int v, int w, const int W) {
+    const uint64_t* av = s->adj0 + (size_t)v * W;
+    const uint64_t* aw = s->adj1 + (size_t)w * W;
+    const size_t out = s->top;
+    int k = 0;
+    for (int i = 0; i < nd; ++i) {
+        const uint64_t* c = cls_at(s, d + i, W);
+        const uint64_t* L = c + 1;
+        const uint64_t* R = c + 1 + W;
+        uint64_t* o = cls_at(s, out + k, W);
+        int ln = 0, rn = 0;
+        for (int j = 0; j < W; ++j) { o[1 + j]     = L[j] & ~av[j]; ln += (int)md_popcnt64(o[1 + j]); }
+        for (int j = 0; j < W; ++j) { o[1 + W + j] = R[j] & ~aw[j]; rn += (int)md_popcnt64(o[1 + W + j]); }
+        if (ln && rn) {
+            o[0] = cls_head((uint32_t)ln, (uint32_t)rn, cls_adj(c[0]));
+            o = cls_at(s, out + ++k, W);
+        }
+        // The rest of each side is adjacent
+        const int la = cls_left(c[0]) - ln, ra = cls_right(c[0]) - rn;
+        if (la && ra) {
+            for (int j = 0; j < W; ++j) o[1 + j]     = L[j] & av[j];
+            for (int j = 0; j < W; ++j) o[1 + W + j] = R[j] & aw[j];
+            o[0] = cls_head((uint32_t)la, (uint32_t)ra, true);
+            k++;
+        }
+    }
+    return k;
 }
 
 // The class with the fewest on its larger side, ties to the one with the lowest vertex; once something is matched,
 // only classes adjacent to it, so what is matched stays connected
-static int select_bidomain(const search_t* s, const bidomain_t* d, int nd) {
+static MD_FORCE_INLINE int select_class(const search_t* s, size_t d, int nd, const int W) {
     int min_size = INT_MAX, min_tie = INT_MAX, best = -1;
     for (int i = 0; i < nd; ++i) {
-        if (s->cur_n > 0 && !d[i].adjacent) continue;
-        const int len = MD_MAX(d[i].left_len, d[i].right_len);
+        const uint64_t* c = cls_at(s, d + i, W);
+        if (s->cur_n > 0 && !cls_adj(c[0])) continue;
+        const int len = MD_MAX(cls_left(c[0]), cls_right(c[0]));
         if (len > min_size) continue;
-        const int tie = min_value(s->left + d[i].l, d[i].left_len);
+        const int tie = first_bit(c + 1, W);
         if (len < min_size || tie < min_tie) { min_size = len; min_tie = tie; best = i; }
     }
     return best;
 }
 
-// The vertices of arr[len] adjacent to the one of row first; how many
-static int partition(int* arr, int len, const uint8_t* row) {
-    int i = 0;
-    for (int j = 0; j < len; ++j) {
-        if (row[arr[j]]) { const int t = arr[i]; arr[i] = arr[j]; arr[j] = t; ++i; }
-    }
-    return i;
-}
+typedef void (*solve_fn)(search_t* s, size_t d, int nd);
 
-// The classes of d split by adjacency to v and to w, into out; how many
-static int filter_domains(search_t* s, const bidomain_t* d, int nd, bidomain_t* out, int v, int w) {
-    const uint8_t* rv = s->g0->adj + (size_t)v * s->g0->n;
-    const uint8_t* rw = s->g1->adj + (size_t)w * s->g1->n;
-    int k = 0;
-    for (int i = 0; i < nd; ++i) {
-        const bidomain_t* o = &d[i];
-        const int ll = partition(s->left + o->l, o->left_len, rv);
-        const int rl = partition(s->right + o->r, o->right_len, rw);
-        const int ln = o->left_len - ll, rn = o->right_len - rl;
-        if (ln && rn) out[k++] = (bidomain_t){o->l + ll, o->r + rl, ln, rn, o->adjacent};
-        if (ll && rl) out[k++] = (bidomain_t){o->l, o->r, ll, rl, true};
-    }
-    return k;
-}
-
-// The index of the least of arr[len] above w, -1 when none is
-static int next_smallest(const int* arr, int len, int w) {
-    int idx = -1, smallest = INT_MAX;
-    for (int i = 0; i < len; ++i) if (arr[i] > w && arr[i] < smallest) { smallest = arr[i]; idx = i; }
-    return idx;
-}
-
-// The lowest vertex v of a class is matched to each of the other side's in turn, lowest first; then the class is
-// searched without v, which is the loop (in place of a call in the tail)
-static void solve(search_t* s, bidomain_t* d, int nd) {
+// The classes d[nd] of the stack. The lowest vertex v of a class is matched to each of the other side's in turn,
+// lowest first; then the class is searched without v, which is the loop (in place of a call in the tail). recurse is
+// the instance of this of the same W.
+static MD_FORCE_INLINE void solve_w(search_t* s, size_t d, int nd, const int W, solve_fn recurse) {
     for (;;) {
         if (++s->steps > s->max_steps) { s->gave_up = true; return; }
         if (s->cur_n > s->best_n) { md_memcpy(s->best, s->cur, s->cur_n * sizeof(vpair_t)); s->best_n = s->cur_n; }
-        if (s->cur_n + calc_bound(d, nd) <= s->best_n) return;
-        const int bi = select_bidomain(s, d, nd);
-        if (bi < 0) return;
-        bidomain_t* bd = &d[bi];
-
-        // v to the end of the left side, out of the class while it is matched
-        int* L = s->left + bd->l;
-        int vi = 0;
-        for (int i = 1; i < bd->left_len; ++i) if (L[i] < L[vi]) vi = i;
-        const int v = L[vi];
-        L[vi] = L[bd->left_len - 1];
-        L[bd->left_len - 1] = v;
-        bd->left_len--;
-
-        // Each w to the end of the right side in turn: the classes below are partitions of what is before it
-        int* R = s->right + bd->r;
-        const int rn = --bd->right_len;
-        int w = -1;
-        for (int i = 0; i <= rn; ++i) {
-            const int idx = next_smallest(R, rn + 1, w);
-            w = R[idx];
-            R[idx] = R[rn];
-            R[rn] = w;
-            bidomain_t* below = s->pool + s->pool_top;
-            const int k = filter_domains(s, d, nd, below, v, w);
-            MD_ASSERT(s->pool_top + k <= s->pool_cap);
-            s->pool_top += k;
-            s->cur[s->cur_n++] = (vpair_t){v, w};
-            solve(s, below, k);
-            s->cur_n--;
-            s->pool_top -= k;
-            if (s->gave_up) return;
+        int bound = 0;
+        for (int i = 0; i < nd; ++i) {
+            const uint64_t h = cls_at(s, d + i, W)[0];
+            bound += MD_MIN(cls_left(h), cls_right(h));
         }
-        bd->right_len++;
-        if (bd->left_len == 0) d[bi] = d[--nd];
+        if (s->cur_n + bound <= s->best_n) return;
+        const int bi = select_class(s, d, nd, W);
+        if (bi < 0) return;
+        const size_t b = d + (size_t)bi;
+
+        // v out of the class while it is matched, and each w in turn: the classes below split what is left of it
+        uint64_t* c = cls_at(s, b, W);
+        const int v = first_bit(c + 1, W);
+        c[1 + v / 64] &= ~(1ull << (v % 64));
+        c[0] -= 1 + (1 << 16);
+        uint64_t todo[MCS_MAX_WORDS];
+        for (int j = 0; j < W; ++j) todo[j] = c[1 + W + j];
+        for (int j = 0; j < W; ++j) {
+            for (uint64_t t = todo[j]; t; t &= t - 1) {
+                const uint64_t bit = t & -t;
+                const int w = j * 64 + (int)md_ctz64(t);
+                cls_at(s, b, W)[1 + W + j] &= ~bit;
+                reserve(s, s->top + 2 * (size_t)nd, W);
+                const int k = filter(s, d, nd, v, w, W);
+                const size_t below = s->top;
+                s->top += k;
+                s->cur[s->cur_n++] = (vpair_t){v, w};
+                recurse(s, below, k);
+                s->cur_n--;
+                s->top = below;
+                cls_at(s, b, W)[1 + W + j] |= bit;
+                if (s->gave_up) return;
+            }
+        }
+        c = cls_at(s, b, W);
+        c[0] += 1 << 16;
+        if (cls_left(c[0]) == 0) {
+            // The last class in its place
+            const size_t last = d + (size_t)--nd;
+            if (b != last) md_memcpy(c, cls_at(s, last, W), (size_t)(1 + 2 * W) * sizeof(uint64_t));
+        }
     }
 }
+
+static void solve_1 (search_t* s, size_t d, int nd) { solve_w(s, d, nd,  1, solve_1); }
+static void solve_2 (search_t* s, size_t d, int nd) { solve_w(s, d, nd,  2, solve_2); }
+static void solve_4 (search_t* s, size_t d, int nd) { solve_w(s, d, nd,  4, solve_4); }
+static void solve_8 (search_t* s, size_t d, int nd) { solve_w(s, d, nd,  8, solve_8); }
+static void solve_16(search_t* s, size_t d, int nd) { solve_w(s, d, nd, 16, solve_16); }
 
 typedef struct label_entry_t {
     uint64_t    name;
@@ -269,39 +313,58 @@ static int cmp_label_entry(const void* x, const void* y) {
     return (a->id > b->id) - (a->id < b->id);
 }
 
+// The neighbours of each vertex of g as sets of W words, W at least g's own
+static const uint64_t* adj_words(const mcs_graph_t* g, int W, md_temp_scope_t temp) {
+    if (W == g->words) return g->adj;
+    uint64_t* adj = md_temp_alloc_zero_array(temp, uint64_t, (size_t)g->n * W);
+    for (int v = 0; v < g->n; ++v) md_memcpy(adj + (size_t)v * W, g->adj + (size_t)v * g->words, g->words * sizeof(uint64_t));
+    return adj;
+}
+
 // The largest connected common subgraph of g0 and g1: its pairs into out[min(g0->n, g1->n)] (vertices), how many;
 // gave_up when the search ran out of steps
 static int graph_mcs(vpair_t* out, const mcs_graph_t* g0, const mcs_graph_t* g1, uint64_t max_steps, bool* gave_up, md_temp_scope_t temp) {
     *gave_up = false;
     const int n0 = g0->n, n1 = g1->n, nmin = MD_MIN(n0, n1);
     if (!nmin) return 0;
-    search_t s = {.g0 = g0, .g1 = g1, .max_steps = max_steps, .best = out};
-    s.left  = md_temp_alloc_array(temp, int, n0);
-    s.right = md_temp_alloc_array(temp, int, n1);
-    s.cur   = md_temp_alloc_array(temp, vpair_t, nmin);
-    // The classes of a level are disjoint and none is empty on either side: below k pairs there are at most nmin - k,
-    // and a path of the search holds at most nmin (nmin + 1) / 2
-    s.pool_cap = (size_t)nmin * (nmin + 1) / 2;
-    s.pool = md_temp_alloc_array(temp, bidomain_t, s.pool_cap);
+    // The words of a set, a power of two
+    int W = 1;
+    while (W < MD_MAX(g0->words, g1->words)) W *= 2;
+    MD_ASSERT(W <= MCS_MAX_WORDS);
+    search_t s = {.g0 = g0, .g1 = g1, .max_steps = max_steps, .best = out, .arena = md_temp_allocator(temp)};
+    s.adj0 = adj_words(g0, W, temp);
+    s.adj1 = adj_words(g1, W, temp);
+    s.cur  = md_temp_alloc_array(temp, vpair_t, nmin);
 
-    // The first classes: the vertices of both by label, each side's ascending
+    // The first classes: the vertices of both by label
     const int ne = n0 + n1;
     label_entry_t* e = md_temp_alloc_array(temp, label_entry_t, ne);
     for (int v = 0; v < n0; ++v) e[v]      = (label_entry_t){g0->label[v].name, g0->label[v].z, (uint32_t)v};
     for (int w = 0; w < n1; ++w) e[n0 + w] = (label_entry_t){g1->label[w].name, g1->label[w].z, (uint32_t)w | 0x80000000u};
     qsort(e, ne, sizeof(label_entry_t), cmp_label_entry);
-    int nd = 0, nl = 0, nr = 0;
+
+    // The stack last: it grows in place as the search goes deeper, the arena's last allocation
+    reserve(&s, 4 * (size_t)nmin + 16, W);
+    int nd = 0;
     for (int i = 0, j; i < ne; i = j) {
-        const int l0 = nl, r0 = nr;
+        uint64_t* c = cls_at(&s, nd, W);
+        md_memset(c, 0, (size_t)(1 + 2 * W) * sizeof(uint64_t));
+        uint32_t nl = 0, nr = 0;
         for (j = i; j < ne && e[j].z == e[i].z && e[j].name == e[i].name; ++j) {
-            if (e[j].id & 0x80000000u) s.right[nr++] = (int)(e[j].id & 0x7FFFFFFFu);
-            else s.left[nl++] = (int)e[j].id;
+            const uint32_t x = e[j].id & 0x7FFFFFFFu;
+            if (e[j].id & 0x80000000u) { c[1 + W + x / 64] |= 1ull << (x % 64); nr++; }
+            else                       { c[1 + x / 64]     |= 1ull << (x % 64); nl++; }
         }
-        if (nl > l0 && nr > r0) s.pool[nd++] = (bidomain_t){l0, r0, nl - l0, nr - r0, false};
-        else { nl = l0; nr = r0; }
+        if (nl && nr) { c[0] = cls_head(nl, nr, false); nd++; }
     }
-    s.pool_top = nd;
-    solve(&s, s.pool, nd);
+    s.top = nd;
+    switch (W) {
+    case 1:  solve_1 (&s, 0, nd); break;
+    case 2:  solve_2 (&s, 0, nd); break;
+    case 4:  solve_4 (&s, 0, nd); break;
+    case 8:  solve_8 (&s, 0, nd); break;
+    default: solve_16(&s, 0, nd); break;
+    }
     *gave_up = s.gave_up;
     return s.best_n;
 }
