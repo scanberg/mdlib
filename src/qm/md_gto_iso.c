@@ -53,7 +53,6 @@ typedef struct iv_t { double lo, hi; } iv_t;
 static inline iv_t   iv(double lo, double hi)   { return (iv_t){lo, hi}; }
 static inline iv_t   iv_pt(double x)            { return (iv_t){x, x}; }
 static inline iv_t   iv_add(iv_t a, iv_t b)     { return (iv_t){a.lo + b.lo, a.hi + b.hi}; }
-static inline iv_t   iv_neg(iv_t a)             { return (iv_t){-a.hi, -a.lo}; }
 static inline double iv_mag(iv_t a)             { return fmax(fabs(a.lo), fabs(a.hi)); }
 static inline double iv_width(iv_t a)           { return a.hi - a.lo; }
 static inline iv_t   iv_widen(iv_t a, double e) { return (iv_t){a.lo - e, a.hi + e}; }

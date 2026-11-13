@@ -2,14 +2,7 @@
 
 #include "md_common.h"
 #include "md_vec.h"
-
-#ifndef MD_VEC_MATH_USE_SIMD
-#define MD_VEC_MATH_USE_SIMD 1
-#endif
-
-#if MD_VEC_MATH_USE_SIMD
 #include "md_simd.h"
-#endif
 
 #ifndef MD_VEC_INLINE
 #define MD_VEC_INLINE static MD_FORCE_INLINE
@@ -413,39 +406,20 @@ MD_VEC_INLINE md_float3_t md_float3_min_image(md_float3_t dx, md_float3_t ext, m
 
 // VEC4 OPERATIONS
 MD_VEC_INLINE md_float4_t md_float4_zero(void) {
-#if MD_VEC_MATH_USE_SIMD
     md_float4_t res;
     md_mm_store_ps(res.elem, md_mm_setzero_ps());
     return res;
-#else
-    md_float4_t res = {0};
-    return res;
-#endif
 }
 
 MD_VEC_INLINE md_float4_t md_float4_set(float x, float y, float z, float w) {
     md_float4_t res;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(res.elem, md_mm_set_ps(w, z, y, x));
-#else
-    res.x = x;
-    res.y = y;
-    res.z = z;
-    res.w = w;
-#endif
     return res;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_set1(float v) {
     md_float4_t res;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(res.elem, md_mm_set1_ps(v));
-#else
-    res.x = v;
-    res.y = v;
-    res.z = v;
-    res.w = v;
-#endif
     return res;
 }
 
@@ -465,207 +439,101 @@ MD_VEC_INLINE md_float4_t md_float4_from_float(float v) {
 
 MD_VEC_INLINE md_float4_t md_float4_from_float3(md_float3_t v, float w) {
     md_float4_t res;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(res.elem, md_mm_set_ps(w, v.z, v.y, v.x));
-#else
-    res = {v.x, v.y, v.z, w};
-#endif
     return res;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_mul(md_float4_t a, md_float4_t b) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_mul_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    c.x = a.x * b.x;
-    c.y = a.y * b.y;
-    c.z = a.z * b.z;
-    c.w = a.w * b.w;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_mul1(md_float4_t a, float s) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_mul_ps(md_mm_load_ps(a.elem), md_mm_set1_ps(s)));
-#else
-    c.x = a.x * s;
-    c.y = a.y * s;
-    c.z = a.z * s;
-    c.w = a.w * s;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_div(md_float4_t a, md_float4_t b) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_div_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    c.x = a.x / b.x;
-    c.y = a.y / b.y;
-    c.z = a.z / b.z;
-    c.w = a.w / b.w;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_div1(md_float4_t a, float s) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_div_ps(md_mm_load_ps(a.elem), md_mm_set1_ps(s)));
-#else
-    c.x = a.x / s;
-    c.y = a.y / s;
-    c.z = a.z / s;
-    c.w = a.w / s;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_add(md_float4_t a, md_float4_t b) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_add_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    c.x = a.x + b.x;
-    c.y = a.y + b.y;
-    c.z = a.z + b.z;
-    c.w = a.w + b.w;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_add1(md_float4_t a, float s) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_add_ps(md_mm_load_ps(a.elem), md_mm_set1_ps(s)));
-#else
-    c.x = a.x + s;
-    c.y = a.y + s;
-    c.z = a.z + s;
-    c.w = a.w + s;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_sub(md_float4_t a, md_float4_t b) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_sub_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    c.x = a.x - b.x;
-    c.y = a.y - b.y;
-    c.z = a.z - b.z;
-    c.w = a.w - b.w;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_sub1(md_float4_t a, float s) {
     md_float4_t c;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(c.elem, md_mm_sub_ps(md_mm_load_ps(a.elem), md_mm_set1_ps(s)));
-#else
-    c.x = a.x - s;
-    c.y = a.y - s;
-    c.z = a.z - s;
-    c.w = a.w - s;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_fmadd(md_float4_t a, md_float4_t b, md_float4_t c) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_fmadd_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem), md_mm_load_ps(c.elem)));
-#else
-    r.x = a.x * b.x + c.x;
-    r.y = a.y * b.y + c.y;
-    r.z = a.z * b.z + c.z;
-    r.w = a.w * b.w + c.w;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_fnmadd(md_float4_t a, md_float4_t b, md_float4_t c) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_fnmadd_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem), md_mm_load_ps(c.elem)));
-#else
-    r.x = -(a.x * b.x) + c.x;
-    r.y = -(a.y * b.y) + c.y;
-    r.z = -(a.z * b.z) + c.z;
-    r.w = -(a.w * b.w) + c.w;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_fmsub(md_float4_t a, md_float4_t b, md_float4_t c) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_fmsub_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem), md_mm_load_ps(c.elem)));
-#else
-    r.x = a.x * b.x - c.x;
-    r.y = a.y * b.y - c.y;
-    r.z = a.z * b.z - c.z;
-    r.w = a.w * b.w - c.w;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_fnmsub(md_float4_t a, md_float4_t b, md_float4_t c) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_fnmsub_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem), md_mm_load_ps(c.elem)));
-#else
-    r.x = -(a.x * b.x) - c.x;
-    r.y = -(a.y * b.y) - c.y;
-    r.z = -(a.z * b.z) - c.z;
-    r.w = -(a.w * b.w) - c.w;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_sqrt(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_sqrt_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = sqrtf(v.x);
-    r.y = sqrtf(v.y);
-    r.z = sqrtf(v.z);
-    r.w = sqrtf(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_rsqrt(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_rsqrt_ps(md_mm_load_ps(v.elem)));
     // Perform additional Newton-Rhapson step to improve precision
     md_float4_t vr = md_float4_mul(v, r);
     md_float4_t hr = md_float4_mul(md_float4_set1(0.5f), r);
     r = md_float4_mul(hr, md_float4_fnmadd(vr, r, md_float4_set1(3.0f)));
-#else
-    r.x = 1.0f / sqrtf(v.x);
-    r.y = 1.0f / sqrtf(v.y);
-    r.z = 1.0f / sqrtf(v.z);
-    r.w = 1.0f / sqrtf(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE float md_float4_dot(md_float4_t a, md_float4_t b) {
     md_float4_t res = md_float4_mul(a, b);
-#if MD_VEC_MATH_USE_SIMD
     return md_mm_reduce_add_ps(md_mm_load_ps(res.elem));
-#else
-    return (res.x + res.y) + (res.z + res.w);
-#endif
 }
 
 MD_VEC_INLINE float md_float4_distance_squared(md_float4_t a, md_float4_t b) {
@@ -696,19 +564,12 @@ MD_VEC_INLINE md_float4_t md_float4_normalize(md_float4_t v) {
 // The cross product of the xyz of a and b, w 0
 MD_VEC_INLINE md_float4_t md_float4_cross(md_float4_t a, md_float4_t b) {
     md_float4_t res;
-#if MD_VEC_MATH_USE_SIMD
     // (a * b.yzx - a.yzx * b).yzx: three shuffles where the textbook a.yzx * b.zxy - a.zxy * b.yzx takes four. Its w,
     // a.w * b.w - a.w * b.w, is not 0 in general once the multiply and the subtract fuse into one rounding: cleared.
     const md_128 a_yzx = md_mm_shuffle_ps(md_mm_load_ps(a.elem), md_mm_load_ps(a.elem), MD_SHUFFLE(3, 0, 2, 1));
     const md_128 b_yzx = md_mm_shuffle_ps(md_mm_load_ps(b.elem), md_mm_load_ps(b.elem), MD_SHUFFLE(3, 0, 2, 1));
     const md_128 c = md_mm_sub_ps(md_mm_mul_ps(md_mm_load_ps(a.elem), b_yzx), md_mm_mul_ps(a_yzx, md_mm_load_ps(b.elem)));
     md_mm_store_ps(res.elem, md_mm_blend_ps(md_mm_shuffle_ps(c, c, MD_SHUFFLE(3, 0, 2, 1)), md_mm_setzero_ps(), 0x8));
-#else
-    res.x = a.y * b.z - a.z * b.y;
-    res.y = a.z * b.x - a.x * b.z;
-    res.z = a.x * b.y - a.y * b.x;
-    res.w = 0.0f;
-#endif
     return res;
 }
 
@@ -739,297 +600,129 @@ MD_VEC_INLINE md_float4_t md_float4_lerp(md_float4_t a, md_float4_t b, float t) 
 
 MD_VEC_INLINE md_float4_t md_float4_cubic_spline(md_float4_t p0, md_float4_t p1, md_float4_t p2, md_float4_t p3, float t, float s) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     const md_float4_t vt = md_float4_set1(t);
     const md_float4_t vs = md_float4_set1(s);
     md_mm_store_ps(r.elem, md_mm_cubic_spline_ps(md_mm_load_ps(p0.elem), md_mm_load_ps(p1.elem), md_mm_load_ps(p2.elem), md_mm_load_ps(p3.elem), md_mm_load_ps(vt.elem), md_mm_load_ps(vs.elem)));
-#else
-    r.x = md_f32_cubic_spline(p0.x, p1.x, p2.x, p3.x, t, s);
-    r.y = md_f32_cubic_spline(p0.y, p1.y, p2.y, p3.y, t, s);
-    r.z = md_f32_cubic_spline(p0.z, p1.z, p2.z, p3.z, t, s);
-    r.w = md_f32_cubic_spline(p0.w, p1.w, p2.w, p3.w, t, s);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_min(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_min_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    r.x = MD_MIN(a.x, b.x);
-    r.y = MD_MIN(a.y, b.y);
-    r.z = MD_MIN(a.z, b.z);
-    r.w = MD_MIN(a.w, b.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_max(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_max_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    r.x = MD_MAX(a.x, b.x);
-    r.y = MD_MAX(a.y, b.y);
-    r.z = MD_MAX(a.z, b.z);
-    r.w = MD_MAX(a.w, b.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE float md_float4_reduce_min(md_float4_t v) {
-#if MD_VEC_MATH_USE_SIMD
     return md_mm_reduce_min_ps(md_mm_load_ps(v.elem));
-#else
-    return MD_MIN(MD_MIN(v.x, v.y), MD_MIN(v.z, v.w));
-#endif
 }
 
 MD_VEC_INLINE float md_float4_reduce_max(md_float4_t v) {
-#if MD_VEC_MATH_USE_SIMD
     return md_mm_reduce_max_ps(md_mm_load_ps(v.elem));
-#else
-    return MD_MAX(MD_MAX(v.x, v.y), MD_MAX(v.z, v.w));
-#endif
 }
 
 MD_VEC_INLINE float md_float4_reduce_add(md_float4_t v) {
-#if MD_VEC_MATH_USE_SIMD
     return md_mm_reduce_add_ps(md_mm_load_ps(v.elem));
-#else
-    return (v.x + v.y) + (v.z + v.w);
-#endif
 }
 
 MD_VEC_INLINE md_float4_t md_float4_clamp(md_float4_t v, md_float4_t min, md_float4_t max) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_max_ps(md_mm_min_ps(md_mm_load_ps(v.elem), md_mm_load_ps(max.elem)), md_mm_load_ps(min.elem)));
-#else
-    r.x = MD_CLAMP(v.x, min.x, max.x);
-    r.y = MD_CLAMP(v.y, min.y, max.y);
-    r.z = MD_CLAMP(v.z, min.z, max.z);
-    r.w = MD_CLAMP(v.w, min.w, max.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_abs(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_abs_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = ABS(v.x);
-    r.y = ABS(v.y);
-    r.z = ABS(v.z);
-    r.w = ABS(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_fract(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_fract_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = md_f32_fract(v.x);
-    r.y = md_f32_fract(v.y);
-    r.z = md_f32_fract(v.z);
-    r.w = md_f32_fract(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_sign(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_sign_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = md_f32_sign(v.x);
-    r.y = md_f32_sign(v.y);
-    r.z = md_f32_sign(v.z);
-    r.w = md_f32_sign(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_neg(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_neg_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = -v.x;
-    r.y = -v.y;
-    r.z = -v.z;
-    r.w = -v.w;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_round(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_round_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = roundf(v.x);
-    r.y = roundf(v.y);
-    r.z = roundf(v.z);
-    r.w = roundf(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_floor(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_floor_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = floorf(v.x);
-    r.y = floorf(v.y);
-    r.z = floorf(v.z);
-    r.w = floorf(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_ceil(md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_ceil_ps(md_mm_load_ps(v.elem)));
-#else
-    r.x = ceilf(v.x);
-    r.y = ceilf(v.y);
-    r.z = ceilf(v.z);
-    r.w = ceilf(v.w);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_cmp_eq(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_cmpeq_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    float mask;
-    md_memset(&mask, 0xFF, sizeof(mask));
-    r.x = (a.x == b.x) ? mask : 0.0f;
-    r.y = (a.y == b.y) ? mask : 0.0f;
-    r.z = (a.z == b.z) ? mask : 0.0f;
-    r.w = (a.w == b.w) ? mask : 0.0f;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_cmp_lt(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_cmplt_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    float mask;
-    md_memset(&mask, 0xFF, sizeof(mask));
-    r.x = (a.x < b.x) ? mask : 0.0f;
-    r.y = (a.y < b.y) ? mask : 0.0f;
-    r.z = (a.z < b.z) ? mask : 0.0f;
-    r.w = (a.w < b.w) ? mask : 0.0f;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_cmp_le(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_cmple_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    float mask;
-    md_memset(&mask, 0xFF, sizeof(mask));
-    r.x = (a.x <= b.x) ? mask : 0.0f;
-    r.y = (a.y <= b.y) ? mask : 0.0f;
-    r.z = (a.z <= b.z) ? mask : 0.0f;
-    r.w = (a.w <= b.w) ? mask : 0.0f;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_cmp_gt(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_cmpgt_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    float mask;
-    md_memset(&mask, 0xFF, sizeof(mask));
-    r.x = (a.x > b.x) ? mask : 0.0f;
-    r.y = (a.y > b.y) ? mask : 0.0f;
-    r.z = (a.z > b.z) ? mask : 0.0f;
-    r.w = (a.w > b.w) ? mask : 0.0f;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_cmp_ge(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_cmpge_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    float mask;
-    md_memset(&mask, 0xFF, sizeof(mask));
-    r.x = (a.x >= b.x) ? mask : 0.0f;
-    r.y = (a.y >= b.y) ? mask : 0.0f;
-    r.z = (a.z >= b.z) ? mask : 0.0f;
-    r.w = (a.w >= b.w) ? mask : 0.0f;
-#endif
     return r;
 }
 
 MD_VEC_INLINE bool md_float4_equal(md_float4_t a, md_float4_t b) {
     bool r;
-#if MD_VEC_MATH_USE_SIMD
     r = md_mm_movemask_ps(md_mm_cmpeq_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem))) == 0xF;
-#else
-    r = a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_and(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_and_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    uint32_t a_u32[4], b_u32[4];
-	md_memcpy(a_u32, &a, sizeof(uint32_t) * 4);
-	md_memcpy(b_u32, &b, sizeof(uint32_t) * 4);
-
-    uint32_t r_u32[4] = {
-        a_u32[0] & b_u32[0],
-        a_u32[1] & b_u32[1],
-        a_u32[2] & b_u32[2],
-        a_u32[3] & b_u32[3],
-    };
-
-	md_memcpy(&r, r_u32, sizeof(uint32_t) * 4);
-#endif
     return r;
 }
 
 MD_VEC_INLINE md_float4_t md_float4_or(md_float4_t a, md_float4_t b) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_or_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    uint32_t a_u32[4], b_u32[4];
-    md_memcpy(a_u32, &a, sizeof(uint32_t) * 4);
-    md_memcpy(b_u32, &b, sizeof(uint32_t) * 4);
-
-    uint32_t r_u32[4] = {
-        a_u32[0] | b_u32[0],
-        a_u32[1] | b_u32[1],
-        a_u32[2] | b_u32[2],
-        a_u32[3] | b_u32[3],
-    };
-
-    md_memcpy(&r, r_u32, sizeof(uint32_t) * 4);
-#endif
     return r;
 }
 
@@ -1050,18 +743,10 @@ MD_VEC_INLINE md_float4_t md_float4_mask(bool x, bool y, bool z, bool w) {
 // md_float4_mask and the comparisons give them (md_mm_select_ps)
 MD_VEC_INLINE md_float4_t md_float4_blend(md_float4_t a, md_float4_t b, md_float4_t mask) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_select_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem), md_mm_load_ps(mask.elem)));
-#else
-    r.x = (mask.x != 0) ? b.x : a.x;
-    r.y = (mask.y != 0) ? b.y : a.y;
-    r.z = (mask.z != 0) ? b.z : a.z;
-    r.w = (mask.w != 0) ? b.w : a.w;
-#endif
     return r;
 }
 
-#if MD_VEC_MATH_USE_SIMD
 // We cannot invoke the SIMD version of this function directly, because the mask is not a constant expression when passed as a function argument.
 MD_VEC_INLINE md_float4_t md_float4__from_m128(md_128 v) {
     md_float4_t r;
@@ -1069,24 +754,9 @@ MD_VEC_INLINE md_float4_t md_float4__from_m128(md_128 v) {
     return r;
 }
 #   define md_float4_blend_mask(a, b, mask) md_float4__from_m128(md_mm_blend_ps(md_mm_load_ps((a).elem), md_mm_load_ps((b).elem), mask))
-#else
-MD_VEC_INLINE md_float4_t md_float4_blend_mask(md_float4_t a, md_float4_t b, const int mask) {
-    md_float4_t r = {
-        (mask & 1) ? a.x : b.x,
-        (mask & 2) ? a.y : b.y,
-        (mask & 4) ? a.z : b.z,
-        (mask & 8) ? a.w : b.w,
-    };
-    return r;
-}
-#endif
 
 MD_VEC_INLINE int md_float4_move_mask(md_float4_t v) {
-#if MD_VEC_MATH_USE_SIMD
     return md_mm_movemask_ps(md_mm_load_ps(v.elem));
-#else
-#error "Not implemented"
-#endif
 }
 
 // dx brought within half a period of zero. The fraction of a period is clamped to [-1/2, 1/2]: a compiler that contracts
@@ -1181,21 +851,10 @@ MD_VEC_INLINE md_float4_t md_float4_linear_combine_3(md_float4_t a, const md_flo
 }
 
 MD_VEC_INLINE void md_float4_sincos(md_float4_t x, md_float4_t* s, md_float4_t* c) {
-#if MD_VEC_MATH_USE_SIMD
     md_128 sin_x, cos_x;
     md_mm_sincos_ps(md_mm_load_ps(x.elem), &sin_x, &cos_x);
     md_mm_store_ps(s->elem, sin_x);
     md_mm_store_ps(c->elem, cos_x);
-#else
-    s->x = sinf(x.x);
-	s->y = sinf(x.y);
-	s->z = sinf(x.z);
-	s->w = sinf(x.w);
-	c->x = cosf(x.x);
-	c->y = cosf(x.y);
-	c->z = cosf(x.z);
-	c->w = cosf(x.w);
-#endif
 }
 
 MD_VEC_INLINE md_quat_t md_quat_ident(void) {
@@ -1205,16 +864,11 @@ MD_VEC_INLINE md_quat_t md_quat_ident(void) {
 
 // quat
 MD_VEC_INLINE float md_quat_dot(md_quat_t a, md_quat_t b) {
-#if MD_VEC_MATH_USE_SIMD
     return md_mm_reduce_add_ps(md_mm_mul_ps(md_mm_load_ps(a.elem), md_mm_load_ps(b.elem)));
-#else
-    return (a.x * b.x + a.y * b.y) + (a.z * b.z + a.w * b.w);
-#endif
 }
 
 MD_VEC_INLINE md_quat_t md_quat_mul(md_quat_t a, md_quat_t b) {
     md_quat_t c;
-#if MD_VEC_MATH_USE_SIMD
     // @NOTE: Reversed notation used here for ijkl, because it makes more sense in my reptile brain
     // shuffle from left to right (xyzw) x:0 y:1 z:2 w:3
 #define MD_PS_SHUFFLE(v,i,j,k,l) md_mm_shuffle_ps(v,v, MD_SHUFFLE(l,k,j,i))
@@ -1226,25 +880,12 @@ MD_VEC_INLINE md_quat_t md_quat_mul(md_quat_t a, md_quat_t b) {
     t2 = md_mm_mul_ps(t2, md_mm_set_ps(-1,1,1,1));
     t3 = md_mm_mul_ps(t3, md_mm_set_ps(-1,1,1,1));
     md_mm_store_ps(c.elem, md_mm_add_ps(md_mm_add_ps(t1, t2), md_mm_sub_ps(t3, t4)));
-#else
-    c.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
-    c.y = a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z;
-    c.z = a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x;
-    c.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-#endif
     return c;
 }
 
 MD_VEC_INLINE md_quat_t md_quat_mul1(md_quat_t q, float s) {
     md_quat_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_mm_mul_ps(md_mm_load_ps(q.elem), md_mm_set1_ps(s)));
-#else
-    r.x = q.x * s,
-    r.y = q.y * s,
-    r.z = q.z * s,
-    r.w = q.w * s,
-#endif
     return r;
 }
 
@@ -1292,14 +933,7 @@ static inline md_quat_t md_quat_nlerp(md_quat_t qa, md_quat_t qb, float t) {
     if (md_quat_dot(qa, qb) < 0.0f) {
         qb = md_quat_conj(qb);
     }
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(res.elem, md_mm_lerp_ps(md_mm_load_ps(qa.elem), md_mm_load_ps(qb.elem), t));
-#else
-    res.x = md_f32_lerp(qa.x, qb.x, t);
-    res.y = md_f32_lerp(qa.y, qb.y, t);
-    res.z = md_f32_lerp(qa.z, qb.z, t);
-    res.w = md_f32_lerp(qa.w, qb.w, t);
-#endif
     return md_quat_normalize(res);
 }
 
@@ -1363,7 +997,6 @@ static inline md_quat_t md_quat_from_float4x4(md_float4x4_t M) {
     return q;
 }
 
-#if MD_VEC_MATH_USE_SIMD
 MD_VEC_INLINE md_128 md_float4__linear_combine_4(md_128 a, const md_float4_t B[4]) {
     md_128 res;
     res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), md_mm_load_ps(B[0].elem));
@@ -1381,7 +1014,6 @@ MD_VEC_INLINE md_128 md_float4__linear_combine_3(md_128 a, const md_float4_t B[3
     return res;
 }
 
-#endif
 
 // MAT2
 MD_VEC_INLINE md_float2x2_t md_float2x2_ident(void) {
@@ -1959,49 +1591,16 @@ MD_VEC_INLINE md_float4x4_t md_float4x4_sub(md_float4x4_t A, md_float4x4_t B) {
 
 MD_VEC_INLINE md_float4x4_t md_float4x4_mul(md_float4x4_t A, md_float4x4_t B) {
     md_float4x4_t C;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(C.col[0].elem, md_float4__linear_combine_4(md_mm_load_ps(B.col[0].elem), A.col));
     md_mm_store_ps(C.col[1].elem, md_float4__linear_combine_4(md_mm_load_ps(B.col[1].elem), A.col));
     md_mm_store_ps(C.col[2].elem, md_float4__linear_combine_4(md_mm_load_ps(B.col[2].elem), A.col));
     md_mm_store_ps(C.col[3].elem, md_float4__linear_combine_4(md_mm_load_ps(B.col[3].elem), A.col));
-#else
-#define MULT(col, row) \
-    A.elem[0][row] * B.elem[col][0] + A.elem[1][row] * B.elem[col][1] + A.elem[2][row] * B.elem[col][2] + A.elem[3][row] * B.elem[col][3]
-    C.elem[0][0] = MULT(0, 0);
-    C.elem[0][1] = MULT(0, 1);
-    C.elem[0][2] = MULT(0, 2);
-    C.elem[0][3] = MULT(0, 3);
-
-    C.elem[1][0] = MULT(1, 0);
-    C.elem[1][1] = MULT(1, 1);
-    C.elem[1][2] = MULT(1, 2);
-    C.elem[1][3] = MULT(1, 3);
-
-    C.elem[2][0] = MULT(2, 0);
-    C.elem[2][1] = MULT(2, 1);
-    C.elem[2][2] = MULT(2, 2);
-    C.elem[2][3] = MULT(2, 3);
-
-    C.elem[3][0] = MULT(3, 0);
-    C.elem[3][1] = MULT(3, 1);
-    C.elem[3][2] = MULT(3, 2);
-    C.elem[3][3] = MULT(3, 3);
-#undef MULT
-#endif
     return C;
 }
 
 MD_VEC_INLINE md_float4_t md_float4x4_mul_float4(md_float4x4_t M, md_float4_t v) {
     md_float4_t r;
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_float4__linear_combine_4(md_mm_load_ps(v.elem), M.col));
-#else
-    r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
-    r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
-    r.z = M.elem[0][2] * v.x + M.elem[1][2] * v.y + M.elem[2][2] * v.z + M.elem[3][2] * v.w;
-    r.w = M.elem[0][3] * v.x + M.elem[1][3] * v.y + M.elem[2][3] * v.z + M.elem[3][3] * v.w;
-    MD_ASSERT(false);
-#endif
     return r;
 }
 
@@ -2013,32 +1612,10 @@ MD_VEC_INLINE md_float3_t md_float4x4_mul_float3(md_float4x4_t M, md_float3_t v,
 
 MD_VEC_INLINE md_float4x4_t md_float4x4_mul1(md_float4x4_t M, float s) {
     md_float4x4_t C = {0};
-#if MD_VEC_MATH_USE_SIMD
     C.col[0] = md_float4_mul1(M.col[0], s);
     C.col[1] = md_float4_mul1(M.col[1], s);
     C.col[2] = md_float4_mul1(M.col[2], s);
     C.col[3] = md_float4_mul1(M.col[3], s);
-#else
-    C.elem[0][0] = M.elem[0][0] * s;
-    C.elem[0][1] = M.elem[0][1] * s;
-    C.elem[0][2] = M.elem[0][2] * s;
-    C.elem[0][3] = M.elem[0][3] * s;
-
-    C.elem[1][0] = M.elem[1][0] * s;
-    C.elem[1][1] = M.elem[1][1] * s;
-    C.elem[1][2] = M.elem[1][2] * s;
-    C.elem[1][3] = M.elem[1][3] * s;
-
-    C.elem[2][0] = M.elem[2][0] * s;
-    C.elem[2][1] = M.elem[2][1] * s;
-    C.elem[2][2] = M.elem[2][2] * s;
-    C.elem[2][3] = M.elem[2][3] * s;
-
-    C.elem[3][0] = M.elem[3][0] * s;
-    C.elem[3][1] = M.elem[3][1] * s;
-    C.elem[3][2] = M.elem[3][2] * s;
-    C.elem[3][3] = M.elem[3][3] * s;
-#endif
     return C;
 }
 
@@ -2047,34 +1624,12 @@ md_float4x4_t md_float4x4_inverse(md_float4x4_t M);
 MD_VEC_INLINE md_float4x4_t md_float4x4_transpose(md_float4x4_t M) {
     md_float4x4_t T;
 
-#if MD_VEC_MATH_USE_SIMD
     md_128 c0 = md_mm_load_ps(M.col[0].elem), c1 = md_mm_load_ps(M.col[1].elem), c2 = md_mm_load_ps(M.col[2].elem), c3 = md_mm_load_ps(M.col[3].elem);
     SIMDE_MM_TRANSPOSE4_PS(c0, c1, c2, c3);
     md_mm_store_ps(T.col[0].elem, c0);
     md_mm_store_ps(T.col[1].elem, c1);
     md_mm_store_ps(T.col[2].elem, c2);
     md_mm_store_ps(T.col[3].elem, c3);
-#else
-    T.elem[0][0] = M.elem[0][0];
-    T.elem[0][1] = M.elem[1][0];
-    T.elem[0][2] = M.elem[2][0];
-    T.elem[0][3] = M.elem[3][0];
-
-    T.elem[1][0] = M.elem[0][1];
-    T.elem[1][1] = M.elem[1][1];
-    T.elem[1][2] = M.elem[2][1];
-    T.elem[1][3] = M.elem[3][1];
-
-    T.elem[2][0] = M.elem[0][2];
-    T.elem[2][1] = M.elem[1][2];
-    T.elem[2][2] = M.elem[2][2];
-    T.elem[2][3] = M.elem[3][2];
-
-    T.elem[3][0] = M.elem[0][3];
-    T.elem[3][1] = M.elem[1][3];
-    T.elem[3][2] = M.elem[2][3];
-    T.elem[3][3] = M.elem[3][3];
-#endif
     return T;
 }
 
@@ -2095,18 +1650,7 @@ MD_VEC_INLINE md_float4x3_t md_float4x3_from_float3x3(md_float3x3_t M) {
 
 MD_VEC_INLINE md_float4_t md_float4x3_mul_float4(md_float4x3_t M, md_float4_t v) {
     md_float4_t r = {0};
-#if MD_VEC_MATH_USE_SIMD
     md_mm_store_ps(r.elem, md_float4__linear_combine_3(md_mm_load_ps(v.elem), M.col));
-#else
-    // md_float4x3_t is THREE columns of four rows (elem[3][4]). There is no elem[3][..] to read - doing
-    // so runs off the end of the struct - and v.w takes no part in the combination. This mirrors
-    // what linear_combine_3 computes above, w lane included, so the two paths agree for any matrix
-    // and not only for ones whose w row happens to be zero.
-    r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z;
-    r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z;
-    r.z = M.elem[0][2] * v.x + M.elem[1][2] * v.y + M.elem[2][2] * v.z;
-    r.w = M.elem[0][3] * v.x + M.elem[1][3] * v.y + M.elem[2][3] * v.z;
-#endif
     return r;
 }
 
