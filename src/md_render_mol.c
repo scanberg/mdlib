@@ -854,12 +854,27 @@ static inline uint64_t window_members(md_bitset_t s, uint32_t base, uint32_t las
    hardware prefetcher follows */
 #define WINDOWS_AHEAD 16u
 
+/* The lines that hold members of the window ahead, each once: a prefetch
+   per line of the window would fill the slots for misses in flight with
+   lines no member is on */
 static inline void prefetch_window(const quant_ctx_t* c, md_bitset_t s, uint32_t base, uint32_t last) {
     const uint32_t ahead = base + WINDOWS_AHEAD * 64u;
-    if (ahead >= last || !md_bitset_word(s, ahead)) return;
-    const char* w = (const char*)(c->xyz + c->step * ahead);
-    const size_t bytes = 64u * c->step * sizeof(float);
-    for (size_t b = 0; b < bytes; b += 64) PREFETCH(w + b);
+    if (ahead >= last) return;
+    uint64_t m = window_members(s, ahead, last);
+    if (m == ~0ull) {
+        const char* w = (const char*)(c->xyz + c->step * ahead);
+        const size_t bytes = 64u * c->step * sizeof(float);
+        for (size_t b = 0; b < bytes; b += 64) PREFETCH(w + b);
+        return;
+    }
+    uintptr_t prev = 0;
+    for (; m; m &= m - 1) {
+        const uint32_t i = ahead + (uint32_t)md_ctz64(m);
+        const uintptr_t a = (uintptr_t)(c->xyz + c->step * i), b = a + 11;     /* the atom's first and last byte */
+        if ((a >> 6) != prev) PREFETCH((const void*)a);
+        if ((b >> 6) != (a >> 6)) PREFETCH((const void*)b);
+        prev = b >> 6;
+    }
 }
 
 void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* q, const float* xyz, uint32_t stride,
