@@ -525,6 +525,9 @@ struct SplinePart {
     float  u0, u1;              // the part's range of u
     float  a0, a1;              // half widths at u0 and u1 (scaled, shrunk)
     float  r0, r1;              // radii at u0 and u1 (scaled, shrunk)
+    float  ru0, ru1;            // the radius's rate along u at u0 and u1: at
+                                // a joint without a cap the mean of the two
+                                // parts' (spline_frame's tilt, continuous)
     uint   caps;                // 1: a cap at u0, 2: at u1
 };
 
@@ -561,7 +564,7 @@ SplinePart spline_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     sp.ok = false;
     sp.p0 = sp.p1 = sp.p2 = sp.p3 = sp.p4 = float3(0.0);
     sp.w0 = sp.w1 = sp.w2 = sp.w3 = sp.w4 = float3(0.0);
-    sp.u0 = sp.u1 = 0.0; sp.a0 = sp.a1 = 0.0; sp.r0 = sp.r1 = 0.0; sp.caps = 0u;
+    sp.u0 = sp.u1 = 0.0; sp.a0 = sp.a1 = 0.0; sp.r0 = sp.r1 = 0.0; sp.ru0 = sp.ru1 = 0.0; sp.caps = 0u;
     uint ie = b.index[e];
     bool hp = (ie & SPLINE_FIRST) == 0u;
     bool hn = (ie & SPLINE_LAST) == 0u;
@@ -607,11 +610,29 @@ SplinePart spline_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     sp.a1 = max(pf.y, 0.0) * s * f;
     sp.r0 = max(pf.z, 0.0) * s * f;
     sp.r1 = max(pf.w, 0.0) * s * f;
-    // caps: at the ends of the spline, next to a hidden part, at a step of the profile
+    // caps: at the ends of the spline, next to a hidden part, at a step of
+    // the profile. Where the joint is smooth, the radius's rate there is the
+    // mean of the two parts' (a part's u spans 1, or 0.5 at a spline's end):
+    // each part tilts its faces by it (spline_frame), and with a rate of its
+    // own each would end its faces at its own tangent point on the joint's
+    // balls, a sliver apart
+    float rr = (pf.w - pf.z) / (sp.u1 - sp.u0);
+    sp.ru0 = rr;
+    sp.ru1 = rr;
     if (!hp) sp.caps |= 1u;
-    else if (!spline_visible(b, im) || any(spline_profile_of(b, e - 1u).yw != pf.xz)) sp.caps |= 1u;
+    else {
+        float4 pm = spline_profile_of(b, e - 1u);
+        if (!spline_visible(b, im) || any(pm.yw != pf.xz)) sp.caps |= 1u;
+        else sp.ru0 = 0.5 * (rr + (pm.w - pm.z) / ((im & SPLINE_FIRST) != 0u ? 0.5 : 1.0));
+    }
     if (!hn) sp.caps |= 2u;
-    else if (!spline_visible(b, ip) || any(spline_profile_of(b, e + 1u).xz != pf.yw)) sp.caps |= 2u;
+    else {
+        float4 pn = spline_profile_of(b, e + 1u);
+        if (!spline_visible(b, ip) || any(pn.xz != pf.yw)) sp.caps |= 2u;
+        else sp.ru1 = 0.5 * (rr + (pn.w - pn.z) / ((ip & SPLINE_LAST) != 0u ? 0.5 : 1.0));
+    }
+    sp.ru0 *= s * f;
+    sp.ru1 *= s * f;
     sp.ok = max(sp.r0, sp.r1) > 0.0;
     return sp;
 }
@@ -630,6 +651,7 @@ struct SplineWeights {
     bool  lo;
     float b0, b1, b2, b3;
     float d0, d1, d2, d3;
+    float e0, e1, e2, e3;       // of its second derivative
 };
 
 SplineWeights spline_weights(float u) {
@@ -645,6 +667,10 @@ SplineWeights spline_weights(float u) {
     k.d1 = 1.5 * x2 - 2.0 * x;
     k.d2 = -1.5 * x2 + x + 0.5;
     k.d3 = 0.5 * x2;
+    k.e0 = ix;
+    k.e1 = 3.0 * x - 2.0;
+    k.e2 = 1.0 - 3.0 * x;
+    k.e3 = x;
     return k;
 }
 
@@ -693,15 +719,19 @@ float spline_piece_u(SplinePart sp, uint k, uint n) {
 uint spline_pieces(ViewData v, SplinePart sp, Geo g) {
     float px = M(v, proj).c1.y * 0.5 * v.viewport.y;
     if (v.ortho == 0u) px /= max(-0.5 * (g.a.z + g.b.z) - g.r, 1e-3);
-    SplineFrame s0 = spline_frame(sp, sp.u0);
-    SplineFrame sm = spline_frame(sp, 0.5 * (sp.u0 + sp.u1));
-    SplineFrame s1 = spline_frame(sp, sp.u1);
+    float  au = spline_width_rate(sp), am = 0.5 * (sp.a0 + sp.a1), rm = 0.5 * (sp.r0 + sp.r1);
+    SplineFrame s0 = spline_frame(sp, sp.u0, sp.a0, au, sp.ru0);
+    SplineFrame sm = spline_frame(sp, 0.5 * (sp.u0 + sp.u1), am, au, 0.5 * (sp.ru0 + sp.ru1));
+    SplineFrame s1 = spline_frame(sp, sp.u1, sp.a1, au, sp.ru1);
     float3 dc = sm.c - 0.5 * (s0.c + s1.c);
-    float3 dw = (0.5 * (sp.a0 + sp.a1)) * sm.w - 0.5 * (sp.a0 * s0.w + sp.a1 * s1.w);
+    float3 dw = am * sm.w - 0.5 * (sp.a0 * s0.w + sp.a1 * s1.w);
     float  e  = max(length(dc + dw), length(dc - dw));
     if (sp.a0 > 0.0 || sp.a1 > 0.0) {                   // a tube's normal is arbitrary, and it has no faces
-        float3 dn = (0.5 * (sp.r0 + sp.r1)) * sm.n - 0.5 * (sp.r0 * s0.n + sp.r1 * s1.n);
-        e = max(e, max(max(length(dc + dw + dn), length(dc + dw - dn)), max(length(dc - dw + dn), length(dc - dw - dn))));
+        float3 dfp = rm * normalize(sm.fp) - 0.5 * (sp.r0 * normalize(s0.fp) + sp.r1 * normalize(s1.fp));   // the faces' corners
+        float3 dfm = rm * normalize(sm.fm) - 0.5 * (sp.r0 * normalize(s0.fm) + sp.r1 * normalize(s1.fm));
+        float3 dbp = rm * normalize(sm.bp) - 0.5 * (sp.r0 * normalize(s0.bp) + sp.r1 * normalize(s1.bp));
+        float3 dbm = rm * normalize(sm.bm) - 0.5 * (sp.r0 * normalize(s0.bm) + sp.r1 * normalize(s1.bm));
+        e = max(e, max(max(length(dc + dw + dfp), length(dc + dw + dbp)), max(length(dc - dw + dfm), length(dc - dw + dbm))));
     }
     return uint(clamp(ceil(sqrt(e * px * 5.0)), 1.0, 16.0));
 }
@@ -716,7 +746,7 @@ uint spline_element_pieces(ViewData v, Batch b, uint inst, uint e, Geo g) {
 // v along q00 -> q01 (Reshetov, "Cool Patches", Ray Tracing Gems ch. 8).
 // A piece's face is one: two triangles would stand off a twisting face by
 // half its turn times its width, a patch by an eighth of the turn squared.
-void patch_root(Ray r, float3 a0, float3 b0, float3 e00, float3 e11, float u, inout float t, inout float hu) {
+void patch_root(Ray r, float3 a0, float3 b0, float3 e00, float3 e11, float u, inout float t, inout float hu, inout float hv) {
     if (!(u >= 0.0 && u <= 1.0)) return;
     float3 pa = lerp(a0, b0, u);
     float3 pb = lerp(e00, e11, u);
@@ -725,11 +755,12 @@ void patch_root(Ray r, float3 a0, float3 b0, float3 e00, float3 e11, float u, in
     n = cross(n, pa);
     float tt = dot(n, pb) / dd;
     float vv = dot(n, r.d);
-    if (tt > 0.0 && vv >= 0.0 && vv <= dd && (t < 0.0 || tt < t)) { t = tt; hu = u; }
+    if (tt > 0.0 && vv >= 0.0 && vv <= dd && (t < 0.0 || tt < t)) { t = tt; hu = u; hv = vv / dd; }
 }
 
-float patch_hit(Ray r, float3 q00, float3 q10, float3 q11, float3 q01, out float hu) {
+float patch_hit(Ray r, float3 q00, float3 q10, float3 q11, float3 q01, out float hu, out float hv) {
     hu = 0.0;
+    hv = 0.0;
     float3 e10 = q10 - q00, e11 = q11 - q10, e00 = q01 - q00;
     float3 qn  = cross(e10, q01 - q11);
     float3 a0  = q00 - r.o, b0 = q10 - r.o;
@@ -743,8 +774,8 @@ float patch_hit(Ray r, float3 q00, float3 q10, float3 q11, float3 q01, out float
     if (c == 0.0) { u1 = -a / b; u2 = -1.0; }          // planar: one root (a NaN or inf misses)
     else          { u1 = 0.5 * (-b - (b >= 0.0 ? det : -det)); u2 = a / u1; u1 /= c; }
     float t = -1.0;
-    patch_root(r, a0, b0, e00, e11, u1, t, hu);
-    patch_root(r, a0, b0, e00, e11, u2, t, hu);
+    patch_root(r, a0, b0, e00, e11, u1, t, hu, hv);
+    patch_root(r, a0, b0, e00, e11, u2, t, hu, hv);
     return t;
 }
 
@@ -807,52 +838,140 @@ ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
     return h;
 }
 
-// A rim: the round cone along a piece's edge. Its normal is the smooth
-// surface's, not the piece's: the part across the piece turned to be across
-// the curve's tangent there (t0 to t1 along the piece), tilted along it by
-// the cone's slope alone. Where the piece's balls show (at the joints) their
-// own tilt is dropped with the rest: shading as smooth as the curve.
-void spline_take_rim(Ray r, inout SplineHit h, float3 pa, float3 pb, float ra, float rb, float3 t0, float3 t1) {
+// A rim: the round cone along a piece's edge, between the rim's points pa
+// and pb, whose tangents (per u) are ta and tb; du: the piece's length in
+// u. The cone is the chord of the rim; its normal is taken from the rim
+// itself, a cubic (Hermite) through the ends with their tangents: the
+// direction from the rim's point at the hit's place along the piece,
+// across its tangent there, tilted by the cone's slope. So shading follows
+// the curve, not the chord: no facets at the joints, and no wobble along a
+// thin rim, whose chord's sag would turn the normal by sag / radius (6 to
+// 12 degrees on the test's tight bends, at a fifth of a pixel of sag).
+//
+// ends: 1 if pa, 2 if pb is a capped end of the part. There the rim's ball
+// is the cap's and keeps its own normal (it and the cap are one sphere,
+// which either may win by an ulp).
+void spline_take_rim(Ray r, inout SplineHit h, float3 pa, float3 pb, float ra, float rb, float3 ta, float3 tb, float du, uint ends) {
     ConeHit c = round_cone_hit(r, pa, pb, ra, rb);
     if (c.t >= 0.0 && (h.t < 0.0 || c.t < h.t)) {
         float3 p  = r.o + r.d * c.t;
         float  k  = capsule_param(p, pa, pb);
+        h.t = c.t;
+        if ((k <= 0.0 && (ends & 1u) != 0u) || (k >= 1.0 && (ends & 2u) != 0u)) { h.n = c.n; return; }
+        float  k2 = k * k, k3 = k2 * k;
+        float3 ma = ta * du, mb = tb * du;
+        float3 q  = pa * (2.0 * k3 - 3.0 * k2 + 1.0) + ma * (k3 - 2.0 * k2 + k) + pb * (3.0 * k2 - 2.0 * k3) + mb * (k3 - k2);
+        float3 qd = (pa - pb) * (6.0 * k2 - 6.0 * k) + ma * (3.0 * k2 - 4.0 * k + 1.0) + mb * (3.0 * k2 - 2.0 * k);
+        float  qq = dot(qd, qd);
+        float3 tg = qq > 0.0 ? qd * rsqrt(qq) : float3(0.0);
+        float3 m  = p - q;
+        m -= tg * dot(m, tg);                           // across the rim
+        float  mm = dot(m, m);
         float3 ba = pb - pa;
         float  bb = dot(ba, ba);
-        float3 z  = bb > 0.0 ? ba * rsqrt(bb) : float3(0.0);
-        float3 m  = c.n - z * dot(c.n, z);              // across the piece
-        float3 tg = lerp(t0, t1, k);
-        float  tt = dot(tg, tg);
-        if (tt > 0.0) { tg *= rsqrt(tt); m -= tg * dot(m, tg); }
-        float  mm = dot(m, m);
         float  sa = bb > 0.0 ? clamp((ra - rb) * rsqrt(bb), -1.0, 1.0) : 0.0;
-        h.t = c.t;
-        h.n = mm > 1e-30 ? m * (rsqrt(mm) * sqrt(1.0 - sa * sa)) + tg * sa : c.n;
+        if (mm > 1e-30) h.n = m * (rsqrt(mm) * sqrt(1.0 - sa * sa)) + tg * sa;
+        else            h.n = c.n;
     }
 }
 
 // A face: from the section at the piece's start (q00 on the +axis rim,
-// q01 on the -axis one) to its end (q10, q11); normals n0 to n1 along it
-void spline_take_face(Ray r, inout SplineHit h, float3 q00, float3 q01, float3 q10, float3 q11, float3 n0, float3 n1) {
-    float u;
-    float t = patch_hit(r, q00, q10, q11, q01, u);
-    if (t >= 0.0 && (h.t < 0.0 || t < h.t)) { h.t = t; h.n = normalize(lerp(n0, n1, u)); }
+// q01 on the -axis one) to its end (q10, q11). Its normal is bilinear in
+// the corners' unnormalised ones (SplineFrame mp, mm): the swept surface's
+// is linear across the face before normalising, and normalised corners
+// would weigh a bent face's edges alike (11 degrees off at the middle of
+// an arrow's base)
+void spline_take_face(Ray r, inout SplineHit h, float3 q00, float3 q01, float3 q10, float3 q11,
+                      float3 n00, float3 n01, float3 n10, float3 n11) {
+    float u, v;
+    float t = patch_hit(r, q00, q10, q11, q01, u, v);
+    if (t >= 0.0 && (h.t < 0.0 || t < h.t)) { h.t = t; h.n = normalize(lerp(lerp(n00, n01, v), lerp(n10, n11, v), u)); }
 }
 
-// The full cross section with its unit normal and tangent: what a piece's
-// rims and faces are built from
+// The swept face's unit normal at an edge: m (across the rim's tangent tg
+// and the axis w), tilted along the rim's direction by the radius's rate
+float3 spline_edge_normal(float3 m, float3 tg, float3 w, float ru) {
+    float3 n  = normalize(m);
+    float3 e  = tg - w * dot(tg, w);                    // along the surface, across w
+    float  el = length(e);
+    if (ru == 0.0 || !(el > 0.0)) return n;
+    float  mu = clamp(-ru / el, -0.99, 0.99);
+    return n * sqrt(1.0 - mu * mu) + e * (mu / el);
+}
+
+// The full cross section, what a piece's rims and faces are built from: its
+// centre and axis, and at its two edges (s = +1 and -1, the rims) the swept
+// surface's normal and the rim's tangent.
+//
+// The face is the swept segment S(u, s) = c + s a w moved out by the radius
+// along its own normal, cross(dS/du, w) = |t| n + s a cross(w', w), with
+// w' = alpha t^ + beta n: the axis turning about the tangent (beta, the
+// twist) tilts the normal across the face, by atan(a beta / |t|) at the
+// edges (13 degrees on a helix ribbon). That normal is the rim tube's there
+// (it is across the rim's tangent t +- (a' w + a w')): a face built on the
+// edge normals meets the rims flush, in position and in shading. Built on
+// the centre's normal it met them at a crease of that angle, which SSAO
+// draws as a groove along every twisting rim.
 struct SplineFrame {
-    float3 c, w, n, t;
+    float3 c, w;
+    float3 n;                   // the centre's normal, cross(t, w), unit
+    float3 fp, fc, fm;          // the front face's normal at the + edge, the
+    float3 bp, bc, bm;          // middle and the - edge, and the back face's,
+                                // each of the length that weighs it in the
+                                // face's bilinear blend
+    float3 tp, tm;              // the + and - rim's tangent (not unit)
 };
 
-SplineFrame spline_frame(SplinePart sp, float u) {
+// a: the half width at u; au, ru: the half width's and the radius's rate
+// along u. A radius that changes along the part tilts the normal along the
+// surface by asin(-ru / speed): balls of a shrinking radius face forward.
+// (The rims' cones carry the same tilt.)
+SplineFrame spline_frame(SplinePart sp, float u, float a, float au, float ru) {
     SplineSection cs = spline_section(sp, u);
-    SplineFrame   fr;
+    SplineWeights k  = spline_weights(u);
+    float3 q0 = k.lo ? sp.p0 : sp.p1, q1 = k.lo ? sp.p1 : sp.p2, q2 = k.lo ? sp.p2 : sp.p3, q3 = k.lo ? sp.p3 : sp.p4;
+    float3 v0 = k.lo ? sp.w0 : sp.w1, v1 = k.lo ? sp.w1 : sp.w2, v2 = k.lo ? sp.w2 : sp.w3, v3 = k.lo ? sp.w3 : sp.w4;
+    float3 t2 = q0 * k.e0 + q1 * k.e1 + q2 * k.e2 + q3 * k.e3;      // t'
+    float3 vb = v0 * k.b0 + v1 * k.b1 + v2 * k.b2 + v3 * k.b3;      // the axes' blend
+    float3 vd = v0 * k.d0 + v1 * k.d1 + v2 * k.d2 + v3 * k.d3;      // and its rate
+    float  tt = dot(cs.t, cs.t);
+    float  tl = sqrt(tt);
+    float3 tn = tl > 0.0 ? cs.t / tl : float3(0.0, 0.0, 1.0);
+    SplineFrame fr;
     fr.c = cs.c;
     fr.w = cs.w;
-    fr.n = normalize(cross(cs.t, cs.w));
-    fr.t = normalize(cs.t);
+    fr.n = normalize(cross(tn, cs.w));
+    // w = (vb - t (vb.t)/(t.t)) / |...|: alpha = w'.t^ = -(w.t')/|t| (w.t = 0
+    // throughout), beta = w'.n = (vb'.n - (vb.t)/(t.t) t'.n) / |...|
+    float  kv = tt > 0.0 ? dot(vb, cs.t) / tt : 0.0;
+    float  wl = length(vb - cs.t * kv);
+    float  alpha = 0.0, beta = 0.0;
+    if (wl > 1e-12 && tl > 0.0) {                       // no axis (tubes): no turn
+        alpha = -dot(cs.w, t2) / tl;
+        beta  = (dot(vd, fr.n) - kv * dot(t2, fr.n)) / wl;
+    }
+    // where the bend folds the face (|t| - a alpha <= 0, a curve tighter
+    // than the half width) its normal is held on the centre's side
+    float3 mp = max(tl + a * alpha, 0.1 * tl) * fr.n - (a * beta) * tn;
+    float3 mm = max(tl - a * alpha, 0.1 * tl) * fr.n + (a * beta) * tn;
+    float3 wd = alpha * tn + beta * fr.n;               // w'
+    fr.tp = cs.t + au * cs.w + a * wd;
+    fr.tm = cs.t - au * cs.w - a * wd;
+    // the tilt along u is the same on both sides: the back face's normal is
+    // not the front's negated
+    float lp = length(mp), lm = length(mm);
+    fr.fp = spline_edge_normal( mp, fr.tp, cs.w, ru) * lp;
+    fr.fm = spline_edge_normal( mm, fr.tm, cs.w, ru) * lm;
+    fr.bp = spline_edge_normal(-mp, fr.tp, cs.w, ru) * lp;
+    fr.bm = spline_edge_normal(-mm, fr.tm, cs.w, ru) * lm;
+    fr.fc = spline_edge_normal( fr.n, cs.t, cs.w, ru) * tl;     // s = 0: |t| n
+    fr.bc = spline_edge_normal(-fr.n, cs.t, cs.w, ru) * tl;
     return fr;
+}
+
+// The half width's rate along u: linear over the part
+float spline_width_rate(SplinePart sp) {
+    return sp.u1 > sp.u0 ? (sp.a1 - sp.a0) / (sp.u1 - sp.u0) : 0.0;
 }
 
 // The ray against the part's pieces. Two phases per piece: the centres of
@@ -864,11 +983,13 @@ SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) {
     h.n = float3(0.0, 0.0, 1.0);
     float3      c0 = spline_centre(sp, sp.u0);
     float       a0 = sp.a0, r0 = sp.r0;
+    float       au = spline_width_rate(sp);
+    float       du = (sp.u1 - sp.u0) / float(pieces);
     SplineFrame f0;
-    f0.c = f0.w = f0.n = f0.t = float3(0.0);
+    f0.c = f0.w = f0.n = f0.fp = f0.fc = f0.fm = f0.bp = f0.bc = f0.bm = f0.tp = f0.tm = float3(0.0);
     bool        have0 = false;
     if ((sp.caps & 1u) != 0u) {
-        f0 = spline_frame(sp, sp.u0); have0 = true;
+        f0 = spline_frame(sp, sp.u0, a0, au, sp.ru0); have0 = true;
         spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, r0);
     }
     for (uint k = 1u; k <= pieces; ++k) {
@@ -884,22 +1005,36 @@ SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) {
         float  hh  = bb * bb - (dot(oc, oc) - br * br);
         bool   have1 = false;
         SplineFrame f1;
-        f1.c = f1.w = f1.n = f1.t = float3(0.0);
+        f1.c = f1.w = f1.n = f1.fp = f1.fc = f1.fm = f1.bp = f1.bc = f1.bm = f1.tp = f1.tm = float3(0.0);
         if (hh >= 0.0 && (h.t < 0.0 || -bb - sqrt(hh) < h.t)) {
-            if (!have0) { f0 = spline_frame(sp, spline_piece_u(sp, k - 1u, pieces)); have0 = true; }
-            f1 = spline_frame(sp, u1); have1 = true;
-            spline_take_rim(r, h, f0.c + f0.w * a0, f1.c + f1.w * a1, r0, r1, f0.t, f1.t);
+            if (!have0) { f0 = spline_frame(sp, spline_piece_u(sp, k - 1u, pieces), a0, au, lerp(sp.ru0, sp.ru1, float(k - 1u) / float(pieces))); have0 = true; }
+            f1 = spline_frame(sp, u1, a1, au, lerp(sp.ru0, sp.ru1, float(k) / float(pieces))); have1 = true;
+            float3 p0 = f0.c + f0.w * a0, m0 = f0.c - f0.w * a0;      // the rims' ends
+            float3 p1 = f1.c + f1.w * a1, m1 = f1.c - f1.w * a1;
+            uint   ends = (k == 1u ? sp.caps & 1u : 0u) | (k == pieces ? sp.caps & 2u : 0u);
+            spline_take_rim(r, h, p0, p1, r0, r1, f0.tp, f1.tp, du, ends);
             if (a0 > 0.0 || a1 > 0.0) {
-                spline_take_rim(r, h, f0.c - f0.w * a0, f1.c - f1.w * a1, r0, r1, f0.t, f1.t);
-                float3 o0 = f0.n * r0, o1 = f1.n * r1;
-                spline_take_face(r, h, f0.c + f0.w * a0 + o0, f0.c - f0.w * a0 + o0, f1.c + f1.w * a1 + o1, f1.c - f1.w * a1 + o1, f0.n, f1.n);
-                spline_take_face(r, h, f0.c + f0.w * a0 - o0, f0.c - f0.w * a0 - o0, f1.c + f1.w * a1 - o1, f1.c - f1.w * a1 - o1, -f0.n, -f1.n);
+                spline_take_rim(r, h, m0, m1, r0, r1, f0.tm, f1.tm, du, ends);
+                // each face in two halves across, at its middle line: the
+                // normal turns across the face (by the twist and the bend),
+                // so its offset points lie on an arc of the radius, whose
+                // chord in one patch stood in by r (1 - cos(turn / 2))
+                float3 fq0 = f0.c + normalize(f0.fc) * r0, fq1 = f1.c + normalize(f1.fc) * r1;
+                float3 bq0 = f0.c + normalize(f0.bc) * r0, bq1 = f1.c + normalize(f1.bc) * r1;
+                float3 fp0 = p0 + normalize(f0.fp) * r0, fp1 = p1 + normalize(f1.fp) * r1;
+                float3 fm0 = m0 + normalize(f0.fm) * r0, fm1 = m1 + normalize(f1.fm) * r1;
+                float3 bp0 = p0 + normalize(f0.bp) * r0, bp1 = p1 + normalize(f1.bp) * r1;
+                float3 bm0 = m0 + normalize(f0.bm) * r0, bm1 = m1 + normalize(f1.bm) * r1;
+                spline_take_face(r, h, fp0, fq0, fp1, fq1, f0.fp, f0.fc, f1.fp, f1.fc);
+                spline_take_face(r, h, fq0, fm0, fq1, fm1, f0.fc, f0.fm, f1.fc, f1.fm);
+                spline_take_face(r, h, bp0, bq0, bp1, bq1, f0.bp, f0.bc, f1.bp, f1.bc);
+                spline_take_face(r, h, bq0, bm0, bq1, bm1, f0.bc, f0.bm, f1.bc, f1.bm);
             }
         }
         c0 = c1; a0 = a1; r0 = r1; f0 = f1; have0 = have1;
     }
     if ((sp.caps & 2u) != 0u) {
-        if (!have0) f0 = spline_frame(sp, spline_piece_u(sp, pieces, pieces));
+        if (!have0) f0 = spline_frame(sp, spline_piece_u(sp, pieces, pieces), a0, au, sp.ru1);
         spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, r0);
     }
     return h;
