@@ -240,22 +240,6 @@ static bool monatomic_ion_element(md_atomic_number_t elem) {
     }
 }
 
-// helper function to get atom indices within a 'tree branch' of the connectivity graph of a system.
-static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_bond_data_t* bond, int start_atom, int exclude_atom, md_allocator_i* alloc) {
-    md_array_push(*out_indices, start_atom, alloc);
-    md_bond_iter_t iter = md_bond_iter(bond, start_atom);
-    while (md_bond_iter_has_next(&iter)) {
-        int neighbor = md_bond_iter_atom_index(&iter);
-        if (neighbor != exclude_atom) {
-            if (!get_branch_atom_indices(out_indices, bond, neighbor, start_atom, alloc)) {
-                return false;
-            }
-        }
-        md_bond_iter_next(&iter);
-    }
-    return true;
-}
-
 // ### BACKBONES FROM THE BONDS ###
 //
 // The backbones of an atomistic system are found from its covalent bonds alone (backbone_paths_ncco, _sugar),
