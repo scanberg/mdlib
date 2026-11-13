@@ -67,6 +67,12 @@ lifetime:
     the update with the velocities of the curve, so nothing is uploaded or
     interpolated on the host per step.
 
+  * Only the resident atoms have points: what the representations may show,
+    given to md_render_mol_plan. The rest (water no representation shows)
+    costs nothing past the plan: no point, no cluster, no bond, no frame
+    data, no regroup, no copy. Per-atom arrays (colours, visibility,
+    selection, the caller's positions) stay indexed by atom.
+
   * Radii come from the system's particle types: the topology holds each
     atom's type and a radius per type (sys->atom.type.radius when planned).
     A changed radius per type is a table and an update
@@ -88,6 +94,7 @@ chain gaps, ring circles.
 
 #include <md_render.h>
 #include <core/md_allocator.h>
+#include <core/md_bitset.h>
 
 struct md_system_t;
 struct md_system_state_t;
@@ -140,18 +147,25 @@ typedef struct md_render_mol_topo_t {
                                       drawn, and the update's scratch                */
     uint64_t      dynamic_size_velocity; /* ... when md_render_mol_atoms_t.velocity is
                                       given: the velocities are copied too           */
-    uint32_t      atom_count;
+    uint32_t      atom_count;      /* the system's: per-atom arrays are this long     */
+    uint32_t      point_count;     /* the resident atoms: what has a point, what
+                                      frames hold (atom_count when all are)          */
+    md_gpu_addr_t resident;        /* internal: the resident atoms as bits and ranks;
+                                      0 when all are                                 */
+    md_gpu_addr_t regroups;        /* internal: a word the regroups count in (a copy
+                                      gathered before the last one is in the old order) */
 
     /* Particle types and radii, per atom */
     uint32_t      type_count;              /* entries a radius table has: sys->atom.type.count */
     md_gpu_addr_t atom_type;               /* uint16 [atom_count]                      */
     md_gpu_addr_t type_radius;             /* float [type_count]: each type's radius   */
 
-    /* The atoms in cluster order: residue clusters first, then one cluster
-       per grid cell (grid_cells of them, some empty) for the small molecules.
-       Point p (of the per-frame copy) is atom atom_order[p]. */
-    md_gpu_addr_t atom_order;              /* uint32 [atom_count]: point -> atom        */
-    md_gpu_addr_t atom_point;              /* uint32 [atom_count]: atom -> point        */
+    /* The resident atoms in cluster order: residue clusters first, then one
+       cluster per grid cell (grid_cells of them, some empty) for the small
+       molecules. Point p (of the per-frame copy) is atom atom_order[p]. */
+    md_gpu_addr_t atom_order;              /* uint32 [point_count]: point -> atom       */
+    md_gpu_addr_t atom_point;              /* uint32 [atom_count]: atom -> point,
+                                              UINT32_MAX for an atom not resident       */
     uint32_t      atom_cluster_count;
     md_gpu_addr_t atom_cluster_offset;     /* uint32 [atom_cluster_count + 1]          */
 
@@ -187,7 +201,14 @@ typedef struct md_render_mol_plan_t {
     const void*          data;     /* [size] bytes                                     */
 } md_render_mol_plan_t;
 
-bool md_render_mol_plan(md_render_mol_plan_t* out, const struct md_system_t* sys, md_temp_scope_t temp);
+/* The resident atoms: the members of `resident` (NULL: every atom). The
+   rest have no point: nothing of them is read, uploaded, interpolated or
+   drawn, and bonds with an end among them are left out. Make it the union of
+   what the representations may show (a selection that changes with the
+   frame contributes its scope, not its current members): water no
+   representation shows costs nothing. A small molecule keeps the members
+   among its atoms. A change of the set is a new plan. */
+bool md_render_mol_plan(md_render_mol_plan_t* out, const struct md_system_t* sys, const md_bitset_t* resident, md_temp_scope_t temp);
 
 /* Uploads the plan into [base, base + plan->size) and writes the topology
    value. Bumps content[MD_RENDER_CONTENT_GEOMETRY] when `content` is given. */
@@ -270,11 +291,13 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
    between them, with the velocities of the curve. What crosses the bus is
    one small frame per frame of the trajectory, nothing per step.
 
-   A frame is quantized on the host: each axis to 16 bits over the frame's
-   bounds, p = origin + q * scale, x, y and z per atom in atom order, 6 bytes
-   per atom. The step is the extent over 65535: 0.01 A up to a 655 A system
-   (the precision of an xtc at its default, so such a frame loses nothing
-   the file had), 0.03 A at 2000 A.
+   A frame is quantized on the host: each axis to 16 bits over the bounds of
+   the resident atoms, p = origin + q * scale, x, y and z per resident atom
+   in increasing atom order, 6 bytes per atom. The step is the extent over
+   65535: 0.01 A up to a 655 A system (the precision of an xtc at its
+   default, so such a frame loses nothing the file had), 0.03 A at 2000 A;
+   resident atoms that span less get a finer step. Atoms not resident are
+   neither quantized nor uploaded.
 
    An upload reads the frame from the host (copied through the stream) or,
    better, from GPU memory: quantized by the host straight into
@@ -295,7 +318,7 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
        md_render_mol_frames_init(&fr, &topo, fb, 4);
        md_gpu_mem_t up = md_gpu_malloc(s, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&topo));
        ...
-       md_render_mol_frame_quantize(&f, up.cpu, xyz, 0, n, cell);      // host, any thread
+       md_render_mol_frame_quantize(&f, up.cpu, xyz, 0, n, cell, resident);   // host, any thread
        f.q_gpu = up.gpu;
        md_render_mol_frame_upload(mol, s, &topo, dyn, &fr, slot, &f, MD_RENDER_MOL_UPDATE_REGROUP);
        ...
@@ -310,7 +333,8 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
    frame is the caller's business (a ring, a cache).
 
    The block: the frames, and for a regroup the old place of every small
-   atom: slots * 6 bytes per atom, and 4 per atom of the small molecules. */
+   atom: slots * 6 bytes per resident atom, and 4 per resident atom of the
+   small molecules. */
 
 #define MD_RENDER_MOL_FRAME_SLOTS 4
 
@@ -320,22 +344,25 @@ typedef struct md_render_mol_frame_t {
     float           scale[3];      /* p = origin + q * scale, per axis               */
     float           cell[9];       /* columns a, b, c; a zero column: not periodic
                                       along it (all zero: not periodic)              */
-    const uint16_t* q;             /* x, y, z per atom, [3 * atom_count], on the host */
+    const uint16_t* q;             /* x, y, z per resident atom, [3 * point_count],
+                                      on the host                                    */
     md_gpu_addr_t   q_gpu;         /* or (when nonzero) in GPU memory: 4-byte aligned,
                                       md_render_mol_frame_size bytes                 */
 } md_render_mol_frame_t;
 
-/* `count` positions (float3, `stride` bytes apart; 0: 12) into q ([3 *
-   count]: x, y, z per atom, written in order, never read, so it may be
-   write-combined memory) over their bounds, and the frame of them (out->q =
-   q). NaN goes to the origin. `cell` may be NULL (not periodic). */
+/* The positions of the resident atoms among `count` (float3, `stride`
+   bytes apart; 0: 12) into q (x, y, z per resident atom, in increasing atom
+   order: [3 * topo.point_count]; written in order and never read, so it may
+   be write-combined memory) over their bounds, and the frame of them (out->q
+   = q). `resident`: the plan's set (NULL: all `count`). NaN goes to the
+   origin. `cell` may be NULL (not periodic). */
 void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* q, const float* xyz, uint32_t stride,
-                                  uint32_t count, const float cell[9]);
+                                  uint32_t count, const float cell[9], const md_bitset_t* resident);
 
 /* An md_unitcell_t as such columns: the periodic axes' (PBC flags) */
 void md_render_mol_frame_cell(float out[9], const struct md_unitcell_t* cell);
 
-/* Bytes of a frame in GPU memory (q_gpu): 6 per atom, in whole words */
+/* Bytes of a frame in GPU memory (q_gpu): 6 per resident atom, in whole words */
 uint64_t md_render_mol_frame_size(const md_render_mol_topo_t* topo);
 
 /* The block's frames, in the point order of one topology. A plain value
@@ -346,7 +373,7 @@ typedef struct md_render_mol_frames_t {
     md_gpu_addr_t topology_base;   /* whose point order: topo.base, topo.topology_version */
     uint64_t      topology_version;
     uint32_t      slots;
-    uint32_t      atom_count;
+    uint32_t      point_count;
     uint32_t      valid;           /* bit k: slot k holds a frame                    */
     uint32_t      buffer[MD_RENDER_MOL_FRAME_SLOTS];   /* internal: each slot's buffer */
 } md_render_mol_frames_t;
