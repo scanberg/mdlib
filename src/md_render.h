@@ -241,9 +241,9 @@ typedef struct md_render_capsule_style_t {
 
 /* SPLINES: a profile swept along a uniform cubic B-spline through control
    points, for cartoons, nucleic acid backbones, lipid tails and the like.
-   The profile is a stadium (a 2D capsule): a segment of half length `a`
-   along the profile's long axis, rounded by `radius`; a circle where a is 0
-   (a tube). Formally, a part is the union of the balls of `radius` around
+   The profile is a stadium (a 2D capsule): a segment of half length a
+   along the profile's long axis, rounded by a radius r; a circle where a is
+   0 (a tube). Formally, a part is the union of the balls of radius r around
    the swept segments.
 
    Control points: element e is control point e, at point index[e] & ~flags;
@@ -261,27 +261,27 @@ typedef struct md_render_capsule_style_t {
    either sign (md_render normalises it, takes the sign of each next to its
    neighbour, and makes it orthogonal to the curve), interpolated along the
    spline as the positions are.
-   Widths: a at the start and the end of each part, linear between: equal
-   across a joint for a smooth ribbon, unequal for a step (the base of an
-   arrow). Ends are round: where a spline ends, next to a hidden part and
-   at a step, a cap closes the part (the ball of `radius` around its end's
-   segment).
-   Fades: SHRINK scales a and radius; THIN drops whole parts, which leaves
-   their joints open: for splines, shrink.
-   Not yet: a radius per control point, flat caps, splines through their
-   control points. */
+   Profile: a and r at the start and the end of each part, linear between:
+   equal across a joint for a smooth spline (a coil tapering into a helix's
+   ribbon over a part), unequal for a step (the base of an arrow). Ends are
+   round: where a spline ends, next to a hidden part and at a step, a cap
+   closes the part (the balls of its end's r around its end's segment).
+   Fades: SHRINK scales a and r; THIN drops whole parts, which leaves their
+   joints open: for splines, shrink.
+   Not yet: flat caps, splines through their control points. */
 enum {
     MD_RENDER_SPLINE_FIRST = 1u << 31,
     MD_RENDER_SPLINE_LAST  = 1u << 30,
 };
 
 typedef struct md_render_spline_style_t {
-    float         radius;          /* the profile's: half its thickness, the
-                                      rounding of its edges; <= 0 not drawn     */
     md_gpu_addr_t axis;            /* float4 per element (xyz), the long axis at
                                       its control point. 0: none (tubes)        */
-    md_gpu_addr_t width;           /* float2 per element: a where its part
-                                      starts and where it ends. 0: all 0        */
+    md_gpu_addr_t profile;         /* float4 per element: a where its part starts
+                                      and where it ends, then r where it starts
+                                      and where it ends. A part with r 0 at both
+                                      ends is not drawn                         */
+    float         radius;          /* without a profile: a tube of this r       */
 } md_render_spline_style_t;
 
 /* ---- Colour: only appearance; a change of it costs a resolve, not a raster */

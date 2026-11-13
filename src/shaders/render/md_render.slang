@@ -83,7 +83,7 @@ static const uint F_FADE_SHRINK  = 1u << 17;  // ... its sizes scaled
 static const uint F_FADE_THIN    = 1u << 18;  // ... its elements dropped one by one
 static const uint F_FADE         = F_FADE_OUT | F_FADE_IN;
 static const uint F_SPL_AXIS     = 1u << 19;  // SPLINES: spl_axis
-static const uint F_SPL_WIDTH    = 1u << 20;  // SPLINES: spl_width
+static const uint F_SPL_PROFILE  = 1u << 20;  // SPLINES: spl_profile
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -158,7 +158,7 @@ struct Batch {
     float   fade_in_b;
 
     float4* spl_axis;           // SPLINES: per control point, the profile's long axis (xyz)
-    float2* spl_width;          // SPLINES: per control point, its part's half widths at its start and end
+    float4* spl_profile;        // SPLINES: per control point, its part's half widths and radii at its start and end
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -506,7 +506,7 @@ struct SplinePart {
     float3 w0, w1, w2, w3, w4;  // their axes, each sign-chained to its neighbour towards e
     float  u0, u1;              // the part's range of u
     float  a0, a1;              // half widths at u0 and u1 (scaled, shrunk)
-    float  r;                   // the profile's radius (scaled, shrunk)
+    float  r0, r1;              // radii at u0 and u1 (scaled, shrunk)
     uint   caps;                // 1: a cap at u0, 2: at u1
 };
 
@@ -522,8 +522,10 @@ float3 spline_axis_view(Mat V, Mat T, Batch b, uint e) {
     return ww > 1e-30 ? w * rsqrt(ww) : float3(0.0);
 }
 
-float2 spline_width_of(Batch b, uint e) {
-    return (b.flags & F_SPL_WIDTH) != 0u ? b.spl_width[e] : float2(0.0);
+// e's part's profile: half width at its start and end, radius at its start
+// and end; without a profile a tube of the batch's radius
+float4 spline_profile_of(Batch b, uint e) {
+    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[e] : float4(0.0, 0.0, b.s0, b.s0);
 }
 
 bool spline_visible(Batch b, uint ie) {
@@ -541,7 +543,7 @@ SplinePart spline_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     sp.ok = false;
     sp.p0 = sp.p1 = sp.p2 = sp.p3 = sp.p4 = float3(0.0);
     sp.w0 = sp.w1 = sp.w2 = sp.w3 = sp.w4 = float3(0.0);
-    sp.u0 = sp.u1 = 0.0; sp.a0 = sp.a1 = 0.0; sp.r = 0.0; sp.caps = 0u;
+    sp.u0 = sp.u1 = 0.0; sp.a0 = sp.a1 = 0.0; sp.r0 = sp.r1 = 0.0; sp.caps = 0u;
     uint ie = b.index[e];
     bool hp = (ie & SPLINE_FIRST) == 0u;
     bool hn = (ie & SPLINE_LAST) == 0u;
@@ -578,20 +580,21 @@ SplinePart spline_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     sp.w0 = chain_sign(sp.w0, sp.w1);
     sp.w4 = chain_sign(sp.w4, sp.w3);
 
-    float2 wd = spline_width_of(b, e);
+    float4 pf = spline_profile_of(b, e);
     float  f  = 1.0;
     if (fade && (b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) f = fade_size(fade_ts(b, -sp.p2.z));
     sp.u0 = hp ? -0.5 : 0.0;
     sp.u1 = hn ?  0.5 : 0.0;
-    sp.a0 = max(wd.x, 0.0) * s * f;
-    sp.a1 = max(wd.y, 0.0) * s * f;
-    sp.r  = b.s0 * s * f;
-    // caps: at the ends of the spline, next to a hidden part, at a step of the width
+    sp.a0 = max(pf.x, 0.0) * s * f;
+    sp.a1 = max(pf.y, 0.0) * s * f;
+    sp.r0 = max(pf.z, 0.0) * s * f;
+    sp.r1 = max(pf.w, 0.0) * s * f;
+    // caps: at the ends of the spline, next to a hidden part, at a step of the profile
     if (!hp) sp.caps |= 1u;
-    else if (!spline_visible(b, im) || spline_width_of(b, e - 1u).y != wd.x) sp.caps |= 1u;
+    else if (!spline_visible(b, im) || any(spline_profile_of(b, e - 1u).yw != pf.xz)) sp.caps |= 1u;
     if (!hn) sp.caps |= 2u;
-    else if (!spline_visible(b, ip) || spline_width_of(b, e + 1u).x != wd.y) sp.caps |= 2u;
-    sp.ok = sp.r > 0.0;
+    else if (!spline_visible(b, ip) || any(spline_profile_of(b, e + 1u).xz != pf.yw)) sp.caps |= 2u;
+    sp.ok = max(sp.r0, sp.r1) > 0.0;
     return sp;
 }
 
@@ -665,17 +668,23 @@ float spline_piece_u(SplinePart sp, uint k, uint n) {
 // Pieces of a part (g: its bounds): as many as keep the straight pieces
 // within about a fifth of a pixel of the curve. A piece of 1/K of the part
 // strays about e / K^2 from it, e the part's own bend away from straight at
-// its middle: the centre's, and the rims' (the turn of the axis bends them
-// further). Straight parts are one piece, and exact.
+// its middle: the centre's, the rims' (the turn of the axis bends them
+// further) and, on a ribbon, the faces' (the turn of the normal). Radii and
+// widths are linear along the part, as along its pieces: no error. Straight
+// parts are one piece, and exact.
 uint spline_pieces(ViewData v, SplinePart sp, Geo g) {
     float px = M(v, proj).c1.y * 0.5 * v.viewport.y;
     if (v.ortho == 0u) px /= max(-0.5 * (g.a.z + g.b.z) - g.r, 1e-3);
-    SplineSection s0 = spline_section(sp, sp.u0);
-    SplineSection sm = spline_section(sp, 0.5 * (sp.u0 + sp.u1));
-    SplineSection s1 = spline_section(sp, sp.u1);
+    SplineFrame s0 = spline_frame(sp, sp.u0);
+    SplineFrame sm = spline_frame(sp, 0.5 * (sp.u0 + sp.u1));
+    SplineFrame s1 = spline_frame(sp, sp.u1);
     float3 dc = sm.c - 0.5 * (s0.c + s1.c);
     float3 dw = (0.5 * (sp.a0 + sp.a1)) * sm.w - 0.5 * (sp.a0 * s0.w + sp.a1 * s1.w);
     float  e  = max(length(dc + dw), length(dc - dw));
+    if (sp.a0 > 0.0 || sp.a1 > 0.0) {                   // a tube's normal is arbitrary, and it has no faces
+        float3 dn = (0.5 * (sp.r0 + sp.r1)) * sm.n - 0.5 * (sp.r0 * s0.n + sp.r1 * s1.n);
+        e = max(e, max(max(length(dc + dw + dn), length(dc + dw - dn)), max(length(dc - dw + dn), length(dc - dw - dn))));
+    }
     return uint(clamp(ceil(sqrt(e * px * 5.0)), 1.0, 16.0));
 }
 
@@ -738,21 +747,69 @@ void spline_take_capsule(Ray r, inout SplineHit h, float3 pa, float3 pb, float r
     if (t >= 0.0 && (h.t < 0.0 || t < h.t)) { h.t = t; h.n = capsule_normal(r.o + r.d * t, pa, pb); }
 }
 
-// A rim: the capsule along a piece's edge, its normal turned to be
-// orthogonal to the curve's tangent there (t0 to t1 along the piece) rather
-// than to the piece: shading as smooth as the curve, not faceted at the joints
-void spline_take_rim(Ray r, inout SplineHit h, float3 pa, float3 pb, float rad, float3 t0, float3 t1) {
-    float t = capsule_hit(r, pa, pb, rad);
-    if (t >= 0.0 && (h.t < 0.0 || t < h.t)) {
-        float3 p  = r.o + r.d * t;
+// A round cone: the balls of radius ra at pa to rb at pb, the radius linear
+// between (their hull). Quilez's intersector, the body's root taken whatever
+// the sign of its leading term (steep rays along a tapering cone); with one
+// ball inside the other, the balls alone. Unit r.d.
+struct ConeHit {
+    float  t;                   // < 0: none
+    float3 n;
+};
+
+ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
+    ConeHit h;
+    h.t = -1.0;
+    h.n = float3(0.0, 0.0, 1.0);
+    float3 ba = pb - pa, oa = r.o - pa, ob = r.o - pb;
+    float  rr = ra - rb;
+    float  m0 = dot(ba, ba), m1 = dot(ba, oa), m2 = dot(ba, r.d), m3 = dot(r.d, oa);
+    float  m5 = dot(oa, oa), m6 = dot(ob, r.d), m7 = dot(ob, ob);
+    float  d2 = m0 - rr * rr;
+    if (d2 > 0.0) {
+        float k2 = d2 - m2 * m2;
+        float k1 = d2 * m3 - m1 * m2 + m2 * rr * ra;
+        float k0 = d2 * m5 - m1 * m1 + m1 * rr * ra * 2.0 - m0 * ra * ra;
+        float hh = k1 * k1 - k0 * k2;
+        if (hh >= 0.0 && abs(k2) > 1e-12 * m0) {
+            float t = (-sqrt(hh) - k1) / k2;
+            float y = m1 - ra * rr + t * m2;
+            if (y > 0.0 && y < d2 && t >= 0.0) { h.t = t; h.n = normalize(d2 * (oa + t * r.d) - ba * y); return h; }
+        }
+    }
+    float h1 = m3 * m3 - m5 + ra * ra;
+    float h2 = m6 * m6 - m7 + rb * rb;
+    if (h1 > 0.0) {
+        float t = -m3 - sqrt(h1);
+        if (t >= 0.0) { h.t = t; h.n = (oa + t * r.d) / ra; }
+    }
+    if (h2 > 0.0) {
+        float t = -m6 - sqrt(h2);
+        if (t >= 0.0 && (h.t < 0.0 || t < h.t)) { h.t = t; h.n = (ob + t * r.d) / rb; }
+    }
+    return h;
+}
+
+// A rim: the round cone along a piece's edge. Its normal is the smooth
+// surface's, not the piece's: the part across the piece turned to be across
+// the curve's tangent there (t0 to t1 along the piece), tilted along it by
+// the cone's slope alone. Where the piece's balls show (at the joints) their
+// own tilt is dropped with the rest: shading as smooth as the curve.
+void spline_take_rim(Ray r, inout SplineHit h, float3 pa, float3 pb, float ra, float rb, float3 t0, float3 t1) {
+    ConeHit c = round_cone_hit(r, pa, pb, ra, rb);
+    if (c.t >= 0.0 && (h.t < 0.0 || c.t < h.t)) {
+        float3 p  = r.o + r.d * c.t;
         float  k  = capsule_param(p, pa, pb);
-        float3 n  = p - lerp(pa, pb, k);
+        float3 ba = pb - pa;
+        float  bb = dot(ba, ba);
+        float3 z  = bb > 0.0 ? ba * rsqrt(bb) : float3(0.0);
+        float3 m  = c.n - z * dot(c.n, z);              // across the piece
         float3 tg = lerp(t0, t1, k);
         float  tt = dot(tg, tg);
-        float3 m  = tt > 0.0 ? n - tg * (dot(n, tg) / tt) : n;
+        if (tt > 0.0) { tg *= rsqrt(tt); m -= tg * dot(m, tg); }
         float  mm = dot(m, m);
-        h.t = t;
-        h.n = mm > 1e-30 ? m * rsqrt(mm) : capsule_normal(p, pa, pb);
+        float  sa = bb > 0.0 ? clamp((ra - rb) * rsqrt(bb), -1.0, 1.0) : 0.0;
+        h.t = c.t;
+        h.n = mm > 1e-30 ? m * (rsqrt(mm) * sqrt(1.0 - sa * sa)) + tg * sa : c.n;
     }
 }
 
@@ -788,21 +845,22 @@ SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) {
     h.t = -1.0;
     h.n = float3(0.0, 0.0, 1.0);
     float3      c0 = spline_centre(sp, sp.u0);
-    float       a0 = sp.a0;
+    float       a0 = sp.a0, r0 = sp.r0;
     SplineFrame f0;
     f0.c = f0.w = f0.n = f0.t = float3(0.0);
     bool        have0 = false;
     if ((sp.caps & 1u) != 0u) {
         f0 = spline_frame(sp, sp.u0); have0 = true;
-        spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, sp.r);
+        spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, r0);
     }
     for (uint k = 1u; k <= pieces; ++k) {
         float  u1 = spline_piece_u(sp, k, pieces);
         float3 c1 = spline_centre(sp, u1);
         float  a1 = lerp(sp.a0, sp.a1, float(k) / float(pieces));
+        float  r1 = lerp(sp.r0, sp.r1, float(k) / float(pieces));
         // the piece's bounding sphere: its chord, widened by the profile
         float3 ctr = 0.5 * (c0 + c1);
-        float  br  = 0.5 * length(c1 - c0) + max(a0, a1) + sp.r;
+        float  br  = 0.5 * length(c1 - c0) + max(a0, a1) + max(r0, r1);
         float3 oc  = r.o - ctr;
         float  bb  = dot(oc, r.d);
         float  hh  = bb * bb - (dot(oc, oc) - br * br);
@@ -812,19 +870,19 @@ SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) {
         if (hh >= 0.0 && (h.t < 0.0 || -bb - sqrt(hh) < h.t)) {
             if (!have0) { f0 = spline_frame(sp, spline_piece_u(sp, k - 1u, pieces)); have0 = true; }
             f1 = spline_frame(sp, u1); have1 = true;
-            spline_take_rim(r, h, f0.c + f0.w * a0, f1.c + f1.w * a1, sp.r, f0.t, f1.t);
+            spline_take_rim(r, h, f0.c + f0.w * a0, f1.c + f1.w * a1, r0, r1, f0.t, f1.t);
             if (a0 > 0.0 || a1 > 0.0) {
-                spline_take_rim(r, h, f0.c - f0.w * a0, f1.c - f1.w * a1, sp.r, f0.t, f1.t);
-                float3 o0 = f0.n * sp.r, o1 = f1.n * sp.r;
+                spline_take_rim(r, h, f0.c - f0.w * a0, f1.c - f1.w * a1, r0, r1, f0.t, f1.t);
+                float3 o0 = f0.n * r0, o1 = f1.n * r1;
                 spline_take_face(r, h, f0.c + f0.w * a0 + o0, f0.c - f0.w * a0 + o0, f1.c + f1.w * a1 + o1, f1.c - f1.w * a1 + o1, f0.n, f1.n);
                 spline_take_face(r, h, f0.c + f0.w * a0 - o0, f0.c - f0.w * a0 - o0, f1.c + f1.w * a1 - o1, f1.c - f1.w * a1 - o1, -f0.n, -f1.n);
             }
         }
-        c0 = c1; a0 = a1; f0 = f1; have0 = have1;
+        c0 = c1; a0 = a1; r0 = r1; f0 = f1; have0 = have1;
     }
     if ((sp.caps & 2u) != 0u) {
         if (!have0) f0 = spline_frame(sp, spline_piece_u(sp, pieces, pieces));
-        spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, sp.r);
+        spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, r0);
     }
     return h;
 }
@@ -870,7 +928,7 @@ void spline_bounds(SplinePart sp, out float3 a, out float3 bnd_b, out float rad)
     float  d = seg_dist(k.m, a, ab, ll);
     if (k.lo) d = max(d, max(seg_dist(k.l1, a, ab, ll), seg_dist(k.l2, a, ab, ll)));
     if (k.hi) d = max(d, max(seg_dist(k.h1, a, ab, ll), seg_dist(k.h2, a, ab, ll)));
-    rad = d + max(sp.a0, sp.a1) + sp.r;
+    rad = d + max(sp.a0, sp.a1) + max(sp.r0, sp.r1);
 }
 
 // With `fade` false (the state lists, which do not depend on the camera) the
@@ -921,7 +979,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.st = attr_state(b, ai);
         if ((ie & (SPLINE_FIRST | SPLINE_LAST)) == (SPLINE_FIRST | SPLINE_LAST)) return g;   // alone
         SplinePart sp = spline_part(v, b, inst, e, fade);
-        if (fade && (b.flags & F_FADE) != 0u && b.s0 > 0.0) {
+        if (fade && (b.flags & F_FADE) != 0u) {
             float2 t = fade_ts(b, -sp.p2.z);
             g.faded = ((b.flags & F_FADE_SHRINK) != 0u && fade_size(t) <= 0.0) || ((b.flags & F_FADE_THIN) != 0u && !fade_keeps(t, ai));
         }
@@ -1188,15 +1246,16 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         l.ok = capsule_radius(b, e) > 0.0;
     } else if (b.kind == KIND_SPLINES) {
         // a and b: the box of the part's curve, batch space; the factor its
-        // half width
+        // widest half width and radius (the cluster's pad)
         uint ie = b.index[e];
         uint ai = attr_of(b, ie & SPLINE_POINT);
         if (!attr_visible(b, ai)) return l;
         bool hp = (ie & SPLINE_FIRST) == 0u, hn = (ie & SPLINE_LAST) == 0u;
         if (!hp && !hn) return l;
         l.st = attr_state(b, ai);
-        float2 wd = spline_width_of(b, e);
-        l.factor = max(max(wd.x, wd.y), 0.0);
+        float4 pf = spline_profile_of(b, e);
+        float  pr = max(max(pf.z, pf.w), 0.0);
+        l.factor = max(max(pf.x, pf.y), 0.0) + pr;
         if (geo) {
             uint   im = 0u, ip = 0u;
             if (hp) im = b.index[e - 1u];
@@ -1219,7 +1278,7 @@ LocalElem element_local(Batch b, uint e, bool geo) {
             if (hp) { l.a = min(l.a, min(k.l1, k.l2)); l.b = max(l.b, max(k.l1, k.l2)); }
             if (hn) { l.a = min(l.a, min(k.h1, k.h2)); l.b = max(l.b, max(k.h1, k.h2)); }
         }
-        l.ok = b.s0 > 0.0;
+        l.ok = pr > 0.0;
     }
     return l;
 }
@@ -1322,7 +1381,7 @@ ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
     float s  = length(T.c0.xyz);
     float3 ctr = 0.5 * (lo.xyz + hi.xyz);
     float3 ext = 0.5 * (hi.xyz - lo.xyz);
-    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : b.kind == KIND_SPLINES ? lo.w + b.s0 : lo.w * b.s0;
+    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : b.kind == KIND_SPLINES ? lo.w : lo.w * b.s0;
     cs.c   = mulp(M(v, view), mulp(T, ctr));
     cs.r   = (length(ext) + max(pad, 0.0)) * s;
     cs.pad = max(pad, 0.0) * s;
