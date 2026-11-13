@@ -38,7 +38,6 @@
 #include <core/md_geom.h>
 #include <md_element.h>
 
-#include <core/md_coord_stream.h>
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_log.h>

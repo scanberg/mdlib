@@ -84,7 +84,6 @@ set(MD_CORE_FILES
   src/core/md_common.c
   src/core/md_common.h
   src/core/md_compiler.h
-  src/core/md_coord_stream.h
   src/core/md_executor.h
   src/core/md_fft.c
   src/core/md_fft.h

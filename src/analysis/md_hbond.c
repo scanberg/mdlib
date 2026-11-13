@@ -9,7 +9,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>
-#include <core/md_coord_stream.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_str.h>
@@ -973,11 +972,9 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
     };
 
     if (n_don && n_acc) {
-        md_coord_stream_t acc_stream = md_coord_stream_from_aos((const float*)acc_pt, sizeof(md_float3_t), NULL, n_acc);
-        md_coord_stream_t don_stream = md_coord_stream_from_aos((const float*)don_pt, sizeof(md_float3_t), NULL, n_don);
         md_spatial_acc_t sa = { .alloc = arena };
-        md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .coords = &acc_stream, .cutoff = radius, .unitcell = cell });
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, &don_stream, radius, pair_callback, &e, 0);
+        md_spatial_acc_init(&sa, &(md_spatial_acc_desc_t){ .xyz = (const float*)acc_pt, .stride = sizeof(md_float3_t), .count = n_acc, .cutoff = radius, .unitcell = cell });
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, (const float*)don_pt, sizeof(md_float3_t), NULL, n_don, radius, pair_callback, &e, 0);
     }
 
     hb_edge_t* edges = e.edges;

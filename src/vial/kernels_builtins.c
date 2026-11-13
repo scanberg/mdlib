@@ -17,7 +17,6 @@
 #include <core/md_geom.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
-#include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
@@ -161,14 +160,14 @@ bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out) {
 
 // A spatial search of this op's: built with the cell extent its last one was, so the spread of the points is
 // estimated once, in the first frame, not in every frame (md_spatial_acc_desc_t.cell_ext)
-static void k_spatial_init(vial_kctx_t* k, md_spatial_acc_t* acc, md_coord_stream_t* coords, double cutoff, const md_unitcell_t* cell) {
+static void k_spatial_init(vial_kctx_t* k, md_spatial_acc_t* acc, const float* xyz, size_t count, double cutoff, const md_unitcell_t* cell) {
     vial_interp_t* in = k->in;
     double* ext = NULL;
     if (k->op && in->cell_ext) {
         const size_t opi = (size_t)(k->op - in->ir->ops);
         if (opi < md_array_size(in->cell_ext)) ext = &in->cell_ext[opi];
     }
-    md_spatial_acc_init(acc, &(md_spatial_acc_desc_t){.coords = coords, .cutoff = cutoff, .unitcell = cell, .cell_ext = ext ? *ext : 0.0});
+    md_spatial_acc_init(acc, &(md_spatial_acc_desc_t){.xyz = xyz, .count = count, .cutoff = cutoff, .unitcell = cell, .cell_ext = ext ? *ext : 0.0});
     if (ext) *ext = md_spatial_acc_cell_ext(acc);
 }
 
@@ -1020,11 +1019,9 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
             int32_t* counts = md_alloc(k->alloc, (rows ? n : m) * sizeof(int32_t));
             memset(counts, 0, (rows ? n : m) * sizeof(int32_t));
             pairs_search_t ps = {.px = px.data, .py = py.data, .cell = &cell, .test = test, .r = rv, .rows = rows, .counts = counts};
-            md_coord_stream_t ys = md_coord_stream_from_aos(py.data, 3 * sizeof(float), NULL, m);
-            md_coord_stream_t xs = md_coord_stream_from_aos(px.data, 3 * sizeof(float), NULL, n);
             md_spatial_acc_t acc = {.alloc = k->alloc};
-            k_spatial_init(k, &acc, &ys, reach, &cell);
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &xs, reach, pairs_search_cb, &ps, 0);
+            k_spatial_init(k, &acc, py.data, m, reach, &cell);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, px.data, 0, NULL, n, reach, pairs_search_cb, &ps, 0);
             md_spatial_acc_free(&acc);
             const size_t nl = rows ? n : m;
             if (axis == VIAL_PAIRS_ALL) {
@@ -1086,11 +1083,9 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
         int32_t* at = md_alloc(k->alloc, lines * sizeof(int32_t));
         for (size_t L = 0; L < lines; ++L) { best[L] = 0.0f; at[L] = -1; }
         pairs_nearest_t ns = {.px = px.data, .py = py.data, .cell = &cell, .rows = rows, .best = best, .at = at};
-        md_coord_stream_t ys = md_coord_stream_from_aos(py.data, 3 * sizeof(float), NULL, m);
-        md_coord_stream_t xs = md_coord_stream_from_aos(px.data, 3 * sizeof(float), NULL, n);
         md_spatial_acc_t acc = {.alloc = k->alloc};
-        k_spatial_init(k, &acc, &ys, near_reach, &cell);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &xs, near_reach, pairs_nearest_cb, &ns, 0);
+        k_spatial_init(k, &acc, py.data, m, near_reach, &cell);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, px.data, 0, NULL, n, near_reach, pairs_nearest_cb, &ns, 0);
         md_spatial_acc_free(&acc);
         resolved = md_alloc(k->alloc, lines);
         for (size_t L = 0; L < lines; ++L) {
@@ -1784,15 +1779,13 @@ static bool k_within(vial_kctx_t* k, const vial_val_t* rv, const vial_val_t* of,
                       .p = p.data, .xyz = xyz, .cell = &cell};
         // A few points of `of`: every pair, which costs less than building a search over every particle
         if (k->in->plain || ((np + 7) / 8) * ((na + 7) / 8) > VIAL_WITHIN_BRUTE || !within_brute(k, &w, na, np)) {
-            md_coord_stream_t all = md_coord_stream_from_aos(xyz, 3 * sizeof(float), NULL, na);
             // The search may leave out a pair at exactly r; it is asked past r by the slack, and the exact distance
             // decides there. The structure is built for that same cutoff: built for r, a query past it reaches two
             // cells around, not one.
             const double reach = (double)r + slack;
             md_spatial_acc_t acc = {.alloc = k->alloc};
-            k_spatial_init(k, &acc, &all, reach, &cell);
-            md_coord_stream_t ext_pts = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_pts, reach, within_cb, &w, 0);
+            k_spatial_init(k, &acc, xyz, na, reach, &cell);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, (const float*)p.data, 0, NULL, np, reach, within_cb, &w, 0);
             md_spatial_acc_free(&acc);
         }
     }

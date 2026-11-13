@@ -9,7 +9,6 @@
 #include <core/md_unitcell.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_os.h>
-#include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
@@ -627,13 +626,12 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
         double reach = 0.0;
         for (int q = 0; q < 3; ++q) reach = MD_MAX(reach, vol->extent[q] + sqrt(vol->basis[q][0] * vol->basis[q][0] + vol->basis[q][1] * vol->basis[q][1] + vol->basis[q][2] * vol->basis[q][2]));
         md_spatial_acc_t acc = {.alloc = k->alloc};
-        md_coord_stream_t pts = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
         // The cell extent of the last frame this interpreter built for, so the spread of the points is estimated once
         vial_interp_t* in = k->in;
         const size_t opi = k->op ? (size_t)(k->op - in->ir->ops) : SIZE_MAX;
         double* ext = in->cell_ext && opi < md_array_size(in->cell_ext) ? &in->cell_ext[opi] : NULL;
         if (np) {
-            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &pts, .cutoff = reach, .unitcell = &cell, .cell_ext = ext ? *ext : 0.0});
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.xyz = (const float*)p.data, .count = np, .cutoff = reach, .unitcell = &cell, .cell_ext = ext ? *ext : 0.0});
             if (ext) *ext = md_spatial_acc_cell_ext(&acc);
         }
         for (uint32_t s = 0; s < vol->num_structures; ++s) {
