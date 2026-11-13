@@ -64,7 +64,7 @@ file(GLOB_RECURSE PROJ_FILES cmake/*)
 #   analysis  contacts, hydrogen bonds, ring puckers, common substructures
 #   qm        orbitals, densities and the topology of fields
 #   io        the formats and their table (md_io.h)
-#   gfx       drawing a system (GL), vector graphics
+#   gfx       drawing a system (GL)
 #   script    the script language, and VIAL (src/vial)
 #
 # analysis, qm and gfx depend on system, io on system and qm, script on analysis and io. Nothing checks it: a header of
@@ -209,8 +209,6 @@ set(MD_ANALYSIS_FILES
 )
 
 set(MD_QM_FILES
-  src/qm/md_flow.c
-  src/qm/md_flow.h
   src/qm/md_gto.c
   src/qm/md_gto.h
   src/qm/md_gto_int.c
@@ -285,8 +283,6 @@ set(MD_GFX_FILES
   src/gfx/md_gl.h
   src/gfx/md_gl_util.c
   src/gfx/md_gl_util.h
-  src/gfx/md_vector_graphics.c
-  src/gfx/md_vector_graphics.h
 )
 
 set(MD_SCRIPT_FILES
