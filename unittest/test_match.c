@@ -1382,3 +1382,44 @@ UTEST(match, script_match) {
 
     md_arena_allocator_destroy(alloc);
 }
+
+// What md_match keeps of a system between calls is of its topology version: a bond inserted is seen by the next
+// search, and so is its kind changed to coordination, which leaves it out of the graph (between residues)
+UTEST(match, topology_changes) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_GT(sys.residue.count, 5u);
+
+    // The CB of the first residue and of the sixth: not bonded
+    int32_t cb[2] = {-1, -1};
+    const size_t res[2] = {0, 5};
+    for (int k = 0; k < 2; ++k) {
+        const md_urange_t r = md_system_residue_atom_range(&sys, res[k]);
+        for (uint32_t a = r.beg; a < r.end; ++a) if (md_str_eq(md_atom_name(&sys.atom, a), MD_STR_LIT("CB"))) cb[k] = (int32_t)a;
+    }
+    ASSERT_TRUE(cb[0] >= 0 && cb[1] >= 0);
+    const uint32_t idx[2] = {(uint32_t)cb[0], (uint32_t)cb[1]};
+    const md_bitset_t unit = md_bitset_from_indices(idx, 2, alloc);
+
+    md_match_query_t q = {0};
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("CC"), alloc, NULL));
+    const md_match_desc_t desc = {.query = &q, .mode = MD_MATCH_MODE_UNIQUE, .units = &unit, .num_units = 1,
+                                  .hydrogens = MD_MATCH_RESOLVE_NEVER, .bond_orders = MD_MATCH_RESOLVE_NEVER, .charges = MD_MATCH_RESOLVE_NEVER};
+    EXPECT_EQ(0, (int)count_matches(&desc, &sys, NULL, NULL));
+
+    // The connectivity is not kept up to date by an insertion (md_bond_find): built again, as code which inserts does
+    md_system_bond_insert(&sys, cb[0], cb[1], MD_BOND_FLAG_NONE);
+    md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
+    EXPECT_EQ(1, (int)count_matches(&desc, &sys, NULL, NULL));
+
+    const md_bond_idx_t b = md_system_bond_find(&sys, cb[0], cb[1]);
+    ASSERT_TRUE(b >= 0);
+    sys.bond.flags[b] = md_bond_flags_set_kind(sys.bond.flags[b], MD_BOND_KIND_COORDINATE);
+    md_system_topology_changed(&sys);
+    EXPECT_EQ(0, (int)count_matches(&desc, &sys, NULL, NULL));
+
+    md_arena_allocator_destroy(alloc);
+}
