@@ -297,15 +297,19 @@ float capsule_radius(Batch b, uint e) {
 
 struct Ray { float3 o; float3 d; };
 
+// Every multiply-add explicit: the compute raster and the fragment shaders
+// must make the same ray to the bit, and under fast math a compiler may fuse
+// a * b + c in one stage and not in another (a jittered projection's inverse
+// has terms that make the two differ)
 float3 unproject(Mat inv_proj, float2 ndc, float z) {
-    float4 p = mul4(inv_proj, float4(ndc, z, 1.0));
+    float4 p = fma(inv_proj.c0, float4(ndc.x), fma(inv_proj.c1, float4(ndc.y), fma(inv_proj.c2, float4(z), inv_proj.c3)));
     return p.xyz / p.w;
 }
 
 // The ray of pixel position `pix` (pixel units, top-left origin; a pixel's
 // centre is at +0.5), through the projection as it was rasterised.
 Ray pixel_ray(ViewData v, float2 pix) {
-    float2 ndc = float2(pix.x * v.viewport.z * 2.0 - 1.0, 1.0 - pix.y * v.viewport.w * 2.0);
+    float2 ndc = float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
     Ray r;
     r.o = unproject(M(v, inv_proj), ndc, 1.0);          // near plane under reverse Z
     float3 f = unproject(M(v, inv_proj), ndc, 0.5);
