@@ -144,11 +144,14 @@ static const uint FP_PERIODIC = 24u;
 
 float3 ld3(uint* p, uint o) { return float3(asfloat(p[o]), asfloat(p[o + 1u]), asfloat(p[o + 2u])); }
 
-// Point i's three values: halves 3i .. 3i+2, in two words
+// Point i's three values: halves 3i .. 3i+2, in two words. Selects, not a
+// branch: even and odd points are neighbours, so a branch split every wave
+// in two (and a compiler need not turn it back into selects).
 uint3 load_q(uint* q, uint i) {
     uint w = (3u * i) >> 1u;
     uint a = q[w], b = q[w + 1u];
-    return (i & 1u) == 0u ? uint3(a & 0xFFFFu, a >> 16u, b & 0xFFFFu) : uint3(a >> 16u, b & 0xFFFFu, b >> 16u);
+    bool odd = (i & 1u) != 0u;
+    return uint3(select(odd, a >> 16u, a & 0xFFFFu), select(odd, b & 0xFFFFu, a >> 16u), select(odd, b >> 16u, b & 0xFFFFu));
 }
 
 float3 dequant(uint* q, uint* par, uint i) {
@@ -162,13 +165,6 @@ void store_pair(uint* q, uint j, uint3 a, uint3 b, bool has_b) {
     if (has_b) q[3u * j + 2u] = b.y | (b.z << 16u);
 }
 
-// d at its minimum image, by the cell's lattice: right while the true
-// displacement is well inside the cell (between frames it is)
-float3 min_image(uint* par, float3 d) {
-    if (par[FP_PERIODIC] == 0u) return d;
-    float3 n = round(float3(dot(ld3(par, FP_INV), d), dot(ld3(par, FP_INV + 3u), d), dot(ld3(par, FP_INV + 6u), d)));
-    return d - ld3(par, FP_CELL) * n.x - ld3(par, FP_CELL + 3u) * n.y - ld3(par, FP_CELL + 6u) * n.z;
-}
 
 // An atom's place in an uploaded frame: its rank among the resident atoms
 uint upload_index(Args a, uint atom) {
@@ -490,7 +486,7 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
 // through pointers inside the loop they were reloaded at every point (the
 // stores to the copy may alias them, as far as the compiler knows)
 struct FrameP { float3 o; float3 s; };
-struct CellP  { float3 a; float3 b; float3 c; float3 i0; float3 i1; float3 i2; bool periodic; };
+struct CellP  { float3 a; float3 b; float3 c; float3 i0; float3 i1; float3 i2; };
 
 FrameP frame_p(uint* par) { FrameP f; f.o = ld3(par, FP_ORIGIN); f.s = ld3(par, FP_SCALE); return f; }
 
@@ -498,14 +494,15 @@ CellP cell_p(uint* par) {
     CellP c;
     c.a  = ld3(par, FP_CELL); c.b  = ld3(par, FP_CELL + 3u); c.c  = ld3(par, FP_CELL + 6u);
     c.i0 = ld3(par, FP_INV);  c.i1 = ld3(par, FP_INV + 3u);  c.i2 = ld3(par, FP_INV + 6u);
-    c.periodic = par[FP_PERIODIC] != 0u;
     return c;
 }
 
 float3 deq(uint* q, FrameP f, uint i) { return f.o + float3(load_q(q, i)) * f.s; }
 
+// d at its minimum image, by the cell's lattice: right while the true
+// displacement is well inside the cell (between frames it is). No branch:
+// the inverse's rows are zero where an axis is not periodic, so n is too.
 float3 mi(CellP c, float3 d) {
-    if (!c.periodic) return d;
     float3 n = round(float3(dot(c.i0, d), dot(c.i1, d), dot(c.i2, d)));
     return d - c.a * n.x - c.b * n.y - c.c * n.z;
 }
