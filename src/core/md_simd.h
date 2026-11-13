@@ -1465,6 +1465,10 @@ typedef md_256 md_xv;
 #define md_xv_reduce_max_ps         md_mm256_reduce_max_ps
 #define md_xv_exp_ps                md_mm256_exp_ps
 #define md_xv_minimage_ps           md_mm256_minimage_ps
+typedef md_256i md_xvi;
+#define md_xv_loadu_si              md_mm256_loadu_si256
+#define md_xv_i32gather_ps(base, idx)       md_mm256_i32gather_ps(base, idx, 4)
+#define md_xv_i32gather_xyz_ps              md_mm256_i32gather_xyz_ps
 #else
 typedef md_128 md_xv;
 #define MD_XV_WIDTH 4
@@ -1513,6 +1517,10 @@ typedef md_128 md_xv;
 #define md_xv_reduce_max_ps         md_mm_reduce_max_ps
 #define md_xv_exp_ps                md_mm_exp_ps
 #define md_xv_minimage_ps           md_mm_minimage_ps
+typedef md_128i md_xvi;
+#define md_xv_loadu_si              md_mm_loadu_si128
+#define md_xv_i32gather_ps(base, idx)       md_mm_i32gather_ps(base, idx, 4)
+#define md_xv_i32gather_xyz_ps              md_mm_i32gather_xyz_ps
 #endif
 
 #if defined(__AVX512F__) && defined(__AVX512DQ__)

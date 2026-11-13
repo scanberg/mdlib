@@ -72,6 +72,48 @@ UBENCH_EX(coords, com_nopbc) {
     md_vm_arena_destroy(arena);
 }
 
+// Every other atom, weighted: the kernels of an index and weights (a selection's center of mass)
+static void com_selection(int32_t** out_idx, float** out_w, size_t* out_count, size_t num_atoms, md_allocator_i* arena) {
+    const size_t n = num_atoms / 2;
+    int32_t* idx = md_alloc(arena, n * sizeof(int32_t));
+    float*   w   = md_alloc(arena, num_atoms * sizeof(float));
+    for (size_t i = 0; i < n; ++i) idx[i] = (int32_t)(2 * i);
+    for (size_t i = 0; i < num_atoms; ++i) w[i] = 1.0f + (float)(i % 3);
+    *out_idx = idx; *out_w = w; *out_count = n;
+}
+
+UBENCH_EX(coords, com_pbc_selection) {
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = {0}; md_system_state_t st = {0};
+    if (load_big(&sys, &st, arena)) {
+        int32_t* idx; float* w; size_t n;
+        com_selection(&idx, &w, &n, st.num_atoms, arena);
+        UBENCH_SET_BYTES(n * 16);
+        md_float3_t com = {0};
+        UBENCH_DO_BENCHMARK() {
+            com = md_geom_com((const float*)st.xyz, 0, w, 0, idx, n, &st.unitcell);
+            UBENCH_DO_NOTHING(&com);
+        }
+    }
+    md_vm_arena_destroy(arena);
+}
+
+UBENCH_EX(coords, com_nopbc_selection) {
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = {0}; md_system_state_t st = {0};
+    if (load_big(&sys, &st, arena)) {
+        int32_t* idx; float* w; size_t n;
+        com_selection(&idx, &w, &n, st.num_atoms, arena);
+        UBENCH_SET_BYTES(n * 16);
+        md_float3_t com = {0};
+        UBENCH_DO_BENCHMARK() {
+            com = md_geom_com((const float*)st.xyz, 0, w, 0, idx, n, NULL);
+            UBENCH_DO_NOTHING(&com);
+        }
+    }
+    md_vm_arena_destroy(arena);
+}
+
 UBENCH_EX(coords, aabb) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {0}; md_system_state_t st = {0};
