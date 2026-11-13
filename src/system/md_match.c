@@ -90,16 +90,22 @@ typedef struct target_t {
     const int8_t*     charge;       // Formal charges
     const md_atom_flags_t* atom_flags;
 
-    // The graph in compressed rows, the system's own where nothing is left out of it. NULL without bonds.
-    const uint32_t*        conn_off;    // [num_atoms + 1]
+    // The graph in compressed rows, the system's own where nothing is left out of it: row a is [conn_off[a],
+    // conn_row_end[a]). Where bonds are left out, the rows of their atoms are made again in copies of the system's,
+    // shorter where they were. NULL without bonds.
+    const uint32_t*        conn_off;    // [num_atoms + 1] The system's
+    const uint32_t*        conn_row_end;// [num_atoms]
     const md_atom_idx_t*   conn_atom;
     const md_bond_idx_t*   conn_bond;
     const md_bond_flags_t* bond_flags;  // By bond index
 
     // Atoms outside of the graph (virtual sites), NULL for none
     const uint8_t* skip;
+    // Bonds left out of the graph (coordination, and those of virtual sites), by bond index, NULL for none
+    const uint8_t* drop;
 
-    // Molecules: the connected parts of the graph, numbered in the order of their first atom. Where nothing is left
+    // Molecules: the connected parts of the graph, numbered in the order of their first atom. Built only where they are
+    // read (TARGET_MOLECULES, TARGET_RESOLUTION, target_resolution): units of the molecule level, and the resolution. Where nothing is left
     // out of the graph they are the structures of the system, read as they are: the atoms of molecule m are
     // mol_atom[mol_off[m] .. mol_off[m + 1]) either way, and the molecule of an atom is mol_of[a], or the structure
     // whose slots hold mol_slot[a].
@@ -119,8 +125,9 @@ typedef struct target_t {
 } target_t;
 
 enum {
-    TARGET_RESOLUTION = 0x1,    // What each molecule can tell (mol_res)
+    TARGET_RESOLUTION = 0x1,    // What each molecule can tell (mol_res), and so the molecules
     TARGET_GROUPS     = 0x2,    // Resonance groups
+    TARGET_MOLECULES  = 0x4,    // The molecules, for units of the molecule level
 };
 
 static inline md_atomic_number_t target_z(const target_t* tg, int32_t a) {
@@ -143,7 +150,7 @@ static inline uint32_t conn_beg(const target_t* tg, int32_t a) {
 }
 
 static inline uint32_t conn_end(const target_t* tg, int32_t a) {
-    return tg->conn_off ? tg->conn_off[a + 1] : 0;
+    return tg->conn_off ? tg->conn_row_end[a] : 0;
 }
 
 static inline md_bond_flags_t target_bond_flags(const target_t* tg, md_bond_idx_t b) {
@@ -240,84 +247,17 @@ static void uf_union(int32_t* parent, int32_t a, int32_t b) {
     if (a != b) parent[MD_MAX(a, b)] = MD_MIN(a, b);
 }
 
-// what: TARGET_RESOLUTION, TARGET_GROUPS. Everything is allocated from arena.
-static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md_allocator_i* arena) {
-    md_memset(tg, 0, sizeof(target_t));
-    const size_t N = sys->atom.count;
-    tg->sys        = sys;
-    tg->num_atoms  = N;
-    tg->type_idx   = sys->atom.type_idx;
-    tg->type_z     = sys->atom.type.z;
-    tg->type_name  = sys->atom.type.name;
-    tg->num_types  = sys->atom.type.count;
-    tg->h_count    = sys->atom.hydrogen_count;
-    tg->charge     = sys->atom.formal_charge;
-    tg->atom_flags = sys->atom.flags;
-    if (N == 0) return;
-
-    // Virtual sites are not atoms of the graph
-    uint8_t* skip = NULL;
-    for (size_t i = 0; i < N; ++i) {
-        if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE) {
-            if (!skip) {
-                skip = md_alloc(arena, N);
-                md_memset(skip, 0, N);
-            }
-            skip[i] = 1;
-        }
-    }
-
-    const md_bond_conn_data_t* conn = &sys->bond.conn;
-    const bool has_bonds = sys->bond.count > 0 && conn->offset && conn->offset_count >= N + 1 && conn->atom_idx && conn->bond_idx;
-    uint8_t* drop = NULL;
-    if (has_bonds) {
-        tg->bond_flags = sys->bond.flags;
-
-        // Bonds left out: coordination, and any bond of a virtual site
-        for (size_t b = 0; b < sys->bond.count; ++b) {
-            const int32_t i = sys->bond.pairs[b].idx[0];
-            const int32_t j = sys->bond.pairs[b].idx[1];
-            const md_bond_flags_t f = sys->bond.flags ? sys->bond.flags[b] : MD_BOND_FLAG_NONE;
-            if (is_coordination(sys, f, i, j) || (skip && (skip[i] || skip[j]))) {
-                if (!drop) {
-                    drop = md_alloc(arena, sys->bond.count);
-                    md_memset(drop, 0, sys->bond.count);
-                }
-                drop[b] = 1;
-            }
-        }
-
-        if (!drop) {
-            tg->conn_off  = conn->offset;
-            tg->conn_atom = conn->atom_idx;
-            tg->conn_bond = conn->bond_idx;
-        } else {
-            const uint32_t total = conn->offset[N];
-            uint32_t*      off   = md_alloc(arena, sizeof(uint32_t) * (N + 1));
-            md_atom_idx_t* atom  = md_alloc(arena, sizeof(md_atom_idx_t) * MD_MAX(1, total));
-            md_bond_idx_t* bond  = md_alloc(arena, sizeof(md_bond_idx_t) * MD_MAX(1, total));
-            uint32_t n = 0;
-            for (size_t a = 0; a < N; ++a) {
-                off[a] = n;
-                for (uint32_t c = conn->offset[a]; c < conn->offset[a + 1]; ++c) {
-                    if (drop[conn->bond_idx[c]]) continue;
-                    atom[n] = conn->atom_idx[c];
-                    bond[n] = conn->bond_idx[c];
-                    n++;
-                }
-            }
-            off[N] = n;
-            tg->conn_off  = off;
-            tg->conn_atom = atom;
-            tg->conn_bond = bond;
-        }
-    }
-
-    tg->skip = skip;
-
-    // Molecules. The structures of the system are the parts of its bond graph closed over residues and polymer chains,
+// The molecules of the target (num_mol, mol_off, mol_atom, and mol_of or mol_slot)
+static void target_molecules(target_t* tg, md_allocator_i* arena) {
+    if (tg->mol_off || tg->num_atoms == 0) return;
+    // The structures of the system are the parts of its bond graph closed over residues and polymer chains,
     // with links of their own for coarse grained beads: without those, and without coordination bonds and virtual
     // sites to leave out, they are the molecules.
+    const md_system_t* sys = tg->sys;
+    const size_t N = tg->num_atoms;
+    const uint8_t* skip = tg->skip;
+    const uint8_t* drop = tg->drop;
+    const bool has_bonds = tg->conn_off != NULL;
     const bool coarse_grained = md_system_is_coarse_grained(sys);
     const md_molecule_data_t* st = &sys->molecule;
     if (!drop && !skip && !coarse_grained && st->count > 0 && st->offset && st->atom_idx && st->atom_slot && st->offset[st->count] == N) {
@@ -404,12 +344,109 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         tg->mol_atom = mol_atom;
         tg->mol_of   = mol_of;
     }
+}
 
-    if (what & TARGET_RESOLUTION) {
-        tg->mol_res      = md_alloc(arena, sizeof(resolution_t) * MD_MAX(1, tg->num_mol));
-        tg->mol_res_done = md_alloc(arena, MD_MAX(1, tg->num_mol));
-        md_memset(tg->mol_res_done, 0, MD_MAX(1, tg->num_mol));
+// What each molecule can tell, worked out when first asked (molecule_resolution); the molecules as well
+static void target_resolution(target_t* tg, md_allocator_i* arena) {
+    if (tg->mol_res || tg->num_atoms == 0) return;
+    target_molecules(tg, arena);
+    tg->mol_res      = md_alloc(arena, sizeof(resolution_t) * MD_MAX(1, tg->num_mol));
+    tg->mol_res_done = md_alloc(arena, MD_MAX(1, tg->num_mol));
+    md_memset(tg->mol_res_done, 0, MD_MAX(1, tg->num_mol));
+}
+
+// what: TARGET_RESOLUTION, TARGET_GROUPS, TARGET_MOLECULES. Everything is allocated from arena.
+static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md_allocator_i* arena) {
+    md_memset(tg, 0, sizeof(target_t));
+    const size_t N = sys->atom.count;
+    tg->sys        = sys;
+    tg->num_atoms  = N;
+    tg->type_idx   = sys->atom.type_idx;
+    tg->type_z     = sys->atom.type.z;
+    tg->type_name  = sys->atom.type.name;
+    tg->num_types  = sys->atom.type.count;
+    tg->h_count    = sys->atom.hydrogen_count;
+    tg->charge     = sys->atom.formal_charge;
+    tg->atom_flags = sys->atom.flags;
+    if (N == 0) return;
+
+    // Virtual sites are not atoms of the graph. A type is a virtual site or not: the atoms only where some type is.
+    bool virtual_sites = false;
+    for (size_t t = 0; t < sys->atom.type.count && sys->atom.type_idx && !virtual_sites; ++t) {
+        virtual_sites = md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_VIRTUAL_SITE;
     }
+    uint8_t* skip = NULL;
+    for (size_t i = 0; i < N && virtual_sites; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE) {
+            if (!skip) {
+                skip = md_alloc(arena, N);
+                md_memset(skip, 0, N);
+            }
+            skip[i] = 1;
+        }
+    }
+
+    const md_bond_conn_data_t* conn = &sys->bond.conn;
+    const bool has_bonds = sys->bond.count > 0 && conn->offset && conn->offset_count >= N + 1 && conn->atom_idx && conn->bond_idx;
+    uint8_t* drop = NULL;
+    if (has_bonds) {
+        tg->bond_flags = sys->bond.flags;
+
+        // Bonds left out: coordination, and any bond of a virtual site. Most bonds are neither, told by their flags.
+        const md_bond_flags_t* flags = sys->bond.flags;
+        md_array(uint32_t) dropped = NULL;
+        for (size_t b = 0; b < sys->bond.count; ++b) {
+            const bool coordinate = flags && md_bond_kind(flags[b]) == MD_BOND_KIND_COORDINATE;
+            if (!coordinate && !skip) continue;
+            const int32_t i = sys->bond.pairs[b].idx[0];
+            const int32_t j = sys->bond.pairs[b].idx[1];
+            if ((coordinate && is_coordination(sys, flags[b], i, j)) || (skip && (skip[i] || skip[j]))) {
+                if (!drop) {
+                    drop = md_alloc(arena, sys->bond.count);
+                    md_memset(drop, 0, sys->bond.count);
+                }
+                drop[b] = 1;
+                md_array_push(dropped, (uint32_t)b, arena);
+            }
+        }
+
+        tg->conn_off     = conn->offset;
+        tg->conn_row_end = conn->offset + 1;
+        tg->conn_atom    = conn->atom_idx;
+        tg->conn_bond    = conn->bond_idx;
+        if (drop) {
+            // The rows of the atoms of the bonds left out, without them, in copies of the system's rows
+            const uint32_t total = conn->offset[N];
+            uint32_t*      end  = md_alloc(arena, sizeof(uint32_t) * N);
+            md_atom_idx_t* atom = md_alloc(arena, sizeof(md_atom_idx_t) * MD_MAX(1, total));
+            md_bond_idx_t* bond = md_alloc(arena, sizeof(md_bond_idx_t) * MD_MAX(1, total));
+            md_memcpy(end,  conn->offset + 1,  sizeof(uint32_t) * N);
+            md_memcpy(atom, conn->atom_idx,    sizeof(md_atom_idx_t) * total);
+            md_memcpy(bond, conn->bond_idx,    sizeof(md_bond_idx_t) * total);
+            for (size_t k = 0; k < md_array_size(dropped); ++k) {
+                for (int e = 0; e < 2; ++e) {
+                    const int32_t x = sys->bond.pairs[dropped[k]].idx[e];
+                    uint32_t n = conn->offset[x];
+                    for (uint32_t c = conn->offset[x]; c < end[x]; ++c) {
+                        if (drop[bond[c]]) continue;
+                        atom[n] = atom[c];
+                        bond[n] = bond[c];
+                        n++;
+                    }
+                    end[x] = n;
+                }
+            }
+            tg->conn_row_end = end;
+            tg->conn_atom    = atom;
+            tg->conn_bond    = bond;
+        }
+    }
+
+    tg->skip = skip;
+    tg->drop = drop;
+
+    if (what & (TARGET_MOLECULES | TARGET_RESOLUTION)) target_molecules(tg, arena);
+    if (what & TARGET_RESOLUTION) target_resolution(tg, arena);
 
     if ((what & TARGET_GROUPS) && tg->conn_off) {
         int32_t* group_of = md_alloc(arena, sizeof(int32_t) * N);
@@ -2313,8 +2350,9 @@ static bool desc_validate(const md_match_desc_t* desc, const md_system_t* sys) {
     return query_validate(desc->query);
 }
 
-static uint32_t target_needs(md_match_resolve_t hydrogens, md_match_resolve_t charges, bool has_charge) {
+static uint32_t target_needs(md_match_resolve_t hydrogens, md_match_resolve_t charges, bool has_charge, md_match_level_t level, bool units) {
     uint32_t what = 0;
+    if (!units && level == MD_MATCH_LEVEL_MOLECULE) what |= TARGET_MOLECULES;
     if (hydrogens == MD_MATCH_RESOLVE_AUTO || charges == MD_MATCH_RESOLVE_AUTO) what |= TARGET_RESOLUTION;
     if (has_charge && charges != MD_MATCH_RESOLVE_NEVER) what |= TARGET_GROUPS;
     return what;
@@ -2373,7 +2411,7 @@ static bool match_run(size_t* out_count, bool* out_incomplete, const md_match_de
     md_allocator_i* arena = md_temp_allocator(temp);
 
     target_t tg;
-    target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, query_states_charge(desc->query)), arena);
+    target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, query_states_charge(desc->query), desc->level, desc->units != NULL), arena);
 
     search_t s;
     search_init(&s, &tg, desc->level, desc->mode, desc->flags, desc->hydrogens, desc->bond_orders, desc->charges, desc->mask, desc->units, desc->num_units, arena);
@@ -2573,7 +2611,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* arena = md_temp_allocator(temp);
     target_t tg;
-    target_build(&tg, sys, TARGET_RESOLUTION, arena);
+    target_build(&tg, sys, 0, arena);
 
     // (atom << 32 | query index), sorted, to find the query index of an atom
     uint64_t* lookup = md_alloc(arena, sizeof(uint64_t) * count);
@@ -2596,6 +2634,9 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
             return false;
         }
     }
+    // Which hydrogens an atom resolves is of its molecule, wanted only for a reference with hydrogens of a system
+    // without hydrogen counts
+    if (has_h && !tg.h_count) target_resolution(&tg, arena);
 
     #define FIND_QUERY_IDX(out, atom) do {                                      \
         size_t lo_ = 0, hi_ = count;                                            \
@@ -2633,8 +2674,7 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
 
         // An atom whose hydrogens are all given has its protonation fixed, see md_match.h. With hydrogen counts in
         // the system every atom resolves its hydrogens. Virtual sites are in no molecule and have none.
-        const bool resolved = !target_skipped(&tg, a) && (tg.h_count || resolution_h(molecule_resolution(&tg, target_molecule(&tg, a)), z));
-        if (has_h && z != MD_Z_H && resolved) {
+        if (has_h && z != MD_Z_H && !target_skipped(&tg, a) && (tg.h_count || resolution_h(molecule_resolution(&tg, target_molecule(&tg, a)), z))) {
             uint32_t h_given = 0;
             for (uint32_t c = conn_beg(&tg, a); c < conn_end(&tg, a); ++c) {
                 const int32_t b = tg.conn_atom[c];
@@ -3003,7 +3043,7 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
     for (size_t e = 0; e < num_entries; ++e) has_charge |= query_states_charge(&lib->entries[e].query);
 
     target_t tg;
-    target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, has_charge), arena);
+    target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, has_charge, desc->level, desc->units != NULL), arena);
 
     const bool whole = (desc->flags & MD_MATCH_FLAG_WHOLE) != 0;
     search_t s;
