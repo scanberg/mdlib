@@ -133,14 +133,14 @@ uint  ordered(float f)  { uint b = asuint(f); return (b & 0x80000000u) != 0u ? ~
 float unordered(uint u) { return asfloat((u & 0x80000000u) != 0u ? (u & 0x7FFFFFFFu) : ~u); }
 
 // ---- Frames: x, y, z per point in 16 bits each, three words to two points -------
-// Parameters of a frame, 32 words: origin, scale, the cell's columns, the
-// rows of its inverse (zero for an axis that is not periodic), periodic.
+// Parameters of a frame, 32 words: origin, scale, the cell (a along x, b in
+// the xy plane: ax, bx, by, cx, cy, cz) and the reciprocals of its diagonal
+// (zero for an axis that is not periodic).
 
 static const uint FP_ORIGIN   = 0u;
 static const uint FP_SCALE    = 3u;
 static const uint FP_CELL     = 6u;
-static const uint FP_INV      = 15u;
-static const uint FP_PERIODIC = 24u;
+static const uint FP_RCELL    = 12u;
 
 float3 ld3(uint* p, uint o) { return float3(asfloat(p[o]), asfloat(p[o + 1u]), asfloat(p[o + 2u])); }
 
@@ -486,37 +486,66 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
 // through pointers inside the loop they were reloaded at every point (the
 // stores to the copy may alias them, as far as the compiler knows)
 struct FrameP { float3 o; float3 s; };
-struct CellP  { float3 a; float3 b; float3 c; float3 i0; float3 i1; float3 i2; };
+struct CellP  { float ax; float bx; float by; float cx; float cy; float cz; float3 r; };
 
 FrameP frame_p(uint* par) { FrameP f; f.o = ld3(par, FP_ORIGIN); f.s = ld3(par, FP_SCALE); return f; }
 
 CellP cell_p(uint* par) {
     CellP c;
-    c.a  = ld3(par, FP_CELL); c.b  = ld3(par, FP_CELL + 3u); c.c  = ld3(par, FP_CELL + 6u);
-    c.i0 = ld3(par, FP_INV);  c.i1 = ld3(par, FP_INV + 3u);  c.i2 = ld3(par, FP_INV + 6u);
+    c.ax = asfloat(par[FP_CELL]);      c.bx = asfloat(par[FP_CELL + 1u]); c.by = asfloat(par[FP_CELL + 2u]);
+    c.cx = asfloat(par[FP_CELL + 3u]); c.cy = asfloat(par[FP_CELL + 4u]); c.cz = asfloat(par[FP_CELL + 5u]);
+    c.r  = ld3(par, FP_RCELL);
     return c;
 }
 
 float3 deq(uint* q, FrameP f, uint i) { return f.o + float3(load_q(q, i)) * f.s; }
 
-// d at its minimum image, by the cell's lattice: right while the true
-// displacement is well inside the cell (between frames it is). No branch:
-// the inverse's rows are zero where an axis is not periodic, so n is too.
+// d at its minimum image: c, then b, then a taken off as often as they fit
+// (as GROMACS does for a triclinic cell), right while the true displacement
+// is well inside the cell (between frames it is). No branch: a reciprocal is
+// zero where an axis is not periodic, so its step is too. Nine values, not
+// the eighteen of a cell and its inverse: on Pascal those registers pushed
+// the two-frame kernel past a tier.
 float3 mi(CellP c, float3 d) {
-    float3 n = round(float3(dot(c.i0, d), dot(c.i1, d), dot(c.i2, d)));
-    return d - c.a * n.x - c.b * n.y - c.c * n.z;
+    float n2 = round(d.z * c.r.z);
+    d -= n2 * float3(c.cx, c.cy, c.cz);
+    float n1 = round(d.y * c.r.y);
+    d.xy -= n1 * float2(c.bx, c.by);
+    d.x  -= round(d.x * c.r.x) * c.ax;
+    return d;
+}
+
+// Before the frames' gather, when the copy's radii are not valid: each
+// point's radius from its source, into the copy's w. fr_check sizes its
+// launch (none when they are), so the gathers need not carry that path.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void fr_check(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    uint* g = a.marker + 16u;                               // the indirect grid
+    g[0] = radii_valid(a) || n == 0u ? 0u : min((n + 63u) / 64u, 65535u);
+    g[1] = 1u;
+    g[2] = 1u;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_radii(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    for (uint p = tid.x; p < n; p += grid_threads(n)) a.points[4u * p + 3u] = radius_of(a, a.atom_order[p]);
 }
 
 // The copy that is drawn, from resident frames in point order: every read in
-// order (the atom only for radii from their source). A kernel per number of
-// frames (COUNT a constant): one kernel for all three kept every frame's
+// order, the radius the copy's own (fr_radii saw to it). A kernel per number
+// of frames (COUNT a constant): one kernel for all three kept every frame's
 // parameters and the cell live, and on Pascal the registers that cost made
 // the nearest frame twice the copy from positions.
 [ForceInline]
 void fr_gather_body(uint3 tid, const uint COUNT) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
-    bool reuse = radii_valid(a);
     const bool vel_out = COUNT > 1u && a.has_fvel != 0u;
     uint* points = a.points;
     const FrameP f0 = frame_p(a.fpar0);
@@ -541,7 +570,7 @@ void fr_gather_body(uint3 tid, const uint COUNT) {
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
-        uint r = reuse ? points[4u * p + 3u] : radius_of(a, a.atom_order[p]);
+        uint r = points[4u * p + 3u];
         ((uint4*)points)[p] = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
         if (vel_out) ((uint2*)a.vel_out)[p] = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
     }
