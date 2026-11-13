@@ -92,14 +92,15 @@ typedef struct gpu_batch_t {
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
     float         fade_out_a, fade_out_b, fade_in_a, fade_in_b;   /* the bands for this camera (fade_bands) */
     md_gpu_addr_t spl_axis, spl_profile;                          /* SPLINES */
+    uint32_t      poly_n, _pad_b[3];                              /* POLYGONS: corners; to the float4 alignment */
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 288, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 304, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
     md_gpu_addr_t        batches;
     uint32_t             mode;      /* raster: 0 visibility, 1 mask. cull etc.: phase 1 or 2 */
-    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1, 4 hw2, 5 st2 */
+    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1, 4 hw2, 5 st2, 6 hw3, 7 st3 */
     md_gpu_sampled_tex_t id;
     md_gpu_storage_tex_t color, normal, motion, mask;
     uint32_t             width, height, px, py;
@@ -112,7 +113,7 @@ typedef struct gpu_args_t {
 _Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
 
 typedef struct gpu_lists_t {
-    md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2;
+    md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -128,7 +129,10 @@ enum {
     C_HWS1 = 96, C_HWS2 = 97, C_STS = 98,   /* spline parts: hardware raster, phase 1 and 2; state */
     C_ICMDS = 100,    /* md_gpu_draw_indexed_cmd_t: spline parts, phase 1 and 2: 100..109 */
     C_STICMDS = 110,  /* the state list's spline parts: 110..114 */
-    C_COUNT = 116,
+    C_HWP1 = 116, C_HWP2 = 117, C_STP = 118,  /* polygons: hardware raster, phase 1 and 2; state */
+    C_ICMDP = 120,    /* md_gpu_draw_indexed_cmd_t: polygons, phase 1 and 2: 120..129 */
+    C_STICMDP = 130,  /* the state list's polygons: 130..134 */
+    C_COUNT = 136,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -159,10 +163,10 @@ void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void*
 struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
-    md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, merge;
+    md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, merge;
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
-    /* the spline twins (md_render.slang, kind_taken): run only for frames with splines */
-    md_gpu_kernel_t   k_refit_spl, k_cull_spl, k_resolve_spl;
+    /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
+    md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy;
     bool              atomic_int64;    /* the compute raster is possible */
 };
 
@@ -213,6 +217,8 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     r->capsule_mask = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_mask_fs_shader(), true,  "md_render.capsule_mask");
     r->spline_vis   = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_fs_shader(),       false, "md_render.spline");
     r->spline_mask  = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_mask_fs_shader(),  true,  "md_render.spline_mask");
+    r->polygon_vis  = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_fs_shader(),      false, "md_render.polygon");
+    r->polygon_mask = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_mask_fs_shader(), true,  "md_render.polygon_mask");
     r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        false, "md_render.merge");
     r->atomic_int64 = info.supports_atomic_int64;
 
@@ -225,17 +231,18 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     kd = md_shader_md_render_hiz_reduce_kernel();   r->k_hiz          = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_refit_kernel();        r->k_refit        = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_cull_clusters_kernel(); r->k_cull_clusters = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_refit_splines_kernel();   r->k_refit_spl   = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_cull_splines_kernel();    r->k_cull_spl    = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_resolve_splines_kernel(); r->k_resolve_spl = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_refit_heavy_kernel();   r->k_refit_heavy   = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_cull_heavy_kernel();    r->k_cull_heavy    = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_resolve_heavy_kernel(); r->k_resolve_heavy = md_gpu_kernel_create(device, &kd);
     if (r->atomic_int64) {
         kd = md_shader_md_render_raster_small_kernel(); r->k_raster_small = md_gpu_kernel_create(device, &kd);
         if (!r->k_raster_small) r->atomic_int64 = false;
     }
 
-    if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask || !r->merge ||
+    if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
+        !r->polygon_vis || !r->polygon_mask || !r->merge ||
         !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
-        !r->k_refit_spl || !r->k_cull_spl || !r->k_resolve_spl) {
+        !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
         md_render_destroy(r);
         return NULL;
@@ -251,9 +258,11 @@ void md_render_destroy(md_render_t r) {
     if (r->capsule_mask)   md_gpu_pipeline_destroy(r->capsule_mask);
     if (r->spline_vis)     md_gpu_pipeline_destroy(r->spline_vis);
     if (r->spline_mask)    md_gpu_pipeline_destroy(r->spline_mask);
-    if (r->k_refit_spl)    md_gpu_kernel_destroy(r->k_refit_spl);
-    if (r->k_cull_spl)     md_gpu_kernel_destroy(r->k_cull_spl);
-    if (r->k_resolve_spl)  md_gpu_kernel_destroy(r->k_resolve_spl);
+    if (r->polygon_vis)    md_gpu_pipeline_destroy(r->polygon_vis);
+    if (r->polygon_mask)   md_gpu_pipeline_destroy(r->polygon_mask);
+    if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
+    if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
+    if (r->k_resolve_heavy)  md_gpu_kernel_destroy(r->k_resolve_heavy);
     if (r->k_resolve)      md_gpu_kernel_destroy(r->k_resolve);
     if (r->k_mask_visible) md_gpu_kernel_destroy(r->k_mask_visible);
     if (r->k_pick)         md_gpu_kernel_destroy(r->k_pick);
@@ -387,6 +396,7 @@ struct md_render_view {
     md_gpu_addr_t       list_mem;          /* the lists themselves             */
     size_t              list_mem_cap;
     md_gpu_addr_t       counters;          /* uint32 [C_COUNT]                 */
+    md_gpu_addr_t       zero;              /* 256 zero bytes: the absent arrays (no_null) */
     md_gpu_addr_t       box_idx;           /* uint16 [36]: a capsule's box over its 8 corners */
     md_gpu_addr_t       vis64;
     size_t              vis64_cap;
@@ -453,6 +463,7 @@ void md_render_view_destroy(md_gpu_stream_t s, md_render_view_t v) {
     if (v->bounds_mem) md_gpu_free(s, v->bounds_mem);
     if (v->list_mem)  md_gpu_free(s, v->list_mem);
     if (v->counters)  md_gpu_free(s, v->counters);
+    if (v->zero)      md_gpu_free(s, v->zero);
     if (v->box_idx)   md_gpu_free(s, v->box_idx);
     if (v->vis64)     md_gpu_free(s, v->vis64);
     if (v->hiz)       md_gpu_texture_destroy(v->hiz);
@@ -543,6 +554,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
     } else if (b->kind == MD_RENDER_SPLINES) {
         out->style.splines = b->style.splines;
+    } else if (b->kind == MD_RENDER_POLYGONS) {
+        out->style.polygons = b->style.polygons;
     }
     out->transform_count = b->transform ? b->transform_count : 0;
     if (b->fade.mode) out->fade = b->fade;
@@ -560,13 +573,15 @@ static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) 
 }
 
 /* The kinds md_render culls and rasterises; and which hardware raster draws
-   them: 0 spheres (quads), 1 capsules (boxes), 2 spline parts (boxes, their
-   own stages: md_render.slang, kind_taken) */
+   them: 0 spheres (quads), 1 capsules (boxes), 2 spline parts and 3
+   polygons (boxes, their own stages, in the heavy twins: md_render.slang,
+   kind_taken) */
+#define HW_KINDS 4
 static bool culled_kind(md_render_kind_t k) {
-    return k == MD_RENDER_SPHERES || k == MD_RENDER_CAPSULES || k == MD_RENDER_SPLINES;
+    return k == MD_RENDER_SPHERES || k == MD_RENDER_CAPSULES || k == MD_RENDER_POLYGONS || k == MD_RENDER_SPLINES;
 }
 static uint32_t hw_kind(md_render_kind_t k) {
-    return k == MD_RENDER_SPHERES ? 0u : k == MD_RENDER_SPLINES ? 2u : 1u;
+    return k == MD_RENDER_SPHERES ? 0u : k == MD_RENDER_SPLINES ? 2u : k == MD_RENDER_POLYGONS ? 3u : 1u;
 }
 
 static bool validate(const md_render_frame_t* f) {
@@ -626,9 +641,14 @@ static bool validate(const md_render_frame_t* f) {
                 return false;
             }
             break;
+        case MD_RENDER_POLYGONS:
+            if (b->style.polygons.corners < 3 || b->style.polygons.corners > 8) {
+                MD_LOG_ERROR("md_render: batch %u: polygons have 3 to 8 corners (got %u)", i, b->style.polygons.corners);
+                return false;
+            }
+            break;
         case MD_RENDER_EXTERNAL:
             continue;
-        case MD_RENDER_POLYGONS:
         case MD_RENDER_TRIANGLES:
             MD_LOG_ERROR("md_render: batch %u: kind %d is not implemented yet", i, (int)b->kind);
             return false;
@@ -682,10 +702,11 @@ static uint64_t batch_work(const md_render_batch_t* b) {
     return (uint64_t)b->count * instance_count(b);
 }
 
-/* Whether the spline twins run: a batch of spline parts to draw */
-static bool frame_has_splines(const md_render_frame_t* f) {
+/* Whether the heavy twins run: a batch of spline parts or polygons to draw */
+static bool frame_has_heavy(const md_render_frame_t* f) {
     for (uint32_t i = 0; i < f->batch_count; ++i) {
-        if (f->batches[i].kind == MD_RENDER_SPLINES && batch_work(&f->batches[i])) return true;
+        const md_render_kind_t k = f->batches[i].kind;
+        if ((k == MD_RENDER_SPLINES || k == MD_RENDER_POLYGONS) && batch_work(&f->batches[i])) return true;
     }
     return false;
 }
@@ -815,6 +836,19 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
     return *addr != 0;
 }
 
+/* No array the shaders read is null: an absent one points at a block of zeros,
+   and the shaders gate its index by its flag to 0 (md_render.slang, gated).
+   A load in a branch not taken then reads that block. lavapipe executes such
+   loads, at the address of the group's first lane whatever its mask: the pick
+   read attr_index[34] where there was none, at 0x88, and crashed. A driver
+   that speculates loads out of branches would do the same. */
+static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
+    md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
+                             &g->visible0, &g->visible1, &g->state0, &g->state1, &g->index, &g->id, &g->radius_scale,
+                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile };
+    for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
+}
+
 static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_inst, md_gpu_addr_t xf, md_gpu_addr_t xf_prev) {
     memset(g, 0, sizeof(*g));
     const md_render_points_t* p = &b->points;
@@ -872,6 +906,9 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->spl_profile = b->style.splines.profile;
         if (g->spl_axis)    f |= F_SPL_AXIS;
         if (g->spl_profile) f |= F_SPL_PROFILE;
+    } else if (b->kind == MD_RENDER_POLYGONS) {
+        g->s0     = b->style.polygons.radius;
+        g->poly_n = b->style.polygons.corners;
     }
     if (b->fade.mode) {
         if (b->fade.out[0] > 0.0f) f |= F_FADE_OUT;
@@ -988,6 +1025,10 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         if (v->bounds_mem != old) v->bounds_valid = false;
     }
     const md_gpu_addr_t cstate_base = align_addr(v->bounds_mem + (md_gpu_addr_t)clusters * 32u);   /* 2 uint per cluster */
+    if (!v->zero) {
+        v->zero = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, 256).gpu;
+        if (!v->zero || !md_gpu_memset(s, v->zero, 0, 256)) return false;
+    }
     uint32_t work = 0, cbase = 0, cwork = 0;
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
@@ -999,6 +1040,7 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         g->cluster_count       = batch_clusters(b);
         g->cluster_offset      = (b->cluster_offset && b->cluster_count) ? b->cluster_offset : 0;
         if (g->cluster_offset) g->flags |= F_CLUSTERS;
+        no_null(g, v->zero);
         g->cluster_base        = cbase;
         g->cluster_work_offset = cwork;
         g->bounds              = v->bounds_mem + (md_gpu_addr_t)cbase * 32u;
@@ -1045,20 +1087,20 @@ static gpu_args_t base_args(const md_render_view_t v) {
 
 /* Lists sized for the worst case of this frame: every element in each list of
    its kind (hardware, state, small, occluded), 4 bytes an entry: 16 bytes per
-   element in all (8 for spline parts: no compute raster, no retest), plus 24
-   per cluster. */
-static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[3], uint64_t cwork, bool compute) {
+   element in all (8 for spline parts and polygons: no compute raster, no
+   retest), plus 24 per cluster. */
+static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
-    const uint64_t sizes[11] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2] };
-    const uint32_t esize[11] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uint64_t sizes[13] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3] };
+    const uint32_t esize[13] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };
     size_t need = 0;
-    for (int i = 0; i < 11; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
+    for (int i = 0; i < 13; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[11] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2 };
-    for (int i = 0; i < 11; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    md_gpu_addr_t* dst[13] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3 };
+    for (int i = 0; i < 13; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
@@ -1154,7 +1196,7 @@ static bool fin(md_gpu_stream_t s, md_render_view_t v, uint32_t mode) {
 static bool run_state_lists(md_gpu_stream_t s, md_render_view_t v, uint32_t cluster_work, bool splines) {
     md_render_t r = v->r;
     return pass(s, v, r->k_cull_clusters, 3, cluster_work, 0) && fin(s, v, 31) &&
-           pass(s, v, r->k_cull, 3, 0, C_GRID_CST) && (!splines || pass(s, v, r->k_cull_spl, 3, 0, C_GRID_CST)) && fin(s, v, 32);
+           pass(s, v, r->k_cull, 3, 0, C_GRID_CST) && (!splines || pass(s, v, r->k_cull_heavy, 3, 0, C_GRID_CST)) && fin(s, v, 32);
 }
 
 static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t phase) {
@@ -1166,7 +1208,7 @@ static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t pha
 /* Phase 1 clears; phase 2 adds. The compute raster's result goes in first, as
    depth and ids, then each kind in one indirect draw whose instance count the
    cull wrote. The CPU's cost is independent of the number of batches. */
-static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bool compute, const bool has_kind[3]) {
+static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bool compute, const bool has_kind[HW_KINDS]) {
     md_render_t r = v->r;
     md_gpu_render_desc_t rd = {0};
     rd.color_count       = 1;
@@ -1187,27 +1229,28 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         md_gpu_set_draw_state(s, &ds);
         md_gpu_draw(s, r->merge, 3, 1, &a, sizeof(a));
     }
-    for (uint32_t k = 0; k < 3; ++k) {
+    for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has_kind[k]) continue;
         ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
         md_gpu_set_draw_state(s, &ds);
         a.mode = 0;
-        a.list = k == 2 ? 4 : k;
+        a.list = k == 2 ? 4 : k == 3 ? 6 : k;
         if (k == 0)      md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
-        else             md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
+        else if (k == 2) md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
+        else             md_gpu_draw_indexed_indirect(s, r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
     }
     return md_gpu_render_end(s);
 }
 
-/* The main resolve, then its spline twin over the spline pixels */
+/* The main resolve, then its heavy twin over the spline and polygon pixels */
 static bool run_resolve(md_gpu_stream_t s, md_render_view_t v, bool splines) {
     gpu_args_t a = base_args(v);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return false;
     if (!splines) return true;
-    g = md_gpu_grid_for(v->r->k_resolve_spl, v->width, v->height, 1);
-    return md_gpu_launch(s, v->r->k_resolve_spl, g, &a, sizeof(a));
+    g = md_gpu_grid_for(v->r->k_resolve_heavy, v->width, v->height, 1);
+    return md_gpu_launch(s, v->r->k_resolve_heavy, g, &a, sizeof(a));
 }
 
 /* The visible part from the ids; the hidden part by rasterising the state
@@ -1218,14 +1261,14 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_mask_visible, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_mask_visible, g, &a, sizeof(a))) return false;
 
-    bool has[3] = { false, false, false };
+    bool has[HW_KINDS] = { false, false, false, false };
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
         if (b->count && (b->points.state[0] || b->points.state[1])) {
             if (culled_kind(b->kind)) has[hw_kind(b->kind)] = true;
         }
     }
-    if (!has[0] && !has[1] && !has[2]) return true;
+    if (!has[0] && !has[1] && !has[2] && !has[3]) return true;
     md_gpu_render_desc_t rd = {0};
     rd.color_count      = 1;
     rd.color[0].texture = v->t.mask;
@@ -1238,15 +1281,16 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     if (!md_gpu_render_begin(s, &rd)) return false;
     md_gpu_draw_state_t ds = {0};
     ds.depth_compare = MD_GPU_COMPARE_ALWAYS;
-    for (uint32_t k = 0; k < 3; ++k) {
+    for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has[k]) continue;
         ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
         md_gpu_set_draw_state(s, &ds);
         a.mode = 1;
-        a.list = k == 2 ? 5 : 2 + k;
+        a.list = k == 2 ? 5 : k == 3 ? 7 : 2 + k;
         if (k == 0)      md_gpu_draw_indirect(s, v->r->sphere_mask, CTR(v, C_STCMD), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, v->r->capsule_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMD), 1, &a, sizeof(a));
-        else             md_gpu_draw_indexed_indirect(s, v->r->spline_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMDS), 1, &a, sizeof(a));
+        else if (k == 2) md_gpu_draw_indexed_indirect(s, v->r->spline_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMDS), 1, &a, sizeof(a));
+        else             md_gpu_draw_indexed_indirect(s, v->r->polygon_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMDP), 1, &a, sizeof(a));
     }
     return md_gpu_render_end(s);
 }
@@ -1285,8 +1329,8 @@ bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
     out->outside     = c[C_OUTSIDE];
     out->faded       = c[C_LOD];
     out->occluded    = c[C_OCCLUDED];
-    out->hardware[0] = c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1];
-    out->hardware[1] = c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2];
+    out->hardware[0] = c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1];
+    out->hardware[1] = c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2];
     out->compute[0]  = c[C_SMALL1];
     out->compute[1]  = c[C_SMALL2];
     out->occlusion_retested = c[C_OCC];
@@ -1431,16 +1475,16 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.refit_mode = refit ? 0u : 1u;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
-        uint64_t work[3] = { 0, 0, 0 };
-        bool has_kind[3] = { false, false, false };
+        uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };
+        bool has_kind[HW_KINDS] = { false, false, false, false };
         for (uint32_t i = 0; i < f->batch_count; ++i) {
             const md_render_batch_t* b = &f->batches[i];
             uint32_t k = hw_kind(b->kind);
             work[k] += batch_work(b);
             if (batch_work(b)) has_kind[k] = true;
         }
-        const bool spl = has_kind[2];       /* the spline twins run */
-        const uint32_t total = (uint32_t)(work[0] + work[1] + work[2]);
+        const bool spl = has_kind[2] || has_kind[3];   /* the heavy twins run */
+        const uint32_t total = (uint32_t)(work[0] + work[1] + work[2] + work[3]);
         const md_gpu_addr_t list_mem_before = v->list_mem;
         if (!ensure_lists(s, v, work, gv.total_cluster_work, compute)) return false;
         /* State lists: rebuilt only when the state bits or the geometry
@@ -1451,7 +1495,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             md_gpu_memset(s, v->counters, 0, C_COUNT * 4u);
         } else {
             static const uint32_t keep[][2] = { { C_ST, C_ST + 2 }, { C_CST, C_CST + 1 }, { C_STCMD, C_STCMD + 8 }, { C_GRID_CST, C_GRID_CST + 3 },
-                                                { C_STICMD, C_STICMD + 5 }, { C_STS, C_STS + 1 }, { C_STICMDS, C_STICMDS + 5 } };
+                                                { C_STICMD, C_STICMD + 5 }, { C_STS, C_STS + 1 }, { C_STICMDS, C_STICMDS + 5 },
+                                                { C_STP, C_STP + 1 }, { C_STICMDP, C_STICMDP + 5 } };
             uint32_t w = 0;
             for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); ++i) {
                 if (keep[i][0] > w) md_gpu_memset(s, CTR(v, w), 0, (keep[i][0] - w) * 4u);
@@ -1466,7 +1511,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
            state bits when those did. Not when only the camera moved. */
         md_render_t r = v->r;
         if ((refit || state_changed) && !pass_per_cluster(s, v, r->k_refit, 0, gv.total_clusters)) return false;
-        if ((refit || state_changed) && spl && !pass_per_cluster(s, v, r->k_refit_spl, 0, gv.total_clusters)) return false;
+        if ((refit || state_changed) && spl && !pass_per_cluster(s, v, r->k_refit_heavy, 0, gv.total_clusters)) return false;
         if (refit || state_changed) PASS_DONE("refit");
         v->bounds_valid = true;
 
@@ -1475,7 +1520,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         if (!pass(s, v, r->k_cull_clusters, 1, gv.total_cluster_work, 0) || !fin(s, v, 11)) return false;
         PASS_DONE("clusters1");
         if (!pass(s, v, r->k_cull, 1, 0, C_GRID_CVIS)) return false;
-        if (spl && !pass(s, v, r->k_cull_spl, 1, 0, C_GRID_CVIS)) return false;
+        if (spl && !pass(s, v, r->k_cull_heavy, 1, 0, C_GRID_CVIS)) return false;
         if (!fin(s, v, 12)) return false;
         PASS_DONE("cull1");
         if (compute && !run_raster_small(s, v, 1)) return false;
@@ -1494,7 +1539,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
                 if (!pass(s, v, r->k_cull, 2, 0, C_GRID_OCC)) return false;
                 PASS_DONE("retest2");
                 if (!pass(s, v, r->k_cull, 4, 0, C_GRID_CVIS + 4)) return false;
-                if (spl && !pass(s, v, r->k_cull_spl, 4, 0, C_GRID_CVIS + 4)) return false;
+                if (spl && !pass(s, v, r->k_cull_heavy, 4, 0, C_GRID_CVIS + 4)) return false;
                 if (!fin(s, v, 22)) return false;
                 PASS_DONE("cull2");
                 if (compute && !run_raster_small(s, v, 2)) return false;
@@ -1537,16 +1582,17 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         const uint32_t one = 1;
         md_gpu_upload(s, v->view_buf + offsetof(gpu_view_t, refit_mode), &one, 4);
         if (!pass_per_cluster(s, v, v->r->k_refit, 0, clusters)) return false;
-        if (frame_has_splines(f) && !pass_per_cluster(s, v, v->r->k_refit_spl, 0, clusters)) return false;
+        if (frame_has_heavy(f) && !pass_per_cluster(s, v, v->r->k_refit_heavy, 0, clusters)) return false;
         PASS_DONE("state refit");
         md_gpu_memset(s, CTR(v, C_ST), 0, 8u);
         md_gpu_memset(s, CTR(v, C_STS), 0, 4u);
+        md_gpu_memset(s, CTR(v, C_STP), 0, 4u);
         md_gpu_memset(s, CTR(v, C_CST), 0, 4u);
-        if (!run_state_lists(s, v, cwork, frame_has_splines(f))) return false;
+        if (!run_state_lists(s, v, cwork, frame_has_heavy(f))) return false;
         PASS_DONE("state lists");
     }
 
-    if (resolve && !run_resolve(s, v, frame_has_splines(f))) return false;
+    if (resolve && !run_resolve(s, v, frame_has_heavy(f))) return false;
     if (resolve) PASS_DONE("resolve");
     if (mask && !run_masks(s, v, f)) return false;
     if (mask) PASS_DONE("mask");
@@ -1693,7 +1739,7 @@ bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, m
         { "refit", r->k_refit }, { "cull_clusters", r->k_cull_clusters }, { "cull", r->k_cull }, { "finalize", r->k_finalize },
         { "raster_small", r->k_raster_small }, { "hiz", r->k_hiz }, { "resolve", r->k_resolve },
         { "mask_visible", r->k_mask_visible }, { "pick", r->k_pick },
-        { "refit_splines", r->k_refit_spl }, { "cull_splines", r->k_cull_spl }, { "resolve_splines", r->k_resolve_spl },
+        { "refit_heavy", r->k_refit_heavy }, { "cull_heavy", r->k_cull_heavy }, { "resolve_heavy", r->k_resolve_heavy },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
