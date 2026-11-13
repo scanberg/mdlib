@@ -9,6 +9,7 @@
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_infer.h>
+#include <md_backbone.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
@@ -3062,6 +3063,246 @@ UTEST(render, mol_resident_set_draws_what_hiding_draws) {
     md_render_mol_destroy(mol);
     md_system_free(&sys);
     md_bitmask_free(&mask);
+    f_close(&fx);
+}
+
+/* ---- The cartoon ------------------------------------------------------------------
+   The protein backbone through md_render's splines: control points at the CAs
+   (the topology), axes oriented by the update with memory across updates,
+   profiles from the secondary structure; drawn and picked as residues. */
+
+static uint32_t lcg_next(uint32_t* s) { *s = *s * 1664525u + 1013904223u; return *s; }
+static float lcg_gauss(uint32_t* s) {
+    float u1 = ((lcg_next(s) >> 8) + 1u) * (1.0f / 16777217.0f), u2 = (lcg_next(s) >> 8) * (1.0f / 16777216.0f);
+    return sqrtf(-2.0f * logf(u1)) * cosf(6.2831853f * u2);
+}
+
+UTEST(render, mol_cartoon_backbone) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"));
+    const md_protein_backbone_data_t* PB = &sys.protein_backbone;
+    ASSERT_GT((uint32_t)PB->segment.count, 50u);
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+
+    /* The topology: a control point per residue at its CA, pieces flagged */
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    const md_render_mol_topo_t* L = &plan.layout;
+    const uint32_t ncp = L->backbone_count;
+    ASSERT_GT(ncp, 50u);
+    {
+        const uint8_t*  img   = (const uint8_t*)plan.data;
+        const uint32_t* order = (const uint32_t*)(img + L->atom_order);
+        const uint32_t* idx   = (const uint32_t*)(img + L->backbone_index);
+        const uint32_t* seg   = (const uint32_t*)(img + L->backbone_segment);
+        const uint32_t* chain = (const uint32_t*)(img + L->backbone_chain);
+        int bad = 0;
+        for (uint32_t j = 0; j < ncp; ++j) {
+            uint32_t ca = order[idx[j] & 0x3FFFFFFFu];
+            if (seg[j] >= PB->segment.count || (uint32_t)PB->segment.atoms[seg[j]].ca != ca) bad++;
+        }
+        EXPECT_EQ(0, bad);
+        for (uint32_t c = 0; c < L->backbone_chain_count; ++c) {
+            EXPECT_TRUE((idx[chain[c]] & MD_RENDER_SPLINE_FIRST) != 0);
+            EXPECT_TRUE((idx[chain[c + 1] - 1] & MD_RENDER_SPLINE_LAST) != 0);
+            EXPECT_GE(chain[c + 1] - chain[c], 2u);
+        }
+        printf("    %u residues in %u pieces, of %u segments\n", ncp, L->backbone_chain_count, (uint32_t)PB->segment.count);
+    }
+    md_gpu_mem_t mem = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size);
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, mem.gpu, content));
+    md_temp_end(temp);
+
+    /* Positions, the update (axes), the secondary structure, the profile */
+    const uint32_t na = (uint32_t)sys.atom.count;
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)na * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_system_state_backbone_compute(&state, &sys));
+    const md_secondary_structure_t* ss = md_system_state_secondary_structure(&state, &sys);
+    ASSERT_TRUE(ss != NULL);
+    md_gpu_addr_t SS = f_buf(&fx, ss, PB->segment.count * sizeof(int32_t));
+    md_gpu_addr_t prof = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_cartoon_size(&topo)).gpu;
+    const float scale[3] = { 1.0f, 1.0f, 1.0f };
+    ASSERT_TRUE(md_render_mol_cartoon_profile(mol, fx.gfx, &topo, prof, SS, scale, content));
+
+    /* The profile: md_gl's shapes inside runs of one structure, and parts
+       meeting without a step (md_render would cap them) */
+    {
+        float*    pf  = (float*)read_block(&fx, prof, (uint64_t)ncp * 16);
+        uint32_t* idx = (uint32_t*)read_block(&fx, topo.backbone_index, (uint64_t)ncp * 4);
+        uint32_t* seg = (uint32_t*)read_block(&fx, topo.backbone_segment, (uint64_t)ncp * 4);
+        ASSERT_TRUE(pf && idx && seg);
+        int runs[3] = { 0, 0, 0 }, bad = 0, steps = 0;
+        for (uint32_t j = 0; j < ncp; ++j) {
+            if (!(idx[j] & MD_RENDER_SPLINE_LAST) && (pf[4 * j + 1] != pf[4 * (j + 1)] || pf[4 * j + 3] != pf[4 * (j + 1) + 2])) steps++;
+            if (j < 2 || j + 2 >= ncp) continue;
+            int cls[5];
+            bool same = true;
+            for (int k = -2; k <= 2; ++k) {
+                if (k < 0 && (idx[j + k + 1] & MD_RENDER_SPLINE_FIRST)) same = false;
+                if (k > 0 && (idx[j + k - 1] & MD_RENDER_SPLINE_LAST)) same = false;
+                int t = ss[seg[j + k]];
+                cls[k + 2] = (t >= MD_SECONDARY_STRUCTURE_HELIX_310 && t <= MD_SECONDARY_STRUCTURE_HELIX_PI) ? 1 : (t == MD_SECONDARY_STRUCTURE_BETA_SHEET || t == MD_SECONDARY_STRUCTURE_BETA_BRIDGE) ? 2 : 0;
+                if (cls[k + 2] != cls[0]) same = false;
+            }
+            if (!same) continue;
+            const float want[3][2] = { { 0.0f, 0.2f }, { 1.0f, 0.2f }, { 1.4f, 0.1f } };
+            const float* w = want[cls[0]];
+            runs[cls[0]]++;
+            if (fabsf(pf[4 * j] - w[0]) > 1e-6f || fabsf(pf[4 * j + 1] - w[0]) > 1e-6f || fabsf(pf[4 * j + 2] - w[1]) > 1e-6f || fabsf(pf[4 * j + 3] - w[1]) > 1e-6f) {
+                if (bad < 4) printf("    control point %u (class %d): %g %g %g %g\n", j, cls[0], pf[4 * j], pf[4 * j + 1], pf[4 * j + 2], pf[4 * j + 3]);
+                bad++;
+            }
+        }
+        EXPECT_EQ(0, bad);
+        EXPECT_EQ(0, steps);
+        EXPECT_GT(runs[0], 5);
+        EXPECT_GT(runs[1] + runs[2], 5);
+        printf("    profiles inside runs: coil %d, helix %d, sheet %d\n", runs[0], runs[1], runs[2]);
+        free(pf); free(idx); free(seg);
+    }
+
+    /* The axes: unit, across the trace, and (the first update decides from
+       the structure alone) each within 90 degrees of the one before */
+    md_render_mol_rep_t rep = {0};
+    rep.key  = 7;
+    rep.type = MD_RENDER_MOL_REP_CARTOON;
+    rep.params.cartoon.profile = prof;
+    rep.color.mode = MD_RENDER_COLOR_UNIFORM;
+    rep.color.uniform = 0xFF40A0E0u;
+    md_render_batch_t batch;
+    ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &rep, &batch, 1));
+    EXPECT_EQ(MD_RENDER_SPLINES, batch.kind);
+    EXPECT_EQ(ncp, batch.count);
+    const md_gpu_addr_t axes = batch.style.splines.axis;
+    {
+        float* ax = (float*)read_block(&fx, axes, (uint64_t)ncp * 16);
+        uint32_t* idx = (uint32_t*)read_block(&fx, topo.backbone_index, (uint64_t)ncp * 4);
+        uint32_t* order = (uint32_t*)read_block(&fx, topo.atom_order, (uint64_t)topo.point_count * 4);
+        int bad = 0;
+        for (uint32_t j = 0; j < ncp; ++j) {
+            const float* a = ax + 4 * j;
+            float l = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            uint32_t jp = (idx[j] & MD_RENDER_SPLINE_FIRST) ? j : j - 1, jn = (idx[j] & MD_RENDER_SPLINE_LAST) ? j : j + 1;
+            const float* xp = &state.xyz[order[idx[jp] & 0x3FFFFFFFu]].x;
+            const float* xn = &state.xyz[order[idx[jn] & 0x3FFFFFFFu]].x;
+            float t[3] = { xn[0] - xp[0], xn[1] - xp[1], xn[2] - xp[2] };
+            float tl = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+            float across = fabsf(a[0] * t[0] + a[1] * t[1] + a[2] * t[2]) / (tl * l);
+            float prev = 1.0f;
+            if (!(idx[j] & MD_RENDER_SPLINE_FIRST)) prev = a[0] * ax[4 * j - 4] + a[1] * ax[4 * j - 3] + a[2] * ax[4 * j - 2];
+            if (fabsf(l - 1.0f) > 1e-4f || across > 1e-3f || prev < 0.0f) bad++;
+        }
+        EXPECT_EQ(0, bad);
+        free(ax); free(idx); free(order);
+    }
+
+    /* Drawn: an orthographic view of the whole protein from +z; the curve
+       point nearest the viewer (no part in front of it) picks as its residue */
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (uint32_t i = 0; i < na; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], (&state.xyz[i].x)[k]); hi[k] = fmaxf(hi[k], (&state.xyz[i].x)[k]); }
+    const uint32_t W = 256, H = 256;
+    float ext = fmaxf(hi[0] - lo[0], hi[1] - lo[1]) * 0.55f + 2.0f;
+    cam_t c = { .ortho = true, .half_h = ext, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    float ctr[3] = { 0.5f * (lo[0] + hi[0]), 0.5f * (lo[1] + hi[1]), hi[2] + 20.0f };
+    cam.view[12] = -ctr[0]; cam.view[13] = -ctr[1]; cam.view[14] = -ctr[2];
+    md_render_frame_t f = frame_of(W, H, cam, &batch, 1);
+    memcpy(f.content, content, sizeof(content));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_GT(st.hardware[0] + st.hardware[1], ncp / 2);
+    {
+        uint32_t* idx = (uint32_t*)read_block(&fx, topo.backbone_index, (uint64_t)ncp * 4);
+        uint32_t* order = (uint32_t*)read_block(&fx, topo.atom_order, (uint64_t)topo.point_count * 4);
+        uint32_t* seg = (uint32_t*)read_block(&fx, topo.backbone_segment, (uint64_t)ncp * 4);
+        uint32_t best = 0;
+        float bz = -1e30f, bp[3] = { 0, 0, 0 };
+        for (uint32_t j = 0; j < ncp; ++j) {
+            if (idx[j] & (MD_RENDER_SPLINE_FIRST | MD_RENDER_SPLINE_LAST)) continue;
+            const float* a = &state.xyz[order[idx[j - 1] & 0x3FFFFFFFu]].x;
+            const float* b = &state.xyz[order[idx[j] & 0x3FFFFFFFu]].x;
+            const float* d = &state.xyz[order[idx[j + 1] & 0x3FFFFFFFu]].x;
+            float q[3];
+            for (int k = 0; k < 3; ++k) q[k] = (a[k] + 4.0f * b[k] + d[k]) / 6.0f;
+            if (q[2] > bz) { bz = q[2]; best = j; memcpy(bp, q, sizeof(q)); }
+        }
+        uint32_t px = (uint32_t)(((bp[0] - ctr[0]) / ext * 0.5f + 0.5f) * W);
+        uint32_t py = (uint32_t)((0.5f - (bp[1] - ctr[1]) / ext * 0.5f) * H);
+        md_render_pick_t pk;
+        md_render_mol_hit_t hit;
+        ASSERT_TRUE(f_pick(&fx, px, py, &pk));
+        ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+        EXPECT_EQ(MD_RENDER_MOL_HIT_BACKBONE, hit.kind);
+        EXPECT_EQ(7u, (unsigned)hit.rep_key);
+        EXPECT_EQ(seg[best], hit.segment);
+        EXPECT_EQ((uint32_t)PB->segment.atoms[seg[best]].ca, hit.atom);
+        EXPECT_EQ(UINT32_MAX, hit.bond);
+        free(idx); free(order); free(seg);
+    }
+
+    /* Sides over a jittered trajectory (0.15 A per coordinate, 40 steps):
+       with memory no axis turns over against its last; decided afresh every
+       update (the reset), pairs near 90 degrees apart turn over against each
+       other (a ribbon's half turn between two residues, what is seen; a
+       whole piece turned over is not, and is not counted) */
+    {
+        md_float3_t* xyz = malloc((size_t)na * sizeof(md_float3_t));
+        uint32_t* idx_host = (uint32_t*)read_block(&fx, topo.backbone_index, (uint64_t)ncp * 4);
+        float* last = (float*)read_block(&fx, axes, (uint64_t)ncp * 16);
+        int turned[2] = { 0, 0 };
+        for (int mode = 0; mode < 2; ++mode) {
+            uint32_t rng = 12345u;
+            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RESET_BACKBONE, content));
+            free(last);
+            last = (float*)read_block(&fx, axes, (uint64_t)ncp * 16);
+            for (int step = 0; step < 40; ++step) {
+                for (uint32_t i = 0; i < na; ++i) {
+                    xyz[i].x = state.xyz[i].x + 0.15f * lcg_gauss(&rng);
+                    xyz[i].y = state.xyz[i].y + 0.15f * lcg_gauss(&rng);
+                    xyz[i].z = state.xyz[i].z + 0.15f * lcg_gauss(&rng);
+                }
+                md_gpu_upload(fx.gfx, P, xyz, (size_t)na * 12);
+                ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, mode ? MD_RENDER_MOL_UPDATE_RESET_BACKBONE : 0, content));
+                float* now = (float*)read_block(&fx, axes, (uint64_t)ncp * 16);
+                bool prev_over = false;
+                for (uint32_t j = 0; j < ncp; ++j) {
+                    float d = now[4 * j] * last[4 * j] + now[4 * j + 1] * last[4 * j + 1] + now[4 * j + 2] * last[4 * j + 2];
+                    bool over = d < 0.0f;
+                    if (mode == 0 && over) turned[0]++;
+                    if (mode == 1 && !(idx_host[j] & MD_RENDER_SPLINE_FIRST) && over != prev_over) turned[1]++;
+                    prev_over = over;
+                }
+                free(last);
+                last = now;
+            }
+        }
+        free(last); free(xyz); free(idx_host);
+        printf("    in 40 jittered updates: %d axes turned over with memory, %d pairs against each other decided afresh\n", turned[0], turned[1]);
+        EXPECT_EQ(0, turned[0]);
+        EXPECT_GT(turned[1], 0);
+    }
+
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, prof);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
     f_close(&fx);
 }
 

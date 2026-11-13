@@ -98,6 +98,15 @@ struct Args {
     uint* src_point;            // regroup with resident frames: each small point's old point
     uint* resident;             // the resident atoms: bits, then each word's rank (has_resident)
     uint* regroups;             // the topology's: word 0 counts the regroups
+    uint* bb_index;             // the backbone (the cartoon): per control point its CA's point | flags
+    uint* bb_segment;           // its segment of sys->protein_backbone
+    uint* bb_carbonyl;          // uint2: its C's and O's points
+    uint* bb_chain;             // each piece's first control point, [bb_chains + 1]
+    uint* bb_axis;              // float4 per control point: the ribbon's axis (md_render's)
+    uint* bb_flip;              // per control point: the next one's axis turned against it (bit 0);
+                                // then the stamp of the update that wrote them
+    uint* bb_ss;                // int32 per segment: md_secondary_structure_t (has_ss)
+    uint* bb_out;               // float4 per control point: the profile (md_render's)
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -124,8 +133,16 @@ struct Args {
     uint  resident_words;       // words of the bits (the ranks follow them)
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
+    uint  bb_count;             // control points
+    uint  bb_chains;            // pieces
+    uint  bb_history;           // bb_orient: the stamp the memory must carry to be used (0: none)
+    uint  has_ss;
+    float bb_coil;              // bb_profile: the scales of the shapes
+    float bb_helix;
+    float bb_sheet;
     uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
     uint  _pad0;
+    uint  _pad1;
 };
 MD_SHADER_ARGS(Args);
 
@@ -629,5 +646,169 @@ void fr_permute(uint3 tid : SV_DispatchThreadID) {
         uint3 qa = load_q(a.qsrc, p0 < st ? p0 : a.src_point[p0 - st]);
         uint3 qb = has_b ? load_q(a.qsrc, p1 < st ? p1 : a.src_point[p1 - st]) : uint3(0u);
         store_pair(a.qdst, j, qa, qb, has_b);
+    }
+}
+
+
+// ---- The protein backbone (the cartoon) ------------------------------------------
+//
+// As md_gl's cartoon (compute_spline_orient.vert, backbone.vert):
+//
+//     bb_support  per control point, the ribbon's axis: the binormal of the
+//                 CA trace there, B = N x T with T = CA[i+1] - CA[i-1] and N =
+//                 CA[i-1] - 2 CA[i] + CA[i+1] (the B-spline's first and second
+//                 derivatives at the point; the ends borrow their neighbour's
+//                 curvature). The CA virtual bond angle stays well below 180
+//                 degrees, so N does not vanish; where B is short (|B| < 0.75
+//                 A, a straight stretch) the carbonyl (O - C) across T takes
+//                 over, blended in from 0.75 down to 0.25.
+//     bb_orient   per piece (a thread walks it): whether each axis is turned
+//                 against the one before, with hysteresis: the last update's
+//                 decision stands until the angle under it passes 90 degrees
+//                 by 40 (md_gl's u_flip_threshold). Then the axes written with
+//                 their signs, which md_render takes as given.
+//     bb_profile  per control point, (a0, a1, r0, r1) from the secondary
+//                 structure (see md_render_mol_cartoon_profile).
+
+static const uint  BB_FIRST = 0x80000000u;
+static const uint  BB_LAST  = 0x40000000u;
+static const uint  BB_POINT = 0x3FFFFFFFu;
+static const float BB_FLIP_THRESHOLD = -0.64278760968;   // -sin(40 degrees)
+
+float3 bb_pos(Args a, uint cp) {
+    uint p = a.bb_index[cp] & BB_POINT;
+    return ld3(a.points, 4u * p);
+}
+
+float3 bb_any_perpendicular(float3 t) {
+    float3 v = abs(t.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
+    return normalize(cross(t, v));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void bb_support(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.bb_count;
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        uint ie = a.bb_index[j];
+        bool hp = (ie & BB_FIRST) == 0u, hn = (ie & BB_LAST) == 0u;
+        uint jp = j, jn = j;
+        if (hp) jp = j - 1u;
+        if (hn) jn = j + 1u;
+        // the curvature's three points: the ends borrow their neighbour's
+        uint i0 = jp, i1 = j, i2 = jn;
+        if (!hp) {
+            i0 = j; i1 = jn; i2 = jn;
+            if ((a.bb_index[jn] & BB_LAST) == 0u) i2 = jn + 1u;
+        } else if (!hn) {
+            i0 = jp; i1 = jp; i2 = j;
+            if ((a.bb_index[jp] & BB_FIRST) == 0u) i0 = jp - 1u;
+        }
+        float3 T  = bb_pos(a, jn) - bb_pos(a, jp);
+        float3 N  = bb_pos(a, i0) - 2.0 * bb_pos(a, i1) + bb_pos(a, i2);
+        float  tt = dot(T, T);
+        float3 tg = tt > 0.0 ? T * rsqrt(tt) : float3(0.0, 0.0, 1.0);
+        float3 B  = cross(N, tg);
+        float  lb = length(B);
+        float3 s;
+        if (lb >= 0.75) {
+            s = B / lb;
+        } else {
+            uint2  co = uint2(a.bb_carbonyl[2u * j], a.bb_carbonyl[2u * j + 1u]);
+            float3 oc = ld3(a.points, 4u * co.y) - ld3(a.points, 4u * co.x);
+            oc -= tg * dot(oc, tg);
+            float  o2 = dot(oc, oc);
+            float3 fb = o2 > 1.0e-6 ? oc * rsqrt(o2) : bb_any_perpendicular(tg);
+            if (lb <= 0.25) {
+                s = fb;
+            } else {
+                float3 sb = B / lb;
+                if (dot(fb, sb) < 0.0) fb = -fb;
+                float3 m = lerp(fb, sb, smoothstep(0.25, 0.75, lb));
+                s = normalize(m - tg * dot(m, tg));
+            }
+        }
+        uint* o = a.bb_axis + 4u * j;
+        o[0] = asuint(s.x); o[1] = asuint(s.y); o[2] = asuint(s.z); o[3] = 0u;
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void bb_orient(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.bb_chains;
+    // the memory is the last update's when its stamp is the one asked for
+    bool history = a.bb_history != 0u && a.bb_flip[a.bb_count] == a.bb_history;
+    for (uint c = tid.x; c < n; c += grid_threads(n)) {
+        uint   b = a.bb_chain[c], e = a.bb_chain[c + 1u];
+        float  sg = 1.0;
+        float3 s  = ld3(a.bb_axis, 4u * b);
+        for (uint j = b; j < e; ++j) {
+            float3 sn = float3(0.0);
+            bool   last = j + 1u >= e;
+            if (!last) sn = ld3(a.bb_axis, 4u * (j + 1u));
+            uint* o = a.bb_axis + 4u * j;
+            o[0] = asuint(s.x * sg); o[1] = asuint(s.y * sg); o[2] = asuint(s.z * sg);
+            if (last) break;
+            float d = dot(s, sn);
+            bool flip = d < 0.0;
+            if (history) {
+                bool  prev  = (a.bb_flip[j] & 1u) != 0u;
+                float sigma = prev ? -1.0 : 1.0;
+                flip = (sigma * d < BB_FLIP_THRESHOLD) ? !prev : prev;
+            }
+            a.bb_flip[j] = flip ? 1u : 0u;
+            if (flip) sg = -sg;
+            s = sn;
+        }
+    }
+}
+
+// A control point's structure as fractions (helix, sheet), as md_gl's
+// md_gl_secondary_structure_convert: 3-10, alpha and pi helices are helix,
+// sheet and bridge are sheet, the rest coil
+float2 bb_fractions(Args a, uint cp) {
+    if (a.has_ss == 0u) return float2(0.0);
+    int ss = int(a.bb_ss[a.bb_segment[cp]]);
+    if (ss >= 4 && ss <= 6) return float2(1.0, 0.0);
+    if (ss == 7 || ss == 8) return float2(0.0, 1.0);
+    return float2(0.0);
+}
+
+// The fractions where the parts of control points l and l + 1 meet: the
+// Catmull-Rom spline of the fractions (md_gl's blend) halfway, over l - 1 ..
+// l + 2 clamped to the piece. Both parts compute it alike: they meet
+// without a step (and so without caps).
+float2 bb_joint(Args a, uint l) {
+    uint r  = l + 1u;
+    uint lp = l, rn = r;
+    if ((a.bb_index[l] & BB_FIRST) == 0u) lp = l - 1u;
+    if ((a.bb_index[r] & BB_LAST)  == 0u) rn = r + 1u;
+    float2 f = (-bb_fractions(a, lp) + 9.0 * bb_fractions(a, l) + 9.0 * bb_fractions(a, r) - bb_fractions(a, rn)) * (1.0 / 16.0);
+    return saturate(f);
+}
+
+// (half width, radius) of the profile at fractions f: md_gl's stadiums,
+// coil (0, 0.2), helix (1.0, 0.2), sheet (1.4, 0.1), each times its scale
+float2 bb_shape(Args a, float2 f) {
+    float coil = max(1.0 - f.x - f.y, 0.0);
+    return coil * float2(0.0, 0.2) * a.bb_coil + f.x * float2(1.0, 0.2) * a.bb_helix + f.y * float2(1.4, 0.1) * a.bb_sheet;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void bb_profile(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.bb_count;
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        uint   ie = a.bb_index[j];
+        float2 f0 = bb_fractions(a, j), f1 = f0;      // the ends: the control point's own
+        if ((ie & BB_FIRST) == 0u) f0 = bb_joint(a, j - 1u);
+        if ((ie & BB_LAST)  == 0u) f1 = bb_joint(a, j);
+        float2 s0 = bb_shape(a, f0), s1 = bb_shape(a, f1);
+        uint* o = a.bb_out + 4u * j;
+        o[0] = asuint(s0.x); o[1] = asuint(s1.x); o[2] = asuint(s0.y); o[3] = asuint(s1.y);
     }
 }
