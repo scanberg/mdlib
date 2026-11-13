@@ -1006,11 +1006,12 @@ static bool pass(md_gpu_stream_t s, md_render_view_t v, md_gpu_kernel_t k, uint3
     return md_gpu_launch(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
 }
 
-/* A group per cluster (the refit): grid_groups(n) of the shader */
+/* The refit: eight clusters a group, refit_groups(n) of the shader */
 static bool pass_per_cluster(md_gpu_stream_t s, md_render_view_t v, md_gpu_kernel_t k, uint32_t mode, uint32_t clusters) {
     gpu_args_t a = base_args(v);
     a.mode = mode;
-    uint32_t groups = clusters < 65535u ? clusters : 65535u;
+    uint32_t groups = (clusters + 7u) / 8u;
+    if (groups > 65535u) groups = 65535u;
     if (groups == 0) groups = 1;
     return md_gpu_launch(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
 }

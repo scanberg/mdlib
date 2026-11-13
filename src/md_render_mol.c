@@ -491,7 +491,7 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
 struct md_render_mol {
     md_allocator_i* alloc;
     md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather, k_mark;
-    md_gpu_kernel_t k_fr_gather, k_fr_reorder, k_fr_permute;
+    md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -527,11 +527,14 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_sol_mixed_kernel();   r->k_mixed   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_gather_kernel();  r->k_gather  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_mark_kernel();    r->k_mark    = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_gather_kernel();   r->k_fr_gather  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_gather1_kernel();  r->k_fr_gather[0] = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_gather2_kernel();  r->k_fr_gather[1] = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_gather4_kernel();  r->k_fr_gather[2] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_reorder_kernel();  r->k_fr_reorder = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_permute_kernel();  r->k_fr_permute = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
-        !r->k_mixed || !r->k_gather || !r->k_mark || !r->k_fr_gather || !r->k_fr_reorder || !r->k_fr_permute) {
+        !r->k_mixed || !r->k_gather || !r->k_mark || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
+        !r->k_fr_reorder || !r->k_fr_permute) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -542,7 +545,8 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
 void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
-                             &r->k_mixed, &r->k_gather, &r->k_mark, &r->k_fr_gather, &r->k_fr_reorder, &r->k_fr_permute };
+                             &r->k_mixed, &r->k_gather, &r->k_mark, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
+                             &r->k_fr_reorder, &r->k_fr_permute };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -722,7 +726,8 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
                 a.dw[k]    = k < atoms->frame_count ? atoms->frame_dw[k] : 0.0f;
             }
             a.has_fvel = has_velocity(atoms) ? 1u : 0u;
-            ok = ok && launch(s, r->k_fr_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
+            const md_gpu_kernel_t k = r->k_fr_gather[atoms->frame_count == 1 ? 0 : atoms->frame_count == 2 ? 1 : 2];
+            ok = ok && launch(s, k, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         } else {
             ok = ok && launch(s, r->k_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         }

@@ -511,43 +511,56 @@ float3 mi(CellP c, float3 d) {
 }
 
 // The copy that is drawn, from resident frames in point order: every read in
-// order (the atom only for radii from their source)
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void fr_gather(uint3 tid : SV_DispatchThreadID) {
+// order (the atom only for radii from their source). A kernel per number of
+// frames (COUNT a constant): one kernel for all three kept every frame's
+// parameters and the cell live, and on Pascal the registers that cost made
+// the nearest frame twice the copy from positions.
+[ForceInline]
+void fr_gather_body(uint3 tid, const uint COUNT) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
     bool reuse = radii_valid(a);
-    const uint  count = a.frame_count;
-    const bool  vel_out = a.has_fvel != 0u;
-    const float w0 = a.w0, w1 = a.w1, w2 = a.w2, w3 = a.w3;
-    const float d0 = a.dw0, d1 = a.dw1, d2 = a.dw2, d3 = a.dw3;
-    uint* q0 = a.frame0; uint* q1 = a.frame1; uint* q2 = a.frame2; uint* q3 = a.frame3;
+    const bool vel_out = COUNT > 1u && a.has_fvel != 0u;
     uint* points = a.points;
-    const FrameP f0 = frame_p(a.fpar0), f1 = frame_p(a.fpar1), f2 = frame_p(a.fpar2), f3 = frame_p(a.fpar3);
-    const CellP  cell = cell_p(count == 4u ? a.fpar1 : a.fpar0);
+    const FrameP f0 = frame_p(a.fpar0);
+    FrameP f1 = f0, f2 = f0, f3 = f0;
+    CellP  cell;
+    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
+    if (COUNT == 4u) { f2 = frame_p(a.fpar2); f3 = frame_p(a.fpar3); }
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         float3 pos, vel = float3(0.0);
-        float3 x0 = deq(q0, f0, p);
-        if (count == 1u) {
+        float3 x0 = deq(a.frame0, f0, p);
+        if (COUNT == 1u) {
             pos = x0;
-        } else if (count == 2u) {
-            float3 x1 = x0 + mi(cell, deq(q1, f1, p) - x0);
-            pos = w0 * x0 + w1 * x1;
-            vel = d0 * x0 + d1 * x1;
+        } else if (COUNT == 2u) {
+            float3 x1 = x0 + mi(cell, deq(a.frame1, f1, p) - x0);
+            pos = a.w0 * x0 + a.w1 * x1;
+            vel = a.dw0 * x0 + a.dw1 * x1;
         } else {
-            float3 x1 = deq(q1, f1, p);
+            float3 x1 = deq(a.frame1, f1, p);
             x0 = x1 + mi(cell, x0 - x1);
-            float3 x2 = x1 + mi(cell, deq(q2, f2, p) - x1);
-            float3 x3 = x2 + mi(cell, deq(q3, f3, p) - x2);
-            pos = w0 * x0 + w1 * x1 + w2 * x2 + w3 * x3;
-            vel = d0 * x0 + d1 * x1 + d2 * x2 + d3 * x3;
+            float3 x2 = x1 + mi(cell, deq(a.frame2, f2, p) - x1);
+            float3 x3 = x2 + mi(cell, deq(a.frame3, f3, p) - x2);
+            pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
+            vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
         uint r = reuse ? points[4u * p + 3u] : radius_of(a, a.atom_order[p]);
         ((uint4*)points)[p] = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
         if (vel_out) ((uint2*)a.vel_out)[p] = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
     }
 }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u); }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u); }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u); }
 
 // An uploaded frame (qsrc: the resident atoms in atom order) into its slot
 // (qdst, point order).

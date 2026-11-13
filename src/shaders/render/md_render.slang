@@ -700,14 +700,20 @@ LocalElem element_local(Batch b, uint e, bool geo) {
     return l;
 }
 
-// One group per cluster: bounds of its visible elements, and its state bits.
-// A thread per element (64 apart), reduced in groupshared. The elements of a
-// cluster are adjacent, so a wave's loads are too; with a thread per cluster
-// each load of a wave touched as many clusters, 1 KB apart (on Pascal that
-// cost several times the bandwidth's time). Min, max, or and sum: the result
-// does not depend on the order. Runs when the geometry changed (refit_mode
-// 0), or when only the state bits did (refit_mode 1). Batches sharing bounds
-// with an earlier one are skipped. Dispatched with grid_groups(clusters).
+// Bounds of each cluster's visible elements, and its state bits. Eight
+// threads per cluster, eight clusters per group: a thread takes every eighth
+// element (several independent loads in flight), eight adjacent elements
+// are one line, and the reduction's barriers serve eight clusters at once.
+// (A thread per cluster made each load of a wave touch as many clusters, 1
+// KB apart: on Pascal several times the bandwidth's time. A group per
+// cluster left a load per thread between six barriers: latency.) Min, max,
+// or and sum: the result does not depend on the order. Runs when the
+// geometry changed (refit_mode 0), or when only the state bits did
+// (refit_mode 1). Batches sharing bounds with an earlier one are skipped.
+// Dispatched as refit_groups(clusters).
+static const uint RF_LANES = 8u;
+uint refit_groups(uint n) { return min((n + 7u) / 8u, 65535u); }
+
 groupshared float4 rf_lo[64];       // xyz: min, w: the largest radius factor
 groupshared float4 rf_hi[64];       // xyz: max
 groupshared uint2  rf_cs[64];       // state bits, visible elements
@@ -717,34 +723,40 @@ groupshared uint2  rf_cs[64];       // state bits, visible elements
 void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
-    uint n   = v.total_clusters;
-    bool geo = v.refit_mode == 0u;
-    for (uint i = gid.x; i < n; i += grid_groups(n)) {      // uniform over the group
-        uint  slot = find_batch_cluster(a.batches, v.batch_count, i);
-        Batch b    = a.batches[slot];
-        if ((b.flags & F_SHARED) != 0u) continue;
-        uint  c    = i - b.cluster_base;
-        uint2 rng  = cluster_range(b, c);
+    uint n    = v.total_clusters;
+    bool geo  = v.refit_mode == 0u;
+    uint lane = gi & (RF_LANES - 1u);
+    for (uint base = gid.x * 8u; base < n; base += refit_groups(n) * 8u) {   // uniform over the group
+        uint   i     = base + gi / RF_LANES;
+        bool   valid = i < n;
+        uint   ic    = valid ? i : n - 1u;                 // a cluster to read either way
+        uint   slot  = find_batch_cluster(a.batches, v.batch_count, ic);
+        Batch  b     = a.batches[slot];
+        uint   c     = ic - b.cluster_base;
+        valid = valid && (b.flags & F_SHARED) == 0u;
         float3 lo = float3(3.0e38), hi = float3(-3.0e38);
         float  fmax = 0.0;
         uint   count = 0u, st = 0u;
-        for (uint e = rng.x + gi; e < rng.y; e += 64u) {
-            LocalElem l = element_local(b, e, geo);
-            if (!l.ok) continue;
-            st |= l.st;
-            if (geo) {
-                lo = min(lo, min(l.a, l.b));
-                hi = max(hi, max(l.a, l.b));
-                fmax = max(fmax, l.factor);
-                count += 1u;
+        if (valid) {
+            uint2 rng = cluster_range(b, c);
+            for (uint e = rng.x + lane; e < rng.y; e += RF_LANES) {
+                LocalElem l = element_local(b, e, geo);
+                if (!l.ok) continue;
+                st |= l.st;
+                if (geo) {
+                    lo = min(lo, min(l.a, l.b));
+                    hi = max(hi, max(l.a, l.b));
+                    fmax = max(fmax, l.factor);
+                    count += 1u;
+                }
             }
         }
         rf_lo[gi] = float4(lo, fmax);
         rf_hi[gi] = float4(hi, 0.0);
         rf_cs[gi] = uint2(st, count);
         GroupMemoryBarrierWithGroupSync();
-        for (uint off = 32u; off > 0u; off >>= 1u) {
-            if (gi < off) {
+        for (uint off = RF_LANES / 2u; off > 0u; off >>= 1u) {
+            if (lane < off) {
                 float4 l0 = rf_lo[gi], l1 = rf_lo[gi + off];
                 float4 h0 = rf_hi[gi], h1 = rf_hi[gi + off];
                 uint2  c0 = rf_cs[gi], c1 = rf_cs[gi + off];
@@ -754,17 +766,17 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
             }
             GroupMemoryBarrierWithGroupSync();
         }
-        if (gi == 0u) {
-            b.cstate[2u * c] = rf_cs[0].x;
+        if (valid && lane == 0u) {
+            b.cstate[2u * c] = rf_cs[gi].x;
             if (geo) {
                 // The count goes in an integer, not in a float's bits: as a float
                 // it is a denormal, which fast math may flush to zero
-                b.cstate[2u * c + 1u] = rf_cs[0].y;
-                b.bounds[2u * c + 0u] = rf_lo[0];
-                b.bounds[2u * c + 1u] = rf_hi[0];
+                b.cstate[2u * c + 1u] = rf_cs[gi].y;
+                b.bounds[2u * c + 0u] = rf_lo[gi];
+                b.bounds[2u * c + 1u] = rf_hi[gi];
             }
         }
-        GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next cluster
+        GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next eight
     }
 }
 
