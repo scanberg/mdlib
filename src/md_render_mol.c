@@ -492,7 +492,7 @@ struct md_render_mol {
     md_allocator_i* alloc;
     md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather, k_mark;
     md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
-    md_gpu_kernel_t k_fr_check, k_fr_radii, k_fr_probe[8];
+    md_gpu_kernel_t k_fr_check, k_fr_radii;
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -533,21 +533,11 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_fr_gather4_kernel();  r->k_fr_gather[2] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_check_kernel();    r->k_fr_check   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_radii_kernel();    r->k_fr_radii   = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_probe2_kernel(); r->k_fr_probe[0] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p1_xyz_kernel(); r->k_fr_probe[1] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p2_r0_kernel(); r->k_fr_probe[2] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p2_xyz_kernel(); r->k_fr_probe[3] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p2_a16_kernel(); r->k_fr_probe[4] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p4_r0_kernel(); r->k_fr_probe[5] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p4_xyz_kernel(); r->k_fr_probe[6] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_p4_a16_kernel(); r->k_fr_probe[7] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_reorder_kernel();  r->k_fr_reorder = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_permute_kernel();  r->k_fr_permute = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_mark || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute || !r->k_fr_check || !r->k_fr_radii ||
-        !r->k_fr_probe[0] || !r->k_fr_probe[1] || !r->k_fr_probe[2] || !r->k_fr_probe[3] || !r->k_fr_probe[4] || !r->k_fr_probe[5] ||
-        !r->k_fr_probe[6] || !r->k_fr_probe[7]) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_fr_check || !r->k_fr_radii) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -559,20 +549,16 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_mark, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_fr_check, &r->k_fr_radii,
-                             &r->k_fr_probe[0], &r->k_fr_probe[1], &r->k_fr_probe[2], &r->k_fr_probe[3], &r->k_fr_probe[4], &r->k_fr_probe[5],
-                             &r->k_fr_probe[6], &r->k_fr_probe[7] };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_fr_check, &r->k_fr_radii };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
 
-/* The bench's probes of the frames' gather (not in the header): at most
-   `groups` groups (0: one a thread per point, up to the limit), and the
-   gathers' probe kernels (1 linear without the minimum image; 2 nearest
-   storing xyz only; 3-5 linear and 6-8 cubic: a constant radius, xyz only,
-   the alignment stated; see fr_gather_body in the shader). */
-static uint32_t g_fr_groups = 0u, g_fr_probe = 0u;
-void md_render_mol_debug_frames(uint32_t groups, uint32_t probe) { g_fr_groups = groups; g_fr_probe = probe; }
+/* For the bench and the tests (not in the header): the frames' gather from
+   at most `groups` groups, each thread striding over the points (0: a thread
+   a point, up to the launch limit). */
+static uint32_t g_fr_groups = 0u;
+void md_render_mol_debug_frame_groups(uint32_t groups) { g_fr_groups = groups; }
 
 static md_gpu_grid_t groups_for(uint32_t threads, uint32_t per_group) {
     uint32_t g = (threads + per_group - 1) / per_group;
@@ -699,6 +685,10 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
         MD_LOG_ERROR("md_render_mol_update: missing context, stream, topology, per-frame block or positions");
         return false;
     }
+    if (dynamic & 15u) {
+        MD_LOG_ERROR("md_render_mol_update: the per-frame block must be 16-byte aligned");
+        return false;
+    }
     const bool regroup = (flags & MD_RENDER_MOL_UPDATE_REGROUP) && topo->grid_cells;
     const bool radii   = (flags & MD_RENDER_MOL_UPDATE_RADII) != 0;
     if (fr) {
@@ -756,9 +746,7 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
             ok = ok && launch(s, r->k_fr_check, md_gpu_grid(1, 1, 1), &a, hook, user, "check");
             ok = ok && md_gpu_launch_indirect(s, r->k_fr_radii, grid, &a, sizeof(a));
             if (ok && hook) hook(user, "radii");
-            md_gpu_kernel_t k = r->k_fr_gather[atoms->frame_count == 1 ? 0 : atoms->frame_count == 2 ? 1 : 2];
-            static const uint32_t probe_count[8] = { 2, 1, 2, 2, 2, 4, 4, 4 };
-            if (g_fr_probe >= 1 && g_fr_probe <= 8 && probe_count[g_fr_probe - 1] == atoms->frame_count) k = r->k_fr_probe[g_fr_probe - 1];
+            const md_gpu_kernel_t k = r->k_fr_gather[atoms->frame_count == 1 ? 0 : atoms->frame_count == 2 ? 1 : 2];
             md_gpu_grid_t g = groups_for(topo->point_count, 64);
             if (g_fr_groups && g_fr_groups < g.x) g.x = g_fr_groups;
             a.fr_threads = 64u * g.x;
@@ -1159,7 +1147,6 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
         { "sol_count", r->k_count }, { "sol_write", r->k_write }, { "sol_gather", r->k_gather },
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
         { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute }, { "fr_radii", r->k_fr_radii },
-        { "fr_probe2", r->k_fr_probe[0] }, { "fr_p1_xyz", r->k_fr_probe[1] }, { "fr_p2_r0", r->k_fr_probe[2] }, { "fr_p2_xyz", r->k_fr_probe[3] }, { "fr_p2_a16", r->k_fr_probe[4] }, { "fr_p4_r0", r->k_fr_probe[5] }, { "fr_p4_xyz", r->k_fr_probe[6] }, { "fr_p4_a16", r->k_fr_probe[7] },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;

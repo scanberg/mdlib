@@ -723,7 +723,7 @@ bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stre
    md_render.c, not in its header */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 void md_render_mol_debug_prefetch(uint32_t windows_ahead);
-void md_render_mol_debug_frames(uint32_t groups, uint32_t probe);
+void md_render_mol_debug_frame_groups(uint32_t groups);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
@@ -886,51 +886,23 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         print_times(ints[ii].name, t, reps);
     }
     {
-        /* Probes of the frames' gather, each differing from the line above in
-           one thing (best of the reps, ms):
-           - the same slot for every frame: the frames past the first read what
-             the first just read, from L2, not DRAM. Fast: the cost is the
-             extra streams from memory. As slow: it is in the kernel.
-           - probe kernels: the minimum image left out; the point stored
-             another way.
-           - fewer groups, more points a thread: whatever a thread does once
-             (its arguments and the frames' parameters, read through pointers)
-             spread over more points. */
-        const uint32_t s0123[4] = { 0, 1, 2, 3 }, s0000[4] = { 0, 0, 0, 0 };
-        printf("  probes: linear 0-1 %.2f, 0-0 %.2f; cubic+vel 0-1-2-3 %.2f, 0-0-0-0 %.2f ms\n",
-               time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps), time_frames(s, mol, sc, &atoms, 2, s0000, 0.0f, t, reps),
-               time_frames(s, mol, sc, &atoms, 4, s0123, 1.0f, t, reps), time_frames(s, mol, sc, &atoms, 4, s0000, 1.0f, t, reps));
-        /* the probe kernels (see md_render_mol_debug_frames), each from the
-           kernel as built except in one thing: the radius not read (a
-           constant), the point's xyz stored alone (the radius left in place),
-           the stores' alignment stated (16) */
-        const struct { uint32_t probe, count; float dt; const char* name; } pk[] = {
-            { 0, 1, 0.0f, "nearest: as built" },          { 2, 1, 0.0f, "xyz only" },
-            { 0, 2, 0.0f, "\n    linear: as built" },     { 1, 2, 0.0f, "no minimum image" }, { 3, 2, 0.0f, "radius constant" },
-            { 4, 2, 0.0f, "xyz only" },                   { 5, 2, 0.0f, "aligned" },
-            { 0, 4, 1.0f, "\n    cubic+vel: as built" },  { 6, 4, 1.0f, "radius constant" }, { 7, 4, 1.0f, "xyz only" },
-            { 8, 4, 1.0f, "aligned" },
-        };
-        printf("  probe kernels (ms):\n    ");
-        for (size_t i = 0; i < sizeof(pk) / sizeof(pk[0]); ++i) {
-            md_render_mol_debug_frames(0, pk[i].probe);
-            printf("%s%s %.2f", i && pk[i].name[0] != '\n' ? ", " : "", pk[i].name, time_frames(s, mol, sc, &atoms, pk[i].count, s0123, pk[i].dt, t, reps));
-        }
-        printf("\n");
-        md_render_mol_debug_frames(0, 0);
+        /* the gather from fewer groups, more points a thread: whatever a
+           thread does once (its arguments and the frames' parameters, read
+           through pointers) spread over more points */
+        const uint32_t s0123[4] = { 0, 1, 2, 3 };
         const uint32_t groups[] = { 65535, 8192, 2048, 640 };
         printf("  by groups (points a thread):    nearest  linear  cubic+vel\n");
         for (size_t gi = 0; gi < sizeof(groups) / sizeof(groups[0]); ++gi) {
             const uint32_t np = sc->topo.point_count;
             uint32_t g = groups[gi], full = (np + 63) / 64;
             if (g > full) g = full;
-            md_render_mol_debug_frames(g, 0);
+            md_render_mol_debug_frame_groups(g);
             const double a1 = time_frames(s, mol, sc, &atoms, 1, s0123, 0.0f, t, reps);
             const double a2 = time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps);
             const double a4 = time_frames(s, mol, sc, &atoms, 4, s0123, 1.0f, t, reps);
             printf("    %5u (%6.1f)               %6.2f  %6.2f  %6.2f\n", g, (double)np / (64.0 * g), a1, a2, a4);
         }
-        md_render_mol_debug_frames(0, 0);
+        md_render_mol_debug_frame_groups(0);
     }
     {
         /* the copy from positions again, beside the frames' (the same state of the GPU's clocks) */

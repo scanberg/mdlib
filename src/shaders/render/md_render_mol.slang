@@ -446,6 +446,17 @@ uint radius_of(Args a, uint atom) {
     return t < a.type_count ? a.type_radius[t] : 0u;
 }
 
+// A point's x, y, z into the copy, its radius left as it is: one store of
+// eight bytes and one of four. Slang marks a vector's store through a pointer
+// aligned to its element (4), and NVIDIA then splits a uint4 into four; with
+// the radius read back to complete it, the frames' gather on the GTX 1060 was
+// 6.3 ms for two frames, 2.05 like this (the copy's block is 16-byte aligned).
+[ForceInline]
+void store_xyz(uint* points, uint p, uint3 v) {
+    storeAligned<8>((uint2*)points + 2u * p, v.xy);
+    points[4u * p + 2u] = v.z;
+}
+
 // The copy that is drawn: point p is atom atom_order[p]. Writes in order,
 // reads where the atoms are (in runs: the atoms of a residue or a molecule
 // are neighbours in both orders).
@@ -458,12 +469,12 @@ void sol_gather(uint3 tid : SV_DispatchThreadID) {
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
-        uint r = reuse ? a.points[4u * p + 3u] : radius_of(a, atom);
-        uint4 v = uint4(q[0], q[1], q[2], r);
-        ((uint4*)a.points)[p] = v;
+        uint3 x = uint3(q[0], q[1], q[2]);
+        if (reuse) store_xyz(a.points, p, x);
+        else       storeAligned<16>((uint4*)a.points + p, uint4(x, radius_of(a, atom)));
         if (a.has_velocity != 0u) {
             uint* w = a.velocity + atom * (a.vel_stride >> 2u);
-            ((uint2*)a.vel_out)[p] = uint2(w[0], w[1]);
+            storeAligned<8>((uint2*)a.vel_out + p, uint2(w[0], w[1]));
         }
     }
 }
@@ -538,19 +549,11 @@ void fr_radii(uint3 tid : SV_DispatchThreadID) {
 }
 
 // The copy that is drawn, from resident frames in point order: every read in
-// order, the radius the copy's own (fr_radii saw to it). A kernel per number
-// of frames (COUNT a constant): one kernel for all three kept every frame's
-// parameters and the cell live, and on Pascal the registers that cost made
-// the nearest frame twice the copy from positions.
-// The minimum image, or none (MI false: the bench's probe, not the API's)
+// order, the radius the copy's own (fr_radii saw to it) and not touched. A
+// kernel per number of frames (COUNT a constant): each frame's parameters
+// and the cell in registers for only the frames it combines.
 [ForceInline]
-float3 mi_if(CellP c, float3 d, const bool MI) { return MI ? mi(c, d) : d; }
-
-[ForceInline]
-// SM, how the point is stored (0 as built; the others the bench's probes):
-// 1 a constant radius (none read), 2 xyz only (the radius left where it is),
-// 3 as 0 with the alignment stated (16, and 8 for the velocity).
-void fr_gather_body(uint3 tid, const uint COUNT, const bool MI, const uint SM) {
+void fr_gather_body(uint3 tid, const uint COUNT) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
     uint step = a.fr_threads;
@@ -559,7 +562,7 @@ void fr_gather_body(uint3 tid, const uint COUNT, const bool MI, const uint SM) {
     const FrameP f0 = frame_p(a.fpar0);
     FrameP f1 = f0, f2 = f0, f3 = f0;
     CellP  cell;
-    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); if (MI) cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
+    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
     if (COUNT == 4u) { f2 = frame_p(a.fpar2); f3 = frame_p(a.fpar3); }
     for (uint p = tid.x; p < n; p += step) {
         float3 pos, vel = float3(0.0);
@@ -567,56 +570,34 @@ void fr_gather_body(uint3 tid, const uint COUNT, const bool MI, const uint SM) {
         if (COUNT == 1u) {
             pos = x0;
         } else if (COUNT == 2u) {
-            float3 x1 = x0 + mi_if(cell, deq(a.frame1, f1, p) - x0, MI);
+            float3 x1 = x0 + mi(cell, deq(a.frame1, f1, p) - x0);
             pos = a.w0 * x0 + a.w1 * x1;
             vel = a.dw0 * x0 + a.dw1 * x1;
         } else {
             float3 x1 = deq(a.frame1, f1, p);
-            x0 = x1 + mi_if(cell, x0 - x1, MI);
-            float3 x2 = x1 + mi_if(cell, deq(a.frame2, f2, p) - x1, MI);
-            float3 x3 = x2 + mi_if(cell, deq(a.frame3, f3, p) - x2, MI);
+            x0 = x1 + mi(cell, x0 - x1);
+            float3 x2 = x1 + mi(cell, deq(a.frame2, f2, p) - x1);
+            float3 x3 = x2 + mi(cell, deq(a.frame3, f3, p) - x2);
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
-        if (SM == 2u) {
-            storeAligned<8>((uint2*)points + 2u * p, uint2(asuint(pos.x), asuint(pos.y)));
-            points[4u * p + 2u] = asuint(pos.z);
-        } else {
-            uint r = SM == 1u ? 0x3F800000u : points[4u * p + 3u];
-            uint4 v = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
-            if (SM == 3u) storeAligned<16>((uint4*)points + p, v);
-            else          ((uint4*)points)[p] = v;
-        }
-        if (vel_out) {
-            uint2 h = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
-            if (SM == 3u) storeAligned<8>((uint2*)a.vel_out + p, h);
-            else          ((uint2*)a.vel_out)[p] = h;
-        }
+        store_xyz(points, p, asuint(pos));
+        if (vel_out) storeAligned<8>((uint2*)a.vel_out + p, uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z)));
     }
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u, true, 0u); }
+void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u); }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 0u); }
+void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u); }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 0u); }
+void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u); }
 
-// Probes (the bench's, not the API's): the gathers without the minimum image,
-// or storing another way (see fr_gather_body's SM)
-[shader("compute")] [numthreads(64, 1, 1)] void fr_probe2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, false, 0u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p1_xyz(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u, true, 2u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p2_r0(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 1u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p2_xyz(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 2u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p2_a16(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true, 3u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p4_r0(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 1u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p4_xyz(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 2u); }
-[shader("compute")] [numthreads(64, 1, 1)] void fr_p4_a16(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true, 3u); }
 
 // An uploaded frame (qsrc: the resident atoms in atom order) into its slot
 // (qdst, point order).

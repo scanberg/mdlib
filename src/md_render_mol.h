@@ -274,7 +274,8 @@ enum {
 
    After positions, velocities or radii changed (and before the first draw):
    the copy that is drawn gathered into `dynamic` ([topo->dynamic_size]
-   bytes, caller-owned, kept for the batches emitted from it), after what
+   bytes, 16-byte aligned as md_gpu_malloc's are, caller-owned, kept for the
+   batches emitted from it), after what
    the flags ask. GPU work only, no readback, ordered in `stream` like any
    other. Bumps content[MD_RENDER_CONTENT_GEOMETRY]. */
 bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
