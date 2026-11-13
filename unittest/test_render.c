@@ -1492,7 +1492,7 @@ static float half_to_float(uint32_t h) {
    atoms resident (the residue, every third water, the oxygen of every
    fifth): only those are quantized, uploaded, regrouped and drawn. */
 /* in md_render_mol.c, not in its header: the frames' gather from at most `groups` groups */
-void md_render_mol_debug_frames(uint32_t groups, uint32_t probe);
+void md_render_mol_debug_frame_groups(uint32_t groups);
 
 static void frames_case(int* utest_result, bool partial) {
     fix_t fx;
@@ -1683,9 +1683,9 @@ static void frames_case(int* utest_result, bool partial) {
         EXPECT_EQ(0, rad_bad);
         {
             /* the same from one group, its threads striding over every point */
-            md_render_mol_debug_frames(1, 0);
+            md_render_mol_debug_frame_groups(1);
             ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
-            md_render_mol_debug_frames(0, 0);
+            md_render_mol_debug_frame_groups(0);
             uint8_t* blk1 = read_block(&fx, dyn, topo.dynamic_size_velocity);
             const size_t po = (size_t)(b.points.position - dyn);
             EXPECT_EQ(0, memcmp(blk + po, blk1 + po, (size_t)nres * 16));
