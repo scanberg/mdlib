@@ -34,6 +34,8 @@ typedef struct gpu_view_t {
     uint32_t      _vpad[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
+/* load_view in md_render.slang reads the matrices and the viewport as float4s 0..28 */
+_Static_assert(offsetof(gpu_view_t, m) == 0 && offsetof(gpu_view_t, viewport) == 28 * 16, "load_view");
 
 /* Occlusion settings, measured on the M4 at 10M atoms (camera moving):
    - Elements no wider than occl_min_px pixels are not tested one by one
@@ -85,6 +87,8 @@ typedef struct gpu_batch_t {
     uint32_t      cluster_count, cluster_work_offset, cluster_base, _pad2;
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 256, "Batch mirror");
+/* load_batch in md_render.slang reads the tint as the 12th float4 */
+_Static_assert(offsetof(gpu_batch_t, tint) == 11 * 16, "load_batch");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;

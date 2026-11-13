@@ -138,6 +138,16 @@ export T getDescriptorFromHandle<T>(DescriptorHandle<T> handle) where T : IOpaqu
     return defaultGetDescriptorFromHandle(handle, BindlessDescriptorOptions.None);
 }
 
+// Vectors through pointers: Slang's natural layout aligns a vector to its
+// element, so a float4's (or uint4's) load or store through a pointer, alone
+// or as a struct's member, is marked Aligned 4, and NVIDIA's compiler then
+// splits it into four words (it may not assume more). Where the address is
+// known to be aligned, say so: loadAligned<16>(p), storeAligned<16>(p, v)
+// (md_gpu_malloc's blocks are 256-byte aligned, argument structs 64). For a
+// struct: load it as usual, then its vector members again aligned; the first
+// loads of those members are dead and go (reinterpret from aligned uint4s
+// does not: Slang may keep every word in a local array).
+
 // Declares the push constant holding the pointer to the argument struct.
 // Place once at file scope, after defining the struct. Every entry point in
 // the file -- kernel, vertex or fragment -- reads the same root, which is how

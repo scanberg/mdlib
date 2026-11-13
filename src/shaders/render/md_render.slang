@@ -58,6 +58,45 @@ struct ViewData {
     uint   _vpad2;
 };
 
+// The view, its matrices in aligned 16-byte loads (see md_gpu.slang: `*p`
+// would make each float4 four words on NVIDIA). The scalars from the plain
+// load; a float4 added to ViewData and not listed here loads too, unaligned.
+// The indices are the float4s' places (md_render.c asserts them).
+ViewData load_view(ViewData* p) {
+    ViewData v = *p;
+    float4* q = (float4*)p;
+    v.view0       = loadAligned<16>(q +  0u);
+    v.view1       = loadAligned<16>(q +  1u);
+    v.view2       = loadAligned<16>(q +  2u);
+    v.view3       = loadAligned<16>(q +  3u);
+    v.proj0       = loadAligned<16>(q +  4u);
+    v.proj1       = loadAligned<16>(q +  5u);
+    v.proj2       = loadAligned<16>(q +  6u);
+    v.proj3       = loadAligned<16>(q +  7u);
+    v.inv_proj0   = loadAligned<16>(q +  8u);
+    v.inv_proj1   = loadAligned<16>(q +  9u);
+    v.inv_proj2   = loadAligned<16>(q + 10u);
+    v.inv_proj3   = loadAligned<16>(q + 11u);
+    v.inv_view0   = loadAligned<16>(q + 12u);
+    v.inv_view1   = loadAligned<16>(q + 13u);
+    v.inv_view2   = loadAligned<16>(q + 14u);
+    v.inv_view3   = loadAligned<16>(q + 15u);
+    v.view_prev0  = loadAligned<16>(q + 16u);
+    v.view_prev1  = loadAligned<16>(q + 17u);
+    v.view_prev2  = loadAligned<16>(q + 18u);
+    v.view_prev3  = loadAligned<16>(q + 19u);
+    v.proj_prev0  = loadAligned<16>(q + 20u);
+    v.proj_prev1  = loadAligned<16>(q + 21u);
+    v.proj_prev2  = loadAligned<16>(q + 22u);
+    v.proj_prev3  = loadAligned<16>(q + 23u);
+    v.proj_cur0   = loadAligned<16>(q + 24u);
+    v.proj_cur1   = loadAligned<16>(q + 25u);
+    v.proj_cur2   = loadAligned<16>(q + 26u);
+    v.proj_cur3   = loadAligned<16>(q + 27u);
+    v.viewport    = loadAligned<16>(q + 28u);
+    return v;
+}
+
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
 #define M(v, n) mat_of(v.n##0, v.n##1, v.n##2, v.n##3)
 
@@ -141,6 +180,15 @@ struct Batch {
     uint    cluster_base;       // first cluster over all batches (refit)
     uint    _pad2;
 };
+
+// Batch i of the table, its tint in an aligned 16-byte load (see load_view;
+// md_render.c asserts the place). A pointer and an index: the index is
+// applied in elements before the pointer moves.
+Batch load_batch(Batch* t, uint i) {
+    Batch b = t[i];
+    b.tint = loadAligned<16>((float4*)(t + i) + 11u);
+    return b;
+}
 
 // The per-view lists the cull writes and everything after it reads. Cluster
 // entries: the batch's local cluster work index and (slot + 1) << 20. Element
@@ -269,10 +317,10 @@ uint point_of(Batch b, uint e, uint k, uint per) {
 
 Mat load_transform(float4* t, uint inst) {
     Mat m;
-    m.c0 = t[inst * 4u + 0u];
-    m.c1 = t[inst * 4u + 1u];
-    m.c2 = t[inst * 4u + 2u];
-    m.c3 = t[inst * 4u + 3u];
+    m.c0 = loadAligned<16>(t + inst * 4u + 0u);
+    m.c1 = loadAligned<16>(t + inst * 4u + 1u);
+    m.c2 = loadAligned<16>(t + inst * 4u + 2u);
+    m.c3 = loadAligned<16>(t + inst * 4u + 3u);
     return m;
 }
 
@@ -722,7 +770,7 @@ groupshared uint2  rf_cs[64];       // state bits, visible elements
 [numthreads(64, 1, 1)]
 void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     uint n    = v.total_clusters;
     bool geo  = v.refit_mode == 0u;
     uint lane = gi & (RF_LANES - 1u);
@@ -731,7 +779,7 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
         bool   valid = i < n;
         uint   ic    = valid ? i : n - 1u;                 // a cluster to read either way
         uint   slot  = find_batch_cluster(a.batches, v.batch_count, ic);
-        Batch  b     = a.batches[slot];
+        Batch  b     = load_batch(a.batches, slot);
         uint   c     = ic - b.cluster_base;
         valid = valid && (b.flags & F_SHARED) == 0u;
         float3 lo = float3(3.0e38), hi = float3(-3.0e38);
@@ -772,8 +820,8 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
                 // The count goes in an integer, not in a float's bits: as a float
                 // it is a denormal, which fast math may flush to zero
                 b.cstate[2u * c + 1u] = rf_cs[gi].y;
-                b.bounds[2u * c + 0u] = rf_lo[gi];
-                b.bounds[2u * c + 1u] = rf_hi[gi];
+                storeAligned<16>(b.bounds + 2u * c + 0u, rf_lo[gi]);
+                storeAligned<16>(b.bounds + 2u * c + 1u, rf_hi[gi]);
             }
         }
         GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next eight
@@ -790,8 +838,8 @@ struct ClusterSphere {
 
 ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
     ClusterSphere cs;
-    float4 lo = b.bounds[2u * c + 0u];
-    float4 hi = b.bounds[2u * c + 1u];
+    float4 lo = loadAligned<16>(b.bounds + 2u * c + 0u);
+    float4 hi = loadAligned<16>(b.bounds + 2u * c + 1u);
     cs.count = b.cstate[2u * c + 1u];
     Mat   T  = load_transform(b.transforms, inst);
     float s  = length(T.c0.xyz);
@@ -810,7 +858,7 @@ ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
 [numthreads(64, 1, 1)]
 void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     Lists    L = *a.lists;
     uint mode = a.mode;
     uint n = mode == 2u ? L.counters[C_COCC] : v.total_cluster_work;
@@ -821,21 +869,21 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         uint slot, inst, c;
         uint2 ent;
         if (mode == 2u) {
-            ent  = L.cocc[i];
+            ent  = loadAligned<8>(L.cocc + i);
             slot = (ent.y >> 20) - 1u;
-            Batch bb = a.batches[slot];
+            Batch bb = load_batch(a.batches, slot);
             uint linear = ent.x;
             inst = linear / max(bb.cluster_count, 1u);
             c    = linear - inst * bb.cluster_count;
         } else {
             slot = find_batch_cluster_work(a.batches, v.batch_count, i);
-            Batch bb = a.batches[slot];
+            Batch bb = load_batch(a.batches, slot);
             uint local = i - bb.cluster_work_offset;
             inst = local / max(bb.cluster_count, 1u);
             c    = local - inst * bb.cluster_count;
             ent  = uint2(local, (slot + 1u) << 20);
         }
-        Batch b = a.batches[slot];
+        Batch b = load_batch(a.batches, slot);
         uint2 rng = cluster_range(b, c);
         ClusterSphere cs = cluster_sphere(v, b, inst, c);
         if (!valid) cs.count = 0u;
@@ -850,14 +898,14 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (mode == 3u) {
             bool want = valid && cs.count > 0u && b.cstate[2u * c] != 0u;
             uint k = wave_append(L.counters + C_CST, want);
-            if (want) L.cst[k] = ent;
+            if (want) storeAligned<8>(L.cst + k, ent);
             continue;
         }
         uint vbase = mode == 2u ? L.counters[C_CVIS1] : 0u;
         uint iv = wave_append(L.counters + (mode == 2u ? C_CVIS2 : C_CVIS1), out == OUT_HW);
-        if (out == OUT_HW) L.cvis[vbase + iv] = ent;
+        if (out == OUT_HW) storeAligned<8>(L.cvis + vbase + iv, ent);
         uint io = wave_append(L.counters + C_COCC, mode == 1u && out == OUT_OCCLUDED);
-        if (mode == 1u && out == OUT_OCCLUDED) L.cocc[io] = ent;
+        if (mode == 1u && out == OUT_OCCLUDED) storeAligned<8>(L.cocc + io, ent);
 
         wave_add(L.counters + C_HIDDEN, hidden);
         wave_add(L.counters + C_OUTSIDE, out == OUT_OUTSIDE ? cs.count : 0u);
@@ -879,7 +927,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
     g.ok = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint ent = 0u;                      // the list entry: global work index
     if (valid) {
-        Batch b = batches[slot];
+        Batch b = load_batch(batches, slot);
         ent = b.work_offset + inst * b.count + e;
         g   = element_geo(v, b, inst, e);
     }
@@ -942,7 +990,7 @@ groupshared uint  gc_inc[64];       // inclusive prefix of the sizes
 [numthreads(64, 1, 1)]
 void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     Lists    L = *a.lists;
     uint mode = a.mode;
     if (mode == 2u) {
@@ -967,9 +1015,9 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
         uint4 cl  = uint4(0u);
         uint  cnt = 0u;
         if (ci < n) {
-            uint2 ent  = src[base + ci];
+            uint2 ent  = loadAligned<8>(src + base + ci);
             uint  slot = (ent.y >> 20) - 1u;
-            Batch b    = a.batches[slot];
+            Batch b    = load_batch(a.batches, slot);
             uint  inst = ent.x / max(b.cluster_count, 1u);
             uint  c    = ent.x - inst * b.cluster_count;
             uint2 rng  = cluster_range(b, c);
@@ -1089,7 +1137,7 @@ groupshared uint   gs_inc[64];      // inclusive prefix of the pixel counts
 [numthreads(64, 1, 1)]
 void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     Lists    L = *a.lists;
     uint phase = a.mode;
     uint n     = phase == 1u ? L.counters[C_SMALL1] : L.counters[C_SMALL2];
@@ -1105,7 +1153,7 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         uint4  box = uint4(0u, 0u, 1u, idx);
         if (i < n) {
             Elem  el = decode_work(a.batches, v.batch_count, L.small[idx]);
-            Batch b  = a.batches[el.slot];
+            Batch b  = load_batch(a.batches, el.slot);
             Geo   g  = element_geo(v, b, el.inst, el.e);
             if (g.ok) {
                 Bounds bd = geo_bounds(v, g);
@@ -1236,7 +1284,7 @@ struct SphereV {
 SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
                   uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
     Args     a = MD_ARGS;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     SphereV  o;
     o.pos   = CULLED;
     o.sph   = float4(0.0);
@@ -1246,7 +1294,7 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  corner = md_draw_vertex(vid, base_vertex);
     Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent    = elem_id(a.batches, el);
-    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
+    Geo   g      = element_geo(v, load_batch(a.batches, el.slot), el.inst, el.e);
     if (!g.ok) return o;
     float3 c   = g.a;
     float  rad = g.r;
@@ -1304,7 +1352,7 @@ struct MaskOut {
 
 [shader("fragment")]
 VisOut sphere_fs(SphereV i) {
-    ViewData v = *MD_ARGS.view;
+    ViewData v = load_view(MD_ARGS.view);
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
     if (t < 0.0) discard;
@@ -1316,7 +1364,7 @@ VisOut sphere_fs(SphereV i) {
 
 [shader("fragment")]
 MaskOut sphere_mask_fs(SphereV i) {
-    ViewData v = *MD_ARGS.view;
+    ViewData v = load_view(MD_ARGS.view);
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
     if (t < 0.0) discard;
@@ -1343,7 +1391,7 @@ struct CapsuleV {
 CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
                     uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
     Args     a = MD_ARGS;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     CapsuleV o;
     o.pos   = CULLED;
     o.pa    = float4(0.0);
@@ -1354,7 +1402,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  vk  = md_draw_vertex(vid, base_vertex);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent = elem_id(a.batches, el);
-    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
+    Geo   g   = element_geo(v, load_batch(a.batches, el.slot), el.inst, el.e);
     if (!g.ok) return o;
     float3 pa  = g.a;
     float3 pb  = g.b;
@@ -1387,7 +1435,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
 
 [shader("fragment")]
 VisOut capsule_fs(CapsuleV i) {
-    ViewData v = *MD_ARGS.view;
+    ViewData v = load_view(MD_ARGS.view);
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
     if (t < 0.0) discard;
@@ -1399,7 +1447,7 @@ VisOut capsule_fs(CapsuleV i) {
 
 [shader("fragment")]
 MaskOut capsule_mask_fs(CapsuleV i) {
-    ViewData v = *MD_ARGS.view;
+    ViewData v = load_view(MD_ARGS.view);
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
     if (t < 0.0) discard;
@@ -1473,7 +1521,7 @@ Hit eval_hit(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     uint slot1 = idv.y >> 20;
     if (slot1 == 0u) return h;
     h.batch = slot1 - 1u;
-    Batch b = batches[h.batch];
+    Batch b = load_batch(batches, h.batch);
     uint64_t linear = (uint64_t(idv.y & 0x3FFFFu) << 32) | uint64_t(idv.x);
     uint cnt = max(b.count, 1u);
     h.instance = uint(linear / uint64_t(cnt));
@@ -1558,11 +1606,11 @@ void resolve(uint3 tid : SV_DispatchThreadID) {
         a.motion[px] = float2(0.0);
         return;
     }
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     Hit h = eval_hit(v, a.batches, idv, float2(tid.xy) + 0.5);
     if (!h.valid) return;       // EXTERNAL: the caller's
 
-    Batch  b   = a.batches[h.batch];
+    Batch  b   = load_batch(a.batches, h.batch);
     float3 lin = srgb_to_linear(h.color.rgb);
     float  g   = dot(lin, float3(0.2126, 0.7152, 0.0722));
     lin = lerp(lin, float3(g), saturate(b.desaturate));
@@ -1587,7 +1635,7 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
     float4 m  = float4(0.0);
     uint slot1 = idv.y >> 20;
     if (slot1 != 0u) {
-        Batch b = a.batches[slot1 - 1u];
+        Batch b = load_batch(a.batches, slot1 - 1u);
         if (b.kind == KIND_SPHERES || b.kind == KIND_CAPSULES) {
             uint64_t linear = (uint64_t(idv.y & 0x3FFFFu) << 32) | uint64_t(idv.x);
             uint cnt = max(b.count, 1u);
@@ -1616,7 +1664,7 @@ void pick(uint3 tid : SV_DispatchThreadID) {
     o[0] = idv.x;
     o[1] = idv.y;
     if ((idv.y >> 20) == 0u) return;
-    ViewData v = *a.view;
+    ViewData v = load_view(a.view);
     Hit h = eval_hit(v, a.batches, idv, float2(float(a.px), float(a.py)) + 0.5);
     o[2] = h.id;
     o[3] = h.attr;
