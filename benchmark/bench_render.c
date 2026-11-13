@@ -723,6 +723,8 @@ bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stre
    md_render.c, not in its header */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 void md_render_mol_debug_prefetch(uint32_t windows_ahead);
+bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
+bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
 typedef struct pass_prof_t {
@@ -850,6 +852,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         { "update from frames: linear           ", 2, 0.0f },
         { "update from frames: linear + velocity", 2, 1.0f },
         { "update from frames: cubic + velocity ", 4, 1.0f },
+        { "update from frames: linear, again    ", 2, 0.0f },      /* the order is not the cause */
     };
     md_render_mol_atoms_t atoms = {0};
     atoms.frames = &fr;
@@ -933,7 +936,16 @@ static int run_gpu(int argc, char** argv) {
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
-    printf("target %ux%u, %u draws per measurement, wall time per draw including the sync, ms (best / median)\n\n", W, H, reps);
+    printf("target %ux%u, %u draws per measurement, wall time per draw including the sync, ms (best / median)\n", W, H, reps);
+    /* what the driver made of the kernels (registers, ...), where it says */
+    {
+        const char* kn; md_gpu_kernel_info_t ki;
+        for (uint32_t i = 0; md_render_debug_kernel_info(r, i, &kn, &ki); ++i)
+            if (ki.stats[0]) printf("  kernel md_render %-14s %s\n", kn, ki.stats);
+        for (uint32_t i = 0; md_render_mol_debug_kernel_info(mol, i, &kn, &ki); ++i)
+            if (ki.stats[0]) printf("  kernel md_render_mol %-10s %s\n", kn, ki.stats);
+    }
+    printf("\n");
 
     const struct { const char* name; bool licorice; float dist; } looks[] = {
         { "spacefill, near", false, 0.6f },
