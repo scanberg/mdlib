@@ -166,13 +166,19 @@ typedef struct md_render_points_t {
                                       apart; 0: radius 0. With radius_table: uint32
                                       per point instead, the low 16 bits an index into
                                       the table (past its count: radius 0), the high
-                                      16 the point's flags (none read yet)           */
+                                      16 the point's flags (none read yet). Read only
+                                      by spheres with a radius_scale other than 0     */
     uint32_t      radius_stride;   /* multiple of 4; 0: 4. Points stored as float4
                                       (x, y, z, radius or type): position with stride
                                       16 and radius = position + 12 with stride 16    */
     md_gpu_addr_t radius_table;    /* float per type: the radius of a point is
-                                      radius_table[type]; 0: `radius` holds radii     */
-    uint32_t      radius_table_count;
+                                      radius_table[type]; 0: `radius` holds radii.
+                                      A draw keeps up to 4 distinct tables of 512
+                                      entries in all next to the cull's threads
+                                      (group memory); a batch past that reads its
+                                      table from memory, slower on GPUs whose L1
+                                      does not hold such loads (Pascal)              */
+    uint32_t      radius_table_count; /* entries; at most 65536 are read            */
 
     uint32_t      attr_count;      /* entries of the attribute arrays; 0: count       */
     md_gpu_addr_t attr_index;      /* uint32 per point; 0: the point itself           */
