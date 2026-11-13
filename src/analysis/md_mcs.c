@@ -12,6 +12,7 @@
 #include <core/md_geom.h>
 #include <core/md_label.h>
 #include <core/md_log.h>
+#include <core/md_simd.h>
 #include <core/md_sort.h>
 #include <core/md_vec_math.h>
 
@@ -533,6 +534,24 @@ static int32_t atom_of_name(const res_list_t* rl, uint32_t beg, uint32_t end, ui
     return -1;
 }
 
+// Small ids of the residue names of both lists into ida[ra->n] and idb[rb->n], one where the names are one
+static void name_ids(int32_t* ida, int32_t* idb, const res_list_t* ra, const res_list_t* rb, md_temp_scope_t temp) {
+    const uint32_t n = ra->n + rb->n;
+    uint64_t* key = md_temp_alloc_array(temp, uint64_t, n);
+    md_memcpy(key, ra->res_name, ra->n * sizeof(uint64_t));
+    md_memcpy(key + ra->n, rb->res_name, rb->n * sizeof(uint64_t));
+    md_sort_radix_u64(key, n);
+    uint32_t u = 0;
+    for (uint32_t i = 0; i < n; ++i) if (!u || key[u - 1] != key[i]) key[u++] = key[i];
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint64_t x = k < ra->n ? ra->res_name[k] : rb->res_name[k - ra->n];
+        uint32_t lo = 0, hi = u;
+        while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (key[mid] < x) lo = mid + 1; else hi = mid; }
+        if (k < ra->n) ida[k] = (int32_t)lo;
+        else idb[k - ra->n] = (int32_t)lo;
+    }
+}
+
 // The residues aligned by name, in order (Needleman-Wunsch), and the atoms of each aligned pair matched: by name when
 // the two are of one name, as graphs when not, once per pair of names. The pairs into pa and pb[ra->beg[ra->n]], how
 // many.
@@ -540,35 +559,62 @@ static size_t by_residue(int32_t* pa, int32_t* pb, bool* incomplete, const md_mc
     const md_system_t* sa = desc->a.sys;
     const md_system_t* sb = desc->b.sys;
     const uint32_t na = ra->n, nb = rb->n;
-    const size_t stride = (size_t)nb + 1;
-    int32_t* sc = md_temp_alloc_array(temp, int32_t, (na + 1) * stride);
-    uint8_t* tb = md_temp_alloc_array(temp, uint8_t, (na + 1) * stride);
+    int32_t* ida = md_temp_alloc_array(temp, int32_t, na);
+    int32_t* idb = md_temp_alloc_array(temp, int32_t, (nb + 7) & ~7u);
+    name_ids(ida, idb, ra, rb, temp);
+
+    // The scores: a residue of the same name 4, of another -1, a gap -3. A score is the most of the one up and left
+    // and the pair's, the one up and a gap, and the one left and a gap: the first two are of the row above, the last
+    // a prefix maximum along the row (a gap less for each step). Rows are made eight at a time, padded to a multiple
+    // of eight: what is past nb only ever reaches further past it.
     const int32_t gap = -3;
-    for (uint32_t i = 0; i <= na; ++i) { sc[i * stride] = (int32_t)i * gap; tb[i * stride] = 1; }
-    for (uint32_t j = 0; j <= nb; ++j) { sc[j] = (int32_t)j * gap; tb[j] = 2; }
+    const uint32_t nb8 = (nb + 7) & ~7u;
+    const size_t stride = (size_t)nb8 + 1;
+    int32_t* sc = md_temp_alloc_array(temp, int32_t, (na + 1) * stride);
+    for (uint32_t j = 0; j <= nb8; ++j) sc[j] = (int32_t)j * gap;
+    for (uint32_t j = nb; j < nb8; ++j) idb[j] = -1;
+    // Shifts by 1, 2 and 4 lanes, and what is added to the lanes shifted: the gaps of the steps, far below any score for
+    // lanes shifted in (md_mm256_set_epi32 takes the lanes highest first)
+    const int32_t far = -(1 << 29);
+    const md_256i sh1 = md_mm256_set_epi32(6, 5, 4, 3, 2, 1, 0, 0);
+    const md_256i sh2 = md_mm256_set_epi32(5, 4, 3, 2, 1, 0, 0, 0);
+    const md_256i sh4 = md_mm256_set_epi32(3, 2, 1, 0, 0, 0, 0, 0);
+    const md_256i add1 = md_mm256_set_epi32(gap, gap, gap, gap, gap, gap, gap, far);
+    const md_256i add2 = md_mm256_set_epi32(2 * gap, 2 * gap, 2 * gap, 2 * gap, 2 * gap, 2 * gap, far, far);
+    const md_256i add4 = md_mm256_set_epi32(4 * gap, 4 * gap, 4 * gap, 4 * gap, far, far, far, far);
+    const md_256i addc = md_mm256_set_epi32(8 * gap, 7 * gap, 6 * gap, 5 * gap, 4 * gap, 3 * gap, 2 * gap, gap);
+    const md_256i last = md_mm256_set1_epi32(7);
+    const md_256i vgap = md_mm256_set1_epi32(gap);
+    const md_256i miss = md_mm256_set1_epi32(-1);
+    const md_256i five = md_mm256_set1_epi32(5);
     for (uint32_t i = 1; i <= na; ++i) {
-        const uint64_t ni = ra->res_name[i - 1];
         const int32_t* up = sc + (i - 1) * stride;
         int32_t* row = sc + i * stride;
-        uint8_t* trow = tb + i * stride;
-        for (uint32_t j = 1; j <= nb; ++j) {
-            int32_t best = up[j - 1] + (ni == rb->res_name[j - 1] ? 4 : -1);
-            uint8_t t = 0;
-            if (up[j] + gap > best)      { best = up[j] + gap; t = 1; }
-            if (row[j - 1] + gap > best) { best = row[j - 1] + gap; t = 2; }
-            row[j] = best;
-            trow[j] = t;
+        row[0] = (int32_t)i * gap;
+        const md_256i x = md_mm256_set1_epi32(ida[i - 1]);
+        md_256i carry = md_mm256_set1_epi32(row[0]);
+        for (uint32_t j = 1; j <= nb8; j += 8) {
+            const md_256i same = md_mm256_cmpeq_epi32(md_mm256_loadu_si256((const md_256i*)(idb + j - 1)), x);
+            const md_256i diag = md_mm256_add_epi32(md_mm256_loadu_si256((const md_256i*)(up + j - 1)), md_mm256_add_epi32(miss, md_mm256_and_si256(same, five)));
+            const md_256i vert = md_mm256_add_epi32(md_mm256_loadu_si256((const md_256i*)(up + j)), vgap);
+            md_256i h = md_mm256_max_epi32(diag, vert);
+            h = md_mm256_max_epi32(h, md_mm256_add_epi32(md_mm256_permutevar8x32_epi32(h, sh1), add1));
+            h = md_mm256_max_epi32(h, md_mm256_add_epi32(md_mm256_permutevar8x32_epi32(h, sh2), add2));
+            h = md_mm256_max_epi32(h, md_mm256_add_epi32(md_mm256_permutevar8x32_epi32(h, sh4), add4));
+            h = md_mm256_max_epi32(h, md_mm256_add_epi32(carry, addc));
+            md_mm256_storeu_si256((md_256i*)(row + j), h);
+            carry = md_mm256_permutevar8x32_epi32(h, last);
         }
     }
-    // The aligned pairs, last first
+    // The aligned pairs, last first: back along the scores, by the first of the three a score is, in that order
     const uint32_t cap = MD_MIN(na, nb);
     uint32_t* ai = md_temp_alloc_array(temp, uint32_t, cap);
     uint32_t* bi = md_temp_alloc_array(temp, uint32_t, cap);
     uint32_t np = 0;
     for (uint32_t i = na, j = nb; i > 0 || j > 0;) {
-        const uint8_t t = (i > 0 && j > 0) ? tb[i * stride + j] : (i > 0 ? 1 : 2);
-        if (t == 0) { ai[np] = --i; bi[np] = --j; np++; }
-        else if (t == 1) i--;
+        const int32_t h = sc[i * stride + j];
+        if (i && j && h == sc[(i - 1) * stride + j - 1] + (ida[i - 1] == idb[j - 1] ? 4 : -1)) { ai[np] = --i; bi[np] = --j; np++; }
+        else if (i && (!j || h == sc[(i - 1) * stride + j] + gap)) i--;
         else j--;
     }
 

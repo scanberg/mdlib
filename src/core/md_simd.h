@@ -634,6 +634,11 @@ MD_SIMD_INLINE int md_mm256_movemask_ps(md_256 a) {
 #define md_mm256_min_epu8 simde_mm256_min_epu8
 #define md_mm256_max_epu8 simde_mm256_max_epu8
 
+#define md_mm_min_epi32 simde_mm_min_epi32
+#define md_mm_max_epi32 simde_mm_max_epi32
+#define md_mm256_min_epi32 simde_mm256_min_epi32
+#define md_mm256_max_epi32 simde_mm256_max_epi32
+
 #define md_mm_packs_epi16 simde_mm_packs_epi16       // Saturated to half the width: a's lanes, then b's
 #define md_mm_packs_epi32 simde_mm_packs_epi32
 #define md_mm_packus_epi16 simde_mm_packus_epi16
