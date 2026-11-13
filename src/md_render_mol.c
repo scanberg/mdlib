@@ -33,7 +33,7 @@ static uint64_t align256(uint64_t x) { return (x + 255u) & ~(uint64_t)255u; }
 
 /* The topology block, as offsets */
 typedef struct topo_layout_t {
-    uint64_t state, atom_type, type_radius, atom_order, mixed_point, resident, atom_cluster_offset, bond_pairs, bond_ids;
+    uint64_t state, atom_type, type_radius, atom_order, point_type, mixed_point, resident, atom_cluster_offset, bond_pairs, bond_ids;
     uint64_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];
     uint64_t small_tables, size;
 } topo_layout_t;
@@ -46,7 +46,7 @@ typedef struct small_layout_t {
 /* The kinds of small molecule: per kind its atom and bond counts and where
    its entries start (uint4), then per atom of a kind its atom less the
    molecule's first and its particle type (the regroup's write fills the
-   radii from those, in order), and per bond its atoms' places in the
+   points' types from those, in order), and per bond its atoms' places in the
    molecule (k0 | k1 << 16; a molecule's bonds sorted by that). A box of
    water is one kind or a few. Not the bonds' ids: inferred bonds are in no order a kind could
    share (tryptophan-md.gro's 2156 molecules were 339 kinds with them). Then
@@ -86,27 +86,25 @@ static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, radii, velocity, marker, params, mol_slot, ids_old, cnt, sums, size, size_velocity;
+    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, size, size_velocity;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
-/* The points in cluster order, what is drawn: float4 (position, radius),
-   written whole by every update; then the radii again in a stream of their
-   own (in point order, written only when they change), which the updates
-   read the copy's w from. Then the scratch of the regroup. Last, only in a
-   block allocated with them, the points' velocities.
-   Not packed positions apart from the radii (1dd0efd6): fewer bytes per
-   update, but md_render reads the points several times a frame, much of it
-   scattered, and a 12-byte position straddles 32-byte sectors (raster after
-   positions changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
+/* The points in cluster order, what is drawn: float4 (position, w),
+   written whole by every update; w is the point's type and flags (the
+   topology's point_type) or the caller's radius for its atom. Then the
+   scratch of the regroup. Last, only in a block allocated with them, the
+   points' velocities.
+   Not packed positions apart (1dd0efd6): fewer bytes per update, but
+   md_render reads the points several times a frame, much of it scattered,
+   and a 12-byte position straddles 32-byte sectors (raster after positions
+   changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
 static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
     L.points   = o; o = align256(o + (uint64_t)n_atoms * 16u);
-    L.radii    = o; o = align256(o + (uint64_t)n_atoms * 4u);
-    L.marker   = o; o = align256(o + 80u);       /* 5 words; at word 16 fr_check's grid */
     L.params   = o; o = align256(o + 16u * 4u);
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
     L.ids_old  = o; o = align256(o + (uint64_t)n_sbonds * 4u);   /* the regroup's: the small bonds' ids before it */
@@ -460,6 +458,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.atom_type           = o; o = align256(o + ((uint64_t)n + 1) / 2 * 4u);
     L.type_radius         = o; o = align256(o + ((uint64_t)sys->atom.type.count + 1) * 4u);
     L.atom_order          = o; o = align256(o + (uint64_t)n_res * 4u);
+    L.point_type          = o; o = align256(o + (uint64_t)n_res * 4u);
     L.mixed_point         = o; o = align256(o + (uint64_t)n * 4u);
     const uint32_t rwords = (n + 31) / 32;
     L.resident            = res ? o : 0; o = res ? align256(o + (uint64_t)rwords * 8u) : o;
@@ -482,6 +481,12 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         T->type_count = (uint32_t)PT->count;
     }
     memcpy(img + L.atom_order, order, (size_t)n_res * 4u);
+    {
+        /* each point's type (and flags: none yet), in point order: what the
+           copy's w holds and md_render's radius table is indexed by */
+        uint32_t* pt = (uint32_t*)(img + L.point_type);
+        for (uint32_t k = 0; k < n_res; ++k) pt[k] = sys->atom.type_idx ? (uint32_t)sys->atom.type_idx[order[k]] : 0u;
+    }
     memcpy(img + L.mixed_point, inv, (size_t)n * 4u);
     if (res) {
         /* the resident atoms as bits, then each word's count of those before it */
@@ -550,6 +555,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->atom_type           = L.atom_type;
     T->type_radius         = L.type_radius;
     T->atom_order          = L.atom_order;
+    T->point_type          = L.point_type;
     T->mixed_point         = L.mixed_point;
     T->atom_cluster_offset = L.atom_cluster_offset;
     T->bond_pairs          = L.bond_pairs;
@@ -578,6 +584,7 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->atom_type           = base + plan->layout.atom_type;
     out->type_radius         = base + plan->layout.type_radius;
     out->atom_order          = base + plan->layout.atom_order;
+    out->point_type          = base + plan->layout.point_type;
     out->mixed_point         = base + plan->layout.mixed_point;
     out->resident            = plan->layout.resident ? base + plan->layout.resident : 0;
     out->regroups            = base + plan->layout.regroups;
@@ -594,26 +601,25 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
 
 struct md_render_mol {
     md_allocator_i* alloc;
-    md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather, k_mark;
+    md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather;
     md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
-    md_gpu_kernel_t k_fr_check, k_fr_radii;
 };
 
 /* Mirrors Args of md_render_mol.slang */
 typedef struct gpu_mol_args_t {
-    md_gpu_addr_t position, velocity, radius_override, points, radii, vel_out;
+    md_gpu_addr_t position, velocity, radius_override, points, vel_out;
     md_gpu_addr_t params, mol_slot, cnt, sums, types, type_radius;
     md_gpu_addr_t kinds, kind_atom, kind_type, kind_bond_local, ids_old, recs0, recs1, mixed_pos, mixed_atoms;
-    md_gpu_addr_t atom_order, mixed_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, marker;
+    md_gpu_addr_t atom_order, mixed_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, point_type;
     md_gpu_addr_t frame[4], fpar[4], qsrc, qdst, qpar, src_point, resident, regroups;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
-    uint32_t full, ident0, ident1, ident2, fr_threads;
+    uint32_t fr_threads;
     uint32_t frame_count, quantized, has_src, has_fvel, has_resident, resident_words;
     float    w[4], dw[4];
-    uint32_t dbg, rsrc0, rsrc1, ident3;
+    uint32_t dbg, _pad0;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 42 * 8 + 40 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 41 * 8 + 34 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -639,17 +645,14 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_sol_offsets_kernel(); r->k_offsets = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_mixed_kernel();   r->k_mixed   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_sol_gather_kernel();  r->k_gather  = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_sol_mark_kernel();    r->k_mark    = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_gather1_kernel();  r->k_fr_gather[0] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_gather2_kernel();  r->k_fr_gather[1] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_gather4_kernel();  r->k_fr_gather[2] = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_check_kernel();    r->k_fr_check   = md_gpu_kernel_create(device, &kd);
-    kd = md_shader_md_render_mol_fr_radii_kernel();    r->k_fr_radii   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_reorder_kernel();  r->k_fr_reorder = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_permute_kernel();  r->k_fr_permute = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
-        !r->k_mixed || !r->k_gather || !r->k_mark || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute || !r->k_fr_check || !r->k_fr_radii) {
+        !r->k_mixed || !r->k_gather || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
+        !r->k_fr_reorder || !r->k_fr_permute) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -660,8 +663,8 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
 void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
-                             &r->k_mixed, &r->k_gather, &r->k_mark, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_fr_check, &r->k_fr_radii };
+                             &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
+                             &r->k_fr_reorder, &r->k_fr_permute };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -702,14 +705,12 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->dbg = g_write_dbg;
     if (dynamic) {
         a->points         = dynamic + D.points;
-        a->radii          = dynamic + D.radii;
         a->vel_out        = dynamic + D.velocity;
         a->params         = dynamic + D.params;
         a->mol_slot       = dynamic + D.mol_slot;
         a->ids_old        = dynamic + D.ids_old;
         a->cnt            = dynamic + D.cnt;
         a->sums           = dynamic + D.sums;
-        a->marker         = dynamic + D.marker;
     }
     a->atom_count         = topo->point_count;      /* the kernels go over points */
     a->resident           = topo->resident;
@@ -730,6 +731,7 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
         a->mixed_atoms     = topo->small_tables + SL.mixed_atoms;
     }
     a->atom_order          = topo->atom_order;
+    a->point_type          = topo->point_type;
     a->mixed_point         = topo->mixed_point;
     a->atom_cluster_offset = topo->atom_cluster_offset;
     a->bond_pairs          = topo->bond_pairs;      /* the covalent class is first: its bonds start at 0 */
@@ -745,10 +747,6 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->static_bond_clusters= a->has_bonds ? topo->bond_cluster_count[MD_RENDER_MOL_BOND_COVALENT] - cells : 0;
     a->mixed_count         = topo->mixed_bond_count;
     a->n                   = D.scan_n;
-    a->ident0              = (uint32_t)topo->base;
-    a->ident1              = (uint32_t)(topo->base >> 32);
-    a->ident2              = (uint32_t)topo->topology_version;
-    a->ident3              = topo->instance;
 }
 
 /* The small molecules into grid cells, by the positions `a` points at */
@@ -853,11 +851,9 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     a.has_velocity        = !fr && atoms->velocity ? 1u : 0u;
     a.radius_override     = atoms->radius;
     a.has_radius          = atoms->radius ? 1u : 0u;
-    a.rsrc0               = atoms->radius ? (uint32_t)atoms->radius | 1u : 0u;   /* where the radii come from (the marker keeps it) */
-    a.rsrc1               = atoms->radius ? (uint32_t)(atoms->radius >> 32) : 0u;
-    a.full                = radii ? 1u : 0u;      /* a regroup writes the small molecules' radii itself */
 
     bool ok = true;
+    /* the radii are the types' table's: a change of them is a copy of it, and md_render reads it at draw time */
     if (radii && atoms->radius_table && topo->type_count) ok = md_gpu_copy(s, topo->type_radius, atoms->radius_table, (size_t)topo->type_count * 4u);
     if (ok && regroup) ok = run_regroup(r, s, &a, topo, hook, user);
     if (topo->point_count) {
@@ -871,13 +867,6 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
                 a.dw[k]    = k < atoms->frame_count ? atoms->frame_dw[k] : 0.0f;
             }
             a.has_fvel = has_velocity(atoms) ? 1u : 0u;
-            /* the radii from their source when the copy's are not valid (a
-               launch of no groups when they are), then the frames' gather */
-            const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells);
-            const md_gpu_addr_t grid = dynamic + D.marker + 64u;
-            ok = ok && launch(s, r->k_fr_check, md_gpu_grid(1, 1, 1), &a, hook, user, "check");
-            ok = ok && md_gpu_launch_indirect(s, r->k_fr_radii, grid, &a, sizeof(a));
-            if (ok && hook) hook(user, "radii");
             const md_gpu_kernel_t k = r->k_fr_gather[atoms->frame_count == 1 ? 0 : atoms->frame_count == 2 ? 1 : 2];
             md_gpu_grid_t g = groups_for(topo->point_count, 64);
             const uint32_t cap = g_fr_groups ? g_fr_groups : FR_GROUPS;
@@ -887,9 +876,6 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
         } else {
             ok = ok && launch(s, r->k_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         }
-        /* Every gather reads the radii from their source until a full one has
-           marked the copy's radii valid; after that only the flags make it full */
-        ok = ok && launch(s, r->k_mark, md_gpu_grid(1, 1, 1), &a, hook, user, "mark");
     }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return ok;
@@ -1280,7 +1266,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "sol_count", r->k_count }, { "sol_write", r->k_write }, { "sol_gather", r->k_gather },
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
-        { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute }, { "fr_radii", r->k_fr_radii },
+        { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -1330,6 +1316,10 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     p.stride          = 16;
     p.radius          = dynamic + D.points + 12;
     p.radius_stride   = 16;
+    if (!atoms->radius) {                      /* w: the type and flags, the radius from the types' table */
+        p.radius_table       = topo->type_radius;
+        p.radius_table_count = topo->type_count;
+    }
     p.velocity        = has_velocity(atoms) ? dynamic + D.velocity : 0;
     p.velocity_stride = 8;
     p.attr_count      = topo->atom_count;

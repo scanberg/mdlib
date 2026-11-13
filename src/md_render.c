@@ -68,6 +68,7 @@ enum {
     F_PALETTE_IDX  = 1u << 11,
     F_CLUSTERS     = 1u << 12,
     F_SHARED       = 1u << 13,
+    F_RADIUS_TABLE = 1u << 14,
 };
 
 typedef struct gpu_batch_t {
@@ -81,8 +82,8 @@ typedef struct gpu_batch_t {
     md_gpu_float4 tint;
     float         sharpness, desaturate;
     uint32_t      work_offset, rad_stride;
-    md_gpu_addr_t cluster_offset, bounds, cstate, _pptr;
-    uint32_t      cluster_count, cluster_work_offset, cluster_base, _pad2;
+    md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
+    uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 256, "Batch mirror");
 
@@ -487,6 +488,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     out->points.velocity        = b->points.velocity;
     out->points.radius          = b->points.radius;
     out->points.radius_stride   = b->points.radius_stride;
+    out->points.radius_table    = b->points.radius ? b->points.radius_table : 0;
+    out->points.radius_table_count = out->points.radius_table ? b->points.radius_table_count : 0;
     out->points.attr_count      = b->points.attr_count;
     out->points.attr_index      = b->points.attr_index;
     out->points.visible[0]      = b->points.visible[0];
@@ -754,6 +757,8 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->position       = p->position;
     g->velocity       = p->velocity;
     g->radius         = p->radius;
+    g->radius_table       = p->radius ? p->radius_table : 0;
+    g->radius_table_count = g->radius_table ? p->radius_table_count : 0;
     g->attr_index     = p->attr_index;
     g->color          = p->color;
     g->palette_index  = p->palette_index;
@@ -770,6 +775,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     if (b->index)          f |= F_INDEX;
     if (p->velocity)       f |= F_VELOCITY;
     if (p->radius)         f |= F_RADIUS;
+    if (g->radius_table)   f |= F_RADIUS_TABLE;
     if (p->attr_index)     f |= F_ATTR_INDEX;
     if (p->visible[0])     f |= F_VISIBLE0;
     if (p->visible[1])     f |= F_VISIBLE1;
