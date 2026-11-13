@@ -1355,8 +1355,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     base.color           = rep->color;
     base.transform       = rep->transform;
     base.transform_count = rep->transform_count;
-    base.lod_min         = rep->lod_min;
-    base.lod_max         = rep->lod_max;
+    base.fade            = rep->fade;
 
     bool  spheres = false, sticks = false;
     float sphere_scale = 0.0f, sphere_add = 0.0f, stick_radius = 0.0f;

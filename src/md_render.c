@@ -69,7 +69,10 @@ enum {
     F_CLUSTERS     = 1u << 12,
     F_SHARED       = 1u << 13,
     F_RADIUS_TABLE = 1u << 14,
-    F_LOD          = 1u << 15,
+    F_FADE_OUT     = 1u << 15,
+    F_FADE_IN      = 1u << 16,
+    F_FADE_SHRINK  = 1u << 17,
+    F_FADE_THIN    = 1u << 18,
 };
 
 typedef struct gpu_batch_t {
@@ -85,8 +88,7 @@ typedef struct gpu_batch_t {
     uint32_t      work_offset, rad_stride;
     md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
-    float         lod_dnear, lod_dfar;  /* F_LOD: the size window as depths for this camera (lod_depths) */
-    uint32_t      _bpad[2];
+    float         fade_out_a, fade_out_b, fade_in_a, fade_in_b;   /* the bands for this camera (fade_bands) */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 272, "Batch mirror");
 
@@ -119,7 +121,7 @@ enum {
     C_GRID_CVIS = 52, C_GRID_COCC = 60, C_GRID_CST = 64, C_CL_VIS = 72, C_CL_OCC = 74,
     C_ICMD = 80,      /* md_gpu_draw_indexed_cmd_t: capsules, phase 1 and 2: 80..89 */
     C_STICMD = 90,    /* the state list's capsules: 90..94 */
-    C_LOD = 95,       /* elements outside their batch's size window */
+    C_LOD = 95,       /* elements dropped by their batch's fade */
     C_COUNT = 96,
 };
 #define IMPLICIT_CLUSTER 64u
@@ -522,8 +524,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
     }
     out->transform_count = b->transform ? b->transform_count : 0;
-    out->lod_min = b->lod_min > 0.0f ? b->lod_min : 0.0f;
-    out->lod_max = b->lod_max > 0.0f ? b->lod_max : 0.0f;
+    if (b->fade.mode) out->fade = b->fade;
 }
 
 static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) {
@@ -566,6 +567,21 @@ static bool validate(const md_render_frame_t* f) {
         for (uint32_t j = 0; j < i; ++j) {
             if (f->batches[j].key == b->key) {
                 MD_LOG_ERROR("md_render: batches %u and %u share the key %llu", j, i, (unsigned long long)b->key);
+                return false;
+            }
+        }
+        if (b->fade.mode) {
+            const float* bands[2] = { b->fade.in, b->fade.out };
+            for (int k = 0; k < 2; ++k) {
+                const float* r = bands[k];
+                if (r[0] == 0.0f && r[1] == 0.0f) continue;
+                if (!(r[0] > r[1] && r[1] > 0.0f)) {
+                    MD_LOG_ERROR("md_render: batch %u: a fade band is {start, end} with start > end > 0 (got {%g, %g})", i, r[0], r[1]);
+                    return false;
+                }
+            }
+            if (b->fade.in[0] > 0.0f && b->fade.out[0] > 0.0f && b->fade.in[1] < b->fade.out[0]) {
+                MD_LOG_ERROR("md_render: batch %u: its fade's `in` band must end where `out` begins or nearer", i);
                 return false;
             }
         }
@@ -650,7 +666,8 @@ static bool bounds_shared(const md_render_batch_t* a, const md_render_batch_t* b
     x.transform_count = y.transform_count = 0;
     x.points.velocity = y.points.velocity = 0;
     x.points.velocity_stride = y.points.velocity_stride = 0;
-    x.lod_min = y.lod_min = x.lod_max = y.lod_max = 0.0f;     /* the bounds do not depend on it */
+    memset(&x.fade, 0, sizeof(x.fade));                     /* the bounds do not depend on it */
+    memset(&y.fade, 0, sizeof(y.fade));
     return memcmp(&x, &y, sizeof(x)) == 0;
 }
 
@@ -734,7 +751,8 @@ static bool geometry_unchanged(const md_render_view_t v, const md_render_frame_t
         canonical_geometry(&x, &f->batches[i]);
         canonical_geometry(&y, &v->batches[i]);
         x.transform_count = y.transform_count = 0;
-        x.lod_min = y.lod_min = x.lod_max = y.lod_max = 0.0f;   /* a raster, not a refit */
+        memset(&x.fade, 0, sizeof(x.fade));                     /* a raster, not a refit */
+        memset(&y.fade, 0, sizeof(y.fade));
         if (memcmp(&x, &y, sizeof(x)) != 0) return false;
     }
     return true;
@@ -805,7 +823,14 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->radius_scale = b->style.capsules.radius_scale;
         if (b->style.capsules.radius_scale) f |= F_RADIUS_SCALE;
     }
-    if (b->lod_min > 0.0f || b->lod_max > 0.0f) f |= F_LOD;
+    if (b->fade.mode) {
+        if (b->fade.out[0] > 0.0f) f |= F_FADE_OUT;
+        if (b->fade.in[0]  > 0.0f) f |= F_FADE_IN;
+        if (f & (F_FADE_OUT | F_FADE_IN)) {
+            if (b->fade.mode & MD_RENDER_FADE_SHRINK) f |= F_FADE_SHRINK;
+            if (b->fade.mode & MD_RENDER_FADE_THIN)   f |= F_FADE_THIN;
+        }
+    }
     g->flags         = f;
     g->uniform_color = b->color.uniform;
     g->palette_count = b->color.palette_count;
@@ -833,26 +858,34 @@ static const float* prev_transforms(const md_render_view_t v, const md_render_fr
     return cur;
 }
 
-/* The size window of a batch as view-space depths for this camera. A scale
-   s (pixels per unit) is at depth lod_px / s, lod_px = |proj[5]| * height /
-   2 (unjittered), so the window [lod_min, lod_max) is the depths (lod_px /
-   lod_max, lod_px / lod_min]; without lod_max it holds what is at or behind
-   the eye too. Orthographic: one scale, the whole batch in or out. */
-static void lod_depths(gpu_batch_t* g, const md_render_batch_t* b, const md_render_frame_t* f) {
-    const float BIG = 3.0e38f;
-    g->lod_dnear = -BIG;
-    g->lod_dfar  = BIG;
-    if (!(g->flags & F_LOD)) return;
-    const float* P  = f->camera.proj;
-    const float  px = fabsf(P[5]) * 0.5f * (float)f->height;
-    const float  lo = b->lod_min > 0.0f ? b->lod_min : 0.0f;
-    const float  hi = b->lod_max > 0.0f ? b->lod_max : 0.0f;
-    if (P[3] == 0.0f && P[7] == 0.0f && P[11] == 0.0f && P[15] == 1.0f) {
-        if (!(px >= lo && (hi == 0.0f || px < hi))) { g->lod_dnear = BIG; g->lod_dfar = -BIG; }
+/* A batch's fade bands for this camera. The scale (pixels per unit) at
+   view-space depth d is px / d, px = |proj[5]| * height / 2 (unjittered), so
+   a band {s0, s1} is the depths px / s0 .. px / s1, and how far through it
+   an element at depth d is, t = saturate(a d + b), is linear in d.
+   Orthographic: the scale is px everywhere, every element equally far
+   through: a = 0, b = t. Both sides of a handover get the same a and b from
+   the same two numbers. */
+static void fade_band(float out_ab[2], const float band[2], float px, bool ortho) {
+    const double d0 = 1.0 / band[0], d1 = 1.0 / band[1];     /* depths over px */
+    if (ortho) {
+        out_ab[0] = 0.0f;
+        out_ab[1] = (float)((1.0 / px - d0) / (d1 - d0));
         return;
     }
-    if (hi > 0.0f) g->lod_dnear = px / hi;
-    if (lo > 0.0f) g->lod_dfar  = px / lo;
+    const double a = 1.0 / (px * (d1 - d0));
+    out_ab[0] = (float)a;
+    out_ab[1] = (float)(-px * d0 * a);
+}
+
+static void fade_bands(gpu_batch_t* g, const md_render_batch_t* b, const md_render_frame_t* f) {
+    g->fade_out_a = g->fade_out_b = g->fade_in_a = g->fade_in_b = 0.0f;
+    if (!(g->flags & (F_FADE_OUT | F_FADE_IN))) return;
+    const float* P  = f->camera.proj;
+    const float  px = fabsf(P[5]) * 0.5f * (float)f->height;
+    const bool ortho = P[3] == 0.0f && P[7] == 0.0f && P[11] == 0.0f && P[15] == 1.0f;
+    float ab[2];
+    if (g->flags & F_FADE_OUT) { fade_band(ab, b->fade.out, px, ortho); g->fade_out_a = ab[0]; g->fade_out_b = ab[1]; }
+    if (g->flags & F_FADE_IN)  { fade_band(ab, b->fade.in,  px, ortho); g->fade_in_a  = ab[0]; g->fade_in_b  = ab[1]; }
 }
 
 /* Builds and uploads the batch table and transforms for `f`. At a raster the
@@ -910,7 +943,7 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         const md_render_batch_t* b = &f->batches[i];
         md_gpu_addr_t xf = v->table[i].transforms, xp = v->table[i].transforms_prev;
         fill_batch(&v->table[i], b, instance_count(b), xf, xp);
-        lod_depths(&v->table[i], b, f);
+        fade_bands(&v->table[i], b, f);
         gpu_batch_t* g = &v->table[i];
         g->work_offset         = work;
         g->cluster_count       = batch_clusters(b);
@@ -1194,7 +1227,7 @@ bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
     out->elements    = v->stats[best].elements;
     out->hidden      = c[C_HIDDEN];
     out->outside     = c[C_OUTSIDE];
-    out->lod         = c[C_LOD];
+    out->faded       = c[C_LOD];
     out->occluded    = c[C_OCCLUDED];
     out->hardware[0] = c[C_HW1] + c[C_HW1 + 1];
     out->hardware[1] = c[C_HW2] + c[C_HW2 + 1];

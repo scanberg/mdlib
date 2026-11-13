@@ -1061,38 +1061,54 @@ UTEST(render, radius_tables_change_nothing) {
     f_close(&fx);
 }
 
-/* The size window (lod_min, lod_max). Two batches over the same spheres in
-   adjacent windows draw what the same two batches draw with each sphere given
-   by visibility bits to the one whose window holds it: ids, depths and masks
-   to the bit, and each sphere counted out of exactly one window. The spheres
-   are in depth order, so whole clusters of 64 leave a window by their bounds
-   and the one across the boundary is decided sphere by sphere. A camera move
-   changes who draws what without a refit; a change of the window alone is a
-   raster without one. With an orthographic camera the scale is one number. */
-typedef struct lod_scene_t {
+/* ---- Fading with distance ------------------------------------------------- */
+
+/* md_render.c's fade_band and md_render.slang's fade_t and fade_keeps,
+   replicated: a band {s0, s1} for this camera as t = saturate(a d + b) */
+static void fade_ab(const float band[2], float px, bool ortho, float ab[2]) {
+    const double d0 = 1.0 / band[0], d1 = 1.0 / band[1];
+    if (ortho) { ab[0] = 0.0f; ab[1] = (float)((1.0 / px - d0) / (d1 - d0)); return; }
+    const double a = 1.0 / (px * (d1 - d0));
+    ab[0] = (float)a;
+    ab[1] = (float)(-px * d0 * a);
+}
+static float fade_t_cpu(const float ab[2], float d) {
+    float t = fmaf(ab[0], d, ab[1]);
+    return t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+}
+static float fade_h_cpu(uint32_t x) {
+    x ^= x >> 16; x *= 0x7FEB352Du;
+    x ^= x >> 15; x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return (float)(x >> 8) * (1.0f / 16777216.0f);
+}
+
+typedef struct fade_scene_t {
     uint32_t      n;
     float*        z;               /* view-space z of each sphere, camera at rest */
     md_gpu_addr_t vis[2];          /* the reference's visibility bits, batch 0 and 1 */
-    md_render_batch_t b[2];        /* with windows */
-    md_render_batch_t r[2];        /* the reference: without, and visibility bits */
-} lod_scene_t;
+    md_render_batch_t b[2];        /* fading */
+    md_render_batch_t r[2];        /* the reference: no fade, visibility bits */
+} fade_scene_t;
 
-/* The reference's bits for a split at scale x, the camera moved by dz along
-   view z; how near (relative) the nearest sphere's scale is to x */
-static double lod_split(fix_t* fx, lod_scene_t* ls, float lod_px, float x, float dz, bool ortho) {
-    uint32_t words = (ls->n + 31) / 32;
+/* The reference's bits for a THIN handover across `band` (batch 0 fading
+   out, 1 in), the camera moved by dz along view z; how near the nearest
+   sphere's hash is to its t */
+static double fade_split(fix_t* fx, fade_scene_t* fs, const float band[2], float px, float dz, bool ortho) {
+    uint32_t words = (fs->n + 31) / 32;
     uint32_t* bits = calloc(2 * words, 4);
+    float ab[2];
+    fade_ab(band, px, ortho, ab);
     double margin = 1e30;
-    for (uint32_t i = 0; i < ls->n; ++i) {
-        float d  = -(ls->z[i] + dz);
-        float sc = ortho ? lod_px : lod_px / d;
-        uint32_t k = sc >= x ? 0u : 1u;
+    for (uint32_t i = 0; i < fs->n; ++i) {
+        float d = -(fs->z[i] + dz);
+        float t = fade_t_cpu(ab, d), h = fade_h_cpu(i);
+        uint32_t k = h >= t ? 0u : 1u;
         bits[k * words + i / 32] |= 1u << (i % 32);
-        double m = fabs((double)sc - x) / x;
-        if (m < margin) margin = m;
+        if (t > 0.0f && t < 1.0f && fabs((double)h - t) < margin) margin = fabs((double)h - t);
     }
-    md_gpu_upload(fx->gfx, ls->vis[0], bits, words * 4);
-    md_gpu_upload(fx->gfx, ls->vis[1], bits + words, words * 4);
+    md_gpu_upload(fx->gfx, fs->vis[0], bits, words * 4);
+    md_gpu_upload(fx->gfx, fs->vis[1], bits + words, words * 4);
     free(bits);
     return margin;
 }
@@ -1108,16 +1124,23 @@ static int compare_masks(fix_t* fx, md_render_view_t a, md_render_view_t b, uint
     return bad;
 }
 
-UTEST(render, size_window_hands_over) {
+/* THIN: one batch thinning out across a band, another thinning in across the
+   same band, over the same spheres, draw what the two draw with each sphere
+   given by visibility bits to the side its hash puts it on: ids, depths and
+   masks to the bit, and each sphere counted faded exactly once. The spheres
+   are in depth order, so clusters of 64 leave by their bounds and those in
+   the band are decided sphere by sphere. A camera move changes who draws
+   what without a refit; orthographic, every sphere is equally far through. */
+UTEST(render, fade_thin_hands_over) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
     const uint32_t W = 160, H = 120;
     cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
     enum { N = 512 };
-    lod_scene_t ls;
-    memset(&ls, 0, sizeof(ls));
-    ls.n = N;
-    ls.z = malloc(N * sizeof(float));
+    fade_scene_t fs;
+    memset(&fs, 0, sizeof(fs));
+    fs.n = N;
+    fs.z = malloc(N * sizeof(float));
     float* pos = malloc(N * 12);
     float* rad = malloc(N * 4);
     uint32_t sel[N / 32];
@@ -1130,12 +1153,16 @@ UTEST(render, size_window_hands_over) {
         pos[3 * i + 1] = (RND() * 2.0f - 1.0f) * 0.5f * -z * c.tan_half;
         pos[3 * i + 2] = z;
         rad[i] = 0.05f + 0.15f * RND();
-        ls.z[i] = z;
+        fs.z[i] = z;
     }
     #undef RND
     md_gpu_addr_t P = f_buf(&fx, pos, N * 12), R = f_buf(&fx, rad, N * 4), S = f_buf(&fx, sel, sizeof(sel));
-    ls.vis[0] = f_buf(&fx, NULL, N / 8);
-    ls.vis[1] = f_buf(&fx, NULL, N / 8);
+    fs.vis[0] = f_buf(&fx, NULL, N / 8);
+    fs.vis[1] = f_buf(&fx, NULL, N / 8);
+    md_render_camera_t cam = make_camera(&c);
+    const float px = fabsf(cam.proj[5]) * 0.5f * (float)H;
+    /* the band: from sphere 150's depth to sphere 300's, inside clusters */
+    float band[2] = { px / -fs.z[150], px / -fs.z[300] };
     for (int k = 0; k < 2; ++k) {
         md_render_batch_t b = {0};
         b.key = 1 + k; b.kind = MD_RENDER_SPHERES; b.count = N; b.points.count = N;
@@ -1143,40 +1170,37 @@ UTEST(render, size_window_hands_over) {
         b.style.spheres.radius_scale = k ? 1.5f : 1.0f;         /* the stand-in: larger */
         b.color.mode = MD_RENDER_COLOR_UNIFORM;
         b.color.uniform = k ? 0xFFFF0000u : 0xFF0000FFu;
-        ls.b[k] = ls.r[k] = b;
-        ls.r[k].points.visible[0] = ls.vis[k];
+        fs.b[k] = fs.r[k] = b;
+        fs.r[k].points.visible[0] = fs.vis[k];
+        fs.b[k].fade.mode = MD_RENDER_FADE_THIN;
+        memcpy(k ? fs.b[k].fade.in : fs.b[k].fade.out, band, sizeof(band));
     }
-    md_render_camera_t cam = make_camera(&c);
-    const float lod_px = fabsf(cam.proj[5]) * 0.5f * (float)H;
-    /* the split between spheres 200 and 201: inside the cluster 192 .. 255 */
-    float x = lod_px / (0.5f * (-ls.z[200] - ls.z[201]));
-    ls.b[0].lod_min = x;
-    ls.b[1].lod_max = x;
-    EXPECT_GT(lod_split(&fx, &ls, lod_px, x, 0.0f, false), 1e-3);
+    while (fade_split(&fx, &fs, band, px, 0.0f, false) < 1e-4) band[1] *= 0.9993f;
+    memcpy(fs.b[0].fade.out, band, sizeof(band));
+    memcpy(fs.b[1].fade.in,  band, sizeof(band));
 
     md_render_view_t ref = md_render_view_create(fx.r, "visibility bits");
-    md_render_frame_t f  = frame_of(W, H, cam, ls.b, 2);
-    md_render_frame_t fr = frame_of(W, H, cam, ls.r, 2);
+    md_render_frame_t f  = frame_of(W, H, cam, fs.b, 2);
+    md_render_frame_t fr = frame_of(W, H, cam, fs.r, 2);
     md_render_stats_t st;
     int covered = 0, set = 0;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     md_gpu_stream_sync(fx.gfx);
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
-    EXPECT_EQ((uint32_t)N, st.lod);
-    EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.lod + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
-    EXPECT_GT(st.clusters_expanded[0] + st.clusters_expanded[1], 0u);
-    EXPECT_LT(st.clusters_expanded[0] + st.clusters_expanded[1], 16u);     /* 8 clusters a batch: most left whole */
+    EXPECT_EQ((uint32_t)N, st.faded);
+    EXPECT_EQ(st.elements, (uint64_t)st.hidden + st.outside + st.faded + st.occluded + st.hardware[0] + st.hardware[1] + st.compute[0] + st.compute[1]);
+    EXPECT_LT(st.clusters_expanded[0] + st.clusters_expanded[1], 16u);     /* 8 clusters a batch: some left whole */
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     EXPECT_GT(covered, (int)(W * H / 20));
     EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
     EXPECT_GT(set, 0);
-    printf("    %u spheres, split at %.2f px per unit: %d pixels covered, %d masked; lod %u, clusters expanded %u\n",
-           (unsigned)N, x, covered, set, st.lod, st.clusters_expanded[0] + st.clusters_expanded[1]);
+    printf("    %u spheres, band %.2f .. %.2f px per unit: %d pixels covered, %d masked; faded %u, clusters expanded %u\n",
+           (unsigned)N, band[0], band[1], covered, set, st.faded, st.clusters_expanded[0] + st.clusters_expanded[1]);
 
-    /* The camera backs off: more spheres go to the stand-in. The bounds hold. */
+    /* The camera backs off: more spheres to the stand-in, the bounds kept */
     float dz = 6.0f;
-    while (lod_split(&fx, &ls, lod_px, x, dz, false) < 1e-3) dz += 0.0137f;
+    while (fade_split(&fx, &fs, band, px, dz, false) < 1e-4) dz += 0.0137f;
     f.camera.view[14] = fr.camera.view[14] = dz;
     fr.content[MD_RENDER_CONTENT_GEOMETRY]++;           /* the reference's bits changed */
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
@@ -1184,43 +1208,96 @@ UTEST(render, size_window_hands_over) {
     md_gpu_stream_sync(fx.gfx);
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
     EXPECT_FALSE(st.refitted);
+    EXPECT_EQ((uint32_t)N, st.faded);
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
 
-    /* The window alone moves: a raster, no refit */
-    float x2 = x * 0.8f;
-    while (lod_split(&fx, &ls, lod_px, x2, dz, false) < 1e-3) x2 *= 1.0013f;
-    ls.b[0].lod_min = ls.b[1].lod_max = x2;
-    fr.content[MD_RENDER_CONTENT_GEOMETRY]++;
-    md_render_status_t rs;
-    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
-    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &rs));
-    EXPECT_TRUE((rs.work & MD_RENDER_WORK_RASTER) != 0);
-    md_gpu_stream_sync(fx.gfx);
-    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
-    EXPECT_FALSE(st.refitted);
-    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
-    EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
-
-    /* Orthographic: one scale for all. Below a batch's window: nothing of it. */
+    /* Orthographic: every sphere equally far through the band */
     cam_t co = { .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 80.0f };
     md_render_camera_t camo = make_camera(&co);
-    const float ortho_px = fabsf(camo.proj[5]) * 0.5f * (float)H;
-    ls.b[0].lod_min = ls.b[1].lod_max = ortho_px * 1.5f;      /* all to the stand-in */
-    lod_split(&fx, &ls, ortho_px, ortho_px * 1.5f, 0.0f, true);
+    const float pxo = fabsf(camo.proj[5]) * 0.5f * (float)H;
+    band[0] = pxo * 1.5f; band[1] = pxo * 0.5f;                /* halfway through, near enough */
+    while (fade_split(&fx, &fs, band, pxo, 0.0f, true) < 1e-4) band[1] *= 0.9993f;
+    memcpy(fs.b[0].fade.out, band, sizeof(band));
+    memcpy(fs.b[1].fade.in,  band, sizeof(band));
     f.camera = fr.camera = camo;
     fr.content[MD_RENDER_CONTENT_GEOMETRY]++;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     md_gpu_stream_sync(fx.gfx);
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
-    EXPECT_EQ((uint32_t)N, st.lod);
-    EXPECT_EQ(0u, st.clusters_expanded[0] + st.clusters_expanded[1] - (uint32_t)(N / 64));   /* the stand-in's 8 only */
+    EXPECT_EQ((uint32_t)N, st.faded);
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     EXPECT_GT(covered, 0);
 
     md_render_view_destroy(fx.gfx, ref);
-    free(pos); free(rad); free(ls.z);
+    free(pos); free(rad); free(fs.z);
+    f_close(&fx);
+}
+
+/* SHRINK: a sphere's radius scales down to 0 across `out` and up from 0
+   across `in`, linearly in depth. Against analytic spheres of those radii
+   (coverage, depth, a pick on one in the band), and the spheres past a band
+   counted faded. */
+UTEST(render, fade_shrink_scales_radii) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 128, H = 96;
+    cam_t c = { .tan_half = 0.5f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const float px = fabsf(cam.proj[5]) * 0.5f * (float)H;
+    enum { N = 12 };
+    double ctr[N][3], rexp[N];
+    float pos[N * 3], rad[N];
+    /* in: nearer than depth 6 absent, full from 8; out: full to 12, gone at 16 */
+    md_render_batch_t b = {0};
+    b.key = 5; b.kind = MD_RENDER_SPHERES; b.count = N; b.points.count = N;
+    b.style.spheres.radius_scale = 1.0f;
+    b.fade.mode = MD_RENDER_FADE_SHRINK;
+    b.fade.in[0]  = px / 6.0f;  b.fade.in[1]  = px / 8.0f;
+    b.fade.out[0] = px / 12.0f; b.fade.out[1] = px / 16.0f;
+    float ai[2], ao[2];
+    fade_ab(b.fade.in, px, false, ai);
+    fade_ab(b.fade.out, px, false, ao);
+    uint32_t gone = 0;
+    for (int i = 0; i < N; ++i) {
+        double z = -(5.0 + 12.0 * i / (N - 1));                     /* 5 .. 17 */
+        ctr[i][0] = (i % 4 - 1.5) * 0.25 * -z * c.tan_half * c.aspect;
+        ctr[i][1] = ((i / 4) % 3 - 1.0) * 0.3 * -z * c.tan_half;
+        ctr[i][2] = z;
+        rad[i] = 0.12f * (float)-z * c.tan_half;                    /* about the same on screen */
+        for (int k = 0; k < 3; ++k) pos[3 * i + k] = (float)ctr[i][k];
+        float d = (float)-z;
+        double f = (1.0 - fade_t_cpu(ao, d)) * fade_t_cpu(ai, d);
+        rexp[i] = rad[i] * f;
+        if (rexp[i] <= 0.0) gone++;
+    }
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.radius   = f_buf(&fx, rad, sizeof(rad));
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    int judged = 0;
+    EXPECT_EQ(0, check_spheres(&fx, &c, cam, W, H, (const double (*)[3])ctr, rexp, N, &judged));
+    EXPECT_GT(judged, (int)(W * H * 9 / 10));
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_GT(gone, 0u);
+    EXPECT_EQ(gone, st.faded);
+    /* a pick on a sphere in the out band: the hit on the shrunk sphere */
+    int pi = -1;
+    for (int i = 0; i < N; ++i) if (rexp[i] > 0.0 && rexp[i] < rad[i] * 0.9) { pi = i; if (ctr[i][2] < -12.5) break; }
+    ASSERT_GE(pi, 0);
+    uint32_t qx = (uint32_t)((ctr[pi][0] / -ctr[pi][2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+    uint32_t qy = (uint32_t)((0.5 - ctr[pi][1] / -ctr[pi][2] / c.tan_half * 0.5) * H);
+    md_render_pick_t pk;
+    ASSERT_TRUE(f_pick(&fx, qx, qy, &pk));
+    EXPECT_EQ((uint32_t)pi, pk.element);
+    ray_t r = pixel_ray(&c, W, H, qx + 0.5, qy + 0.5);
+    double dist, tt = sphere_t(r, ctr[pi], rexp[pi], &dist);
+    for (int k = 0; k < 3; ++k) EXPECT_NEAR(r.o[k] + r.d[k] * tt, pk.position[k], 1e-3);
+    printf("    %d spheres from depth 5 to 17, in 6 -> 8, out 12 -> 16: %u gone, %d pixels judged; picked %d (radius %.3f of %.3f)\n",
+           N, gone, judged, pi, rexp[pi], rad[pi]);
     f_close(&fx);
 }
 
@@ -1289,14 +1366,15 @@ UTEST(render, mol_licorice_emit_and_pick) {
     EXPECT_EQ(8u, batches[0].count);
     /* emit is pure: asking with no room says how many it needs */
     EXPECT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rep, NULL, 0));
-    /* a representation's size window goes on every batch it emits */
+    /* a representation's fade goes on every batch it emits */
     {
         md_render_mol_rep_t rw = rep;
-        rw.lod_min = 2.5f; rw.lod_max = 40.0f;
+        rw.fade.mode = MD_RENDER_FADE_THIN;
+        rw.fade.out[0] = 2.5f; rw.fade.out[1] = 1.25f;
         md_render_batch_t bw[8];
         ASSERT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rw, bw, 8));
-        for (int k = 0; k < 2; ++k) { EXPECT_EQ(2.5f, bw[k].lod_min); EXPECT_EQ(40.0f, bw[k].lod_max); }
-        EXPECT_EQ(0.0f, batches[0].lod_min);
+        for (int k = 0; k < 2; ++k) { EXPECT_EQ((uint32_t)MD_RENDER_FADE_THIN, bw[k].fade.mode); EXPECT_EQ(2.5f, bw[k].fade.out[0]); EXPECT_EQ(1.25f, bw[k].fade.out[1]); }
+        EXPECT_EQ(0u, batches[0].fade.mode);
     }
 
     /* Looking down -Z at the molecule from 6 Å, orthographic */

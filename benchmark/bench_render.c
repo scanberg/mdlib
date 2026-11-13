@@ -1145,14 +1145,18 @@ static int run_gpu(int argc, char** argv) {
     }
     printf("\n");
 
-    /* standin: licorice drawn where a stick is at least a pixel wide (2.5
-       px/A for 0.2 A), spheres at 0.4 of the atoms' radii beyond (md_render_mol
-       only: two representations in adjacent size windows) */
-    const struct { const char* name; bool licorice; float dist; float standin; } looks[] = {
-        { "spacefill, near", false, 0.6f, 0.0f },
-        { "spacefill, far",  false, 6.0f, 0.0f },
-        { "licorice, near",  true,  0.6f, 0.0f },
-        { "licorice from 2.5 px/A, spheres beyond, near", true, 0.6f, 2.5f },
+    /* fade (md_render_mol only): licorice fading across 2.5 -> 1.25 px/A (a
+       0.2 A stick a pixel wide, then half), thinning out, shrinking out, or
+       thinning out while spacefill at full radii thins in across the same
+       band (each atom drawn by one of the two) */
+    enum { FADE_NONE, FADE_THIN, FADE_SHRINK, FADE_TO_SPACEFILL };
+    const struct { const char* name; bool licorice; float dist; int fade; } looks[] = {
+        { "spacefill, near", false, 0.6f, FADE_NONE },
+        { "spacefill, far",  false, 6.0f, FADE_NONE },
+        { "licorice, near",  true,  0.6f, FADE_NONE },
+        { "licorice thinning out over 2.5 to 1.25 px/A, near",        true, 0.6f, FADE_THIN },
+        { "licorice shrinking out over 2.5 to 1.25 px/A, near",       true, 0.6f, FADE_SHRINK },
+        { "licorice thinning into spacefill over 2.5 to 1.25 px/A, near", true, 0.6f, FADE_TO_SPACEFILL },
     };
     /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
        untested. Rows marked "x:" would be experiments with other settings
@@ -1279,7 +1283,7 @@ static int run_gpu(int argc, char** argv) {
         }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
             if (only_look && !strstr(looks[li].name, only_look)) continue;
-            if (looks[li].standin > 0.0f && src != SRC_MOL) continue;
+            if (looks[li].fade != FADE_NONE && src != SRC_MOL) continue;
             md_render_batch_t b[8];
             memset(b, 0, sizeof(b));
             uint32_t nb = 0;
@@ -1290,15 +1294,20 @@ static int run_gpu(int argc, char** argv) {
                 rep.atom_color = sc.color;
                 if (looks[li].licorice) { rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; }
                 else                    { rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f; }
-                rep.lod_min = looks[li].standin;
+                const float band[2] = { 2.5f, 1.25f };
+                if (looks[li].fade != FADE_NONE) {
+                    rep.fade.mode = looks[li].fade == FADE_SHRINK ? MD_RENDER_FADE_SHRINK : MD_RENDER_FADE_THIN;
+                    memcpy(rep.fade.out, band, sizeof(band));
+                }
                 nb = md_render_mol_emit(&sc.topo, sc.dyn, &atoms, &rep, b, 8);
-                if (looks[li].standin > 0.0f) {
+                if (looks[li].fade == FADE_TO_SPACEFILL) {
                     md_render_mol_rep_t far = rep;
                     far.key = 2;
                     far.type = MD_RENDER_MOL_REP_SPACEFILL;
-                    far.params.spacefill.radius_scale = 0.4f;
-                    far.lod_min = 0.0f;
-                    far.lod_max = looks[li].standin;
+                    far.params.spacefill.radius_scale = 1.0f;
+                    memset(&far.fade, 0, sizeof(far.fade));
+                    far.fade.mode = MD_RENDER_FADE_THIN;
+                    memcpy(far.fade.in, band, sizeof(band));
                     nb += md_render_mol_emit(&sc.topo, sc.dyn, &atoms, &far, b + nb, 8 - nb);
                 }
             }
@@ -1318,7 +1327,7 @@ static int run_gpu(int argc, char** argv) {
             }
             printf("-- %s\n", looks[li].name);
             printf("  %-24s %6s | %17s %17s %17s %17s | %9s %9s %9s %9s %9s %9s | %8s %8s %8s\n", "options", "small", "raster (refit)", "raster (camera)", "resolve", "mask",
-                   "outside", "lod", "occluded", "hw", "compute", "retested", "clusters", "expanded", "c.occl");
+                   "outside", "faded", "occluded", "hw", "compute", "retested", "clusters", "expanded", "c.occl");
             for (size_t oi = 0; oi < sizeof(opts) / sizeof(opts[0]); ++oi) {
                 for (uint32_t pi = 0; pi < (opts[oi].options & MD_RENDER_NO_COMPUTE_RASTER ? 1u : n_small); ++pi) {
                     md_render_debug_occlusion(opts[oi].margin, opts[oi].min_px);
@@ -1355,7 +1364,7 @@ static int run_gpu(int argc, char** argv) {
                     else snprintf(small_s, sizeof(small_s), "%.0f", smalls[pi]);
                     printf("  %-24s %6s | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %9u %9u %9u %9u %9u %9u | %8u %8u %8u\n", opts[oi].name, small_s,
                            tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
-                           st.outside, st.lod, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
+                           st.outside, st.faded, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1], st.occlusion_retested,
                            st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
                     if (oi == 0 && pi == 0) {
                         /* where a camera raster's time goes, pass by pass (each synced) */
