@@ -14,22 +14,23 @@
 //              the atoms, bonds and molecules counted before it; a group adds
 //              a run of molecules with the same cell in one atomic
 //     scan     exclusive, of the per-cell counts (blocks, sums, add)
-//     write    each molecule's atoms and bonds into the tails of the
-//              topology's arrays, at its cell's offset plus its place (the
-//              bonds between the points its atoms now are), and its record
-//              into the next grouping's order
+//     write    each molecule's atoms, their types and its bonds into the
+//              tails of the topology's arrays, at its cell's offset plus its
+//              place (the bonds between the points its atoms now are), and
+//              its record into the next grouping's order
 //     offsets  the cells' cluster offsets; the regroups counted
 //     mixed    the points of the other bonds touching small molecules
 //
 // And on every update, whatever else it does:
 //
 //     gather   the copy that is drawn: per point (cluster order), its atom's
-//              position and radius as a float4, and its velocity. The radius
-//              from `radii`, in point order, kept there by a gather that
-//              fetched it (scattered, like the position) when the radii were
-//              not valid, and by the regroup's write for the small molecules
-//              (from their kinds' types). A marker says `radii` is valid: for
-//              this topology, this grouping, this source of radii.
+//              position and a word (x, y, z, w), and its velocity. w is the
+//              point's type and flags (POINT_TYPE_* below) from the
+//              topology's point_type, in order: md_render takes the radius
+//              from the types' table (the topology's type_radius), so a
+//              change of radii is a change of that table and nothing else.
+//              With the caller's per-atom radii instead, w is the radius,
+//              fetched (scattered, as the position) on every update.
 //
 // The small molecules are records (first atom, its bonds' place among the
 // small bonds, kind, first point)
@@ -54,8 +55,7 @@ struct Args {
     uint* position;             // float3 per atom, `stride` bytes apart
     uint* velocity;             // packed half3 per atom, `vel_stride` bytes apart
     uint* radius_override;      // float per atom
-    uint* points;               // float4 per point (x, y, z, radius): the copy
-    uint* radii;                // float per point: the radii, in point order (the copy's w)
+    uint* points;               // float4 per point (x, y, z, w: the type and flags, or a radius): the copy
     uint* vel_out;              // uint2 per point
     uint* params;               // 16 words: ordered bounds, then the grid
     uint* mol_slot;             // uint4 per slot (a molecule, the last grouping's order): its first
@@ -83,7 +83,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
-    uint* marker;               // 8 words: whose radii `radii` holds, in which grouping, from which source (radii_valid)
+    uint* point_type;           // the topology's: per point its type and flags (POINT_TYPE_*), in point order
     uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
@@ -109,16 +109,12 @@ struct Args {
     uint  has_bonds;
     uint  mode;                 // scan: 0 blocks, 1 the block sums, 2 add
     uint  n;                    // scan: elements
-    uint  atom_count;           // radii, gather
+    uint  atom_count;           // the points (gather)
     uint  type_count;
     uint  vel_stride;
     uint  has_velocity;
     uint  has_radius;           // radius_override given
     uint  mixed_count;
-    uint  full;                 // gather: the radii from their source (the order or the radii changed)
-    uint  ident0;               // the topology the copy belongs to: its block address and version (and ident3)
-    uint  ident1;
-    uint  ident2;
     uint  fr_threads;           // fr_gather: the threads launched (its stride)
     uint  frame_count;          // fr_gather: 1, 2 or 4
     uint  quantized;            // regroup: positions from qsrc, not `position`
@@ -129,9 +125,7 @@ struct Args {
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
     uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
-    uint  rsrc0;                // where the radii come from: radius_override's address | 1, or 0 for the
-    uint  rsrc1;                // types (the marker keeps it: radii from one are not the other's)
-    uint  ident3;               // the topology's instance (each md_render_mol_write its own)
+    uint  _pad0;
 };
 MD_SHADER_ARGS(Args);
 
@@ -143,7 +137,9 @@ static const uint P_INV   = 9u;    // 1 / edge
 static const uint P_DIM   = 10u;   // 3 uints
 static const uint P_EDGE  = 13u;
 
-static const uint MARKER = 0x6D64726Du;   // the copy's radii are valid
+// point_type: the type in the low 16 bits (md_render's radius table index),
+// the point's flags in the high 16 (none yet)
+static const uint POINT_TYPE_MASK = 0xFFFFu;
 
 uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
 uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
@@ -407,7 +403,7 @@ void sol_scan(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     }
 }
 
-// ---- Write, offsets, radii --------------------------------------------------------
+// ---- Write, offsets ---------------------------------------------------------------
 
 // By slot, in the last grouping's order: each molecule's atoms and bonds
 // at its cell's offset plus its place, and its record at its new slot. In
@@ -423,10 +419,6 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
     uint n = a.n_mol;
     uint4* cur = recs_cur(a);
     uint4* nxt = recs_next(a);
-    // the radii only when they are valid going in (and so stay valid): when
-    // not, the copy after the regroup fetches every one anyway, and here they
-    // would be one more array written scattered (the first regroup's)
-    const bool radii = radii_valid(a);
     for (uint j = tid.x; j < n; j += grid_threads(n)) {
         uint4 r = loadAligned<16>(cur + j);
         uint4 st = loadAligned<16>((uint4*)a.mol_slot + j);
@@ -436,10 +428,7 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
         for (uint i = 0u; i < k.x; ++i) {
             uint atom = r.x + a.kind_atom[k.z + i];
             if ((a.dbg & 1u) == 0u) a.atom_order[p0 + i] = atom;
-            if (radii) {
-                uint t = a.kind_type[k.z + i];
-                a.radii[p0 + i] = a.has_radius != 0u ? a.radius_override[atom] : (t < a.type_count ? a.type_radius[t] : 0u);
-            }
+            a.point_type[p0 + i] = a.kind_type[k.z + i];   // flags: none yet
             if (a.has_src != 0u) a.src_point[p0 + i - a.static_atoms] = r.w + i;   // its point in the last grouping
             if ((r.z & REC_MIXED) != 0u) a.mixed_point[atom] = p0 + i;
         }
@@ -467,15 +456,7 @@ void sol_offsets(uint3 tid : SV_DispatchThreadID) {
         a.atom_cluster_offset[a.static_atom_clusters + c] = a.static_atoms + a.cnt[4u * c];
         if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + c] = a.static_bonds + a.cnt[4u * c + 1u];
     }
-    if (tid.x == 0u) {
-        // Every copy gathered before is in the old order. The radii are not:
-        // the static points' stay where they were and the write put the small
-        // molecules' (from the kinds' types or the caller's array); valid if
-        // they were before, from this source.
-        bool kept = radii_valid(a);
-        a.regroups[0] = a.regroups[0] + 1u;
-        if (kept) a.marker[4] = a.regroups[0];
-    }
+    if (tid.x == 0u) a.regroups[0] = a.regroups[0] + 1u;  // the records' buffers swap
 }
 
 
@@ -493,16 +474,10 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-bool radii_valid(Args a) {
-    return a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2 &&
-           a.marker[4] == a.regroups[0] && a.marker[5] == a.rsrc0 && a.marker[6] == a.rsrc1 && a.marker[7] == a.ident3;
-}
 
-// An atom's radius from its source: the caller's array, or its type's
-uint radius_of(Args a, uint atom) {
-    if (a.has_radius != 0u) return a.radius_override[atom];
-    uint t = (a.types[atom >> 1u] >> ((atom & 1u) * 16u)) & 0xFFFFu;
-    return t < a.type_count ? a.type_radius[t] : 0u;
+// A point's w: its type and flags, or the caller's radius for its atom
+uint point_w(Args a, uint p, uint atom) {
+    return a.has_radius != 0u ? a.radius_override[atom] : a.point_type[p];
 }
 
 // A point into the copy: one aligned 16-byte store, whole, so a wave writes
@@ -510,7 +485,7 @@ uint radius_of(Args a, uint atom) {
 // makes: Slang marks it Aligned 4 and NVIDIA splits it in four (with the
 // radius read back from the copy to complete it, the two-frame gather was
 // 6.3 ms on a GTX 1060). Not 12 bytes of 16 either: 0.7 ms slower than the
-// whole store on the M4. The radius comes from `radii`, read in order.
+// whole store on the M4. w: the point's type and flags (or a radius).
 [ForceInline]
 void store_point(uint* points, uint p, uint3 v, uint r) {
     storeAligned<16>((uint4*)points + p, uint4(v, r));
@@ -524,15 +499,10 @@ void store_point(uint* points, uint p, uint3 v, uint r) {
 void sol_gather(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
-    bool reuse = radii_valid(a);
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         uint atom = a.atom_order[p];
         uint* q = a.position + atom * (a.stride >> 2u);
-        uint3 x = uint3(q[0], q[1], q[2]);
-        uint r;
-        if (reuse) r = a.radii[p];
-        else { r = radius_of(a, atom); a.radii[p] = r; }
-        store_point(a.points, p, x, r);
+        store_point(a.points, p, uint3(q[0], q[1], q[2]), point_w(a, p, atom));
         if (a.has_velocity != 0u) {
             uint* w = a.velocity + atom * (a.vel_stride >> 2u);
             storeAligned<8>((uint2*)a.vel_out + p, uint2(w[0], w[1]));
@@ -540,20 +510,6 @@ void sol_gather(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-// After a full gather (its own launch: the gather's threads read the marker)
-[shader("compute")]
-[numthreads(1, 1, 1)]
-void sol_mark(uint3 tid : SV_DispatchThreadID) {
-    Args a = MD_ARGS;
-    a.marker[0] = MARKER;
-    a.marker[1] = a.ident0;
-    a.marker[2] = a.ident1;
-    a.marker[3] = a.ident2;
-    a.marker[4] = a.regroups[0];
-    a.marker[5] = a.rsrc0;
-    a.marker[6] = a.rsrc1;
-    a.marker[7] = a.ident3;
-}
 
 // ---- Frames --------------------------------------------------------------------
 
@@ -590,30 +546,10 @@ float3 mi(CellP c, float3 d) {
     return d;
 }
 
-// Before the frames' gather, when the copy's radii are not valid: each
-// point's radius from its source, into `radii`. fr_check sizes its
-// launch (none when they are), so the gathers need not carry that path.
-[shader("compute")]
-[numthreads(1, 1, 1)]
-void fr_check(uint3 tid : SV_DispatchThreadID) {
-    Args a = MD_ARGS;
-    uint n = a.atom_count;
-    uint* g = a.marker + 16u;                               // the indirect grid
-    g[0] = radii_valid(a) || n == 0u ? 0u : min((n + 63u) / 64u, 65535u);
-    g[1] = 1u;
-    g[2] = 1u;
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void fr_radii(uint3 tid : SV_DispatchThreadID) {
-    Args a = MD_ARGS;
-    uint n = a.atom_count;
-    for (uint p = tid.x; p < n; p += grid_threads(n)) a.radii[p] = radius_of(a, a.atom_order[p]);
-}
 
 // The copy that is drawn, from resident frames in point order: every read in
-// order, every write too; the radii fr_radii's (when they were not valid). A
+// order, every write too (w: point_type; the caller's radius instead is
+// fetched by atom). A
 // kernel per number of frames (COUNT a constant): each frame's parameters
 // and the cell in registers for only the frames it combines.
 [ForceInline]
@@ -645,7 +581,7 @@ void fr_gather_body(uint3 tid, const uint COUNT) {
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
-        store_point(points, p, asuint(pos), a.radii[p]);
+        store_point(points, p, asuint(pos), a.has_radius != 0u ? a.radius_override[a.atom_order[p]] : a.point_type[p]);
         if (vel_out) storeAligned<8>((uint2*)a.vel_out + p, uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z)));
     }
 }

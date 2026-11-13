@@ -295,6 +295,40 @@ UTEST(render, sphere_coverage_depth_pick_perspective) {
     f_close(&fx);
 }
 
+/* Radii from a table: float4 points whose w is a type (low 16 bits) with
+   flags above it; the spheres as drawn are those of the table's radii, and a
+   type past the table's end is radius 0 (not drawn) */
+UTEST(render, sphere_radius_table) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 64, H = 64;
+    cam_t c = { .ortho = true, .half_h = 3.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 50.0f };
+    md_render_camera_t cam = make_camera(&c);
+    const double ctr[2][3] = { { 0.5, 0.2, -10 }, { -1.0, -1.0, -20 } };
+    const double rad[2]    = { 1.2, 2.5 };
+    const float table[3]   = { 0.0f, 2.5f, 1.2f };
+    const uint32_t type[3] = { 2u | (0xABCDu << 16), 1u | (0x1234u << 16), 7u };   /* the third: past the table */
+    float pts[12];
+    for (int i = 0; i < 3; ++i) {
+        for (int k = 0; k < 3; ++k) pts[4 * i + k] = i < 2 ? (float)ctr[i][k] : (k == 2 ? -10.0f : 2.0f);
+        memcpy(&pts[4 * i + 3], &type[i], 4);
+    }
+    md_gpu_addr_t P = f_buf(&fx, pts, sizeof(pts));
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 3; b.points.count = 3;
+    b.points.position = P;      b.points.stride = 16;
+    b.points.radius   = P + 12; b.points.radius_stride = 16;
+    b.points.radius_table = f_buf(&fx, table, sizeof(table));
+    b.points.radius_table_count = 3;
+    b.style.spheres.radius_scale = 1.0f;
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    int judged = 0;
+    EXPECT_EQ(0, check_spheres(&fx, &c, cam, W, H, ctr, rad, 2, &judged));
+    EXPECT_GT(judged, (int)(W * H * 9 / 10));
+    f_close(&fx);
+}
+
 UTEST(render, sphere_coverage_orthographic) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -1251,6 +1285,19 @@ static double grid_cluster_extent(const md_render_mol_topo_t* T, const uint8_t* 
 /* Tryptophan in water, the waters shuffled (whole molecules swap places) so
    their order says nothing of where they are: the update must regroup them,
    and the clustered licorice must give the depths and picks of a plain one. */
+/* Point p's radius as md_render reads it: the float at radius + p * stride,
+   or with a radius table the table's entry for the type in its low 16 bits */
+static float* read_radius_table(fix_t* fx, const md_render_batch_t* b) {
+    if (!b->points.radius_table) return NULL;
+    return (float*)read_block(fx, b->points.radius_table, (uint64_t)b->points.radius_table_count * 4u + 4u);
+}
+static float radius_at(const float* r, uint32_t stride_floats, uint32_t p, const float* table, uint32_t count) {
+    float v = r[(size_t)stride_floats * p];
+    if (!table) return v;
+    uint32_t w; memcpy(&w, &v, 4);
+    return (w & 0xFFFFu) < count ? table[w & 0xFFFFu] : 0.0f;
+}
+
 /* The copy's radii follow their source across regroups: the types' (the
    regroup writes the small molecules' from their kinds) or the caller's
    array, switched with and without a regroup, no flags */
@@ -1262,9 +1309,10 @@ static int radii_wrong(fix_t* fx, const md_render_mol_topo_t* topo, md_gpu_addr_
     uint8_t* ord = read_block(fx, topo->atom_order, (size_t)topo->point_count * 4);
     const float* r = (const float*)(blk + (b.points.radius - dyn));
     const uint32_t* order = (const uint32_t*)ord;
+    float* table = read_radius_table(fx, &b);
     int wrong = 0;
-    for (uint32_t p = 0; p < topo->point_count; ++p) wrong += r[4 * (size_t)p] != expect[order[p]];
-    free(blk); free(ord);
+    for (uint32_t p = 0; p < topo->point_count; ++p) wrong += radius_at(r, 4, p, table, b.points.radius_table_count) != expect[order[p]];
+    free(blk); free(ord); free(table);
     return wrong;
 }
 
@@ -1779,8 +1827,10 @@ static void frames_case(int* utest_result, bool partial) {
         uint8_t* ord = read_block(&fx, topo.atom_order, (size_t)nres * 4);
         const float* pts = (const float*)(blk + (b.points.position - dyn));
         const float* rad = (const float*)(blk + (b.points.radius - dyn));
+        float* rtab = read_radius_table(&fx, &b);
         EXPECT_EQ(16u, b.points.stride);
         EXPECT_EQ(16u, b.points.radius_stride);
+        EXPECT_TRUE(rtab != NULL);                  /* the types' table: w is the type */
         const uint32_t* vel = with_v ? (const uint32_t*)(blk + (b.points.velocity - dyn)) : NULL;
         const uint32_t* order = (const uint32_t*)ord;
         double pos_err = 0, vel_err = 0, vmax = 0;
@@ -1808,7 +1858,7 @@ static void frames_case(int* utest_result, bool partial) {
                     if (fabs(vr) > vmax) vmax = fabs(vr);
                 }
             }
-            rad_bad += rad[4 * p] != sys.atom.type.radius[sys.atom.type_idx[i]];
+            rad_bad += radius_at(rad, 4, p, rtab, b.points.radius_table_count) != sys.atom.type.radius[sys.atom.type_idx[i]];
         }
         printf("    %u frame(s), t %.1f: position error %.2g A, velocity error %.2g of the tolerance (max |v| %.2f)\n",
                cases[ci].count, cases[ci].t, pos_err, vel_err, vmax);
@@ -1826,7 +1876,7 @@ static void frames_case(int* utest_result, bool partial) {
             if (with_v) { const size_t vo = (size_t)(b.points.velocity - dyn); EXPECT_EQ(0, memcmp(blk + vo, blk1 + vo, (size_t)nres * 8)); }
             free(blk1);
         }
-        free(blk); free(ord);
+        free(blk); free(ord); free(rtab);
     }
     /* the topology after the regroups: whole and consistent */
     uint8_t* img = read_block(&fx, topo.base, topo.size);

@@ -53,8 +53,9 @@ lifetime:
     molecules are grouped in molecule order.
 
   * What md_render draws is a copy of the atoms in cluster order, in the
-    per-frame block: float4 (position, radius) and the velocity per point,
-    gathered by every md_render_mol_update. Read through the cluster order
+    per-frame block: float4 (position, w) and the velocity per point,
+    gathered by every md_render_mol_update. w is the point's type and flags
+    (topo.point_type), or its radius when the caller gives radii per atom. Read through the cluster order
     instead, the caller's arrays in file order cost a scattered fetch in
     every pass over the elements; the copy costs one per position change.
     Everything per atom that is not geometry (colours, palette indices,
@@ -73,11 +74,13 @@ lifetime:
     data, no regroup, no copy. Per-atom arrays (colours, visibility,
     selection, the caller's positions) stay indexed by atom.
 
-  * Radii come from the system's particle types: the topology holds each
-    atom's type and a radius per type (sys->atom.type.radius when planned).
-    A changed radius per type is a table and an update
-    (MD_RENDER_MOL_UPDATE_RADII); a radius per atom (size by a property)
-    is the caller's array, md_render_mol_atoms_t.radius.
+  * Radii come from the system's particle types and stay a table as long as
+    they can: the topology holds each point's type and a radius per type
+    (sys->atom.type.radius when planned), and md_render takes a point's
+    radius from that table when it draws. A changed radius per type is the
+    table and nothing else (MD_RENDER_MOL_UPDATE_RADII copies it in); a
+    radius per atom (size by a property) is the caller's array,
+    md_render_mol_atoms_t.radius, gathered into the copy by every update.
 
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, solid (dashes per kind wait for capsule dashes in md_render). Declared
@@ -163,6 +166,9 @@ typedef struct md_render_mol_topo_t {
     /* The resident atoms in cluster order: residue clusters first, then one
        cluster per grid cell (grid_cells of them, some empty) for the small
        molecules. Point p (of the per-frame copy) is atom atom_order[p]. */
+    md_gpu_addr_t point_type;              /* uint32 [point_count]: the point's particle
+                                              type (low 16 bits; the radius table's
+                                              index) and flags (high 16: none yet)      */
     md_gpu_addr_t atom_order;              /* uint32 [point_count]: point -> atom (the
                                               other way: invert it; a map kept from atom
                                               to point would cost every regroup a write
@@ -271,10 +277,10 @@ enum {
        the tails of topo's atom_order and covalent bonds, and their cluster
        offsets. Nothing to do without small molecules. */
     MD_RENDER_MOL_UPDATE_REGROUP = 1u << 0,
-    /* The radii changed: topo's radius per type copied from
-       atoms->radius_table when given, and the copy's radii from those (or
-       from atoms->radius). Also after changing atoms->radius (its contents
-       or which array). */
+    /* The radii per type changed: topo's radius per type copied from
+       atoms->radius_table (what md_render reads when it draws: nothing per
+       point changes). A radius per atom (atoms->radius) is read by every
+       update, without the flag. */
     MD_RENDER_MOL_UPDATE_RADII   = 1u << 1,
 };
 

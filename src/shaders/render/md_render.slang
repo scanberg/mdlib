@@ -76,6 +76,7 @@ static const uint F_COLOR        = 1u << 10;
 static const uint F_PALETTE_IDX  = 1u << 11;
 static const uint F_CLUSTERS     = 1u << 12;  // explicit cluster offsets
 static const uint F_SHARED       = 1u << 13;  // bounds shared with an earlier batch: no refit
+static const uint F_RADIUS_TABLE = 1u << 14;  // `radius` holds a type per point (low 16 bits; high: flags)
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -135,11 +136,11 @@ struct Batch {
     uint*   cluster_offset;
     float4* bounds;             // [2 per cluster]: min.xyz, max radius factor; max.xyz, unused
     uint*   cstate;             // [2 per cluster]: OR of the state bits of its elements, visible elements
-    uint*   _pptr;
+    float*  radius_table;       // F_RADIUS_TABLE: float per type
     uint    cluster_count;
     uint    cluster_work_offset;// first cluster work item (cluster x instance)
     uint    cluster_base;       // first cluster over all batches (refit)
-    uint    _pad2;
+    uint    radius_table_count;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -276,8 +277,15 @@ Mat load_transform(float4* t, uint inst) {
     return m;
 }
 
+// A point's radius: its own, or its type's (F_RADIUS_TABLE: the table is a
+// few dozen floats, in cache; the type comes in the same load as the position
+// when the points are float4)
 float point_radius(Batch b, uint pi) {
-    return ((b.flags & F_RADIUS) != 0u) ? b.radius[pi * (b.rad_stride >> 2)] : 0.0;
+    if ((b.flags & F_RADIUS) == 0u) return 0.0;
+    float v = b.radius[pi * (b.rad_stride >> 2)];
+    if ((b.flags & F_RADIUS_TABLE) == 0u) return v;
+    uint t = asuint(v) & 0xFFFFu;
+    return t < b.radius_table_count ? b.radius_table[t] : 0.0;
 }
 
 float sphere_radius(Batch b, uint pi) {
