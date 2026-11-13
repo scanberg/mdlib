@@ -73,6 +73,8 @@ enum {
     F_FADE_IN      = 1u << 16,
     F_FADE_SHRINK  = 1u << 17,
     F_FADE_THIN    = 1u << 18,
+    F_SPL_AXIS     = 1u << 19,
+    F_SPL_WIDTH    = 1u << 20,
 };
 
 typedef struct gpu_batch_t {
@@ -89,8 +91,9 @@ typedef struct gpu_batch_t {
     md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
     float         fade_out_a, fade_out_b, fade_in_a, fade_in_b;   /* the bands for this camera (fade_bands) */
+    md_gpu_addr_t spl_axis, spl_width;                            /* SPLINES */
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 272, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 288, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -522,6 +525,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.capsules.offset       = c->offset;
         out->style.capsules.offset_mode  = c->offset_mode;
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
+    } else if (b->kind == MD_RENDER_SPLINES) {
+        out->style.splines = b->style.splines;
     }
     out->transform_count = b->transform ? b->transform_count : 0;
     if (b->fade.mode) out->fade = b->fade;
@@ -538,6 +543,15 @@ static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) 
     out->desaturate    = b->color.desaturate;
 }
 
+/* The kinds md_render culls and rasterises; and which hardware raster draws
+   them: 0 spheres (quads), 1 capsules and splines (boxes) */
+static bool culled_kind(md_render_kind_t k) {
+    return k == MD_RENDER_SPHERES || k == MD_RENDER_CAPSULES || k == MD_RENDER_SPLINES;
+}
+static uint32_t hw_kind(md_render_kind_t k) {
+    return k == MD_RENDER_SPHERES ? 0u : 1u;
+}
+
 static bool validate(const md_render_frame_t* f) {
     if (f->width == 0 || f->height == 0) {
         MD_LOG_ERROR("md_render: frame of zero size");
@@ -552,7 +566,7 @@ static bool validate(const md_render_frame_t* f) {
         return false;
     }
     uint64_t total = 0;
-    for (uint32_t i = 0; i < f->batch_count; ++i) total += (f->batches[i].kind == MD_RENDER_SPHERES || f->batches[i].kind == MD_RENDER_CAPSULES)
+    for (uint32_t i = 0; i < f->batch_count; ++i) total += culled_kind(f->batches[i].kind)
         ? (uint64_t)f->batches[i].count * ((f->batches[i].transform && f->batches[i].transform_count) ? f->batches[i].transform_count : 1u) : 0u;
     if (total >= (1ull << 31)) {
         MD_LOG_ERROR("md_render: %llu elements times instances in a frame; at most 2^31", (unsigned long long)total);
@@ -589,10 +603,15 @@ static bool validate(const md_render_frame_t* f) {
         case MD_RENDER_SPHERES:
         case MD_RENDER_CAPSULES:
             break;
+        case MD_RENDER_SPLINES:
+            if (b->count && !b->index) {
+                MD_LOG_ERROR("md_render: batch %u: splines need an index (control points and their flags)", i);
+                return false;
+            }
+            break;
         case MD_RENDER_EXTERNAL:
             continue;
         case MD_RENDER_POLYGONS:
-        case MD_RENDER_SPLINES:
         case MD_RENDER_TRIANGLES:
             MD_LOG_ERROR("md_render: batch %u: kind %d is not implemented yet", i, (int)b->kind);
             return false;
@@ -642,14 +661,14 @@ static uint32_t instance_count(const md_render_batch_t* b) {
 
 /* Work items of the cull: elements times instances, for the kinds that are culled */
 static uint64_t batch_work(const md_render_batch_t* b) {
-    if (b->kind != MD_RENDER_SPHERES && b->kind != MD_RENDER_CAPSULES) return 0;
+    if (!culled_kind(b->kind)) return 0;
     return (uint64_t)b->count * instance_count(b);
 }
 
 /* Store the frame as the one last drawn. */
 /* Clusters of a batch: given, or runs of 64 consecutive elements */
 static uint32_t batch_clusters(const md_render_batch_t* b) {
-    if (b->kind != MD_RENDER_SPHERES && b->kind != MD_RENDER_CAPSULES) return 0;
+    if (!culled_kind(b->kind)) return 0;
     if (b->cluster_offset && b->cluster_count) return b->cluster_count;
     return (b->count + IMPLICIT_CLUSTER - 1) / IMPLICIT_CLUSTER;
 }
@@ -822,6 +841,12 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->s0 = b->style.capsules.radius;
         g->radius_scale = b->style.capsules.radius_scale;
         if (b->style.capsules.radius_scale) f |= F_RADIUS_SCALE;
+    } else if (b->kind == MD_RENDER_SPLINES) {
+        g->s0        = b->style.splines.radius;
+        g->spl_axis  = b->style.splines.axis;
+        g->spl_width = b->style.splines.width;
+        if (g->spl_axis)  f |= F_SPL_AXIS;
+        if (g->spl_width) f |= F_SPL_WIDTH;
     }
     if (b->fade.mode) {
         if (b->fade.out[0] > 0.0f) f |= F_FADE_OUT;
@@ -1166,8 +1191,7 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
         if (b->count && (b->points.state[0] || b->points.state[1])) {
-            if (b->kind == MD_RENDER_SPHERES)  has[0] = true;
-            if (b->kind == MD_RENDER_CAPSULES) has[1] = true;
+            if (culled_kind(b->kind)) has[hw_kind(b->kind)] = true;
         }
     }
     if (!has[0] && !has[1]) return true;
@@ -1379,7 +1403,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         bool has_kind[2] = { false, false };
         for (uint32_t i = 0; i < f->batch_count; ++i) {
             const md_render_batch_t* b = &f->batches[i];
-            uint32_t k = b->kind == MD_RENDER_CAPSULES ? 1u : 0u;
+            uint32_t k = hw_kind(b->kind);
             work[k] += batch_work(b);
             if (batch_work(b)) has_kind[k] = true;
         }

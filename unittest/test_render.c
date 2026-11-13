@@ -421,6 +421,546 @@ UTEST(render, capsule_coverage_depth_pick) {
     f_close(&fx);
 }
 
+/* ---- Splines ------------------------------------------------------------------- */
+
+static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered);
+
+/* Distance from p to the rectangle x in [x0, x1], y in [yc - a, yc + a], z 0 */
+static double rect_dist(const double p[3], double x0, double x1, double yc, double a) {
+    double dx = p[0] < x0 ? x0 - p[0] : p[0] > x1 ? p[0] - x1 : 0.0;
+    double dy = fabs(p[1] - yc) - a;
+    if (dy < 0) dy = 0;
+    return sqrt(dx * dx + dy * dy + p[2] * p[2]);
+}
+
+/* Straight splines along local x: each part is a rectangle (the swept
+   segment of its width) widened by the radius, exactly what the pieces of a
+   straight spline make, caps included */
+typedef struct bar_part_t { double x0, x1, yc, a; int element; } bar_part_t;
+typedef struct bar_scene_t {
+    double R[3][3];      /* local to view: view = R local + t */
+    double t[3];
+    double radius;
+    const bar_part_t* part;
+    int part_count;
+} bar_scene_t;
+
+/* The scene's distance at view-space p, and the nearest part and how far the next nearest is behind it */
+static double bar_sdf(const bar_scene_t* s, const double pv[3], int* who, double* gap) {
+    double q[3] = { pv[0] - s->t[0], pv[1] - s->t[1], pv[2] - s->t[2] }, p[3];
+    for (int i = 0; i < 3; ++i) p[i] = s->R[0][i] * q[0] + s->R[1][i] * q[1] + s->R[2][i] * q[2];   /* R^T q */
+    double best = 1e30, second = 1e30;
+    *who = -1;
+    for (int k = 0; k < s->part_count; ++k) {
+        double d = rect_dist(p, s->part[k].x0, s->part[k].x1, s->part[k].yc, s->part[k].a) - s->radius;
+        if (d < best) { second = best; best = d; *who = s->part[k].element; }
+        else if (d < second) second = d;
+    }
+    *gap = second - best;
+    return best;
+}
+
+/* Every pixel against the scene, sphere traced: coverage, the part (where no
+   other is as near), depth. Rays that graze it are not judged. */
+static int check_bars(fix_t* fx, const cam_t* c, md_render_camera_t cam, uint32_t W, uint32_t H, const bar_scene_t* s, int* judged) {
+    md_render_targets_t t = md_render_view_targets(fx->view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    int bad = 0;
+    *judged = 0;
+    if (!f_read(fx, t.id, id, W * H * 8) || !f_read(fx, t.depth, dp, W * H * 4)) { free(id); free(dp); return -1; }
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            ray_t r = pixel_ray(c, W, H, x + 0.5, y + 0.5);
+            double tt = 0.0, dmin = 1e30, gap = 0.0;
+            int who = -1;
+            bool hit = false;
+            for (int it = 0; it < 4000 && tt < 200.0; ++it) {
+                double p[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+                double d = bar_sdf(s, p, &who, &gap);
+                if (d < 1e-7) { hit = true; break; }
+                if (d < dmin) dmin = d;
+                tt += d;
+            }
+            if (!hit && dmin < 2e-3) continue;              /* grazes */
+            if (hit && dmin < 2e-3 && tt > 0) {
+                /* near the silhouette on the way in: judge only if the ray came in steeply */
+                continue;
+            }
+            (*judged)++;
+            uint32_t ix = id[2 * (y * W + x)], iy = id[2 * (y * W + x) + 1];
+            if (!hit) { if (iy != 0) bad++; continue; }
+            if ((iy >> 20) == 0) { bad++; continue; }
+            if (gap > 1e-3 && ix != (uint32_t)who) { bad++; if (bad < 6) printf("    pixel (%u, %u): part %u, expected %d\n", x, y, ix, who); continue; }
+            double p[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+            float ed = proj_depth(&cam, p);
+            if (fabsf(ed - dp[y * W + x]) > 1e-4f * fmaxf(fabsf(ed), 1e-3f) + 1e-6f) {
+                bad++;
+                if (bad < 6) printf("    pixel (%u, %u): depth %.7g, expected %.7g\n", x, y, dp[y * W + x], ed);
+            }
+        }
+    }
+    free(id); free(dp);
+    return bad;
+}
+
+/* Straight splines are exact: a ribbon of seven control points whose parts
+   are widths of their own (steps: caps on the wider side), one part hidden
+   (caps on its neighbours), and a tube of four (width 0: a capsule). Turned,
+   seen in perspective; coverage, the part each pixel shows and depth against
+   the rectangles widened by the radius. Then hidden parts, a pick. */
+UTEST(render, spline_straight_parts) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 128, H = 96;
+    cam_t c = { .tan_half = 0.45f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    enum { NA = 7, NB = 4, N = NA + NB };
+    const double d = 1.2, radius = 0.22;
+    const double wa[NA] = { 0.5, 0.5, 0.9, 0.9, 0.3, 0.6, 0.6 };
+    /* the local frame turned: about x by 50 degrees, then about y by 25 */
+    const double ax = 50 * 3.14159265358979 / 180, ay = 25 * 3.14159265358979 / 180;
+    const double Rx[3][3] = { { 1, 0, 0 }, { 0, cos(ax), -sin(ax) }, { 0, sin(ax), cos(ax) } };
+    const double Ry[3][3] = { { cos(ay), 0, sin(ay) }, { 0, 1, 0 }, { -sin(ay), 0, cos(ay) } };
+    bar_scene_t sc = { .t = { -0.4, -0.2, -11.0 }, .radius = radius };
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { sc.R[i][j] = 0; for (int k = 0; k < 3; ++k) sc.R[i][j] += Ry[i][k] * Rx[k][j]; }
+    float pos[N * 3], axis[N * 4], width[N * 2];
+    uint32_t index[N];
+    double local[N][3];
+    for (int k = 0; k < NA; ++k) { local[k][0] = -3.6 + k * d; local[k][1] = -0.8; local[k][2] = 0; }
+    for (int k = 0; k < NB; ++k) { local[NA + k][0] = -2.0 + k * d; local[NA + k][1] = 1.6; local[NA + k][2] = 0; }
+    for (int k = 0; k < N; ++k) {
+        for (int i = 0; i < 3; ++i) pos[3 * k + i] = (float)(sc.R[i][0] * local[k][0] + sc.R[i][1] * local[k][1] + sc.R[i][2] * local[k][2] + sc.t[i]);
+        for (int i = 0; i < 3; ++i) axis[4 * k + i] = (float)(sc.R[i][1] * ((k % 2) ? -2.0 : 0.5));   /* local y, any length, either sign */
+        axis[4 * k + 3] = 0;
+        width[2 * k] = width[2 * k + 1] = k < NA ? (float)wa[k] : 0.0f;
+        index[k] = (uint32_t)k;
+    }
+    index[0] |= MD_RENDER_SPLINE_FIRST; index[NA - 1] |= MD_RENDER_SPLINE_LAST;
+    index[NA] |= MD_RENDER_SPLINE_FIRST; index[N - 1] |= MD_RENDER_SPLINE_LAST;
+    uint32_t vis = ~0u & ~(1u << 3);                    /* part 3 hidden */
+    bar_part_t parts[N];
+    int np = 0;
+    for (int k = 0; k < N; ++k) {
+        if (k == 3) continue;
+        const bool first = k == 0 || k == NA, last = k == NA - 1 || k == N - 1;
+        parts[np].x0 = local[k][0] - (first ? 0.0 : 0.5 * d);
+        parts[np].x1 = local[k][0] + (last ? 0.0 : 0.5 * d);
+        parts[np].yc = local[k][1];
+        parts[np].a  = width[2 * k];
+        parts[np].element = k;
+        np++;
+    }
+    sc.part = parts; sc.part_count = np;
+
+    md_render_batch_t b = {0};
+    b.key = 9; b.kind = MD_RENDER_SPLINES; b.count = N; b.points.count = N;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.visible[0] = f_buf(&fx, &vis, 4);
+    b.index = f_buf(&fx, index, sizeof(index));
+    b.style.splines.radius = (float)radius;
+    b.style.splines.axis   = f_buf(&fx, axis, sizeof(axis));
+    b.style.splines.width  = f_buf(&fx, width, sizeof(width));
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    int judged = 0;
+    EXPECT_EQ(0, check_bars(&fx, &c, cam, W, H, &sc, &judged));
+    EXPECT_GT(judged, (int)(W * H * 8 / 10));
+    printf("    %d parts drawn (one hidden), %d pixels judged\n", np, judged);
+
+    /* the same with every part small enough for the compute raster: the
+       same ids and depths to the bit */
+    md_render_view_t hw = md_render_view_create(fx.r, "hardware only");
+    md_render_frame_t fh = f;
+    fh.options = MD_RENDER_NO_COMPUTE_RASTER;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, hw, &fh, NULL));
+    f.small_pixels = 1000.0f;
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_GT(st.compute[0] + st.compute[1], 0u);
+    int covered = 0;
+    EXPECT_EQ(0, compare_views(&fx, fx.view, hw, W, H, &covered));
+    md_render_view_destroy(fx.gfx, hw);
+
+    /* a pick at part 5's middle: the part, its point on the face */
+    double pl[3] = { local[5][0], local[5][1], radius }, pv[3];
+    for (int i = 0; i < 3; ++i) pv[i] = sc.R[i][0] * pl[0] + sc.R[i][1] * pl[1] + sc.R[i][2] * pl[2] + sc.t[i];
+    uint32_t qx = (uint32_t)((pv[0] / -pv[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+    uint32_t qy = (uint32_t)((0.5 - pv[1] / -pv[2] / c.tan_half * 0.5) * H);
+    md_render_pick_t pk;
+    ASSERT_TRUE(f_pick(&fx, qx, qy, &pk));
+    EXPECT_EQ(9u, (unsigned)pk.key);
+    EXPECT_EQ(MD_RENDER_SPLINES, pk.kind);
+    EXPECT_EQ(5u, pk.element);
+    ray_t r = pixel_ray(&c, W, H, qx + 0.5, qy + 0.5);
+    double tt = 0.0, gap;
+    int who;
+    for (int it = 0; it < 4000; ++it) {
+        double p[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+        double dd = bar_sdf(&sc, p, &who, &gap);
+        if (dd < 1e-7) break;
+        tt += dd;
+    }
+    for (int k = 0; k < 3; ++k) EXPECT_NEAR(r.o[k] + r.d[k] * tt, pk.position[k], 1e-3);
+    f_close(&fx);
+}
+
+
+/* Curved splines against the sweep they stand for: the union of the balls
+   of the radius around the profile's segments, sampled densely along each
+   part from the same B-spline (mirrored ends, unit axes chained in sign,
+   made orthogonal to the tangent). The renderer cuts parts into straight
+   pieces, so it is judged within a pixel of that surface. */
+enum { SW_S = 49 };
+typedef struct sweep_part_t {
+    int    element;
+    double a[SW_S][3], b[SW_S][3];   /* the profile's segment at each sample, view space */
+    double ctr[3], bound;            /* a ball around every segment of the part */
+} sweep_part_t;
+typedef struct sweep_t { sweep_part_t* part; int count; double radius; } sweep_t;
+
+static double pt_seg_dist(const double p[3], const double a[3], const double b[3]) {
+    double ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+    double ll = dot3(ab, ab), s = ll > 0 ? dot3(ap, ab) / ll : 0.0;
+    s = s < 0 ? 0 : s > 1 ? 1 : s;
+    double d[3] = { ap[0] - ab[0] * s, ap[1] - ab[1] * s, ap[2] - ab[2] * s };
+    return sqrt(dot3(d, d));
+}
+
+/* Distance between the segments p1 q1 and p2 q2 (Ericson 5.1.9) */
+static double seg_seg_dist(const double p1[3], const double q1[3], const double p2[3], const double q2[3]) {
+    double d1[3], d2[3], r[3];
+    for (int i = 0; i < 3; ++i) { d1[i] = q1[i] - p1[i]; d2[i] = q2[i] - p2[i]; r[i] = p1[i] - p2[i]; }
+    double a = dot3(d1, d1), e = dot3(d2, d2), f = dot3(d2, r), s, t;
+    if (e <= 1e-30) {
+        if (a <= 1e-30) { s = t = 0; }
+        else { t = 0; s = -dot3(d1, r) / a; s = s < 0 ? 0 : s > 1 ? 1 : s; }
+    } else {
+        double c = dot3(d1, r);
+        if (a <= 1e-30) { s = 0; t = f / e; t = t < 0 ? 0 : t > 1 ? 1 : t; }
+        else {
+            double b = dot3(d1, d2), den = a * e - b * b;
+            s = den > 1e-30 ? (b * f - c * e) / den : 0.0;
+            s = s < 0 ? 0 : s > 1 ? 1 : s;
+            t = (b * s + f) / e;
+            if (t < 0) { t = 0; s = -c / a; s = s < 0 ? 0 : s > 1 ? 1 : s; }
+            else if (t > 1) { t = 1; s = (b - c) / a; s = s < 0 ? 0 : s > 1 ? 1 : s; }
+        }
+    }
+    double dd[3];
+    for (int i = 0; i < 3; ++i) dd[i] = p1[i] + d1[i] * s - (p2[i] + d2[i] * t);
+    return sqrt(dot3(dd, dd));
+}
+
+/* The sweep of every visible part of the splines in pos (view space) */
+static int sweep_build(sweep_t* sw, const double (*pos)[3], const double (*axis)[3], const float* width, const uint32_t* index,
+                       const bool* visible, int n, double radius) {
+    sw->part = calloc(n, sizeof(sweep_part_t));
+    sw->count = 0;
+    sw->radius = radius;
+    for (int s0 = 0; s0 < n;) {
+        int s1 = s0;
+        while (!(index[s1] & MD_RENDER_SPLINE_LAST)) s1++;
+        int m = s1 - s0 + 1;
+        /* the points with two mirrored at each end; axes unit, chained in sign from the first */
+        double (*P)[3] = malloc((m + 4) * sizeof(*P)), (*Wx)[3] = malloc((m + 4) * sizeof(*Wx));
+        for (int k = 0; k < m; ++k) {
+            for (int i = 0; i < 3; ++i) { P[k + 2][i] = pos[s0 + k][i]; Wx[k + 2][i] = axis[s0 + k][i]; }
+            double l = sqrt(dot3(Wx[k + 2], Wx[k + 2]));
+            for (int i = 0; i < 3; ++i) Wx[k + 2][i] = l > 0 ? Wx[k + 2][i] / l : 0.0;
+            if (k > 0 && dot3(Wx[k + 2], Wx[k + 1]) < 0) for (int i = 0; i < 3; ++i) Wx[k + 2][i] = -Wx[k + 2][i];
+        }
+        for (int i = 0; i < 3; ++i) {
+            P[1][i] = 2 * P[2][i] - P[3][i];           P[0][i] = 2 * P[1][i] - P[2][i];
+            P[m + 2][i] = 2 * P[m + 1][i] - P[m][i];   P[m + 3][i] = 2 * P[m + 2][i] - P[m + 1][i];
+            Wx[0][i] = Wx[1][i] = Wx[2][i];            Wx[m + 2][i] = Wx[m + 3][i] = Wx[m + 1][i];
+        }
+        for (int k = 0; k < m && m > 1; ++k) {
+            int e = s0 + k;
+            if (!visible[e]) continue;
+            sweep_part_t* pt = &sw->part[sw->count++];
+            pt->element = e;
+            double u0 = k == 0 ? 0.0 : -0.5, u1 = k == m - 1 ? 0.0 : 0.5;
+            for (int j = 0; j < SW_S; ++j) {
+                double f = (double)j / (SW_S - 1), u = u0 + (u1 - u0) * f;
+                int base = u < 0 ? k : k + 1;          /* extended index of the first of the four */
+                double x = u < 0 ? u + 1.0 : u, x2 = x * x, x3 = x2 * x, ix = 1 - x;
+                double bw[4] = { ix * ix * ix / 6, (3 * x3 - 6 * x2 + 4) / 6, (-3 * x3 + 3 * x2 + 3 * x + 1) / 6, x3 / 6 };
+                double dw[4] = { -0.5 * ix * ix, 1.5 * x2 - 2 * x, -1.5 * x2 + x + 0.5, 0.5 * x2 };
+                double c[3] = {0}, t[3] = {0}, w[3] = {0};
+                for (int q = 0; q < 4; ++q) for (int i = 0; i < 3; ++i) {
+                    c[i] += P[base + q][i] * bw[q]; t[i] += P[base + q][i] * dw[q]; w[i] += Wx[base + q][i] * bw[q];
+                }
+                double tt = dot3(t, t), wt = dot3(w, t);
+                if (tt > 0) for (int i = 0; i < 3; ++i) w[i] -= t[i] * wt / tt;
+                double wl = sqrt(dot3(w, w));
+                double a = (double)width[2 * e] + ((double)width[2 * e + 1] - (double)width[2 * e]) * f;
+                for (int i = 0; i < 3; ++i) {
+                    double wi = wl > 1e-12 ? w[i] / wl : 0.0;
+                    pt->a[j][i] = c[i] - wi * a;
+                    pt->b[j][i] = c[i] + wi * a;
+                }
+            }
+            for (int i = 0; i < 3; ++i) pt->ctr[i] = 0.5 * (pt->a[SW_S / 2][i] + pt->b[SW_S / 2][i]);
+            pt->bound = 0;
+            for (int j = 0; j < SW_S; ++j) {
+                double da[3] = { pt->a[j][0] - pt->ctr[0], pt->a[j][1] - pt->ctr[1], pt->a[j][2] - pt->ctr[2] };
+                double db[3] = { pt->b[j][0] - pt->ctr[0], pt->b[j][1] - pt->ctr[1], pt->b[j][2] - pt->ctr[2] };
+                pt->bound = fmax(pt->bound, fmax(sqrt(dot3(da, da)), sqrt(dot3(db, db))));
+            }
+        }
+        free(P); free(Wx);
+        s0 = s1 + 1;
+    }
+    return sw->count;
+}
+
+/* Distance from p to the sweep; the nearest part's element and how much farther the next is */
+static double sweep_sdf(const sweep_t* sw, const double p[3], int* who, double* gap) {
+    double best = 1e30, second = 1e30;
+    *who = -1;
+    for (int k = 0; k < sw->count; ++k) {
+        const sweep_part_t* pt = &sw->part[k];
+        double dc[3] = { p[0] - pt->ctr[0], p[1] - pt->ctr[1], p[2] - pt->ctr[2] };
+        if (sqrt(dot3(dc, dc)) - pt->bound - sw->radius > second) continue;
+        double d = 1e30;
+        for (int j = 0; j < SW_S; ++j) d = fmin(d, pt_seg_dist(p, pt->a[j], pt->b[j]));
+        d -= sw->radius;
+        if (d < best) { second = best; best = d; *who = pt->element; }
+        else if (d < second) second = d;
+    }
+    *gap = second - best;
+    return best;
+}
+
+/* The ray's (t in [0, tmax]) distance to the swept segments: < radius, it goes through */
+static double sweep_ray_dist(const sweep_t* sw, ray_t r, double tmax) {
+    double q[3] = { r.o[0] + r.d[0] * tmax, r.o[1] + r.d[1] * tmax, r.o[2] + r.d[2] * tmax };
+    double best = 1e30;
+    for (int k = 0; k < sw->count; ++k) {
+        const sweep_part_t* pt = &sw->part[k];
+        if (pt_seg_dist(pt->ctr, r.o, q) - pt->bound > best) continue;
+        for (int j = 0; j < SW_S; ++j) best = fmin(best, seg_seg_dist(r.o, q, pt->a[j], pt->b[j]));
+    }
+    return best;
+}
+
+UTEST(render, spline_curves_match_the_sweep) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144;
+    cam_t c = { .tan_half = 0.45f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    /* A: a helix ribbon, axes along the helix axis in alternating sign and
+       length; B: a twisting strand with an arrow (a step up, then down to 0);
+       C: a wavy tube, one part hidden */
+    enum { NA = 11, NB = 8, NC = 9, N = NA + NB + NC };
+    const double radius = 0.18;
+    double local[N][3], laxis[N][3];
+    float width[N * 2];
+    for (int k = 0; k < NA; ++k) {
+        double ph = k * 100.0 * 3.14159265358979 / 180;
+        local[k][0] = -5.0 + k * 1.0; local[k][1] = 2.6 + 2.0 * cos(ph); local[k][2] = 2.0 * sin(ph);
+        double l = (k % 2) ? -0.5 : 1.5;
+        laxis[k][0] = l; laxis[k][1] = 0; laxis[k][2] = 0;
+        width[2 * k] = width[2 * k + 1] = 0.7f;
+    }
+    for (int k = 0; k < NB; ++k) {
+        int e = NA + k;
+        double th = k * 15.0 * 3.14159265358979 / 180, l = ((k % 2) ? -1.0 : 1.0) * (1 + k % 3);
+        local[e][0] = -5.0 + k * 1.4; local[e][1] = -1.4 + ((k % 2) ? 0.35 : -0.35); local[e][2] = 0.3 * sin((double)k);
+        laxis[e][0] = 0; laxis[e][1] = sin(th) * l; laxis[e][2] = cos(th) * l;
+        width[2 * e] = width[2 * e + 1] = 0.8f;
+    }
+    width[2 * (NA + NB - 2)] = 1.3f;  width[2 * (NA + NB - 2) + 1] = 0.65f;     /* the arrow */
+    width[2 * (NA + NB - 1)] = 0.65f; width[2 * (NA + NB - 1) + 1] = 0.0f;
+    for (int k = 0; k < NC; ++k) {
+        int e = NA + NB + k;
+        local[e][0] = -5.0 + k * 1.25; local[e][1] = -4.3 + 0.8 * sin(1.3 * k); local[e][2] = 1.0 * cos(0.9 * k);
+        laxis[e][0] = laxis[e][1] = laxis[e][2] = 0;
+        width[2 * e] = width[2 * e + 1] = 0.0f;
+    }
+    const double ax = 35 * 3.14159265358979 / 180, ay = -20 * 3.14159265358979 / 180;
+    const double Rx[3][3] = { { 1, 0, 0 }, { 0, cos(ax), -sin(ax) }, { 0, sin(ax), cos(ax) } };
+    const double Ry[3][3] = { { cos(ay), 0, sin(ay) }, { 0, 1, 0 }, { -sin(ay), 0, cos(ay) } };
+    const double tr[3] = { 0.3, 0.2, -15.0 };
+    double R[3][3];
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { R[i][j] = 0; for (int k = 0; k < 3; ++k) R[i][j] += Ry[i][k] * Rx[k][j]; }
+    float pos[N * 3], axis[N * 4];
+    double vpos[N][3], vaxis[N][3];
+    uint32_t index[N];
+    bool visible[N];
+    for (int k = 0; k < N; ++k) {
+        for (int i = 0; i < 3; ++i) {
+            pos[3 * k + i] = (float)(R[i][0] * local[k][0] + R[i][1] * local[k][1] + R[i][2] * local[k][2] + tr[i]);
+            axis[4 * k + i] = (float)(R[i][0] * laxis[k][0] + R[i][1] * laxis[k][1] + R[i][2] * laxis[k][2]);
+            vpos[k][i] = pos[3 * k + i];
+            vaxis[k][i] = axis[4 * k + i];
+        }
+        axis[4 * k + 3] = 0;
+        index[k] = (uint32_t)k;
+        visible[k] = true;
+    }
+    index[0] |= MD_RENDER_SPLINE_FIRST;       index[NA - 1] |= MD_RENDER_SPLINE_LAST;
+    index[NA] |= MD_RENDER_SPLINE_FIRST;      index[NA + NB - 1] |= MD_RENDER_SPLINE_LAST;
+    index[NA + NB] |= MD_RENDER_SPLINE_FIRST; index[N - 1] |= MD_RENDER_SPLINE_LAST;
+    const int hidden = NA + NB + 4;
+    visible[hidden] = false;
+    uint32_t vis = ~(1u << hidden);
+
+    md_render_batch_t b = {0};
+    b.key = 5; b.kind = MD_RENDER_SPLINES; b.count = N; b.points.count = N;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.visible[0] = f_buf(&fx, &vis, 4);
+    b.index = f_buf(&fx, index, sizeof(index));
+    b.style.splines.radius = (float)radius;
+    b.style.splines.axis   = f_buf(&fx, axis, sizeof(axis));
+    b.style.splines.width  = f_buf(&fx, width, sizeof(width));
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    f.options = MD_RENDER_NO_COMPUTE_RASTER;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    sweep_t sw;
+    sweep_build(&sw, (const double (*)[3])vpos, (const double (*)[3])vaxis, width, index, visible, N, radius);
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4));
+    int bad = 0, covered = 0, judged_parts = 0;
+    double worst_surface = 0;    /* in pixels */
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            uint32_t ix = id[2 * (y * W + x)], iy = id[2 * (y * W + x) + 1];
+            double rd = sweep_ray_dist(&sw, r, 100.0);
+            /* a pixel's size in world at depth z, from the ray through the scene's middle */
+            double px_at15 = 15.0 * 2.0 * c.tan_half / H;
+            if (iy == 0) {
+                if (rd < radius - 0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, the sweep %.3f px inside\n", x, y, (radius - rd) / px_at15); }
+                continue;
+            }
+            covered++;
+            if (rd > radius + 0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, the sweep %.3f px away\n", x, y, (rd - radius) / px_at15); continue; }
+            double zv = -c.n / dp[y * W + x], tp = zv / r.d[2];
+            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            double pxw = -P[2] * 2.0 * c.tan_half / H;
+            int who; double gap;
+            double sd = sweep_sdf(&sw, P, &who, &gap);
+            worst_surface = fmax(worst_surface, fabs(sd) / pxw);
+            if (fabs(sd) > 0.5 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the surface\n", x, y, sd / pxw); continue; }
+            if (gap > pxw) {
+                judged_parts++;
+                if (ix != (uint32_t)who) { bad++; if (bad < 8) printf("    pixel (%u, %u): part %u, expected %d\n", x, y, ix, who); continue; }
+            }
+            /* nothing of the sweep in front: the ray before P stays outside but for a pixel */
+            double tt = 0.0;
+            for (int it = 0; it < 400 && tt < tp; ++it) {
+                double q[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+                double d = sweep_sdf(&sw, q, &who, &gap);
+                double qw = -q[2] * 2.0 * c.tan_half / H;
+                if (d < -0.5 * qw) { bad++; if (bad < 8) printf("    pixel (%u, %u): the sweep %.3f px in front\n", x, y, (tp - tt) / qw); break; }
+                tt += fmax(fabs(d), 0.25 * qw);
+            }
+        }
+    }
+    printf("    %d pixels covered, %d with a clear part; the farthest %.3f px from the sweep\n", covered, judged_parts, worst_surface);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered, (int)(W * H / 8));
+    EXPECT_GT(judged_parts, covered / 2);
+
+    /* the compute raster: the same ids and depths to the bit */
+    md_render_view_t cr = md_render_view_create(fx.r, "compute raster");
+    md_render_frame_t fc = f;
+    fc.options = 0;
+    fc.small_pixels = 1000.0f;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, cr, &fc, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(cr, &st));
+    EXPECT_GT(st.compute[0] + st.compute[1], 0u);
+    int cov2 = 0;
+    EXPECT_EQ(0, compare_views(&fx, cr, fx.view, W, H, &cov2));
+    md_render_view_destroy(fx.gfx, cr);
+
+    /* picks at each part's control point: what the raster drew there */
+    int picks = 0;
+    for (int e = 0; e < N; ++e) {
+        double* q = vpos[e];
+        int32_t qx = (int32_t)((q[0] / -q[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        int32_t qy = (int32_t)((0.5 - q[1] / -q[2] / c.tan_half * 0.5) * H);
+        if (qx < 0 || qy < 0 || qx >= (int32_t)W || qy >= (int32_t)H) continue;
+        uint32_t i = (uint32_t)qy * W + (uint32_t)qx;
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, (uint32_t)qx, (uint32_t)qy, &pk));
+        if (id[2 * i + 1] == 0) { EXPECT_EQ(0u, (unsigned)pk.key); continue; }
+        picks++;
+        EXPECT_EQ(5u, (unsigned)pk.key);
+        EXPECT_EQ(id[2 * i], pk.element);
+        EXPECT_EQ(pk.element & 0x3FFFFFFFu, pk.attr);
+        ray_t r = pixel_ray(&c, W, H, qx + 0.5, qy + 0.5);
+        double zv = -c.n / dp[i], tp = zv / r.d[2];
+        for (int k = 0; k < 3; ++k) EXPECT_NEAR(r.o[k] + r.d[k] * tp, pk.position[k], 1e-4 * 15.0);
+    }
+    EXPECT_GT(picks, N / 2);
+
+    /* every other part of the helix selected: its mask where the raster
+       shows them, its outline around more (where the turn in front covers
+       the turn behind) */
+    uint32_t sel = 0x555u & ((1u << NA) - 1u);
+    b.points.state[0] = f_buf(&fx, &sel, 4);
+    f.content[MD_RENDER_CONTENT_STATE]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    uint32_t* m = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.mask, m, W * H * 4));
+    int mbad = 0, mvis = 0, many = 0;
+    for (uint32_t i = 0; i < W * H; ++i) {
+        bool helix = id[2 * i + 1] != 0 && id[2 * i] < NA && (id[2 * i] % 2) == 0;
+        bool vis = (m[i] & 0xFFu) != 0, any = (m[i] & 0xFF00u) != 0;
+        mvis += vis; many += any;
+        if (vis != helix || (vis && !any) || (m[i] & 0xFFFF0000u)) {
+            if (mbad < 6) printf("    pixel (%u, %u): mask %08x, part %u\n", i % W, i / W, m[i], id[2 * i]);
+            mbad++;
+        }
+    }
+    EXPECT_EQ(0, mbad);
+    EXPECT_GT(mvis, 500);
+    EXPECT_GT(many, mvis + 50);
+    printf("    the selected parts: %d pixels in view, %d in all\n", mvis, many);
+    free(m);
+
+    /* shrunk across a fade band through the scene: thinner, the rasters
+       still agree to the bit; past the band, nothing */
+    b.points.state[0] = 0;
+    b.fade.mode = MD_RENDER_FADE_SHRINK;
+    b.fade.out[0] = 14.0f; b.fade.out[1] = 8.0f;     /* px per unit: depth 11.4 to 20 */
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    cr = md_render_view_create(fx.r, "compute raster");
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, cr, &fc, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    int cov3 = 0;
+    EXPECT_EQ(0, compare_views(&fx, cr, fx.view, W, H, &cov3));
+    EXPECT_GT(cov3, covered / 4);
+    EXPECT_LT(cov3, covered * 3 / 4);
+    b.fade.out[0] = 40.0f; b.fade.out[1] = 30.0f;    /* depth 4 to 5.3: the scene is past it */
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    EXPECT_EQ((uint32_t)(N - 1), st.faded);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8));
+    int left = 0;
+    for (uint32_t i = 0; i < W * H; ++i) left += id[2 * i + 1] != 0;
+    EXPECT_EQ(0, left);
+    printf("    shrunk: %d pixels; past the band: %d\n", cov3, left);
+    md_render_view_destroy(fx.gfx, cr);
+    free(id); free(dp); free(sw.part);
+    f_close(&fx);
+}
+
 UTEST(render, index_visibility_instances) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
