@@ -1,6 +1,7 @@
 ﻿#include "md_infer_internal.h"
 #include <core/md_executor.h>
 #include <core/md_hash.h>
+#include <core/md_xxhash.h>     // XXH3 of the residues' labels, in the loop of infer_residue_keys
 #include <core/md_log.h>
 
 // Particle type inference: the types of the atoms and beads from their names and residues (md_util.h).
