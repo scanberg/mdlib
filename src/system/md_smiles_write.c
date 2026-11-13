@@ -18,6 +18,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
+#include <core/md_sort.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,14 +68,10 @@ static void put(sw_t* w, const char* s) {
 
 // ### RANKS ###
 
-// What an atom is, before its neighbours are looked at
-static int cmp_invariant(const sw_atom_t* a, const sw_atom_t* b) {
-    if (a->cls != b->cls) return a->cls < b->cls ? -1 : 1;
-    if (a->z != b->z) return a->z < b->z ? -1 : 1;
-    if (a->aromatic != b->aromatic) return a->aromatic ? 1 : -1;
-    if (a->charge != b->charge) return a->charge < b->charge ? -1 : 1;
-    if (a->num_nbr != b->num_nbr) return a->num_nbr < b->num_nbr ? -1 : 1;
-    return 0;
+// What an atom is, before its neighbours are looked at, as a key in that order: its class, element, aromatic or not,
+// charge and the number of its neighbours (at most 64)
+static uint64_t invariant_key(const sw_atom_t* a) {
+    return ((uint64_t)a->cls << 24) | ((uint64_t)a->z << 16) | ((uint64_t)a->aromatic << 15) | ((uint64_t)(uint8_t)(a->charge + 128) << 7) | a->num_nbr;
 }
 
 typedef struct sw_key_t {
@@ -84,9 +81,14 @@ typedef struct sw_key_t {
     uint32_t  num;
 } sw_key_t;
 
-static int cmp_u64(const void* a, const void* b) {
-    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
-    return x < y ? -1 : x > y;
+// A few at most: a list of neighbours
+static void sort_small_u64(uint64_t* v, uint32_t n) {
+    for (uint32_t i = 1; i < n; ++i) {
+        const uint64_t x = v[i];
+        uint32_t j = i;
+        while (j > 0 && v[j - 1] > x) { v[j] = v[j - 1]; --j; }
+        v[j] = x;
+    }
 }
 
 static int cmp_key(const void* pa, const void* pb) {
@@ -108,46 +110,74 @@ static int cmp_key_atom(const void* pa, const void* pb) {
     return a->atom < b->atom ? -1 : a->atom > b->atom;
 }
 
-// Refines the ranks by the neighbours' until the number of classes no longer grows; returns the number of classes
-static uint32_t refine(sw_t* w, sw_key_t* keys) {
-    uint32_t classes = 0;
+// The end of the class (atoms of one rank) which starts at place s of order
+static inline uint32_t class_end(const sw_t* w, const uint32_t* order, uint32_t s) {
+    uint32_t e = s + 1;
+    while (e < w->n && w->atoms[order[e]].rank == w->atoms[order[s]].rank) ++e;
+    return e;
+}
+
+// Refines the ranks by the neighbours' until the classes (atoms of one rank) no longer split; returns their number. A
+// rank is the place of the first atom of its class in the order of (rank, the neighbours' ranks, atom): the atoms are
+// kept in that order, and a class of one atom stays where it is, so a round sorts the classes of several only. order
+// and fresh are of n atoms, count of n + 2.
+static uint32_t refine(sw_t* w, sw_key_t* keys, uint32_t* order, uint32_t* fresh, uint32_t* count) {
+    const uint32_t n = w->n;
+    // The atoms by rank (a broken tie may have moved one up to n), and each rank the place of its class
+    md_memset(count, 0, (n + 2) * sizeof(uint32_t));
+    for (uint32_t i = 0; i < n; ++i) count[w->atoms[i].rank + 1] += 1;
+    for (uint32_t r = 0; r <= n; ++r) count[r + 1] += count[r];
+    for (uint32_t i = 0; i < n; ++i) order[count[w->atoms[i].rank]++] = i;
+    for (uint32_t i = 0; i < n; ++i) fresh[i] = (i && w->atoms[order[i]].rank == w->atoms[order[i - 1]].rank) ? fresh[i - 1] : i;
+    for (uint32_t i = 0; i < n; ++i) w->atoms[order[i]].rank = fresh[i];
+
     for (;;) {
-        for (uint32_t i = 0; i < w->n; ++i) {
-            sw_key_t* k = &keys[i];
-            const sw_atom_t* a = &w->atoms[i];
-            k->atom = i;
-            k->rank = a->rank;
-            k->num = a->num_nbr;
-            for (uint32_t j = 0; j < a->num_nbr; ++j) {
-                const uint32_t o = w->nbr[a->nbr_beg + j];
-                k->nbr[j] = ((uint64_t)w->atoms[o].rank << 8) | w->nbr_bond[a->nbr_beg + j];
+        // Each class of several: the keys of its atoms from the ranks of this round, sorted, ranked anew by place
+        bool split = false;
+        for (uint32_t s = 0, e; s < n; s = e) {
+            e = class_end(w, order, s);
+            if (e - s < 2) continue;
+            for (uint32_t i = s; i < e; ++i) {
+                sw_key_t* k = &keys[i];
+                const sw_atom_t* a = &w->atoms[order[i]];
+                k->atom = order[i];
+                k->rank = a->rank;
+                k->num  = a->num_nbr;
+                for (uint32_t j = 0; j < a->num_nbr; ++j) {
+                    const uint32_t o = w->nbr[a->nbr_beg + j];
+                    k->nbr[j] = ((uint64_t)w->atoms[o].rank << 8) | w->nbr_bond[a->nbr_beg + j];
+                }
+                sort_small_u64(k->nbr, k->num);
             }
-            qsort(k->nbr, k->num, sizeof(uint64_t), cmp_u64);
+            qsort(keys + s, e - s, sizeof(sw_key_t), cmp_key_atom);
+            for (uint32_t i = s; i < e; ++i) {
+                const bool same = i > s && cmp_key(&keys[i - 1], &keys[i]) == 0;
+                fresh[i] = same ? fresh[i - 1] : i;
+                split |= i > s && !same;
+            }
         }
-        qsort(keys, w->n, sizeof(sw_key_t), cmp_key_atom);
-        uint32_t r = 0, cnt = 1;
-        for (uint32_t i = 0; i < w->n; ++i) {
-            if (i && cmp_key(&keys[i - 1], &keys[i]) != 0) { r = i; cnt += 1; }
-            w->atoms[keys[i].atom].rank = r;
+        if (!split) break;
+        // The new ranks only now, as every key of the round is of the ranks before it
+        for (uint32_t s = 0, e; s < n; s = e) {
+            e = class_end(w, order, s);
+            if (e - s < 2) continue;
+            for (uint32_t i = s; i < e; ++i) order[i] = keys[i].atom;
+            for (uint32_t i = s; i < e; ++i) w->atoms[order[i]].rank = fresh[i];
         }
-        if (cnt == classes) return cnt;
-        classes = cnt;
     }
+    uint32_t classes = 0;
+    for (uint32_t i = 0; i < n; ++i) classes += !i || w->atoms[order[i]].rank != w->atoms[order[i - 1]].rank;
+    return classes;
 }
 
 static void rank_atoms(sw_t* w) {
-    // Initial ranks by what each atom is
+    // Initial ranks by what each atom is: the place of the first of its kind
+    uint64_t* inv   = md_alloc(w->alloc, w->n * sizeof(uint64_t));
     uint32_t* order = md_alloc(w->alloc, w->n * sizeof(uint32_t));
-    for (uint32_t i = 0; i < w->n; ++i) order[i] = i;
-    for (uint32_t i = 1; i < w->n; ++i) {
-        // insertion sort: stable, and n is small
-        const uint32_t v = order[i];
-        uint32_t j = i;
-        while (j > 0 && cmp_invariant(&w->atoms[order[j - 1]], &w->atoms[v]) > 0) { order[j] = order[j - 1]; --j; }
-        order[j] = v;
-    }
+    for (uint32_t i = 0; i < w->n; ++i) inv[i] = invariant_key(&w->atoms[i]);
+    md_argsort_radix_u64(order, inv, w->n);
     for (uint32_t i = 0; i < w->n; ++i) {
-        const bool same = i && cmp_invariant(&w->atoms[order[i - 1]], &w->atoms[order[i]]) == 0;
+        const bool same = i && inv[order[i - 1]] == inv[order[i]];
         w->atoms[order[i]].rank = same ? w->atoms[order[i - 1]].rank : i;
     }
     // Each key's list holds as many as any atom has: the keys are sorted, and so change atoms, every round
@@ -155,20 +185,22 @@ static void rank_atoms(sw_t* w) {
     for (uint32_t i = 0; i < w->n; ++i) max_nbr = MD_MAX(max_nbr, w->atoms[i].num_nbr);
     sw_key_t* keys = md_alloc(w->alloc, w->n * sizeof(sw_key_t));
     for (uint32_t i = 0; i < w->n; ++i) keys[i].nbr = md_alloc(w->alloc, max_nbr * sizeof(uint64_t));
-    uint32_t classes = refine(w, keys);
+    uint32_t* held  = md_alloc(w->alloc, w->n * sizeof(uint32_t));      // Atoms of each rank (ranks are below n)
+    uint32_t* fresh = md_alloc(w->alloc, w->n * sizeof(uint32_t));
+    uint32_t* count = md_alloc(w->alloc, (w->n + 2) * sizeof(uint32_t));
+    uint32_t classes = refine(w, keys, order, fresh, count);
     while (classes < w->n) {
         // Break the lowest tie: the first atom of the lowest rank held by several moves ahead of the others
-        uint32_t best_rank = UINT32_MAX, pick = UINT32_MAX;
-        for (uint32_t i = 0; i < w->n; ++i) {
-            const uint32_t r = w->atoms[i].rank;
-            bool tied = false;
-            for (uint32_t j = 0; j < w->n && !tied; ++j) tied = j != i && w->atoms[j].rank == r;
-            if (tied && r < best_rank) { best_rank = r; pick = i; }
-        }
-        if (pick == UINT32_MAX) break;
+        md_memset(held, 0, w->n * sizeof(uint32_t));
+        for (uint32_t i = 0; i < w->n; ++i) held[w->atoms[i].rank] += 1;
+        uint32_t best_rank = 0;
+        while (best_rank < w->n && held[best_rank] < 2) ++best_rank;
+        if (best_rank == w->n) break;
+        uint32_t pick = 0;
+        while (w->atoms[pick].rank != best_rank) ++pick;
         // The tied atoms move up by one place, the one picked stays: it is now ranked before them
         for (uint32_t i = 0; i < w->n; ++i) if (i != pick && w->atoms[i].rank >= best_rank) w->atoms[i].rank += 1;
-        classes = refine(w, keys);
+        classes = refine(w, keys, order, fresh, count);
     }
 }
 
@@ -324,32 +356,56 @@ static void write_from(sw_t* w, uint32_t a, uint32_t from, const sw_ring_t* ring
     --w->depth;
 }
 
+// The place of atom o among the atoms given (lookup: atom << 32 | place, sorted), UINT32_MAX when it is not one
+static uint32_t local_of(const uint64_t* lookup, uint32_t n, int32_t o) {
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) / 2;
+        if ((uint32_t)(lookup[mid] >> 32) < (uint32_t)o) lo = mid + 1;
+        else hi = mid;
+    }
+    return (lo < n && (uint32_t)(lookup[lo] >> 32) == (uint32_t)o) ? (uint32_t)lookup[lo] : UINT32_MAX;
+}
+
 size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int32_t* atoms, size_t count, const uint32_t* classes) {
     if (buf && cap) buf[0] = '\0';
     if (!sys || !atoms || count == 0 || count > MD_SMILES_WRITE_MAX) return 0;
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
     sw_t w = {.buf = buf, .cap = buf ? cap : 0, .alloc = alloc};
     w.n = (uint32_t)count;
     w.atoms = md_alloc(alloc, count * sizeof(sw_atom_t));
     memset(w.atoms, 0, count * sizeof(sw_atom_t));
     size_t result = 0;
 
-    // The atoms, and their bonds among themselves
+    // The atoms given, in range and each once, sorted with their places to look them up
+    uint64_t* lookup = md_alloc(alloc, count * sizeof(uint64_t));
     for (uint32_t i = 0; i < w.n; ++i) {
         const int32_t ai = atoms[i];
         if (ai < 0 || (size_t)ai >= sys->atom.count) goto done;
-        for (uint32_t k = 0; k < i; ++k) if (atoms[k] == ai) goto done;     // each atom once
+        lookup[i] = ((uint64_t)(uint32_t)ai << 32) | i;
+    }
+    md_sort_radix_u64(lookup, w.n);
+    for (uint32_t i = 1; i < w.n; ++i) if ((lookup[i] >> 32) == (lookup[i - 1] >> 32)) goto done;
+
+    // The atoms, and their bonds among themselves
+    size_t num_conn = 0;
+    for (uint32_t i = 0; i < w.n; ++i) {
+        const int32_t ai = atoms[i];
+        const md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)ai);
+        num_conn += it.end_idx - it.i;
         sw_atom_t* a = &w.atoms[i];
         a->idx = ai;
         a->z = (uint8_t)md_atom_atomic_number(&sys->atom, (size_t)ai);
         a->charge = (int8_t)md_atom_formal_charge(&sys->atom, (size_t)ai);
         a->cls = classes ? classes[i] : 0;
     }
-    md_array(uint32_t) nbr = 0;
-    md_array(uint8_t) nbr_bond = 0;
+    uint32_t* nbr      = md_alloc(alloc, MD_MAX(1, num_conn) * sizeof(uint32_t));
+    uint8_t*  nbr_bond = md_alloc(alloc, MD_MAX(1, num_conn));
+    uint32_t  num_nbr  = 0;
     for (uint32_t i = 0; i < w.n; ++i) {
         sw_atom_t* a = &w.atoms[i];
-        a->nbr_beg = (uint32_t)md_array_size(nbr);
+        a->nbr_beg = num_nbr;
         md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)a->idx);
         while (md_bond_iter_has_next(&it)) {
             const int32_t o = md_bond_iter_atom_index(&it);
@@ -359,8 +415,7 @@ size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int3
             if (kind != MD_BOND_KIND_COVALENT && kind != MD_BOND_KIND_COORDINATE) continue;
             // Aromatic as the system has it, through any of its bonds: a ring atom given without its ring is still one
             if (f & MD_BOND_FLAG_AROMATIC) a->aromatic = true;
-            uint32_t local = UINT32_MAX;
-            for (uint32_t k = 0; k < w.n && local == UINT32_MAX; ++k) if (atoms[k] == o) local = k;
+            const uint32_t local = local_of(lookup, w.n, o);
             if (local == UINT32_MAX) continue;
             uint8_t b;
             if (f & MD_BOND_FLAG_AROMATIC) b = MD_SMILES_BOND_AROMATIC;
@@ -371,10 +426,11 @@ size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int3
                 case 4: b = MD_SMILES_BOND_QUADRUPLE; break;
                 default: b = MD_SMILES_BOND_ANY; break;
             }
-            md_array_push(nbr, local, alloc);
-            md_array_push(nbr_bond, b, alloc);
+            nbr[num_nbr]      = local;
+            nbr_bond[num_nbr] = b;
+            num_nbr++;
         }
-        a->num_nbr = (uint32_t)md_array_size(nbr) - a->nbr_beg;
+        a->num_nbr = num_nbr - a->nbr_beg;
         if (a->num_nbr > 64) goto done;
         // Its hydrogens, explicit and implicit as the system has them, less those written as atoms
         uint32_t bonded_h = 0, written_h = 0;
@@ -384,7 +440,7 @@ size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int3
             md_bond_iter_next(&hit);
             if (md_atom_atomic_number(&sys->atom, (size_t)o) != 1) continue;
             bonded_h += 1;
-            for (uint32_t k = 0; k < w.n; ++k) if (atoms[k] == o) { written_h += 1; break; }
+            written_h += local_of(lookup, w.n, o) != UINT32_MAX;
         }
         const uint32_t total_h = sys->atom.hydrogen_count ? MD_MAX((uint32_t)sys->atom.hydrogen_count[a->idx], bonded_h) : bonded_h;
         a->h = total_h > written_h ? total_h - written_h : 0;
@@ -420,6 +476,6 @@ size_t md_smiles_write(char* buf, size_t cap, const md_system_t* sys, const int3
 
 done:
     if (!result && buf && cap) buf[0] = '\0';
-    md_arena_allocator_destroy(alloc);
+    md_temp_end(temp);
     return result;
 }
