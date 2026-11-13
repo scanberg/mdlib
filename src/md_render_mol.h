@@ -163,9 +163,10 @@ typedef struct md_render_mol_topo_t {
     /* The resident atoms in cluster order: residue clusters first, then one
        cluster per grid cell (grid_cells of them, some empty) for the small
        molecules. Point p (of the per-frame copy) is atom atom_order[p]. */
-    md_gpu_addr_t atom_order;              /* uint32 [point_count]: point -> atom       */
-    md_gpu_addr_t atom_point;              /* uint32 [atom_count]: atom -> point,
-                                              UINT32_MAX for an atom not resident       */
+    md_gpu_addr_t atom_order;              /* uint32 [point_count]: point -> atom (the
+                                              other way: invert it; a map kept from atom
+                                              to point would cost every regroup a write
+                                              scattered over all of it)                 */
     uint32_t      atom_cluster_count;
     md_gpu_addr_t atom_cluster_offset;     /* uint32 [atom_cluster_count + 1]          */
 
@@ -190,7 +191,14 @@ typedef struct md_render_mol_topo_t {
                                               covalent bonds, when small_bond_count)    */
     uint32_t      mixed_bond_count;        /* other bonds touching small molecules:
                                               their points follow every regroup         */
-    md_gpu_addr_t small_tables;            /* internal: their atoms and bonds by molecule */
+    md_gpu_addr_t small_tables;            /* internal: their kinds, and each one's record
+                                              (in the last grouping's order)            */
+    uint32_t      kind_count;              /* internal: the kinds of small molecule     */
+    uint32_t      kind_atom_count;         /* internal: their atoms and bonds            */
+    uint32_t      kind_bond_count;
+    md_gpu_addr_t mixed_point;             /* internal: atom -> point, valid for the
+                                              static atoms and those of small molecules
+                                              with mixed bonds                          */
 } md_render_mol_topo_t;
 
 /* Host side of a topology to be written: the block's image in the caller's

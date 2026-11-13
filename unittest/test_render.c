@@ -1120,8 +1120,12 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
             }
         }
     }
-    const uint32_t* point = (const uint32_t*)(img + T->atom_point);
-    for (uint32_t p = 0; p < np; ++p) if (order[p] < n && point[order[p]] != p) { FAIL("atom_point is not the inverse at point %u", p); break; }
+    /* the internal map from atom to point: the inverse for the static atoms
+       (a small molecule's are kept only with mixed bonds; those show in the
+       bonds' points below) */
+    const uint32_t* point = (const uint32_t*)(img + T->mixed_point);
+    const uint32_t n_static_pts = np - T->small_atom_count;
+    for (uint32_t p = 0; p < n_static_pts; ++p) if (order[p] < n && point[order[p]] != p) { FAIL("mixed_point is not the inverse at static point %u", p); break; }
     for (uint32_t a = 0; a < n; ++a) if (!RES(a) && point[a] != UINT32_MAX) { FAIL("atom %u is not resident but has point %u", a, point[a]); break; }
     /* bonds are between points: atom order[p] is at point p */
     const uint32_t* pairs = (const uint32_t*)(img + T->bond_pairs);
@@ -1183,9 +1187,10 @@ UTEST(render, mol_plan_clusters) {
         const md_render_mol_topo_t* T = &plan.layout;
         EXPECT_EQ(0, check_topo_image(&sys, T, plan.data, NULL));
         uint32_t n_static = T->atom_count - T->small_atom_count, cl_static = T->atom_cluster_count - T->grid_cells;
-        printf("    %s: %u atoms: %u in %u residue clusters (%.1f per cluster), %u in %u small molecules over %u cells; %u bonds (%u mixed)\n",
+        printf("    %s: %u atoms: %u in %u residue clusters (%.1f per cluster), %u in %u small molecules (%u kinds) over %u cells; %u bonds (%u mixed)\n",
                strrchr(files[f], '/') + 1, T->atom_count, n_static, cl_static, cl_static ? (double)n_static / cl_static : 0.0,
-               T->small_atom_count, T->small_molecule_count, T->grid_cells, T->bond_count, T->mixed_bond_count);
+               T->small_atom_count, T->small_molecule_count, T->kind_count, T->grid_cells, T->bond_count, T->mixed_bond_count);
+        EXPECT_LE(T->kind_count, T->small_molecule_count);
         if (n_static > 1000) EXPECT_GT((double)n_static / cl_static, 40.0);   /* residues pack well */
         if (mol) {
             md_render_mol_topo_t topo;
@@ -1194,14 +1199,18 @@ UTEST(render, mol_plan_clusters) {
             md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
             md_render_mol_atoms_t atoms = {0};
             atoms.position = P;
-            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
-            uint8_t* img = read_block(&fx, topo.base, topo.size);
             md_render_mol_topo_t rel = topo;
-            rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base;
+            rel.atom_order -= topo.base; rel.mixed_point -= topo.base; rel.atom_cluster_offset -= topo.base;
             rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
             for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
-            EXPECT_EQ(0, check_topo_image(&sys, &rel, img, NULL));
-            free(img);
+            /* twice: the second from the first's records (the other buffer),
+               mixed bonds and all */
+            for (int rg = 0; rg < 2; ++rg) {
+                ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
+                uint8_t* img = read_block(&fx, topo.base, topo.size);
+                EXPECT_EQ(0, check_topo_image(&sys, &rel, img, NULL));
+                free(img);
+            }
             md_gpu_free(fx.gfx, P); md_gpu_free(fx.gfx, dyn); md_gpu_free(fx.gfx, topo.base);
         }
         md_temp_end(temp);
@@ -1292,7 +1301,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     uint8_t* after = read_block(&fx, topo.base, topo.size);
     /* the block's own image: rebase the addresses to offsets */
     md_render_mol_topo_t rel = topo;
-    rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
+    rel.atom_order -= topo.base; rel.mixed_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
     for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
     EXPECT_EQ(0, check_topo_image(&sys, &rel, after, NULL));
     double e0 = grid_cluster_extent(&rel, before, xyz), e1 = grid_cluster_extent(&rel, after, xyz);
@@ -1700,7 +1709,7 @@ static void frames_case(int* utest_result, bool partial) {
     /* the topology after the regroups: whole and consistent */
     uint8_t* img = read_block(&fx, topo.base, topo.size);
     md_render_mol_topo_t rel = topo;
-    rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
+    rel.atom_order -= topo.base; rel.mixed_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
     for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
     EXPECT_EQ(0, check_topo_image(&sys, &rel, img, resident));
     /* refused: a regroup in the update, a slot without a frame, a cell with a
