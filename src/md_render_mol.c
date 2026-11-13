@@ -843,7 +843,10 @@ static inline uint64_t window_members(md_bitset_t s, uint32_t base, uint32_t las
 
 /* Windows read ahead: members with gaps between them are a pattern no
    hardware prefetcher follows. 0: none (md_render_mol_debug_prefetch, for
-   md_render_bench's sweep; not in the header) */
+   md_render_bench's sweep; not in the header). 16 from the sweep of a
+   scattered tenth of 10M atoms: the M4 Pro 10.75 ms without, 4.22 at 16
+   (its best); an i7-6700K 15.39 without, flat at 9.7-10.1 from 4 on. A block
+   of molecules costs the same at any distance on both. */
 static uint32_t g_windows_ahead = 16u;
 
 void md_render_mol_debug_prefetch(uint32_t windows_ahead) { g_windows_ahead = windows_ahead; }
