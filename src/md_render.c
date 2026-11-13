@@ -1006,6 +1006,15 @@ static bool pass(md_gpu_stream_t s, md_render_view_t v, md_gpu_kernel_t k, uint3
     return md_gpu_launch(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
 }
 
+/* A group per cluster (the refit): grid_groups(n) of the shader */
+static bool pass_per_cluster(md_gpu_stream_t s, md_render_view_t v, md_gpu_kernel_t k, uint32_t mode, uint32_t clusters) {
+    gpu_args_t a = base_args(v);
+    a.mode = mode;
+    uint32_t groups = clusters < 65535u ? clusters : 65535u;
+    if (groups == 0) groups = 1;
+    return md_gpu_launch(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a));
+}
+
 static bool fin(md_gpu_stream_t s, md_render_view_t v, uint32_t mode) {
     gpu_args_t a = base_args(v);
     a.mode = mode;
@@ -1321,7 +1330,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         /* Cluster bounds: refitted when the geometry changed, else only their
            state bits when those did. Not when only the camera moved. */
         md_render_t r = v->r;
-        if ((refit || state_changed) && !pass(s, v, r->k_refit, 0, gv.total_clusters, 0)) return false;
+        if ((refit || state_changed) && !pass_per_cluster(s, v, r->k_refit, 0, gv.total_clusters)) return false;
         if (refit || state_changed) PASS_DONE("refit");
         v->bounds_valid = true;
 
@@ -1387,10 +1396,12 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         }
         const uint32_t one = 1;
         md_gpu_upload(s, v->view_buf + offsetof(gpu_view_t, refit_mode), &one, 4);
-        if (!pass(s, v, v->r->k_refit, 0, clusters, 0)) return false;
+        if (!pass_per_cluster(s, v, v->r->k_refit, 0, clusters)) return false;
+        PASS_DONE("state refit");
         md_gpu_memset(s, CTR(v, C_ST), 0, 8u);
         md_gpu_memset(s, CTR(v, C_CST), 0, 4u);
         if (!run_state_lists(s, v, cwork)) return false;
+        PASS_DONE("state lists");
     }
 
     if (resolve && !run_resolve(s, v)) return false;

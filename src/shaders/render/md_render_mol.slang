@@ -486,6 +486,30 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
 
 // ---- Frames --------------------------------------------------------------------
 
+// A frame's origin and scale, and the reference cell, in registers: read
+// through pointers inside the loop they were reloaded at every point (the
+// stores to the copy may alias them, as far as the compiler knows)
+struct FrameP { float3 o; float3 s; };
+struct CellP  { float3 a; float3 b; float3 c; float3 i0; float3 i1; float3 i2; bool periodic; };
+
+FrameP frame_p(uint* par) { FrameP f; f.o = ld3(par, FP_ORIGIN); f.s = ld3(par, FP_SCALE); return f; }
+
+CellP cell_p(uint* par) {
+    CellP c;
+    c.a  = ld3(par, FP_CELL); c.b  = ld3(par, FP_CELL + 3u); c.c  = ld3(par, FP_CELL + 6u);
+    c.i0 = ld3(par, FP_INV);  c.i1 = ld3(par, FP_INV + 3u);  c.i2 = ld3(par, FP_INV + 6u);
+    c.periodic = par[FP_PERIODIC] != 0u;
+    return c;
+}
+
+float3 deq(uint* q, FrameP f, uint i) { return f.o + float3(load_q(q, i)) * f.s; }
+
+float3 mi(CellP c, float3 d) {
+    if (!c.periodic) return d;
+    float3 n = round(float3(dot(c.i0, d), dot(c.i1, d), dot(c.i2, d)));
+    return d - c.a * n.x - c.b * n.y - c.c * n.z;
+}
+
 // The copy that is drawn, from resident frames in point order: every read in
 // order (the atom only for radii from their source)
 [shader("compute")]
@@ -494,26 +518,34 @@ void fr_gather(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
     bool reuse = radii_valid(a);
+    const uint  count = a.frame_count;
+    const bool  vel_out = a.has_fvel != 0u;
+    const float w0 = a.w0, w1 = a.w1, w2 = a.w2, w3 = a.w3;
+    const float d0 = a.dw0, d1 = a.dw1, d2 = a.dw2, d3 = a.dw3;
+    uint* q0 = a.frame0; uint* q1 = a.frame1; uint* q2 = a.frame2; uint* q3 = a.frame3;
+    uint* points = a.points;
+    const FrameP f0 = frame_p(a.fpar0), f1 = frame_p(a.fpar1), f2 = frame_p(a.fpar2), f3 = frame_p(a.fpar3);
+    const CellP  cell = cell_p(count == 4u ? a.fpar1 : a.fpar0);
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         float3 pos, vel = float3(0.0);
-        float3 x0 = dequant(a.frame0, a.fpar0, p);
-        if (a.frame_count == 1u) {
+        float3 x0 = deq(q0, f0, p);
+        if (count == 1u) {
             pos = x0;
-        } else if (a.frame_count == 2u) {
-            float3 x1 = x0 + min_image(a.fpar0, dequant(a.frame1, a.fpar1, p) - x0);
-            pos = a.w0 * x0 + a.w1 * x1;
-            vel = a.dw0 * x0 + a.dw1 * x1;
+        } else if (count == 2u) {
+            float3 x1 = x0 + mi(cell, deq(q1, f1, p) - x0);
+            pos = w0 * x0 + w1 * x1;
+            vel = d0 * x0 + d1 * x1;
         } else {
-            float3 x1 = dequant(a.frame1, a.fpar1, p);
-            x0 = x1 + min_image(a.fpar1, x0 - x1);
-            float3 x2 = x1 + min_image(a.fpar1, dequant(a.frame2, a.fpar2, p) - x1);
-            float3 x3 = x2 + min_image(a.fpar1, dequant(a.frame3, a.fpar3, p) - x2);
-            pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
-            vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
+            float3 x1 = deq(q1, f1, p);
+            x0 = x1 + mi(cell, x0 - x1);
+            float3 x2 = x1 + mi(cell, deq(q2, f2, p) - x1);
+            float3 x3 = x2 + mi(cell, deq(q3, f3, p) - x2);
+            pos = w0 * x0 + w1 * x1 + w2 * x2 + w3 * x3;
+            vel = d0 * x0 + d1 * x1 + d2 * x2 + d3 * x3;
         }
-        uint r = reuse ? a.points[4u * p + 3u] : radius_of(a, a.atom_order[p]);
-        ((uint4*)a.points)[p] = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
-        if (a.has_fvel != 0u) ((uint2*)a.vel_out)[p] = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
+        uint r = reuse ? points[4u * p + 3u] : radius_of(a, a.atom_order[p]);
+        ((uint4*)points)[p] = uint4(asuint(pos.x), asuint(pos.y), asuint(pos.z), r);
+        if (vel_out) ((uint2*)a.vel_out)[p] = uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z));
     }
 }
 
