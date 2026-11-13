@@ -832,6 +832,19 @@ UTEST(bonds, metallic_slab_trajectory) {
 // ---------------------------------------------------------------------------
 
 #include "test_executor.h"
+#include <float.h>
+#include <md_run.h>
+#include <core/md_sort.h>
+#include <md_dssp.h>
+#include <md_itp.h>
+#include <md_element.h>
+#include <core/md_writer.h>
+#include <core/md_os.h>
+#include <core/md_bitset.h>
+#include <core/md_hash.h>
+#include "rmsd.h"
+#include "system_invariants.h"
+#include "system_util.h"
 
 static bool bonds_threads_same(const md_system_t* a, const md_system_t* b) {
     if (a->bond.count != b->bond.count) return false;
@@ -868,5 +881,96 @@ UTEST(bonds, threads) {
             EXPECT_TRUE_MSG(bonds_threads_same(&ref, &sys), path);
         }
     }
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(bonds, reference_systems) {
+    reference_systems_t refsys = reference_systems_load();
+    EXPECT_EQ(152,      refsys.mol_ala.bond.count);
+    EXPECT_EQ(55,       refsys.mol_pftaa.bond.count);
+    EXPECT_EQ(40,       refsys.mol_nucleotides.bond.count);
+    EXPECT_EQ(163504,   refsys.mol_centered.bond.count);
+    reference_systems_free(&refsys);
+}
+
+// Bond inference marks what it produces as of origin MD_BOND_ORIGIN_INFERRED, and re-inference replaces only those.
+// A bond of another origin (read from a file, user defined, from a topology) is kept wherever it sits in the arrays,
+// is never duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.
+UTEST(bonds, infer_bonds_replaces_only_inferred) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+
+    // Four carbons 1.5A apart along x: inference finds 0-1, 1-2, 2-3
+    md_system_t sys = { .alloc = alloc };
+    md_particle_type_find_or_add(&sys.atom.type, MD_STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
+    md_particle_type_idx_t c = md_particle_type_find_or_add(&sys.atom.type, MD_STR_LIT("C"), 6, 12.011f, 0.76f, 0, 0, alloc);
+    for (int i = 0; i < 5; ++i) {
+        md_array_push(sys.atom.type_idx, c, alloc);
+        md_array_push(sys.atom.flags, MD_ATOM_FLAG_NONE, alloc);
+        sys.atom.count += 1;
+    }
+    float x[] = {0.0f, 1.5f, 3.0f, 4.5f, 20.0f};
+    float y[] = {0, 0, 0, 0, 0};
+    float z[] = {0, 0, 0, 0, 0};
+    md_float3_t xyz[5];
+    md_system_state_t state = { .num_atoms = 5, .xyz = pack_xyz(xyz, x, y, z, 5) };
+
+    md_bond_data_t inferred = {0};
+    md_bond_infer(&inferred, &sys, &state, alloc, NULL);
+    sys.bond = inferred;
+    ASSERT_EQ(sys.bond.count, 3u);
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[i]));
+    }
+
+    // Kept bonds placed FIRST, so nothing may rely on them trailing: a file bond duplicating an inferred pair,
+    // a file bond inference would never find, a user bond and a topology bond.
+    md_bond_flags_t* flags = 0;
+    md_atom_pair_t*  pairs = 0;
+    const md_atom_pair_t kept_pairs[] = {{{1, 2}}, {{3, 4}}, {{0, 4}}, {{2, 4}}};
+    const md_bond_flags_t kept_flags[] = {MD_BOND_FLAG_NONE, MD_BOND_FLAG_NONE, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY)};
+    for (size_t i = 0; i < 4; ++i) {
+        md_array_push(pairs, kept_pairs[i], alloc);
+        md_array_push(flags, kept_flags[i], alloc);
+    }
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        md_array_push(pairs, sys.bond.pairs[i], alloc);
+        md_array_push(flags, sys.bond.flags[i], alloc);
+    }
+    md_bond_data_clear(&sys.bond);
+    for (size_t i = 0; i < md_array_size(pairs); ++i) {
+        md_array_push(sys.bond.pairs, pairs[i], alloc);
+        md_array_push(sys.bond.flags, flags[i], alloc);
+    }
+    sys.bond.count = md_array_size(pairs);
+
+    // Fresh bond data: inferred above became the system's (its arrays are sys.bond's)
+    md_bond_data_t reinferred = {0};
+    md_bond_data_t merged = {0};
+    md_bond_infer(&reinferred, &sys, &state, alloc, NULL);
+    md_bond_merge(&merged, &sys.bond, &reinferred, sys.atom.count, alloc);
+    sys.bond = merged;
+
+    // Inferred 0-1 and 2-3 (1-2 is already kept), then the four kept bonds in their original order
+    ASSERT_EQ(sys.bond.count, 6u);
+    size_t num_inferred = 0;
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (md_bond_origin(sys.bond.flags[i]) == MD_BOND_ORIGIN_INFERRED) num_inferred += 1;
+    }
+    EXPECT_EQ(num_inferred, 2u);
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(sys.bond.pairs[2 + i].idx[0], kept_pairs[i].idx[0]);
+        EXPECT_EQ(sys.bond.pairs[2 + i].idx[1], kept_pairs[i].idx[1]);
+        EXPECT_EQ((int)sys.bond.flags[2 + i], (int)kept_flags[i]);
+    }
+
+    // No coordinates: nothing is inferred, the kept bonds are still there
+    md_system_state_t empty = { .num_atoms = 5 };
+    md_bond_data_t none = {0};
+    md_bond_data_t kept = {0};
+    EXPECT_FALSE(md_bond_infer(&none, &sys, &empty, alloc, NULL));
+    md_bond_merge(&kept, &sys.bond, &none, sys.atom.count, alloc);
+    sys.bond = kept;
+    EXPECT_EQ(sys.bond.count, 4u);
+
     md_vm_arena_destroy(alloc);
 }
