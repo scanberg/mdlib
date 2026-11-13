@@ -1618,7 +1618,7 @@ bool md_backbone_infer(md_backbone_data_t* out, const md_system_t* sys, md_alloc
     MD_ASSERT(out);
     MD_ASSERT(sys);
     MD_ASSERT(alloc);
-    MD_ASSERT(&out->protein != &out->protein && &out->nucleic != &out->nucleic);
+    MD_ASSERT(&out->protein != &sys->protein_backbone && &out->nucleic != &sys->nucleic_backbone);
     md_backbone_data_free(out, alloc);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
