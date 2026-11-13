@@ -697,7 +697,12 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         l.st = attr_state(b, ai);
         l.factor = point_radius(b, pi);
         if (geo) { l.a = load_pos(b, pi); l.b = l.a; }
-        l.ok = sphere_radius(b, pi) > 0.0;
+        // From the factor, not from a second point_radius: unless the
+        // compiler merges the two, that is a second load and, with a table, a
+        // second lookup. The GTX 1060's refit at 10M atoms, a table against a
+        // float radius: 0.24 ms with the second call (1c494694), 0.04 without
+        // (66782714, a build with other differences too)
+        l.ok = l.factor * b.s0 + b.s1 > 0.0;
     } else if (b.kind == KIND_CAPSULES) {
         uint p0 = point_of(b, e, 0u, 2u);
         uint p1 = point_of(b, e, 1u, 2u);
