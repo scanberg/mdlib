@@ -342,8 +342,10 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
 typedef struct md_render_mol_frame_t {
     float           origin[3];
     float           scale[3];      /* p = origin + q * scale, per axis               */
-    float           cell[9];       /* columns a, b, c; a zero column: not periodic
-                                      along it (all zero: not periodic)              */
+    float           cell[9];       /* columns a, b, c, with a along x and b in the
+                                      xy plane (as md_unitcell_t, as every trajectory
+                                      format has it; an upload refuses another); a
+                                      zero column: not periodic along it            */
     const uint16_t* q;             /* x, y, z per resident atom, [3 * point_count],
                                       on the host                                    */
     md_gpu_addr_t   q_gpu;         /* or (when nonzero) in GPU memory: 4-byte aligned,

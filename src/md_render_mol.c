@@ -77,7 +77,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t cells)
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
     L.points   = o; o = align256(o + (uint64_t)n_atoms * 16u);
-    L.marker   = o; o = align256(o + 32u);
+    L.marker   = o; o = align256(o + 80u);       /* 5 words; at word 16 fr_check's grid */
     L.params   = o; o = align256(o + 16u * 4u);
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
     L.cnt      = o; o = align256(o + (uint64_t)L.scan_n * 16u);
@@ -492,6 +492,7 @@ struct md_render_mol {
     md_allocator_i* alloc;
     md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather, k_mark;
     md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
+    md_gpu_kernel_t k_fr_check, k_fr_radii;
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -530,11 +531,13 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_fr_gather1_kernel();  r->k_fr_gather[0] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_gather2_kernel();  r->k_fr_gather[1] = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_gather4_kernel();  r->k_fr_gather[2] = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_check_kernel();    r->k_fr_check   = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_fr_radii_kernel();    r->k_fr_radii   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_reorder_kernel();  r->k_fr_reorder = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_fr_permute_kernel();  r->k_fr_permute = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_mark || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_fr_check || !r->k_fr_radii) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -546,7 +549,7 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_mark, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_fr_check, &r->k_fr_radii };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -726,6 +729,13 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
                 a.dw[k]    = k < atoms->frame_count ? atoms->frame_dw[k] : 0.0f;
             }
             a.has_fvel = has_velocity(atoms) ? 1u : 0u;
+            /* the radii from their source when the copy's are not valid (a
+               launch of no groups when they are), then the frames' gather */
+            const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->grid_cells);
+            const md_gpu_addr_t grid = dynamic + D.marker + 64u;
+            ok = ok && launch(s, r->k_fr_check, md_gpu_grid(1, 1, 1), &a, hook, user, "check");
+            ok = ok && md_gpu_launch_indirect(s, r->k_fr_radii, grid, &a, sizeof(a));
+            if (ok && hook) hook(user, "radii");
             const md_gpu_kernel_t k = r->k_fr_gather[atoms->frame_count == 1 ? 0 : atoms->frame_count == 2 ? 1 : 2];
             ok = ok && launch(s, k, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         } else {
@@ -991,39 +1001,24 @@ void md_render_mol_frame_cell(float out[9], const md_unitcell_t* cell) {
     }
 }
 
-/* A frame's 32 words on the GPU: origin, scale, the cell's columns, the rows
-   of its inverse (zero for an axis that is not periodic), periodic */
-static void frame_param_words(uint32_t out[32], const md_render_mol_frame_t* f) {
+/* A frame's 32 words on the GPU: origin, scale, the cell (ax, bx, by, cx, cy,
+   cz) and the reciprocals of its diagonal, zero for an axis that is not
+   periodic. False for a cell not in that form (a along x, b in the xy plane,
+   as md_unitcell_t and every trajectory format has it). */
+static bool frame_param_words(uint32_t out[32], const md_render_mol_frame_t* f) {
     float o[32];
     memset(o, 0, sizeof(o));
     for (int d = 0; d < 3; ++d) { o[0 + d] = f->origin[d]; o[3 + d] = f->scale[d]; }
-    memcpy(o + 6, f->cell, 9 * sizeof(float));
-    bool col[3];
-    double M[3][3];                 /* columns; a missing one replaced by its axis */
-    for (int c = 0; c < 3; ++c) {
-        col[c] = f->cell[3 * c] != 0.0f || f->cell[3 * c + 1] != 0.0f || f->cell[3 * c + 2] != 0.0f;
-        for (int k = 0; k < 3; ++k) M[c][k] = col[c] ? f->cell[3 * c + k] : (k == c ? 1.0 : 0.0);
-    }
-    uint32_t periodic = 0;
-    if (col[0] || col[1] || col[2]) {
-        /* rows of the inverse: the cofactors over the determinant */
-        double r[3][3];
-        r[0][0] = M[1][1] * M[2][2] - M[1][2] * M[2][1]; r[0][1] = M[1][2] * M[2][0] - M[1][0] * M[2][2]; r[0][2] = M[1][0] * M[2][1] - M[1][1] * M[2][0];
-        r[1][0] = M[2][1] * M[0][2] - M[2][2] * M[0][1]; r[1][1] = M[2][2] * M[0][0] - M[2][0] * M[0][2]; r[1][2] = M[2][0] * M[0][1] - M[2][1] * M[0][0];
-        r[2][0] = M[0][1] * M[1][2] - M[0][2] * M[1][1]; r[2][1] = M[0][2] * M[1][0] - M[0][0] * M[1][2]; r[2][2] = M[0][0] * M[1][1] - M[0][1] * M[1][0];
-        const double det = M[0][0] * r[0][0] + M[0][1] * r[0][1] + M[0][2] * r[0][2];
-        double scale = 0.0;
-        for (int c = 0; c < 3; ++c) for (int k = 0; k < 3; ++k) scale = M[c][k] * M[c][k] > scale ? M[c][k] * M[c][k] : scale;
-        if (det * det > 1e-12 * scale * scale * scale) {
-            for (int i = 0; i < 3; ++i) {
-                if (!col[i]) continue;
-                for (int k = 0; k < 3; ++k) o[15 + 3 * i + k] = (float)(r[i][k] / det);
-            }
-            periodic = 1;
-        }
-    }
+    const float* A = f->cell;       /* columns a, b, c */
+    if (A[1] != 0.0f || A[2] != 0.0f || A[5] != 0.0f) return false;
+    o[6]  = A[0];                   /* ax */
+    o[7]  = A[3]; o[8]  = A[4];     /* bx, by */
+    o[9]  = A[6]; o[10] = A[7]; o[11] = A[8];   /* cx, cy, cz */
+    o[12] = A[0] > 0.0f ? 1.0f / A[0] : 0.0f;
+    o[13] = A[4] > 0.0f ? 1.0f / A[4] : 0.0f;
+    o[14] = A[8] > 0.0f ? 1.0f / A[8] : 0.0f;
     memcpy(out, o, sizeof(o));
-    out[24] = periodic;
+    return true;
 }
 
 uint64_t md_render_mol_frames_size(const md_render_mol_topo_t* topo, uint32_t slots) {
@@ -1070,7 +1065,10 @@ static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_ren
     const uint32_t n = topo->point_count;
     const frames_layout_t L = frames_layout(n, topo->small_atom_count, fr->slots);
     uint32_t par[32];
-    frame_param_words(par, f);
+    if (!frame_param_words(par, f)) {
+        MD_LOG_ERROR("md_render_mol_frame_upload: the cell must have a along x and b in the xy plane (as md_unitcell_t)");
+        return false;
+    }
     bool ok = md_gpu_upload(s, frame_params(fr, slot), par, sizeof(par));
     if (!ok || !n) {
         if (ok) fr->valid |= 1u << slot;
@@ -1135,7 +1133,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "sol_count", r->k_count }, { "sol_write", r->k_write }, { "sol_gather", r->k_gather },
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
-        { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
+        { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute }, { "fr_radii", r->k_fr_radii },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;

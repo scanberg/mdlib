@@ -1686,8 +1686,14 @@ static void frames_case(int* utest_result, bool partial) {
     rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
     for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
     EXPECT_EQ(0, check_topo_image(&sys, &rel, img, resident));
-    /* refused: a regroup in the update, a slot without a frame */
+    /* refused: a regroup in the update, a slot without a frame, a cell with a
+       not along x (the minimum image is GROMACS's, for that form) */
     EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, RG, NULL));
+    {
+        md_render_mol_frame_t tilted = frames[0];
+        tilted.cell[1] = 0.5f;
+        EXPECT_FALSE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0, &fr, 0, &tilted, 0));
+    }
     md_render_mol_frames_t empty;
     ASSERT_TRUE(md_render_mol_frames_init(&empty, &topo, fr.base, 4));
     atoms.frames = &empty;
