@@ -524,7 +524,7 @@ UTEST(render, spline_straight_parts) {
     const double Ry[3][3] = { { cos(ay), 0, sin(ay) }, { 0, 1, 0 }, { -sin(ay), 0, cos(ay) } };
     bar_scene_t sc = { .t = { -0.4, -0.2, -11.0 }, .radius = radius };
     for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { sc.R[i][j] = 0; for (int k = 0; k < 3; ++k) sc.R[i][j] += Ry[i][k] * Rx[k][j]; }
-    float pos[N * 3], axis[N * 4], width[N * 2];
+    float pos[N * 3], axis[N * 4], profile[N * 4];
     uint32_t index[N];
     double local[N][3];
     for (int k = 0; k < NA; ++k) { local[k][0] = -3.6 + k * d; local[k][1] = -0.8; local[k][2] = 0; }
@@ -533,7 +533,8 @@ UTEST(render, spline_straight_parts) {
         for (int i = 0; i < 3; ++i) pos[3 * k + i] = (float)(sc.R[i][0] * local[k][0] + sc.R[i][1] * local[k][1] + sc.R[i][2] * local[k][2] + sc.t[i]);
         for (int i = 0; i < 3; ++i) axis[4 * k + i] = (float)(sc.R[i][1] * ((k % 2) ? -2.0 : 0.5));   /* local y, any length, either sign */
         axis[4 * k + 3] = 0;
-        width[2 * k] = width[2 * k + 1] = k < NA ? (float)wa[k] : 0.0f;
+        profile[4 * k] = profile[4 * k + 1] = k < NA ? (float)wa[k] : 0.0f;
+        profile[4 * k + 2] = profile[4 * k + 3] = (float)radius;
         index[k] = (uint32_t)k;
     }
     index[0] |= MD_RENDER_SPLINE_FIRST; index[NA - 1] |= MD_RENDER_SPLINE_LAST;
@@ -547,7 +548,7 @@ UTEST(render, spline_straight_parts) {
         parts[np].x0 = local[k][0] - (first ? 0.0 : 0.5 * d);
         parts[np].x1 = local[k][0] + (last ? 0.0 : 0.5 * d);
         parts[np].yc = local[k][1];
-        parts[np].a  = width[2 * k];
+        parts[np].a  = profile[4 * k];
         parts[np].element = k;
         np++;
     }
@@ -558,9 +559,8 @@ UTEST(render, spline_straight_parts) {
     b.points.position = f_buf(&fx, pos, sizeof(pos));
     b.points.visible[0] = f_buf(&fx, &vis, 4);
     b.index = f_buf(&fx, index, sizeof(index));
-    b.style.splines.radius = (float)radius;
-    b.style.splines.axis   = f_buf(&fx, axis, sizeof(axis));
-    b.style.splines.width  = f_buf(&fx, width, sizeof(width));
+    b.style.splines.axis    = f_buf(&fx, axis, sizeof(axis));
+    b.style.splines.profile = f_buf(&fx, profile, sizeof(profile));
     md_render_frame_t f = frame_of(W, H, cam, &b, 1);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     int judged = 0;
@@ -618,9 +618,10 @@ enum { SW_S = 49 };
 typedef struct sweep_part_t {
     int    element;
     double a[SW_S][3], b[SW_S][3];   /* the profile's segment at each sample, view space */
-    double ctr[3], bound;            /* a ball around every segment of the part */
+    double r[SW_S];                  /* and its radius */
+    double ctr[3], bound;            /* a ball around every segment of the part, radius included */
 } sweep_part_t;
-typedef struct sweep_t { sweep_part_t* part; int count; double radius; } sweep_t;
+typedef struct sweep_t { sweep_part_t* part; int count; } sweep_t;
 
 static double pt_seg_dist(const double p[3], const double a[3], const double b[3]) {
     double ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
@@ -656,11 +657,10 @@ static double seg_seg_dist(const double p1[3], const double q1[3], const double 
 }
 
 /* The sweep of every visible part of the splines in pos (view space) */
-static int sweep_build(sweep_t* sw, const double (*pos)[3], const double (*axis)[3], const float* width, const uint32_t* index,
-                       const bool* visible, int n, double radius) {
+static int sweep_build(sweep_t* sw, const double (*pos)[3], const double (*axis)[3], const float* profile, const uint32_t* index,
+                       const bool* visible, int n) {
     sw->part = calloc(n, sizeof(sweep_part_t));
     sw->count = 0;
-    sw->radius = radius;
     for (int s0 = 0; s0 < n;) {
         int s1 = s0;
         while (!(index[s1] & MD_RENDER_SPLINE_LAST)) s1++;
@@ -697,7 +697,8 @@ static int sweep_build(sweep_t* sw, const double (*pos)[3], const double (*axis)
                 double tt = dot3(t, t), wt = dot3(w, t);
                 if (tt > 0) for (int i = 0; i < 3; ++i) w[i] -= t[i] * wt / tt;
                 double wl = sqrt(dot3(w, w));
-                double a = (double)width[2 * e] + ((double)width[2 * e + 1] - (double)width[2 * e]) * f;
+                double a = (double)profile[4 * e] + ((double)profile[4 * e + 1] - (double)profile[4 * e]) * f;
+                pt->r[j] = (double)profile[4 * e + 2] + ((double)profile[4 * e + 3] - (double)profile[4 * e + 2]) * f;
                 for (int i = 0; i < 3; ++i) {
                     double wi = wl > 1e-12 ? w[i] / wl : 0.0;
                     pt->a[j][i] = c[i] - wi * a;
@@ -709,7 +710,7 @@ static int sweep_build(sweep_t* sw, const double (*pos)[3], const double (*axis)
             for (int j = 0; j < SW_S; ++j) {
                 double da[3] = { pt->a[j][0] - pt->ctr[0], pt->a[j][1] - pt->ctr[1], pt->a[j][2] - pt->ctr[2] };
                 double db[3] = { pt->b[j][0] - pt->ctr[0], pt->b[j][1] - pt->ctr[1], pt->b[j][2] - pt->ctr[2] };
-                pt->bound = fmax(pt->bound, fmax(sqrt(dot3(da, da)), sqrt(dot3(db, db))));
+                pt->bound = fmax(pt->bound, fmax(sqrt(dot3(da, da)), sqrt(dot3(db, db))) + pt->r[j]);
             }
         }
         free(P); free(Wx);
@@ -725,10 +726,9 @@ static double sweep_sdf(const sweep_t* sw, const double p[3], int* who, double* 
     for (int k = 0; k < sw->count; ++k) {
         const sweep_part_t* pt = &sw->part[k];
         double dc[3] = { p[0] - pt->ctr[0], p[1] - pt->ctr[1], p[2] - pt->ctr[2] };
-        if (sqrt(dot3(dc, dc)) - pt->bound - sw->radius > second) continue;
+        if (sqrt(dot3(dc, dc)) - pt->bound > second) continue;
         double d = 1e30;
-        for (int j = 0; j < SW_S; ++j) d = fmin(d, pt_seg_dist(p, pt->a[j], pt->b[j]));
-        d -= sw->radius;
+        for (int j = 0; j < SW_S; ++j) d = fmin(d, pt_seg_dist(p, pt->a[j], pt->b[j]) - pt->r[j]);
         if (d < best) { second = best; best = d; *who = pt->element; }
         else if (d < second) second = d;
     }
@@ -736,14 +736,14 @@ static double sweep_sdf(const sweep_t* sw, const double p[3], int* who, double* 
     return best;
 }
 
-/* The ray's (t in [0, tmax]) distance to the swept segments: < radius, it goes through */
-static double sweep_ray_dist(const sweep_t* sw, ray_t r, double tmax) {
+/* How far the ray (t in [0, tmax]) passes outside the sweep: < 0, through it */
+static double sweep_ray_clearance(const sweep_t* sw, ray_t r, double tmax) {
     double q[3] = { r.o[0] + r.d[0] * tmax, r.o[1] + r.d[1] * tmax, r.o[2] + r.d[2] * tmax };
     double best = 1e30;
     for (int k = 0; k < sw->count; ++k) {
         const sweep_part_t* pt = &sw->part[k];
         if (pt_seg_dist(pt->ctr, r.o, q) - pt->bound > best) continue;
-        for (int j = 0; j < SW_S; ++j) best = fmin(best, seg_seg_dist(r.o, q, pt->a[j], pt->b[j]));
+        for (int j = 0; j < SW_S; ++j) best = fmin(best, seg_seg_dist(r.o, q, pt->a[j], pt->b[j]) - pt->r[j]);
     }
     return best;
 }
@@ -755,34 +755,40 @@ UTEST(render, spline_curves_match_the_sweep) {
     cam_t c = { .tan_half = 0.45f, .aspect = (float)W / H, .n = 0.1f };
     md_render_camera_t cam = make_camera(&c);
     /* A: a helix ribbon, axes along the helix axis in alternating sign and
-       length; B: a twisting strand with an arrow (a step up, then down to 0);
-       C: a wavy tube, one part hidden */
+       length, out of a coil over its first two parts (a tube tapering into
+       the ribbon); B: a twisting strand with an arrow (a step up, then down
+       to 0, thinner); C: a wavy tube, thicker along it, one part hidden */
     enum { NA = 11, NB = 8, NC = 9, N = NA + NB + NC };
-    const double radius = 0.18;
     double local[N][3], laxis[N][3];
-    float width[N * 2];
+    float profile[N * 4];
+    #define PROFILE(e, a0, a1, r0, r1) (profile[4 * (e)] = (float)(a0), profile[4 * (e) + 1] = (float)(a1), \
+                                        profile[4 * (e) + 2] = (float)(r0), profile[4 * (e) + 3] = (float)(r1))
     for (int k = 0; k < NA; ++k) {
         double ph = k * 100.0 * 3.14159265358979 / 180;
         local[k][0] = -5.0 + k * 1.0; local[k][1] = 2.6 + 2.0 * cos(ph); local[k][2] = 2.0 * sin(ph);
         double l = (k % 2) ? -0.5 : 1.5;
         laxis[k][0] = l; laxis[k][1] = 0; laxis[k][2] = 0;
-        width[2 * k] = width[2 * k + 1] = 0.7f;
+        PROFILE(k, 0.7, 0.7, 0.18, 0.18);
     }
+    PROFILE(0, 0.0, 0.35, 0.3, 0.24);
+    PROFILE(1, 0.35, 0.7, 0.24, 0.18);
     for (int k = 0; k < NB; ++k) {
         int e = NA + k;
         double th = k * 15.0 * 3.14159265358979 / 180, l = ((k % 2) ? -1.0 : 1.0) * (1 + k % 3);
         local[e][0] = -5.0 + k * 1.4; local[e][1] = -1.4 + ((k % 2) ? 0.35 : -0.35); local[e][2] = 0.3 * sin((double)k);
         laxis[e][0] = 0; laxis[e][1] = sin(th) * l; laxis[e][2] = cos(th) * l;
-        width[2 * e] = width[2 * e + 1] = 0.8f;
+        PROFILE(e, 0.8, 0.8, 0.18, 0.18);
     }
-    width[2 * (NA + NB - 2)] = 1.3f;  width[2 * (NA + NB - 2) + 1] = 0.65f;     /* the arrow */
-    width[2 * (NA + NB - 1)] = 0.65f; width[2 * (NA + NB - 1) + 1] = 0.0f;
+    PROFILE(NA + NB - 2, 1.3, 0.65, 0.24, 0.2);                 /* the arrow */
+    PROFILE(NA + NB - 1, 0.65, 0.0, 0.2, 0.16);
     for (int k = 0; k < NC; ++k) {
         int e = NA + NB + k;
         local[e][0] = -5.0 + k * 1.25; local[e][1] = -4.3 + 0.8 * sin(1.3 * k); local[e][2] = 1.0 * cos(0.9 * k);
         laxis[e][0] = laxis[e][1] = laxis[e][2] = 0;
-        width[2 * e] = width[2 * e + 1] = 0.0f;
+        double x0 = k == 0 ? 0.0 : k - 0.5, x1 = k == NC - 1 ? k : k + 0.5;
+        PROFILE(e, 0.0, 0.0, 0.1 + 0.2 * x0 / (NC - 1), 0.1 + 0.2 * x1 / (NC - 1));
     }
+    #undef PROFILE
     const double ax = 35 * 3.14159265358979 / 180, ay = -20 * 3.14159265358979 / 180;
     const double Rx[3][3] = { { 1, 0, 0 }, { 0, cos(ax), -sin(ax) }, { 0, sin(ax), cos(ax) } };
     const double Ry[3][3] = { { cos(ay), 0, sin(ay) }, { 0, 1, 0 }, { -sin(ay), 0, cos(ay) } };
@@ -816,15 +822,14 @@ UTEST(render, spline_curves_match_the_sweep) {
     b.points.position = f_buf(&fx, pos, sizeof(pos));
     b.points.visible[0] = f_buf(&fx, &vis, 4);
     b.index = f_buf(&fx, index, sizeof(index));
-    b.style.splines.radius = (float)radius;
-    b.style.splines.axis   = f_buf(&fx, axis, sizeof(axis));
-    b.style.splines.width  = f_buf(&fx, width, sizeof(width));
+    b.style.splines.axis    = f_buf(&fx, axis, sizeof(axis));
+    b.style.splines.profile = f_buf(&fx, profile, sizeof(profile));
     md_render_frame_t f = frame_of(W, H, cam, &b, 1);
     f.options = MD_RENDER_NO_COMPUTE_RASTER;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
 
     sweep_t sw;
-    sweep_build(&sw, (const double (*)[3])vpos, (const double (*)[3])vaxis, width, index, visible, N, radius);
+    sweep_build(&sw, (const double (*)[3])vpos, (const double (*)[3])vaxis, profile, index, visible, N);
     md_render_targets_t tg = md_render_view_targets(fx.view);
     uint32_t* id = malloc(W * H * 8);
     float*    dp = malloc(W * H * 4);
@@ -835,15 +840,15 @@ UTEST(render, spline_curves_match_the_sweep) {
         for (uint32_t x = 0; x < W; ++x) {
             ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
             uint32_t ix = id[2 * (y * W + x)], iy = id[2 * (y * W + x) + 1];
-            double rd = sweep_ray_dist(&sw, r, 100.0);
+            double clr = sweep_ray_clearance(&sw, r, 100.0);
             /* a pixel's size in world at depth z, from the ray through the scene's middle */
             double px_at15 = 15.0 * 2.0 * c.tan_half / H;
             if (iy == 0) {
-                if (rd < radius - 0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, the sweep %.3f px inside\n", x, y, (radius - rd) / px_at15); }
+                if (clr < -0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, the sweep %.3f px inside\n", x, y, -clr / px_at15); }
                 continue;
             }
             covered++;
-            if (rd > radius + 0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, the sweep %.3f px away\n", x, y, (rd - radius) / px_at15); continue; }
+            if (clr > 0.75 * px_at15) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, the sweep %.3f px away\n", x, y, clr / px_at15); continue; }
             double zv = -c.n / dp[y * W + x], tp = zv / r.d[2];
             double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
             double pxw = -P[2] * 2.0 * c.tan_half / H;

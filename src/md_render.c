@@ -74,7 +74,7 @@ enum {
     F_FADE_SHRINK  = 1u << 17,
     F_FADE_THIN    = 1u << 18,
     F_SPL_AXIS     = 1u << 19,
-    F_SPL_WIDTH    = 1u << 20,
+    F_SPL_PROFILE  = 1u << 20,
 };
 
 typedef struct gpu_batch_t {
@@ -91,7 +91,7 @@ typedef struct gpu_batch_t {
     md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
     float         fade_out_a, fade_out_b, fade_in_a, fade_in_b;   /* the bands for this camera (fade_bands) */
-    md_gpu_addr_t spl_axis, spl_width;                            /* SPLINES */
+    md_gpu_addr_t spl_axis, spl_profile;                          /* SPLINES */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 288, "Batch mirror");
 
@@ -844,9 +844,9 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;
         g->spl_axis  = b->style.splines.axis;
-        g->spl_width = b->style.splines.width;
-        if (g->spl_axis)  f |= F_SPL_AXIS;
-        if (g->spl_width) f |= F_SPL_WIDTH;
+        g->spl_profile = b->style.splines.profile;
+        if (g->spl_axis)    f |= F_SPL_AXIS;
+        if (g->spl_profile) f |= F_SPL_PROFILE;
     }
     if (b->fade.mode) {
         if (b->fade.out[0] > 0.0f) f |= F_FADE_OUT;
