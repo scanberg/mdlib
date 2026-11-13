@@ -529,6 +529,7 @@ typedef struct scene_t {
     float*               host_pos;       /* the positions, for the frames */
     md_bitmask_t         resident;       /* --resident F < 1: the resident atoms */
     bool                 partial;
+    double               plan_ms, write_ms;  /* what a new plan costs (a change of the resident set) */
 } scene_t;
 
 typedef struct mol_cell_t { uint32_t cell, m; } mol_cell_t;
@@ -601,9 +602,14 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         }
         md_temp_scope_t temp = md_temp_begin();
         md_render_mol_plan_t plan;
+        md_tick_t t0 = md_tick_now();
         bool ok = md_render_mol_plan(&plan, &sys, sc->partial ? &rset : NULL, temp);
+        md_tick_t t1 = md_tick_now();
         md_gpu_addr_t base = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, plan.size).gpu : 0;
         ok = ok && base && md_render_mol_write(s, &sc->topo, &plan, base, NULL);
+        md_gpu_stream_sync(s);
+        sc->plan_ms  = md_tick_to_milliseconds(t1 - t0);
+        sc->write_ms = md_tick_to_milliseconds(md_tick_now() - t1);
         md_temp_end(temp);
         sc->dyn = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size_velocity).gpu : 0;
         free(moff); free(mats); free(pairs); free(types);
@@ -904,7 +910,8 @@ static int run_gpu(int argc, char** argv) {
         printf("== %u atoms, %u bonds, box %.0f A, %s\n", sc.atoms, sc.bonds, sc.box,
                src == SRC_IMPLICIT ? "implicit clusters (runs of 64 in grid-cell order)" :
                src == SRC_HOST_GRID ? "clusters by grid cell, built on the host" : "md_render_mol (molecules in random order, GPU grid)");
-        if (src == SRC_MOL) printf("   %u atoms resident (%.1f %%), %u bonds\n", sc.topo.point_count, 100.0 * sc.topo.point_count / sc.atoms, sc.topo.bond_count);
+        if (src == SRC_MOL) printf("   %u atoms resident (%.1f %%), %u bonds; md_render_mol_plan %.1f ms (host, one thread), write %.1f ms\n",
+                                   sc.topo.point_count, 100.0 * sc.topo.point_count / sc.atoms, sc.topo.bond_count, sc.plan_ms, sc.write_ms);
         md_render_mol_atoms_t atoms = {0};
         atoms.position = sc.pos; atoms.selection = sc.sel;
         if (src == SRC_MOL) {
