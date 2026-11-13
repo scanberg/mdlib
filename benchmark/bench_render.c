@@ -723,6 +723,7 @@ bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stre
    md_render.c, not in its header */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 void md_render_mol_debug_prefetch(uint32_t windows_ahead);
+void md_render_mol_debug_frames(uint32_t groups, uint32_t probe);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
@@ -776,6 +777,22 @@ static void print_times(const char* name, double* t, uint32_t reps) {
    quantized straight into GPU-visible memory and read from there (on
    unified memory, nothing is copied); the upload from host memory, through
    the stream, is timed beside it. */
+/* The best of `reps` frame updates from the given slots (velocities when dt) */
+static double time_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, md_render_mol_atoms_t* atoms,
+                          uint32_t count, const uint32_t slot[4], float dt, double* t, uint32_t reps) {
+    atoms->frame_count = count;
+    for (uint32_t k = 0; k < 4; ++k) atoms->frame_slot[k] = slot[k];
+    for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+        md_render_mol_frame_weights(atoms->frame_w, atoms->frame_dw, count, (rr % 8) / 8.0f, dt, 0.5f);
+        md_tick_t t0 = md_tick_now();
+        md_render_mol_update(mol, s, &sc->topo, sc->dyn, atoms, 0, NULL);
+        md_gpu_stream_sync(s);
+        if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+    }
+    qsort(t, reps, sizeof(double), cmp_d);
+    return t[0];
+}
+
 static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, uint32_t reps) {
     const uint32_t n = sc->atoms;
     float cell[9] = { sc->box, 0, 0, 0, sc->box, 0, 0, 0, sc->box };
@@ -869,30 +886,35 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         print_times(ints[ii].name, t, reps);
     }
     {
-        /* by which slots: nearest from each (is a buffer slow?), linear between
-           pairs of them (does where the two streams lie matter?) */
-        printf("  slots in buffers: %u %u %u %u; nearest by slot:", fr.buffer[0], fr.buffer[1], fr.buffer[2], fr.buffer[3]);
-        const uint32_t pairs[][2] = { {0, 1}, {1, 2}, {2, 3}, {0, 2}, {0, 3}, {1, 3} };
-        for (int pass = 0; pass < 2; ++pass) {
-            const uint32_t m = pass == 0 ? 4 : (uint32_t)(sizeof(pairs) / sizeof(pairs[0]));
-            if (pass == 1) printf("\n  linear by slots:");
-            for (uint32_t j = 0; j < m; ++j) {
-                atoms.frame_count = pass == 0 ? 1 : 2;
-                atoms.frame_slot[0] = pass == 0 ? j : pairs[j][0];
-                atoms.frame_slot[1] = pass == 0 ? j : pairs[j][1];
-                for (uint32_t rr = 0; rr < reps + 2; ++rr) {
-                    md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, atoms.frame_count, 0.5f, 0.0f, 0.5f);
-                    md_tick_t t0 = md_tick_now();
-                    md_render_mol_update(mol, s, &sc->topo, sc->dyn, &atoms, 0, NULL);
-                    md_gpu_stream_sync(s);
-                    if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
-                }
-                qsort(t, reps, sizeof(double), cmp_d);
-                if (pass == 0) printf(" %u: %.2f", j, t[0]);
-                else           printf(" %u-%u: %.2f", pairs[j][0], pairs[j][1], t[0]);
-            }
+        /* Probes of the frames' gather, each differing from the line above in
+           one thing (best of the reps, ms):
+           - the same slot for every frame: the frames past the first read what
+             the first just read, from L2, not DRAM. Fast: the cost is the
+             extra streams from memory. As slow: it is in the kernel.
+           - without the minimum image (a probe kernel, linear only).
+           - fewer groups, more points a thread: whatever a thread does once
+             (its arguments and the frames' parameters, read through pointers)
+             spread over more points. */
+        const uint32_t s0123[4] = { 0, 1, 2, 3 }, s0000[4] = { 0, 0, 0, 0 };
+        printf("  probes: linear 0-1 %.2f, 0-0 %.2f; cubic+vel 0-1-2-3 %.2f, 0-0-0-0 %.2f",
+               time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps), time_frames(s, mol, sc, &atoms, 2, s0000, 0.0f, t, reps),
+               time_frames(s, mol, sc, &atoms, 4, s0123, 1.0f, t, reps), time_frames(s, mol, sc, &atoms, 4, s0000, 1.0f, t, reps));
+        md_render_mol_debug_frames(0, 1);
+        printf("; linear without the minimum image %.2f ms\n", time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps));
+        md_render_mol_debug_frames(0, 0);
+        const uint32_t groups[] = { 65535, 8192, 2048, 640 };
+        printf("  by groups (points a thread):    nearest  linear  cubic+vel\n");
+        for (size_t gi = 0; gi < sizeof(groups) / sizeof(groups[0]); ++gi) {
+            const uint32_t np = sc->topo.point_count;
+            uint32_t g = groups[gi], full = (np + 63) / 64;
+            if (g > full) g = full;
+            md_render_mol_debug_frames(g, 0);
+            const double a1 = time_frames(s, mol, sc, &atoms, 1, s0123, 0.0f, t, reps);
+            const double a2 = time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps);
+            const double a4 = time_frames(s, mol, sc, &atoms, 4, s0123, 1.0f, t, reps);
+            printf("    %5u (%6.1f)               %6.2f  %6.2f  %6.2f\n", g, (double)np / (64.0 * g), a1, a2, a4);
         }
-        printf(" ms\n");
+        md_render_mol_debug_frames(0, 0);
     }
     {
         /* the copy from positions again, beside the frames' (the same state of the GPU's clocks) */

@@ -103,7 +103,7 @@ struct Args {
     uint  ident0;               // the topology the copy belongs to: its block address and version
     uint  ident1;
     uint  ident2;
-    uint  _pad;
+    uint  fr_threads;           // fr_gather: the threads launched (its stride)
     uint  frame_count;          // fr_gather: 1, 2 or 4
     uint  quantized;            // regroup: positions from qsrc, not `position`
     uint  has_src;              // sol_write: record src_point
@@ -542,31 +542,36 @@ void fr_radii(uint3 tid : SV_DispatchThreadID) {
 // of frames (COUNT a constant): one kernel for all three kept every frame's
 // parameters and the cell live, and on Pascal the registers that cost made
 // the nearest frame twice the copy from positions.
+// MI false only for the probe that leaves the minimum image out.
 [ForceInline]
-void fr_gather_body(uint3 tid, const uint COUNT) {
+float3 mi_if(CellP c, float3 d, const bool MI) { return MI ? mi(c, d) : d; }
+
+[ForceInline]
+void fr_gather_body(uint3 tid, const uint COUNT, const bool MI) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
+    uint step = a.fr_threads;
     const bool vel_out = COUNT > 1u && a.has_fvel != 0u;
     uint* points = a.points;
     const FrameP f0 = frame_p(a.fpar0);
     FrameP f1 = f0, f2 = f0, f3 = f0;
     CellP  cell;
-    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
+    if (COUNT >= 2u) { f1 = frame_p(a.fpar1); if (MI) cell = cell_p(COUNT == 4u ? a.fpar1 : a.fpar0); }
     if (COUNT == 4u) { f2 = frame_p(a.fpar2); f3 = frame_p(a.fpar3); }
-    for (uint p = tid.x; p < n; p += grid_threads(n)) {
+    for (uint p = tid.x; p < n; p += step) {
         float3 pos, vel = float3(0.0);
         float3 x0 = deq(a.frame0, f0, p);
         if (COUNT == 1u) {
             pos = x0;
         } else if (COUNT == 2u) {
-            float3 x1 = x0 + mi(cell, deq(a.frame1, f1, p) - x0);
+            float3 x1 = x0 + mi_if(cell, deq(a.frame1, f1, p) - x0, MI);
             pos = a.w0 * x0 + a.w1 * x1;
             vel = a.dw0 * x0 + a.dw1 * x1;
         } else {
             float3 x1 = deq(a.frame1, f1, p);
-            x0 = x1 + mi(cell, x0 - x1);
-            float3 x2 = x1 + mi(cell, deq(a.frame2, f2, p) - x1);
-            float3 x3 = x2 + mi(cell, deq(a.frame3, f3, p) - x2);
+            x0 = x1 + mi_if(cell, x0 - x1, MI);
+            float3 x2 = x1 + mi_if(cell, deq(a.frame2, f2, p) - x1, MI);
+            float3 x3 = x2 + mi_if(cell, deq(a.frame3, f3, p) - x2, MI);
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
@@ -578,15 +583,20 @@ void fr_gather_body(uint3 tid, const uint COUNT) {
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u); }
+void fr_gather1(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 1u, true); }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u); }
+void fr_gather2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, true); }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u); }
+void fr_gather4(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 4u, true); }
+
+// Probe (the bench's, not the API's): two frames without the minimum image
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void fr_probe2(uint3 tid : SV_DispatchThreadID) { fr_gather_body(tid, 2u, false); }
 
 // An uploaded frame (qsrc: the resident atoms in atom order) into its slot
 // (qdst, point order).
