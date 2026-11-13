@@ -111,7 +111,6 @@ set(MD_CORE_FILES
   src/core/md_linear_allocator.h
   src/core/md_log.c
   src/core/md_log.h
-  src/core/md_lru_cache.inl
   src/core/md_os.c
   src/core/md_os.h
   src/core/md_parse.c

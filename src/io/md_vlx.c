@@ -2371,43 +2371,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static bool h5_read_optional_1d_data(vlx_1d_data_t* out_data, hid_t handle, const char* field_name, md_allocator_i* arena) {
-	MD_ASSERT(out_data);
-	MD_ASSERT(field_name);
-	MD_ASSERT(arena);
-
-	if (!h5_check_dataset_exists(handle, field_name)) {
-		return true;
-	}
-
-	size_t dim[2] = {0};
-	int num_dims = h5_read_dataset_dims(dim, 2, handle, field_name);
-	if (num_dims <= 0) {
-		MD_LOG_ERROR("Invalid dimensions in H5 vector dataset '%s'", field_name);
-		return false;
-	}
-
-	size_t sample_count = 1;
-	for (int dim_idx = 0; dim_idx < num_dims; ++dim_idx) {
-		sample_count *= dim[dim_idx];
-	}
-
-	if (sample_count == 0) {
-		MD_LOG_ERROR("Empty H5 vector dataset '%s'", field_name);
-		return false;
-	}
-
-	md_array_resize(out_data->data, sample_count, arena);
-	md_memset(out_data->data, 0, md_array_bytes(out_data->data));
-	out_data->size = sample_count;
-
-	if (!h5_read_dataset_data(out_data->data, sample_count, handle, H5T_NATIVE_DOUBLE, field_name)) {
-		return false;
-	}
-
-	return true;
-}
-
 // The occupied/virtual split the response solution vectors are indexed by.
 //
 // VeloxChem writes num_core/num_valence/num_virtual only for some calculations - none of the files
@@ -4365,25 +4328,6 @@ done:
 	return result;
 }
 
-static inline void extract_row(double* dst, const vlx_2d_data_t* data, size_t row_idx) {
-        MD_ASSERT(dst);
-        MD_ASSERT(data);
-	size_t num_cols = data->size[1];
-	for (size_t i = 0; i < num_cols; ++i) {
-		dst[i] = data->data[row_idx * num_cols + i];
-	}
-}
-
-static inline void extract_col(double* dst, const vlx_2d_data_t* data, size_t col_idx) {
-	MD_ASSERT(dst);
-	MD_ASSERT(data);
-	MD_ASSERT(col_idx < data->size[1]);
-
-	for (size_t i = 0; i < data->size[0]; ++i) {
-		dst[i] = data->data[i * data->size[1] + col_idx];
-	}
-}
-
 static inline size_t number_of_molecular_orbitals(const vlx_orbital_t* orb) {
 	MD_ASSERT(orb);
 	return orb->coefficients.size[0];
@@ -4394,18 +4338,6 @@ static inline size_t number_of_atomic_orbitals(const vlx_orbital_t* orb) {
 	return orb->coefficients.size[1];
 }
 
-static inline size_t number_of_ao_coefficients(const vlx_orbital_t* orb) {
-	MD_ASSERT(orb);
-	return orb->coefficients.size[1];
-}
-
-static inline void extract_ao_coefficients(double* out_coeff, const vlx_orbital_t* orb, size_t ao_idx) {
-	MD_ASSERT(out_coeff);
-	MD_ASSERT(orb);
-	MD_ASSERT(ao_idx < number_of_atomic_orbitals(orb));
-
-	extract_col(out_coeff, &orb->coefficients, ao_idx);
-}
 size_t vlx_rsp_number_of_excited_states(const vlx_t* vlx) {
 	if (vlx) {
 		if (vlx->rsp.type == VLX_RSP_LINEAR) {
@@ -6331,12 +6263,5 @@ const double* vlx_scf_mo_coefficients(const vlx_t* vlx, size_t mo_idx, vlx_spin_
 	size_t num_ao = orb->coefficients.size[1];
 	if (mo_idx >= num_mo || num_ao == 0) return NULL;
 	return orb->coefficients.data + mo_idx * num_ao;
-}
-
-static inline size_t get_matrix_index(size_t i, size_t j, size_t N) {
-	size_t row = (i < j) ? i : j;
-	size_t col = (i < j) ? j : i;
-	size_t row_offset = row * (2 * N - row + 1) / 2;
-	return row_offset + (col - row);
 }
 

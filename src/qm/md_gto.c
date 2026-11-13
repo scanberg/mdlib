@@ -913,21 +913,6 @@ static void density_matrix_upper_tri_extract_float(float* out, const double* dm,
     }
 }
 
-// Extract the upper-triangular sub-block of a full N_full×N_full double density matrix
-// for a subset of row/column indices given by old_indices[0..num_kept-1].
-// D is symmetric so dm[gi * N_full + gj] is valid for any gi, gj pair.
-static void density_matrix_sub_block_upper_tri_float(float* out, const double* dm,
-    size_t N_full, const uint32_t* old_indices, uint32_t num_kept) {
-    size_t k = 0;
-    for (uint32_t i = 0; i < num_kept; i++) {
-        uint32_t gi = old_indices[i];
-        for (uint32_t j = i; j < num_kept; j++) {
-            uint32_t gj = old_indices[j];
-            out[k++] = (float)dm[(size_t)gi * N_full + gj];
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Sparse CGTO-pair evaluation: CPU-side pair list construction
 // ---------------------------------------------------------------------------
@@ -984,80 +969,6 @@ typedef struct {
     size_t num_pairs;              // total number of pairs across all batches
     uint32_t* cgto_order;          // [num_cgtos] Morton permutation: cgto_order[new_idx] = original_idx
 } gto_sparse_pair_list_t;
-
-// Build the sparse CGTO-pair batch list.
-//
-// cgto_xyzr    - expanded CGTO data in original order, xyzr = center xyz + cutoff radius
-// num_cgtos    - number of CGTOs
-// density_matrix - full N×N row-major double matrix (symmetric)
-// dm_threshold - pairs with |D_{μν}| < dm_threshold are dropped; pass 0.0 to keep all
-// cgto_order   - caller-allocated uint32_t[num_cgtos]; filled with Morton permutation
-//                cgto_order[new_idx] = original_idx
-//
-// out_batches and out_pairs point into temp memory allocated inside this function.
-// The caller must copy them (or use them) before calling md_temp_set_pos_back.
-//
-// Returns the number of batches.
-static void gto_build_sparse_pairs(
-    gto_sparse_pair_list_t* list,
-    const md_float4_t*     cgto_xyzr,      // [num_cgtos] original order
-    size_t            num_cgtos,
-    const double*     density_matrix, // [num_cgtos × num_cgtos] row-major
-    double            dm_threshold)
-{
-    MD_ASSERT(list);
-    MD_ASSERT(list->alloc);
-    MD_ASSERT(cgto_xyzr);
-    MD_ASSERT(density_matrix);
-
-    if (num_cgtos == 0) {
-        return;
-    }
-
-    // Reset data
-    //md_array_resize(list->cgto_order, num_cgtos, list->alloc);
-    //md_array_resize(list->batches, num_batches, list->alloc);
-    md_array_shrink(list->pairs, 0);
-    list->num_batches = 0;
-    list->num_pairs = 0;
-
-    // Step 1: Morton-sort CGTO centers.
-    // cgto_order[new_idx] = original_idx after the sort.
-    //md_sort_spatial(list->cgto_order, (const float*)cgto_xyzr, sizeof(md_float4_t), num_cgtos);
-
-    //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
-
-    for (size_t i = 0; i < num_cgtos; i++) {
-        const float* vi = (const float*)&cgto_xyzr[i];
-        float ix = vi[0], iy = vi[1], iz = vi[2], ir = vi[3];
-
-        for (size_t j = i; j < num_cgtos; j++) {
-            const float* vj = (const float*)&cgto_xyzr[j];
-            float jx = vj[0], jy = vj[1], jz = vj[2], jr = vj[3];
-
-            // Sphere intersection: drop pairs whose CGTO support never overlaps.
-            float dx    = ix - jx, dy = iy - jy, dz = iz - jz;
-            float dist2 = dx*dx + dy*dy + dz*dz;
-            float rsum  = ir + jr;
-            if (dist2 > rsum * rsum) continue;
-
-            // Density matrix threshold.
-            // Use original row-major layout; matrix is symmetric so [i*N+j] == [j*N+i].
-            double dval = density_matrix[(size_t)i * num_cgtos + j];
-            if (dm_threshold > 0.0 && fabs(dval) < dm_threshold) continue;
-
-            gto_cgto_pair_t pair = {
-                .i = (uint16_t)i,
-                .j = (uint16_t)j,
-                // Off-diagonal pairs: pre-double to fold in the symmetric D_{νμ} term.
-                .D = (i == j) ? (float)dval : (float)(2.0 * dval),
-            };
-            md_array_push(list->pairs, pair, list->alloc);
-        }
-    }
-
-    list->num_pairs = md_array_size(list->pairs);
-}
 
 // ---------------------------------------------------------------------------
 // The derivative basis (md_gto_basis_derivative, md_gto_orbital_gradients)
@@ -3645,18 +3556,6 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
 
 #endif // MD_ENABLE_GPU
 
-static inline float fast_powf(float base, int exp) {
-    float val = 1.0f;
-    switch(exp) {
-    case 4: val *= base; MD_FALLTHROUGH;
-    case 3: val *= base; MD_FALLTHROUGH;
-    case 2: val *= base; MD_FALLTHROUGH;
-    case 1: val *= base; MD_FALLTHROUGH;
-    case 0: break;
-    }
-    return val;
-}
-
 static inline double fast_pow(double base, int exp){
     double val = 1.0;
     switch(exp) {
@@ -3669,24 +3568,6 @@ static inline double fast_pow(double base, int exp){
     return val;
 }
 
-
-static inline md_128 md_mm_fast_pow1(md_128 base, int exp) {
-    switch (exp) {
-    case 1:
-        return base;
-    case 2:
-        return md_mm_mul_ps(base, base);
-    case 3:
-        return md_mm_mul_ps(base, md_mm_mul_ps(base, base));
-    case 4: {
-        md_128 squared = md_mm_mul_ps(base, base);
-        return md_mm_mul_ps(squared, squared);
-    }
-    case 0:
-    default:
-        return md_mm_set1_ps(1.0f);
-    }
-}
 
 static inline md_256 md_mm256_fast_pow1(md_256 base, int exp) {
     switch (exp) {
@@ -3743,23 +3624,6 @@ static inline md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
 }
 
 #ifdef __AVX512F__
-static inline __m512 md_mm512_fast_pow(__m512 base1, __m512i exp) {
-    __m512 base2 = _mm512_mul_ps(base1,  base1);
-    __m512 base3 = _mm512_mul_ps(base2, base1);
-    __m512 base4 = _mm512_mul_ps(base2, base2);
-
-    __mmask16 mask1 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(1), _MM_CMPINT_EQ);
-    __mmask16 mask2 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(2), _MM_CMPINT_EQ);
-    __mmask16 mask3 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(3), _MM_CMPINT_EQ);
-    __mmask16 mask4 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(4), _MM_CMPINT_EQ);
-
-    __m512 res = _mm512_set1_ps(1.0f);
-    res = _mm512_mask_blend_ps(mask1, res, base1);
-    res = _mm512_mask_blend_ps(mask2, res, base2);
-    res = _mm512_mask_blend_ps(mask3, res, base3);
-    res = _mm512_mask_blend_ps(mask4, res, base4);
-    return res;
-}
 #endif
 
 static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_step_x[3], const float grid_step_y[3], const float grid_step_z[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
@@ -3810,79 +3674,6 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
 }
 
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
-
-// Evaluate 8 voxels per gto
-static inline void evaluate_grid_ortho_8x8x8_512(float grid_data[], const int grid_idx_min[3], const int grid_dim[3], const float grid_origin[3], const float grid_step[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
-    const md_256i vix = md_mm256_add_epi32(md_mm256_set1_epi32(grid_idx_min[0]), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-    const md_256  vxh = md_mm256_fmadd_ps(md_mm256_cvtepi32_ps(vix), md_mm256_set1_ps(grid_step[0]), md_mm256_set1_ps(grid_origin[0]));
-    const __m512  vx  = _mm512_insertf32x8(_mm512_castps256_ps512(vxh), vxh, 1);
-    const int x_stride = grid_idx_min[0];
-
-    __m512 vpsi[8][4] = {0};
-
-    for (size_t i = 0; i < num_gtos; ++i) {
-        const __m512  px = _mm512_set1_ps(gtos[i].x);
-        const __m512  py = _mm512_set1_ps(gtos[i].y);
-        const __m512  pz = _mm512_set1_ps(gtos[i].z);
-        const __m512  pc = _mm512_set1_ps(gtos[i].coeff);
-        const __m512  pa = _mm512_set1_ps(-gtos[i].alpha); // Negate alpha here
-        const __m512i pi = _mm512_set1_epi32(gtos[i].i);
-        const __m512i pj = _mm512_set1_epi32(gtos[i].j);
-        const __m512i pk = _mm512_set1_epi32(gtos[i].k);
-
-        for (int iz = 0; iz < 8; ++iz) {
-            float z = grid_origin[2] + (grid_idx_min[2] + iz) * grid_step[2];
-            __m512 vz = _mm512_set1_ps(z);
-            for (int iy = 0; iy < 4; ++iy) {
-                float y[2] = {
-                    grid_origin[1] + (grid_idx_min[1] + iy * 2 + 0) * grid_step[1],
-                    grid_origin[1] + (grid_idx_min[1] + iy * 2 + 1) * grid_step[1],
-                };
-                __m512 vy = _mm512_insertf32x8(_mm512_set1_ps(y[0]), _mm256_set1_ps(y[1]), 1);
-
-                __m512 dx = _mm512_sub_ps(vx, px);
-                __m512 dy = _mm512_sub_ps(vy, py);
-                __m512 dz = _mm512_sub_ps(vz, pz);
-                __m512 d2 = _mm512_fmadd_ps(dx, dx, _mm512_fmadd_ps(dy, dy, _mm512_mul_ps(dz, dz)));
-                __m512 fx = md_mm512_fast_pow(dx, pi);
-                __m512 fy = md_mm512_fast_pow(dy, pj);
-                __m512 fz = md_mm512_fast_pow(dz, pk);
-                __m512 ex = md_mm512_exp_ps(_mm512_mul_ps(pa, d2));
-                __m512 prod = _mm512_mul_ps(_mm512_mul_ps(_mm512_mul_ps(pc, fx), _mm512_mul_ps(fy, fz)), ex);
-
-                vpsi[iz][iy] = _mm512_add_ps(vpsi[iz][iy], prod);
-            }
-        }
-    }
-
-    // Write result block to memory
-    for (int iz = 0; iz < 8; ++iz) {
-        int z_stride = (grid_idx_min[2] + iz) * grid_dim[0] * grid_dim[1];
-        for (int iy = 0; iy < 4; ++iy) {
-            int y_stride[2] = {
-                (grid_idx_min[1] + iy * 2 + 0) * grid_dim[0],
-                (grid_idx_min[1] + iy * 2 + 1) * grid_dim[0],
-            };
-            int index[2] = {
-                x_stride + y_stride[0] + z_stride,
-                x_stride + y_stride[1] + z_stride,
-            };
-
-            md_512 psi = vpsi[iz][iy];
-            if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                psi = _mm512_mul_ps(psi, psi);
-            }
-
-            md_256 tpsi[2] = {
-                _mm512_castps512_ps256(psi),
-                _mm512_extractf32x8_ps(psi, 1),
-            };
-
-            md_mm256_storeu_ps(grid_data + index[0], tpsi[0]);
-            md_mm256_storeu_ps(grid_data + index[1], tpsi[1]);
-        }
-    }
-}
 
 #endif
 
