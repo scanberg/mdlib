@@ -2,6 +2,7 @@
 
 #include <md_system.h>
 #include <md_bond.h>
+#include <md_element.h>
 #include <md_system_state.h>
 #include <md_unitcell.h>
 #include <core/md_log.h>
@@ -36,6 +37,8 @@ typedef struct topo_layout_t {
     uint64_t state, atom_type, type_radius, atom_order, point_type, mixed_point, resident, atom_cluster_offset, bond_pairs, bond_ids;
     uint64_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];
     uint64_t backbone_index, backbone_segment, backbone_carbonyl, backbone_chain;
+    uint64_t nucleic_index, nucleic_segment, nucleic_face;
+    uint64_t ring_points[MD_RENDER_MOL_RING_SIZES], ring_segment[MD_RENDER_MOL_RING_SIZES], stick_points, stick_segment;
     uint64_t small_tables, size;
 } topo_layout_t;
 
@@ -73,6 +76,13 @@ static small_layout_t small_layout(uint32_t n_mol, uint32_t n_kinds, uint32_t n_
     return L;
 }
 
+static bool ring_has_atom(const md_ring_data_t* rd, uint32_t ring, int32_t atom) {
+    const int32_t* ra = md_ring_atoms(rd, ring);
+    const size_t   rn = md_ring_size(rd, ring);
+    for (size_t k = 0; k < rn; ++k) if (ra[k] == atom) return true;
+    return false;
+}
+
 /* A kind's identity: its atoms relative to the first and their types, its bonds' places */
 static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_type_idx_t* types, const uint32_t* local, uint32_t nb) {
     uint32_t h = 0x811C9DC5u ^ (na * 0x9E3779B1u) ^ (nb * 0x85EBCA77u);
@@ -87,7 +97,7 @@ static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, size, size_velocity;
+    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, na_axis, size, size_velocity;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
@@ -97,13 +107,14 @@ typedef struct dyn_layout_t {
    scratch of the regroup. Then the backbone's axes (float4 per control
    point, md_render's) and the orientation's memory: per control point
    whether the next one's axis is turned against it, then a word naming the
-   topology instance that wrote them (none yet: no memory). Last, only in a
-   block allocated with them, the points' velocities.
+   topology instance that wrote them (none yet: no memory). The nucleic
+   band's axes (float4 per control point). Last, only in a block allocated
+   with them, the points' velocities.
    Not packed positions apart (1dd0efd6): fewer bytes per update, but
    md_render reads the points several times a frame, much of it scattered,
    and a 12-byte position straddles 32-byte sectors (raster after positions
    changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
-static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp) {
+static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
@@ -116,10 +127,15 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.sums     = o; o = align256(o + (uint64_t)L.scan_blocks * 16u);
     L.bb_axis  = o; o = align256(o + (uint64_t)n_cp * 16u);
     L.bb_flip  = o; o = align256(o + ((uint64_t)n_cp + 1u) * 4u);
+    L.na_axis  = o; o = align256(o + (uint64_t)n_na * 16u);
     L.size = o;
     L.velocity = o; o = align256(o + (uint64_t)n_atoms * 8u);
     L.size_velocity = o;
     return L;
+}
+
+static dyn_layout_t dyn_of(const md_render_mol_topo_t* t) {
+    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count);
 }
 
 /* The frames block: each slot's parameters (32 words), the slots' frames
@@ -440,6 +456,150 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     T->backbone_count       = n_cp;
     T->backbone_chain_count = n_chain;
+
+    /* The nucleic acids (viamd's cartoon_glyphs, for atomistic ranges): the
+       band through each C4', in pieces as the protein's; the rings of each
+       nucleotide, found from its C1' (the sugar: the ring with it; the base:
+       the ring with the atom bonded to it outside the sugar, the glycosidic
+       N, and the rings fused to that, sharing a bond); the stick from the
+       C1' to that N. Every atom of a ring resident and static, else the
+       ring is left out. */
+    const md_nucleic_backbone_data_t* NB = &sys->nucleic_backbone;
+    const uint32_t n_nseg = NB->segment.atoms ? (uint32_t)NB->segment.count : 0;
+    #define RING_PER_NUC 4u                    /* a sugar, a purine's two, one more of a modified base */
+    uint32_t* na_index = md_temp_alloc(temp, ((size_t)n_nseg + 1) * 4u);
+    uint32_t* na_seg   = md_temp_alloc(temp, ((size_t)n_nseg + 1) * 4u);
+    uint32_t* na_face  = md_temp_alloc(temp, ((size_t)n_nseg + 1) * 4u);
+    uint32_t* st_pts   = md_temp_alloc(temp, ((size_t)n_nseg + 1) * 8u);
+    uint32_t* st_seg   = md_temp_alloc(temp, ((size_t)n_nseg + 1) * 4u);
+    uint32_t* rg_pts[MD_RENDER_MOL_RING_SIZES];
+    uint32_t* rg_seg[MD_RENDER_MOL_RING_SIZES];
+    uint32_t  rg_n[MD_RENDER_MOL_RING_SIZES] = { 0 };
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        rg_pts[k] = md_temp_alloc(temp, ((size_t)n_nseg * RING_PER_NUC + 1) * (3u + k) * 4u);
+        rg_seg[k] = md_temp_alloc(temp, ((size_t)n_nseg * RING_PER_NUC + 1) * 4u);
+        if (!rg_pts[k] || !rg_seg[k]) return false;
+    }
+    if (!na_index || !na_seg || !na_face || !st_pts || !st_seg) return false;
+    uint32_t n_na = 0, n_stick = 0;
+    if (n_nseg) {
+        /* each atom's rings (sys->ring: 3 to 7 atoms in order around it) */
+        const md_ring_data_t* RD = &sys->ring;
+        const uint32_t n_rings = (uint32_t)md_ring_data_count(RD);
+        uint32_t* ar_off  = md_temp_alloc_zero(temp, ((size_t)n + 2) * 4u);
+        if (!ar_off) return false;
+        for (uint32_t r = 0; r < n_rings; ++r) {
+            const int32_t* ra = md_ring_atoms(RD, r);
+            for (size_t k = 0; k < md_ring_size(RD, r); ++k) if ((uint32_t)ra[k] < n) ar_off[ra[k] + 1]++;
+        }
+        for (uint32_t i = 0; i < n; ++i) ar_off[i + 1] += ar_off[i];
+        uint32_t* ar_ring = md_temp_alloc(temp, ((size_t)ar_off[n] + 1) * 4u);
+        uint32_t* cursor  = md_temp_alloc(temp, ((size_t)n + 1) * 4u);
+        if (!ar_ring || !cursor) return false;
+        memcpy(cursor, ar_off, (size_t)n * 4u);
+        for (uint32_t r = 0; r < n_rings; ++r) {
+            const int32_t* ra = md_ring_atoms(RD, r);
+            for (size_t k = 0; k < md_ring_size(RD, r); ++k) if ((uint32_t)ra[k] < n) ar_ring[cursor[ra[k]]++] = r;
+        }
+        #define NA_ATOM_OK(x) ((x) >= 0 && (uint32_t)(x) < n && inv[(x)] != UINT32_MAX && !IS_SMALL((uint32_t)(x)))
+        #define RING_HAS(r, x) ring_has_atom(RD, (r), (x))
+        uint32_t start = 0;
+        for (size_t rr = 0; rr < NB->range.count; ++rr) {
+            if (md_nucleic_backbone_range_is_coarse_grained(NB, rr)) continue;   /* derived points: not yet */
+            const uint32_t b = NB->range.offset[rr], e = NB->range.offset[rr + 1];
+            for (uint32_t g = b; g <= e; ++g) {
+                bool band = false;
+                if (g < e && g < n_nseg) {
+                    const md_nucleic_acid_atoms_t at = NB->segment.atoms[g];
+                    /* its rings: the sugar, then the base's */
+                    uint32_t rings[2 * RING_PER_NUC], nr = 0, sugar = UINT32_MAX;
+                    int32_t  glyco = -1;
+                    if (at.c1 >= 0 && (uint32_t)at.c1 < n) {
+                        if (ar_off[at.c1] < ar_off[at.c1 + 1]) rings[nr++] = sugar = ar_ring[ar_off[at.c1]];
+                        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)at.c1);
+                        for (; md_bond_iter_has_next(&it) && glyco < 0; md_bond_iter_next(&it)) {
+                            const int32_t x = md_bond_iter_atom_index(&it);
+                            if (x < 0 || (uint32_t)x >= n || md_atom_atomic_number(&sys->atom, (size_t)x) == MD_Z_H) continue;
+                            if (sugar != UINT32_MAX && RING_HAS(sugar, x)) continue;
+                            if (ar_off[x] < ar_off[x + 1]) glyco = x;
+                        }
+                    }
+                    const uint32_t first_base = nr;
+                    if (glyco >= 0) {
+                        for (uint32_t k = ar_off[glyco]; k < ar_off[glyco + 1] && nr < 2 * RING_PER_NUC; ++k) {
+                            bool have = false;
+                            for (uint32_t q = 0; q < nr; ++q) have |= rings[q] == ar_ring[k];
+                            if (!have && ar_ring[k] != sugar) rings[nr++] = ar_ring[k];
+                        }
+                        for (uint32_t q = first_base; q < nr; ++q) {           /* and those fused to them */
+                            const int32_t* ra = md_ring_atoms(RD, rings[q]);
+                            const size_t   rn = md_ring_size(RD, rings[q]);
+                            for (size_t k = 0; k < rn; ++k) {
+                                for (uint32_t j = ar_off[ra[k]]; j < ar_off[ra[k] + 1] && nr < 2 * RING_PER_NUC; ++j) {
+                                    const uint32_t o = ar_ring[j];
+                                    bool have = o == sugar;
+                                    for (uint32_t w = 0; w < nr; ++w) have |= rings[w] == o;
+                                    if (have) continue;
+                                    uint32_t shared = 0;
+                                    for (size_t l = 0; l < rn; ++l) shared += RING_HAS(o, ra[l]) ? 1u : 0u;
+                                    if (shared >= 2) rings[nr++] = o;
+                                }
+                            }
+                        }
+                    }
+                    bool drew_sugar = false, drew_base_n = false;
+                    for (uint32_t q = 0; q < nr; ++q) {
+                        const int32_t* ra = md_ring_atoms(RD, rings[q]);
+                        const uint32_t rn = (uint32_t)md_ring_size(RD, rings[q]);
+                        if (rn < 3 || rn > 2 + MD_RENDER_MOL_RING_SIZES) continue;
+                        const uint32_t k = rn - 3;
+                        if (rg_n[k] >= n_nseg * RING_PER_NUC) continue;
+                        bool all = true;
+                        for (uint32_t l = 0; l < rn; ++l) all = all && NA_ATOM_OK(ra[l]);
+                        if (!all) continue;
+                        const bool is_sugar = rings[q] == sugar;
+                        uint32_t f0 = 0;                /* from the C1', or a carbon: the colour's corner */
+                        for (uint32_t l = 0; l < rn; ++l) {
+                            if (is_sugar ? ra[l] == at.c1 : md_atom_atomic_number(&sys->atom, (size_t)ra[l]) == 6) { f0 = l; break; }
+                        }
+                        uint32_t* dst = rg_pts[k] + (size_t)rg_n[k] * rn;
+                        for (uint32_t l = 0; l < rn; ++l) dst[l] = inv[ra[(f0 + l) % rn]];
+                        rg_seg[k][rg_n[k]++] = g;
+                        if (is_sugar) drew_sugar = true;
+                        else if (glyco >= 0 && RING_HAS(rings[q], glyco)) drew_base_n = true;
+                    }
+                    if (drew_sugar && drew_base_n) {
+                        st_pts[2 * n_stick + 0] = inv[at.c1];
+                        st_pts[2 * n_stick + 1] = inv[glyco];
+                        st_seg[n_stick++] = g;
+                    }
+                    /* the band: faces the base's N, else the C1' */
+                    if (NA_ATOM_OK(at.c4)) {
+                        band = true;
+                        na_index[n_na] = inv[at.c4];
+                        na_seg[n_na]   = g;
+                        na_face[n_na]  = (glyco >= 0 && NA_ATOM_OK(glyco)) ? inv[glyco] : NA_ATOM_OK(at.c1) ? inv[at.c1] : UINT32_MAX;
+                        n_na++;
+                    }
+                }
+                if (!band) {                     /* the piece so far ends here */
+                    if (n_na - start >= 2) {
+                        na_index[start]    |= MD_RENDER_SPLINE_FIRST;
+                        na_index[n_na - 1] |= MD_RENDER_SPLINE_LAST;
+                    } else {
+                        n_na = start;            /* one nucleotide: no band */
+                    }
+                    start = n_na;
+                }
+            }
+        }
+        #undef NA_ATOM_OK
+        #undef RING_HAS
+    }
+    #undef RING_PER_NUC
+    T->nucleic_count = n_na;
+    T->stick_count   = n_stick;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) T->ring_count[k] = rg_n[k];
     uint32_t n_mixed = 0;
     for (uint32_t i = 0; i < nb; ++i) {
         if (key[i] != SMALL_KEY && (IS_SMALL(BA(i)) || IS_SMALL(BB(i)))) n_mixed++;
@@ -525,6 +685,15 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.backbone_segment    = o; o = align256(o + (uint64_t)n_cp * 4u);
     L.backbone_carbonyl   = o; o = align256(o + (uint64_t)n_cp * 8u);
     L.backbone_chain      = o; o = align256(o + ((uint64_t)n_chain + 1u) * 4u);
+    L.nucleic_index       = o; o = align256(o + (uint64_t)n_na * 4u);
+    L.nucleic_segment     = o; o = align256(o + (uint64_t)n_na * 4u);
+    L.nucleic_face        = o; o = align256(o + (uint64_t)n_na * 4u);
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        L.ring_points[k]  = o; o = align256(o + (uint64_t)rg_n[k] * (3u + k) * 4u);
+        L.ring_segment[k] = o; o = align256(o + (uint64_t)rg_n[k] * 4u);
+    }
+    L.stick_points        = o; o = align256(o + (uint64_t)n_stick * 8u);
+    L.stick_segment       = o; o = align256(o + (uint64_t)n_stick * 4u);
     L.small_tables = o; o += small_mols ? SL.size : 0;
     L.size = o ? o : 256;
 
@@ -592,6 +761,15 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     memcpy(img + L.backbone_segment,  cp_seg,   (size_t)n_cp * 4u);
     memcpy(img + L.backbone_carbonyl, cp_co,    (size_t)n_cp * 8u);
     memcpy(img + L.backbone_chain,    cp_chain, ((size_t)n_chain + 1u) * 4u);
+    memcpy(img + L.nucleic_index,     na_index, (size_t)n_na * 4u);
+    memcpy(img + L.nucleic_segment,   na_seg,   (size_t)n_na * 4u);
+    memcpy(img + L.nucleic_face,      na_face,  (size_t)n_na * 4u);
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        memcpy(img + L.ring_points[k],  rg_pts[k], (size_t)rg_n[k] * (3u + k) * 4u);
+        memcpy(img + L.ring_segment[k], rg_seg[k], (size_t)rg_n[k] * 4u);
+    }
+    memcpy(img + L.stick_points,      st_pts,   (size_t)n_stick * 8u);
+    memcpy(img + L.stick_segment,     st_seg,   (size_t)n_stick * 4u);
     if (small_mols) {
         uint8_t* st = img + L.small_tables;
         memcpy(st + SL.kinds,           kinfo,   (size_t)n_kinds * 16u);
@@ -610,8 +788,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
 
     T->size                = L.size;
-    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp).size;
-    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp).size_velocity;
+    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na).size;
+    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na).size_velocity;
     T->resident            = L.resident;
     T->regroups            = L.state;
     T->atom_type           = L.atom_type;
@@ -627,6 +805,15 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->backbone_segment    = L.backbone_segment;
     T->backbone_carbonyl   = L.backbone_carbonyl;
     T->backbone_chain      = L.backbone_chain;
+    T->nucleic_index       = L.nucleic_index;
+    T->nucleic_segment     = L.nucleic_segment;
+    T->nucleic_face        = L.nucleic_face;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        T->ring_points[k]  = L.ring_points[k];
+        T->ring_segment[k] = L.ring_segment[k];
+    }
+    T->stick_points        = L.stick_points;
+    T->stick_segment       = L.stick_segment;
     T->small_tables        = small_mols ? L.small_tables : 0;
     #undef RES
     #undef BA
@@ -662,6 +849,15 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->backbone_segment    = base + plan->layout.backbone_segment;
     out->backbone_carbonyl   = base + plan->layout.backbone_carbonyl;
     out->backbone_chain      = base + plan->layout.backbone_chain;
+    out->nucleic_index       = base + plan->layout.nucleic_index;
+    out->nucleic_segment     = base + plan->layout.nucleic_segment;
+    out->nucleic_face        = base + plan->layout.nucleic_face;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        out->ring_points[k]  = base + plan->layout.ring_points[k];
+        out->ring_segment[k] = base + plan->layout.ring_segment[k];
+    }
+    out->stick_points        = base + plan->layout.stick_points;
+    out->stick_segment       = base + plan->layout.stick_segment;
     out->small_tables        = plan->layout.small_molecule_count ? base + plan->layout.small_tables : 0;
     if (content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return true;
@@ -674,6 +870,7 @@ struct md_render_mol {
     md_gpu_kernel_t k_clear, k_bounds, k_dims, k_count, k_scan, k_write, k_offsets, k_mixed, k_gather;
     md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
     md_gpu_kernel_t k_bb_support, k_bb_orient, k_bb_profile;        /* the cartoon */
+    md_gpu_kernel_t k_na_axis;                                       /* the nucleic band */
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -684,6 +881,7 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t atom_order, mixed_point, atom_cluster_offset, bond_pairs, bond_ids, bond_cluster_offset, point_type;
     md_gpu_addr_t frame[4], fpar[4], qsrc, qdst, qpar, src_point, resident, regroups;
     md_gpu_addr_t bb_index, bb_segment, bb_carbonyl, bb_chain, bb_axis, bb_flip, bb_ss, bb_out;
+    md_gpu_addr_t na_index, na_face, na_axis;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t fr_threads;
@@ -691,9 +889,9 @@ typedef struct gpu_mol_args_t {
     float    w[4], dw[4];
     uint32_t bb_count, bb_chains, bb_history, has_ss;
     float    bb_scale[3];                                           /* coil, helix, sheet */
-    uint32_t dbg, _pad0, _pad1;
+    uint32_t dbg, na_count, _pad1;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 49 * 8 + 42 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 52 * 8 + 42 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -727,9 +925,10 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_bb_support_kernel();  r->k_bb_support = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_bb_orient_kernel();   r->k_bb_orient  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_bb_profile_kernel();  r->k_bb_profile = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_na_axis_kernel();     r->k_na_axis    = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -741,7 +940,7 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -776,7 +975,7 @@ static bool launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t g, const 
 /* The arguments every kernel shares: the topology, the per-frame block */
 static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic) {
     const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
-    const dyn_layout_t   D  = dyn_layout(topo->point_count, n_mol, topo->small_bond_count, cells, topo->backbone_count);
+    const dyn_layout_t   D  = dyn_of(topo);
     const small_layout_t SL = small_layout(n_mol, topo->kind_count, topo->kind_atom_count, topo->kind_bond_count, topo->mixed_bond_count);
     memset(a, 0, sizeof(*a));
     a->dbg = g_write_dbg;
@@ -830,16 +1029,20 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->bb_chain            = topo->backbone_chain;
     a->bb_count            = topo->backbone_count;
     a->bb_chains           = topo->backbone_chain_count;
+    a->na_index            = topo->nucleic_index;
+    a->na_face             = topo->nucleic_face;
+    a->na_count            = topo->nucleic_count;
     if (dynamic) {
         a->bb_axis = dynamic + D.bb_axis;
         a->bb_flip = dynamic + D.bb_flip;
+        a->na_axis = dynamic + D.na_axis;
     }
 }
 
 /* The small molecules into grid cells, by the positions `a` points at */
 static bool run_regroup(md_render_mol_t r, md_gpu_stream_t s, gpu_mol_args_t* a, const md_render_mol_topo_t* topo, pass_hook_t hook, void* user) {
     const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
-    const dyn_layout_t D = dyn_layout(topo->point_count, n_mol, topo->small_bond_count, cells, topo->backbone_count);
+    const dyn_layout_t D = dyn_of(topo);
     bool ok = true;
     ok = ok && launch(s, r->k_clear,  groups_for(4 * (cells + 1) > 16 ? 4 * (cells + 1) : 16, 64), a, hook, user, "clear");
     ok = ok && launch(s, r->k_bounds, groups_for(n_mol, 64), a, hook, user, "bounds");
@@ -968,11 +1171,14 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
         /* The backbone's axes, from the copy just gathered; whether each is
            turned against the one before with the last update's decision as
            memory, when that update's stamp is this topology's */
-        const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells, topo->backbone_count);
+        const dyn_layout_t D = dyn_of(topo);
         a.bb_history = (flags & MD_RENDER_MOL_UPDATE_RESET_BACKBONE) ? 0u : topo->instance;
         ok = launch(s, r->k_bb_support, groups_for(topo->backbone_count, 64), &a, hook, user, "backbone axes") &&
              launch(s, r->k_bb_orient, groups_for(topo->backbone_chain_count, 64), &a, hook, user, "backbone sides") &&
              md_gpu_upload(s, dynamic + D.bb_flip + (uint64_t)topo->backbone_count * 4u, &topo->instance, 4);
+    }
+    if (ok && topo->nucleic_count) {             /* the nucleic band's axes, towards the bases */
+        ok = launch(s, r->k_na_axis, groups_for(topo->nucleic_count, 64), &a, hook, user, "nucleic axes");
     }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return ok;
@@ -1388,6 +1594,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
         { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
         { "bb_support", r->k_bb_support }, { "bb_orient", r->k_bb_orient }, { "bb_profile", r->k_bb_profile },
+        { "na_axis", r->k_na_axis },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -1429,7 +1636,7 @@ void md_render_mol_frame_weights(float w[4], float dw[4], uint32_t frame_count, 
 /* The copy in the per-frame block: points in cluster order, each its atom's
    attributes through atom_order */
 static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms, const md_render_mol_rep_t* rep) {
-    const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells, topo->backbone_count);
+    const dyn_layout_t D = dyn_of(topo);
     md_render_points_t p;
     memset(&p, 0, sizeof(p));
     p.count           = topo->point_count;
@@ -1511,7 +1718,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
            pick's id the residue's segment */
         uint32_t n = 0;
         if (topo->backbone_count) {
-            const dyn_layout_t D = dyn_layout(topo->point_count, topo->small_molecule_count, topo->small_bond_count, topo->grid_cells, topo->backbone_count);
+            const dyn_layout_t D = dyn_of(topo);
             md_render_batch_t b = base;
             b.key   = (rep->key << 8) | MD_RENDER_MOL_PART_BACKBONE;
             b.kind  = MD_RENDER_SPLINES;
@@ -1521,6 +1728,46 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.style.splines.axis    = dynamic + D.bb_axis;
             b.style.splines.profile = rep->params.cartoon.profile;
             b.style.splines.radius  = 0.2f;     /* without a profile: the coil */
+            put(out, cap, &n, &b);
+        }
+        /* The nucleic acids: the band through the C4' (its atom the part's
+           attribute), the rings (from the colour's corner), the sticks; each
+           picks as its nucleotide's segment */
+        const float band = rep->params.cartoon.band_radius > 0.0f ? rep->params.cartoon.band_radius : 0.25f;
+        const float ring = rep->params.cartoon.ring_radius > 0.0f ? rep->params.cartoon.ring_radius : 0.2f;
+        if (topo->nucleic_count) {
+            md_render_batch_t b = base;
+            b.key   = (rep->key << 8) | MD_RENDER_MOL_PART_NUCLEIC;
+            b.kind  = MD_RENDER_SPLINES;
+            b.count = topo->nucleic_count;
+            b.index = topo->nucleic_index;
+            b.id    = topo->nucleic_segment;
+            b.style.splines.axis    = dynamic + dyn_of(topo).na_axis;
+            b.style.splines.radius  = band;
+            b.style.splines.flat    = 1.6f;     /* md_gl's: the width stays */
+            b.style.splines.through = true;     /* the sugars hang off the C4' */
+            put(out, cap, &n, &b);
+        }
+        for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+            if (!topo->ring_count[k]) continue;
+            md_render_batch_t b = base;
+            b.key   = (rep->key << 8) | (MD_RENDER_MOL_PART_RINGS + k);
+            b.kind  = MD_RENDER_POLYGONS;
+            b.count = topo->ring_count[k];
+            b.index = topo->ring_points[k];
+            b.id    = topo->ring_segment[k];
+            b.style.polygons.corners = 3u + k;
+            b.style.polygons.radius  = ring;
+            put(out, cap, &n, &b);
+        }
+        if (topo->stick_count) {
+            md_render_batch_t b = base;
+            b.key   = (rep->key << 8) | MD_RENDER_MOL_PART_STICKS;
+            b.kind  = MD_RENDER_CAPSULES;
+            b.count = topo->stick_count;
+            b.index = topo->stick_points;
+            b.id    = topo->stick_segment;
+            b.style.capsules.radius = ring;
             put(out, cap, &n, &b);
         }
         return n;
@@ -1582,6 +1829,14 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     }
     if (part == MD_RENDER_MOL_PART_BACKBONE && pick->kind == MD_RENDER_SPLINES) {
         hit->kind    = MD_RENDER_MOL_HIT_BACKBONE;
+        hit->segment = pick->id;
+        hit->atom    = pick->attr;
+        return true;
+    }
+    if ((part == MD_RENDER_MOL_PART_NUCLEIC && pick->kind == MD_RENDER_SPLINES) ||
+        (part >= MD_RENDER_MOL_PART_RINGS && part < MD_RENDER_MOL_PART_RINGS + MD_RENDER_MOL_RING_SIZES && pick->kind == MD_RENDER_POLYGONS) ||
+        (part == MD_RENDER_MOL_PART_STICKS && pick->kind == MD_RENDER_CAPSULES)) {
+        hit->kind    = MD_RENDER_MOL_HIT_NUCLEOTIDE;
         hit->segment = pick->id;
         hit->atom    = pick->attr;
         return true;

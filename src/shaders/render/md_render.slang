@@ -84,6 +84,7 @@ static const uint F_FADE_THIN    = 1u << 18;  // ... its elements dropped one by
 static const uint F_FADE         = F_FADE_OUT | F_FADE_IN;
 static const uint F_SPL_AXIS     = 1u << 19;  // SPLINES: spl_axis
 static const uint F_SPL_PROFILE  = 1u << 20;  // SPLINES: spl_profile
+static const uint F_SPL_THROUGH  = 1u << 21;  // SPLINES: through their control points (spline_controls)
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -564,13 +565,70 @@ float3 spline_axis_view(Mat V, Mat T, Batch b, uint e) {
 }
 
 // e's part's profile: half width at its start and end, radius at its start
-// and end; without a profile a tube of the batch's radius
+// and end; without a profile the batch's flat (s1) and radius (s0)
 float4 spline_profile_of(Batch b, uint e) {
-    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[gated(b, F_SPL_PROFILE, e)] : float4(0.0, 0.0, b.s0, b.s0);
+    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[gated(b, F_SPL_PROFILE, e)] : float4(b.s1, b.s1, b.s0, b.s0);
 }
 
 bool spline_visible(Batch b, uint ie) {
     return attr_visible(b, attr_of(b, ie & SPLINE_POINT));
+}
+
+// The control points of e's part, batch space: e - 2 .. e + 2, mirrored past
+// the spline's ends (where the B-spline then ends at its end point). Through
+// its control points (F_SPL_THROUGH) each is moved by one step of the
+// inverse of the B-spline's smoothing, (q- + 4 q + q+) / 6: c = (8 q - q- -
+// q+) / 6, which leaves an offset of the fourth difference over 36 instead
+// of the second over 6 (md_gl's tubes.through). An end
+// stays where it is (its mirrored neighbour makes the step nothing). Every
+// load past an end behind an if and its index gated (no_null in md_render.c).
+// The caller has checked that e is not alone.
+struct SplineCtl {
+    float3 p0, p1, p2, p3, p4;
+    bool   hp, hn, hpp, hnn;            // e - 1, e + 1, e - 2, e + 2 are of the spline
+    uint   im, ip;                      // the index entries of e - 1, e + 1 (0 past an end)
+};
+
+SplineCtl spline_controls(Batch b, uint e, uint ie) {
+    SplineCtl k;
+    k.hp = (ie & SPLINE_FIRST) == 0u;
+    k.hn = (ie & SPLINE_LAST) == 0u;
+    k.im = 0u; k.ip = 0u;
+    if (k.hp) k.im = b.index[k.hp ? e - 1u : e];
+    if (k.hn) k.ip = b.index[k.hn ? e + 1u : e];
+    k.hpp = k.hp && (k.im & SPLINE_FIRST) == 0u;
+    k.hnn = k.hn && (k.ip & SPLINE_LAST) == 0u;
+    uint imm = 0u, ipp = 0u;
+    if (k.hpp) imm = b.index[k.hpp ? e - 2u : e];
+    if (k.hnn) ipp = b.index[k.hnn ? e + 2u : e];
+    k.p2 = load_pos(b, ie & SPLINE_POINT);
+    k.p0 = k.p1 = k.p3 = k.p4 = float3(0.0);
+    if (k.hp) k.p1 = load_pos(b, k.im & SPLINE_POINT);
+    if (k.hn) k.p3 = load_pos(b, k.ip & SPLINE_POINT);
+    if (!k.hp) k.p1 = 2.0 * k.p2 - k.p3;
+    if (!k.hn) k.p3 = 2.0 * k.p2 - k.p1;
+    if (k.hpp) k.p0 = load_pos(b, imm & SPLINE_POINT);
+    else       k.p0 = 2.0 * k.p1 - k.p2;
+    if (k.hnn) k.p4 = load_pos(b, ipp & SPLINE_POINT);
+    else       k.p4 = 2.0 * k.p3 - k.p2;
+    if ((b.flags & F_SPL_THROUGH) != 0u) {
+        bool   hppp = k.hpp && (imm & SPLINE_FIRST) == 0u;
+        bool   hnnn = k.hnn && (ipp & SPLINE_LAST) == 0u;
+        float3 m3 = float3(0.0), n3 = float3(0.0);
+        if (hppp) m3 = load_pos(b, b.index[hppp ? e - 3u : e] & SPLINE_POINT);
+        if (hnnn) n3 = load_pos(b, b.index[hnnn ? e + 3u : e] & SPLINE_POINT);
+        float3 c2 = (k.hp && k.hn)  ? (8.0 * k.p2 - k.p1 - k.p3) / 6.0 : k.p2;
+        float3 c1 = (k.hp && k.hpp) ? (8.0 * k.p1 - k.p0 - k.p2) / 6.0 : k.p1;
+        float3 c3 = (k.hn && k.hnn) ? (8.0 * k.p3 - k.p2 - k.p4) / 6.0 : k.p3;
+        float3 c0 = (k.hpp && hppp) ? (8.0 * k.p0 - m3 - k.p1) / 6.0 : k.p0;
+        float3 c4 = (k.hnn && hnnn) ? (8.0 * k.p4 - k.p3 - n3) / 6.0 : k.p4;
+        if (!k.hp)  c1 = 2.0 * c2 - c3;     // mirrored again, of the moved ones
+        if (!k.hn)  c3 = 2.0 * c2 - c1;
+        if (!k.hpp) c0 = 2.0 * c1 - c2;
+        if (!k.hnn) c4 = 2.0 * c3 - c2;
+        k.p0 = c0; k.p1 = c1; k.p2 = c2; k.p3 = c3; k.p4 = c4;
+    }
+    return k;
 }
 
 // Control point e's part, in view space. fade: the batch's SHRINK applies
@@ -585,25 +643,17 @@ SplinePart spline_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     bool hp = (ie & SPLINE_FIRST) == 0u;
     bool hn = (ie & SPLINE_LAST) == 0u;
     if (!hp && !hn) return sp;                          // alone: no curve
-    // Every load past an end behind an if: a ?: may evaluate both sides
-    uint im = 0u, ip = 0u;
-    if (hp) im = b.index[e - 1u];
-    if (hn) ip = b.index[e + 1u];
-    bool hpp = hp && (im & SPLINE_FIRST) == 0u;
-    bool hnn = hn && (ip & SPLINE_LAST) == 0u;
+    SplineCtl k = spline_controls(b, e, ie);
+    uint im = k.im, ip = k.ip;
+    bool hpp = k.hpp, hnn = k.hnn;
     Mat  T = load_transform(b.transforms, inst);
     Mat  V = M(v, view);
     float s = length(T.c0.xyz);
-
-    sp.p2 = mulp(V, mulp(T, load_pos(b, ie & SPLINE_POINT)));
-    if (hp) sp.p1 = mulp(V, mulp(T, load_pos(b, im & SPLINE_POINT)));
-    if (hn) sp.p3 = mulp(V, mulp(T, load_pos(b, ip & SPLINE_POINT)));
-    if (!hp) sp.p1 = 2.0 * sp.p2 - sp.p3;
-    if (!hn) sp.p3 = 2.0 * sp.p2 - sp.p1;
-    if (hpp) sp.p0 = mulp(V, mulp(T, load_pos(b, b.index[e - 2u] & SPLINE_POINT)));
-    else     sp.p0 = 2.0 * sp.p1 - sp.p2;
-    if (hnn) sp.p4 = mulp(V, mulp(T, load_pos(b, b.index[e + 2u] & SPLINE_POINT)));
-    else     sp.p4 = 2.0 * sp.p3 - sp.p2;
+    sp.p0 = mulp(V, mulp(T, k.p0));
+    sp.p1 = mulp(V, mulp(T, k.p1));
+    sp.p2 = mulp(V, mulp(T, k.p2));
+    sp.p3 = mulp(V, mulp(T, k.p3));
+    sp.p4 = mulp(V, mulp(T, k.p4));
 
     sp.w2 = spline_axis_view(V, T, b, e);
     sp.w1 = sp.w2; sp.w3 = sp.w2;
@@ -1625,22 +1675,9 @@ LocalElem spline_local(Batch b, uint e, bool geo) {
     float  pr = max(max(pf.z, pf.w), 0.0);
     l.factor = max(max(pf.x, pf.y), 0.0) + pr;
     if (geo) {
-        uint   im = 0u, ip = 0u;
-        if (hp) im = b.index[e - 1u];
-        if (hn) ip = b.index[e + 1u];
-        float3 p2 = load_pos(b, ie & SPLINE_POINT);
-        float3 p1 = float3(0.0), p3 = float3(0.0);
-        if (hp) p1 = load_pos(b, im & SPLINE_POINT);
-        if (hn) p3 = load_pos(b, ip & SPLINE_POINT);
-        if (!hp) p1 = 2.0 * p2 - p3;
-        if (!hn) p3 = 2.0 * p2 - p1;
-        float3 p0, p4;
-        if (hp && (im & SPLINE_FIRST) == 0u) p0 = load_pos(b, b.index[e - 2u] & SPLINE_POINT);
-        else                                 p0 = 2.0 * p1 - p2;
-        if (hn && (ip & SPLINE_LAST) == 0u)  p4 = load_pos(b, b.index[e + 2u] & SPLINE_POINT);
-        else                                 p4 = 2.0 * p3 - p2;
+        SplineCtl c = spline_controls(b, e, ie);
         // the box of its hull (spline_hull): what the pieces stay in
-        SplineHull k = spline_hull(p0, p1, p2, p3, p4, hp, hn);
+        SplineHull k = spline_hull(c.p0, c.p1, c.p2, c.p3, c.p4, hp, hn);
         l.a = min(min(k.ca, k.cb), k.m);
         l.b = max(max(k.ca, k.cb), k.m);
         if (hp) { l.a = min(l.a, min(k.l1, k.l2)); l.b = max(l.b, max(k.l1, k.l2)); }

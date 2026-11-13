@@ -270,9 +270,16 @@ typedef struct md_render_capsule_style_t {
    ribbon over a part), unequal for a step (the base of an arrow). Ends are
    round: where a spline ends, next to a hidden part and at a step, a cap
    closes the part (the balls of its end's r around its end's segment).
+   Through: a B-spline passes near its control points, smoothing them (off
+   by a sixth of the second difference: 0.5 A on the C4' helix of DNA). With
+   `through` each is moved first by one step of the inverse of that
+   smoothing, from the two on either side (md_gl's tubes.through): the
+   spline is off by the fourth difference over 36 instead, a sixteenth on
+   DNA. For a spline something hangs off at its control points (the sugars
+   of a nucleic acid off its C4').
    Fades: SHRINK scales a and r; THIN drops whole parts, which leaves their
    joints open: for splines, shrink.
-   Not yet: flat caps, splines through their control points. */
+   Not yet: flat caps. */
 enum {
     MD_RENDER_SPLINE_FIRST = 1u << 31,
     MD_RENDER_SPLINE_LAST  = 1u << 30,
@@ -285,7 +292,9 @@ typedef struct md_render_spline_style_t {
                                       and where it ends, then r where it starts
                                       and where it ends. A part with r 0 at both
                                       ends is not drawn                         */
-    float         radius;          /* without a profile: a tube of this r       */
+    float         radius;          /* without a profile: this r ...              */
+    float         flat;            /* ... and this a (0: a tube)                */
+    bool          through;         /* through the control points, not near them */
 } md_render_spline_style_t;
 
 /* POLYGONS: a flat convex polygon made solid by a ball of `radius`: the

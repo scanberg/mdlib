@@ -91,10 +91,20 @@ lifetime:
     cartoon: a coil tube, helix and sheet bands, blended over the residues
     where the structure changes.
 
+  * The cartoon of a nucleic acid is viamd's (cartoon_glyphs), after Lindow
+    et al. (Interactive Visualization of RNA and DNA Structures, 2019): a
+    flat band through the C4' of each nucleotide (md_render's splines,
+    through their control points), its faces towards the base; the sugar
+    ring and each ring of the base a polygon of their atoms (a purine two,
+    side by side); a stick from the C1' to the base. Nothing is derived but
+    the band's axes (by every update): the corners are the atoms' points.
+
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, solid (dashes per kind wait for capsule dashes in md_render); CARTOON
-of proteins. Declared for the next phases: RIBBONS, nucleic acid and lipid
-backbones, glyphs, bond orders, chain gaps, ring circles.
+of proteins and of atomistic nucleic acids. Declared for the next phases:
+RIBBONS, coarse grained nucleic acids and lipids (points derived from
+several atoms: the ideal rings of a Martini base, lipid heads), glyphs, bond
+orders, chain gaps, ring circles.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -134,6 +144,10 @@ typedef enum md_render_mol_bond_class_t {
 /* Molecules of at most this many atoms are "small": regrouped by position on
    every update instead of by the topology once */
 #define MD_RENDER_MOL_SMALL 16
+
+/* The cartoon's rings of nucleotides: 3 .. 7 atoms (MD_RING_MAX_SIZE), a
+   batch for each size there is */
+#define MD_RENDER_MOL_RING_SIZES 5
 
 /* =========================================================================
    Kernels
@@ -213,6 +227,31 @@ typedef struct md_render_mol_topo_t {
                                               points of its C and O                    */
     md_gpu_addr_t backbone_chain;          /* internal: uint32 [backbone_chain_count + 1],
                                               each piece's first control point         */
+
+    /* The nucleic acids, for the cartoon: the atomistic ranges of
+       sys->nucleic_backbone. The band: a control point per nucleotide whose
+       C4' is resident (not in a small molecule), in pieces as the protein's
+       (nucleic_index an md_render SPLINES index over the points). The
+       rings: those of sys->ring with the C1' (the sugar) or with the atom
+       bonded to it outside the sugar (the glycosidic N), and the rings fused
+       to that one, every atom resident; from the C1' of the sugar, from a
+       carbon of a base ring (the corner whose colour the polygon takes, as
+       md_gl's slabs). The sticks: the C1' and the glycosidic N of a
+       nucleotide with both rings. All between points, and each with the
+       index of its nucleotide in sys->nucleic_backbone.segment. */
+    uint32_t      nucleic_count;           /* control points of the band               */
+    md_gpu_addr_t nucleic_index;           /* uint32 [nucleic_count]: C4' point | flags */
+    md_gpu_addr_t nucleic_segment;         /* uint32 [nucleic_count]                   */
+    md_gpu_addr_t nucleic_face;            /* internal: uint32 [nucleic_count], the
+                                              point the band faces (the glycosidic N,
+                                              else the C1'; UINT32_MAX for none)       */
+    uint32_t      ring_count[MD_RENDER_MOL_RING_SIZES];    /* of 3 + k corners        */
+    md_gpu_addr_t ring_points[MD_RENDER_MOL_RING_SIZES];   /* uint32 [(3 + k) * count]:
+                                              the corners' points in order around it   */
+    md_gpu_addr_t ring_segment[MD_RENDER_MOL_RING_SIZES];  /* uint32 [count]           */
+    uint32_t      stick_count;
+    md_gpu_addr_t stick_points;            /* uint32 [2 * stick_count]: C1', N          */
+    md_gpu_addr_t stick_segment;           /* uint32 [stick_count]                     */
 
     /* The small molecules, regrouped by md_render_mol_update */
     uint32_t      small_molecule_count;
@@ -335,7 +374,12 @@ enum {
    afresh every update, pairs near 90 degrees apart flip back and forth with
    thermal noise. The memory is in `dynamic`: keep one per-frame block per
    view of a trajectory, and reset it on a jump
-   (MD_RENDER_MOL_UPDATE_RESET_BACKBONE). */
+   (MD_RENDER_MOL_UPDATE_RESET_BACKBONE).
+
+   With a nucleic acid it also gives its band an axis per C4': across the
+   curve and the way to the base (the point the band faces), so that its
+   flat faces face the base. That side is the same all along a strand: no
+   sign to decide, no memory. */
 bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                           md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]);
@@ -495,7 +539,8 @@ typedef enum md_render_mol_rep_type_t {
     MD_RENDER_MOL_REP_BONDS,       /* sticks only, no atoms                          */
     MD_RENDER_MOL_REP_RIBBONS,     /* not yet implemented                            */
     MD_RENDER_MOL_REP_CARTOON,     /* the protein backbone (see the update and
-                                      md_render_mol_cartoon_profile)                */
+                                      md_render_mol_cartoon_profile), the nucleic
+                                      acids                                          */
 } md_render_mol_rep_type_t;
 
 typedef struct md_render_mol_rep_t {
@@ -507,8 +552,12 @@ typedef struct md_render_mol_rep_t {
         struct { float radius; } licorice;
         struct { float ball_scale; float stick_radius; } ball_and_stick;
         struct { float radius; } bonds;
-        /* md_render_mol_cartoon_profile's output; 0: a coil tube throughout */
-        struct { md_gpu_addr_t profile; } cartoon;
+        /* profile: md_render_mol_cartoon_profile's output; 0: a coil tube
+           throughout. A nucleic acid's band is 2 (1.6 + band_radius) wide
+           and 2 band_radius thick; ring_radius rounds the rings and is
+           that of the sticks (half their thickness). 0: md_gl's, 0.25 and
+           0.2 */
+        struct { md_gpu_addr_t profile; float band_radius; float ring_radius; } cartoon;
     } params;
 
     /* Which bond classes the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
@@ -538,7 +587,10 @@ typedef struct md_render_mol_rep_t {
 enum {
     MD_RENDER_MOL_PART_ATOMS    = 0,
     MD_RENDER_MOL_PART_BONDS    = 1,    /* + bond class */
-    MD_RENDER_MOL_PART_BACKBONE = 16,   /* the cartoon */
+    MD_RENDER_MOL_PART_BACKBONE = 16,   /* the cartoon: the protein's */
+    MD_RENDER_MOL_PART_NUCLEIC  = 17,   /* the nucleic acids' band */
+    MD_RENDER_MOL_PART_RINGS    = 18,   /* + corners - 3: their rings */
+    MD_RENDER_MOL_PART_STICKS   = MD_RENDER_MOL_PART_RINGS + MD_RENDER_MOL_RING_SIZES,   /* sugar to base */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -556,17 +608,21 @@ typedef enum md_render_mol_hit_kind_t {
     MD_RENDER_MOL_HIT_ATOM,
     MD_RENDER_MOL_HIT_BOND,
     MD_RENDER_MOL_HIT_BACKBONE,    /* a residue's part of the cartoon               */
+    MD_RENDER_MOL_HIT_NUCLEOTIDE,  /* a nucleotide's: its part of the band, a ring,
+                                      its stick                                      */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {
     md_render_mol_hit_kind_t kind;
     uint64_t rep_key;              /* the representation's key                        */
     uint32_t instance;
-    uint32_t atom;                 /* the atom, the bond's atom nearer the hit, or the
-                                      residue's CA                                    */
+    uint32_t atom;                 /* the atom, the bond's atom nearer the hit, the
+                                      residue's CA, the nucleotide's C4' (band) or
+                                      its ring's or stick's atom nearest the hit     */
     uint32_t bond;                 /* index in sys->bond; UINT32_MAX for others       */
     uint32_t segment;              /* index in sys->protein_backbone.segment of a
-                                      BACKBONE hit; UINT32_MAX for others            */
+                                      BACKBONE hit, in sys->nucleic_backbone.segment
+                                      of a NUCLEOTIDE hit; UINT32_MAX for others      */
     float    position[3];
 } md_render_mol_hit_t;
 
