@@ -5,15 +5,6 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 
-#define XXH_INLINE_ALL
-// Read the input through memcpy. xxHash's default on GCC reads it through a uint64_t (or uint32_t)
-// lvalue, which may not alias what the caller stored: hashing a uint32_t[2] that way is undefined,
-// and GCC 13 at -O2 removes the stores to it, so the hash is of whatever was on the stack.
-#ifndef XXH_FORCE_MEMORY_ACCESS
-#define XXH_FORCE_MEMORY_ACCESS 0
-#endif
-#include <xxhash.h>
-
 #include <stdint.h>
 #include <stddef.h>
 
@@ -64,20 +55,16 @@ static inline float md_halton(int index, int base) {
     return r;
 }
 
-// Standard default hash functions.
-static inline uint32_t md_hash32(const void* input, size_t len, uint32_t seed) {
-    return XXH32(input, len, seed);
-}
-
-static inline uint64_t md_hash64(const void* input, size_t len, uint64_t seed) {
-    return XXH64(input, len, seed);
-}
+// Standard default hash functions (xxHash: XXH32 and XXH64), in md_hash.c, so that xxHash (and the intrinsics it
+// includes) is not in every file which includes this
+uint32_t md_hash32(const void* input, size_t len, uint32_t seed);
+uint64_t md_hash64(const void* input, size_t len, uint64_t seed);
 
 static inline uint64_t md_hash64_combine(uint64_t a, uint64_t b) {
     return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2));
 }
 
-static inline uint64_t md_hash64_str(md_str_t str, uint64_t seed) { return XXH64(str.ptr, str.len, seed); }
+static inline uint64_t md_hash64_str(md_str_t str, uint64_t seed) { return md_hash64(str.ptr, str.len, seed); }
 
 
 // This is very inspired by the Ourmachinery hash API

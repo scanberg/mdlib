@@ -6,6 +6,7 @@
 #include <core/md_os.h>
 #include <core/md_file.h>
 #include <core/md_allocator.h>
+#include <core/md_parse_simd.h>
 
 #include "comma_locale.h"
 #include "test_executor.h"

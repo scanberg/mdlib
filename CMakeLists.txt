@@ -99,7 +99,9 @@ set(MD_CORE_FILES
   src/core/md_grid.h
   src/core/md_handle.c
   src/core/md_handle.h
+  src/core/md_hash.c
   src/core/md_hash.h
+  src/core/md_xxhash.h
   src/core/md_json.c
   src/core/md_json.h
   src/core/md_label.h

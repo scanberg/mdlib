@@ -3,7 +3,6 @@
 #include <core/md_common.h>
 #include <core/md_str.h>
 #include <core/md_file.h>
-#include <core/md_parse_simd.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -73,7 +72,6 @@ A reader is used by one thread at a time.
 
 #define MD_READER_PADDING 64
 
-// The ends of lines are found by md_parse_find_byte and the others of md_parse_simd.h: a chunk of 64 bytes at a time.
 
 // The default size of a file reader's buffer: lines of any format we read fit many times over
 #define MD_READER_DEFAULT_CAPACITY MD_MEGABYTES(1)
@@ -128,6 +126,13 @@ typedef struct md_file_reader_t {
 extern "C" {
 #endif
 
+// The first c of [beg, end), else end; past the n:th c of [beg, end), or end where there are fewer, with *n lessened by
+// those there were. md_parse_find_byte and md_parse_after_nth_byte (md_parse_simd.h) as calls, so that this header
+// does not take the intrinsics: a search per line costs the same either way. A loop over the lines of a range is
+// faster with md_parse_lines.
+const char* md_text_find_byte(const char* beg, const char* end, char c);
+const char* md_text_after_nth_byte(const char* beg, const char* end, char c, size_t* n);
+
 // ### THE INTERFACE ###
 
 // A reader of a string: all of it, at once. Nothing to free.
@@ -157,7 +162,7 @@ static inline md_str_t md_reader_strip_cr(md_str_t line) {
 
 // The next line, in line, and where the one after it begins: false at the end
 static inline bool md_reader_find_line(md_reader_i* r, md_str_t* line, const char** next) {
-    const char* nl = md_parse_find_byte(r->cur, r->end, '\n');
+    const char* nl = md_text_find_byte(r->cur, r->end, '\n');
     if (nl < r->end) {
         *line = md_reader_strip_cr((md_str_t){ r->cur, (size_t)(nl - r->cur) });
         *next = nl + 1;
@@ -212,7 +217,7 @@ static inline size_t md_reader_skip_lines(md_reader_i* r, size_t n) {
         const md_str_t block = md_reader_block(r);
         if (!block.len) break;
         const char* e = block.ptr + block.len;
-        const char* c = md_parse_after_nth_byte(block.ptr, e, '\n', &left);
+        const char* c = md_text_after_nth_byte(block.ptr, e, '\n', &left);
         if (left && c == e && e[-1] != '\n' && (r->flags & MD_READER_FLAG_END) && e == r->end) {
             // The last line of the source, without a newline: md_reader_block gives it only at the end
             left -= 1;
@@ -309,7 +314,7 @@ static inline void md_text_split(md_text_piece_t* pieces, size_t num_pieces, con
     for (size_t p = 0; p < num_pieces; ++p) {
         size_t e = (p + 1 == num_pieces) ? len : MD_MAX(at, len * (p + 1) / num_pieces);
         if (e < len && e > 0 && text[e - 1] != '\n') {
-            const char* nl = md_parse_find_byte(text + e, text + len, '\n');
+            const char* nl = md_text_find_byte(text + e, text + len, '\n');
             e = nl < text + len ? (size_t)(nl - text) + 1 : len;
         }
         pieces[p] = (md_text_piece_t){ at, e };
@@ -328,7 +333,7 @@ static inline md_str_t md_text_line_before(const char* text, size_t at) {
 // The line at c, up to e, and where the next begins
 static inline md_str_t md_text_next_line(const char** c, const char* e) {
     const char* beg = *c;
-    const char* nl = md_parse_find_byte(beg, e, '\n');
+    const char* nl = md_text_find_byte(beg, e, '\n');
     const char* le = nl;
     *c = nl < e ? nl + 1 : e;
     return md_reader_strip_cr((md_str_t){ beg, (size_t)(le - beg) });
