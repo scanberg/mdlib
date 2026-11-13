@@ -865,6 +865,18 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         }
         print_times(ints[ii].name, t, reps);
     }
+    {
+        /* the copy from positions again, beside the frames' (the same state of the GPU's clocks) */
+        md_render_mol_atoms_t ap = {0};
+        ap.position = sc->pos;
+        for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+            md_tick_t t0 = md_tick_now();
+            md_render_mol_update(mol, s, &sc->topo, sc->dyn, &ap, 0, NULL);
+            md_gpu_stream_sync(s);
+            if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
+        }
+        print_times("update from positions (the copy)     ", t, reps);
+    }
     printf("  frames block: %.1f MB for 4 slots (%.1f bytes per resident atom), the upload buffer %.1f MB\n",
            size / 1048576.0, (double)size / (sc->topo.point_count ? sc->topo.point_count : 1), md_render_mol_frame_size(&sc->topo) / 1048576.0);
     md_gpu_free(s, base);
@@ -1068,6 +1080,26 @@ static int run_gpu(int argc, char** argv) {
                         printf("\n    by phase: clusters expanded %u + %u, hardware %u + %u, compute %u + %u, occluded %u (retested %u)\n",
                                ps.clusters_expanded[0], ps.clusters_expanded[1], ps.hardware[0], ps.hardware[1], ps.compute[0], ps.compute[1],
                                ps.occluded, ps.occlusion_retested);
+                        /* the same for a raster after a change of positions (the refit
+                           and the state lists on top), and for a change of the state
+                           bits alone (the selection: their refit, lists and the mask) */
+                        const struct { const char* name; int bump; } more[] = {
+                            { "refit raster", MD_RENDER_CONTENT_GEOMETRY },
+                            { "state change", MD_RENDER_CONTENT_STATE },
+                        };
+                        for (int mi = 0; mi < 2; ++mi) {
+                            prof.n = 0;
+                            f.content[more[mi].bump]++;
+                            md_gpu_stream_sync(s);
+                            prof.t = md_tick_now();
+                            md_render_debug_pass_hook(pass_hook, &prof);
+                            md_render_view_draw(s, v, &f, NULL);
+                            md_render_debug_pass_hook(NULL, NULL);
+                            md_gpu_stream_sync(s);
+                            printf("    %s, passes each synced:", more[mi].name);
+                            for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
+                            printf("\n");
+                        }
                         if (getenv("MD_BENCH_SEQ")) {
                             float base12 = f.camera.view[12];
                             const char* step[] = { "c0 (geometry)", "c0 again (geometry)", "c1 = c0 + shift", "c1 again (geometry)", "c0 (back)", "c0 again (geometry)" };
