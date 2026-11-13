@@ -10,7 +10,7 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       occlusion around it).
 
   md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME]
-                     [--resident F | --resident-random F]
+                     [--resident F | --resident-random F] [--mol-order cells]
       Renders generated scenes (water-like boxes of three-atom molecules, in
       spacefill and licorice, near and far) through md_render, with each of
       the culling and raster options, and times full rasters, resolves and
@@ -28,6 +28,8 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       one block in file order (as a structure is): what a view costs when the
       rest is not shown. --resident-random F spreads them at random instead,
       the worst case for the host's quantize (a set no representation makes).
+      --mol-order cells generates the molecules in md_render_mol's grid-cell
+      order instead of at random: the regroup's writes land in order.
       After each look's first row, one camera raster is profiled pass by
       pass (each pass synced, so each number carries a sync), with the cull
       by phase. MD_BENCH_SEQ=1 adds a sequence of rasters (a camera c0
@@ -545,7 +547,15 @@ static int mol_cell_cmp(const void* a, const void* b) {
    O anywhere, two H at 1 A from it. The molecules are ordered by the grid
    cell of their O, cells sized for about 64 atoms, and each cell is a
    cluster: what md_render_mol builds for solvent. */
-static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, cluster_src_t src, float resident, bool scattered) {
+/* --mol-order cells: the molecules sorted by the cell of their first atom,
+   z, then y, then x (md_render_mol's grid numbering), at about its cell size */
+typedef struct mol_key_t { uint64_t key; uint32_t m; } mol_key_t;
+static int cmp_mol_key(const void* a, const void* b) {
+    const mol_key_t* x = a; const mol_key_t* y = b;
+    return x->key < y->key ? -1 : x->key > y->key ? 1 : (x->m < y->m ? -1 : x->m > y->m);
+}
+
+static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, cluster_src_t src, float resident, bool scattered, bool cell_order) {
     memset(sc, 0, sizeof(*sc));
     sc->atoms = molecules * 3;
     sc->bonds = molecules * 2;
@@ -571,6 +581,30 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         idx[4 * m + 2] = 3 * m; idx[4 * m + 3] = 3 * m + 2;
     }
     #undef RND
+    if (cell_order) {
+        const float e = (float)cbrt(64.0 / 0.1);           /* CELL_TARGET atoms at 0.1 per A^3 */
+        const uint64_t d = (uint64_t)(sc->box / e) + 1;
+        mol_key_t* k = malloc((size_t)molecules * sizeof(mol_key_t));
+        for (uint32_t m = 0; m < molecules; ++m) {
+            const float* o = pos + 9 * (size_t)m;          /* atom 0 sits at the origin */
+            uint64_t c[3];
+            for (int j = 0; j < 3; ++j) { float q = floorf(o[j] / e); c[j] = q < 0 ? 0 : (uint64_t)q; }
+            k[m].key = (c[2] * d + c[1]) * d + c[0];
+            k[m].m = m;
+        }
+        qsort(k, molecules, sizeof(mol_key_t), cmp_mol_key);
+        float* p2 = malloc((size_t)sc->atoms * 12);
+        float* r2 = malloc((size_t)sc->atoms * 4);
+        uint32_t* c2 = malloc((size_t)sc->atoms * 4);
+        for (uint32_t m = 0; m < molecules; ++m) {
+            const uint32_t f = k[m].m;
+            memcpy(p2 + 9 * (size_t)m, pos + 9 * (size_t)f, 36);
+            memcpy(r2 + 3 * (size_t)m, rad + 3 * (size_t)f, 12);
+            memcpy(c2 + 3 * (size_t)m, col + 3 * (size_t)f, 12);
+        }
+        free(pos); free(rad); free(col); free(k);
+        pos = p2; rad = r2; col = c2;
+    }
     if (src == SRC_MOL) {
         /* A system of waters for md_render_mol: molecules and bonds, nothing else */
         md_system_t sys;
@@ -723,6 +757,7 @@ bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stre
    md_render.c, not in its header */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 void md_render_mol_debug_prefetch(uint32_t windows_ahead);
+void md_render_mol_debug_write(uint32_t leave_out);
 void md_render_mol_debug_frame_groups(uint32_t groups);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
@@ -933,6 +968,7 @@ static int run_gpu(int argc, char** argv) {
     const char* only_look = NULL;     /* --look NAME: the looks whose name contains NAME */
     float resident = 1.0f;            /* --resident F: md_render_mol plans that fraction of the molecules */
     bool  resident_scattered = false; /* --resident-random F: ... spread at random */
+    bool  cell_order = false;         /* --mol-order cells: the molecules in grid-cell order, not at random */
     for (int i = 0; i < argc; ++i) {
         if (!strcmp(argv[i], "--atoms") && i + 1 < argc) {
             n_atoms = 0;
@@ -949,6 +985,8 @@ static int run_gpu(int argc, char** argv) {
             only_look = argv[++i];
         } else if (!strcmp(argv[i], "--resident") && i + 1 < argc) {
             resident = strtof(argv[++i], NULL);
+        } else if (!strcmp(argv[i], "--mol-order") && i + 1 < argc) {
+            cell_order = !strcmp(argv[++i], "cells");
         } else if (!strcmp(argv[i], "--resident-random") && i + 1 < argc) {
             resident = strtof(argv[++i], NULL);
             resident_scattered = true;
@@ -1000,10 +1038,10 @@ static int run_gpu(int argc, char** argv) {
 
     for (uint32_t ai = 0; ai < n_atoms; ++ai) {
         scene_t sc;
-        if (!scene_make(s, &sc, atoms_list[ai] / 3, src, resident, resident_scattered)) { fprintf(stderr, "scene of %u atoms failed (memory?)\n", atoms_list[ai]); continue; }
+        if (!scene_make(s, &sc, atoms_list[ai] / 3, src, resident, resident_scattered, cell_order)) { fprintf(stderr, "scene of %u atoms failed (memory?)\n", atoms_list[ai]); continue; }
         printf("== %u atoms, %u bonds, box %.0f A, %s\n", sc.atoms, sc.bonds, sc.box,
                src == SRC_IMPLICIT ? "implicit clusters (runs of 64 in grid-cell order)" :
-               src == SRC_HOST_GRID ? "clusters by grid cell, built on the host" : "md_render_mol (molecules in random order, GPU grid)");
+               src == SRC_HOST_GRID ? "clusters by grid cell, built on the host" : (cell_order ? "md_render_mol (molecules in grid-cell order, GPU grid)" : "md_render_mol (molecules in random order, GPU grid)"));
         if (src == SRC_MOL) printf("   %u atoms resident (%.1f %%%s), %u bonds; md_render_mol_plan %.1f ms (host, one thread), write %.1f ms\n",
                                    sc.topo.point_count, 100.0 * sc.topo.point_count / sc.atoms,
                                    !sc.partial ? "" : resident_scattered ? ", molecules at random" : ", one block of molecules",
@@ -1035,6 +1073,31 @@ static int run_gpu(int argc, char** argv) {
             md_render_mol_update_hooked(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
             printf("  passes, each synced:");
             for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
+            {
+                /* the write pass leaving out one array's writes at a time (its
+                   scattered writes: the atoms' order, the bonds; atom_point is
+                   in molecule order), then all of them; best of 3 each. The
+                   topology is wrong meanwhile: a full regroup restores it. */
+                const struct { uint32_t mask; const char* name; } wp[] = {
+                    { 0, "all" }, { 1, "no atom_order" }, { 2, "no atom_point" }, { 4, "no bonds" }, { 7, "none" },
+                };
+                printf("\n  the write pass by what it writes (ms):");
+                for (size_t wi = 0; wi < sizeof(wp) / sizeof(wp[0]); ++wi) {
+                    md_render_mol_debug_write(wp[wi].mask);
+                    double best = 1e30;
+                    for (int rep = 0; rep < 3; ++rep) {
+                        pass_prof_t pw = { .s = s };
+                        md_gpu_stream_sync(s);
+                        pw.t = md_tick_now();
+                        md_render_mol_update_hooked(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &pw);
+                        for (uint32_t k = 0; k < pw.n; ++k) if (!strcmp(pw.name[k], "write") && pw.ms[k] < best) best = pw.ms[k];
+                    }
+                    printf("%s %s %.2f", wi ? "," : "", wp[wi].name, best);
+                }
+                md_render_mol_debug_write(0);
+                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                md_gpu_stream_sync(s);
+            }
             printf("\n  %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block (%.1f MB with velocities)\n",
                    sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0, sc.topo.dynamic_size_velocity / 1048576.0);
             bench_frames(s, mol, &sc, reps);
@@ -1190,7 +1253,7 @@ int main(int argc, char** argv) {
 #endif
     fprintf(stderr, "usage:\n  md_render_bench clusters <structure> [<trajectory>] [--frames N] [--size N]\n"
 #if MD_ENABLE_GPU
-                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME] [--resident F | --resident-random F]\n"
+                    "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME] [--resident F | --resident-random F] [--mol-order cells]\n"
 #endif
            );
     return 1;

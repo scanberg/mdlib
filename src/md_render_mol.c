@@ -514,8 +514,14 @@ typedef struct gpu_mol_args_t {
     uint32_t full, ident0, ident1, ident2, fr_threads;
     uint32_t frame_count, quantized, has_src, has_fvel, has_resident, resident_words;
     float    w[4], dw[4];
+    uint32_t dbg, _pad1;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 40 * 8 + 36 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 40 * 8 + 38 * 4, "gpu_mol_args_t mirrors Args");
+
+/* The bench's probes of the regroup's write (not in the header): what it
+   leaves out (see Args.dbg in the shader). Wrong topologies; timing only. */
+static uint32_t g_write_dbg = 0u;
+void md_render_mol_debug_write(uint32_t leave_out) { g_write_dbg = leave_out; }
 
 md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
     if (!device) return NULL;
@@ -594,6 +600,7 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     const dyn_layout_t   D  = dyn_layout(topo->point_count, n_mol, cells);
     const small_layout_t SL = small_layout(n_mol, topo->small_atom_count, topo->small_bond_count, topo->mixed_bond_count);
     memset(a, 0, sizeof(*a));
+    a->dbg = g_write_dbg;
     if (dynamic) {
         a->points         = dynamic + D.points;
         a->radii          = dynamic + D.radii;
