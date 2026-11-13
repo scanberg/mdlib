@@ -77,7 +77,11 @@ static const uint F_PALETTE_IDX  = 1u << 11;
 static const uint F_CLUSTERS     = 1u << 12;  // explicit cluster offsets
 static const uint F_SHARED       = 1u << 13;  // bounds shared with an earlier batch: no refit
 static const uint F_RADIUS_TABLE = 1u << 14;  // `radius` holds a type per point (low 16 bits; high: flags)
-static const uint F_LOD          = 1u << 15;  // a size window: lod_dnear, lod_dfar
+static const uint F_FADE_OUT     = 1u << 15;  // fades out across a far band: fade_out_a, fade_out_b
+static const uint F_FADE_IN      = 1u << 16;  // fades in across a near band: fade_in_a, fade_in_b
+static const uint F_FADE_SHRINK  = 1u << 17;  // ... its sizes scaled
+static const uint F_FADE_THIN    = 1u << 18;  // ... its elements dropped one by one
+static const uint F_FADE         = F_FADE_OUT | F_FADE_IN;
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -143,10 +147,12 @@ struct Batch {
     uint    cluster_base;       // first cluster over all batches (refit)
     uint    radius_table_count;
 
-    float   lod_dnear;          // F_LOD: drawn where the view-space depth is in (lod_dnear, lod_dfar],
-    float   lod_dfar;           // the size window for this camera (md_render.c, lod_depths)
-    uint    _bpad0;
-    uint    _bpad1;
+    // The fade bands for this camera (md_render.c, fade_bands): how far
+    // through a band an element at view-space depth d is, saturate(a d + b)
+    float   fade_out_a;
+    float   fade_out_b;
+    float   fade_in_a;
+    float   fade_in_b;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -193,7 +199,7 @@ static const uint C_GRID_SMALL = 40;   // md_gpu_grid_t [phase - 1], 4 words apa
 static const uint C_GRID_OCC   = 48;
 static const uint C_ICMD       = 80;   // md_gpu_draw_indexed_cmd_t, capsules [phase - 1]: 80..89
 static const uint C_STICMD     = 90;   // the state list's capsules: 90..94
-static const uint C_LOD        = 95;   // elements outside their batch's size window
+static const uint C_LOD        = 95;   // elements dropped by their batch's fade
 static const uint C_COUNT      = 96;
 
 // One argument struct for every entry point (md_gpu shares one root between a
@@ -427,7 +433,8 @@ Elem decode(Batch* batches, uint2 ent) {
 
 // An element in view space: spheres a = b = centre; capsules a, b the ends.
 struct Geo {
-    bool   ok;                  // visible and of positive radius
+    bool   ok;                  // visible, of positive radius, not faded
+    bool   faded;               // would be drawn but for its batch's fade
     uint   kind;                // 0 spheres, 1 capsules
     uint   st;                  // state bits
     float3 a;
@@ -435,9 +442,45 @@ struct Geo {
     float  r;
 };
 
-Geo element_geo(ViewData v, Batch b, uint inst, uint e) {
+// Fading with distance (md_render_batch_t.fade). A band is a ramp in
+// view-space depth: t = saturate(a d + b), 0 where it begins (nearer), 1
+// where it ends. Across the far band a batch fades out, across the near one
+// in. The host gives the two sides of a handover the same a and b, and each
+// side computes t by the same expression: they see the same t to the bit.
+float fade_t(float a, float b, float d) { return saturate(fma(a, d, b)); }
+
+// How far through its far band (0 without one) and its near band (1 without
+// one) an element at depth d is
+float2 fade_ts(Batch b, float d) {
+    float to = (b.flags & F_FADE_OUT) != 0u ? fade_t(b.fade_out_a, b.fade_out_b, d) : 0.0;
+    float ti = (b.flags & F_FADE_IN)  != 0u ? fade_t(b.fade_in_a,  b.fade_in_b,  d) : 1.0;
+    return float2(to, ti);
+}
+
+// SHRINK: the size factor
+float fade_size(float2 t) { return (1.0 - t.x) * t.y; }
+
+// THIN: an attribute is kept while its hash h (in [0, 1), 24 bits) is at
+// least how far through the far band and below how far through the near one.
+// Across a shared band the side fading out keeps h >= t and the side fading
+// in h < t: each attribute on exactly one side.
+uint fade_hash(uint x) {
+    x ^= x >> 16; x *= 0x7FEB352Du;
+    x ^= x >> 15; x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+bool fade_keeps(float2 t, uint attr) {
+    float h = float(fade_hash(attr) >> 8) * (1.0 / 16777216.0);
+    return h >= t.x && h < t.y;
+}
+
+// With `fade` false (the state lists, which do not depend on the camera) the
+// batch's fade is not applied.
+Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     Geo g;
     g.ok   = false;
+    g.faded = false;
     g.kind = b.kind == KIND_CAPSULES ? 1u : 0u;
     g.st   = 0u;
     g.a    = float3(0.0);
@@ -453,6 +496,11 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e) {
         g.r  = sphere_radius(b, pi) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, pi)));
         g.b  = g.a;
+        if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
+            float2 t = fade_ts(b, -g.a.z);
+            if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
+            g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !fade_keeps(t, ai));
+        }
     } else if (b.kind == KIND_CAPSULES) {
         uint p0 = point_of(b, e, 0u, 2u);
         uint p1 = point_of(b, e, 1u, 2u);
@@ -463,10 +511,15 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e) {
         g.r  = capsule_radius(b, e) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
         g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
+        if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
+            float2 t = fade_ts(b, -0.5 * (g.a.z + g.b.z));      // the midpoint
+            if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
+            g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t, a0) && fade_keeps(t, a1)));
+        }
     } else {
         return g;
     }
-    g.ok = g.r > 0.0;
+    g.ok = g.r > 0.0 && !g.faded;
     return g;
 }
 
@@ -620,22 +673,8 @@ static const uint OUT_OCCLUDED = 2u;
 static const uint OUT_HW       = 3u;
 static const uint OUT_SMALL    = 4u;
 static const uint OUT_NONE     = 5u;   // a lane without an element
-static const uint OUT_LOD      = 6u;   // outside its batch's size window
+static const uint OUT_LOD      = 6u;   // dropped by its batch's fade
 
-// The size window (md_render_batch_t.lod_min, lod_max), as the depths it
-// holds for this camera: the host turns the scales into view-space depths
-// (lod_depths), so the test is two compares with nothing of the projection
-// in the shader. (Tested as scales, the cull measured 96 registers on the
-// GTX 1060 at 3cb6ff05, against 80 before the window.)
-// Whether depths in [d0, d1] can meet it:
-bool lod_meets(Batch b, float d0, float d1) {
-    return d1 > b.lod_dnear && d0 <= b.lod_dfar;
-}
-// An element: its centre (view space), a capsule's midpoint
-bool lod_keeps(Batch b, float3 centre) {
-    if ((b.flags & F_LOD) == 0u) return true;
-    return lod_meets(b, -centre.z, -centre.z);
-}
 
 // Appends with one atomic per wave: the index for this lane (valid when it wants one)
 uint wave_append(uint* counter, bool want) {
@@ -825,6 +864,7 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
 struct ClusterSphere {
     float3 c;
     float  r;
+    float  pad;                 // of r: the style's (scaled with the instance)
     uint   count;               // visible elements
 };
 
@@ -838,8 +878,9 @@ ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
     float3 ctr = 0.5 * (lo.xyz + hi.xyz);
     float3 ext = 0.5 * (hi.xyz - lo.xyz);
     float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : lo.w * b.s0;
-    cs.c = mulp(M(v, view), mulp(T, ctr));
-    cs.r = (length(ext) + max(pad, 0.0)) * s;
+    cs.c   = mulp(M(v, view), mulp(T, ctr));
+    cs.r   = (length(ext) + max(pad, 0.0)) * s;
+    cs.pad = max(pad, 0.0) * s;
     return cs;
 }
 
@@ -881,14 +922,19 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (!valid) cs.count = 0u;
         uint hidden = (mode == 1u && valid) ? (rng.y - rng.x) - cs.count : 0u;
         uint out = valid ? OUT_HIDDEN : OUT_NONE;
-        // The size window first: over the cluster's depths (its bounding
-        // sphere's), the scales its element centres can have
-        bool lod_out = false;
-        if (cs.count > 0u && mode != 3u && (b.flags & F_LOD) != 0u) {
-            float d = -cs.c.z;
-            lod_out = !lod_meets(b, d - cs.r, d + cs.r);
+        // The batch's fade first, over the depths of the cluster's bounding
+        // sphere (t grows with depth): gone if its nearest point is past the
+        // far band or its farthest short of the near band. Shrinking, its
+        // pad shrinks by the largest factor it can have.
+        bool faded = false;
+        if (cs.count > 0u && mode != 3u && (b.flags & F_FADE) != 0u) {
+            float  d  = -cs.c.z;
+            float2 tn = fade_ts(b, d - cs.r);
+            float2 tf = fade_ts(b, d + cs.r);
+            faded = tn.x >= 1.0 || tf.y <= 0.0;
+            if ((b.flags & F_FADE_SHRINK) != 0u) cs.r -= cs.pad * (1.0 - (1.0 - tn.x) * tf.y) * 0.999;
         }
-        if (cs.count > 0u && lod_out) {
+        if (cs.count > 0u && faded) {
             out = OUT_LOD;
         } else if (cs.count > 0u) {
             Bounds bd = sphere_bounds(v, cs.c, cs.r);
@@ -926,19 +972,17 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 // struct never fired (the M4 counted no element occluded where lavapipe did).
 void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
     Geo   g;
-    g.ok = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
+    g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint ent = 0u;                      // the list entry: global work index
-    bool lod_out = false;
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
-        g   = element_geo(v, b, inst, e);
-        // the size window: not for the state lists, which do not depend on
-        // the camera (the mask's raster applies it)
-        lod_out = g.ok && !state_only && !lod_keeps(b, 0.5 * (g.a + g.b));
+        // the fade: not for the state lists, which do not depend on the
+        // camera (the mask's raster applies it)
+        g   = element_geo(v, b, inst, e, !state_only);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
-    if (lod_out) {
+    if (g.faded) {
         out = OUT_LOD;
     } else if (g.ok) {
         Bounds bd = geo_bounds(v, g);
@@ -1163,7 +1207,7 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (i < n) {
             Elem  el = decode_work(a.batches, v.batch_count, L.small[idx]);
             Batch b  = a.batches[el.slot];
-            Geo   g  = element_geo(v, b, el.inst, el.e);
+            Geo   g  = element_geo(v, b, el.inst, el.e, true);
             if (g.ok) {
                 Bounds bd = geo_bounds(v, g);
                 int4 rp = reach_px(v, bd);
@@ -1303,9 +1347,8 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  corner = md_draw_vertex(vid, base_vertex);
     Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent    = elem_id(a.batches, el);
-    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
+    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e, true);   // the state lists' fade here
     if (!g.ok) return o;
-    if (a.list >= 2u && !lod_keeps(a.batches[el.slot], g.a)) return o;   // the state lists: the size window here
     float3 c   = g.a;
     float  rad = g.r;
 
@@ -1412,9 +1455,8 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  vk  = md_draw_vertex(vid, base_vertex);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent = elem_id(a.batches, el);
-    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
+    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e, true);   // the state lists' fade here
     if (!g.ok) return o;
-    if (a.list >= 2u && !lod_keeps(a.batches[el.slot], 0.5 * (g.a + g.b))) return o;   // the state lists: the size window here
     float3 pa  = g.a;
     float3 pb  = g.b;
     float  rad = g.r;
@@ -1553,6 +1595,7 @@ Hit eval_hit(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 cwp = mulp(Tp, lc - load_vel(b, pi) * v.dt);
         float3 c   = mulp(M(v, view), cw);
         float  rad = sphere_radius(b, pi) * s;
+        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -c.z));   // as element_geo
         float  t   = sphere_hit(r, c, rad, true);
         h.p_view   = r.o + r.d * t;
         h.n_view   = normalize(h.p_view - c);
@@ -1573,6 +1616,7 @@ Hit eval_hit(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 pa  = mulp(M(v, view), w0);
         float3 pb  = mulp(M(v, view), w1);
         float  rad = capsule_radius(b, h.element) * s;
+        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (pa.z + pb.z)));
         float  t   = capsule_hit(r, pa, pb, rad);
         if (t < 0.0) {
             // A rounding miss at the silhouette: the nearest point of the ray

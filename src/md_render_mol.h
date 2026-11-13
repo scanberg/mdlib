@@ -464,12 +464,12 @@ typedef struct md_render_mol_rep_t {
     const float*             transform;        /* as md_render_batch_t: copied by md_render_view_draw */
     uint32_t                 transform_count;
 
-    /* The scales it draws at: pixels per Angstrom at the atom or the bond's
-       midpoint in [lod_min, lod_max), 0 no bound (md_render_batch_t.lod_min,
-       lod_max, on every batch it emits). Representations in adjacent windows
-       hand over at the same depth: licorice from 2.5 px/A (a 0.2 A stick a
-       pixel wide) and a stand-in that resolves farther below it. */
-    float                    lod_min, lod_max;
+    /* Fading with distance, on every batch it emits (md_render_fade_t;
+       scales in pixels per Angstrom). The atom representations thin, keyed by
+       atom: licorice thinning out across {2.5, 1.25} (a 0.2 A stick a pixel
+       wide, then half) and a stand-in thinning in across the same band draw
+       each atom once through it. */
+    md_render_fade_t         fade;
 } md_render_mol_rep_t;
 
 /* What emit writes, as the low byte of batch keys */

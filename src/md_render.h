@@ -259,6 +259,38 @@ typedef struct md_render_color_t {
     float         desaturate;      /* 0 unchanged, 1 grey                             */
 } md_render_color_t;
 
+/* Fading with distance. A band is a range of the projection's scale at an
+   element (pixels per view-space unit at a sphere's centre or a capsule's
+   midpoint), {start, end} with start > end > 0: where a transition begins,
+   nearer, and where it ends, farther. Across `out` the batch fades out and
+   beyond it is gone; across `in` it fades in and nearer it is absent (`in`
+   nearer than `out`). {0, 0}: no such band. Through a band the transition is
+   linear in view-space depth.
+     SHRINK  the sizes (sphere and capsule radii) scale down to 0 across `out`
+             and up from 0 across `in`: for continuous geometry, and a batch
+             that fades to nothing.
+     THIN    elements drop out one by one: an element is kept while a hash of
+             its attribute (of both, for a capsule) is at least how far
+             through `out` it is and below how far through `in`. A batch that
+             fades in across the band another fades out across, with the same
+             two numbers and over the same attributes, draws exactly the
+             attributes the other leaves out: a handover without holes.
+   Both may be set. Clusters wholly past a band are dropped by their bounds,
+   unread. Which batches hand over to which is the caller's. The instance
+   transform's scale does not enter; with an orthographic projection every
+   element is equally far through a band. Elements dropped are counted in
+   md_render_stats_t.faded. */
+enum {
+    MD_RENDER_FADE_SHRINK = 1u << 0,
+    MD_RENDER_FADE_THIN   = 1u << 1,
+};
+
+typedef struct md_render_fade_t {
+    uint32_t mode;                 /* MD_RENDER_FADE_* or'ed; 0: no fading            */
+    float    in[2];                /* {start, end}, start > end; {0, 0}: none          */
+    float    out[2];
+} md_render_fade_t;
+
 typedef struct md_render_batch_t {
     /* Identity across frames, chosen by the caller: non-zero, unique in a
        frame. Carries the previous instance transforms into motion, and comes
@@ -307,16 +339,7 @@ typedef struct md_render_batch_t {
     const float*       transform;
     uint32_t           transform_count;
 
-    /* Size window: the batch draws only the elements where the projection's
-       scale, in pixels per view-space unit at the element's centre (a
-       capsule's midpoint), is in [lod_min, lod_max); 0 is no bound. A cull
-       test like the frustum's, and applied before it: whole clusters out of
-       the window are dropped by their bounds. What draws where (a
-       representation and its stand-in at a distance, in adjacent windows) is
-       the caller's. The instance transform's scale does not enter; with an
-       orthographic projection the scale is the same everywhere. Elements left
-       out are counted in md_render_stats_t.lod. */
-    float              lod_min, lod_max;
+    md_render_fade_t   fade;
 } md_render_batch_t;
 
 /* =========================================================================
@@ -466,7 +489,7 @@ typedef struct md_render_stats_t {
     uint64_t elements;             /* submitted: count x instances over all batches */
     uint32_t hidden;               /* by visibility bits or a radius <= 0           */
     uint32_t outside;              /* the frustum                                   */
-    uint32_t lod;                  /* their batch's size window (lod_min, lod_max)  */
+    uint32_t faded;                /* by their batch's fade                         */
     uint32_t occluded;             /* by the depth pyramid, after both phases       */
     uint32_t hardware[2];          /* rasterised in hardware: phase 1, phase 2      */
     uint32_t compute[2];           /* rasterised in compute:  phase 1, phase 2      */
