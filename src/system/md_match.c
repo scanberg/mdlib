@@ -104,11 +104,11 @@ typedef struct target_t {
     // Bonds left out of the graph (coordination, and those of virtual sites), by bond index, NULL for none
     const uint8_t* drop;
 
-    // Molecules: the connected parts of the graph, numbered in the order of their first atom. Built only where they are
-    // read (TARGET_MOLECULES, TARGET_RESOLUTION, target_resolution): units of the molecule level, and the resolution. Where nothing is left
-    // out of the graph they are the structures of the system, read as they are: the atoms of molecule m are
-    // mol_atom[mol_off[m] .. mol_off[m + 1]) either way, and the molecule of an atom is mol_of[a], or the structure
-    // whose slots hold mol_slot[a].
+    // Molecules: the system's (sys->molecule), read as they are. Only where a system has none are they found here, as
+    // md_molecule_infer finds them, numbered in the order of their first atom. Built only where they are read
+    // (TARGET_MOLECULES, TARGET_RESOLUTION, target_resolution): units of the molecule level, and the resolution. The
+    // atoms of molecule m are mol_atom[mol_off[m] .. mol_off[m + 1]) either way, and the molecule of an atom is
+    // mol_of[a], or the molecule whose slots hold mol_slot[a].
     size_t          num_mol;
     const uint32_t* mol_off;        // [num_mol + 1]
     const int32_t*  mol_atom;
@@ -250,17 +250,18 @@ static void uf_union(int32_t* parent, int32_t a, int32_t b) {
 // The molecules of the target (num_mol, mol_off, mol_atom, and mol_of or mol_slot)
 static void target_molecules(target_t* tg, md_allocator_i* arena) {
     if (tg->mol_off || tg->num_atoms == 0) return;
-    // The structures of the system are the parts of its bond graph closed over residues and polymer chains,
-    // with links of their own for coarse grained beads: without those, and without coordination bonds and virtual
-    // sites to leave out, they are the molecules.
+    // The system's molecules (md_molecule_infer) are the parts of its bond graph closed over residues, polymer chains
+    // and the molecules of a topology, without the coordination bonds between residues which no topology gives. This
+    // graph leaves out those a topology gives as well: a molecule held by one is then two parts of it, searched as the
+    // one unit. A virtual site is in a molecule, as it is in its residue: the search of a unit passes over it
+    // (target_skipped). For a system without molecules the same partition from this graph, numbered by first atom.
     const md_system_t* sys = tg->sys;
     const size_t N = tg->num_atoms;
     const uint8_t* skip = tg->skip;
     const uint8_t* drop = tg->drop;
     const bool has_bonds = tg->conn_off != NULL;
-    const bool coarse_grained = md_system_is_coarse_grained(sys);
     const md_molecule_data_t* st = &sys->molecule;
-    if (!drop && !skip && !coarse_grained && st->count > 0 && st->offset && st->atom_idx && st->atom_slot && st->offset[st->count] == N) {
+    if (st->count > 0 && st->offset && st->atom_idx && st->atom_slot && st->offset[st->count] == N) {
         tg->num_mol  = st->count;
         tg->mol_off  = st->offset;
         tg->mol_atom = st->atom_idx;
