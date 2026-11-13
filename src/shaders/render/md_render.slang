@@ -54,14 +54,8 @@ struct ViewData {
     float  jitter_px;           // how far this raster's jitter moves the image (pixels)
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
     float  occl_min_px;         // elements no wider are not tested for occlusion
-    uint   rt_tables;           // radius tables to stage in group memory (stage_radii)
+    uint   _vpad1;
     uint   _vpad2;
-    float* rt_src0;             // each table, its first entry in gs_rt and its entries
-    float* rt_src1;
-    float* rt_src2;
-    float* rt_src3;
-    uint4  rt_base;
-    uint4  rt_count;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -83,7 +77,6 @@ static const uint F_PALETTE_IDX  = 1u << 11;
 static const uint F_CLUSTERS     = 1u << 12;  // explicit cluster offsets
 static const uint F_SHARED       = 1u << 13;  // bounds shared with an earlier batch: no refit
 static const uint F_RADIUS_TABLE = 1u << 14;  // `radius` holds a type per point (low 16 bits; high: flags)
-static const uint F_RADIUS_LDS   = 1u << 15;  // the table is staged in gs_rt at radius_table_info >> 17
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -147,7 +140,7 @@ struct Batch {
     uint    cluster_count;
     uint    cluster_work_offset;// first cluster work item (cluster x instance)
     uint    cluster_base;       // first cluster over all batches (refit)
-    uint    radius_table_info;  // the table's entries (low 17 bits); F_RADIUS_LDS: its first in gs_rt (above)
+    uint    radius_table_count;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -284,56 +277,23 @@ Mat load_transform(float4* t, uint inst) {
     return m;
 }
 
-// Radius tables in group memory. The kernels that look radii up by the
-// million (refit, cull, raster_small) copy the draw's tables in first
-// (stage_radii, up to four tables and RT_CAP entries; md_render.c decides
-// which). Through a pointer, Pascal reads the table from L2 every time: a
-// table of a few dozen floats sits in one slice of it, and every lookup of
-// every SM goes there (the GTX 1060's refit at 10M atoms: 2.7 -> 3.7 ms). An
-// L1 that holds it makes that free (the M4: 0.1 ms); group memory is that
-// L1 everywhere. 2 KB keeps the refit's 18 groups per SM on the 1060 (4 KB
-// would leave 13). The graphics stages have no group memory: they, and the
-// resolve and the pick (a lookup per pixel), read the table where it is.
-static const uint RT_CAP = 512u;
-groupshared float gs_rt[RT_CAP];
-
-// Every thread of a group of 64, in uniform control flow
-void stage_radii(ViewData v, uint gi) {
-    if (v.rt_tables == 0u) return;
-    for (uint d = 0u; d < v.rt_tables; ++d) {
-        float* src = d == 0u ? v.rt_src0 : d == 1u ? v.rt_src1 : d == 2u ? v.rt_src2 : v.rt_src3;
-        uint   at  = v.rt_base[d];
-        uint   n   = v.rt_count[d];
-        for (uint i = gi; i < n; i += 64u) gs_rt[at + i] = src[i];
-    }
-    GroupMemoryBarrierWithGroupSync();
-}
-
-// Where a radius table is read: memory, or group memory when staged
-interface IRadii {
-    static float at(Batch b, uint t);
-}
-struct MemRadii : IRadii {
-    static float at(Batch b, uint t) { return b.radius_table[t]; }
-}
-struct GroupRadii : IRadii {
-    static float at(Batch b, uint t) {
-        return (b.flags & F_RADIUS_LDS) != 0u ? gs_rt[(b.radius_table_info >> 17) + t] : b.radius_table[t];
-    }
-}
-
-// A point's radius: its own, or its type's (F_RADIUS_TABLE; the type comes
-// in the same load as the position when the points are float4)
-float point_radius<R : IRadii>(Batch b, uint pi) {
+// A point's radius: its own, or its type's (F_RADIUS_TABLE; the type comes in
+// the same load as the position when the points are float4). The lookup read
+// from memory costs the GTX 1060's refit at 10M atoms 0.04 ms over a float
+// radius (md_render_bench, "-- radii"). Copied into group memory first it
+// cost 0.1 ms more (the copy and a barrier per group), and the kernels that
+// did it took more registers (the refit 56 -> 64, the cull and the compute
+// raster 80 -> 96).
+float point_radius(Batch b, uint pi) {
     if ((b.flags & F_RADIUS) == 0u) return 0.0;
     float v = b.radius[pi * (b.rad_stride >> 2)];
     if ((b.flags & F_RADIUS_TABLE) == 0u) return v;
     uint t = asuint(v) & 0xFFFFu;
-    return t < (b.radius_table_info & 0x1FFFFu) ? R.at(b, t) : 0.0;
+    return t < b.radius_table_count ? b.radius_table[t] : 0.0;
 }
 
-float sphere_radius<R : IRadii>(Batch b, uint pi) {
-    float r = point_radius<R>(b, pi);
+float sphere_radius(Batch b, uint pi) {
+    float r = point_radius(b, pi);
     return r * b.s0 + b.s1;
 }
 
@@ -468,7 +428,7 @@ struct Geo {
     float  r;
 };
 
-Geo element_geo<R : IRadii>(ViewData v, Batch b, uint inst, uint e) {
+Geo element_geo(ViewData v, Batch b, uint inst, uint e) {
     Geo g;
     g.ok   = false;
     g.kind = b.kind == KIND_CAPSULES ? 1u : 0u;
@@ -483,7 +443,7 @@ Geo element_geo<R : IRadii>(ViewData v, Batch b, uint inst, uint e) {
         uint ai = attr_of(b, pi);
         if (!attr_visible(b, ai)) return g;
         g.st = attr_state(b, ai);
-        g.r  = sphere_radius<R>(b, pi) * s;
+        g.r  = sphere_radius(b, pi) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, pi)));
         g.b  = g.a;
     } else if (b.kind == KIND_CAPSULES) {
@@ -735,9 +695,9 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         uint ai = attr_of(b, pi);
         if (!attr_visible(b, ai)) return l;
         l.st = attr_state(b, ai);
-        l.factor = point_radius<GroupRadii>(b, pi);
+        l.factor = point_radius(b, pi);
         if (geo) { l.a = load_pos(b, pi); l.b = l.a; }
-        l.ok = l.factor * b.s0 + b.s1 > 0.0;
+        l.ok = sphere_radius(b, pi) > 0.0;
     } else if (b.kind == KIND_CAPSULES) {
         uint p0 = point_of(b, e, 0u, 2u);
         uint p1 = point_of(b, e, 1u, 2u);
@@ -775,7 +735,6 @@ groupshared uint2  rf_cs[64];       // state bits, visible elements
 void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
-    stage_radii(v, gi);
     uint n    = v.total_clusters;
     bool geo  = v.refit_mode == 0u;
     uint lane = gi & (RF_LANES - 1u);
@@ -934,7 +893,7 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
-        g   = element_geo<GroupRadii>(v, b, inst, e);
+        g   = element_geo(v, b, inst, e);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
     if (g.ok) {
@@ -997,7 +956,6 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
     Args     a = MD_ARGS;
     ViewData v = *a.view;
     Lists    L = *a.lists;
-    stage_radii(v, gi);
     uint mode = a.mode;
     if (mode == 2u) {
         uint n = L.counters[C_OCC];
@@ -1145,7 +1103,6 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
     Lists    L = *a.lists;
-    stage_radii(v, gi);
     uint phase = a.mode;
     uint n     = phase == 1u ? L.counters[C_SMALL1] : L.counters[C_SMALL2];
     uint base  = phase == 1u ? 0u : L.counters[C_SMALL1];
@@ -1161,7 +1118,7 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (i < n) {
             Elem  el = decode_work(a.batches, v.batch_count, L.small[idx]);
             Batch b  = a.batches[el.slot];
-            Geo   g  = element_geo<GroupRadii>(v, b, el.inst, el.e);
+            Geo   g  = element_geo(v, b, el.inst, el.e);
             if (g.ok) {
                 Bounds bd = geo_bounds(v, g);
                 int4 rp = reach_px(v, bd);
@@ -1301,7 +1258,7 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  corner = md_draw_vertex(vid, base_vertex);
     Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent    = elem_id(a.batches, el);
-    Geo   g      = element_geo<MemRadii>(v, a.batches[el.slot], el.inst, el.e);
+    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
     float3 c   = g.a;
     float  rad = g.r;
@@ -1409,7 +1366,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  vk  = md_draw_vertex(vid, base_vertex);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent = elem_id(a.batches, el);
-    Geo   g   = element_geo<MemRadii>(v, a.batches[el.slot], el.inst, el.e);
+    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e);
     if (!g.ok) return o;
     float3 pa  = g.a;
     float3 pb  = g.b;
@@ -1548,7 +1505,7 @@ Hit eval_hit(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 cw  = mulp(T, lc);
         float3 cwp = mulp(Tp, lc - load_vel(b, pi) * v.dt);
         float3 c   = mulp(M(v, view), cw);
-        float  rad = sphere_radius<MemRadii>(b, pi) * s;
+        float  rad = sphere_radius(b, pi) * s;
         float  t   = sphere_hit(r, c, rad, true);
         h.p_view   = r.o + r.d * t;
         h.n_view   = normalize(h.p_view - c);

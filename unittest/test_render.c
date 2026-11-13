@@ -976,16 +976,11 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     f_close(&fx);
 }
 
-/* md_render's radius tables in group memory, or where they are (in
-   md_render.c, not in its header) */
-void md_render_debug_stage_radii(bool on);
-
-/* Radii from tables, staged in group memory by the cull's kernels: four
-   distinct tables of a draw are (one of them read by two batches), a table
-   past the 512 entries and a fifth are read from memory. Each draws what
-   float radii draw, to the bit, as do all tables read from memory; a sphere
-   style that ignores radii (radius_scale 0, licorice's) draws what no radii
-   do. */
+/* Radii from tables: six tables over seven batches (one read by two, one of
+   600 entries), types past a table's end among them, flags above the type,
+   small spheres for the compute raster and large ones for the hardware. They
+   draw what float radii draw, to the bit; a sphere style that ignores radii
+   (radius_scale 0, licorice's) draws what no radii do. */
 UTEST(render, radius_tables_change_nothing) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -994,8 +989,7 @@ UTEST(render, radius_tables_change_nothing) {
     const uint32_t W = 160, H = 120;
     cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
     enum { NB = 7, PER = 48, NT = 6 };
-    /* the tables in the order the batches meet them: 0 staged, 1 too large,
-       2..4 staged (four now), 5 a fifth; the last batch reads table 0 again */
+    /* the last batch reads table 0 again */
     const uint32_t tsize[NT] = { 8, 600, 13, 5, 300, 7 };
     const uint32_t which[NB] = { 0, 1, 2, 3, 4, 5, 0 };
     float* table[NT];
@@ -1059,16 +1053,9 @@ UTEST(render, radius_tables_change_nothing) {
     f.content[MD_RENDER_CONTENT_GEOMETRY]++;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
-
-    md_render_debug_stage_radii(false);
-    md_render_view_t mem = md_render_view_create(fx.r, "tables from memory");
-    ASSERT_TRUE(md_render_view_draw(fx.gfx, mem, &f, NULL));
-    md_render_debug_stage_radii(true);
-    EXPECT_EQ(0, compare_views(&fx, mem, ref, W, H, &covered));
-    printf("    %u spheres in %u batches, %u tables (4 in group memory): %d pixels covered, hardware %u + %u, compute %u + %u\n",
+    printf("    %u spheres in %u batches, %u tables: %d pixels covered, hardware %u + %u, compute %u + %u\n",
            (NB + 1) * PER, NB + 1, NT, covered, st.hardware[0], st.hardware[1], st.compute[0], st.compute[1]);
 
-    md_render_view_destroy(fx.gfx, mem);
     md_render_view_destroy(fx.gfx, ref);
     for (uint32_t t = 0; t < NT; ++t) free(table[t]);
     f_close(&fx);

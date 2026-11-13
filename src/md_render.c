@@ -15,17 +15,6 @@
 
 enum { M_VIEW, M_PROJ, M_INV_PROJ, M_INV_VIEW, M_VIEW_PREV, M_PROJ_PREV, M_PROJ_CUR, M_COUNT };
 
-/* The radius tables a draw stages in group memory (md_render.slang
-   stage_radii): up to RT_TABLES of them, RT_CAP entries in all */
-#define RT_TABLES 4u
-#define RT_CAP    512u
-typedef struct rt_dir_t {
-    uint32_t      tables, _pad;
-    md_gpu_addr_t src[RT_TABLES];
-    uint32_t      base[RT_TABLES];
-    uint32_t      count[RT_TABLES];
-} rt_dir_t;
-
 typedef struct gpu_view_t {
     md_gpu_float4 m[M_COUNT][4];   /* columns */
     md_gpu_float4 viewport;
@@ -42,9 +31,9 @@ typedef struct gpu_view_t {
     float         jitter_px;        /* how far this raster's jitter moves the image: max |jx|, |jy| */
     float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
-    rt_dir_t      rt;               /* the radius tables the kernels stage in group memory */
+    uint32_t      _vpad[2];
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 608, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
 /* Occlusion settings, measured on the M4 at 10M atoms (camera moving):
    - Elements no wider than occl_min_px pixels are not tested one by one
@@ -63,10 +52,6 @@ _Static_assert(sizeof(gpu_view_t) == 608, "ViewData mirror");
 static float g_occl_margin = 2.0f;
 static float g_occl_min_px = 2.0f;
 void md_render_debug_occlusion(float margin_radii, float min_px) { g_occl_margin = margin_radii; g_occl_min_px = min_px; }
-/* Radius tables staged in group memory (default), or read where they are:
-   md_render_bench's comparison of the two */
-static bool g_stage_radii = true;
-void md_render_debug_stage_radii(bool on) { g_stage_radii = on; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -84,7 +69,6 @@ enum {
     F_CLUSTERS     = 1u << 12,
     F_SHARED       = 1u << 13,
     F_RADIUS_TABLE = 1u << 14,
-    F_RADIUS_LDS   = 1u << 15,
 };
 
 typedef struct gpu_batch_t {
@@ -99,8 +83,7 @@ typedef struct gpu_batch_t {
     float         sharpness, desaturate;
     uint32_t      work_offset, rad_stride;
     md_gpu_addr_t cluster_offset, bounds, cstate, radius_table;
-    uint32_t      cluster_count, cluster_work_offset, cluster_base;
-    uint32_t      radius_table_info;   /* entries (low 17 bits); F_RADIUS_LDS: the first in group memory << 17 */
+    uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 256, "Batch mirror");
 
@@ -373,7 +356,6 @@ struct md_render_view {
     md_gpu_addr_t       xform_buf;         /* current then previous per batch  */
     size_t              xform_buf_cap;     /* bytes                            */
     gpu_batch_t*        table;             /* host copy of the batch table     */
-    rt_dir_t            rt;                /* its radius tables in group memory */
 
     /* Cull lists, counters, compute raster buffer, depth pyramid */
     md_gpu_addr_t       lists_buf;         /* gpu_lists_t                      */
@@ -781,7 +763,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     const bool radii  = b->kind == MD_RENDER_SPHERES && b->style.spheres.radius_scale != 0.0f && p->radius;
     g->radius         = radii ? p->radius : 0;
     g->radius_table   = radii ? p->radius_table : 0;
-    g->radius_table_info = g->radius_table ? (p->radius_table_count < 0x10000u ? p->radius_table_count : 0x10000u) : 0;
+    g->radius_table_count = g->radius_table ? (p->radius_table_count < 0x10000u ? p->radius_table_count : 0x10000u) : 0;
     g->attr_index     = p->attr_index;
     g->color          = p->color;
     g->palette_index  = p->palette_index;
@@ -917,27 +899,6 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         work  += (uint32_t)batch_work(b);
         cbase += g->cluster_count;
         cwork += g->cluster_count * instance_count(b);
-    }
-    /* Radius tables into group memory: each distinct one once, while they
-       fit; the batches of the others read theirs from memory */
-    memset(&v->rt, 0, sizeof(v->rt));
-    uint32_t rt_used = 0;
-    for (uint32_t i = 0; g_stage_radii && i < f->batch_count; ++i) {
-        gpu_batch_t* g = &v->table[i];
-        if (!(g->flags & F_RADIUS_TABLE)) continue;
-        const uint32_t n = g->radius_table_info & 0x1FFFFu;
-        uint32_t d = 0;
-        while (d < v->rt.tables && !(v->rt.src[d] == g->radius_table && v->rt.count[d] == n)) ++d;
-        if (d == v->rt.tables) {
-            if (d == RT_TABLES || rt_used + n > RT_CAP) continue;
-            v->rt.src[d]   = g->radius_table;
-            v->rt.base[d]  = rt_used;
-            v->rt.count[d] = n;
-            v->rt.tables++;
-            rt_used += n;
-        }
-        g->flags |= F_RADIUS_LDS;
-        g->radius_table_info |= v->rt.base[d] << 17;
     }
     size_t cap = (size_t)v->batch_buf_cap * sizeof(gpu_batch_t);
     size_t need = (size_t)(f->batch_count ? f->batch_count : 1) * sizeof(gpu_batch_t);
@@ -1338,7 +1299,6 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         if (!upload_tables(s, v, f, true)) return false;
-        gv.rt = v->rt;
         const bool refit = !geometry_same;
         gv.total_clusters     = 0;
         gv.total_cluster_work = 0;
@@ -1436,7 +1396,6 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         store_raster_meta(v, f);
     } else if (resolve) {
         if (!upload_tables(s, v, f, false)) return false;
-        if (v->view_buf) md_gpu_upload(s, v->view_buf + offsetof(gpu_view_t, rt), &v->rt, sizeof(v->rt));
     }
     if (!raster && state_changed) {
         /* Only the state bits changed: refit the clusters' state bits, then
