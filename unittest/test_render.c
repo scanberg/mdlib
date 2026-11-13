@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "bench_rev.h"                    /* MD_BENCH_SOURCE_REV, generated at build time */
 
 #if MD_ENABLE_GPU
 
@@ -32,6 +33,8 @@ typedef struct {
 } fix_t;
 
 static bool f_open(fix_t* f) {
+    static bool rev_printed = false;            /* once per run: a stale build shows as one */
+    if (!rev_printed) { printf("    mdlib %s\n", MD_BENCH_SOURCE_REV); rev_printed = true; }
     memset(f, 0, sizeof(*f));
     md_gpu_device_desc_t dd = {0};
     dd.enable_validation = true;
