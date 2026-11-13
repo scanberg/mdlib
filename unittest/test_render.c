@@ -738,6 +738,61 @@ static double sweep_sdf(const sweep_t* sw, const double p[3], int* who, double* 
     return best;
 }
 
+/* The sweep's normal at p (on its surface) by part k's nearest point:
+   between the samples nearest it the segments are interpolated, and the
+   nearest of them found by ternary search, good to ~0.1 degree here */
+static void sweep_normal(const sweep_t* sw, int k, const double p[3], double n[3]) {
+    const sweep_part_t* pt = &sw->part[k];
+    int best = 0;
+    double bd = 1e30;
+    for (int j = 0; j < SW_S; ++j) {
+        double d = pt_seg_dist(p, pt->a[j], pt->b[j]) - pt->r[j];
+        if (d < bd) { bd = d; best = j; }
+    }
+    double lo = best > 0 ? best - 1 : 0, hi = best < SW_S - 1 ? best + 1 : SW_S - 1;
+    double sa[3], sb[3], sr;
+    #define SEG_AT(x) do { int j0 = (int)floor(x); if (j0 >= SW_S - 1) j0 = SW_S - 2; double f = (x) - j0; \
+        for (int i = 0; i < 3; ++i) { sa[i] = pt->a[j0][i] + (pt->a[j0 + 1][i] - pt->a[j0][i]) * f; sb[i] = pt->b[j0][i] + (pt->b[j0 + 1][i] - pt->b[j0][i]) * f; } \
+        sr = pt->r[j0] + (pt->r[j0 + 1] - pt->r[j0]) * f; } while (0)
+    for (int it = 0; it < 60; ++it) {
+        double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+        SEG_AT(m1); double d1 = pt_seg_dist(p, sa, sb) - sr;
+        SEG_AT(m2); double d2 = pt_seg_dist(p, sa, sb) - sr;
+        if (d1 < d2) hi = m2; else lo = m1;
+    }
+    SEG_AT(0.5 * (lo + hi));
+    #undef SEG_AT
+    double ab[3] = { sb[0] - sa[0], sb[1] - sa[1], sb[2] - sa[2] }, ap[3] = { p[0] - sa[0], p[1] - sa[1], p[2] - sa[2] };
+    double ll = dot3(ab, ab), t = ll > 0 ? dot3(ap, ab) / ll : 0.0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    for (int i = 0; i < 3; ++i) n[i] = ap[i] - ab[i] * t;
+    double l = sqrt(dot3(n, n));
+    for (int i = 0; i < 3; ++i) n[i] /= l;
+}
+
+static int cmp_double(const void* a, const void* b) {
+    double x = *(const double*)a, y = *(const double*)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static int sweep_part_of(const sweep_t* sw, int element) {
+    for (int k = 0; k < sw->count; ++k) if (sw->part[k].element == element) return k;
+    return -1;
+}
+
+static float half_bits_to_float(uint32_t h) {
+    uint32_t s = (h >> 15) & 1u, e = (h >> 10) & 31u, m = h & 1023u;
+    float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? INFINITY : ldexpf((float)(m | 1024u), (int)e - 25);
+    return s ? -v : v;
+}
+
+static void oct_decode(uint32_t bits, double n[3]) {
+    double x = half_bits_to_float(bits & 0xFFFFu), y = half_bits_to_float(bits >> 16), z = 1.0 - fabs(x) - fabs(y);
+    if (z < 0) { double px = (1 - fabs(y)) * (x >= 0 ? 1 : -1), py = (1 - fabs(x)) * (y >= 0 ? 1 : -1); x = px; y = py; }
+    double l = sqrt(x * x + y * y + z * z);
+    n[0] = x / l; n[1] = y / l; n[2] = z / l;
+}
+
 /* How far the ray (t in [0, tmax]) passes outside the sweep: < 0, through it */
 static double sweep_ray_clearance(const sweep_t* sw, ray_t r, double tmax) {
     double q[3] = { r.o[0] + r.d[0] * tmax, r.o[1] + r.d[1] * tmax, r.o[2] + r.d[2] * tmax };
@@ -874,6 +929,48 @@ UTEST(render, spline_curves_match_the_sweep) {
         }
     }
     printf("    %d pixels covered, %d with a clear part; the farthest %.3f px from the sweep\n", covered, judged_parts, worst_surface);
+
+    /* Normals against the sweep's, where the part is clear: smooth across
+       the faces' edges into the rims, and along the pieces. The faces were
+       once built on the centre's normal and met twisting rims at a crease
+       (13 degrees on this helix, a groove under SSAO): its pixels stand
+       out at the top of this distribution. */
+    {
+        uint32_t* nb = malloc(W * H * 4);
+        ASSERT_TRUE(f_read(&fx, tg.normal, nb, W * H * 4));
+        double* errs = malloc(W * H * sizeof(double));
+        int ne = 0;
+        for (uint32_t y = 0; y < H; ++y) {
+            for (uint32_t x = 0; x < W; ++x) {
+                uint32_t i = y * W + x;
+                if (id[2 * i + 1] == 0) continue;
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                double zv = -c.n / dp[i], tp = zv / r.d[2];
+                double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+                double pxw = -P[2] * 2.0 * c.tan_half / H;
+                int who; double gap;
+                sweep_sdf(&sw, P, &who, &gap);
+                if (gap < 2.0 * pxw || who != (int)id[2 * i]) continue;
+                double nr[3], ng[3];
+                sweep_normal(&sw, sweep_part_of(&sw, who), P, nr);
+                if (fabs(dot3(nr, r.d)) < 0.3) continue;   /* grazing: the depth's rounding moves P around a thin rim */
+                oct_decode(nb[i], ng);
+                double cs = dot3(nr, ng);
+                errs[ne++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+            }
+        }
+        qsort(errs, (size_t)ne, sizeof(double), cmp_double);
+        double p50 = ne ? errs[ne / 2] : 0, p99 = ne ? errs[(ne * 99) / 100] : 0, pmax = ne ? errs[ne - 1] : 0;
+        printf("    normals against the sweep's, %d pixels: median %.2f, 99th %.2f, largest %.2f degrees\n", ne, p50, p99, pmax);
+        EXPECT_GT(ne, judged_parts / 2);
+        /* The rest is the pieces' sag over a thin rim's radius, near where
+           it meets the face (the face's normal is the curve's, the rim's
+           point is the piece's); it shrinks as the view comes closer. The
+           faces on the centre's normal: median 4.8, 99th 30 degrees. */
+        EXPECT_LT(p50, 1.0);
+        EXPECT_LT(p99, 6.0);
+        free(errs); free(nb);
+    }
     EXPECT_EQ(0, bad);
     EXPECT_GT(covered, (int)(W * H / 8));
     EXPECT_GT(judged_parts, covered / 2);
