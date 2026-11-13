@@ -971,7 +971,7 @@ UTEST(render, mol_licorice_emit_and_pick) {
     /* Topology: plan, the caller allocates, write */
     md_temp_scope_t temp = md_temp_begin();
     md_render_mol_plan_t plan;
-    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
     md_gpu_mem_t mem = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size);
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, mem.gpu, content));
@@ -1076,49 +1076,68 @@ static int32_t* molecule_of_atoms(const md_system_t* sys) {
     return mol;
 }
 
-static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* T, const uint8_t* img) {
+/* A topology image against its system and resident set (NULL: all): every
+   resident atom at one point, no other atom at any; static clusters whole
+   residues of one molecule; a small molecule's resident atoms contiguous;
+   exactly the bonds with both ends resident, between their atoms' points */
+static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* T, const uint8_t* img, const md_bitset_t* resident) {
     int bad = 0;
     #define FAIL(...) do { if (bad++ < 6) { printf("    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
-    const uint32_t n = T->atom_count, nb = T->bond_count;
+    const uint32_t n = T->atom_count, np = T->point_count, nb = T->bond_count;
+    const uint32_t nb_sys = (uint32_t)(sys->bond.count + sys->bond.noncovalent_count);
+    #define RES(a) (!resident || md_bitset_test(*resident, (a)))
     const uint32_t* order = (const uint32_t*)(img + T->atom_order);
     const uint32_t* coff  = (const uint32_t*)(img + T->atom_cluster_offset);
     int32_t* mol = molecule_of_atoms(sys);
-    uint8_t* seen = calloc(n + nb + 1, 1);
+    uint8_t* seen = calloc(n + nb_sys + 1, 1);
+    uint32_t n_res = 0;
+    for (uint32_t a = 0; a < n; ++a) n_res += RES(a);
+    if (np != n_res) FAIL("%u points for %u resident atoms", np, n_res);
     const uint32_t n_static = T->atom_cluster_count - T->grid_cells;
-    if (coff[0] != 0 || coff[T->atom_cluster_count] != n) FAIL("atom cluster offsets span %u..%u of %u", coff[0], coff[T->atom_cluster_count], n);
+    if (coff[0] != 0 || coff[T->atom_cluster_count] != np) FAIL("atom cluster offsets span %u..%u of %u", coff[0], coff[T->atom_cluster_count], np);
     for (uint32_t c = 0; c < T->atom_cluster_count; ++c) {
         if (coff[c + 1] < coff[c]) { FAIL("atom cluster %u decreasing", c); continue; }
         uint32_t size = coff[c + 1] - coff[c];
         bool dynamic = c >= n_static;
         if (!dynamic && (size == 0 || size > 64)) FAIL("static cluster %u has %u atoms", c, size);
-        for (uint32_t k = coff[c]; k < coff[c + 1] && k < n; ++k) {
+        for (uint32_t k = coff[c]; k < coff[c + 1] && k < np; ++k) {
             uint32_t a = order[k];
             if (a >= n || seen[a]) { FAIL("atom %u at %u: out of range or twice", a, k); continue; }
+            if (!RES(a)) FAIL("atom %u at %u is not resident", a, k);
             seen[a] = 1;
             bool small = mol[a] >= 0 && sys->molecule.offset[mol[a] + 1] - sys->molecule.offset[mol[a]] <= MD_RENDER_MOL_SMALL;
             if (small != dynamic) FAIL("atom %u (small %d) in a %s cluster", a, small, dynamic ? "grid" : "static");
             if (!dynamic && mol[a] != mol[order[coff[c]]]) FAIL("static cluster %u crosses molecules", c);
-            /* a small molecule is whole and contiguous: the slot after its first atom continues it */
+            /* a small molecule is contiguous: the slots after its first resident atom hold the rest */
             if (dynamic && mol[a] >= 0) {
                 uint32_t mb = sys->molecule.offset[mol[a]], me = sys->molecule.offset[mol[a] + 1];
-                if ((uint32_t)sys->molecule.atom_idx[mb] == a && k + (me - mb) > coff[c + 1]) FAIL("molecule %d split by cluster %u", mol[a], c);
-                if ((uint32_t)sys->molecule.atom_idx[mb] == a)
-                    for (uint32_t j = 1; j < me - mb; ++j) if (order[k + j] != (uint32_t)sys->molecule.atom_idx[mb + j]) { FAIL("molecule %d not contiguous", mol[a]); break; }
+                uint32_t rest[MD_RENDER_MOL_SMALL], nr = 0;
+                for (uint32_t j = mb; j < me; ++j) if (RES((uint32_t)sys->molecule.atom_idx[j])) rest[nr++] = (uint32_t)sys->molecule.atom_idx[j];
+                if (nr && rest[0] == a) {
+                    if (k + nr > coff[c + 1]) FAIL("molecule %d split by cluster %u", mol[a], c);
+                    for (uint32_t j = 1; j < nr; ++j) if (order[k + j] != rest[j]) { FAIL("molecule %d not contiguous", mol[a]); break; }
+                }
             }
         }
     }
     const uint32_t* point = (const uint32_t*)(img + T->atom_point);
-    for (uint32_t p = 0; p < n; ++p) if (order[p] < n && point[order[p]] != p) { FAIL("atom_point is not the inverse at point %u", p); break; }
+    for (uint32_t p = 0; p < np; ++p) if (order[p] < n && point[order[p]] != p) { FAIL("atom_point is not the inverse at point %u", p); break; }
+    for (uint32_t a = 0; a < n; ++a) if (!RES(a) && point[a] != UINT32_MAX) { FAIL("atom %u is not resident but has point %u", a, point[a]); break; }
     /* bonds are between points: atom order[p] is at point p */
     const uint32_t* pairs = (const uint32_t*)(img + T->bond_pairs);
     const uint32_t* ids   = (const uint32_t*)(img + T->bond_ids);
-    memset(seen, 0, n + nb + 1);
+    memset(seen, 0, n + nb_sys + 1);
     for (uint32_t j = 0; j < nb; ++j) {
         uint32_t i = ids[j];
-        if (i >= nb || seen[i]) { FAIL("bond id %u at %u: out of range or twice", i, j); continue; }
+        if (i >= nb_sys || seen[i]) { FAIL("bond id %u at %u: out of range or twice", i, j); continue; }
         seen[i] = 1;
-        if (pairs[2 * j] >= n || pairs[2 * j + 1] >= n ||
+        if (pairs[2 * j] >= np || pairs[2 * j + 1] >= np ||
             order[pairs[2 * j]] != (uint32_t)sys->bond.pairs[i].idx[0] || order[pairs[2 * j + 1]] != (uint32_t)sys->bond.pairs[i].idx[1]) FAIL("bond %u: points do not match its id", j);
+    }
+    for (uint32_t i = 0; i < nb_sys; ++i) {
+        uint32_t a = (uint32_t)sys->bond.pairs[i].idx[0], b = (uint32_t)sys->bond.pairs[i].idx[1];
+        bool expect = a < n && b < n && RES(a) && RES(b);
+        if (expect != (bool)seen[i]) { FAIL("bond %u (%u-%u): %s", i, a, b, expect ? "missing" : "kept with an end not resident"); }
     }
     for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
         const uint32_t* bo = (const uint32_t*)(img + T->bond_cluster_offset[c]);
@@ -1130,6 +1149,7 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
             else if (k < cc - n_grid && bo[k + 1] - bo[k] > 64) FAIL("class %u cluster %u has %u bonds", c, k, bo[k + 1] - bo[k]);
         }
     }
+    #undef RES
     #undef FAIL
     free(mol); free(seen);
     return bad;
@@ -1159,9 +1179,9 @@ UTEST(render, mol_plan_clusters) {
         ASSERT_TRUE(load_system(&sys, &state, files[f]));
         md_temp_scope_t temp = md_temp_begin();
         md_render_mol_plan_t plan;
-        ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+        ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
         const md_render_mol_topo_t* T = &plan.layout;
-        EXPECT_EQ(0, check_topo_image(&sys, T, plan.data));
+        EXPECT_EQ(0, check_topo_image(&sys, T, plan.data, NULL));
         uint32_t n_static = T->atom_count - T->small_atom_count, cl_static = T->atom_cluster_count - T->grid_cells;
         printf("    %s: %u atoms: %u in %u residue clusters (%.1f per cluster), %u in %u small molecules over %u cells; %u bonds (%u mixed)\n",
                strrchr(files[f], '/') + 1, T->atom_count, n_static, cl_static, cl_static ? (double)n_static / cl_static : 0.0,
@@ -1180,7 +1200,7 @@ UTEST(render, mol_plan_clusters) {
             rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base;
             rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
             for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
-            EXPECT_EQ(0, check_topo_image(&sys, &rel, img));
+            EXPECT_EQ(0, check_topo_image(&sys, &rel, img, NULL));
             free(img);
             md_gpu_free(fx.gfx, P); md_gpu_free(fx.gfx, dyn); md_gpu_free(fx.gfx, topo.base);
         }
@@ -1234,7 +1254,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
 
     md_temp_scope_t temp = md_temp_begin();
     md_render_mol_plan_t plan;
-    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
     md_temp_end(temp);
@@ -1274,14 +1294,14 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     md_render_mol_topo_t rel = topo;
     rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
     for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
-    EXPECT_EQ(0, check_topo_image(&sys, &rel, after));
+    EXPECT_EQ(0, check_topo_image(&sys, &rel, after, NULL));
     double e0 = grid_cluster_extent(&rel, before, xyz), e1 = grid_cluster_extent(&rel, after, xyz);
     printf("    grid clusters: mean extent %.1f A in molecule order, %.1f A after the update\n", e0, e1);
     EXPECT_LT(e1, 0.4 * e0);
     /* again from the regrouped order: the same cells (the order within one is the atomics') */
     ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint8_t* again = read_block(&fx, topo.base, topo.size);
-    EXPECT_EQ(0, check_topo_image(&sys, &rel, again));
+    EXPECT_EQ(0, check_topo_image(&sys, &rel, again, NULL));
     EXPECT_EQ(0, memcmp(after + rel.atom_cluster_offset, again + rel.atom_cluster_offset, (topo.atom_cluster_count + 1) * 4));
     /* Velocities: copied into the point order when given (a per-frame block
        of dynamic_size_velocity), and emit hands md_render that copy */
@@ -1437,6 +1457,27 @@ UTEST(render, mol_clusters_follow_the_solvent) {
 
 /* ---- Frames: resident on the GPU, interpolated there ---------------------------- */
 
+/* All atoms, or (partial) the bonded structures, every third small molecule
+   and the first atom of every fifth: whole molecules, parts of molecules and
+   molecules left out */
+static md_bitmask_t make_resident(const md_system_t* sys, bool partial) {
+    const uint32_t n = (uint32_t)sys->atom.count;
+    md_bitmask_t mask = md_bitmask_create(0, n, md_get_heap_allocator());
+    const md_molecule_data_t* M = &sys->molecule;
+    uint32_t w = 0;
+    for (size_t m = 0; m < M->count; ++m) {
+        uint32_t b = M->offset[m], e = M->offset[m + 1];
+        bool small = e - b <= MD_RENDER_MOL_SMALL;
+        if (small) w++;
+        for (uint32_t k = b; k < e; ++k) {
+            bool keep = !partial || !small || w % 3 == 0 || (w % 5 == 0 && k == b);
+            if (keep) md_bitmask_set_bit(&mask, (uint32_t)M->atom_idx[k]);
+        }
+    }
+    return mask;
+}
+
+
 static float half_to_float(uint32_t h) {
     uint32_t sgn = (h >> 15) & 1u, e = (h >> 10) & 31u, m = h & 1023u;
     float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? (m ? NAN : INFINITY) : ldexpf((float)(m | 1024u), (int)e - 25);
@@ -1447,10 +1488,12 @@ static float half_to_float(uint32_t h) {
    into the box, so many cross it between frames. Uploads that regroup (one
    into a slot that holds a frame) must leave every resident frame in the new
    point order, and nearest, linear and cubic must give the CPU's answer from
-   the same quantized frames, minimum image included. */
-UTEST(render, mol_frames_interpolate) {
+   the same quantized frames, minimum image included. `partial`: only some
+   atoms resident (the residue, every third water, the oxygen of every
+   fifth): only those are quantized, uploaded, regrouped and drawn. */
+static void frames_case(int* utest_result, bool partial) {
     fix_t fx;
-    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    if (!f_open(&fx)) { printf("    skipped: %s\n", f_skip_reason()); return; }
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
@@ -1462,9 +1505,19 @@ UTEST(render, mol_frames_interpolate) {
     md_render_mol_frame_cell(cell, &state.unitcell);
     EXPECT_EQ(L[0], cell[0]); EXPECT_EQ(L[1], cell[4]); EXPECT_EQ(L[2], cell[8]);
 
+    /* the resident atoms */
+    md_bitmask_t mask = make_resident(&sys, partial);
+    md_bitset_t rset = md_bitmask_view(&mask);
+    const md_bitset_t* resident = partial ? &rset : NULL;
+    uint32_t* rlist = malloc((size_t)n * 4);           /* the resident atoms in order: a frame's rows */
+    uint32_t nres = (uint32_t)md_bitset_extract_indices(rlist, n, rset);
+    printf("    %s: %u of %u atoms resident\n", partial ? "partial" : "all", nres, n);
+
     md_temp_scope_t temp = md_temp_begin();
     md_render_mol_plan_t plan;
-    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, temp));
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, resident, temp));
+    EXPECT_EQ(nres, plan.layout.point_count);
+    EXPECT_EQ(0, check_topo_image(&sys, &plan.layout, plan.data, resident));
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
@@ -1506,9 +1559,10 @@ UTEST(render, mol_frames_interpolate) {
             if (f && fabsf(fpos[f][3 * i + d] - fpos[f - 1][3 * i + d]) > 0.5f * L[d]) crossings++;
         }
         qs[f] = malloc((size_t)n * 6);
-        md_render_mol_frame_quantize(&frames[f], qs[f], fpos[f], 0, n, cell);
-        for (uint32_t i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
-            deq[f][3 * i + d] = frames[f].origin[d] + (float)qs[f][3 * i + d] * frames[f].scale[d];
+        md_render_mol_frame_quantize(&frames[f], qs[f], fpos[f], 0, n, cell, resident);
+        for (uint32_t r = 0; r < nres; ++r) for (int d = 0; d < 3; ++d) {
+            const uint32_t i = rlist[r];
+            deq[f][3 * i + d] = frames[f].origin[d] + (float)qs[f][3 * r + d] * frames[f].scale[d];
             quant_bad += fabsf(deq[f][3 * i + d] - fpos[f][3 * i + d]) > 0.5f * frames[f].scale[d] + 1e-5f;
         }
     }
@@ -1517,12 +1571,12 @@ UTEST(render, mol_frames_interpolate) {
     EXPECT_EQ(0, quant_bad);
     /* the vector path and the scalar one agree: the same frame through a
        stride the vector path does not take */
-    {
+    if (!partial) {
         float* wide = malloc((size_t)n * 16);
         uint16_t* q2 = malloc((size_t)n * 6);
         for (uint32_t i = 0; i < n; ++i) { memcpy(wide + 4 * i, fpos[2] + 3 * i, 12); wide[4 * i + 3] = NAN; }
         md_render_mol_frame_t f2;
-        md_render_mol_frame_quantize(&f2, q2, wide, 16, n, cell);
+        md_render_mol_frame_quantize(&f2, q2, wide, 16, n, cell, NULL);
         EXPECT_EQ(0, memcmp(f2.origin, frames[2].origin, sizeof(f2.origin)));
         EXPECT_EQ(0, memcmp(f2.scale, frames[2].scale, sizeof(f2.scale)));
         int diff = 0;
@@ -1536,26 +1590,26 @@ UTEST(render, mol_frames_interpolate) {
     for (int k = 0; k < 2; ++k) {
         up[k] = md_gpu_malloc(fx.gfx, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&topo));
         ASSERT_TRUE(up[k].cpu != NULL);
-        md_render_mol_frame_quantize(&frames[3 + k], up[k].cpu, fpos[3 + k], 0, n, cell);
+        md_render_mol_frame_quantize(&frames[3 + k], up[k].cpu, fpos[3 + k], 0, n, cell, resident);
         frames[3 + k].q_gpu = up[k].gpu;
     }
 
     md_render_mol_frames_t fr;
     const uint64_t fsize = md_render_mol_frames_size(&topo, 4);
-    ASSERT_GE(fsize, (uint64_t)n * 24);              /* four slots of 6 bytes per atom, no staging */
-    ASSERT_LT(fsize, (uint64_t)n * 29);
+    ASSERT_GE(fsize, (uint64_t)nres * 24);           /* four slots of 6 bytes per atom, no staging */
+    ASSERT_LT(fsize, (uint64_t)nres * 29 + 4096);
     ASSERT_TRUE(md_render_mol_frames_init(&fr, &topo, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, fsize).gpu, 4));
     const md_render_mol_update_flags_t RG = MD_RENDER_MOL_UPDATE_REGROUP;
     /* frames 0..3 into slots 0..3, regrouping with the first and the last */
-    uint8_t* order0 = read_block(&fx, topo.atom_order, (size_t)n * 4);
+    uint8_t* order0 = read_block(&fx, topo.atom_order, (size_t)nres * 4);
     ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &frames[0], RG));
-    uint8_t* order1 = read_block(&fx, topo.atom_order, (size_t)n * 4);
+    uint8_t* order1 = read_block(&fx, topo.atom_order, (size_t)nres * 4);
     ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0,   &fr, 1, &frames[1], 0));
     ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0,   &fr, 2, &frames[2], 0));
     ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 3, &frames[3], RG));
-    uint8_t* order2 = read_block(&fx, topo.atom_order, (size_t)n * 4);
-    EXPECT_NE(0, memcmp(order0, order1, (size_t)n * 4));
-    EXPECT_NE(0, memcmp(order1, order2, (size_t)n * 4));
+    uint8_t* order2 = read_block(&fx, topo.atom_order, (size_t)nres * 4);
+    EXPECT_NE(0, memcmp(order0, order1, (size_t)nres * 4));
+    EXPECT_NE(0, memcmp(order1, order2, (size_t)nres * 4));
     EXPECT_EQ(15u, fr.valid);
 
     /* the slots' frames, by slot: which of ours each holds */
@@ -1588,13 +1642,13 @@ UTEST(render, mol_frames_interpolate) {
         EXPECT_EQ(with_v, b.points.velocity != 0);
 
         uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size_velocity);
-        uint8_t* ord = read_block(&fx, topo.atom_order, (size_t)n * 4);
+        uint8_t* ord = read_block(&fx, topo.atom_order, (size_t)nres * 4);
         const float* pts = (const float*)(blk + (b.points.position - dyn));
         const uint32_t* vel = with_v ? (const uint32_t*)(blk + (b.points.velocity - dyn)) : NULL;
         const uint32_t* order = (const uint32_t*)ord;
         double pos_err = 0, vel_err = 0, vmax = 0;
         int rad_bad = 0;
-        for (uint32_t p = 0; p < n; ++p) {
+        for (uint32_t p = 0; p < nres; ++p) {
             const uint32_t i = order[p];
             double x[4][3];
             for (uint32_t k = 0; k < cases[ci].count; ++k)
@@ -1631,7 +1685,7 @@ UTEST(render, mol_frames_interpolate) {
     md_render_mol_topo_t rel = topo;
     rel.atom_order -= topo.base; rel.atom_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
     for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
-    EXPECT_EQ(0, check_topo_image(&sys, &rel, img));
+    EXPECT_EQ(0, check_topo_image(&sys, &rel, img, resident));
     /* refused: a regroup in the update, a slot without a frame */
     EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, RG, NULL));
     md_render_mol_frames_t empty;
@@ -1650,6 +1704,128 @@ UTEST(render, mol_frames_interpolate) {
     md_gpu_free(fx.gfx, topo.base);
     md_render_mol_destroy(mol);
     md_system_free(&sys);
+    md_bitmask_free(&mask);
+    free(rlist);
+    f_close(&fx);
+}
+
+UTEST(render, mol_frames_interpolate) {
+    frames_case(utest_result, false);
+}
+
+UTEST(render, mol_frames_resident_set) {
+    frames_case(utest_result, true);
+}
+
+/* Leaving atoms out of the topology draws what hiding them draws: licorice
+   from a topology of the resident atoms against plain batches of every atom
+   with the others hidden (and the bonds between resident atoms), depth by
+   depth, and picks of the same atoms and bonds */
+UTEST(render, mol_resident_set_draws_what_hiding_draws) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count, nb = (uint32_t)sys.bond.count;
+    md_bitmask_t mask = make_resident(&sys, true);
+    md_bitset_t rset = md_bitmask_view(&mask);
+    const uint32_t nres = (uint32_t)md_bitset_count(rset);
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, &rset, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
+    md_temp_end(temp);
+    EXPECT_EQ(nres, topo.point_count);
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = f_buf(&fx, state.xyz, (size_t)n * 12);
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
+
+    md_render_mol_rep_t rep = {0};
+    rep.key  = 7;
+    rep.type = MD_RENDER_MOL_REP_LICORICE;
+    rep.params.licorice.radius = 0.3f;
+    rep.bond_classes = MD_RENDER_MOL_BONDS_ALL;
+    md_render_batch_t batches[8];
+    uint32_t nbat = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, 8);
+    ASSERT_GE(nbat, 2u);
+    EXPECT_EQ(nres, batches[nbat - 1].count);
+    EXPECT_EQ(n, batches[nbat - 1].points.attr_count);
+
+    /* the reference: every atom, the others hidden; the bonds between resident atoms */
+    uint32_t* bits = calloc((n + 31) / 32, 4);
+    for (uint32_t i = 0; i < n; ++i) if (md_bitset_test(rset, i)) bits[i >> 5] |= 1u << (i & 31);
+    uint32_t* pairs = malloc((size_t)nb * 8);
+    uint32_t* ids   = malloc((size_t)nb * 4);
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < nb; ++i) {
+        uint32_t a = (uint32_t)sys.bond.pairs[i].idx[0], b = (uint32_t)sys.bond.pairs[i].idx[1];
+        if (!md_bitset_test(rset, a) || !md_bitset_test(rset, b)) continue;
+        pairs[2 * kept] = a; pairs[2 * kept + 1] = b; ids[kept] = i; kept++;
+    }
+    EXPECT_EQ(kept, topo.bond_count);
+    md_render_batch_t plain[2];
+    memset(plain, 0, sizeof(plain));
+    plain[0].key = 1; plain[0].kind = MD_RENDER_SPHERES; plain[0].count = n;
+    plain[0].points.count = n; plain[0].points.position = P;
+    plain[0].points.visible[0] = f_buf(&fx, bits, (n + 31) / 32 * 4);
+    plain[0].style.spheres.radius_add = 0.3f;
+    plain[1].key = 2; plain[1].kind = MD_RENDER_CAPSULES; plain[1].count = kept;
+    plain[1].points.count = n; plain[1].points.position = P;
+    plain[1].index = f_buf(&fx, pairs, (size_t)kept * 8);
+    plain[1].id    = f_buf(&fx, ids, (size_t)kept * 4);
+    plain[1].style.capsules.radius = 0.3f;
+
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.5f, .aspect = (float)W / H, .n = 1.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -20.0f; cam.view[13] = -20.0f; cam.view[14] = -85.0f;
+    md_render_view_t ref = md_render_view_create(fx.r, "reference");
+    md_render_frame_t fr = frame_of(W, H, cam, plain, 2);
+    fr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    md_render_frame_t f = frame_of(W, H, cam, batches, nbat);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;                 /* again, culling against the pyramid */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    int covered = 0;
+    EXPECT_EQ(0, compare_views_ex(&fx, fx.view, ref, W, H, &covered, true));
+    printf("    %u of %u atoms resident, %u of %u bonds; %d pixels covered\n", nres, n, kept, nb, covered);
+    EXPECT_GT(covered, (int)(W * H / 8));
+
+    int picked = 0, agree = 0;
+    for (uint32_t y = 3; y < H; y += 11) for (uint32_t x = 5; x < W; x += 13) {
+        md_render_pick_t pa, pb;
+        ASSERT_TRUE(f_pick(&fx, x, y, &pa));
+        if (!md_render_view_pick(fx.gfx, ref, x, y)) continue;
+        md_gpu_stream_sync(fx.gfx);
+        ASSERT_TRUE(md_render_view_pick_result(ref, &pb));
+        if (pb.key == 0) { EXPECT_EQ(0u, (unsigned)pa.key); continue; }
+        md_render_mol_hit_t hit;
+        ASSERT_TRUE(md_render_mol_decode_pick(&pa, &hit));
+        picked++;
+        if (pb.kind == MD_RENDER_SPHERES) agree += hit.kind == MD_RENDER_MOL_HIT_ATOM && hit.atom == pb.attr;
+        else                              agree += hit.kind == MD_RENDER_MOL_HIT_BOND && hit.bond == pb.id;
+    }
+    EXPECT_GT(picked, 10);
+    EXPECT_EQ(picked, agree);
+
+    md_gpu_stream_sync(fx.gfx);
+    md_render_view_destroy(fx.gfx, ref);
+    free(bits); free(pairs); free(ids);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    md_bitmask_free(&mask);
     f_close(&fx);
 }
 

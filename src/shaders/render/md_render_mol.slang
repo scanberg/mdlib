@@ -67,7 +67,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
-    uint* marker;               // 4 words: whose radii the copy's w holds (see sol_gather)
+    uint* marker;               // 5 words: whose radii the copy's w holds, in which grouping (see sol_gather)
     uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
@@ -80,6 +80,8 @@ struct Args {
     uint* qdst;                 // the frame to
     uint* qpar;                 // regroup: the uploaded frame's parameters
     uint* src_point;            // regroup with resident frames: each small point's old point
+    uint* resident;             // the resident atoms: bits, then each word's rank (has_resident)
+    uint* regroups;             // the topology's: word 0 counts the regroups
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -106,6 +108,8 @@ struct Args {
     uint  quantized;            // regroup: positions from qsrc, not `position`
     uint  has_src;              // sol_write: record src_point
     uint  has_fvel;             // fr_gather: velocities from dw
+    uint  has_resident;         // 0: every atom is resident, its place in a frame is itself
+    uint  resident_words;       // words of the bits (the ranks follow them)
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
 };
@@ -166,9 +170,16 @@ float3 min_image(uint* par, float3 d) {
     return d - ld3(par, FP_CELL) * n.x - ld3(par, FP_CELL + 3u) * n.y - ld3(par, FP_CELL + 6u) * n.z;
 }
 
+// An atom's place in an uploaded frame: its rank among the resident atoms
+uint upload_index(Args a, uint atom) {
+    if (a.has_resident == 0u) return atom;
+    uint w = atom >> 5u;
+    return a.resident[a.resident_words + w] + countbits(a.resident[w] & ((1u << (atom & 31u)) - 1u));
+}
+
 float3 first_pos(Args a, uint m) {
     uint i = a.mol_atoms[a.mol_atom_offset[m]];
-    if (a.quantized != 0u) return dequant(a.qsrc, a.qpar, i);
+    if (a.quantized != 0u) return dequant(a.qsrc, a.qpar, upload_index(a, i));
     uint* p = a.position + i * (a.stride >> 2);
     return float3(asfloat(p[0]), asfloat(p[1]), asfloat(p[2]));
 }
@@ -409,6 +420,7 @@ void sol_offsets(uint3 tid : SV_DispatchThreadID) {
         a.atom_cluster_offset[a.static_atom_clusters + c] = a.static_atoms + a.cnt[4u * c];
         if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + c] = a.static_bonds + a.cnt[4u * c + 1u];
     }
+    if (tid.x == 0u) a.regroups[0] = a.regroups[0] + 1u;  // every copy gathered before is in the old order
 }
 
 
@@ -427,7 +439,8 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
 }
 
 bool radii_valid(Args a) {
-    return a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2;
+    return a.full == 0u && a.marker[0] == MARKER && a.marker[1] == a.ident0 && a.marker[2] == a.ident1 && a.marker[3] == a.ident2 &&
+           a.marker[4] == a.regroups[0];
 }
 
 // An atom's radius from its source: the caller's array, or its type's
@@ -468,6 +481,7 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
     a.marker[1] = a.ident0;
     a.marker[2] = a.ident1;
     a.marker[3] = a.ident2;
+    a.marker[4] = a.regroups[0];
 }
 
 // ---- Frames --------------------------------------------------------------------
@@ -503,7 +517,8 @@ void fr_gather(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-// An uploaded frame (qsrc, atom order) into its slot (qdst, point order).
+// An uploaded frame (qsrc: the resident atoms in atom order) into its slot
+// (qdst, point order).
 // A thread per two points of the destination, each read from its atom: one
 // gather of two words per point.
 [shader("compute")]
@@ -513,8 +528,8 @@ void fr_reorder(uint3 tid : SV_DispatchThreadID) {
     uint n = a.atom_count, pairs = (n + 1u) >> 1u;
     for (uint j = tid.x; j < pairs; j += grid_threads(pairs)) {
         bool has_b = 2u * j + 1u < n;
-        uint3 qa = load_q(a.qsrc, a.atom_order[2u * j]);
-        uint3 qb = has_b ? load_q(a.qsrc, a.atom_order[2u * j + 1u]) : uint3(0u);
+        uint3 qa = load_q(a.qsrc, upload_index(a, a.atom_order[2u * j]));
+        uint3 qb = has_b ? load_q(a.qsrc, upload_index(a, a.atom_order[2u * j + 1u])) : uint3(0u);
         store_pair(a.qdst, j, qa, qb, has_b);
     }
 }
