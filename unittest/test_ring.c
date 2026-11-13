@@ -20,6 +20,30 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <md_io.h>
+#include <math.h>
+#include <float.h>
+#include <md_pdb.h>
+#include <md_gro.h>
+#include <md_xyz.h>
+#include <md_mmcif.h>
+#include <md_tpr.h>
+#include <md_lammps.h>
+#include <md_run.h>
+#include <md_infer.h>
+#include <core/md_geom.h>
+#include <core/md_sort.h>
+#include <md_dssp.h>
+#include <md_itp.h>
+#include <md_element.h>
+#include <core/md_writer.h>
+#include <core/md_os.h>
+#include <core/md_path.h>
+#include <core/md_hash.h>
+#include <core/md_vec_math.h>
+#include "rmsd.h"
+#include "system_invariants.h"
+#include "system_util.h"
 
 typedef struct ring_sys_t {
     md_allocator_i*   alloc;
@@ -359,4 +383,170 @@ UTEST_F(ring, script_ring_index) {
     EXPECT_TRUE(ring_filter_fails_with("ring(0)", "before the first ring", trp));
     EXPECT_TRUE(ring_filter_fails_with("ring(0) in element('C')", "before the first ring", trp));
     EXPECT_TRUE(ring_filter_fails_with("ring(1, 'aromatic')", "can only be given by name", trp));
+}
+
+UTEST(ring, rings_common) {
+    reference_systems_t refsys = reference_systems_load();
+    int64_t num_rings = 0;
+
+    num_rings = md_ring_data_count(&refsys.mol_nucleotides.ring);
+    EXPECT_EQ(num_rings, 4);
+    
+    num_rings = md_ring_data_count(&refsys.mol_ala.ring);
+    EXPECT_EQ(num_rings, 0);
+   
+    num_rings = md_ring_data_count(&refsys.mol_pftaa.ring);
+    EXPECT_EQ(num_rings, 5);
+
+    num_rings = md_ring_data_count(&refsys.mol_centered.ring);
+    EXPECT_EQ(num_rings, 2076);
+    reference_systems_free(&refsys);
+}
+
+UTEST(ring, rings_c60) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+	md_system_t sys = { .alloc = alloc };
+	md_system_state_t sys_state = { .alloc = alloc };
+	md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL);
+	md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+	EXPECT_EQ(sys.atom.count, 60);
+	EXPECT_EQ(sys.bond.count, 90);
+
+    const size_t num_rings = md_ring_data_count(&sys.ring);
+    EXPECT_EQ(num_rings, 32);
+
+    const size_t num_molecules = md_system_molecule_count(&sys);
+    EXPECT_EQ(num_molecules, 1);
+
+    md_temp_end(temp_scope);
+}
+
+UTEST(ring, rings_c720) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+    EXPECT_EQ(sys.atom.count, 720);
+    EXPECT_EQ(sys.bond.count, 1080);
+
+    const size_t num_rings = md_ring_data_count(&sys.ring);
+    EXPECT_EQ(num_rings, 362);
+
+    const size_t num_molecules = md_system_molecule_count(&sys);
+    EXPECT_EQ(num_molecules, 1);
+
+    md_temp_end(temp_scope);
+}
+
+UTEST(ring, rings_14kr) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+    const size_t num_rings = md_ring_data_count(&sys.ring);
+    EXPECT_EQ(num_rings, 207);
+
+    md_temp_end(temp_scope);
+}
+
+UTEST(ring, rings_trytophan_pdb) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+    const size_t num_rings = md_ring_data_count(&sys.ring);
+    EXPECT_EQ(num_rings, 2);
+
+    const size_t num_molecules = md_system_molecule_count(&sys);
+    EXPECT_EQ(num_molecules, 1);
+
+    md_temp_end(temp_scope);
+}
+
+UTEST(ring, rings_trytophan_xyz) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+    const size_t num_rings = md_ring_data_count(&sys.ring);
+    EXPECT_EQ(num_rings, 2);
+
+    const size_t num_molecules = md_system_molecule_count(&sys);
+    EXPECT_EQ(num_molecules, 1);
+
+    md_temp_end(temp_scope);
+}
+
+UTEST(ring, rings_full) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+    const size_t num_rings = md_ring_data_count(&sys.ring);
+    EXPECT_EQ(num_rings, 195);
+
+    const size_t num_molecules = md_system_molecule_count(&sys);
+    EXPECT_EQ(num_molecules, 1);
+
+    md_temp_end(temp_scope);
+}
+
+UTEST(ring, rings_ciprofloxacin) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp_scope);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL);
+    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+
+    const int64_t num_rings = md_ring_data_count(&sys.ring);
+    ASSERT_EQ(num_rings, 4);
+    EXPECT_EQ(md_ring_size(&sys.ring, 0), 3);
+    EXPECT_EQ(md_ring_size(&sys.ring, 1), 6);
+    EXPECT_EQ(md_ring_size(&sys.ring, 2), 6);
+    EXPECT_EQ(md_ring_size(&sys.ring, 3), 6);
+
+    md_temp_end(temp_scope);
+}
+
+// Beads make no rings. Their cycles are the rigid triangles Martini closes where the atoms had a ring (the side chains
+// of PHE, TYR, TRP, HIS, the small molecules) and, in a protein, those its secondary structure bonds and elastic
+// network close: thousands for an elastic network, all of which the ring search and the aromaticity of
+// md_chem_perceive went through.
+UTEST(ring, rings_coarse_grained) {
+    static const char* files[] = { "martini3_small_molecules.tpr", "martini2_membrane_protein.tpr", "martini3_peptides.tpr" };
+    for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
+        md_temp_scope_t temp_scope = md_temp_begin();
+        md_allocator_i* alloc = md_temp_allocator(temp_scope);
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t sys_state = { .alloc = alloc };
+        char path[512];
+        snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s", files[f]);
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, md_str_from_cstr(path), NULL));
+        ASSERT_TRUE(md_system_is_coarse_grained(&sys));
+        // The bonds of the topology close cycles: more bonds than a forest of the molecules has
+        EXPECT_GT(sys.bond.count + sys.instance.count, sys.atom.count);
+
+        md_infer_flags_t flags = MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT;
+        EXPECT_TRUE(md_system_infer(&sys, &sys_state, flags, NULL));
+        EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
+        md_temp_end(temp_scope);
+    }
 }

@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 
 #include <md_dcd.h>
 #include <md_system.h>

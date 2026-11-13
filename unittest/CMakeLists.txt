@@ -50,7 +50,11 @@ set (SRC_FILES
     test_ring.c
     test_lipid.c
     test_monomer.c
-    test_util.c
+    test_geom.c
+    test_sort.c
+    test_hierarchy.c
+    test_backbone.c
+    test_martini.c
     test_secondary_structure.c
     test_unit.c
     test_script.c

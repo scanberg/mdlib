@@ -4,9 +4,9 @@
 #include "builtins.h"
 
 #include <md_system.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <md_mcs.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_os.h>
 #include <core/md_coord_stream.h>

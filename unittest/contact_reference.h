@@ -5,7 +5,7 @@
 
 #include <md_contact.h>
 #include <md_system.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>
