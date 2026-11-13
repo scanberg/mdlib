@@ -1,6 +1,6 @@
-﻿#include <md_geom.h>
+﻿#include <core/md_geom.h>
 
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 
 #include <core/md_compiler.h>
 #include <core/md_common.h>

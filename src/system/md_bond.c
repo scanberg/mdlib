@@ -4,7 +4,7 @@
 #include <core/md_fifo.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 
 // Bond inference: covalent and metallic bonds from the coordinates, coordination and elastic bonds, and the bonds
 // formed and broken in a state (md_util.h).

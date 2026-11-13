@@ -2,7 +2,7 @@
 
 #include <md_system.h>
 #include <md_run.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 #include <md_xdr.h>
 #if MD_HDF5
 #include <md_amber_netcdf4.h>

@@ -10,7 +10,7 @@
 #include <md_tpr.h>
 #include <md_lammps.h>
 #include <md_infer.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <md_xyz.h>
 
 #include <core/md_allocator.h>

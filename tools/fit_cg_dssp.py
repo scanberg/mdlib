@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fits the virtual carbonyls of CG-DSSP (md_dssp.c) and writes them to src/md_dssp_cg.inl.
+Fits the virtual carbonyls of CG-DSSP (md_dssp.c) and writes them to src/system/md_dssp_cg.inl.
 
 CG-DSSP assigns secondary structure to a trace of coarse grained backbone beads (the BB beads of Martini) from bonds
 between its peptide groups, and a peptide group's bond direction is that of its C=O. The beads do not give it: the
@@ -170,7 +170,7 @@ def main():
     ap.add_argument("folders", nargs="+")
     ap.add_argument("--noise", type=float, default=0.35, help="Gaussian noise on the beads of the copies, A per coordinate")
     ap.add_argument("--copies", type=int, default=4, help="noisy copies of each structure")
-    ap.add_argument("--out", default=os.path.join("src", "md_dssp_cg.inl"))
+    ap.add_argument("--out", default=os.path.join("src", "system", "md_dssp_cg.inl"))
     args = ap.parse_args()
 
     systems = [load(f) for f in args.folders]

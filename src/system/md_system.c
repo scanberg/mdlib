@@ -3,7 +3,7 @@
 #include "md_run.h"
 #include <md_nonbonded.h>
 #include "md_system_fields.h"
-#include <md_geom.h>
+#include <core/md_geom.h>
 
 #include <inttypes.h>
 #include <stdio.h>

@@ -8,7 +8,7 @@
 // tools/gen_martini_db.py, and the links between the residues of the polymers.
 #include "md_martini_db.inl"
 #include <core/md_executor.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 
 const martini_db_bead_t* mdi_martini_db_bead(const martini_db_residue_t* res, size_t k) {
     return &martini_db_beads[martini_db_residue_beads[res->bead_offset + k]];

@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 #include <md_attributes.h>
 #include <core/md_vec.h>
 

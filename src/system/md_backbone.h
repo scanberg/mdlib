@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <md_types.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 
 struct md_float3_t;
 
