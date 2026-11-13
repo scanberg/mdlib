@@ -1139,7 +1139,7 @@ static int run_gpu(int argc, char** argv) {
     {
         const char* kn; md_gpu_kernel_info_t ki;
         for (uint32_t i = 0; md_render_debug_kernel_info(r, i, &kn, &ki); ++i)
-            if (ki.stats[0]) printf("  kernel md_render %-14s %s\n", kn, ki.stats);
+            if (ki.stats[0]) printf("  kernel md_render %-15s %s\n", kn, ki.stats);
         for (uint32_t i = 0; md_render_mol_debug_kernel_info(mol, i, &kn, &ki); ++i)
             if (ki.stats[0]) printf("  kernel md_render_mol %-10s %s\n", kn, ki.stats);
     }

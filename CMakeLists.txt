@@ -840,9 +840,9 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_render.slang
-    ENTRIES   refit cull_clusters cull finalize raster_small hiz_reduce resolve mask_visible pick
-    VERTEX    sphere_vs capsule_vs merge_vs
-    FRAGMENT  sphere_fs sphere_mask_fs capsule_fs capsule_mask_fs merge_fs
+    ENTRIES   refit refit_splines cull_clusters cull cull_splines finalize raster_small hiz_reduce resolve resolve_splines mask_visible pick
+    VERTEX    sphere_vs capsule_vs spline_vs merge_vs
+    FRAGMENT  sphere_fs sphere_mask_fs capsule_fs capsule_mask_fs spline_fs spline_mask_fs merge_fs
   )
   compile_gpu_shaders(md_render_mol_shaders.inl
     TARGET    mdlib

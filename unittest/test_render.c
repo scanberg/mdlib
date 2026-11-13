@@ -568,8 +568,9 @@ UTEST(render, spline_straight_parts) {
     EXPECT_GT(judged, (int)(W * H * 8 / 10));
     printf("    %d parts drawn (one hidden), %d pixels judged\n", np, judged);
 
-    /* the same with every part small enough for the compute raster: the
-       same ids and depths to the bit */
+    /* the same with the compute raster asked for every part: spline parts
+       have none (their code would cost spheres and capsules registers), so
+       the same ids and depths to the bit, all from the hardware raster */
     md_render_view_t hw = md_render_view_create(fx.r, "hardware only");
     md_render_frame_t fh = f;
     fh.options = MD_RENDER_NO_COMPUTE_RASTER;
@@ -580,7 +581,8 @@ UTEST(render, spline_straight_parts) {
     md_gpu_stream_sync(fx.gfx);
     md_render_stats_t st;
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
-    EXPECT_GT(st.compute[0] + st.compute[1], 0u);
+    EXPECT_EQ(0u, st.compute[0] + st.compute[1]);
+    EXPECT_EQ((uint32_t)(N - 1), st.hardware[0] + st.hardware[1]);
     int covered = 0;
     EXPECT_EQ(0, compare_views(&fx, fx.view, hw, W, H, &covered));
     md_render_view_destroy(fx.gfx, hw);
@@ -876,7 +878,8 @@ UTEST(render, spline_curves_match_the_sweep) {
     EXPECT_GT(covered, (int)(W * H / 8));
     EXPECT_GT(judged_parts, covered / 2);
 
-    /* the compute raster: the same ids and depths to the bit */
+    /* the compute raster asked for: spline parts stay with the hardware
+       raster, the same ids and depths to the bit */
     md_render_view_t cr = md_render_view_create(fx.r, "compute raster");
     md_render_frame_t fc = f;
     fc.options = 0;
@@ -885,7 +888,8 @@ UTEST(render, spline_curves_match_the_sweep) {
     md_gpu_stream_sync(fx.gfx);
     md_render_stats_t st;
     ASSERT_TRUE(md_render_view_stats(cr, &st));
-    EXPECT_GT(st.compute[0] + st.compute[1], 0u);
+    EXPECT_EQ(0u, st.compute[0] + st.compute[1]);
+    EXPECT_GT(st.hardware[0] + st.hardware[1], (uint32_t)(N / 2));
     int cov2 = 0;
     EXPECT_EQ(0, compare_views(&fx, cr, fx.view, W, H, &cov2));
     md_render_view_destroy(fx.gfx, cr);
@@ -962,6 +966,59 @@ UTEST(render, spline_curves_match_the_sweep) {
     EXPECT_EQ(0, left);
     printf("    shrunk: %d pixels; past the band: %d\n", cov3, left);
     md_render_view_destroy(fx.gfx, cr);
+
+    /* with spheres in the same frame: the main kernels and the spline twins
+       each take theirs, nothing twice, nothing lost. Every pixel as the
+       nearer of the two drawn alone: depth, id, colour and normal. */
+    b.fade.mode = 0;
+    enum { NS = 24 };
+    float spos[NS * 3];
+    for (int k = 0; k < NS; ++k) {
+        int e = (k * 7) % N;                                /* by control points, in front and behind */
+        for (int i = 0; i < 3; ++i) spos[3 * k + i] = pos[3 * e + i];
+        spos[3 * k + 0] += 0.3f * (float)((k % 3) - 1);
+        spos[3 * k + 2] += (k % 2) ? 0.6f : -0.6f;
+    }
+    md_render_batch_t bs = {0};
+    bs.key = 6; bs.kind = MD_RENDER_SPHERES; bs.count = NS; bs.points.count = NS;
+    bs.points.position = f_buf(&fx, spos, sizeof(spos));
+    bs.style.spheres.radius_add = 0.45f;
+    bs.color.mode = MD_RENDER_COLOR_UNIFORM;
+    bs.color.uniform = 0xFF30C030u;
+    md_render_batch_t both[2] = { bs, b };
+    md_render_view_t vs = md_render_view_create(fx.r, "spheres"), vp = md_render_view_create(fx.r, "splines"), vb = md_render_view_create(fx.r, "both");
+    md_render_frame_t fs = frame_of(W, H, cam, &bs, 1), fp = frame_of(W, H, cam, &b, 1), fbo = frame_of(W, H, cam, both, 2);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, vs, &fs, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, vp, &fp, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, vb, &fbo, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_view_t views[3] = { vs, vp, vb };
+    uint32_t* ids[3]; float* dps[3]; uint32_t* cols[3]; uint32_t* nrms[3];
+    for (int k = 0; k < 3; ++k) {
+        md_render_targets_t t = md_render_view_targets(views[k]);
+        ids[k] = malloc(W * H * 8); dps[k] = malloc(W * H * 4); cols[k] = malloc(W * H * 4); nrms[k] = malloc(W * H * 4);
+        ASSERT_TRUE(f_read(&fx, t.id, ids[k], W * H * 8) && f_read(&fx, t.depth, dps[k], W * H * 4) &&
+                    f_read(&fx, t.color, cols[k], W * H * 4) && f_read(&fx, t.normal, nrms[k], W * H * 4));
+    }
+    int mixed_bad = 0, from[2] = { 0, 0 };
+    for (uint32_t i = 0; i < W * H; ++i) {
+        bool hs = ids[0][2 * i + 1] != 0, hp = ids[1][2 * i + 1] != 0;
+        if (!hs && !hp) { if (ids[2][2 * i + 1] != 0) mixed_bad++; continue; }
+        int w = !hp || (hs && dps[0][i] >= dps[1][i]) ? 0 : 1;      /* reverse Z: the larger is nearer */
+        from[w]++;
+        uint32_t ey = (ids[w][2 * i + 1] & 0xFFFFFu) | ((uint32_t)(w + 1) << 20);   /* slot 0 alone, slot w in both */
+        if (ids[2][2 * i] != ids[w][2 * i] || ids[2][2 * i + 1] != ey || dps[2][i] != dps[w][i] ||
+            cols[2][i] != cols[w][i] || nrms[2][i] != nrms[w][i]) {
+            if (mixed_bad < 6) printf("    pixel (%u, %u): both %u/%x, alone (%s) %u/%x\n", i % W, i / W, ids[2][2 * i], ids[2][2 * i + 1],
+                                      w ? "splines" : "spheres", ids[w][2 * i], ids[w][2 * i + 1]);
+            mixed_bad++;
+        }
+    }
+    EXPECT_EQ(0, mixed_bad);
+    EXPECT_GT(from[0], 200);
+    EXPECT_GT(from[1], 1000);
+    printf("    with spheres: %d pixels theirs, %d the splines'\n", from[0], from[1]);
+    for (int k = 0; k < 3; ++k) { free(ids[k]); free(dps[k]); free(cols[k]); free(nrms[k]); md_render_view_destroy(fx.gfx, views[k]); }
     free(id); free(dp); free(sw.part);
     f_close(&fx);
 }

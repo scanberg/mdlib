@@ -177,6 +177,8 @@ struct Lists {
     uint*     occ;              // occluded in phase 1, tested again in phase 2
     uint*     counters;         // see C_* below
     uint64_t* vis64;            // compute raster: depth << 32 | index into small
+    uint*     hw2;              // spline parts for the hardware raster (they have no compute raster)
+    uint*     st2;              // spline parts with a state bit
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -206,7 +208,12 @@ static const uint C_GRID_OCC   = 48;
 static const uint C_ICMD       = 80;   // md_gpu_draw_indexed_cmd_t, capsules [phase - 1]: 80..89
 static const uint C_STICMD     = 90;   // the state list's capsules: 90..94
 static const uint C_LOD        = 95;   // elements dropped by their batch's fade
-static const uint C_COUNT      = 96;
+static const uint C_HWS1       = 96;   // spline parts for the hardware raster, phase 1
+static const uint C_HWS2       = 97;   // and phase 2
+static const uint C_STS        = 98;   // spline parts with a state bit
+static const uint C_ICMDS      = 100;  // md_gpu_draw_indexed_cmd_t, spline parts [phase - 1]: 100..109
+static const uint C_STICMDS    = 110;  // the state list's spline parts: 110..114
+static const uint C_COUNT      = 116;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -438,10 +445,21 @@ Elem decode(Batch* batches, uint2 ent) {
 }
 
 // An element in view space: spheres a = b = centre; capsules a, b the ends.
+// Splines are heavy code: in a kernel that also takes spheres and capsules
+// they would set its registers, and so its occupancy, for all of them
+// (resolve went from 168 to 242 on Pascal, the compute raster from 80 to
+// 168). So the kernels that run per element or per pixel come in twins: the
+// main one takes every kind but splines, its spline twin (SPL 1) only
+// splines, and the twin is dispatched only for frames that have splines.
+// Both walk the same work; each passes over what is the other's.
+bool kind_taken<let SPL : int>(uint kind) {
+    return SPL != 0 ? kind == KIND_SPLINES : kind != KIND_SPLINES;
+}
+
 struct Geo {
     bool   ok;                  // visible, of positive radius, not faded
     bool   faded;               // would be drawn but for its batch's fade
-    uint   kind;                // 0 spheres, 1 capsules
+    uint   kind;                // the hardware raster's: 0 spheres, 1 capsules, 2 spline parts
     uint   st;                  // state bits
     float3 a;
     float3 b;
@@ -931,13 +949,14 @@ void spline_bounds(SplinePart sp, out float3 a, out float3 bnd_b, out float rad)
     rad = d + max(sp.a0, sp.a1) + max(sp.r0, sp.r1);
 }
 
-// With `fade` false (the state lists, which do not depend on the camera) the
-// batch's fade is not applied.
+// Spheres and capsules (spline parts: spline_geo). With `fade` false (the
+// state lists, which do not depend on the camera) the batch's fade is not
+// applied.
 Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     Geo g;
     g.ok   = false;
     g.faded = false;
-    g.kind = b.kind == KIND_SPHERES ? 0u : 1u;          // splines go the capsules' way: a box proxy
+    g.kind = b.kind == KIND_SPHERES ? 0u : 1u;
     g.st   = 0u;
     g.a    = float3(0.0);
     g.b    = float3(0.0);
@@ -972,22 +991,36 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
             if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
             g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t, a0) && fade_keeps(t, a1)));
         }
-    } else if (b.kind == KIND_SPLINES) {
-        uint ie = b.index[e];
-        uint ai = attr_of(b, ie & SPLINE_POINT);
-        if (!attr_visible(b, ai)) return g;
-        g.st = attr_state(b, ai);
-        if ((ie & (SPLINE_FIRST | SPLINE_LAST)) == (SPLINE_FIRST | SPLINE_LAST)) return g;   // alone
-        SplinePart sp = spline_part(v, b, inst, e, fade);
-        if (fade && (b.flags & F_FADE) != 0u) {
-            float2 t = fade_ts(b, -sp.p2.z);
-            g.faded = ((b.flags & F_FADE_SHRINK) != 0u && fade_size(t) <= 0.0) || ((b.flags & F_FADE_THIN) != 0u && !fade_keeps(t, ai));
-        }
-        if (!sp.ok || g.faded) return g;
-        spline_bounds(sp, g.a, g.b, g.r);
     } else {
         return g;
     }
+    g.ok = g.r > 0.0 && !g.faded;
+    return g;
+}
+
+// A spline part's bounds: a capsule around it (the box proxy's), as
+// element_geo's for capsules
+Geo spline_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
+    Geo g;
+    g.ok    = false;
+    g.faded = false;
+    g.kind  = 2u;
+    g.st    = 0u;
+    g.a     = float3(0.0);
+    g.b     = float3(0.0);
+    g.r     = 0.0;
+    uint ie = b.index[e];
+    uint ai = attr_of(b, ie & SPLINE_POINT);
+    if (!attr_visible(b, ai)) return g;
+    g.st = attr_state(b, ai);
+    if ((ie & (SPLINE_FIRST | SPLINE_LAST)) == (SPLINE_FIRST | SPLINE_LAST)) return g;   // alone
+    SplinePart sp = spline_part(v, b, inst, e, fade);
+    if (fade && (b.flags & F_FADE) != 0u) {
+        float2 t = fade_ts(b, -sp.p2.z);
+        g.faded = ((b.flags & F_FADE_SHRINK) != 0u && fade_size(t) <= 0.0) || ((b.flags & F_FADE_THIN) != 0u && !fade_keeps(t, ai));
+    }
+    if (!sp.ok || g.faded) return g;
+    spline_bounds(sp, g.a, g.b, g.r);
     g.ok = g.r > 0.0 && !g.faded;
     return g;
 }
@@ -1244,42 +1277,48 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[e] : 1.0;
         if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
         l.ok = capsule_radius(b, e) > 0.0;
-    } else if (b.kind == KIND_SPLINES) {
-        // a and b: the box of the part's curve, batch space; the factor its
-        // widest half width and radius (the cluster's pad)
-        uint ie = b.index[e];
-        uint ai = attr_of(b, ie & SPLINE_POINT);
-        if (!attr_visible(b, ai)) return l;
-        bool hp = (ie & SPLINE_FIRST) == 0u, hn = (ie & SPLINE_LAST) == 0u;
-        if (!hp && !hn) return l;
-        l.st = attr_state(b, ai);
-        float4 pf = spline_profile_of(b, e);
-        float  pr = max(max(pf.z, pf.w), 0.0);
-        l.factor = max(max(pf.x, pf.y), 0.0) + pr;
-        if (geo) {
-            uint   im = 0u, ip = 0u;
-            if (hp) im = b.index[e - 1u];
-            if (hn) ip = b.index[e + 1u];
-            float3 p2 = load_pos(b, ie & SPLINE_POINT);
-            float3 p1 = float3(0.0), p3 = float3(0.0);
-            if (hp) p1 = load_pos(b, im & SPLINE_POINT);
-            if (hn) p3 = load_pos(b, ip & SPLINE_POINT);
-            if (!hp) p1 = 2.0 * p2 - p3;
-            if (!hn) p3 = 2.0 * p2 - p1;
-            float3 p0, p4;
-            if (hp && (im & SPLINE_FIRST) == 0u) p0 = load_pos(b, b.index[e - 2u] & SPLINE_POINT);
-            else                                 p0 = 2.0 * p1 - p2;
-            if (hn && (ip & SPLINE_LAST) == 0u)  p4 = load_pos(b, b.index[e + 2u] & SPLINE_POINT);
-            else                                 p4 = 2.0 * p3 - p2;
-            // the box of its hull (spline_hull): what the pieces stay in
-            SplineHull k = spline_hull(p0, p1, p2, p3, p4, hp, hn);
-            l.a = min(min(k.ca, k.cb), k.m);
-            l.b = max(max(k.ca, k.cb), k.m);
-            if (hp) { l.a = min(l.a, min(k.l1, k.l2)); l.b = max(l.b, max(k.l1, k.l2)); }
-            if (hn) { l.a = min(l.a, min(k.h1, k.h2)); l.b = max(l.b, max(k.h1, k.h2)); }
-        }
-        l.ok = pr > 0.0;
     }
+    return l;
+}
+
+// A spline part's: the box of its curve's hull
+LocalElem spline_local(Batch b, uint e, bool geo) {
+    LocalElem l;
+    l.ok = false; l.st = 0u; l.a = float3(0.0); l.b = float3(0.0); l.factor = 0.0;
+    // a and b: the box of the part's curve, batch space; the factor its
+    // widest half width and radius (the cluster's pad)
+    uint ie = b.index[e];
+    uint ai = attr_of(b, ie & SPLINE_POINT);
+    if (!attr_visible(b, ai)) return l;
+    bool hp = (ie & SPLINE_FIRST) == 0u, hn = (ie & SPLINE_LAST) == 0u;
+    if (!hp && !hn) return l;
+    l.st = attr_state(b, ai);
+    float4 pf = spline_profile_of(b, e);
+    float  pr = max(max(pf.z, pf.w), 0.0);
+    l.factor = max(max(pf.x, pf.y), 0.0) + pr;
+    if (geo) {
+        uint   im = 0u, ip = 0u;
+        if (hp) im = b.index[e - 1u];
+        if (hn) ip = b.index[e + 1u];
+        float3 p2 = load_pos(b, ie & SPLINE_POINT);
+        float3 p1 = float3(0.0), p3 = float3(0.0);
+        if (hp) p1 = load_pos(b, im & SPLINE_POINT);
+        if (hn) p3 = load_pos(b, ip & SPLINE_POINT);
+        if (!hp) p1 = 2.0 * p2 - p3;
+        if (!hn) p3 = 2.0 * p2 - p1;
+        float3 p0, p4;
+        if (hp && (im & SPLINE_FIRST) == 0u) p0 = load_pos(b, b.index[e - 2u] & SPLINE_POINT);
+        else                                 p0 = 2.0 * p1 - p2;
+        if (hn && (ip & SPLINE_LAST) == 0u)  p4 = load_pos(b, b.index[e + 2u] & SPLINE_POINT);
+        else                                 p4 = 2.0 * p3 - p2;
+        // the box of its hull (spline_hull): what the pieces stay in
+        SplineHull k = spline_hull(p0, p1, p2, p3, p4, hp, hn);
+        l.a = min(min(k.ca, k.cb), k.m);
+        l.b = max(max(k.ca, k.cb), k.m);
+        if (hp) { l.a = min(l.a, min(k.l1, k.l2)); l.b = max(l.b, max(k.l1, k.l2)); }
+        if (hn) { l.a = min(l.a, min(k.h1, k.h2)); l.b = max(l.b, max(k.h1, k.h2)); }
+    }
+    l.ok = pr > 0.0;
     return l;
 }
 
@@ -1301,9 +1340,7 @@ groupshared float4 rf_lo[64];       // xyz: min, w: the largest radius factor
 groupshared float4 rf_hi[64];       // xyz: max
 groupshared uint2  rf_cs[64];       // state bits, visible elements
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
+void refit_body<let SPL : int>(uint3 gid, uint gi) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
     uint n    = v.total_clusters;
@@ -1316,14 +1353,16 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
         uint   slot  = find_batch_cluster(a.batches, v.batch_count, ic);
         Batch  b     = a.batches[slot];
         uint   c     = ic - b.cluster_base;
-        valid = valid && (b.flags & F_SHARED) == 0u;
+        valid = valid && (b.flags & F_SHARED) == 0u && kind_taken<SPL>(b.kind);
         float3 lo = float3(3.0e38), hi = float3(-3.0e38);
         float  fmax = 0.0;
         uint   count = 0u, st = 0u;
         if (valid) {
             uint2 rng = cluster_range(b, c);
             for (uint e = rng.x + lane; e < rng.y; e += RF_LANES) {
-                LocalElem l = element_local(b, e, geo);
+                LocalElem l;
+                if (SPL != 0) l = spline_local(b, e, geo);
+                else          l = element_local(b, e, geo);
                 if (!l.ok) continue;
                 st |= l.st;
                 if (geo) {
@@ -1362,6 +1401,14 @@ void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
         GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next eight
     }
 }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void refit(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { refit_body<0>(gid, gi); }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void refit_splines(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { refit_body<1>(gid, gi); }
 
 // The bounding sphere of cluster c of instance inst, in view space, padded by
 // the batch's style (scaled with the instance)
@@ -1474,7 +1521,11 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 // Texture handles are read from the root where used (MD_ARGS.hiz), never from
 // a copy of the argument struct: on Metal, element occlusion through a copied
 // struct never fired (the M4 counted no element occluded where lavapipe did).
-void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
+//
+// Spline parts (SPL 1) are not tested for occlusion one by one (their
+// clusters are; a part's own test would need a retest list of their own in
+// phase 2, for few elements) and have no compute raster.
+void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
     Geo   g;
     g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint ent = 0u;                      // the list entry: global work index
@@ -1483,7 +1534,8 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
         ent = b.work_offset + inst * b.count + e;
         // the fade: not for the state lists, which do not depend on the
         // camera (the mask's raster applies it)
-        g   = element_geo(v, b, inst, e, !state_only);
+        if (SPL != 0) g = spline_geo(v, b, inst, e, !state_only);
+        else          g = element_geo(v, b, inst, e, !state_only);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
     if (g.faded) {
@@ -1494,11 +1546,25 @@ void element_pass(Batch* batches, ViewData v, Lists L, uint phase, bool state_on
         int4  rp  = reach_px(v, bd);
         if (bd.outside || (!bd.near_clip && ext <= v.small_px && (rp.z < rp.x || rp.w < rp.y))) {
             out = OUT_OUTSIDE;          // off screen, or between pixel centres: no pixel to draw
-        } else if (!state_only && v.occlusion != 0u && ext > v.occl_min_px && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
+        } else if (SPL == 0 && !state_only && v.occlusion != 0u && ext > v.occl_min_px && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
             out = OUT_OCCLUDED;
         } else {
-            out = (v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
+            out = (SPL == 0 && v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
         }
+    }
+    if (SPL != 0) {
+        if (state_only) {
+            bool want = g.ok && g.st != 0u;
+            uint is = wave_append(L.counters + C_STS, want);
+            if (want) L.st2[is] = ent;
+            return;
+        }
+        uint base = phase == 2u ? L.counters[C_HWS1] : 0u;
+        uint ih = wave_append(L.counters + (phase == 2u ? C_HWS2 : C_HWS1), out == OUT_HW);
+        if (out == OUT_HW) L.hw2[base + ih] = ent;
+        wave_count(L.counters + C_OUTSIDE, out == OUT_OUTSIDE);
+        wave_count(L.counters + C_LOD,     out == OUT_LOD);
+        return;
     }
     uint k = g.kind;
     if (state_only) {
@@ -1543,14 +1609,13 @@ uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
 groupshared uint4 gc_cl[64];        // slot, instance, first element
 groupshared uint  gc_inc[64];       // inclusive prefix of the sizes
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
+void cull_body<let SPL : int>(uint3 tid, uint3 gid, uint gi) {
     Args     a = MD_ARGS;
     ViewData v = *a.view;
     Lists    L = *a.lists;
     uint mode = a.mode;
     if (mode == 2u) {
+        if (SPL != 0) return;                               // spline parts are not in the retest list
         uint n = L.counters[C_OCC];
         uint stride = grid_threads(n);
         for (uint i0 = group_start(tid, gi); i0 < n; i0 += stride) {
@@ -1559,7 +1624,7 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
             Elem el;
             el.slot = 0u; el.inst = 0u; el.e = 0u;
             if (valid) el = decode_work(a.batches, v.batch_count, L.occ[i]);
-            element_pass(a.batches, v, L, 2u, false, valid, el.slot, el.inst, el.e);
+            element_pass<0>(a.batches, v, L, 2u, false, valid, el.slot, el.inst, el.e);
         }
         return;
     }
@@ -1579,7 +1644,7 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
             uint  c    = ent.x - inst * b.cluster_count;
             uint2 rng  = cluster_range(b, c);
             cl  = uint4(slot, inst, rng.x, 0u);
-            cnt = rng.y - rng.x;
+            cnt = kind_taken<SPL>(b.kind) ? rng.y - rng.x : 0u;     // the other kernel's: none here
         }
         gc_cl[gi]  = cl;
         gc_inc[gi] = cnt;
@@ -1598,11 +1663,19 @@ void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_
             while (lo < hi) { uint mid = (lo + hi) >> 1; if (gc_inc[mid] > k) hi = mid; else lo = mid + 1u; }
             uint4 c = gc_cl[lo];
             uint  e = c.z + (k - (lo > 0u ? gc_inc[lo - 1u] : 0u));
-            element_pass(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, valid, c.x, c.y, e);
+            element_pass<SPL>(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, valid, c.x, c.y, e);
         }
         GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next 64
     }
 }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { cull_body<0>(tid, gid, gi); }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_splines(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) { cull_body<1>(tid, gid, gi); }
 
 // The indirect commands and grids made of the counts. One thread.
 //   11: after the phase 1 cluster cull: element grid, phase 2 cluster grid
@@ -1633,6 +1706,8 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
         sc[0] = 6u; sc[1] = c[C_ST]; sc[2] = 0u; sc[3] = 0u;
         uint* si = c + C_STICMD;                // capsules: indexed, 36 indices over 8 corners
         si[0] = 36u; si[1] = c[C_ST + 1u]; si[2] = 0u; si[3] = 0u; si[4] = 0u;
+        uint* ss = c + C_STICMDS;               // spline parts: the same boxes
+        ss[0] = 36u; ss[1] = c[C_STS]; ss[2] = 0u; ss[3] = 0u; ss[4] = 0u;
         return;
     }
     uint phase = mode == 12u ? 1u : 2u;
@@ -1647,6 +1722,12 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     icmd[2] = 0u;
     icmd[3] = 0u;
     icmd[4] = phase == 1u ? 0u : c[C_HW1 + 1u];
+    uint* scmd = c + C_ICMDS + (phase - 1u) * 5u;   // spline parts: the same boxes
+    scmd[0] = 36u;
+    scmd[1] = phase == 1u ? c[C_HWS1] : c[C_HWS2];
+    scmd[2] = 0u;
+    scmd[3] = 0u;
+    scmd[4] = phase == 1u ? 0u : c[C_HWS1];
     uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
     uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
     gs[0] = min((ns + 63u) / 64u, 65535u); gs[1] = 1u; gs[2] = 1u;
@@ -1723,10 +1804,6 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
                     box = uint4(uint(p0.x), uint(p0.y), w, idx);
                     ga  = float4(g.a, g.r);
                     gb  = float4(g.b, float(g.kind));
-                    if (b.kind == KIND_SPLINES) {           // per pixel from its control points: the element, its pieces
-                        ga = float4(asfloat(el.slot), asfloat(el.inst), asfloat(el.e), 0.0);
-                        gb = float4(float(spline_element_pieces(v, b, el.inst, el.e, g)), 0.0, 0.0, 2.0);
-                    }
                 }
             }
         }
@@ -1754,9 +1831,8 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
             float4 eb   = gs_b[e];
             Ray   r = pixel_ray(v, float2(float(x), float(y)) + 0.5);
             float t;
-            if (eb.w < 0.5)      t = sphere_hit(r, ea.xyz, ea.w, false);
-            else if (eb.w < 1.5) t = capsule_hit(r, ea.xyz, eb.xyz, ea.w);
-            else                 t = spline_hit(r, spline_part(v, a.batches[asuint(ea.x)], asuint(ea.y), asuint(ea.z), true), uint(eb.x)).t;
+            if (eb.w < 0.5) t = sphere_hit(r, ea.xyz, ea.w, false);
+            else            t = capsule_hit(r, ea.xyz, eb.xyz, ea.w);
             if (t < 0.0) continue;
             float d = clip_depth(v, r.o + r.d * t);
             if (eb.w >= 0.5) d = capsule_depth(d);
@@ -1833,7 +1909,9 @@ uint list_entry(Args a, uint i) {
     case 0u: return L.hw0[i];
     case 1u: return L.hw1[i];
     case 2u: return L.st0[i];
-    default: return L.st1[i];
+    case 3u: return L.st1[i];
+    case 4u: return L.hw2[i];
+    default: return L.st2[i];
     }
 }
 
@@ -1941,8 +2019,7 @@ MaskOut sphere_mask_fs(SphereV i) {
 struct CapsuleV {
     float4 pos : SV_Position;
     nointerpolation float4 pa    : PA;      // view space, w: radius
-    nointerpolation float4 pb    : PB;      // w: a spline's pieces (0: a capsule)
-    nointerpolation uint2  ie    : IE;      // a spline's instance and element
+    nointerpolation float4 pb    : PB;
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
 };
@@ -1961,7 +2038,6 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.pos   = CULLED;
     o.pa    = float4(0.0);
     o.pb    = float4(0.0);
-    o.ie    = uint2(0u);
     o.idv   = uint2(0u);
     o.state = 0u;
 
@@ -1970,10 +2046,20 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint2 ent = elem_id(a.batches, el);
     Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e, true);   // the state lists' fade here
     if (!g.ok) return o;
+    float4 corner = capsule_box_corner(v, g, vk);
+    o.pos   = corner;
+    o.pa    = float4(g.a, g.r);
+    o.pb    = float4(g.b, 0.0);
+    o.idv   = ent;
+    o.state = g.st;
+    return o;
+}
+
+// Corner c of the box around the capsule g, in clip space
+float4 capsule_box_corner(ViewData v, Geo g, uint c) {
     float3 pa  = g.a;
     float3 pb  = g.b;
     float  rad = g.r;
-
     float3 ax  = pb - pa;
     float  len = length(ax);
     float3 z   = len > 1e-20 ? ax / len : float3(0.0, 0.0, 1.0);
@@ -1983,36 +2069,19 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
 
     // Built in view space from the transformed ends, in a right-handed frame:
     // outward faces stay counter-clockwise whatever the transforms mirror.
-    uint  c   = vk;
-
     float  br = rad * 1.002;                // see sphere_vs: not just touching
     float3 p = pa
              + x * (((c & 1u) != 0u) ? br : -br)
              + y * (((c & 2u) != 0u) ? br : -br)
              + z * (((c & 4u) != 0u) ? len + br : -br);
-
-    o.pos   = mul4(M(v, proj), float4(p, 1.0));
-    o.pa    = float4(pa, rad);
-    uint pieces = 0u;                       // behind an if: spline_part loads past a capsule batch's ends
-    if (a.batches[el.slot].kind == KIND_SPLINES) pieces = spline_element_pieces(v, a.batches[el.slot], el.inst, el.e, g);
-    o.pb    = float4(pb, float(pieces));
-    o.ie    = uint2(el.inst, el.e);
-    o.idv   = ent;
-    o.state = g.st;
-    return o;
-}
-
-// The capsule, or the spline part, a fragment of the box proxy hits
-float capsule_or_spline_hit(ViewData v, Ray r, CapsuleV i) {
-    if (i.pb.w < 0.5) return capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
-    return spline_hit(r, spline_part(v, MD_ARGS.batches[(i.idv.y >> 20) - 1u], i.ie.x, i.ie.y, true), uint(i.pb.w)).t;
+    return mul4(M(v, proj), float4(p, 1.0));
 }
 
 [shader("fragment")]
 VisOut capsule_fs(CapsuleV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = capsule_or_spline_hit(v, r, i);
+    float t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
     if (t < 0.0) discard;
     VisOut o;
     o.id    = i.idv;
@@ -2024,7 +2093,68 @@ VisOut capsule_fs(CapsuleV i) {
 MaskOut capsule_mask_fs(CapsuleV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = capsule_or_spline_hit(v, r, i);
+    float t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
+    if (t < 0.0) discard;
+    MaskOut o;
+    o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    return o;
+}
+
+// Spline parts: the box around the part's bounding capsule (element_geo's
+// for capsules, spline_geo's here), a fragment casting its ray against the
+// part rebuilt from its control points, cut into the pieces the vertex
+// stage counted (as eval_hit counts them)
+struct SplineV {
+    float4 pos : SV_Position;
+    nointerpolation uint4  pe    : PE;      // pieces, instance, element
+    nointerpolation uint2  idv   : IDV;
+    nointerpolation uint   state : STATE;
+};
+
+[shader("vertex")]
+SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+                  uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    SplineV  o;
+    o.pos   = CULLED;
+    o.pe    = uint4(0u);
+    o.idv   = uint2(0u);
+    o.state = 0u;
+    uint  vk  = md_draw_vertex(vid, base_vertex);
+    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
+    Batch b   = a.batches[el.slot];
+    Geo   g   = spline_geo(v, b, el.inst, el.e, true);     // the state lists' fade here
+    if (!g.ok) return o;
+    o.pos   = capsule_box_corner(v, g, vk);
+    o.pe    = uint4(spline_element_pieces(v, b, el.inst, el.e, g), el.inst, el.e, el.slot);
+    o.idv   = elem_id(a.batches, el);
+    o.state = g.st;
+    return o;
+}
+
+float spline_fragment_hit(ViewData v, Ray r, SplineV i) {
+    return spline_hit(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x).t;
+}
+
+[shader("fragment")]
+VisOut spline_fs(SplineV i) {
+    ViewData v = *MD_ARGS.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = spline_fragment_hit(v, r, i);
+    if (t < 0.0) discard;
+    VisOut o;
+    o.id    = i.idv;
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    return o;
+}
+
+[shader("fragment")]
+MaskOut spline_mask_fs(SplineV i) {
+    ViewData v = *MD_ARGS.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = spline_fragment_hit(v, r, i);
     if (t < 0.0) discard;
     MaskOut o;
     o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
@@ -2090,7 +2220,8 @@ float2 oct_encode(float3 n) {
     return p;
 }
 
-Hit eval_hit(ViewData v, Batch* batches, uint2 idv, float2 pix) {
+// SPL 0: every kind but splines (a spline pixel comes back invalid); 1: all
+Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     Hit h;
     h.valid = false;
     uint slot1 = idv.y >> 20;
@@ -2161,9 +2292,9 @@ Hit eval_hit(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float  kk  = saturate((k - 0.5) / max(1.0 - sh, 1e-3) + 0.5);
         h.color    = lerp(attr_color(b, a0), attr_color(b, a1), kk);
         h.valid    = true;
-    } else if (b.kind == KIND_SPLINES) {
+    } else if (SPL != 0 && b.kind == KIND_SPLINES) {
         // the part again, cut as the raster cut it (its bounds give the pieces;
-        // not through element_geo, which crashed lavapipe's pick kernel)
+        // not through spline_geo, which crashed lavapipe's pick kernel)
         SplinePart sp = spline_part(v, b, h.instance, h.element, true);
         Geo        g;
         g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u;
@@ -2193,21 +2324,24 @@ float2 to_pixels(ViewData v, float4 clip) {
     return float2((ndc.x * 0.5 + 0.5) * v.viewport.x, (0.5 - ndc.y * 0.5) * v.viewport.y);
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void resolve(uint3 tid : SV_DispatchThreadID) {
+// Each pixel by the twin that takes its kind: the main one clears the empty
+// ones, the spline twin (run after it, when the frame has splines) passes
+// over all but spline pixels
+void resolve_body<let SPL : int>(uint3 tid) {
     Args a = MD_ARGS;
     if (tid.x >= a.width || tid.y >= a.height) return;
     int2  px  = int2(tid.xy);
     uint2 idv = a.id.Load(int3(px, 0));
     if ((idv.y >> 20) == 0u) {
+        if (SPL != 0) return;
         a.color[px]  = float4(0.0);
         a.normal[px] = float2(0.0);
         a.motion[px] = float2(0.0);
         return;
     }
+    if (!kind_taken<SPL>(a.batches[(idv.y >> 20) - 1u].kind)) return;
     ViewData v = *a.view;
-    Hit h = eval_hit(v, a.batches, idv, float2(tid.xy) + 0.5);
+    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5);
     if (!h.valid) return;       // EXTERNAL: the caller's
 
     Batch  b   = a.batches[h.batch];
@@ -2222,6 +2356,14 @@ void resolve(uint3 tid : SV_DispatchThreadID) {
     float4 prev = mul4(M(v, proj_prev), mul4(M(v, view_prev), float4(h.p_world_prev, 1.0)));
     a.motion[px] = to_pixels(v, cur) - to_pixels(v, prev);
 }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resolve(uint3 tid : SV_DispatchThreadID) { resolve_body<0>(tid); }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resolve_splines(uint3 tid : SV_DispatchThreadID) { resolve_body<1>(tid); }
 
 // The visible part of the masks, from the ids: r state 0, b state 1. The
 // raster pass that follows adds g and a (anywhere, hidden too) by max.
@@ -2267,7 +2409,7 @@ void pick(uint3 tid : SV_DispatchThreadID) {
     o[1] = idv.y;
     if ((idv.y >> 20) == 0u) return;
     ViewData v = *a.view;
-    Hit h = eval_hit(v, a.batches, idv, float2(float(a.px), float(a.py)) + 0.5);
+    Hit h = eval_hit<1>(v, a.batches, idv, float2(float(a.px), float(a.py)) + 0.5);
     o[2] = h.id;
     o[3] = h.attr;
     if (h.valid) {
