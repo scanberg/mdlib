@@ -271,10 +271,17 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
    one small frame per frame of the trajectory, nothing per step.
 
    A frame is quantized on the host: each axis to 16 bits over the frame's
-   bounds, p = origin + q * scale, as three planes (x, y, z) in atom order,
-   6 bytes per atom. The step is the extent over 65535: 0.01 A up to a 655 A
-   system (the precision of an xtc at its default, so such a frame loses
-   nothing the file had), 0.03 A at 2000 A.
+   bounds, p = origin + q * scale, x, y and z per atom in atom order, 6 bytes
+   per atom. The step is the extent over 65535: 0.01 A up to a 655 A system
+   (the precision of an xtc at its default, so such a frame loses nothing
+   the file had), 0.03 A at 2000 A.
+
+   An upload reads the frame from the host (copied through the stream) or,
+   better, from GPU memory: quantized by the host straight into
+   MD_GPU_MEM_HOST_WRITE memory (on unified memory and with resizable BAR
+   that is the transfer: nothing is copied), or written there by a GPU
+   decoder. The upload reorders it into its slot; one gather of 6 bytes per
+   atom.
 
    Resident frames are in the point order, so the update reads them in
    order: one coalesced pass, 6 bytes per frame and atom in, the copy out.
@@ -286,8 +293,10 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
        md_render_mol_frames_t fr;
        md_gpu_addr_t fb = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&topo, 4)).gpu;
        md_render_mol_frames_init(&fr, &topo, fb, 4);
+       md_gpu_mem_t up = md_gpu_malloc(s, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&topo));
        ...
-       md_render_mol_frame_quantize(&f, x, y, z, xyz, 0, n, cell);     // host, any thread
+       md_render_mol_frame_quantize(&f, up.cpu, xyz, 0, n, cell);      // host, any thread
+       f.q_gpu = up.gpu;
        md_render_mol_frame_upload(mol, s, &topo, dyn, &fr, slot, &f, MD_RENDER_MOL_UPDATE_REGROUP);
        ...
        atoms.frames = &fr;                                            // per step
@@ -295,32 +304,39 @@ bool md_render_mol_update(md_render_mol_t mol, md_gpu_stream_t stream, const md_
        md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, 4, t, dt, 0.5f);
        md_render_mol_update(mol, s, &topo, dyn, &atoms, 0, content);
 
-   Which slot holds which frame is the caller's business (a ring, a cache).
+   Memory written for an upload must not be written again before the stream
+   has passed the upload (two such buffers in turn, with a sync point each,
+   let the host quantize the next frame meanwhile). Which slot holds which
+   frame is the caller's business (a ring, a cache).
 
-   The block: the frames, one more buffer that an upload passes through
-   (the upload lands in atom order and is reordered from there), and for a
-   regroup the old place of every small atom: (slots + 1) * 6 bytes per atom,
-   and 4 per atom of the small molecules. */
+   The block: the frames, and for a regroup the old place of every small
+   atom: slots * 6 bytes per atom, and 4 per atom of the small molecules. */
 
 #define MD_RENDER_MOL_FRAME_SLOTS 4
 
-/* A frame on the host, as uploaded */
+/* A frame, as uploaded */
 typedef struct md_render_mol_frame_t {
     float           origin[3];
     float           scale[3];      /* p = origin + q * scale, per axis               */
     float           cell[9];       /* columns a, b, c; a zero column: not periodic
                                       along it (all zero: not periodic)              */
-    const uint16_t* q[3];          /* the x, y and z planes, [atom_count] each       */
+    const uint16_t* q;             /* x, y, z per atom, [3 * atom_count], on the host */
+    md_gpu_addr_t   q_gpu;         /* or (when nonzero) in GPU memory: 4-byte aligned,
+                                      md_render_mol_frame_size bytes                 */
 } md_render_mol_frame_t;
 
-/* `count` positions (float3, `stride` bytes apart; 0: 12) into the planes x,
-   y, z ([count] each) over their bounds, and the frame of them. NaN goes to
-   the origin. `cell` may be NULL (not periodic). */
-void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* x, uint16_t* y, uint16_t* z,
-                                  const float* xyz, uint32_t stride, uint32_t count, const float cell[9]);
+/* `count` positions (float3, `stride` bytes apart; 0: 12) into q ([3 *
+   count]: x, y, z per atom, written in order, never read, so it may be
+   write-combined memory) over their bounds, and the frame of them (out->q =
+   q). NaN goes to the origin. `cell` may be NULL (not periodic). */
+void md_render_mol_frame_quantize(md_render_mol_frame_t* out, uint16_t* q, const float* xyz, uint32_t stride,
+                                  uint32_t count, const float cell[9]);
 
 /* An md_unitcell_t as such columns: the periodic axes' (PBC flags) */
 void md_render_mol_frame_cell(float out[9], const struct md_unitcell_t* cell);
+
+/* Bytes of a frame in GPU memory (q_gpu): 6 per atom, in whole words */
+uint64_t md_render_mol_frame_size(const md_render_mol_topo_t* topo);
 
 /* The block's frames, in the point order of one topology. A plain value
    that uploads change: keep one per topology. */
@@ -332,8 +348,7 @@ typedef struct md_render_mol_frames_t {
     uint32_t      slots;
     uint32_t      atom_count;
     uint32_t      valid;           /* bit k: slot k holds a frame                    */
-    uint32_t      buffer[MD_RENDER_MOL_FRAME_SLOTS + 1];   /* internal: each slot's
-                                      buffer, then the upload's                      */
+    uint32_t      buffer[MD_RENDER_MOL_FRAME_SLOTS];   /* internal: each slot's buffer */
 } md_render_mol_frames_t;
 
 /* Bytes of a block of `slots` frames (1 .. MD_RENDER_MOL_FRAME_SLOTS) */
@@ -347,7 +362,8 @@ bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_
    molecules regrouped by this frame's positions, which needs `dynamic` (the
    regroup's scratch) and reorders the topology and the other resident
    frames along; then update before drawing. GPU work only, ordered in
-   `stream`: the frame's planes are read before this returns. */
+   `stream`. A frame on the host is copied before this returns; one in GPU
+   memory is read when the stream gets to it. */
 bool md_render_mol_frame_upload(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                                 md_gpu_addr_t dynamic, md_render_mol_frames_t* frames, uint32_t slot,
                                 const md_render_mol_frame_t* frame, md_render_mol_update_flags_t flags);

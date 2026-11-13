@@ -68,7 +68,7 @@ struct Args {
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
     uint* marker;               // 4 words: whose radii the copy's w holds (see sol_gather)
-    uint* frame0;               // frames: the slots combined (planes x, y, z, plane_words apart)
+    uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
     uint* frame3;
@@ -76,8 +76,8 @@ struct Args {
     uint* fpar1;
     uint* fpar2;
     uint* fpar3;
-    uint* qsrc;                 // reorder, permute: planes from; regroup: the uploaded frame's
-    uint* qdst;                 // planes to
+    uint* qsrc;                 // reorder, permute: the frame from; regroup: the uploaded frame
+    uint* qdst;                 // the frame to
     uint* qpar;                 // regroup: the uploaded frame's parameters
     uint* src_point;            // regroup with resident frames: each small point's old point
     uint  stride;
@@ -102,12 +102,10 @@ struct Args {
     uint  ident1;
     uint  ident2;
     uint  _pad;
-    uint  plane_words;          // frames: words from one plane to the next
     uint  frame_count;          // fr_gather: 1, 2 or 4
     uint  quantized;            // regroup: positions from qsrc, not `position`
     uint  has_src;              // sol_write: record src_point
     uint  has_fvel;             // fr_gather: velocities from dw
-    uint  _pad2;
     float w0, w1, w2, w3;       // fr_gather: weights of the frames
     float dw0, dw1, dw2, dw3;   // and of their derivative
 };
@@ -130,7 +128,7 @@ uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
 uint  ordered(float f)  { uint b = asuint(f); return (b & 0x80000000u) != 0u ? ~b : (b | 0x80000000u); }
 float unordered(uint u) { return asfloat((u & 0x80000000u) != 0u ? (u & 0x7FFFFFFFu) : ~u); }
 
-// ---- Frames: 16-bit planes, two values to a word ------------------------------
+// ---- Frames: x, y, z per point in 16 bits each, three words to two points -------
 // Parameters of a frame, 32 words: origin, scale, the cell's columns, the
 // rows of its inverse (zero for an axis that is not periodic), periodic.
 
@@ -142,11 +140,22 @@ static const uint FP_PERIODIC = 24u;
 
 float3 ld3(uint* p, uint o) { return float3(asfloat(p[o]), asfloat(p[o + 1u]), asfloat(p[o + 2u])); }
 
-uint half16(uint* plane, uint i) { return (plane[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu; }
+// Point i's three values: halves 3i .. 3i+2, in two words
+uint3 load_q(uint* q, uint i) {
+    uint w = (3u * i) >> 1u;
+    uint a = q[w], b = q[w + 1u];
+    return (i & 1u) == 0u ? uint3(a & 0xFFFFu, a >> 16u, b & 0xFFFFu) : uint3(a >> 16u, b & 0xFFFFu, b >> 16u);
+}
 
-float3 dequant(uint* planes, uint pw, uint* par, uint i) {
-    float3 q = float3(float(half16(planes, i)), float(half16(planes + pw, i)), float(half16(planes + 2u * pw, i)));
-    return ld3(par, FP_ORIGIN) + q * ld3(par, FP_SCALE);
+float3 dequant(uint* q, uint* par, uint i) {
+    return ld3(par, FP_ORIGIN) + float3(load_q(q, i)) * ld3(par, FP_SCALE);
+}
+
+// Points 2j and 2j+1 (if it is one of n) as words 3j .. 3j+2
+void store_pair(uint* q, uint j, uint3 a, uint3 b, bool has_b) {
+    q[3u * j]      = a.x | (a.y << 16u);
+    q[3u * j + 1u] = a.z | (b.x << 16u);
+    if (has_b) q[3u * j + 2u] = b.y | (b.z << 16u);
 }
 
 // d at its minimum image, by the cell's lattice: right while the true
@@ -159,7 +168,7 @@ float3 min_image(uint* par, float3 d) {
 
 float3 first_pos(Args a, uint m) {
     uint i = a.mol_atoms[a.mol_atom_offset[m]];
-    if (a.quantized != 0u) return dequant(a.qsrc, a.plane_words, a.qpar, i);
+    if (a.quantized != 0u) return dequant(a.qsrc, a.qpar, i);
     uint* p = a.position + i * (a.stride >> 2);
     return float3(asfloat(p[0]), asfloat(p[1]), asfloat(p[2]));
 }
@@ -470,22 +479,21 @@ void sol_mark(uint3 tid : SV_DispatchThreadID) {
 void fr_gather(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.atom_count;
-    uint pw = a.plane_words;
     bool reuse = radii_valid(a);
     for (uint p = tid.x; p < n; p += grid_threads(n)) {
         float3 pos, vel = float3(0.0);
-        float3 x0 = dequant(a.frame0, pw, a.fpar0, p);
+        float3 x0 = dequant(a.frame0, a.fpar0, p);
         if (a.frame_count == 1u) {
             pos = x0;
         } else if (a.frame_count == 2u) {
-            float3 x1 = x0 + min_image(a.fpar0, dequant(a.frame1, pw, a.fpar1, p) - x0);
+            float3 x1 = x0 + min_image(a.fpar0, dequant(a.frame1, a.fpar1, p) - x0);
             pos = a.w0 * x0 + a.w1 * x1;
             vel = a.dw0 * x0 + a.dw1 * x1;
         } else {
-            float3 x1 = dequant(a.frame1, pw, a.fpar1, p);
+            float3 x1 = dequant(a.frame1, a.fpar1, p);
             x0 = x1 + min_image(a.fpar1, x0 - x1);
-            float3 x2 = x1 + min_image(a.fpar1, dequant(a.frame2, pw, a.fpar2, p) - x1);
-            float3 x3 = x2 + min_image(a.fpar1, dequant(a.frame3, pw, a.fpar3, p) - x2);
+            float3 x2 = x1 + min_image(a.fpar1, dequant(a.frame2, a.fpar2, p) - x1);
+            float3 x3 = x2 + min_image(a.fpar1, dequant(a.frame3, a.fpar3, p) - x2);
             pos = a.w0 * x0 + a.w1 * x1 + a.w2 * x2 + a.w3 * x3;
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
@@ -496,19 +504,18 @@ void fr_gather(uint3 tid : SV_DispatchThreadID) {
 }
 
 // An uploaded frame (qsrc, atom order) into its slot (qdst, point order).
-// A thread per word of the destination: two points, each from its atom.
+// A thread per two points of the destination, each read from its atom: one
+// gather of two words per point.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void fr_reorder(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
-    uint n = a.atom_count, words = (n + 1u) >> 1u, pw = a.plane_words;
-    for (uint w = tid.x; w < words; w += grid_threads(words)) {
-        uint i0 = a.atom_order[2u * w];
-        uint i1 = 2u * w + 1u < n ? a.atom_order[2u * w + 1u] : i0;
-        for (uint k = 0u; k < 3u; ++k) {
-            uint* src = a.qsrc + k * pw;
-            a.qdst[k * pw + w] = half16(src, i0) | (half16(src, i1) << 16u);
-        }
+    uint n = a.atom_count, pairs = (n + 1u) >> 1u;
+    for (uint j = tid.x; j < pairs; j += grid_threads(pairs)) {
+        bool has_b = 2u * j + 1u < n;
+        uint3 qa = load_q(a.qsrc, a.atom_order[2u * j]);
+        uint3 qb = has_b ? load_q(a.qsrc, a.atom_order[2u * j + 1u]) : uint3(0u);
+        store_pair(a.qdst, j, qa, qb, has_b);
     }
 }
 
@@ -518,14 +525,12 @@ void fr_reorder(uint3 tid : SV_DispatchThreadID) {
 [numthreads(64, 1, 1)]
 void fr_permute(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
-    uint n = a.atom_count, words = (n + 1u) >> 1u, pw = a.plane_words, st = a.static_atoms;
-    for (uint w = tid.x; w < words; w += grid_threads(words)) {
-        uint p0 = 2u * w, p1 = min(p0 + 1u, n - 1u);
-        uint s0 = p0 < st ? p0 : a.src_point[p0 - st];
-        uint s1 = p1 < st ? p1 : a.src_point[p1 - st];
-        for (uint k = 0u; k < 3u; ++k) {
-            uint* src = a.qsrc + k * pw;
-            a.qdst[k * pw + w] = half16(src, s0) | (half16(src, s1) << 16u);
-        }
+    uint n = a.atom_count, pairs = (n + 1u) >> 1u, st = a.static_atoms;
+    for (uint j = tid.x; j < pairs; j += grid_threads(pairs)) {
+        uint p0 = 2u * j, p1 = p0 + 1u;
+        bool has_b = p1 < n;
+        uint3 qa = load_q(a.qsrc, p0 < st ? p0 : a.src_point[p0 - st]);
+        uint3 qb = has_b ? load_q(a.qsrc, p1 < st ? p1 : a.src_point[p1 - st]) : uint3(0u);
+        store_pair(a.qdst, j, qa, qb, has_b);
     }
 }

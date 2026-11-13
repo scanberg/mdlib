@@ -1488,7 +1488,7 @@ UTEST(render, mol_frames_interpolate) {
         }
     }
     float* fpos[NF];
-    uint16_t* planes[NF][3];
+    uint16_t* qs[NF];
     md_render_mol_frame_t frames[NF];
     float* deq[NF];                                /* what the GPU holds, atom order */
     float* v = malloc((size_t)n * 24);
@@ -1502,20 +1502,45 @@ UTEST(render, mol_frames_interpolate) {
             fpos[f][3 * i + d] = x - L[d] * floorf(x / L[d]);
             if (f && fabsf(fpos[f][3 * i + d] - fpos[f - 1][3 * i + d]) > 0.5f * L[d]) crossings++;
         }
-        for (int d = 0; d < 3; ++d) planes[f][d] = malloc((size_t)n * 2);
-        md_render_mol_frame_quantize(&frames[f], planes[f][0], planes[f][1], planes[f][2], fpos[f], 0, n, cell);
+        qs[f] = malloc((size_t)n * 6);
+        md_render_mol_frame_quantize(&frames[f], qs[f], fpos[f], 0, n, cell);
         for (uint32_t i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
-            deq[f][3 * i + d] = frames[f].origin[d] + (float)planes[f][d][i] * frames[f].scale[d];
+            deq[f][3 * i + d] = frames[f].origin[d] + (float)qs[f][3 * i + d] * frames[f].scale[d];
             quant_bad += fabsf(deq[f][3 * i + d] - fpos[f][3 * i + d]) > 0.5f * frames[f].scale[d] + 1e-5f;
         }
     }
     printf("    %d crossings of the box between frames; step %.4f A\n", crossings, frames[0].scale[0]);
     EXPECT_GT(crossings, 100);
     EXPECT_EQ(0, quant_bad);
+    /* the vector path and the scalar one agree: the same frame through a
+       stride the vector path does not take */
+    {
+        float* wide = malloc((size_t)n * 16);
+        uint16_t* q2 = malloc((size_t)n * 6);
+        for (uint32_t i = 0; i < n; ++i) { memcpy(wide + 4 * i, fpos[2] + 3 * i, 12); wide[4 * i + 3] = NAN; }
+        md_render_mol_frame_t f2;
+        md_render_mol_frame_quantize(&f2, q2, wide, 16, n, cell);
+        EXPECT_EQ(0, memcmp(f2.origin, frames[2].origin, sizeof(f2.origin)));
+        EXPECT_EQ(0, memcmp(f2.scale, frames[2].scale, sizeof(f2.scale)));
+        int diff = 0;
+        for (uint32_t k = 0; k < 3 * n; ++k) diff += abs((int)q2[k] - (int)qs[2][k]) > 1;
+        EXPECT_EQ(0, diff);
+        free(wide); free(q2);
+    }
+    /* frames 3 and 4 from GPU-visible memory the host quantized into (the
+       unified-memory path: nothing copied), the others from the host */
+    md_gpu_mem_t up[2];
+    for (int k = 0; k < 2; ++k) {
+        up[k] = md_gpu_malloc(fx.gfx, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&topo));
+        ASSERT_TRUE(up[k].cpu != NULL);
+        md_render_mol_frame_quantize(&frames[3 + k], up[k].cpu, fpos[3 + k], 0, n, cell);
+        frames[3 + k].q_gpu = up[k].gpu;
+    }
 
     md_render_mol_frames_t fr;
     const uint64_t fsize = md_render_mol_frames_size(&topo, 4);
-    ASSERT_GT(fsize, (uint64_t)n * 30);
+    ASSERT_GE(fsize, (uint64_t)n * 24);              /* four slots of 6 bytes per atom, no staging */
+    ASSERT_LT(fsize, (uint64_t)n * 29);
     ASSERT_TRUE(md_render_mol_frames_init(&fr, &topo, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, fsize).gpu, 4));
     const md_render_mol_update_flags_t RG = MD_RENDER_MOL_UPDATE_REGROUP;
     /* frames 0..3 into slots 0..3, regrouping with the first and the last */
@@ -1614,7 +1639,9 @@ UTEST(render, mol_frames_interpolate) {
 
     md_gpu_stream_sync(fx.gfx);
     free(img); free(order0); free(order1); free(order2); free(v); free(xyz);
-    for (int f = 0; f < NF; ++f) { free(fpos[f]); free(deq[f]); for (int d = 0; d < 3; ++d) free(planes[f][d]); }
+    for (int f = 0; f < NF; ++f) { free(fpos[f]); free(deq[f]); free(qs[f]); }
+    md_gpu_free(fx.gfx, up[0].gpu);
+    md_gpu_free(fx.gfx, up[1].gpu);
     md_gpu_free(fx.gfx, fr.base);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
