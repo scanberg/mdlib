@@ -561,9 +561,14 @@ void md_render_mol_destroy(md_render_mol_t r) {
     md_free(r->alloc, r, sizeof(*r));
 }
 
-/* For the bench and the tests (not in the header): the frames' gather from
-   at most `groups` groups, each thread striding over the points (0: a thread
-   a point, up to the launch limit). */
+/* The frames' gather: at most FR_GROUPS groups of 64, each thread striding
+   over the points (at 10M about 19 a thread). Measured against a thread a
+   point (up to the launch limit, 2.4 a thread at 10M): the GTX 1060 0.1-0.2
+   ms faster for two and four frames (2.21 -> 2.11, 3.74 -> 3.52), the M4 the
+   same within its noise. Fewer groups gained nothing more on either.
+   md_render_mol_debug_frame_groups (the bench's and the tests', not in the
+   header) sets another cap; 0 restores this one. */
+#define FR_GROUPS 8192u
 static uint32_t g_fr_groups = 0u;
 void md_render_mol_debug_frame_groups(uint32_t groups) { g_fr_groups = groups; }
 
@@ -756,7 +761,8 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
             if (ok && hook) hook(user, "radii");
             const md_gpu_kernel_t k = r->k_fr_gather[atoms->frame_count == 1 ? 0 : atoms->frame_count == 2 ? 1 : 2];
             md_gpu_grid_t g = groups_for(topo->point_count, 64);
-            if (g_fr_groups && g_fr_groups < g.x) g.x = g_fr_groups;
+            const uint32_t cap = g_fr_groups ? g_fr_groups : FR_GROUPS;
+            if (cap < g.x) g.x = cap;
             a.fr_threads = 64u * g.x;
             ok = ok && launch(s, k, g, &a, hook, user, "gather");
         } else {
