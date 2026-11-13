@@ -962,7 +962,7 @@ UTEST(render, mol_licorice_emit_and_pick) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ethanol_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ethanol_pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(8u, (uint32_t)(sys.bond.count + sys.bond.noncovalent_count));
 
@@ -1158,7 +1158,7 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
 static bool load_system(md_system_t* sys, md_system_state_t* state, const char* file) {
     md_str_t path = md_str_from_cstr(file);
     bool ok = md_str_ends_with(path, MD_STR_LIT(".gro")) ? md_gro_system_init_from_file(sys, state, path, NULL)
-            : md_pdb_system_init_from_file(sys, state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+            : md_pdb_system_init_from_file(sys, state, path, NULL);
     return ok && md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
 }
 
