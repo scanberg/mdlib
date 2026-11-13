@@ -54,8 +54,7 @@ extern "C" {
 //
 // Common to the constructors: atom_xyz in bohr, stride in bytes (0 = tightly packed float3); AO
 // vectors and matrices in the Cartesian AO order of the basis (md_gto_basis_num_ao entries per
-// vector), as for md_gto_expand_with_ao_coeffs and the orbital/coefficient attributes. Each returns
-// NULL on failure.
+// vector), as the orbital/coefficient attributes hold them. Each returns NULL on failure.
 typedef struct md_gto_iso_field_t md_gto_iso_field_t;
 
 // An orbital, f = psi = sum_i c_i phi_i.

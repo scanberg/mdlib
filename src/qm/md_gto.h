@@ -25,20 +25,6 @@ enum {
 	MD_GTO_OP_ABS        = 1u << 8,
 };
 
-// Stand Alone Gaussian Type Orbital
-// Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
-// Where x' y' and z' are the observer coordinates we evaluate the function at
-typedef struct md_gto_t {
-	float x;
-	float y;
-	float z;
-	float coeff;		// Baked coefficient (Including normalization factors)
-	float alpha;		// Exponent alpha
-	float cutoff;		// Radial cutoff
-	uint8_t i, j, k, l;
-	uint32_t _pad;
-} md_gto_t;
-
 // ---------------------------------------------------------------------------
 // General basis representation
 // ---------------------------------------------------------------------------
@@ -275,21 +261,6 @@ bool md_gto_basis_derivative(md_gto_basis_t* out, const md_gto_basis_t* basis, s
 // alone). Returns the rows written, 3 num_mo, or 0 on failure (a basis without a derivative basis).
 size_t md_gto_orbital_gradients(double* out, size_t* out_num_ao, const double* coeff, size_t mo_stride, size_t num_mo, const md_gto_basis_t* basis);
 
-// Returns the upper bound on the number of Cartesian GTOs produced when
-// fully expanding all shells in the basis (before any cutoff filtering).
-// Use this to pre-allocate the output buffer for md_gto_expand_with_mo().
-size_t md_gto_pgto_count(const md_gto_basis_t* basis);
-
-// Expand a contracted GTO basis with baked MO coefficients into a flat md_gto_t[] array.
-// mo_coeffs: one double per spherical AO (length = sum of (2*l+1) over all shells)
-// atom_xyz:  packed xyz in Bohr, length >= max(shell.atom_idx)+1
-// atom_xyz_stride: stride in bytes between consecutive atom positions in atom_xyz; pass 0 for tightly packed (12 bytes)
-// cutoff:    if > 0, applies md_gto_cutoff_compute_and_filter; pass 0 to skip
-// out:       caller-allocated array of length >= md_gto_pgto_count(basis)
-// Returns:   number of elements written (after pruning, or total if cutoff == 0)
-size_t md_gto_expand_with_ao_coeffs(md_gto_t* out, const md_gto_basis_t* basis,
-    const float* atom_xyz, size_t atom_xyz_stride, const double* mo_coeffs, double cutoff);
-
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	uint32_t res = 0;
 	res |= ((uint32_t)i) <<  0;
@@ -299,21 +270,6 @@ static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	return res;
 }
 
-static inline void md_gto_unpack_ijkl(uint32_t packed, int* i, int* j, int* k, int* l) {
-	if (i) *i = (packed >>  0) & 0xFF;
-	if (j) *j = (packed >>  8) & 0xFF;
-	if (k) *k = (packed >> 16) & 0xFF;
-	if (l) *l = (packed >> 24) & 0xFF;
-}
-
-// Average local ionization energy
-// Evaluates GTOs over a grid
-// - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
-// - grid: The grid to evaluate
-// - gtos: The gtos to evaluate
-// - num_gtos: Number of supplied gtos
-// - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate(float* out_grid_values, const struct md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 #if MD_ENABLE_GPU
 
@@ -667,44 +623,9 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
 #endif
 
 
-// ---------------------------------------------------------------------------
-// LEGACY CPU API
-// ---------------------------------------------------------------------------
-
-// Evaluate GTOs over subportion of a grid
-// - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
-// - grid: The grid to evaluate a subportion of
-// - grid_idx_off: Index offset for x,y,z
-// - grid_idx_len: Index length for x,y,z
-// - gtos: The gtos to evaluate
-// - num_gtos: Number of supplied gtos
-// - eval_mode: GTO evaluation mode
-// @NOTE: It is strongly recommended that the evaluation occurs over a 8x8x8 blocks as this will get a vectorized fastpath
-void md_gto_grid_evaluate_sub(float* out_grid_values, const struct md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
-
-// Evaluates GTOs over a set of given XYZ coordinates
-// - out_xyz_values: Array of values to write evaluated values to, should have length 'num_xyz'
-// - xyz: Pointer to base addr of xyz packed coordinates to be evaluated, should have length 'num_xyz'
-// - num_xyz: Number of coordinates to evaluate
-// - stride_xyz [OPTIONAL]: Stride in bytes between the given xyz coordinates. A value of zero implies fully packed XYZXYZ... -> (12 bytes)
-// - gtos: input gtos to be evaluated for the supplied coordinates
-// - num_gtos: Number of gtos
-// - eval_mode: GTO evaluation mode
-void md_gto_xyz_evaluate(float* out_xyz_values, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
-
-// Evaluates GTOs over space 
-//void md_gto_xyz_voronoi_evaluate(float* out_val, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t)
-
-
 // Calculate the radius of influence for a single GTO
 double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, double alpha, double cutoff);
 
-// Extracts a subset of gtos from an input array which overlap a given axis aligned bounding box with its radii of influence
-// - out_gtos: The output array to store the gtos in
-// - min_ext: The minimum extent of the axis aligned bounding box
-// - max_ext: The maximum extent of the axis aligned bounding box
-
-size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float aabb_max[3], const md_gto_t* in_gtos, size_t num_gtos);
 
 #ifdef __cplusplus
 }

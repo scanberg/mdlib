@@ -3,6 +3,7 @@
 #include <md_vlx.h>
 #include <md_system.h>
 #include <md_gto.h>
+#include <md_gto_iso.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -122,8 +123,8 @@ static bool bench_gto_load(bench_gto_t* b) {
 // CPU
 // ---------------------------------------------------------------------------
 
-// The legacy CPU path evaluates at origin + index * spacing; the GPU at voxel centres. Shift the grid so
-// that the CPU evaluates the same points.
+// The CPU evaluates at origin + index * spacing; the GPU at voxel centres. Shift the grid so that the CPU evaluates
+// the same points.
 static md_grid_t bench_cpu_grid(const bench_gto_t* b) {
     md_grid_t g = b->grid;
     g.origin = md_float3_add(g.origin, md_float3_mul1(g.spacing, 0.5f));
@@ -137,40 +138,41 @@ static void bench_cpu_slice_offset(int off[3], const md_grid_t* g) {
     }
 }
 
+// The orbital as md_gto_iso evaluates it on the CPU, at the points of the slice
 UBENCH_EX(gto, mo_cpu) {
     bench_gto_t b;
     if (!bench_gto_load(&b)) return;
 
-    const size_t max_gtos = md_gto_pgto_count(&b.basis);
-    md_gto_t* gtos     = md_arena_allocator_push(b.arena, sizeof(md_gto_t) * max_gtos);
-    md_gto_t* sub_gtos = md_arena_allocator_push(b.arena, sizeof(md_gto_t) * max_gtos);
-    const size_t num_gtos = md_gto_expand_with_ao_coeffs(gtos, &b.basis, b.atom_xyz, 0, b.mo, BENCH_CUTOFF);
+    md_gto_iso_field_t* field = md_gto_iso_field_create(&b.basis, b.atom_xyz, 0, b.mo, md_get_heap_allocator());
+    if (!field) {
+        bench_gto_free(&b);
+        return;
+    }
 
     const md_grid_t grid = bench_cpu_grid(&b);
-    float* out = md_arena_allocator_push(b.arena, sizeof(float) * md_grid_num_points(&grid));
-    md_memset(out, 0, sizeof(float) * md_grid_num_points(&grid));
     int slice_off[3];
     bench_cpu_slice_offset(slice_off, &grid);
 
-    UBENCH_DO_BENCHMARK() {
-        for (int z = 0; z < BENCH_CPU_SLICE; z += BENCH_BLK) {
-            for (int y = 0; y < BENCH_CPU_SLICE; y += BENCH_BLK) {
-                for (int x = 0; x < BENCH_CPU_SLICE; x += BENCH_BLK) {
-                    const int off[3] = { slice_off[0] + x, slice_off[1] + y, slice_off[2] + z };
-                    const int len[3] = { BENCH_BLK, BENCH_BLK, BENCH_BLK };
-                    float aabb_min[3], aabb_max[3];
-                    for (int i = 0; i < 3; ++i) {
-                        aabb_min[i] = grid.origin.elem[i] + off[i] * grid.spacing.elem[i];
-                        aabb_max[i] = grid.origin.elem[i] + (off[i] + BENCH_BLK) * grid.spacing.elem[i];
-                    }
-                    const size_t num_sub = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
-                    md_gto_grid_evaluate_sub(out, &grid, off, len, sub_gtos, num_sub, MD_GTO_EVAL_MODE_PSI);
-                }
+    const size_t n = (size_t)BENCH_CPU_SLICE * BENCH_CPU_SLICE * BENCH_CPU_SLICE;
+    float*  xyz = md_arena_allocator_push(b.arena, sizeof(float) * 3 * n);
+    double* out = md_arena_allocator_push(b.arena, sizeof(double) * n);
+    const md_float4x4_t M = md_grid_index_to_world(&grid);
+    size_t p = 0;
+    for (int z = 0; z < BENCH_CPU_SLICE; ++z) {
+        for (int y = 0; y < BENCH_CPU_SLICE; ++y) {
+            for (int x = 0; x < BENCH_CPU_SLICE; ++x, ++p) {
+                const md_float4_t w = md_float4x4_mul_float4(M, md_float4_set((float)(slice_off[0] + x), (float)(slice_off[1] + y), (float)(slice_off[2] + z), 1.0f));
+                xyz[3 * p + 0] = w.x; xyz[3 * p + 1] = w.y; xyz[3 * p + 2] = w.z;
             }
         }
     }
 
+    UBENCH_DO_BENCHMARK() {
+        md_gto_iso_field_evaluate(field, xyz, n, 0, out, NULL);
+    }
+
     UBENCH_DO_NOTHING(out);
+    md_gto_iso_field_destroy(field);
     bench_gto_free(&b);
 }
 

@@ -6,6 +6,7 @@
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 #include <core/md_grid.h>
+#include <md_gto_iso.h>
 
 #include <math.h>
 #include <float.h>
@@ -163,21 +164,20 @@ UTEST(vlx, minimal_example) {
 	md_gto_basis_t basis = {0};
 	ASSERT_TRUE(qm_test_basis(&basis, &t));
 
-	size_t num_gtos = md_gto_pgto_count(&basis);
-	md_gto_t* gtos = (md_gto_t*)md_alloc(arena, sizeof(md_gto_t) * num_gtos);
-
 	const size_t num_aos = md_gto_basis_num_ao(&basis);
 	double* mo_coeffs = (double*)md_alloc(arena, sizeof(double) * num_aos);
 	ASSERT_EQ(qm_test_row(mo_coeffs, num_aos, &t, MD_STR_LIT("orbital/alpha/coefficient"), mo_idx), num_aos);
 
-	md_gto_expand_with_ao_coeffs(gtos, &basis, atom_xyz, sizeof(float) * 3, mo_coeffs, 1.0e-6);
+	// The orbital as a field over the basis (md_gto_iso.h): what is evaluated at any point
+	md_gto_iso_field_t* field = md_gto_iso_field_create(&basis, atom_xyz, sizeof(float) * 3, mo_coeffs, arena);
+	ASSERT_TRUE(field != NULL);
 
-	// Calculate bounding box (AABB)
+	// Calculate bounding box (AABB) of the atoms
 	md_float3_t min_aabb = md_float3_set1( FLT_MAX);
 	md_float3_t max_aabb = md_float3_set1(-FLT_MAX);
 
-	for (size_t i = 0; i < num_gtos; ++i) {
-		md_float3_t coord = md_float3_set(gtos[i].x, gtos[i].y, gtos[i].z);
+	for (size_t i = 0; i < num_atoms; ++i) {
+		md_float3_t coord = md_float3_set(atom_xyz[3 * i + 0], atom_xyz[3 * i + 1], atom_xyz[3 * i + 2]);
 		min_aabb = md_float3_min(min_aabb, coord);
 		max_aabb = md_float3_max(max_aabb, coord);
 	}
@@ -193,10 +193,6 @@ UTEST(vlx, minimal_example) {
 	// Shift origin by half a voxel such that the samples are constructed from the center of each voxel
 	md_float3_t origin = md_float3_add(min_aabb, md_float3_mul1(step_size, 0.5f));
 
-	// Allocate data for storing the result
-	float* vol_data = (float*)md_alloc(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
-	md_memset(vol_data, 0, sizeof(float) * vol_dim * vol_dim * vol_dim);
-
 	// Setup the grid structure that control how we aim to sample over space
 	md_grid_t grid = (md_grid_t) {
 		.orientation = md_float3x3_ident(),
@@ -205,14 +201,19 @@ UTEST(vlx, minimal_example) {
 		.dim = {vol_dim, vol_dim, vol_dim},
 	};
 
-	// Evaluate the GTOs over the supplied grid
-	md_gto_grid_evaluate(vol_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+	// Evaluate the orbital at the points of the grid
+	const size_t num_points = md_grid_num_points(&grid);
+	md_float3_t* points = (md_float3_t*)md_alloc(arena, sizeof(md_float3_t) * num_points);
+	double* vol_data = (double*)md_alloc(arena, sizeof(double) * num_points);
+	md_grid_extract_points((float*)points, &grid);
+	md_gto_iso_field_evaluate(field, (const float*)points, num_points, sizeof(md_float3_t), vol_data, NULL);
+	md_gto_iso_field_destroy(field);
 
 	// An occupied orbital is not the zero function; this is what catches a coefficient row that
 	// came back empty rather than wrong.
 	double max_value = 0.0;
-	for (int i = 0; i < vol_dim * vol_dim * vol_dim; ++i) {
-		max_value = MD_MAX(max_value, fabs((double)vol_data[i]));
+	for (size_t i = 0; i < num_points; ++i) {
+		max_value = MD_MAX(max_value, fabs(vol_data[i]));
 	}
 	EXPECT_TRUE(max_value > 1.0e-6);
 

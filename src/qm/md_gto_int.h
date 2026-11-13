@@ -242,7 +242,7 @@ md_gto_int_moments_t md_gto_int_charges_moments(const md_gto_int_charges_t* char
 void md_gto_int_potential_xyz(double* out_potential, double* out_field, const float* xyz, size_t num_xyz, size_t xyz_stride,
                               const md_gto_int_charges_t* charges);
 
-// Potential on the points of a grid, written as float, x fastest, like md_gto_grid_evaluate.
+// Potential on the points of a grid, written as float, x fastest.
 // Point (i,j,k) is origin + orientation * (((i,j,k) + sample_offset) * spacing); sample_offset
 // NULL means (0,0,0), (0.5,0.5,0.5) puts the points at voxel centres as the GPU paths in viamd do.
 void md_gto_int_potential_grid(float* out_values, const struct md_grid_t* grid, const float sample_offset[3],

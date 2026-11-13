@@ -327,18 +327,17 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         iso_field_t f;
         ASSERT_TRUE(iso_field_init(&f, &basis, xyz, num_atoms, c, tc->name));
 
-        const size_t num_gto = md_gto_pgto_count(&basis);
-        md_gto_t* gtos = (md_gto_t*)malloc(sizeof(md_gto_t) * num_gto);
-        const size_t n_gto = md_gto_expand_with_ao_coeffs(gtos, &basis, xyz, 0, c, 0.0);
-
         enum { N = 2000 };
         float* pts = (float*)malloc(sizeof(float) * 3 * N);
-        float* ref = (float*)malloc(sizeof(float) * N);
+        double* ref = (double*)malloc(sizeof(double) * N);
         iso_rng_t rng = {7};
         for (int i = 0; i < N; ++i) {
             for (int a = 0; a < 3; ++a) pts[3 * i + a] = (float)iso_rng_range(&rng, f.atom_min[a] - 3.0, f.atom_max[a] + 3.0);
         }
-        md_gto_xyz_evaluate(ref, pts, N, 0, gtos, n_gto, MD_GTO_EVAL_MODE_PSI);
+        for (int i = 0; i < N; ++i) {
+            const double p[3] = {pts[3 * i], pts[3 * i + 1], pts[3 * i + 2]};
+            ref[i] = qm_test_orbital_at(&basis, xyz, c, p);
+        }
 
         double max_ref = 0.0, max_err = 0.0, max_gerr = 0.0, max_herr = 0.0, max_g = 0.0, max_h = 0.0;
         for (int i = 0; i < N; ++i) {
@@ -371,7 +370,7 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         EXPECT_LT(max_gerr, 1.0e-5 * max_g);
         EXPECT_LT(max_herr, 1.0e-4 * max_h);
 
-        free(pts); free(ref); free(gtos); free(c); free(xyz);
+        free(pts); free(ref); free(c); free(xyz);
         iso_field_free(&f);
         qm_test_free(&t);
     }

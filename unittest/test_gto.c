@@ -10,6 +10,7 @@
 
 #include <md_cube.h>
 #include <md_gto.h>
+#include <md_gto_iso.h>
 #include <core/md_grid.h>
 #include "test_executor.h"
 
@@ -21,58 +22,6 @@
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
 #define VALUE_CUTOFF 1.0E-5
-
-static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, md_str_t filename, md_allocator_i* arena) {
-    md_temp_scope_t temp = md_temp_begin_avoid(arena);
-
-    vlx_test_t t = {0};
-    if (!vlx_test_load(&t, filename, MD_MEGABYTES(64))) {
-        md_temp_end(temp);
-        return;
-    }
-
-    const size_t num_atoms = t.sys.atom.count;
-    float* atom_xyz = md_temp_alloc_array(temp, float, 3 * num_atoms);
-    vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t);
-
-    md_float3_t min_box = md_float3_set1(FLT_MAX);
-    md_float3_t max_box = md_float3_set1(-FLT_MAX);
-    for (size_t i = 0; i < num_atoms; ++i) {
-        md_float3_t c = {atom_xyz[3*i+0], atom_xyz[3*i+1], atom_xyz[3*i+2]};
-        min_box = md_float3_min(min_box, c);
-        max_box = md_float3_max(max_box, c);
-    }
-
-    min_box = md_float3_sub1(min_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
-    max_box = md_float3_add1(max_box, 2.0f * (float)VLX_TEST_ANGSTROM_TO_BOHR);
-
-    float* vol_data = md_temp_alloc_zero_array(temp, float, vol_dim * vol_dim * vol_dim);
-
-    md_float3_t step = md_float3_div1(md_float3_sub(max_box, min_box), (float)vol_dim);
-
-    *grid = (md_grid_t) {
-        .orientation = md_float3x3_ident(),
-        .origin = {min_box.x, min_box.y, min_box.z},
-        .spacing = {step.x, step.y, step.z},
-        .dim = {vol_dim, vol_dim, vol_dim},
-    };
-
-    *grid_data = vol_data;
-
-    md_gto_basis_t basis = {0};
-    qm_test_basis(&basis, &t);
-
-    const size_t num_ao = md_gto_basis_num_ao(&basis);
-    double* mo_coeffs = md_temp_alloc_array(temp, double, num_ao);
-    qm_test_row(mo_coeffs, num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), 120);
-
-    *num_gtos = md_gto_pgto_count(&basis);
-    *gtos = md_alloc(arena, sizeof(md_gto_t) * (*num_gtos));
-    *num_gtos = md_gto_expand_with_ao_coeffs(*gtos, &basis, atom_xyz, sizeof(float) * 3, mo_coeffs, 1.0e-6);
-
-    qm_test_free(&t);
-    md_temp_end(temp);
-}
 
 // The basis is Cartesian (see the AO CONVENTION block in md_gto.h). These pin the
 // counting and the normalization convention so a reader that gets either wrong
@@ -394,47 +343,9 @@ UTEST(gto, kernels_cancelled_through_the_executor) {
     free(D); free(w); free(C);
 }
 
-UTEST(gto, evaluate_grid) {
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-    
-    md_grid_t grid;
-    float* grid_data;
-    md_gto_t* gtos;
-    size_t num_gtos;
-
-    int vol_dim = 64;
-    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.h5"), temp_arena);
-    size_t num_points = md_grid_num_points(&grid);
-
-    md_grid_t ref_grid = grid;
-    float* ref_data    = md_temp_alloc_array(temp, float, num_points);
-    md_float3_t* ref_points = md_temp_alloc_array(temp, md_float3_t, num_points);
-
-    md_grid_extract_points((float*)ref_points, &ref_grid);
-
-    md_memset(grid_data, 0, sizeof(float) * num_points);
-    md_memset(ref_data,  0, sizeof(float) * num_points);
-
-    md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
-    md_gto_xyz_evaluate(ref_data, (float*)ref_points, num_points, 0, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
-
-    for (size_t i = 0; i < num_points; ++i) {
-        double delta = fabs(grid_data[i] - ref_data[i]);
-        if (delta > 1.0e-4) {
-            printf("Delta: %g at [%zu]\n", delta, i);
-        }
-    }
-
-    md_temp_end(temp);
-}
-
 // compares vlx file of specific orbital and compares it with a cube file, returns the abs max difference between the two
 static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis_t* gto_basis, const double* ao_coeffs, const md_cube_t* cube) {
-    const double cutoff_value = 1.0E-6;
-
     md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     md_float3x3_t orientation = md_float3x3_ident();
     md_float3_t x_axis = md_float3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
@@ -455,28 +366,20 @@ static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis
         .spacing = md_float3_set(x_len, y_len, z_len),
         .dim = {cube->data.num_x, cube->data.num_y, cube->data.num_z},
     };
-    float* grid_data = md_temp_alloc_array(temp, float, cube->data.num_x * cube->data.num_y * cube->data.num_z);
-
-    size_t num_gtos = md_gto_pgto_count(gto_basis);
-    md_gto_t* gtos = (md_gto_t*)md_temp_alloc_array(temp, md_gto_t, num_gtos);
-    num_gtos = md_gto_expand_with_ao_coeffs(gtos, gto_basis, atom_xyz, sizeof(md_float3_t), ao_coeffs, cutoff_value);
+    // The orbital as a field, evaluated at the cube's points (md_gto_iso: the CPU evaluation of an orbital)
+    md_gto_iso_field_t* field = md_gto_iso_field_create(gto_basis, atom_xyz, sizeof(md_float3_t), ao_coeffs, md_get_heap_allocator());
+    if (!field) {
+        md_temp_end(temp);
+        return DBL_MAX;
+    }
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
-
-    md_float4x4_t M = md_grid_index_to_world(&grid);
-
-    float* psi  = md_temp_alloc_array(temp, float, count);
-    md_memset(psi, 0, sizeof(float) * count);
+    double* grid_data = md_temp_alloc_array(temp, double, count);
     md_float3_t* xyz = md_temp_alloc_array(temp, md_float3_t, count);
     md_grid_extract_points((float*)xyz, &grid);
+    md_gto_iso_field_evaluate(field, (const float*)xyz, count, sizeof(md_float3_t), grid_data, NULL);
+    md_gto_iso_field_destroy(field);
 
-    md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(md_float3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
-
-    md_memset(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
-
-    md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
-
-    double xyz_sum  = 0.0;
     double grid_sum = 0.0;
     double cube_sum = 0.0;
 
@@ -490,10 +393,8 @@ static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis
                 int cube_idx = ix * grid.dim[1] * grid.dim[2] + iy * grid.dim[2] + iz;
                 double g_val = grid_data[grid_idx];
                 double c_val = cube->data.val[cube_idx];
-                double p_val = psi[grid_idx];
                 grid_sum += g_val;
                 cube_sum += c_val;
-                xyz_sum  += p_val;
 
                 double delta = fabs(fabs(g_val) - fabs(c_val));
                 if (delta > max_delta) {
@@ -509,7 +410,6 @@ static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis
     printf("Max abs delta: %g at [%i,%i,%i]\n", max_delta, max_idx[0], max_idx[1], max_idx[2]);
     printf("GRID SUM: %.5f\n", grid_sum);
     printf("CUBE SUM: %.5f\n", cube_sum);
-    printf("XYZ  SUM: %.5f\n", xyz_sum);
 
     md_temp_end(temp);
 

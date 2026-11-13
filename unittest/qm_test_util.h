@@ -195,3 +195,27 @@ static inline double qm_test_electron_count(const qm_test_t* t, md_str_t density
     }
     return tr;
 }
+
+// An orbital at a point (bohr), summed straight from the basis in double precision: over the shells and their Cartesian
+// functions, c N(i,j,k) dx^i dy^j dz^k sum_p coeff_p exp(-alpha_p r^2). What the evaluators are checked against, so it
+// is written as plainly as the definition reads. atom_xyz: packed xyz in bohr.
+static inline double qm_test_orbital_at(const md_gto_basis_t* basis, const float* atom_xyz, const double* ao_coeffs, const double p[3]) {
+    double psi = 0.0;
+    size_t ao = 0;
+    for (uint32_t s = 0; s < basis->num_shells; ++s) {
+        const md_gto_shell_t* sh = &basis->shells[s];
+        const float* a = atom_xyz + 3 * (size_t)sh->atom_idx;
+        const double d[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+        const double r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        double radial = 0.0;
+        for (uint32_t k = 0; k < sh->num_primitives; ++k) {
+            radial += basis->coeff[sh->primitive_offset + k] * exp(-basis->alpha[sh->primitive_offset + k] * r2);
+        }
+        for (uint32_t c = 0; c < md_gto_num_cart_ao(sh->l); ++c, ++ao) {
+            int i = 0, j = 0, k = 0;
+            md_gto_cart_ijk(&i, &j, &k, sh->l, c);
+            psi += ao_coeffs[ao] * md_gto_cart_norm_factor(i, j, k) * pow(d[0], i) * pow(d[1], j) * pow(d[2], k) * radial;
+        }
+    }
+    return psi;
+}
