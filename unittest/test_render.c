@@ -531,7 +531,7 @@ UTEST(render, spline_straight_parts) {
     for (int k = 0; k < NB; ++k) { local[NA + k][0] = -2.0 + k * d; local[NA + k][1] = 1.6; local[NA + k][2] = 0; }
     for (int k = 0; k < N; ++k) {
         for (int i = 0; i < 3; ++i) pos[3 * k + i] = (float)(sc.R[i][0] * local[k][0] + sc.R[i][1] * local[k][1] + sc.R[i][2] * local[k][2] + sc.t[i]);
-        for (int i = 0; i < 3; ++i) axis[4 * k + i] = (float)(sc.R[i][1] * ((k % 2) ? -2.0 : 0.5));   /* local y, any length, either sign */
+        for (int i = 0; i < 3; ++i) axis[4 * k + i] = (float)(sc.R[i][1] * ((k % 2) ? 2.0 : 0.5));    /* local y, any length */
         axis[4 * k + 3] = 0;
         profile[4 * k] = profile[4 * k + 1] = k < NA ? (float)wa[k] : 0.0f;
         profile[4 * k + 2] = profile[4 * k + 3] = (float)radius;
@@ -613,7 +613,7 @@ UTEST(render, spline_straight_parts) {
 
 /* Curved splines against the sweep they stand for: the union of the balls
    of the radius around the profile's segments, sampled densely along each
-   part from the same B-spline (mirrored ends, unit axes chained in sign,
+   part from the same B-spline (mirrored ends, unit axes in the sign given,
    made orthogonal to the tangent). The renderer cuts parts into straight
    pieces, so it is judged within a pixel of that surface. */
 enum { SW_S = 49 };
@@ -667,13 +667,12 @@ static int sweep_build(sweep_t* sw, const double (*pos)[3], const double (*axis)
         int s1 = s0;
         while (!(index[s1] & MD_RENDER_SPLINE_LAST)) s1++;
         int m = s1 - s0 + 1;
-        /* the points with two mirrored at each end; axes unit, chained in sign from the first */
+        /* the points with two mirrored at each end; axes unit, in the sign given */
         double (*P)[3] = malloc((m + 4) * sizeof(*P)), (*Wx)[3] = malloc((m + 4) * sizeof(*Wx));
         for (int k = 0; k < m; ++k) {
             for (int i = 0; i < 3; ++i) { P[k + 2][i] = pos[s0 + k][i]; Wx[k + 2][i] = axis[s0 + k][i]; }
             double l = sqrt(dot3(Wx[k + 2], Wx[k + 2]));
             for (int i = 0; i < 3; ++i) Wx[k + 2][i] = l > 0 ? Wx[k + 2][i] / l : 0.0;
-            if (k > 0 && dot3(Wx[k + 2], Wx[k + 1]) < 0) for (int i = 0; i < 3; ++i) Wx[k + 2][i] = -Wx[k + 2][i];
         }
         for (int i = 0; i < 3; ++i) {
             P[1][i] = 2 * P[2][i] - P[3][i];           P[0][i] = 2 * P[1][i] - P[2][i];
@@ -811,8 +810,7 @@ UTEST(render, spline_curves_match_the_sweep) {
     const uint32_t W = 192, H = 144;
     cam_t c = { .tan_half = 0.45f, .aspect = (float)W / H, .n = 0.1f };
     md_render_camera_t cam = make_camera(&c);
-    /* A: a helix ribbon, axes along the helix axis in alternating sign and
-       length, out of a coil over its first two parts (a tube tapering into
+    /* A: a helix ribbon, axes along the helix axis in alternating length, out of a coil over its first two parts (a tube tapering into
        the ribbon); B: a twisting strand with an arrow (a step up, then down
        to 0, thinner); C: a wavy tube, thicker along it, one part hidden */
     enum { NA = 11, NB = 8, NC = 9, N = NA + NB + NC };
@@ -823,7 +821,7 @@ UTEST(render, spline_curves_match_the_sweep) {
     for (int k = 0; k < NA; ++k) {
         double ph = k * 100.0 * 3.14159265358979 / 180;
         local[k][0] = -5.0 + k * 1.0; local[k][1] = 2.6 + 2.0 * cos(ph); local[k][2] = 2.0 * sin(ph);
-        double l = (k % 2) ? -0.5 : 1.5;
+        double l = (k % 2) ? 0.5 : 1.5;
         laxis[k][0] = l; laxis[k][1] = 0; laxis[k][2] = 0;
         PROFILE(k, 0.7, 0.7, 0.18, 0.18);
     }
@@ -831,7 +829,7 @@ UTEST(render, spline_curves_match_the_sweep) {
     PROFILE(1, 0.35, 0.7, 0.24, 0.18);
     for (int k = 0; k < NB; ++k) {
         int e = NA + k;
-        double th = k * 15.0 * 3.14159265358979 / 180, l = ((k % 2) ? -1.0 : 1.0) * (1 + k % 3);
+        double th = k * 15.0 * 3.14159265358979 / 180, l = 1.0 + k % 3;
         local[e][0] = -5.0 + k * 1.4; local[e][1] = -1.4 + ((k % 2) ? 0.35 : -0.35); local[e][2] = 0.3 * sin((double)k);
         laxis[e][0] = 0; laxis[e][1] = sin(th) * l; laxis[e][2] = cos(th) * l;
         PROFILE(e, 0.8, 0.8, 0.18, 0.18);
