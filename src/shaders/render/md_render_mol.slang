@@ -620,7 +620,7 @@ void fr_gather_body(uint3 tid, const uint COUNT) {
             vel = a.dw0 * x0 + a.dw1 * x1 + a.dw2 * x2 + a.dw3 * x3;
         }
         store_point(points, p, asuint(pos), a.has_radius != 0u ? a.radius_override[a.atom_order[p]] : a.point_type[p]);
-        if (vel_out) storeAligned<8>((uint2*)a.vel_out + p, uint2(f32tof16(vel.x) | (f32tof16(vel.y) << 16u), f32tof16(vel.z)));
+        if (vel_out) storeAligned<8>((uint2*)a.vel_out + p, uint2(md_float_to_half(vel.x) | (md_float_to_half(vel.y) << 16u), md_float_to_half(vel.z)));
     }
 }
 
@@ -891,12 +891,12 @@ void derive(uint3 tid : SV_DispatchThreadID) {
             x += w * (ref + mi(cell, ld3(a.points, 4u * p) - ref));
             if (vel) {
                 uint2 h = loadAligned<8>((uint2*)a.vel_out + p);
-                v += w * float3(f16tof32(h.x & 0xFFFFu), f16tof32(h.x >> 16u), f16tof32(h.y & 0xFFFFu));
+                v += w * float3(md_half_to_float(h.x & 0xFFFFu), md_half_to_float(h.x >> 16u), md_half_to_float(h.y & 0xFFFFu));
             }
         }
         uint q = a.atom_count + d;
         store_point(a.points, q, asuint(x), a.der_radius[d]);
-        if (vel) storeAligned<8>((uint2*)a.vel_out + q, uint2(f32tof16(v.x) | (f32tof16(v.y) << 16u), f32tof16(v.z)));
+        if (vel) storeAligned<8>((uint2*)a.vel_out + q, uint2(md_float_to_half(v.x) | (md_float_to_half(v.y) << 16u), md_float_to_half(v.z)));
     }
 }
 
@@ -1007,7 +1007,7 @@ void bond_partners(uint3 tid : SV_DispatchThreadID) {
         }
         uint* o = a.prt_side + 4u * j;
         o[0] = asuint(side.x); o[1] = asuint(side.y); o[2] = asuint(side.z);
-        o[3] = f32tof16(mt.x) | (f32tof16(mt.y) << 16u);
+        o[3] = md_float_to_half(mt.x) | (md_float_to_half(mt.y) << 16u);
     }
 }
 

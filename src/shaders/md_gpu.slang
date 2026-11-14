@@ -201,4 +201,44 @@ uint md_draw_instance(uint iid, uint base_instance) {
     }
 }
 
+// Half floats as bits in a uint, both ways, exactly (round to nearest even;
+// subnormals, infinities and NaNs kept), in 32-bit arithmetic alone. Slang's
+// f16tof32 and f32tof16 go through 16-bit types, which make a SPIR-V module
+// declare the Float16 and Int16 capabilities: a device must enable
+// shaderFloat16 and shaderInt16 for it, which not every one has (a GTX 1060
+// reports neither enabled; Vulkan validation flags every such module).
+float md_half_to_float(uint h) {
+    uint s = (h & 0x8000u) << 16u;
+    uint e = (h >> 10u) & 0x1Fu;
+    uint m = h & 0x3FFu;
+    if (e == 0u) {                              // zero and subnormals: m 2^-24
+        float v = float(m) * 5.9604644775390625e-8;
+        return s != 0u ? -v : v;
+    }
+    if (e == 31u) return asfloat(s | 0x7F800000u | (m << 13u));
+    return asfloat(s | ((e + 112u) << 23u) | (m << 13u));
+}
+
+uint md_float_to_half(float f) {
+    uint x = asuint(f);
+    uint s = (x >> 16u) & 0x8000u;
+    uint e = (x >> 23u) & 0xFFu;
+    uint m = x & 0x7FFFFFu;
+    if (e == 0xFFu) return s | 0x7C00u | (m != 0u ? 0x200u : 0u);
+    int he = int(e) - 112;
+    if (he >= 31) return s | 0x7C00u;           // too large: infinity
+    if (he <= 0) {                              // a subnormal, or zero
+        if (he < -10) return s;
+        m |= 0x800000u;
+        uint sh = uint(14 - he);
+        uint hm = m >> sh, rem = m & ((1u << sh) - 1u), hf = 1u << (sh - 1u);
+        if (rem > hf || (rem == hf && (hm & 1u) != 0u)) hm += 1u;
+        return s | hm;
+    }
+    uint hm = m >> 13u, rem = m & 0x1FFFu;
+    uint r = s | (uint(he) << 10u) | hm;
+    if (rem > 0x1000u || (rem == 0x1000u && (hm & 1u) != 0u)) r += 1u;   // a carry rounds into the exponent
+    return r;
+}
+
 #endif // MD_GPU_SLANG_INCLUDED
