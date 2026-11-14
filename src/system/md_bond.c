@@ -1,6 +1,5 @@
 ﻿#include "md_infer_internal.h"
 #include <core/md_executor.h>
-#include <core/md_fifo.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_geom.h>
@@ -1685,7 +1684,7 @@ void md_bond_mask_grow(md_bitmask_t* mask, const md_bond_data_t* bond, size_t at
     const size_t num_indices = md_bitset_iter_extract_indices(indices, mask_size, md_bitmask_iter(mask));
     MD_ASSERT(num_indices == mask_size);
 
-    md_fifo_t queue = md_fifo_create(64, temp_alloc);
+    md_array(int) queue = 0;
 
     // Zero means 'not reached'. Temp memory is not cleared, so this has to be, or the walk depends on what the
     // allocator handed out last: fresh pages happen to be zero, reused ones are not.
@@ -1703,11 +1702,11 @@ void md_bond_mask_grow(md_bitmask_t* mask, const md_bond_data_t* bond, size_t at
     for (size_t j = 0; j < num_indices; ++j) {
         int i = indices[j];
 
-        md_fifo_clear(&queue);
-        md_fifo_push(&queue, i);
-        
-        while (!md_fifo_empty(&queue)) {
-            int idx = md_fifo_pop(&queue);
+        md_array_shrink(queue, 0);
+        md_array_push(queue, i, temp_alloc);
+
+        for (size_t head = 0; head < md_array_size(queue); ++head) {
+            int idx = queue[head];
             md_bitmask_set_bit(mask, (uint32_t)idx);
 
             md_bond_iter_t it = md_bond_iter(bond, idx);
@@ -1724,7 +1723,7 @@ void md_bond_mask_grow(md_bitmask_t* mask, const md_bond_data_t* bond, size_t at
                 if (dn == 0 || dc < dn) {
                     depth[next] = dc;
                     if (dc <= extent) {
-                        md_fifo_push(&queue, next);
+                        md_array_push(queue, next, temp_alloc);
                     }
                 }
             }

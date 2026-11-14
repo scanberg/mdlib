@@ -87,8 +87,6 @@ set(MD_CORE_FILES
   src/core/md_executor.h
   src/core/md_fft.c
   src/core/md_fft.h
-  src/core/md_fifo.c
-  src/core/md_fifo.h
   src/core/md_file.h
   src/core/md_format.h
   src/core/md_geom.c
