@@ -231,3 +231,10 @@ const martini_db_bead_t* mdi_martini_db_biopolymer_bead(uint32_t version, md_str
 martini_system_t mdi_martini_system_ex(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data, const struct md_executor_t* ex);
 martini_system_t mdi_martini_system(const md_system_t* sys, md_str_t (*label)(const void*, size_t), const void* data);
 void mdi_infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc);
+
+// CHEMISTRY in two steps (md_chem_perceive): computed from the system, which it only reads, and the rings given (the
+// system's, or rings not yet given to it), into alloc; then written into the system. md_system_infer computes it beside
+// the other steps which only read the system, and writes it after them.
+typedef struct mdi_chem_t mdi_chem_t;
+mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, md_allocator_i* alloc);
+void mdi_chem_write(md_system_t* sys, const mdi_chem_t* chem);

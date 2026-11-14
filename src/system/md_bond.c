@@ -329,7 +329,7 @@ typedef struct cov_bond_pass_t {
     double                      cutoff;
     // The pass from the metals: their coordinates and atoms, METAL_PIECE of them a piece. NULL for the pass over all pairs.
     const md_float3_t*          xyz;
-    const int*                  metals;
+    const int32_t*              metals;
     size_t                      num_metals;
     cov_bond_callback_param_t*  param;      // [num_threads], each with its own candidates
     md_array(cov_bond_segment_t)* segments; // [num_threads]
@@ -363,7 +363,7 @@ static int compare_cov_bond_segment(const void* a, const void* b) {
 // The pairs within the bonding range of their radii: of all pairs in the order of
 // md_spatial_acc_for_each_internal_pair_within_cutoff, or (metals given) from the metals in their order, each metal's
 // pairs in the order of md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff
-static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const md_float3_t* xyz, const int* metals, size_t num_metals,
+static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const md_float3_t* xyz, const int32_t* metals, size_t num_metals,
                                 const cov_bond_callback_param_t* proto, const md_executor_t* ex, md_allocator_i* alloc) {
     md_allocator_i* heap = md_get_heap_allocator();
     const uint32_t num_threads = md_executor_num_threads(ex);
@@ -678,6 +678,120 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
 }
 
 // The bonds inferred from the coordinates, into bond (empty), every one of origin MD_BOND_ORIGIN_INFERRED
+// The candidates by their atoms, the lower of each pair first (see infer_bonds), on an executor: into blocks of
+// atoms first, each chunk of the candidates counting its own and scattering them into its places, chunk by chunk; then
+// each block by the lower atom (counted into its place) and an atom's few by the higher one. The order is that of the
+// candidates' atoms alone, whatever the chunks or the threads.
+typedef struct cand_sort_t {
+    const bond_pair_t* in;
+    bond_pair_t* blocked;       // By block
+    bond_pair_t* out;
+    size_t       num;
+    uint32_t     num_chunks;
+    uint32_t     num_blocks;
+    uint32_t     shift;         // An atom's block: atom >> shift
+    uint32_t*    place;         // [num_chunks][num_blocks] The counts of each chunk, then its places in each block
+    uint32_t*    block_beg;     // [num_blocks + 1]
+    uint32_t*    scratch;       // [num_threads][block atoms + 1]
+} cand_sort_t;
+
+static inline size_t cand_chunk_beg(const cand_sort_t* t, uint32_t c) { return t->num * c / t->num_chunks; }
+
+static void cand_sort_count(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const cand_sort_t* t = (const cand_sort_t*)arg;
+    const bond_pair_t* in = t->in;
+    const uint32_t shift = t->shift;
+    for (uint32_t c = beg; c < end; ++c) {
+        uint32_t* count = t->place + (size_t)c * t->num_blocks;
+        md_memset(count, 0, t->num_blocks * sizeof(uint32_t));
+        const size_t i_end = cand_chunk_beg(t, c + 1);
+        for (size_t i = cand_chunk_beg(t, c); i < i_end; ++i) count[(uint32_t)MD_MIN(in[i].atom_i, in[i].atom_j) >> shift] += 1;
+    }
+}
+
+static void cand_sort_scatter(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const cand_sort_t* t = (const cand_sort_t*)arg;
+    const bond_pair_t* in = t->in;
+    bond_pair_t* blocked = t->blocked;
+    const uint32_t shift = t->shift;
+    for (uint32_t c = beg; c < end; ++c) {
+        uint32_t* place = t->place + (size_t)c * t->num_blocks;
+        const size_t i_end = cand_chunk_beg(t, c + 1);
+        for (size_t i = cand_chunk_beg(t, c); i < i_end; ++i) {
+            const bond_pair_t p = in[i];
+            const bool swap = p.atom_j < p.atom_i;
+            const bond_pair_t q = { .atom_i = swap ? p.atom_j : p.atom_i, .atom_j = swap ? p.atom_i : p.atom_j, .dist = p.dist };
+            blocked[place[(uint32_t)q.atom_i >> shift]++] = q;
+        }
+    }
+}
+
+static void cand_sort_blocks(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    const cand_sort_t* t = (const cand_sort_t*)arg;
+    const uint32_t block_atoms = 1u << t->shift;
+    uint32_t* at = t->scratch + (size_t)thread_idx * (block_atoms + 1);
+    const bond_pair_t* blocked = t->blocked;
+    bond_pair_t* out = t->out;
+    for (uint32_t b = beg; b < end; ++b) {
+        const uint32_t lo = t->block_beg[b], hi = t->block_beg[b + 1];
+        if (lo == hi) continue;
+        const uint32_t first = b << t->shift;
+        // By the lower atom, counted into its place: at[a] ends where the candidates of atom first + a begin
+        md_memset(at, 0, (block_atoms + 1) * sizeof(uint32_t));
+        for (uint32_t i = lo; i < hi; ++i) at[blocked[i].atom_i - first + 1] += 1;
+        for (uint32_t a = 0; a < block_atoms; ++a) at[a + 1] += at[a];
+        for (uint32_t i = lo; i < hi; ++i) out[lo + at[blocked[i].atom_i - first]++] = blocked[i];
+        // Then each atom's few by the higher atom
+        for (uint32_t a = 0, a_beg = lo; a < block_atoms; a_beg = lo + at[a++]) {
+            for (uint32_t k = a_beg + 1; k < lo + at[a]; ++k) {
+                const bond_pair_t c = out[k];
+                uint32_t j = k;
+                for (; j > a_beg && out[j - 1].atom_j > c.atom_j; --j) out[j] = out[j - 1];
+                out[j] = c;
+            }
+        }
+    }
+}
+
+static void sort_candidates(bond_pair_t* out, const bond_pair_t* in, size_t num, size_t num_atoms, const md_executor_t* ex, md_temp_scope_t temp) {
+    if (num == 0) return;
+    const md_temp_mark_t mark = md_temp_mark(temp);
+    const uint32_t num_threads = md_executor_num_threads(ex);
+    // Blocks of 2^shift atoms, about 4096 of them; chunks of at least 16k candidates, a couple per thread
+    uint32_t shift = 0;
+    while ((num_atoms >> shift) > 4096) ++shift;
+    cand_sort_t t = {
+        .in = in,
+        .blocked = md_temp_alloc_array(temp, bond_pair_t, num),
+        .out = out,
+        .num = num,
+        .num_chunks = (uint32_t)MD_CLAMP(MD_MIN((size_t)num_threads * 2, num / 16384), 1, 256),
+        .num_blocks = (uint32_t)((num_atoms >> shift) + 1),
+        .shift = shift,
+    };
+    t.place     = md_temp_alloc_array(temp, uint32_t, (size_t)t.num_chunks * t.num_blocks);
+    t.block_beg = md_temp_alloc_array(temp, uint32_t, (size_t)t.num_blocks + 1);
+    t.scratch   = md_temp_alloc_array(temp, uint32_t, (size_t)num_threads * ((1u << shift) + 1));
+
+    md_parallel_for(ex, t.num_chunks, 1, cand_sort_count, &t);
+    uint32_t off = 0;
+    for (uint32_t b = 0; b < t.num_blocks; ++b) {
+        t.block_beg[b] = off;
+        for (uint32_t c = 0; c < t.num_chunks; ++c) {
+            uint32_t* p = &t.place[(size_t)c * t.num_blocks + b];
+            const uint32_t n = *p;
+            *p = off;
+            off += n;
+        }
+    }
+    t.block_beg[t.num_blocks] = off;
+    md_parallel_for(ex, t.num_chunks, 1, cand_sort_scatter, &t);
+    md_parallel_for(ex, t.num_blocks, 16, cand_sort_blocks, &t);
+    md_temp_reset(temp, mark);
+}
+
 static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
@@ -766,10 +880,10 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             // Build candidate list
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
             md_spatial_acc_t acc = {.alloc = temp_arena};
-            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .count = state->num_atoms, .cutoff = cutoff, .unitcell = &state->unitcell });
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .count = state->num_atoms, .cutoff = acc_cutoff, .unitcell = &state->unitcell, .executor = executor });
             cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, executor, heap);
             if (num_metals) {
-                int* metals = md_temp_alloc_array(temp_scope, int, num_metals);
+                int32_t* metals = md_temp_alloc_array(temp_scope, int32_t, num_metals);
                 size_t k = 0;
                 for (size_t i = 0; i < num_atoms; ++i) if (metal[i]) metals[k++] = (int)i;
                 cov_bond_candidates(&candidates, &acc, metal_cutoff, state->xyz, metals, num_metals, &param, executor, heap);
@@ -782,30 +896,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         // come out in an order of their atoms alone, whatever the cells, the threads or the metals of the search
         const size_t num_candidates = md_array_size(candidates);
         bond_pair_t* cand = md_temp_alloc_array(temp_scope, bond_pair_t, MD_MAX(num_candidates, 1));
-        {
-            // By the lower atom, counted into its place, then each atom's few by the higher one
-            const md_temp_mark_t before_sort = md_temp_mark(temp_scope);
-            uint32_t* end = md_temp_alloc_zero_array(temp_scope, uint32_t, num_atoms + 1);
-            for (size_t i = 0; i < num_candidates; ++i) {
-                end[MD_MIN(candidates[i].atom_i, candidates[i].atom_j) + 1] += 1;
-            }
-            for (size_t a = 0; a < num_atoms; ++a) end[a + 1] += end[a];
-            for (size_t i = 0; i < num_candidates; ++i) {
-                const bond_pair_t c = candidates[i];
-                const bool swap = c.atom_j < c.atom_i;
-                cand[end[swap ? c.atom_j : c.atom_i]++] = (bond_pair_t){ .atom_i = swap ? c.atom_j : c.atom_i, .atom_j = swap ? c.atom_i : c.atom_j, .dist = c.dist };
-            }
-            // end[a] is now where the candidates of atom a end, and those of a + 1 begin
-            for (size_t a = 0, beg = 0; a < num_atoms; beg = end[a++]) {
-                for (uint32_t k = (uint32_t)beg + 1; k < end[a]; ++k) {
-                    const bond_pair_t c = cand[k];
-                    uint32_t j = k;
-                    for (; j > beg && cand[j - 1].atom_j > c.atom_j; --j) cand[j] = cand[j - 1];
-                    cand[j] = c;
-                }
-            }
-            md_temp_reset(temp_scope, before_sort);
-        }
+        sort_candidates(cand, candidates, num_candidates, num_atoms, executor, temp_scope);
         md_array_free(candidates, heap);
 
         //MD_LOG_DEBUG("Found %zu candidates", num_candidates);

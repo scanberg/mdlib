@@ -1045,7 +1045,22 @@ static void infer_coarse_grained_chain_ends(md_system_t* sys) {
 // atoms of the amino acids and nucleotides whose backbone could be verified their roles.
 // What residue res_idx is (md_system_infer_residue_flags), fallback where nothing tells. The flags it has besides
 // (RESOLVED, the terminal flags) go to out_flags; ambiguous is 1 (2) for an amino acid (nucleotide) by name alone.
-static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx, md_residue_kind_t fallback, md_residue_flags_t* out_flags, int* ambiguous) {
+// What a residue name says it is: the bits of the names of md_monomer.h it is one of
+enum {
+    NAME_AMINO_ACID = 1,
+    NAME_NUCLEOTIDE = 2,
+    NAME_WATER      = 4,
+    NAME_ION        = 8,
+    NAME_LIPID      = 16,
+};
+
+static uint32_t residue_name_kinds(md_str_t name) {
+    return (md_resname_amino_acid(name) ? NAME_AMINO_ACID : 0) | (md_resname_nucleotide(name) ? NAME_NUCLEOTIDE : 0) |
+           (md_resname_water(name) ? NAME_WATER : 0) | (md_resname_ion(name) ? NAME_ION : 0) | (md_resname_lipid(name) ? NAME_LIPID : 0);
+}
+
+// The kind of a residue, from its atoms and what its name says it is (name_kinds, residue_name_kinds)
+static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx, uint32_t name_kinds, md_residue_kind_t fallback, md_residue_flags_t* out_flags, int* ambiguous) {
     const md_str_t res_name = md_system_residue_name(sys, res_idx);
     const md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
     const size_t len = (size_t)(res_range.end - res_range.beg);
@@ -1058,7 +1073,7 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
         for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, res_range.beg + i);
         const martini_db_residue_t* mol = mdi_martini_db_match_molecule(MARTINI_ANY, res_name, labels, len, map);
         // Renamed (CHL for CHOL): by its beads, unless it is named as a residue of a chain
-        if (!mol && !md_resname_amino_acid(res_name) && !md_resname_nucleotide(res_name)) {
+        if (!mol && !(name_kinds & (NAME_AMINO_ACID | NAME_NUCLEOTIDE))) {
             mol = mdi_martini_db_match_beads(MARTINI_ANY, labels, NULL, len, map);
         }
         if (mol) return mol->kind;
@@ -1074,7 +1089,7 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
         if (md_atom_flags(&sys->atom, (size_t)prot_atoms.c) & MD_ATOM_FLAG_TERMINAL_END) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_END;
         return MD_RESIDUE_KIND_AMINO_ACID;
     }
-    if (md_resname_amino_acid(res_name)) {
+    if (name_kinds & NAME_AMINO_ACID) {
         *ambiguous = 1;
         return MD_RESIDUE_KIND_AMINO_ACID;
     }
@@ -1086,24 +1101,24 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
         if (md_atom_flags(&sys->atom, (size_t)nucl_atoms.o3) & MD_ATOM_FLAG_TERMINAL_END) *out_flags |= MD_RESIDUE_FLAG_TERMINAL_END;
         return MD_RESIDUE_KIND_NUCLEOTIDE;
     }
-    if (md_resname_nucleotide(res_name)) {
+    if (name_kinds & NAME_NUCLEOTIDE) {
         *ambiguous = 2;
         return MD_RESIDUE_KIND_NUCLEOTIDE;
     }
 
     // Water by its atoms, or by name when its hydrogens are left out (united atom, coarse grained)
     if (atoms_are_water(sys, res_range) ||
-       ((len == 1 || len == 3) && md_resname_water(res_name)) ||
+       ((len == 1 || len == 3) && (name_kinds & NAME_WATER)) ||
        (len == 1 && md_resname_water(md_atom_name(&sys->atom, res_range.beg)))) {
         return MD_RESIDUE_KIND_WATER;
     }
     // An ion by its name, or by its element where it is bonded to nothing but by coordination: a lone O, S or N
     // covalently bonded (the O between two Si of a silica network, a residue to an atom) is no ion
-    if (len == 1 && (md_resname_ion(res_name) ||
+    if (len == 1 && ((name_kinds & NAME_ION) ||
         (monatomic_ion_element(md_atom_atomic_number(&sys->atom, res_range.beg)) && !atom_bonded_covalently(sys, (md_atom_idx_t)res_range.beg)))) {
         return MD_RESIDUE_KIND_ION;
     }
-    if (md_resname_lipid(res_name)) {
+    if (name_kinds & NAME_LIPID) {
         return MD_RESIDUE_KIND_LIPID;
     }
     return fallback;
@@ -1146,6 +1161,9 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
         sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END));
     }
 
+    // What a name says is found once for each run of residues of one name (a solvent, a membrane)
+    md_str_t run_name = {0};
+    uint32_t run_kinds = 0;
     for (size_t residue_idx = 0; residue_idx < sys->residue.count; ++residue_idx) {
         const md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
         const bool beads = atoms_are_beads(sys, res_range);
@@ -1160,7 +1178,12 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
         }
         md_residue_flags_t flags = MD_RESIDUE_FLAG_NONE;
         int ambiguous = 0;
-        const md_residue_kind_t found = classify_residue(sys, residue_idx, beads ? kind : MD_RESIDUE_KIND_OTHER, &flags, &ambiguous);
+        const md_str_t name = md_system_residue_name(sys, residue_idx);
+        if (residue_idx == 0 || !md_str_eq(name, run_name)) {
+            run_name = name;
+            run_kinds = residue_name_kinds(name);
+        }
+        const md_residue_kind_t found = classify_residue(sys, residue_idx, run_kinds, beads ? kind : MD_RESIDUE_KIND_OTHER, &flags, &ambiguous);
         set_residue_kind(sys, residue_idx, found);
         sys->residue.flags[residue_idx] |= flags;
         if (ambiguous == 1) md_array_push(ambigous_amino_acid_indices, (int)residue_idx, temp_alloc);

@@ -4,6 +4,7 @@
 #include <core/md_geom.h>
 #include <md_attributes.h>
 #include <md_element.h>
+#include "md_infer_internal.h"
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -179,8 +180,10 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
         return sum >= 350.0f ? 2 : 3;
     }
     if (n == 2) {
-        const float a = (float)MD_RAD_TO_DEG(md_float3_angle(v[0], v[1]));
-        if (a > 165.0f) return 1;
+        // The angle is only compared, so by its cosine: no atan2 for every water oxygen of a solvent
+        const float len = sqrtf(md_float3_dot(v[0], v[0]) * md_float3_dot(v[1], v[1]));
+        const float cos_a = len > 0.0f ? md_float3_dot(v[0], v[1]) / len : 1.0f;
+        if (cos_a < -0.96592583f) return 1;     // Above 165 degrees
         // sp2 has a short bond (a double or aromatic one), whatever the angle: about 108 in a five membered ring.
         // Without one only a wide angle says sp2: a CH2 in a ring is often opened to 117.
         float rmin = FLT_MAX;
@@ -189,7 +192,7 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
         }
         if (rmin < 0.83f) return 1;     // A triple bond, also bent (in a strained ring)
         if (rmin < 0.94f) return 2;
-        return a > 128.0f ? 2 : 3;
+        return cos_a < -0.61566148f ? 2 : 3;    // Above 128 degrees
     }
     if (n == 1) {
         if (c->z[nb[0]] == MD_Z_H) return 3;
@@ -211,7 +214,7 @@ static float planar_angle_sum(const chem_t* c, uint32_t i) {
 // ### SETUP ###
 
 // The atoms and the bonds of the system, which md_chem_perceive works on as they are
-static void setup_system(chem_t* c, const md_system_t* sys) {
+static void setup_system(chem_t* c, const md_system_t* sys, const md_ring_data_t* rings) {
     const size_t N = c->N;
     c->z     = md_alloc(c->alloc, N);
     c->part  = md_alloc(c->alloc, N);
@@ -224,7 +227,7 @@ static void setup_system(chem_t* c, const md_system_t* sys) {
     c->num_bonds = sys->bond.count;
     c->pairs     = sys->bond.pairs;
     c->bflags    = sys->bond.flags;
-    c->rings     = &sys->ring;
+    c->rings     = rings;
     c->metal_bound = md_alloc(c->alloc, MD_MAX(N, 1));
     md_memset(c->metal_bound, 0, MD_MAX(N, 1));
     for (size_t b = 0; b < c->num_bonds; ++b) {
@@ -284,10 +287,6 @@ static void build_graph(chem_t* c) {
 }
 
 // Hydrogen mode of each atom: by residue where there are residues, by molecule otherwise
-static uint32_t uf_find(uint32_t* p, uint32_t x) {
-    while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
-    return x;
-}
 
 static void assign_modes(chem_t* c, const md_system_t* sys) {
     const size_t N = c->N;
@@ -303,15 +302,17 @@ static void assign_modes(chem_t* c, const md_system_t* sys) {
         // Atoms outside of every residue form their own groups by molecule
         for (size_t i = 0; i < N; ++i) if (group[i] == UINT32_MAX) group[i] = (uint32_t)(sys->residue.count + i);
     } else {
-        for (size_t i = 0; i < N; ++i) group[i] = (uint32_t)i;
+        // By molecule: union find (md_infer_internal.h) over the groups, as indices below INT32_MAX
+        int32_t* parent = (int32_t*)group;
+        for (size_t i = 0; i < N; ++i) parent[i] = (int32_t)i;
         for (size_t i = 0; i < N; ++i) {
             for (uint32_t k = c->off[i]; k < c->off[i + 1]; ++k) {
-                const uint32_t a = uf_find(group, (uint32_t)i);
-                const uint32_t b = uf_find(group, c->nbr[k]);
-                if (a != b) group[MD_MAX(a, b)] = MD_MIN(a, b);
+                const int32_t a = uf_find(parent, (int32_t)i);
+                const int32_t b = uf_find(parent, (int32_t)c->nbr[k]);
+                if (a != b) parent[MD_MAX(a, b)] = MD_MIN(a, b);
             }
         }
-        for (size_t i = 0; i < N; ++i) group[i] = uf_find(group, (uint32_t)i);
+        for (size_t i = 0; i < N; ++i) parent[i] = uf_find(parent, (int32_t)i);
     }
 
     // Per group: any hydrogen, any hydrogen on a carbon
@@ -1313,8 +1314,11 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
         c->hyb[i] = 0;
         if (c->frozen && c->frozen[i]) { c->hyb[i] = c->frozen_hyb[i]; continue; }
         if (!c->part[i] || c->z[i] == MD_Z_H) continue;
-        // With all hydrogens explicit an atom saturated by its sigma bonds has no use for its geometry (water, CH3)
-        if (c->mode[i] == HMODE_ALL && sigma(c, (uint32_t)i) >= base_valence(c->z[i]) && !c->charge[i]) { c->hyb[i] = 3; continue; }
+        // An atom saturated by its sigma bonds, whose hydrogens are all explicit (implicit_hydrogens adds it none),
+        // has no use for its geometry: a CH3, or the O of water, whose residue has hydrogens but none on carbon
+        const md_atomic_number_t z = c->z[i];
+        const bool h_explicit = c->mode[i] == HMODE_ALL || (c->mode[i] == HMODE_POLAR && z != MD_Z_C && z != MD_Z_B && z != MD_Z_Si);
+        if (h_explicit && sigma(c, (uint32_t)i) >= base_valence(z) && !c->charge[i]) { c->hyb[i] = 3; continue; }
         c->hyb[i] = geometric_hybridization(c, (uint32_t)i);
     }
     implicit_hydrogens(c);
@@ -1464,15 +1468,33 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* arena = md_temp_allocator(temp);
+    mdi_chem_write(sys, mdi_chem_compute(sys, &sys->ring, reference, flags, md_temp_allocator(temp)));
+    md_temp_end(temp);
+    return true;
+}
+
+// The perception of a system, computed (mdi_chem_compute) and not yet written into it (mdi_chem_write): what it writes
+typedef struct mdi_chem_t {
+    size_t           num_bonds;
+    size_t           num_atoms;
+    md_bond_flags_t* bond_flags;        // [num_bonds]
+    md_atom_flags_t* atom_flags;        // [num_atoms]
+    int8_t*          formal_charge;     // [num_atoms]
+    uint8_t*         hydrogen_count;    // [num_atoms]
+} mdi_chem_t;
+
+mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, md_allocator_i* alloc) {
+    const size_t N = sys->atom.count;
+    // The perception in a temporary scope of the thread; what it writes into alloc
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     chem_t c = {
         .xyz   = (md_system_state_has_coords(reference) && reference->num_atoms == N) ? reference->xyz : NULL,
         .cell  = reference ? &reference->unitcell : NULL,
         .N     = N,
         .flags = flags,
-        .alloc = arena,
+        .alloc = md_temp_allocator(temp),
     };
-    setup_system(&c, sys);
+    setup_system(&c, sys, rings);
     build_graph(&c);
     assign_modes(&c, sys);
     mark_rings(&c);
@@ -1484,7 +1506,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     const float* q_given = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
     if (q_given && md_attribute_slice_count(q_attr, md_attribute_slice_all()) != N) q_given = NULL;
 
-    uint8_t* atom_aromatic = perceive(&c, q_given);
+    const uint8_t* atom_aromatic = perceive(&c, q_given);
 
     // Monatomic ions
     for (size_t ci = 0; ci < sys->residue.count && sys->residue.atom_offset; ++ci) {
@@ -1496,30 +1518,39 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
         if (q) c.charge[a] = (int8_t)q;
     }
 
-    // ### WRITE ###
+    // What is written: the orders of the bonds which take part, the charges, the hydrogens, the aromaticity and the
+    // hybridization of the atoms
+    mdi_chem_t* out = md_alloc(alloc, sizeof(mdi_chem_t));
+    *out = (mdi_chem_t){ .num_bonds = c.num_bonds, .num_atoms = N };
+    out->bond_flags     = md_alloc(alloc, sizeof(md_bond_flags_t) * MD_MAX(c.num_bonds, 1));
+    out->atom_flags     = md_alloc(alloc, sizeof(md_atom_flags_t) * MD_MAX(N, 1));
+    out->formal_charge  = md_alloc(alloc, MD_MAX(N, 1));
+    out->hydrogen_count = md_alloc(alloc, MD_MAX(N, 1));
     for (size_t b = 0; b < c.num_bonds; ++b) {
-        if (c.bond_part[b]) sys->bond.flags[b] = perceived_bond_flags(&c, (uint32_t)b);
+        out->bond_flags[b] = c.bond_part[b] ? perceived_bond_flags(&c, (uint32_t)b) : sys->bond.flags[b];
     }
-
-    md_array_resize(sys->atom.formal_charge, N, sys->alloc);
-    md_array_resize(sys->atom.hydrogen_count, N, sys->alloc);
     for (size_t i = 0; i < N; ++i) {
-        sys->atom.formal_charge[i] = c.charge[i];
-        sys->atom.hydrogen_count[i] = (c.part[i] && c.z[i] != MD_Z_H) ? (uint8_t)(c.h_exp[i] + c.h_imp[i]) : 0;
-    }
-
-    // Hybridization
-    for (size_t i = 0; i < N; ++i) {
+        out->formal_charge[i] = c.charge[i];
+        out->hydrogen_count[i] = (c.part[i] && c.z[i] != MD_Z_H) ? (uint8_t)(c.h_exp[i] + c.h_imp[i]) : 0;
         md_atom_flags_t f = sys->atom.flags[i] & ~MD_ATOM_FLAG_AROMATIC;
         if (atom_aromatic[i] && c.part[i] && c.z[i] != MD_Z_H && !is_halogen_z(c.z[i])) f |= MD_ATOM_FLAG_AROMATIC;
-        sys->atom.flags[i] = md_atom_flags_set_hybridization(f, perceived_hybridization(&c, (uint32_t)i, atom_aromatic));
+        out->atom_flags[i] = md_atom_flags_set_hybridization(f, perceived_hybridization(&c, (uint32_t)i, atom_aromatic));
     }
-
     md_temp_end(temp);
+    return out;
+}
+
+void mdi_chem_write(md_system_t* sys, const mdi_chem_t* chem) {
+    const size_t N = chem->num_atoms;
+    if (chem->num_bonds) md_memcpy(sys->bond.flags, chem->bond_flags, sizeof(md_bond_flags_t) * chem->num_bonds);
+    md_array_resize(sys->atom.formal_charge, N, sys->alloc);
+    md_array_resize(sys->atom.hydrogen_count, N, sys->alloc);
+    md_memcpy(sys->atom.formal_charge, chem->formal_charge, N);
+    md_memcpy(sys->atom.hydrogen_count, chem->hydrogen_count, N);
+    md_memcpy(sys->atom.flags, chem->atom_flags, sizeof(md_atom_flags_t) * N);
 
     // The ring flags follow the aromaticity and orders just written
     md_system_infer_ring_flags(sys);
-    return true;
 }
 
 // ### A FRAME WITH OTHER BONDS ###
