@@ -164,8 +164,18 @@ void read_tex(uint3 tid : SV_DispatchThreadID) {
 [numthreads(1, 1, 1)]
 void gen_cmd(uint3 tid : SV_DispatchThreadID) {
     RArgs a = MD_ARGS;
-    a.cmds[0] = 3u; a.cmds[1] = 1u; a.cmds[2] = 0u; a.cmds[3] = 0u;
-    a.cmds[4] = 3u; a.cmds[5] = 1u; a.cmds[6] = 0u; a.cmds[7] = 0u; a.cmds[8] = 0u;
+    uint  n = (a.flags & 16u) != 0u ? min(a.cmds[32], 1u) : 1u;   // 16: the instance count gen_cnt counted
+    a.cmds[0] = 3u; a.cmds[1] = n; a.cmds[2] = 0u; a.cmds[3] = 0u;
+    a.cmds[4] = 3u; a.cmds[5] = n; a.cmds[6] = 0u; a.cmds[7] = 0u; a.cmds[8] = 0u;
+}
+
+// A count made with atomics, which gen_cmd turns into a command (md_render's
+// cull and finalize)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gen_cnt(uint3 tid : SV_DispatchThreadID) {
+    RArgs a = MD_ARGS;
+    if (tid.x == 0u) InterlockedAdd(a.cmds[32], 1u);
 }
 
 // Positions produced by a kernel and consumed by a draw in the same stream.
