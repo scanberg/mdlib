@@ -1428,7 +1428,9 @@ static int run_gpu(int argc, char** argv) {
         }
         if (src == SRC_MOL && (!only_look || strstr("radii", only_look))) bench_radii(s, r, mol, &sc, &atoms, W, H, reps);
         md_gpu_memory_stats_t ms;
-        if (md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &ms)) printf("device memory peak: %.0f MB\n", ms.bytes_peak_in_use / 1048576.0);
+        if (md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &ms))
+            printf("device memory peak: %.0f MB (held now: %.0f MB of buffers, %.0f MB of textures)\n",
+                   ms.bytes_peak_in_use / 1048576.0, ms.bytes_in_use / 1048576.0, ms.bytes_textures / 1048576.0);
         printf("\n");
         scene_free(s, &sc);
         md_gpu_stream_sync(s);
