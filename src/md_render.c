@@ -103,7 +103,8 @@ typedef struct gpu_batch_t {
     md_gpu_addr_t cap_side;                                       /* along this side (float4 per capsule), optional */
     float         poly_inset;                                     /* POLYGONS circles: the inset, */
     uint32_t      poly_dashes;                                    /* the dashes over each edge */
-    uint32_t      _pad_d[2];                                      /* to the float4 alignment */
+    float         cap_trim;                                       /* CAPSULES displaced: their ends pulled in */
+    uint32_t      _pad_d;                                         /* to the float4 alignment */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 336, "Batch mirror");
 
@@ -563,6 +564,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.capsules.dash_ends    = c->dash_ends;
         out->style.capsules.offset       = c->offset;
         out->style.capsules.side         = c->offset != 0.0f ? c->side : 0;
+        out->style.capsules.trim         = c->offset != 0.0f ? c->trim : 0.0f;
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
     } else if (b->kind == MD_RENDER_SPLINES) {
         out->style.splines = b->style.splines;
@@ -691,8 +693,8 @@ static bool validate(const md_render_frame_t* f) {
                 MD_LOG_ERROR("md_render: batch %u: flat caps are not implemented yet", i);
                 return false;
             }
-            if (!isfinite(c->offset)) {
-                MD_LOG_ERROR("md_render: batch %u: the offset is not finite", i);
+            if (!isfinite(c->offset) || !(c->trim >= 0.0f) || !(c->trim <= 1.0f)) {
+                MD_LOG_ERROR("md_render: batch %u: the offset is finite, the trim in [0, 1]", i);
                 return false;
             }
             if (c->dash_length < 0.0f || c->gap_length < 0.0f) {
@@ -938,6 +940,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
             f |= F_DISPLACED;
             g->cap_offset = b->style.capsules.offset;
             g->cap_side   = b->style.capsules.side;
+            g->cap_trim   = b->style.capsules.trim;
             if (g->cap_side) f |= F_SIDE;
         }
     } else if (b->kind == MD_RENDER_SPLINES) {

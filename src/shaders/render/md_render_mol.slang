@@ -117,6 +117,9 @@ struct Args {
     uint* ord_points;           // the multiple bonds: uint2 per bond, its points (the doubles first)
     uint* ord_ref;              // uint4 per double: the points by its ends that give its plane
     uint* ord_side;             // float4 per double: its side (md_render's capsule side)
+    uint* prt_points;           // the partners: uint2 per partner, its bond's points
+    uint* prt_ref;              // uint2: the points by its ends that give its side
+    uint* prt_side;             // float4: its side, w its miters (md_render's)
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -155,6 +158,8 @@ struct Args {
     uint  der_count;            // derived points
     uint  der_cell;             // the cell of their images: 0 none, 1 fpar0's, 2 fpar1's
     uint  ord_count;            // double bonds
+    uint  prt_count;            // partners
+    uint  _pad3;
 };
 MD_SHADER_ARGS(Args);
 
@@ -950,5 +955,54 @@ void bond_sides(uint3 tid : SV_DispatchThreadID) {
         }
         uint* o = a.ord_side + 4u * j;
         o[0] = asuint(side.x); o[1] = asuint(side.y); o[2] = asuint(side.z); o[3] = 0u;
+    }
+}
+
+// The partners' sides (md_render's capsule side): md_gl's plane_side and
+// inset_factor. The side in the plane of the bond and its surroundings,
+// perpendicular to the bond, towards them (the normals they give summed,
+// aligned; one within 6 degrees of the axis gives none; none: 0, the view's
+// in md_render); w the miters of the ends, two halves: 1 / tan of half the
+// angle between the bond and the surrounding atom there (where the
+// partners of the neighbouring bonds at the same offset meet), 1 / tan 60
+// without one.
+float prt_miter(float3 u, float3 c, bool has) {
+    if (!has) return 0.57735;
+    float cs = clamp(dot(u, c) * rsqrt(dot(c, c)), -0.999, 0.999);
+    return sqrt((1.0 + cs) / (1.0 - cs));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void bond_partners(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.prt_count;
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        float3 pa = ld3(a.points, 4u * a.prt_points[2u * j]);
+        float3 pb = ld3(a.points, 4u * a.prt_points[2u * j + 1u]);
+        float3 d  = pb - pa;
+        float  dd = dot(d, d);
+        float3 side = float3(0.0);
+        float2 mt = float2(0.57735);
+        if (dd > 0.0) {
+            float3 ax = d * rsqrt(dd);
+            uint   ra = a.prt_ref[2u * j], rb = a.prt_ref[2u * j + 1u];
+            float3 ca = float3(0.0), cb = float3(0.0);
+            bool   ha = false, hb = false;
+            if (ra != 0xFFFFFFFFu) { ca = ld3(a.points, 4u * ra) - pa; ha = dot(ca, ca) > 0.0 && dot(ca, ca) < ORD_MAX_D2; }
+            if (rb != 0xFFFFFFFFu) { cb = ld3(a.points, 4u * rb) - pb; hb = dot(cb, cb) > 0.0 && dot(cb, cb) < ORD_MAX_D2; }
+            float3 nv = float3(0.0);
+            float  c2 = 0.0;
+            if (ha) { nv = cross(ax, ca); c2 = dot(ca, ca); }
+            if (hb) { float3 nb = cross(ax, cb); nv += dot(nv, nb) < 0.0 ? -nb : nb; c2 = max(c2, dot(cb, cb)); }
+            if (c2 > 0.0 && dot(nv, nv) > 0.01 * c2) {
+                side = normalize(cross(nv, ax));
+                if ((ha && dot(side, ca) < 0.0) || (!ha && hb && dot(side, cb) < 0.0)) side = -side;
+            }
+            mt = float2(prt_miter(ax, ca, ha), prt_miter(-ax, cb, hb));
+        }
+        uint* o = a.prt_side + 4u * j;
+        o[0] = asuint(side.x); o[1] = asuint(side.y); o[2] = asuint(side.z);
+        o[3] = f32tof16(mt.x) | (f32tof16(mt.y) << 16u);
     }
 }

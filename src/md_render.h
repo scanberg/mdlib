@@ -238,9 +238,16 @@ typedef struct md_render_capsule_style_t {
        So a side of length 1 holds, a short one turns smoothly towards
        facing the view, and none faces it. The thinner sticks of a multiple
        bond: batches over the same capsules and sides, the offset of either
-       sign (md_gl's double and triple bonds). */
+       sign (md_gl's double and triple bonds).
+       The ends of a displaced capsule pulled in: by its displacement times
+       the miter of each end, side.w as two halves (packHalf2x16, the first
+       end's low; 1 / tan of half the angle there, where a neighbour
+       displaced alike meets it; 0: none), and by `trim` of its length;
+       together at most four fifths of it. The dashed partners of
+       delocalized bonds (md_gl's), an inner outline of their group. */
     float           offset;
     md_gpu_addr_t   side;
+    float           trim;
 
     /* Not yet implemented. Periodic capsules: each point joined to the
        nearest image of the other, drawn as two halves. All zero: none. */
