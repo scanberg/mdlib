@@ -1314,8 +1314,11 @@ static uint8_t* perceive(chem_t* c, const float* q_given) {
         c->hyb[i] = 0;
         if (c->frozen && c->frozen[i]) { c->hyb[i] = c->frozen_hyb[i]; continue; }
         if (!c->part[i] || c->z[i] == MD_Z_H) continue;
-        // With all hydrogens explicit an atom saturated by its sigma bonds has no use for its geometry (water, CH3)
-        if (c->mode[i] == HMODE_ALL && sigma(c, (uint32_t)i) >= base_valence(c->z[i]) && !c->charge[i]) { c->hyb[i] = 3; continue; }
+        // An atom saturated by its sigma bonds, whose hydrogens are all explicit (implicit_hydrogens adds it none),
+        // has no use for its geometry: a CH3, or the O of water, whose residue has hydrogens but none on carbon
+        const md_atomic_number_t z = c->z[i];
+        const bool h_explicit = c->mode[i] == HMODE_ALL || (c->mode[i] == HMODE_POLAR && z != MD_Z_C && z != MD_Z_B && z != MD_Z_Si);
+        if (h_explicit && sigma(c, (uint32_t)i) >= base_valence(z) && !c->charge[i]) { c->hyb[i] = 3; continue; }
         c->hyb[i] = geometric_hybridization(c, (uint32_t)i);
     }
     implicit_hydrogens(c);
