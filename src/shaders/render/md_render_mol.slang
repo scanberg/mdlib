@@ -114,6 +114,9 @@ struct Args {
     uint* der_member;           // per member its atom
     uint* der_weight;           // float per member
     uint* der_radius;           // float per derived point: its w
+    uint* ord_points;           // the multiple bonds: uint2 per bond, its points (the doubles first)
+    uint* ord_ref;              // uint4 per double: the points by its ends that give its plane
+    uint* ord_side;             // float4 per double: its side (md_render's capsule side)
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -151,7 +154,7 @@ struct Args {
     uint  na_count;             // control points of the nucleic band
     uint  der_count;            // derived points
     uint  der_cell;             // the cell of their images: 0 none, 1 fpar0's, 2 fpar1's
-    uint  _pad2;
+    uint  ord_count;            // double bonds
 };
 MD_SHADER_ARGS(Args);
 
@@ -885,5 +888,67 @@ void derive(uint3 tid : SV_DispatchThreadID) {
         uint q = a.atom_count + d;
         store_point(a.points, q, asuint(x), a.der_radius[d]);
         if (vel) storeAligned<8>((uint2*)a.vel_out + q, uint2(f32tof16(v.x) | (f32tof16(v.y) << 16u), f32tof16(v.z)));
+    }
+}
+
+// The sides of the double bonds (md_render's capsule side), md_gl's
+// bond_side but for the view, which md_render adds: each atom by an end
+// (two by each at most) gives a line about the axis, the plane of the bond
+// and the atom; the lines are averaged as lines (their doubled angles),
+// weighted by sin^2 of the angle to the axis, so cis and trans substituents
+// agree, an end twisted against the other moves the side smoothly, and an
+// atom near the axis fades out. Two by an end count as much as the end is
+// planar in this frame: fully while the bond is within 10 degrees of their
+// plane, not at all past 30 (a pyramidal end gives no plane, whatever the
+// order says). The side: the line of the sum, as long as the sum.
+static const float ORD_MAX_D2 = 16.0;   // a surrounding atom farther than 4 A is across the cell: none
+
+float2 ord_doubled(float3 c, float3 u, float3 v) {
+    float x = dot(c, u), y = dot(c, v);
+    return float2(x * x - y * y, 2.0 * x * y) / dot(c, c);
+}
+
+float2 ord_end_lines(Args a, float3 ax, float3 p, uint r0, uint r1, float3 u, float3 v) {
+    float3 c0 = float3(0.0), c1 = float3(0.0);
+    bool h0 = false, h1 = false;
+    if (r0 != 0xFFFFFFFFu) { c0 = ld3(a.points, 4u * r0) - p; h0 = dot(c0, c0) < ORD_MAX_D2 && dot(c0, c0) > 0.0; }
+    if (r1 != 0xFFFFFFFFu) { c1 = ld3(a.points, 4u * r1) - p; h1 = dot(c1, c1) < ORD_MAX_D2 && dot(c1, c1) > 0.0; }
+    float2 s = float2(0.0);
+    if (h0) s += ord_doubled(c0, u, v);
+    if (h1) s += ord_doubled(c1, u, v);
+    if (h0 && h1) {
+        float3 m = cross(c0, c1);
+        float  sin_out = abs(dot(ax, m)) * rsqrt(max(dot(m, m), 1.0e-20));
+        s *= 1.0 - smoothstep(0.17, 0.5, sin_out);
+    }
+    return s;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void bond_sides(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.ord_count;
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        float3 pa = ld3(a.points, 4u * a.ord_points[2u * j]);
+        float3 pb = ld3(a.points, 4u * a.ord_points[2u * j + 1u]);
+        float3 d  = pb - pa;
+        float  dd = dot(d, d);
+        float3 side = float3(0.0);
+        if (dd > 0.0) {
+            float3 ax = d * rsqrt(dd);
+            float3 u  = bb_any_perpendicular(ax);
+            float3 v  = cross(ax, u);
+            uint4  r  = uint4(a.ord_ref[4u * j], a.ord_ref[4u * j + 1u], a.ord_ref[4u * j + 2u], a.ord_ref[4u * j + 3u]);
+            float2 s  = ord_end_lines(a, ax, pa, r.x, r.y, u, v) + ord_end_lines(a, ax, pb, r.z, r.w, u, v);
+            float  l  = length(s);
+            if (l > 0.0) {      // half the angle of s, as md_render's capsule_side
+                float2 h  = s.x >= 0.0 ? float2(l + s.x, s.y) : float2(s.y, l - s.x);
+                float  hh = dot(h, h);
+                if (hh > 0.0) side = (h.x * u + h.y * v) * (rsqrt(hh) * l);
+            }
+        }
+        uint* o = a.ord_side + 4u * j;
+        o[0] = asuint(side.x); o[1] = asuint(side.y); o[2] = asuint(side.z); o[3] = 0u;
     }
 }

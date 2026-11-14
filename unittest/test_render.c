@@ -1960,6 +1960,169 @@ UTEST(render, capsules_dashed_match_their_cylinders) {
     f_close(&fx);
 }
 
+/* md_render.h's side of a displaced capsule, in double: pa, pb in view space,
+   side (already in view space, divided by the scale) or NULL */
+static void ref_capsule_side(const double pa[3], const double pb[3], const double* sv, bool ortho, double out[3]) {
+    double z[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(z, z));
+    for (int k = 0; k < 3; ++k) z[k] /= l;
+    double w[3] = { 0, 0, 1 };
+    if (!ortho) for (int k = 0; k < 3; ++k) w[k] = -0.5 * (pa[k] + pb[k]);
+    double u[3], vv[3];
+    cross3(z, w, u);
+    double lu = sqrt(dot3(u, u));
+    for (int k = 0; k < 3; ++k) u[k] /= lu;
+    if (!sv) { memcpy(out, u, sizeof(u)); return; }
+    cross3(z, u, vv);
+    double x = dot3(sv, u), y = dot3(sv, vv), m2 = x * x + y * y;
+    double q[2] = { 0.02, 0.0 };
+    if (m2 > 0) { q[0] += (x * x - y * y) / sqrt(m2); q[1] += 2 * x * y / sqrt(m2); }
+    double ang = 0.5 * atan2(q[1], q[0]);         /* half the angle */
+    for (int k = 0; k < 3; ++k) out[k] = cos(ang) * u[k] + sin(ang) * vv[k];
+    if (dot3(out, sv) < 0) for (int k = 0; k < 3; ++k) out[k] = -out[k];
+}
+
+/* Displaced capsules (md_render.h: offset, side) against plain capsules
+   moved by the reference's side: strong sides, weak ones, none, one with a
+   part along the axis; offsets of either sign over the same capsules (a
+   double bond), and without sides (facing the view); a second instance
+   turned and scaled, its sides weighed alike */
+UTEST(render, capsules_displaced_follow_their_sides) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    enum { NC = 6 };
+    const float pos[2 * NC][3] = {
+        { -5.0f,  3.0f, -14.0f }, { -1.0f,  3.2f, -14.0f },
+        {  0.5f,  3.0f, -13.0f }, {  4.5f,  1.5f, -16.0f },
+        { -5.0f,  0.0f, -12.0f }, { -2.6f,  0.9f, -16.5f },
+        {  0.0f,  0.0f, -14.0f }, {  3.6f,  0.4f, -14.0f },
+        { -5.5f, -2.5f, -14.0f }, { -1.5f, -3.5f, -15.0f },
+        {  1.0f, -2.0f, -14.0f }, {  4.4f, -3.4f, -15.0f },
+    };
+    const float side[NC][4] = {
+        { 0.0f, 1.0f, 0.0f, 0 },          /* strong, across the view: holds */
+        { 0.0f, 0.0f, 1.0f, 0 },          /* strong, along the view: holds, sticks one behind the other */
+        { 0.0f, 0.004f, 0.01f, 0 },       /* weak: mostly the view's */
+        { 0.0f, 0.0f, 0.0f, 0 },          /* none: the view's */
+        { 0.6f, 0.4f, 0.7f, 0 },          /* with a part along the axis */
+        { 0.05f, 0.05f, 0.05f, 0 },       /* middling */
+    };
+    const float R = 0.16f, OFF = 1.38f, OFF3 = 2.57f;
+    float xf[32] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    {
+        const double ang = 35 * 3.14159265358979 / 180, sc = 1.3, ctr[3] = { 0, 0, -14 }, mv[3] = { 0.3, -0.5, -7.0 };
+        float m[9] = { (float)(sc * cos(ang)), 0, (float)(-sc * sin(ang)), 0, (float)sc, 0, (float)(sc * sin(ang)), 0, (float)(sc * cos(ang)) };
+        for (int i = 0; i < 9; ++i) xf[16 + 4 * (i / 3) + i % 3] = m[i];
+        for (int i = 0; i < 3; ++i) xf[28 + i] = (float)(ctr[i] + mv[i] - (m[i] * ctr[0] + m[3 + i] * ctr[1] + m[6 + i] * ctr[2]));
+    }
+    md_render_batch_t b[3];
+    memset(b, 0, sizeof(b));
+    b[0].key = 51; b[0].kind = MD_RENDER_CAPSULES; b[0].count = NC; b[0].points.count = 2 * NC;
+    b[0].points.position = f_buf(&fx, pos, sizeof(pos));
+    b[0].style.capsules.radius = R;
+    b[0].style.capsules.offset = OFF;
+    b[0].style.capsules.side   = f_buf(&fx, side, sizeof(side));
+    b[0].transform = xf; b[0].transform_count = 2;
+    b[1] = b[0]; b[1].key = 52; b[1].style.capsules.offset = -OFF;
+    b[2] = b[0]; b[2].key = 53; b[2].style.capsules.offset = OFF3; b[2].style.capsules.side = 0;
+    md_render_frame_t f = frame_of(W, H, cam, b, 3);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    double ca[3 * 2 * NC][3], cb[3 * 2 * NC][3], cr[3 * 2 * NC];
+    uint32_t ckey[3 * 2 * NC], clin[3 * 2 * NC];
+    int n = 0;
+    for (int bi = 0; bi < 3; ++bi) {
+        for (int in = 0; in < 2; ++in) {
+            const float* m = xf + 16 * in;
+            const double sc = sqrt((double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2]);
+            for (int k = 0; k < NC; ++k) {
+                double p[2][3], sv[3];
+                for (int e = 0; e < 2; ++e) for (int i = 0; i < 3; ++i) {
+                    const float* q = pos[2 * k + e];
+                    p[e][i] = (double)m[i] * q[0] + (double)m[4 + i] * q[1] + (double)m[8 + i] * q[2] + m[12 + i];
+                }
+                for (int i = 0; i < 3; ++i) sv[i] = ((double)m[i] * side[k][0] + (double)m[4 + i] * side[k][1] + (double)m[8 + i] * side[k][2]) / sc;
+                double d[3];
+                const bool has = bi < 2 && (side[k][0] != 0 || side[k][1] != 0 || side[k][2] != 0);
+                ref_capsule_side(p[0], p[1], bi < 2 ? sv : NULL, false, d);
+                (void)has;
+                const double o = (bi == 0 ? OFF : bi == 1 ? -OFF : OFF3) * R * sc;
+                for (int i = 0; i < 3; ++i) { ca[n][i] = p[0][i] + d[i] * o; cb[n][i] = p[1][i] + d[i] * o; }
+                cr[n] = R * sc; ckey[n] = 51u + (uint32_t)bi; clin[n] = (uint32_t)(in * NC + k);
+                n++;
+            }
+        }
+    }
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4));
+    int bad = 0, covered = 0, judged = 0;
+    double worst = 0;
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            const uint32_t i = y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            const double far_[3] = { r.d[0] * 100, r.d[1] * 100, r.d[2] * 100 };
+            bool hit_in = false, hit_out = false;
+            for (int k = 0; k < n; ++k) {
+                const double d = seg_seg_dist(r.o, far_, ca[k], cb[k]);
+                const double px = -0.5 * (ca[k][2] + cb[k][2]) * 2.0 * c.tan_half / H;
+                hit_in  |= d < cr[k] - 0.6 * px;
+                hit_out |= d < cr[k] + 0.6 * px;
+            }
+            if (id[2 * i + 1] == 0) {
+                if (hit_in) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, a capsule there\n", x, y); }
+                continue;
+            }
+            covered++;
+            if (!hit_out) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, no capsule near\n", x, y); continue; }
+            const double zv = -c.n / dp[i], tp = zv / r.d[2];
+            const double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            const double pxw = -P[2] * 2.0 * c.tan_half / H;
+            int who = -1;
+            double best = 1e30, second = 1e30;
+            for (int k = 0; k < n; ++k) {
+                const double sd = pt_seg_dist(P, ca[k], cb[k]) - cr[k];
+                if (sd < best) { second = best; best = sd; who = k; } else if (sd < second) second = sd;
+            }
+            worst = fmax(worst, fabs(best) / pxw);
+            if (fabs(best) > 0.05 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the capsules\n", x, y, best / pxw); continue; }
+            if (second - best > pxw) {
+                judged++;
+                const uint32_t slot = (id[2 * i + 1] >> 20) - 1u;
+                if (id[2 * i] != clin[who] || slot != ckey[who] - 51u) {
+                    bad++;
+                    if (bad < 8) printf("    pixel (%u, %u): batch %u element %u, expected %u %u\n", x, y, slot, id[2 * i], ckey[who] - 51u, clin[who]);
+                }
+            }
+        }
+    }
+    printf("    %d pixels covered, %d of one capsule clearly; the farthest %.4f px from the capsules\n", covered, judged, worst);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered, 2000);
+    EXPECT_GT(judged, covered / 2);
+
+    /* the strong side across the view holds: the two sticks of the first, one above the other */
+    EXPECT_NEAR(ca[0][1] - pos[0][1], OFF * R, 0.005 * OFF * R);      /* the view's 1/50 turns it a little */
+    EXPECT_NEAR(ca[2 * NC][1] - pos[0][1], -OFF * R, 0.005 * OFF * R);
+    /* a pick on the middle of the upper stick of the first: that batch and element */
+    {
+        double q[3];
+        for (int i = 0; i < 3; ++i) q[i] = 0.5 * (ca[0][i] + cb[0][i]);
+        const uint32_t qx = (uint32_t)((q[0] / -q[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        const uint32_t qy = (uint32_t)((0.5 - q[1] / -q[2] / c.tan_half * 0.5) * H);
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, qx, qy, &pk));
+        EXPECT_EQ(51u, (unsigned)pk.key);
+        EXPECT_EQ(0u, pk.element);
+    }
+    free(id); free(dp);
+    f_close(&fx);
+}
+
 UTEST(render, index_visibility_instances) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -4813,6 +4976,334 @@ UTEST(render, mol_chain_gaps) {
     EXPECT_GE(runs, (int)nd - 1);
     md_render_mol_destroy(mol);
     free(ca);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* Oct-7-ynal, built by hand (ideal lengths and angles, no file of it): a
+   triple bond, a double, 21 atoms (not a small molecule) */
+static const char octynal_pdb[] =
+    "HETATM    1 H1   OYN A   1      -1.060   0.000   0.000  1.00  0.00           H\n"
+    "HETATM    2 C2   OYN A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    3 C3   OYN A   1       1.200   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    4 C4   OYN A   1       2.660   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    5 C5   OYN A   1       3.921   0.867   0.000  1.00  0.00           C\n"
+    "HETATM    6 C6   OYN A   1       5.182   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    7 C7   OYN A   1       6.443   0.867   0.000  1.00  0.00           C\n"
+    "HETATM    8 C8   OYN A   1       7.704   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    9 C9   OYN A   1       8.948   0.855   0.000  1.00  0.00           C\n"
+    "HETATM   10 H10  OYN A   1       2.847  -0.601  -0.890  1.00  0.00           H\n"
+    "HETATM   11 H11  OYN A   1       2.847  -0.601   0.890  1.00  0.00           H\n"
+    "HETATM   12 H12  OYN A   1       3.921   1.496   0.890  1.00  0.00           H\n"
+    "HETATM   13 H13  OYN A   1       3.921   1.496  -0.890  1.00  0.00           H\n"
+    "HETATM   14 H14  OYN A   1       5.182  -0.629  -0.890  1.00  0.00           H\n"
+    "HETATM   15 H15  OYN A   1       5.182  -0.629   0.890  1.00  0.00           H\n"
+    "HETATM   16 H16  OYN A   1       6.443   1.496   0.890  1.00  0.00           H\n"
+    "HETATM   17 H17  OYN A   1       6.443   1.496  -0.890  1.00  0.00           H\n"
+    "HETATM   18 H18  OYN A   1       7.704  -0.629  -0.890  1.00  0.00           H\n"
+    "HETATM   19 H19  OYN A   1       7.704  -0.629   0.890  1.00  0.00           H\n"
+    "HETATM   20 O20  OYN A   1      10.040   0.334   0.000  1.00  0.00           O\n"
+    "HETATM   21 H21  OYN A   1       8.862   1.952   0.000  1.00  0.00           H\n"
+    "CONECT    1    2\n"
+    "CONECT    2    1    3\n"
+    "CONECT    3    2    4\n"
+    "CONECT    4    3    5   10   11\n"
+    "CONECT    5    4    6   12   13\n"
+    "CONECT    6    5    7   14   15\n"
+    "CONECT    7    6    8   16   17\n"
+    "CONECT    8    7    9   18   19\n"
+    "CONECT    9    8   20   21\n"
+    "CONECT   10    4\n"
+    "CONECT   11    4\n"
+    "CONECT   12    5\n"
+    "CONECT   13    5\n"
+    "CONECT   14    6\n"
+    "CONECT   15    6\n"
+    "CONECT   16    7\n"
+    "CONECT   17    7\n"
+    "CONECT   18    8\n"
+    "CONECT   19    8\n"
+    "CONECT   20    9\n"
+    "CONECT   21    9\n"
+    "END\n";
+
+/* The double bond's side as md_render_mol's bond_sides has it, in double */
+static void ref_end_lines(const double ax[3], const double p[3], const double* c0, const double* c1, const double u[3], const double v[3], double s[2]) {
+    const double* cs[2] = { c0, c1 };
+    double acc[2] = { 0, 0 };
+    for (int k = 0; k < 2; ++k) {
+        if (!cs[k]) continue;
+        double c[3] = { cs[k][0] - p[0], cs[k][1] - p[1], cs[k][2] - p[2] }, cc = dot3(c, c);
+        if (!(cc > 0 && cc < 16.0)) { cs[k] = NULL; continue; }
+        double x = dot3(c, u), y = dot3(c, v);
+        acc[0] += (x * x - y * y) / cc; acc[1] += 2 * x * y / cc;
+    }
+    if (cs[0] && cs[1]) {
+        double a[3] = { cs[0][0] - p[0], cs[0][1] - p[1], cs[0][2] - p[2] }, b[3] = { cs[1][0] - p[0], cs[1][1] - p[1], cs[1][2] - p[2] }, m[3];
+        cross3(a, b, m);
+        double so = fabs(dot3(ax, m)) / sqrt(fmax(dot3(m, m), 1e-20));
+        double t = so <= 0.17 ? 0 : so >= 0.5 ? 1 : (so - 0.17) / (0.5 - 0.17);
+        t = t * t * (3 - 2 * t);
+        acc[0] *= 1 - t; acc[1] *= 1 - t;
+    }
+    s[0] += acc[0]; s[1] += acc[1];
+}
+
+/* md_gl's bond orders on 1LAF: the double bonds of the plan are those of
+   order 2, neither aromatic nor delocalized, the sticks of the covalent
+   class leave them out; the update's sides are the reference's; licorice
+   with bond_orders emits the two thinner sticks, picked as the bond */
+UTEST(render, mol_bond_orders) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/1LAF.pdb"));
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    const md_render_mol_topo_t* L = &plan.layout;
+    const uint8_t*  img   = plan.data;
+    const uint32_t* order = (const uint32_t*)(img + L->atom_order);
+    const uint32_t* op    = (const uint32_t*)(img + L->order_points);
+    const uint32_t* ob    = (const uint32_t*)(img + L->order_bond);
+    const uint32_t* orf   = (const uint32_t*)(img + L->order_ref);
+    const uint32_t  nd = L->order_count[0], nt = L->order_count[1];
+    ASSERT_GT(nd, 100u);
+    int wrong = 0, both_ends = 0;
+    uint8_t* is_ord = calloc(sys.bond.count + 1, 1);
+    for (uint32_t k = 0; k < nd + nt; ++k) {
+        const uint32_t bi = ob[k], f = sys.bond.flags[bi];
+        is_ord[bi] = 1;
+        wrong += md_bond_order(f) != (k < nd ? 2 : 3) || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)) || md_bond_kind(f) != MD_BOND_KIND_COVALENT;
+        const uint32_t a = order[op[2 * k]], b = order[op[2 * k + 1]];
+        wrong += !((a == (uint32_t)sys.bond.pairs[bi].idx[0] && b == (uint32_t)sys.bond.pairs[bi].idx[1]));
+        if (k >= nd) continue;
+        int ends = 0;
+        for (int e = 0; e < 2; ++e) {
+            const uint32_t at = e ? b : a, other = e ? a : b;
+            bool any = false;
+            for (int q = 0; q < 2; ++q) {
+                const uint32_t r = orf[4 * k + 2 * e + q];
+                if (r == UINT32_MAX) continue;
+                any = true;
+                const uint32_t ra = order[r];
+                bool bonded = false;
+                md_bond_iter_t it = md_bond_iter(&sys.bond, at);
+                for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) bonded |= (uint32_t)md_bond_iter_atom_index(&it) == ra;
+                wrong += !bonded || ra == other;
+            }
+            ends += any;
+        }
+        both_ends += ends >= 1;     /* a C=O's O has none */
+    }
+    /* the sticks of the covalent class leave them out */
+    {
+        const uint32_t beg = L->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT], cnt = L->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT + 1] - beg;
+        const uint32_t* ids = (const uint32_t*)(img + L->bond_ids);
+        const float*    one = (const float*)(img + L->bond_single);
+        ASSERT_TRUE(L->bond_single != 0);
+        uint32_t zeros = 0;
+        for (uint32_t j = 0; j < cnt; ++j) { wrong += (one[j] == 0.0f) != (is_ord[ids[beg + j]] != 0); zeros += one[j] == 0.0f; }
+        EXPECT_EQ(nd + nt, zeros);
+    }
+    printf("    1LAF: %u double, %u triple bonds; %u doubles with a plane by an end\n", nd, nt, both_ends);
+    EXPECT_EQ(0, wrong);
+    EXPECT_GT(both_ends, (int)nd * 9 / 10);
+
+    fix_t fx;
+    if (!f_open(&fx)) { md_temp_end(temp); free(is_ord); md_system_free(&sys); UTEST_SKIP(f_skip_reason()); }
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+
+    /* the sides against the reference */
+    uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size);
+    ASSERT_TRUE(blk != NULL);
+    md_render_batch_t bt[16];
+    md_render_mol_rep_t rep = {0};
+    rep.key = 7; rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; rep.bond_orders = true;
+    const uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 16);
+    rep.bond_orders = false;
+    const uint32_t nb0 = md_render_mol_emit(&topo, dyn, &atoms, &rep, NULL, 0);
+    rep.bond_orders = true;
+    ASSERT_EQ(nb0 + 2u, nb);    /* the covalent sticks, then its doubles' two */
+    const md_render_batch_t* d0 = &bt[1];
+    const md_render_batch_t* d1 = &bt[2];
+    EXPECT_EQ(topo.bond_single, bt[0].style.capsules.radius_scale);
+    EXPECT_EQ((uint64_t)(7 << 8 | MD_RENDER_MOL_PART_DOUBLE), d0->key);
+    EXPECT_EQ((uint64_t)(7 << 8 | (MD_RENDER_MOL_PART_DOUBLE + 1)), d1->key);
+    EXPECT_NEAR(0.084f, d0->style.capsules.radius, 1e-6f);
+    EXPECT_NEAR(0.58f / 0.42f, d0->style.capsules.offset, 1e-5f);
+    EXPECT_NEAR(-0.58f / 0.42f, d1->style.capsules.offset, 1e-5f);
+    EXPECT_EQ(d0->style.capsules.side, d1->style.capsules.side);
+    EXPECT_EQ(nd, d0->count);
+    const float* side = (const float*)(blk + (d0->style.capsules.side - dyn));
+    double worst = 0;
+    int strong = 0, first_strong = -1;
+    for (uint32_t k = 0; k < nd; ++k) {
+        double pa[3], pb[3], c[4][3];
+        const float* xa = &state.xyz[order[op[2 * k]]].x;
+        const float* xb = &state.xyz[order[op[2 * k + 1]]].x;
+        for (int i = 0; i < 3; ++i) { pa[i] = xa[i]; pb[i] = xb[i]; }
+        for (int q = 0; q < 4; ++q) {
+            const uint32_t r = orf[4 * k + q];
+            if (r != UINT32_MAX) for (int i = 0; i < 3; ++i) c[q][i] = (&state.xyz[order[r]].x)[i];
+        }
+        double ax[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(ax, ax));
+        for (int i = 0; i < 3; ++i) ax[i] /= l;
+        /* the kernel's basis is its own: compare the sides as lines of a weight */
+        double u[3], v[3], hlp[3] = { 1, 0, 0 };
+        if (fabs(ax[0]) >= 0.9) { hlp[0] = 0; hlp[1] = 1; }
+        cross3(ax, hlp, u);
+        double lu = sqrt(dot3(u, u));
+        for (int i = 0; i < 3; ++i) u[i] /= lu;
+        cross3(ax, u, v);
+        double sv[2] = { 0, 0 };
+        ref_end_lines(ax, pa, orf[4 * k] != UINT32_MAX ? c[0] : NULL, orf[4 * k + 1] != UINT32_MAX ? c[1] : NULL, u, v, sv);
+        ref_end_lines(ax, pb, orf[4 * k + 2] != UINT32_MAX ? c[2] : NULL, orf[4 * k + 3] != UINT32_MAX ? c[3] : NULL, u, v, sv);
+        const double w = sqrt(sv[0] * sv[0] + sv[1] * sv[1]), ang = 0.5 * atan2(sv[1], sv[0]);
+        double ref[3];
+        for (int i = 0; i < 3; ++i) ref[i] = (cos(ang) * u[i] + sin(ang) * v[i]) * w;
+        const float* g = side + 4 * k;
+        const double gl = sqrt((double)g[0] * g[0] + (double)g[1] * g[1] + (double)g[2] * g[2]);
+        const double dt = fabs(g[0] * ref[0] + g[1] * ref[1] + g[2] * ref[2]);   /* lines: either sign */
+        worst = fmax(worst, fabs(gl - w) + (w > 1e-3 ? fabs(dt / (gl * w) - 1.0) : 0.0));
+        if (w > 1.0 && first_strong < 0) first_strong = (int)k;
+        strong += w > 1.0;
+    }
+    printf("    sides: %d strong (> 1); the worst off the reference %.2e\n", strong, worst);
+    EXPECT_LT(worst, 1e-4);
+    EXPECT_GT(strong, (int)nd / 2);
+    free(blk);
+
+    /* The first strong one side on, the two sticks above and below: each
+       picks as the bond, from its own batch */
+    ASSERT_GE(first_strong, 0);
+    {
+        const uint32_t k = (uint32_t)first_strong;
+        const float* gs = side + 0;     /* (read again below) */
+        (void)gs;
+        uint8_t* blk2 = read_block(&fx, dyn, topo.dynamic_size);
+        const float* g = (const float*)(blk2 + (d0->style.capsules.side - dyn)) + 4 * k;
+        const float* xa = &state.xyz[order[op[2 * k]]].x;
+        const float* xb = &state.xyz[order[op[2 * k + 1]]].x;
+        double x[3] = { xb[0] - xa[0], xb[1] - xa[1], xb[2] - xa[2] }, len = sqrt(dot3(x, x));
+        for (int i = 0; i < 3; ++i) x[i] /= len;
+        double y[3] = { g[0], g[1], g[2] }, ly = sqrt(dot3(y, y));
+        for (int i = 0; i < 3; ++i) y[i] /= ly;
+        double z[3];
+        cross3(x, y, z);
+        double eye[3];
+        for (int i = 0; i < 3; ++i) eye[i] = 0.5 * (xa[i] + xb[i]) + 30.0 * z[i];
+        const uint32_t W = 128, H = 128;
+        cam_t c = { .ortho = true, .half_h = 1.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 100.0f };
+        md_render_camera_t cam = make_camera(&c);
+        for (int i = 0; i < 3; ++i) { cam.view[4 * i + 0] = (float)x[i]; cam.view[4 * i + 1] = (float)y[i]; cam.view[4 * i + 2] = (float)z[i]; }
+        cam.view[12] = (float)-dot3(x, eye); cam.view[13] = (float)-dot3(y, eye); cam.view[14] = (float)-dot3(z, eye);
+        md_render_frame_t f = frame_of(W, H, cam, bt + 1, 2);
+        memcpy(f.content, content, sizeof(content));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        const double o = 0.58 * 0.2;    /* the sticks' axes off the bond's */
+        for (int m = 0; m < 2; ++m) {
+            const double sy = m == 0 ? o : -o;
+            const uint32_t py = (uint32_t)((0.5 - sy / c.half_h * 0.5) * H);
+            md_render_pick_t pk;
+            md_render_mol_hit_t hit;
+            ASSERT_TRUE(f_pick(&fx, W / 2, py, &pk));
+            ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+            EXPECT_EQ(MD_RENDER_MOL_HIT_BOND, hit.kind);
+            EXPECT_EQ(ob[k], hit.bond);
+            EXPECT_EQ((uint64_t)(7 << 8 | (MD_RENDER_MOL_PART_DOUBLE + m)), pk.key);
+        }
+        free(blk2);
+    }
+
+    /* A triple bond: three sticks facing the view, the middle one on the
+       bond's axis, the others either side; picked as the bond */
+    {
+        md_allocator_i* a2 = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t ys = { .alloc = a2 };
+        md_system_state_t yst = { .alloc = a2 };
+        ASSERT_TRUE(md_pdb_system_init_from_str(&ys, &yst, (md_str_t){ octynal_pdb, sizeof(octynal_pdb) - 1 }, NULL));
+        ASSERT_TRUE(md_system_infer(&ys, &yst, MD_SYSTEM_INFER_ALL, NULL));
+        md_temp_scope_t t2 = md_temp_begin();
+        md_render_mol_plan_t yp;
+        ASSERT_TRUE(md_render_mol_plan(&yp, &ys, NULL, t2));
+        EXPECT_EQ(1u, yp.layout.order_count[0]);
+        ASSERT_EQ(1u, yp.layout.order_count[1]);
+        md_render_mol_topo_t yt;
+        ASSERT_TRUE(md_render_mol_write(fx.gfx, &yt, &yp, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, yp.size).gpu, content));
+        const uint32_t* yo  = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.atom_order);
+        const uint32_t* yop = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.order_points);
+        const uint32_t* yob = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.order_bond);
+        const uint32_t  ta = yo[yop[2]], tb = yo[yop[3]], tbond = yob[1];
+        EXPECT_EQ(3, md_bond_order(ys.bond.flags[tbond]));
+        md_gpu_addr_t ydyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, yt.dynamic_size).gpu;
+        md_gpu_addr_t YP = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)ys.atom.count * 12).gpu;
+        ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, YP, &yst, content));
+        md_render_mol_atoms_t yat = {0};
+        yat.position = YP;
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &yt, ydyn, &yat, 0, content));
+        md_render_mol_rep_t yr = {0};
+        yr.key = 8; yr.type = MD_RENDER_MOL_REP_LICORICE; yr.params.licorice.radius = 0.2f; yr.bond_orders = true;
+        md_render_batch_t yb[16];
+        const uint32_t ny = md_render_mol_emit(&yt, ydyn, &yat, &yr, yb, 16);
+        ASSERT_EQ(7u, ny);          /* covalent, the double's two, the triple's three, atoms */
+        for (int m = 0; m < 3; ++m) {
+            const md_render_batch_t* tq = &yb[3 + m];
+            EXPECT_EQ((uint64_t)(8 << 8 | (MD_RENDER_MOL_PART_TRIPLE + m)), tq->key);
+            EXPECT_NEAR(0.056f, tq->style.capsules.radius, 1e-6f);
+            EXPECT_NEAR((m == 0 ? 1.0f : m == 1 ? 0.0f : -1.0f) * 0.72f / 0.28f, tq->style.capsules.offset, 1e-5f);
+            EXPECT_EQ((md_gpu_addr_t)0, tq->style.capsules.side);
+        }
+        /* along x on the screen, orthographic: the sticks off by 0.144 down (+) and up (-) */
+        const float* xa = &yst.xyz[ta].x;
+        const float* xb = &yst.xyz[tb].x;
+        double x[3] = { xb[0] - xa[0], xb[1] - xa[1], xb[2] - xa[2] }, len = sqrt(dot3(x, x));
+        for (int i = 0; i < 3; ++i) x[i] /= len;
+        double y[3] = { 0, 1, 0 }, z[3];
+        if (fabs(x[1]) > 0.9) { y[0] = 1; y[1] = 0; }
+        cross3(x, y, z);
+        double lz = sqrt(dot3(z, z));
+        for (int i = 0; i < 3; ++i) z[i] /= lz;
+        cross3(z, x, y);
+        double eye[3];
+        for (int i = 0; i < 3; ++i) eye[i] = 0.5 * (xa[i] + xb[i]) + 30.0 * z[i];
+        const uint32_t W = 128, H = 128;
+        cam_t c = { .ortho = true, .half_h = 0.6f, .aspect = 1.0f, .n = 0.0f, .far_ = 100.0f };
+        md_render_camera_t cam = make_camera(&c);
+        for (int i = 0; i < 3; ++i) { cam.view[4 * i + 0] = (float)x[i]; cam.view[4 * i + 1] = (float)y[i]; cam.view[4 * i + 2] = (float)z[i]; }
+        cam.view[12] = (float)-dot3(x, eye); cam.view[13] = (float)-dot3(y, eye); cam.view[14] = (float)-dot3(z, eye);
+        md_render_frame_t f = frame_of(W, H, cam, yb + 3, 3);
+        memcpy(f.content, content, sizeof(content));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        const double o = 0.72 * 0.2;
+        for (int m = 0; m < 3; ++m) {
+            const double sy = m == 0 ? -o : m == 1 ? 0.0 : o;       /* +offset: cross(axis, view) = -y */
+            const uint32_t py = (uint32_t)((0.5 - sy / c.half_h * 0.5) * H);
+            md_render_pick_t pk;
+            md_render_mol_hit_t hit;
+            ASSERT_TRUE(f_pick(&fx, W / 2, py, &pk));
+            ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+            EXPECT_EQ(MD_RENDER_MOL_HIT_BOND, hit.kind);
+            EXPECT_EQ(tbond, hit.bond);
+            EXPECT_EQ((uint64_t)(8 << 8 | (MD_RENDER_MOL_PART_TRIPLE + m)), pk.key);
+        }
+        md_temp_end(t2);
+        md_system_free(&ys);
+        md_vm_arena_destroy(a2);
+    }
+    md_temp_end(temp);
+    md_render_mol_destroy(mol);
+    free(is_ord);
     md_system_free(&sys);
     f_close(&fx);
 }

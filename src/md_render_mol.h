@@ -103,10 +103,11 @@ Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, the bonds that are not covalent dashed in a style per kind (md_gl's
 BOND DASHES: see md_render_mol_dashes_t); CARTOON
 of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
-(md_render_mol_rep_t.chain_gaps). Declared for the next phases: RIBBONS,
-coarse grained nucleic acids and lipids (points derived from several atoms:
-the ideal rings of a Martini base, lipid heads), glyphs, bond orders, ring
-circles.
+(md_render_mol_rep_t.chain_gaps); double and triple bonds (bond_orders).
+Declared for the next phases: RIBBONS, coarse grained nucleic acids and
+lipids (points derived from several atoms: the ideal rings of a Martini
+base, lipid heads), glyphs, the circles of aromatic rings and the dashed
+partners of delocalized bonds.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -287,6 +288,20 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t gap_points;              /* uint32 [2 * (gap_count[0] + gap_count[1])]:
                                               the cartoon's first                      */
     md_gpu_addr_t gap_residue;             /* uint32 per gap: index in sys->residue     */
+
+    /* The multiple bonds, for the bond orders: the covalent bonds of order 2
+       and 3 (md_chem's), neither aromatic nor delocalized, both ends static;
+       the doubles first. Between points, each with its index in sys->bond.
+       A double's plane is that of its sp2 centres: the atoms by its ends
+       that give it (md_gl's), its side (md_render's) the update's.
+       bond_single: per bond of the covalent class 0 for those drawn as
+       multiple bonds, else 1 (the sticks' radius_scale); 0 without any. */
+    uint32_t      order_count[2];          /* doubles, triples                         */
+    md_gpu_addr_t order_points;            /* uint32 [2 * (order_count[0] + order_count[1])] */
+    md_gpu_addr_t order_bond;              /* uint32 per bond: index in sys->bond       */
+    md_gpu_addr_t order_ref;               /* internal: uint32 [4] per double, the points
+                                              of two atoms by either end (UINT32_MAX none) */
+    md_gpu_addr_t bond_single;             /* float per bond of the covalent class      */
 
     /* Derived points: each a weighted sum of resident atoms, taken at their
        images nearest the first one's (where the update has a cell: the
@@ -626,6 +641,15 @@ typedef struct md_render_mol_rep_t {
        spheres. Dashes and gaps 4 times the radius: longer than a bond's. */
     bool                     chain_gaps;
 
+    /* LICORICE and BALL_AND_STICK: the double and triple bonds as two and
+       three thinner sticks in place of the stick (md_gl's bond orders),
+       within the stick (licorice) or 1.3 times it (ball and stick). A
+       double's lie in the plane of its sp2 centres as planar as the frame
+       has them, and turn to face the view where they give none (O=O, the
+       C=O of CO2); a triple's face the view. Aromatic and delocalized bonds
+       keep their stick: their circles and dashed partners are not yet. */
+    bool                     bond_orders;
+
     /* Colour of atoms and sticks. COLOR_POINTS reads `color` (uint32 RGBA8
        per atom), COLOR_PALETTE reads `palette_index` (uint16 per atom). */
     md_render_color_t        color;
@@ -654,6 +678,8 @@ enum {
     MD_RENDER_MOL_PART_RINGS    = 18,   /* + corners - 3: their rings */
     MD_RENDER_MOL_PART_STICKS   = MD_RENDER_MOL_PART_RINGS + MD_RENDER_MOL_RING_SIZES,   /* sugar to base */
     MD_RENDER_MOL_PART_GAPS,            /* the gaps of the chains */
+    MD_RENDER_MOL_PART_DOUBLE,          /* + 0, 1: the sticks of the double bonds */
+    MD_RENDER_MOL_PART_TRIPLE = MD_RENDER_MOL_PART_DOUBLE + 2,  /* + 0, 1, 2: of the triple bonds */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it

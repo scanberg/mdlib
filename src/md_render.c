@@ -77,6 +77,8 @@ enum {
     F_SPL_PROFILE  = 1u << 20,
     F_SPL_THROUGH  = 1u << 21,
     F_DASHED       = 1u << 22,
+    F_DISPLACED    = 1u << 23,
+    F_SIDE         = 1u << 24,
 };
 
 typedef struct gpu_batch_t {
@@ -96,7 +98,8 @@ typedef struct gpu_batch_t {
     md_gpu_addr_t spl_axis, spl_profile;                          /* SPLINES */
     uint32_t      poly_n;                                         /* POLYGONS: corners */
     float         dash, gap, end_scale, end_add;                  /* CAPSULES dashed: the lengths, the spheres at the ends */
-    uint32_t      _pad_c[3];                                      /* to the float4 alignment */
+    float         cap_offset;                                     /* CAPSULES displaced: by this many radii */
+    md_gpu_addr_t cap_side;                                       /* along this side (float4 per capsule), optional */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 320, "Batch mirror");
 
@@ -555,7 +558,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.capsules.gap_length   = c->gap_length;
         out->style.capsules.dash_ends    = c->dash_ends;
         out->style.capsules.offset       = c->offset;
-        out->style.capsules.offset_mode  = c->offset_mode;
+        out->style.capsules.side         = c->offset != 0.0f ? c->side : 0;
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
     } else if (b->kind == MD_RENDER_SPLINES) {
         out->style.splines = b->style.splines;
@@ -676,8 +679,12 @@ static bool validate(const md_render_frame_t* f) {
         }
         if (b->kind == MD_RENDER_CAPSULES) {
             const md_render_capsule_style_t* c = &b->style.capsules;
-            if ((c->dash_length <= 0.0f && (c->cap[0] != MD_RENDER_CAP_ROUND || c->cap[1] != MD_RENDER_CAP_ROUND)) || c->offset) {
-                MD_LOG_ERROR("md_render: batch %u: flat caps and offsets are not implemented yet", i);
+            if (c->dash_length <= 0.0f && (c->cap[0] != MD_RENDER_CAP_ROUND || c->cap[1] != MD_RENDER_CAP_ROUND)) {
+                MD_LOG_ERROR("md_render: batch %u: flat caps are not implemented yet", i);
+                return false;
+            }
+            if (!isfinite(c->offset)) {
+                MD_LOG_ERROR("md_render: batch %u: the offset is not finite", i);
                 return false;
             }
             if (c->dash_length < 0.0f || c->gap_length < 0.0f) {
@@ -854,7 +861,7 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
                              &g->visible0, &g->visible1, &g->state0, &g->state1, &g->index, &g->id, &g->radius_scale,
-                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile };
+                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
 
@@ -918,6 +925,12 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
             g->gap       = b->style.capsules.gap_length;
             g->end_scale = b->style.capsules.dash_ends.radius_scale;
             g->end_add   = b->style.capsules.dash_ends.radius_add;
+        }
+        if (b->style.capsules.offset != 0.0f) {
+            f |= F_DISPLACED;
+            g->cap_offset = b->style.capsules.offset;
+            g->cap_side   = b->style.capsules.side;
+            if (g->cap_side) f |= F_SIDE;
         }
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;
