@@ -133,6 +133,7 @@ _Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
 
 typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
+    md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's box: 4 float4 */
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -1146,20 +1147,21 @@ static gpu_args_t base_args(const md_render_view_t v) {
 
 /* Lists sized for the worst case of this frame: every element in each list of
    its kind (hardware, state, small, occluded), 4 bytes an entry: 16 bytes per
-   element in all (8 for spline parts and polygons: no compute raster, no
-   retest), plus 24 per cluster. */
+   element in all (8 for polygons: no compute raster, no retest; 72 for spline
+   parts, whose hardware entries carry their box, 64 bytes), plus 24 per
+   cluster. */
 static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
-    const uint64_t sizes[13] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3] };
-    const uint32_t esize[13] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uint64_t sizes[14] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2] };
+    const uint32_t esize[14] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 64 };
     size_t need = 0;
-    for (int i = 0; i < 13; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
+    for (int i = 0; i < 14; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[13] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3 };
-    for (int i = 0; i < 13; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    md_gpu_addr_t* dst[14] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b };
+    for (int i = 0; i < 14; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
