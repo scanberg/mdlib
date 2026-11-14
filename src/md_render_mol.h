@@ -111,8 +111,7 @@ of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
 triple bonds, the circles of aromatic rings, the dashed partners of
 delocalized bonds).
 The cartoon of lipids and of coarse grained nucleic acids (the ideal
-rings of a Martini base), on derived points. Declared for the next phases:
-RIBBONS.
+rings of a Martini base), on derived points. RIBBONS of proteins.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -660,7 +659,7 @@ typedef enum md_render_mol_rep_type_t {
     MD_RENDER_MOL_REP_LICORICE,
     MD_RENDER_MOL_REP_BALL_AND_STICK,
     MD_RENDER_MOL_REP_BONDS,       /* sticks only, no atoms                          */
-    MD_RENDER_MOL_REP_RIBBONS,     /* not yet implemented                            */
+    MD_RENDER_MOL_REP_RIBBONS,     /* the protein backbone as a flat ribbon          */
     MD_RENDER_MOL_REP_CARTOON,     /* the protein backbone (see the update and
                                       md_render_mol_cartoon_profile), the nucleic
                                       acids                                          */
@@ -675,6 +674,10 @@ typedef struct md_render_mol_rep_t {
         struct { float radius; } licorice;
         struct { float ball_scale; float stick_radius; } ball_and_stick;
         struct { float radius; } bonds;
+        /* md_gl's: a ribbon along the protein backbone, oriented as the
+           cartoon (the update's axes), of half width and half thickness (the
+           edges rounded: a stadium); 0: md_gl's, 1 and 0.1 */
+        struct { float half_width; float half_thickness; } ribbons;
         /* profile: md_render_mol_cartoon_profile's output; 0: a coil tube
            throughout. A nucleic acid's band is 2 (1.6 + band_radius) wide
            and 2 band_radius thick; ring_radius rounds the rings and is
@@ -700,8 +703,8 @@ typedef struct md_render_mol_rep_t {
 
     /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
        CARTOON from end to end of the cartoon, 0.14 (0.7 of the coil at a
-       scale of 1; the profile's scales do not reach it), its colours
-       blended; LICORICE, BALL_AND_STICK and BONDS between the atoms a link
+       scale of 1; the profile's scales do not reach it), RIBBONS 1.4 times
+       their half thickness, their colours blended; LICORICE, BALL_AND_STICK and BONDS between the atoms a link
        would join, half the sticks' radius, from where they leave the
        spheres. Dashes and gaps 4 times the radius: longer than a bond's. */
     bool                     chain_gaps;
