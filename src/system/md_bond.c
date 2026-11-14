@@ -346,8 +346,8 @@ static void cov_bond_pass_range(void* arg, uint32_t beg, uint32_t end, uint32_t 
     if (pass->metals) {
         const size_t m_beg = (size_t)beg * METAL_PIECE;
         const size_t m_end = MD_MIN((size_t)end * METAL_PIECE, pass->num_metals);
-        md_coord_stream_t ext = md_coord_stream_from_aos((const float*)pass->xyz, sizeof(md_float3_t), pass->metals + m_beg, m_end - m_beg);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(pass->acc, &ext, pass->cutoff, test_cov_bond_pair_callback, param, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(pass->acc, (const float*)pass->xyz, sizeof(md_float3_t), pass->metals + m_beg, m_end - m_beg,
+            pass->cutoff, test_cov_bond_pair_callback, param, MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX);
     } else {
         md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(pass->acc, pass->cutoff, beg, end, test_cov_bond_pair_callback, param);
     }
