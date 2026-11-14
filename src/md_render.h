@@ -208,12 +208,6 @@ typedef enum md_render_cap_t {
     MD_RENDER_CAP_FLAT,            /* not yet implemented                            */
 } md_render_cap_t;
 
-typedef enum md_render_offset_mode_t {
-    MD_RENDER_OFFSET_WORLD = 0,    /* the offset vector as given                      */
-    MD_RENDER_OFFSET_VIEW,         /* its length, perpendicular to both the capsule
-                                      and the view direction (triple bonds)          */
-} md_render_offset_mode_t;
-
 typedef struct md_render_capsule_style_t {
     /* Radius of every capsule, times its own scale when `radius_scale` is
        given (a weak bond fading out; <= 0 hides it). */
@@ -235,12 +229,18 @@ typedef struct md_render_capsule_style_t {
     float           gap_length;
     md_render_sphere_style_t dash_ends;
 
-    /* Not yet implemented. A displacement of each capsule, in multiples of
-       `radius` (float4 per capsule, xyz used): the thinner sticks of a double
-       bond. With it the geometry no longer depends on the radius, so a
-       generator runs once for all representations. */
-    md_gpu_addr_t           offset;
-    md_render_offset_mode_t offset_mode;
+    /* Displaced (offset != 0): each capsule moved off its points by
+       `offset` times its radius, perpendicular to it, along its side: the
+       line of `side` (float4 per capsule, xyz, in the points' space; 0: no
+       side) weighed by its length against the line perpendicular to the
+       capsule and the view, of weight 1/50, the two averaged as lines (by
+       their doubled angles about the axis), the result towards `side`.
+       So a side of length 1 holds, a short one turns smoothly towards
+       facing the view, and none faces it. The thinner sticks of a multiple
+       bond: batches over the same capsules and sides, the offset of either
+       sign (md_gl's double and triple bonds). */
+    float           offset;
+    md_gpu_addr_t   side;
 
     /* Not yet implemented. Periodic capsules: each point joined to the
        nearest image of the other, drawn as two halves. All zero: none. */

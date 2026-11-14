@@ -86,6 +86,8 @@ static const uint F_SPL_AXIS     = 1u << 19;  // SPLINES: spl_axis
 static const uint F_SPL_PROFILE  = 1u << 20;  // SPLINES: spl_profile
 static const uint F_SPL_THROUGH  = 1u << 21;  // SPLINES: through their control points (spline_controls)
 static const uint F_DASHED       = 1u << 22;  // CAPSULES: dashed (dash_hit)
+static const uint F_DISPLACED    = 1u << 23;  // CAPSULES: moved off their points (capsule_side)
+static const uint F_SIDE         = 1u << 24;  // ... along cap_side
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -167,9 +169,8 @@ struct Batch {
     float   gap;
     float   end_scale;          // the spheres at the ends they run between
     float   end_add;
-    uint    _pad_c0;            // to the float4 alignment
-    uint    _pad_c1;
-    uint    _pad_c2;
+    float   cap_offset;         // CAPSULES displaced (F_DISPLACED): by this many radii
+    float4* cap_side;           // along this side (F_SIDE), float4 per capsule
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -504,6 +505,36 @@ float dash_hit(Ray r, float3 pa, float3 pb, float rad, float dash, float period,
     if (tb > t1) return -1.0;
     n = du > 0.0 ? -u : u;
     return tb;
+}
+
+// The unit direction a displaced capsule pa-pb (view space) of element e is
+// moved along (md_render.h): the line of its side (in the points' space, by
+// T, of scale s), its length its weight, and the line perpendicular to the
+// capsule and the view, of weight 1/50, averaged as lines: by their doubled
+// angles about the axis in the basis (u, v), u the view's. Then towards the
+// side.
+float3 capsule_side(ViewData v, Mat T, float s, Batch b, uint e, float3 pa, float3 pb) {
+    float3 ax = pb - pa;
+    float  l2 = dot(ax, ax);
+    float3 z  = l2 > 1e-30 ? ax * rsqrt(l2) : float3(0.0, 0.0, 1.0);
+    float3 w  = v.ortho != 0u ? float3(0.0, 0.0, 1.0) : -0.5 * (pa + pb);
+    float3 u  = cross(z, w);
+    if (dot(u, u) <= 1e-12 * dot(w, w)) u = cross(z, abs(z.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0));
+    u = normalize(u);
+    if ((b.flags & F_SIDE) == 0u) return u;
+    float3 sv = mulv(M(v, view), mulv(T, b.cap_side[gated(b, F_SIDE, e)].xyz)) / max(s, 1e-30);
+    float3 vv = cross(z, u);
+    float  x  = dot(sv, u), y = dot(sv, vv), m2 = x * x + y * y;
+    float2 q  = float2(0.02, 0.0);
+    if (m2 > 0.0) q += float2(x * x - y * y, 2.0 * x * y) * rsqrt(m2);
+    // half the angle of q: (cos, sin) along (|q| + q.x, q.y) and along (q.y, |q| - q.x), the larger
+    float  ql = length(q);
+    float2 h  = q.x >= 0.0 ? float2(ql + q.x, q.y) : float2(q.y, ql - q.x);
+    float  hh = dot(h, h);
+    if (!(hh > 0.0)) return u;
+    h *= rsqrt(hh);
+    float3 d = h.x * u + h.y * vv;
+    return dot(d, sv) < 0.0 ? -d : d;
 }
 
 float capsule_param(float3 p, float3 pa, float3 pb) {
@@ -1272,12 +1303,15 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.r  = capsule_radius(b, e) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
         g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
+        float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, e, g.a, g.b) : float3(0.0);
         if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.r, g.a, g.b)) return g;   // the spheres meet
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
             float2 t = fade_ts(b, -0.5 * (g.a.z + g.b.z));      // the midpoint
             if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
             g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t, a0) && fade_keeps(t, a1)));
         }
+        g.a += side * (b.cap_offset * g.r);       // displaced: by its radius as drawn
+        g.b += side * (b.cap_offset * g.r);
     } else {
         return g;
     }
@@ -1748,6 +1782,7 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         if (!attr_visible(b, a0) || !attr_visible(b, a1)) return l;
         l.st = attr_state(b, a0) & attr_state(b, a1);
         l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[gated(b, F_RADIUS_SCALE, e)] : 1.0;
+        if ((b.flags & F_DISPLACED) != 0u) l.factor *= 1.0 + abs(b.cap_offset);    // off its points in any direction
         if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
         l.ok = capsule_radius(b, e) > 0.0;
     }
@@ -2836,9 +2871,12 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 pa  = mulp(M(v, view), w0);
         float3 pb  = mulp(M(v, view), w1);
         float  rad = capsule_radius(b, h.element) * s;
+        float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, h.element, pa, pb) : float3(0.0);
         float3 qa  = pa, qb = pb;               // a dash's: trimmed
         bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, rad, qa, qb);
         if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (qa.z + qb.z)));
+        float3 dsp = side * (b.cap_offset * rad);   // as element_geo
+        pa += dsp; pb += dsp; qa += dsp; qb += dsp;
         float3 dn  = float3(0.0);
         float  t;
         if (dashed) {

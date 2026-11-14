@@ -277,7 +277,7 @@ static int run(int argc, char** argv) {
     int64_t sel_beg = -1, sel_end = -1;
     rep_arg_t reps[8];
     uint32_t n_reps = 0;
-    bool chain_gaps = false;
+    bool chain_gaps = false, bond_orders = false;
     const char* views[8];
     uint32_t n_views = 0;
     for (int i = 1; i < argc; ++i) {
@@ -290,6 +290,7 @@ static int run(int argc, char** argv) {
         else if (!strcmp(a, "--time") && i + 1 < argc) timed = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(a, "--select") && i + 1 < argc) { long long x, y; if (sscanf(argv[++i], "%lld:%lld", &x, &y) != 2) return 2; sel_beg = x; sel_end = y; }
         else if (!strcmp(a, "--gaps")) chain_gaps = true;
+        else if (!strcmp(a, "--orders")) bond_orders = true;
         else if (!strcmp(a, "--view") && i + 1 < argc) { if (n_views < 8) views[n_views++] = argv[++i]; else ++i; }
         else if (!strcmp(a, "--rep") && i + 1 < argc) {
             if (n_reps == 8) return 2;
@@ -489,6 +490,7 @@ static int run(int argc, char** argv) {
         rep.atom_color = rep.type == MD_RENDER_MOL_REP_CARTOON && CC ? CC : C;
         rep.fade = reps[k].fade;
         rep.chain_gaps = chain_gaps;
+        rep.bond_orders = bond_orders;
         if (n_inst > 1) { rep.transform = xf; rep.transform_count = n_inst; }
         nb += md_render_mol_emit(&topo, dyn, &atoms, &rep, batches + nb, 64 - nb);
     }
@@ -578,7 +580,7 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: md_render_snap <structure> [--coords FILE] [--rep TYPE[:P]] [--fade MODE S0 S1] [--fade-in MODE S0 S1]\n"
                         "                      [--view front|back|side|top|iso] [--zoom Z] [--replicate N] [--select A:B]\n"
-                        "                      [--res WxH] [--out PREFIX] [--time N] [--gaps]\n");
+                        "                      [--res WxH] [--out PREFIX] [--time N] [--gaps] [--orders]\n");
         return 2;
     }
     int rc = run(argc - 1, argv + 1);
