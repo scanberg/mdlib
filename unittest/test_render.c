@@ -1961,6 +1961,8 @@ UTEST(render, capsules_dashed_match_their_cylinders) {
     f_close(&fx);
 }
 
+static uint16_t float_to_half(float f);
+
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,
    side (already in view space, divided by the scale) or NULL */
 static void ref_capsule_side(const double pa[3], const double pb[3], const double* sv, bool ortho, double out[3]) {
@@ -2018,7 +2020,16 @@ UTEST(render, capsules_displaced_follow_their_sides) {
         for (int i = 0; i < 9; ++i) xf[16 + 4 * (i / 3) + i % 3] = m[i];
         for (int i = 0; i < 3; ++i) xf[28 + i] = (float)(ctr[i] + mv[i] - (m[i] * ctr[0] + m[3 + i] * ctr[1] + m[6 + i] * ctr[2]));
     }
-    md_render_batch_t b[3];
+    /* a fourth: pulled in by miters and a trim (the partners of delocalized bonds) */
+    float side4[NC][4];
+    const float miter[NC][2] = { { 0.577f, 0.577f }, { 0.0f, 1.2f }, { 0.4f, 0.0f }, { 0.7f, 0.3f }, { 2.0f, 2.5f }, { 0.0f, 0.0f } };
+    for (int k = 0; k < NC; ++k) {
+        memcpy(side4[k], side[k], sizeof(side4[k]));
+        const uint32_t w = (uint32_t)float_to_half(miter[k][0]) | ((uint32_t)float_to_half(miter[k][1]) << 16);
+        memcpy(&side4[k][3], &w, 4);
+    }
+    const float OFF4 = 3.0f, TRIM = 0.08f;
+    md_render_batch_t b[4];
     memset(b, 0, sizeof(b));
     b[0].key = 51; b[0].kind = MD_RENDER_CAPSULES; b[0].count = NC; b[0].points.count = 2 * NC;
     b[0].points.position = f_buf(&fx, pos, sizeof(pos));
@@ -2028,13 +2039,15 @@ UTEST(render, capsules_displaced_follow_their_sides) {
     b[0].transform = xf; b[0].transform_count = 2;
     b[1] = b[0]; b[1].key = 52; b[1].style.capsules.offset = -OFF;
     b[2] = b[0]; b[2].key = 53; b[2].style.capsules.offset = OFF3; b[2].style.capsules.side = 0;
-    md_render_frame_t f = frame_of(W, H, cam, b, 3);
+    b[3] = b[0]; b[3].key = 54; b[3].style.capsules.offset = -OFF4; b[3].style.capsules.side = f_buf(&fx, side4, sizeof(side4));
+    b[3].style.capsules.trim = TRIM;
+    md_render_frame_t f = frame_of(W, H, cam, b, 4);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
 
-    double ca[3 * 2 * NC][3], cb[3 * 2 * NC][3], cr[3 * 2 * NC];
-    uint32_t ckey[3 * 2 * NC], clin[3 * 2 * NC];
+    double ca[4 * 2 * NC][3], cb[4 * 2 * NC][3], cr[4 * 2 * NC];
+    uint32_t ckey[4 * 2 * NC], clin[4 * 2 * NC];
     int n = 0;
-    for (int bi = 0; bi < 3; ++bi) {
+    for (int bi = 0; bi < 4; ++bi) {
         for (int in = 0; in < 2; ++in) {
             const float* m = xf + 16 * in;
             const double sc = sqrt((double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2]);
@@ -2046,11 +2059,15 @@ UTEST(render, capsules_displaced_follow_their_sides) {
                 }
                 for (int i = 0; i < 3; ++i) sv[i] = ((double)m[i] * side[k][0] + (double)m[4 + i] * side[k][1] + (double)m[8 + i] * side[k][2]) / sc;
                 double d[3];
-                const bool has = bi < 2 && (side[k][0] != 0 || side[k][1] != 0 || side[k][2] != 0);
-                ref_capsule_side(p[0], p[1], bi < 2 ? sv : NULL, false, d);
-                (void)has;
-                const double o = (bi == 0 ? OFF : bi == 1 ? -OFF : OFF3) * R * sc;
+                ref_capsule_side(p[0], p[1], bi != 2 ? sv : NULL, false, d);
+                const double o = (bi == 0 ? OFF : bi == 1 ? -OFF : bi == 2 ? OFF3 : -OFF4) * R * sc;
                 for (int i = 0; i < 3; ++i) { ca[n][i] = p[0][i] + d[i] * o; cb[n][i] = p[1][i] + d[i] * o; }
+                if (bi == 3) {          /* pulled in: by the miters times |o|, and the trim, to a fifth at least */
+                    double ax[3] = { cb[n][0] - ca[n][0], cb[n][1] - ca[n][1], cb[n][2] - ca[n][2] }, len = sqrt(dot3(ax, ax));
+                    double ia = fabs(o) * miter[k][0] + TRIM * len, ib = fabs(o) * miter[k][1] + TRIM * len;
+                    if (ia + ib > 0.8 * len) { const double q = 0.8 * len / (ia + ib); ia *= q; ib *= q; }
+                    for (int i = 0; i < 3; ++i) { ca[n][i] += ax[i] / len * ia; cb[n][i] -= ax[i] / len * ib; }
+                }
                 cr[n] = R * sc; ckey[n] = 51u + (uint32_t)bi; clin[n] = (uint32_t)(in * NC + k);
                 n++;
             }
@@ -5366,7 +5383,39 @@ UTEST(render, mol_bond_orders) {
         n_circ += L->aromatic_count[k];
         n_dash += L->aromatic_dashed[k];
     }
-    printf("    %u aromatic rings, %u circles (%u dashed)\n", n_arom, n_circ, n_dash);
+    /* the partners: the delocalized bonds, the aromatic ones no circle covers (none here: every ring has one) */
+    uint8_t* in_circle = calloc(sys.bond.count + 1, 1);
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        const uint32_t* ai = (const uint32_t*)(img + L->aromatic_ring[k]);
+        for (uint32_t j = 0; j < L->aromatic_count[k]; ++j) {
+            const int32_t* ra = md_ring_atoms(&sys.ring, ai[j]);
+            for (uint32_t l = 0; l < 3u + k; ++l) {
+                md_bond_iter_t it = md_bond_iter(&sys.bond, (size_t)ra[l]);
+                for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) if (md_bond_iter_atom_index(&it) == ra[(l + 1) % (3u + k)]) in_circle[md_bond_iter_bond_index(&it)] = 1;
+            }
+        }
+    }
+    uint32_t n_deloc = 0, n_small = 0;
+    int32_t* mol_of = molecule_of_atoms(&sys);
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        const uint32_t f = sys.bond.flags[i];
+        if (!(md_bond_kind(f) == MD_BOND_KIND_COVALENT && (((f & MD_BOND_FLAG_DELOCALIZED) && !(f & MD_BOND_FLAG_AROMATIC)) || ((f & MD_BOND_FLAG_AROMATIC) && !in_circle[i])))) continue;
+        const int32_t m = mol_of[sys.bond.pairs[i].idx[0]];      /* a small molecule's (an ion): not static, none */
+        const bool small = m >= 0 && sys.molecule.offset[m + 1] - sys.molecule.offset[m] <= MD_RENDER_MOL_SMALL;
+        n_small += small;
+        n_deloc += !small;
+    }
+    free(mol_of);
+    const uint32_t* pbnd = (const uint32_t*)(img + L->partner_bond);
+    const uint32_t* ppts = (const uint32_t*)(img + L->partner_points);
+    for (uint32_t k = 0; k < L->partner_count; ++k) {
+        const uint32_t f = sys.bond.flags[pbnd[k]];
+        wrong += !(((f & MD_BOND_FLAG_DELOCALIZED) && !(f & MD_BOND_FLAG_AROMATIC)) || ((f & MD_BOND_FLAG_AROMATIC) && !in_circle[pbnd[k]]));
+        wrong += order[ppts[2 * k]] != (uint32_t)sys.bond.pairs[pbnd[k]].idx[0] || order[ppts[2 * k + 1]] != (uint32_t)sys.bond.pairs[pbnd[k]].idx[1];
+    }
+    printf("    %u aromatic rings, %u circles (%u dashed); %u partners of %u bonds that want one (and %u in small molecules)\n", n_arom, n_circ, n_dash, L->partner_count, n_deloc, n_small);
+    EXPECT_EQ(n_deloc, L->partner_count);
+    free(in_circle);
     EXPECT_EQ(0, wrong);
     EXPECT_EQ(n_arom, n_circ);
     EXPECT_GT(n_dash, 0u);
@@ -5398,7 +5447,15 @@ UTEST(render, mol_bond_orders) {
     rep.bond_orders = true;
     uint32_t n_cb = 0;            /* batches of circles: per size, solid and dashed */
     for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) n_cb += (topo.aromatic_count[k] > topo.aromatic_dashed[k]) + (topo.aromatic_dashed[k] > 0);
-    ASSERT_EQ(nb0 + 2u + n_cb, nb);   /* the covalent sticks, its doubles' two, the circles */
+    ASSERT_EQ(nb0 + 3u + n_cb, nb);   /* the covalent sticks, its doubles' two, the circles, the partners */
+    const md_render_batch_t* bpt = &bt[3 + n_cb];
+    EXPECT_EQ((uint64_t)(7 << 8 | MD_RENDER_MOL_PART_PARTNER), bpt->key);
+    EXPECT_EQ(topo.partner_count, bpt->count);
+    EXPECT_NEAR(0.066f, bpt->style.capsules.radius, 1e-6f);
+    EXPECT_NEAR(0.38f / 0.066f, bpt->style.capsules.offset, 1e-4f);
+    EXPECT_NEAR(0.08f, bpt->style.capsules.trim, 1e-6f);
+    EXPECT_NEAR(0.15f, bpt->style.capsules.dash_length, 1e-6f);
+    EXPECT_NEAR(0.15f, bpt->style.capsules.gap_length, 1e-6f);
     const md_render_batch_t* c6 = NULL;
     for (uint32_t i = 3; i < 3 + n_cb; ++i) {
         const md_render_polygon_style_t* ps = &bt[i].style.polygons;
@@ -5500,6 +5557,103 @@ UTEST(render, mol_bond_orders) {
             EXPECT_EQ((uint64_t)(7 << 8 | (MD_RENDER_MOL_PART_DOUBLE + m)), pk.key);
         }
         free(blk2);
+    }
+
+    /* The partners' sides and miters against md_gl's plane_side and inset_factor; then a
+       carboxylate face on, the partner of one of its bonds picked along its centre line */
+    {
+        uint8_t* blk3 = read_block(&fx, dyn, topo.dynamic_size);
+        const float*    ps   = (const float*)(blk3 + (bpt->style.capsules.side - dyn));
+        const uint32_t* pref = (const uint32_t*)(img + L->partner_ref);
+        const uint32_t* ppt  = (const uint32_t*)(img + L->partner_points);
+        const uint32_t* pbd  = (const uint32_t*)(img + L->partner_bond);
+        double pworst = 0;
+        int carbox = -1;
+        for (uint32_t k = 0; k < topo.partner_count; ++k) {
+            double pa[3], pb[3], ca[3] = { 0, 0, 0 }, cb[3] = { 0, 0, 0 };
+            for (int i = 0; i < 3; ++i) { pa[i] = (&state.xyz[order[ppt[2 * k]]].x)[i]; pb[i] = (&state.xyz[order[ppt[2 * k + 1]]].x)[i]; }
+            const bool ha = pref[2 * k] != UINT32_MAX, hb = pref[2 * k + 1] != UINT32_MAX;
+            if (ha) for (int i = 0; i < 3; ++i) ca[i] = (&state.xyz[order[pref[2 * k]]].x)[i] - pa[i];
+            if (hb) for (int i = 0; i < 3; ++i) cb[i] = (&state.xyz[order[pref[2 * k + 1]]].x)[i] - pb[i];
+            double ax[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(ax, ax));
+            for (int i = 0; i < 3; ++i) ax[i] /= l;
+            double nv[3] = { 0, 0, 0 }, c2 = 0, sd[3] = { 0, 0, 0 };
+            if (ha) { cross3(ax, ca, nv); c2 = dot3(ca, ca); }
+            if (hb) { double nb[3]; cross3(ax, cb, nb); const double sg = dot3(nv, nb) < 0 ? -1 : 1; for (int i = 0; i < 3; ++i) nv[i] += sg * nb[i]; c2 = fmax(c2, dot3(cb, cb)); }
+            if (c2 > 0 && dot3(nv, nv) > 0.01 * c2) {
+                cross3(nv, ax, sd);
+                const double sl = sqrt(dot3(sd, sd));
+                for (int i = 0; i < 3; ++i) sd[i] /= sl;
+                if ((ha && dot3(sd, ca) < 0) || (!ha && hb && dot3(sd, cb) < 0)) for (int i = 0; i < 3; ++i) sd[i] = -sd[i];
+            }
+            double mt[2];
+            for (int e = 0; e < 2; ++e) {
+                const double* c = e ? cb : ca;
+                if (!(e ? hb : ha)) { mt[e] = 0.57735; continue; }
+                double cs = (e ? -1 : 1) * dot3(ax, c) / sqrt(dot3(c, c));
+                cs = fmin(fmax(cs, -0.999), 0.999);
+                mt[e] = sqrt((1 + cs) / (1 - cs));
+            }
+            const float* g = ps + 4 * k;
+            uint32_t w;
+            memcpy(&w, &g[3], 4);
+            const double gm[2] = { half_to_float(w & 0xFFFFu), half_to_float(w >> 16) };
+            for (int i = 0; i < 3; ++i) pworst = fmax(pworst, fabs(g[i] - sd[i]));
+            for (int e = 0; e < 2; ++e) pworst = fmax(pworst, fabs(gm[e] - mt[e]) / fmax(mt[e], 1.0) * 0.1);   /* halves: 1e-3 relative */
+            /* a carboxylate's (an O-C-O centre with two delocalized bonds) with a side */
+            if (carbox < 0 && dot3(sd, sd) > 0.5 && ha != hb && md_atom_atomic_number(&sys.atom, order[ppt[2 * k + (ha ? 0 : 1)]]) == 6) carbox = (int)k;
+        }
+        printf("    partners: the worst off the reference %.2e\n", pworst);
+        EXPECT_LT(pworst, 2e-4);
+        ASSERT_GE(carbox, 0);
+        const uint32_t k = (uint32_t)carbox;
+        const float* g = ps + 4 * k;
+        double pa[3], pb[3];
+        for (int i = 0; i < 3; ++i) { pa[i] = (&state.xyz[order[ppt[2 * k]]].x)[i]; pb[i] = (&state.xyz[order[ppt[2 * k + 1]]].x)[i]; }
+        double x[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, len = sqrt(dot3(x, x));
+        for (int i = 0; i < 3; ++i) x[i] /= len;
+        double y[3] = { g[0], g[1], g[2] }, z[3];
+        cross3(x, y, z);
+        uint32_t w;
+        memcpy(&w, &g[3], 4);
+        const double d = 0.38, ia = d * half_to_float(w & 0xFFFFu) + 0.08 * len, ib = d * half_to_float(w >> 16) + 0.08 * len;
+        double eye[3];
+        for (int i = 0; i < 3; ++i) eye[i] = 0.5 * (pa[i] + pb[i]) + 30.0 * z[i];
+        const uint32_t W = 160, H = 160;
+        cam_t c = { .ortho = true, .half_h = 1.6f, .aspect = 1.0f, .n = 0.0f, .far_ = 100.0f };
+        md_render_camera_t cam = make_camera(&c);
+        for (int i = 0; i < 3; ++i) { cam.view[4 * i + 0] = (float)x[i]; cam.view[4 * i + 1] = (float)y[i]; cam.view[4 * i + 2] = (float)z[i]; }
+        cam.view[12] = (float)-dot3(x, eye); cam.view[13] = (float)-dot3(y, eye); cam.view[14] = (float)-dot3(z, eye);
+        md_render_frame_t f = frame_of(W, H, cam, bt, nb);
+        memcpy(f.content, content, sizeof(content));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        if (getenv("MD_RENDER_DUMP")) {
+            uint32_t* col = malloc(W * H * 4);
+            if (f_read(&fx, md_render_view_targets(fx.view).color, col, W * H * 4)) {
+                FILE* fp = fopen(getenv("MD_RENDER_DUMP"), "wb");
+                if (fp) {
+                    fprintf(fp, "P6\n%u %u\n255\n", W, H);
+                    for (uint32_t i = 0; i < W * H; ++i) { uint8_t px3[3] = { (uint8_t)col[i], (uint8_t)(col[i] >> 8), (uint8_t)(col[i] >> 16) }; fwrite(px3, 1, 3, fp); }
+                    fclose(fp);
+                }
+            }
+            free(col);
+        }
+        /* along its centre line: from -len/2 + ia to len/2 - ib in x, d up in y */
+        int on = 0, other = 0;
+        for (int sI = 0; sI <= 20; ++sI) {
+            const double sx = -0.5 * len + ia + (len - ia - ib) * sI / 20.0;
+            const uint32_t px = (uint32_t)((sx / c.half_h * 0.5 + 0.5) * W);
+            const uint32_t py = (uint32_t)((0.5 - d / c.half_h * 0.5) * H);
+            md_render_pick_t pk;
+            md_render_mol_hit_t hit;
+            if (!f_pick(&fx, px, py, &pk) || !md_render_mol_decode_pick(&pk, &hit)) continue;
+            if ((pk.key & 0xFF) == MD_RENDER_MOL_PART_PARTNER) { on += hit.kind == MD_RENDER_MOL_HIT_BOND && hit.bond == pbd[k]; other += hit.bond != pbd[k]; }
+        }
+        printf("    a carboxylate's partner: %d of 21 picks along it on its dashes\n", on);
+        EXPECT_GT(on, 5);
+        EXPECT_EQ(0, other);
+        free(blk3);
     }
 
     /* The first solid 6-ring's circle face on: picks as the ring, the corner nearest the hit */

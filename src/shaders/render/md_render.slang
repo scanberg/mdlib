@@ -174,8 +174,8 @@ struct Batch {
     float4* cap_side;           // along this side (F_SIDE), float4 per capsule
     float   poly_inset;         // POLYGONS circles (F_CIRCLE): the centre line's inset from the edges
     uint    poly_dashes;        // the dashes over each edge (0: solid)
+    float   cap_trim;           // CAPSULES displaced: their ends pulled in by this of their length
     uint    _pad_d0;            // to the float4 alignment
-    uint    _pad_d1;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -540,6 +540,31 @@ float3 capsule_side(ViewData v, Mat T, float s, Batch b, uint e, float3 pa, floa
     h *= rsqrt(hh);
     float3 d = h.x * u + h.y * vv;
     return dot(d, sv) < 0.0 ? -d : d;
+}
+
+// A displaced capsule's ends pulled in (md_render.h): by its displacement d
+// times each end's miter (side.w, two halves) and by trim of its length,
+// together at most four fifths of it
+float2 capsule_pull(Batch b, uint e, float len, float d) {
+    float2 m = float2(0.0);
+    if ((b.flags & F_SIDE) != 0u) {
+        uint w = asuint(b.cap_side[gated(b, F_SIDE, e)].w);
+        m = float2(f16tof32(w & 0xFFFFu), f16tof32(w >> 16u));
+    }
+    float2 p = m * d + b.cap_trim * len;
+    float  s = p.x + p.y;
+    return s > 0.8 * len ? p * (0.8 * len / s) : p;
+}
+
+void capsule_displace(Batch b, uint e, float3 side, float rad, inout float3 pa, inout float3 pb) {
+    float  d   = abs(b.cap_offset) * rad;
+    float3 dsp = side * (b.cap_offset * rad);
+    float3 ax  = pb - pa;
+    float  len = length(ax);
+    float2 pl  = len > 0.0 ? capsule_pull(b, e, len, d) : float2(0.0);
+    float3 u   = len > 0.0 ? ax / len : float3(0.0);
+    pa += dsp + u * pl.x;
+    pb += dsp - u * pl.y;
 }
 
 float capsule_param(float3 p, float3 pa, float3 pb) {
@@ -1315,8 +1340,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
             if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
             g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t, a0) && fade_keeps(t, a1)));
         }
-        g.a += side * (b.cap_offset * g.r);       // displaced: by its radius as drawn
-        g.b += side * (b.cap_offset * g.r);
+        if ((b.flags & F_DISPLACED) != 0u) capsule_displace(b, e, side, g.r, g.a, g.b);   // by its radius as drawn
     } else {
         return g;
     }
@@ -3133,8 +3157,10 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 qa  = pa, qb = pb;               // a dash's: trimmed
         bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, rad, qa, qb);
         if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (qa.z + qb.z)));
-        float3 dsp = side * (b.cap_offset * rad);   // as element_geo
-        pa += dsp; pb += dsp; qa += dsp; qb += dsp;
+        if ((b.flags & F_DISPLACED) != 0u) {        // as element_geo
+            capsule_displace(b, h.element, side, rad, qa, qb);
+            if (dashed) { float3 dsp = side * (b.cap_offset * rad); pa += dsp; pb += dsp; } else { pa = qa; pb = qb; }
+        }
         float3 dn  = float3(0.0);
         float  t;
         if (dashed) {

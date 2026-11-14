@@ -103,11 +103,12 @@ Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, the bonds that are not covalent dashed in a style per kind (md_gl's
 BOND DASHES: see md_render_mol_dashes_t); CARTOON
 of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
-(md_render_mol_rep_t.chain_gaps); double and triple bonds (bond_orders).
+(md_render_mol_rep_t.chain_gaps); the bond orders (bond_orders: double and
+triple bonds, the circles of aromatic rings, the dashed partners of
+delocalized bonds).
 Declared for the next phases: RIBBONS, coarse grained nucleic acids and
 lipids (points derived from several atoms: the ideal rings of a Martini
-base, lipid heads), glyphs, the circles of aromatic rings and the dashed
-partners of delocalized bonds.
+base, lipid heads), glyphs.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -312,6 +313,18 @@ typedef struct md_render_mol_topo_t {
     uint32_t      aromatic_dashed[MD_RENDER_MOL_RING_SIZES];   /* of them, the last  */
     md_gpu_addr_t aromatic_points[MD_RENDER_MOL_RING_SIZES];   /* uint32 [(3 + k) * count] */
     md_gpu_addr_t aromatic_ring[MD_RENDER_MOL_RING_SIZES];     /* uint32 per ring    */
+
+    /* The dashed partners, for the bond orders (md_gl's): of the delocalized
+       bonds (carboxylate, nitro, guanidinium, phosphate, ...) and of the
+       aromatic bonds no circle covers, both ends static. Between the bond's
+       points, each with its index in sys->bond; the atoms by its ends that
+       give its side (within the group: towards the next delocalized bond of
+       its centre; along the ring; else the plane) are internal, the side
+       (md_render's, with the miters of its ends) the update's. */
+    uint32_t      partner_count;
+    md_gpu_addr_t partner_points;          /* uint32 [2 * partner_count]               */
+    md_gpu_addr_t partner_bond;            /* uint32 per partner: index in sys->bond    */
+    md_gpu_addr_t partner_ref;             /* internal: uint32 [2] per partner          */
 
     /* Derived points: each a weighted sum of resident atoms, taken at their
        images nearest the first one's (where the update has a cell: the
@@ -660,8 +673,10 @@ typedef struct md_render_mol_rep_t {
        circle inside it (md_render's polygon circles), a third of the stick
        thick, 1.9 times the envelope inside its bonds, solid, or dashed in a
        fused aromatic system (naphthalene, indole, a purine), whose sextets
-       are not the rings' own; its bonds keep their sticks. Delocalized bonds
-       keep their stick: their dashed partners are not yet. */
+       are not the rings' own; its bonds keep their sticks. A delocalized
+       bond (and an aromatic one no circle covers) keeps its stick and gets a
+       thin dashed partner beside it towards its group, an inner outline
+       of the group. */
     bool                     bond_orders;
 
     /* Colour of atoms and sticks. COLOR_POINTS reads `color` (uint32 RGBA8
@@ -695,6 +710,7 @@ enum {
     MD_RENDER_MOL_PART_DOUBLE,          /* + 0, 1: the sticks of the double bonds */
     MD_RENDER_MOL_PART_TRIPLE = MD_RENDER_MOL_PART_DOUBLE + 2,  /* + 0, 1, 2: of the triple bonds */
     MD_RENDER_MOL_PART_AROMATIC = MD_RENDER_MOL_PART_TRIPLE + 3, /* + 2 (corners - 3) + dashed: the circles */
+    MD_RENDER_MOL_PART_PARTNER  = MD_RENDER_MOL_PART_AROMATIC + 2 * MD_RENDER_MOL_RING_SIZES,  /* the partners */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it

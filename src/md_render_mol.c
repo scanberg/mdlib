@@ -44,6 +44,7 @@ typedef struct topo_layout_t {
     uint64_t gap_points, gap_residue;
     uint64_t order_points, order_bond, order_ref, bond_single;
     uint64_t aromatic_points[MD_RENDER_MOL_RING_SIZES], aromatic_ring[MD_RENDER_MOL_RING_SIZES];
+    uint64_t partner_points, partner_bond, partner_ref;
     uint64_t small_tables, size;
 } topo_layout_t;
 
@@ -153,6 +154,65 @@ static void plane_refs(const md_system_t* sys, const float* xyz, const uint8_t* 
     }
 }
 
+/* The first of plane_refs, for the side of a dashed partner */
+static uint32_t plane_ref(const md_system_t* sys, const float* xyz, const uint8_t* ok, uint32_t e, uint32_t o) {
+    uint32_t r[2];
+    plane_refs(sys, xyz, ok, e, o, r);
+    return r[0];
+}
+
+static uint32_t bond_flags_of(const md_system_t* sys, const md_bond_iter_t* it) {
+    return sys->bond.flags ? (uint32_t)sys->bond.flags[md_bond_iter_bond_index(it)] : 0u;
+}
+
+/* md_gl's bo_aromatic_ref: an aromatic bond in no circle has its partner on
+   the side of the aromatic bonds that continue from its ends (along its
+   ring, when that is too large for a circle), failing those in its plane */
+static uint32_t aromatic_ref(const md_system_t* sys, const float* xyz, const uint8_t* ok, uint32_t e, uint32_t o) {
+    md_bond_iter_t it = md_bond_iter(&sys->bond, e);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const int32_t  c = md_bond_iter_atom_index(&it);
+        const uint32_t f = bond_flags_of(sys, &it);
+        if (c >= 0 && (uint32_t)c != o && ok[c] && (f & MD_BOND_FLAG_AROMATIC) && md_bond_kind((md_bond_flags_t)f) != MD_BOND_KIND_COORDINATE &&
+            off_axis(xyz, e, o, (uint32_t)c)) return (uint32_t)c;
+    }
+    return plane_ref(sys, xyz, ok, e, o);
+}
+
+/* md_gl's bo_delocalized_refs: a delocalized bond has its partner within
+   the group. The centre of the group is the end with more delocalized bonds
+   (the C of a carboxylate or guanidinium, the N of a nitro group); the
+   partner lies towards the next of them in order of atom index, so the
+   partners of a carboxylate are both between its O, and those of a
+   guanidinium one in each angle. No group to speak of: the plane. */
+static void delocalized_refs(const md_system_t* sys, const float* xyz, const uint8_t* ok, uint32_t a, uint32_t b, uint32_t out[2]) {
+    uint32_t na = 0, nb = 0;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, a);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) na += (bond_flags_of(sys, &it) & MD_BOND_FLAG_DELOCALIZED) ? 1u : 0u;
+    it = md_bond_iter(&sys->bond, b);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) nb += (bond_flags_of(sys, &it) & MD_BOND_FLAG_DELOCALIZED) ? 1u : 0u;
+    out[0] = out[1] = UINT32_MAX;
+    if (na < 2 && nb < 2) {
+        out[0] = plane_ref(sys, xyz, ok, a, b);
+        out[1] = plane_ref(sys, xyz, ok, b, a);
+        return;
+    }
+    const uint32_t center = na >= nb ? a : b, other = center == a ? b : a;
+    uint32_t nbr[8], n = 0;
+    it = md_bond_iter(&sys->bond, center);
+    for (; md_bond_iter_has_next(&it) && n < 8; md_bond_iter_next(&it)) {
+        if (!(bond_flags_of(sys, &it) & MD_BOND_FLAG_DELOCALIZED)) continue;
+        const uint32_t c = (uint32_t)md_bond_iter_atom_index(&it);
+        uint32_t k = n++;
+        while (k > 0 && nbr[k - 1] > c) { nbr[k] = nbr[k - 1]; --k; }
+        nbr[k] = c;
+    }
+    uint32_t ref = UINT32_MAX;
+    for (uint32_t k = 0; k < n; ++k) if (nbr[k] == other) { ref = nbr[(k + 1) % n]; break; }
+    if (ref == other || (ref != UINT32_MAX && !ok[ref])) ref = UINT32_MAX;
+    out[center == a ? 0 : 1] = ref;
+}
+
 static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_type_idx_t* types, const uint32_t* local, uint32_t nb) {
     uint32_t h = 0x811C9DC5u ^ (na * 0x9E3779B1u) ^ (nb * 0x85EBCA77u);
     #define MIX(w) do { h ^= (w); h *= 0x01000193u; h ^= h >> 15; } while (0)
@@ -166,7 +226,7 @@ static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, na_axis, ord_side, size, size_velocity;
+    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, na_axis, ord_side, prt_side, size, size_velocity;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
@@ -177,15 +237,15 @@ typedef struct dyn_layout_t {
    point, md_render's) and the orientation's memory: per control point
    whether the next one's axis is turned against it, then a word naming the
    topology instance that wrote them (none yet: no memory). The nucleic
-   band's axes (float4 per control point). The double bonds' sides (float4
-   each, md_render's). The points and their velocities
+   band's axes (float4 per control point). The double bonds' sides and the
+   partners' (float4 each, md_render's). The points and their velocities
    include the derived points (after the atoms'). Last, only in a block
    allocated with them, the points' velocities.
    Not packed positions apart (1dd0efd6): fewer bytes per update, but
    md_render reads the points several times a frame, much of it scattered,
    and a 12-byte position straddles 32-byte sectors (raster after positions
    changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
-static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na, uint32_t n_der, uint32_t n_dbl) {
+static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na, uint32_t n_der, uint32_t n_dbl, uint32_t n_prt) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
@@ -200,6 +260,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.bb_flip  = o; o = align256(o + ((uint64_t)n_cp + 1u) * 4u);
     L.na_axis  = o; o = align256(o + (uint64_t)n_na * 16u);
     L.ord_side = o; o = align256(o + (uint64_t)n_dbl * 16u);
+    L.prt_side = o; o = align256(o + (uint64_t)n_prt * 16u);
     L.size = o;
     L.velocity = o; o = align256(o + ((uint64_t)n_atoms + n_der) * 8u);
     L.size_velocity = o;
@@ -207,7 +268,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
 }
 
 static dyn_layout_t dyn_of(const md_render_mol_topo_t* t) {
-    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count, t->derived_count, t->order_count[0]);
+    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count, t->derived_count, t->order_count[0], t->partner_count);
 }
 
 /* The frames block: each slot's parameters (32 words), the slots' frames
@@ -808,6 +869,47 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) { T->aromatic_count[k] = ar_n[k]; T->aromatic_dashed[k] = ar_d[k]; }
 
+    /* The dashed partners (see the topology): md_gl's compute_bond_partners,
+       the bonds of the circles' rings covered */
+    uint8_t* covered = md_temp_alloc_zero(temp, (size_t)nb_sys + 1);
+    if (!covered) return false;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        for (uint32_t j = 0; j < ar_n[k]; ++j) {
+            const int32_t* ra = md_ring_atoms(RDA, ar_idx[k][j]);
+            const uint32_t rn = 3u + k;
+            for (uint32_t l = 0; l < rn; ++l) {
+                md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)ra[l]);
+                for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                    if (md_bond_iter_atom_index(&it) == ra[(l + 1) % rn]) covered[md_bond_iter_bond_index(&it)] = 1;
+                }
+            }
+        }
+    }
+    uint32_t  n_prt  = 0;
+    uint32_t* pt_pts = md_temp_alloc(temp, ((size_t)cov_static + 1) * 8u);
+    uint32_t* pt_bnd = md_temp_alloc(temp, ((size_t)cov_static + 1) * 4u);
+    uint32_t* pt_ref = md_temp_alloc(temp, ((size_t)cov_static + 1) * 8u);
+    if (!pt_pts || !pt_bnd || !pt_ref) return false;
+    if (sys->bond.flags) {
+        const float* ref_xyz = (md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= n) ? (const float*)sys->reference.xyz : NULL;
+        for (uint32_t j = 0; j < cov_static; ++j) {
+            const uint32_t i = sorted[cov_beg + j], a = BA(i), b = BB(i), bi = kept[i];
+            const uint32_t f = (uint32_t)sys->bond.flags[bi];
+            const bool aromatic    = (f & MD_BOND_FLAG_AROMATIC) && !covered[bi];
+            const bool delocalized = (f & MD_BOND_FLAG_DELOCALIZED) && !(f & MD_BOND_FLAG_AROMATIC);
+            if (!(aromatic || delocalized) || md_bond_kind((md_bond_flags_t)f) != MD_BOND_KIND_COVALENT || !st_ok[a] || !st_ok[b] || a == b) continue;
+            uint32_t r[2];
+            if (aromatic) { r[0] = aromatic_ref(sys, ref_xyz, st_ok, a, b); r[1] = aromatic_ref(sys, ref_xyz, st_ok, b, a); }
+            else          delocalized_refs(sys, ref_xyz, st_ok, a, b, r);
+            pt_pts[2 * n_prt + 0] = inv[a];
+            pt_pts[2 * n_prt + 1] = inv[b];
+            pt_ref[2 * n_prt + 0] = r[0] != UINT32_MAX ? inv[r[0]] : UINT32_MAX;
+            pt_ref[2 * n_prt + 1] = r[1] != UINT32_MAX ? inv[r[1]] : UINT32_MAX;
+            pt_bnd[n_prt++] = bi;
+        }
+    }
+    T->partner_count = n_prt;
+
     /* Derived points (see the topology). The lipids' heads: each at the
        centre of its resident heavy atoms (beads), standing for the first */
     derived_build_t der = { .alloc = md_temp_allocator(temp) };
@@ -933,6 +1035,9 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         L.aromatic_points[k] = o; o = align256(o + (uint64_t)ar_n[k] * (3u + k) * 4u);
         L.aromatic_ring[k]   = o; o = align256(o + (uint64_t)ar_n[k] * 4u);
     }
+    L.partner_points      = o; o = align256(o + (uint64_t)n_prt * 8u);
+    L.partner_bond        = o; o = align256(o + (uint64_t)n_prt * 4u);
+    L.partner_ref         = o; o = align256(o + (uint64_t)n_prt * 8u);
     L.derived_offset      = o; o = align256(o + ((uint64_t)n_der + 1u) * 4u);
     L.derived_member      = o; o = align256(o + (uint64_t)n_dmem * 4u);
     L.derived_weight      = o; o = align256(o + (uint64_t)n_dmem * 4u);
@@ -1023,6 +1128,9 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         memcpy(img + L.aromatic_points[k], ar_pts[k], (size_t)ar_n[k] * (3u + k) * 4u);
         memcpy(img + L.aromatic_ring[k],   ar_idx[k], (size_t)ar_n[k] * 4u);
     }
+    memcpy(img + L.partner_points, pt_pts, (size_t)n_prt * 8u);
+    memcpy(img + L.partner_bond,   pt_bnd, (size_t)n_prt * 4u);
+    memcpy(img + L.partner_ref,    pt_ref, (size_t)n_prt * 8u);
     if (n_ord_all) {
         float* single = (float*)(img + L.bond_single);
         for (uint32_t j = 0; j < cov_n; ++j) single[j] = (j < cov_static && od_kind[j]) ? 0.0f : 1.0f;
@@ -1051,8 +1159,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
 
     T->size                = L.size;
-    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0]).size;
-    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0]).size_velocity;
+    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt).size;
+    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt).size_velocity;
     T->resident            = L.resident;
     T->regroups            = L.state;
     T->atom_type           = L.atom_type;
@@ -1087,6 +1195,9 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         T->aromatic_points[k] = L.aromatic_points[k];
         T->aromatic_ring[k]   = L.aromatic_ring[k];
     }
+    T->partner_points      = L.partner_points;
+    T->partner_bond        = L.partner_bond;
+    T->partner_ref         = L.partner_ref;
     T->derived_offset      = L.derived_offset;
     T->derived_member      = L.derived_member;
     T->derived_weight      = L.derived_weight;
@@ -1145,6 +1256,9 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
         out->aromatic_points[k] = base + plan->layout.aromatic_points[k];
         out->aromatic_ring[k]   = base + plan->layout.aromatic_ring[k];
     }
+    out->partner_points      = base + plan->layout.partner_points;
+    out->partner_bond        = base + plan->layout.partner_bond;
+    out->partner_ref         = base + plan->layout.partner_ref;
     out->derived_offset      = base + plan->layout.derived_offset;
     out->derived_member      = base + plan->layout.derived_member;
     out->derived_weight      = base + plan->layout.derived_weight;
@@ -1164,6 +1278,7 @@ struct md_render_mol {
     md_gpu_kernel_t k_na_axis;                                       /* the nucleic band */
     md_gpu_kernel_t k_derive;                                        /* the derived points */
     md_gpu_kernel_t k_bond_sides;                                    /* the double bonds' sides */
+    md_gpu_kernel_t k_bond_partners;                                 /* the partners' sides */
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -1176,7 +1291,7 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t bb_index, bb_segment, bb_carbonyl, bb_chain, bb_axis, bb_flip, bb_ss, bb_out;
     md_gpu_addr_t na_index, na_face, na_axis;
     md_gpu_addr_t der_offset, der_member, der_weight, der_radius;
-    md_gpu_addr_t ord_points, ord_ref, ord_side;
+    md_gpu_addr_t ord_points, ord_ref, ord_side, prt_points, prt_ref, prt_side;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t fr_threads;
@@ -1184,9 +1299,9 @@ typedef struct gpu_mol_args_t {
     float    w[4], dw[4];
     uint32_t bb_count, bb_chains, bb_history, has_ss;
     float    bb_scale[3];                                           /* coil, helix, sheet */
-    uint32_t dbg, na_count, der_count, der_cell, ord_count;
+    uint32_t dbg, na_count, der_count, der_cell, ord_count, prt_count;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 59 * 8 + 44 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 62 * 8 + 46 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -1223,9 +1338,10 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_na_axis_kernel();     r->k_na_axis    = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_derive_kernel();      r->k_derive     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_bond_sides_kernel();  r->k_bond_sides = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_bond_partners_kernel(); r->k_bond_partners = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis || !r->k_derive || !r->k_bond_sides) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis || !r->k_derive || !r->k_bond_sides || !r->k_bond_partners) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -1237,7 +1353,7 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis, &r->k_derive, &r->k_bond_sides };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis, &r->k_derive, &r->k_bond_sides, &r->k_bond_partners };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -1337,11 +1453,15 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->ord_points          = topo->order_points;
     a->ord_ref             = topo->order_ref;
     a->ord_count           = topo->order_count[0];
+    a->prt_points          = topo->partner_points;
+    a->prt_ref             = topo->partner_ref;
+    a->prt_count           = topo->partner_count;
     if (dynamic) {
         a->bb_axis  = dynamic + D.bb_axis;
         a->bb_flip  = dynamic + D.bb_flip;
         a->na_axis  = dynamic + D.na_axis;
         a->ord_side = dynamic + D.ord_side;
+        a->prt_side = dynamic + D.prt_side;
     }
 }
 
@@ -1496,6 +1616,9 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     }
     if (ok && topo->order_count[0]) {            /* the double bonds' planes */
         ok = launch(s, r->k_bond_sides, groups_for(topo->order_count[0], 64), &a, hook, user, "bond sides");
+    }
+    if (ok && topo->partner_count) {             /* the partners' sides */
+        ok = launch(s, r->k_bond_partners, groups_for(topo->partner_count, 64), &a, hook, user, "bond partners");
     }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return ok;
@@ -1911,7 +2034,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
         { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
         { "bb_support", r->k_bb_support }, { "bb_orient", r->k_bb_orient }, { "bb_profile", r->k_bb_profile },
-        { "na_axis", r->k_na_axis }, { "derive", r->k_derive }, { "bond_sides", r->k_bond_sides },
+        { "na_axis", r->k_na_axis }, { "derive", r->k_derive }, { "bond_sides", r->k_bond_sides }, { "bond_partners", r->k_bond_partners },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -2226,6 +2349,25 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
                     put(out, cap, &n, &bc);
                 }
             }
+            /* The delocalized bonds' partners (and the aromatic bonds' in no
+               circle): md_gl's, a third of the stick thick, 1.9 envelopes
+               off it towards their group, an inner outline of it, ends
+               pulled in a little more; dashes and gaps 0.75 of the stick */
+            if (topo->partner_count) {
+                md_render_batch_t bp = base;
+                bp.key   = (rep->key << 8) | MD_RENDER_MOL_PART_PARTNER;
+                bp.kind  = MD_RENDER_CAPSULES;
+                bp.count = topo->partner_count;
+                bp.index = topo->partner_points;
+                bp.id    = topo->partner_bond;
+                bp.style.capsules.radius      = tube;
+                bp.style.capsules.offset      = inset / tube;
+                bp.style.capsules.side        = dynamic + dyn_of(topo).prt_side;
+                bp.style.capsules.trim        = 0.08f;
+                bp.style.capsules.dash_length = 0.75f * stick_radius;
+                bp.style.capsules.gap_length  = 0.75f * stick_radius;
+                put(out, cap, &n, &bp);
+            }
         }
         put_gaps(out, cap, &n, &base, topo, rep, 1, CHAIN_GAP_RADIUS_LINK * stick_radius, dash_ends);
     }
@@ -2287,7 +2429,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
         return true;
     }
     if (((part >= MD_RENDER_MOL_PART_BONDS && part < MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_CLASS_COUNT) ||
-         (part >= MD_RENDER_MOL_PART_DOUBLE && part < MD_RENDER_MOL_PART_TRIPLE + 3)) && pick->kind == MD_RENDER_CAPSULES) {
+         (part >= MD_RENDER_MOL_PART_DOUBLE && part < MD_RENDER_MOL_PART_TRIPLE + 3) || part == MD_RENDER_MOL_PART_PARTNER) && pick->kind == MD_RENDER_CAPSULES) {
         hit->kind = MD_RENDER_MOL_HIT_BOND;
         hit->bond = pick->id;
         hit->atom = pick->attr;
