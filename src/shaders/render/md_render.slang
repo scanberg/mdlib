@@ -85,6 +85,7 @@ static const uint F_FADE         = F_FADE_OUT | F_FADE_IN;
 static const uint F_SPL_AXIS     = 1u << 19;  // SPLINES: spl_axis
 static const uint F_SPL_PROFILE  = 1u << 20;  // SPLINES: spl_profile
 static const uint F_SPL_THROUGH  = 1u << 21;  // SPLINES: through their control points (spline_controls)
+static const uint F_DASHED       = 1u << 22;  // CAPSULES: dashed (dash_hit)
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -162,9 +163,13 @@ struct Batch {
     float4* spl_axis;           // SPLINES: per control point, the profile's long axis (xyz)
     float4* spl_profile;        // SPLINES: per control point, its part's half widths and radii at its start and end
     uint    poly_n;             // POLYGONS: corners of each
-    uint    _pad_b0;            // to the float4 alignment
-    uint    _pad_b1;
-    uint    _pad_b2;
+    float   dash;               // CAPSULES dashed (F_DASHED): dash and gap lengths,
+    float   gap;
+    float   end_scale;          // the spheres at the ends they run between
+    float   end_add;
+    uint    _pad_c0;            // to the float4 alignment
+    uint    _pad_c1;
+    uint    _pad_c2;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -415,6 +420,85 @@ float capsule_hit(Ray r, float3 pa, float3 pb, float rad) {
     float t1 = sphere_hit(r, pb, rad, false);
     if (t1 >= 0.0 && (best < 0.0 || t1 < best)) best = t1;
     return best;
+}
+
+// Dashed capsules (F_DASHED): the segment between the spheres at the ends
+// (element_geo trims it), dashes along it. The pattern of one of length len:
+// as many as come closest to the batch's lengths, at least two, stretched
+// alike so that the first starts at its start and the last ends at its end.
+// (dash, period).
+float2 dash_pattern(Batch b, float len, float s) {
+    float D = b.dash * s, G = b.gap * s;
+    float n = max(2.0, round((len + G) / (D + G)));
+    float k = len / (n * D + (n - 1.0) * G);
+    return float2(D * k, (D + G) * k);
+}
+
+// The trimmed ends of capsule pa-pb: by the spheres at its points (each
+// point's radius times the batch's end_scale plus end_add, times the
+// instance's scale s). False where they meet: nothing between them.
+bool dash_trim(Batch b, uint p0, uint p1, float s, inout float3 pa, inout float3 pb) {
+    float3 ax  = pb - pa;
+    float  len = length(ax);
+    float  ia  = (point_radius(b, p0) * b.end_scale + b.end_add) * s;
+    float  ib  = (point_radius(b, p1) * b.end_scale + b.end_add) * s;
+    if (!(len > ia + ib)) return false;
+    float3 u = ax / len;
+    pa += u * ia;
+    pb -= u * ib;
+    return true;
+}
+
+// Ray against a dashed capsule (the trimmed pa-pb): flat-ended cylinders of
+// radius rad, the first from pa, `dash` long and `period` apart, the last
+// ending at pb. The ray's place along the axis, y, is linear in t: within
+// the infinite cylinder (t0 .. t1) it hits where it enters, through the
+// side, if y is in a dash there; else where y next reaches a dash's end in
+// its direction, through that flat end, if still within. t (-1: none) and
+// the normal.
+float dash_hit(Ray r, float3 pa, float3 pb, float rad, float dash, float period, out float3 n) {
+    n = -r.d;
+    float3 ba  = pb - pa;
+    float  len = length(ba);
+    if (!(len > 0.0) || !(period > 0.0)) return -1.0;
+    float3 u  = ba / len;
+    float3 oa = r.o - pa;
+    float  du = dot(r.d, u), ou = dot(oa, u);
+    float3 dp = r.d - u * du, op = oa - u * ou;      // across the axis
+    float  A = dot(dp, dp), B = dot(dp, op), C = dot(op, op) - rad * rad;
+    float  t0 = -3.0e38, t1 = 3.0e38;
+    if (A > 1e-12) {
+        float h = B * B - A * C;
+        if (h < 0.0) return -1.0;
+        h  = sqrt(h);
+        t0 = (-B - h) / A;
+        t1 = (-B + h) / A;
+    } else if (C > 0.0) {
+        return -1.0;                                 // along the axis, outside it
+    }
+    float ts = max(t0, 0.0);
+    if (ts > t1) return -1.0;
+    float y  = ou + ts * du;
+    float kf = floor(y / period);
+    if (y >= 0.0 && y <= len && y - kf * period <= dash) {
+        if (ts == t0) n = (op + dp * ts) / rad;       // the side
+        return ts;
+    }
+    float yb;                                        // the end it reaches next
+    if (du > 0.0) {
+        if (y > len) return -1.0;
+        yb = y < 0.0 ? 0.0 : (kf + 1.0) * period;    // the next dash's start
+        if (yb > len - dash + 1e-6 * len) return -1.0;
+    } else if (du < 0.0) {
+        if (y < 0.0) return -1.0;
+        yb = y > len ? len : kf * period + dash;     // the last dash's end
+    } else {
+        return -1.0;
+    }
+    float tb = ts + (yb - y) / du;
+    if (tb > t1) return -1.0;
+    n = du > 0.0 ? -u : u;
+    return tb;
 }
 
 float capsule_param(float3 p, float3 pa, float3 pb) {
@@ -1183,6 +1267,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.r  = capsule_radius(b, e) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
         g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
+        if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.a, g.b)) return g;   // the spheres meet
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
             float2 t = fade_ts(b, -0.5 * (g.a.z + g.b.z));      // the midpoint
             if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
@@ -1924,9 +2009,11 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
     Geo   g;
     g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint ent = 0u;                      // the list entry: global work index
+    bool dashed = false;                // dashed capsules: no compute raster
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
+        dashed = (b.flags & F_DASHED) != 0u;
         // the fade: not for the state lists, which do not depend on the
         // camera (the mask's raster applies it)
         if (SPL != 0) g = b.kind == KIND_POLYGONS ? poly_geo(v, b, inst, e, !state_only) : spline_geo(v, b, inst, e, !state_only);
@@ -1944,7 +2031,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         } else if (SPL == 0 && !state_only && v.occlusion != 0u && ext > v.occl_min_px && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
             out = OUT_OCCLUDED;
         } else {
-            out = (SPL == 0 && v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px) ? OUT_SMALL : OUT_HW;
+            out = (SPL == 0 && v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px && !dashed) ? OUT_SMALL : OUT_HW;
         }
     }
     if (SPL != 0) {
@@ -2428,7 +2515,8 @@ MaskOut sphere_mask_fs(SphereV i) {
 struct CapsuleV {
     float4 pos : SV_Position;
     nointerpolation float4 pa    : PA;      // view space, w: radius
-    nointerpolation float4 pb    : PB;
+    nointerpolation float4 pb    : PB;      // w: dashed, the dash (0: solid)
+    nointerpolation float  per   : PER;     // dashed, the period
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
 };
@@ -2447,6 +2535,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.pos   = CULLED;
     o.pa    = float4(0.0);
     o.pb    = float4(0.0);
+    o.per   = 0.0;
     o.idv   = uint2(0u);
     o.state = 0u;
 
@@ -2456,9 +2545,13 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e, true);   // the state lists' fade here
     if (!g.ok) return o;
     float4 corner = capsule_box_corner(v, g, vk);
+    Batch  b = a.batches[el.slot];
+    float2 dp = float2(0.0);
+    if ((b.flags & F_DASHED) != 0u) dp = dash_pattern(b, length(g.b - g.a), length(load_transform(b.transforms, el.inst).c0.xyz));
     o.pos   = corner;
     o.pa    = float4(g.a, g.r);
-    o.pb    = float4(g.b, 0.0);
+    o.pb    = float4(g.b, dp.x);
+    o.per   = dp.y;
     o.idv   = ent;
     o.state = g.st;
     return o;
@@ -2486,11 +2579,16 @@ float4 capsule_box_corner(ViewData v, Geo g, uint c) {
     return mul4(M(v, proj), float4(p, 1.0));
 }
 
+float capsule_fragment_hit(Ray r, CapsuleV i) {
+    float3 n;
+    return i.pb.w > 0.0 ? dash_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w, i.pb.w, i.per, n) : capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
+}
+
 [shader("fragment")]
 VisOut capsule_fs(CapsuleV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
+    float t = capsule_fragment_hit(r, i);
     if (t < 0.0) discard;
     VisOut o;
     o.id    = i.idv;
@@ -2502,7 +2600,7 @@ VisOut capsule_fs(CapsuleV i) {
 MaskOut capsule_mask_fs(CapsuleV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
+    float t = capsule_fragment_hit(r, i);
     if (t < 0.0) discard;
     MaskOut o;
     o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
@@ -2733,8 +2831,17 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 pa  = mulp(M(v, view), w0);
         float3 pb  = mulp(M(v, view), w1);
         float  rad = capsule_radius(b, h.element) * s;
-        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (pa.z + pb.z)));
-        float  t   = capsule_hit(r, pa, pb, rad);
+        float3 qa  = pa, qb = pb;               // a dash's: trimmed
+        bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, qa, qb);
+        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (qa.z + qb.z)));
+        float3 dn  = float3(0.0);
+        float  t;
+        if (dashed) {
+            float2 dp = dash_pattern(b, length(qb - qa), s);
+            t = dash_hit(r, qa, qb, rad, dp.x, dp.y, dn);
+        } else {
+            t = capsule_hit(r, pa, pb, rad);
+        }
         if (t < 0.0) {
             // A rounding miss at the silhouette: the nearest point of the ray
             // to the axis stands in.
@@ -2746,7 +2853,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         }
         h.p_view   = r.o + r.d * t;
         float k    = capsule_param(h.p_view, pa, pb);
-        h.n_view   = normalize(h.p_view - lerp(pa, pb, k));
+        h.n_view   = dashed ? dn : normalize(h.p_view - lerp(pa, pb, k));
         h.p_world  = mulp(M(v, inv_view), h.p_view);
         h.p_world_prev = h.p_world - lerp(w0 - w0p, w1 - w1p, k);
         uint   a0  = attr_of(b, p0);

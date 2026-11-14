@@ -1770,6 +1770,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
 
     bool  spheres = false, sticks = false;
     float sphere_scale = 0.0f, sphere_add = 0.0f, stick_radius = 0.0f;
+    md_render_sphere_style_t dash_ends = { 0.0f, 0.0f };     /* the spheres the dashes run between */
     uint32_t classes = rep->bond_classes;
     const uint32_t default_classes = MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COVALENT) | MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COORDINATE);
 
@@ -1793,6 +1794,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
         sticks = true;
         stick_radius = rep->params.bonds.radius;
         if (!classes) classes = MD_RENDER_MOL_BONDS_ALL;
+        dash_ends.radius_add = stick_radius;      /* no spheres: as far as a stick's round end */
         break;
     case MD_RENDER_MOL_REP_CARTOON: {
         /* The protein backbone's splines over the copy: the CA's point is
@@ -1864,6 +1866,23 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     /* At licorice joints the atom's sphere and the stick's round end are the
        same surface; md_render gives such ties to the sphere, so a joint picks
        as its atom whatever the order here. */
+    if (spheres) {
+        dash_ends.radius_scale = sphere_scale;
+        dash_ends.radius_add   = sphere_add;
+    }
+    /* md_gl's BOND DASHES: radius, dash and gap per class, relative to the sticks' */
+    static const float dash_style[MD_RENDER_MOL_BOND_CLASS_COUNT][3] = {
+        [MD_RENDER_MOL_BOND_COVALENT]    = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_COORDINATE]  = { 0.70f, 2.0f, 0.8f },
+        [MD_RENDER_MOL_BOND_ELASTIC]     = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_METALLIC]    = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_INTERACTION] = { 0.35f, 0.5f, 1.1f },
+        [MD_RENDER_MOL_BOND_HYDROGEN]    = { 0.45f, 0.9f, 0.9f },
+    };
+    const uint32_t by_kind = MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COORDINATE) | MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_INTERACTION) |
+                             MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_HYDROGEN);
+    const uint32_t dashed = rep->dashes == MD_RENDER_MOL_DASHES_ALL ? MD_RENDER_MOL_BONDS_ALL
+                          : rep->dashes == MD_RENDER_MOL_DASHES_NONE ? 0u : by_kind;
     uint32_t n = 0;
     if (sticks) {
         for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
@@ -1879,6 +1898,12 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.cluster_offset = topo->bond_cluster_offset[c];
             b.cluster_count  = topo->bond_cluster_count[c];
             b.style.capsules.radius = stick_radius;
+            if (dashed & MD_RENDER_MOL_BONDS(c)) {
+                b.style.capsules.radius      = stick_radius * dash_style[c][0];
+                b.style.capsules.dash_length = stick_radius * dash_style[c][1];
+                b.style.capsules.gap_length  = stick_radius * dash_style[c][2];
+                b.style.capsules.dash_ends   = dash_ends;
+            }
             put(out, cap, &n, &b);
         }
     }

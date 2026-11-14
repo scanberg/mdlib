@@ -100,7 +100,8 @@ lifetime:
     the band's axes (by every update): the corners are the atoms' points.
 
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
-kind, solid (dashes per kind wait for capsule dashes in md_render); CARTOON
+kind, the bonds that are not covalent dashed in a style per kind (md_gl's
+BOND DASHES: see md_render_mol_dashes_t); CARTOON
 of proteins and of atomistic nucleic acids. Declared for the next phases:
 RIBBONS, coarse grained nucleic acids and lipids (points derived from
 several atoms: the ideal rings of a Martini base, lipid heads), glyphs, bond
@@ -140,6 +141,26 @@ typedef enum md_render_mol_bond_class_t {
 
 #define MD_RENDER_MOL_BONDS(c) (1u << (c))
 #define MD_RENDER_MOL_BONDS_ALL ((1u << MD_RENDER_MOL_BOND_CLASS_COUNT) - 1u)
+
+/* Which bonds the sticks draw dashed (md_render's dashed capsules), each in
+   the style of its class, so that the classes are told apart and the
+   stronger reads as the stronger: the thicker, the more of its length
+   covered, the longer its dashes (md_gl's BOND DASHES). Relative to the
+   radius r of the representation's sticks:
+                    radius    dash    gap     covered
+     COORDINATE     0.70 r    2.0 r   0.8 r   71 %    nearly a stick
+     HYDROGEN       0.45 r    0.9 r   0.9 r   50 %    even dashes
+     INTERACTION    0.35 r    0.5 r   1.1 r   31 %    dotted
+     the others     1.00 r    2.4 r   0.6 r   80 %    only with DASHES_ALL
+   They run between the surfaces of the representation's spheres at the
+   atoms (the joints of a licorice, the balls of a ball and stick; the
+   sticks' radius for BONDS), so that none is hidden or cut by one. */
+typedef enum md_render_mol_dashes_t {
+    MD_RENDER_MOL_DASHES_BY_KIND = 0,   /* those which are not covalent: coordinate,
+                                           hydrogen bonds, interactions             */
+    MD_RENDER_MOL_DASHES_NONE,          /* none: all solid                          */
+    MD_RENDER_MOL_DASHES_ALL,           /* all, covalent, elastic and metallic too  */
+} md_render_mol_dashes_t;
 
 /* Molecules of at most this many atoms are "small": regrouped by position on
    every update instead of by the topology once */
@@ -579,8 +600,10 @@ typedef struct md_render_mol_rep_t {
     } params;
 
     /* Which bond classes the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
-       0 takes the type's default (covalent and coordinate; BONDS: all). */
+       0 takes the type's default (covalent and coordinate; BONDS: all).
+       Which of them dashed: md_render_mol_dashes_t. */
     uint32_t                 bond_classes;
+    md_render_mol_dashes_t   dashes;
 
     /* Colour of atoms and sticks. COLOR_POINTS reads `color` (uint32 RGBA8
        per atom), COLOR_PALETTE reads `palette_index` (uint16 per atom). */
