@@ -52,7 +52,7 @@ target_include_directories(md_topo_gto_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR}
 
 # How structure files (PDB, GRO) load over threads: best and median per thread count, the speedup, and a hash of the
 # system each count loads (see bench_load.c). Its own executable, which takes the files to load.
-add_executable(md_load_bench bench_load.c)
+add_executable(md_load_bench bench_load.c bench_common.h)
 target_compile_options(md_load_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(md_load_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_load_bench PRIVATE mdlib $<$<PLATFORM_ID:Windows>:psapi>)
@@ -68,3 +68,13 @@ target_link_options(md_parse_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${
 target_link_libraries(md_parse_bench PRIVATE mdlib)
 add_dependencies(md_parse_bench md_topo_gto_bench_rev)
 target_include_directories(md_parse_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# How the topology of a system is inferred, and over threads: md_system_infer (or md_bond_infer alone), best and median
+# per thread count, the speedup, the page faults and a hash of what it inferred (see bench_infer.c). Its own executable,
+# which takes the files to infer.
+add_executable(md_infer_bench bench_infer.c bench_common.h)
+target_compile_options(md_infer_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+target_link_options(md_infer_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+target_link_libraries(md_infer_bench PRIVATE mdlib $<$<PLATFORM_ID:Windows>:psapi>)
+add_dependencies(md_infer_bench md_topo_gto_bench_rev)
+target_include_directories(md_infer_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
