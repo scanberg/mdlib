@@ -1234,6 +1234,88 @@ UTEST(gpu_render, kernel_writes_indirect_commands) {
     r_close(&f);
 }
 
+/* md_render's chain into its first raster: the counters cleared, a count
+   made with atomics by a kernel launched indirectly, a kernel turning it into
+   the draw command, then a pass with a depth attachment cleared to 0 drawing
+   from it. On the HD 530 (1.3.215) md_render's frame drew nothing that way
+   in one submission and everything with a submission boundary before the
+   pass; kernel_writes_indirect_commands (a kernel writing a constant command)
+   drew. The variants add md_render's steps one at a time. */
+UTEST(gpu_render, kernel_chain_feeds_indirect_draw) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+    md_gpu_kernel_desc_t kd = md_shader_gpu_render_test_gen_cmd_kernel();
+    md_gpu_kernel_t gen = md_gpu_kernel_create(f.dev, &kd);
+    kd = md_shader_gpu_render_test_gen_cnt_kernel();
+    md_gpu_kernel_t cnt = md_gpu_kernel_create(f.dev, &kd);
+    md_gpu_texture_t u = r_target(&f, MD_GPU_FORMAT_R32_UINT, W, H, 0);
+    md_gpu_texture_t d = r_target(&f, MD_GPU_FORMAT_D32_FLOAT, W, H, 0);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_R32_UINT;
+    md_gpu_pipeline_t p  = r_pipeline(&f, md_shader_gpu_render_test_indirect_vs_shader(), md_shader_gpu_render_test_id_fs_shader(),
+                                      MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_INVALID);
+    md_gpu_pipeline_t pd = r_pipeline(&f, md_shader_gpu_render_test_indirect_vs_shader(), md_shader_gpu_render_test_id_fs_shader(),
+                                      MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    ASSERT_TRUE(gen && cnt && u && d && p && pd);
+    static const uint32_t one[4] = { 1, 1, 1, 0 };
+    md_gpu_addr_t vb = r_buffer(&f, full_tri, sizeof(full_tri));
+    md_gpu_addr_t rb = r_buffer(&f, NULL, sizeof(rdraw_t));
+    md_gpu_addr_t gb = r_buffer(&f, one, sizeof(one));
+    md_gpu_addr_t cb = r_buffer(&f, NULL, 1024);
+    static uint32_t ids[W * H];
+
+    for (int variant = 0; variant < 8; ++variant) {
+        const bool counted = (variant & 1) != 0, indirect = (variant & 2) != 0, depth = (variant & 4) != 0;
+        int least = W * H;
+        for (int round = 0; round < 3; ++round) {
+            ASSERT_TRUE(md_gpu_memset(f.gfx, cb, 0, 1024));
+            rargs_t a = {0};
+            a.cmds  = cb;
+            a.flags = counted ? 16u : 0u;
+            if (counted) {
+                if (indirect) EXPECT_TRUE(md_gpu_launch_indirect(f.gfx, cnt, gb, &a, sizeof(a)));
+                else          EXPECT_TRUE(md_gpu_launch(f.gfx, cnt, md_gpu_grid(1, 1, 1), &a, sizeof(a)));
+            }
+            if (indirect && !counted) EXPECT_TRUE(md_gpu_launch_indirect(f.gfx, gen, gb, &a, sizeof(a)));
+            else                      EXPECT_TRUE(md_gpu_launch(f.gfx, gen, md_gpu_grid(1, 1, 1), &a, sizeof(a)));
+
+            md_gpu_render_desc_t rdesc = {0};
+            rdesc.color_count = 1;
+            rdesc.color[0].texture = u; rdesc.color[0].load = MD_GPU_LOAD_CLEAR; rdesc.color[0].clear.u32[0] = 0xFFFFFFFFu;
+            if (depth) { rdesc.depth.texture = d; rdesc.depth.load = MD_GPU_LOAD_CLEAR; rdesc.depth.clear_depth = 0.0f; }
+            ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rdesc));
+            if (depth) {
+                md_gpu_draw_state_t ds = {0};
+                ds.depth_compare = MD_GPU_COMPARE_GREATER_EQUAL;
+                ds.depth_write   = true;
+                md_gpu_set_draw_state(f.gfx, &ds);
+            }
+            a.pos   = vb;
+            a.draws = rb;
+            a.flags = 0;
+            a.id    = 200u + (uint32_t)(10 * variant + round);
+            EXPECT_TRUE(md_gpu_draw_indirect(f.gfx, depth ? pd : p, cb, 1, &a, sizeof(a)));
+            ASSERT_TRUE(md_gpu_render_end(f.gfx));
+            ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+            int drawn = 0;
+            for (int i = 0; i < W * H; ++i) drawn += ids[i] == a.id;
+            EXPECT_EQ(W * H, drawn);
+            if (drawn < least) least = drawn;
+        }
+        printf("    command %s, kernels launched %s, %s: %d of %d pixels drawn (the fewest of 3)\n",
+               counted ? "from an atomic count" : "constant", indirect ? "indirectly" : "directly",
+               depth ? "a depth attachment" : "no depth", least, W * H);
+    }
+
+    md_gpu_free(f.gfx, vb); md_gpu_free(f.gfx, rb); md_gpu_free(f.gfx, gb); md_gpu_free(f.gfx, cb);
+    md_gpu_kernel_destroy(gen);
+    md_gpu_kernel_destroy(cnt);
+    md_gpu_pipeline_destroy(p);
+    md_gpu_pipeline_destroy(pd);
+    md_gpu_texture_destroy(u);
+    md_gpu_texture_destroy(d);
+    r_close(&f);
+}
+
 UTEST(gpu_render, kernel_feeds_draw_and_reads_the_result) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());

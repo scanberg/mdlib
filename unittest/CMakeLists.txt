@@ -120,7 +120,7 @@ if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQU
     TARGET    md_unittest
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_render_test.slang
-    ENTRIES   read_tex gen_pos gen_cmd
+    ENTRIES   read_tex gen_pos gen_cmd gen_cnt
     VERTEX    basic_vs indirect_vs point_vs table_vs
     FRAGMENT  color_fs mrt_fs id_fs depth_fs table_fs spec_fs depth_less_fs
   )
