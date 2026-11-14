@@ -848,7 +848,7 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_render_mol.slang
-    ENTRIES   sol_clear sol_bounds sol_dims sol_count sol_scan sol_write sol_offsets sol_mixed sol_gather fr_gather1 fr_gather2 fr_gather4 fr_reorder fr_permute bb_support bb_orient bb_profile na_axis derive bond_sides bond_partners
+    ENTRIES   sol_clear sol_bounds sol_dims sol_count sol_scan sol_write sol_offsets sol_mixed sol_gather fr_gather1 fr_gather2 fr_gather4 fr_reorder fr_permute bb_support bb_orient bb_profile na_axis derive bond_sides bond_partners slab_axes
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl

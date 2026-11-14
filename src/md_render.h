@@ -309,6 +309,7 @@ typedef struct md_render_spline_style_t {
                                       ends is not drawn                         */
     float         radius;          /* without a profile: this r ...              */
     float         flat;            /* ... and this a (0: a tube)                */
+    float         scale;           /* the profile's a and r times this; 0: 1     */
     bool          through;         /* through the control points, not near them */
 } md_render_spline_style_t;
 

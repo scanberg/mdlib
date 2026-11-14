@@ -4791,21 +4791,29 @@ static uint16_t float_to_half(float f) {        /* round to nearest; tiny values
    Each the mean of its head's beads: as given without a cell, at their
    images nearest the first with the frames' cell; still after a regroup;
    its velocity the mean of theirs; standing for its first bead */
-static void head_mean(const md_system_t* sys, const float* xyz, const float L[3], size_t h, double out[3]) {
-    const md_atom_idx_t* at = md_lipid_head_atoms(&sys->lipid, h);
-    const size_t na = md_lipid_head_atom_count(&sys->lipid, h);
-    const float* r = xyz + 3 * at[0];
-    for (int d = 0; d < 3; ++d) out[d] = 0;
-    for (size_t j = 0; j < na; ++j) {
-        const float* x = xyz + 3 * at[j];
-        for (int d = 0; d < 3; ++d) {
-            double v = x[d] - r[d];
-            if (L) v -= L[d] * round(v / L[d]);
-            out[d] += (r[d] + v) / (double)na;
+/* A derived point as the topology defines it, in double: the weighted sum of
+   its members, each at its image nearest the first (L: an orthorhombic cell,
+   NULL none) */
+typedef struct der_ref_t { uint32_t count; const uint32_t* offset; const uint32_t* member; const float* weight; } der_ref_t;
+static void derived_expect(const der_ref_t* D, const float* xyz, const float L[3], uint32_t d, double out[3]) {
+    const float* r = xyz + 3 * D->member[D->offset[d]];
+    for (int k = 0; k < 3; ++k) out[k] = 0;
+    for (uint32_t o = D->offset[d]; o < D->offset[d + 1]; ++o) {
+        const float* x = xyz + 3 * D->member[o];
+        for (int k = 0; k < 3; ++k) {
+            double v = x[k] - r[k];
+            if (L) v -= L[k] * round(v / L[k]);
+            out[k] += D->weight[o] * (r[k] + v);
         }
     }
 }
 
+/* The derived points of the lipids' cartoon (viamd's glyphs) on Martini 3
+   lipids: their spheres (a head, a split head as one or its parts), the
+   tubes; every derived point where its members' weighted sum is: as given,
+   with velocities, after a regroup (the small lipids' beads elsewhere among
+   the points), from a frame with the cell and from positions with it (whole
+   across the box, each lipid about its first head bead) */
 UTEST(render, mol_derived_points) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -4824,6 +4832,16 @@ UTEST(render, mol_derived_points) {
     ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    const uint32_t nd = topo.derived_count;
+    der_ref_t D = { nd, NULL, NULL, NULL };
+    {
+        const uint8_t* img = plan.data;
+        const uint32_t* off = (const uint32_t*)(img + plan.layout.derived_offset);
+        uint32_t* o2 = malloc(((size_t)nd + 1) * 4); memcpy(o2, off, ((size_t)nd + 1) * 4);
+        uint32_t* m2 = malloc((size_t)off[nd] * 4 + 4); memcpy(m2, img + plan.layout.derived_member, (size_t)off[nd] * 4);
+        float*    w2 = malloc((size_t)off[nd] * 4 + 4); memcpy(w2, img + plan.layout.derived_weight, (size_t)off[nd] * 4);
+        D.offset = o2; D.member = m2; D.weight = w2;
+    }
     md_temp_end(temp);
     uint32_t small_heads = 0, split = 0;
     for (size_t h = 0; h < nh; ++h) {
@@ -4833,36 +4851,49 @@ UTEST(render, mol_derived_points) {
             for (uint32_t j = sys.molecule.offset[k]; j < sys.molecule.offset[k + 1]; ++j) if (sys.molecule.atom_idx[j] == at[0]) m = (int32_t)k;
         }
         if (m >= 0 && sys.molecule.offset[m + 1] - sys.molecule.offset[m] <= MD_RENDER_MOL_SMALL) small_heads++;
+    }
+    for (uint32_t d = 0; d < nd; ++d) {
         double a[3], b[3];
-        head_mean(&sys, &state.xyz[0].x, NULL, h, a);
-        head_mean(&sys, &state.xyz[0].x, L, h, b);
+        derived_expect(&D, &state.xyz[0].x, NULL, d, a);
+        derived_expect(&D, &state.xyz[0].x, L, d, b);
         split += fabs(a[0] - b[0]) + fabs(a[1] - b[1]) + fabs(a[2] - b[2]) > 1.0;
     }
-    printf("    %zu lipids, %zu heads (%u of small molecules, %u split by the box): %u derived points after %u atoms' points\n",
-           sys.lipid.count, nh, small_heads, split, topo.derived_count, topo.point_count);
-    ASSERT_EQ((uint32_t)nh, topo.derived_count);
+    const uint32_t* sc = topo.lipid_sphere_count;
+    printf("    %zu lipids, %zu heads (%u of small molecules): %u derived points after %u atoms' points, %u split by the box; spheres %u + %u (or %u parts), tubes' control points %u %u %u\n",
+           sys.lipid.count, nh, small_heads, nd, topo.point_count, split, sc[0], sc[1], sc[2], topo.lipid_tube_count[0], topo.lipid_tube_count[1], topo.lipid_tube_count[2]);
+    EXPECT_EQ((uint32_t)nh, sc[0] + sc[1]);        /* a sphere per head (every lipid's heads known here) */
+    EXPECT_GT(sc[2], sc[1]);                        /* the split heads' parts */
+    EXPECT_GT(topo.lipid_tube_count[0], 100u);
+    EXPECT_GT(topo.lipid_tube_count[2], 0u);        /* a cholesterol's slab */
     EXPECT_GT(small_heads, 0u);
     EXPECT_GT(split, 0u);
-    {   /* each stands for its first bead */
-        uint32_t* ord = (uint32_t*)read_block(&fx, topo.atom_order, ((size_t)topo.point_count + nh) * 4);
+    {   /* a head's sphere: its radius viamd's, standing for its heaviest (a bead: the phosphate's, or its first) */
+        uint32_t* sph = (uint32_t*)read_block(&fx, topo.lipid_spheres, ((size_t)sc[0] + sc[1] + sc[2]) * 4);
+        float* rad = (float*)read_block(&fx, topo.base + plan.layout.derived_radius, (size_t)nd * 4);
         int bad = 0;
-        for (size_t h = 0; h < nh; ++h) bad += ord[topo.point_count + h] != (uint32_t)md_lipid_head_atoms(&sys.lipid, h)[0];
+        for (uint32_t k = 0; k < sc[0] + sc[1] + sc[2]; ++k) {
+            const uint32_t d = sph[k] - topo.point_count;
+            const uint32_t m = D.offset[d + 1] - D.offset[d] - (D.weight[D.offset[d]] == 0.0f ? 1u : 0u);   /* less a lead of weight 0 */
+            float r = 1.6f * cbrtf(4.0f * (float)m);
+            r = r < 1.8f ? 1.8f : r > 7.0f ? 7.0f : r;
+            bad += d >= nd || fabsf(rad[d] - r) > 1e-5f;
+        }
         EXPECT_EQ(0, bad);
-        free(ord);
+        free(sph); free(rad);
     }
 
     md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(mol != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
     const uint32_t np = topo.point_count;
-    #define CHECK_HEADS(cellL, tol, label) do { \
-        float* pts = (float*)read_block(&fx, dyn, ((size_t)np + nh) * 16); \
+    #define CHECK_DERIVED(cellL, tol, label) do { \
+        float* pts = (float*)read_block(&fx, dyn, ((size_t)np + nd) * 16); \
         double worst = 0; \
-        for (size_t h = 0; h < nh; ++h) { \
-            double e[3]; head_mean(&sys, &state.xyz[0].x, cellL, h, e); \
-            for (int d = 0; d < 3; ++d) worst = fmax(worst, fabs(pts[4 * (np + h) + d] - e[d])); \
+        for (uint32_t d = 0; d < nd; ++d) { \
+            double e[3]; derived_expect(&D, &state.xyz[0].x, cellL, d, e); \
+            for (int k = 0; k < 3; ++k) worst = fmax(worst, fabs(pts[4 * (np + d) + k] - e[k])); \
         } \
-        printf("    %s: the heads within %.2e A of their means\n", label, worst); \
+        printf("    %s: the derived points within %.2e A of their sums\n", label, worst); \
         EXPECT_LT(worst, tol); \
         free(pts); \
     } while (0)
@@ -4880,32 +4911,37 @@ UTEST(render, mol_derived_points) {
     atoms.position = P;
     atoms.velocity = f_buf(&fx, vel, (size_t)n * 8);
     ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
-    CHECK_HEADS(NULL, 1e-4, "as given");
+    CHECK_DERIVED(NULL, 1e-4, "as given");
     {
-        uint16_t* pv = (uint16_t*)read_block(&fx, dyn + (topo.dynamic_size), ((size_t)np + nh) * 8);
+        uint16_t* pv = (uint16_t*)read_block(&fx, dyn + (topo.dynamic_size), ((size_t)np + nd) * 8);
         double worst = 0;
-        for (size_t h = 0; h < nh; ++h) {
-            const md_atom_idx_t* at = md_lipid_head_atoms(&sys.lipid, h);
-            const size_t na = md_lipid_head_atom_count(&sys.lipid, h);
-            for (int d = 0; d < 3; ++d) {
+        for (uint32_t d = 0; d < nd; ++d) {
+            for (int k = 0; k < 3; ++k) {
                 double e = 0;
-                for (size_t j = 0; j < na; ++j) e += velf[3 * at[j] + d] / (double)na;
-                worst = fmax(worst, fabs(half_to_float(pv[4 * (np + h) + d]) - e));
+                for (uint32_t o = D.offset[d]; o < D.offset[d + 1]; ++o) e += D.weight[o] * velf[3 * D.member[o] + k];
+                worst = fmax(worst, fabs(half_to_float(pv[4 * (np + d) + k]) - e));
             }
         }
-        printf("    velocities: the heads within %.2e of their means\n", worst);
+        printf("    velocities: the derived points within %.2e of their sums\n", worst);
         EXPECT_LT(worst, 1e-2);
         free(pv);
     }
-    /* regrouped: the small lipids' beads elsewhere among the points, the heads where they were */
+    /* regrouped: the small lipids' beads elsewhere among the points, the derived where they were */
     uint32_t* ord0 = (uint32_t*)read_block(&fx, topo.atom_order, (size_t)np * 4);
     ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint32_t* ord1 = (uint32_t*)read_block(&fx, topo.atom_order, (size_t)np * 4);
     EXPECT_NE(0, memcmp(ord0, ord1, (size_t)np * 4));
-    CHECK_HEADS(NULL, 1e-4, "after a regroup");
+    CHECK_DERIVED(NULL, 1e-4, "after a regroup");
     free(ord0); free(ord1);
 
-    /* from a frame with the cell: whole, at the images nearest the first bead */
+    /* from positions with their cell: whole */
+    {
+        md_render_mol_atoms_t ac = atoms;
+        md_render_mol_frame_cell(ac.cell, &state.unitcell);
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &ac, 0, content));
+        CHECK_DERIVED(L, 1e-4, "with the positions' cell, whole");
+    }
+    /* from a frame with the cell: whole */
     {
         float cell[9];
         md_render_mol_frame_cell(cell, &state.unitcell);
@@ -4921,10 +4957,11 @@ UTEST(render, mol_derived_points) {
         af.frame_w[0] = 1.0f;
         ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &af, 0, content));
         const double qtol = 2.0 * fmax(fmax(f.scale[0], f.scale[1]), f.scale[2]);
-        CHECK_HEADS(L, qtol, "from a frame, whole");
+        CHECK_DERIVED(L, qtol, "from a frame, whole");
         free(q);
     }
-    #undef CHECK_HEADS
+    #undef CHECK_DERIVED
+    free((void*)D.offset); free((void*)D.member); free((void*)D.weight);
     free(vel); free(velf);
     md_render_mol_destroy(mol);
     md_system_free(&sys);
@@ -5767,6 +5804,158 @@ UTEST(render, mol_bond_orders) {
     md_render_mol_destroy(mol);
     free(is_ord);
     md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* The cartoon of coarse grained systems (viamd's glyphs): a Martini 3 RNA
+   duplex, its bases the rings of ideal ones where their beads are (a ring
+   of six per nucleotide, one of five more per purine), planar with bonds
+   about as long as a base's; a Martini 3 membrane, its lipids' spheres (one
+   per head, or a split head's parts) and tubes, a cholesterol's slab with
+   its axes the update's; a head picked as a lipid, its atom the one its
+   point stands for */
+UTEST(render, mol_cartoon_coarse_grained) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/martini/martini3_rna.gro"));
+        uint32_t nuc = 0, purines = 0;
+        const md_nucleic_backbone_data_t* NB = &sys.nucleic_backbone;
+        for (size_t g = 0; g < NB->segment.count; ++g) {
+            md_str_t nm = md_system_residue_name(&sys, (size_t)NB->segment.res_idx[g]);
+            while (nm.len > 1 && (nm.ptr[nm.len - 1] == '3' || nm.ptr[nm.len - 1] == '5')) nm.len--;
+            const char c = nm.ptr[nm.len - 1];
+            nuc++;
+            purines += c == 'A' || c == 'G';
+        }
+        md_temp_scope_t temp = md_temp_begin();
+        md_render_mol_plan_t plan;
+        ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+        const md_render_mol_topo_t* T = &plan.layout;
+        printf("    RNA: %u nucleotides (%u purines): band %u, rings of six %u and of five %u, sticks %u; %u derived points\n",
+               nuc, purines, T->nucleic_count, T->ring_count[3], T->ring_count[2], T->stick_count, T->derived_count);
+        EXPECT_EQ(nuc, T->nucleic_count);
+        EXPECT_EQ(nuc, T->ring_count[3]);
+        EXPECT_EQ(purines, T->ring_count[2]);
+        EXPECT_EQ(nuc, T->stick_count);
+        EXPECT_EQ(6u * nuc + 3u * purines, T->derived_count);
+        md_render_mol_topo_t topo;
+        ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+        uint32_t* r6 = malloc((size_t)T->ring_count[3] * 24 + 4);
+        memcpy(r6, (const uint8_t*)plan.data + T->ring_points[3], (size_t)T->ring_count[3] * 24);
+        const uint32_t n6 = T->ring_count[3];
+        md_temp_end(temp);
+        md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+        md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
+        ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+        md_render_mol_atoms_t atoms = {0};
+        atoms.position = P;
+        md_render_mol_frame_cell(atoms.cell, &state.unitcell);
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+        float* pts = (float*)read_block(&fx, dyn, ((size_t)topo.point_count + topo.derived_count) * 16);
+        double lmin = 1e9, lmax = 0, worst_plane = 0;
+        for (uint32_t r = 0; r < n6; ++r) {
+            double q[6][3];
+            for (int k = 0; k < 6; ++k) for (int i = 0; i < 3; ++i) q[k][i] = pts[4 * r6[6 * r + k] + i];
+            circ_ref_t cr;
+            circ_ref_build(&cr, (const double (*)[3])q, 6, 0.0, 0.0, 0);
+            for (int k = 0; k < 6; ++k) {
+                double e[3] = { q[(k + 1) % 6][0] - q[k][0], q[(k + 1) % 6][1] - q[k][1], q[(k + 1) % 6][2] - q[k][2] }, l = sqrt(dot3(e, e));
+                lmin = fmin(lmin, l); lmax = fmax(lmax, l);
+                double dc[3] = { q[k][0] - cr.c[0], q[k][1] - cr.c[1], q[k][2] - cr.c[2] };
+                worst_plane = fmax(worst_plane, fabs(dot3(dc, cr.n)));
+            }
+        }
+        printf("    the rings of six: bonds %.2f .. %.2f A, off their planes %.3f A at most\n", lmin, lmax, worst_plane);
+        EXPECT_GT(lmin, 1.0);
+        EXPECT_LT(lmax, 1.8);
+        EXPECT_LT(worst_plane, 0.25);
+        free(pts); free(r6);
+        md_system_free(&sys);
+        md_vm_arena_destroy(alloc);
+    }
+    {
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
+        md_temp_scope_t temp = md_temp_begin();
+        md_render_mol_plan_t plan;
+        ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+        md_render_mol_topo_t topo;
+        ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+        const uint32_t nsl = topo.lipid_tube_count[2];
+        ASSERT_GT(nsl, 0u);
+        uint32_t* slab_pts  = malloc((size_t)nsl * 4);
+        uint32_t* slab_side = malloc((size_t)nsl * 4);
+        memcpy(slab_pts, (const uint8_t*)plan.data + plan.layout.lipid_tubes + ((size_t)topo.lipid_tube_count[0] + topo.lipid_tube_count[1]) * 4, (size_t)nsl * 4);
+        memcpy(slab_side, (const uint8_t*)plan.data + plan.layout.lipid_slab_side, (size_t)nsl * 4);
+        md_temp_end(temp);
+        md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+        md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
+        ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+        md_render_mol_atoms_t atoms = {0};
+        atoms.position = P;
+        md_render_mol_frame_cell(atoms.cell, &state.unitcell);
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+        md_render_mol_rep_t rep = {0};
+        rep.key = 12; rep.type = MD_RENDER_MOL_REP_CARTOON;
+        md_render_batch_t bt[16];
+        const uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 16);
+        ASSERT_EQ(4u, nb);          /* the spheres: always, a split head as one; the tubes: chains, slabs */
+        EXPECT_EQ((uint64_t)(12 << 8 | MD_RENDER_MOL_PART_LIPID_SPHERES), bt[0].key);
+        EXPECT_EQ(topo.lipid_sphere_count[1], bt[1].count);
+        EXPECT_EQ(0u, (uint32_t)bt[1].points.radius_table);
+        EXPECT_NEAR(1.1f, bt[2].style.splines.radius, 1e-6f);
+        EXPECT_EQ((uint64_t)(12 << 8 | (MD_RENDER_MOL_PART_LIPID_TUBES + 2)), bt[3].key);
+        EXPECT_EQ(topo.lipid_slab_profile, bt[3].style.splines.profile);
+        rep.params.cartoon.split_heads = true;
+        rep.params.cartoon.lipid_scale = 0.5f;
+        md_render_batch_t bs[16];
+        ASSERT_EQ(4u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bs, 16));
+        EXPECT_EQ(topo.lipid_sphere_count[2], bs[1].count);
+        EXPECT_NEAR(0.5f, bs[1].style.spheres.radius_scale, 1e-6f);
+        EXPECT_NEAR(0.55f, bs[2].style.splines.radius, 1e-6f);
+        EXPECT_NEAR(0.5f, bs[3].style.splines.scale, 1e-6f);
+        /* the slabs' axes: from each control point to its side */
+        float* pts = (float*)read_block(&fx, dyn, ((size_t)topo.point_count + topo.derived_count) * 16);
+        float* ax  = (float*)read_block(&fx, bt[3].style.splines.axis, (size_t)nsl * 16);
+        double worst = 0;
+        for (uint32_t j = 0; j < nsl; ++j) {
+            const uint32_t p = slab_pts[j] & ~(uint32_t)(MD_RENDER_SPLINE_FIRST | MD_RENDER_SPLINE_LAST);
+            for (int i = 0; i < 3; ++i) worst = fmax(worst, fabs(ax[4 * j + i] - (slab_side[j] != UINT32_MAX ? pts[4 * slab_side[j] + i] - pts[4 * p + i] : 0.0f)));
+        }
+        printf("    membrane: %zu lipids; spheres %u + %u (or %u parts), control points %u + %u; the slabs' axes within %.2e\n", sys.lipid.count,
+               topo.lipid_sphere_count[0], topo.lipid_sphere_count[1], topo.lipid_sphere_count[2], topo.lipid_tube_count[0], nsl, worst);
+        EXPECT_LT(worst, 1e-5);
+        /* a head's sphere, the first, face on: a LIPID hit, its point's atom */
+        uint32_t* sph = (uint32_t*)read_block(&fx, topo.lipid_spheres, 4);
+        uint32_t* ord = (uint32_t*)read_block(&fx, topo.atom_order, ((size_t)topo.point_count + topo.derived_count) * 4);
+        const float* c = pts + 4 * sph[0];
+        const uint32_t W = 96, H = 96;
+        cam_t cm = { .ortho = true, .half_h = 8.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+        md_render_camera_t cam = make_camera(&cm);
+        cam.view[12] = -c[0]; cam.view[13] = -c[1]; cam.view[14] = -(c[2] + 200.0f);
+        md_render_frame_t f = frame_of(W, H, cam, bt, 1);
+        memcpy(f.content, content, sizeof(content));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        md_render_pick_t pk;
+        md_render_mol_hit_t hit;
+        ASSERT_TRUE(f_pick(&fx, W / 2, H / 2, &pk));
+        ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+        EXPECT_EQ(MD_RENDER_MOL_HIT_LIPID, hit.kind);
+        EXPECT_EQ(ord[sph[0]], hit.atom);
+        free(pts); free(ax); free(sph); free(ord); free(slab_pts); free(slab_side);
+        md_system_free(&sys);
+        md_vm_arena_destroy(alloc);
+    }
+    md_render_mol_destroy(mol);
     f_close(&fx);
 }
 

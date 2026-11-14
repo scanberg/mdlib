@@ -104,7 +104,7 @@ typedef struct gpu_batch_t {
     float         poly_inset;                                     /* POLYGONS circles: the inset, */
     uint32_t      poly_dashes;                                    /* the dashes over each edge */
     float         cap_trim;                                       /* CAPSULES displaced: their ends pulled in */
-    uint32_t      _pad_d;                                         /* to the float4 alignment */
+    float         spl_scale;                                      /* SPLINES: of the profile */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 336, "Batch mirror");
 
@@ -946,6 +946,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;
         g->s1        = b->style.splines.flat;
+        g->spl_scale = b->style.splines.scale > 0.0f ? b->style.splines.scale : 1.0f;
         if (b->style.splines.through) f |= F_SPL_THROUGH;
         g->spl_axis  = b->style.splines.axis;
         g->spl_profile = b->style.splines.profile;
