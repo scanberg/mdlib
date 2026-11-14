@@ -55,7 +55,7 @@ struct ViewData {
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
     float  occl_min_px;         // elements no wider are not tested for occlusion
     uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit)
-    uint   _vpad2;
+    uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -199,6 +199,7 @@ struct Lists {
     uint*     hw3;              // polygons for the hardware raster (nor have they)
     uint*     st3;              // polygons with a state bit
     float4*   hw2b;             // per hw2 entry, its part's record (spline_record_write): SPLINE_RECORD float4
+    uint*     hw2g;             // the boxes of the spline parts' pieces: record (hw2 entry) << 4 | group of pieces
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -238,7 +239,9 @@ static const uint C_HWP2       = 117;  // and phase 2
 static const uint C_STP        = 118;  // polygons with a state bit
 static const uint C_ICMDP      = 120;  // md_gpu_draw_indexed_cmd_t, polygons [phase - 1]: 120..129
 static const uint C_STICMDP    = 130;  // the state list's polygons: 130..134
-static const uint C_COUNT      = 136;
+static const uint C_HWSG1      = 136;  // the boxes of the hardware spline parts' pieces (hw2g), phase 1
+static const uint C_HWSG2      = 137;  // and phase 2
+static const uint C_COUNT      = 140;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -1187,25 +1190,30 @@ float spline_width_rate(SplinePart sp) {
     return sp.u1 > sp.u0 ? (sp.a1 - sp.a0) / (sp.u1 - sp.u0) : 0.0;
 }
 
-// The ray against the part's pieces. Two phases per piece: the centres of
-// its ends (cheap) give its bounding sphere; only a piece the ray may hit
-// gets its full sections, and the next piece reuses the one they share.
-SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) {
+// The ray against the part's pieces k0 + 1 .. k1 (1-based; the caps with the
+// first and the last). Two phases per piece: the centres of its ends (cheap)
+// give its bounding sphere; only a piece the ray may hit gets its full
+// sections, and the next piece reuses the one they share. A piece's hit is
+// the same in any range that holds it: the raster's boxes (a group of
+// pieces each) and the resolve (all of them) agree.
+SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) {
     SplineHit h;
     h.t = -1.0;
     h.n = float3(0.0, 0.0, 1.0);
-    float3      c0 = spline_centre(sp, sp.u0);
-    float       a0 = sp.a0, r0 = sp.r0;
+    float       fs = float(k0) / float(pieces);
+    float3      c0 = spline_centre(sp, k0 == 0u ? sp.u0 : spline_piece_u(sp, k0, pieces));
+    float       a0 = k0 == 0u ? sp.a0 : lerp(sp.a0, sp.a1, fs);
+    float       r0 = k0 == 0u ? sp.r0 : lerp(sp.r0, sp.r1, fs);
     float       au = spline_width_rate(sp);
     float       du = (sp.u1 - sp.u0) / float(pieces);
     SplineFrame f0;
     f0.c = f0.w = f0.n = f0.fp = f0.fc = f0.fm = f0.bp = f0.bc = f0.bm = f0.tp = f0.tm = float3(0.0);
     bool        have0 = false;
-    if ((sp.caps & 1u) != 0u) {
+    if (k0 == 0u && (sp.caps & 1u) != 0u) {
         f0 = spline_frame(sp, sp.u0, a0, au, sp.ru0); have0 = true;
         spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, r0);
     }
-    for (uint k = 1u; k <= pieces; ++k) {
+    for (uint k = k0 + 1u; k <= k1; ++k) {
         float  u1 = spline_piece_u(sp, k, pieces);
         float3 c1 = spline_centre(sp, u1);
         float  a1 = lerp(sp.a0, sp.a1, float(k) / float(pieces));
@@ -1246,12 +1254,14 @@ SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) {
         }
         c0 = c1; a0 = a1; r0 = r1; f0 = f1; have0 = have1;
     }
-    if ((sp.caps & 2u) != 0u) {
+    if (k1 == pieces && (sp.caps & 2u) != 0u) {
         if (!have0) f0 = spline_frame(sp, spline_piece_u(sp, pieces, pieces), a0, au, sp.ru1);
         spline_take_capsule(r, h, f0.c - f0.w * a0, f0.c + f0.w * a0, r0);
     }
     return h;
 }
+
+SplineHit spline_hit(Ray r, SplinePart sp, uint pieces) { return spline_hit_range(r, sp, pieces, 0u, pieces); }
 
 float seg_dist(float3 p, float3 a, float3 ab, float ll) {
     float3 pq = p - a;
@@ -1392,14 +1402,18 @@ struct SplineBox {
     float3 x, y, z;             // half axes
 };
 
-SplineBox spline_box(SplinePart sp, uint pieces) {
+// Pieces k0 .. k1 - 1 of the part's: across the mid-section's axis, or for
+// one piece the mean of its ends' (the sections it needs anyway)
+SplineBox spline_box_range(SplinePart sp, uint pieces, uint k0, uint k1) {
     SplineBox bx;
-    float3 ca = spline_centre(sp, sp.u0), cb = spline_centre(sp, sp.u1);
-    SplineSection sm = spline_section(sp, 0.5 * (sp.u0 + sp.u1));
-    float3 z  = cb - ca;
+    float  ua = spline_piece_u(sp, k0, pieces), ub = spline_piece_u(sp, k1, pieces);
+    SplineSection sa = spline_section(sp, ua), sb = spline_section(sp, ub);
+    float3 xw = sa.w + sb.w, tw = sa.t + sb.t;
+    if (k1 - k0 > 1u) { SplineSection sm = spline_section(sp, 0.5 * (ua + ub)); xw = sm.w; tw = sm.t; }
+    float3 z  = sb.c - sa.c;
     float  zl = length(z);
-    z = zl > 1e-20 ? z / zl : (dot(sm.t, sm.t) > 0.0 ? normalize(sm.t) : float3(0.0, 0.0, 1.0));
-    float3 x  = sm.w - z * dot(sm.w, z);
+    z = zl > 1e-20 ? z / zl : (dot(tw, tw) > 0.0 ? normalize(tw) : float3(0.0, 0.0, 1.0));
+    float3 x  = xw - z * dot(xw, z);
     float  xl = length(x);
     if (!(xl > 1e-6)) {                                 // no axis (tubes): any normal of the chord
         x  = abs(z.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
@@ -1410,9 +1424,9 @@ SplineBox spline_box(SplinePart sp, uint pieces) {
     float3 y  = cross(z, x);                            // (x, y, z) right-handed
     float3 lo = float3(1e30), hi = float3(-1e30);
     float  n  = float(max(pieces, 1u));
-    for (uint k = 0u; k <= pieces; ++k) {
+    for (uint k = k0; k <= k1; ++k) {
         float  f = float(k) / n;
-        SplineSection s = spline_section(sp, spline_piece_u(sp, k, pieces));
+        SplineSection s = k == k0 ? sa : k == k1 ? sb : spline_section(sp, spline_piece_u(sp, k, pieces));
         float  a = lerp(sp.a0, sp.a1, f), r = lerp(sp.r0, sp.r1, f);
         float3 p = s.c + s.w * a, m = s.c - s.w * a;     // the rim points (spline_hit's)
         float3 qp = float3(dot(p, x), dot(p, y), dot(p, z)), qm = float3(dot(m, x), dot(m, y), dot(m, z));
@@ -1427,6 +1441,17 @@ SplineBox spline_box(SplinePart sp, uint pieces) {
     bx.y = y * h.y;
     bx.z = z * h.z;
     return bx;
+}
+
+SplineBox spline_box(SplinePart sp, uint pieces) { return spline_box_range(sp, pieces, 0u, pieces); }
+
+// The boxes of a part of n pieces in the hardware raster: one per group of
+// spl_group pieces (0: one). A fragment of a box tests its group's pieces
+// alone (spline_hit_range): of a whole part's box it tested every piece whose
+// bounding sphere its ray met, and on a ribbon those spheres are as wide as
+// the ribbon, which put most of a part's pieces under every fragment.
+uint spline_groups(ViewData v, uint n) {
+    return v.spl_group == 0u ? 1u : (n + v.spl_group - 1u) / v.spl_group;
 }
 
 // The hardware raster's record of a part (Lists.hw2b, SPLINE_RECORD float4
@@ -2073,6 +2098,15 @@ uint wave_append(uint* counter, bool want) {
     return base + WavePrefixSum(want ? 1u : 0u);    // WavePrefixCountBits has no Metal lowering
 }
 
+// n entries of this lane's at the returned index; the wave's in one atomic
+uint wave_reserve(uint* counter, uint n) {
+    uint tot  = WaveActiveSum(n);
+    uint base = 0u;
+    if (WaveIsFirstLane() && tot > 0u) base = ((Atomic<uint>*)counter)->add(tot);
+    base = WaveReadLaneFirst(base);
+    return base + WavePrefixSum(n);
+}
+
 void wave_add(uint* counter, uint value) {
     uint n = WaveActiveSum(value);
     if (WaveIsFirstLane() && n > 0u) ((Atomic<uint>*)counter)->add(n);
@@ -2468,13 +2502,19 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         uint ih2 = wave_append(L.counters + (phase == 2u ? C_HWS2 : C_HWS1), out == OUT_HW && !poly);
         uint ih3 = wave_append(L.counters + (phase == 2u ? C_HWP2 : C_HWP1), out == OUT_HW && poly);
         if (out == OUT_HW) { if (poly) L.hw3[base3 + ih3] = ent; else L.hw2[base2 + ih2] = ent; }
+        uint ng = 0u;
         if (out == OUT_HW && !poly) {
-            // its box, once: the vertex stage reads it (spline_box)
+            // its record, once: the vertex and fragment stages read it
             Batch      b  = batches[slot];
             SplinePart sp = spline_part(v, b, inst, e, true);
             uint       n  = spline_pieces(v, sp, g);
             spline_record_write(L, base2 + ih2, spline_box(sp, n), n, g.st, sp);
+            ng = spline_groups(v, n);
         }
+        // and a box per group of its pieces (converged: every lane reserves)
+        uint gbase = phase == 2u ? L.counters[C_HWSG1] : 0u;
+        uint ig    = wave_reserve(L.counters + (phase == 2u ? C_HWSG2 : C_HWSG1), ng);
+        for (uint j = 0u; j < ng; ++j) L.hw2g[gbase + ig + j] = ((base2 + ih2) << 4) | j;
         wave_count(L.counters + C_OUTSIDE, out == OUT_OUTSIDE);
         wave_count(L.counters + C_LOD,     out == OUT_LOD);
         return;
@@ -2639,10 +2679,10 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     icmd[4] = phase == 1u ? 0u : c[C_HW1 + 1u];
     uint* scmd = c + C_ICMDS + (phase - 1u) * 5u;   // spline parts: the same boxes
     scmd[0] = 36u;
-    scmd[1] = phase == 1u ? c[C_HWS1] : c[C_HWS2];
+    scmd[1] = phase == 1u ? c[C_HWSG1] : c[C_HWSG2];    // a box per group of a part's pieces (hw2g)
     scmd[2] = 0u;
     scmd[3] = 0u;
-    scmd[4] = phase == 1u ? 0u : c[C_HWS1];
+    scmd[4] = phase == 1u ? 0u : c[C_HWSG1];
     uint* pcmd = c + C_ICMDP + (phase - 1u) * 5u;   // polygons: boxes too
     pcmd[0] = 36u;
     pcmd[1] = phase == 1u ? c[C_HWP1] : c[C_HWP2];
@@ -3041,7 +3081,7 @@ MaskOut capsule_mask_fs(CapsuleV i) {
 // stage counted (as eval_hit counts them)
 struct SplineV {
     float4 pos : SV_Position;
-    nointerpolation uint4  pe    : PE;      // pieces, instance, element
+    nointerpolation uint4  pe    : PE;      // pieces, instance, element, slot; with a record: pieces, the box's first and end piece
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
     nointerpolation uint   rec   : REC;     // its record (Lists.hw2b) + 1, 0: none (rebuild the part)
@@ -3060,22 +3100,32 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.rec   = 0u;
     uint  vk  = md_draw_vertex(vid, base_vertex);
     uint  li  = base_instance + md_draw_instance(iid, base_instance);
-    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, li));
     if (a.list == 4u) {
-        // the hardware list: the cull's box (spline_box)
-        Lists  L  = *a.lists;
-        float4* rc = L.hw2b + SPLINE_RECORD * li;
-        float4 r0 = rc[0], r1 = rc[1];
-        float3 p  = r0.xyz + r1.xyz * (((vk & 1u) != 0u) ? 1.0 : -1.0)
-                           + rc[2].xyz * (((vk & 2u) != 0u) ? 1.0 : -1.0)
-                           + rc[3].xyz * (((vk & 4u) != 0u) ? 1.0 : -1.0);
-        o.rec   = li + 1u;
+        // the hardware list: a box per group of a part's pieces (hw2g), of
+        // the part in its record; the whole part's, the cull's (spline_box)
+        Lists   L   = *a.lists;
+        uint    ge  = L.hw2g[li];
+        uint    rec = ge >> 4u;
+        Elem    el  = decode_work(a.batches, v.batch_count, L.hw2[rec]);
+        float4* rc  = L.hw2b + SPLINE_RECORD * rec;
+        float4  r0  = rc[0], r1 = rc[1];
+        uint    n   = asuint(r0.w);
+        uint    k0  = v.spl_group == 0u ? 0u : (ge & 15u) * v.spl_group;
+        uint    k1  = v.spl_group == 0u ? n : min(k0 + v.spl_group, n);
+        SplineBox bx;
+        if (k0 == 0u && k1 == n) { bx.c = r0.xyz; bx.x = r1.xyz; bx.y = rc[2].xyz; bx.z = rc[3].xyz; }
+        else                       bx = spline_box_range(spline_record_part(L, rec), n, k0, k1);
+        float3  p   = bx.c + bx.x * (((vk & 1u) != 0u) ? 1.0 : -1.0)
+                           + bx.y * (((vk & 2u) != 0u) ? 1.0 : -1.0)
+                           + bx.z * (((vk & 4u) != 0u) ? 1.0 : -1.0);
+        o.rec   = rec + 1u;
         o.pos   = mul4(M(v, proj), float4(p, 1.0));
-        o.pe    = uint4(asuint(r0.w), el.inst, el.e, el.slot);
+        o.pe    = uint4(n, k0, k1, 0u);
         o.idv   = elem_id(a.batches, el);
         o.state = asuint(r1.w);
         return o;
     }
+    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, li));
     Batch b   = a.batches[el.slot];
     Geo   g   = spline_geo(v, b, el.inst, el.e, true);     // the state lists' fade here
     if (!g.ok) return o;
@@ -3087,7 +3137,7 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
 }
 
 float spline_fragment_hit(ViewData v, Ray r, SplineV i) {
-    if (i.rec != 0u) return spline_hit(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x).t;
+    if (i.rec != 0u) return spline_hit_range(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x, i.pe.y, i.pe.z).t;
     return spline_hit(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x).t;
 }
 
