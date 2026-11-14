@@ -911,6 +911,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         if (g->spl_profile) f |= F_SPL_PROFILE;
     } else if (b->kind == MD_RENDER_POLYGONS) {
         g->s0     = b->style.polygons.radius;
+        g->s1     = b->style.polygons.plate > 0.0f ? MD_MIN(b->style.polygons.plate, 1.0f) : 1.0f;   /* 0: flat */
         g->poly_n = b->style.polygons.corners;
     }
     if (b->fade.mode) {

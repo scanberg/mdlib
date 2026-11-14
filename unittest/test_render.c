@@ -1174,8 +1174,9 @@ UTEST(render, spline_curves_match_the_sweep) {
    line: its edges alone. */
 typedef struct poly_ref_t {
     double q[8][3], c[3], n[3], r, bound;
+    double h;                            /* the plate's half thickness: r flat, less a dish */
     int    corners;
-    bool   plate;
+    bool   planar;
     uint32_t key, linear;                /* its batch, and its id's element (instance * count + element) */
     uint32_t point[8];                   /* its corners' points: their attributes */
 } poly_ref_t;
@@ -1187,6 +1188,7 @@ static void cross3(const double* a, const double* b, double* o) {
 static void poly_ref_build(poly_ref_t* p, const double (*q)[3], int n, double r) {
     p->corners = n;
     p->r = r;
+    p->h = r;
     for (int i = 0; i < 3; ++i) { p->c[i] = 0; for (int k = 0; k < n; ++k) p->c[i] += q[k][i] / n; }
     double nv[3] = { 0, 0, 0 }, sz = 0;
     for (int k = 0; k < n; ++k) {
@@ -1197,8 +1199,8 @@ static void poly_ref_build(poly_ref_t* p, const double (*q)[3], int n, double r)
         sz = fmax(sz, sqrt(dot3(u, u)));
     }
     double nl = sqrt(dot3(nv, nv));
-    p->plate = nl > 1e-6 * sz * sz;
-    for (int i = 0; i < 3; ++i) p->n[i] = p->plate ? nv[i] / nl : 0.0;
+    p->planar = nl > 1e-6 * sz * sz;
+    for (int i = 0; i < 3; ++i) p->n[i] = p->planar ? nv[i] / nl : 0.0;
     p->bound = 0;
     for (int k = 0; k < n; ++k) {
         double d[3] = { q[k][0] - p->c[0], q[k][1] - p->c[1], q[k][2] - p->c[2] }, h = dot3(d, p->n);
@@ -1211,7 +1213,7 @@ static void poly_ref_build(poly_ref_t* p, const double (*q)[3], int n, double r)
 
 /* Whether x, on the plane, is inside the polygon */
 static bool poly_ref_inside(const poly_ref_t* p, const double x[3]) {
-    if (!p->plate) return false;
+    if (!p->planar) return false;
     for (int k = 0; k < p->corners; ++k) {
         const double* a = p->q[k]; const double* b = p->q[(k + 1) % p->corners];
         double e[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, d[3] = { x[0] - a[0], x[1] - a[1], x[2] - a[2] }, s[3];
@@ -1239,12 +1241,33 @@ static double poly_ref_dist(const poly_ref_t* p, const double x[3], double cp[3]
     return best;
 }
 
+/* The signed distance to the polygon's solid. Flat: to the polygon, less
+   the radius. A dish (h < r): the nearer of its rims (the capsules of its
+   edges) and its plate (the prism of the polygon, h either side), and how
+   near those two are (crease; 1e30 when flat) */
+static double poly_ref_sdf(const poly_ref_t* p, const double x[3], double* crease) {
+    double cp[3];
+    if (crease) *crease = 1e30;
+    if (p->h >= p->r || !p->planar) return poly_ref_dist(p, x, cp) - p->r;
+    double rim = 1e30, edge = 1e30;
+    double d[3] = { x[0] - p->c[0], x[1] - p->c[1], x[2] - p->c[2] }, z = dot3(d, p->n);
+    double xp[3] = { x[0] - p->n[0] * z, x[1] - p->n[1] * z, x[2] - p->n[2] * z };
+    for (int k = 0; k < p->corners; ++k) {
+        rim  = fmin(rim, pt_seg_dist(x, p->q[k], p->q[(k + 1) % p->corners]) - p->r);
+        edge = fmin(edge, pt_seg_dist(xp, p->q[k], p->q[(k + 1) % p->corners]));
+    }
+    double wx = poly_ref_inside(p, xp) ? -edge : edge, wy = fabs(z) - p->h;
+    double plate = fmin(fmax(wx, wy), 0.0) + sqrt(fmax(wx, 0.0) * fmax(wx, 0.0) + fmax(wy, 0.0) * fmax(wy, 0.0));
+    if (crease) *crease = fabs(rim - plate);
+    return fmin(rim, plate);
+}
+
 /* The signed distance to the nearest polygon, which, and how much farther the next one is */
 static double polys_sdf(const poly_ref_t* P, int count, const double x[3], int* who, double* gap) {
-    double best = 1e30, second = 1e30, cp[3];
+    double best = 1e30, second = 1e30;
     *who = -1;
     for (int k = 0; k < count; ++k) {
-        double d = poly_ref_dist(&P[k], x, cp) - P[k].r;
+        double d = poly_ref_sdf(&P[k], x, NULL);
         if (d < best) { second = best; best = d; *who = k; }
         else if (d < second) second = d;
     }
@@ -1252,7 +1275,10 @@ static double polys_sdf(const poly_ref_t* P, int count, const double x[3], int* 
     return best;
 }
 
-/* How far the ray (t in [0, tmax]) passes outside every polygon: < 0, through one */
+/* How far the ray (t in [0, tmax]) passes outside every polygon: < 0, through
+   one. A dish: its rims, or how far inside the polygon it crosses the plate's
+   middle, at most h (a ray into the plate either crosses that or leaves
+   through a rim) */
 static double polys_ray_clearance(const poly_ref_t* P, int count, ray_t r, double tmax) {
     double q[3] = { r.o[0] + r.d[0] * tmax, r.o[1] + r.d[1] * tmax, r.o[2] + r.d[2] * tmax }, cp[3];
     double best = 1e30;
@@ -1263,7 +1289,19 @@ static double polys_ray_clearance(const poly_ref_t* P, int count, ray_t r, doubl
         double d = fmin(poly_ref_dist(p, r.o, cp), poly_ref_dist(p, q, cp));
         double o[3] = { r.o[0] - p->c[0], r.o[1] - p->c[1], r.o[2] - p->c[2] }, e[3] = { q[0] - p->c[0], q[1] - p->c[1], q[2] - p->c[2] };
         double h0 = dot3(o, p->n), h1 = dot3(e, p->n);
-        if (p->plate && (h0 > 0) != (h1 > 0)) {
+        if (p->planar && p->h < p->r) {
+            double rim = 1e30, plate = 1e30;
+            for (int j = 0; j < p->corners; ++j) rim = fmin(rim, seg_seg_dist(r.o, q, p->q[j], p->q[(j + 1) % p->corners]) - p->r);
+            if ((h0 > 0) != (h1 > 0)) {
+                double s = h0 / (h0 - h1), x[3] = { r.o[0] + (q[0] - r.o[0]) * s, r.o[1] + (q[1] - r.o[1]) * s, r.o[2] + (q[2] - r.o[2]) * s };
+                double edge = 1e30;
+                for (int j = 0; j < p->corners; ++j) edge = fmin(edge, pt_seg_dist(x, p->q[j], p->q[(j + 1) % p->corners]));
+                plate = poly_ref_inside(p, x) ? -fmin(edge, p->h) : edge;
+            }
+            best = fmin(best, fmin(rim, plate));
+            continue;
+        }
+        if (p->planar && (h0 > 0) != (h1 > 0)) {
             double s = h0 / (h0 - h1), x[3] = { r.o[0] + (q[0] - r.o[0]) * s, r.o[1] + (q[1] - r.o[1]) * s, r.o[2] + (q[2] - r.o[2]) * s };
             if (poly_ref_inside(p, x)) d = 0;
         }
@@ -1290,6 +1328,73 @@ static void poly_corners(double (*out)[3], int n, const double ctr[3], double rh
         double th = 2 * 3.14159265358979 * j / n + 0.3;
         double z = (k % 2 ? 1.0 : -1.0) * bump;
         for (int i = 0; i < 3; ++i) out[k][i] = ctr[i] + rho * (cos(th) * u[i] + sin(th) * v[i]) + z * nn[i];
+    }
+}
+
+/* Every pixel of a view of polygons against their solids: empty where the
+   rays miss them, covered where they hit (flat ones: a dish's coverage is
+   its surface's), on the surface, nothing in front; where one polygon is
+   clearly the nearest its id and its normal */
+static void poly_check_pixels(const cam_t* c, uint32_t W, uint32_t H, const poly_ref_t* ref, int nref, const uint32_t keys[4], bool dished,
+                              const uint32_t* id, const float* dp, const uint32_t* nb,
+                              int* bad, int* covered, int* judged, double* worst, double* errs, int* nerr, int* per_ref) {
+    *bad = 0; *covered = 0; *judged = 0; *worst = 0; *nerr = 0;
+    for (int k = 0; k < nref; ++k) per_ref[k] = 0;
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            uint32_t i = y * W + x;
+            ray_t r = pixel_ray(c, W, H, x + 0.5, y + 0.5);
+            uint32_t ix = id[2 * i], iy = id[2 * i + 1];
+            double clr = polys_ray_clearance(ref, nref, r, 100.0);
+            double px15 = 15.0 * 2.0 * c->tan_half / H;
+            if (iy == 0) {
+                if (clr < -0.5 * px15) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): empty, a polygon %.3f px inside\n", x, y, -clr / px15); }
+                continue;
+            }
+            (*covered)++;
+            if (!dished && clr > 0.5 * px15) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): covered, the polygons %.3f px away\n", x, y, clr / px15); continue; }
+            double zv = -c->n / dp[i], tp = zv / r.d[2];
+            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            double pxw = -P[2] * 2.0 * c->tan_half / H;
+            int who; double gap;
+            double sd = polys_sdf(ref, nref, P, &who, &gap);
+            *worst = fmax(*worst, fabs(sd) / pxw);
+            if (fabs(sd) > 0.05 * pxw) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): %.3f px off the surface\n", x, y, sd / pxw); continue; }
+            if (gap > pxw) {
+                (*judged)++;
+                per_ref[who]++;
+                uint32_t slot = (iy >> 20) - 1u;
+                if (slot >= 4 || keys[slot] != ref[who].key || ix != ref[who].linear) {
+                    (*bad)++;
+                    if (*bad < 8) printf("    pixel (%u, %u): batch slot %u element %u, expected key %u element %u\n", x, y, slot, ix, ref[who].key, ref[who].linear);
+                    continue;
+                }
+                /* the normal: the distance's gradient, away from a dish's crease */
+                double nr[3], ng[3], crease;
+                poly_ref_sdf(&ref[who], P, &crease);
+                for (int k = 0; k < 3; ++k) {
+                    double a[3] = { P[0], P[1], P[2] }, b[3] = { P[0], P[1], P[2] };
+                    a[k] += 1e-6; b[k] -= 1e-6;
+                    nr[k] = (poly_ref_sdf(&ref[who], a, NULL) - poly_ref_sdf(&ref[who], b, NULL)) / 2e-6;
+                }
+                double nl = sqrt(dot3(nr, nr));
+                if (crease > 0.5 * pxw && fabs(dot3(nr, r.d)) > 0.3 * nl) {
+                    for (int k = 0; k < 3; ++k) nr[k] /= nl;
+                    oct_decode(nb[i], ng);
+                    double cs = dot3(nr, ng);
+                    errs[(*nerr)++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+                }
+            }
+            /* nothing in front of it */
+            double tt = 0.0;
+            for (int it = 0; it < 400 && tt < tp; ++it) {
+                double qv[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+                double d = polys_sdf(ref, nref, qv, &who, &gap);
+                double qw = -qv[2] * 2.0 * c->tan_half / H;
+                if (d < -0.05 * qw) { (*bad)++; if (*bad < 8) printf("    pixel (%u, %u): a polygon %.3f px in front\n", x, y, (tp - tt) / qw); break; }
+                tt += fmax(fabs(d), 0.05 * qw);
+            }
+        }
     }
 }
 
@@ -1414,7 +1519,7 @@ UTEST(render, polygons_match_their_solids) {
         for (int j = 0; j < 8; ++j) ref[nref].point[j] = (uint32_t)j;
         nref++;
     }
-    EXPECT_FALSE(ref[NH - 1 + 2 * NP + 1].plate);         /* the triangle on a line */
+    EXPECT_FALSE(ref[NH - 1 + 2 * NP + 1].planar);        /* the triangle on a line */
 
     md_render_targets_t tg = md_render_view_targets(fx.view);
     uint32_t* id = malloc(W * H * 8);
@@ -1426,58 +1531,7 @@ UTEST(render, polygons_match_their_solids) {
     double worst = 0;
     double* errs = malloc(W * H * sizeof(double));
     int per_ref[NREF] = { 0 };
-    for (uint32_t y = 0; y < H; ++y) {
-        for (uint32_t x = 0; x < W; ++x) {
-            uint32_t i = y * W + x;
-            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
-            uint32_t ix = id[2 * i], iy = id[2 * i + 1];
-            double clr = polys_ray_clearance(ref, nref, r, 100.0);
-            double px15 = 15.0 * 2.0 * c.tan_half / H;
-            if (iy == 0) {
-                if (clr < -0.5 * px15) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, a polygon %.3f px inside\n", x, y, -clr / px15); }
-                continue;
-            }
-            covered++;
-            if (clr > 0.5 * px15) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, the polygons %.3f px away\n", x, y, clr / px15); continue; }
-            double zv = -c.n / dp[i], tp = zv / r.d[2];
-            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
-            double pxw = -P[2] * 2.0 * c.tan_half / H;
-            int who; double gap;
-            double sd = polys_sdf(ref, nref, P, &who, &gap);
-            worst = fmax(worst, fabs(sd) / pxw);
-            if (fabs(sd) > 0.05 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the surface\n", x, y, sd / pxw); continue; }
-            if (gap > pxw) {
-                judged++;
-                per_ref[who]++;
-                uint32_t slot = (iy >> 20) - 1u;
-                if (slot >= 4 || keys[slot] != ref[who].key || ix != ref[who].linear) {
-                    bad++;
-                    if (bad < 8) printf("    pixel (%u, %u): batch slot %u element %u, expected key %u element %u\n", x, y, slot, ix, ref[who].key, ref[who].linear);
-                    continue;
-                }
-                /* the normal: the distance's gradient */
-                double cp[3], nr[3], ng[3];
-                poly_ref_dist(&ref[who], P, cp);
-                for (int k = 0; k < 3; ++k) nr[k] = P[k] - cp[k];
-                double nl = sqrt(dot3(nr, nr));
-                if (nl > 0.5 * ref[who].r && fabs(dot3(nr, r.d)) > 0.3 * nl) {
-                    for (int k = 0; k < 3; ++k) nr[k] /= nl;
-                    oct_decode(nb[i], ng);
-                    double cs = dot3(nr, ng);
-                    errs[nerr++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
-                }
-            }
-            /* nothing in front of it */
-            double tt = 0.0;
-            for (int it = 0; it < 400 && tt < tp; ++it) {
-                double qv[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
-                double d = polys_sdf(ref, nref, qv, &who, &gap);
-                double qw = -qv[2] * 2.0 * c.tan_half / H;
-                if (d < -0.05 * qw) { bad++; if (bad < 8) printf("    pixel (%u, %u): a polygon %.3f px in front\n", x, y, (tp - tt) / qw); break; }
-                tt += fmax(fabs(d), 0.05 * qw);
-            }
-        }
-    }
+    poly_check_pixels(&c, W, H, ref, nref, keys, false, id, dp, nb, &bad, &covered, &judged, &worst, errs, &nerr, per_ref);
     qsort(errs, (size_t)nerr, sizeof(double), cmp_double);
     double p50 = nerr ? errs[nerr / 2] : 0, p99 = nerr ? errs[(nerr * 99) / 100] : 0;
     printf("    %d pixels covered, %d with a clear polygon; the farthest %.4f px from the solid; normals over %d: median %.3f, 99th %.3f degrees\n",
@@ -1584,6 +1638,33 @@ UTEST(render, polygons_match_their_solids) {
     EXPECT_EQ(0, left);
     printf("    shrunk: %d pixels; past the band: %d\n", shrunk, left);
     for (int k = 0; k < 4; ++k) memset(&bp[k].fade, 0, sizeof(bp[k].fade));
+
+    /* dished: the plate half as thick as the rims (md_gl's slabs.plate) */
+    {
+        for (int k = 0; k < 4; ++k) bp[k].style.polygons.plate = 0.5f;
+        for (int k = 0; k < nref; ++k) ref[k].h = 0.5 * ref[k].r;
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4) && f_read(&fx, tg.normal, nb, W * H * 4));
+        double* derrs = malloc(W * H * sizeof(double));
+        int dbad, dcov, djudged, dnerr, dper[NREF];
+        double dworst;
+        poly_check_pixels(&c, W, H, ref, nref, keys, true, id, dp, nb, &dbad, &dcov, &djudged, &dworst, derrs, &dnerr, dper);
+        qsort(derrs, (size_t)dnerr, sizeof(double), cmp_double);
+        double d50 = dnerr ? derrs[dnerr / 2] : 0, d99 = dnerr ? derrs[(dnerr * 99) / 100] : 0;
+        printf("    dished: %d pixels covered, %d with a clear polygon; the farthest %.4f px from the solid; normals over %d: median %.3f, 99th %.3f degrees\n",
+               dcov, djudged, dworst, dnerr, d50, d99);
+        EXPECT_EQ(0, dbad);
+        EXPECT_GT(dcov, covered * 9 / 10);
+        EXPECT_GT(djudged, dcov * 3 / 4);
+        for (int k = 0; k < nref; ++k) EXPECT_GT(dper[k], 20);
+        EXPECT_LT(d50, 0.2);
+        EXPECT_LT(d99, 1.0);
+        free(derrs);
+        for (int k = 0; k < 4; ++k) bp[k].style.polygons.plate = 0.0f;
+        for (int k = 0; k < nref; ++k) ref[k].h = ref[k].r;
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    }
 
     /* with spheres (the main kernels) and a spline (the same twin) in one
        frame: every pixel as the nearest of the three drawn alone */

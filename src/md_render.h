@@ -299,7 +299,9 @@ typedef struct md_render_spline_style_t {
 
 /* POLYGONS: a flat convex polygon made solid by a ball of `radius`: the
    Minkowski sum, a plate twice the radius thick with round edges (the rings
-   of a cartoon, the sugars and bases of nucleic acids).
+   of a cartoon, the sugars and bases of nucleic acids). With `plate` below 1
+   the plate within the rims is thinner, its faces moved in to plate times
+   the radius: a dish, the rims standing above it (md_gl's slabs.plate).
    Every polygon of a batch has n = `corners` corners (3 to 8): element e's
    are points n e .. n e + n - 1 in order around it (through index when it is
    given, as a capsule's two are). Rings of 5 and of 6 are two batches. Its plane is the corners' fit (Newell's normal, through
@@ -315,6 +317,8 @@ typedef struct md_render_polygon_style_t {
     uint32_t corners;              /* 3 .. 8, the same for every polygon of the batch */
     float    radius;               /* half the thickness, the rounding of the edges;
                                       <= 0 not drawn                                 */
+    float    plate;                /* the plate's half thickness within the rims, a
+                                      fraction of the radius, up to 1; 0: 1, flat    */
 } md_render_polygon_style_t;
 
 /* ---- Colour: only appearance; a change of it costs a resolve, not a raster */
