@@ -884,6 +884,42 @@ UTEST(bonds, threads) {
     md_vm_arena_destroy(alloc);
 }
 
+// On an executor the molecules are made in the system's allocator, on whichever thread runs them, or in an arena of
+// their own and copied into it where that allocator is one of the calling thread's temporary arenas (which its other
+// work may use meanwhile): the molecules and their structures are those made on the calling thread either way
+UTEST(bonds, threads_molecules) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s%s", MD_UNITTEST_DATA_DIR, "/nucl-dna.gro");
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t ref = { .alloc = alloc };
+    md_system_state_t ref_st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), NULL));
+    ASSERT_TRUE(md_system_infer(&ref, &ref_st, MD_SYSTEM_INFER_ALL, NULL));
+    const md_molecule_data_t* rm = &ref.molecule;
+    ASSERT_GT(rm->count, (size_t)1);
+    test_executor_t threads = test_executor_threads(3);
+    for (int k = 0; k < 2; ++k) {
+        md_temp_scope_t temp = md_temp_begin();
+        md_allocator_i* a = k ? md_temp_allocator(temp) : alloc;
+        EXPECT_EQ(k == 1, md_temp_is_thread_arena(a));
+        md_system_t sys = { .alloc = a };
+        md_system_state_t st = { .alloc = a };
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, test_executor(&threads)));
+        EXPECT_TRUE(bonds_threads_same(&ref, &sys));
+        const md_molecule_data_t* m = &sys.molecule;
+        ASSERT_EQ(rm->count, m->count);
+        EXPECT_EQ(0, memcmp(rm->offset, m->offset, (rm->count + 1) * sizeof(*rm->offset)));
+        EXPECT_EQ(0, memcmp(rm->atom_idx, m->atom_idx, ref.atom.count * sizeof(*rm->atom_idx)));
+        EXPECT_EQ(0, memcmp(rm->parent_idx, m->parent_idx, ref.atom.count * sizeof(*rm->parent_idx)));
+        EXPECT_EQ(rm->structure_count, m->structure_count);
+        EXPECT_EQ(0, memcmp(rm->structure_idx, m->structure_idx, rm->count * sizeof(*rm->structure_idx)));
+        EXPECT_TRUE(md_system_molecule_structures_valid(&sys));
+        md_temp_end(temp);
+    }
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(bonds, reference_systems) {
     reference_systems_t refsys = reference_systems_load();
     EXPECT_EQ(152,      refsys.mol_ala.bond.count);

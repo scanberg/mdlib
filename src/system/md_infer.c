@@ -209,11 +209,18 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         if ((br.rings || br.molecules || chemistry) && sys->bond.count && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
         PROFILE_STEP("connectivity");
 
-        // Side by side on the executor each makes its results in an arena of its own, as the system's allocator is not
-        // for several threads, and they are copied into it. Otherwise one after the other, in the system's allocator.
+        // Side by side on the executor the system's allocator, which is not for several threads, is the molecules' alone:
+        // they are made in it, on whichever thread runs them, and the rings and the backbones each in an arena of its
+        // own, copied into it after (they are small; the molecules are several arrays of the atoms, 19 ms to copy at 2M
+        // atoms). But for an allocator this thread's temporary scopes may use meanwhile (md_temp_is_thread_arena),
+        // where the molecules take an arena of their own as well. Otherwise one after the other, in the system's allocator.
         const bool side_by_side = md_executor_num_threads(executor) > 1;
+        const bool molecules_own = side_by_side && md_temp_is_thread_arena(sys->alloc);
         md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-        for (int i = 0; i < 3; ++i) br.alloc[i] = side_by_side ? md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1)) : sys->alloc;
+        for (int i = 0; i < 3; ++i) {
+            const bool own = side_by_side && (i > 0 || molecules_own);
+            br.alloc[i] = own ? md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1)) : sys->alloc;
+        }
         md_parallel_for(side_by_side ? executor : NULL, 3, 1, infer_branch, &br);
         if (mdi_infer_profile) {
             if (br.molecules) profile_record("  molecules", br.ms[0]);
@@ -231,7 +238,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         if (br.molecules) {
             molecules_inferred = true;
             md_molecule_data_free(&sys->molecule, sys->alloc);
-            if (side_by_side) molecule_data_copy(&sys->molecule, &br.molecule, sys->alloc);
+            if (molecules_own) molecule_data_copy(&sys->molecule, &br.molecule, sys->alloc);
             else              sys->molecule = br.molecule;
             // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
             // (md_system_infer_fragments). Their types stay, for the colours to be kept.
@@ -278,7 +285,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             md_system_set_chain_breaks(sys, br.backbone_data.breaks, br.backbone_data.num_breaks);
             if (!side_by_side) md_array_free(br.backbone_data.breaks, sys->alloc);
         }
-        if (side_by_side) for (int i = 0; i < 3; ++i) md_arena_allocator_destroy(br.alloc[i]);
+        for (int i = 0; i < 3; ++i) if (br.alloc[i] != sys->alloc) md_arena_allocator_destroy(br.alloc[i]);
         md_temp_end(temp);
         PROFILE_STEP("write");
     }
