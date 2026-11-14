@@ -53,7 +53,9 @@ static void molecule_data_copy(md_molecule_data_t* dst, const md_molecule_data_t
     for (size_t t = 0; t < src->type.count; ++t) md_molecule_type_data_push(&dst->type, src->type.name[t], src->type.flags[t], alloc);
     COPY_INTO(dst->structure_idx, src->structure_idx, alloc);
     COPY_INTO(dst->structure_ref, src->structure_ref, alloc);
-    dst->structure_count = src->structure_count;
+    dst->structure_count  = src->structure_count;
+    dst->structure_hash   = src->structure_hash;
+    dst->topology_version = src->topology_version;
 }
 
 // Try to fill in missing fields for molecule struct
@@ -154,6 +156,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         sys->part = parts;
     }
 
+    bool molecules_inferred = false;
     // The molecules, the rings, the backbones: steps which read the system and make results of their own (MOLECULES,
     // RINGS AND BACKBONES), then the chemistry of the molecules and the rings, all given to the system in the order of
     // the steps
@@ -183,6 +186,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         if (chemistry) chem = mdi_chem_compute(sys, br.rings ? &br.ring : &sys->ring, state, MD_CHEM_FLAG_PROTONATE_PH7, br.molecules ? &br.molecule : NULL, md_temp_allocator(temp));
 
         if (br.molecules) {
+            molecules_inferred = true;
             md_molecule_data_free(&sys->molecule, sys->alloc);
             if (side_by_side) molecule_data_copy(&sys->molecule, &br.molecule, sys->alloc);
             else              sys->molecule = br.molecule;
@@ -250,6 +254,9 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails
         md_system_infer_fragments(sys);
     }
+
+    // The structures of the molecules inferred are of the topology as it is now (md_system_molecule_structures_valid)
+    if (molecules_inferred) sys->molecule.topology_version = sys->topology_version;
 
     // Record the state the topology above was inferred from. Written here, as part of performing
     // the inference, so it cannot disagree with what it produced.

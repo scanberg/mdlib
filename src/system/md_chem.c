@@ -1452,10 +1452,14 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
         MD_LOG_ERROR("Chemistry perception: too many atoms");
         return false;
     }
+    // The copies of a molecule take its chemistry (COPIES OF A MOLECULE) when the structures of the molecules are of the
+    // system as it is, which the chemistry leaves them: it changes no bond they are found from
+    const bool structures = md_system_molecule_structures_valid(sys);
     md_system_topology_changed(sys);
+    if (structures) sys->molecule.topology_version = sys->topology_version;
 
+    if (sys->bond.count && (structures || md_ring_data_count(&sys->ring) == 0) && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, sys->alloc);
     if (sys->bond.count && md_ring_data_count(&sys->ring) == 0) {
-        if (!sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, sys->alloc);
         md_ring_data_t rings = {0};
         md_ring_infer(&rings, sys, sys->alloc);
         md_ring_data_free(&sys->ring, sys->alloc);
@@ -1468,7 +1472,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    mdi_chem_write(sys, mdi_chem_compute(sys, &sys->ring, reference, flags, NULL, md_temp_allocator(temp)));
+    mdi_chem_write(sys, mdi_chem_compute(sys, &sys->ring, reference, flags, structures ? &sys->molecule : NULL, md_temp_allocator(temp)));
     md_temp_end(temp);
     return true;
 }

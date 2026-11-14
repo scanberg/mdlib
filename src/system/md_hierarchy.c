@@ -851,6 +851,35 @@ static uint64_t structure_hash(const structure_ctx_t* c, size_t m) {
     return h;
 }
 
+uint64_t md_system_molecule_structure_hash(const md_system_t* sys) {
+    MD_ASSERT(sys);
+    const size_t N = sys->atom.count;
+    uint64_t h = md_hash64(&N, sizeof(N), 0x5EED5EED5EED5EEDull);
+    if (sys->atom.type_idx) h = md_hash64(sys->atom.type_idx, sizeof(*sys->atom.type_idx) * N, h);
+    if (sys->residue.atom_offset) h = md_hash64(sys->residue.atom_offset, sizeof(*sys->residue.atom_offset) * (sys->residue.count + 1), h);
+    const size_t B = sys->bond.count;
+    h = md_hash64(&B, sizeof(B), h);
+    if (B) h = md_hash64(sys->bond.pairs, sizeof(*sys->bond.pairs) * B, h);
+    // The flags as the structures see them, a block at a time
+    uint32_t key[256];
+    for (size_t b = 0; b < B && sys->bond.flags; b += 256) {
+        const size_t n = MD_MIN(B - b, (size_t)256);
+        for (size_t k = 0; k < n; ++k) key[k] = structure_bond_key(sys->bond.flags[b + k]);
+        h = md_hash64(key, sizeof(uint32_t) * n, h);
+    }
+    return h;
+}
+
+bool md_system_molecule_structures_valid(md_system_t* sys) {
+    MD_ASSERT(sys);
+    md_molecule_data_t* mol = &sys->molecule;
+    if (!mol->structure_idx || mol->count == 0 || md_array_size(mol->atom_slot) != sys->atom.count) return false;
+    if (mol->topology_version && mol->topology_version == sys->topology_version) return true;
+    if (md_system_molecule_structure_hash(sys) != mol->structure_hash) return false;
+    mol->topology_version = sys->topology_version;
+    return true;
+}
+
 // The structures of the molecules (STRUCTURES): a molecule is most often a copy of the one before it (a solvent), so
 // it is compared with that first, and else with the references of the structures it hashes alike with
 static void infer_molecule_structures(md_molecule_data_t* mol, const md_system_t* sys, md_allocator_i* alloc) {
@@ -866,6 +895,7 @@ static void infer_molecule_structures(md_molecule_data_t* mol, const md_system_t
     }
     const structure_ctx_t c = { .mol = mol, .bond = &sys->bond, .type = sys->atom.type_idx, .res_of = res_of };
 
+    mol->structure_hash = md_system_molecule_structure_hash(sys);
     md_array_resize(mol->structure_idx, mol->count, alloc);
     md_hashmap32_t first_of_hash = { .allocator = md_temp_allocator(temp) };   // The first structure of a hash
     md_array(int32_t) next = 0;                                                 // [structure] The next of its hash
