@@ -1729,6 +1729,234 @@ UTEST(render, polygons_match_their_solids) {
     f_close(&fx);
 }
 
+/* ---- Dashed capsules ----------------------------------------------------------- */
+
+/* A dashed capsule as md_render.h defines it, in double: the segment between
+   the spheres at its ends, dashes of the batch's lengths, as many as come
+   closest (at least two), stretched alike to fill it */
+typedef struct dash_ref_t {
+    double a[3], u[3], len, r;      /* the trimmed segment: start, direction, length; radius */
+    double dash, period;
+    int    n;                       /* dashes; 0: none (the spheres meet) */
+    uint32_t key, linear;
+} dash_ref_t;
+
+static void dash_ref_build(dash_ref_t* d, const double pa[3], const double pb[3], double ia, double ib, double r, double D, double G) {
+    double ab[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(ab, ab));
+    d->r = r;
+    d->n = 0;
+    if (l <= ia + ib) return;
+    for (int i = 0; i < 3; ++i) { d->u[i] = ab[i] / l; d->a[i] = pa[i] + d->u[i] * ia; }
+    d->len = l - ia - ib;
+    double n = fmax(2.0, floor((d->len + G) / (D + G) + 0.5));
+    double k = d->len / (n * D + (n - 1) * G);
+    d->n = (int)n; d->dash = D * k; d->period = (D + G) * k;
+}
+
+/* The distance to the dashes: the nearest flat-ended cylinder (dash k from k period, dash long) */
+static double dash_ref_sdf(const dash_ref_t* d, const double x[3]) {
+    if (!d->n) return 1e30;
+    double ox[3] = { x[0] - d->a[0], x[1] - d->a[1], x[2] - d->a[2] }, y = dot3(ox, d->u);
+    double rp[3] = { ox[0] - d->u[0] * y, ox[1] - d->u[1] * y, ox[2] - d->u[2] * y }, rad = sqrt(dot3(rp, rp));
+    double best = 1e30;
+    int k0 = (int)floor(y / d->period);
+    for (int k = k0 - 1; k <= k0 + 1; ++k) {
+        if (k < 0 || k >= d->n) continue;
+        double c = k * d->period + 0.5 * d->dash;
+        double qx = rad - d->r, qy = fabs(y - c) - 0.5 * d->dash;
+        double s = sqrt(fmax(qx, 0) * fmax(qx, 0) + fmax(qy, 0) * fmax(qy, 0)) + fmin(fmax(qx, qy), 0.0);
+        best = fmin(best, s);
+    }
+    if (best >= 1e29) {                    /* beyond the ends: the end dash */
+        int k = y < 0 ? 0 : d->n - 1;
+        double c = k * d->period + 0.5 * d->dash;
+        double qx = rad - d->r, qy = fabs(y - c) - 0.5 * d->dash;
+        best = sqrt(fmax(qx, 0) * fmax(qx, 0) + fmax(qy, 0) * fmax(qy, 0)) + fmin(fmax(qx, qy), 0.0);
+    }
+    return best;
+}
+
+/* Whether the ray hits the dashes grown (e > 0) or shrunk (e < 0) by e: each
+   dash a finite cylinder, the ray's interval inside the infinite one and
+   inside its slab intersected (independent of md_render's way: the next end) */
+static bool dash_ref_hits(const dash_ref_t* d, ray_t ry, double e) {
+    if (!d->n) return false;
+    double oa[3] = { ry.o[0] - d->a[0], ry.o[1] - d->a[1], ry.o[2] - d->a[2] };
+    double du = dot3(ry.d, d->u), ou = dot3(oa, d->u);
+    double dp[3] = { ry.d[0] - d->u[0] * du, ry.d[1] - d->u[1] * du, ry.d[2] - d->u[2] * du };
+    double op[3] = { oa[0] - d->u[0] * ou, oa[1] - d->u[1] * ou, oa[2] - d->u[2] * ou };
+    double r = d->r + e, A = dot3(dp, dp), B = dot3(dp, op), C = dot3(op, op) - r * r;
+    double t0 = -1e30, t1 = 1e30;
+    if (A > 1e-15) {
+        double h = B * B - A * C;
+        if (h < 0) return false;
+        t0 = (-B - sqrt(h)) / A; t1 = (-B + sqrt(h)) / A;
+    } else if (C > 0) return false;
+    for (int k = 0; k < d->n; ++k) {
+        double y0 = k * d->period - e, y1 = k * d->period + d->dash + e, s0 = -1e30, s1 = 1e30;
+        if (fabs(du) > 1e-15) {
+            s0 = (y0 - ou) / du; s1 = (y1 - ou) / du;
+            if (s0 > s1) { double t = s0; s0 = s1; s1 = t; }
+        } else if (ou < y0 || ou > y1) continue;
+        double lo = fmax(fmax(t0, s0), 0.0), hi = fmin(t1, s1);
+        if (lo <= hi) return true;
+    }
+    return false;
+}
+
+UTEST(render, capsules_dashed_match_their_cylinders) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    /* Sticks between points of their own radii: across the view, oblique,
+       nearly along it (the ends of the dashes face the camera), short ones,
+       one whose spheres meet; a second instance turned and scaled 1.3 */
+    enum { NC = 9 };
+    const float pos[2 * NC][3] = {
+        { -5.0f,  3.0f, -14.0f }, { -1.0f,  3.2f, -14.0f },
+        {  0.5f,  3.0f, -13.0f }, {  4.5f,  1.5f, -16.0f },
+        { -5.0f,  0.5f, -12.0f }, { -4.6f,  0.9f, -16.5f },     /* nearly along the view */
+        { -2.5f,  0.0f, -14.0f }, { -1.6f, -0.2f, -14.0f },     /* short: two dashes */
+        {  0.0f,  0.0f, -14.0f }, {  0.6f,  0.0f, -14.0f },     /* the spheres meet */
+        {  1.5f, -0.5f, -15.0f }, {  5.5f,  1.0f, -12.0f },
+        { -5.5f, -2.5f, -14.0f }, { -1.5f, -3.5f, -15.0f },
+        {  0.0f, -2.0f, -14.0f }, {  0.4f, -2.4f, -18.0f },     /* steeply away */
+        {  2.0f, -3.0f, -13.5f }, {  5.5f, -2.0f, -14.5f },
+    };
+    float rad[2 * NC];
+    for (int k = 0; k < 2 * NC; ++k) rad[k] = 0.5f + 0.25f * (float)(k % 3);
+    const float R = 0.18f, D = 0.35f, G = 0.25f, ES = 0.4f, EA = 0.05f;
+    float xf[32] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    {   /* about (0, 0, -14): turned 30 degrees about y, scaled 1.3, moved back and down */
+        const double ang = 30 * 3.14159265358979 / 180, sc = 1.3, ctr[3] = { 0, 0, -14 }, mv[3] = { 0.5, -1.0, -6.0 };
+        float m[9] = { (float)(sc * cos(ang)), 0, (float)(-sc * sin(ang)), 0, (float)sc, 0, (float)(sc * sin(ang)), 0, (float)(sc * cos(ang)) };
+        for (int i = 0; i < 9; ++i) xf[16 + 4 * (i / 3) + i % 3] = m[i];
+        for (int i = 0; i < 3; ++i) xf[28 + i] = (float)(ctr[i] + mv[i] - (m[i] * ctr[0] + m[3 + i] * ctr[1] + m[6 + i] * ctr[2]));
+    }
+    md_render_batch_t b = {0};
+    b.key = 41; b.kind = MD_RENDER_CAPSULES; b.count = NC; b.points.count = 2 * NC;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.radius   = f_buf(&fx, rad, sizeof(rad));
+    b.style.capsules.radius = R;
+    b.style.capsules.dash_length = D;
+    b.style.capsules.gap_length  = G;
+    b.style.capsules.dash_ends.radius_scale = ES;
+    b.style.capsules.dash_ends.radius_add   = EA;
+    b.transform = xf; b.transform_count = 2;
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    dash_ref_t ref[2 * NC];
+    int nref = 0, none = 0;
+    for (int in = 0; in < 2; ++in) {
+        const float* m = xf + 16 * in;
+        const double s = sqrt((double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2]);
+        for (int k = 0; k < NC; ++k) {
+            double p[2][3];
+            for (int e = 0; e < 2; ++e) for (int i = 0; i < 3; ++i) {
+                const float* q = pos[2 * k + e];
+                p[e][i] = (double)m[i] * q[0] + (double)m[4 + i] * q[1] + (double)m[8 + i] * q[2] + m[12 + i];
+            }
+            dash_ref_build(&ref[nref], p[0], p[1], (rad[2 * k] * ES + EA) * s, (rad[2 * k + 1] * ES + EA) * s, R * s, D * s, G * s);
+            ref[nref].key = 41; ref[nref].linear = (uint32_t)(in * NC + k);
+            none += ref[nref].n == 0;
+            nref++;
+        }
+    }
+    EXPECT_EQ(2, none);                    /* the one whose spheres meet, twice */
+    EXPECT_EQ(2, ref[3].n);                /* the short one: two */
+
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    uint32_t* nb = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4) && f_read(&fx, tg.normal, nb, W * H * 4));
+    int bad = 0, covered = 0, judged = 0, nerr = 0, caps = 0;
+    double worst = 0;
+    double* errs = malloc(W * H * sizeof(double));
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            uint32_t i = y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            double px = 14.0 * 2.0 * c.tan_half / H;       /* a pixel at the depth of most */
+            bool hit_in = false, hit_out = false;
+            for (int k = 0; k < nref; ++k) {
+                hit_in  |= dash_ref_hits(&ref[k], r, -0.5 * px);
+                hit_out |= dash_ref_hits(&ref[k], r, 0.5 * px);
+            }
+            uint32_t iy = id[2 * i + 1];
+            if (iy == 0) {
+                if (hit_in) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, a dash there\n", x, y); }
+                continue;
+            }
+            covered++;
+            if (!hit_out) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, no dash near\n", x, y); continue; }
+            double zv = -c.n / dp[i], tp = zv / r.d[2];
+            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            double pxw = -P[2] * 2.0 * c.tan_half / H;
+            int who = -1;
+            double best = 1e30, second = 1e30;
+            for (int k = 0; k < nref; ++k) {
+                double sd = dash_ref_sdf(&ref[k], P);
+                if (sd < best) { second = best; best = sd; who = k; } else if (sd < second) second = sd;
+            }
+            worst = fmax(worst, fabs(best) / pxw);
+            if (fabs(best) > 0.05 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the dashes\n", x, y, best / pxw); continue; }
+            if (second - best > pxw) {
+                judged++;
+                if (id[2 * i] != ref[who].linear) { bad++; if (bad < 8) printf("    pixel (%u, %u): element %u, expected %u\n", x, y, id[2 * i], ref[who].linear); continue; }
+                /* the normal: the distance's gradient, away from a dash's rim */
+                double g[3], ng[3];
+                for (int k = 0; k < 3; ++k) {
+                    double a[3] = { P[0], P[1], P[2] }, bq[3] = { P[0], P[1], P[2] };
+                    a[k] += 1e-6; bq[k] -= 1e-6;
+                    g[k] = (dash_ref_sdf(&ref[who], a) - dash_ref_sdf(&ref[who], bq)) / 2e-6;
+                }
+                double gl = sqrt(dot3(g, g));
+                double ox[3] = { P[0] - ref[who].a[0], P[1] - ref[who].a[1], P[2] - ref[who].a[2] }, yy = dot3(ox, ref[who].u);
+                double rp[3] = { ox[0] - ref[who].u[0] * yy, ox[1] - ref[who].u[1] * yy, ox[2] - ref[who].u[2] * yy };
+                double radial = sqrt(dot3(rp, rp)), kk = floor(yy / ref[who].period), ya = yy - kk * ref[who].period;
+                double edge = fmax(fabs(radial - ref[who].r), fmin(fabs(ya), fabs(ya - ref[who].dash)));   /* the rim: both small */
+                if (edge > 0.7 * pxw && fabs(dot3(g, r.d)) > 0.3 * gl) {
+                    oct_decode(nb[i], ng);
+                    double cs = dot3(g, ng) / gl;
+                    errs[nerr++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+                    caps += fabs(dot3(g, ref[who].u)) > 0.9 * gl;
+                }
+            }
+        }
+    }
+    qsort(errs, (size_t)nerr, sizeof(double), cmp_double);
+    double p50 = nerr ? errs[nerr / 2] : 0, p99 = nerr ? errs[(nerr * 99) / 100] : 0;
+    printf("    %d pixels covered, %d with a clear dash; the farthest %.4f px from the dashes; normals over %d (%d on ends): median %.3f, 99th %.3f degrees\n",
+           covered, judged, worst, nerr, caps, p50, p99);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered, 1000);
+    EXPECT_GT(judged, covered * 3 / 4);
+    EXPECT_GT(caps, 30);
+    EXPECT_LT(p50, 0.2);
+    EXPECT_LT(p99, 1.0);
+    free(errs);
+
+    /* a pick on the middle of the first dash of the first: that capsule, the nearer end's attribute */
+    {
+        const dash_ref_t* d = &ref[0];
+        double q[3];
+        for (int i = 0; i < 3; ++i) q[i] = d->a[i] + d->u[i] * 0.5 * d->dash;
+        uint32_t qx = (uint32_t)((q[0] / -q[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        uint32_t qy = (uint32_t)((0.5 - q[1] / -q[2] / c.tan_half * 0.5) * H);
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, qx, qy, &pk));
+        EXPECT_EQ(41u, (unsigned)pk.key);
+        EXPECT_EQ(0u, pk.element);
+        EXPECT_EQ(0u, pk.attr);
+    }
+    free(id); free(dp); free(nb);
+    f_close(&fx);
+}
+
 UTEST(render, index_visibility_instances) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -4274,6 +4502,104 @@ UTEST(render, mol_derived_points) {
     }
     #undef CHECK_HEADS
     free(vel); free(velf);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* The bonds that are not covalent dashed, in their class's style (md_gl's
+   BOND DASHES): the coordinate bonds of a catalyst. Their batches' styles by
+   representation and dash mode; drawn, the dashes cover part of what the
+   solid sticks do, never more */
+UTEST(render, mol_bonds_dashed_by_kind) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/catalyst.gro"));
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    const uint32_t ncoord = topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE + 1] - topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE];
+    ASSERT_GT(ncoord, 0u);
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+
+    const float r = 0.2f;
+    md_render_mol_rep_t rep = {0};
+    rep.key = 5; rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = r;
+    md_render_batch_t bt[8];
+    ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));     /* covalent, coordinate, atoms */
+    const md_render_capsule_style_t* cv = &bt[0].style.capsules;
+    const md_render_capsule_style_t* cd = &bt[1].style.capsules;
+    EXPECT_EQ((uint64_t)(5 << 8 | (MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_COORDINATE)), bt[1].key);
+    EXPECT_EQ(0.0f, cv->dash_length);
+    EXPECT_NEAR(0.70f * r, cd->radius, 1e-6f);
+    EXPECT_NEAR(2.0f * r, cd->dash_length, 1e-6f);
+    EXPECT_NEAR(0.8f * r, cd->gap_length, 1e-6f);
+    EXPECT_EQ(0.0f, cd->dash_ends.radius_scale);       /* licorice: its joints, r */
+    EXPECT_NEAR(r, cd->dash_ends.radius_add, 1e-6f);
+    md_render_batch_t dashed = bt[1];
+    rep.dashes = MD_RENDER_MOL_DASHES_NONE;
+    ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
+    EXPECT_EQ(0.0f, bt[1].style.capsules.dash_length);
+    EXPECT_NEAR(r, bt[1].style.capsules.radius, 1e-6f);
+    md_render_batch_t solid = bt[1];
+    rep.dashes = MD_RENDER_MOL_DASHES_ALL;
+    ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
+    EXPECT_NEAR(2.4f * r, bt[0].style.capsules.dash_length, 1e-6f);
+    EXPECT_NEAR(0.6f * r, bt[0].style.capsules.gap_length, 1e-6f);
+    EXPECT_NEAR(1.0f * r, bt[0].style.capsules.radius, 1e-6f);
+    md_render_mol_rep_t bs = {0};
+    bs.key = 6; bs.type = MD_RENDER_MOL_REP_BALL_AND_STICK; bs.params.ball_and_stick.ball_scale = 0.3f; bs.params.ball_and_stick.stick_radius = 0.12f;
+    ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &bs, bt, 8));
+    EXPECT_NEAR(0.3f, bt[1].style.capsules.dash_ends.radius_scale, 1e-6f);   /* its balls */
+    EXPECT_EQ(0.0f, bt[1].style.capsules.dash_ends.radius_add);
+    EXPECT_NEAR(2.0f * 0.12f, bt[1].style.capsules.dash_length, 1e-6f);
+
+    /* drawn alone: the dashes within the solid sticks, and less of them */
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (size_t i = 0; i < sys.atom.count; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], (&state.xyz[i].x)[k]); hi[k] = fmaxf(hi[k], (&state.xyz[i].x)[k]); }
+    const uint32_t W = 256, H = 256;
+    float ext = 0.55f * fmaxf(hi[0] - lo[0], hi[1] - lo[1]) + 1.0f;
+    cam_t c = { .ortho = true, .half_h = ext, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -0.5f * (lo[0] + hi[0]); cam.view[13] = -0.5f * (lo[1] + hi[1]); cam.view[14] = -(hi[2] + 20.0f);
+    uint32_t* ids[2];
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    const md_render_batch_t* which[2] = { &solid, &dashed };
+    for (int k = 0; k < 2; ++k) {
+        md_render_frame_t f = frame_of(W, H, cam, which[k], 1);
+        memcpy(f.content, content, sizeof(content));
+        f.content[MD_RENDER_CONTENT_GEOMETRY] += (uint64_t)k + 1;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        ids[k] = malloc(W * H * 8);
+        tg = md_render_view_targets(fx.view);       /* of this size */
+        ASSERT_TRUE(f_read(&fx, tg.id, ids[k], W * H * 8));
+    }
+    int ns = 0, nd = 0, outside = 0;
+    for (uint32_t i = 0; i < W * H; ++i) {
+        ns += ids[0][2 * i + 1] != 0;
+        if (ids[1][2 * i + 1] == 0) continue;
+        nd++;
+        outside += ids[0][2 * i + 1] == 0;      /* (where sticks cross, another may be in front) */
+    }
+    printf("    %u coordinate bonds: %d pixels solid, %d dashed\n", ncoord, ns, nd);
+    EXPECT_EQ(0, outside);
+    EXPECT_GT(nd, ns / 5);
+    EXPECT_LT(nd, ns * 3 / 4);
+    free(ids[0]); free(ids[1]);
     md_render_mol_destroy(mol);
     md_system_free(&sys);
     f_close(&fx);

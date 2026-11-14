@@ -76,6 +76,7 @@ enum {
     F_SPL_AXIS     = 1u << 19,
     F_SPL_PROFILE  = 1u << 20,
     F_SPL_THROUGH  = 1u << 21,
+    F_DASHED       = 1u << 22,
 };
 
 typedef struct gpu_batch_t {
@@ -93,9 +94,11 @@ typedef struct gpu_batch_t {
     uint32_t      cluster_count, cluster_work_offset, cluster_base, radius_table_count;
     float         fade_out_a, fade_out_b, fade_in_a, fade_in_b;   /* the bands for this camera (fade_bands) */
     md_gpu_addr_t spl_axis, spl_profile;                          /* SPLINES */
-    uint32_t      poly_n, _pad_b[3];                              /* POLYGONS: corners; to the float4 alignment */
+    uint32_t      poly_n;                                         /* POLYGONS: corners */
+    float         dash, gap, end_scale, end_add;                  /* CAPSULES dashed: the lengths, the spheres at the ends */
+    uint32_t      _pad_c[3];                                      /* to the float4 alignment */
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 304, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 320, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -550,6 +553,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.capsules.radius_scale = c->radius_scale;
         out->style.capsules.dash_length  = c->dash_length;
         out->style.capsules.gap_length   = c->gap_length;
+        out->style.capsules.dash_ends    = c->dash_ends;
         out->style.capsules.offset       = c->offset;
         out->style.capsules.offset_mode  = c->offset_mode;
         memcpy(out->style.capsules.cell, c->cell, sizeof(c->cell));
@@ -672,8 +676,12 @@ static bool validate(const md_render_frame_t* f) {
         }
         if (b->kind == MD_RENDER_CAPSULES) {
             const md_render_capsule_style_t* c = &b->style.capsules;
-            if (c->cap[0] != MD_RENDER_CAP_ROUND || c->cap[1] != MD_RENDER_CAP_ROUND || c->dash_length != 0.0f || c->offset) {
-                MD_LOG_ERROR("md_render: batch %u: flat caps, dashes and offsets are not implemented yet", i);
+            if ((c->dash_length <= 0.0f && (c->cap[0] != MD_RENDER_CAP_ROUND || c->cap[1] != MD_RENDER_CAP_ROUND)) || c->offset) {
+                MD_LOG_ERROR("md_render: batch %u: flat caps and offsets are not implemented yet", i);
+                return false;
+            }
+            if (c->dash_length < 0.0f || c->gap_length < 0.0f) {
+                MD_LOG_ERROR("md_render: batch %u: dash and gap lengths are not negative", i);
                 return false;
             }
             for (int k = 0; k < 9; ++k) {
@@ -863,9 +871,12 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->color_mode     = (uint32_t)b->color.mode;
     g->position       = p->position;
     g->velocity       = p->velocity;
-    /* Spheres are the only kind that reads point radii, and a radius_scale
-       of 0 does not (licorice: radius_add alone) */
-    const bool radii  = b->kind == MD_RENDER_SPHERES && b->style.spheres.radius_scale != 0.0f && p->radius;
+    /* Spheres read point radii, but not with a radius_scale of 0 (licorice:
+       radius_add alone); so do dashed capsules, for the spheres at their
+       ends, likewise */
+    const bool radii  = p->radius && ((b->kind == MD_RENDER_SPHERES && b->style.spheres.radius_scale != 0.0f) ||
+                                      (b->kind == MD_RENDER_CAPSULES && b->style.capsules.dash_length > 0.0f &&
+                                       b->style.capsules.dash_ends.radius_scale != 0.0f));
     g->radius         = radii ? p->radius : 0;
     g->radius_table   = radii ? p->radius_table : 0;
     g->radius_table_count = g->radius_table ? (p->radius_table_count < 0x10000u ? p->radius_table_count : 0x10000u) : 0;
@@ -901,6 +912,13 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->s0 = b->style.capsules.radius;
         g->radius_scale = b->style.capsules.radius_scale;
         if (b->style.capsules.radius_scale) f |= F_RADIUS_SCALE;
+        if (b->style.capsules.dash_length > 0.0f) {
+            f |= F_DASHED;
+            g->dash      = b->style.capsules.dash_length;
+            g->gap       = b->style.capsules.gap_length;
+            g->end_scale = b->style.capsules.dash_ends.radius_scale;
+            g->end_add   = b->style.capsules.dash_ends.radius_add;
+        }
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;
         g->s1        = b->style.splines.flat;

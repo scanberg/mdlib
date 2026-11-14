@@ -221,11 +221,18 @@ typedef struct md_render_capsule_style_t {
     md_render_cap_t cap[2];
     md_gpu_addr_t   radius_scale;  /* float per capsule, optional                      */
 
-    /* Not yet implemented. Dashes are given by lengths, never by a count:
-       as many flat-ended dashes as come closest (at least two), stretched
-       alike. dash_length 0: solid. */
+    /* Dashed (dash_length > 0): flat-ended cylinders of the radius between
+       the spheres at its points (dash_ends: of radius point radius *
+       radius_scale + radius_add, those a representation draws there, so
+       that none is hidden or cut by one), not from the points. Given by
+       lengths, never by a count: as many dashes as come closest, at least
+       two, stretched alike to fill the length (the first starts at the one
+       sphere, the last ends at the other). Nothing where the spheres meet.
+       `cap` does not apply. Only the hardware raster draws them (no compute
+       raster for small ones). dash_length 0: solid. */
     float           dash_length;
     float           gap_length;
+    md_render_sphere_style_t dash_ends;
 
     /* Not yet implemented. A displacement of each capsule, in multiples of
        `radius` (float4 per capsule, xyz used): the thinner sticks of a double
