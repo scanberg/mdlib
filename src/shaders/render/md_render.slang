@@ -198,6 +198,7 @@ struct Lists {
     uint*     st2;              // spline parts with a state bit
     uint*     hw3;              // polygons for the hardware raster (nor have they)
     uint*     st3;              // polygons with a state bit
+    float4*   hw2b;             // per hw2 entry, its part's box (spline_box_write): 4 float4
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -1375,6 +1376,68 @@ Geo spline_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     return g;
 }
 
+// The box the hardware raster draws for a part, in view space: oriented
+// along its chord (z), across its axis at the middle (x) and through it (y),
+// right-handed. What the raster tests is not the swept surface but its
+// pieces (spline_hit): rims, round cones between the rim points of the
+// sections at the pieces' ends, faces, bilinear patches between points within
+// the radius of those, caps, capsules between them. All of it lies in the
+// convex hull of the balls of the radius at those rim points, so the box
+// bounding those balls bounds it: exact, and for a ribbon as thin as it is
+// (the box around the part's bounding capsule was as thick as it was wide).
+// The cull writes it once per part (element_pass); the vertex stage reads it
+// instead of rebuilding the part at each of the box's corners.
+struct SplineBox {
+    float3 c;                   // centre
+    float3 x, y, z;             // half axes
+};
+
+SplineBox spline_box(SplinePart sp, uint pieces) {
+    SplineBox bx;
+    float3 ca = spline_centre(sp, sp.u0), cb = spline_centre(sp, sp.u1);
+    SplineSection sm = spline_section(sp, 0.5 * (sp.u0 + sp.u1));
+    float3 z  = cb - ca;
+    float  zl = length(z);
+    z = zl > 1e-20 ? z / zl : (dot(sm.t, sm.t) > 0.0 ? normalize(sm.t) : float3(0.0, 0.0, 1.0));
+    float3 x  = sm.w - z * dot(sm.w, z);
+    float  xl = length(x);
+    if (!(xl > 1e-6)) {                                 // no axis (tubes): any normal of the chord
+        x  = abs(z.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
+        x -= z * dot(x, z);
+        xl = length(x);
+    }
+    x /= xl;
+    float3 y  = cross(z, x);                            // (x, y, z) right-handed
+    float3 lo = float3(1e30), hi = float3(-1e30);
+    float  n  = float(max(pieces, 1u));
+    for (uint k = 0u; k <= pieces; ++k) {
+        float  f = float(k) / n;
+        SplineSection s = spline_section(sp, spline_piece_u(sp, k, pieces));
+        float  a = lerp(sp.a0, sp.a1, f), r = lerp(sp.r0, sp.r1, f);
+        float3 p = s.c + s.w * a, m = s.c - s.w * a;     // the rim points (spline_hit's)
+        float3 qp = float3(dot(p, x), dot(p, y), dot(p, z)), qm = float3(dot(m, x), dot(m, y), dot(m, z));
+        lo = min(lo, min(qp, qm) - r);
+        hi = max(hi, max(qp, qm) + r);
+    }
+    float3 h = 0.5 * (hi - lo);
+    h += 0.002 * max(h.x, max(h.y, h.z)) + 1e-6;        // see sphere_vs: not just touching
+    float3 q = 0.5 * (hi + lo);
+    bx.c = x * q.x + y * q.y + z * q.z;
+    bx.x = x * h.x;
+    bx.y = y * h.y;
+    bx.z = z * h.z;
+    return bx;
+}
+
+// The hardware raster's record of a part (Lists.hw2b, 4 float4 at 4 i):
+// its box, its pieces and state bits
+void spline_box_write(Lists L, uint i, SplineBox bx, uint pieces, uint st) {
+    L.hw2b[4u * i + 0u] = float4(bx.c, asfloat(pieces));
+    L.hw2b[4u * i + 1u] = float4(bx.x, asfloat(st));
+    L.hw2b[4u * i + 2u] = float4(bx.y, 0.0);
+    L.hw2b[4u * i + 3u] = float4(bx.z, 0.0);
+}
+
 // ---------------------------------------------------------------------------
 // Polygons (md_render_polygon_style_t): a flat convex polygon of n corners
 // (3 .. 8, the same for a whole batch), made solid by a ball of the radius.
@@ -2370,6 +2433,13 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         uint ih2 = wave_append(L.counters + (phase == 2u ? C_HWS2 : C_HWS1), out == OUT_HW && !poly);
         uint ih3 = wave_append(L.counters + (phase == 2u ? C_HWP2 : C_HWP1), out == OUT_HW && poly);
         if (out == OUT_HW) { if (poly) L.hw3[base3 + ih3] = ent; else L.hw2[base2 + ih2] = ent; }
+        if (out == OUT_HW && !poly) {
+            // its box, once: the vertex stage reads it (spline_box)
+            Batch      b  = batches[slot];
+            SplinePart sp = spline_part(v, b, inst, e, true);
+            uint       n  = spline_pieces(v, sp, g);
+            spline_box_write(L, base2 + ih2, spline_box(sp, n), n, g.st);
+        }
         wave_count(L.counters + C_OUTSIDE, out == OUT_OUTSIDE);
         wave_count(L.counters + C_LOD,     out == OUT_LOD);
         return;
@@ -2952,7 +3022,21 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.idv   = uint2(0u);
     o.state = 0u;
     uint  vk  = md_draw_vertex(vid, base_vertex);
-    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
+    uint  li  = base_instance + md_draw_instance(iid, base_instance);
+    Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, li));
+    if (a.list == 4u) {
+        // the hardware list: the cull's box (spline_box)
+        Lists  L  = *a.lists;
+        float4 r0 = L.hw2b[4u * li + 0u], r1 = L.hw2b[4u * li + 1u];
+        float3 p  = r0.xyz + r1.xyz * (((vk & 1u) != 0u) ? 1.0 : -1.0)
+                           + L.hw2b[4u * li + 2u].xyz * (((vk & 2u) != 0u) ? 1.0 : -1.0)
+                           + L.hw2b[4u * li + 3u].xyz * (((vk & 4u) != 0u) ? 1.0 : -1.0);
+        o.pos   = mul4(M(v, proj), float4(p, 1.0));
+        o.pe    = uint4(asuint(r0.w), el.inst, el.e, el.slot);
+        o.idv   = elem_id(a.batches, el);
+        o.state = asuint(r1.w);
+        return o;
+    }
     Batch b   = a.batches[el.slot];
     Geo   g   = spline_geo(v, b, el.inst, el.e, true);     // the state lists' fade here
     if (!g.ok) return o;
