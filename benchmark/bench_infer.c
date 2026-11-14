@@ -37,7 +37,7 @@
 #include <string.h>
 
 // The benchmark's own revision: bumped with every change of it, so that a result names the build it came from
-#define MD_INFER_BENCH_REV "R1"
+#define MD_INFER_BENCH_REV "R2"
 
 #define MAX_COUNTS 32
 
@@ -82,8 +82,27 @@ static void quiet(struct md_logger_o* inst, enum md_log_type_t type, const char*
     if (type == MD_LOG_TYPE_ERROR) fprintf(stderr, "%s\n", msg);
 }
 
+// Run when no files are given: a spread of sizes, formats and chemistry
+// (solvated systems, protein, DNA, lipids, coarse grained), relative to test_data
+static const char* default_files[] = {
+    "nvt_prod.gro",
+    "centered.gro",
+    "inside-md-pullout.gro",
+    "nucl-dna.gro",
+    "tryptophan-md.gro",
+    "dppc64.pdb",
+    "tubulin-A-B.pdb",
+    "8g7u.cif",
+    "1fez.cif",
+    "tpr/peptide_tip3p.tpr",
+    "martini/martini3_membrane.tpr",
+};
+
+#define NUM_DEFAULT_FILES (sizeof(default_files) / sizeof(default_files[0]))
+
 static void usage(const char* exe) {
-    printf("usage: %s [--reps n] [--threads a,b,c] [--reuse-memory] [--bonds] file ...\n", exe);
+    printf("usage: %s [--reps n] [--threads a,b,c] [--reuse-memory] [--bonds] [file ...]\n", exe);
+    printf("without files it runs the default set in %s\n", MD_BENCHMARK_DATA_DIR);
 }
 
 int main(int argc, char** argv) {
@@ -126,9 +145,12 @@ int main(int argc, char** argv) {
         for (int n = 1; n < cores && num_counts < MAX_COUNTS - 1; n *= 2) counts[num_counts++] = n;
         counts[num_counts++] = MD_MIN(cores, MAX_THREADS);
     }
+    static char default_paths[NUM_DEFAULT_FILES][1024];
     if (num_files == 0) {
-        usage(argv[0]);
-        return 1;
+        for (size_t i = 0; i < NUM_DEFAULT_FILES; ++i) {
+            snprintf(default_paths[i], sizeof(default_paths[i]), "%s/%s", MD_BENCHMARK_DATA_DIR, default_files[i]);
+            files[num_files++] = default_paths[i];
+        }
     }
 
     // Errors only: the notes of the steps on each of many runs are not the point
