@@ -30,8 +30,7 @@ typedef struct {
     md_gpu_sampler_t     smp;
     uint32_t             width;
     uint32_t             height;
-    uint32_t             _p0;
-    uint32_t             _p1;
+    md_gpu_addr_t        cmds;
 } rargs_t;
 
 typedef struct { md_gpu_float4 offset; md_gpu_float4 color; } rdraw_t;
@@ -1170,6 +1169,68 @@ UTEST(gpu_render, pass_to_pass_explicit_barriers) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
     render_then_sample(&f, true, utest_result);
+    r_close(&f);
+}
+
+/* Indirect draws whose commands a kernel wrote just before, in the same
+   stream, with nothing between but md_gpu's implicit ordering: what
+   md_render's rasters do (its culls write their instance counts). The
+   commands start zeroed, so a draw that reads them stale draws nothing. */
+UTEST(gpu_render, kernel_writes_indirect_commands) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+
+    md_gpu_kernel_desc_t kd = md_shader_gpu_render_test_gen_cmd_kernel();
+    md_gpu_kernel_t gen = md_gpu_kernel_create(f.dev, &kd);
+    md_gpu_texture_t u = r_target(&f, MD_GPU_FORMAT_R32_UINT, W, H, 0);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_R32_UINT;
+    md_gpu_pipeline_t p = r_pipeline(&f, md_shader_gpu_render_test_indirect_vs_shader(), md_shader_gpu_render_test_id_fs_shader(),
+                                     MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_INVALID);
+    ASSERT_TRUE(gen && u && p);
+    static const uint16_t idx[3] = { 0, 1, 2 };
+    md_gpu_addr_t vb = r_buffer(&f, full_tri, sizeof(full_tri));
+    md_gpu_addr_t ib = r_buffer(&f, idx, sizeof(idx));
+    md_gpu_addr_t rb = r_buffer(&f, NULL, sizeof(rdraw_t));
+    md_gpu_addr_t cb = r_buffer(&f, NULL, 64);
+    static uint32_t ids[W * H];
+
+    /* explicit 0: md_gpu's implicit ordering alone (md_render's case);
+       1: an explicit barrier from the kernel to the indirect read as well
+       (redundant by the spec: printed apart, to tell a driver that needs it) */
+    for (int explicit_barrier = 0; explicit_barrier < 2; ++explicit_barrier)
+    for (int indexed = 0; indexed < 2; ++indexed) {
+        int least = W * H;
+        for (int round = 0; round < 3; ++round) {
+            ASSERT_TRUE(md_gpu_memset(f.gfx, cb, 0, 64));
+            rargs_t a = {0};
+            a.cmds = cb;
+            EXPECT_TRUE(md_gpu_launch(f.gfx, gen, md_gpu_grid(1, 1, 1), &a, sizeof(a)));
+            if (explicit_barrier) md_gpu_barrier(f.gfx, MD_GPU_STAGE_COMPUTE, MD_GPU_STAGE_INDIRECT);
+
+            md_gpu_render_desc_t rd = {0};
+            rd.color_count = 1;
+            rd.color[0].texture = u; rd.color[0].load = MD_GPU_LOAD_CLEAR; rd.color[0].clear.u32[0] = 0xFFFFFFFFu;
+            ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+            a.pos   = vb;
+            a.draws = rb;
+            a.id    = 100u + (uint32_t)(10 * indexed + round);
+            if (indexed) EXPECT_TRUE(md_gpu_draw_indexed_indirect(f.gfx, p, ib, MD_GPU_INDEX_U16, cb + 16, 1, &a, sizeof(a)));
+            else         EXPECT_TRUE(md_gpu_draw_indirect(f.gfx, p, cb, 1, &a, sizeof(a)));
+            ASSERT_TRUE(md_gpu_render_end(f.gfx));
+            ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+            int drawn = 0;
+            for (int i = 0; i < W * H; ++i) drawn += ids[i] == a.id;
+            EXPECT_EQ(W * H, drawn);
+            if (drawn < least) least = drawn;
+        }
+        printf("    %s draw, %s: %d of %d pixels drawn (the fewest of 3)\n", indexed ? "indexed" : "plain",
+               explicit_barrier ? "with an explicit compute -> indirect barrier" : "implicit ordering alone", least, W * H);
+    }
+
+    md_gpu_free(f.gfx, vb); md_gpu_free(f.gfx, ib); md_gpu_free(f.gfx, rb); md_gpu_free(f.gfx, cb);
+    md_gpu_kernel_destroy(gen);
+    md_gpu_pipeline_destroy(p);
+    md_gpu_texture_destroy(u);
     r_close(&f);
 }
 
