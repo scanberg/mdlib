@@ -1688,3 +1688,90 @@ UTEST(spatial_acc_cells, cell_extent_given_or_cutoff) {
     free(y);
     free(z);
 }
+
+// ### PIECES ###
+
+typedef struct piece_pairs_t {
+    uint32_t* i;
+    uint32_t* j;
+    float*    d2;
+    size_t    count;
+    size_t    cap;
+} piece_pairs_t;
+
+static void piece_pairs_callback(const uint32_t* i, const uint32_t* j, const float* d2, size_t n, void* user) {
+    piece_pairs_t* p = (piece_pairs_t*)user;
+    if (p->count + n > p->cap) {
+        p->cap = (p->count + n) * 2;
+        p->i  = (uint32_t*)realloc(p->i,  p->cap * sizeof(uint32_t));
+        p->j  = (uint32_t*)realloc(p->j,  p->cap * sizeof(uint32_t));
+        p->d2 = (float*)realloc(p->d2, p->cap * sizeof(float));
+    }
+    memcpy(p->i + p->count, i, n * sizeof(uint32_t));
+    memcpy(p->j + p->count, j, n * sizeof(uint32_t));
+    memcpy(p->d2 + p->count, d2, n * sizeof(float));
+    p->count += n;
+}
+
+static void piece_pairs_free(piece_pairs_t* p) {
+    free(p->i);
+    free(p->j);
+    free(p->d2);
+    memset(p, 0, sizeof(*p));
+}
+
+static bool piece_pairs_equal(const piece_pairs_t* a, const piece_pairs_t* b) {
+    return a->count == b->count &&
+        (a->count == 0 || (!memcmp(a->i, b->i, a->count * sizeof(uint32_t)) && !memcmp(a->j, b->j, a->count * sizeof(uint32_t)) &&
+                           !memcmp(a->d2, b->d2, a->count * sizeof(float))));
+}
+
+// The pieces of the structure, run in order a range at a time, hand the callback exactly what the call over the whole
+// does, in its order: whatever the ranges, over boxes of one top node and of several, with tiers below the top more
+// than one (a sparse box of small cells), periodic or not, orthorhombic or triclinic.
+UTEST(spatial_acc_pieces, ranges_in_order_match_whole) {
+    typedef struct { double ext; size_t count; double cutoff; double cell_ext; int clusters; int kind; } setup_t;   // kind: 0 open, 1 ortho, 2 triclinic
+    const setup_t setups[] = {
+        {  80.0, 50000, 1.84, 0.0,  0, 1 },     // Dense, one top node: the pieces are what splits it
+        {  80.0, 50000, 1.84, 0.0,  0, 0 },
+        {  60.0, 20000, 2.5,  0.0,  0, 2 },
+        { 300.0, 60000, 3.0,  0.0,  0, 1 },     // Several top nodes
+        { 2200.0, 30000, 3.0, 3.0, 40, 1 },     // Clusters in a large box of small cells: three tiers or more
+    };
+    const size_t ranges[] = { 1, 3, 17, 1000 };
+    srand(7);
+    for (size_t s = 0; s < sizeof(setups) / sizeof(setups[0]); ++s) {
+        const setup_t su = setups[s];
+        float* xyz = (float*)malloc(su.count * 3 * sizeof(float));
+        double cen[64][3];
+        for (int c = 0; c < su.clusters; ++c) for (int k = 0; k < 3; ++k) cen[c][k] = rnd_rng(10.0, su.ext - 10.0);
+        for (size_t i = 0; i < su.count; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                xyz[3 * i + k] = su.clusters ? (float)(cen[i % su.clusters][k] + rnd_rng(-8.0, 8.0)) : (float)rnd_rng(0.0, su.ext);
+            }
+        }
+        md_unitcell_t cell = su.kind == 1 ? md_unitcell_from_extent(su.ext, su.ext, su.ext) :
+                                            md_unitcell_from_extent_and_angles(su.ext, su.ext, su.ext, 80.0, 75.0, 100.0);
+        md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = xyz, .count = su.count, .cutoff = su.cutoff, .unitcell = su.kind ? &cell : NULL, .cell_ext = su.cell_ext });
+        if (s == 4) EXPECT_GE(acc.num_tiers, 3u);
+
+        piece_pairs_t whole = {0};
+        md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, su.cutoff, piece_pairs_callback, &whole);
+        EXPECT_GT(whole.count, (size_t)0);
+        const size_t num_pieces = md_spatial_acc_num_pieces(&acc);
+        EXPECT_GT(num_pieces, (size_t)8);
+
+        for (size_t r = 0; r < sizeof(ranges) / sizeof(ranges[0]); ++r) {
+            piece_pairs_t parts = {0};
+            for (size_t beg = 0; beg < num_pieces; beg += ranges[r]) {
+                md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(&acc, su.cutoff, beg, beg + ranges[r], piece_pairs_callback, &parts);
+            }
+            EXPECT_TRUE(piece_pairs_equal(&whole, &parts));
+            piece_pairs_free(&parts);
+        }
+        piece_pairs_free(&whole);
+        md_spatial_acc_free(&acc);
+        free(xyz);
+    }
+}
