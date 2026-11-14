@@ -1732,8 +1732,8 @@ UTEST(render, polygons_match_their_solids) {
 /* ---- Dashed capsules ----------------------------------------------------------- */
 
 /* A dashed capsule as md_render.h defines it, in double: the segment between
-   the spheres at its ends, dashes of the batch's lengths, as many as come
-   closest (at least two), stretched alike to fill it */
+   where its rim meets the spheres at its ends, dashes of the batch's
+   lengths, as many as come closest (at least two), stretched alike to fill it */
 typedef struct dash_ref_t {
     double a[3], u[3], len, r;      /* the trimmed segment: start, direction, length; radius */
     double dash, period;
@@ -1741,11 +1741,13 @@ typedef struct dash_ref_t {
     uint32_t key, linear;
 } dash_ref_t;
 
-static void dash_ref_build(dash_ref_t* d, const double pa[3], const double pb[3], double ia, double ib, double r, double D, double G) {
+static void dash_ref_build(dash_ref_t* d, const double pa[3], const double pb[3], double ea, double eb, double r, double D, double G) {
     double ab[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(ab, ab));
+    /* from where the rim meets the sphere of radius ea, eb */
+    double ia = sqrt(fmax(ea * ea - r * r, 0.0)), ib = sqrt(fmax(eb * eb - r * r, 0.0));
     d->r = r;
     d->n = 0;
-    if (l <= ia + ib) return;
+    if (l - ia - ib <= 0.0 || (ia + ib > 0.0 && l - ia - ib <= 0.5 * D)) return;
     for (int i = 0; i < 3; ++i) { d->u[i] = ab[i] / l; d->a[i] = pa[i] + d->u[i] * ia; }
     d->len = l - ia - ib;
     double n = fmax(2.0, floor((d->len + G) / (D + G) + 0.5));

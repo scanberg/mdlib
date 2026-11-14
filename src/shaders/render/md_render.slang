@@ -434,15 +434,20 @@ float2 dash_pattern(Batch b, float len, float s) {
     return float2(D * k, (D + G) * k);
 }
 
-// The trimmed ends of capsule pa-pb: by the spheres at its points (each
-// point's radius times the batch's end_scale plus end_add, times the
-// instance's scale s). False where they meet: nothing between them.
-bool dash_trim(Batch b, uint p0, uint p1, float s, inout float3 pa, inout float3 pb) {
+// The trimmed ends of capsule pa-pb of radius rad: where the dashes' rim
+// meets the sphere at each point (of the point's radius times the batch's
+// end_scale plus end_add, times the instance's scale s), as md_gl's. False
+// where too little is left between them, not half a dash: the spheres all
+// but touch.
+float dash_inset(float re, float rad) { return sqrt(max(re * re - rad * rad, 0.0)); }
+
+bool dash_trim(Batch b, uint p0, uint p1, float s, float rad, inout float3 pa, inout float3 pb) {
     float3 ax  = pb - pa;
     float  len = length(ax);
-    float  ia  = (point_radius(b, p0) * b.end_scale + b.end_add) * s;
-    float  ib  = (point_radius(b, p1) * b.end_scale + b.end_add) * s;
-    if (!(len > ia + ib)) return false;
+    float  ia  = dash_inset((point_radius(b, p0) * b.end_scale + b.end_add) * s, rad);
+    float  ib  = dash_inset((point_radius(b, p1) * b.end_scale + b.end_add) * s, rad);
+    float  span = len - ia - ib;
+    if (!(span > 0.0) || (ia + ib > 0.0 && span <= 0.5 * b.dash * s)) return false;
     float3 u = ax / len;
     pa += u * ia;
     pb -= u * ib;
@@ -1267,7 +1272,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.r  = capsule_radius(b, e) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
         g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
-        if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.a, g.b)) return g;   // the spheres meet
+        if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.r, g.a, g.b)) return g;   // the spheres meet
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
             float2 t = fade_ts(b, -0.5 * (g.a.z + g.b.z));      // the midpoint
             if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
@@ -2832,7 +2837,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float3 pb  = mulp(M(v, view), w1);
         float  rad = capsule_radius(b, h.element) * s;
         float3 qa  = pa, qb = pb;               // a dash's: trimmed
-        bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, qa, qb);
+        bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, rad, qa, qb);
         if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (qa.z + qb.z)));
         float3 dn  = float3(0.0);
         float  t;
