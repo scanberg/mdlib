@@ -7,7 +7,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>
-#include <core/md_coord_stream.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
@@ -239,20 +238,17 @@ bool md_contact_pairs_for_each(const md_contact_pairs_t* p, const md_system_stat
         .alloc = temp_alloc,
     };
 
-    const md_spatial_acc_flags_t flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
+    const md_spatial_acc_flags_t flags = MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX;
     md_spatial_acc_t sa = { .alloc = temp_alloc };
     if (self) {
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), p->a_atoms, p->num_a_atoms);
         // The cutoff, not a cell extent: the structure sizes its cells from it and from how the particles are spread
-        const md_spatial_acc_desc_t desc = { .coords = &coords, .cutoff = p->radius, .unitcell = &state->unitcell, .flags = flags };
+        const md_spatial_acc_desc_t desc = { .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .idx = p->a_atoms, .count = p->num_a_atoms, .cutoff = p->radius, .unitcell = &state->unitcell, .flags = flags };
         md_spatial_acc_init(&sa, &desc);
         md_spatial_acc_for_each_internal_pair_within_cutoff(&sa, p->radius, pair_stream_callback, &stream);
     } else {
-        md_coord_stream_t internal = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), p->b_atoms, p->num_b_atoms);
-        md_coord_stream_t external = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), p->a_atoms, p->num_a_atoms);
-        const md_spatial_acc_desc_t desc = { .coords = &internal, .cutoff = p->radius, .unitcell = &state->unitcell, .flags = flags };
+        const md_spatial_acc_desc_t desc = { .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .idx = p->b_atoms, .count = p->num_b_atoms, .cutoff = p->radius, .unitcell = &state->unitcell, .flags = flags };
         md_spatial_acc_init(&sa, &desc);
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, &external, p->radius, pair_stream_callback, &stream, flags);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&sa, (const float*)state->xyz, sizeof(md_float3_t), p->a_atoms, p->num_a_atoms, p->radius, pair_stream_callback, &stream, flags);
     }
 
     md_vm_arena_destroy(temp_alloc);

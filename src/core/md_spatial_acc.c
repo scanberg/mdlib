@@ -1,6 +1,5 @@
 ﻿#include "md_spatial_acc.h"
 
-#include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -101,20 +100,28 @@ typedef struct {
     uint32_t idx;
 } elem_t;
 
-static inline md_float4_t md_coord_stream_load_vec4(const md_coord_stream_t* s, size_t i) {
-    const size_t src = s->idx ? (size_t)s->idx[i] : i;
+// Points as they are given (md_spatial_acc_desc_t): count of them, xyz stride bytes apart, of the entries of idx
+typedef struct points_t {
+    const float*   xyz;
+    size_t         stride;
+    const int32_t* idx;
+    size_t         count;
+} points_t;
 
-    if (s->layout == MD_COORD_STREAM_LAYOUT_SOA) {
-        return md_float4_set(s->soa.x[src], s->soa.y[src], s->soa.z[src], 0.0f);
-    } else {
-        const char* p = (const char*)s->aos.base + src * s->aos.stride;
-        md_float4_t v = {0};
-        md_memcpy(&v, p, sizeof(float) * 3);
-        return v;
-    }
+static inline points_t points_make(const float* xyz, size_t stride, const int32_t* idx, size_t count) {
+    points_t p = { xyz, stride ? stride : sizeof(float) * 3, idx, count };
+    return p;
 }
 
-static inline int32_t md_coord_stream_load_idx(const md_coord_stream_t* s, size_t i) {
+static inline md_float4_t points_load(const points_t* s, size_t i) {
+    const size_t src = s->idx ? (size_t)s->idx[i] : i;
+    const char* p = (const char*)s->xyz + src * s->stride;
+    md_float4_t v = {0};
+    md_memcpy(&v, p, sizeof(float) * 3);
+    return v;
+}
+
+static inline int32_t points_idx(const points_t* s, size_t i) {
     return s->idx ? s->idx[i] : (int32_t)i;
 }
 
@@ -245,7 +252,7 @@ static inline void bin_cell(uint32_t out[3], float sx, float sy, float sz, md_fl
 // The passes of build_cells over chunks of the elements, which run on an executor
 typedef struct build_task_t {
     md_spatial_acc_t*        acc;
-    const md_coord_stream_t* coords;
+    const points_t*          coords;
     size_t      N;
     uint32_t    num_chunks;
     elem_t*     buf[2];
@@ -278,10 +285,10 @@ static void build_fractional(void* arg, uint32_t beg, uint32_t end, uint32_t thr
     };
     // Everything the loops read into locals: they store through pointers the compiler cannot tell apart from t
     elem_t* dst = t->buf[0];
-    const md_coord_stream_t coords = *t->coords;
+    const points_t coords = *t->coords;
     const size_t i_end = chunk_beg(t, end);
     for (size_t i = chunk_beg(t, beg); i < i_end; ++i) {
-        const md_float4_t r = md_coord_stream_load_vec4(&coords, i);
+        const md_float4_t r = points_load(&coords, i);
         md_float4_t s = md_float4_linear_combine_3(md_float4_sub(r, origin), vI);
         s = md_float4_blend(s, md_float4_fract(s), pbc_mask);
         dst[i] = (elem_t){ s.x, s.y, s.z, (uint32_t)i };
@@ -340,7 +347,7 @@ static void build_scatter(void* arg, uint32_t beg, uint32_t end, uint32_t thread
             float* ey = t->acc->elem_y;
             float* ez = t->acc->elem_z;
             uint32_t* ei = t->acc->elem_idx;
-            const int* stream_idx = t->stream_idx ? t->coords->idx : NULL;
+            const int32_t* stream_idx = t->stream_idx ? t->coords->idx : NULL;
             for (size_t i = i_beg; i < i_end; ++i) {
                 const elem_t e = src[i];
                 const uint32_t dst = place[digit[i]]++;
@@ -354,7 +361,7 @@ static void build_scatter(void* arg, uint32_t beg, uint32_t end, uint32_t thread
 }
 
 // Builds the elements and the cell index. The frame (cell_dim, origin, I, flags) is already stored in acc.
-static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, md_spatial_acc_flags_t in_flags, const md_executor_t* ex) {
+static void build_cells(md_spatial_acc_t* acc, const points_t* coords, md_spatial_acc_flags_t in_flags, const md_executor_t* ex) {
     const size_t N = coords->count;
     const uint32_t* cell_dim = acc->cell_dim;
 
@@ -400,7 +407,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
         .hist  = (uint32_t*)md_temp_alloc(temp_scope, num_chunks * num_buckets_max * sizeof(uint32_t)),
         .fcell_dim = md_float4_set((float)cell_dim[0], (float)cell_dim[1], (float)cell_dim[2], 0),
         .icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0),
-        .stream_idx = (in_flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) != 0,
+        .stream_idx = (in_flags & MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX) != 0,
     };
 
     // 1) Fractional coordinates, periodic axes wrapped into [0,1). The record keeps the position in the stream.
@@ -559,7 +566,7 @@ static double occupancy_at(const md_float4_t* pos, size_t m, md_float4_t lo, dou
     return sum / (double)m;
 }
 
-static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cutoff, const md_allocator_i* avoid) {
+static double cell_ext_from_occupancy(const points_t* coords, double cutoff, const md_allocator_i* avoid) {
     const size_t N = coords->count;
     if (N == 0 || !(cutoff > 0.0)) return cutoff;
 
@@ -572,14 +579,14 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
     uint32_t* slot_count = md_temp_alloc_array(temp, uint32_t, cap);
 
     // The subset: every point when there are few, otherwise each with probability f, decided by a hash of its position
-    // in the stream. Positions in a stream follow molecules, so taking every n-th would not be a random subset.
+    // among the points. Positions among the points follow molecules, so taking every n-th would not be a random subset.
     const double f = N <= SPATIAL_ACC_OCCUPANCY_SAMPLES ? 1.0 : (double)SPATIAL_ACC_OCCUPANCY_SAMPLES / (double)N;
     const uint64_t threshold = f >= 1.0 ? UINT64_MAX : (uint64_t)(f * 18446744073709551616.0);
     size_t m = 0;
     md_float4_t lo = md_float4_set1(FLT_MAX);
     for (size_t i = 0; i < N && m < max_m; ++i) {
         if (f < 1.0 && occupancy_hash(i) >= threshold) continue;
-        const md_float4_t p = md_coord_stream_load_vec4(coords, i);
+        const md_float4_t p = points_load(coords, i);
         pos[m++] = p;
         lo = md_float4_min(lo, p);
     }
@@ -655,7 +662,7 @@ static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], m
     acc->flags = flags;
 }
 
-static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags, double in_cell_ext, const md_executor_t* ex) {
+static void spatial_acc_init_internal(md_spatial_acc_t* acc, const points_t* coords, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags, double in_cell_ext, const md_executor_t* ex) {
     MD_ASSERT(acc);
     MD_ASSERT(coords);
 
@@ -664,9 +671,9 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
         return;
     }
 
-    if (in_flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) {
+    if (in_flags & MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX) {
         if (!coords->idx) {
-            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX is set, but coordinate stream index is not supplied");
+            MD_LOG_ERROR("Flag MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX is set, but the points have no idx");
             return;
         }
     }
@@ -707,10 +714,10 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
         // Seed from the first point, not from the origin. A system which sits far from the origin would otherwise
         // get a grid spanning all the way back to it, and the cell count grows with that distance: two points at
         // 6700 A with an 8 A cell extent produce 840 cells per axis instead of 2.
-        md_float4_t aabb_min = md_coord_stream_load_vec4(coords, 0);
+        md_float4_t aabb_min = points_load(coords, 0);
         md_float4_t aabb_max = aabb_min;
         for (size_t i = 1; i < coords->count; i++) {
-            md_float4_t v = md_coord_stream_load_vec4(coords, i);
+            md_float4_t v = points_load(coords, i);
             aabb_min = md_float4_min(aabb_min, v);
             aabb_max = md_float4_max(aabb_max, v);
         }
@@ -819,11 +826,12 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
 void md_spatial_acc_init(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc) {
     MD_ASSERT(acc);
     MD_ASSERT(desc);
-    if (!desc->coords) {
+    if (!desc->xyz && desc->count > 0) {
         MD_LOG_ERROR("md_spatial_acc_init: the description has no coordinates");
         return;
     }
-    spatial_acc_init_internal(acc, desc->coords, desc->cutoff, desc->unitcell, desc->flags, desc->cell_ext, desc->executor);
+    const points_t points = points_make(desc->xyz, desc->stride, desc->idx, desc->count);
+    spatial_acc_init_internal(acc, &points, desc->cutoff, desc->unitcell, desc->flags, desc->cell_ext, desc->executor);
 }
 
 double md_spatial_acc_cell_ext(const md_spatial_acc_t* acc) {
@@ -1348,7 +1356,7 @@ typedef struct cell_range_t {
 } cell_range_t;
 
 // Recently used tier 1 nodes, for queries which look up cells one at a time near each other: the neighbours of an
-// external point (which come in the order of the stream, mostly coherent), the cells of an AABB. Consecutive lookups
+// external point (which come in the order they are given, mostly coherent), the cells of an AABB. Consecutive lookups
 // fall in a few nodes, which then cost a hash and a compare instead of a walk from the top.
 #define NODE_CACHE_SIZE 32
 
@@ -1600,13 +1608,13 @@ static void internal_pairs_tricl(const md_spatial_acc_t* acc, double cutoff, siz
 
 // --- EXTERNAL PAIRS ---
 
-static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md_coord_stream_t* ext, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags, const bool tri) {
+static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const points_t* ext, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags, const bool tri) {
     int ncell[3];
     neighbor_cell_extent(ncell, cutoff, acc);
     if (!neighbor_stencil_fits(ncell, "md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff")) return;
 
-    if ((flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) && !ext->idx) {
-        MD_LOG_ERROR("md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff: MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX is set but the external stream has no idx");
+    if ((flags & MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX) && !ext->idx) {
+        MD_LOG_ERROR("md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff: MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX is set but the external points have no idx");
         return;
     }
 
@@ -1633,10 +1641,10 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
     const md_float4_t fcell_dim = md_float4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
 
     for (size_t pt = 0; pt < ext->count; ++pt) {
-        const uint32_t idx = (flags & MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX) ? (uint32_t)md_coord_stream_load_idx(ext, pt) : (uint32_t)pt;
+        const uint32_t idx = (flags & MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX) ? (uint32_t)points_idx(ext, pt) : (uint32_t)pt;
         // Into the cell along the periodic axes. Along the others a point outside the grid has no cells to visit
         // beyond the edge, which the wrapping rejects.
-        md_float4_t f = vec4_cart_to_fract(md_coord_stream_load_vec4(ext, pt), acc);
+        md_float4_t f = vec4_cart_to_fract(points_load(ext, pt), acc);
         f = md_float4_blend(f, md_float4_fract(f), fract_mask);
         const ivec4_t c_v = ivec4_from_vec4(md_float4_floor(md_float4_mul(f, fcell_dim)));
         const md_256i v_idx = md_mm256_set1_epi32((int)idx);
@@ -1658,8 +1666,8 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
     pair_out_flush(&out);
 }
 
-static void external_pairs_ortho(const md_spatial_acc_t* acc, const md_coord_stream_t* ext, double cutoff, md_spatial_acc_pair_callback_t cb, void* user, md_spatial_acc_flags_t flags) { external_pairs(acc, ext, cutoff, cb, user, flags, false); }
-static void external_pairs_tricl(const md_spatial_acc_t* acc, const md_coord_stream_t* ext, double cutoff, md_spatial_acc_pair_callback_t cb, void* user, md_spatial_acc_flags_t flags) { external_pairs(acc, ext, cutoff, cb, user, flags, true);  }
+static void external_pairs_ortho(const md_spatial_acc_t* acc, const points_t* ext, double cutoff, md_spatial_acc_pair_callback_t cb, void* user, md_spatial_acc_flags_t flags) { external_pairs(acc, ext, cutoff, cb, user, flags, false); }
+static void external_pairs_tricl(const md_spatial_acc_t* acc, const points_t* ext, double cutoff, md_spatial_acc_pair_callback_t cb, void* user, md_spatial_acc_flags_t flags) { external_pairs(acc, ext, cutoff, cb, user, flags, true);  }
 
 // --- POINTS IN AABB ---
 
@@ -1828,13 +1836,14 @@ void md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_spat
     tricl ? internal_pairs_tricl(acc, cutoff, piece_beg, piece_end, callback, user_param) : internal_pairs_ortho(acc, cutoff, piece_beg, piece_end, callback, user_param);
 }
 
-void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
+void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_xyz, size_t ext_stride, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {
     MD_ASSERT(acc);
-    MD_ASSERT(ext_stream);
+    MD_ASSERT(ext_xyz || ext_count == 0);
     MD_ASSERT(callback);
-    if (acc->num_elems == 0) return;
+    if (acc->num_elems == 0 || ext_count == 0) return;
+    const points_t ext = points_make(ext_xyz, ext_stride, ext_idx, ext_count);
     const bool tricl = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
-    tricl ? external_pairs_tricl(acc, ext_stream, cutoff, callback, user_param, flags) : external_pairs_ortho(acc, ext_stream, cutoff, callback, user_param, flags);
+    tricl ? external_pairs_tricl(acc, &ext, cutoff, callback, user_param, flags) : external_pairs_ortho(acc, &ext, cutoff, callback, user_param, flags);
 }
 
 void md_spatial_acc_for_each_point_in_aabb(const md_spatial_acc_t* acc, const double aabb_cen[3], const double aabb_rad[3], md_spatial_acc_point_callback_t callback, void* user_param) {

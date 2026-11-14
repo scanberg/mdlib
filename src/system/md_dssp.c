@@ -9,7 +9,6 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_coord_stream.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
@@ -363,9 +362,8 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
 
     // The spatial structure and the candidates grow through the allocator interface
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(md_float3_t), res_idx, num_res);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
-    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell, .flags = res_idx ? MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX : MD_SPATIAL_ACC_FLAG_NONE });
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)res_ca, .stride = sizeof(md_float3_t), .idx = res_idx, .count = num_res, .cutoff = cutoff, .unitcell = cell, .flags = res_idx ? MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX : MD_SPATIAL_ACC_FLAG_NONE });
 
     dssp_hbond_energy_user_param_t user_param = {
 		.res_key = res_key,
@@ -582,10 +580,9 @@ static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pa
 
     // The spatial structure and the candidates grow through the allocator interface
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)site, sizeof(md_float3_t), NULL, num_peptides);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     const double cutoff = MD_MAX(CG_DSSP_TURN_DISTANCE, CG_DSSP_SHEET_DISTANCE);
-    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell });
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)site, .stride = sizeof(md_float3_t), .count = num_peptides, .cutoff = cutoff, .unitcell = cell });
 
     cg_dssp_param_t param = {
         .site = site,

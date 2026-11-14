@@ -2,7 +2,6 @@
 
 #include <md_gro.h>
 #include <md_system.h>
-#include <core/md_coord_stream.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_arena_allocator.h>
 
@@ -29,13 +28,12 @@ UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
         return;
     }
 
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count);
     md_spatial_acc_t acc = { .alloc = arena };
-    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = RADIUS, .unitcell = &sys_state.unitcell });
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)sys_state.xyz, .stride = sizeof(md_float3_t), .count = sys.atom.count, .cutoff = RADIUS, .unitcell = &sys_state.unitcell });
 
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &stream, RADIUS, spatial_acc_pair_count_callback, &count, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, (const float*)sys_state.xyz, sizeof(md_float3_t), NULL, sys.atom.count, RADIUS, spatial_acc_pair_count_callback, &count, 0);
         UBENCH_DO_NOTHING(&count);
     }
 

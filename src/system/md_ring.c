@@ -1,5 +1,4 @@
 ﻿#include "md_infer_internal.h"
-#include <core/md_fifo.h>
 #include <core/md_hash.h>
 
 // Ring inference: the rings of the bond graph and their flags (md_util.h).
@@ -214,7 +213,7 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
     md_memset(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
 
     // The capacity is arbitrary here, but will be resized if needed.
-    md_fifo_t queue = md_fifo_create(64, temp_arena);
+    md_array(int) queue = 0;
 
     md_hashset_t ring_set = {.allocator = temp_arena};
     
@@ -232,10 +231,10 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
         pred [atom_idx] = -1;
         mark [atom_idx] = current_mark++;
 
-        md_fifo_clear(&queue);
-        md_fifo_push(&queue, atom_idx);
-        while (!md_fifo_empty(&queue)) {
-            int idx = md_fifo_pop(&queue);
+        md_array_shrink(queue, 0);
+        md_array_push(queue, atom_idx, temp_arena);
+        for (size_t head = 0; head < md_array_size(queue); ++head) {
+            int idx = queue[head];
 
             md_bond_iter_t it = md_bond_iter(bond, idx);
             while (md_bond_iter_has_next(&it)) {
@@ -326,7 +325,7 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
                     depth[next] = d;
                     pred[next]  = idx;
                     mark[next]  = current_mark;
-                    md_fifo_push(&queue, next);
+                    md_array_push(queue, next, temp_arena);
                 }
             }
         }
