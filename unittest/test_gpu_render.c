@@ -369,6 +369,117 @@ UTEST(gpu_render, fragment_shader_writes_depth) {
     r_close(&f);
 }
 
+/* Reversed depth, as md_render draws: cleared to 0, nearer is larger, the
+   test GREATER_EQUAL. */
+UTEST(gpu_render, reverse_z_depth_test) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+
+    md_gpu_texture_t c = r_target(&f, MD_GPU_FORMAT_RGBA8_UNORM, W, H, 0);
+    md_gpu_texture_t d = r_target(&f, MD_GPU_FORMAT_D32_FLOAT, W, H, MD_GPU_TEX_SAMPLED);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_RGBA8_UNORM;
+    md_gpu_pipeline_t p = r_pipeline(&f, md_shader_gpu_render_test_basic_vs_shader(), md_shader_gpu_render_test_color_fs_shader(),
+                                     MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    ASSERT_TRUE(c && d && p);
+    md_gpu_float4 pos[12];
+    const float z[4] = {0.5f, 0.3f, 0.7f, 0.6f};
+    for (int t = 0; t < 4; ++t) for (int v = 0; v < 3; ++v) { pos[t * 3 + v] = full_tri[v]; pos[t * 3 + v].z = z[t]; }
+    md_gpu_addr_t vb = r_buffer(&f, pos, sizeof(pos));
+
+    ASSERT_TRUE(r_begin(&f, c, MD_GPU_LOAD_CLEAR, 0, 0, 0, 1, d, 0.0f));
+    md_gpu_draw_state_t ds = {0};
+    ds.depth_compare = MD_GPU_COMPARE_GREATER_EQUAL;
+    ds.depth_write   = true;
+    md_gpu_set_draw_state(f.gfx, &ds);
+    rargs_t a = {0};
+    a.pos = vb;
+    a.color = f4(1, 0, 0, 1); EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p, 3, 1, a));      /* 0.5: passes */
+    a.pos = vb + 3 * sizeof(md_gpu_float4);
+    a.color = f4(0, 1, 0, 1); EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p, 3, 1, a));      /* 0.3: fails  */
+    a.pos = vb + 6 * sizeof(md_gpu_float4);
+    a.color = f4(0, 0, 1, 1); EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p, 3, 1, a));      /* 0.7: passes */
+    a.pos = vb + 9 * sizeof(md_gpu_float4);
+    a.color = f4(1, 1, 1, 1); EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p, 3, 1, a));      /* 0.6: fails  */
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+
+    static uint32_t px[W * H];
+    static float    dp[W * H];
+    ASSERT_TRUE(r_read(&f, c, 0, 0, px, sizeof(px)));
+    ASSERT_TRUE(r_read(&f, d, 0, 0, dp, sizeof(dp)));
+    EXPECT_EQ(rgba8(0, 0, 255, 255), px[5 * W + 7]);
+    EXPECT_NEAR(0.7f, dp[5 * W + 7], 1e-6f);
+    EXPECT_NEAR(0.7f, dp[15 * W + 15], 1e-6f);
+
+    md_gpu_free(f.gfx, vb);
+    md_gpu_pipeline_destroy(p);
+    md_gpu_texture_destroy(c);
+    md_gpu_texture_destroy(d);
+    r_close(&f);
+}
+
+/* Conservative depth, as md_render writes it: SV_DepthLessEqual (a depth
+   no larger than the rasterised one) against reversed depth. The fragment
+   writes its rasterised depth times color.x. A fragment whose rasterised
+   depth passes may still lose with the depth it writes (the test is the
+   written one's), and one whose rasterised depth fails cannot win (the
+   early test may drop it). Then the same with every odd column discarded. */
+UTEST(gpu_render, conservative_depth_reverse_z) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+
+    md_gpu_texture_t c = r_target(&f, MD_GPU_FORMAT_RGBA8_UNORM, W, H, 0);
+    md_gpu_texture_t d = r_target(&f, MD_GPU_FORMAT_D32_FLOAT, W, H, MD_GPU_TEX_SAMPLED);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_RGBA8_UNORM;
+    md_gpu_pipeline_t pc = r_pipeline(&f, md_shader_gpu_render_test_basic_vs_shader(), md_shader_gpu_render_test_color_fs_shader(),
+                                      MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    md_gpu_pipeline_t pl = r_pipeline(&f, md_shader_gpu_render_test_basic_vs_shader(), md_shader_gpu_render_test_depth_less_fs_shader(),
+                                      MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    ASSERT_TRUE(c && d && pc && pl);
+    md_gpu_float4 pos[15];
+    const float z[5] = {0.5f, 0.8f, 0.9f, 0.55f, 0.7f};
+    for (int t = 0; t < 5; ++t) for (int v = 0; v < 3; ++v) { pos[t * 3 + v] = full_tri[v]; pos[t * 3 + v].z = z[t]; }
+    md_gpu_addr_t vb = r_buffer(&f, pos, sizeof(pos));
+    static uint32_t px[W * H];
+    static float    dp[W * H];
+
+    ASSERT_TRUE(r_begin(&f, c, MD_GPU_LOAD_CLEAR, 0, 0, 0, 1, d, 0.0f));
+    md_gpu_draw_state_t ds = {0};
+    ds.depth_compare = MD_GPU_COMPARE_GREATER_EQUAL;
+    ds.depth_write   = true;
+    md_gpu_set_draw_state(f.gfx, &ds);
+    rargs_t a = {0};
+    a.pos = vb;                                 a.color = f4(1.0f, 0, 0, 1);  EXPECT_TRUE(MD_GPU_DRAW(f.gfx, pc, 3, 1, a));  /* 0.5                    */
+    a.pos = vb + 3 * sizeof(md_gpu_float4);     a.color = f4(0.75f, 1, 0, 1); EXPECT_TRUE(MD_GPU_DRAW(f.gfx, pl, 3, 1, a));  /* 0.8 writes 0.6: wins    */
+    a.pos = vb + 6 * sizeof(md_gpu_float4);     a.color = f4(0.5f, 0, 1, 1);  EXPECT_TRUE(MD_GPU_DRAW(f.gfx, pl, 3, 1, a));  /* 0.9 writes 0.45: loses  */
+    a.pos = vb + 9 * sizeof(md_gpu_float4);     a.color = f4(1.0f, 1, 1, 1);  EXPECT_TRUE(MD_GPU_DRAW(f.gfx, pl, 3, 1, a));  /* 0.55: fails early      */
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, c, 0, 0, px, sizeof(px)));
+    ASSERT_TRUE(r_read(&f, d, 0, 0, dp, sizeof(dp)));
+    EXPECT_EQ(rgba8(191, 255, 0, 255), px[5 * W + 7]);
+    EXPECT_NEAR(0.6f, dp[5 * W + 7], 1e-6f);
+    EXPECT_NEAR(0.6f, dp[15 * W + 15], 1e-6f);
+
+    /* Discarding: the odd columns keep the clear */
+    ASSERT_TRUE(r_begin(&f, c, MD_GPU_LOAD_CLEAR, 0, 0, 0, 1, d, 0.0f));
+    md_gpu_set_draw_state(f.gfx, &ds);
+    a.pos = vb + 12 * sizeof(md_gpu_float4);    a.color = f4(1.0f, 1, 0, 1);  a.flags = 8;
+    EXPECT_TRUE(MD_GPU_DRAW(f.gfx, pl, 3, 1, a));                                                                             /* 0.7, even columns      */
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, c, 0, 0, px, sizeof(px)));
+    ASSERT_TRUE(r_read(&f, d, 0, 0, dp, sizeof(dp)));
+    EXPECT_EQ(rgba8(255, 255, 0, 255), px[5 * W + 6]);
+    EXPECT_NEAR(0.7f, dp[5 * W + 6], 1e-6f);
+    EXPECT_EQ(rgba8(0, 0, 0, 255), px[5 * W + 7]);
+    EXPECT_EQ(0.0f, dp[5 * W + 7]);
+
+    md_gpu_free(f.gfx, vb);
+    md_gpu_pipeline_destroy(pc);
+    md_gpu_pipeline_destroy(pl);
+    md_gpu_texture_destroy(c);
+    md_gpu_texture_destroy(d);
+    r_close(&f);
+}
+
 UTEST(gpu_render, depth_only_pass_without_fragment_shader) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());

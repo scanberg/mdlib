@@ -158,6 +158,24 @@ DepthOut depth_fs(VOut i) {
     return o;
 }
 
+// Conservative depth, as md_render writes it (reversed Z: nearer is larger):
+// SV_DepthLessEqual, a depth no larger than the rasterised one, here that
+// scaled by color.x (<= 1). With flags & 8, odd columns are discarded.
+struct DepthLessOut {
+    float4 color : SV_Target0;
+    float  depth : SV_DepthLessEqual;
+};
+
+[shader("fragment")]
+DepthLessOut depth_less_fs(VOut i) {
+    RArgs a = MD_ARGS;
+    if ((a.flags & 8u) != 0u && (uint(i.pos.x) & 1u) != 0u) discard;
+    DepthLessOut o;
+    o.color = i.col;
+    o.depth = i.pos.z * a.color.x;
+    return o;
+}
+
 // Rendered texture -> buffer, through the bindless heap.
 [shader("compute")]
 [numthreads(8, 8, 1)]
