@@ -372,8 +372,12 @@ static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc
     md_array(bond_pair_t)*        cand = md_alloc(heap, num_threads * sizeof(md_array(bond_pair_t)));
     md_array(cov_bond_segment_t)* segs = md_alloc(heap, num_threads * sizeof(md_array(cov_bond_segment_t)));
     cov_bond_callback_param_t*    param = md_alloc(heap, num_threads * sizeof(cov_bond_callback_param_t));
+    // Room for about a pair per atom (most are bonds), or a few per far atom, at once: an array grown by doubling copies
+    // itself and touches new pages each time
+    const size_t expect = fars ? num_far * 8 : acc->num_elems;
     for (uint32_t t = 0; t < num_threads; ++t) {
         cand[t] = 0;
+        md_array_ensure(cand[t], expect / num_threads + 64, heap);
         segs[t] = 0;
         param[t] = *proto;
         param[t].candidates = &cand[t];
@@ -392,9 +396,16 @@ static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc
     }
     // Not with a NULL array: qsort's pointer is declared non-null, which lets the compiler drop the NULL checks after it
     if (md_array_size(all) > 1) qsort(all, md_array_size(all), sizeof(cov_bond_segment_t), compare_cov_bond_segment);
-    md_array_ensure(*out, md_array_size(*out) + total, alloc);
-    for (size_t k = 0; k < md_array_size(all); ++k) {
-        md_array_push_array(*out, cand[all[k].thread] + all[k].offset, all[k].count, alloc);
+    if (num_threads == 1 && md_array_size(*out) == 0 && alloc == heap) {
+        // One thread's pairs are in their order already: they are the array
+        md_array_free(*out, alloc);
+        *out = cand[0];
+        cand[0] = 0;
+    } else {
+        md_array_ensure(*out, md_array_size(*out) + total, alloc);
+        for (size_t k = 0; k < md_array_size(all); ++k) {
+            md_array_push_array(*out, cand[all[k].thread] + all[k].offset, all[k].count, alloc);
+        }
     }
 
     md_array_free(all, heap);
@@ -837,16 +848,34 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         md_atomic_number_t* atomic_nr = md_temp_alloc_array(temp_scope, md_atomic_number_t, num_atoms);
         uint8_t* metal = md_temp_alloc_array(temp_scope, uint8_t, num_atoms);
         uint8_t* far   = md_temp_alloc_array(temp_scope, uint8_t, num_atoms);
-        for (size_t i = 0; i < num_atoms; ++i) {
-            atomic_nr[i]  = md_atom_atomic_number(&sys->atom, i);
-            // The covalent radius for metals too: the ionic radius of the metal plus the covalent radius of the
-            // ligand mixes two scales and comes out 0.4-0.6 Å short of real metal-ligand distances.
-            atom_radius[i] = element_covalent_radius(atomic_nr[i]);
-            metal[i] = is_metal(atomic_nr[i]);
-            far[i] = metal[i] || atom_radius[i] > FAR_RADIUS;
-            num_far += far[i];
-            if (far[i]) max_far_rad   = MD_MAX(max_far_rad, atom_radius[i]);
-            else        max_small_rad = MD_MAX(max_small_rad, atom_radius[i]);
+        uint8_t* vsite = md_temp_alloc_array(temp_scope, uint8_t, num_atoms);     // A virtual site, bonded to nothing
+        {
+            // What the atoms are is what their types are: worked out for the types, a few, and looked up
+            const size_t num_types = sys->atom.type_idx ? sys->atom.type.count : 0;
+            md_atomic_number_t* type_z = md_temp_alloc_array(temp_scope, md_atomic_number_t, num_types + 1);
+            uint8_t* type_vsite = md_temp_alloc_array(temp_scope, uint8_t, num_types + 1);
+            for (size_t t = 0; t < num_types; ++t) {
+                type_z[t] = sys->atom.type.z ? sys->atom.type.z[t] : 0;
+                type_vsite[t] = md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_VIRTUAL_SITE;
+            }
+            for (size_t i = 0; i < num_atoms; ++i) {
+                const size_t t = sys->atom.type_idx ? (size_t)sys->atom.type_idx[i] : SIZE_MAX;
+                if (t < num_types) {
+                    atomic_nr[i] = type_z[t];
+                    vsite[i] = type_vsite[t];
+                } else {
+                    atomic_nr[i] = md_atom_atomic_number(&sys->atom, i);
+                    vsite[i] = md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE;
+                }
+                // The covalent radius for metals too: the ionic radius of the metal plus the covalent radius of the
+                // ligand mixes two scales and comes out 0.4-0.6 Å short of real metal-ligand distances.
+                atom_radius[i] = element_covalent_radius(atomic_nr[i]);
+                metal[i] = is_metal(atomic_nr[i]);
+                far[i] = metal[i] || atom_radius[i] > FAR_RADIUS;
+                num_far += far[i];
+                if (far[i]) max_far_rad   = MD_MAX(max_far_rad, atom_radius[i]);
+                else        max_small_rad = MD_MAX(max_small_rad, atom_radius[i]);
+            }
         }
 
         int* comp_id = md_temp_alloc_array(temp_scope, int, num_atoms);
@@ -890,8 +919,9 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .count = state->num_atoms, .cutoff = acc_cutoff, .unitcell = &state->unitcell, .executor = executor });
-            // The few pairs of the far atoms first: the many of the rest then grow the array once (sort_candidates
-            // orders them all after)
+            // The many pairs of the small atoms (an array made for them), then the few of the far atoms after them:
+            // sort_candidates orders them all
+            cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, executor, heap);
             if (num_far) {
                 int32_t* fars = md_temp_alloc_array(temp_scope, int32_t, num_far);
                 size_t k = 0;
@@ -900,7 +930,6 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
                 far_param.k_max = bond_k_coord;
                 cov_bond_candidates(&candidates, &acc, far_cutoff, state->xyz, fars, num_far, &far_param, executor, heap);
             }
-            cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, executor, heap);
             md_temp_reset(temp_scope, before_acc);
         }
 
@@ -921,7 +950,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         for (size_t i = 0; i < num_candidates; ++i) {
             const int ai = cand[i].atom_i;
             const int aj = cand[i].atom_j;
-            if (md_atom_particle_kind(&sys->atom, ai) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, aj) == MD_PARTICLE_VIRTUAL_SITE) continue;
+            if (vsite[ai] || vsite[aj]) continue;
             const int ci = comp_id[ai];
             const int cj = comp_id[aj];
             const bool is_water = (ci >= 0 && res_water[ci]) || (cj >= 0 && res_water[cj]);
@@ -948,7 +977,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             if (is_metal(atomic_nr[ai]) == is_metal(atomic_nr[aj])) continue;
             const int metal = is_metal(atomic_nr[ai]) ? ai : aj;
             const int other = metal == ai ? aj : ai;
-            if (md_atom_particle_kind(&sys->atom, other) == MD_PARTICLE_VIRTUAL_SITE) continue;
+            if (vsite[other]) continue;
             const int z = atomic_nr[other];
             const float factor = z == C ? bond_k_carbon : is_metal_donor(z) ? bond_k_ligand : 0.0f;
             if (cand[i].dist < factor * (atom_radius[ai] + atom_radius[aj])) contacts[metal] += 1;
@@ -957,34 +986,43 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         md_array(bond_pair_t) metallic_pairs = 0;
         infer_metallic_phases(metallic, &metallic_pairs, state, sys, atomic_nr, atom_radius, contacts, temp_arena);
 
+        // The bonds: the candidates of a rule, but those of the atoms of metallic phases, then the metallic bonds. Each
+        // pair is found once (cov_bond_candidates), so they are written as they are, with the distance of each, which the
+        // pruning below is more informed by (the coordination bonds).
         md_bond_data_t temp_bond = { 0 };
-        // We are lazy and propagate the correct periodic distance for each bond, so we can do more informed pruning later (e.g. for coordination bonds)
-        md_array(float) temp_bond_dist = 0;
+        float* temp_bond_dist = NULL;
         {
-            // Room for all of them at once: arrays which grow in an arena leave their copies behind
-            size_t num_bonds = md_array_size(metallic_pairs);
-            for (size_t i = 0; i < num_candidates; ++i) num_bonds += rules[i].factor > 0.0f;
-            md_array_ensure(temp_bond.pairs, num_bonds, temp_arena);
-            md_array_ensure(temp_bond.flags, num_bonds, temp_arena);
-            md_array_ensure(temp_bond_dist,  num_bonds, temp_arena);
-        }
-
-        for (size_t i = 0; i < num_candidates; ++i) {
-            if (rules[i].factor <= 0.0f) continue;
-            const int ai = cand[i].atom_i;
-            const int aj = cand[i].atom_j;
-            // An atom of a metallic phase has its metallic bonds, below, and no other: what touches a metal moves
-            // across it, and has its contacts in a frame (md_bond_delta_compute)
-            if (metallic[ai] || metallic[aj]) continue;
-            md_bond_insert(&temp_bond, ai, aj, rules[i].coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
-            md_array_push(temp_bond_dist, cand[i].dist, temp_arena);
-        }
-        {
-            const md_bond_flags_t flags = md_bond_flags_set_kind(inferred, MD_BOND_KIND_METALLIC);
-            for (size_t k = 0; k < md_array_size(metallic_pairs); ++k) {
-                md_bond_insert(&temp_bond, metallic_pairs[k].atom_i, metallic_pairs[k].atom_j, flags, temp_arena);
-                md_array_push(temp_bond_dist, metallic_pairs[k].dist, temp_arena);
+            const size_t num_metallic = md_array_size(metallic_pairs);
+            size_t num_bonds = num_metallic;
+            for (size_t i = 0; i < num_candidates; ++i) {
+                num_bonds += rules[i].factor > 0.0f && !metallic[cand[i].atom_i] && !metallic[cand[i].atom_j];
             }
+            md_array_resize(temp_bond.pairs, num_bonds, temp_arena);
+            md_array_resize(temp_bond.flags, num_bonds, temp_arena);
+            temp_bond_dist = md_temp_alloc_array(temp_scope, float, MD_MAX(num_bonds, 1));
+            const md_bond_flags_t coordinate = md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE);
+            size_t b = 0;
+            for (size_t i = 0; i < num_candidates; ++i) {
+                if (rules[i].factor <= 0.0f) continue;
+                const int ai = cand[i].atom_i;
+                const int aj = cand[i].atom_j;
+                // An atom of a metallic phase has its metallic bonds, below, and no other: what touches a metal moves
+                // across it, and has its contacts in a frame (md_bond_delta_compute)
+                if (metallic[ai] || metallic[aj]) continue;
+                temp_bond.pairs[b] = (md_atom_pair_t){{ ai, aj }};
+                temp_bond.flags[b] = rules[i].coordinate ? coordinate : inferred;
+                temp_bond_dist[b]  = cand[i].dist;
+                b += 1;
+            }
+            const md_bond_flags_t flags = md_bond_flags_set_kind(inferred, MD_BOND_KIND_METALLIC);
+            for (size_t k = 0; k < num_metallic; ++k) {
+                temp_bond.pairs[b] = (md_atom_pair_t){{ metallic_pairs[k].atom_i, metallic_pairs[k].atom_j }};
+                temp_bond.flags[b] = flags;
+                temp_bond_dist[b]  = metallic_pairs[k].dist;
+                b += 1;
+            }
+            MD_ASSERT(b == num_bonds);
+            temp_bond.count = num_bonds;
         }
 
         // Create bitfield to keep track of valid bonds during pruning (we do not remove bonds to ensure index stability)
@@ -1118,15 +1156,17 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
 
         size_t num_valid_bonds = bitfield_popcount(temp_bond_valid, temp_bond.count);
 
-        // Populate real bond data
-        md_array_ensure(bond->pairs, num_valid_bonds, alloc);
-        md_array_ensure(bond->flags, num_valid_bonds, alloc);
-
+        // The bonds left, in their order
+        md_array_resize(bond->pairs, num_valid_bonds, alloc);
+        md_array_resize(bond->flags, num_valid_bonds, alloc);
+        size_t n = 0;
         for (size_t i = 0; i < temp_bond.count; ++i) {
-            if (bitfield_test_bit(temp_bond_valid, i)) {
-                md_bond_insert(bond, temp_bond.pairs[i].idx[0], temp_bond.pairs[i].idx[1], temp_bond.flags[i], alloc);
-            }
+            if (!bitfield_test_bit(temp_bond_valid, i)) continue;
+            bond->pairs[n] = temp_bond.pairs[i];
+            bond->flags[n] = temp_bond.flags[i];
+            n += 1;
         }
+        bond->count = n;
     }
 
     md_temp_end(temp_scope);
