@@ -43,6 +43,7 @@ typedef struct topo_layout_t {
     uint64_t ring_points[MD_RENDER_MOL_RING_SIZES], ring_segment[MD_RENDER_MOL_RING_SIZES], stick_points, stick_segment;
     uint64_t gap_points, gap_residue;
     uint64_t order_points, order_bond, order_ref, bond_single;
+    uint64_t aromatic_points[MD_RENDER_MOL_RING_SIZES], aromatic_ring[MD_RENDER_MOL_RING_SIZES];
     uint64_t small_tables, size;
 } topo_layout_t;
 
@@ -766,6 +767,47 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->order_count[0] = n_ord[0];
     T->order_count[1] = n_ord[1];
 
+    /* The aromatic rings' circles (see the topology): md_gl's bo_circle_ring,
+       of static atoms each bonded to the next; per size the solid ones, then
+       the dashed (of a fused aromatic system) */
+    const md_ring_data_t* RDA = &sys->ring;
+    const uint32_t n_rng = (uint32_t)md_ring_data_count(RDA);
+    uint32_t* ar_pts[MD_RENDER_MOL_RING_SIZES];
+    uint32_t* ar_idx[MD_RENDER_MOL_RING_SIZES];
+    uint32_t  ar_n[MD_RENDER_MOL_RING_SIZES] = { 0 }, ar_d[MD_RENDER_MOL_RING_SIZES] = { 0 };
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        ar_pts[k] = md_temp_alloc(temp, ((size_t)n_rng + 1) * (3u + k) * 4u);
+        ar_idx[k] = md_temp_alloc(temp, ((size_t)n_rng + 1) * 4u);
+        if (!ar_pts[k] || !ar_idx[k]) return false;
+    }
+    for (int dashed = 0; dashed < 2; ++dashed) {
+        for (uint32_t rg = 0; rg < n_rng; ++rg) {
+            const md_ring_flags_t rf = md_ring_flags(RDA, rg);
+            const uint32_t rn = (uint32_t)md_ring_size(RDA, rg);
+            if (!(rf & MD_RING_FLAG_AROMATIC) || ((rf & MD_RING_FLAG_FUSED_AROMATIC) != 0) != (dashed != 0)) continue;
+            if (rn < 3 || rn > 2 + MD_RENDER_MOL_RING_SIZES) continue;
+            const int32_t* ra = md_ring_atoms(RDA, rg);
+            bool all = true;
+            for (uint32_t l = 0; l < rn && all; ++l) {
+                const int32_t x = ra[l], y = ra[(l + 1) % rn];
+                all = x >= 0 && (uint32_t)x < n && st_ok[x] && y >= 0 && (uint32_t)y < n;
+                bool bonded = false;
+                md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)(all ? x : 0));
+                for (; all && md_bond_iter_has_next(&it) && !bonded; md_bond_iter_next(&it)) {
+                    const uint32_t bf = sys->bond.flags ? (uint32_t)sys->bond.flags[md_bond_iter_bond_index(&it)] : 0u;
+                    bonded = md_bond_iter_atom_index(&it) == y && md_bond_kind((md_bond_flags_t)bf) == MD_BOND_KIND_COVALENT;
+                }
+                all = all && bonded;
+            }
+            if (!all) continue;
+            const uint32_t k = rn - 3;
+            for (uint32_t l = 0; l < rn; ++l) ar_pts[k][(size_t)ar_n[k] * rn + l] = inv[ra[l]];
+            ar_idx[k][ar_n[k]++] = rg;
+            ar_d[k] += dashed ? 1u : 0u;
+        }
+    }
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) { T->aromatic_count[k] = ar_n[k]; T->aromatic_dashed[k] = ar_d[k]; }
+
     /* Derived points (see the topology). The lipids' heads: each at the
        centre of its resident heavy atoms (beads), standing for the first */
     derived_build_t der = { .alloc = md_temp_allocator(temp) };
@@ -887,6 +929,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.order_bond          = o; o = align256(o + (uint64_t)n_ord_all * 4u);
     L.order_ref           = o; o = align256(o + (uint64_t)n_ord[0] * 16u);
     L.bond_single         = o; o = align256(o + (n_ord_all ? (uint64_t)cov_n * 4u : 0u));
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        L.aromatic_points[k] = o; o = align256(o + (uint64_t)ar_n[k] * (3u + k) * 4u);
+        L.aromatic_ring[k]   = o; o = align256(o + (uint64_t)ar_n[k] * 4u);
+    }
     L.derived_offset      = o; o = align256(o + ((uint64_t)n_der + 1u) * 4u);
     L.derived_member      = o; o = align256(o + (uint64_t)n_dmem * 4u);
     L.derived_weight      = o; o = align256(o + (uint64_t)n_dmem * 4u);
@@ -973,6 +1019,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     memcpy(img + L.order_points,      od_pts,   (size_t)n_ord_all * 8u);
     memcpy(img + L.order_bond,        od_bond,  (size_t)n_ord_all * 4u);
     memcpy(img + L.order_ref,         od_ref,   (size_t)n_ord[0] * 16u);
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        memcpy(img + L.aromatic_points[k], ar_pts[k], (size_t)ar_n[k] * (3u + k) * 4u);
+        memcpy(img + L.aromatic_ring[k],   ar_idx[k], (size_t)ar_n[k] * 4u);
+    }
     if (n_ord_all) {
         float* single = (float*)(img + L.bond_single);
         for (uint32_t j = 0; j < cov_n; ++j) single[j] = (j < cov_static && od_kind[j]) ? 0.0f : 1.0f;
@@ -1033,6 +1083,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->order_bond          = L.order_bond;
     T->order_ref           = L.order_ref;
     T->bond_single         = n_ord_all ? L.bond_single : 0;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        T->aromatic_points[k] = L.aromatic_points[k];
+        T->aromatic_ring[k]   = L.aromatic_ring[k];
+    }
     T->derived_offset      = L.derived_offset;
     T->derived_member      = L.derived_member;
     T->derived_weight      = L.derived_weight;
@@ -1087,6 +1141,10 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->order_bond          = base + plan->layout.order_bond;
     out->order_ref           = base + plan->layout.order_ref;
     out->bond_single         = plan->layout.bond_single ? base + plan->layout.bond_single : 0;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        out->aromatic_points[k] = base + plan->layout.aromatic_points[k];
+        out->aromatic_ring[k]   = base + plan->layout.aromatic_ring[k];
+    }
     out->derived_offset      = base + plan->layout.derived_offset;
     out->derived_member      = base + plan->layout.derived_member;
     out->derived_weight      = base + plan->layout.derived_weight;
@@ -2139,6 +2197,36 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
                 }
             }
         }
+        /* The aromatic rings' circles (md_gl's ring.vert): a tube a third of
+           the stick thick, 1.9 times the envelope inside the edges; dashed
+           in a fused system, two dashes over each bond, or one where those
+           would be shorter than the tube is thick in the ring of its size
+           with bonds of 1.39 */
+        if (rep->bond_orders && spread > 0.0f && (classes & MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COVALENT))) {
+            const float tube = 0.33f * stick_radius, inset = 1.9f * spread * stick_radius;
+            for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+                const uint32_t nr = topo->aromatic_count[k], nd = topo->aromatic_dashed[k], nc = 3u + k;
+                for (uint32_t dsh = 0; dsh < 2; ++dsh) {
+                    const uint32_t cnt = dsh ? nd : nr - nd, first = dsh ? nr - nd : 0u;
+                    if (!cnt) continue;
+                    md_render_batch_t bc = base;
+                    bc.key   = (rep->key << 8) | (uint64_t)(MD_RENDER_MOL_PART_AROMATIC + 2u * k + dsh);
+                    bc.kind  = MD_RENDER_POLYGONS;
+                    bc.count = cnt;
+                    bc.index = topo->aromatic_points[k] + (md_gpu_addr_t)first * nc * 4u;
+                    bc.id    = topo->aromatic_ring[k]   + (md_gpu_addr_t)first * 4u;
+                    bc.style.polygons.corners = nc;
+                    bc.style.polygons.radius  = tube;
+                    bc.style.polygons.inset   = inset;
+                    if (dsh) {
+                        const float ideal = 1.39f / (2.0f * tanf(3.14159265f / (float)nc));
+                        const float dash  = 2.0f * 3.14159265f * (ideal - inset) / (float)nc / 2.0f * 0.5f;
+                        bc.style.polygons.dashes = dash >= 2.0f * tube ? 2u : 1u;
+                    }
+                    put(out, cap, &n, &bc);
+                }
+            }
+        }
         put_gaps(out, cap, &n, &base, topo, rep, 1, CHAIN_GAP_RADIUS_LINK * stick_radius, dash_ends);
     }
     if (spheres && topo->point_count) {
@@ -2161,6 +2249,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     hit->bond = UINT32_MAX;
     hit->segment = UINT32_MAX;
     hit->residue = UINT32_MAX;
+    hit->ring = UINT32_MAX;
     if (pick->key == 0) return false;
     uint32_t part = (uint32_t)(pick->key & 0xFFu);
     hit->rep_key  = pick->key >> 8;
@@ -2189,6 +2278,12 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
         hit->kind    = MD_RENDER_MOL_HIT_CHAIN_GAP;
         hit->residue = pick->id;
         hit->atom    = pick->attr;
+        return true;
+    }
+    if (part >= MD_RENDER_MOL_PART_AROMATIC && part < MD_RENDER_MOL_PART_AROMATIC + 2u * MD_RENDER_MOL_RING_SIZES && pick->kind == MD_RENDER_POLYGONS) {
+        hit->kind = MD_RENDER_MOL_HIT_RING;
+        hit->ring = pick->id;
+        hit->atom = pick->attr;
         return true;
     }
     if (((part >= MD_RENDER_MOL_PART_BONDS && part < MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_CLASS_COUNT) ||

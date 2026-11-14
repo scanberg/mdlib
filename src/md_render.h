@@ -320,13 +320,24 @@ typedef struct md_render_spline_style_t {
    its corners do; it takes its colour from its first corner, and a pick
    reports the corner nearest the hit as its attribute. SHRINK scales it
    about its centroid, radius and all.
-   Raycast exactly: the plate's two faces, and a capsule along each edge. */
+   Raycast exactly: the plate's two faces, and a capsule along each edge.
+   CIRCLES (inset > 0): in the polygon's stead the circle inside it, a
+   torus of `radius` in its plane about its centroid (md_gl's circles of
+   aromatic rings): its centre line `inset` inside the nearest edge (of
+   radius the apothem less inset), none where that leaves less than twice
+   `radius`. Coloured around it by the corners as a capsule is along it by
+   its two (color.sharpness): between two corners by their angles about the
+   centroid. `dashes` over each edge (0: solid), half of each edge's share
+   of the circle, the gaps centred on the corners. `plate` does not apply.
+   Raycast exactly (the quartic). */
 typedef struct md_render_polygon_style_t {
     uint32_t corners;              /* 3 .. 8, the same for every polygon of the batch */
     float    radius;               /* half the thickness, the rounding of the edges;
                                       <= 0 not drawn                                 */
     float    plate;                /* the plate's half thickness within the rims, a
                                       fraction of the radius, up to 1; 0: 1, flat    */
+    float    inset;                /* > 0: the circle inside it, so far from the edges */
+    uint32_t dashes;               /* the circle's dashes over each edge, up to 16    */
 } md_render_polygon_style_t;
 
 /* ---- Colour: only appearance; a change of it costs a resolve, not a raster */

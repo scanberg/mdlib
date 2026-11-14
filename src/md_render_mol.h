@@ -303,6 +303,16 @@ typedef struct md_render_mol_topo_t {
                                               of two atoms by either end (UINT32_MAX none) */
     md_gpu_addr_t bond_single;             /* float per bond of the covalent class      */
 
+    /* The circles of the aromatic rings, for the bond orders: the rings of
+       sys->ring with MD_RING_FLAG_AROMATIC, every atom static and each
+       bonded to the next by a covalent bond; per size those of a fused
+       aromatic system (MD_RING_FLAG_FUSED_AROMATIC: dashed) last. Their
+       corners' points in order around them, each with its index in sys->ring. */
+    uint32_t      aromatic_count[MD_RENDER_MOL_RING_SIZES];    /* of 3 + k atoms     */
+    uint32_t      aromatic_dashed[MD_RENDER_MOL_RING_SIZES];   /* of them, the last  */
+    md_gpu_addr_t aromatic_points[MD_RENDER_MOL_RING_SIZES];   /* uint32 [(3 + k) * count] */
+    md_gpu_addr_t aromatic_ring[MD_RENDER_MOL_RING_SIZES];     /* uint32 per ring    */
+
     /* Derived points: each a weighted sum of resident atoms, taken at their
        images nearest the first one's (where the update has a cell: the
        frames'), written by every update after the atoms' points: points
@@ -646,8 +656,12 @@ typedef struct md_render_mol_rep_t {
        within the stick (licorice) or 1.3 times it (ball and stick). A
        double's lie in the plane of its sp2 centres as planar as the frame
        has them, and turn to face the view where they give none (O=O, the
-       C=O of CO2); a triple's face the view. Aromatic and delocalized bonds
-       keep their stick: their circles and dashed partners are not yet. */
+       C=O of CO2); a triple's face the view. An aromatic ring gets a
+       circle inside it (md_render's polygon circles), a third of the stick
+       thick, 1.9 times the envelope inside its bonds, solid, or dashed in a
+       fused aromatic system (naphthalene, indole, a purine), whose sextets
+       are not the rings' own; its bonds keep their sticks. Delocalized bonds
+       keep their stick: their dashed partners are not yet. */
     bool                     bond_orders;
 
     /* Colour of atoms and sticks. COLOR_POINTS reads `color` (uint32 RGBA8
@@ -680,6 +694,7 @@ enum {
     MD_RENDER_MOL_PART_GAPS,            /* the gaps of the chains */
     MD_RENDER_MOL_PART_DOUBLE,          /* + 0, 1: the sticks of the double bonds */
     MD_RENDER_MOL_PART_TRIPLE = MD_RENDER_MOL_PART_DOUBLE + 2,  /* + 0, 1, 2: of the triple bonds */
+    MD_RENDER_MOL_PART_AROMATIC = MD_RENDER_MOL_PART_TRIPLE + 3, /* + 2 (corners - 3) + dashed: the circles */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -700,6 +715,7 @@ typedef enum md_render_mol_hit_kind_t {
     MD_RENDER_MOL_HIT_NUCLEOTIDE,  /* a nucleotide's: its part of the band, a ring,
                                       its stick                                      */
     MD_RENDER_MOL_HIT_CHAIN_GAP,   /* the gap over a break of a chain                */
+    MD_RENDER_MOL_HIT_RING,        /* the circle of an aromatic ring                 */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {
@@ -709,13 +725,16 @@ typedef struct md_render_mol_hit_t {
     uint32_t atom;                 /* the atom, the bond's atom nearer the hit, the
                                       residue's CA, the nucleotide's C4' (band) or
                                       its ring's or stick's atom nearest the hit, the
-                                      gap's end nearer the hit                       */
+                                      gap's end nearer the hit, the ring's atom
+                                      nearest the hit                                */
     uint32_t bond;                 /* index in sys->bond; UINT32_MAX for others       */
     uint32_t segment;              /* index in sys->protein_backbone.segment of a
                                       BACKBONE hit, in sys->nucleic_backbone.segment
                                       of a NUCLEOTIDE hit; UINT32_MAX for others      */
     uint32_t residue;              /* index in sys->residue of the residue before the
                                       break of a CHAIN_GAP hit; UINT32_MAX for others */
+    uint32_t ring;                 /* index in sys->ring of a RING hit; UINT32_MAX for
+                                      others                                         */
     float    position[3];
 } md_render_mol_hit_t;
 
