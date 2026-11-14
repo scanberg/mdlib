@@ -179,8 +179,10 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
         return sum >= 350.0f ? 2 : 3;
     }
     if (n == 2) {
-        const float a = (float)MD_RAD_TO_DEG(md_float3_angle(v[0], v[1]));
-        if (a > 165.0f) return 1;
+        // The angle is only compared, so by its cosine: no atan2 for every water oxygen of a solvent
+        const float len = sqrtf(md_float3_dot(v[0], v[0]) * md_float3_dot(v[1], v[1]));
+        const float cos_a = len > 0.0f ? md_float3_dot(v[0], v[1]) / len : 1.0f;
+        if (cos_a < -0.96592583f) return 1;     // Above 165 degrees
         // sp2 has a short bond (a double or aromatic one), whatever the angle: about 108 in a five membered ring.
         // Without one only a wide angle says sp2: a CH2 in a ring is often opened to 117.
         float rmin = FLT_MAX;
@@ -189,7 +191,7 @@ static uint8_t geometric_hybridization(const chem_t* c, uint32_t i) {
         }
         if (rmin < 0.83f) return 1;     // A triple bond, also bent (in a strained ring)
         if (rmin < 0.94f) return 2;
-        return a > 128.0f ? 2 : 3;
+        return cos_a < -0.61566148f ? 2 : 3;    // Above 128 degrees
     }
     if (n == 1) {
         if (c->z[nb[0]] == MD_Z_H) return 3;
