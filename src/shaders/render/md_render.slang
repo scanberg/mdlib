@@ -198,7 +198,7 @@ struct Lists {
     uint*     st2;              // spline parts with a state bit
     uint*     hw3;              // polygons for the hardware raster (nor have they)
     uint*     st3;              // polygons with a state bit
-    float4*   hw2b;             // per hw2 entry, its part's box (spline_box_write): 4 float4
+    float4*   hw2b;             // per hw2 entry, its part's record (spline_record_write): SPLINE_RECORD float4
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -1429,13 +1429,48 @@ SplineBox spline_box(SplinePart sp, uint pieces) {
     return bx;
 }
 
-// The hardware raster's record of a part (Lists.hw2b, 4 float4 at 4 i):
-// its box, its pieces and state bits
-void spline_box_write(Lists L, uint i, SplineBox bx, uint pieces, uint st) {
-    L.hw2b[4u * i + 0u] = float4(bx.c, asfloat(pieces));
-    L.hw2b[4u * i + 1u] = float4(bx.x, asfloat(st));
-    L.hw2b[4u * i + 2u] = float4(bx.y, 0.0);
-    L.hw2b[4u * i + 3u] = float4(bx.z, 0.0);
+// The hardware raster's record of a part (Lists.hw2b, SPLINE_RECORD float4
+// at SPLINE_RECORD i): its box, pieces and state bits for the vertex stage,
+// and the part itself for the fragments, which read it instead of rebuilding
+// it from its control points (the index walk, five points, five axes, three
+// profiles and a transform, dependent loads all, for every fragment). The
+// part as spline_part made it, to the bit: the resolve and the pick rebuild
+// it with spline_part, as the raster did.
+static const uint SPLINE_RECORD = 14u;
+
+void spline_record_write(Lists L, uint i, SplineBox bx, uint pieces, uint st, SplinePart sp) {
+    float4* r = L.hw2b + SPLINE_RECORD * i;
+    r[0]  = float4(bx.c, asfloat(pieces));
+    r[1]  = float4(bx.x, asfloat(st));
+    r[2]  = float4(bx.y, 0.0);
+    r[3]  = float4(bx.z, 0.0);
+    r[4]  = float4(sp.p0, sp.u0);
+    r[5]  = float4(sp.p1, sp.u1);
+    r[6]  = float4(sp.p2, sp.a0);
+    r[7]  = float4(sp.p3, sp.a1);
+    r[8]  = float4(sp.p4, sp.r0);
+    r[9]  = float4(sp.w0, sp.r1);
+    r[10] = float4(sp.w1, sp.ru0);
+    r[11] = float4(sp.w2, sp.ru1);
+    r[12] = float4(sp.w3, asfloat(sp.caps));
+    r[13] = float4(sp.w4, asfloat(sp.ok ? 1u : 0u));
+}
+
+SplinePart spline_record_part(Lists L, uint i) {
+    float4* r = L.hw2b + SPLINE_RECORD * i;
+    SplinePart sp;
+    float4 q;
+    q = r[4];  sp.p0 = q.xyz; sp.u0  = q.w;
+    q = r[5];  sp.p1 = q.xyz; sp.u1  = q.w;
+    q = r[6];  sp.p2 = q.xyz; sp.a0  = q.w;
+    q = r[7];  sp.p3 = q.xyz; sp.a1  = q.w;
+    q = r[8];  sp.p4 = q.xyz; sp.r0  = q.w;
+    q = r[9];  sp.w0 = q.xyz; sp.r1  = q.w;
+    q = r[10]; sp.w1 = q.xyz; sp.ru0 = q.w;
+    q = r[11]; sp.w2 = q.xyz; sp.ru1 = q.w;
+    q = r[12]; sp.w3 = q.xyz; sp.caps = asuint(q.w);
+    q = r[13]; sp.w4 = q.xyz; sp.ok   = asuint(q.w) != 0u;
+    return sp;
 }
 
 // ---------------------------------------------------------------------------
@@ -2438,7 +2473,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
             Batch      b  = batches[slot];
             SplinePart sp = spline_part(v, b, inst, e, true);
             uint       n  = spline_pieces(v, sp, g);
-            spline_box_write(L, base2 + ih2, spline_box(sp, n), n, g.st);
+            spline_record_write(L, base2 + ih2, spline_box(sp, n), n, g.st, sp);
         }
         wave_count(L.counters + C_OUTSIDE, out == OUT_OUTSIDE);
         wave_count(L.counters + C_LOD,     out == OUT_LOD);
@@ -3009,6 +3044,7 @@ struct SplineV {
     nointerpolation uint4  pe    : PE;      // pieces, instance, element
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
+    nointerpolation uint   rec   : REC;     // its record (Lists.hw2b) + 1, 0: none (rebuild the part)
 };
 
 [shader("vertex")]
@@ -3021,16 +3057,19 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.pe    = uint4(0u);
     o.idv   = uint2(0u);
     o.state = 0u;
+    o.rec   = 0u;
     uint  vk  = md_draw_vertex(vid, base_vertex);
     uint  li  = base_instance + md_draw_instance(iid, base_instance);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, li));
     if (a.list == 4u) {
         // the hardware list: the cull's box (spline_box)
         Lists  L  = *a.lists;
-        float4 r0 = L.hw2b[4u * li + 0u], r1 = L.hw2b[4u * li + 1u];
+        float4* rc = L.hw2b + SPLINE_RECORD * li;
+        float4 r0 = rc[0], r1 = rc[1];
         float3 p  = r0.xyz + r1.xyz * (((vk & 1u) != 0u) ? 1.0 : -1.0)
-                           + L.hw2b[4u * li + 2u].xyz * (((vk & 2u) != 0u) ? 1.0 : -1.0)
-                           + L.hw2b[4u * li + 3u].xyz * (((vk & 4u) != 0u) ? 1.0 : -1.0);
+                           + rc[2].xyz * (((vk & 2u) != 0u) ? 1.0 : -1.0)
+                           + rc[3].xyz * (((vk & 4u) != 0u) ? 1.0 : -1.0);
+        o.rec   = li + 1u;
         o.pos   = mul4(M(v, proj), float4(p, 1.0));
         o.pe    = uint4(asuint(r0.w), el.inst, el.e, el.slot);
         o.idv   = elem_id(a.batches, el);
@@ -3048,6 +3087,7 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
 }
 
 float spline_fragment_hit(ViewData v, Ray r, SplineV i) {
+    if (i.rec != 0u) return spline_hit(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x).t;
     return spline_hit(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x).t;
 }
 
@@ -3089,6 +3129,7 @@ SplineV polygon_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.pe    = uint4(0u);
     o.idv   = uint2(0u);
     o.state = 0u;
+    o.rec   = 0u;
     uint  vk  = md_draw_vertex(vid, base_vertex);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     Batch b   = a.batches[el.slot];
