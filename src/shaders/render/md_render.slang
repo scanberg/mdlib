@@ -381,8 +381,12 @@ float3 unproject(Mat inv_proj, float2 ndc, float z) {
 
 // The ray of pixel position `pix` (pixel units, top-left origin; a pixel's
 // centre is at +0.5), through the projection as it was rasterised.
+float2 pixel_ndc(ViewData v, float2 pix) {
+    return float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
+}
+
 Ray pixel_ray(ViewData v, float2 pix) {
-    float2 ndc = float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
+    float2 ndc = pixel_ndc(v, pix);
     Ray r;
     r.o = unproject(M(v, inv_proj), ndc, 1.0);          // near plane under reverse Z
     float3 f = unproject(M(v, inv_proj), ndc, 0.5);
@@ -1402,18 +1406,19 @@ struct SplineBox {
     float3 x, y, z;             // half axes
 };
 
-// Pieces k0 .. k1 - 1 of the part's: across the mid-section's axis, or for
-// one piece the mean of its ends' (the sections it needs anyway)
-SplineBox spline_box_range(SplinePart sp, uint pieces, uint k0, uint k1) {
+// With it, each piece's extent along the chord (sl: per piece a low and a
+// high byte, fractions of the box's length, rounded outward; piece k in
+// bits 16 (k & 1) of word k / 2): the slice of the box between them bounds
+// the piece (the balls at its two sections' rim points), which is what the
+// raster draws for it (spline_vs). The sections are this loop's already.
+SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8]) {
     SplineBox bx;
-    float  ua = spline_piece_u(sp, k0, pieces), ub = spline_piece_u(sp, k1, pieces);
-    SplineSection sa = spline_section(sp, ua), sb = spline_section(sp, ub);
-    float3 xw = sa.w + sb.w, tw = sa.t + sb.t;
-    if (k1 - k0 > 1u) { SplineSection sm = spline_section(sp, 0.5 * (ua + ub)); xw = sm.w; tw = sm.t; }
-    float3 z  = sb.c - sa.c;
+    float3 ca = spline_centre(sp, sp.u0), cb = spline_centre(sp, sp.u1);
+    SplineSection sm = spline_section(sp, 0.5 * (sp.u0 + sp.u1));
+    float3 z  = cb - ca;
     float  zl = length(z);
-    z = zl > 1e-20 ? z / zl : (dot(tw, tw) > 0.0 ? normalize(tw) : float3(0.0, 0.0, 1.0));
-    float3 x  = xw - z * dot(xw, z);
+    z = zl > 1e-20 ? z / zl : (dot(sm.t, sm.t) > 0.0 ? normalize(sm.t) : float3(0.0, 0.0, 1.0));
+    float3 x  = sm.w - z * dot(sm.w, z);
     float  xl = length(x);
     if (!(xl > 1e-6)) {                                 // no axis (tubes): any normal of the chord
         x  = abs(z.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
@@ -1424,14 +1429,19 @@ SplineBox spline_box_range(SplinePart sp, uint pieces, uint k0, uint k1) {
     float3 y  = cross(z, x);                            // (x, y, z) right-handed
     float3 lo = float3(1e30), hi = float3(-1e30);
     float  n  = float(max(pieces, 1u));
-    for (uint k = k0; k <= k1; ++k) {
+    float  zlo[16], zhi[16];                            // each piece's extent along z
+    float  pl = 0.0, ph = 0.0;                          // the previous section's
+    for (uint k = 0u; k <= pieces; ++k) {
         float  f = float(k) / n;
-        SplineSection s = k == k0 ? sa : k == k1 ? sb : spline_section(sp, spline_piece_u(sp, k, pieces));
+        SplineSection s = spline_section(sp, spline_piece_u(sp, k, pieces));
         float  a = lerp(sp.a0, sp.a1, f), r = lerp(sp.r0, sp.r1, f);
         float3 p = s.c + s.w * a, m = s.c - s.w * a;     // the rim points (spline_hit's)
         float3 qp = float3(dot(p, x), dot(p, y), dot(p, z)), qm = float3(dot(m, x), dot(m, y), dot(m, z));
         lo = min(lo, min(qp, qm) - r);
         hi = max(hi, max(qp, qm) + r);
+        float  sl0 = min(qp.z, qm.z) - r, sh0 = max(qp.z, qm.z) + r;
+        if (k > 0u) { zlo[k - 1u] = min(pl, sl0); zhi[k - 1u] = max(ph, sh0); }
+        pl = sl0; ph = sh0;
     }
     float3 h = 0.5 * (hi - lo);
     h += 0.002 * max(h.x, max(h.y, h.z)) + 1e-6;        // see sphere_vs: not just touching
@@ -1440,13 +1450,19 @@ SplineBox spline_box_range(SplinePart sp, uint pieces, uint k0, uint k1) {
     bx.x = x * h.x;
     bx.y = y * h.y;
     bx.z = z * h.z;
+    float zb = q.z - h.z, zs = 255.0 / (2.0 * h.z);
+    for (uint i = 0u; i < 8u; ++i) sl[i] = 0u;
+    for (uint k = 0u; k < pieces; ++k) {
+        uint l = uint(clamp(floor((zlo[k] - zb) * zs - 0.01), 0.0, 255.0));
+        uint u = uint(clamp(ceil((zhi[k] - zb) * zs + 0.01), 0.0, 255.0));
+        sl[k >> 1] |= (l | (u << 8)) << ((k & 1u) * 16u);
+    }
     return bx;
 }
 
-SplineBox spline_box(SplinePart sp, uint pieces) { return spline_box_range(sp, pieces, 0u, pieces); }
-
 // The boxes of a part of n pieces in the hardware raster: one per group of
-// spl_group pieces (0: one). A fragment of a box tests its group's pieces
+// spl_group pieces (0: one), the slice of the part's box that bounds the
+// group (spline_box's sl). A fragment of a box tests its group's pieces
 // alone (spline_hit_range): of a whole part's box it tested every piece whose
 // bounding sphere its ray met, and on a ribbon those spheres are as wide as
 // the ribbon, which put most of a part's pieces under every fragment.
@@ -1455,15 +1471,15 @@ uint spline_groups(ViewData v, uint n) {
 }
 
 // The hardware raster's record of a part (Lists.hw2b, SPLINE_RECORD float4
-// at SPLINE_RECORD i): its box, pieces and state bits for the vertex stage,
-// and the part itself for the fragments, which read it instead of rebuilding
+// at SPLINE_RECORD i): its box, pieces, state bits and pieces' slices for the
+// vertex stage, and the part itself for the fragments, which read it instead of rebuilding
 // it from its control points (the index walk, five points, five axes, three
 // profiles and a transform, dependent loads all, for every fragment). The
 // part as spline_part made it, to the bit: the resolve and the pick rebuild
 // it with spline_part, as the raster did.
-static const uint SPLINE_RECORD = 14u;
+static const uint SPLINE_RECORD = 16u;
 
-void spline_record_write(Lists L, uint i, SplineBox bx, uint pieces, uint st, SplinePart sp) {
+void spline_record_write(Lists L, uint i, SplineBox bx, uint sl[8], uint pieces, uint st, SplinePart sp) {
     float4* r = L.hw2b + SPLINE_RECORD * i;
     r[0]  = float4(bx.c, asfloat(pieces));
     r[1]  = float4(bx.x, asfloat(st));
@@ -1479,6 +1495,16 @@ void spline_record_write(Lists L, uint i, SplineBox bx, uint pieces, uint st, Sp
     r[11] = float4(sp.w2, sp.ru1);
     r[12] = float4(sp.w3, asfloat(sp.caps));
     r[13] = float4(sp.w4, asfloat(sp.ok ? 1u : 0u));
+    r[14] = asfloat(uint4(sl[0], sl[1], sl[2], sl[3]));
+    r[15] = asfloat(uint4(sl[4], sl[5], sl[6], sl[7]));
+}
+
+// Piece k's slice of its part's box (spline_box's sl): low, high byte
+uint2 spline_record_slice(float4* r, uint k) {
+    uint4 q = asuint(r[14u + (k >> 3)]);
+    uint  j = (k >> 1) & 3u;
+    uint  w = (j == 0u ? q.x : j == 1u ? q.y : j == 2u ? q.z : q.w) >> ((k & 1u) * 16u);
+    return uint2(w & 255u, (w >> 8) & 255u);
 }
 
 SplinePart spline_record_part(Lists L, uint i) {
@@ -2508,7 +2534,9 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
             Batch      b  = batches[slot];
             SplinePart sp = spline_part(v, b, inst, e, true);
             uint       n  = spline_pieces(v, sp, g);
-            spline_record_write(L, base2 + ih2, spline_box(sp, n), n, g.st, sp);
+            uint       sl[8];
+            SplineBox  bx = spline_box(sp, n, sl);
+            spline_record_write(L, base2 + ih2, bx, sl, n, g.st, sp);
             ng = spline_groups(v, n);
         }
         // and a box per group of its pieces (converged: every lane reserves)
@@ -3101,8 +3129,8 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  vk  = md_draw_vertex(vid, base_vertex);
     uint  li  = base_instance + md_draw_instance(iid, base_instance);
     if (a.list == 4u) {
-        // the hardware list: a box per group of a part's pieces (hw2g), of
-        // the part in its record; the whole part's, the cull's (spline_box)
+        // the hardware list: a box per group of a part's pieces (hw2g), the
+        // group's slice of the part's box in its record (spline_box)
         Lists   L   = *a.lists;
         uint    ge  = L.hw2g[li];
         uint    rec = ge >> 4u;
@@ -3112,12 +3140,17 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
         uint    n   = asuint(r0.w);
         uint    k0  = v.spl_group == 0u ? 0u : (ge & 15u) * v.spl_group;
         uint    k1  = v.spl_group == 0u ? n : min(k0 + v.spl_group, n);
-        SplineBox bx;
-        if (k0 == 0u && k1 == n) { bx.c = r0.xyz; bx.x = r1.xyz; bx.y = rc[2].xyz; bx.z = rc[3].xyz; }
-        else                       bx = spline_box_range(spline_record_part(L, rec), n, k0, k1);
-        float3  p   = bx.c + bx.x * (((vk & 1u) != 0u) ? 1.0 : -1.0)
-                           + bx.y * (((vk & 2u) != 0u) ? 1.0 : -1.0)
-                           + bx.z * (((vk & 4u) != 0u) ? 1.0 : -1.0);
+        float3  c   = r0.xyz, Z = rc[3].xyz;
+        if (!(k0 == 0u && k1 == n)) {                   // the group's slice of the part's box
+            uint lo = 255u, hi = 0u;
+            for (uint k = k0; k < k1; ++k) { uint2 s = spline_record_slice(rc, k); lo = min(lo, s.x); hi = max(hi, s.y); }
+            float fl = float(lo) * (1.0 / 255.0), fh = float(hi) * (1.0 / 255.0);
+            c += Z * (fl + fh - 1.0);
+            Z *= fh - fl;
+        }
+        float3  p   = c + r1.xyz * (((vk & 1u) != 0u) ? 1.0 : -1.0)
+                        + rc[2].xyz * (((vk & 2u) != 0u) ? 1.0 : -1.0)
+                        + Z * (((vk & 4u) != 0u) ? 1.0 : -1.0);
         o.rec   = rec + 1u;
         o.pos   = mul4(M(v, proj), float4(p, 1.0));
         o.pe    = uint4(n, k0, k1, 0u);
@@ -3281,8 +3314,9 @@ float2 oct_encode(float3 n) {
 }
 
 // SPL 0: spheres and capsules; 1: splines and polygons (the other's pixels
-// come back invalid)
-Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
+// come back invalid). zd: the raster's depth at the pixel when known (> 0),
+// which finds the piece of a spline part the raster drew there.
+Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, float zd) {
     Hit h;
     h.valid = false;
     uint slot1 = idv.y >> 20;
@@ -3374,7 +3408,35 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         Geo        g;
         g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u;
         spline_bounds(sp, g.a, g.b, g.r);                // as element_geo: the same pieces
-        SplineHit  sh = spline_hit(r, sp, spline_pieces(v, sp, g));
+        uint       n  = spline_pieces(v, sp, g);
+        SplineHit  sh;
+        sh.t = -1.0;
+        sh.n = float3(0.0, 0.0, 1.0);
+        if (zd > 0.0 && n > 1u) {
+            // the piece under the raster's depth: the one whose chord passes
+            // nearest that point, tested alone. Its hit is the raster's (the
+            // same part, ray and arithmetic) when it is the piece; when not
+            // (a tight bend), every piece. Most of the part's pieces would
+            // get their full test otherwise: their bounding spheres are as
+            // wide as the ribbon.
+            float3 pz = unproject(M(v, inv_proj), pixel_ndc(v, pix), zd);
+            float  tz = dot(pz - r.o, r.d);
+            float3 ca = spline_centre(sp, sp.u0);
+            float  dbest = 1e30;
+            uint   kbest = 0u;
+            for (uint k = 1u; k <= n; ++k) {
+                float3 cb = spline_centre(sp, spline_piece_u(sp, k, n));
+                float3 ab = cb - ca, ap = pz - ca;
+                float  ll = dot(ab, ab);
+                float3 q  = ap - ab * (ll > 0.0 ? saturate(dot(ap, ab) / ll) : 0.0);
+                float  dd = dot(q, q);
+                if (dd < dbest) { dbest = dd; kbest = k - 1u; }
+                ca = cb;
+            }
+            sh = spline_hit_range(r, sp, n, kbest, kbest + 1u);
+            if (!(sh.t >= 0.0 && abs(sh.t - tz) <= 1e-5 * abs(tz) + 1e-6)) sh.t = -1.0;
+        }
+        if (sh.t < 0.0) sh = spline_hit(r, sp, n);
         if (sh.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its control point
             sh.t = max(dot(sp.p2 - r.o, r.d), 0.0);
             sh.n = -r.d;
@@ -3452,7 +3514,7 @@ void resolve_body<let SPL : int>(uint3 tid) {
     }
     if (!kind_taken<SPL>(a.batches[(idv.y >> 20) - 1u].kind)) return;
     ViewData v = *a.view;
-    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5);
+    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5, SPL != 0 ? a.src.Load(int3(px, 0)) : 0.0);
     if (!h.valid) return;       // EXTERNAL: the caller's
 
     Batch  b   = a.batches[h.batch];
@@ -3525,8 +3587,8 @@ void pick(uint3 tid : SV_DispatchThreadID) {
     ViewData v   = *a.view;
     float2   pix = float2(float(px), float(py)) + 0.5;
     Hit h;
-    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix);
-    else                                                h = eval_hit<0>(v, a.batches, idv, pix);
+    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix, 0.0);
+    else                                                h = eval_hit<0>(v, a.batches, idv, pix, 0.0);
     o[2] = h.id;
     o[3] = h.attr;
     if (h.valid) {
