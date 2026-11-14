@@ -2509,6 +2509,65 @@ UTEST(render, lazy_tiers) {
     f_close(&fx);
 }
 
+/* The same tiers for a batch drawn as instances (periodic images,
+   assemblies): an unchanged frame draws nothing, a change of state or
+   appearance no raster; their transforms and their count are geometry. (Every
+   draw of an instanced batch was a raster: the view keeps a batch's
+   transforms apart from it, and the comparison read their count off the
+   pointer it no longer had.) */
+UTEST(render, lazy_tiers_with_instances) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 32, H = 32;
+    cam_t c = { .tan_half = 0.5f, .aspect = 1.0f, .n = 0.1f };
+    float pos[3] = { 0, 0, -5 };
+    uint32_t sel = 1;
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 1; b.points.count = 1;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.state[0] = f_buf(&fx, &sel, 4);
+    b.style.spheres.radius_add = 0.5f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM;
+    b.color.uniform = 0xFFFFFFFFu;
+    float xf[32] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -1,0,0,1,   1,0,0,0, 0,1,0,0, 0,0,1,0, 1,0,0,1 };
+    b.transform = xf;
+    b.transform_count = 2;
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
+
+    md_render_status_t st;
+    const md_render_work_t ALL = MD_RENDER_WORK_RASTER | MD_RENDER_WORK_RESOLVE | MD_RENDER_WORK_MASK;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(ALL, st.work);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(0u, st.work);                                          /* unchanged */
+    f.content[MD_RENDER_CONTENT_STATE]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(MD_RENDER_WORK_MASK, st.work);
+    f.content[MD_RENDER_CONTENT_APPEARANCE]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(MD_RENDER_WORK_RESOLVE | MD_RENDER_WORK_MASK, st.work);
+    b.color.uniform = 0xFF0000FFu;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(MD_RENDER_WORK_RESOLVE | MD_RENDER_WORK_MASK, st.work);
+
+    /* A transform moved: a raster; then nothing again */
+    xf[28] = 1.5f;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(ALL, st.work);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(0u, st.work);
+    /* One instance fewer, and one more */
+    b.transform_count = 1;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(ALL, st.work);
+    b.transform_count = 2;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(ALL, st.work);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(0u, st.work);
+    f_close(&fx);
+}
+
 UTEST(render, color_modes) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

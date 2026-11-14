@@ -571,7 +571,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     } else if (b->kind == MD_RENDER_POLYGONS) {
         out->style.polygons = b->style.polygons;
     }
-    out->transform_count = b->transform ? b->transform_count : 0;
+    /* not the instances: the view keeps them apart from its copy of the
+       batch (remember), and compare checks their count and transforms */
     if (b->fade.mode) out->fade = b->fade;
 }
 
@@ -754,7 +755,6 @@ static bool bounds_shared(const md_render_batch_t* a, const md_render_batch_t* b
     canonical_geometry(&y, b);
     x.key = y.key = 0;
     x.id = y.id = 0;
-    x.transform_count = y.transform_count = 0;
     x.points.velocity = y.points.velocity = 0;
     x.points.velocity_stride = y.points.velocity_stride = 0;
     memset(&x.fade, 0, sizeof(x.fade));                     /* the bounds do not depend on it */
@@ -819,6 +819,7 @@ static change_t compare(const md_render_view_t v, const md_render_frame_t* f) {
         canonical_geometry(&y, &v->batches[i]);
         if (memcmp(&x, &y, sizeof(x)) != 0) return CHANGE_RASTER;
         uint32_t n = instance_count(&f->batches[i]);
+        if (16u * n != v->xform_offset[i + 1] - v->xform_offset[i]) return CHANGE_RASTER;
         const float* t = (f->batches[i].transform && f->batches[i].transform_count) ? f->batches[i].transform : IDENTITY;
         if (memcmp(t, v->xforms + v->xform_offset[i], n * 16 * sizeof(float)) != 0) return CHANGE_RASTER;
         md_render_color_t cx, cy;
@@ -841,7 +842,6 @@ static bool geometry_unchanged(const md_render_view_t v, const md_render_frame_t
         md_render_batch_t x, y;
         canonical_geometry(&x, &f->batches[i]);
         canonical_geometry(&y, &v->batches[i]);
-        x.transform_count = y.transform_count = 0;
         memset(&x.fade, 0, sizeof(x.fade));                     /* a raster, not a refit */
         memset(&y.fade, 0, sizeof(y.fade));
         if (memcmp(&x, &y, sizeof(x)) != 0) return false;
