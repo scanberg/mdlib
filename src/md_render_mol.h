@@ -556,8 +556,9 @@ typedef struct md_render_mol_rep_t {
            throughout. A nucleic acid's band is 2 (1.6 + band_radius) wide
            and 2 band_radius thick; ring_radius rounds the rings and is
            that of the sticks (half their thickness). 0: md_gl's, 0.25 and
-           0.2 */
-        struct { md_gpu_addr_t profile; float band_radius; float ring_radius; } cartoon;
+           0.2. ring_plate: the rings' plate within their rims, a fraction
+           of ring_radius (md_render_polygon_style_t plate); 0: flat */
+        struct { md_gpu_addr_t profile; float band_radius; float ring_radius; float ring_plate; } cartoon;
     } params;
 
     /* Which bond classes the sticks draw: MD_RENDER_MOL_BONDS(...) mask.

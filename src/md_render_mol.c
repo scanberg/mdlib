@@ -1758,6 +1758,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.id    = topo->ring_segment[k];
             b.style.polygons.corners = 3u + k;
             b.style.polygons.radius  = ring;
+            b.style.polygons.plate   = rep->params.cartoon.ring_plate;
             put(out, cap, &n, &b);
         }
         if (topo->stick_count) {

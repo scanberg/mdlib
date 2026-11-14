@@ -1240,12 +1240,13 @@ static const uint POLY_MAX = 8u;
 
 struct PolyPart {
     bool   ok;
-    bool   plate;               // a plane: corners not on a line
+    bool   planar;              // a plane: corners not on a line
     uint   n;
     float3 q[POLY_MAX];         // projected onto the plane, scaled about c (shrink)
     float3 c;                   // centroid
     float3 nrm;                 // unit normal, by the winding
     float  r;
+    float  h;                   // the plate's half thickness: r (flat), less (a dish; s1, the fraction)
 };
 
 uint poly_n(Batch b) { return clamp(b.poly_n, 3u, POLY_MAX); }
@@ -1275,8 +1276,8 @@ void poly_plane(inout PolyPart pp) {
         }
     }
     float nl = length(nv);
-    pp.plate = nl > 1e-6 * sz * sz;
-    if (pp.plate) {
+    pp.planar = nl > 1e-6 * sz * sz;
+    if (pp.planar) {
         pp.nrm = nv / nl;
         [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) if (k < pp.n) pp.q[k] -= pp.nrm * dot(pp.q[k] - c, pp.nrm);
     } else {
@@ -1289,7 +1290,7 @@ void poly_plane(inout PolyPart pp) {
 
 PolyPart poly_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     PolyPart pp;
-    pp.ok = false; pp.plate = false; pp.r = 0.0;
+    pp.ok = false; pp.planar = false; pp.r = 0.0; pp.h = 0.0;
     pp.n  = poly_n(b);
     Mat T = load_transform(b.transforms, inst);
     Mat V = M(v, view);
@@ -1304,6 +1305,7 @@ PolyPart poly_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
         [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) if (k < pp.n) pp.q[k] = pp.c + (pp.q[k] - pp.c) * f;
     }
     pp.r  = b.s0 * length(T.c0.xyz) * f;
+    pp.h  = pp.r * clamp(b.s1, 0.0, 1.0);
     pp.ok = pp.r > 0.0;
     return pp;
 }
@@ -1321,17 +1323,20 @@ bool poly_visible(Batch b, uint e, out uint st) {
     return vis;
 }
 
-// The ray against the polygon: the plate's faces, then a capsule per edge
+// The ray against the polygon: the plate's face towards it, then a capsule
+// per edge. A flat plate (h = r) makes the solid convex: where the face is
+// hit it is the nearest. A dished one (h < r) lies below the rims, which
+// stand above it near the edges: the nearest of all.
 SplineHit poly_hit(Ray r, PolyPart pp) {
     SplineHit h;
     h.t = -1.0;
     h.n = float3(0.0, 0.0, 1.0);
     float dn = dot(r.d, pp.nrm);
-    if (pp.plate && abs(dn) > 1e-12) {
+    if (pp.planar && abs(dn) > 1e-12) {
         float sg = dn < 0.0 ? 1.0 : -1.0;           // the face towards the ray
-        float t  = dot(pp.c + pp.nrm * (pp.r * sg) - r.o, pp.nrm) / dn;
+        float t  = dot(pp.c + pp.nrm * (pp.h * sg) - r.o, pp.nrm) / dn;
         if (t >= 0.0) {
-            float3 p = r.o + r.d * t - pp.nrm * (pp.r * sg);     // onto the polygon's plane
+            float3 p = r.o + r.d * t - pp.nrm * (pp.h * sg);     // onto the polygon's plane
             bool inside = true;
             [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
                 if (k < pp.n) inside = inside && dot(cross(poly_next(pp, k) - pp.q[k], p - pp.q[k]), pp.nrm) >= 0.0;
@@ -1339,7 +1344,7 @@ SplineHit poly_hit(Ray r, PolyPart pp) {
             if (inside) { h.t = t; h.n = pp.nrm * sg; }
         }
     }
-    if (h.t >= 0.0) return h;                       // a face, where it is, is nearer than any rim
+    if (h.t >= 0.0 && pp.h >= pp.r) return h;      // flat: a face, where it is, is nearer than any rim
     [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
         if (k < pp.n) spline_take_capsule(r, h, pp.q[k], poly_next(pp, k), pp.r);
     }
@@ -1697,7 +1702,7 @@ LocalElem poly_local(Batch b, uint e, bool geo) {
     l.st = st;
     if (geo) {
         PolyPart pp;
-        pp.ok = false; pp.plate = false; pp.r = 0.0;
+        pp.ok = false; pp.planar = false; pp.r = 0.0; pp.h = 0.0;
         pp.n  = poly_n(b);
         [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
             pp.q[k] = float3(0.0);
