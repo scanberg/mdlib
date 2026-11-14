@@ -2249,8 +2249,53 @@ static void md_vk_stream_full_masks(md_gpu_stream_t s, VkPipelineStageFlags2* sr
     }
 }
 
+/* How barriers are encoded, for a diagnosis (md_gpu_debug_barrier_mode, the
+   tests', not in the header): 0 as given (synchronization2); 1 the generic
+   ALL_COMMANDS / MEMORY_* masks with every stage and access they stand for
+   named too; 2 as given through the original vkCmdPipelineBarrier; 3 both.
+   The HD 530's driver (1.3.215) drew nothing from indirect commands a kernel
+   had just written in md_render's frame, under the implicit full barrier,
+   where a submission boundary in the same place drew everything. */
+static int g_vk_barrier_mode = 0;
+void md_gpu_debug_barrier_mode(int mode) { g_vk_barrier_mode = mode; }
+
+static void md_vk_name_masks(VkPipelineStageFlags2* stage, VkAccessFlags2* access, bool src) {
+    if (*stage & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) {
+        *stage |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+                | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+                | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    }
+    if (src && (*access & VK_ACCESS_2_MEMORY_WRITE_BIT)) {
+        *access |= VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                 | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT;
+    }
+    if (!src && (*access & VK_ACCESS_2_MEMORY_READ_BIT)) {
+        *access |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
+                 | VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+                 | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
+    }
+    if (!src && (*access & VK_ACCESS_2_MEMORY_WRITE_BIT)) {
+        *access |= VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                 | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    }
+}
+
 static void md_vk_emit_barrier(md_gpu_stream_t s, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
                                VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    if (g_vk_barrier_mode & 1) {
+        md_vk_name_masks(&src_stage, &src_access, true);
+        md_vk_name_masks(&dst_stage, &dst_access, false);
+    }
+    if (g_vk_barrier_mode & 2) {
+        /* The bits used here have the same values in both APIs below bit 32 */
+        VkMemoryBarrier lb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        lb.srcAccessMask = (VkAccessFlags)(src_access & 0xFFFFFFFFull);
+        lb.dstAccessMask = (VkAccessFlags)(dst_access & 0xFFFFFFFFull);
+        VkPipelineStageFlags ls = (VkPipelineStageFlags)(src_stage & 0xFFFFFFFFull), ld = (VkPipelineStageFlags)(dst_stage & 0xFFFFFFFFull);
+        vkCmdPipelineBarrier(s->open, ls ? ls : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, ld ? ld : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0, 1, &lb, 0, NULL, 0, NULL);
+        return;
+    }
     VkMemoryBarrier2 mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask  = src_stage;
     mb.srcAccessMask = src_access;
