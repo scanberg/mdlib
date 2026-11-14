@@ -1222,6 +1222,56 @@ UTEST(gpu, texture_destroy_while_in_flight) {
     gpu_close(&f);
 }
 
+static uint64_t gpu_texture_bytes(gpu_fixture_t* f) {
+    md_gpu_memory_stats_t ms;
+    memset(&ms, 0, sizeof(ms));
+    md_gpu_memory_stats(f->dev, MD_GPU_MEM_DEVICE, &ms);
+    return ms.bytes_textures;
+}
+
+/* A program that never polls holds no destroyed textures: they are released
+   at the next sync, or the next texture creation, once the GPU has passed
+   them, and their memory counts until then. (md_render_bench never polled; it
+   held every view's targets until it exited, and ran a 6 GB GPU out of
+   memory.) */
+UTEST(gpu, texture_destroyed_is_released_without_a_poll) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 16 };
+    const uint64_t base = gpu_texture_bytes(&f);
+    md_gpu_texture_t tex = NULL;
+    for (int iter = 0; iter < 4; ++iter) {
+        tex = gpu_volume(&f, f.compute, D, MD_GPU_TEX_STORAGE);
+        ASSERT_TRUE(tex != NULL);
+        tex_args_t ta = {0};
+        ta.dim[0] = D; ta.dim[1] = D; ta.dim[2] = D;
+        ta.tex = md_gpu_texture_storage(tex, 0);
+        ta.scale = 1.0f;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_tex_write, md_gpu_grid_for(f.k_tex_write, D, D, D), ta));
+        md_gpu_stream_flush(f.compute);
+        md_gpu_texture_destroy(tex);
+        EXPECT_GE(gpu_texture_bytes(&f), base + (uint64_t)D * D * D * 4u);   /* held until released */
+        md_gpu_stream_sync(f.compute);
+        EXPECT_EQ(gpu_texture_bytes(&f), base);                               /* released by the sync */
+    }
+
+    /* Destroyed after the GPU has passed it: the next creation releases it */
+    tex = gpu_volume(&f, f.compute, D, MD_GPU_TEX_STORAGE);
+    ASSERT_TRUE(tex != NULL);
+    md_gpu_stream_sync(f.compute);
+    md_gpu_texture_destroy(tex);
+    const uint64_t one = gpu_texture_bytes(&f) - base;
+    EXPECT_GE(one, (uint64_t)D * D * D * 4u);
+    md_gpu_texture_t tex2 = gpu_volume(&f, f.compute, D, MD_GPU_TEX_STORAGE);
+    ASSERT_TRUE(tex2 != NULL);
+    EXPECT_EQ(gpu_texture_bytes(&f), base + one);                             /* tex2 only */
+    md_gpu_texture_destroy(tex2);
+    md_gpu_stream_sync(f.compute);
+    EXPECT_EQ(gpu_texture_bytes(&f), base);
+    gpu_close(&f);
+}
+
 /* A 3D texture of depth 1 is still 3D. It used to be silently created as 2D,
    which a RWTexture3D handle then addressed as the wrong view type. */
 UTEST(gpu, texture_3d_with_depth_one_stays_3d) {

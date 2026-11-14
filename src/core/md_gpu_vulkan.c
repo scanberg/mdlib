@@ -396,6 +396,7 @@ typedef struct md_gpu_texture {
     VkImage               image;
     VkDeviceMemory        memory;
     uint64_t              bytes;           /* memory size, for stats         */
+    bool                  counted;         /* in texture_bytes until freed   */
     VkImageView           sampled_view;    /* all mips, or VK_NULL_HANDLE    */
     uint32_t              sampled_slot;    /* heap slot, or 0                */
     VkImageView*          storage_views;   /* one per mip, or NULL           */
@@ -623,6 +624,7 @@ static uint64_t md_vk_stream_completed(md_gpu_stream_t s);
 static bool     md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr, void** out_host,
                                   VkBuffer* out_buffer, uint64_t* out_offset);
 static void     md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t);
+static void     md_vk_reclaim(md_gpu_device_t dev);
 static void     md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k);
 static void     md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p);
 static void     md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc);
@@ -2430,6 +2432,7 @@ void md_gpu_stream_sync(md_gpu_stream_t s) {
         wi.pValues        = &s->submitted_value;
         md_vk_check(vkWaitSemaphores(s->device->device, &wi, UINT64_MAX), "vkWaitSemaphores");   /* a lost device shows here */
     }
+    md_vk_reclaim(s->device);
 }
 
 bool md_gpu_sync_is_complete(md_gpu_sync_t sync) {
@@ -2566,6 +2569,20 @@ static void md_vk_process_pending_frees_locked(md_gpu_device_t dev) {
             ++i;
         }
     }
+}
+
+/* Release what the GPU has passed: retired objects (textures, kernels,
+   pipelines) and pending frees. md_gpu_device_poll does it too, but nothing
+   may depend on a poll: a program that never polls (a benchmark, a headless
+   batch) would hold every destroyed texture until md_gpu_device_destroy. So it
+   also runs where the host learns the GPU has caught up (md_gpu_stream_sync)
+   and before new memory is taken for a texture (as md_gpu_malloc takes the
+   pending frees first). */
+static void md_vk_reclaim(md_gpu_device_t dev) {
+    md_mutex_lock(&dev->device_mutex);
+    md_vk_process_retires_locked(dev, false);
+    md_vk_process_pending_frees_locked(dev);
+    md_mutex_unlock(&dev->device_mutex);
 }
 
 /* A node for `need` bytes: the stream's own pending frees first (DEVICE only,
@@ -3101,6 +3118,7 @@ static void md_vk_free_slot_locked(md_gpu_device_t dev, uint32_t slot, VkDescrip
    must no longer be referenced by any work in flight. */
 static void md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
     const uint32_t mips = t->desc.mip_levels;
+    if (t->counted) dev->texture_bytes -= t->bytes;
     if (t->storage_slots) {
         for (uint32_t m = 0; m < mips; ++m) md_vk_free_slot_locked(dev, t->storage_slots[m], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         md_free(dev->alloc, t->storage_slots, mips * sizeof(uint32_t));
@@ -3140,6 +3158,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     md_gpu_device_t dev = s->device;
     if (s->upload_open)                  { md_vk_fail("md_gpu_texture_create: stream '%s' has an open upload", s->label); return NULL; }
     if (!md_vk_not_in_pass(s, "md_gpu_texture_create")) return NULL;
+    md_vk_reclaim(dev);
 
     md_gpu_texture_desc_t d = *desc;
     const char* label = d.label ? d.label : "texture";
@@ -3331,6 +3350,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
         }
         *slot = t;
         dev->texture_bytes += t->bytes;
+        t->counted = true;
     }
     md_mutex_unlock(&dev->device_mutex);
     return t;
@@ -3349,8 +3369,7 @@ void md_gpu_texture_destroy(md_gpu_texture_t t) {
     md_gpu_device_t dev = t->device;
     md_mutex_lock(&dev->device_mutex);
     md_vk_vec_remove_ptr(&dev->textures, t);
-    dev->texture_bytes -= t->bytes;
-    md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);
+    md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);   /* its bytes count until then */
     md_mutex_unlock(&dev->device_mutex);
 }
 

@@ -369,6 +369,7 @@ typedef struct md_gpu_texture {
     md_mtl_fmt_t          fi;
     md_gpu_texture_desc_t desc;              /* normalised */
     bool                  resident;          /* in the residency set / live_res */
+    bool                  counted;           /* in texture_bytes until freed */
     bool                  external;          /* a drawable's texture; not the caller's */
     char                  label[64];
 } md_gpu_texture;
@@ -482,6 +483,7 @@ static uint64_t md_mtl_stream_completed(md_gpu_stream_t s);
 static void     md_mtl_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node);
 static void     md_mtl_temp_free_all(md_gpu_stream_t s);
 static void     md_mtl_texture_free(md_gpu_device_t dev, md_gpu_texture_t t);
+static void     md_mtl_reclaim(md_gpu_device_t dev);
 static void     md_mtl_abandon_pass(md_gpu_stream_t s);
 
 /* =========================================================================
@@ -1150,6 +1152,7 @@ void md_gpu_stream_sync(md_gpu_stream_t s) {
     if (!md_mtl_not_in_pass(s, "md_gpu_stream_sync")) return;
     md_mtl_stream_submit(s);
     if (s->submitted_value > 0) md_mtl_event_wait(s->timeline, s->submitted_value);
+    md_mtl_reclaim(s->device);
 }
 
 bool md_gpu_sync_is_complete(md_gpu_sync_t sync) {
@@ -1268,6 +1271,17 @@ static void md_mtl_process_pending_frees_locked(md_gpu_device_t dev) {
             ++i;
         }
     }
+}
+
+/* Release what the GPU has passed: retired objects and pending frees. As in
+   the Vulkan backend: md_gpu_device_poll does it, md_gpu_stream_sync and
+   md_gpu_texture_create too, so a program that never polls does not hold
+   every destroyed texture until md_gpu_device_destroy. */
+static void md_mtl_reclaim(md_gpu_device_t dev) {
+    md_mutex_lock(&dev->device_mutex);
+    md_mtl_process_retires_locked(dev, false);
+    md_mtl_process_pending_frees_locked(dev);
+    md_mutex_unlock(&dev->device_mutex);
 }
 
 /* Caller holds device_mutex. */
@@ -1741,6 +1755,7 @@ static MTLTextureType md_mtl_texture_type(md_gpu_tex_type_t t) {
 /* Release a texture and everything it holds. Caller holds device_mutex. */
 static void md_mtl_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
     const uint32_t mips = t->desc.mip_levels;
+    if (t->counted) dev->texture_bytes -= t->bytes;
     if (t->mip_views) {
         for (uint32_t m = 0; m < mips; ++m) MD_MTL_RELEASE(t->mip_views[m]);
         md_free(dev->alloc, (void*)t->mip_views, mips * sizeof(id));
@@ -1758,6 +1773,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     md_gpu_device_t dev = s->device;
     if (!md_mtl_check_no_upload(s, "md_gpu_texture_create")) return NULL;
     if (!md_mtl_not_in_pass(s, "md_gpu_texture_create")) return NULL;
+    md_mtl_reclaim(dev);
 
     md_gpu_texture_desc_t d = *desc;
     const char* label = d.label ? d.label : "texture";
@@ -1867,6 +1883,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
             md_mtl_make_resident_locked(dev, t->texture);
             t->resident = true;
             dev->texture_bytes += t->bytes;
+            t->counted = true;
         }
     }
     if (!ok) {
@@ -1885,8 +1902,7 @@ void md_gpu_texture_destroy(md_gpu_texture_t t) {
     md_gpu_device_t dev = t->device;
     md_mutex_lock(&dev->device_mutex);
     md_mtl_vec_remove_ptr(&dev->textures, t);
-    dev->texture_bytes -= t->bytes;
-    md_mtl_retire_locked(dev, MD_MTL_RETIRE_TEXTURE, t);
+    md_mtl_retire_locked(dev, MD_MTL_RETIRE_TEXTURE, t);   /* its bytes count until then */
     md_mutex_unlock(&dev->device_mutex);
 }
 

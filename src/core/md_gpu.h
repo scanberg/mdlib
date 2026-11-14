@@ -387,7 +387,10 @@ bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* out_info);
 
 /* Fires host callbacks whose sync point has completed and releases objects
    whose deferred destruction has become safe. Callbacks run on the calling
-   thread and nowhere else. Returns the number of callbacks fired.
+   thread and nowhere else. Returns the number of callbacks fired. Releasing
+   does not depend on it: md_gpu_stream_sync and md_gpu_texture_create release
+   what has become safe too, so a program that never polls holds no more than
+   one that does.
 
    Call once per frame. Cheap when there is nothing to do. */
 uint32_t md_gpu_device_poll(md_gpu_device_t device);
@@ -589,7 +592,8 @@ typedef struct md_gpu_memory_stats_t {
     uint64_t bytes_reserved;     /* heap chunks held from the driver, in use
                                     or not                                      */
     uint64_t bytes_temp;         /* held by temp arenas, over all streams       */
-    uint64_t bytes_textures;     /* textures; MD_GPU_MEM_DEVICE only            */
+    uint64_t bytes_textures;     /* held by textures, destroyed ones included
+                                    until released; MD_GPU_MEM_DEVICE only      */
     uint32_t allocations;        /* live md_gpu_malloc allocations              */
     uint32_t chunks;             /* heap chunks                                 */
 } md_gpu_memory_stats_t;
@@ -706,7 +710,9 @@ typedef struct md_gpu_texture_desc_t {
 md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t stream, const md_gpu_texture_desc_t* desc);
 
 /* Deferred and non-blocking: the texture and its handles are released once
-   every stream has completed the work issued before this call. */
+   every stream has completed the work issued before this call (at the next
+   md_gpu_stream_sync, md_gpu_texture_create or md_gpu_device_poll after
+   that). Its memory counts in bytes_textures until then. */
 void md_gpu_texture_destroy(md_gpu_texture_t tex);
 
 /* The description the texture was created with, normalised (mip_levels >= 1,
