@@ -920,6 +920,8 @@ bool md_system_infer_fragments(md_system_t* sys) {
     md_array(uint64_t) enc_pool = 0;
     md_array(uint32_t) tmpl_next = 0;       // the next template of the same hash
     md_array(uint64_t) enc = 0;
+    md_array(uint64_t) prev_enc = 0;        // The encoding of the molecule before, of template prev_t
+    uint32_t prev_t = UINT32_MAX;
     md_hashmap32_t by_hash = { .allocator = talloc };
     md_array_push(tmpl_enc_off, 0, talloc);
     md_array_resize(out->mol_template, num_mols, alloc);
@@ -927,6 +929,11 @@ bool md_system_infer_fragments(md_system_t* sys) {
     for (size_t m = 0; m < num_mols; ++m) {
         frag_encode(&enc, sys, m, atom_res, metallic, lipid_tail, talloc);
         const size_t len = md_array_size(enc);
+        // A molecule like the one before it (a solvent, a membrane) is of its template, without the hash
+        if (prev_t != UINT32_MAX && md_array_size(prev_enc) == len && memcmp(prev_enc, enc, len * sizeof(uint64_t)) == 0) {
+            out->mol_template[m] = prev_t;
+            continue;
+        }
         uint64_t h = md_hash64(enc, len * sizeof(uint64_t), 0);
         if (h >= MD_HASH_TOMBSTONE) h -= 2;
         uint32_t t = UINT32_MAX;
@@ -945,6 +952,10 @@ bool md_system_infer_fragments(md_system_t* sys) {
             else       md_hashmap_add(&by_hash, h, t);
         }
         out->mol_template[m] = t;
+        md_array(uint64_t) swap = prev_enc;
+        prev_enc = enc;
+        enc = swap;
+        prev_t = t;
     }
     const size_t num_tmpl = md_array_size(out->template_molecule);
     out->template_count = num_tmpl;
