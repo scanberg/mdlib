@@ -514,10 +514,13 @@ static void build_cells(md_spatial_acc_t* acc, const points_t* coords, md_spatia
 // SPATIAL_ACC_TARGET_OCCUPANCY points in its own cell. That is weighted by points rather than by cells, so it follows
 // where the points are, not how much empty space there is between them. It is estimated from a random subset of the
 // points (each kept with probability f): a point which shares its cell with k - 1 others of the subset sees about
-// 1 + (k - 1) / f points of the whole set there.
+// 1 + (k - 1) / f points of the whole set there. 20: the pairs within a cutoff short against the spacing of the points
+// (the 1.84 A of the covalent bonds, md_bond) want cells of several cutoffs, as a cell's lookups and setup cost more
+// than the tests culling saves; measured (accbench, x86-64 AVX2), 2M atoms of water at 1.84 A: 5.2 A cells (10) 135 ms,
+// 6.2 A (20) 120 ms, 7.4 A (35) 113 ms; the cases of accset alike at 20 and 35, 3-7% faster than at 10.
 
 #ifndef SPATIAL_ACC_TARGET_OCCUPANCY
-#define SPATIAL_ACC_TARGET_OCCUPANCY 10.0
+#define SPATIAL_ACC_TARGET_OCCUPANCY 20.0
 #endif
 #define SPATIAL_ACC_MAX_CELL_SCALE   4.0
 #define SPATIAL_ACC_DEFAULT_CUTOFF   6.0     // For a description without a cutoff

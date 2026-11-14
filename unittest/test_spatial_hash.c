@@ -1494,8 +1494,9 @@ UTEST(spatial_acc_cells, cell_extent_from_cutoff) {
     float* z = (float*)malloc(count * sizeof(float));
     const double cutoff = 5.0;
 
-    // Dense: ~0.1 points per A^3, about 12 per cell of the cutoff. Sparse: ~1 point per cell of the cutoff.
-    const double extents[2] = { 73.0, 171.0 };
+    // Dense: ~0.2 points per A^3, about 25 per cell of the cutoff (past SPATIAL_ACC_TARGET_OCCUPANCY). Sparse: ~1 point
+    // per cell of the cutoff.
+    const double extents[2] = { 58.0, 171.0 };
     for (int pass = 0; pass < 2; ++pass) {
         const double ext = extents[pass];
         for (size_t i = 0; i < count; ++i) {
