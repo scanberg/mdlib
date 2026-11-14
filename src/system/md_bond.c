@@ -363,9 +363,10 @@ static int compare_cov_bond_segment(const void* a, const void* b) {
 
 // The pairs within the bonding range of their radii: of all pairs in the order of
 // md_spatial_acc_for_each_internal_pair_within_cutoff, or (fars given) from the far atoms in their order, each one's
-// pairs in the order of md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff
+// pairs in the order of md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff. Room is left in out for
+// `reserve` pairs more, which a pass after appends without the array being moved.
 static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const md_float3_t* xyz, const int32_t* fars, size_t num_far,
-                                const cov_bond_callback_param_t* proto, const md_executor_t* ex, md_allocator_i* alloc) {
+                                const cov_bond_callback_param_t* proto, size_t reserve, const md_executor_t* ex, md_allocator_i* alloc) {
     md_allocator_i* heap = md_get_heap_allocator();
     const uint32_t num_threads = md_executor_num_threads(ex);
     const size_t num_pieces = fars ? (num_far + FAR_PIECE - 1) / FAR_PIECE : md_spatial_acc_num_pieces(acc);
@@ -403,8 +404,9 @@ static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc
         md_array_free(*out, alloc);
         *out = cand[0];
         cand[0] = 0;
+        md_array_ensure(*out, md_array_size(*out) + reserve, alloc);
     } else {
-        md_array_ensure(*out, md_array_size(*out) + total, alloc);
+        md_array_ensure(*out, md_array_size(*out) + total + reserve, alloc);
         for (size_t k = 0; k < md_array_size(all); ++k) {
             md_array_push_array(*out, cand[all[k].thread] + all[k].offset, all[k].count, alloc);
         }
@@ -926,7 +928,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             mdi_infer_profile_step(&prof_t, "  bonds: grid");
             // The many pairs of the small atoms (an array made for them), then the few of the far atoms after them:
             // sort_candidates orders them all
-            cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, executor, heap);
+            cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, num_far * 8, executor, heap);
             mdi_infer_profile_step(&prof_t, "  bonds: search");
             if (num_far) {
                 int32_t* fars = md_temp_alloc_array(temp_scope, int32_t, num_far);
@@ -934,7 +936,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
                 for (size_t i = 0; i < num_atoms; ++i) if (far[i]) fars[k++] = (int)i;
                 cov_bond_callback_param_t far_param = param;
                 far_param.k_max = bond_k_coord;
-                cov_bond_candidates(&candidates, &acc, far_cutoff, state->xyz, fars, num_far, &far_param, executor, heap);
+                cov_bond_candidates(&candidates, &acc, far_cutoff, state->xyz, fars, num_far, &far_param, 0, executor, heap);
             }
             md_temp_reset(temp_scope, before_acc);
             mdi_infer_profile_step(&prof_t, "  bonds: search far");
