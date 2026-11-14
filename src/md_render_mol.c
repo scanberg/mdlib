@@ -41,6 +41,7 @@ typedef struct topo_layout_t {
     uint64_t nucleic_index, nucleic_segment, nucleic_face;
     uint64_t derived_offset, derived_member, derived_weight, derived_radius;
     uint64_t ring_points[MD_RENDER_MOL_RING_SIZES], ring_segment[MD_RENDER_MOL_RING_SIZES], stick_points, stick_segment;
+    uint64_t gap_points, gap_residue;
     uint64_t small_tables, size;
 } topo_layout_t;
 
@@ -627,6 +628,57 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->stick_count   = n_stick;
     for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) T->ring_count[k] = rg_n[k];
 
+    /* The gaps of the chains (md_gl's): per break, the cartoon's where a
+       side has one (from its end: the control point, which the spline ends
+       at; a side without one from the atom a link would join), and the
+       link's between the atoms a link would join. Both ends static. */
+    const uint32_t n_rres = (uint32_t)sys->residue.count;
+    uint32_t  n_brk = 0;
+    for (uint32_t i = 0; i + 1 < n_rres; ++i) n_brk += (md_system_residue_flags(sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) ? 1u : 0u;
+    uint32_t* gp_pts = md_temp_alloc(temp, ((size_t)n_brk + 1) * 16u);     /* the cartoon's, then the links' */
+    uint32_t* gp_res = md_temp_alloc(temp, ((size_t)n_brk + 1) * 8u);
+    uint32_t  n_gap[2] = { 0, 0 };
+    if (!gp_pts || !gp_res) return false;
+    if (n_brk) {
+        uint32_t* res_end = md_temp_alloc(temp, ((size_t)n_rres + 1) * 4u);  /* each residue's end of the cartoon */
+        if (!res_end) return false;
+        for (uint32_t i = 0; i < n_rres; ++i) res_end[i] = UINT32_MAX;
+        const uint32_t pmask = ~(uint32_t)(MD_RENDER_SPLINE_FIRST | MD_RENDER_SPLINE_LAST);
+        for (uint32_t k = 0; k < n_cp && PB->segment.res_idx; ++k) {
+            const int32_t rx = PB->segment.res_idx[cp_seg[k]];
+            if (rx >= 0 && (uint32_t)rx < n_rres) res_end[rx] = cp_index[k] & pmask;
+        }
+        for (uint32_t k = 0; k < n_na && NB->segment.res_idx; ++k) {
+            const int32_t rx = NB->segment.res_idx[na_seg[k]];
+            if (rx >= 0 && (uint32_t)rx < n_rres) res_end[rx] = na_index[k] & pmask;
+        }
+        uint32_t* lk_pts = gp_pts + 2 * (size_t)n_brk;
+        uint32_t* lk_res = gp_res + n_brk;
+        #define GAP_ATOM_OK(x) ((x) >= 0 && (uint32_t)(x) < n && inv[(x)] != UINT32_MAX && !IS_SMALL((uint32_t)(x)))
+        for (uint32_t i = 0; i + 1 < n_rres; ++i) {
+            if (!(md_system_residue_flags(sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER)) continue;
+            md_atom_idx_t la[2];
+            const bool link = md_system_chain_break_atoms(la, sys, i) && GAP_ATOM_OK(la[0]) && GAP_ATOM_OK(la[1]);
+            if (link) {
+                lk_pts[2 * n_gap[1] + 0] = inv[la[0]];
+                lk_pts[2 * n_gap[1] + 1] = inv[la[1]];
+                lk_res[n_gap[1]++] = i;
+            }
+            const uint32_t ea = res_end[i], eb = res_end[i + 1];
+            if (ea == UINT32_MAX && eb == UINT32_MAX) continue;       /* no cartoon on either side */
+            if ((ea == UINT32_MAX || eb == UINT32_MAX) && !link) continue;
+            gp_pts[2 * n_gap[0] + 0] = ea != UINT32_MAX ? ea : inv[la[0]];
+            gp_pts[2 * n_gap[0] + 1] = eb != UINT32_MAX ? eb : inv[la[1]];
+            gp_res[n_gap[0]++] = i;
+        }
+        #undef GAP_ATOM_OK
+        /* the links after the cartoon's */
+        memmove(gp_pts + 2 * (size_t)n_gap[0], lk_pts, (size_t)n_gap[1] * 8u);
+        memmove(gp_res + n_gap[0], lk_res, (size_t)n_gap[1] * 4u);
+    }
+    T->gap_count[0] = n_gap[0];
+    T->gap_count[1] = n_gap[1];
+
     /* Derived points (see the topology). The lipids' heads: each at the
        centre of its resident heavy atoms (beads), standing for the first */
     derived_build_t der = { .alloc = md_temp_allocator(temp) };
@@ -742,6 +794,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     L.stick_points        = o; o = align256(o + (uint64_t)n_stick * 8u);
     L.stick_segment       = o; o = align256(o + (uint64_t)n_stick * 4u);
+    L.gap_points          = o; o = align256(o + ((uint64_t)n_gap[0] + n_gap[1]) * 8u);
+    L.gap_residue         = o; o = align256(o + ((uint64_t)n_gap[0] + n_gap[1]) * 4u);
     L.derived_offset      = o; o = align256(o + ((uint64_t)n_der + 1u) * 4u);
     L.derived_member      = o; o = align256(o + (uint64_t)n_dmem * 4u);
     L.derived_weight      = o; o = align256(o + (uint64_t)n_dmem * 4u);
@@ -823,6 +877,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     memcpy(img + L.stick_points,      st_pts,   (size_t)n_stick * 8u);
     memcpy(img + L.stick_segment,     st_seg,   (size_t)n_stick * 4u);
+    memcpy(img + L.gap_points,        gp_pts,   ((size_t)n_gap[0] + n_gap[1]) * 8u);
+    memcpy(img + L.gap_residue,       gp_res,   ((size_t)n_gap[0] + n_gap[1]) * 4u);
     memcpy(img + L.derived_offset,    der.offset, ((size_t)n_der + 1u) * 4u);
     if (n_dmem) {
         memcpy(img + L.derived_member, der.member, (size_t)n_dmem * 4u);
@@ -873,6 +929,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     T->stick_points        = L.stick_points;
     T->stick_segment       = L.stick_segment;
+    T->gap_points          = L.gap_points;
+    T->gap_residue         = L.gap_residue;
     T->derived_offset      = L.derived_offset;
     T->derived_member      = L.derived_member;
     T->derived_weight      = L.derived_weight;
@@ -921,6 +979,8 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     }
     out->stick_points        = base + plan->layout.stick_points;
     out->stick_segment       = base + plan->layout.stick_segment;
+    out->gap_points          = base + plan->layout.gap_points;
+    out->gap_residue         = base + plan->layout.gap_residue;
     out->derived_offset      = base + plan->layout.derived_offset;
     out->derived_member      = base + plan->layout.derived_member;
     out->derived_weight      = base + plan->layout.derived_weight;
@@ -1749,6 +1809,32 @@ static void put(md_render_batch_t* out, uint32_t cap, uint32_t* n, const md_rend
     (*n)++;
 }
 
+/* md_gl's chain gaps: the radius relative to the coil (the cartoon's) or to
+   the sticks (the links'), dashes and gaps relative to the radius */
+#define CHAIN_GAP_RADIUS_TRACE 0.7f
+#define CHAIN_GAP_RADIUS_LINK  0.5f
+#define CHAIN_GAP_DASH         4.0f
+#define CHAIN_GAP_GAP          4.0f
+
+/* The gaps of kind k (0: the cartoon's, 1: the links') */
+static void put_gaps(md_render_batch_t* out, uint32_t cap, uint32_t* n, const md_render_batch_t* base, const md_render_mol_topo_t* topo,
+                     const md_render_mol_rep_t* rep, uint32_t k, float radius, md_render_sphere_style_t ends) {
+    if (!rep->chain_gaps || !topo->gap_count[k] || !(radius > 0.0f)) return;
+    const uint32_t first = k ? topo->gap_count[0] : 0u;
+    md_render_batch_t b = *base;
+    b.key   = (rep->key << 8) | MD_RENDER_MOL_PART_GAPS;
+    b.kind  = MD_RENDER_CAPSULES;
+    b.count = topo->gap_count[k];
+    b.index = topo->gap_points  + (md_gpu_addr_t)first * 8u;
+    b.id    = topo->gap_residue + (md_gpu_addr_t)first * 4u;
+    b.style.capsules.radius      = radius;
+    b.style.capsules.dash_length = CHAIN_GAP_DASH * radius;
+    b.style.capsules.gap_length  = CHAIN_GAP_GAP * radius;
+    b.style.capsules.dash_ends   = ends;
+    if (k == 0) b.color.sharpness = 0.0f;       /* the cartoon's: blended from end to end */
+    put(out, cap, n, &b);
+}
+
 uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                             const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap) {
     if (!topo || !atoms || !rep || (cap && !out)) return 0;
@@ -1856,6 +1942,8 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.style.capsules.radius = ring;
             put(out, cap, &n, &b);
         }
+        const md_render_sphere_style_t none = { 0.0f, 0.0f };     /* the cartoon ends at the points */
+        put_gaps(out, cap, &n, &base, topo, rep, 0, CHAIN_GAP_RADIUS_TRACE * 0.2f, none);
         return n;
     }
     default:
@@ -1906,6 +1994,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             }
             put(out, cap, &n, &b);
         }
+        put_gaps(out, cap, &n, &base, topo, rep, 1, CHAIN_GAP_RADIUS_LINK * stick_radius, dash_ends);
     }
     if (spheres && topo->point_count) {
         md_render_batch_t b = base;
@@ -1926,6 +2015,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     memset(hit, 0, sizeof(*hit));
     hit->bond = UINT32_MAX;
     hit->segment = UINT32_MAX;
+    hit->residue = UINT32_MAX;
     if (pick->key == 0) return false;
     uint32_t part = (uint32_t)(pick->key & 0xFFu);
     hit->rep_key  = pick->key >> 8;
@@ -1947,6 +2037,12 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
         (part == MD_RENDER_MOL_PART_STICKS && pick->kind == MD_RENDER_CAPSULES)) {
         hit->kind    = MD_RENDER_MOL_HIT_NUCLEOTIDE;
         hit->segment = pick->id;
+        hit->atom    = pick->attr;
+        return true;
+    }
+    if (part == MD_RENDER_MOL_PART_GAPS && pick->kind == MD_RENDER_CAPSULES) {
+        hit->kind    = MD_RENDER_MOL_HIT_CHAIN_GAP;
+        hit->residue = pick->id;
         hit->atom    = pick->attr;
         return true;
     }
