@@ -782,6 +782,8 @@ void md_render_mol_debug_prefetch(uint32_t windows_ahead);
 void md_render_mol_debug_write(uint32_t leave_out);
 void md_render_mol_debug_frame_groups(uint32_t groups);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
+bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
+void md_render_debug_raster_probe(uint32_t mode);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1536,6 +1538,11 @@ static int run_heavy(int argc, char** argv) {
         const char* kn; md_gpu_kernel_info_t ki;
         for (uint32_t i = 0; md_render_debug_kernel_info(r, i, &kn, &ki); ++i)
             if (ki.stats[0]) printf("  kernel md_render %-15s %s\n", kn, ki.stats);
+        md_gpu_pipeline_info_t pi;
+        for (uint32_t i = 0; md_render_debug_pipeline_info(r, i, &kn, &pi); ++i) {
+            if (pi.vertex_stats[0])   printf("  raster %-12s vertex   %s\n", kn, pi.vertex_stats);
+            if (pi.fragment_stats[0]) printf("  raster %-12s fragment %s\n", kn, pi.fragment_stats);
+        }
     }
     printf("views: near and mid at 4 and 1 px/A at the front of the block of copies, fit with all of it in view\n\n");
 
@@ -1767,6 +1774,16 @@ static int run_heavy(int argc, char** argv) {
                                 md_render_debug_pass_hook(NULL, NULL);
                                 md_gpu_stream_sync(s);
                                 print_prof(prof_of[pk].name, &prof);
+                            }
+                            if (looks[li].kind == HV_CARTOON || looks[li].kind == HV_RIBBONS || looks[li].kind == HV_LICORICE_ORDERS) {
+                                /* the probe: spline and polygon fragments keep their proxy's
+                                   depth, no hit (the vertex stage and the fill alone), timed
+                                   unsynced as the rows, and against the same draws without it */
+                                for (int pr = 1; pr >= 0; --pr) {
+                                    md_render_debug_raster_probe((uint32_t)pr);
+                                    timing_t tp = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
+                                    printf("    refit raster %s: %.2f / %.2f ms\n", pr ? "with the probe (spline and polygon fragments keep their proxy, no hit)" : "without the probe, again", tp.best, tp.median);
+                                }
                             }
                         }
                         md_render_view_destroy(s, v);

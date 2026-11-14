@@ -425,6 +425,7 @@ typedef struct md_gpu_pipeline {
     md_gpu_format_t   depth;
     uint32_t          args_size;
     char              label[64];
+    md_gpu_pipeline_info_t info;     /* the driver's statistics, per stage */
 } md_gpu_pipeline;
 
 /* A swapchain and what hangs off it. Retired as one object: on a rebuild the
@@ -3653,15 +3654,12 @@ static void md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k) {
     md_free(dev->alloc, k, sizeof(*k));
 }
 
-/* The driver's statistics of a kernel's pipeline as "name value, ..." (its first executable). */
-static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
-    VkPipelineInfoKHR pi = {VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
-    pi.pipeline = k->pipeline;
-    uint32_t nexe = 0;
-    if (vkGetPipelineExecutablePropertiesKHR(dev->device, &pi, &nexe, NULL) != VK_SUCCESS || nexe == 0) return;
+/* The driver's statistics of executable `index` of a pipeline as "name value, ..." into out[cap] */
+static void md_vk_executable_stats(md_gpu_device_t dev, VkPipeline pipeline, uint32_t index, char* out, size_t cap) {
+    out[0] = 0;
     VkPipelineExecutableInfoKHR ei = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
-    ei.pipeline = k->pipeline;
-    ei.executableIndex = 0;
+    ei.pipeline = pipeline;
+    ei.executableIndex = index;
     uint32_t n = 0;
     if (vkGetPipelineExecutableStatisticsKHR(dev->device, &ei, &n, NULL) != VK_SUCCESS || n == 0) return;
     if (n > 32) n = 32;
@@ -3670,7 +3668,7 @@ static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
     VkResult r = vkGetPipelineExecutableStatisticsKHR(dev->device, &ei, &n, st);
     if (r != VK_SUCCESS && r != VK_INCOMPLETE) return;
     size_t len = 0;
-    for (uint32_t i = 0; i < n && len + 1 < sizeof(k->stats); ++i) {
+    for (uint32_t i = 0; i < n && len + 1 < cap; ++i) {
         char v[32];
         switch (st[i].format) {
             case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:  md_snprintf(v, sizeof(v), "%s", st[i].value.b32 ? "yes" : "no"); break;
@@ -3679,9 +3677,35 @@ static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
             case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: md_snprintf(v, sizeof(v), "%g", st[i].value.f64); break;
             default: v[0] = 0; break;
         }
-        len += (size_t)md_snprintf(k->stats + len, sizeof(k->stats) - len, "%s%s %s", i ? ", " : "", st[i].name, v);
+        len += (size_t)md_snprintf(out + len, cap - len, "%s%s %s", i ? ", " : "", st[i].name, v);
     }
-    if (len >= sizeof(k->stats)) k->stats[sizeof(k->stats) - 1] = 0;
+    if (len >= cap) out[cap - 1] = 0;
+}
+
+/* A kernel's: its pipeline's first (only) executable */
+static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
+    VkPipelineInfoKHR pi = {VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+    pi.pipeline = k->pipeline;
+    uint32_t nexe = 0;
+    if (vkGetPipelineExecutablePropertiesKHR(dev->device, &pi, &nexe, NULL) != VK_SUCCESS || nexe == 0) return;
+    md_vk_executable_stats(dev, k->pipeline, 0, k->stats, sizeof(k->stats));
+}
+
+/* A graphics pipeline's: its vertex and fragment executables, by their stages */
+static void md_vk_pipeline_stats(md_gpu_device_t dev, md_gpu_pipeline_t p) {
+    VkPipelineInfoKHR pi = {VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+    pi.pipeline = p->pipeline;
+    uint32_t nexe = 0;
+    if (vkGetPipelineExecutablePropertiesKHR(dev->device, &pi, &nexe, NULL) != VK_SUCCESS || nexe == 0) return;
+    VkPipelineExecutablePropertiesKHR props[8];
+    if (nexe > 8) nexe = 8;
+    for (uint32_t i = 0; i < nexe; ++i) props[i] = (VkPipelineExecutablePropertiesKHR){VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR};
+    VkResult r = vkGetPipelineExecutablePropertiesKHR(dev->device, &pi, &nexe, props);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) return;
+    for (uint32_t i = 0; i < nexe; ++i) {
+        if (props[i].stages & VK_SHADER_STAGE_VERTEX_BIT)   md_vk_executable_stats(dev, p->pipeline, i, p->info.vertex_stats, sizeof(p->info.vertex_stats));
+        if (props[i].stages & VK_SHADER_STAGE_FRAGMENT_BIT) md_vk_executable_stats(dev, p->pipeline, i, p->info.fragment_stats, sizeof(p->info.fragment_stats));
+    }
 }
 
 static bool md_vk_debug_labels(md_gpu_device_t dev);
@@ -4171,8 +4195,10 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
         gpci.pColorBlendState    = &cb;
         gpci.pDynamicState       = &dy;
         gpci.layout              = dev->raster_layout;
+        if (dev->pipeline_stats) gpci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
         ok = md_vk_check(vkCreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gpci, NULL, &p->pipeline),
                          "vkCreateGraphicsPipelines");
+        if (ok && dev->pipeline_stats) md_vk_pipeline_stats(dev, p);
     }
     for (uint32_t i = 0; i < 2; ++i) if (modules[i]) vkDestroyShaderModule(dev->device, modules[i], NULL);
     if (!ok) { md_vk_pipeline_free(dev, p); return NULL; }
@@ -4184,6 +4210,12 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     md_mutex_unlock(&dev->device_mutex);
     if (!slot) { md_vk_pipeline_free(dev, p); md_vk_fail("out of memory"); return NULL; }
     return p;
+}
+
+bool md_gpu_pipeline_info(md_gpu_pipeline_t p, md_gpu_pipeline_info_t* out) {
+    if (!p || !out) return false;
+    *out = p->info;
+    return true;
 }
 
 void md_gpu_pipeline_destroy(md_gpu_pipeline_t p) {

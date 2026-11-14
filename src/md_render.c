@@ -31,7 +31,8 @@ typedef struct gpu_view_t {
     float         jitter_px;        /* how far this raster's jitter moves the image: max |jx|, |jy| */
     float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
-    uint32_t      _vpad[2];
+    uint32_t      dbg_probe;      /* md_render_debug_raster_probe */
+    uint32_t      _vpad;
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
@@ -52,6 +53,12 @@ _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 static float g_occl_margin = 2.0f;
 static float g_occl_min_px = 2.0f;
 void md_render_debug_occlusion(float margin_radii, float min_px) { g_occl_margin = margin_radii; g_occl_min_px = min_px; }
+
+/* A probe of the rasters' costs (the bench's, not in the header): 1, the
+   spline and polygon fragments skip their hit and keep the proxy's depth
+   (what the vertex stage and the fill cost alone). Wrong pictures. */
+static uint32_t g_raster_probe = 0u;
+void md_render_debug_raster_probe(uint32_t mode) { g_raster_probe = mode; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -1526,6 +1533,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             gv.total_cluster_work += batch_clusters(&f->batches[i]) * instance_count(&f->batches[i]);
         }
         gv.refit_mode = refit ? 0u : 1u;
+        gv.dbg_probe  = g_raster_probe;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };
@@ -1800,5 +1808,19 @@ bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, m
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
+    if (info && !ks[i].k) { memset(info, 0, sizeof(*info)); return true; }   /* not made on this device: no stats */
     return info ? md_gpu_kernel_info(ks[i].k, info) : true;
+}
+
+/* The same for the raster pipelines: per stage, what the driver says */
+bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info) {
+    if (!r) return false;
+    const struct { const char* n; md_gpu_pipeline_t p; } ps[] = {
+        { "sphere", r->sphere_vis }, { "capsule", r->capsule_vis }, { "spline", r->spline_vis }, { "polygon", r->polygon_vis },
+        { "sphere mask", r->sphere_mask }, { "capsule mask", r->capsule_mask }, { "spline mask", r->spline_mask }, { "polygon mask", r->polygon_mask },
+    };
+    if (i >= sizeof(ps) / sizeof(ps[0])) return false;
+    if (name) *name = ps[i].n;
+    if (info && !ps[i].p) { memset(info, 0, sizeof(*info)); return true; }
+    return info ? md_gpu_pipeline_info(ps[i].p, info) : true;
 }

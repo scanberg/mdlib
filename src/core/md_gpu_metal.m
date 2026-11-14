@@ -2677,6 +2677,12 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
 
 /* Immediate, like kernels: command buffers retain the pipeline states set on
    their encoders. */
+bool md_gpu_pipeline_info(md_gpu_pipeline_t p, md_gpu_pipeline_info_t* out) {
+    if (!p || !out) return false;
+    memset(out, 0, sizeof(*out));      /* Metal reports nothing per stage */
+    return true;
+}
+
 void md_gpu_pipeline_destroy(md_gpu_pipeline_t p) {
     if (!p) return;
     md_gpu_device_t dev = p->device;

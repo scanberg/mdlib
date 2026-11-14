@@ -1024,6 +1024,17 @@ typedef struct md_gpu_pipeline_desc_t {
 md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t device, const md_gpu_pipeline_desc_t* desc);
 void              md_gpu_pipeline_destroy(md_gpu_pipeline_t pipeline);
 
+/* What the driver reports of a pipeline's compiled stages, "" if nothing: as
+   md_gpu_kernel_info_t's stats (Vulkan's pipeline executable statistics:
+   registers, spills, instructions, ... as the driver names them; Metal:
+   nothing). For profiling. */
+typedef struct md_gpu_pipeline_info_t {
+    char vertex_stats[256];
+    char fragment_stats[256];
+} md_gpu_pipeline_info_t;
+
+bool              md_gpu_pipeline_info(md_gpu_pipeline_t pipeline, md_gpu_pipeline_info_t* out_info);
+
 /* ---- Render passes ------------------------------------------------------------
    A pass is a scope on a GRAPHICS stream:
 
