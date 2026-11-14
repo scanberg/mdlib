@@ -79,6 +79,7 @@ enum {
     F_DASHED       = 1u << 22,
     F_DISPLACED    = 1u << 23,
     F_SIDE         = 1u << 24,
+    F_CIRCLE       = 1u << 25,
 };
 
 typedef struct gpu_batch_t {
@@ -100,8 +101,11 @@ typedef struct gpu_batch_t {
     float         dash, gap, end_scale, end_add;                  /* CAPSULES dashed: the lengths, the spheres at the ends */
     float         cap_offset;                                     /* CAPSULES displaced: by this many radii */
     md_gpu_addr_t cap_side;                                       /* along this side (float4 per capsule), optional */
+    float         poly_inset;                                     /* POLYGONS circles: the inset, */
+    uint32_t      poly_dashes;                                    /* the dashes over each edge */
+    uint32_t      _pad_d[2];                                      /* to the float4 alignment */
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 320, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 336, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -654,6 +658,10 @@ static bool validate(const md_render_frame_t* f) {
                 MD_LOG_ERROR("md_render: batch %u: polygons have 3 to 8 corners (got %u)", i, b->style.polygons.corners);
                 return false;
             }
+            if (!(b->style.polygons.inset >= 0.0f) || !isfinite(b->style.polygons.inset) || b->style.polygons.dashes > 16) {
+                MD_LOG_ERROR("md_render: batch %u: a circle's inset is finite and not negative, its dashes 16 at most", i);
+                return false;
+            }
             break;
         case MD_RENDER_EXTERNAL:
             continue;
@@ -944,6 +952,11 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         g->s0     = b->style.polygons.radius;
         g->s1     = b->style.polygons.plate > 0.0f ? MD_MIN(b->style.polygons.plate, 1.0f) : 1.0f;   /* 0: flat */
         g->poly_n = b->style.polygons.corners;
+        if (b->style.polygons.inset > 0.0f) {
+            f |= F_CIRCLE;
+            g->poly_inset  = b->style.polygons.inset;
+            g->poly_dashes = b->style.polygons.dashes;
+        }
     }
     if (b->fade.mode) {
         if (b->fade.out[0] > 0.0f) f |= F_FADE_OUT;

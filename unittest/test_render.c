@@ -11,6 +11,7 @@
 #include <md_mmcif.h>
 #include <md_infer.h>
 #include <md_backbone.h>
+#include <md_ring.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
@@ -2123,6 +2124,247 @@ UTEST(render, capsules_displaced_follow_their_sides) {
     f_close(&fx);
 }
 
+/* A circle of md_render.h (POLYGONS with an inset), in double: its frame,
+   its radii, its corners' angles */
+typedef struct {
+    double c[3], n[3], t[3], b[3], R, r, ang[8];
+    int    nc, dashes;
+    uint32_t key, linear;
+} circ_ref_t;
+
+static bool circ_ref_build(circ_ref_t* o, const double (*q)[3], int n, double inset, double r, int dashes) {
+    memset(o, 0, sizeof(*o));
+    o->nc = n; o->r = r; o->dashes = dashes;
+    for (int k = 0; k < n; ++k) for (int i = 0; i < 3; ++i) o->c[i] += q[k][i] / n;
+    double nv[3] = { 0, 0, 0 };
+    for (int k = 0; k < n; ++k) {
+        double a[3], b[3], x[3];
+        for (int i = 0; i < 3; ++i) { a[i] = q[k][i] - o->c[i]; b[i] = q[(k + 1) % n][i] - o->c[i]; }
+        cross3(a, b, x);
+        for (int i = 0; i < 3; ++i) nv[i] += x[i];
+    }
+    double nl = sqrt(dot3(nv, nv));
+    for (int i = 0; i < 3; ++i) o->n[i] = nv[i] / nl;
+    double p[8][3];
+    for (int k = 0; k < n; ++k) {
+        double d[3] = { q[k][0] - o->c[0], q[k][1] - o->c[1], q[k][2] - o->c[2] }, h = dot3(d, o->n);
+        for (int i = 0; i < 3; ++i) p[k][i] = d[i] - o->n[i] * h;
+    }
+    double ap = 1e30;
+    for (int k = 0; k < n; ++k) {
+        double d[3] = { p[(k + 1) % n][0] - p[k][0], p[(k + 1) % n][1] - p[k][1], p[(k + 1) % n][2] - p[k][2] }, x[3];
+        cross3(p[k], d, x);
+        ap = fmin(ap, fabs(dot3(x, o->n)) / sqrt(dot3(d, d)));
+    }
+    o->R = ap - inset;
+    double l0 = sqrt(dot3(p[0], p[0]));
+    for (int i = 0; i < 3; ++i) o->t[i] = p[0][i] / l0;
+    cross3(o->n, o->t, o->b);
+    for (int k = 1; k < n; ++k) { double a = atan2(dot3(p[k], o->b), dot3(p[k], o->t)); o->ang[k] = a < 0 ? a + 2 * 3.14159265358979 : a; }
+    return o->R > 2 * r;
+}
+
+/* the edge k and u along it of angle a */
+static void circ_ref_segment(const circ_ref_t* o, double a, int* k, double* u) {
+    *k = 0;
+    for (int i = 1; i < o->nc; ++i) if (o->ang[i] <= a) *k = i;
+    double a0 = o->ang[*k], a1 = *k + 1 < o->nc ? o->ang[*k + 1] : 2 * 3.14159265358979;
+    *u = (a - a0) / (a1 - a0);
+}
+
+/* within a dash at angle a (by a margin of `ma` radians: > 0 shrinks the dashes, < 0 grows them) */
+static bool circ_ref_in_dash(const circ_ref_t* o, double a, double ma) {
+    if (!o->dashes) return true;
+    for (int k = 0; k < o->nc; ++k) {
+        double a0 = o->ang[k], a1 = k + 1 < o->nc ? o->ang[k + 1] : 2 * 3.14159265358979, m = o->dashes;
+        for (int j = 0; j < o->dashes; ++j) {
+            double s0 = a0 + (a1 - a0) * (j + 0.25) / m, s1 = a0 + (a1 - a0) * (j + 0.75) / m;
+            if (a >= s0 + ma && a <= s1 - ma) return true;
+        }
+    }
+    return false;
+}
+
+/* the least distance from the ray (from its origin on) to the circle's centre line, over its points in dashes */
+static double circ_ref_ray_dist(const circ_ref_t* o, ray_t r, double ma) {
+    double best = 1e30, dc;
+    sphere_t(r, o->c, 0, &dc);
+    if (dc > o->R + 2.0 * o->r + 0.5) return best;          /* nowhere near */
+    for (int s = 0; s < 1440; ++s) {
+        double a = (s + 0.5) * 2 * 3.14159265358979 / 1440;
+        if (!circ_ref_in_dash(o, a, ma)) continue;
+        double pt[3];
+        for (int i = 0; i < 3; ++i) pt[i] = o->c[i] + o->R * (cos(a) * o->t[i] + sin(a) * o->b[i]);
+        double d;
+        sphere_t(r, pt, 0, &d);
+        double oc[3] = { pt[0] - r.o[0], pt[1] - r.o[1], pt[2] - r.o[2] };
+        if (dot3(oc, r.d) < 0) d = sqrt(dot3(oc, oc));
+        best = fmin(best, d);
+    }
+    return best;
+}
+
+/* signed distance of x to the circle's tube, and x's angle */
+static double circ_ref_sdf(const circ_ref_t* o, const double x[3], double* ang) {
+    double d[3] = { x[0] - o->c[0], x[1] - o->c[1], x[2] - o->c[2] };
+    double lx = dot3(d, o->t), ly = dot3(d, o->b), lz = dot3(d, o->n);
+    double a = atan2(ly, lx);
+    *ang = a < 0 ? a + 2 * 3.14159265358979 : a;
+    double rho = sqrt(lx * lx + ly * ly) - o->R;
+    return sqrt(rho * rho + lz * lz) - o->r;
+}
+
+/* POLYGONS with an inset: the circles inside them (md_gl's aromatic rings)
+   against tori in double: solid hexagons at several tilts, nearly edge on
+   too, and dashed pentagons (the gaps on the corners); every pixel empty or
+   covered as the reference says, on the tube (or on a dash's flat end),
+   the ids where one is clearly nearest; a solid circle's colour by the
+   corners either side (sharpness 1: the nearer one's); a pick */
+UTEST(render, polygons_circles_match_their_tori) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 200, H = 150;
+    cam_t c = { .tan_half = 0.35f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    enum { N6 = 4, N5 = 3 };
+    double q6[N6][6][3], q5[N5][5][3];
+    const double c6[N6][3] = { { -2.6, 1.3, -12 }, { 0.2, 1.4, -12.5 }, { 2.9, 1.2, -11.5 }, { -1.0, -1.2, -12 } };
+    const double t6[N6] = { 0, 55, 84, 30 }, s6[N6] = { 0, 20, -10, 100 };
+    const double c5[N5][3] = { { 1.8, -1.4, -11.5 }, { -3.2, -1.6, -13 }, { 3.6, -2.2, -13 } };
+    const double t5[N5] = { 10, 60, 40 }, s5[N5] = { 0, -40, 70 };
+    for (int k = 0; k < N6; ++k) poly_corners(q6[k], 6, c6[k], 1.39, t6[k], s6[k], k == 3, k == 1 ? 0.12 : 0.0);
+    for (int k = 0; k < N5; ++k) poly_corners(q5[k], 5, c5[k], 1.18, t5[k], s5[k], false, 0.0);
+    float pos6[N6 * 6][3], pos5[N5 * 5][3];
+    for (int k = 0; k < N6; ++k) for (int j = 0; j < 6; ++j) for (int i = 0; i < 3; ++i) pos6[6 * k + j][i] = (float)q6[k][j][i];
+    for (int k = 0; k < N5; ++k) for (int j = 0; j < 5; ++j) for (int i = 0; i < 3; ++i) pos5[5 * k + j][i] = (float)q5[k][j][i];
+    uint32_t col6[N6 * 6];
+    const uint32_t pal[6] = { 0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u, 0xFF00FFFFu, 0xFFFF00FFu, 0xFFFFFF00u };
+    for (int i = 0; i < N6 * 6; ++i) col6[i] = pal[i % 6];
+    const float R = 0.07f, INS = 0.38f;
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 61; b[0].kind = MD_RENDER_POLYGONS; b[0].count = N6; b[0].points.count = N6 * 6;
+    b[0].points.position = f_buf(&fx, pos6, sizeof(pos6));
+    b[0].points.color    = f_buf(&fx, col6, sizeof(col6));
+    b[0].color.mode = MD_RENDER_COLOR_POINTS; b[0].color.sharpness = 1.0f;
+    b[0].style.polygons.corners = 6; b[0].style.polygons.radius = R; b[0].style.polygons.inset = INS;
+    b[1].key = 62; b[1].kind = MD_RENDER_POLYGONS; b[1].count = N5; b[1].points.count = N5 * 5;
+    b[1].points.position = f_buf(&fx, pos5, sizeof(pos5));
+    b[1].style.polygons.corners = 5; b[1].style.polygons.radius = R; b[1].style.polygons.inset = INS; b[1].style.polygons.dashes = 2;
+    md_render_frame_t f = frame_of(W, H, cam, b, 2);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    circ_ref_t ref[N6 + N5];
+    int nref = 0;
+    for (int k = 0; k < N6; ++k) { ASSERT_TRUE(circ_ref_build(&ref[nref], (const double (*)[3])q6[k], 6, INS, R, 0)); ref[nref].key = 61; ref[nref].linear = (uint32_t)k; nref++; }
+    for (int k = 0; k < N5; ++k) { ASSERT_TRUE(circ_ref_build(&ref[nref], (const double (*)[3])q5[k], 5, INS, R, 2)); ref[nref].key = 62; ref[nref].linear = (uint32_t)k; nref++; }
+
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id  = malloc(W * H * 8);
+    float*    dp  = malloc(W * H * 4);
+    uint32_t* col = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4) && f_read(&fx, tg.color, col, W * H * 4));
+    int bad = 0, covered = 0, judged = 0, ends = 0, coloured = 0, gaps_seen = 0;
+    double worst = 0;
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            const uint32_t i = y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            bool hit_in = false, hit_out = false;
+            for (int k = 0; k < nref; ++k) {
+                const double px = 12.0 * 2.0 * c.tan_half / H;
+                const double grow = (ref[k].r + px) / (ref[k].R - ref[k].r);   /* past a dash's end: its tube, a pixel */
+                hit_in  |= circ_ref_ray_dist(&ref[k], r, ref[k].dashes ? 1.5 * grow : 0.0) < ref[k].r - 0.6 * px;
+                hit_out |= circ_ref_ray_dist(&ref[k], r, ref[k].dashes ? -grow : 0.0) < ref[k].r + 0.6 * px;
+            }
+            if (id[2 * i + 1] == 0) {
+                if (hit_in) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, a circle there\n", x, y); }
+                continue;
+            }
+            covered++;
+            if (!hit_out) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, no circle near\n", x, y); continue; }
+            const double zv = -c.n / dp[i], tp = zv / r.d[2];
+            const double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            const double pxw = -P[2] * 2.0 * c.tan_half / H;
+            int who = -1;
+            double best = 1e30, second = 1e30, ang = 0;
+            for (int k = 0; k < nref; ++k) {
+                double a, sd = circ_ref_sdf(&ref[k], P, &a);
+                if (ref[k].dashes && !circ_ref_in_dash(&ref[k], a, -0.02)) sd = fabs(sd) + 1.0;     /* in a gap: not this one */
+                if (fabs(sd) < fabs(best)) { second = best; best = sd; who = k; ang = a; } else if (fabs(sd) < fabs(second)) second = sd;
+            }
+            bool on_end = false;
+            if (who >= 0 && ref[who].dashes && best < -0.05 * pxw) {
+                /* inside the tube: on a dash's flat end, at the end's angle */
+                on_end = !circ_ref_in_dash(&ref[who], ang, 0.02) && circ_ref_in_dash(&ref[who], ang, -0.02);
+                ends += on_end;
+            }
+            worst = fmax(worst, on_end ? 0.0 : fabs(best) / pxw);
+            if (!on_end && fabs(best) > 0.05 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the circles\n", x, y, best / pxw); continue; }
+            if (fabs(second) - fabs(best) > pxw) {
+                judged++;
+                const uint32_t slot = (id[2 * i + 1] >> 20) - 1u;
+                if (id[2 * i] != ref[who].linear || slot != ref[who].key - 61u) {
+                    bad++;
+                    if (bad < 8) printf("    pixel (%u, %u): batch %u element %u, expected %u %u\n", x, y, slot, id[2 * i], ref[who].key - 61u, ref[who].linear);
+                    continue;
+                }
+                if (!ref[who].dashes) {
+                    int k; double u;
+                    circ_ref_segment(&ref[who], ang, &k, &u);
+                    if (fabs(u - 0.5) > 0.06) {
+                        const int kk = u < 0.5 ? k : (k + 1) % ref[who].nc;
+                        coloured++;
+                        if (!near_rgba(col[i] | 0xFF000000u, pal[kk])) { bad++; if (bad < 8) printf("    pixel (%u, %u): colour %08x, expected %08x\n", x, y, col[i], pal[kk]); }
+                    }
+                }
+            }
+        }
+    }
+    /* the gaps: along a dashed circle's centre line, a gap's middle is empty */
+    {
+        const circ_ref_t* d = &ref[N6];
+        for (int k = 0; k < d->nc; ++k) {
+            const double a = d->ang[k] + (k ? 0.0 : 0.0);        /* a corner: a gap's middle */
+            double pt[3];
+            for (int i = 0; i < 3; ++i) pt[i] = d->c[i] + d->R * (cos(a) * d->t[i] + sin(a) * d->b[i]);
+            const uint32_t qx = (uint32_t)((pt[0] / -pt[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+            const uint32_t qy = (uint32_t)((0.5 - pt[1] / -pt[2] / c.tan_half * 0.5) * H);
+            gaps_seen += id[2 * (qy * W + qx) + 1] == 0;
+        }
+    }
+    printf("    %d pixels covered, %d of one circle clearly (%d on dashes' ends, %d coloured); the farthest %.4f px off; %d of 5 gaps empty\n",
+           covered, judged, ends, coloured, worst, gaps_seen);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered, 800);
+    EXPECT_GT(judged, covered / 2);
+    EXPECT_GT(coloured, 300);
+    if (getenv("MD_RENDER_DUMP")) {
+        FILE* fp = fopen(getenv("MD_RENDER_DUMP"), "wb");
+        if (fp) {
+            fprintf(fp, "P6\n%u %u\n255\n", W, H);
+            for (uint32_t i = 0; i < W * H; ++i) { uint8_t px3[3] = { (uint8_t)col[i], (uint8_t)(col[i] >> 8), (uint8_t)(col[i] >> 16) }; fwrite(px3, 1, 3, fp); }
+            fclose(fp);
+        }
+    }
+    EXPECT_EQ(5, gaps_seen);
+    /* a pick on the first circle, at its first corner's angle, past the gap: that circle */
+    {
+        const circ_ref_t* d = &ref[0];
+        const double a = 0.5 * d->ang[1];
+        double pt[3];
+        for (int i = 0; i < 3; ++i) pt[i] = d->c[i] + d->R * (cos(a) * d->t[i] + sin(a) * d->b[i]) + d->n[i] * 0.5 * d->r;
+        const uint32_t qx = (uint32_t)((pt[0] / -pt[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        const uint32_t qy = (uint32_t)((0.5 - pt[1] / -pt[2] / c.tan_half * 0.5) * H);
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, qx, qy, &pk));
+        EXPECT_EQ(61u, (unsigned)pk.key);
+        EXPECT_EQ(0u, pk.element);
+    }
+    free(id); free(dp); free(col);
+    f_close(&fx);
+}
+
 UTEST(render, index_visibility_instances) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -3412,10 +3654,9 @@ UTEST(render, mol_radii_follow_their_source) {
         md_render_mol_plan_t pa, pb;
         ASSERT_TRUE(md_render_mol_plan(&pa, &sys, &sa, t2));
         ASSERT_TRUE(md_render_mol_plan(&pb, &sys, &sb, t2));
-        ASSERT_EQ(pa.size, pb.size);
-        ASSERT_EQ(pa.layout.point_count, pb.layout.point_count);
-        md_gpu_addr_t base = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, pa.size).gpu;
-        md_gpu_addr_t dyn2 = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, pa.layout.dynamic_size).gpu;
+        ASSERT_EQ(pa.layout.point_count, pb.layout.point_count);   /* (the sizes may differ: the bonds left out differ) */
+        md_gpu_addr_t base = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, MD_MAX(pa.size, pb.size)).gpu;
+        md_gpu_addr_t dyn2 = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, MD_MAX(pa.layout.dynamic_size, pb.layout.dynamic_size)).gpu;
         md_render_mol_topo_t ta, tb;
         ASSERT_TRUE(md_render_mol_write(fx.gfx, &ta, &pa, base, NULL));
         ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &ta, dyn2, &types, 0, NULL));
@@ -5109,6 +5350,27 @@ UTEST(render, mol_bond_orders) {
     printf("    1LAF: %u double, %u triple bonds; %u doubles with a plane by an end\n", nd, nt, both_ends);
     EXPECT_EQ(0, wrong);
     EXPECT_GT(both_ends, (int)nd * 9 / 10);
+    /* the aromatic rings' circles: every aromatic ring of static atoms, the fused ones dashed, last */
+    uint32_t n_circ = 0, n_dash = 0, n_arom = 0;
+    for (size_t rg = 0; rg < md_ring_data_count(&sys.ring); ++rg) n_arom += (md_ring_flags(&sys.ring, rg) & MD_RING_FLAG_AROMATIC) != 0;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
+        const uint32_t* ap = (const uint32_t*)(img + L->aromatic_points[k]);
+        const uint32_t* ai = (const uint32_t*)(img + L->aromatic_ring[k]);
+        for (uint32_t j = 0; j < L->aromatic_count[k]; ++j) {
+            const md_ring_flags_t rf = md_ring_flags(&sys.ring, ai[j]);
+            const bool dashed = j >= L->aromatic_count[k] - L->aromatic_dashed[k];
+            wrong += !(rf & MD_RING_FLAG_AROMATIC) || ((rf & MD_RING_FLAG_FUSED_AROMATIC) != 0) != dashed || md_ring_size(&sys.ring, ai[j]) != 3u + k;
+            const int32_t* ra = md_ring_atoms(&sys.ring, ai[j]);
+            for (uint32_t l = 0; l < 3u + k; ++l) wrong += (int32_t)order[ap[(3u + k) * j + l]] != ra[l];
+        }
+        n_circ += L->aromatic_count[k];
+        n_dash += L->aromatic_dashed[k];
+    }
+    printf("    %u aromatic rings, %u circles (%u dashed)\n", n_arom, n_circ, n_dash);
+    EXPECT_EQ(0, wrong);
+    EXPECT_EQ(n_arom, n_circ);
+    EXPECT_GT(n_dash, 0u);
+    EXPECT_LT(n_dash, n_circ);
 
     fix_t fx;
     if (!f_open(&fx)) { md_temp_end(temp); free(is_ord); md_system_free(&sys); UTEST_SKIP(f_skip_reason()); }
@@ -5134,7 +5396,21 @@ UTEST(render, mol_bond_orders) {
     rep.bond_orders = false;
     const uint32_t nb0 = md_render_mol_emit(&topo, dyn, &atoms, &rep, NULL, 0);
     rep.bond_orders = true;
-    ASSERT_EQ(nb0 + 2u, nb);    /* the covalent sticks, then its doubles' two */
+    uint32_t n_cb = 0;            /* batches of circles: per size, solid and dashed */
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) n_cb += (topo.aromatic_count[k] > topo.aromatic_dashed[k]) + (topo.aromatic_dashed[k] > 0);
+    ASSERT_EQ(nb0 + 2u + n_cb, nb);   /* the covalent sticks, its doubles' two, the circles */
+    const md_render_batch_t* c6 = NULL;
+    for (uint32_t i = 3; i < 3 + n_cb; ++i) {
+        const md_render_polygon_style_t* ps = &bt[i].style.polygons;
+        EXPECT_EQ(MD_RENDER_POLYGONS, bt[i].kind);
+        EXPECT_NEAR(0.066f, ps->radius, 1e-6f);
+        EXPECT_NEAR(0.38f, ps->inset, 1e-6f);
+        const uint32_t part = (uint32_t)(bt[i].key & 0xFF) - MD_RENDER_MOL_PART_AROMATIC;
+        EXPECT_EQ(3u + part / 2u, ps->corners);
+        EXPECT_EQ(part % 2u ? 2u : 0u, ps->dashes);      /* two over each bond: 1.39 bonds leave room */
+        if (ps->corners == 6 && !ps->dashes) c6 = &bt[i];
+    }
+    ASSERT_TRUE(c6 != NULL);
     const md_render_batch_t* d0 = &bt[1];
     const md_render_batch_t* d1 = &bt[2];
     EXPECT_EQ(topo.bond_single, bt[0].style.capsules.radius_scale);
@@ -5226,6 +5502,38 @@ UTEST(render, mol_bond_orders) {
         free(blk2);
     }
 
+    /* The first solid 6-ring's circle face on: picks as the ring, the corner nearest the hit */
+    {
+        const uint32_t* ap = (const uint32_t*)(img + L->aromatic_points[3]);
+        const uint32_t* ai = (const uint32_t*)(img + L->aromatic_ring[3]);
+        double q[6][3];
+        for (int l = 0; l < 6; ++l) for (int i = 0; i < 3; ++i) q[l][i] = (&state.xyz[order[ap[l]]].x)[i];
+        circ_ref_t cr;
+        ASSERT_TRUE(circ_ref_build(&cr, (const double (*)[3])q, 6, 0.38, 0.066, 0));
+        double x[3], y[3], z[3];
+        for (int i = 0; i < 3; ++i) { x[i] = cr.t[i]; y[i] = cr.b[i]; z[i] = cr.n[i]; }
+        double eye[3];
+        for (int i = 0; i < 3; ++i) eye[i] = cr.c[i] + 30.0 * z[i];
+        const uint32_t W = 128, H = 128;
+        cam_t c = { .ortho = true, .half_h = 1.5f, .aspect = 1.0f, .n = 0.0f, .far_ = 100.0f };
+        md_render_camera_t cam = make_camera(&c);
+        for (int i = 0; i < 3; ++i) { cam.view[4 * i + 0] = (float)x[i]; cam.view[4 * i + 1] = (float)y[i]; cam.view[4 * i + 2] = (float)z[i]; }
+        cam.view[12] = (float)-dot3(x, eye); cam.view[13] = (float)-dot3(y, eye); cam.view[14] = (float)-dot3(z, eye);
+        md_render_frame_t f = frame_of(W, H, cam, c6, 1);
+        memcpy(f.content, content, sizeof(content));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        const double a = 0.2 * cr.ang[1];           /* nearer the first corner */
+        const uint32_t px = (uint32_t)((cr.R * cos(a) / c.half_h * 0.5 + 0.5) * W);
+        const uint32_t py = (uint32_t)((0.5 - cr.R * sin(a) / c.half_h * 0.5) * H);
+        md_render_pick_t pk;
+        md_render_mol_hit_t hit;
+        ASSERT_TRUE(f_pick(&fx, px, py, &pk));
+        ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+        EXPECT_EQ(MD_RENDER_MOL_HIT_RING, hit.kind);
+        EXPECT_EQ(ai[0], hit.ring);
+        EXPECT_EQ(order[ap[0]], hit.atom);
+    }
+
     /* A triple bond: three sticks facing the view, the middle one on the
        bond's axis, the others either side; picked as the bond */
     {
@@ -5256,7 +5564,7 @@ UTEST(render, mol_bond_orders) {
         yr.key = 8; yr.type = MD_RENDER_MOL_REP_LICORICE; yr.params.licorice.radius = 0.2f; yr.bond_orders = true;
         md_render_batch_t yb[16];
         const uint32_t ny = md_render_mol_emit(&yt, ydyn, &yat, &yr, yb, 16);
-        ASSERT_EQ(7u, ny);          /* covalent, the double's two, the triple's three, atoms */
+        ASSERT_EQ(7u, ny);          /* covalent, the double's two, the triple's three, atoms: no ring */
         for (int m = 0; m < 3; ++m) {
             const md_render_batch_t* tq = &yb[3 + m];
             EXPECT_EQ((uint64_t)(8 << 8 | (MD_RENDER_MOL_PART_TRIPLE + m)), tq->key);

@@ -88,6 +88,7 @@ static const uint F_SPL_THROUGH  = 1u << 21;  // SPLINES: through their control 
 static const uint F_DASHED       = 1u << 22;  // CAPSULES: dashed (dash_hit)
 static const uint F_DISPLACED    = 1u << 23;  // CAPSULES: moved off their points (capsule_side)
 static const uint F_SIDE         = 1u << 24;  // ... along cap_side
+static const uint F_CIRCLE       = 1u << 25;  // POLYGONS: the circle inside each (poly_inset, poly_dashes)
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -171,6 +172,10 @@ struct Batch {
     float   end_add;
     float   cap_offset;         // CAPSULES displaced (F_DISPLACED): by this many radii
     float4* cap_side;           // along this side (F_SIDE), float4 per capsule
+    float   poly_inset;         // POLYGONS circles (F_CIRCLE): the centre line's inset from the edges
+    uint    poly_dashes;        // the dashes over each edge (0: solid)
+    uint    _pad_d0;            // to the float4 alignment
+    uint    _pad_d1;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -1361,6 +1366,7 @@ Geo spline_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
 // ---------------------------------------------------------------------------
 
 static const uint POLY_MAX = 8u;
+static const float PI = 3.14159265358979;
 
 struct PolyPart {
     bool   ok;
@@ -1371,6 +1377,11 @@ struct PolyPart {
     float3 nrm;                 // unit normal, by the winding
     float  r;
     float  h;                   // the plate's half thickness: r (flat), less (a dish; s1, the fraction)
+    bool   circle;              // F_CIRCLE: the circle inside it, a torus of tube r
+    float  R;                   // its major radius
+    float3 tng;                 // unit, in the plane towards the first corner: the torus' x
+    float  ang[POLY_MAX];       // each corner's angle about nrm from tng, increasing from 0
+    uint   dashes;              // over each edge, 0: solid
 };
 
 uint poly_n(Batch b) { return clamp(b.poly_n, 3u, POLY_MAX); }
@@ -1431,6 +1442,33 @@ PolyPart poly_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
     pp.r  = b.s0 * length(T.c0.xyz) * f;
     pp.h  = pp.r * clamp(b.s1, 0.0, 1.0);
     pp.ok = pp.r > 0.0;
+    pp.circle = (b.flags & F_CIRCLE) != 0u;
+    pp.R = 0.0; pp.tng = float3(1.0, 0.0, 0.0); pp.dashes = 0u;
+    [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) pp.ang[k] = 0.0;
+    if (pp.circle) {
+        // the apothem: the least distance in the plane from the centroid to an edge's line
+        float ap = 3.4e38;
+        [ForceUnroll] for (uint k = 0u; k < POLY_MAX; ++k) {
+            if (k < pp.n) {
+                float3 a = pp.q[k] - pp.c, d = poly_next(pp, k) - pp.q[k];
+                float  dd = dot(d, d);
+                if (dd > 0.0) ap = min(ap, abs(dot(cross(a, d), pp.nrm)) * rsqrt(dd));
+            }
+        }
+        pp.R  = ap - b.poly_inset * length(T.c0.xyz) * f;
+        pp.ok = pp.ok && pp.planar && pp.R > 2.0 * pp.r;
+        float3 q0 = pp.q[0] - pp.c;
+        pp.tng = dot(q0, q0) > 0.0 ? normalize(q0) : poly_any_perpendicular(pp.nrm);
+        float3 bit = cross(pp.nrm, pp.tng);
+        [ForceUnroll] for (uint k = 1u; k < POLY_MAX; ++k) {
+            if (k < pp.n) {
+                float3 q = pp.q[k] - pp.c;
+                float  a = atan2(dot(q, bit), dot(q, pp.tng));
+                pp.ang[k] = a < 0.0 ? a + 2.0 * PI : a;
+            }
+        }
+        pp.dashes = b.poly_dashes;
+    }
     return pp;
 }
 
@@ -1447,11 +1485,231 @@ bool poly_visible(Batch b, uint e, out uint st) {
     return vis;
 }
 
+// ---- The circles (F_CIRCLE): md_gl's ring.frag, a torus in the polygon's
+// plane. The ray is intersected analytically (the quartic of Inigo Quilez,
+// torIntersect), accurate in float only with coefficients of order one: so
+// in the torus' frame scaled by 1 / R (the torus is (1, r / R)), from where
+// the ray enters a sphere about it a tube radius clear of it (an origin on
+// the torus' bounding sphere makes the constant term vanish and the
+// inversion overflow); the inversion below 0.001 rather than 0.01 (the
+// inverted quartic's discriminant cancels in float); two steps along the ray
+// by the distance to the torus polish the root. md_gl measured one ray in
+// 10^4 off at r / R ~ 0.1, almost all grazing a ring seen edge on.
+
+// The crossings of the ray (ro, rd unit) with the torus (tor.x about z, tube
+// tor.y), ascending in t[] (1e20 past them): 0, 2 or 4
+int tor_roots(float3 ro, float3 rd, float2 tor, out float t[4]) {
+    t[0] = 1e20; t[1] = 1e20; t[2] = 1e20; t[3] = 1e20;
+    float po = 1.0;
+    float Ra2 = tor.x * tor.x, ra2 = tor.y * tor.y;
+    float m = dot(ro, ro), n = dot(ro, rd);
+    float k  = (m + Ra2 - ra2) / 2.0;
+    float k3 = n;
+    float k2 = n * n - Ra2 * dot(rd.xy, rd.xy) + k;
+    float k1 = n * k - Ra2 * dot(rd.xy, ro.xy);
+    float k0 = k * k - Ra2 * dot(ro.xy, ro.xy);
+    if (abs(k3 * (k3 * k3 - k2) + k1) < 0.001) {
+        po = -1.0;
+        float tmp = k1; k1 = k3; k3 = tmp;
+        k0 = 1.0 / k0;
+        k1 = k1 * k0; k2 = k2 * k0; k3 = k3 * k0;
+    }
+    float c2 = k2 * 2.0 - 3.0 * k3 * k3;
+    float c1 = k3 * (k3 * k3 - k2) + k1;
+    float c0 = k3 * (k3 * (c2 + 2.0 * k2) - 8.0 * k1) + 4.0 * k0;
+    c2 /= 3.0; c1 *= 2.0; c0 /= 3.0;
+    float Q = c2 * c2 + c0;
+    float R = c2 * c2 * c2 - 3.0 * c2 * c0 + c1 * c1;
+    float h = R * R - Q * Q * Q;
+    int count = 0;
+    if (h >= 0.0) {
+        h = sqrt(h);
+        float v = sign(R + h) * pow(abs(R + h), 1.0 / 3.0);
+        float u = sign(R - h) * pow(abs(R - h), 1.0 / 3.0);
+        float2 s = float2((v + u) + 4.0 * c2, (v - u) * sqrt(3.0));
+        float y = sqrt(0.5 * (length(s) + s.x));
+        float x = 0.5 * s.y / y;
+        float r = 2.0 * c1 / (x * x + y * y);
+        float t1 =  x - r - k3; t1 = (po < 0.0) ? 2.0 / t1 : t1;
+        float t2 = -x - r - k3; t2 = (po < 0.0) ? 2.0 / t2 : t2;
+        t[0] = t1; t[1] = t2;
+        count = 2;
+    } else {
+        float sQ = sqrt(Q);
+        float w  = sQ * cos(acos(clamp(-R / (sQ * Q), -1.0, 1.0)) / 3.0);
+        float d2 = -(w + c2);
+        if (d2 < 0.0) return 0;
+        float d1 = sqrt(d2);
+        float e1 = w - 2.0 * c2 + c1 / d1;
+        float e2 = w - 2.0 * c2 - c1 / d1;
+        if (e1 >= 0.0) {
+            float h1 = sqrt(e1);
+            float t1 = -d1 - h1 - k3; t1 = (po < 0.0) ? 2.0 / t1 : t1;
+            float t2 = -d1 + h1 - k3; t2 = (po < 0.0) ? 2.0 / t2 : t2;
+            t[0] = t1; t[1] = t2;
+            count = 2;
+        }
+        if (e2 >= 0.0) {
+            float h2 = sqrt(e2);
+            float t3 = d1 - h2 - k3; t3 = (po < 0.0) ? 2.0 / t3 : t3;
+            float t4 = d1 + h2 - k3; t4 = (po < 0.0) ? 2.0 / t4 : t4;
+            if (count == 0) { t[0] = t3; t[1] = t4; } else { t[2] = t3; t[3] = t4; }
+            count += 2;
+        }
+    }
+    // ascending: a sorting network of four
+    float a0 = min(t[0], t[1]), a1 = max(t[0], t[1]), a2 = min(t[2], t[3]), a3 = max(t[2], t[3]);
+    float b0 = min(a0, a2), b2 = max(a0, a2), b1 = min(a1, a3), b3 = max(a1, a3);
+    t[0] = b0; t[1] = min(b1, b2); t[2] = max(b1, b2); t[3] = b3;
+    return count;
+}
+
+float3 tor_normal(float3 p, float2 tor) {
+    return normalize(p * (dot(p, p) - tor.y * tor.y - tor.x * tor.x * float3(1.0, 1.0, -1.0)));
+}
+
+// The angle of a point of the torus' frame about its axis, in [0, 2 pi)
+float circle_angle(float2 p) {
+    float a = atan2(p.y, p.x);
+    return a < 0.0 ? a + 2.0 * PI : a;
+}
+
+// Between corners k and k + 1 (edge k) at angle a: at u along it, linear in the angle
+void circle_segment(PolyPart pp, float a, out uint k, out float u) {
+    k = 0u;
+    [ForceUnroll] for (uint i = 1u; i < POLY_MAX; ++i) if (i < pp.n && pp.ang[i] <= a) k = i;
+    float a0 = 0.0, a1 = 2.0 * PI;
+    [ForceUnroll] for (uint i = 0u; i < POLY_MAX; ++i) {
+        if (i == k) a0 = pp.ang[i];
+        if (i == k + 1u && i < pp.n) a1 = pp.ang[i];
+    }
+    u = a1 > a0 ? saturate((a - a0) / (a1 - a0)) : 0.0;
+}
+
+// DASHED: m dashes over each edge, each in the middle half of its m-th of the
+// edge, so the gaps are centred on the corners
+static const float CIRCLE_DASH_FILL = 0.5;
+
+bool circle_in_dash(float u, float m) {
+    float g = 0.5 * (1.0 - CIRCLE_DASH_FILL), w = frac(u * m);
+    return g <= w && w <= 1.0 - g;
+}
+
+// The angle where the dash after the gap at u along edge k begins, going
+// around in the direction of s (increasing angle where s > 0): its flat end
+float circle_next_dash(PolyPart pp, uint k, float u, float m, float s) {
+    float g = 0.5 * (1.0 - CIRCLE_DASH_FILL);
+    float c = floor(u * m), w = u * m - c, e;
+    uint  kk = k;
+    if (s > 0.0) {
+        e = (w < g ? c + g : c + 1.0 + g) / m;
+        if (e > 1.0) { kk = k + 1u < pp.n ? k + 1u : 0u; e = g / m; }
+    } else {
+        e = (w > 1.0 - g ? c + 1.0 - g : c - g) / m;
+        if (e < 0.0) { kk = k > 0u ? k - 1u : pp.n - 1u; e = 1.0 - g / m; }
+    }
+    float a0 = 0.0, a1 = 2.0 * PI;
+    [ForceUnroll] for (uint i = 0u; i < POLY_MAX; ++i) {
+        if (i == kk) a0 = pp.ang[i];
+        if (i == kk + 1u && i < pp.n) a1 = pp.ang[i];
+    }
+    return a0 + (a1 - a0) * e;
+}
+
+// The ray (lo, ld) within the tube from t_in to t_out against the dashes (the
+// torus' frame): entering within a dash it hits the tube there (side);
+// entering in a gap, the flat end of the next dash the way it goes around,
+// if it reaches that before it leaves the tube (the end: a disc of the tube
+// in a plane through the axis). The angle along a line only ever increases
+// or decreases, so no other dash comes first.
+bool circle_dash_hit(PolyPart pp, float3 lo, float3 ld, float2 tor, float t_in, float t_out, float m,
+                     out float t_hit, out float3 nrm, out bool side) {
+    t_hit = -1.0; nrm = float3(0.0); side = true;
+    uint  k;
+    float u;
+    if (t_in <= 0.0) {                      // from within the tube: where it leaves, in a dash
+        float3 p = lo + ld * t_out;
+        circle_segment(pp, circle_angle(p.xy), k, u);
+        if (t_out <= 0.0 || !circle_in_dash(u, m)) return false;
+        t_hit = t_out;
+        return true;
+    }
+    float3 p = lo + ld * t_in;
+    circle_segment(pp, circle_angle(p.xy), k, u);
+    if (circle_in_dash(u, m)) { t_hit = t_in; return true; }
+    float s = p.x * ld.y - p.y * ld.x;      // the rate of the angle along the ray, up to a positive factor
+    if (s == 0.0) return false;
+    float  a   = circle_next_dash(pp, k, u, m, s);
+    float2 dir = float2(cos(a), sin(a));
+    float3 nb  = float3(-dir.y, dir.x, 0.0);
+    float  den = dot(ld, nb);
+    if (den == 0.0) return false;
+    float  tb  = -dot(lo, nb) / den;
+    float3 q   = lo + ld * tb;
+    float  rho = dot(q.xy, dir), dr = rho - tor.x;
+    if (tb < t_in - 1.0e-4 || rho <= 0.0 || dr * dr + q.z * q.z > tor.y * tor.y) return false;
+    t_hit = max(tb, t_in);
+    nrm   = s > 0.0 ? -nb : nb;
+    side  = false;
+    return true;
+}
+
+SplineHit circle_hit(Ray r, PolyPart pp) {
+    SplineHit h;
+    h.t = -1.0;
+    h.n = pp.nrm;
+    float3 bit  = cross(pp.nrm, pp.tng);
+    float  invR = 1.0 / pp.R;
+    float2 tor  = float2(1.0, pp.r * invR);
+    float3 o    = r.o - pp.c;
+    float3 lo   = float3(dot(o, pp.tng), dot(o, bit), dot(o, pp.nrm)) * invR;
+    float3 ld   = float3(dot(r.d, pp.tng), dot(r.d, bit), dot(r.d, pp.nrm));
+    float  rb   = 1.0 + 2.0 * tor.y;            // re-origin, a tube radius clear of the torus
+    float  bb   = dot(lo, ld);
+    float  hh   = bb * bb - (dot(lo, lo) - rb * rb);
+    if (hh < 0.0) return h;
+    hh = sqrt(hh);
+    if (-bb + hh < 0.0) return h;
+    float t0 = max(-bb - hh, 0.0);
+    lo += ld * t0;
+    float roots[4];
+    int   count = tor_roots(lo, ld, tor, roots);
+    float t = -1.0;
+    bool  side = true;
+    float3 en = float3(0.0);
+    if (pp.dashes == 0u) {
+        [ForceUnroll] for (int i = 0; i < 4; ++i) if (t < 0.0 && i < count && roots[i] > 0.0) t = roots[i];
+    } else {
+        float m = float(pp.dashes);
+        [ForceUnroll] for (int i = 0; i < 4; i += 2) {
+            if (t < 0.0 && i + 1 < count) {
+                float th; float3 nn; bool sd;
+                if (circle_dash_hit(pp, lo, ld, tor, roots[i], roots[i + 1], m, th, nn, sd)) { t = th; en = nn; side = sd; }
+            }
+        }
+    }
+    if (!(t > 0.0) || t >= 1e19) return h;
+    float3 ln;
+    if (side) {
+        [ForceUnroll] for (int i = 0; i < 2; ++i) {     // polish: by the distance to the torus
+            float3 p = lo + ld * t;
+            t += length(float2(length(p.xy) - tor.x, p.z)) - tor.y;
+        }
+        ln = tor_normal(lo + ld * t, tor);
+    } else {
+        ln = en;
+    }
+    h.t = (t0 + t) * pp.R;
+    h.n = normalize(pp.tng * ln.x + bit * ln.y + pp.nrm * ln.z);
+    return h;
+}
+
 // The ray against the polygon: the plate's face towards it, then a capsule
 // per edge. A flat plate (h = r) makes the solid convex: where the face is
 // hit it is the nearest. A dished one (h < r) lies below the rims, which
 // stand above it near the edges: the nearest of all.
 SplineHit poly_hit(Ray r, PolyPart pp) {
+    if (pp.circle) return circle_hit(r, pp);
     SplineHit h;
     h.t = -1.0;
     h.n = float3(0.0, 0.0, 1.0);
@@ -2953,6 +3211,17 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         }
         h.attr     = attr_of(b, point_of(b, h.element, kn, pp.n));
         h.color    = attr_color(b, attr_of(b, point_of(b, h.element, 0u, pp.n)));   // its colour: the first's
+        if (pp.circle) {                                // a circle's: around it, as a capsule's along it
+            float3 q  = h.p_view - pp.c;
+            uint   kc;
+            float  u;
+            circle_segment(pp, circle_angle(float2(dot(q, pp.tng), dot(q, cross(pp.nrm, pp.tng)))), kc, u);
+            uint   k1 = kc + 1u < pp.n ? kc + 1u : 0u;
+            float  sh = saturate(b.sharpness);
+            float  kk = saturate((u - 0.5) / max(1.0 - sh, 1e-3) + 0.5);
+            h.color   = lerp(attr_color(b, attr_of(b, point_of(b, h.element, kc, pp.n))),
+                             attr_color(b, attr_of(b, point_of(b, h.element, k1, pp.n))), kk);
+        }
         h.valid    = true;
     }
     return h;
