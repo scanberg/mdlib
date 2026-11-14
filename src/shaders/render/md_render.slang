@@ -175,7 +175,7 @@ struct Batch {
     float   poly_inset;         // POLYGONS circles (F_CIRCLE): the centre line's inset from the edges
     uint    poly_dashes;        // the dashes over each edge (0: solid)
     float   cap_trim;           // CAPSULES displaced: their ends pulled in by this of their length
-    uint    _pad_d0;            // to the float4 alignment
+    float   spl_scale;          // SPLINES: the profile's a and r times this
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -717,7 +717,7 @@ float3 spline_axis_view(Mat V, Mat T, Batch b, uint e) {
 // e's part's profile: half width at its start and end, radius at its start
 // and end; without a profile the batch's flat (s1) and radius (s0)
 float4 spline_profile_of(Batch b, uint e) {
-    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[gated(b, F_SPL_PROFILE, e)] : float4(b.s1, b.s1, b.s0, b.s0);
+    return (b.flags & F_SPL_PROFILE) != 0u ? b.spl_profile[gated(b, F_SPL_PROFILE, e)] * b.spl_scale : float4(b.s1, b.s1, b.s0, b.s0);
 }
 
 bool spline_visible(Batch b, uint ie) {

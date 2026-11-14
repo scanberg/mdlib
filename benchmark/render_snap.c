@@ -397,6 +397,7 @@ static int run(int argc, char** argv) {
     md_gpu_upload(s, S, sel, (size_t)(words ? words : 1) * 4);
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
+    md_render_mol_frame_cell(atoms.cell, md_unitcell_flags(&state.unitcell) ? &state.unitcell : NULL);   /* the lipids whole across it */
     if (n_sel) atoms.selection = S;
     if (!md_render_mol_update(mol, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
 

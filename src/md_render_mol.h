@@ -91,6 +91,10 @@ lifetime:
     cartoon: a coil tube, helix and sheet bands, blended over the residues
     where the structure changes.
 
+  * The cartoon of a lipid is viamd's (cartoon_glyphs): a sphere for each
+    head, a tube for each tail, a slab for the ring system of a sterol, on
+    derived points (see the topology).
+
   * The cartoon of a nucleic acid is viamd's (cartoon_glyphs), after Lindow
     et al. (Interactive Visualization of RNA and DNA Structures, 2019): a
     flat band through the C4' of each nucleotide (md_render's splines,
@@ -106,9 +110,9 @@ of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
 (md_render_mol_rep_t.chain_gaps); the bond orders (bond_orders: double and
 triple bonds, the circles of aromatic rings, the dashed partners of
 delocalized bonds).
-Declared for the next phases: RIBBONS, coarse grained nucleic acids and
-lipids (points derived from several atoms: the ideal rings of a Martini
-base, lipid heads), glyphs.
+The cartoon of lipids and of coarse grained nucleic acids (the ideal
+rings of a Martini base), on derived points. Declared for the next phases:
+RIBBONS.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -326,6 +330,32 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t partner_bond;            /* uint32 per partner: index in sys->bond    */
     md_gpu_addr_t partner_ref;             /* internal: uint32 [2] per partner          */
 
+    /* The lipids, for the cartoon (viamd's cartoon_glyphs), on derived
+       points, each lipid's taken whole about its first head atom. A sphere
+       per head at the centre of its heavy atoms (beads), its radius the
+       point's w: 1.6 cbrt(n) for n heavy atoms (4 per bead) in [1.8, 7]; a
+       head that splits at its phosphate (the head group and the backbone the
+       tails hang off) is one sphere or one per part, the representation's
+       choice. A lipid whose heads and tails are not known: one sphere. A
+       tube per tail from its head's (part's) centre over the atom it hangs
+       off along its spine, a control point per two atoms or per bead, on to
+       the other head of a spanning chain: a chain's 1.1 round; a sterol's
+       ring system a slab (sections through its rings, 1 thick and 2 wide in
+       their plane, laid out from the reference positions), and its side
+       chain on as a chain; one not laid out a round tube, 1.5. */
+    uint32_t      lipid_sphere_count[3];   /* always, a split head as one, its parts   */
+    md_gpu_addr_t lipid_spheres;           /* uint32 per sphere: its point, the three
+                                              lists one after the other                */
+    uint32_t      lipid_tube_count[3];     /* control points: chains, ring systems as
+                                              round tubes, as slabs                    */
+    md_gpu_addr_t lipid_tubes;             /* uint32 per control point: an md_render
+                                              SPLINES index, the three one after the
+                                              other                                    */
+    md_gpu_addr_t lipid_slab_profile;      /* float4 per control point of the slabs:
+                                              md_render's profile (Angstrom)           */
+    md_gpu_addr_t lipid_slab_side;         /* internal: uint32 per control point of the
+                                              slabs, the point its axis points at      */
+
     /* Derived points: each a weighted sum of resident atoms, taken at their
        images nearest the first one's (where the update has a cell: the
        frames'), written by every update after the atoms' points: points
@@ -403,6 +433,10 @@ typedef struct md_render_mol_atoms_t {
     md_gpu_addr_t visible;         /* bitset over atoms: globally shown, optional     */
     md_gpu_addr_t selection;       /* bitset over atoms, optional                     */
     md_gpu_addr_t highlight;       /* bitset over atoms, optional                     */
+    float         cell[9];         /* the positions' periodic cell (without frames:
+                                      theirs is used), md_render_mol_frame_cell's;
+                                      the derived points take their atoms at the
+                                      images nearest their first. All 0: none       */
 
     /* Instead of position and velocity: frames resident on the GPU (see
        Frames below), combined by the update. In a periodic cell frames [0]
@@ -647,8 +681,15 @@ typedef struct md_render_mol_rep_t {
            that of the sticks (half their thickness). 0: md_gl's, 0.25 and
            0.2. ring_plate: the rings' plate within their rims, a fraction
            of ring_radius (md_render_polygon_style_t plate; 1: flat); 0:
-           viamd's, 0.6, a dish */
-        struct { md_gpu_addr_t profile; float band_radius; float ring_radius; float ring_plate; } cartoon;
+           viamd's, 0.6, a dish. lipid_scale: the lipids' spheres and
+           tubes thicker by it (0: 1); split_heads: a head that splits at its
+           phosphate as a sphere for each part, not one */
+        struct {
+            md_gpu_addr_t profile;
+            float band_radius, ring_radius, ring_plate;
+            float lipid_scale;
+            bool  split_heads;
+        } cartoon;
     } params;
 
     /* Which bond classes the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
@@ -712,6 +753,8 @@ enum {
     MD_RENDER_MOL_PART_TRIPLE = MD_RENDER_MOL_PART_DOUBLE + 2,  /* + 0, 1, 2: of the triple bonds */
     MD_RENDER_MOL_PART_AROMATIC = MD_RENDER_MOL_PART_TRIPLE + 3, /* + 2 (corners - 3) + dashed: the circles */
     MD_RENDER_MOL_PART_PARTNER  = MD_RENDER_MOL_PART_AROMATIC + 2 * MD_RENDER_MOL_RING_SIZES,  /* the partners */
+    MD_RENDER_MOL_PART_LIPID_SPHERES,                           /* + 0 always, 1 the split heads' variant */
+    MD_RENDER_MOL_PART_LIPID_TUBES = MD_RENDER_MOL_PART_LIPID_SPHERES + 2,  /* + 0 chains, 1 ring systems, 2 slabs */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -733,6 +776,9 @@ typedef enum md_render_mol_hit_kind_t {
                                       its stick                                      */
     MD_RENDER_MOL_HIT_CHAIN_GAP,   /* the gap over a break of a chain                */
     MD_RENDER_MOL_HIT_RING,        /* the circle of an aromatic ring                 */
+    MD_RENDER_MOL_HIT_LIPID,       /* a lipid's sphere or tube: atom, the one its
+                                      point stands for (a head's heaviest, a tail's
+                                      spine atom)                                     */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {

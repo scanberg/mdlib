@@ -8,6 +8,10 @@
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_array.h>
+#include <core/md_vec_math.h>
+#include <md_geom.h>
+#include <md_lipid.h>
+#include <md_ring.h>
 
 #include <float.h>
 #include <string.h>
@@ -45,6 +49,7 @@ typedef struct topo_layout_t {
     uint64_t order_points, order_bond, order_ref, bond_single;
     uint64_t aromatic_points[MD_RENDER_MOL_RING_SIZES], aromatic_ring[MD_RENDER_MOL_RING_SIZES];
     uint64_t partner_points, partner_bond, partner_ref;
+    uint64_t lipid_spheres, lipid_tubes, lipid_slab_profile, lipid_slab_side;
     uint64_t small_tables, size;
 } topo_layout_t;
 
@@ -226,7 +231,7 @@ static uint32_t kind_hash(const uint32_t* atoms, uint32_t na, const md_particle_
 /* The per-frame block (scratch of the update) */
 #define SCAN_BLOCK 1024u
 typedef struct dyn_layout_t {
-    uint64_t points, velocity, params, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, na_axis, ord_side, prt_side, size, size_velocity;
+    uint64_t points, velocity, params, cell, mol_slot, ids_old, cnt, sums, bb_axis, bb_flip, na_axis, ord_side, prt_side, lip_axis, size, size_velocity;
     uint32_t scan_n, scan_blocks;
 } dyn_layout_t;
 
@@ -238,20 +243,21 @@ typedef struct dyn_layout_t {
    whether the next one's axis is turned against it, then a word naming the
    topology instance that wrote them (none yet: no memory). The nucleic
    band's axes (float4 per control point). The double bonds' sides and the
-   partners' (float4 each, md_render's). The points and their velocities
+   partners' (float4 each, md_render's). The axes of the sterols' slabs. The points and their velocities
    include the derived points (after the atoms'). Last, only in a block
    allocated with them, the points' velocities.
    Not packed positions apart (1dd0efd6): fewer bytes per update, but
    md_render reads the points several times a frame, much of it scattered,
    and a 12-byte position straddles 32-byte sectors (raster after positions
    changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
-static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na, uint32_t n_der, uint32_t n_dbl, uint32_t n_prt) {
+static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na, uint32_t n_der, uint32_t n_dbl, uint32_t n_prt, uint32_t n_slab) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
     L.points   = o; o = align256(o + ((uint64_t)n_atoms + n_der) * 16u);
     L.params   = o; o = align256(o + 16u * 4u);
+    L.cell     = o; o = align256(o + 32u * 4u);        /* the positions' cell, as a frame's words */
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
     L.ids_old  = o; o = align256(o + (uint64_t)n_sbonds * 4u);   /* the regroup's: the small bonds' ids before it */
     L.cnt      = o; o = align256(o + (uint64_t)L.scan_n * 16u);
@@ -261,6 +267,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.na_axis  = o; o = align256(o + (uint64_t)n_na * 16u);
     L.ord_side = o; o = align256(o + (uint64_t)n_dbl * 16u);
     L.prt_side = o; o = align256(o + (uint64_t)n_prt * 16u);
+    L.lip_axis = o; o = align256(o + (uint64_t)n_slab * 16u);
     L.size = o;
     L.velocity = o; o = align256(o + ((uint64_t)n_atoms + n_der) * 8u);
     L.size_velocity = o;
@@ -268,7 +275,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
 }
 
 static dyn_layout_t dyn_of(const md_render_mol_topo_t* t) {
-    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count, t->derived_count, t->order_count[0], t->partner_count);
+    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count, t->derived_count, t->order_count[0], t->partner_count, t->lipid_tube_count[2]);
 }
 
 /* The frames block: each slot's parameters (32 words), the slots' frames
@@ -321,6 +328,488 @@ static void pack_unit(packer_t* p, const uint32_t* atoms, uint32_t n) {
     if (p->fill + n > CLUSTER) pack_close(p);
     memcpy(p->order + p->pos, atoms, n * 4u);
     p->pos += n; p->fill += n;
+}
+
+
+/* ---- The cartoon of lipids and of coarse grained nucleic acids: viamd's
+   cartoon_glyphs, on derived points ------------------------------------- */
+
+#define LIPID_HEAD_SCALE        1.6f    /* a head of n heavy atoms: 1.6 cbrt(n), 4.3 for a phosphatidyl choline's 20 */
+#define LIPID_HEAD_MIN          1.8f
+#define LIPID_HEAD_MAX          7.0f
+#define LIPID_ATOMS_PER_BEAD    4.0f    /* what a Martini bead stands for */
+#define LIPID_TAIL_RADIUS       1.1f
+#define STEROL_HALF_THICKNESS   1.0f    /* the ring system of a sterol: a slab as thick as a chain, */
+#define STEROL_HALF_WIDTH       2.0f    /* twice as wide, */
+#define STEROL_SECTION          3.2f    /* its sections a ring apart */
+#define SKELETON_RADIUS         1.5f    /* without its rings to lay it out: a round tube */
+
+enum { LIPID_TUBE_CHAIN = 0, LIPID_TUBE_SKELETON, LIPID_TUBE_SLAB, LIPID_TUBES };
+enum { LIPID_SPHERE_ALWAYS = 0, LIPID_SPHERE_ONE, LIPID_SPHERE_TWO, LIPID_SPHERES };
+
+static bool atom_is_bead(const md_system_t* sys, size_t i) {
+    return md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM && md_atom_atomic_number(&sys->atom, i) == 0;
+}
+
+/* The P of a phosphate, or a Martini phosphate bead (PO and digits: PO4,
+   PO41; not the P1 .. P5 of an inositol's phosphates, of the head group) */
+static bool is_phosphate_center(const md_system_t* sys, int32_t atom) {
+    const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, (size_t)atom);
+    if (z != 0) return z == 15;
+    const md_str_t name = md_atom_name(&sys->atom, (size_t)atom);
+    if (name.len < 3 || name.ptr[0] != 'P' || name.ptr[1] != 'O') return false;
+    for (size_t i = 2; i < name.len; ++i) if (name.ptr[i] < '0' || name.ptr[i] > '9') return false;
+    return true;
+}
+
+/* The atom a head takes its colour from: its heaviest element (the P of a
+   phospholipid, the O of a sterol), for beads the phosphate bead */
+static int32_t head_color_atom(const md_system_t* sys, const int32_t* atoms, size_t n) {
+    int32_t best = atoms[0];
+    md_atomic_number_t best_z = md_atom_atomic_number(&sys->atom, (size_t)atoms[0]);
+    for (size_t k = 0; k < n; ++k) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, (size_t)atoms[k]);
+        if (z > best_z) { best = atoms[k]; best_z = z; }
+        if (best_z == 0 && is_phosphate_center(sys, atoms[k])) best = atoms[k];
+    }
+    return best;
+}
+
+static float head_radius(const md_system_t* sys, const int32_t* atoms, size_t n) {
+    const float heavy = (float)n * (atom_is_bead(sys, (size_t)atoms[0]) ? LIPID_ATOMS_PER_BEAD : 1.0f);
+    const float r = LIPID_HEAD_SCALE * cbrtf(heavy);
+    return r < LIPID_HEAD_MIN ? LIPID_HEAD_MIN : r > LIPID_HEAD_MAX ? LIPID_HEAD_MAX : r;
+}
+
+static int32_t head_local(const int32_t* atoms, size_t n, int32_t atom) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) { const size_t mid = (lo + hi) / 2; if (atoms[mid] < atom) lo = mid + 1; else hi = mid; }
+    return (lo < n && atoms[lo] == atom) ? (int32_t)lo : -1;
+}
+
+/* The connected parts of the head's atoms that keep, through bonds between such */
+static int32_t head_label_parts(int32_t* label, const uint8_t* keep, const md_system_t* sys, const int32_t* atoms, size_t n, int32_t* stack) {
+    for (size_t i = 0; i < n; ++i) label[i] = -1;
+    int32_t count = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (!keep[i] || label[i] != -1) continue;
+        size_t top = 0;
+        stack[top++] = (int32_t)i;
+        label[i] = count;
+        while (top > 0) {
+            const int32_t a = stack[--top];
+            md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)atoms[a]);
+            for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                const int32_t b = head_local(atoms, n, md_bond_iter_atom_index(&it));
+                if (b >= 0 && keep[b] && label[b] == -1) { label[b] = count; stack[top++] = b; }
+            }
+        }
+        ++count;
+    }
+    return count;
+}
+
+/* A head split at its phosphates (viamd's split_head): the parts the tails
+   hang off (the backbone: a glycerol and its esters), then the head group
+   with the phosphates (a phosphocholine), a group per connected part. The
+   Martini beads split alike, NC3 PO4 | GL1 GL2. None for a head without a
+   phosphate, with nothing beyond it or before it, or a tail off a phosphate. */
+typedef struct head_split_t {
+    md_array(int32_t)  atoms;
+    md_array(uint32_t) offset;
+    md_array(uint8_t)  outer;
+} head_split_t;
+
+static bool split_head(head_split_t* out, const md_system_t* sys, const int32_t* atoms, size_t n, const int32_t* anchors, size_t num_anchors, md_allocator_i* alloc) {
+    if (n < 2 || num_anchors == 0) return false;
+    uint8_t* center   = md_alloc(alloc, n);
+    uint8_t* keep     = md_alloc(alloc, n);
+    uint8_t* anchored = md_alloc(alloc, n);
+    int32_t* label    = md_alloc(alloc, n * sizeof(int32_t));
+    int32_t* olabel   = md_alloc(alloc, n * sizeof(int32_t));
+    int32_t* stack    = md_alloc(alloc, n * sizeof(int32_t));
+    bool any = false;
+    for (size_t i = 0; i < n; ++i) { center[i] = is_phosphate_center(sys, atoms[i]); keep[i] = !center[i]; any |= center[i] != 0; }
+    if (!any) return false;
+    const int32_t parts = head_label_parts(label, keep, sys, atoms, n, stack);
+    memset(anchored, 0, n);
+    for (size_t k = 0; k < num_anchors; ++k) {
+        const int32_t a = head_local(atoms, n, anchors[k]);
+        if (a < 0 || center[a]) return false;
+        anchored[label[a]] = 1;
+    }
+    for (size_t i = 0; i < n; ++i) keep[i] = center[i] || !anchored[label[i]];
+    const int32_t outer = head_label_parts(olabel, keep, sys, atoms, n, stack);
+    int32_t inner = 0;
+    for (int32_t p = 0; p < parts; ++p) inner += anchored[p] ? 1 : 0;
+    if (outer == 0 || inner == 0) return false;
+    md_array_push(out->offset, 0u, alloc);
+    for (int32_t p = 0; p < parts; ++p) {
+        if (!anchored[p]) continue;
+        for (size_t i = 0; i < n; ++i) if (!center[i] && label[i] == p) md_array_push(out->atoms, atoms[i], alloc);
+        md_array_push(out->offset, (uint32_t)md_array_size(out->atoms), alloc);
+        md_array_push(out->outer, (uint8_t)0, alloc);
+    }
+    for (int32_t p = 0; p < outer; ++p) {
+        for (size_t i = 0; i < n; ++i) if (olabel[i] == p) md_array_push(out->atoms, atoms[i], alloc);
+        md_array_push(out->offset, (uint32_t)md_array_size(out->atoms), alloc);
+        md_array_push(out->outer, (uint8_t)1, alloc);
+    }
+    return true;
+}
+
+/* The glyphs as the plan builds them: points are derived (der), at point
+   base + their index; the spheres' points per variant; the tubes as md_render
+   SPLINES indices per kind; per control point of the slabs, its r, a and the
+   point its axis points at */
+typedef struct glyph_build_t {
+    derived_build_t*   der;
+    uint32_t           base;
+    const uint32_t*    inv;             /* atom -> point (UINT32_MAX: not resident) */
+    uint32_t           n;
+    md_allocator_i*    alloc;
+    md_array(uint32_t) sphere[LIPID_SPHERES];
+    md_array(uint32_t) tube[LIPID_TUBES];
+    uint32_t           open[LIPID_TUBES];
+    md_array(float)    slab_r;
+    md_array(float)    slab_a;
+    md_array(uint32_t) slab_side;
+    int32_t            ref;             /* the atom the points are taken whole about (-1: their first's) */
+} glyph_build_t;
+
+/* A point of atoms (weights w, NULL: the mean) standing for attr, with the
+   radius w, at their images nearest the ref (a first member of weight 0:
+   the derived points' rule, so the points of one lipid stay together across
+   the cell); UINT32_MAX where an atom is not resident */
+static uint32_t gpoint(glyph_build_t* g, const int32_t* atoms, size_t n, int32_t attr, float radius, const float* w) {
+    if (n == 0 || n > 64) return UINT32_MAX;
+    for (size_t k = 0; k < n; ++k) if (atoms[k] < 0 || (uint32_t)atoms[k] >= g->n || g->inv[atoms[k]] == UINT32_MAX) return UINT32_MAX;
+    const bool lead = g->ref >= 0 && g->ref != atoms[0] && (uint32_t)g->ref < g->n && g->inv[g->ref] != UINT32_MAX;
+    int32_t m[65];
+    float   mw[65];
+    uint32_t c = 0;
+    if (lead) { m[c] = g->ref; mw[c++] = 0.0f; }
+    for (size_t k = 0; k < n; ++k) { m[c] = atoms[k]; mw[c++] = w ? w[k] : 1.0f / (float)n; }
+    return g->base + derived_add(g->der, m, mw, c, (uint32_t)attr, radius);
+}
+
+static void gtube_point(glyph_build_t* g, uint32_t k, uint32_t p, float r, float a, uint32_t side) {
+    if (p == UINT32_MAX) return;
+    md_array_push(g->tube[k], p, g->alloc);
+    if (k == LIPID_TUBE_SLAB) {
+        md_array_push(g->slab_r, r, g->alloc);
+        md_array_push(g->slab_a, a, g->alloc);
+        md_array_push(g->slab_side, side, g->alloc);
+    }
+}
+
+/* Closes the tube of kind k: two control points at least, else none */
+static void gtube_end(glyph_build_t* g, uint32_t k) {
+    const uint32_t beg = g->open[k], end = (uint32_t)md_array_size(g->tube[k]);
+    if (end - beg >= 2) {
+        g->tube[k][beg]     |= MD_RENDER_SPLINE_FIRST;
+        g->tube[k][end - 1] |= MD_RENDER_SPLINE_LAST;
+    } else {
+        md_array_shrink(g->tube[k], beg);
+        if (k == LIPID_TUBE_SLAB) { md_array_shrink(g->slab_r, beg); md_array_shrink(g->slab_a, beg); md_array_shrink(g->slab_side, beg); }
+    }
+    g->open[k] = (uint32_t)md_array_size(g->tube[k]);
+}
+
+/* viamd's sterol_slab: the ring system of a sterol as a slab, a tube
+   through the middle of its rings in sections along it, flat in their plane,
+   from the head's point and on along the side chain as a chain. Laid out once
+   from the reference positions: the long axis and the width are the first
+   two principal axes of the ring atoms (the ring beads R1 .. R6 of a coarse
+   grained one); a section a share of the ring atoms on either side of the
+   long axis, about STEROL_SECTION along it, its axis towards those on the
+   one side. False where they cannot lay it out: a round tube then. */
+static bool sterol_slab(glyph_build_t* g, const md_system_t* sys, const md_lipid_data_t* L, uint32_t t, uint32_t head_point, const uint8_t* in_ring, md_allocator_i* temp) {
+    const md_atom_idx_t* atoms = md_lipid_tail_atoms(L, t);
+    const size_t num_atoms = md_lipid_tail_atom_count(L, t);
+    const md_atom_idx_t* spine = md_lipid_tail_spine(L, t);
+    const size_t len = md_lipid_tail_spine_size(L, t);
+    const md_system_state_t* refs = &sys->reference;
+    if (!refs->xyz || refs->num_atoms != sys->atom.count || len == 0) return false;
+    md_array(int32_t) ring = NULL;
+    for (size_t k = 0; k < num_atoms; ++k) {
+        const int32_t i = atoms[k];
+        bool r;
+        if (atom_is_bead(sys, (size_t)i)) {
+            const md_str_t nm = md_atom_name(&sys->atom, (size_t)i);
+            r = nm.len >= 2 && nm.ptr[0] == 'R' && nm.ptr[1] >= '0' && nm.ptr[1] <= '9';
+        } else {
+            r = in_ring && in_ring[i] && md_atom_atomic_number(&sys->atom, (size_t)i) != MD_Z_H;
+        }
+        if (r) md_array_push(ring, i, temp);
+    }
+    const size_t n = md_array_size(ring);
+    if (n < 3) return false;
+    const int32_t anchor = L->tail.anchor_beg[t];
+    md_float3_t* d = md_alloc(temp, n * sizeof(md_float3_t));
+    for (size_t k = 0; k < n; ++k) d[k] = md_float3_sub(refs->xyz[ring[k]], refs->xyz[anchor]);
+    if (md_unitcell_flags(&refs->unitcell)) md_geom_min_image((float*)d, 0, n, &refs->unitcell);
+    md_float3_t c = md_float3_zero();
+    for (size_t k = 0; k < n; ++k) c = md_float3_add(c, d[k]);
+    c = md_float3_mul1(c, 1.0f / (float)n);
+    md_float3x3_t M;
+    memset(&M, 0, sizeof(M));
+    for (size_t k = 0; k < n; ++k) {
+        const md_float3_t x = md_float3_sub(d[k], c);
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) M.elem[i][j] += x.elem[i] * x.elem[j];
+    }
+    const md_float3x3_eigen_t eig = md_float3x3_eigen(M);
+    md_float3_t axis = eig.vectors.col[0];
+    const md_float3_t width = eig.vectors.col[1];
+    if (md_float3_dot(c, axis) < 0.0f) axis = md_float3_mul1(axis, -1.0f);   /* from the head */
+    float* along  = md_alloc(temp, n * sizeof(float));
+    float* across = md_alloc(temp, n * sizeof(float));
+    float lo = FLT_MAX, hi = -FLT_MAX;
+    for (size_t k = 0; k < n; ++k) {
+        const md_float3_t x = md_float3_sub(d[k], c);
+        along[k]  = md_float3_dot(x, axis);
+        across[k] = md_float3_dot(x, width);
+        lo = MD_MIN(lo, along[k]);
+        hi = MD_MAX(hi, along[k]);
+    }
+    md_array(int32_t) pos = NULL;
+    md_array(int32_t) neg = NULL;
+    for (size_t k = 0; k < n; ++k) { if (across[k] > 0.0f) md_array_push(pos, (int32_t)k, temp); else md_array_push(neg, (int32_t)k, temp); }
+    const size_t np = md_array_size(pos), nn = md_array_size(neg);
+    if (np == 0 || nn == 0) return false;
+    for (int side = 0; side < 2; ++side) {          /* each side in order along the axis */
+        int32_t* a = side ? neg : pos;
+        const size_t m = side ? nn : np;
+        for (size_t i = 1; i < m; ++i) {
+            const int32_t x = a[i];
+            size_t j = i;
+            while (j > 0 && along[a[j - 1]] > along[x]) { a[j] = a[j - 1]; --j; }
+            a[j] = x;
+        }
+    }
+    int sections = (int)((hi - lo) / STEROL_SECTION + 0.5f);
+    sections = MD_CLAMP(sections, 1, (int)MD_MIN(np, nn));
+    const float flat = STEROL_HALF_WIDTH - STEROL_HALF_THICKNESS;
+    md_array(int32_t)  group  = NULL;
+    md_array(uint32_t) points = NULL;
+    md_array(uint32_t) sides  = NULL;
+    for (int sec = 0; sec < sections; ++sec) {
+        const size_t pb = (size_t)sec * np / (size_t)sections, pe = (size_t)(sec + 1) * np / (size_t)sections;
+        const size_t nb = (size_t)sec * nn / (size_t)sections, ne = (size_t)(sec + 1) * nn / (size_t)sections;
+        md_array_shrink(group, 0);
+        for (size_t i = pb; i < pe; ++i) md_array_push(group, ring[pos[i]], temp);
+        const size_t m = md_array_size(group);
+        for (size_t i = nb; i < ne; ++i) md_array_push(group, ring[neg[i]], temp);
+        const uint32_t p  = gpoint(g, group, md_array_size(group), group[0], 0.0f, NULL);
+        const uint32_t sd = gpoint(g, group, m, group[0], 0.0f, NULL);
+        if (p == UINT32_MAX || sd == UINT32_MAX) return false;    /* (its points so far are left unused) */
+        md_array_push(points, p, temp);
+        md_array_push(sides, sd, temp);
+    }
+    /* the dummies of a coarse grained sterol (VOH V1 V2 ...), its rings' mass: of the ring system */
+    size_t chain_beg = 0;
+    for (size_t k = 0; k < len; ++k) {
+        const int32_t i = spine[k];
+        bool r;
+        if (atom_is_bead(sys, (size_t)i)) {
+            const md_str_t nm = md_atom_name(&sys->atom, (size_t)i);
+            r = (nm.len >= 2 && nm.ptr[0] == 'R' && nm.ptr[1] >= '0' && nm.ptr[1] <= '9') || (nm.len >= 1 && nm.ptr[0] == 'V');
+        } else {
+            r = in_ring && in_ring[i] && md_atom_atomic_number(&sys->atom, (size_t)i) != MD_Z_H;
+        }
+        if (r) chain_beg = k + 1;
+    }
+    const uint32_t first_side = sides[0], last_side = sides[md_array_size(sides) - 1];
+    gtube_point(g, LIPID_TUBE_SLAB, head_point, STEROL_HALF_THICKNESS, 0.0f, first_side);
+    for (size_t i = 0; i < md_array_size(points); ++i) gtube_point(g, LIPID_TUBE_SLAB, points[i], STEROL_HALF_THICKNESS, flat, sides[i]);
+    size_t k = chain_beg;
+    if (k < len && !atom_is_bead(sys, (size_t)spine[k])) {
+        for (; k + 1 < len; k += 2) gtube_point(g, LIPID_TUBE_SLAB, gpoint(g, spine + k, 2, spine[k], 0.0f, NULL), LIPID_TAIL_RADIUS, 0.0f, last_side);
+        k = len - 1;
+    }
+    for (; k < len; ++k) gtube_point(g, LIPID_TUBE_SLAB, gpoint(g, spine + k, 1, spine[k], 0.0f, NULL), LIPID_TAIL_RADIUS, 0.0f, last_side);
+    gtube_end(g, LIPID_TUBE_SLAB);
+    return true;
+}
+
+typedef struct tube_root_t { uint32_t head; int32_t anchor; uint32_t point; uint32_t size; } tube_root_t;
+
+/* viamd's build_lipids: per lipid a sphere for each head (at the centre of
+   its heavy atoms, sized by how many: head_radius), or for a head that
+   splits at its phosphate (split_head) one sphere and, for the other
+   variant, one for each part (a point without a sphere where its tails
+   start); a tube for each tail from the head's (or its part's) point over the
+   atom it hangs off and along its spine, a control point per two atoms (an
+   atomistic chain's zigzag smoothed away) or per bead, on to the head a
+   spanning chain joins (a bolalipid); a sterol's ring system a slab
+   (sterol_slab). A lipid whose heads and tails are not known: one sphere for
+   all of it. Every point of a lipid at the images nearest its first's
+   (the derived points' rule: their first member). */
+static void build_lipids(glyph_build_t* g, const md_system_t* sys, md_allocator_i* temp) {
+    const md_lipid_data_t* L = &sys->lipid;
+    if (!L->count || !L->head_offset || !L->tail_offset) return;
+    uint8_t* in_ring = NULL;
+    const size_t num_rings = md_ring_data_count(&sys->ring);
+    if (num_rings) {
+        in_ring = md_alloc(temp, sys->atom.count + 1);
+        memset(in_ring, 0, sys->atom.count + 1);
+        for (size_t r = 0; r < num_rings; ++r) {
+            const int32_t* ra = md_ring_atoms(&sys->ring, r);
+            for (size_t k = 0; k < md_ring_size(&sys->ring, r); ++k) if ((size_t)ra[k] < sys->atom.count) in_ring[ra[k]] = 1;
+        }
+    }
+    md_array(tube_root_t) roots = NULL;
+    md_array(int32_t) anchors = NULL;
+    md_array(int32_t) whole = NULL;
+    for (size_t l = 0; l < L->count; ++l) {
+        const uint32_t h0 = L->head_offset[l], h1 = L->head_offset[l + 1];
+        const uint32_t t0 = L->tail_offset[l], t1 = L->tail_offset[l + 1];
+        g->ref = -1;
+        if (h1 == h0) {
+            md_array_shrink(whole, 0);
+            const int32_t* residues = md_lipid_residues(L, l);
+            for (size_t c = 0; c < md_lipid_residue_count(L, l); ++c) {
+                const md_urange_t r = md_system_residue_atom_range(sys, (size_t)residues[c]);
+                for (uint32_t i = r.beg; i < r.end; ++i) if (md_atom_atomic_number(&sys->atom, i) != MD_Z_H) md_array_push(whole, (int32_t)i, temp);
+            }
+            const size_t n = md_array_size(whole);
+            if (!n) continue;
+            const uint32_t p = gpoint(g, whole, n, head_color_atom(sys, whole, n), head_radius(sys, whole, n), NULL);
+            if (p != UINT32_MAX) md_array_push(g->sphere[LIPID_SPHERE_ALWAYS], p, g->alloc);
+            continue;
+        }
+        md_array_shrink(roots, 0);
+        g->ref = md_lipid_head_atom_count(L, h0) ? md_lipid_head_atoms(L, h0)[0] : -1;     /* every point in its first head atom's image */
+        for (uint32_t h = h0; h < h1; ++h) {
+            const md_atom_idx_t* atoms = md_lipid_head_atoms(L, h);
+            const size_t n = md_lipid_head_atom_count(L, h);
+            if (!n) continue;
+            const int32_t color = head_color_atom(sys, atoms, n);
+            md_array_shrink(anchors, 0);
+            for (uint32_t t = t0; t < t1; ++t) {
+                if (L->tail.head_beg[t] == h) md_array_push(anchors, L->tail.anchor_beg[t], temp);
+                if (L->tail.head_end[t] == h && L->tail.anchor_end[t] != -1) md_array_push(anchors, L->tail.anchor_end[t], temp);
+            }
+            head_split_t split = { 0 };
+            if (!split_head(&split, sys, atoms, n, anchors, md_array_size(anchors), temp)) {
+                const uint32_t p = gpoint(g, atoms, n, color, head_radius(sys, atoms, n), NULL);
+                if (p != UINT32_MAX) md_array_push(g->sphere[LIPID_SPHERE_ALWAYS], p, g->alloc);
+                md_array_push(roots, ((tube_root_t){ h, -1, p, (uint32_t)n }), temp);
+                continue;
+            }
+            const uint32_t one = gpoint(g, atoms, n, color, head_radius(sys, atoms, n), NULL);
+            if (one != UINT32_MAX) md_array_push(g->sphere[LIPID_SPHERE_ONE], one, g->alloc);
+            for (uint32_t k = 0; k + 1 < (uint32_t)md_array_size(split.offset); ++k) {
+                const int32_t* ga = split.atoms + split.offset[k];
+                const size_t   gn = split.offset[k + 1] - split.offset[k];
+                const int32_t  gc = head_color_atom(sys, ga, gn);
+                const uint32_t ps = gpoint(g, ga, gn, gc, head_radius(sys, ga, gn), NULL);
+                if (ps != UINT32_MAX) md_array_push(g->sphere[LIPID_SPHERE_TWO], ps, g->alloc);
+                if (split.outer[k]) continue;
+                const uint32_t root = gpoint(g, ga, gn, gc, 0.0f, NULL);
+                for (size_t a = 0; a < md_array_size(anchors); ++a) {
+                    if (head_local(ga, gn, anchors[a]) >= 0) md_array_push(roots, ((tube_root_t){ h, anchors[a], root, (uint32_t)gn }), temp);
+                }
+            }
+        }
+        for (uint32_t t = t0; t < t1; ++t) {
+            const md_atom_idx_t* spine = md_lipid_tail_spine(L, t);
+            const size_t len = md_lipid_tail_spine_size(L, t);
+            if (!len) continue;
+            const bool skeleton = L->tail.kind && L->tail.kind[t] == MD_LIPID_TAIL_SKELETON;
+            const uint32_t kind = skeleton ? LIPID_TUBE_SKELETON : LIPID_TUBE_CHAIN;
+            const bool beads = atom_is_bead(sys, (size_t)spine[0]);
+            /* from the head's (or its part's) point, over the atom it hangs off */
+            const int32_t anchor_beg = L->tail.anchor_beg[t];
+            tube_root_t beg = { L->tail.head_beg[t], -1, UINT32_MAX, 0 };
+            for (size_t i = 0; i < md_array_size(roots); ++i) {
+                if (roots[i].head != L->tail.head_beg[t]) continue;
+                if (roots[i].anchor == anchor_beg) { beg = roots[i]; break; }
+                if (roots[i].anchor == -1) beg = roots[i];
+            }
+            if (beg.point == UINT32_MAX) continue;
+            if (skeleton && sterol_slab(g, sys, L, t, beg.point, in_ring, temp)) continue;
+            gtube_point(g, kind, beg.point, 0.0f, 0.0f, UINT32_MAX);
+            if (beg.size > 1) gtube_point(g, kind, gpoint(g, &anchor_beg, 1, spine[0], 0.0f, NULL), 0.0f, 0.0f, UINT32_MAX);
+            size_t k = 0;
+            if (!beads) {
+                for (; k + 1 < len; k += 2) gtube_point(g, kind, gpoint(g, spine + k, 2, spine[k], 0.0f, NULL), 0.0f, 0.0f, UINT32_MAX);
+                k = len - 1;
+            }
+            for (; k < len; ++k) gtube_point(g, kind, gpoint(g, spine + k, 1, spine[k], 0.0f, NULL), 0.0f, 0.0f, UINT32_MAX);
+            /* a spanning chain on to its other head */
+            if (L->tail.anchor_end[t] != -1 && L->tail.head_end[t] != UINT32_MAX) {
+                const int32_t anchor_end = L->tail.anchor_end[t];
+                tube_root_t end = { L->tail.head_end[t], -1, UINT32_MAX, 0 };
+                for (size_t i = 0; i < md_array_size(roots); ++i) {
+                    if (roots[i].head != L->tail.head_end[t]) continue;
+                    if (roots[i].anchor == anchor_end) { end = roots[i]; break; }
+                    if (roots[i].anchor == -1) end = roots[i];
+                }
+                if (end.point != UINT32_MAX) {
+                    if (end.size > 1) gtube_point(g, kind, gpoint(g, &anchor_end, 1, spine[len - 1], 0.0f, NULL), 0.0f, 0.0f, UINT32_MAX);
+                    gtube_point(g, kind, end.point, 0.0f, 0.0f, UINT32_MAX);
+                }
+            }
+            gtube_end(g, kind);
+        }
+    }
+    g->ref = -1;
+}
+
+/* ---- Coarse grained nucleic acids: the rings of an ideal base where its
+   beads are (viamd's coarse_grained_base) ---- */
+#define NUCLEOBASE_MAX_REAL    4u
+#define NUCLEOBASE_MAX_CORNERS 9u
+typedef struct nucleobase_t {
+    char        base;           /* A, C, G, T or U */
+    uint8_t     num_beads;      /* of the base, real and virtual */
+    uint8_t     num_real;       /* the beads the ring atoms are weighted sums of */
+    const char* real[NUCLEOBASE_MAX_REAL];
+    uint8_t     num_corners;    /* 6 for a pyrimidine, 9 for a purine */
+    float       weight[NUCLEOBASE_MAX_CORNERS][NUCLEOBASE_MAX_REAL];
+} nucleobase_t;
+
+#include "md_render_mol_nucleobases.inl"
+
+static const uint32_t NUCLEOBASE_RING6[6] = { 0, 1, 2, 3, 4, 5 };    /* N1 C2 N3 C4 C5 C6 */
+static const uint32_t NUCLEOBASE_RING5[5] = { 3, 4, 6, 7, 8 };       /* C4 C5 N7 C8 N9 */
+
+/* DA, A, RA, and those of a terminal one (DA5, A3); 0 for none */
+static char nucleotide_base(md_str_t name) {
+    while (name.len > 1 && (name.ptr[name.len - 1] == '3' || name.ptr[name.len - 1] == '5')) name.len -= 1;
+    char c = 0;
+    if (name.len == 1) c = name.ptr[0];
+    else if (name.len == 2 && (name.ptr[0] == 'D' || name.ptr[0] == 'R')) c = name.ptr[1];
+    return (c == 'A' || c == 'C' || c == 'G' || c == 'T' || c == 'U') ? c : 0;
+}
+
+/* The corners' points of a coarse grained base (out: 6 or 9, N1 C2 N3 C4 C5
+   C6 [N7 C8 N9]), each a weighted sum of its real beads; how many, 0 for a
+   base of none of the models (another name, number of beads, a bead missing) */
+static uint32_t coarse_grained_base(glyph_build_t* g, const md_system_t* sys, int32_t res, uint32_t out[NUCLEOBASE_MAX_CORNERS]) {
+    if (res < 0) return 0;
+    const char base = nucleotide_base(md_system_residue_name(sys, (size_t)res));
+    if (!base) return 0;
+    const md_urange_t range = md_system_residue_atom_range(sys, (size_t)res);
+    uint32_t beads = 0;
+    for (uint32_t i = range.beg; i < range.end; ++i) beads += (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_NUCLEOBASE) ? 1u : 0u;
+    const nucleobase_t* t = NULL;
+    for (size_t e = 0; e < sizeof(cartoon_nucleobases) / sizeof(cartoon_nucleobases[0]) && !t; ++e) {
+        if (cartoon_nucleobases[e].base == base && cartoon_nucleobases[e].num_beads == beads) t = &cartoon_nucleobases[e];
+    }
+    if (!t) return 0;
+    int32_t real[NUCLEOBASE_MAX_REAL];
+    for (uint32_t k = 0; k < t->num_real; ++k) {
+        real[k] = -1;
+        for (uint32_t i = range.beg; i < range.end && real[k] < 0; ++i) if (md_str_eq_cstr(md_atom_name(&sys->atom, i), t->real[k])) real[k] = (int32_t)i;
+        if (real[k] < 0) return 0;
+    }
+    for (uint32_t k = 0; k < t->num_corners; ++k) {
+        out[k] = gpoint(g, real, t->num_real, real[0], 0.0f, t->weight[k]);
+        if (out[k] == UINT32_MAX) return 0;
+    }
+    return t->num_corners;
 }
 
 bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const md_bitset_t* resident, md_temp_scope_t temp) {
@@ -597,6 +1086,14 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
        N, and the rings fused to that, sharing a bond); the stick from the
        C1' to that N. Every atom of a ring resident and static, else the
        ring is left out. */
+    /* Derived points (see the topology): the coarse grained bases' rings
+       (below), then the lipids' glyphs */
+    derived_build_t der = { .alloc = md_temp_allocator(temp) };
+    md_array_push(der.offset, 0u, der.alloc);
+    glyph_build_t gb;
+    memset(&gb, 0, sizeof(gb));
+    gb.der = &der; gb.base = n_res; gb.inv = inv; gb.n = n; gb.alloc = der.alloc; gb.ref = -1;
+
     const md_nucleic_backbone_data_t* NB = &sys->nucleic_backbone;
     const uint32_t n_nseg = NB->segment.atoms ? (uint32_t)NB->segment.count : 0;
     #define RING_PER_NUC 4u                    /* a sugar, a purine's two, one more of a modified base */
@@ -638,11 +1135,41 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         #define RING_HAS(r, x) ring_has_atom(RD, (r), (x))
         uint32_t start = 0;
         for (size_t rr = 0; rr < NB->range.count; ++rr) {
-            if (md_nucleic_backbone_range_is_coarse_grained(NB, rr)) continue;   /* derived points: not yet */
+            const bool beads = md_nucleic_backbone_range_is_coarse_grained(NB, rr);
             const uint32_t b = NB->range.offset[rr], e = NB->range.offset[rr + 1];
             for (uint32_t g = b; g <= e; ++g) {
                 bool band = false;
-                if (g < e && g < n_nseg) {
+                if (beads && g < e && g < n_nseg) {
+                    /* coarse grained (viamd's): the band through the sugar bead with
+                       the C4' (BB2), its base the rings of an ideal one where its beads
+                       are (derived points), the stick from the band to its glycosidic
+                       N; its sugar not drawn (two beads tell neither pucker nor lie) */
+                    const md_nucleic_acid_atoms_t at = NB->segment.atoms[g];
+                    uint32_t base_n = UINT32_MAX;
+                    if (NA_ATOM_OK(at.c4)) {
+                        uint32_t cn[NUCLEOBASE_MAX_CORNERS];
+                        gb.ref = at.c4;
+                        const uint32_t nc = coarse_grained_base(&gb, sys, NB->segment.res_idx ? NB->segment.res_idx[g] : -1, cn);
+                        gb.ref = -1;
+                        if (nc && rg_n[3] < n_nseg * RING_PER_NUC && rg_n[2] < n_nseg * RING_PER_NUC) {
+                            for (uint32_t l = 0; l < 6; ++l) rg_pts[3][(size_t)rg_n[3] * 6 + l] = cn[NUCLEOBASE_RING6[l]];
+                            rg_seg[3][rg_n[3]++] = g;
+                            if (nc == 9) {
+                                for (uint32_t l = 0; l < 5; ++l) rg_pts[2][(size_t)rg_n[2] * 5 + l] = cn[NUCLEOBASE_RING5[l]];
+                                rg_seg[2][rg_n[2]++] = g;
+                            }
+                            base_n = nc == 9 ? cn[8] : cn[0];
+                            st_pts[2 * n_stick + 0] = inv[at.c4];
+                            st_pts[2 * n_stick + 1] = base_n;
+                            st_seg[n_stick++] = g;
+                        }
+                        band = true;
+                        na_index[n_na] = inv[at.c4];
+                        na_seg[n_na]   = g;
+                        na_face[n_na]  = base_n != UINT32_MAX ? base_n : NA_ATOM_OK(at.c1) ? inv[at.c1] : UINT32_MAX;
+                        n_na++;
+                    }
+                } else if (g < e && g < n_nseg) {
                     const md_nucleic_acid_atoms_t at = NB->segment.atoms[g];
                     /* its rings: the sugar, then the base's */
                     uint32_t rings[2 * RING_PER_NUC], nr = 0, sugar = UINT32_MAX;
@@ -910,22 +1437,24 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     T->partner_count = n_prt;
 
-    /* Derived points (see the topology). The lipids' heads: each at the
-       centre of its resident heavy atoms (beads), standing for the first */
-    derived_build_t der = { .alloc = md_temp_allocator(temp) };
-    md_array_push(der.offset, 0u, der.alloc);
-    {
-        const md_lipid_data_t* LP = &sys->lipid;
-        int32_t* ha = md_temp_alloc(temp, (sizeof(int32_t) * (LP->head.offset ? LP->head.offset[LP->head.count] : 0)) + 4u);
-        if (!ha) return false;
-        for (size_t h = 0; h < LP->head.count; ++h) {
-            const md_atom_idx_t* at = md_lipid_head_atoms(LP, h);
-            const size_t na_h = md_lipid_head_atom_count(LP, h);
-            uint32_t k = 0;
-            for (size_t j = 0; j < na_h; ++j) if (at[j] >= 0 && (uint32_t)at[j] < n && inv[at[j]] != UINT32_MAX) ha[k++] = at[j];
-            if (k) derived_add(&der, ha, NULL, k, (uint32_t)ha[0], 0.0f);
-        }
+    /* The lipids' glyphs (viamd's build_lipids), on derived points; the
+       profile of the sterols' slabs from their control points' r and a, as
+       md_render's parts: from the joint before to the joint after (halfway) */
+    build_lipids(&gb, sys, md_temp_allocator(temp));
+    const uint32_t n_slab = (uint32_t)md_array_size(gb.tube[LIPID_TUBE_SLAB]);
+    float* slab_prof = md_temp_alloc(temp, ((size_t)n_slab + 1) * 16u);
+    if (!slab_prof) return false;
+    for (uint32_t j = 0; j < n_slab; ++j) {
+        const uint32_t ie = gb.tube[LIPID_TUBE_SLAB][j];
+        const uint32_t jp = (ie & MD_RENDER_SPLINE_FIRST) ? j : j - 1u, jn = (ie & MD_RENDER_SPLINE_LAST) ? j : j + 1u;
+        slab_prof[4 * j + 0] = 0.5f * (gb.slab_a[jp] + gb.slab_a[j]);
+        slab_prof[4 * j + 1] = 0.5f * (gb.slab_a[j] + gb.slab_a[jn]);
+        slab_prof[4 * j + 2] = 0.5f * (gb.slab_r[jp] + gb.slab_r[j]);
+        slab_prof[4 * j + 3] = 0.5f * (gb.slab_r[j] + gb.slab_r[jn]);
     }
+    uint32_t n_sph = 0, n_tub = 0;
+    for (uint32_t k = 0; k < LIPID_SPHERES; ++k) { T->lipid_sphere_count[k] = (uint32_t)md_array_size(gb.sphere[k]); n_sph += T->lipid_sphere_count[k]; }
+    for (uint32_t k = 0; k < LIPID_TUBES; ++k)   { T->lipid_tube_count[k]   = (uint32_t)md_array_size(gb.tube[k]);   n_tub += T->lipid_tube_count[k]; }
     const uint32_t n_der    = (uint32_t)md_array_size(der.atom);
     const uint32_t n_dmem   = (uint32_t)md_array_size(der.member);
     T->derived_count = n_der;
@@ -1038,6 +1567,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.partner_points      = o; o = align256(o + (uint64_t)n_prt * 8u);
     L.partner_bond        = o; o = align256(o + (uint64_t)n_prt * 4u);
     L.partner_ref         = o; o = align256(o + (uint64_t)n_prt * 8u);
+    L.lipid_spheres       = o; o = align256(o + (uint64_t)n_sph * 4u);
+    L.lipid_tubes         = o; o = align256(o + (uint64_t)n_tub * 4u);
+    L.lipid_slab_profile  = o; o = align256(o + (uint64_t)n_slab * 16u);
+    L.lipid_slab_side     = o; o = align256(o + (uint64_t)n_slab * 4u);
     L.derived_offset      = o; o = align256(o + ((uint64_t)n_der + 1u) * 4u);
     L.derived_member      = o; o = align256(o + (uint64_t)n_dmem * 4u);
     L.derived_weight      = o; o = align256(o + (uint64_t)n_dmem * 4u);
@@ -1131,6 +1664,14 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     memcpy(img + L.partner_points, pt_pts, (size_t)n_prt * 8u);
     memcpy(img + L.partner_bond,   pt_bnd, (size_t)n_prt * 4u);
     memcpy(img + L.partner_ref,    pt_ref, (size_t)n_prt * 8u);
+    {
+        uint64_t q = 0;
+        for (uint32_t k = 0; k < LIPID_SPHERES; ++k) { memcpy(img + L.lipid_spheres + q, gb.sphere[k], (size_t)T->lipid_sphere_count[k] * 4u); q += (uint64_t)T->lipid_sphere_count[k] * 4u; }
+        q = 0;
+        for (uint32_t k = 0; k < LIPID_TUBES; ++k) { memcpy(img + L.lipid_tubes + q, gb.tube[k], (size_t)T->lipid_tube_count[k] * 4u); q += (uint64_t)T->lipid_tube_count[k] * 4u; }
+        memcpy(img + L.lipid_slab_profile, slab_prof, (size_t)n_slab * 16u);
+        memcpy(img + L.lipid_slab_side, gb.slab_side, (size_t)n_slab * 4u);
+    }
     if (n_ord_all) {
         float* single = (float*)(img + L.bond_single);
         for (uint32_t j = 0; j < cov_n; ++j) single[j] = (j < cov_static && od_kind[j]) ? 0.0f : 1.0f;
@@ -1159,8 +1700,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
 
     T->size                = L.size;
-    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt).size;
-    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt).size_velocity;
+    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt, n_slab).size;
+    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt, n_slab).size_velocity;
     T->resident            = L.resident;
     T->regroups            = L.state;
     T->atom_type           = L.atom_type;
@@ -1198,6 +1739,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->partner_points      = L.partner_points;
     T->partner_bond        = L.partner_bond;
     T->partner_ref         = L.partner_ref;
+    T->lipid_spheres       = L.lipid_spheres;
+    T->lipid_tubes         = L.lipid_tubes;
+    T->lipid_slab_profile  = L.lipid_slab_profile;
+    T->lipid_slab_side     = L.lipid_slab_side;
     T->derived_offset      = L.derived_offset;
     T->derived_member      = L.derived_member;
     T->derived_weight      = L.derived_weight;
@@ -1259,6 +1804,10 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->partner_points      = base + plan->layout.partner_points;
     out->partner_bond        = base + plan->layout.partner_bond;
     out->partner_ref         = base + plan->layout.partner_ref;
+    out->lipid_spheres       = base + plan->layout.lipid_spheres;
+    out->lipid_tubes         = base + plan->layout.lipid_tubes;
+    out->lipid_slab_profile  = base + plan->layout.lipid_slab_profile;
+    out->lipid_slab_side     = base + plan->layout.lipid_slab_side;
     out->derived_offset      = base + plan->layout.derived_offset;
     out->derived_member      = base + plan->layout.derived_member;
     out->derived_weight      = base + plan->layout.derived_weight;
@@ -1279,6 +1828,7 @@ struct md_render_mol {
     md_gpu_kernel_t k_derive;                                        /* the derived points */
     md_gpu_kernel_t k_bond_sides;                                    /* the double bonds' sides */
     md_gpu_kernel_t k_bond_partners;                                 /* the partners' sides */
+    md_gpu_kernel_t k_slab_axes;                                     /* the sterols' slabs' axes */
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -1291,7 +1841,7 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t bb_index, bb_segment, bb_carbonyl, bb_chain, bb_axis, bb_flip, bb_ss, bb_out;
     md_gpu_addr_t na_index, na_face, na_axis;
     md_gpu_addr_t der_offset, der_member, der_weight, der_radius;
-    md_gpu_addr_t ord_points, ord_ref, ord_side, prt_points, prt_ref, prt_side;
+    md_gpu_addr_t ord_points, ord_ref, ord_side, prt_points, prt_ref, prt_side, lip_tubes, lip_side, lip_axis;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t fr_threads;
@@ -1299,9 +1849,9 @@ typedef struct gpu_mol_args_t {
     float    w[4], dw[4];
     uint32_t bb_count, bb_chains, bb_history, has_ss;
     float    bb_scale[3];                                           /* coil, helix, sheet */
-    uint32_t dbg, na_count, der_count, der_cell, ord_count, prt_count;
+    uint32_t dbg, na_count, der_count, der_cell, ord_count, prt_count, lip_count, _pad4;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 62 * 8 + 46 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 65 * 8 + 48 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -1339,9 +1889,10 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_derive_kernel();      r->k_derive     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_bond_sides_kernel();  r->k_bond_sides = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_bond_partners_kernel(); r->k_bond_partners = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_slab_axes_kernel();   r->k_slab_axes  = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis || !r->k_derive || !r->k_bond_sides || !r->k_bond_partners) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis || !r->k_derive || !r->k_bond_sides || !r->k_bond_partners || !r->k_slab_axes) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -1353,7 +1904,7 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis, &r->k_derive, &r->k_bond_sides, &r->k_bond_partners };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis, &r->k_derive, &r->k_bond_sides, &r->k_bond_partners, &r->k_slab_axes };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -1456,12 +2007,16 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->prt_points          = topo->partner_points;
     a->prt_ref             = topo->partner_ref;
     a->prt_count           = topo->partner_count;
+    a->lip_tubes           = topo->lipid_tubes + ((uint64_t)topo->lipid_tube_count[0] + topo->lipid_tube_count[1]) * 4u;   /* the slabs' */
+    a->lip_side            = topo->lipid_slab_side;
+    a->lip_count           = topo->lipid_tube_count[2];
     if (dynamic) {
         a->bb_axis  = dynamic + D.bb_axis;
         a->bb_flip  = dynamic + D.bb_flip;
         a->na_axis  = dynamic + D.na_axis;
         a->ord_side = dynamic + D.ord_side;
         a->prt_side = dynamic + D.prt_side;
+        a->lip_axis = dynamic + D.lip_axis;
     }
 }
 
@@ -1519,6 +2074,8 @@ static bool has_velocity(const md_render_mol_atoms_t* atoms) {
     }
     return atoms->velocity != 0;
 }
+
+static bool frame_param_words(uint32_t out[32], const md_render_mol_frame_t* f);
 
 static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
                         md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
@@ -1599,6 +2156,20 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
            (that of the gather's minimum images), or as they are */
         a.der_cell = fr ? 1u + (atoms->frame_count == 4 ? 1u : 0u) : 0u;
         if (fr) for (uint32_t k = 0; k < 4; ++k) a.fpar[k] = frame_params(fr, atoms->frame_slot[k < atoms->frame_count ? k : 0]);
+        bool cell = false;
+        for (int k = 0; k < 9; ++k) cell |= atoms->cell[k] != 0.0f;
+        if (!fr && cell) {          /* the positions' own: as a frame's words */
+            md_render_mol_frame_t cf;
+            memset(&cf, 0, sizeof(cf));
+            memcpy(cf.cell, atoms->cell, sizeof(cf.cell));
+            uint32_t words[32];
+            if (frame_param_words(words, &cf)) {
+                const md_gpu_addr_t at = dynamic + dyn_of(topo).cell;
+                ok = md_gpu_upload(s, at, words, sizeof(words));
+                a.fpar[0]  = at;
+                a.der_cell = 1u;
+            }
+        }
         ok = launch(s, r->k_derive, groups_for(topo->derived_count, 64), &a, hook, user, "derived");
     }
     if (ok && topo->backbone_count) {
@@ -1619,6 +2190,9 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
     }
     if (ok && topo->partner_count) {             /* the partners' sides */
         ok = launch(s, r->k_bond_partners, groups_for(topo->partner_count, 64), &a, hook, user, "bond partners");
+    }
+    if (ok && topo->lipid_tube_count[2]) {       /* the sterols' slabs, after the derived points */
+        ok = launch(s, r->k_slab_axes, groups_for(topo->lipid_tube_count[2], 64), &a, hook, user, "slab axes");
     }
     if (ok && content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return ok;
@@ -2034,7 +2608,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
         { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
         { "bb_support", r->k_bb_support }, { "bb_orient", r->k_bb_orient }, { "bb_profile", r->k_bb_profile },
-        { "na_axis", r->k_na_axis }, { "derive", r->k_derive }, { "bond_sides", r->k_bond_sides }, { "bond_partners", r->k_bond_partners },
+        { "na_axis", r->k_na_axis }, { "derive", r->k_derive }, { "bond_sides", r->k_bond_sides }, { "bond_partners", r->k_bond_partners }, { "slab_axes", r->k_slab_axes },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -2241,6 +2815,47 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.style.capsules.radius = ring;
             put(out, cap, &n, &b);
         }
+        /* The lipids (viamd's): the heads' spheres, their radii the points'
+           w (no radius table); the tubes */
+        const float ls = rep->params.cartoon.lipid_scale > 0.0f ? rep->params.cartoon.lipid_scale : 1.0f;
+        {
+            const uint32_t* sc = topo->lipid_sphere_count;
+            const uint32_t first[2] = { 0u, rep->params.cartoon.split_heads ? sc[0] + sc[1] : sc[0] };
+            const uint32_t count[2] = { sc[0], rep->params.cartoon.split_heads ? sc[2] : sc[1] };
+            for (uint32_t k = 0; k < 2; ++k) {
+                if (!count[k]) continue;
+                md_render_batch_t b = base;
+                b.key   = (rep->key << 8) | (uint64_t)(MD_RENDER_MOL_PART_LIPID_SPHERES + k);
+                b.kind  = MD_RENDER_SPHERES;
+                b.count = count[k];
+                b.index = topo->lipid_spheres + (md_gpu_addr_t)first[k] * 4u;
+                b.points.radius_table       = 0;
+                b.points.radius_table_count = 0;
+                b.style.spheres.radius_scale = ls;
+                put(out, cap, &n, &b);
+            }
+            const float radius[3] = { LIPID_TAIL_RADIUS, SKELETON_RADIUS, 0.0f };
+            uint32_t first_t = 0;
+            for (uint32_t k = 0; k < LIPID_TUBES; ++k) {
+                const uint32_t cnt = topo->lipid_tube_count[k];
+                if (cnt) {
+                    md_render_batch_t b = base;
+                    b.key   = (rep->key << 8) | (uint64_t)(MD_RENDER_MOL_PART_LIPID_TUBES + k);
+                    b.kind  = MD_RENDER_SPLINES;
+                    b.count = cnt;
+                    b.index = topo->lipid_tubes + (md_gpu_addr_t)first_t * 4u;
+                    if (k == LIPID_TUBE_SLAB) {
+                        b.style.splines.profile = topo->lipid_slab_profile;
+                        b.style.splines.axis    = dynamic + dyn_of(topo).lip_axis;
+                        b.style.splines.scale   = ls;
+                    } else {
+                        b.style.splines.radius  = radius[k] * ls;
+                    }
+                    put(out, cap, &n, &b);
+                }
+                first_t += cnt;
+            }
+        }
         const md_render_sphere_style_t none = { 0.0f, 0.0f };     /* the cartoon ends at the points */
         put_gaps(out, cap, &n, &base, topo, rep, 0, CHAIN_GAP_RADIUS_TRACE * 0.2f, none);
         return n;
@@ -2420,6 +3035,16 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
         hit->kind    = MD_RENDER_MOL_HIT_CHAIN_GAP;
         hit->residue = pick->id;
         hit->atom    = pick->attr;
+        return true;
+    }
+    if ((part == MD_RENDER_MOL_PART_LIPID_SPHERES || part == MD_RENDER_MOL_PART_LIPID_SPHERES + 1u) && pick->kind == MD_RENDER_SPHERES) {
+        hit->kind = MD_RENDER_MOL_HIT_LIPID;
+        hit->atom = pick->attr;
+        return true;
+    }
+    if (part >= MD_RENDER_MOL_PART_LIPID_TUBES && part < MD_RENDER_MOL_PART_LIPID_TUBES + 3u && pick->kind == MD_RENDER_SPLINES) {
+        hit->kind = MD_RENDER_MOL_HIT_LIPID;
+        hit->atom = pick->attr;
         return true;
     }
     if (part >= MD_RENDER_MOL_PART_AROMATIC && part < MD_RENDER_MOL_PART_AROMATIC + 2u * MD_RENDER_MOL_RING_SIZES && pick->kind == MD_RENDER_POLYGONS) {

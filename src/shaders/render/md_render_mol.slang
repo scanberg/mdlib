@@ -120,6 +120,9 @@ struct Args {
     uint* prt_points;           // the partners: uint2 per partner, its bond's points
     uint* prt_ref;              // uint2: the points by its ends that give its side
     uint* prt_side;             // float4: its side, w its miters (md_render's)
+    uint* lip_tubes;            // the sterols' slabs: per control point its point | flags
+    uint* lip_side;             // the point its axis points at (UINT32_MAX: none)
+    uint* lip_axis;             // float4: its axis (md_render's)
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -159,7 +162,8 @@ struct Args {
     uint  der_cell;             // the cell of their images: 0 none, 1 fpar0's, 2 fpar1's
     uint  ord_count;            // double bonds
     uint  prt_count;            // partners
-    uint  _pad3;
+    uint  lip_count;            // control points of the sterols' slabs
+    uint  _pad4;
 };
 MD_SHADER_ARGS(Args);
 
@@ -1004,5 +1008,22 @@ void bond_partners(uint3 tid : SV_DispatchThreadID) {
         uint* o = a.prt_side + 4u * j;
         o[0] = asuint(side.x); o[1] = asuint(side.y); o[2] = asuint(side.z);
         o[3] = f32tof16(mt.x) | (f32tof16(mt.y) << 16u);
+    }
+}
+
+// The axes of the sterols' slabs (md_render's spline axis): from each control
+// point to the point its axis points at (the ring atoms on one side of its
+// section), md_render making it orthogonal to the curve
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void slab_axes(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.lip_count;
+    for (uint j = tid.x; j < n; j += grid_threads(n)) {
+        uint   sd = a.lip_side[j];
+        float3 ax = float3(0.0);
+        if (sd != 0xFFFFFFFFu) ax = ld3(a.points, 4u * sd) - ld3(a.points, 4u * (a.lip_tubes[j] & BB_POINT));
+        uint* o = a.lip_axis + 4u * j;
+        o[0] = asuint(ax.x); o[1] = asuint(ax.y); o[2] = asuint(ax.z); o[3] = 0u;
     }
 }
