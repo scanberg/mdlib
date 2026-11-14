@@ -295,7 +295,7 @@ float3 load_vel(Batch b, uint i) {
     uint* p = b.velocity + gated(b, F_VELOCITY, i) * (b.vel_stride >> 2);
     uint w0 = p[0];
     uint w1 = p[1];
-    return float3(f16tof32(w0 & 0xFFFFu), f16tof32(w0 >> 16), f16tof32(w1 & 0xFFFFu));
+    return float3(md_half_to_float(w0 & 0xFFFFu), md_half_to_float(w0 >> 16), md_half_to_float(w1 & 0xFFFFu));
 }
 
 uint attr_of(Batch b, uint pi) {
@@ -549,7 +549,7 @@ float2 capsule_pull(Batch b, uint e, float len, float d) {
     float2 m = float2(0.0);
     if ((b.flags & F_SIDE) != 0u) {
         uint w = asuint(b.cap_side[gated(b, F_SIDE, e)].w);
-        m = float2(f16tof32(w & 0xFFFFu), f16tof32(w >> 16u));
+        m = float2(md_half_to_float(w & 0xFFFFu), md_half_to_float(w >> 16u));
     }
     float2 p = m * d + b.cap_trim * len;
     float  s = p.x + p.y;
