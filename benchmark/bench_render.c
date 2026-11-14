@@ -54,6 +54,8 @@ Every run prints the mdlib revision it was built from, first.
 #include <md_io.h>
 #include <md_attributes.h>
 #include <md_unitcell.h>
+#include <md_element.h>
+#include <md_backbone.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
@@ -787,8 +789,8 @@ typedef struct pass_prof_t {
     md_gpu_stream_t s;
     md_tick_t       t;
     uint32_t        n;
-    const char*     name[24];
-    double          ms[24];
+    const char*     name[32];
+    double          ms[32];
 } pass_prof_t;
 
 /* Each pass synced and timed on the host: the sync's own cost is in every number */
@@ -796,7 +798,7 @@ static void pass_hook(void* user, const char* pass) {
     pass_prof_t* p = user;
     md_gpu_stream_sync(p->s);
     md_tick_t now = md_tick_now();
-    if (p->n < 24) { p->name[p->n] = pass; p->ms[p->n] = md_tick_to_milliseconds(now - p->t); p->n++; }
+    if (p->n < 32) { p->name[p->n] = pass; p->ms[p->n] = md_tick_to_milliseconds(now - p->t); p->n++; }
     p->t = now;
 }
 
@@ -1441,16 +1443,368 @@ static int run_gpu(int argc, char** argv) {
     md_gpu_device_destroy(dev);
     return 0;
 }
+
+/* =========================================================================
+   The heavy path: md_render's splines and polygons (refit_heavy, cull_heavy,
+   resolve_heavy) and the md_render_mol representations built on them, on
+   real structures from test_data, drawn as copies on a grid of their cell
+   (batch transforms: how assemblies and periodic images are drawn; per
+   element and per pixel the same work as one system that large)
+   ========================================================================= */
+
+enum { HV_CARTOON, HV_RIBBONS, HV_LICORICE, HV_LICORICE_ORDERS };
+
+/* Looking down -z at (ctr x, ctr y) from `dist` in front of z = z_front */
+static md_render_camera_t camera_front(const double ctr[3], double z_front, double dist, float aspect) {
+    md_render_camera_t c;
+    memset(&c, 0, sizeof(c));
+    const float tan_half = 0.4142f;    /* 45 degrees */
+    c.view[0] = c.view[5] = c.view[10] = c.view[15] = 1.0f;
+    c.view[12] = (float)-ctr[0]; c.view[13] = (float)-ctr[1]; c.view[14] = (float)-(z_front + dist);
+    c.proj[0] = 1.0f / (tan_half * aspect);
+    c.proj[5] = 1.0f / tan_half;
+    c.proj[11] = -1.0f;
+    c.proj[14] = 0.1f;
+    return c;
+}
+
+static void print_prof(const char* what, const pass_prof_t* p) {
+    printf("    %s, passes each synced:", what);
+    for (uint32_t k = 0; k < p->n; ++k) printf(" %s %.2f", p->name[k], p->ms[k]);
+    printf("\n");
+}
+
+static int run_heavy(int argc, char** argv) {
+    uint32_t W = 1920, H = 1080, reps = 10;
+    uint32_t grid[8] = { 1, 4, 8 }, n_grid = 3;
+    const char* only = NULL;
+    const char* data = MD_BENCHMARK_DATA_DIR;
+    for (int i = 0; i < argc; ++i) {
+        if (!strcmp(argv[i], "--grid") && i + 1 < argc) {
+            n_grid = 0;
+            for (char* p = argv[++i]; *p && n_grid < 8; ) { grid[n_grid++] = (uint32_t)strtoul(p, &p, 10); if (*p == ',') ++p; }
+        } else if (!strcmp(argv[i], "--res") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%ux%u", &W, &H) != 2) return 2;
+        } else if (!strcmp(argv[i], "--reps") && i + 1 < argc) {
+            reps = (uint32_t)atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--look") && i + 1 < argc) {
+            only = argv[++i];
+        } else if (!strcmp(argv[i], "--data") && i + 1 < argc) {
+            data = argv[++i];
+        } else {
+            fprintf(stderr, "unknown option '%s'\n", argv[i]);
+            return 2;
+        }
+    }
+    if (reps < 1) reps = 1;
+
+    const struct { const char* name; const char* file; } scenes[] = {
+        { "protein",    "8g7u.cif" },        /* 12 chains, 1634 residues: aromatic, carbonyl, guanidinium */
+        { "nucleosome", "nucl-dna.gro" },    /* DNA wound on histones: nucleic band and rings, and splines */
+        { "membrane",   "dppc64.pdb" },      /* 64 DPPC in water: lipid heads and tails */
+    };
+    const struct { const char* name; int scene; int kind; } looks[] = {
+        { "protein cartoon",                0, HV_CARTOON },
+        { "protein ribbons",                0, HV_RIBBONS },
+        { "protein licorice",               0, HV_LICORICE },
+        { "protein licorice + bond orders", 0, HV_LICORICE_ORDERS },
+        { "nucleosome cartoon",             1, HV_CARTOON },
+        { "membrane cartoon",               2, HV_CARTOON },
+    };
+    const size_t n_looks = sizeof(looks) / sizeof(looks[0]);
+    /* the scale at the front of the block, px/A; 0: the whole block in view */
+    const struct { const char* name; float px_per_a; } views[] = { { "near", 4.0f }, { "mid", 1.0f }, { "fit", 0.0f } };
+    const struct { const char* name; uint32_t options; } opts[] = {
+        { "all", 0 }, { "no occlusion", MD_RENDER_NO_OCCLUSION_CULLING },
+    };
+
+    md_gpu_device_desc_t dd = {0};
+    dd.label = "md_render_bench";
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) { fprintf(stderr, "no GPU device: %s\n", md_gpu_last_error()); return 1; }
+    md_gpu_device_info_t info;
+    md_gpu_device_info(dev, &info);
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
+    md_render_t r = md_render_create(dev, NULL);
+    md_render_mol_t mol = md_render_mol_create(dev, NULL);
+    if (!s || !r || !mol) { fprintf(stderr, "md_render could not start\n"); return 1; }
+
+    printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
+    printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
+    printf("target %ux%u, %u draws per measurement, wall time per draw including the sync, ms (best / median)\n", W, H, reps);
+    {
+        const char* kn; md_gpu_kernel_info_t ki;
+        for (uint32_t i = 0; md_render_debug_kernel_info(r, i, &kn, &ki); ++i)
+            if (ki.stats[0]) printf("  kernel md_render %-15s %s\n", kn, ki.stats);
+    }
+    printf("views: near and mid at 4 and 1 px/A at the front of the block of copies, fit with all of it in view\n\n");
+
+    const float aspect = (float)W / (float)H;
+    const double tan_half = 0.4142;
+    for (size_t si = 0; si < sizeof(scenes) / sizeof(scenes[0]); ++si) {
+        bool any = false;
+        for (size_t li = 0; li < n_looks; ++li) any |= looks[li].scene == (int)si && (!only || strstr(looks[li].name, only));
+        if (!any) continue;
+
+        /* The system, as md_render_snap loads it */
+        char path_buf[1024];
+        snprintf(path_buf, sizeof(path_buf), "%s/%s", data, scenes[si].file);
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        md_str_t path = md_str_from_cstr(path_buf);
+        const md_io_format_info_t* fmt = md_io_format_info(md_io_format_from_file(path));
+        if (!fmt || !fmt->system_init || !fmt->system_init(&sys, &state, path, NULL) ||
+            !md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL)) {
+            fprintf(stderr, "could not load '%s' (--data DIR: the folder of the test structures)\n", path_buf);
+            md_vm_arena_destroy(alloc);
+            continue;
+        }
+        const uint32_t n = (uint32_t)sys.atom.count;
+
+        md_temp_scope_t temp = md_temp_begin();
+        md_render_mol_plan_t plan;
+        md_render_mol_topo_t topo;
+        uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+        bool ok = md_render_mol_plan(&plan, &sys, NULL, temp);
+        md_gpu_addr_t topo_mem = ok ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, plan.size).gpu : 0;
+        ok = ok && topo_mem && md_render_mol_write(s, &topo, &plan, topo_mem, content);
+        md_temp_end(temp);
+        if (!ok) { fprintf(stderr, "%s: md_render_mol_plan or _write failed\n", scenes[si].name); return 1; }
+
+        /* Colours: by element; the cartoon's by secondary structure and base,
+           as md_render_snap's (for the pictures; the cost is the same) */
+        uint32_t* colors = malloc((size_t)n * 4);
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t c = 0;
+            if (sys.atom.type_idx && sys.atom.type.color && (size_t)sys.atom.type_idx[i] < sys.atom.type.count) c = sys.atom.type.color[sys.atom.type_idx[i]];
+            if (!c) c = md_atomic_number_cpk_color(md_atom_atomic_number(&sys.atom, i));
+            colors[i] = c | 0xFF000000u;
+        }
+        uint32_t* cc = malloc((size_t)n * 4);
+        memcpy(cc, colors, (size_t)n * 4);
+        md_gpu_addr_t SSB = 0;
+        if (topo.backbone_count) {
+            const md_secondary_structure_t* ss = md_system_state_secondary_structure(&state, &sys);
+            if (!ss && md_system_state_backbone_compute(&state, &sys)) ss = md_system_state_secondary_structure(&state, &sys);
+            const size_t nseg = sys.protein_backbone.segment.count;
+            if (ss) {
+                SSB = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, nseg * 4).gpu;
+                md_gpu_upload(s, SSB, ss, nseg * 4);
+            }
+            for (size_t g = 0; g < nseg; ++g) {
+                int32_t ca = sys.protein_backbone.segment.atoms[g].ca;
+                if (ca < 0 || (uint32_t)ca >= n) continue;
+                int t = ss ? (int)ss[g] : 0;
+                cc[ca] = (t >= MD_SECONDARY_STRUCTURE_HELIX_310 && t <= MD_SECONDARY_STRUCTURE_HELIX_PI) ? 0xFF4040E0u
+                       : (t == MD_SECONDARY_STRUCTURE_BETA_SHEET || t == MD_SECONDARY_STRUCTURE_BETA_BRIDGE) ? 0xFF30C8F0u : 0xFFC8C8C8u;
+            }
+        }
+        /* about 1 % of the atoms selected: the mask has something to draw */
+        const uint32_t words = (n + 31) / 32;
+        uint32_t* sel = calloc(words ? words : 1, 4);
+        for (uint32_t i = 0; i < n; i += 97) sel[i / 32] |= 1u << (i % 32);
+
+        md_gpu_addr_t P   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 12).gpu;
+        md_gpu_addr_t C   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
+        md_gpu_addr_t CC  = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
+        md_gpu_addr_t S   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)(words ? words : 1) * 4).gpu;
+        md_gpu_addr_t dyn = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+        const uint64_t prof_size = md_render_mol_cartoon_size(&topo) ? md_render_mol_cartoon_size(&topo) : 256;
+        md_gpu_addr_t PROF = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, prof_size).gpu;
+        if (!P || !C || !CC || !S || !dyn || !PROF) { fprintf(stderr, "out of GPU memory\n"); return 1; }
+        md_gpu_upload(s, P, state.xyz, (size_t)n * 12);
+        md_gpu_upload(s, C, colors, (size_t)n * 4);
+        md_gpu_upload(s, CC, cc, (size_t)n * 4);
+        md_gpu_upload(s, S, sel, (size_t)(words ? words : 1) * 4);
+        md_render_mol_atoms_t atoms = {0};
+        atoms.position  = P;
+        atoms.selection = S;
+        md_render_mol_frame_cell(atoms.cell, md_unitcell_flags(&state.unitcell) ? &state.unitcell : NULL);
+        if (!md_render_mol_update(mol, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
+        const float unit[3] = { 1.0f, 1.0f, 1.0f };
+        if (topo.backbone_count && !md_render_mol_cartoon_profile(mol, s, &topo, PROF, SSB, unit, content)) { fprintf(stderr, "md_render_mol_cartoon_profile failed\n"); return 1; }
+        md_gpu_stream_sync(s);
+
+        /* lipid spheres: [0] whole heads, [1] split heads as one, [2] their
+           parts (the representation draws [1] or [2]); tubes: control points */
+        uint32_t aromatic = 0, lip_tubes = 0;
+        const uint32_t lipids = topo.lipid_sphere_count[0] + topo.lipid_sphere_count[1];
+        for (int k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) aromatic += topo.aromatic_count[k];
+        for (int k = 0; k < 3; ++k) lip_tubes += topo.lipid_tube_count[k];
+        printf("=== %s (%s): %u atoms, %zu bonds; cartoon: %u residues in %u pieces, %u nucleotides, %u lipids (%u tail control points); "
+               "bond orders: %u double, %u triple, %u ring circles, %u partners\n",
+               scenes[si].name, scenes[si].file, n, (size_t)(sys.bond.count + sys.bond.noncovalent_count), topo.backbone_count, topo.backbone_chain_count,
+               topo.nucleic_count, lipids, lip_tubes, topo.order_count[0], topo.order_count[1], aromatic, topo.partner_count);
+        /* The per-frame update of this one copy (the copies share it) */
+        {
+            double* tu = malloc(reps * sizeof(double));
+            for (uint32_t k = 0; k < reps; ++k) {
+                md_tick_t t0 = md_tick_now();
+                md_render_mol_update(mol, s, &topo, dyn, &atoms, 0, NULL);
+                md_gpu_stream_sync(s);
+                tu[k] = md_tick_to_milliseconds(md_tick_now() - t0);
+            }
+            print_times("md_render_mol_update of one copy (the copy, and what it derives)", tu, reps);
+            free(tu);
+        }
+
+        /* The block of copies: along the cell, or the bounds without one */
+        double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
+        for (uint32_t i = 0; i < n; ++i) {
+            const float* p = (const float*)&state.xyz[i];
+            for (int k = 0; k < 3; ++k) { if (p[k] < lo[k]) lo[k] = p[k]; if (p[k] > hi[k]) hi[k] = p[k]; }
+        }
+        double A[3][3] = { { hi[0] - lo[0], 0, 0 }, { 0, hi[1] - lo[1], 0 }, { 0, 0, hi[2] - lo[2] } };
+        if (md_unitcell_flags(&state.unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) md_unitcell_A_extract_double(A, &state.unitcell);
+
+        for (uint32_t gi = 0; gi < n_grid; ++gi) {
+            const uint32_t g = grid[gi] ? grid[gi] : 1, n_inst = g * g * g;
+            float* xf = malloc((size_t)n_inst * 64);
+            for (uint32_t ix = 0, k = 0; ix < g; ++ix) for (uint32_t iy = 0; iy < g; ++iy) for (uint32_t iz = 0; iz < g; ++iz, ++k) {
+                float* m = xf + 16 * k;
+                memset(m, 0, 64);
+                m[0] = m[5] = m[10] = m[15] = 1.0f;
+                for (int d = 0; d < 3; ++d) m[12 + d] = (float)(ix * A[0][d] + iy * A[1][d] + iz * A[2][d]);
+            }
+            double ctr[3], half[3], rad = 0;
+            for (int d = 0; d < 3; ++d) {
+                const double ext = (g - 1) * (A[0][d] + A[1][d] + A[2][d]);
+                ctr[d]  = 0.5 * (lo[d] + hi[d] + ext);
+                half[d] = 0.5 * (hi[d] - lo[d] + fabs(ext));
+                rad += half[d] * half[d];
+            }
+            rad = sqrt(rad);
+            const double z_front = ctr[2] + half[2];
+            printf("\n== %s, %u x %u x %u copies: %llu atoms; block %.0f x %.0f x %.0f A\n", scenes[si].name, g, g, g,
+                   (unsigned long long)n * n_inst, 2 * half[0], 2 * half[1], 2 * half[2]);
+
+            for (size_t li = 0; li < n_looks; ++li) {
+                if (looks[li].scene != (int)si || (only && !strstr(looks[li].name, only))) continue;
+                md_render_mol_rep_t rep;
+                memset(&rep, 0, sizeof(rep));
+                rep.key = 1;
+                rep.color.mode = MD_RENDER_COLOR_POINTS;
+                rep.atom_color = C;
+                switch (looks[li].kind) {
+                case HV_CARTOON:
+                    rep.type = MD_RENDER_MOL_REP_CARTOON;
+                    rep.params.cartoon.profile = PROF;
+                    rep.atom_color = CC;
+                    break;
+                case HV_RIBBONS:
+                    rep.type = MD_RENDER_MOL_REP_RIBBONS;
+                    rep.params.ribbons.half_width = 1.0f;
+                    rep.atom_color = CC;
+                    break;
+                case HV_LICORICE_ORDERS:
+                    rep.bond_orders = true;
+                    /* fall through */
+                default:
+                    rep.type = MD_RENDER_MOL_REP_LICORICE;
+                    rep.params.licorice.radius = 0.2f;
+                    break;
+                }
+                if (n_inst > 1) { rep.transform = xf; rep.transform_count = n_inst; }
+                md_render_batch_t b[64];
+                const uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, b, 64);
+                printf("-- %s (%u batches)\n", looks[li].name, nb);
+                printf("  %-4s %-13s %7s | %17s %17s %17s %17s | %10s %9s %9s %9s %9s %9s | %8s %8s %8s\n", "view", "options", "px/A",
+                       "raster (refit)", "raster (camera)", "resolve", "mask", "elements", "outside", "faded", "occluded", "hw", "compute",
+                       "clusters", "expanded", "c.occl");
+                for (size_t vi = 0; vi < sizeof(views) / sizeof(views[0]); ++vi) {
+                    double dist;
+                    if (views[vi].px_per_a > 0.0f) dist = 0.5 * H / (tan_half * views[vi].px_per_a);
+                    else dist = rad / sin(atan(tan_half * (aspect < 1 ? aspect : 1.0))) - half[2];
+                    if (dist < 1.0) dist = 1.0;
+                    const double scale = 0.5 * H / (tan_half * dist);
+                    for (size_t oi = 0; oi < sizeof(opts) / sizeof(opts[0]); ++oi) {
+                        md_render_view_t v = md_render_view_create(r, "heavy");
+                        md_render_frame_t f;
+                        memset(&f, 0, sizeof(f));
+                        f.width = W; f.height = H;
+                        f.camera = camera_front(ctr, z_front, dist, aspect);
+                        f.batches = b; f.batch_count = nb;
+                        f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
+                        f.options = opts[oi].options;
+                        f.small_pixels = 6.0f;
+                        memcpy(f.content, content, sizeof(content));
+                        time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);     /* the first raster has no pyramid */
+                        timing_t tr = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
+                        md_render_stats_t st = {0};
+                        md_render_view_stats(v, &st);
+                        double* tc = malloc(reps * sizeof(double));
+                        for (uint32_t rr = 0; rr < reps; ++rr) {
+                            f.camera.view[12] += (float)(0.002 * dist * ((rr & 1) ? -1.0 : 1.0));
+                            md_tick_t t0 = md_tick_now();
+                            md_render_view_draw(s, v, &f, NULL);
+                            md_gpu_stream_sync(s);
+                            tc[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
+                        }
+                        qsort(tc, reps, sizeof(double), cmp_d);
+                        timing_t tcam = { tc[0], tc[reps / 2] };
+                        free(tc);
+                        timing_t tv = time_draws(s, v, &f, MD_RENDER_CONTENT_APPEARANCE, reps, NULL);
+                        timing_t tm = time_draws(s, v, &f, MD_RENDER_CONTENT_STATE, reps, NULL);
+                        printf("  %-4s %-13s %7.2f | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %10llu %9u %9u %9u %9u %9u | %8u %8u %8u\n",
+                               views[vi].name, opts[oi].name, scale, tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
+                               (unsigned long long)st.elements, st.outside, st.faded, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1],
+                               st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
+                        if (oi == 0) {
+                            /* where the time goes, pass by pass: a camera raster, a
+                               raster after the geometry changed, a change of state */
+                            const struct { const char* name; int bump; } prof_of[] = {
+                                { "camera raster", -1 }, { "refit raster", MD_RENDER_CONTENT_GEOMETRY }, { "state change", MD_RENDER_CONTENT_STATE },
+                            };
+                            for (int pk = 0; pk < 3; ++pk) {
+                                pass_prof_t prof = { .s = s };
+                                if (prof_of[pk].bump < 0) f.camera.view[12] += (float)(0.001 * dist);
+                                else f.content[prof_of[pk].bump]++;
+                                md_gpu_stream_sync(s);
+                                prof.t = md_tick_now();
+                                md_render_debug_pass_hook(pass_hook, &prof);
+                                md_render_view_draw(s, v, &f, NULL);
+                                md_render_debug_pass_hook(NULL, NULL);
+                                md_gpu_stream_sync(s);
+                                print_prof(prof_of[pk].name, &prof);
+                            }
+                        }
+                        md_render_view_destroy(s, v);
+                    }
+                }
+            }
+            free(xf);
+        }
+
+        md_gpu_stream_sync(s);
+        md_gpu_memory_stats_t ms;
+        if (md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &ms))
+            printf("device memory peak: %.0f MB (held now: %.0f MB of buffers, %.0f MB of textures)\n\n",
+                   ms.bytes_peak_in_use / 1048576.0, ms.bytes_in_use / 1048576.0, ms.bytes_textures / 1048576.0);
+        md_gpu_free(s, P); md_gpu_free(s, C); md_gpu_free(s, CC); md_gpu_free(s, S); md_gpu_free(s, dyn); md_gpu_free(s, PROF); md_gpu_free(s, topo_mem);
+        if (SSB) md_gpu_free(s, SSB);
+        md_gpu_stream_sync(s);
+        free(colors); free(cc); free(sel);
+        md_system_free(&sys);
+        md_vm_arena_destroy(alloc);
+    }
+    md_render_mol_destroy(mol);
+    md_render_destroy(r);
+    md_gpu_device_destroy(dev);
+    return 0;
+}
 #endif
 
 int main(int argc, char** argv) {
     if (argc >= 2 && !strcmp(argv[1], "clusters")) return run_clusters(argc - 2, argv + 2);
 #if MD_ENABLE_GPU
     if (argc >= 2 && !strcmp(argv[1], "gpu")) return run_gpu(argc - 2, argv + 2);
+    if (argc >= 2 && !strcmp(argv[1], "heavy")) return run_heavy(argc - 2, argv + 2);
 #endif
     fprintf(stderr, "usage:\n  md_render_bench clusters <structure> [<trajectory>] [--frames N] [--size N]\n"
 #if MD_ENABLE_GPU
                     "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME] [--resident F | --resident-random F] [--mol-order cells [--jitter A]]\n"
+                    "  md_render_bench heavy [--grid N[,N...]] [--res WxH] [--reps N] [--look NAME] [--data DIR]   (N x N x N copies; default 1,4,8)\n"
 #endif
            );
     return 1;

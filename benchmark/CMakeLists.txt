@@ -72,7 +72,7 @@ target_include_directories(md_parse_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 # md_render: how well clusters bound their atoms on real systems (CPU), and what md_render costs on
 # generated scenes (GPU) (see bench_render.c). Its own executable, which prints tables and takes options.
 add_executable(md_render_bench bench_render.c)
-target_compile_definitions(md_render_bench PRIVATE ${MD_DEFINES})
+target_compile_definitions(md_render_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" ${MD_DEFINES})
 target_compile_options(md_render_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(md_render_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_render_bench PRIVATE mdlib)
