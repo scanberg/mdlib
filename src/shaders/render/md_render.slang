@@ -54,7 +54,7 @@ struct ViewData {
     float  jitter_px;           // how far this raster's jitter moves the image (pixels)
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
     float  occl_min_px;         // elements no wider are not tested for occlusion
-    uint   _vpad1;
+    uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit)
     uint   _vpad2;
 };
 
@@ -2970,11 +2970,12 @@ float spline_fragment_hit(ViewData v, Ray r, SplineV i) {
 [shader("fragment")]
 VisOut spline_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
+    VisOut o;
+    o.id = i.idv;
+    if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = spline_fragment_hit(v, r, i);
     if (t < 0.0) discard;
-    VisOut o;
-    o.id    = i.idv;
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
@@ -3024,11 +3025,12 @@ float poly_fragment_hit(ViewData v, Ray r, SplineV i) {
 [shader("fragment")]
 VisOut polygon_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
+    VisOut o;
+    o.id = i.idv;
+    if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = poly_fragment_hit(v, r, i);
     if (t < 0.0) discard;
-    VisOut o;
-    o.id    = i.idv;
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
