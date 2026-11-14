@@ -32,7 +32,7 @@ typedef struct gpu_view_t {
     float         occl_margin;      /* phase 1: occluded only when nearer by this many radii too */
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
     uint32_t      dbg_probe;      /* md_render_debug_raster_probe */
-    uint32_t      _vpad;
+    uint32_t      spl_group;      /* md_render_debug_spline_group */
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
 
@@ -59,6 +59,12 @@ void md_render_debug_occlusion(float margin_radii, float min_px) { g_occl_margin
    (what the vertex stage and the fill cost alone). Wrong pictures. */
 static uint32_t g_raster_probe = 0u;
 void md_render_debug_raster_probe(uint32_t mode) { g_raster_probe = mode; }
+
+/* Pieces per box of a spline part in the hardware raster (the bench's, not in
+   the header): a fragment tests its box's pieces alone. 0: one box the part,
+   whose fragments test every piece their ray may hit. At most 16. */
+static uint32_t g_spline_group = 1u;
+void md_render_debug_spline_group(uint32_t pieces) { g_spline_group = pieces < 16u ? pieces : 16u; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -134,6 +140,7 @@ _Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
 typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
     md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box and part, 14 float4 (SPLINE_RECORD) */
+    md_gpu_addr_t hw2g;             /* boxes of groups of the parts' pieces: record << 4 | group, 16 at most a part */
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -152,7 +159,8 @@ enum {
     C_HWP1 = 116, C_HWP2 = 117, C_STP = 118,  /* polygons: hardware raster, phase 1 and 2; state */
     C_ICMDP = 120,    /* md_gpu_draw_indexed_cmd_t: polygons, phase 1 and 2: 120..129 */
     C_STICMDP = 130,  /* the state list's polygons: 130..134 */
-    C_COUNT = 136,
+    C_HWSG1 = 136, C_HWSG2 = 137,   /* boxes of the hardware spline parts' pieces (hw2g): phase 1 and 2 */
+    C_COUNT = 140,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -1147,21 +1155,22 @@ static gpu_args_t base_args(const md_render_view_t v) {
 
 /* Lists sized for the worst case of this frame: every element in each list of
    its kind (hardware, state, small, occluded), 4 bytes an entry: 16 bytes per
-   element in all (8 for polygons: no compute raster, no retest; 232 for
+   element in all (8 for polygons: no compute raster, no retest; 296 for
    spline parts, whose hardware entries carry their box and the part itself,
-   224 bytes), plus 24 per cluster. */
+   224 bytes, and up to 16 boxes of their pieces, 4 bytes each), plus 24 per
+   cluster. */
 static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
-    const uint64_t sizes[14] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2] };
-    const uint32_t esize[14] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 224 };   /* SPLINE_RECORD float4 */
+    const uint64_t sizes[15] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2], 16u * work[2] };
+    const uint32_t esize[15] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 224, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
     size_t need = 0;
-    for (int i = 0; i < 14; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
+    for (int i = 0; i < 15; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[14] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b };
-    for (int i = 0; i < 14; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    md_gpu_addr_t* dst[15] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g };
+    for (int i = 0; i < 15; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
@@ -1536,6 +1545,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         }
         gv.refit_mode = refit ? 0u : 1u;
         gv.dbg_probe  = g_raster_probe;
+        gv.spl_group  = g_spline_group;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };

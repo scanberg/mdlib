@@ -784,6 +784,7 @@ void md_render_mol_debug_frame_groups(uint32_t groups);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
 void md_render_debug_raster_probe(uint32_t mode);
+void md_render_debug_spline_group(uint32_t pieces);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1784,6 +1785,20 @@ static int run_heavy(int argc, char** argv) {
                                     timing_t tp = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
                                     printf("    refit raster %s: %.2f / %.2f ms\n", pr ? "with the probe (spline and polygon fragments keep their proxy, no hit)" : "without the probe, again", tp.best, tp.median);
                                 }
+                            }
+                            if (looks[li].kind == HV_CARTOON || looks[li].kind == HV_RIBBONS) {
+                                /* a spline part's boxes in the hardware raster: one per
+                                   group of so many pieces, or one the part (0) */
+                                static const uint32_t groups[] = { 0, 1, 2, 4 };
+                                printf("    refit raster, spline boxes of");
+                                for (int gi = 0; gi < 4; ++gi) {
+                                    md_render_debug_spline_group(groups[gi]);
+                                    timing_t tg = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
+                                    if (groups[gi]) printf("%s %u piece%s: %.2f / %.2f", gi ? "," : "", groups[gi], groups[gi] > 1 ? "s" : "", tg.best, tg.median);
+                                    else            printf(" the whole part: %.2f / %.2f", tg.best, tg.median);
+                                }
+                                printf(" ms\n");
+                                md_render_debug_spline_group(1);
                             }
                         }
                         md_render_view_destroy(s, v);
