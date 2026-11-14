@@ -6088,4 +6088,126 @@ UTEST(render, mol_ribbons) {
     f_close(&fx);
 }
 
+/* ---- One submission against each pass synced -----------------------------------
+   A frame recorded in one go must draw what the same frame draws with the
+   stream synced after each of its passes. On the HD 530 (Vulkan 1.3.215) it
+   did not: synced pass by pass the rasters drew, in one go they left the
+   targets empty. Each variant draws on a view of its own (its first frame,
+   as the tests' frames are); the lines it prints say where an ordering is
+   missing: a flush (a submission boundary, no wait) or a sync after one pass
+   alone that repairs the frame names the boundary. */
+void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
+
+typedef struct order_probe_t {
+    md_gpu_stream_t s;
+    int             mode;           /* 0 nothing, 1 sync, 2 flush (submit, no wait) */
+    const char*     at;             /* NULL: after every pass, else after this one */
+    const char*     seen[32];
+    int             n;
+} order_probe_t;
+
+static void order_hook(void* user, const char* pass) {
+    order_probe_t* p = user;
+    if (p->n < 32) p->seen[p->n++] = pass;
+    if (p->at && strcmp(p->at, pass) != 0) return;
+    if (p->mode == 1) md_gpu_stream_sync(p->s);
+    else if (p->mode == 2) md_gpu_stream_flush(p->s);
+}
+
+typedef struct order_result_t { int ids, depth, color; uint32_t hw; bool ok; } order_result_t;
+
+static order_result_t order_draw(fix_t* fx, const md_render_frame_t* f, order_probe_t* p) {
+    order_result_t o = {0};
+    const uint32_t W = f->width, H = f->height;
+    md_render_view_t v = md_render_view_create(fx->r, "ordering view");
+    if (!v) return o;
+    p->s = fx->gfx;
+    p->n = 0;
+    md_render_debug_pass_hook(order_hook, p);
+    md_render_status_t st;
+    o.ok = md_render_view_draw(fx->gfx, v, f, &st);
+    md_render_debug_pass_hook(NULL, NULL);
+    md_render_targets_t t = md_render_view_targets(v);
+    uint32_t* id  = malloc(W * H * 8);
+    float*    dp  = malloc(W * H * 4);
+    uint32_t* col = malloc(W * H * 4);
+    if (o.ok && f_read(fx, t.id, id, W * H * 8) && f_read(fx, t.depth, dp, W * H * 4) && f_read(fx, t.color, col, W * H * 4)) {
+        for (uint32_t i = 0; i < W * H; ++i) {
+            o.ids   += (id[2 * i + 1] >> 20) != 0;
+            o.depth += dp[i] > 0.0f;
+            o.color += col[i] != 0;
+        }
+    } else {
+        o.ok = false;
+    }
+    md_render_stats_t rs;
+    if (md_render_view_stats(v, &rs)) o.hw = rs.hardware[0] + rs.hardware[1];
+    free(id); free(dp); free(col);
+    md_render_view_destroy(fx->gfx, v);
+    md_gpu_stream_sync(fx->gfx);
+    return o;
+}
+
+static void order_print(const char* what, order_result_t r) {
+    printf("    %-34s ids %5d px, depth %5d px, colour %5d px, hardware %u%s\n", what, r.ids, r.depth, r.color, r.hw, r.ok ? "" : " (draw or readback failed)");
+}
+
+UTEST(render, one_submission_draws_what_synced_passes_draw) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 64;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const float pos[9]    = { 0, 0, -10,  2.2f, 0.8f, -12,  -1.5f, -0.9f, -8 };
+    const float radius[3] = { 1.5f, 2.0f, 0.7f };
+    md_render_batch_t b = {0};
+    b.key = 7;
+    b.kind = MD_RENDER_SPHERES;
+    b.count = 3;
+    b.points.count = 3;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.radius = f_buf(&fx, radius, sizeof(radius));
+    b.style.spheres.radius_scale = 1.0f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM;
+    b.color.uniform = 0xFF00FF00u;
+    md_gpu_stream_sync(fx.gfx);
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+
+    order_probe_t p = {0};
+    p.mode = 1;
+    const order_result_t synced = order_draw(&fx, &f, &p);
+    order_print("each pass synced:", synced);
+    const char* passes[32];
+    const int   npass = p.n;
+    for (int i = 0; i < npass; ++i) passes[i] = p.seen[i];
+
+    p.mode = 0;
+    const order_result_t one = order_draw(&fx, &f, &p);
+    order_print("one submission:", one);
+
+    if (one.ids != synced.ids || one.depth != synced.depth || one.color != synced.color) {
+        p.mode = 2;
+        order_print("each pass flushed (no wait):", order_draw(&fx, &f, &p));
+        for (int i = 0; i < npass; ++i) {
+            char what[64];
+            p.at = passes[i];
+            p.mode = 1;
+            snprintf(what, sizeof(what), "synced after '%s' alone:", passes[i]);
+            order_print(what, order_draw(&fx, &f, &p));
+            p.mode = 2;
+            snprintf(what, sizeof(what), "flushed after '%s' alone:", passes[i]);
+            order_print(what, order_draw(&fx, &f, &p));
+        }
+        p.at = NULL;
+    }
+    EXPECT_TRUE(synced.ok && one.ok);
+    EXPECT_GT(synced.ids, (int)(W * H / 10));
+    EXPECT_EQ(synced.ids, one.ids);
+    EXPECT_EQ(synced.depth, one.depth);
+    EXPECT_EQ(synced.color, one.color);
+    md_gpu_free(fx.gfx, b.points.position);
+    md_gpu_free(fx.gfx, b.points.radius);
+    f_close(&fx);
+}
+
 #endif
