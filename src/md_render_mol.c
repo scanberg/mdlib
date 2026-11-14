@@ -7,6 +7,7 @@
 #include <md_unitcell.h>
 #include <core/md_log.h>
 #include <core/md_simd.h>
+#include <core/md_array.h>
 
 #include <float.h>
 #include <string.h>
@@ -38,6 +39,7 @@ typedef struct topo_layout_t {
     uint64_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];
     uint64_t backbone_index, backbone_segment, backbone_carbonyl, backbone_chain;
     uint64_t nucleic_index, nucleic_segment, nucleic_face;
+    uint64_t derived_offset, derived_member, derived_weight, derived_radius;
     uint64_t ring_points[MD_RENDER_MOL_RING_SIZES], ring_segment[MD_RENDER_MOL_RING_SIZES], stick_points, stick_segment;
     uint64_t small_tables, size;
 } topo_layout_t;
@@ -76,6 +78,29 @@ static small_layout_t small_layout(uint32_t n_mol, uint32_t n_kinds, uint32_t n_
     return L;
 }
 
+/* Derived points as the plan builds them (see the topology) */
+typedef struct derived_build_t {
+    md_allocator_i*    alloc;
+    md_array(uint32_t) offset;           /* [count + 1] */
+    md_array(uint32_t) member;           /* atoms */
+    md_array(float)    weight;
+    md_array(float)    radius;           /* the w it is written with */
+    md_array(uint32_t) atom;             /* the atom it stands for */
+} derived_build_t;
+
+/* A point of atoms[0 .. n) with weights w (NULL: the mean), standing for
+   `attr`; its index among the derived points */
+static uint32_t derived_add(derived_build_t* d, const int32_t* atoms, const float* w, uint32_t n, uint32_t attr, float radius) {
+    for (uint32_t k = 0; k < n; ++k) {
+        md_array_push(d->member, (uint32_t)atoms[k], d->alloc);
+        md_array_push(d->weight, w ? w[k] : 1.0f / (float)n, d->alloc);
+    }
+    md_array_push(d->offset, (uint32_t)md_array_size(d->member), d->alloc);
+    md_array_push(d->radius, radius, d->alloc);
+    md_array_push(d->atom, attr, d->alloc);
+    return (uint32_t)md_array_size(d->atom) - 1u;
+}
+
 static bool ring_has_atom(const md_ring_data_t* rd, uint32_t ring, int32_t atom) {
     const int32_t* ra = md_ring_atoms(rd, ring);
     const size_t   rn = md_ring_size(rd, ring);
@@ -108,18 +133,19 @@ typedef struct dyn_layout_t {
    point, md_render's) and the orientation's memory: per control point
    whether the next one's axis is turned against it, then a word naming the
    topology instance that wrote them (none yet: no memory). The nucleic
-   band's axes (float4 per control point). Last, only in a block allocated
-   with them, the points' velocities.
+   band's axes (float4 per control point). The points and their velocities
+   include the derived points (after the atoms'). Last, only in a block
+   allocated with them, the points' velocities.
    Not packed positions apart (1dd0efd6): fewer bytes per update, but
    md_render reads the points several times a frame, much of it scattered,
    and a 12-byte position straddles 32-byte sectors (raster after positions
    changed 15.66 -> 16.60 ms on the GTX 1060, +0.3 on the M4). */
-static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na) {
+static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbonds, uint32_t cells, uint32_t n_cp, uint32_t n_na, uint32_t n_der) {
     dyn_layout_t L;
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
-    L.points   = o; o = align256(o + (uint64_t)n_atoms * 16u);
+    L.points   = o; o = align256(o + ((uint64_t)n_atoms + n_der) * 16u);
     L.params   = o; o = align256(o + 16u * 4u);
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
     L.ids_old  = o; o = align256(o + (uint64_t)n_sbonds * 4u);   /* the regroup's: the small bonds' ids before it */
@@ -129,13 +155,13 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.bb_flip  = o; o = align256(o + ((uint64_t)n_cp + 1u) * 4u);
     L.na_axis  = o; o = align256(o + (uint64_t)n_na * 16u);
     L.size = o;
-    L.velocity = o; o = align256(o + (uint64_t)n_atoms * 8u);
+    L.velocity = o; o = align256(o + ((uint64_t)n_atoms + n_der) * 8u);
     L.size_velocity = o;
     return L;
 }
 
 static dyn_layout_t dyn_of(const md_render_mol_topo_t* t) {
-    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count);
+    return dyn_layout(t->point_count, t->small_molecule_count, t->small_bond_count, t->grid_cells, t->backbone_count, t->nucleic_count, t->derived_count);
 }
 
 /* The frames block: each slot's parameters (32 words), the slots' frames
@@ -600,6 +626,26 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->nucleic_count = n_na;
     T->stick_count   = n_stick;
     for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) T->ring_count[k] = rg_n[k];
+
+    /* Derived points (see the topology). The lipids' heads: each at the
+       centre of its resident heavy atoms (beads), standing for the first */
+    derived_build_t der = { .alloc = md_temp_allocator(temp) };
+    md_array_push(der.offset, 0u, der.alloc);
+    {
+        const md_lipid_data_t* LP = &sys->lipid;
+        int32_t* ha = md_temp_alloc(temp, (sizeof(int32_t) * (LP->head.offset ? LP->head.offset[LP->head.count] : 0)) + 4u);
+        if (!ha) return false;
+        for (size_t h = 0; h < LP->head.count; ++h) {
+            const md_atom_idx_t* at = md_lipid_head_atoms(LP, h);
+            const size_t na_h = md_lipid_head_atom_count(LP, h);
+            uint32_t k = 0;
+            for (size_t j = 0; j < na_h; ++j) if (at[j] >= 0 && (uint32_t)at[j] < n && inv[at[j]] != UINT32_MAX) ha[k++] = at[j];
+            if (k) derived_add(&der, ha, NULL, k, (uint32_t)ha[0], 0.0f);
+        }
+    }
+    const uint32_t n_der    = (uint32_t)md_array_size(der.atom);
+    const uint32_t n_dmem   = (uint32_t)md_array_size(der.member);
+    T->derived_count = n_der;
     uint32_t n_mixed = 0;
     for (uint32_t i = 0; i < nb; ++i) {
         if (key[i] != SMALL_KEY && (IS_SMALL(BA(i)) || IS_SMALL(BB(i)))) n_mixed++;
@@ -612,6 +658,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         if (IS_SMALL(BA(i))) sm_mixed[sm_index[mol_of[BA(i)]]] = 1;
         if (IS_SMALL(BB(i))) sm_mixed[sm_index[mol_of[BB(i)]]] = 1;
     }
+    /* and those whose atoms derived points read */
+    for (uint32_t i = 0; i < n_dmem; ++i) if (IS_SMALL(der.member[i])) sm_mixed[sm_index[mol_of[der.member[i]]]] = 1;
     /* The kinds of small molecule (see small_layout), by a hash of each one's pattern */
     uint32_t* kind_of = md_temp_alloc(temp, ((size_t)small_mols + 1) * 4u);
     uint32_t* kinfo   = md_temp_alloc(temp, ((size_t)small_mols + 1) * 16u);
@@ -671,7 +719,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.state               = o; o = align256(o + 4u);            /* the regroups' count: word 0 */
     L.atom_type           = o; o = align256(o + ((uint64_t)n + 1) / 2 * 4u);
     L.type_radius         = o; o = align256(o + ((uint64_t)sys->atom.type.count + 1) * 4u);
-    L.atom_order          = o; o = align256(o + (uint64_t)n_res * 4u);
+    L.atom_order          = o; o = align256(o + ((uint64_t)n_res + n_der) * 4u);
     L.point_type          = o; o = align256(o + (uint64_t)n_res * 4u);
     L.mixed_point         = o; o = align256(o + (uint64_t)n * 4u);
     const uint32_t rwords = (n + 31) / 32;
@@ -694,6 +742,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     L.stick_points        = o; o = align256(o + (uint64_t)n_stick * 8u);
     L.stick_segment       = o; o = align256(o + (uint64_t)n_stick * 4u);
+    L.derived_offset      = o; o = align256(o + ((uint64_t)n_der + 1u) * 4u);
+    L.derived_member      = o; o = align256(o + (uint64_t)n_dmem * 4u);
+    L.derived_weight      = o; o = align256(o + (uint64_t)n_dmem * 4u);
+    L.derived_radius      = o; o = align256(o + (uint64_t)n_der * 4u);
     L.small_tables = o; o += small_mols ? SL.size : 0;
     L.size = o ? o : 256;
 
@@ -708,6 +760,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         T->type_count = (uint32_t)PT->count;
     }
     memcpy(img + L.atom_order, order, (size_t)n_res * 4u);
+    if (n_der) memcpy(img + L.atom_order + (size_t)n_res * 4u, der.atom, (size_t)n_der * 4u);
     {
         /* each point's type (and flags: none yet), in point order: what the
            copy's w holds and md_render's radius table is indexed by */
@@ -770,6 +823,12 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     memcpy(img + L.stick_points,      st_pts,   (size_t)n_stick * 8u);
     memcpy(img + L.stick_segment,     st_seg,   (size_t)n_stick * 4u);
+    memcpy(img + L.derived_offset,    der.offset, ((size_t)n_der + 1u) * 4u);
+    if (n_dmem) {
+        memcpy(img + L.derived_member, der.member, (size_t)n_dmem * 4u);
+        memcpy(img + L.derived_weight, der.weight, (size_t)n_dmem * 4u);
+    }
+    if (n_der) memcpy(img + L.derived_radius, der.radius, (size_t)n_der * 4u);
     if (small_mols) {
         uint8_t* st = img + L.small_tables;
         memcpy(st + SL.kinds,           kinfo,   (size_t)n_kinds * 16u);
@@ -788,8 +847,8 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
 
     T->size                = L.size;
-    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na).size;
-    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na).size_velocity;
+    T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der).size;
+    T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der).size_velocity;
     T->resident            = L.resident;
     T->regroups            = L.state;
     T->atom_type           = L.atom_type;
@@ -814,6 +873,10 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     T->stick_points        = L.stick_points;
     T->stick_segment       = L.stick_segment;
+    T->derived_offset      = L.derived_offset;
+    T->derived_member      = L.derived_member;
+    T->derived_weight      = L.derived_weight;
+    T->derived_radius      = L.derived_radius;
     T->small_tables        = small_mols ? L.small_tables : 0;
     #undef RES
     #undef BA
@@ -858,6 +921,10 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     }
     out->stick_points        = base + plan->layout.stick_points;
     out->stick_segment       = base + plan->layout.stick_segment;
+    out->derived_offset      = base + plan->layout.derived_offset;
+    out->derived_member      = base + plan->layout.derived_member;
+    out->derived_weight      = base + plan->layout.derived_weight;
+    out->derived_radius      = base + plan->layout.derived_radius;
     out->small_tables        = plan->layout.small_molecule_count ? base + plan->layout.small_tables : 0;
     if (content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return true;
@@ -871,6 +938,7 @@ struct md_render_mol {
     md_gpu_kernel_t k_fr_gather[3], k_fr_reorder, k_fr_permute;     /* gather: 1, 2, 4 frames */
     md_gpu_kernel_t k_bb_support, k_bb_orient, k_bb_profile;        /* the cartoon */
     md_gpu_kernel_t k_na_axis;                                       /* the nucleic band */
+    md_gpu_kernel_t k_derive;                                        /* the derived points */
 };
 
 /* Mirrors Args of md_render_mol.slang */
@@ -882,6 +950,7 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t frame[4], fpar[4], qsrc, qdst, qpar, src_point, resident, regroups;
     md_gpu_addr_t bb_index, bb_segment, bb_carbonyl, bb_chain, bb_axis, bb_flip, bb_ss, bb_out;
     md_gpu_addr_t na_index, na_face, na_axis;
+    md_gpu_addr_t der_offset, der_member, der_weight, der_radius;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t fr_threads;
@@ -889,9 +958,9 @@ typedef struct gpu_mol_args_t {
     float    w[4], dw[4];
     uint32_t bb_count, bb_chains, bb_history, has_ss;
     float    bb_scale[3];                                           /* coil, helix, sheet */
-    uint32_t dbg, na_count, _pad1;
+    uint32_t dbg, na_count, der_count, der_cell, _pad2;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 52 * 8 + 42 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 56 * 8 + 44 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -926,9 +995,10 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     kd = md_shader_md_render_mol_bb_orient_kernel();   r->k_bb_orient  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_bb_profile_kernel();  r->k_bb_profile = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mol_na_axis_kernel();     r->k_na_axis    = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_mol_derive_kernel();      r->k_derive     = md_gpu_kernel_create(device, &kd);
     if (!r->k_clear || !r->k_bounds || !r->k_dims || !r->k_count || !r->k_scan || !r->k_write || !r->k_offsets ||
         !r->k_mixed || !r->k_gather || !r->k_fr_gather[0] || !r->k_fr_gather[1] || !r->k_fr_gather[2] ||
-        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis) {
+        !r->k_fr_reorder || !r->k_fr_permute || !r->k_bb_support || !r->k_bb_orient || !r->k_bb_profile || !r->k_na_axis || !r->k_derive) {
         MD_LOG_ERROR("md_render_mol: kernel creation failed: %s", md_gpu_last_error());
         md_render_mol_destroy(r);
         return NULL;
@@ -940,7 +1010,7 @@ void md_render_mol_destroy(md_render_mol_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
-                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis };
+                             &r->k_fr_reorder, &r->k_fr_permute, &r->k_bb_support, &r->k_bb_orient, &r->k_bb_profile, &r->k_na_axis, &r->k_derive };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) if (*k[i]) md_gpu_kernel_destroy(*k[i]);
     md_free(r->alloc, r, sizeof(*r));
 }
@@ -1032,6 +1102,11 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->na_index            = topo->nucleic_index;
     a->na_face             = topo->nucleic_face;
     a->na_count            = topo->nucleic_count;
+    a->der_offset          = topo->derived_offset;
+    a->der_member          = topo->derived_member;
+    a->der_weight          = topo->derived_weight;
+    a->der_radius          = topo->derived_radius;
+    a->der_count           = topo->derived_count;
     if (dynamic) {
         a->bb_axis = dynamic + D.bb_axis;
         a->bb_flip = dynamic + D.bb_flip;
@@ -1166,6 +1241,14 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
         } else {
             ok = ok && launch(s, r->k_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         }
+    }
+    if (ok && topo->derived_count) {
+        /* the derived points from the copy just gathered: the members at
+           their images nearest the first's in the reference frame's cell
+           (that of the gather's minimum images), or as they are */
+        a.der_cell = fr ? 1u + (atoms->frame_count == 4 ? 1u : 0u) : 0u;
+        if (fr) for (uint32_t k = 0; k < 4; ++k) a.fpar[k] = frame_params(fr, atoms->frame_slot[k < atoms->frame_count ? k : 0]);
+        ok = launch(s, r->k_derive, groups_for(topo->derived_count, 64), &a, hook, user, "derived");
     }
     if (ok && topo->backbone_count) {
         /* The backbone's axes, from the copy just gathered; whether each is
@@ -1594,7 +1677,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
         { "fr_gather1", r->k_fr_gather[0] }, { "fr_gather2", r->k_fr_gather[1] }, { "fr_gather4", r->k_fr_gather[2] },
         { "fr_reorder", r->k_fr_reorder }, { "fr_permute", r->k_fr_permute },
         { "bb_support", r->k_bb_support }, { "bb_orient", r->k_bb_orient }, { "bb_profile", r->k_bb_profile },
-        { "na_axis", r->k_na_axis },
+        { "na_axis", r->k_na_axis }, { "derive", r->k_derive },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -1639,7 +1722,7 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     const dyn_layout_t D = dyn_of(topo);
     md_render_points_t p;
     memset(&p, 0, sizeof(p));
-    p.count           = topo->point_count;
+    p.count           = topo->point_count + topo->derived_count;
     p.position        = dynamic + D.points;
     p.stride          = 16;
     p.radius          = dynamic + D.points + 12;

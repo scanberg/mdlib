@@ -192,10 +192,11 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t point_type;              /* uint32 [point_count]: the point's particle
                                               type (low 16 bits; the radius table's
                                               index) and flags (high 16: none yet)      */
-    md_gpu_addr_t atom_order;              /* uint32 [point_count]: point -> atom (the
-                                              other way: invert it; a map kept from atom
-                                              to point would cost every regroup a write
-                                              scattered over all of it)                 */
+    md_gpu_addr_t atom_order;              /* uint32 [point_count + derived_count]:
+                                              point -> atom (the other way: invert it; a
+                                              map kept from atom to point would cost every
+                                              regroup a write scattered over all of it);
+                                              of a derived point the atom it stands for  */
     uint32_t      atom_cluster_count;
     md_gpu_addr_t atom_cluster_offset;     /* uint32 [atom_cluster_count + 1]          */
 
@@ -252,6 +253,22 @@ typedef struct md_render_mol_topo_t {
     uint32_t      stick_count;
     md_gpu_addr_t stick_points;            /* uint32 [2 * stick_count]: C1', N          */
     md_gpu_addr_t stick_segment;           /* uint32 [stick_count]                     */
+
+    /* Derived points: each a weighted sum of resident atoms, taken at their
+       images nearest the first one's (where the update has a cell: the
+       frames'), written by every update after the atoms' points: points
+       point_count .. point_count + derived_count - 1. Each stands for an
+       atom (atom_order: its colour, visibility, state, pick). The cartoons
+       of lipids and of coarse grained nucleic acids are made of them. An
+       atom of a small molecule moves among the points with every regroup,
+       and the derived points find it where it is now (mixed_point). */
+    uint32_t      derived_count;
+    md_gpu_addr_t derived_offset;          /* internal: uint32 [derived_count + 1]     */
+    md_gpu_addr_t derived_member;          /* internal: uint32 per member, its atom;
+                                              the first the reference                  */
+    md_gpu_addr_t derived_weight;          /* internal: float per member               */
+    md_gpu_addr_t derived_radius;          /* internal: float per derived point, the w
+                                              it is written with (a sphere's radius)    */
 
     /* The small molecules, regrouped by md_render_mol_update */
     uint32_t      small_molecule_count;
