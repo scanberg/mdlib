@@ -2,12 +2,61 @@
 #include <md_element.h>
 #include "md_infer_internal.h"
 #include <core/md_executor.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <md_chem.h>
 #include <md_system_fields.h>
 
 // The inference of a system: md_system_infer runs the steps of md_bond.c, md_ring.c, md_atom.c, md_hierarchy.c,
 // md_backbone.c, md_lipid.c, md_fragment.c and md_chem.c in order and gives the system what they infer.
+
+// ### MOLECULES, RINGS, CHEMISTRY AND BACKBONES ###
+//
+// Three branches of the inference which read the system and write only results of their own: the molecules, the rings
+// and the chemistry computed on them (mdi_chem_compute), the backbones. None reads what another makes, and none of
+// them depends on what the others write into the system after (the chemistry the bond orders and the atom flags, which
+// neither the molecules nor the backbones read). So they run side by side, and their results are given to the system
+// after, in the order of the steps.
+typedef struct infer_branches_t {
+    const md_system_t*       sys;
+    const md_system_state_t* state;
+    bool molecules, rings, chemistry, backbone;
+    md_allocator_i*     alloc[3];           // Of the results of each branch
+    md_allocator_i*     chem_alloc;         // Of the chemistry, until it is written
+    md_molecule_data_t  molecule;
+    md_ring_data_t      ring;
+    mdi_chem_t*         chem;
+    md_backbone_data_t  backbone_data;
+} infer_branches_t;
+
+// The longest branch first: the rings and the chemistry, then the molecules, then the backbones
+static void infer_branch(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    infer_branches_t* br = (infer_branches_t*)arg;
+    for (uint32_t b = beg; b < end; ++b) {
+        if (b == 0) {
+            if (br->rings) md_ring_infer(&br->ring, br->sys, br->alloc[0]);
+            if (br->chemistry) br->chem = mdi_chem_compute(br->sys, br->rings ? &br->ring : &br->sys->ring, br->state, MD_CHEM_FLAG_PROTONATE_PH7, br->chem_alloc);
+        } else if (b == 1) {
+            if (br->molecules) md_molecule_infer(&br->molecule, br->sys, br->alloc[1]);
+        } else {
+            if (br->backbone) md_backbone_infer(&br->backbone_data, br->sys, br->alloc[2]);
+        }
+    }
+}
+
+// An array, anew in alloc
+#define COPY_INTO(dst, src, alloc) do { (dst) = NULL; if (md_array_size(src)) md_array_push_array((dst), (src), md_array_size(src), (alloc)); } while (0)
+
+static void molecule_data_copy(md_molecule_data_t* dst, const md_molecule_data_t* src, md_allocator_i* alloc) {
+    *dst = (md_molecule_data_t){ .count = src->count };
+    COPY_INTO(dst->offset,     src->offset,     alloc);
+    COPY_INTO(dst->atom_idx,   src->atom_idx,   alloc);
+    COPY_INTO(dst->parent_idx, src->parent_idx, alloc);
+    COPY_INTO(dst->atom_slot,  src->atom_slot,  alloc);
+    COPY_INTO(dst->type_idx,   src->type_idx,   alloc);
+    for (size_t t = 0; t < src->type.count; ++t) md_molecule_type_data_push(&dst->type, src->type.name[t], src->type.flags[t], alloc);
+}
 
 // Try to fill in missing fields for molecule struct
 // (Coordinates & Elements) -> Covalent Bonds
@@ -107,14 +156,35 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         sys->part = parts;
     }
 
-    if (flags & MD_SYSTEM_INFER_MOLECULE_BIT) {
+    // The molecules, the rings and the chemistry, the backbones: steps which read the system and make results of their
+    // own (MOLECULES, RINGS, CHEMISTRY AND BACKBONES), then given to the system in the order of the steps
+    {
         // Coarse grained systems get a hierarchy even without bonds (synthesize_hierarchy_links), and a residue is a
-        // molecule whatever its bonds (synthesize_molecule_links): ions and waters given without bonds are molecules
-        if (sys->bond.count || cg || sys->residue.count) {
-            md_molecule_data_t molecules = {0};
-            md_molecule_infer(&molecules, sys, sys->alloc);
+        // molecule whatever its bonds (synthesize_molecule_links): ions and waters given without bonds are molecules.
+        // The chemistry finds the rings it needs where there are none.
+        infer_branches_t br = {
+            .sys       = sys,
+            .state     = state,
+            .molecules = (flags & MD_SYSTEM_INFER_MOLECULE_BIT) && (sys->bond.count || cg || sys->residue.count),
+            .rings     = sys->bond.count && ((flags & MD_SYSTEM_INFER_MOLECULE_BIT) || ((flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) && md_ring_data_count(&sys->ring) == 0)),
+            .chemistry = (flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) && sys->bond.count,
+            .backbone  = (flags & MD_SYSTEM_INFER_BACKBONE_BIT) != 0,
+        };
+        if (br.rings && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+
+        // Side by side on the executor each makes its results in an arena of its own, as the system's allocator is not
+        // for several threads, and they are copied into it. Otherwise one after the other, in the system's allocator,
+        // and the chemistry in a temporary scope until it is written.
+        const bool side_by_side = md_executor_num_threads(executor) > 1;
+        md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+        for (int i = 0; i < 3; ++i) br.alloc[i] = side_by_side ? md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1)) : sys->alloc;
+        br.chem_alloc = side_by_side ? br.alloc[0] : md_temp_allocator(temp);
+        md_parallel_for(side_by_side ? executor : NULL, 3, 1, infer_branch, &br);
+
+        if (br.molecules) {
             md_molecule_data_free(&sys->molecule, sys->alloc);
-            sys->molecule = molecules;
+            if (side_by_side) molecule_data_copy(&sys->molecule, &br.molecule, sys->alloc);
+            else              sys->molecule = br.molecule;
             // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
             // (md_system_infer_fragments). Their types stay, for the colours to be kept.
             sys->fragment.count = 0;
@@ -129,31 +199,38 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             md_array_shrink(sys->fragment.frag_slot_offset, 0);
             md_array_shrink(sys->fragment.frag_slot, 0);
         }
-        if (sys->bond.count) {
-            md_ring_data_t rings = {0};
-            md_ring_infer(&rings, sys, sys->alloc);
+        if (br.rings) {
             md_ring_data_free(&sys->ring, sys->alloc);
-            sys->ring = rings;
+            sys->ring = (md_ring_data_t){0};
+            if (side_by_side) COPY_INTO(sys->ring.rings, br.ring.rings, sys->alloc);
+            else              sys->ring = br.ring;
         }
-    }
-    
-    if (flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) {
         // After the rings, before the hydrogen bond roles which read the orders. Protonation at pH 7 applies to
         // residues without hydrogens only.
-        if (sys->bond.count) {
-            md_chem_perceive(sys, state, MD_CHEM_FLAG_PROTONATE_PH7);
+        if (br.chemistry) mdi_chem_write(sys, br.chem);
+        if (br.backbone) {
+            md_backbone_data_t old = { .protein = sys->protein_backbone, .nucleic = sys->nucleic_backbone };
+            md_backbone_data_free(&old, sys->alloc);
+            if (side_by_side) {
+                sys->protein_backbone = (md_protein_backbone_data_t){ .range.count = br.backbone_data.protein.range.count, .segment.count = br.backbone_data.protein.segment.count };
+                sys->nucleic_backbone = (md_nucleic_backbone_data_t){ .range.count = br.backbone_data.nucleic.range.count, .segment.count = br.backbone_data.nucleic.segment.count };
+                COPY_INTO(sys->protein_backbone.range.offset,    br.backbone_data.protein.range.offset,    sys->alloc);
+                COPY_INTO(sys->protein_backbone.range.part_idx,  br.backbone_data.protein.range.part_idx,  sys->alloc);
+                COPY_INTO(sys->protein_backbone.segment.atoms,   br.backbone_data.protein.segment.atoms,   sys->alloc);
+                COPY_INTO(sys->protein_backbone.segment.res_idx, br.backbone_data.protein.segment.res_idx, sys->alloc);
+                COPY_INTO(sys->nucleic_backbone.range.offset,    br.backbone_data.nucleic.range.offset,    sys->alloc);
+                COPY_INTO(sys->nucleic_backbone.range.part_idx,  br.backbone_data.nucleic.range.part_idx,  sys->alloc);
+                COPY_INTO(sys->nucleic_backbone.segment.atoms,   br.backbone_data.nucleic.segment.atoms,   sys->alloc);
+                COPY_INTO(sys->nucleic_backbone.segment.res_idx, br.backbone_data.nucleic.segment.res_idx, sys->alloc);
+            } else {
+                sys->protein_backbone = br.backbone_data.protein;
+                sys->nucleic_backbone = br.backbone_data.nucleic;
+            }
+            md_system_set_chain_breaks(sys, br.backbone_data.breaks, br.backbone_data.num_breaks);
+            if (!side_by_side) md_array_free(br.backbone_data.breaks, sys->alloc);
         }
-    }
-
-    if (flags & MD_SYSTEM_INFER_BACKBONE_BIT) {
-        md_backbone_data_t bb = {0};
-        md_backbone_infer(&bb, sys, sys->alloc);
-        md_backbone_data_t old = { .protein = sys->protein_backbone, .nucleic = sys->nucleic_backbone };
-        md_backbone_data_free(&old, sys->alloc);
-        sys->protein_backbone = bb.protein;
-        sys->nucleic_backbone = bb.nucleic;
-        md_system_set_chain_breaks(sys, bb.breaks, bb.num_breaks);
-        md_array_free(bb.breaks, sys->alloc);
+        if (side_by_side) for (int i = 0; i < 3; ++i) md_arena_allocator_destroy(br.alloc[i]);
+        md_temp_end(temp);
     }
 
     if (flags & MD_SYSTEM_INFER_LIPID_BIT) {
