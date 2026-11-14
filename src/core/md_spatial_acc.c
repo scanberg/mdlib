@@ -116,9 +116,11 @@ static inline points_t points_make(const float* xyz, size_t stride, const int32_
 static inline md_float4_t points_load(const points_t* s, size_t i) {
     const size_t src = s->idx ? (size_t)s->idx[i] : i;
     const char* p = (const char*)s->xyz + src * s->stride;
-    md_float4_t v = {0};
-    md_memcpy(&v, p, sizeof(float) * 3);
-    return v;
+    // Three scalars into a register: a vector loaded from the 12 bytes just stored into it waits on the stores (no
+    // forwarding of three narrow stores to one wide load), which made the fractional coordinates of the build 5x slower
+    float c[3];
+    md_memcpy(c, p, sizeof(c));
+    return md_float4_set(c[0], c[1], c[2], 0);
 }
 
 static inline int32_t points_idx(const points_t* s, size_t i) {
