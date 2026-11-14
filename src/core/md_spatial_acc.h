@@ -6,6 +6,7 @@
 struct md_allocator_i;
 struct md_coord_stream_t;
 struct md_unitcell_t;
+struct md_executor_t;
 
 typedef enum {
     MD_SPATIAL_ACC_FLAG_NONE = 0,
@@ -81,6 +82,10 @@ typedef struct md_spatial_acc_desc_t {
     // costs more than building the cells for a few thousand points, and the spread changes little from frame to
     // frame. Raised to the cutoff when less. 0 to estimate.
     double cell_ext;
+
+    // Where the building runs (md_executor.h): its passes over the points are spread over the executor's threads, with
+    // the same result. NULL builds on the calling thread.
+    const struct md_executor_t* executor;
 } md_spatial_acc_desc_t;
 
 #ifdef __cplusplus
