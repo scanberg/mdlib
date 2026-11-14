@@ -46,6 +46,11 @@ MD_ENUM_FLAGS(md_infer_flags_t)
 //
 // The phases run one after the other, each on the threads of the executor where it spreads its work (NULL: the calling
 // thread); the result is the same whatever the threads.
+//
+// The chemistry (MD_SYSTEM_INFER_CHEMISTRY_BIT) is perceived for the molecules it infers, and a molecule which is a copy
+// of another (md_molecule_data_t, STRUCTURES) with all of its hydrogens explicit takes the chemistry of its reference:
+// where the geometry chooses between equivalent forms (the double bond of a carboxylate, the charge of a guanidinium,
+// the Kekule structure of a ring), every copy has the form of its reference. md_chem_perceive perceives each.
 bool md_system_infer(struct md_system_t* sys, const struct md_system_state_t* state, md_infer_flags_t flags, const struct md_executor_t* executor);
 
 // INFERENCE WHILE THE SYSTEM IS IN USE. Inference reads the CORE of a system (the atoms, their types, the residues, the

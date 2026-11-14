@@ -1468,7 +1468,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    mdi_chem_write(sys, mdi_chem_compute(sys, &sys->ring, reference, flags, md_temp_allocator(temp)));
+    mdi_chem_write(sys, mdi_chem_compute(sys, &sys->ring, reference, flags, NULL, md_temp_allocator(temp)));
     md_temp_end(temp);
     return true;
 }
@@ -1483,28 +1483,20 @@ typedef struct mdi_chem_t {
     uint8_t*         hydrogen_count;    // [num_atoms]
 } mdi_chem_t;
 
-mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, md_allocator_i* alloc) {
+// The perception of all of the atoms of the system, into out
+static void perceive_system(mdi_chem_t* out, const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, const float* q_given, md_allocator_i* temp) {
     const size_t N = sys->atom.count;
-    // The perception in a temporary scope of the thread; what it writes into alloc
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     chem_t c = {
         .xyz   = (md_system_state_has_coords(reference) && reference->num_atoms == N) ? reference->xyz : NULL,
         .cell  = reference ? &reference->unitcell : NULL,
         .N     = N,
         .flags = flags,
-        .alloc = md_temp_allocator(temp),
+        .alloc = temp,
     };
     setup_system(&c, sys, rings);
     build_graph(&c);
     assign_modes(&c, sys);
     mark_rings(&c);
-
-    // The formal charges a file gives: the atom/formal_charge column its loader publishes, NAN where it gives none.
-    // The charges in md_atom_data_t are this function's output and are not read back, so running it again starts
-    // from the same place.
-    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
-    const float* q_given = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
-    if (q_given && md_attribute_slice_count(q_attr, md_attribute_slice_all()) != N) q_given = NULL;
 
     const uint8_t* atom_aromatic = perceive(&c, q_given);
 
@@ -1520,12 +1512,6 @@ mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings
 
     // What is written: the orders of the bonds which take part, the charges, the hydrogens, the aromaticity and the
     // hybridization of the atoms
-    mdi_chem_t* out = md_alloc(alloc, sizeof(mdi_chem_t));
-    *out = (mdi_chem_t){ .num_bonds = c.num_bonds, .num_atoms = N };
-    out->bond_flags     = md_alloc(alloc, sizeof(md_bond_flags_t) * MD_MAX(c.num_bonds, 1));
-    out->atom_flags     = md_alloc(alloc, sizeof(md_atom_flags_t) * MD_MAX(N, 1));
-    out->formal_charge  = md_alloc(alloc, MD_MAX(N, 1));
-    out->hydrogen_count = md_alloc(alloc, MD_MAX(N, 1));
     for (size_t b = 0; b < c.num_bonds; ++b) {
         out->bond_flags[b] = c.bond_part[b] ? perceived_bond_flags(&c, (uint32_t)b) : sys->bond.flags[b];
     }
@@ -1535,6 +1521,304 @@ mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings
         md_atom_flags_t f = sys->atom.flags[i] & ~MD_ATOM_FLAG_AROMATIC;
         if (atom_aromatic[i] && c.part[i] && c.z[i] != MD_Z_H && !is_halogen_z(c.z[i])) f |= MD_ATOM_FLAG_AROMATIC;
         out->atom_flags[i] = md_atom_flags_set_hybridization(f, perceived_hybridization(&c, (uint32_t)i, atom_aromatic));
+    }
+}
+
+// ### COPIES OF A MOLECULE ###
+//
+// md_system_infer gives the chemistry the molecules it infers, with their structures (md_molecule_data_t): which are
+// copies of one another. A copy whose chemistry follows from its structure takes that of its reference rather than
+// being perceived: one whose hydrogens are all explicit (the geometry then only chooses between equivalent forms:
+// which O of a carboxylate has the double bond, which N of a guanidinium the charge, the Kekule structure of a ring;
+// every copy has its reference's), whose residues are within it (the hydrogens of a residue set its mode) and whose
+// formal charges given by the file are those of the reference. The others are perceived, with the references.
+
+static inline bool atom_takes_part(const md_system_t* sys, size_t a) {
+    return base_valence(md_atom_atomic_number(&sys->atom, a)) > 0 && md_atom_particle_kind(&sys->atom, a) == MD_PARTICLE_ATOM;
+}
+
+// The hydrogen mode of a residue, as assign_modes gives it
+static uint8_t residue_hydrogen_mode(const md_system_t* sys, size_t ci) {
+    const md_urange_t r = md_system_residue_atom_range(sys, ci);
+    uint8_t h = 0;
+    for (uint32_t a = r.beg; a < r.end && h != 3; ++a) {
+        if (md_atom_atomic_number(&sys->atom, a) != MD_Z_H) continue;
+        h |= 1;
+        if (!atom_takes_part(sys, a)) continue;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, a);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const uint32_t o = (uint32_t)md_bond_iter_atom_index(&it);
+            if (o == a || md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&it)) != MD_BOND_KIND_COVALENT) continue;
+            if (md_atom_atomic_number(&sys->atom, o) == MD_Z_C && atom_takes_part(sys, o)) h |= 2;
+        }
+    }
+    return (h & 2) ? HMODE_ALL : (h & 1) ? HMODE_POLAR : HMODE_NONE;
+}
+
+typedef struct copy_plan_t {
+    const md_molecule_data_t* mol;
+    uint8_t*  copy;             // [molecule] Takes the chemistry of its reference
+    uint8_t*  res_mode;         // [residue] Its hydrogen mode, 0xFF until needed
+    uint32_t* atoms;            // The atoms perceived, ascending
+    size_t    num_atoms;
+} copy_plan_t;
+
+static inline uint8_t plan_res_mode(copy_plan_t* p, const md_system_t* sys, size_t ci) {
+    if (p->res_mode[ci] == 0xFF) p->res_mode[ci] = residue_hydrogen_mode(sys, ci);
+    return p->res_mode[ci];
+}
+
+// Which molecules are copies taking their reference's chemistry: false when none is, or the system is not one this
+// is for (its atoms all in residues, in order)
+static bool plan_copies(copy_plan_t* p, const md_system_t* sys, const md_molecule_data_t* mol, const float* q_given, md_allocator_i* temp) {
+    const size_t N = sys->atom.count;
+    if (!mol || !mol->structure_idx || mol->structure_count >= mol->count || md_array_size(mol->atom_slot) != N) return false;
+    if (!sys->bond.conn.offset || !sys->residue.count || !sys->residue.atom_offset) return false;
+    const uint32_t* ro = sys->residue.atom_offset;
+    if (ro[0] != 0 || ro[sys->residue.count] != N) return false;
+    for (size_t ci = 0; ci < sys->residue.count; ++ci) if (ro[ci] > ro[ci + 1]) return false;
+
+    int32_t* mol_of = md_alloc(temp, sizeof(int32_t) * MD_MAX(N, 1));
+    for (size_t m = 0; m < mol->count; ++m) {
+        for (uint32_t k = mol->offset[m]; k < mol->offset[m + 1]; ++k) mol_of[mol->atom_idx[k]] = (int32_t)m;
+    }
+    // A molecule which shares a residue with another
+    uint8_t* open = md_alloc(temp, MD_MAX(mol->count, 1));
+    md_memset(open, 0, mol->count);
+    for (size_t ci = 0; ci < sys->residue.count; ++ci) {
+        if (ro[ci] == ro[ci + 1]) continue;
+        const int32_t m0 = mol_of[ro[ci]];
+        for (uint32_t a = ro[ci] + 1; a < ro[ci + 1]; ++a) {
+            if (mol_of[a] != m0) open[m0] = open[mol_of[a]] = 1;
+        }
+    }
+    p->mol = mol;
+    p->res_mode = md_alloc(temp, sys->residue.count);
+    md_memset(p->res_mode, 0xFF, sys->residue.count);
+
+    // The structures whose copies take their reference's chemistry: every hydrogen of the reference explicit
+    uint8_t* share = md_alloc(temp, MD_MAX(mol->structure_count, 1));
+    for (size_t s = 0; s < mol->structure_count; ++s) {
+        const int32_t r = mol->structure_ref[s];
+        share[s] = !open[r];
+        for (uint32_t k = mol->offset[r]; k < mol->offset[r + 1] && share[s]; ++k) {
+            const int32_t a = mol->atom_idx[k];
+            if (!atom_takes_part(sys, (size_t)a)) continue;
+            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, (size_t)a);
+            const uint8_t mode = plan_res_mode(p, sys, (size_t)md_system_residue_find_by_atom_idx(sys, (size_t)a));
+            share[s] = mode == HMODE_ALL || (mode == HMODE_POLAR && z != MD_Z_C && z != MD_Z_B && z != MD_Z_Si);
+        }
+    }
+
+    p->copy = md_alloc(temp, MD_MAX(mol->count, 1));
+    size_t num_copies = 0;
+    for (size_t m = 0; m < mol->count; ++m) {
+        const int32_t s = mol->structure_idx[m];
+        const int32_t r = mol->structure_ref[s];
+        bool copy = share[s] && !open[m] && (int32_t)m != r;
+        for (uint32_t k = 0; copy && q_given && k < mol->offset[m + 1] - mol->offset[m]; ++k) {
+            uint32_t qa, qb;
+            md_memcpy(&qa, &q_given[mol->atom_idx[mol->offset[m] + k]], sizeof(qa));
+            md_memcpy(&qb, &q_given[mol->atom_idx[mol->offset[r] + k]], sizeof(qb));
+            copy = qa == qb;
+        }
+        p->copy[m] = copy;
+        num_copies += copy;
+    }
+    if (!num_copies) return false;
+
+    p->atoms = md_alloc(temp, sizeof(uint32_t) * MD_MAX(N - num_copies, 1));
+    p->num_atoms = 0;
+    for (size_t a = 0; a < N; ++a) {
+        if (!p->copy[mol_of[a]]) p->atoms[p->num_atoms++] = (uint32_t)a;
+    }
+    return true;
+}
+
+static int compare_u32_asc(const void* x, const void* y) {
+    const uint32_t a = *(const uint32_t*)x, b = *(const uint32_t*)y;
+    return a < b ? -1 : a > b;
+}
+
+// The perception of the atoms of the plan (whole molecules), into out: as perceive_system perceives them, their bonds in
+// the order of the system's and their neighbours in that order. perceived[bond] marks the bonds perceived.
+static void perceive_planned(mdi_chem_t* out, uint8_t* perceived, const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, const float* q_given, copy_plan_t* p, md_allocator_i* temp) {
+    const size_t N = sys->atom.count;
+    const size_t NL = p->num_atoms;
+    const uint32_t* atoms = p->atoms;
+    int32_t* local = md_alloc(temp, sizeof(int32_t) * MD_MAX(N, 1));
+    for (size_t a = 0; a < N; ++a) local[a] = -1;
+    for (size_t l = 0; l < NL; ++l) local[atoms[l]] = (int32_t)l;
+
+    md_float3_t* xyz = NULL;
+    if (md_system_state_has_coords(reference) && reference->num_atoms == N) {
+        xyz = md_alloc(temp, sizeof(md_float3_t) * MD_MAX(NL, 1));
+        for (size_t l = 0; l < NL; ++l) xyz[l] = reference->xyz[atoms[l]];
+    }
+    chem_t c = {
+        .xyz   = xyz,
+        .cell  = reference ? &reference->unitcell : NULL,
+        .N     = NL,
+        .flags = flags,
+        .alloc = temp,
+    };
+    c.z           = md_alloc(temp, MD_MAX(NL, 1));
+    c.part        = md_alloc(temp, MD_MAX(NL, 1));
+    c.mode        = md_alloc(temp, MD_MAX(NL, 1));
+    c.metal_bound = md_alloc(temp, MD_MAX(NL, 1));
+    uint8_t* ext_heavy = md_alloc(temp, MD_MAX(NL, 1));
+    uint8_t* ext_h     = md_alloc(temp, MD_MAX(NL, 1));
+    bool ext = false;
+    float* q_local = q_given ? md_alloc(temp, sizeof(float) * MD_MAX(NL, 1)) : NULL;
+
+    // The bonds between the atoms, by their index in the system. The residues cover the atoms in order (plan_copies),
+    // so the residue of each atom follows from that of the one before.
+    const uint32_t* ro = sys->residue.atom_offset;
+    uint32_t* res_of = md_alloc(temp, sizeof(uint32_t) * MD_MAX(NL, 1));
+    md_array(uint32_t) bond_id = 0;
+    size_t ci = 0;
+    for (size_t l = 0; l < NL; ++l) {
+        const uint32_t a = atoms[l];
+        while (ro[ci + 1] <= a) ++ci;
+        res_of[l] = (uint32_t)ci;
+        c.z[l] = (uint8_t)md_atom_atomic_number(&sys->atom, a);
+        c.part[l] = atom_takes_part(sys, a);
+        c.mode[l] = plan_res_mode(p, sys, ci);
+        c.metal_bound[l] = 0;
+        ext_heavy[l] = ext_h[l] = 0;
+        if (q_local) q_local[l] = q_given[a];
+        md_bond_iter_t it = md_bond_iter(&sys->bond, a);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const uint32_t o = (uint32_t)md_bond_iter_atom_index(&it);
+            const int32_t lo = local[o];
+            if (lo > (int32_t)l) md_array_push(bond_id, (uint32_t)md_bond_iter_bond_index(&it), temp);
+            if (!c.part[l] || o == a) continue;
+            const bool o_part = atom_takes_part(sys, o);
+            if (!o_part && md_atom_atomic_number(&sys->atom, o) > 2) c.metal_bound[l] = 1;
+            if (lo < 0 && o_part && md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&it)) == MD_BOND_KIND_COVALENT) {
+                if (md_atom_atomic_number(&sys->atom, o) == MD_Z_H) ext_h[l] += 1; else ext_heavy[l] += 1;
+                ext = true;
+            }
+        }
+    }
+    const size_t nb = md_array_size(bond_id);
+    if (nb) qsort(bond_id, nb, sizeof(uint32_t), compare_u32_asc);
+    md_atom_pair_t*  pairs  = md_alloc(temp, sizeof(md_atom_pair_t) * MD_MAX(nb, 1));
+    md_bond_flags_t* bflags = md_alloc(temp, sizeof(md_bond_flags_t) * MD_MAX(nb, 1));
+    for (size_t k = 0; k < nb; ++k) {
+        const md_atom_pair_t g = sys->bond.pairs[bond_id[k]];
+        pairs[k] = (md_atom_pair_t){{ local[g.idx[0]], local[g.idx[1]] }};
+        bflags[k] = sys->bond.flags[bond_id[k]];
+    }
+    c.num_bonds = nb;
+    c.pairs  = pairs;
+    c.bflags = bflags;
+    if (ext) {
+        c.ext_heavy = ext_heavy;
+        c.ext_h     = ext_h;
+    }
+    build_graph(&c);
+
+    // The rings of the atoms
+    md_ring_data_t local_rings = {0};
+    {
+        int32_t lr[MD_RING_MAX_SIZE];
+        const size_t num = rings ? md_ring_data_count(rings) : 0;
+        for (size_t r = 0; r < num; ++r) {
+            const int32_t* ring = md_ring_atoms(rings, r);
+            const size_t n = md_ring_size(rings, r);
+            bool all = n <= MD_RING_MAX_SIZE;
+            for (size_t k = 0; k < n && all; ++k) {
+                all = ring[k] >= 0 && (size_t)ring[k] < N && local[ring[k]] >= 0;
+                if (all) lr[k] = local[ring[k]];
+            }
+            if (all) md_ring_data_push(&local_rings, lr, n, MD_RING_FLAG_NONE, temp);
+        }
+    }
+    c.rings = &local_rings;
+    mark_rings(&c);
+
+    const uint8_t* atom_aromatic = perceive(&c, q_local);
+
+    // Monatomic ions: an atom of a residue of its own, without bonds
+    for (size_t l = 0; l < NL; ++l) {
+        const uint32_t a = atoms[l];
+        if (c.charge_fixed[l] || md_bond_conn_count(&sys->bond, a) || ro[res_of[l] + 1] - ro[res_of[l]] != 1) continue;
+        const int q = monatomic_ion_charge(c.z[l]);
+        if (q) c.charge[l] = (int8_t)q;
+    }
+
+    md_memcpy(out->bond_flags, sys->bond.flags, sizeof(md_bond_flags_t) * out->num_bonds);
+    for (size_t k = 0; k < nb; ++k) {
+        if (!c.bond_part[k]) continue;
+        out->bond_flags[bond_id[k]] = perceived_bond_flags(&c, (uint32_t)k);
+        perceived[bond_id[k]] = 1;
+    }
+    for (size_t l = 0; l < NL; ++l) {
+        const uint32_t a = atoms[l];
+        out->formal_charge[a] = c.charge[l];
+        out->hydrogen_count[a] = (c.part[l] && c.z[l] != MD_Z_H) ? (uint8_t)(c.h_exp[l] + c.h_imp[l]) : 0;
+        md_atom_flags_t f = sys->atom.flags[a] & ~MD_ATOM_FLAG_AROMATIC;
+        if (atom_aromatic[l] && c.part[l] && c.z[l] != MD_Z_H && !is_halogen_z(c.z[l])) f |= MD_ATOM_FLAG_AROMATIC;
+        out->atom_flags[a] = md_atom_flags_set_hybridization(f, perceived_hybridization(&c, (uint32_t)l, atom_aromatic));
+    }
+}
+
+// The copies take the chemistry of their references, slot by slot and bond by bond
+static void copy_planned(mdi_chem_t* out, const uint8_t* perceived, const md_system_t* sys, const copy_plan_t* p) {
+    const md_molecule_data_t* mol = p->mol;
+    const md_atom_flags_t atom_mask = MD_ATOM_FLAG_AROMATIC | MD_ATOM_FLAG_HYBRIDIZATION_MASK;
+    const md_bond_flags_t bond_mask = MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_RESONANCE_MASK | MD_BOND_FLAG_ORDER_PERCEIVED;
+    const uint32_t* off = sys->bond.conn.offset;
+    for (size_t m = 0; m < mol->count; ++m) {
+        if (!p->copy[m]) continue;
+        const int32_t r = mol->structure_ref[mol->structure_idx[m]];
+        const uint32_t mb = mol->offset[m], me = mol->offset[m + 1], rb = mol->offset[r];
+        for (uint32_t k = 0; k < me - mb; ++k) {
+            const int32_t a = mol->atom_idx[mb + k], b = mol->atom_idx[rb + k];
+            out->formal_charge[a]  = out->formal_charge[b];
+            out->hydrogen_count[a] = out->hydrogen_count[b];
+            out->atom_flags[a] = (sys->atom.flags[a] & ~atom_mask) | (out->atom_flags[b] & atom_mask);
+            const uint32_t ao = off[a], bo = off[b], n = off[a + 1] - ao;
+            for (uint32_t j = 0; j < n; ++j) {
+                const uint32_t bb = (uint32_t)sys->bond.conn.bond_idx[bo + j];
+                if (!perceived[bb]) continue;
+                const uint32_t ba = (uint32_t)sys->bond.conn.bond_idx[ao + j];
+                out->bond_flags[ba] = (sys->bond.flags[ba] & ~bond_mask) | (out->bond_flags[bb] & bond_mask);
+            }
+        }
+    }
+}
+
+mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, const md_molecule_data_t* molecules, md_allocator_i* alloc) {
+    const size_t N = sys->atom.count;
+    const size_t num_bonds = sys->bond.count;
+    // The perception in a temporary scope of the thread; what it writes into alloc
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    // The formal charges a file gives: the atom/formal_charge column its loader publishes, NAN where it gives none.
+    // The charges in md_atom_data_t are this function's output and are not read back, so running it again starts
+    // from the same place.
+    const md_attribute_t* q_attr = md_attributes_find(&sys->attributes, MD_STR_LIT("atom/formal_charge"));
+    const float* q_given = (const float*)md_attribute_view(q_attr, MD_ATTRIBUTE_TYPE_F32, 1, 1);
+    if (q_given && md_attribute_slice_count(q_attr, md_attribute_slice_all()) != N) q_given = NULL;
+
+    mdi_chem_t* out = md_alloc(alloc, sizeof(mdi_chem_t));
+    *out = (mdi_chem_t){ .num_bonds = num_bonds, .num_atoms = N };
+    out->bond_flags     = md_alloc(alloc, sizeof(md_bond_flags_t) * MD_MAX(num_bonds, 1));
+    out->atom_flags     = md_alloc(alloc, sizeof(md_atom_flags_t) * MD_MAX(N, 1));
+    out->formal_charge  = md_alloc(alloc, MD_MAX(N, 1));
+    out->hydrogen_count = md_alloc(alloc, MD_MAX(N, 1));
+
+    copy_plan_t plan = {0};
+    if (plan_copies(&plan, sys, molecules, q_given, temp_alloc)) {
+        uint8_t* perceived = md_alloc(temp_alloc, MD_MAX(num_bonds, 1));
+        md_memset(perceived, 0, MD_MAX(num_bonds, 1));
+        perceive_planned(out, perceived, sys, rings, reference, flags, q_given, &plan, temp_alloc);
+        copy_planned(out, perceived, sys, &plan);
+    } else {
+        perceive_system(out, sys, rings, reference, flags, q_given, temp_alloc);
     }
     md_temp_end(temp);
     return out;

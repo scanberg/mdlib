@@ -236,5 +236,8 @@ void mdi_infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const md_
 // system's, or rings not yet given to it), into alloc; then written into the system. md_system_infer computes it beside
 // the other steps which only read the system, and writes it after them.
 typedef struct mdi_chem_t mdi_chem_t;
-mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, md_allocator_i* alloc);
+// The molecules given (those of the bonds, with their structures, md_molecule_data_t), a copy of a molecule whose
+// chemistry follows from its structure takes that of its reference (md_chem.c, COPIES OF A MOLECULE); NULL: each is
+// perceived.
+mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings, const md_system_state_t* reference, uint32_t flags, const md_molecule_data_t* molecules, md_allocator_i* alloc);
 void mdi_chem_write(md_system_t* sys, const mdi_chem_t* chem);

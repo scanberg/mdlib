@@ -585,6 +585,8 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->molecule.atom_slot, alloc);
     md_array_free(sys->molecule.type_idx, alloc);
     md_molecule_type_data_free(&sys->molecule.type, alloc);
+    md_array_free(sys->molecule.structure_idx, alloc);
+    md_array_free(sys->molecule.structure_ref, alloc);
 
     md_fragment_data_free(&sys->fragment, alloc);
 
