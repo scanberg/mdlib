@@ -23,8 +23,7 @@ struct RArgs {
     DescriptorHandle<SamplerState> smp;
     uint    width;
     uint    height;
-    uint    _p0;
-    uint    _p1;
+    uint*   cmds;           // draw commands a kernel writes (gen_cmd)
 };
 MD_SHADER_ARGS(RArgs);
 
@@ -155,6 +154,18 @@ void read_tex(uint3 tid : SV_DispatchThreadID) {
     RArgs a = MD_ARGS;
     if (tid.x >= a.width || tid.y >= a.height) return;
     a.colors[tid.y * a.width + tid.x] = a.tex.Load(int3(int2(tid.xy), 0));
+}
+
+// Draw commands produced by a kernel and consumed by an indirect draw in the
+// same stream, as md_render's culls write its rasters': a draw of 3 vertices
+// at cmds[0], an indexed draw of 3 indices at cmds[4] (md_gpu_draw_cmd_t,
+// md_gpu_draw_indexed_cmd_t), one instance each.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void gen_cmd(uint3 tid : SV_DispatchThreadID) {
+    RArgs a = MD_ARGS;
+    a.cmds[0] = 3u; a.cmds[1] = 1u; a.cmds[2] = 0u; a.cmds[3] = 0u;
+    a.cmds[4] = 3u; a.cmds[5] = 1u; a.cmds[6] = 0u; a.cmds[7] = 0u; a.cmds[8] = 0u;
 }
 
 // Positions produced by a kernel and consumed by a draw in the same stream.
