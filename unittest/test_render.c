@@ -5959,4 +5959,74 @@ UTEST(render, mol_cartoon_coarse_grained) {
     f_close(&fx);
 }
 
+/* RIBBONS (md_gl's): the backbone's splines as a flat stadium, oriented as
+   the cartoon; its gaps as thick as the ribbon; drawn and picked as the
+   backbone */
+UTEST(render, mol_ribbons) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    md_render_mol_rep_t rep = {0};
+    rep.key = 13; rep.type = MD_RENDER_MOL_REP_RIBBONS; rep.chain_gaps = true;
+    md_render_batch_t bt[4];
+    ASSERT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 4));
+    EXPECT_EQ((uint64_t)(13 << 8 | MD_RENDER_MOL_PART_BACKBONE), bt[0].key);
+    EXPECT_EQ(MD_RENDER_SPLINES, bt[0].kind);
+    EXPECT_EQ(topo.backbone_count, bt[0].count);
+    EXPECT_NEAR(0.1f, bt[0].style.splines.radius, 1e-6f);
+    EXPECT_NEAR(0.9f, bt[0].style.splines.flat, 1e-6f);
+    EXPECT_EQ((md_gpu_addr_t)0, bt[0].style.splines.profile);
+    EXPECT_NEAR(0.14f, bt[1].style.capsules.radius, 1e-6f);
+    rep.params.ribbons.half_width = 1.5f; rep.params.ribbons.half_thickness = 0.25f;
+    ASSERT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 4));
+    EXPECT_NEAR(1.25f, bt[0].style.splines.flat, 1e-6f);
+    EXPECT_NEAR(0.35f, bt[1].style.capsules.radius, 1e-6f);
+    /* drawn, orthographic over all of it: a pick on a covered pixel is the backbone */
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (size_t i = 0; i < sys.atom.count; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], (&state.xyz[i].x)[k]); hi[k] = fmaxf(hi[k], (&state.xyz[i].x)[k]); }
+    const uint32_t W = 160, H = 160;
+    cam_t c = { .ortho = true, .half_h = 0.55f * fmaxf(hi[0] - lo[0], hi[1] - lo[1]), .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -0.5f * (lo[0] + hi[0]); cam.view[13] = -0.5f * (lo[1] + hi[1]); cam.view[14] = -(hi[2] + 20.0f);
+    md_render_frame_t f = frame_of(W, H, cam, bt, 1);
+    memcpy(f.content, content, sizeof(content));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    uint32_t* id = malloc(W * H * 8);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).id, id, W * H * 8));
+    uint32_t covered = 0, first = UINT32_MAX;
+    for (uint32_t i = 0; i < W * H; ++i) if (id[2 * i + 1]) { covered++; if (first == UINT32_MAX) first = i; }
+    printf("    9gfu ribbons: %u pixels of %u covered\n", covered, W * H);
+    EXPECT_GT(covered, W * H / 20);
+    ASSERT_NE(UINT32_MAX, first);
+    md_render_pick_t pk;
+    md_render_mol_hit_t hit;
+    ASSERT_TRUE(f_pick(&fx, first % W, first / W, &pk));
+    ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+    EXPECT_EQ(MD_RENDER_MOL_HIT_BACKBONE, hit.kind);
+    EXPECT_LT(hit.segment, (uint32_t)sys.protein_backbone.segment.count);
+    free(id);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
 #endif

@@ -475,6 +475,8 @@ typedef struct glyph_build_t {
     md_array(float)    slab_a;
     md_array(uint32_t) slab_side;
     int32_t            ref;             /* the atom the points are taken whole about (-1: their first's) */
+    md_array(int32_t)  m;               /* scratch: a point's members and weights */
+    md_array(float)    mw;
 } glyph_build_t;
 
 /* A point of atoms (weights w, NULL: the mean) standing for attr, with the
@@ -482,15 +484,14 @@ typedef struct glyph_build_t {
    the derived points' rule, so the points of one lipid stay together across
    the cell); UINT32_MAX where an atom is not resident */
 static uint32_t gpoint(glyph_build_t* g, const int32_t* atoms, size_t n, int32_t attr, float radius, const float* w) {
-    if (n == 0 || n > 64) return UINT32_MAX;
+    if (n == 0) return UINT32_MAX;
     for (size_t k = 0; k < n; ++k) if (atoms[k] < 0 || (uint32_t)atoms[k] >= g->n || g->inv[atoms[k]] == UINT32_MAX) return UINT32_MAX;
     const bool lead = g->ref >= 0 && g->ref != atoms[0] && (uint32_t)g->ref < g->n && g->inv[g->ref] != UINT32_MAX;
-    int32_t m[65];
-    float   mw[65];
-    uint32_t c = 0;
-    if (lead) { m[c] = g->ref; mw[c++] = 0.0f; }
-    for (size_t k = 0; k < n; ++k) { m[c] = atoms[k]; mw[c++] = w ? w[k] : 1.0f / (float)n; }
-    return g->base + derived_add(g->der, m, mw, c, (uint32_t)attr, radius);
+    md_array_shrink(g->m, 0);
+    md_array_shrink(g->mw, 0);
+    if (lead) { md_array_push(g->m, g->ref, g->alloc); md_array_push(g->mw, 0.0f, g->alloc); }
+    for (size_t k = 0; k < n; ++k) { md_array_push(g->m, atoms[k], g->alloc); md_array_push(g->mw, w ? w[k] : 1.0f / (float)n, g->alloc); }
+    return g->base + derived_add(g->der, g->m, g->mw, (uint32_t)md_array_size(g->m), (uint32_t)attr, radius);
 }
 
 static void gtube_point(glyph_build_t* g, uint32_t k, uint32_t p, float r, float a, uint32_t side) {
@@ -2755,6 +2756,27 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
         if (!classes) classes = MD_RENDER_MOL_BONDS_ALL;
         dash_ends.radius_add = stick_radius;      /* no spheres: as far as a stick's round end */
         break;
+    case MD_RENDER_MOL_REP_RIBBONS: {
+        /* md_gl's: the backbone's splines, a flat stadium throughout */
+        uint32_t n = 0;
+        const float hw = rep->params.ribbons.half_width > 0.0f ? rep->params.ribbons.half_width : 1.0f;
+        const float ht = rep->params.ribbons.half_thickness > 0.0f ? rep->params.ribbons.half_thickness : 0.1f;
+        if (topo->backbone_count) {
+            md_render_batch_t b = base;
+            b.key   = (rep->key << 8) | MD_RENDER_MOL_PART_BACKBONE;
+            b.kind  = MD_RENDER_SPLINES;
+            b.count = topo->backbone_count;
+            b.index = topo->backbone_index;
+            b.id    = topo->backbone_segment;
+            b.style.splines.axis   = dynamic + dyn_of(topo).bb_axis;
+            b.style.splines.radius = ht;
+            b.style.splines.flat   = hw > ht ? hw - ht : 0.0f;
+            put(out, cap, &n, &b);
+        }
+        const md_render_sphere_style_t none = { 0.0f, 0.0f };
+        put_gaps(out, cap, &n, &base, topo, rep, 0, CHAIN_GAP_RADIUS_TRACE * 0.2f * (ht / 0.1f), none);
+        return n;
+    }
     case MD_RENDER_MOL_REP_CARTOON: {
         /* The protein backbone's splines over the copy: the CA's point is
            the control point, its atom the part's attribute (colour,

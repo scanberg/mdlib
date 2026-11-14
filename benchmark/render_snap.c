@@ -310,6 +310,7 @@ static int run(int argc, char** argv) {
             else if (!strcmp(name, "ball"))      r.type = MD_RENDER_MOL_REP_BALL_AND_STICK;
             else if (!strcmp(name, "bonds"))     r.type = MD_RENDER_MOL_REP_BONDS;
             else if (!strcmp(name, "cartoon"))   r.type = MD_RENDER_MOL_REP_CARTOON;
+            else if (!strcmp(name, "ribbons"))   r.type = MD_RENDER_MOL_REP_RIBBONS;
             else { fprintf(stderr, "unknown representation '%s'\n", name); return 2; }
             reps[n_reps++] = r;
         } else if ((!strcmp(a, "--fade") || !strcmp(a, "--fade-in")) && i + 3 < argc) {
@@ -485,6 +486,7 @@ static int run(int argc, char** argv) {
             rep.params.cartoon.profile = prof;
             break;
         }
+        case MD_RENDER_MOL_REP_RIBBONS: rep.params.ribbons.half_width = p >= 0 ? p : 1.0f; break;
         default: break;
         }
         rep.color.mode = MD_RENDER_COLOR_POINTS;
