@@ -716,18 +716,44 @@ static void infer_molecule_types(md_molecule_data_t* mol, const md_system_t* sys
         if (first_part[m] == UINT32_MAX) first_part[m] = (uint32_t)p;
         num_parts[m] += 1;
     }
-    for (size_t a = 0; a < atom_count; ++a) {
-        const md_particle_type_idx_t t = sys->atom.type_idx ? sys->atom.type_idx[a] : 0;
-        atom_sum[mol_of_atom[a]] += md_hash64(&t, sizeof(t), 0x9E3779B97F4A7C15ull);
-    }
-    for (size_t b = 0; b < sys->bond.count; ++b) {
-        if (!bond_holds_molecule(sys, b)) continue;
-        const md_atom_pair_t pair = sys->bond.pairs[b];
-        if ((size_t)pair.idx[0] >= atom_count || (size_t)pair.idx[1] >= atom_count) continue;
-        const md_particle_type_idx_t ta = sys->atom.type_idx ? sys->atom.type_idx[pair.idx[0]] : 0;
-        const md_particle_type_idx_t tb = sys->atom.type_idx ? sys->atom.type_idx[pair.idx[1]] : 0;
-        const uint32_t key = ((uint32_t)MD_MIN(ta, tb) << 16) | (uint32_t)MD_MAX(ta, tb);
-        bond_sum[mol_of_atom[pair.idx[0]]] += md_hash64(&key, sizeof(key), 0xC2B2AE3D27D4EB4Full);
+    if (mol->structure_idx) {
+        // A copy is made of what its reference is (STRUCTURES): its sums are its reference's. The bonds of a molecule are
+        // those of the connectivity of its atoms, each once, from its first atom.
+        for (size_t m = 0; m < mol->count; ++m) {
+            const int32_t r = mol->structure_ref[mol->structure_idx[m]];
+            if (r != (int32_t)m) {
+                atom_sum[m] = atom_sum[r];
+                bond_sum[m] = bond_sum[r];
+                continue;
+            }
+            for (uint32_t slot = mol->offset[m]; slot < mol->offset[m + 1]; ++slot) {
+                const int32_t a = mol->atom_idx[slot];
+                const md_particle_type_idx_t t = sys->atom.type_idx ? sys->atom.type_idx[a] : 0;
+                atom_sum[m] += md_hash64(&t, sizeof(t), 0x9E3779B97F4A7C15ull);
+                for (uint32_t j = sys->bond.conn.offset[a]; j < sys->bond.conn.offset[a + 1]; ++j) {
+                    const md_bond_idx_t b = sys->bond.conn.bond_idx[j];
+                    const md_atom_pair_t pair = sys->bond.pairs[b];
+                    if (pair.idx[0] != a || (size_t)pair.idx[1] >= atom_count || !bond_holds_molecule(sys, (size_t)b)) continue;
+                    const md_particle_type_idx_t tb = sys->atom.type_idx ? sys->atom.type_idx[pair.idx[1]] : 0;
+                    const uint32_t key = ((uint32_t)MD_MIN(t, tb) << 16) | (uint32_t)MD_MAX(t, tb);
+                    bond_sum[m] += md_hash64(&key, sizeof(key), 0xC2B2AE3D27D4EB4Full);
+                }
+            }
+        }
+    } else {
+        for (size_t a = 0; a < atom_count; ++a) {
+            const md_particle_type_idx_t t = sys->atom.type_idx ? sys->atom.type_idx[a] : 0;
+            atom_sum[mol_of_atom[a]] += md_hash64(&t, sizeof(t), 0x9E3779B97F4A7C15ull);
+        }
+        for (size_t b = 0; b < sys->bond.count; ++b) {
+            if (!bond_holds_molecule(sys, b)) continue;
+            const md_atom_pair_t pair = sys->bond.pairs[b];
+            if ((size_t)pair.idx[0] >= atom_count || (size_t)pair.idx[1] >= atom_count) continue;
+            const md_particle_type_idx_t ta = sys->atom.type_idx ? sys->atom.type_idx[pair.idx[0]] : 0;
+            const md_particle_type_idx_t tb = sys->atom.type_idx ? sys->atom.type_idx[pair.idx[1]] : 0;
+            const uint32_t key = ((uint32_t)MD_MIN(ta, tb) << 16) | (uint32_t)MD_MAX(ta, tb);
+            bond_sum[mol_of_atom[pair.idx[0]]] += md_hash64(&key, sizeof(key), 0xC2B2AE3D27D4EB4Full);
+        }
     }
 
     md_hashmap32_t type_of_key = { .allocator = temp_arena };
@@ -758,6 +784,13 @@ static void infer_molecule_types(md_molecule_data_t* mol, const md_system_t* sys
             }
         }
 
+        // A copy of a molecule of an inferred type, of the same parts, is of its type (its key is the same)
+        if (type < 0 && mol->structure_idx) {
+            const int32_t r = mol->structure_ref[mol->structure_idx[m]];
+            if (r != (int32_t)m && seq_key[r] == seq_key[m] && num_parts[r] == num_parts[m] && (mol->type.flags[mol->type_idx[r]] & MD_MOLECULE_TYPE_FLAG_INFERRED)) {
+                type = mol->type_idx[r];
+            }
+        }
         if (type < 0) {
             const size_t n = molecule.count;
             const uint64_t key = md_hash64_combine(md_hash64(&n, sizeof(n), seq_key[m]), md_hash64_combine(atom_sum[m], bond_sum[m]));
@@ -785,15 +818,18 @@ static void infer_molecule_types(md_molecule_data_t* mol, const md_system_t* sys
 
 // ### STRUCTURES ###
 
-// What a bond is to the structure of a molecule: its kind and, unless perceived, its order and resonance
+// What a bond is to the structure of a molecule: its kind and origin (which decide whether it holds the molecule) and,
+// unless perceived, its order and resonance
 static inline uint32_t structure_bond_key(md_bond_flags_t f) {
-    const uint32_t kind = (uint32_t)f & (MD_BOND_FLAG_KIND_MASK | MD_BOND_FLAG_KIND_GIVEN);
+    const uint32_t kind = (uint32_t)f & (MD_BOND_FLAG_KIND_MASK | MD_BOND_FLAG_KIND_GIVEN | MD_BOND_FLAG_ORIGIN_MASK);
     if (f & MD_BOND_FLAG_ORDER_PERCEIVED) return kind;
     return kind | ((uint32_t)f & (MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_RESONANCE_MASK));
 }
 
 typedef struct structure_ctx_t {
-    const md_molecule_data_t* mol;
+    const uint32_t*           offset;       // [molecule + 1] Its slots
+    const int32_t*            atom_idx;     // [slot]
+    const int32_t*            atom_slot;    // [atom]
     const md_bond_data_t*     bond;
     const md_particle_type_idx_t* type;     // [atom] NULL: all of one
     const int32_t*            res_of;       // [atom] The residue, -1 outside of every residue
@@ -801,7 +837,7 @@ typedef struct structure_ctx_t {
 
 // What slot k of molecule m is bonded to, in its j'th bond: the slot of the molecule, or out of it ~particle type
 static inline int64_t structure_partner(const structure_ctx_t* c, uint32_t beg, uint32_t end, int32_t o) {
-    const uint32_t s = (uint32_t)c->mol->atom_slot[o];
+    const uint32_t s = (uint32_t)c->atom_slot[o];
     if (s >= beg && s < end) return (int64_t)(s - beg);
     return ~(int64_t)(c->type ? c->type[o] : 0);
 }
@@ -814,13 +850,12 @@ static inline uint64_t structure_residue(const structure_ctx_t* c, int32_t a, in
 }
 
 static bool same_structure(const structure_ctx_t* c, size_t m, size_t r) {
-    const md_molecule_data_t* mol = c->mol;
-    const uint32_t mb = mol->offset[m], me = mol->offset[m + 1], rb = mol->offset[r], re = mol->offset[r + 1];
+    const uint32_t mb = c->offset[m], me = c->offset[m + 1], rb = c->offset[r], re = c->offset[r + 1];
     if (me - mb != re - rb) return false;
-    const int32_t m0 = mol->atom_idx[mb], r0 = mol->atom_idx[rb];
+    const int32_t m0 = c->atom_idx[mb], r0 = c->atom_idx[rb];
     const uint32_t* off = c->bond->conn.offset;
     for (uint32_t k = 0; k < me - mb; ++k) {
-        const int32_t a = mol->atom_idx[mb + k], b = mol->atom_idx[rb + k];
+        const int32_t a = c->atom_idx[mb + k], b = c->atom_idx[rb + k];
         if (c->type && c->type[a] != c->type[b]) return false;
         if (structure_residue(c, a, m0) != structure_residue(c, b, r0)) return false;
         const uint32_t ao = off[a], bo = off[b], n = off[a + 1] - ao;
@@ -834,13 +869,12 @@ static bool same_structure(const structure_ctx_t* c, size_t m, size_t r) {
 }
 
 static uint64_t structure_hash(const structure_ctx_t* c, size_t m) {
-    const md_molecule_data_t* mol = c->mol;
-    const uint32_t mb = mol->offset[m], me = mol->offset[m + 1];
-    const int32_t m0 = mol->atom_idx[mb];
+    const uint32_t mb = c->offset[m], me = c->offset[m + 1];
+    const int32_t m0 = c->atom_idx[mb];
     const uint32_t* off = c->bond->conn.offset;
     uint64_t h = md_hash64_combine(0x9E3779B97F4A7C15ull, me - mb);
     for (uint32_t k = 0; k < me - mb; ++k) {
-        const int32_t a = mol->atom_idx[mb + k];
+        const int32_t a = c->atom_idx[mb + k];
         h = md_hash64_combine(h, (uint64_t)(c->type ? c->type[a] : 0) << 32 | (off[a + 1] - off[a]));
         h = md_hash64_combine(h, structure_residue(c, a, m0));
         for (uint32_t j = off[a]; j < off[a + 1]; ++j) {
@@ -880,48 +914,39 @@ bool md_system_molecule_structures_valid(md_system_t* sys) {
     return true;
 }
 
-// The structures of the molecules (STRUCTURES): a molecule is most often a copy of the one before it (a solvent), so
-// it is compared with that first, and else with the references of the structures it hashes alike with
-static void infer_molecule_structures(md_molecule_data_t* mol, const md_system_t* sys, md_allocator_i* alloc) {
-    const size_t N = sys->atom.count;
-    if (mol->count == 0 || !sys->bond.conn.offset || sys->bond.conn.offset_count < N + 1) return;
-
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    int32_t* res_of = md_temp_alloc_array(temp, int32_t, MD_MAX(N, 1));
-    for (size_t a = 0; a < N; ++a) res_of[a] = -1;
-    for (size_t ci = 0; ci < sys->residue.count && sys->residue.atom_offset; ++ci) {
-        const md_urange_t r = md_system_residue_atom_range(sys, ci);
-        for (uint32_t a = r.beg; a < r.end && a < N; ++a) res_of[a] = (int32_t)ci;
-    }
-    const structure_ctx_t c = { .mol = mol, .bond = &sys->bond, .type = sys->atom.type_idx, .res_of = res_of };
-
-    mol->structure_hash = md_system_molecule_structure_hash(sys);
-    md_array_resize(mol->structure_idx, mol->count, alloc);
-    md_hashmap32_t first_of_hash = { .allocator = md_temp_allocator(temp) };   // The first structure of a hash
-    md_array(int32_t) next = 0;                                                 // [structure] The next of its hash
-    for (size_t m = 0; m < mol->count; ++m) {
-        int32_t s = -1;
-        if (m > 0 && same_structure(&c, m, (size_t)mol->structure_ref[mol->structure_idx[m - 1]])) {
-            s = mol->structure_idx[m - 1];
-        } else {
-            const uint64_t h = structure_hash(&c, m);
-            const uint32_t* first = md_hashmap_get(&first_of_hash, h);
-            int32_t last = -1;
-            for (int32_t t = first ? (int32_t)*first : -1; t >= 0; t = next[t]) {
-                if (same_structure(&c, m, (size_t)mol->structure_ref[t])) { s = t; break; }
-                last = t;
-            }
-            if (s < 0) {
-                s = (int32_t)mol->structure_count++;
-                md_array_push(mol->structure_ref, (int32_t)m, alloc);
-                md_array_push(next, -1, md_temp_allocator(temp));
-                if (last >= 0) next[last] = s;
-                else md_hashmap_add(&first_of_hash, h, (uint32_t)s);
+// Whether the component of molecule m, in the order its atoms were discovered (comp, from the atom with the lowest
+// index), is the previous molecule's (prev) atom for atom: the same particle types and residues of the molecule, each
+// atom bonded in the same order to the same atoms of its molecule (by pos, the position in that order), or out of it to
+// an atom of the same type, by bonds alike (structure_bond_key); and in the graph the traversal follows, the same. Then
+// its traversal is the previous one's atom for atom: the same slots, the same structure.
+static bool same_as_previous(const structure_ctx_t* c, const md_bond_data_t* graph, const int32_t* comp, const int32_t* prev, size_t n, int32_t m, const int32_t* mol_of, const int32_t* pos) {
+    const md_bond_data_t* bd = c->bond;
+    const uint32_t* off = bd->conn.offset;
+    const int32_t a0 = comp[0], b0 = prev[0];
+    for (size_t k = 0; k < n; ++k) {
+        const int32_t a = comp[k], b = prev[k];
+        if (c->type && c->type[a] != c->type[b]) return false;
+        if (structure_residue(c, a, a0) != structure_residue(c, b, b0)) return false;
+        const uint32_t ao = off[a], bo = off[b], na = off[a + 1] - ao;
+        if (off[b + 1] - bo != na) return false;
+        for (uint32_t j = 0; j < na; ++j) {
+            const int32_t oa = bd->conn.atom_idx[ao + j], ob = bd->conn.atom_idx[bo + j];
+            const bool ia = mol_of[oa] == m, ib = mol_of[ob] == m - 1;
+            if (ia != ib) return false;
+            if (ia ? pos[oa] != pos[ob] : (c->type && c->type[oa] != c->type[ob])) return false;
+            if (structure_bond_key(bd->flags[bd->conn.bond_idx[ao + j]]) != structure_bond_key(bd->flags[bd->conn.bond_idx[bo + j]])) return false;
+        }
+        if (graph != bd) {
+            const uint32_t* goff = graph->conn.offset;
+            const uint32_t gao = goff[a], gbo = goff[b], gn = goff[a + 1] - gao;
+            if (goff[b + 1] - gbo != gn) return false;
+            for (uint32_t j = 0; j < gn; ++j) {
+                const int32_t oa = graph->conn.atom_idx[gao + j], ob = graph->conn.atom_idx[gbo + j];
+                if ((mol_of[oa] == m) != (mol_of[ob] == m - 1) || pos[oa] != pos[ob]) return false;
             }
         }
-        mol->structure_idx[m] = s;
     }
-    md_temp_end(temp);
+    return true;
 }
 
 void md_molecule_data_free(md_molecule_data_t* mol, md_allocator_i* alloc) {
@@ -1001,6 +1026,38 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
         }
     }
 
+    // STRUCTURES (md_molecule_data_t), found as the molecules are: a molecule is most often a copy of the one before it
+    // (a solvent), which is told from its component as discovered (same_as_previous), and then it takes the slots of
+    // that one atom for atom, without the sweeps which find them. Else by the references of the structures it hashes
+    // alike with. Without the connectivity of the bonds there are none.
+    const bool structures = sys->bond.conn.offset && sys->bond.conn.offset_count >= atom_count + 1;
+    int32_t* res_of     = NULL;     // [atom] Its residue, -1 outside of every residue
+    int32_t* mol_of     = NULL;     // [atom] Its molecule, -1 not yet in one
+    int32_t* pos        = NULL;     // [atom] Its position in its component as discovered
+    int32_t* prev       = NULL;     // The component of the previous molecule as discovered
+    int32_t* slot_src   = NULL;     // [slot of the previous molecule] The position of its atom in its component
+    int32_t* parent_src = NULL;     // [slot of the previous molecule] The position of the atom it was reached from
+    int32_t* structure_of  = NULL;  // [molecule]
+    md_array(int32_t) structure_ref = 0;
+    md_array(int32_t) next = 0;     // [structure] The next of its hash
+    md_hashmap32_t first_of_hash = { .allocator = temp_arena };     // The first structure of a hash
+    if (structures) {
+        res_of       = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        mol_of       = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        pos          = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        prev         = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        slot_src     = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        parent_src   = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        structure_of = md_temp_alloc_array(temp, int32_t, MD_MAX(atom_count, 1));
+        for (size_t a = 0; a < atom_count; ++a) res_of[a] = mol_of[a] = -1;
+        for (size_t ci = 0; ci < sys->residue.count && sys->residue.atom_offset; ++ci) {
+            const md_urange_t r = md_system_residue_atom_range(sys, ci);
+            for (uint32_t a = r.beg; a < r.end && a < atom_count; ++a) res_of[a] = (int32_t)ci;
+        }
+    }
+    const structure_ctx_t sc = { .offset = offset, .atom_idx = out->atom_idx, .atom_slot = out->atom_slot, .bond = &sys->bond, .type = sys->atom.type_idx, .res_of = res_of };
+    size_t prev_size = 0;
+
     size_t num_slots = 0;
     offset[0] = 0;
     for (int32_t i = 0; i < (int32_t)atom_count; ++i) {
@@ -1010,6 +1067,30 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
         // from it. This is the sweep that claims the atoms in 'visited'; the atom list it produces is
         // what lets the following sweeps clear their bits without touching the rest of the system.
         const size_t component_size = bfs_order(component, NULL, visited, graph, i);
+        const int32_t m = (int32_t)out->count;
+        int32_t* slot_atom = out->atom_idx + num_slots;
+
+        bool copy = false;
+        if (structures) {
+            for (size_t k = 0; k < component_size; ++k) {
+                mol_of[component[k]] = m;
+                pos[component[k]] = (int32_t)k;
+            }
+            copy = m > 0 && prev_size == component_size && same_as_previous(&sc, graph, component, prev, component_size, m, mol_of, pos);
+        }
+        if (copy) {
+            for (size_t k = 0; k < component_size; ++k) {
+                slot_atom[k] = component[slot_src[k]];
+                out->atom_slot[slot_atom[k]] = (int32_t)(num_slots + k);
+                out->parent_idx[num_slots + k] = component[parent_src[k]];
+            }
+            structure_of[m] = structure_of[m - 1];
+            num_slots += component_size;
+            out->count += 1;
+            offset[out->count] = (uint32_t)num_slots;
+            int32_t* t = prev; prev = component; component = t;
+            continue;
+        }
 
         // Locate the graph center: the atom whose greatest distance to any other atom in the
         // component is smallest. Standard double sweep - the midpoint of a longest path. Exact for
@@ -1032,7 +1113,6 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
         // Sweep 3: the component in breadth first order from the root, into its slots, which establishes the
         // slot(parent) < slot(child) invariant md_molecule_data_t documents (the root is its own parent)
         for (size_t k = 0; k < component_size; ++k) bitfield_clear_bit(sweep_visited, component[k]);
-        int32_t* slot_atom = out->atom_idx + num_slots;
         const size_t n = bfs_order(slot_atom, pred, sweep_visited, graph, root);
         for (size_t k = 0; k < n; ++k) {
             out->atom_slot[slot_atom[k]] = (int32_t)(num_slots + k);
@@ -1041,15 +1121,47 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
         num_slots += n;
         out->count += 1;
         offset[out->count] = (uint32_t)num_slots;
+
+        if (structures) {
+            // How the slots follow from the component, for a copy of this one next
+            for (size_t k = 0; k < n; ++k) {
+                slot_src[k]   = pos[slot_atom[k]];
+                parent_src[k] = pos[out->parent_idx[num_slots - n + k]];
+            }
+            // Its structure: of the references it hashes alike with, else one of its own
+            int32_t st = -1;
+            const uint64_t h = structure_hash(&sc, (size_t)m);
+            const uint32_t* first = md_hashmap_get(&first_of_hash, h);
+            int32_t last = -1;
+            for (int32_t t = first ? (int32_t)*first : -1; t >= 0; t = next[t]) {
+                if (same_structure(&sc, (size_t)m, (size_t)structure_ref[t])) { st = t; break; }
+                last = t;
+            }
+            if (st < 0) {
+                st = (int32_t)md_array_size(structure_ref);
+                md_array_push(structure_ref, m, temp_arena);
+                md_array_push(next, -1, temp_arena);
+                if (last >= 0) next[last] = st;
+                else md_hashmap_add(&first_of_hash, h, (uint32_t)st);
+            }
+            structure_of[m] = st;
+            prev_size = component_size;
+            int32_t* t = prev; prev = component; component = t;
+        }
     }
     MD_ASSERT(num_slots == atom_count);
     md_array_resize(out->offset, out->count + 1, alloc);
     md_memcpy(out->offset, offset, (out->count + 1) * sizeof(uint32_t));
+    if (structures) {
+        out->structure_count = md_array_size(structure_ref);
+        md_array_push_array(out->structure_idx, structure_of, out->count, alloc);
+        md_array_push_array(out->structure_ref, structure_ref, out->structure_count, alloc);
+        out->structure_hash = md_system_molecule_structure_hash(sys);
+    }
 
     md_temp_end(temp);
 
     infer_molecule_types(out, sys, alloc);
-    infer_molecule_structures(out, sys, alloc);
     return true;
 }
 

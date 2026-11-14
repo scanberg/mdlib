@@ -300,7 +300,7 @@ typedef struct md_molecule_t {
 // STRUCTURES. The molecules which are copies of one another share a structure: as many atoms, slot by slot of the same
 // particle type and in the same residue of the molecule (counted from the residue of its first slot), each with the
 // same bonds in the same order (md_bond_conn_data_t), to the same slots or, out of the molecule, to an atom of the same
-// particle type, by bonds of the same kind and given order (what md_chem_perceive perceives is left out). The slots of
+// particle type, by bonds of the same kind, origin and given order (what md_chem_perceive perceives is left out). The slots of
 // two such molecules correspond, atom for atom and bond for bond: what is worked out for one, its reference, holds for
 // the others where it follows from the structure alone (a large system is mostly copies: a solvent, a membrane), and a
 // view may draw the reference in place of a copy far away. The reference is the first molecule of its structure.
@@ -454,7 +454,7 @@ bool md_part_infer(md_part_data_t* out, const struct md_system_t* sys, md_alloca
 bool md_molecule_infer(md_molecule_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
 
 // What the structures of the molecules are found from (STRUCTURES): the particle types of the atoms, the residues, the
-// bonds (their atoms, kinds and given orders, not what md_chem_perceive perceives), hashed. In O(atoms + bonds).
+// bonds (their atoms, kinds, origins and given orders, not what md_chem_perceive perceives), hashed. In O(atoms + bonds).
 uint64_t md_system_molecule_structure_hash(const struct md_system_t* sys);
 
 // Whether the structures of the system's molecules are of the system as it is: those md_system_infer gave it, the
