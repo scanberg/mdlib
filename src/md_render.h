@@ -19,9 +19,10 @@ The model, in full
     live in the caller's GPU memory, read in place:
 
         SPHERES     one point each                                [implemented]
-        CAPSULES    two points: a cylinder between them           [implemented: round caps]
-                    (cones, flat caps, dashes, periodic halves,
-                    offsets: declared, not yet implemented)
+        CAPSULES    two points: a cylinder between them           [implemented: round caps,
+                                                                   dashes, displacement]
+                    (flat caps and periodic halves: declared, not
+                    yet implemented)
         POLYGONS    3..8 points around: a rounded slab            [implemented]
         SPLINES     chains of control points, swept stadium       [implemented]
         TRIANGLES   meshes                                        [declared]
