@@ -102,10 +102,11 @@ lifetime:
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
 kind, the bonds that are not covalent dashed in a style per kind (md_gl's
 BOND DASHES: see md_render_mol_dashes_t); CARTOON
-of proteins and of atomistic nucleic acids. Declared for the next phases:
-RIBBONS, coarse grained nucleic acids and lipids (points derived from
-several atoms: the ideal rings of a Martini base, lipid heads), glyphs, bond
-orders, chain gaps, ring circles.
+of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
+(md_render_mol_rep_t.chain_gaps). Declared for the next phases: RIBBONS,
+coarse grained nucleic acids and lipids (points derived from several atoms:
+the ideal rings of a Martini base, lipid heads), glyphs, bond orders, ring
+circles.
 */
 
 #ifndef MD_RENDER_MOL_H
@@ -274,6 +275,18 @@ typedef struct md_render_mol_topo_t {
     uint32_t      stick_count;
     md_gpu_addr_t stick_points;            /* uint32 [2 * stick_count]: C1', N          */
     md_gpu_addr_t stick_segment;           /* uint32 [stick_count]                     */
+
+    /* The gaps of the chains, md_gl's: per break (a residue with
+       MD_RESIDUE_FLAG_BREAK_AFTER) the cartoon's, where a side has a
+       cartoon: from its end (the CA's or C4''s point, where the spline
+       ends) to the other's, or to the atom a link would join on a side
+       without one; then the links': between the atoms a link would join
+       (md_system_chain_break_atoms). Both ends resident and not in a small
+       molecule. Each with the residue before the break. */
+    uint32_t      gap_count[2];            /* the cartoon's, the links'                */
+    md_gpu_addr_t gap_points;              /* uint32 [2 * (gap_count[0] + gap_count[1])]:
+                                              the cartoon's first                      */
+    md_gpu_addr_t gap_residue;             /* uint32 per gap: index in sys->residue     */
 
     /* Derived points: each a weighted sum of resident atoms, taken at their
        images nearest the first one's (where the update has a cell: the
@@ -605,6 +618,14 @@ typedef struct md_render_mol_rep_t {
     uint32_t                 bond_classes;
     md_render_mol_dashes_t   dashes;
 
+    /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
+       CARTOON from end to end of the cartoon, 0.14 (0.7 of the coil at a
+       scale of 1; the profile's scales do not reach it), its colours
+       blended; LICORICE, BALL_AND_STICK and BONDS between the atoms a link
+       would join, half the sticks' radius, from where they leave the
+       spheres. Dashes and gaps 4 times the radius: longer than a bond's. */
+    bool                     chain_gaps;
+
     /* Colour of atoms and sticks. COLOR_POINTS reads `color` (uint32 RGBA8
        per atom), COLOR_PALETTE reads `palette_index` (uint16 per atom). */
     md_render_color_t        color;
@@ -632,6 +653,7 @@ enum {
     MD_RENDER_MOL_PART_NUCLEIC  = 17,   /* the nucleic acids' band */
     MD_RENDER_MOL_PART_RINGS    = 18,   /* + corners - 3: their rings */
     MD_RENDER_MOL_PART_STICKS   = MD_RENDER_MOL_PART_RINGS + MD_RENDER_MOL_RING_SIZES,   /* sugar to base */
+    MD_RENDER_MOL_PART_GAPS,            /* the gaps of the chains */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -651,6 +673,7 @@ typedef enum md_render_mol_hit_kind_t {
     MD_RENDER_MOL_HIT_BACKBONE,    /* a residue's part of the cartoon               */
     MD_RENDER_MOL_HIT_NUCLEOTIDE,  /* a nucleotide's: its part of the band, a ring,
                                       its stick                                      */
+    MD_RENDER_MOL_HIT_CHAIN_GAP,   /* the gap over a break of a chain                */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {
@@ -659,11 +682,14 @@ typedef struct md_render_mol_hit_t {
     uint32_t instance;
     uint32_t atom;                 /* the atom, the bond's atom nearer the hit, the
                                       residue's CA, the nucleotide's C4' (band) or
-                                      its ring's or stick's atom nearest the hit     */
+                                      its ring's or stick's atom nearest the hit, the
+                                      gap's end nearer the hit                       */
     uint32_t bond;                 /* index in sys->bond; UINT32_MAX for others       */
     uint32_t segment;              /* index in sys->protein_backbone.segment of a
                                       BACKBONE hit, in sys->nucleic_backbone.segment
                                       of a NUCLEOTIDE hit; UINT32_MAX for others      */
+    uint32_t residue;              /* index in sys->residue of the residue before the
+                                      break of a CHAIN_GAP hit; UINT32_MAX for others */
     float    position[3];
 } md_render_mol_hit_t;
 

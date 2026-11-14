@@ -8,6 +8,7 @@
 #include <md_unitcell.h>
 #include <md_pdb.h>
 #include <md_gro.h>
+#include <md_mmcif.h>
 #include <md_infer.h>
 #include <md_backbone.h>
 #include <core/md_arena_allocator.h>
@@ -4603,6 +4604,215 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     EXPECT_LT(nd, ns * 3 / 4);
     free(ids[0]); free(ids[1]);
     md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
+/* md_gl's chain gaps on 9gfu (residues missing in its chains, as md_mmcif's
+   test has it): the cartoon's from CA to CA, the links' from the C to the N;
+   emitted by the representations that ask for them; along the cartoon's,
+   dashes and gaps, a dash picking as the residue before the break and the
+   end nearer the hit */
+UTEST(render, mol_chain_gaps) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    uint32_t brk[64], nbrk = 0;
+    for (uint32_t i = 0; i + 1 < sys.residue.count && nbrk < 64; ++i) {
+        if (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) brk[nbrk++] = i;
+    }
+    ASSERT_GE(nbrk, 4u);
+    /* each residue's CA */
+    const md_protein_backbone_data_t* PB = &sys.protein_backbone;
+    int32_t* ca = malloc(sys.residue.count * sizeof(int32_t));
+    for (size_t i = 0; i < sys.residue.count; ++i) ca[i] = -1;
+    for (size_t g = 0; g < PB->segment.count; ++g) if (PB->segment.res_idx[g] >= 0) ca[PB->segment.res_idx[g]] = PB->segment.atoms[g].ca;
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    const md_render_mol_topo_t* L = &plan.layout;
+    EXPECT_EQ(nbrk, L->gap_count[0]);
+    EXPECT_EQ(nbrk, L->gap_count[1]);
+    const uint8_t*  img   = plan.data;
+    const uint32_t* order = (const uint32_t*)(img + L->atom_order);
+    const uint32_t* gp    = (const uint32_t*)(img + L->gap_points);
+    const uint32_t* gr    = (const uint32_t*)(img + L->gap_residue);
+    int wrong = 0;
+    for (uint32_t k = 0; k < nbrk && k < L->gap_count[0] && k < L->gap_count[1]; ++k) {
+        const uint32_t i = brk[k];
+        md_atom_idx_t la[2];
+        ASSERT_TRUE(md_system_chain_break_atoms(la, &sys, i));
+        wrong += gr[k] != i || (int32_t)order[gp[2 * k]] != ca[i] || (int32_t)order[gp[2 * k + 1]] != ca[i + 1];
+        const uint32_t j = L->gap_count[0] + k;
+        wrong += gr[j] != i || (int32_t)order[gp[2 * j]] != la[0] || (int32_t)order[gp[2 * j + 1]] != la[1];
+    }
+    EXPECT_EQ(0, wrong);
+
+    /* A nucleic acid's from C4' to C4': 8g7u without the sixth nucleotide of
+       its RNA (chain E) */
+    {
+        FILE* fp = fopen(MD_UNITTEST_DATA_DIR "/8g7u.cif", "rb");
+        ASSERT_TRUE(fp != NULL);
+        fseek(fp, 0, SEEK_END);
+        const long fsz = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        char* txt = malloc((size_t)fsz + 1), *cut = malloc((size_t)fsz + 1);
+        ASSERT_EQ((size_t)fsz, fread(txt, 1, (size_t)fsz, fp));
+        fclose(fp);
+        txt[fsz] = 0;
+        size_t m = 0, dropped = 0;
+        for (char* ln = txt; *ln; ) {
+            char* nl = strchr(ln, '\n');
+            const size_t ll = nl ? (size_t)(nl - ln) + 1 : strlen(ln);
+            char f[10][16] = {{0}};
+            if (!strncmp(ln, "ATOM", 4)) sscanf(ln, "%15s %15s %15s %15s %15s %15s %15s %15s %15s", f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]);
+            if (!strcmp(f[6], "E") && !strcmp(f[8], "6")) dropped++;
+            else { memcpy(cut + m, ln, ll); m += ll; }
+            ln += ll;
+        }
+        cut[m] = 0;
+        EXPECT_GT(dropped, 10u);
+        md_allocator_i* a2 = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t ns = { .alloc = a2 };
+        md_system_state_t nst = { .alloc = a2 };
+        ASSERT_TRUE(md_mmcif_system_init_from_str(&ns, &nst, (md_str_t){ cut, m }, NULL));
+        ASSERT_TRUE(md_system_infer(&ns, &nst, MD_SYSTEM_INFER_ALL, NULL));
+        int32_t* c4 = malloc((ns.residue.count + 1) * sizeof(int32_t));
+        for (size_t i = 0; i < ns.residue.count; ++i) c4[i] = -1;
+        const md_nucleic_backbone_data_t* NB = &ns.nucleic_backbone;
+        for (size_t g = 0; g < NB->segment.count; ++g) if (NB->segment.res_idx[g] >= 0) c4[NB->segment.res_idx[g]] = NB->segment.atoms[g].c4;
+        md_temp_scope_t t2 = md_temp_begin();
+        md_render_mol_plan_t np;
+        ASSERT_TRUE(md_render_mol_plan(&np, &ns, NULL, t2));
+        const md_render_mol_topo_t* NL = &np.layout;
+        const uint32_t* no = (const uint32_t*)((const uint8_t*)np.data + NL->atom_order);
+        const uint32_t* ngp = (const uint32_t*)((const uint8_t*)np.data + NL->gap_points);
+        const uint32_t* ngr = (const uint32_t*)((const uint8_t*)np.data + NL->gap_residue);
+        int nucleic = 0;
+        for (uint32_t k = 0; k < NL->gap_count[0]; ++k) {
+            const uint32_t i = ngr[k];
+            if (c4[i] < 0 && c4[i + 1] < 0) continue;
+            nucleic++;
+            EXPECT_EQ(c4[i], (int32_t)no[ngp[2 * k]]);
+            EXPECT_EQ(c4[i + 1], (int32_t)no[ngp[2 * k + 1]]);
+            md_atom_idx_t la[2];
+            EXPECT_TRUE(md_system_chain_break_atoms(la, &ns, i));
+            bool link = false;          /* and its link, from the O3' to the P */
+            for (uint32_t j = NL->gap_count[0]; j < NL->gap_count[0] + NL->gap_count[1]; ++j) {
+                link |= ngr[j] == i && (int32_t)no[ngp[2 * j]] == la[0] && (int32_t)no[ngp[2 * j + 1]] == la[1];
+            }
+            EXPECT_TRUE(link);
+            EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&ns.atom, (size_t)la[0]), "O3'"));
+            EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&ns.atom, (size_t)la[1]), "P"));
+        }
+        printf("    8g7u without a nucleotide: %u gaps of its cartoon, %d of them a nucleic acid's\n", NL->gap_count[0], nucleic);
+        EXPECT_EQ(1, nucleic);
+        md_temp_end(t2);
+        free(c4); free(txt); free(cut);
+        md_system_free(&ns);
+        md_vm_arena_destroy(a2);
+    }
+
+    fix_t fx;
+    if (!f_open(&fx)) { md_temp_end(temp); free(ca); md_system_free(&sys); UTEST_SKIP(f_skip_reason()); }
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+
+    /* who emits them */
+    md_render_mol_rep_t rep = {0};
+    rep.key = 9; rep.type = MD_RENDER_MOL_REP_CARTOON;
+    md_render_batch_t bt[16];
+    const uint32_t n0 = md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 16);
+    rep.chain_gaps = true;
+    const uint32_t n1 = md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 16);
+    ASSERT_EQ(n0 + 1, n1);
+    md_render_batch_t gaps = bt[n1 - 1];
+    EXPECT_EQ((uint64_t)(9 << 8 | MD_RENDER_MOL_PART_GAPS), gaps.key);
+    EXPECT_EQ(nbrk, gaps.count);
+    EXPECT_NEAR(0.14f, gaps.style.capsules.radius, 1e-6f);
+    EXPECT_NEAR(0.56f, gaps.style.capsules.dash_length, 1e-6f);
+    EXPECT_NEAR(0.56f, gaps.style.capsules.gap_length, 1e-6f);
+    EXPECT_EQ(0.0f, gaps.style.capsules.dash_ends.radius_add);
+    EXPECT_EQ(0.0f, gaps.color.sharpness);
+    md_render_mol_rep_t lic = {0};
+    lic.key = 10; lic.type = MD_RENDER_MOL_REP_LICORICE; lic.params.licorice.radius = 0.2f;
+    const uint32_t m0 = md_render_mol_emit(&topo, dyn, &atoms, &lic, bt, 16);
+    lic.chain_gaps = true;
+    ASSERT_EQ(m0 + 1, md_render_mol_emit(&topo, dyn, &atoms, &lic, bt, 16));
+    EXPECT_EQ((uint64_t)(10 << 8 | MD_RENDER_MOL_PART_GAPS), bt[m0 - 1].key);       /* before the atoms */
+    EXPECT_EQ(topo.gap_points + (md_gpu_addr_t)topo.gap_count[0] * 8u, bt[m0 - 1].index);
+    EXPECT_NEAR(0.1f, bt[m0 - 1].style.capsules.radius, 1e-6f);
+    EXPECT_NEAR(0.4f, bt[m0 - 1].style.capsules.dash_length, 1e-6f);
+    EXPECT_NEAR(0.2f, bt[m0 - 1].style.capsules.dash_ends.radius_add, 1e-6f);   /* from the joints' spheres */
+    md_render_mol_rep_t sf = {0};
+    sf.key = 11; sf.type = MD_RENDER_MOL_REP_SPACEFILL; sf.params.spacefill.radius_scale = 1.0f; sf.chain_gaps = true;
+    EXPECT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &sf, bt, 16));          /* no sticks, no gaps */
+
+    /* The first gap side on, along x: picks along it */
+    const float* pa = &state.xyz[ca[brk[0]]].x;
+    const float* pb = &state.xyz[ca[brk[0] + 1]].x;
+    double x[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, len = sqrt(dot3(x, x));
+    for (int k = 0; k < 3; ++k) x[k] /= len;
+    double z[3] = { 0, 0, 1 };
+    if (fabs(x[2]) > 0.9) { z[0] = 1; z[2] = 0; }
+    double y[3];
+    cross3(z, x, y);
+    double ly = sqrt(dot3(y, y));
+    for (int k = 0; k < 3; ++k) y[k] /= ly;
+    cross3(x, y, z);
+    double eye[3];
+    for (int k = 0; k < 3; ++k) eye[k] = 0.5 * (pa[k] + pb[k]) + 50.0 * z[k];
+    const uint32_t W = 256, H = 64;
+    cam_t c = { .ortho = true, .half_h = (float)(0.55 * len / 4.0), .aspect = 4.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    for (int k = 0; k < 3; ++k) {
+        cam.view[4 * k + 0] = (float)x[k];
+        cam.view[4 * k + 1] = (float)y[k];
+        cam.view[4 * k + 2] = (float)z[k];
+    }
+    cam.view[12] = (float)-dot3(x, eye); cam.view[13] = (float)-dot3(y, eye); cam.view[14] = (float)-dot3(z, eye);
+    md_render_frame_t f = frame_of(W, H, cam, &gaps, 1);
+    memcpy(f.content, content, sizeof(content));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    int hits = 0, misses = 0, bad = 0, runs = 0;
+    bool was = false;
+    for (int s = 3; s <= 97; ++s) {
+        const double t = s / 100.0, sx = (t - 0.5) * len;
+        const uint32_t px = (uint32_t)((sx / (c.half_h * c.aspect) * 0.5 + 0.5) * W);
+        md_render_pick_t pk;
+        md_render_mol_hit_t hit;
+        bool on = f_pick(&fx, px, H / 2, &pk) && md_render_mol_decode_pick(&pk, &hit) && hit.kind == MD_RENDER_MOL_HIT_CHAIN_GAP && hit.residue == brk[0];
+        if (on) {
+            hits++;
+            if (fabs(t - 0.5) > 0.02) bad += hit.atom != (uint32_t)(t < 0.5 ? ca[brk[0]] : ca[brk[0] + 1]);
+            bad += hit.rep_key != 9;
+        } else {
+            misses++;
+        }
+        runs += on && !was;
+        was = on;
+    }
+    const double D = 0.56, nd = fmax(2.0, floor((len + D) / (2 * D) + 0.5));
+    printf("    %u breaks; the first %.2f A: %d of %d picks on a dash, %d dashes met (%.0f drawn)\n", nbrk, len, hits, hits + misses, runs, nd);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(hits, 30);
+    EXPECT_GT(misses, 30);
+    EXPECT_GE(runs, (int)nd - 1);
+    md_render_mol_destroy(mol);
+    free(ca);
     md_system_free(&sys);
     f_close(&fx);
 }
