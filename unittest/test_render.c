@@ -4123,4 +4123,160 @@ UTEST(render, mol_cartoon_nucleic) {
     f_close(&fx);
 }
 
+static uint16_t float_to_half(float f) {        /* round to nearest; tiny values to 0 (the tests' are not) */
+    uint32_t x;
+    memcpy(&x, &f, 4);
+    uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t  e = (int32_t)((x >> 23) & 0xFFu) - 127 + 15;
+    if ((x & 0x7FFFFFFFu) == 0 || e <= 0) return (uint16_t)sign;
+    if (e >= 31) return (uint16_t)(sign | 0x7C00u);
+    return (uint16_t)(sign | (((uint32_t)e << 10) + (((x & 0x7FFFFFu) + 0x1000u) >> 13)));
+}
+
+/* Derived points: the lipids' head centres of the Martini 3 lipid zoo (its
+   molecules broken across the box as the run wrote them; the lipids of up
+   to 16 beads small molecules, which every regroup moves among the points).
+   Each the mean of its head's beads: as given without a cell, at their
+   images nearest the first with the frames' cell; still after a regroup;
+   its velocity the mean of theirs; standing for its first bead */
+static void head_mean(const md_system_t* sys, const float* xyz, const float L[3], size_t h, double out[3]) {
+    const md_atom_idx_t* at = md_lipid_head_atoms(&sys->lipid, h);
+    const size_t na = md_lipid_head_atom_count(&sys->lipid, h);
+    const float* r = xyz + 3 * at[0];
+    for (int d = 0; d < 3; ++d) out[d] = 0;
+    for (size_t j = 0; j < na; ++j) {
+        const float* x = xyz + 3 * at[j];
+        for (int d = 0; d < 3; ++d) {
+            double v = x[d] - r[d];
+            if (L) v -= L[d] * round(v / L[d]);
+            out[d] += (r[d] + v) / (double)na;
+        }
+    }
+}
+
+UTEST(render, mol_derived_points) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/martini/martini3_lipids.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    const size_t nh = sys.lipid.head.count;
+    ASSERT_TRUE(md_unitcell_is_orthorhombic(&state.unitcell));
+    const float L[3] = { (float)state.unitcell.x, (float)state.unitcell.y, (float)state.unitcell.z };
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    uint32_t small_heads = 0, split = 0;
+    for (size_t h = 0; h < nh; ++h) {
+        const md_atom_idx_t* at = md_lipid_head_atoms(&sys.lipid, h);
+        int32_t m = -1;
+        for (size_t k = 0; k < sys.molecule.count && m < 0; ++k) {
+            for (uint32_t j = sys.molecule.offset[k]; j < sys.molecule.offset[k + 1]; ++j) if (sys.molecule.atom_idx[j] == at[0]) m = (int32_t)k;
+        }
+        if (m >= 0 && sys.molecule.offset[m + 1] - sys.molecule.offset[m] <= MD_RENDER_MOL_SMALL) small_heads++;
+        double a[3], b[3];
+        head_mean(&sys, &state.xyz[0].x, NULL, h, a);
+        head_mean(&sys, &state.xyz[0].x, L, h, b);
+        split += fabs(a[0] - b[0]) + fabs(a[1] - b[1]) + fabs(a[2] - b[2]) > 1.0;
+    }
+    printf("    %zu lipids, %zu heads (%u of small molecules, %u split by the box): %u derived points after %u atoms' points\n",
+           sys.lipid.count, nh, small_heads, split, topo.derived_count, topo.point_count);
+    ASSERT_EQ((uint32_t)nh, topo.derived_count);
+    EXPECT_GT(small_heads, 0u);
+    EXPECT_GT(split, 0u);
+    {   /* each stands for its first bead */
+        uint32_t* ord = (uint32_t*)read_block(&fx, topo.atom_order, ((size_t)topo.point_count + nh) * 4);
+        int bad = 0;
+        for (size_t h = 0; h < nh; ++h) bad += ord[topo.point_count + h] != (uint32_t)md_lipid_head_atoms(&sys.lipid, h)[0];
+        EXPECT_EQ(0, bad);
+        free(ord);
+    }
+
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
+    const uint32_t np = topo.point_count;
+    #define CHECK_HEADS(cellL, tol, label) do { \
+        float* pts = (float*)read_block(&fx, dyn, ((size_t)np + nh) * 16); \
+        double worst = 0; \
+        for (size_t h = 0; h < nh; ++h) { \
+            double e[3]; head_mean(&sys, &state.xyz[0].x, cellL, h, e); \
+            for (int d = 0; d < 3; ++d) worst = fmax(worst, fabs(pts[4 * (np + h) + d] - e[d])); \
+        } \
+        printf("    %s: the heads within %.2e A of their means\n", label, worst); \
+        EXPECT_LT(worst, tol); \
+        free(pts); \
+    } while (0)
+
+    /* as given, no cell; with velocities (packed half3) */
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)n * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    uint16_t* vel = malloc((size_t)n * 8);
+    float* velf = malloc((size_t)n * 12);
+    for (uint32_t i = 0; i < n; ++i) {
+        for (int d = 0; d < 3; ++d) { velf[3 * i + d] = (float)((int)((i * 7u + (uint32_t)d * 13u) % 29u) - 14) * 0.25f; vel[4 * i + d] = float_to_half(velf[3 * i + d]); }
+        vel[4 * i + 3] = 0;
+    }
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    atoms.velocity = f_buf(&fx, vel, (size_t)n * 8);
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    CHECK_HEADS(NULL, 1e-4, "as given");
+    {
+        uint16_t* pv = (uint16_t*)read_block(&fx, dyn + (topo.dynamic_size), ((size_t)np + nh) * 8);
+        double worst = 0;
+        for (size_t h = 0; h < nh; ++h) {
+            const md_atom_idx_t* at = md_lipid_head_atoms(&sys.lipid, h);
+            const size_t na = md_lipid_head_atom_count(&sys.lipid, h);
+            for (int d = 0; d < 3; ++d) {
+                double e = 0;
+                for (size_t j = 0; j < na; ++j) e += velf[3 * at[j] + d] / (double)na;
+                worst = fmax(worst, fabs(half_to_float(pv[4 * (np + h) + d]) - e));
+            }
+        }
+        printf("    velocities: the heads within %.2e of their means\n", worst);
+        EXPECT_LT(worst, 1e-2);
+        free(pv);
+    }
+    /* regrouped: the small lipids' beads elsewhere among the points, the heads where they were */
+    uint32_t* ord0 = (uint32_t*)read_block(&fx, topo.atom_order, (size_t)np * 4);
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    uint32_t* ord1 = (uint32_t*)read_block(&fx, topo.atom_order, (size_t)np * 4);
+    EXPECT_NE(0, memcmp(ord0, ord1, (size_t)np * 4));
+    CHECK_HEADS(NULL, 1e-4, "after a regroup");
+    free(ord0); free(ord1);
+
+    /* from a frame with the cell: whole, at the images nearest the first bead */
+    {
+        float cell[9];
+        md_render_mol_frame_cell(cell, &state.unitcell);
+        uint16_t* q = malloc((size_t)n * 6);
+        md_render_mol_frame_t f;
+        md_render_mol_frame_quantize(&f, q, &state.xyz[0].x, 0, n, cell, NULL);
+        md_render_mol_frames_t fr;
+        ASSERT_TRUE(md_render_mol_frames_init(&fr, &topo, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&topo, 1)).gpu, 1));
+        ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP));
+        md_render_mol_atoms_t af = {0};
+        af.frames = &fr;
+        af.frame_count = 1;
+        af.frame_w[0] = 1.0f;
+        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &af, 0, content));
+        const double qtol = 2.0 * fmax(fmax(f.scale[0], f.scale[1]), f.scale[2]);
+        CHECK_HEADS(L, qtol, "from a frame, whole");
+        free(q);
+    }
+    #undef CHECK_HEADS
+    free(vel); free(velf);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
 #endif

@@ -110,6 +110,10 @@ struct Args {
     uint* na_index;             // the nucleic band: per control point its C4''s point | flags
     uint* na_face;              // the point it faces (UINT32_MAX for none)
     uint* na_axis;              // float4 per control point: the band's axis (md_render's)
+    uint* der_offset;           // the derived points: each one's members, [der_count + 1]
+    uint* der_member;           // per member its atom
+    uint* der_weight;           // float per member
+    uint* der_radius;           // float per derived point: its w
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -145,7 +149,9 @@ struct Args {
     float bb_sheet;
     uint  dbg;                  // the bench's probes: sol_write leaves out (1) atom_order, (4) the bonds
     uint  na_count;             // control points of the nucleic band
-    uint  _pad1;
+    uint  der_count;            // derived points
+    uint  der_cell;             // the cell of their images: 0 none, 1 fpar0's, 2 fpar1's
+    uint  _pad2;
 };
 MD_SHADER_ARGS(Args);
 
@@ -844,5 +850,40 @@ void na_axis(uint3 tid : SV_DispatchThreadID) {
         s = ls > 1.0e-4 ? s / ls : bb_any_perpendicular(tg);
         uint* o = a.na_axis + 4u * j;
         o[0] = asuint(s.x); o[1] = asuint(s.y); o[2] = asuint(s.z); o[3] = 0u;
+    }
+}
+
+// The derived points (md_render_mol_topo_t): each the weighted sum of its
+// members' points, found where they are now (mixed_point: the atoms of a
+// small molecule move among the points with every regroup), each at its
+// image nearest the first's where the update has a cell (the reference
+// frame's, der_cell). Written after the atoms' points, with the radius it
+// stands for as its w; its velocity the same sum of theirs.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void derive(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.der_count;
+    bool vel = a.has_velocity != 0u || a.has_fvel != 0u;
+    CellP cell;
+    cell.ax = cell.bx = cell.by = cell.cx = cell.cy = cell.cz = 0.0;
+    cell.r  = float3(0.0);                          // no cell: mi leaves d as it is
+    if (a.der_cell != 0u) cell = cell_p(a.der_cell == 1u ? a.fpar0 : a.fpar1);
+    for (uint d = tid.x; d < n; d += grid_threads(n)) {
+        uint   o0  = a.der_offset[d], o1 = a.der_offset[d + 1u];
+        float3 ref = ld3(a.points, 4u * a.mixed_point[a.der_member[o0]]);
+        float3 x = float3(0.0), v = float3(0.0);
+        for (uint o = o0; o < o1; ++o) {
+            uint  p = a.mixed_point[a.der_member[o]];
+            float w = asfloat(a.der_weight[o]);
+            x += w * (ref + mi(cell, ld3(a.points, 4u * p) - ref));
+            if (vel) {
+                uint2 h = loadAligned<8>((uint2*)a.vel_out + p);
+                v += w * float3(f16tof32(h.x & 0xFFFFu), f16tof32(h.x >> 16u), f16tof32(h.y & 0xFFFFu));
+            }
+        }
+        uint q = a.atom_count + d;
+        store_point(a.points, q, asuint(x), a.der_radius[d]);
+        if (vel) storeAligned<8>((uint2*)a.vel_out + q, uint2(f32tof16(v.x) | (f32tof16(v.y) << 16u), f32tof16(v.z)));
     }
 }
