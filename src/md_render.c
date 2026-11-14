@@ -1301,6 +1301,7 @@ static bool run_resolve(md_gpu_stream_t s, md_render_view_t v, bool splines) {
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return false;
     if (!splines) return true;
+    PASS_DONE("resolve");                       /* the profile (md_render_debug_pass_hook): each on its own */
     g = md_gpu_grid_for(v->r->k_resolve_heavy, v->width, v->height, 1);
     return md_gpu_launch(s, v->r->k_resolve_heavy, g, &a, sizeof(a));
 }
@@ -1563,8 +1564,9 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
            state bits when those did. Not when only the camera moved. */
         md_render_t r = v->r;
         if ((refit || state_changed) && !pass_per_cluster(s, v, r->k_refit, 0, gv.total_clusters)) return false;
-        if ((refit || state_changed) && spl && !pass_per_cluster(s, v, r->k_refit_heavy, 0, gv.total_clusters)) return false;
         if (refit || state_changed) PASS_DONE("refit");
+        if ((refit || state_changed) && spl && !pass_per_cluster(s, v, r->k_refit_heavy, 0, gv.total_clusters)) return false;
+        if ((refit || state_changed) && spl) PASS_DONE("refit heavy");
         v->bounds_valid = true;
 
         /* Phase 1: clusters, then the elements of the visible ones, against
@@ -1572,9 +1574,10 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         if (!pass(s, v, r->k_cull_clusters, 1, gv.total_cluster_work, 0) || !fin(s, v, 11)) return false;
         PASS_DONE("clusters1");
         if (!pass(s, v, r->k_cull, 1, 0, C_GRID_CVIS)) return false;
+        if (spl) PASS_DONE("cull1");
         if (spl && !pass(s, v, r->k_cull_heavy, 1, 0, C_GRID_CVIS)) return false;
         if (!fin(s, v, 12)) return false;
-        PASS_DONE("cull1");
+        PASS_DONE(spl ? "cull1 heavy" : "cull1");
         if (compute && !run_raster_small(s, v, 1)) return false;
         if (compute) PASS_DONE("small1");
         if (!run_raster(s, v, 1, compute, has_kind)) return false;
@@ -1591,9 +1594,10 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
                 if (!pass(s, v, r->k_cull, 2, 0, C_GRID_OCC)) return false;
                 PASS_DONE("retest2");
                 if (!pass(s, v, r->k_cull, 4, 0, C_GRID_CVIS + 4)) return false;
+                if (spl) PASS_DONE("cull2");
                 if (spl && !pass(s, v, r->k_cull_heavy, 4, 0, C_GRID_CVIS + 4)) return false;
                 if (!fin(s, v, 22)) return false;
-                PASS_DONE("cull2");
+                PASS_DONE(spl ? "cull2 heavy" : "cull2");
                 if (compute && !run_raster_small(s, v, 2)) return false;
                 if (compute) PASS_DONE("small2");
                 if (!run_raster(s, v, 2, compute, has_kind)) return false;
@@ -1634,8 +1638,9 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         const uint32_t one = 1;
         md_gpu_upload(s, v->view_buf + offsetof(gpu_view_t, refit_mode), &one, 4);
         if (!pass_per_cluster(s, v, v->r->k_refit, 0, clusters)) return false;
-        if (frame_has_heavy(f) && !pass_per_cluster(s, v, v->r->k_refit_heavy, 0, clusters)) return false;
         PASS_DONE("state refit");
+        if (frame_has_heavy(f) && !pass_per_cluster(s, v, v->r->k_refit_heavy, 0, clusters)) return false;
+        if (frame_has_heavy(f)) PASS_DONE("state refit heavy");
         md_gpu_memset(s, CTR(v, C_ST), 0, 8u);
         md_gpu_memset(s, CTR(v, C_STS), 0, 4u);
         md_gpu_memset(s, CTR(v, C_STP), 0, 4u);
@@ -1645,7 +1650,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
     }
 
     if (resolve && !run_resolve(s, v, frame_has_heavy(f))) return false;
-    if (resolve) PASS_DONE("resolve");
+    if (resolve) PASS_DONE(frame_has_heavy(f) ? "resolve heavy" : "resolve");
     if (mask && !run_masks(s, v, f)) return false;
     if (mask) PASS_DONE("mask");
 
