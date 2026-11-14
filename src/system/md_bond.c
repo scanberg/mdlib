@@ -1,4 +1,6 @@
 ﻿#include "md_infer_internal.h"
+#include "md_infer_profile.h"
+#include <core/md_os.h>
 #include <core/md_executor.h>
 #include <core/md_log.h>
 #include <core/md_spatial_acc.h>
@@ -818,6 +820,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
 
     size_t num_atoms = state->num_atoms;
     md_array(bond_pair_t) candidates = 0;
+    int64_t prof_t = mdi_infer_profile ? md_tick_now() : 0;     // The parts timed (mdi_infer_profile)
 
     if (is_coarse_grained) {
         md_array_ensure(candidates, num_atoms, temp_arena);
@@ -895,6 +898,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         for (size_t i = 0; i < num_res; ++i) {
             res_water[i] = md_system_residue_kind(sys, i) == MD_RESIDUE_KIND_WATER || atoms_are_water(sys, md_system_residue_atom_range(sys, i));
         }
+        mdi_infer_profile_step(&prof_t, "  bonds: atoms");
 
         // The candidates live on the heap: the spatial structure is given back (to the scratch it came from) before
         // anything else is made, and what is made after it reuses that memory rather than adding to it
@@ -919,9 +923,11 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = (const float*)state->xyz, .stride = sizeof(md_float3_t), .count = state->num_atoms, .cutoff = acc_cutoff, .unitcell = &state->unitcell, .executor = executor });
+            mdi_infer_profile_step(&prof_t, "  bonds: grid");
             // The many pairs of the small atoms (an array made for them), then the few of the far atoms after them:
             // sort_candidates orders them all
             cov_bond_candidates(&candidates, &acc, cutoff, NULL, NULL, 0, &param, executor, heap);
+            mdi_infer_profile_step(&prof_t, "  bonds: search");
             if (num_far) {
                 int32_t* fars = md_temp_alloc_array(temp_scope, int32_t, num_far);
                 size_t k = 0;
@@ -931,6 +937,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
                 cov_bond_candidates(&candidates, &acc, far_cutoff, state->xyz, fars, num_far, &far_param, executor, heap);
             }
             md_temp_reset(temp_scope, before_acc);
+            mdi_infer_profile_step(&prof_t, "  bonds: search far");
         }
 
         // The candidates by their atoms, the lower of each pair first: the passes below then read the atoms nearly in
@@ -940,6 +947,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         bond_pair_t* cand = md_temp_alloc_array(temp_scope, bond_pair_t, MD_MAX(num_candidates, 1));
         sort_candidates(cand, candidates, num_candidates, num_atoms, executor, temp_scope);
         md_array_free(candidates, heap);
+        mdi_infer_profile_step(&prof_t, "  bonds: sort");
 
         //MD_LOG_DEBUG("Found %zu candidates", num_candidates);
 
@@ -989,6 +997,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         // The bonds: the candidates of a rule, but those of the atoms of metallic phases, then the metallic bonds. Each
         // pair is found once (cov_bond_candidates), so they are written as they are, with the distance of each, which the
         // pruning below is more informed by (the coordination bonds).
+        mdi_infer_profile_step(&prof_t, "  bonds: rules");
         md_bond_data_t temp_bond = { 0 };
         float* temp_bond_dist = NULL;
         {
@@ -1026,6 +1035,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         }
 
         // Create bitfield to keep track of valid bonds during pruning (we do not remove bonds to ensure index stability)
+        mdi_infer_profile_step(&prof_t, "  bonds: pairs");
         md_array(uint64_t) temp_bond_valid = make_bitfield(temp_bond.count, temp_arena);
         bitfield_set_all(temp_bond_valid, temp_bond.count); // Set all bits to 1 (valid)
 
@@ -1154,6 +1164,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         }
 #endif
 
+        mdi_infer_profile_step(&prof_t, "  bonds: prune");
         size_t num_valid_bonds = bitfield_popcount(temp_bond_valid, temp_bond.count);
 
         // The bonds left, in their order
@@ -1168,6 +1179,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
         }
         MD_ASSERT(n == num_valid_bonds);
         bond->count = n;
+        mdi_infer_profile_step(&prof_t, "  bonds: out");
     }
 
     md_temp_end(temp_scope);
@@ -1185,7 +1197,9 @@ bool md_bond_infer(md_bond_data_t* out, const md_system_t* sys, const md_system_
         return false;
     }
     infer_bonds(out, state, sys, alloc, executor);
+    int64_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
     md_bond_build_connectivity(out, state->num_atoms, alloc);
+    mdi_infer_profile_step(&prof_t, "  bonds: connectivity");
     return true;
 }
 

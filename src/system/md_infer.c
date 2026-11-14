@@ -1,9 +1,11 @@
 ﻿#include <md_infer.h>
 #include <md_element.h>
 #include "md_infer_internal.h"
+#include "md_infer_profile.h"
 #include <core/md_executor.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
 #include <md_chem.h>
 #include <md_system_fields.h>
 
@@ -23,6 +25,7 @@ typedef struct infer_branches_t {
     md_molecule_data_t  molecule;
     md_ring_data_t      ring;
     md_backbone_data_t  backbone_data;
+    double              ms[3];              // Of each branch, when profiled (mdi_infer_profile)
 } infer_branches_t;
 
 // The longest branch first: the molecules, then the rings, then the backbones
@@ -30,6 +33,7 @@ static void infer_branch(void* arg, uint32_t beg, uint32_t end, uint32_t thread_
     (void)thread_idx;
     infer_branches_t* br = (infer_branches_t*)arg;
     for (uint32_t b = beg; b < end; ++b) {
+        const md_tick_t t0 = mdi_infer_profile ? md_tick_now() : 0;
         if (b == 0) {
             if (br->molecules) md_molecule_infer(&br->molecule, br->sys, br->alloc[0]);
         } else if (b == 1) {
@@ -37,6 +41,7 @@ static void infer_branch(void* arg, uint32_t beg, uint32_t end, uint32_t thread_
         } else {
             if (br->backbone) md_backbone_infer(&br->backbone_data, br->sys, br->alloc[2]);
         }
+        if (mdi_infer_profile) br->ms[b] = md_tick_to_milliseconds(md_tick_now() - t0);
     }
 }
 
@@ -58,6 +63,29 @@ static void molecule_data_copy(md_molecule_data_t* dst, const md_molecule_data_t
     dst->topology_version = src->topology_version;
 }
 
+// ### PROFILING ###
+
+mdi_infer_profile_t* mdi_infer_profile = NULL;
+
+static void profile_record(const char* name, double ms) {
+    mdi_infer_profile_t* p = mdi_infer_profile;
+    if (p && p->count < MDI_INFER_PROFILE_MAX_STEPS) {
+        p->name[p->count] = name;
+        p->ms[p->count] = ms;
+        p->count += 1;
+    }
+}
+
+void mdi_infer_profile_step(int64_t* t, const char* name) {
+    if (!mdi_infer_profile) return;
+    const md_tick_t now = md_tick_now();
+    profile_record(name, md_tick_to_milliseconds(now - *t));
+    *t = now;
+}
+
+// The step which ended now, since the one before it
+#define PROFILE_STEP(name) do { if (mdi_infer_profile) { const md_tick_t t_ = md_tick_now(); profile_record(name, md_tick_to_milliseconds(t_ - prof_t)); prof_t = t_; } } while (0)
+
 // Try to fill in missing fields for molecule struct
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
@@ -70,6 +98,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         MD_LOG_ERROR("System allocator not set");
         return false;
     }
+    md_tick_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
     md_system_topology_changed(sys);
 
     md_allocator_i* alloc = sys->alloc;
@@ -110,6 +139,8 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         }
     }
    
+    PROFILE_STEP("setup");
+
     if (flags & MD_SYSTEM_INFER_BOND_BIT) {
         // Setting the bit means "derive this", unconditionally. A format which supplies its own
         // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
@@ -131,16 +162,19 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         md_bond_data_free(&sys->bond, sys->alloc);
         sys->bond = bonds;
         md_system_topology_changed(sys);
+        PROFILE_STEP("bonds");
     }
 
     // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are
     // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
     md_system_infer_coordination(sys);
+    PROFILE_STEP("coordination");
 
     // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
     // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.
     if (flags & MD_SYSTEM_INFER_RESIDUE_BIT) {
         md_system_infer_residue_flags(sys, state);
+        PROFILE_STEP("residue flags");
     }
 
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are
@@ -154,6 +188,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         md_part_infer(&parts, sys, sys->alloc);
         md_part_data_free(&sys->part, sys->alloc);
         sys->part = parts;
+        PROFILE_STEP("chains, parts");
     }
 
     bool molecules_inferred = false;
@@ -172,6 +207,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         };
         const bool chemistry = (flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) && sys->bond.count;
         if ((br.rings || br.molecules || chemistry) && sys->bond.count && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+        PROFILE_STEP("connectivity");
 
         // Side by side on the executor each makes its results in an arena of its own, as the system's allocator is not
         // for several threads, and they are copied into it. Otherwise one after the other, in the system's allocator.
@@ -179,11 +215,18 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
         for (int i = 0; i < 3; ++i) br.alloc[i] = side_by_side ? md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1)) : sys->alloc;
         md_parallel_for(side_by_side ? executor : NULL, 3, 1, infer_branch, &br);
+        if (mdi_infer_profile) {
+            if (br.molecules) profile_record("  molecules", br.ms[0]);
+            if (br.rings)     profile_record("  rings", br.ms[1]);
+            if (br.backbone)  profile_record("  backbones", br.ms[2]);
+        }
+        PROFILE_STEP("branches");
 
         // The chemistry of the molecules just inferred (the copies of one take its chemistry), in a temporary scope
         // until it is written. Protonation at pH 7 applies to residues without hydrogens only.
         mdi_chem_t* chem = NULL;
         if (chemistry) chem = mdi_chem_compute(sys, br.rings ? &br.ring : &sys->ring, state, MD_CHEM_FLAG_PROTONATE_PH7, br.molecules ? &br.molecule : NULL, md_temp_allocator(temp));
+        if (chem) PROFILE_STEP("chemistry");
 
         if (br.molecules) {
             molecules_inferred = true;
@@ -211,7 +254,9 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             else              sys->ring = br.ring;
         }
         // After the rings, before the hydrogen bond roles which read the orders
+        PROFILE_STEP("write");
         if (chem) mdi_chem_write(sys, chem);
+        if (chem) PROFILE_STEP("chemistry write");
         if (br.backbone) {
             md_backbone_data_t old = { .protein = sys->protein_backbone, .nucleic = sys->nucleic_backbone };
             md_backbone_data_free(&old, sys->alloc);
@@ -235,6 +280,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         }
         if (side_by_side) for (int i = 0; i < 3; ++i) md_arena_allocator_destroy(br.alloc[i]);
         md_temp_end(temp);
+        PROFILE_STEP("write");
     }
 
     if (flags & MD_SYSTEM_INFER_LIPID_BIT) {
@@ -244,15 +290,18 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         md_lipid_data_free(&sys->lipid, sys->alloc);
         sys->lipid = lipids;
         md_system_infer_lipid_kinds(sys);
+        PROFILE_STEP("lipids");
     }
 
     // Last of what depends on the classification of the residues, which the lipids are the last to change. Cheap,
     // and what a residue type is follows from the residues alone, so not behind a bit.
     md_system_infer_residue_types(sys);
+    PROFILE_STEP("residue types");
 
     if (flags & MD_SYSTEM_INFER_FRAGMENT_BIT) {
         // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails
         md_system_infer_fragments(sys);
+        PROFILE_STEP("fragments");
     }
 
     // The structures of the molecules inferred are of the topology as it is now (md_system_molecule_structures_valid)
@@ -264,6 +313,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         sys->reference.alloc = sys->alloc;
         md_system_state_copy(&sys->reference, state);
     }
+    PROFILE_STEP("reference");
 
     return true;
 }
