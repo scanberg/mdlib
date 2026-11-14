@@ -1166,6 +1166,7 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             bond->flags[n] = temp_bond.flags[i];
             n += 1;
         }
+        MD_ASSERT(n == num_valid_bonds);
         bond->count = n;
     }
 

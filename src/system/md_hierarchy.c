@@ -396,6 +396,13 @@ bool md_part_infer(md_part_data_t* out, const md_system_t* sys, md_allocator_i* 
 // Breadth first from seed over the atoms not yet in visited, marking them: the atoms in the order they are reached into
 // order, which is the queue, and the atom each was reached from into pred where given (the seed its own). Returns how
 // many were reached. The order is by distance from the seed, so the last is as far from it as any.
+// The entries of atom a in the connectivity of bd: none without one, as a system without bonds (beads which only links
+// hold together, a metal whose bonds are all metallic) may have
+static inline md_urange_t conn_range(const md_bond_data_t* bd, int32_t a) {
+    const uint32_t* off = bd->conn.offset;
+    return off ? (md_urange_t){ off[a], off[a + 1] } : (md_urange_t){ 0, 0 };
+}
+
 static size_t bfs_order(int32_t* order, int32_t* pred, uint64_t* visited, const md_bond_data_t* bond, int32_t seed) {
     size_t n = 0;
     bitfield_set_bit(visited, seed);
@@ -730,7 +737,8 @@ static void infer_molecule_types(md_molecule_data_t* mol, const md_system_t* sys
                 const int32_t a = mol->atom_idx[slot];
                 const md_particle_type_idx_t t = sys->atom.type_idx ? sys->atom.type_idx[a] : 0;
                 atom_sum[m] += md_hash64(&t, sizeof(t), 0x9E3779B97F4A7C15ull);
-                for (uint32_t j = sys->bond.conn.offset[a]; j < sys->bond.conn.offset[a + 1]; ++j) {
+                const md_urange_t ca = conn_range(&sys->bond, a);
+                for (uint32_t j = ca.beg; j < ca.end; ++j) {
                     const md_bond_idx_t b = sys->bond.conn.bond_idx[j];
                     const md_atom_pair_t pair = sys->bond.pairs[b];
                     if (pair.idx[0] != a || (size_t)pair.idx[1] >= atom_count || !bond_holds_molecule(sys, (size_t)b)) continue;
@@ -826,6 +834,11 @@ static inline uint32_t structure_bond_key(md_bond_flags_t f) {
     return kind | ((uint32_t)f & (MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_RESONANCE_MASK));
 }
 
+// The key of the bond of entry j of the connectivity of bd: of no flags where the bonds have none (pairs alone)
+static inline uint32_t conn_bond_key(const md_bond_data_t* bd, uint32_t j) {
+    return structure_bond_key(bd->flags ? bd->flags[bd->conn.bond_idx[j]] : 0);
+}
+
 typedef struct structure_ctx_t {
     const uint32_t*           offset;       // [molecule + 1] Its slots
     const int32_t*            atom_idx;     // [slot]
@@ -853,16 +866,16 @@ static bool same_structure(const structure_ctx_t* c, size_t m, size_t r) {
     const uint32_t mb = c->offset[m], me = c->offset[m + 1], rb = c->offset[r], re = c->offset[r + 1];
     if (me - mb != re - rb) return false;
     const int32_t m0 = c->atom_idx[mb], r0 = c->atom_idx[rb];
-    const uint32_t* off = c->bond->conn.offset;
     for (uint32_t k = 0; k < me - mb; ++k) {
         const int32_t a = c->atom_idx[mb + k], b = c->atom_idx[rb + k];
         if (c->type && c->type[a] != c->type[b]) return false;
         if (structure_residue(c, a, m0) != structure_residue(c, b, r0)) return false;
-        const uint32_t ao = off[a], bo = off[b], n = off[a + 1] - ao;
-        if (off[b + 1] - bo != n) return false;
+        const md_urange_t ca = conn_range(c->bond, a), cb = conn_range(c->bond, b);
+        const uint32_t ao = ca.beg, bo = cb.beg, n = ca.end - ca.beg;
+        if (cb.end - cb.beg != n) return false;
         for (uint32_t j = 0; j < n; ++j) {
             if (structure_partner(c, mb, me, c->bond->conn.atom_idx[ao + j]) != structure_partner(c, rb, re, c->bond->conn.atom_idx[bo + j])) return false;
-            if (structure_bond_key(c->bond->flags[c->bond->conn.bond_idx[ao + j]]) != structure_bond_key(c->bond->flags[c->bond->conn.bond_idx[bo + j]])) return false;
+            if (conn_bond_key(c->bond, ao + j) != conn_bond_key(c->bond, bo + j)) return false;
         }
     }
     return true;
@@ -871,15 +884,15 @@ static bool same_structure(const structure_ctx_t* c, size_t m, size_t r) {
 static uint64_t structure_hash(const structure_ctx_t* c, size_t m) {
     const uint32_t mb = c->offset[m], me = c->offset[m + 1];
     const int32_t m0 = c->atom_idx[mb];
-    const uint32_t* off = c->bond->conn.offset;
     uint64_t h = md_hash64_combine(0x9E3779B97F4A7C15ull, me - mb);
     for (uint32_t k = 0; k < me - mb; ++k) {
         const int32_t a = c->atom_idx[mb + k];
-        h = md_hash64_combine(h, (uint64_t)(c->type ? c->type[a] : 0) << 32 | (off[a + 1] - off[a]));
+        const md_urange_t ca = conn_range(c->bond, a);
+        h = md_hash64_combine(h, (uint64_t)(c->type ? c->type[a] : 0) << 32 | (ca.end - ca.beg));
         h = md_hash64_combine(h, structure_residue(c, a, m0));
-        for (uint32_t j = off[a]; j < off[a + 1]; ++j) {
+        for (uint32_t j = ca.beg; j < ca.end; ++j) {
             h = md_hash64_combine(h, (uint64_t)structure_partner(c, mb, me, c->bond->conn.atom_idx[j]));
-            h = md_hash64_combine(h, structure_bond_key(c->bond->flags[c->bond->conn.bond_idx[j]]));
+            h = md_hash64_combine(h, conn_bond_key(c->bond, j));
         }
     }
     return h;
@@ -921,25 +934,25 @@ bool md_system_molecule_structures_valid(md_system_t* sys) {
 // its traversal is the previous one's atom for atom: the same slots, the same structure.
 static bool same_as_previous(const structure_ctx_t* c, const md_bond_data_t* graph, const int32_t* comp, const int32_t* prev, size_t n, int32_t m, const int32_t* mol_of, const int32_t* pos) {
     const md_bond_data_t* bd = c->bond;
-    const uint32_t* off = bd->conn.offset;
     const int32_t a0 = comp[0], b0 = prev[0];
     for (size_t k = 0; k < n; ++k) {
         const int32_t a = comp[k], b = prev[k];
         if (c->type && c->type[a] != c->type[b]) return false;
         if (structure_residue(c, a, a0) != structure_residue(c, b, b0)) return false;
-        const uint32_t ao = off[a], bo = off[b], na = off[a + 1] - ao;
-        if (off[b + 1] - bo != na) return false;
+        const md_urange_t ca = conn_range(bd, a), cb = conn_range(bd, b);
+        const uint32_t ao = ca.beg, bo = cb.beg, na = ca.end - ca.beg;
+        if (cb.end - cb.beg != na) return false;
         for (uint32_t j = 0; j < na; ++j) {
             const int32_t oa = bd->conn.atom_idx[ao + j], ob = bd->conn.atom_idx[bo + j];
             const bool ia = mol_of[oa] == m, ib = mol_of[ob] == m - 1;
             if (ia != ib) return false;
             if (ia ? pos[oa] != pos[ob] : (c->type && c->type[oa] != c->type[ob])) return false;
-            if (structure_bond_key(bd->flags[bd->conn.bond_idx[ao + j]]) != structure_bond_key(bd->flags[bd->conn.bond_idx[bo + j]])) return false;
+            if (conn_bond_key(bd, ao + j) != conn_bond_key(bd, bo + j)) return false;
         }
         if (graph != bd) {
-            const uint32_t* goff = graph->conn.offset;
-            const uint32_t gao = goff[a], gbo = goff[b], gn = goff[a + 1] - gao;
-            if (goff[b + 1] - gbo != gn) return false;
+            const md_urange_t ga = conn_range(graph, a), gb = conn_range(graph, b);
+            const uint32_t gao = ga.beg, gbo = gb.beg, gn = ga.end - ga.beg;
+            if (gb.end - gb.beg != gn) return false;
             for (uint32_t j = 0; j < gn; ++j) {
                 const int32_t oa = graph->conn.atom_idx[gao + j], ob = graph->conn.atom_idx[gbo + j];
                 if ((mol_of[oa] == m) != (mol_of[ob] == m - 1) || pos[oa] != pos[ob]) return false;
