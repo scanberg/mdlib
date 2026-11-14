@@ -38,6 +38,7 @@
     X(bond.pairs) X(bond.flags) X(bond.conn.atom_idx) X(bond.conn.bond_idx) X(bond.conn.offset) \
     X(ring.rings) \
     X(molecule.offset) X(molecule.atom_idx) X(molecule.parent_idx) X(molecule.atom_slot) X(molecule.type_idx) X(molecule.type.flags) \
+    X(molecule.structure_idx) X(molecule.structure_ref) \
     X(fragment.mol_template) X(fragment.frag_offset) X(fragment.template_molecule) X(fragment.template_slot_offset) \
     X(fragment.slot_frag) X(fragment.template_frag_offset) X(fragment.frag_type) X(fragment.frag_slot_offset) \
     X(fragment.frag_slot) X(fragment.type.kind) X(fragment.type.color)

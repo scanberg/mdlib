@@ -296,6 +296,15 @@ typedef struct md_molecule_t {
 // alike: of the same part types in the same order, as many atoms of each particle type and as many bonds between each
 // pair of particle types (counted, not placed: two molecules of these which are bonded differently share a type). The given
 // types come first, the inferred after them, and are inferred anew with the molecules.
+//
+// STRUCTURES. The molecules which are copies of one another share a structure: as many atoms, slot by slot of the same
+// particle type and in the same residue of the molecule (counted from the residue of its first slot), each with the
+// same bonds in the same order (md_bond_conn_data_t), to the same slots or, out of the molecule, to an atom of the same
+// particle type, by bonds of the same kind and given order (what md_chem_perceive perceives is left out). The slots of
+// two such molecules correspond, atom for atom and bond for bond: what is worked out for one, its reference, holds for
+// the others where it follows from the structure alone (a large system is mostly copies: a solvent, a membrane), and a
+// view may draw the reference in place of a copy far away. The reference is the first molecule of its structure.
+// Without the connectivity of the bonds there are none (structure_idx NULL).
 typedef struct md_molecule_type_data_t {
     size_t count;
     md_str_t* name;                        // [count] The topology's name of it, else what its parts are
@@ -311,6 +320,10 @@ typedef struct md_molecule_data_t {
 
     md_molecule_type_idx_t* type_idx;   // [count]
     md_molecule_type_data_t type;
+
+    int32_t* structure_idx;     // [count] The structure of each molecule (STRUCTURES)
+    int32_t* structure_ref;     // [structure_count] The molecule each structure is the structure of first: its reference
+    size_t   structure_count;
 } md_molecule_data_t;
 
 #ifdef __cplusplus
