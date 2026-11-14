@@ -133,7 +133,7 @@ _Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
 
 typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
-    md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's box: 4 float4 */
+    md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box and part, 14 float4 (SPLINE_RECORD) */
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
