@@ -3309,8 +3309,10 @@ float2 oct_encode(float3 n) {
     return p;
 }
 
-// SPL 0: spheres and capsules; 1: splines and polygons (the other's pixels
-// come back invalid)
+// SPL 0: spheres and capsules; 1: splines and polygons; 2: splines; 3:
+// polygons (the others' pixels come back invalid). The resolve takes the
+// heavy kinds a kernel each (2, 3): the two together held 255 registers on
+// the 1060 and spilled, which the splines alone need not.
 Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     Hit h;
     h.valid = false;
@@ -3396,7 +3398,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         float  kk  = saturate((k - 0.5) / max(1.0 - sh, 1e-3) + 0.5);
         h.color    = lerp(attr_color(b, a0), attr_color(b, a1), kk);
         h.valid    = true;
-    } else if (SPL != 0 && b.kind == KIND_SPLINES) {
+    } else if ((SPL == 1 || SPL == 2) && b.kind == KIND_SPLINES) {
         // the part again, cut as the raster cut it (its bounds give the pieces;
         // not through spline_geo, which crashed lavapipe's pick kernel)
         SplinePart sp = spline_part(v, b, h.instance, h.element, true);
@@ -3419,7 +3421,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         h.attr     = attr_of(b, pi);
         h.color    = attr_color(b, h.attr);
         h.valid    = true;
-    } else if (SPL != 0 && b.kind == KIND_POLYGONS) {
+    } else if ((SPL == 1 || SPL == 3) && b.kind == KIND_POLYGONS) {
         PolyPart  pp = poly_part(v, b, h.instance, h.element, true);
         SplineHit ph = poly_hit(r, pp);
         if (ph.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its centroid
@@ -3479,7 +3481,8 @@ void resolve_body<let SPL : int>(uint3 tid) {
         a.motion[px] = float2(0.0);
         return;
     }
-    if (!kind_taken<SPL>(a.batches[(idv.y >> 20) - 1u].kind)) return;
+    uint kind = a.batches[(idv.y >> 20) - 1u].kind;
+    if (SPL == 0 ? heavy_kind(kind) : SPL == 2 ? kind != KIND_SPLINES : kind != KIND_POLYGONS) return;
     ViewData v = *a.view;
     Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5);
     if (!h.valid) return;       // EXTERNAL: the caller's
@@ -3503,7 +3506,11 @@ void resolve(uint3 tid : SV_DispatchThreadID) { resolve_body<0>(tid); }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void resolve_heavy(uint3 tid : SV_DispatchThreadID) { resolve_body<1>(tid); }
+void resolve_heavy(uint3 tid : SV_DispatchThreadID) { resolve_body<2>(tid); }      // splines
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resolve_poly(uint3 tid : SV_DispatchThreadID) { resolve_body<3>(tid); }
 
 // The visible part of the masks, from the ids: r state 0, b state 1. The
 // raster pass that follows adds g and a (anywhere, hidden too) by max.
