@@ -194,7 +194,7 @@ struct md_render {
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, merge;
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
-    md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy;
+    md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly;
     bool              atomic_int64;    /* the compute raster is possible */
 };
 
@@ -262,6 +262,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     kd = md_shader_md_render_refit_heavy_kernel();   r->k_refit_heavy   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_cull_heavy_kernel();    r->k_cull_heavy    = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_resolve_heavy_kernel(); r->k_resolve_heavy = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_resolve_poly_kernel();  r->k_resolve_poly  = md_gpu_kernel_create(device, &kd);
     if (r->atomic_int64) {
         kd = md_shader_md_render_raster_small_kernel(); r->k_raster_small = md_gpu_kernel_create(device, &kd);
         if (!r->k_raster_small) r->atomic_int64 = false;
@@ -270,7 +271,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
         !r->polygon_vis || !r->polygon_mask || !r->merge ||
         !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
-        !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy) {
+        !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
         md_render_destroy(r);
         return NULL;
@@ -291,6 +292,7 @@ void md_render_destroy(md_render_t r) {
     if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
     if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
     if (r->k_resolve_heavy)  md_gpu_kernel_destroy(r->k_resolve_heavy);
+    if (r->k_resolve_poly)   md_gpu_kernel_destroy(r->k_resolve_poly);
     if (r->k_resolve)      md_gpu_kernel_destroy(r->k_resolve);
     if (r->k_mask_visible) md_gpu_kernel_destroy(r->k_mask_visible);
     if (r->k_pick)         md_gpu_kernel_destroy(r->k_pick);
@@ -1314,14 +1316,30 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
 }
 
 /* The main resolve, then its heavy twin over the spline and polygon pixels */
-static bool run_resolve(md_gpu_stream_t s, md_render_view_t v, bool splines) {
+/* The light kinds' kernel, then a kernel for each heavy kind the frame has:
+   splines and polygons together held 255 registers on the 1060 and spilled.
+   The last pass is left for the caller to mark (md_render_debug_pass_hook). */
+static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f) {
+    bool spl = false, poly = false;
+    for (uint32_t i = 0; i < f->batch_count; ++i) {
+        if (!batch_work(&f->batches[i])) continue;
+        spl  |= f->batches[i].kind == MD_RENDER_SPLINES;
+        poly |= f->batches[i].kind == MD_RENDER_POLYGONS;
+    }
     gpu_args_t a = base_args(v);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
-    if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return false;
-    if (!splines) return true;
-    PASS_DONE("resolve");                       /* the profile (md_render_debug_pass_hook): each on its own */
-    g = md_gpu_grid_for(v->r->k_resolve_heavy, v->width, v->height, 1);
-    return md_gpu_launch(s, v->r->k_resolve_heavy, g, &a, sizeof(a));
+    if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
+    if (!spl && !poly) return "resolve";
+    PASS_DONE("resolve");
+    if (spl) {
+        g = md_gpu_grid_for(v->r->k_resolve_heavy, v->width, v->height, 1);
+        if (!md_gpu_launch(s, v->r->k_resolve_heavy, g, &a, sizeof(a))) return NULL;
+        if (!poly) return "resolve splines";
+        PASS_DONE("resolve splines");
+    }
+    g = md_gpu_grid_for(v->r->k_resolve_poly, v->width, v->height, 1);
+    if (!md_gpu_launch(s, v->r->k_resolve_poly, g, &a, sizeof(a))) return NULL;
+    return "resolve polygons";
 }
 
 /* The visible part from the ids; the hidden part by rasterising the state
@@ -1669,8 +1687,11 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         PASS_DONE("state lists");
     }
 
-    if (resolve && !run_resolve(s, v, frame_has_heavy(f))) return false;
-    if (resolve) PASS_DONE(frame_has_heavy(f) ? "resolve heavy" : "resolve");
+    if (resolve) {
+        const char* last = run_resolve(s, v, f);
+        if (!last) return false;
+        PASS_DONE(last);
+    }
     if (mask && !run_masks(s, v, f)) return false;
     if (mask) PASS_DONE("mask");
 
@@ -1816,7 +1837,7 @@ bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, m
         { "refit", r->k_refit }, { "cull_clusters", r->k_cull_clusters }, { "cull", r->k_cull }, { "finalize", r->k_finalize },
         { "raster_small", r->k_raster_small }, { "hiz", r->k_hiz }, { "resolve", r->k_resolve },
         { "mask_visible", r->k_mask_visible }, { "pick", r->k_pick },
-        { "refit_heavy", r->k_refit_heavy }, { "cull_heavy", r->k_cull_heavy }, { "resolve_heavy", r->k_resolve_heavy },
+        { "refit_heavy", r->k_refit_heavy }, { "cull_heavy", r->k_cull_heavy }, { "resolve_heavy", r->k_resolve_heavy }, { "resolve_poly", r->k_resolve_poly },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
