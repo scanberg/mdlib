@@ -381,8 +381,12 @@ float3 unproject(Mat inv_proj, float2 ndc, float z) {
 
 // The ray of pixel position `pix` (pixel units, top-left origin; a pixel's
 // centre is at +0.5), through the projection as it was rasterised.
+float2 pixel_ndc(ViewData v, float2 pix) {
+    return float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
+}
+
 Ray pixel_ray(ViewData v, float2 pix) {
-    float2 ndc = float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
+    float2 ndc = pixel_ndc(v, pix);
     Ray r;
     r.o = unproject(M(v, inv_proj), ndc, 1.0);          // near plane under reverse Z
     float3 f = unproject(M(v, inv_proj), ndc, 0.5);
@@ -2845,8 +2849,9 @@ FullV merge_vs(uint vid : SV_VertexID) {
 }
 
 struct MergeOut {
-    uint2 id    : SV_Target0;
-    float depth : SV_Depth;
+    uint2  id    : SV_Target0;
+    float2 n     : SV_Target1;  // the resolve's (VisOut)
+    float  depth : SV_Depth;
 };
 
 [shader("fragment")]
@@ -2856,6 +2861,7 @@ MergeOut merge_fs(FullV i) {
     uint64_t val = a.lists->vis64[px.y * a.width + px.x];
     if (val == 0ull) discard;
     MergeOut o;
+    o.n     = float2(0.0);
     o.depth = asfloat(uint(val >> 32));
     o.id    = elem_id(a.batches, decode_work(a.batches, a.view->batch_count, a.lists->small[uint(val & 0xFFFFFFFFull)]));
     return o;
@@ -2969,9 +2975,16 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     return o;
 }
 
+// n: the hit's view-space normal, octahedral (oct_encode), into the
+// normal target, for splines and polygons: their hit is the expensive part
+// of the frame, and the resolve took it again per pixel to find the normal
+// (the 1060's 512 protein copies: 38 ms; the HD 530's 64: 92 ms). The
+// resolve reads it, and the depth for the point. Spheres and capsules write
+// 0: theirs is the resolve's, which costs it next to nothing.
 struct VisOut {
-    uint2 id    : SV_Target0;
-    float depth : SV_DepthLessEqual;
+    uint2  id    : SV_Target0;
+    float2 n     : SV_Target1;
+    float  depth : SV_DepthLessEqual;
 };
 
 struct MaskOut {
@@ -2987,6 +3000,7 @@ VisOut sphere_fs(SphereV i) {
     if (t < 0.0) discard;
     VisOut o;
     o.id    = i.idv;
+    o.n     = float2(0.0);
     o.depth = clip_depth(v, r.o + r.d * t);
     return o;
 }
@@ -3082,6 +3096,7 @@ VisOut capsule_fs(CapsuleV i) {
     float t = capsule_fragment_hit(r, i);
     if (t < 0.0) discard;
     VisOut o;
+    o.n     = float2(0.0);
     o.id    = i.idv;
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
@@ -3165,9 +3180,9 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     return o;
 }
 
-float spline_fragment_hit(ViewData v, Ray r, SplineV i) {
-    if (i.rec != 0u) return spline_hit_range(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x, i.pe.y, i.pe.z).t;
-    return spline_hit(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x).t;
+SplineHit spline_fragment_hit(ViewData v, Ray r, SplineV i) {
+    if (i.rec != 0u) return spline_hit_range(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x, i.pe.y, i.pe.z);
+    return spline_hit(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x);
 }
 
 [shader("fragment")]
@@ -3175,11 +3190,13 @@ VisOut spline_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
     VisOut o;
     o.id = i.idv;
+    o.n  = float2(0.0);
     if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
-    Ray   r = pixel_ray(v, i.pos.xy);
-    float t = spline_fragment_hit(v, r, i);
-    if (t < 0.0) discard;
-    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    Ray       r = pixel_ray(v, i.pos.xy);
+    SplineHit h = spline_fragment_hit(v, r, i);
+    if (h.t < 0.0) discard;
+    o.n     = oct_encode(h.n);
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * h.t));
     return o;
 }
 
@@ -3187,7 +3204,7 @@ VisOut spline_fs(SplineV i) {
 MaskOut spline_mask_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = spline_fragment_hit(v, r, i);
+    float t = spline_fragment_hit(v, r, i).t;
     if (t < 0.0) discard;
     MaskOut o;
     o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
@@ -3222,8 +3239,8 @@ SplineV polygon_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     return o;
 }
 
-float poly_fragment_hit(ViewData v, Ray r, SplineV i) {
-    return poly_hit(r, poly_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true)).t;
+SplineHit poly_fragment_hit(ViewData v, Ray r, SplineV i) {
+    return poly_hit(r, poly_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true));
 }
 
 [shader("fragment")]
@@ -3231,11 +3248,13 @@ VisOut polygon_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
     VisOut o;
     o.id = i.idv;
+    o.n  = float2(0.0);
     if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
-    Ray   r = pixel_ray(v, i.pos.xy);
-    float t = poly_fragment_hit(v, r, i);
-    if (t < 0.0) discard;
-    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    Ray       r = pixel_ray(v, i.pos.xy);
+    SplineHit h = poly_fragment_hit(v, r, i);
+    if (h.t < 0.0) discard;
+    o.n     = oct_encode(h.n);
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * h.t));
     return o;
 }
 
@@ -3243,7 +3262,7 @@ VisOut polygon_fs(SplineV i) {
 MaskOut polygon_mask_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = poly_fragment_hit(v, r, i);
+    float t = poly_fragment_hit(v, r, i).t;
     if (t < 0.0) discard;
     MaskOut o;
     o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
@@ -3311,9 +3330,11 @@ float2 oct_encode(float3 n) {
 
 // SPL 0: spheres and capsules; 1: splines and polygons; 2: splines; 3:
 // polygons (the others' pixels come back invalid). The resolve takes the
-// heavy kinds a kernel each (2, 3): the two together held 255 registers on
-// the 1060 and spilled, which the splines alone need not.
-Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
+// heavy kinds a kernel each (2, 3), with zd, the raster's depth at the
+// pixel: the raster hit them and wrote the normal (VisOut), so the point is
+// the depth's and no hit is taken again; n_view is left unset. The pick
+// (1) has neither and takes the hit.
+Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, float zd) {
     Hit h;
     h.valid = false;
     uint slot1 = idv.y >> 20;
@@ -3399,23 +3420,28 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         h.color    = lerp(attr_color(b, a0), attr_color(b, a1), kk);
         h.valid    = true;
     } else if ((SPL == 1 || SPL == 2) && b.kind == KIND_SPLINES) {
-        // the part again, cut as the raster cut it (its bounds give the pieces;
-        // not through spline_geo, which crashed lavapipe's pick kernel)
-        SplinePart sp = spline_part(v, b, h.instance, h.element, true);
-        Geo        g;
-        g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u;
-        spline_bounds(sp, g.a, g.b, g.r);                // as element_geo: the same pieces
-        SplineHit  sh = spline_hit(r, sp, spline_pieces(v, sp, g));
-        if (sh.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its control point
-            sh.t = max(dot(sp.p2 - r.o, r.d), 0.0);
-            sh.n = -r.d;
+        if (SPL == 2) {
+            h.p_view = unproject(M(v, inv_proj), pixel_ndc(v, pix), zd);
+            h.n_view = float3(0.0, 0.0, 1.0);
+        } else {
+            // the part again, cut as the raster cut it (its bounds give the pieces;
+            // not through spline_geo, which crashed lavapipe's pick kernel)
+            SplinePart sp = spline_part(v, b, h.instance, h.element, true);
+            Geo        g;
+            g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u;
+            spline_bounds(sp, g.a, g.b, g.r);                // as element_geo: the same pieces
+            SplineHit  sh = spline_hit(r, sp, spline_pieces(v, sp, g));
+            if (sh.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its control point
+                sh.t = max(dot(sp.p2 - r.o, r.d), 0.0);
+                sh.n = -r.d;
+            }
+            h.p_view = r.o + r.d * sh.t;
+            h.n_view = sh.n;
         }
         uint   pi  = b.index[h.element] & SPLINE_POINT;
         float3 lc  = load_pos(b, pi);
         float3 cw  = mulp(T, lc);
         float3 cwp = mulp(Tp, lc - load_vel(b, pi) * v.dt);
-        h.p_view   = r.o + r.d * sh.t;
-        h.n_view   = sh.n;
         h.p_world  = mulp(M(v, inv_view), h.p_view);
         h.p_world_prev = h.p_world - (cw - cwp);
         h.attr     = attr_of(b, pi);
@@ -3423,10 +3449,16 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
         h.valid    = true;
     } else if ((SPL == 1 || SPL == 3) && b.kind == KIND_POLYGONS) {
         PolyPart  pp = poly_part(v, b, h.instance, h.element, true);
-        SplineHit ph = poly_hit(r, pp);
-        if (ph.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its centroid
-            ph.t = max(dot(pp.c - r.o, r.d), 0.0);
-            ph.n = -r.d;
+        SplineHit ph;
+        if (SPL == 3) {                                 // the raster's point (its depth)
+            ph.t = dot(unproject(M(v, inv_proj), pixel_ndc(v, pix), zd) - r.o, r.d);
+            ph.n = float3(0.0, 0.0, 1.0);
+        } else {
+            ph = poly_hit(r, pp);
+            if (ph.t < 0.0) {                           // a rounding miss at the silhouette: the nearest point to its centroid
+                ph.t = max(dot(pp.c - r.o, r.d), 0.0);
+                ph.n = -r.d;
+            }
         }
         float3 dm = float3(0.0);                        // its motion: its corners' mean
         for (uint k = 0u; k < pp.n; ++k) {
@@ -3484,7 +3516,7 @@ void resolve_body<let SPL : int>(uint3 tid) {
     uint kind = a.batches[(idv.y >> 20) - 1u].kind;
     if (SPL == 0 ? heavy_kind(kind) : SPL == 2 ? kind != KIND_SPLINES : kind != KIND_POLYGONS) return;
     ViewData v = *a.view;
-    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5);
+    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5, SPL >= 2 ? a.src.Load(int3(px, 0)) : 0.0);
     if (!h.valid) return;       // EXTERNAL: the caller's
 
     Batch  b   = a.batches[h.batch];
@@ -3493,7 +3525,7 @@ void resolve_body<let SPL : int>(uint3 tid) {
     lin = lerp(lin, float3(g), saturate(b.desaturate));
     lin = lerp(lin, lin * b.tint.rgb, saturate(b.tint.a));
     a.color[px]  = float4(linear_to_srgb(saturate(lin)), 1.0);
-    a.normal[px] = oct_encode(h.n_view);
+    if (SPL == 0) a.normal[px] = oct_encode(h.n_view);   // the heavy kinds': the raster's (VisOut)
 
     float4 cur  = mul4(M(v, proj_cur),  mul4(M(v, view),      float4(h.p_world, 1.0)));
     float4 prev = mul4(M(v, proj_prev), mul4(M(v, view_prev), float4(h.p_world_prev, 1.0)));
@@ -3561,8 +3593,8 @@ void pick(uint3 tid : SV_DispatchThreadID) {
     ViewData v   = *a.view;
     float2   pix = float2(float(px), float(py)) + 0.5;
     Hit h;
-    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix);
-    else                                                h = eval_hit<0>(v, a.batches, idv, pix);
+    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix, 0.0);
+    else                                                h = eval_hit<0>(v, a.batches, idv, pix, 0.0);
     o[2] = h.id;
     o[3] = h.attr;
     if (h.valid) {
