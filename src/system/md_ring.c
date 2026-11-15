@@ -87,26 +87,27 @@ static void sort_ring(int* arr, int n) {
 #define ENVELOPE_MAX_CAND 64
 #define ENVELOPE_MAX_BONDS ((ENVELOPE_MAX_CAND + 1) * MAX_RING_SIZE)
 #define ENVELOPE_WORDS ((ENVELOPE_MAX_BONDS + 63) / 64)
-static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* temp_arena) {
+// loc: the index of each atom of a ring among the num_core atoms rings are searched in (find_rings)
+static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* bond, const int32_t* loc, size_t num_core, md_allocator_i* temp_arena) {
     const size_t num_rings = md_ring_data_count(rings);
     if (num_rings < 2) return;
 
     // The rings of each atom
-    uint32_t* off = md_alloc(temp_arena, (num_atoms + 1) * sizeof(uint32_t));
-    md_memset(off, 0, (num_atoms + 1) * sizeof(uint32_t));
+    uint32_t* off = md_alloc(temp_arena, (num_core + 1) * sizeof(uint32_t));
+    md_memset(off, 0, (num_core + 1) * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(rings, r);
         const size_t n = md_ring_size(rings, r);
-        for (size_t k = 0; k < n; ++k) off[ring[k] + 1] += 1;
+        for (size_t k = 0; k < n; ++k) off[loc[ring[k]] + 1] += 1;
     }
-    for (size_t i = 0; i < num_atoms; ++i) off[i + 1] += off[i];
-    uint32_t* idx = md_alloc(temp_arena, MD_MAX(off[num_atoms], 1) * sizeof(uint32_t));
-    uint32_t* fill = md_alloc(temp_arena, num_atoms * sizeof(uint32_t));
-    md_memcpy(fill, off, num_atoms * sizeof(uint32_t));
+    for (size_t i = 0; i < num_core; ++i) off[i + 1] += off[i];
+    uint32_t* idx = md_alloc(temp_arena, MD_MAX(off[num_core], 1) * sizeof(uint32_t));
+    uint32_t* fill = md_alloc(temp_arena, MD_MAX(num_core, 1) * sizeof(uint32_t));
+    md_memcpy(fill, off, num_core * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(rings, r);
         const size_t n = md_ring_size(rings, r);
-        for (size_t k = 0; k < n; ++k) idx[fill[ring[k]]++] = (uint32_t)r;
+        for (size_t k = 0; k < n; ++k) idx[fill[loc[ring[k]]]++] = (uint32_t)r;
     }
 
     uint8_t* removed = md_alloc(temp_arena, num_rings);
@@ -122,7 +123,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
         uint32_t cand[ENVELOPE_MAX_CAND];
         int num_cand = 0;
         for (int k = 0; k < n; ++k) {
-            for (uint32_t t = off[ring[k]]; t < off[ring[k] + 1]; ++t) {
+            for (uint32_t t = off[loc[ring[k]]]; t < off[loc[ring[k]] + 1]; ++t) {
                 const uint32_t s = idx[t];
                 if (s == r || (int)md_ring_size(rings, s) >= n) continue;
                 bool dup = false;
@@ -197,6 +198,21 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
 
 // The rings of the bond graph (bond, with its connectivity), pushed to out: see md_ring_infer. The atoms
 // set in skip (optional) are neither roots nor passed through.
+// Sets the bits [beg, end)
+static void bits_set_range(uint64_t* bits, size_t beg, size_t end) {
+    for (; beg < end && (beg & 63); ++beg) bits[beg >> 6] |= 1ull << (beg & 63);
+    for (; beg + 64 <= end; beg += 64) bits[beg >> 6] = ~0ull;
+    for (; beg < end; ++beg) bits[beg >> 6] |= 1ull << (beg & 63);
+}
+
+// The bits of [0, num_bits) not set in skip of word w (all without skip)
+static inline uint64_t bits_free(const uint64_t* skip, size_t w, size_t num_bits) {
+    uint64_t v = skip ? ~skip[w] : ~0ull;
+    const size_t rem = num_bits - w * 64;
+    if (rem < 64) v &= (1ull << rem) - 1;
+    return v;
+}
+
 static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t num_atoms, const uint64_t* skip, md_allocator_i* alloc, md_temp_scope_t temp) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
@@ -205,12 +221,26 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
     typedef uint8_t  depth_t;
     typedef uint16_t mark_t;
     typedef  int32_t pred_t;
-        
-    color_t* color = md_temp_alloc_zero_array(temp, color_t, num_atoms);
-    depth_t* depth = md_temp_alloc_zero_array(temp, depth_t, num_atoms);
-    mark_t*  mark  = md_temp_alloc_zero_array(temp, mark_t, num_atoms);
-    pred_t*  pred  = md_temp_alloc_zero_array(temp, pred_t, num_atoms);
-    md_memset(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
+
+    // The atoms searched, the CORE: those not skipped, in order. The state of the search is of them alone (by loc, their
+    // index among them), as the skipped ones are never reached: most of a system has no ring (a solvent).
+    int32_t* core = md_temp_alloc_array(temp, int32_t, MD_MAX(num_atoms, 1));
+    int32_t* loc  = md_temp_alloc_array(temp, int32_t, MD_MAX(num_atoms, 1));    // Of the core only
+    size_t num_core = 0;
+    for (size_t w = 0; w * 64 < num_atoms; ++w) {
+        for (uint64_t v = bits_free(skip, w, num_atoms); v; v &= v - 1) {
+            const size_t i = w * 64 + md_ctz64(v);
+            loc[i] = (int32_t)num_core;
+            core[num_core++] = (int32_t)i;
+        }
+    }
+    if (num_core == 0) return;
+
+    color_t* color = md_temp_alloc_zero_array(temp, color_t, num_core);
+    depth_t* depth = md_temp_alloc_zero_array(temp, depth_t, num_core);
+    mark_t*  mark  = md_temp_alloc_zero_array(temp, mark_t, num_core);
+    pred_t*  pred  = md_temp_alloc_zero_array(temp, pred_t, num_core);      // The atom (not its loc) it was reached from
+    md_memset(pred, -1, num_core * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
 
     // The capacity is arbitrary here, but will be resized if needed.
     md_array(int) queue = 0;
@@ -220,21 +250,22 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
     color_t current_color = 1;
     mark_t  current_mark  = 1;
 
-    for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
-        if (skip && bitfield_test_bit(skip, atom_idx)) continue;
+    for (size_t c = 0; c < num_core; ++c) {
+        const int atom_idx = core[c];
 
         // Skip any atom that has already been colored in the previous search
-        if (color[atom_idx] == current_color) continue;
+        if (color[c] == current_color) continue;
 
         // Set i as our root
-        depth[atom_idx] = 1;
-        pred [atom_idx] = -1;
-        mark [atom_idx] = current_mark++;
+        depth[c] = 1;
+        pred [c] = -1;
+        mark [c] = current_mark++;
 
         md_array_shrink(queue, 0);
         md_array_push(queue, atom_idx, temp_arena);
         for (size_t head = 0; head < md_array_size(queue); ++head) {
             int idx = queue[head];
+            const int32_t li = loc[idx];
 
             md_bond_iter_t it = md_bond_iter(bond, idx);
             while (md_bond_iter_has_next(&it)) {
@@ -242,10 +273,11 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
                 md_bond_iter_next(&it);
 
                 //if (next > idx) continue;
-                if (next == pred[idx]) continue;  // avoid adding parent to search queue
+                if (next == pred[li]) continue;  // avoid adding parent to search queue
                 if (skip && bitfield_test_bit(skip, next)) continue;
+                const int32_t ln = loc[next];
 
-                if (mark[next] == current_mark && depth[idx] >= MIN_RING_SIZE) {
+                if (mark[ln] == current_mark && depth[li] >= MIN_RING_SIZE) {
                     // We found a junction point where the graph connects
                     // Now we need to traverse both branches of this graph back up
                     // In order to find the other junction where the graph branches
@@ -265,20 +297,20 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
 
                     cur = l;
                     for (int d = 0; d < MAX_DEPTH; ++d) {
-                        color[cur] = col;
-                        cur = pred[cur];
+                        color[loc[cur]] = col;
+                        cur = pred[loc[cur]];
                         if (cur < 0) break;
                     }
 
                     int target = -1;
                     cur = r;
                     for (int d = 0; d < MAX_DEPTH; ++d) {
-                        if (color[cur] == col) {
+                        if (color[loc[cur]] == col) {
                             target = cur;
                             break;
                         }
                         ring[len++] = cur;
-                        cur = pred[cur];
+                        cur = pred[loc[cur]];
                         if (cur == -1) break;
                     }
 
@@ -290,7 +322,7 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
                     for (int d = 0; d < MAX_DEPTH; ++d) {
                         ring[len++] = cur;
                         if (target == cur) break;
-                        cur = pred[cur];
+                        cur = pred[loc[cur]];
                         if (cur == -1) break;
                     }
 
@@ -319,19 +351,19 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
                 } else {
                     // Avoid expanding too far from the root as we are only interested in rings up to a certain size
                     // Otherwise, we will may have alot of potential large cycles such as in the case of C60 or graphene
-                    depth_t d = depth[idx] + 1;
+                    depth_t d = depth[li] + 1;
                     if (d > MAX_DEPTH) continue;
 
-                    depth[next] = d;
-                    pred[next]  = idx;
-                    mark[next]  = current_mark;
+                    depth[ln] = d;
+                    pred[ln]  = idx;
+                    mark[ln]  = current_mark;
                     md_array_push(queue, next, temp_arena);
                 }
             }
         }
     }
 
-    remove_envelope_rings(out, bond, num_atoms, temp_arena);
+    remove_envelope_rings(out, bond, loc, num_core, temp_arena);
 }
 
 void md_ring_infer_from_bonds(md_ring_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* alloc) {
@@ -369,15 +401,32 @@ bool md_ring_infer(md_ring_data_t* out, const md_system_t* sys, md_allocator_i* 
     // grained protein close thousands of cycles which are no rings at all. Skipped atoms are neither roots nor
     // passed through, so a ring of atoms in a molecule which also holds beads is still found.
     uint64_t* skip = make_bitfield(num_atoms, temp_arena);
-    for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-        const md_residue_kind_t kind = md_system_residue_kind(sys, ci);
-        if (kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION) {
+    {
+        // Runs of such residues (a solvent) at a time
+        size_t run_beg = 0, run_end = 0;
+        for (size_t ci = 0; ci < sys->residue.count; ++ci) {
+            const md_residue_kind_t kind = md_system_residue_kind(sys, ci);
+            if (kind != MD_RESIDUE_KIND_WATER && kind != MD_RESIDUE_KIND_ION) continue;
             const md_urange_t range = md_system_residue_atom_range(sys, ci);
-            for (uint32_t i = range.beg; i < range.end && i < num_atoms; ++i) bitfield_set_bit(skip, i);
+            const size_t beg = MD_MIN((size_t)range.beg, num_atoms), end = MD_MIN((size_t)range.end, num_atoms);
+            if (beg >= end) continue;
+            if (beg != run_end) {
+                bits_set_range(skip, run_beg, run_end);
+                run_beg = beg;
+            }
+            run_end = end;
         }
+        bits_set_range(skip, run_beg, run_end);
     }
-    for (size_t i = 0; i < num_atoms; ++i) {
-        if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
+    // The particles which are no atoms, by their type
+    if (sys->atom.type_idx) {
+        const size_t num_types = sys->atom.type.count;
+        uint8_t* not_atom = md_temp_alloc_array(temp, uint8_t, MD_MAX(num_types, 1));
+        for (size_t t = 0; t < num_types; ++t) not_atom[t] = md_particle_type_particle_kind(&sys->atom.type, t) != MD_PARTICLE_ATOM;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            const size_t t = (size_t)sys->atom.type_idx[i];
+            if (t < num_types ? not_atom[t] : md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
+        }
     }
 
     // A ring is a cycle, and a cycle lies within what is left of the graph when its ends are cut off, one after
@@ -387,16 +436,18 @@ bool md_ring_infer(md_ring_data_t* out, const md_system_t* sys, md_allocator_i* 
         uint32_t* degree = md_temp_alloc_array(temp, uint32_t, num_atoms);
         uint32_t* stack  = md_temp_alloc_array(temp, uint32_t, num_atoms);
         size_t top = 0;
-        for (size_t i = 0; i < num_atoms; ++i) {
-            uint32_t d = 0;
-            if (!bitfield_test_bit(skip, i)) {
+        // Of the atoms not skipped, which are all that is read of it
+        for (size_t w = 0; w * 64 < num_atoms; ++w) {
+            for (uint64_t v = bits_free(skip, w, num_atoms); v; v &= v - 1) {
+                const size_t i = w * 64 + md_ctz64(v);
+                uint32_t d = 0;
                 md_bond_iter_t it = md_bond_iter(&sys->bond, i);
                 for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
                     d += !bitfield_test_bit(skip, md_bond_iter_atom_index(&it));
                 }
                 if (d <= 1) stack[top++] = (uint32_t)i;
+                degree[i] = d;
             }
-            degree[i] = d;
         }
         while (top) {
             const uint32_t i = stack[--top];

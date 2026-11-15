@@ -1124,6 +1124,32 @@ static md_residue_kind_t classify_residue(const md_system_t* sys, size_t res_idx
     return fallback;
 }
 
+// Whether residue r is classified as the one before it is, when of the same name: its atoms of the same particle types in
+// the same order, with the same atom flags (their roles in a chain, set before), each bonded as the atom of the other
+// is (in the same order to the same atoms of the residue, or out of it to an atom of the same type, by bonds of the same
+// kind). What classify_residue reads of a residue is that, and its name. A solvent, a membrane.
+static bool residue_classified_as_previous(const md_system_t* sys, size_t r) {
+    const md_urange_t a = md_system_residue_atom_range(sys, r), b = md_system_residue_atom_range(sys, r - 1);
+    const uint32_t n = a.end - a.beg;
+    if (n != b.end - b.beg || n == 0 || !sys->atom.type_idx || !sys->bond.conn.offset) return false;
+    const uint32_t* off = sys->bond.conn.offset;
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint32_t x = a.beg + k, y = b.beg + k;
+        if (sys->atom.type_idx[x] != sys->atom.type_idx[y]) return false;
+        if (md_atom_flags(&sys->atom, x) != md_atom_flags(&sys->atom, y)) return false;
+        const uint32_t xo = off[x], yo = off[y], m = off[x + 1] - xo;
+        if (off[y + 1] - yo != m) return false;
+        for (uint32_t j = 0; j < m; ++j) {
+            const int32_t ox = sys->bond.conn.atom_idx[xo + j], oy = sys->bond.conn.atom_idx[yo + j];
+            const bool ix = (uint32_t)ox >= a.beg && (uint32_t)ox < a.end, iy = (uint32_t)oy >= b.beg && (uint32_t)oy < b.end;
+            if (ix != iy) return false;
+            if (ix ? (uint32_t)ox - a.beg != (uint32_t)oy - b.beg : sys->atom.type_idx[ox] != sys->atom.type_idx[oy]) return false;
+            if (md_bond_kind(sys->bond.flags[sys->bond.conn.bond_idx[xo + j]]) != md_bond_kind(sys->bond.flags[sys->bond.conn.bond_idx[yo + j]])) return false;
+        }
+    }
+    return true;
+}
+
 bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
@@ -1161,11 +1187,26 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
         sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END));
     }
 
-    // What a name says is found once for each run of residues of one name (a solvent, a membrane)
+    // What a name says is found once for each run of residues of one name (a solvent, a membrane), and what a residue
+    // is, for a residue alike the one before it in the run, is what that one is
     md_str_t run_name = {0};
     uint32_t run_kinds = 0;
+    bool prev_classified = false;       // The residue before was classified (of atoms), into:
+    md_residue_kind_t prev_found = MD_RESIDUE_KIND_OTHER;
+    md_residue_flags_t prev_flags = MD_RESIDUE_FLAG_NONE;
+    int prev_ambiguous = 0;
     for (size_t residue_idx = 0; residue_idx < sys->residue.count; ++residue_idx) {
         const md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
+        const md_str_t name = md_system_residue_name(sys, residue_idx);
+        const bool same_name = residue_idx > 0 && md_str_eq(name, run_name);
+        if (prev_classified && same_name && residue_classified_as_previous(sys, residue_idx)) {
+            set_residue_kind(sys, residue_idx, prev_found);
+            sys->residue.flags[residue_idx] |= prev_flags;
+            if (prev_ambiguous == 1) md_array_push(ambigous_amino_acid_indices, (int)residue_idx, temp_alloc);
+            if (prev_ambiguous == 2) md_array_push(ambigous_nucleotide_indices, (int)residue_idx, temp_alloc);
+            continue;
+        }
+        prev_classified = false;
         const bool beads = atoms_are_beads(sys, res_range);
 
         // A residue of beads a predefined coarse grained type classified keeps its kind (what the model says it is,
@@ -1178,8 +1219,7 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
         }
         md_residue_flags_t flags = MD_RESIDUE_FLAG_NONE;
         int ambiguous = 0;
-        const md_str_t name = md_system_residue_name(sys, residue_idx);
-        if (residue_idx == 0 || !md_str_eq(name, run_name)) {
+        if (!same_name) {
             run_name = name;
             run_kinds = residue_name_kinds(name);
         }
@@ -1188,6 +1228,13 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
         sys->residue.flags[residue_idx] |= flags;
         if (ambiguous == 1) md_array_push(ambigous_amino_acid_indices, (int)residue_idx, temp_alloc);
         if (ambiguous == 2) md_array_push(ambigous_nucleotide_indices, (int)residue_idx, temp_alloc);
+        // A residue of beads is classified by its kind too, which is not compared
+        if (!beads) {
+            prev_classified = true;
+            prev_found = found;
+            prev_flags = flags;
+            prev_ambiguous = ambiguous;
+        }
     }
 
     infer_coarse_grained_chain_ends(sys);

@@ -9,6 +9,7 @@
 #include <md_lammps.h>
 #include <md_system.h>
 #include <md_infer.h>
+#include <md_chem.h>
 #include <md_element.h>
 #include <core/md_geom.h>
 #include <core/md_allocator.h>
@@ -1183,6 +1184,60 @@ UTEST(hierarchy, topology_version) {
 
     md_system_free(&sys);
     EXPECT_EQ(sys.topology_version, 0u);
+    md_vm_arena_destroy(alloc);
+}
+
+// The structures of the molecules: copies slot by slot, valid while the topology they were found from stands, and the
+// chemistry of a copy that of its reference
+UTEST(hierarchy, molecule_structures) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+
+    const md_molecule_data_t* mol = &sys.molecule;
+    ASSERT_TRUE(mol->structure_idx != NULL);
+    EXPECT_EQ(mol->structure_count, 2u);    // The chains of 253 residues, the PFTAA
+    for (size_t s = 0; s < mol->structure_count; ++s) EXPECT_EQ(mol->structure_idx[mol->structure_ref[s]], (int32_t)s);
+    EXPECT_TRUE(md_system_molecule_structures_valid(&sys));
+
+    // Every copy is its reference slot by slot, and has its chemistry
+    size_t num_copies = 0;
+    for (size_t m = 0; m < mol->count; ++m) {
+        const int32_t r = mol->structure_ref[mol->structure_idx[m]];
+        if (r == (int32_t)m) continue;
+        num_copies += 1;
+        ASSERT_EQ(mol->offset[m + 1] - mol->offset[m], mol->offset[r + 1] - mol->offset[r]);
+        for (uint32_t k = 0; k < mol->offset[m + 1] - mol->offset[m]; ++k) {
+            const int32_t a = mol->atom_idx[mol->offset[m] + k], b = mol->atom_idx[mol->offset[r] + k];
+            EXPECT_EQ(sys.atom.type_idx[a], sys.atom.type_idx[b]);
+            EXPECT_EQ(md_atom_formal_charge(&sys.atom, a), md_atom_formal_charge(&sys.atom, b));
+            EXPECT_EQ(md_atom_hybridization(&sys.atom, a), md_atom_hybridization(&sys.atom, b));
+            const uint32_t ao = sys.bond.conn.offset[a], bo = sys.bond.conn.offset[b];
+            ASSERT_EQ(sys.bond.conn.offset[a + 1] - ao, sys.bond.conn.offset[b + 1] - bo);
+            for (uint32_t j = 0; j < sys.bond.conn.offset[a + 1] - ao; ++j) {
+                EXPECT_EQ(md_bond_order(sys.bond.flags[sys.bond.conn.bond_idx[ao + j]]), md_bond_order(sys.bond.flags[sys.bond.conn.bond_idx[bo + j]]));
+            }
+        }
+    }
+    EXPECT_EQ(num_copies, mol->count - 2);
+
+    // The chemistry perceived again keeps them, and gives what md_system_infer gave
+    const size_t B = sys.bond.count;
+    md_bond_flags_t* flags = md_alloc(alloc, sizeof(md_bond_flags_t) * B);
+    md_memcpy(flags, sys.bond.flags, sizeof(md_bond_flags_t) * B);
+    ASSERT_TRUE(md_chem_perceive(&sys, &st, MD_CHEM_FLAG_PROTONATE_PH7));
+    EXPECT_TRUE(md_system_molecule_structures_valid(&sys));
+    EXPECT_EQ(0, memcmp(flags, sys.bond.flags, sizeof(md_bond_flags_t) * B));
+
+    // A topology changed and changed back: valid again, from what they were found from
+    md_system_bond_insert(&sys, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
+    EXPECT_FALSE(md_system_molecule_structures_valid(&sys));
+    md_system_bond_remove(&sys, (md_bond_idx_t)(sys.bond.count - 1));
+    EXPECT_TRUE(md_system_molecule_structures_valid(&sys));
+
+    md_system_free(&sys);
     md_vm_arena_destroy(alloc);
 }
 

@@ -73,7 +73,8 @@ static inline size_t bitfield_popcount(const uint64_t* bits, size_t num_bits) {
         count += (size_t)md_popcnt64(*it);
         it++;
     }
-    const uint64_t mask = (1ULL << (num_bits & 63)) - 1;
+    // The bits of the last word within num_bits: all of them when num_bits is a multiple of 64
+    const uint64_t mask = (num_bits & 63) ? (1ULL << (num_bits & 63)) - 1 : ~0ULL;
     count += (size_t)md_popcnt64(*end & mask);
     return count;
 }

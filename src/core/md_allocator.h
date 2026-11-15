@@ -49,6 +49,10 @@ md_temp_scope_t md_temp_begin(void);
 // Begin a temporary allocation scope using a temp arena different from the supplied allocator.
 md_temp_scope_t md_temp_begin_avoid(const md_allocator_i* avoid);
 
+// Whether alloc is one of the calling thread's temporary arenas: one which no other thread may allocate from, as this
+// thread's temporary scopes may use it at any time.
+bool md_temp_is_thread_arena(const md_allocator_i* alloc);
+
 // Begin a temporary allocation scope using an explicitly supplied arena.
 md_temp_scope_t md_temp_begin_in(struct md_allocator_i* arena);
 

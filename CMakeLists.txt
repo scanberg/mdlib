@@ -169,6 +169,7 @@ set(MD_SYSTEM_FILES
   src/system/md_infer.c
   src/system/md_infer.h
   src/system/md_infer_internal.h
+  src/system/md_infer_profile.h
   src/system/md_lipid.c
   src/system/md_lipid.h
   src/system/md_martini.c

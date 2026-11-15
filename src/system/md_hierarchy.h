@@ -300,11 +300,12 @@ typedef struct md_molecule_t {
 // STRUCTURES. The molecules which are copies of one another share a structure: as many atoms, slot by slot of the same
 // particle type and in the same residue of the molecule (counted from the residue of its first slot), each with the
 // same bonds in the same order (md_bond_conn_data_t), to the same slots or, out of the molecule, to an atom of the same
-// particle type, by bonds of the same kind and given order (what md_chem_perceive perceives is left out). The slots of
+// particle type, by bonds of the same kind, origin and given order (what md_chem_perceive perceives is left out). The slots of
 // two such molecules correspond, atom for atom and bond for bond: what is worked out for one, its reference, holds for
 // the others where it follows from the structure alone (a large system is mostly copies: a solvent, a membrane), and a
 // view may draw the reference in place of a copy far away. The reference is the first molecule of its structure.
 // Without the connectivity of the bonds there are none (structure_idx NULL).
+// They are of the system as it was when inferred: md_system_molecule_structures_valid tells whether they still are.
 typedef struct md_molecule_type_data_t {
     size_t count;
     md_str_t* name;                        // [count] The topology's name of it, else what its parts are
@@ -324,6 +325,8 @@ typedef struct md_molecule_data_t {
     int32_t* structure_idx;     // [count] The structure of each molecule (STRUCTURES)
     int32_t* structure_ref;     // [structure_count] The molecule each structure is the structure of first: its reference
     size_t   structure_count;
+    uint64_t structure_hash;    // Of what the structures were found from (md_system_molecule_structure_hash)
+    uint64_t topology_version;  // The topology version of a system they are known to be of, 0 for none
 } md_molecule_data_t;
 
 #ifdef __cplusplus
@@ -449,6 +452,16 @@ bool md_part_infer(md_part_data_t* out, const struct md_system_t* sys, md_alloca
 // The fragments of the system (md_fragment.h) are of its molecules: whoever gives the system new molecules empties its
 // fragments, and infers them again.
 bool md_molecule_infer(md_molecule_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
+
+// What the structures of the molecules are found from (STRUCTURES): the particle types of the atoms, the residues, the
+// bonds (their atoms, kinds, origins and given orders, not what md_chem_perceive perceives), hashed. In O(atoms + bonds).
+uint64_t md_system_molecule_structure_hash(const struct md_system_t* sys);
+
+// Whether the structures of the system's molecules are of the system as it is: those md_system_infer gave it, the
+// topology not changed since, or what they were found from the same (md_system_molecule_structure_hash, after which
+// they are known to be of this topology version). A topology changed without the molecules being inferred again (a
+// bond added, residues split) leaves them out of date, and what reads them reads the molecules one by one instead.
+bool md_system_molecule_structures_valid(struct md_system_t* sys);
 
 void md_chain_data_free(md_chain_data_t* chain, md_allocator_i* alloc);
 void md_part_data_free(md_part_data_t* part, md_allocator_i* alloc);

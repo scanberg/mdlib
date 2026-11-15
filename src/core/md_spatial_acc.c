@@ -116,9 +116,11 @@ static inline points_t points_make(const float* xyz, size_t stride, const int32_
 static inline md_float4_t points_load(const points_t* s, size_t i) {
     const size_t src = s->idx ? (size_t)s->idx[i] : i;
     const char* p = (const char*)s->xyz + src * s->stride;
-    md_float4_t v = {0};
-    md_memcpy(&v, p, sizeof(float) * 3);
-    return v;
+    // Three scalars into a register: a vector loaded from the 12 bytes just stored into it waits on the stores (no
+    // forwarding of three narrow stores to one wide load), which made the fractional coordinates of the build 5x slower
+    float c[3];
+    md_memcpy(c, p, sizeof(c));
+    return md_float4_set(c[0], c[1], c[2], 0);
 }
 
 static inline int32_t points_idx(const points_t* s, size_t i) {
@@ -512,10 +514,13 @@ static void build_cells(md_spatial_acc_t* acc, const points_t* coords, md_spatia
 // SPATIAL_ACC_TARGET_OCCUPANCY points in its own cell. That is weighted by points rather than by cells, so it follows
 // where the points are, not how much empty space there is between them. It is estimated from a random subset of the
 // points (each kept with probability f): a point which shares its cell with k - 1 others of the subset sees about
-// 1 + (k - 1) / f points of the whole set there.
+// 1 + (k - 1) / f points of the whole set there. 20: the pairs within a cutoff short against the spacing of the points
+// (the 1.84 A of the covalent bonds, md_bond) want cells of several cutoffs, as a cell's lookups and setup cost more
+// than the tests culling saves; measured (accbench, x86-64 AVX2), 2M atoms of water at 1.84 A: 5.2 A cells (10) 135 ms,
+// 6.2 A (20) 120 ms, 7.4 A (35) 113 ms; the cases of accset alike at 20 and 35, 3-7% faster than at 10.
 
 #ifndef SPATIAL_ACC_TARGET_OCCUPANCY
-#define SPATIAL_ACC_TARGET_OCCUPANCY 10.0
+#define SPATIAL_ACC_TARGET_OCCUPANCY 20.0
 #endif
 #define SPATIAL_ACC_MAX_CELL_SCALE   4.0
 #define SPATIAL_ACC_DEFAULT_CUTOFF   6.0     // For a description without a cutoff
@@ -1403,6 +1408,7 @@ typedef struct cell_iter_t {
     const md_spatial_acc_t* acc;
     size_t   top;                                       // Next top node to visit
     size_t   top_end;                                   // The top nodes visited end here
+    uint32_t node_end;                                  // The tier 1 nodes visited end here (a range of pieces)
     uint32_t depth;                                     // Tier of the node whose children are visited, num_tiers + 1 between top nodes
     uint64_t rem[MD_SPATIAL_ACC_MAX_TIERS + 1];         // Children not yet visited, per tier
     uint32_t next[MD_SPATIAL_ACC_MAX_TIERS + 1];        // Index of the next child, per tier
@@ -1417,6 +1423,7 @@ static inline cell_iter_t cell_iter(const md_spatial_acc_t* acc) {
     it.acc = acc;
     it.depth = acc->num_tiers + 1;
     it.top_end = (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
+    it.node_end = UINT32_MAX;
     return it;
 }
 
@@ -1446,6 +1453,7 @@ static inline bool cell_iter_next(cell_iter_t* it, uint32_t* out_idx, uint32_t o
         const uint32_t bit = (uint32_t)md_ctz64(it->rem[d]);
         it->rem[d] &= it->rem[d] - 1;
         const uint32_t idx = it->next[d]++;
+        if (d == 2 && idx >= it->node_end) return false;
         const uint32_t s = 2 * (d - 1);
         const uint32_t c[3] = {
             it->org[d][0] + ((bit & 3) << s),
@@ -1466,6 +1474,45 @@ static inline bool cell_iter_next(cell_iter_t* it, uint32_t* out_idx, uint32_t o
         it->org[d - 1][2] = c[2];
         it->depth = d - 1;
     }
+}
+
+// The iterator at tier 1 node `node`, as though it had visited every node before it: the nodes from it on follow in
+// order. Down from the top node of the node's first cell, each tier left with the children after the one on the path.
+static inline void cell_iter_seek(cell_iter_t* it, uint32_t node) {
+    const md_spatial_acc_t* acc = it->acc;
+    const uint32_t L = acc->num_tiers;
+    const uint32_t k = acc->cell_off[acc->tier_base[1][node]];
+    const md_float4_t fcell_dim = md_float4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
+    const ivec4_t icell_max = ivec4_set((int)acc->cell_dim[0] - 1, (int)acc->cell_dim[1] - 1, (int)acc->cell_dim[2] - 1, 0);
+    uint32_t c[3];
+    bin_cell(c, acc->elem_x[k], acc->elem_y[k], acc->elem_z[k], fcell_dim, icell_max);
+
+    const size_t t = top_index(acc, c);
+    it->top = t + 1;
+    uint64_t mask = acc->top_mask[t];
+    uint32_t base = acc->top_base[t];
+    for (uint32_t d = L; d >= 2; --d) {
+        const uint32_t s = 2 * d;
+        it->org[d][0] = (c[0] >> s) << s;
+        it->org[d][1] = (c[1] >> s) << s;
+        it->org[d][2] = (c[2] >> s) << s;
+        it->mask[d]  = mask;
+        it->first[d] = base;
+        const uint32_t bit = local_bit(c, d - 1);
+        MD_ASSERT((mask >> bit) & 1);
+        const uint32_t idx = base + (uint32_t)md_popcnt64(mask & ((1ULL << bit) - 1));
+        it->rem[d]  = mask & ~((2ULL << bit) - 1);     // The children after it (none after bit 63: 2 << 63 is 0)
+        it->next[d] = idx + 1;
+        mask = acc->tier_mask[d - 1][idx];
+        base = acc->tier_base[d - 1][idx];
+    }
+    MD_ASSERT(base == acc->tier_base[1][node]);
+    it->org[1][0] = (c[0] >> 2) << 2;
+    it->org[1][1] = (c[1] >> 2) << 2;
+    it->org[1][2] = (c[2] >> 2) << 2;
+    it->rem[1]  = it->mask[1]  = mask;
+    it->next[1] = it->first[1] = base;
+    it->depth = 1;
 }
 
 // Index of the occupied cell at cell coordinates c, or UINT32_MAX if it is empty. Starts from the lowest node on the
@@ -1525,7 +1572,12 @@ static inline void node_lookup_near(const cell_iter_t* it, const uint32_t c[3], 
 }
 
 
-static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cutoff, size_t top_beg, size_t top_end, md_spatial_acc_pair_callback_t callback, void* user_param, const bool tri) {
+static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cutoff, size_t piece_beg, size_t piece_end, md_spatial_acc_pair_callback_t callback, void* user_param, const bool tri) {
+    // The pieces are the tier 1 nodes, in order (md_spatial_acc_num_pieces)
+    const size_t num_nodes = md_array_size(acc->tier_mask[1]);
+    piece_end = MD_MIN(piece_end, num_nodes);
+    if (piece_beg >= piece_end) return;
+
     int ncell[3];
     neighbor_cell_extent(ncell, cutoff, acc);
     if (!neighbor_stencil_fits(ncell, "md_spatial_acc_for_each_internal_pair_within_cutoff")) return;
@@ -1554,8 +1606,10 @@ static MD_FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double c
     uint32_t cur_node[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };
 
     cell_iter_t it = cell_iter(acc);
-    it.top = top_beg;
-    it.top_end = MD_MIN(top_end, it.top_end);
+    if (piece_beg > 0 || piece_end < num_nodes) {
+        cell_iter_seek(&it, (uint32_t)piece_beg);
+        it.node_end = (uint32_t)piece_end;
+    }
     uint32_t ci;
     uint32_t cc[3];
     while (cell_iter_next(&it, &ci, cc)) {
@@ -1825,7 +1879,10 @@ void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t*
 size_t md_spatial_acc_num_pieces(const md_spatial_acc_t* acc) {
     MD_ASSERT(acc);
     if (acc->num_elems == 0) return 0;
-    return (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
+    // The tier 1 nodes which are occupied (4x4x4 cells): small pieces whatever the extent of the system, where the top
+    // nodes are 16 cells across or more (a system 80 Å across is one). There are at least two tiers (build_cells).
+    MD_ASSERT(acc->num_tiers >= 2);
+    return md_array_size(acc->tier_mask[1]);
 }
 
 void md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_spatial_acc_t* acc, double cutoff, size_t piece_beg, size_t piece_end, md_spatial_acc_pair_callback_t callback, void* user_param) {
