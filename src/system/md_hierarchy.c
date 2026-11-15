@@ -1042,8 +1042,9 @@ bool md_molecule_infer(md_molecule_data_t* out, const md_system_t* sys, md_alloc
     // STRUCTURES (md_molecule_data_t), found as the molecules are: a molecule is most often a copy of the one before it
     // (a solvent), which is told from its component as discovered (same_as_previous), and then it takes the slots of
     // that one atom for atom, without the sweeps which find them. Else by the references of the structures it hashes
-    // alike with. Without the connectivity of the bonds there are none.
-    const bool structures = sys->bond.conn.offset && sys->bond.conn.offset_count >= atom_count + 1;
+    // alike with. A system without bonds has them too (beads held by links alone: of their types and residues), but
+    // not one whose bonds have no connectivity for every atom, which the molecules could not be found from either.
+    const bool structures = sys->bond.count == 0 || (sys->bond.conn.offset && sys->bond.conn.offset_count >= atom_count + 1);
     int32_t* res_of     = NULL;     // [atom] Its residue, -1 outside of every residue
     int32_t* mol_of     = NULL;     // [atom] Its molecule, -1 not yet in one
     int32_t* pos        = NULL;     // [atom] Its position in its component as discovered

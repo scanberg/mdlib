@@ -106,6 +106,84 @@ static inline void check_molecule_invariants(int* utest_result, const md_system_
     EXPECT_EQ(total, sys->atom.count);
 }
 
+// ### STRUCTURES ###
+//
+// Whether molecule m is molecule r slot by slot, as the structures of the molecules (md_molecule_data_t) are told,
+// checked here on their own terms: the same particle types, the same residues relative to the first slot's, each atom
+// with as many bonds, to the same slots within the molecule or to atoms of the same types out of it, of the same kinds,
+// origins and orders (but those perceived). A system may lack connectivity (no bonds), flags (pairs alone), types and residues.
+static inline bool structure_test_res(const md_system_t* sys, int32_t a, int32_t a0, int64_t* out) {
+    if (!sys->residue.count || !sys->residue.atom_offset) { *out = 0; return true; }
+    const int r = md_system_residue_find_by_atom_idx(sys, (size_t)a), r0 = md_system_residue_find_by_atom_idx(sys, (size_t)a0);
+    *out = r < 0 ? INT64_MIN : (int64_t)r - r0;
+    return true;
+}
+
+static inline bool structure_test_same(const md_system_t* sys, size_t m, size_t r) {
+    const md_molecule_data_t* mol = &sys->molecule;
+    const uint32_t mb = mol->offset[m], me = mol->offset[m + 1], rb = mol->offset[r], re = mol->offset[r + 1];
+    if (me - mb != re - rb) return false;
+    const md_bond_data_t* bd = &sys->bond;
+    const int32_t m0 = mol->atom_idx[mb], r0 = mol->atom_idx[rb];
+    for (uint32_t k = 0; k < me - mb; ++k) {
+        const int32_t a = mol->atom_idx[mb + k], b = mol->atom_idx[rb + k];
+        if (sys->atom.type_idx && sys->atom.type_idx[a] != sys->atom.type_idx[b]) return false;
+        int64_t ra, rr;
+        structure_test_res(sys, a, m0, &ra);
+        structure_test_res(sys, b, r0, &rr);
+        if (ra != rr) return false;
+        const uint32_t na = bd->conn.offset ? bd->conn.offset[a + 1] - bd->conn.offset[a] : 0;
+        const uint32_t nb = bd->conn.offset ? bd->conn.offset[b + 1] - bd->conn.offset[b] : 0;
+        if (na != nb) return false;
+        for (uint32_t j = 0; j < na; ++j) {
+            const int32_t oa = bd->conn.atom_idx[bd->conn.offset[a] + j], ob = bd->conn.atom_idx[bd->conn.offset[b] + j];
+            const uint32_t sa = (uint32_t)mol->atom_slot[oa], sb = (uint32_t)mol->atom_slot[ob];
+            const bool ia = sa >= mb && sa < me, ib = sb >= rb && sb < re;
+            if (ia != ib) return false;
+            if (ia && sa - mb != sb - rb) return false;
+            if (!ia && sys->atom.type_idx && sys->atom.type_idx[oa] != sys->atom.type_idx[ob]) return false;
+            if (bd->flags) {
+                const md_bond_flags_t fa = bd->flags[bd->conn.bond_idx[bd->conn.offset[a] + j]];
+                const md_bond_flags_t fb = bd->flags[bd->conn.bond_idx[bd->conn.offset[b] + j]];
+                if (md_bond_kind(fa) != md_bond_kind(fb) || md_bond_origin(fa) != md_bond_origin(fb)) return false;
+                // An order perceived is the chemistry's, of the structure's atoms, not part of it
+                const bool perceived = (fa & MD_BOND_FLAG_ORDER_PERCEIVED) || (fb & MD_BOND_FLAG_ORDER_PERCEIVED);
+                if (!perceived && md_bond_order(fa) != md_bond_order(fb)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+// The structures of the molecules: each its reference's own, every copy its reference slot by slot, no two references
+// alike (up to max_refs of them compared pairwise), and the structures valid for the topology as it is
+static inline void check_structure_invariants(int* utest_result, md_system_t* sys, size_t max_refs) {
+    const md_molecule_data_t* mol = &sys->molecule;
+    if (mol->count == 0) return;
+    ASSERT_TRUE(mol->structure_idx != NULL);
+    ASSERT_GT(mol->structure_count, (size_t)0);
+    ASSERT_LE(mol->structure_count, mol->count);
+    for (size_t s = 0; s < mol->structure_count; ++s) {
+        const int32_t r = mol->structure_ref[s];
+        ASSERT_TRUE(r >= 0 && (size_t)r < mol->count);
+        EXPECT_EQ(mol->structure_idx[r], (int32_t)s);
+    }
+    for (size_t m = 0; m < mol->count; ++m) {
+        const int32_t s = mol->structure_idx[m];
+        ASSERT_TRUE(s >= 0 && (size_t)s < mol->structure_count);
+        const int32_t r = mol->structure_ref[s];
+        if (r != (int32_t)m) EXPECT_TRUE_MSG(structure_test_same(sys, m, (size_t)r), "a copy is not its reference");
+    }
+    if (mol->structure_count <= max_refs) {
+        for (size_t s = 0; s < mol->structure_count; ++s) {
+            for (size_t t = s + 1; t < mol->structure_count; ++t) {
+                EXPECT_FALSE_MSG(structure_test_same(sys, (size_t)mol->structure_ref[s], (size_t)mol->structure_ref[t]), "two structures alike");
+            }
+        }
+    }
+    EXPECT_TRUE(md_system_molecule_structures_valid(sys));
+}
+
 // The systems several tests check counts of, loaded and inferred as an application loads them
 typedef struct reference_systems_t {
     md_allocator_i* alloc;

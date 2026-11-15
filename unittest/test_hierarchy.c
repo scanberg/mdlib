@@ -1241,6 +1241,114 @@ UTEST(hierarchy, molecule_structures) {
     md_vm_arena_destroy(alloc);
 }
 
+// The structures of systems the code which finds them has tripped on, or could: bonds as pairs alone (no flags, no
+// types), coarse grained beads without bonds (molecules held by links alone), a metal whose bonds are all metallic (no
+// bond holds a molecule: every atom is one), and the systems of the test data, inferred twice
+UTEST(hierarchy, structures_edge_cases) {
+    {
+        // Pairs alone: three chains of five, two of four
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = {0};
+        make_chain_system(&sys, alloc, 3, 5);
+        md_system_t tail = {0};
+        make_chain_system(&tail, alloc, 2, 4);
+        for (size_t b = 0; b < tail.bond.count; ++b) {
+            md_atom_pair_t p = tail.bond.pairs[b];
+            p.idx[0] += (md_atom_idx_t)sys.atom.count;
+            p.idx[1] += (md_atom_idx_t)sys.atom.count;
+            md_array_push(sys.bond.pairs, p, alloc);
+        }
+        sys.bond.count += tail.bond.count;
+        sys.atom.count += tail.atom.count;
+        md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
+        ASSERT_TRUE(test_infer_molecules(&sys));
+        ASSERT_EQ(md_system_molecule_count(&sys), 5u);
+        EXPECT_EQ(sys.molecule.structure_count, 2u);
+        check_molecule_invariants(utest_result, &sys);
+        check_structure_invariants(utest_result, &sys, 64);
+        md_vm_arena_destroy(alloc);
+    }
+    {
+        // Beads without bonds: a chain of three residues, one of two, two lipids alike, a water
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        md_system_t sys = { .alloc = alloc };
+        const char* ala[] = {"BB"};
+        const char* lys[] = {"BB", "SC1", "SC2"};
+        const char* popc[] = {"NC3", "PO4", "GL1", "GL2", "C1A", "C1B"};
+        const char* w[] = {"W"};
+        cg_add_residue(&sys, "LYS", 1, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
+        cg_add_residue(&sys, "ALA", 2, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc);
+        cg_add_residue(&sys, "ALA", 3, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc);
+        cg_add_residue(&sys, "ALA", 7, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc);
+        cg_add_residue(&sys, "ALA", 8, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc);
+        cg_add_residue(&sys, "POPC", 9, 0, popc, 6, alloc);
+        cg_add_residue(&sys, "POPC", 10, 0, popc, 6, alloc);
+        cg_add_residue(&sys, "W", 11, MD_RESIDUE_KIND_WATER, w, 1, alloc);
+        ASSERT_TRUE(test_infer_molecules(&sys));
+        EXPECT_EQ(sys.bond.count, 0u);
+        ASSERT_EQ(md_system_molecule_count(&sys), 5u);
+        EXPECT_EQ(sys.molecule.structure_count, 4u);     // The two lipids are one
+        check_molecule_invariants(utest_result, &sys);
+        check_structure_invariants(utest_result, &sys, 64);
+        md_vm_arena_destroy(alloc);
+    }
+    {
+        // Copper, periodic: every bond metallic, every atom a molecule of one structure
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+        const float a = 3.615f;
+        const int n = 3;
+        char* buf = md_alloc(alloc, 256 + 64 * 4 * n * n * n);
+        int len = sprintf(buf, "%d\nLattice=\"%.4f 0 0 0 %.4f 0 0 0 %.4f\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\n", 4 * n * n * n, n * a, n * a, n * a);
+        const float site[4][3] = { {0, 0, 0}, {0.5f, 0.5f, 0}, {0.5f, 0, 0.5f}, {0, 0.5f, 0.5f} };
+        for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) for (int k = 0; k < n; ++k) for (int s = 0; s < 4; ++s) {
+            len += sprintf(buf + len, "Cu %.4f %.4f %.4f\n", (i + site[s][0]) * a, (j + site[s][1]) * a, (k + site[s][2]) * a);
+        }
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (md_str_t){ buf, (size_t)len }, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+        EXPECT_EQ(sys.bond.count, (size_t)(4 * n * n * n * 12 / 2));
+        EXPECT_EQ(md_system_molecule_count(&sys), sys.atom.count);
+        EXPECT_EQ(sys.molecule.structure_count, 1u);
+        check_molecule_invariants(utest_result, &sys);
+        check_structure_invariants(utest_result, &sys, 64);
+        md_vm_arena_destroy(alloc);
+    }
+}
+
+UTEST(hierarchy, structures_of_test_data) {
+    static const char* files[] = {
+        "/centered.gro", "/nucl-dna.gro", "/water.gro", "/tryptophan-md.gro", "/inside-md-pullout.gro", "/1k4r.pdb",
+        "/1fez.cif", "/8g7u.cif", "/2or2.cif", "/dppc64.pdb", "/tubulin-A-B.pdb", "/tpr/peptide_tip3p.tpr",
+        "/martini/martini3_membrane.tpr", "/martini/martini2_dna.tpr", "/Water_Ethane_Cubic_Init.data",
+    };
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s%s", MD_UNITTEST_DATA_DIR, files[f]);
+        FILE* exists = fopen(path, "rb");
+        if (!exists) continue;
+        fclose(exists);
+        md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        const md_str_t p = md_str_from_cstr(path);
+        bool ok = false;
+        if (strstr(path, ".gro"))       ok = md_gro_system_init_from_file(&sys, &st, p, NULL);
+        else if (strstr(path, ".pdb"))  ok = md_pdb_system_init_from_file(&sys, &st, p, NULL);
+        else if (strstr(path, ".cif"))  ok = md_mmcif_system_init_from_file(&sys, &st, p, NULL);
+        else if (strstr(path, ".tpr"))  ok = md_tpr_system_init_from_file(&sys, &st, p, NULL);
+        else                            ok = md_lammps_system_init_from_file(&sys, &st, p, &(md_load_desc_t){ .format = md_str_from_cstr(md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL]) });
+        EXPECT_TRUE_MSG(ok, path);
+        if (!ok) { md_vm_arena_destroy(alloc); continue; }
+        for (int pass = 0; pass < 2; ++pass) {
+            ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+            check_molecule_invariants(utest_result, &sys);
+            check_structure_invariants(utest_result, &sys, 512);
+        }
+        md_vm_arena_destroy(alloc);
+    }
+}
+
 // The binary searches from an atom to its residue and from a residue to its instance
 UTEST(hierarchy, find_by_index) {
     const uint32_t offset[] = {0, 3, 3, 7, 10};   // [0,3) [3,3) [3,7) [7,10)

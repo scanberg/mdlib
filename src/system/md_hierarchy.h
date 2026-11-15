@@ -304,7 +304,8 @@ typedef struct md_molecule_t {
 // two such molecules correspond, atom for atom and bond for bond: what is worked out for one, its reference, holds for
 // the others where it follows from the structure alone (a large system is mostly copies: a solvent, a membrane), and a
 // view may draw the reference in place of a copy far away. The reference is the first molecule of its structure.
-// Without the connectivity of the bonds there are none (structure_idx NULL).
+// A system without bonds has them too (of the particle types and residues); one whose bonds have no connectivity for every
+// atom has none (structure_idx NULL).
 // They are of the system as it was when inferred: md_system_molecule_structures_valid tells whether they still are.
 typedef struct md_molecule_type_data_t {
     size_t count;
