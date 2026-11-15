@@ -97,7 +97,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Particle types: one per name, force field type, element, mass and kind
     const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags, capacity, alloc);
+    md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
     md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     sys->atom.type.count = 0;
@@ -134,7 +134,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         md_array_push(sys->residue.atom_offset, d.res_offset[r], alloc);
         md_array_push(sys->residue.name, md_label_make(d.res_name[r]), alloc);
         md_array_push(sys->residue.seq_id, (md_sequence_id_t)(d.res_number ? d.res_number[r] : (int64_t)r + 1), alloc);
-        md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
+        md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
     }
     md_array_push(sys->residue.atom_offset, (uint32_t)N, alloc);
     sys->residue.count = R;
@@ -142,8 +142,8 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Bonds
     {
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-        md_array_resize(sys->bond.pairs, d.num_bonds, alloc);
-        md_array_resize(sys->bond.flags, d.num_bonds, alloc);
+        md_array_resize(sys->bond.pairs, d.num_bonds, md_system_derived_alloc(sys));
+        md_array_resize(sys->bond.flags, d.num_bonds, md_system_derived_alloc(sys));
         size_t kept = 0;
         for (size_t b = 0; b < d.num_bonds; ++b) {
             const md_atom_pair_t pair = d.bonds[b];
@@ -155,7 +155,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         md_array_shrink(sys->bond.pairs, kept);
         md_array_shrink(sys->bond.flags, kept);
         sys->bond.count = kept;
-        md_bond_build_connectivity(&sys->bond, N, alloc);
+        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
     }
 
     md_system_augment_particle_types(sys);
@@ -269,15 +269,15 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
             md_memcpy(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
         }
         md_bond_data_clear(&sys->bond);
-        md_array_resize(sys->bond.pairs, count + num_noncovalent, sys->alloc);
-        md_array_resize(sys->bond.flags, count + num_noncovalent, sys->alloc);
+        md_array_resize(sys->bond.pairs, count + num_noncovalent, md_system_derived_alloc(sys));
+        md_array_resize(sys->bond.flags, count + num_noncovalent, md_system_derived_alloc(sys));
         if (count + num_noncovalent) {
             md_memcpy(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
             md_memcpy(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
         }
         sys->bond.count = count;
         sys->bond.noncovalent_count = num_noncovalent;
-        md_bond_build_connectivity(&sys->bond, N, sys->alloc);
+        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
         md_system_infer_coordination(sys);
         md_system_topology_changed(sys);
         TOPO_LOG_INFO(d.format, "%zu bonds of the topology replace those inferred", num_topology);

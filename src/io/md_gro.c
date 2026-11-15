@@ -499,7 +499,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         // The atoms' own are written as they are read (gro_parse_lines), the padding past them here
         const size_t capacity = MD_ROUND_UP(num_atoms, 16);
         md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-        md_array_resize(sys->atom.flags, capacity, sys->alloc);
+        md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
         md_memset(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
         md_memset(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
         sys->atom.count = num_atoms;
@@ -570,7 +570,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
     md_array_resize(sys->residue.name,   num_res, sys->alloc);
     md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
-    md_array_resize(sys->residue.flags,  num_res, sys->alloc);
+    md_array_resize(sys->residue.flags,  num_res, md_system_derived_alloc(sys));
     sys->residue.count = num_res;
     {
         gro_residues_t rb = { &sys->residue, res, num_res };

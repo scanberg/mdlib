@@ -861,8 +861,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         }
 
         md_bond_data_clear(&sys->bond);
-        md_array_resize(sys->bond.pairs, count + num_user + num_noncovalent, sys->alloc);
-        md_array_resize(sys->bond.flags, count + num_user + num_noncovalent, sys->alloc);
+        md_array_resize(sys->bond.pairs, count + num_user + num_noncovalent, md_system_derived_alloc(sys));
+        md_array_resize(sys->bond.flags, count + num_user + num_noncovalent, md_system_derived_alloc(sys));
         if (count) {
             md_memcpy(sys->bond.pairs, pairs, sizeof(md_atom_pair_t) * count);
             md_memcpy(sys->bond.flags, flags, sizeof(md_bond_flags_t) * count);
@@ -877,7 +877,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         }
         sys->bond.count = count + num_user;
         sys->bond.noncovalent_count = num_noncovalent;
-        md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
+        md_bond_build_connectivity(&sys->bond, atom_count, md_system_derived_alloc(sys));
         md_system_infer_coordination(sys);
         // An elastic network written as plain bonds (bond type 1)
         md_system_infer_elastic_bonds(sys);
@@ -984,7 +984,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     // the matched molecules are units of their own, of no type.
     if (sys->instance.count == 0 && sys->residue.count > 0) {
         // Without units every molecule type there is was inferred, and the given come first
-        md_molecule_type_data_free(&sys->molecule.type, sys->alloc);
+        md_molecule_type_data_free(&sys->molecule.type, md_system_derived_alloc(sys));
         md_molecule_type_idx_t* mol_type = md_temp_alloc_array(temp, md_molecule_type_idx_t, num_types + 1);
         for (size_t t = 0; t < num_types; ++t) mol_type[t] = -1;
         const size_t num_res = sys->residue.count;
@@ -1011,7 +1011,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
                 sys->instance.count += 1;
             }
             if (mol_type[t] < 0) {
-                mol_type[t] = md_molecule_type_data_push(&sys->molecule.type, data->moleculetypes[t].name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
+                mol_type[t] = md_molecule_type_data_push(&sys->molecule.type, data->moleculetypes[t].name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
             }
             md_array_push(sys->instance.id, (md_label_t){0}, sys->alloc);
             md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
@@ -1038,7 +1038,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             md_array_free(sys->instance.part_type_idx, sys->alloc);
             md_array_free(sys->instance.mol_type_idx, sys->alloc);
             md_memset(&sys->instance, 0, sizeof(sys->instance));
-            md_molecule_type_data_free(&sys->molecule.type, sys->alloc);
+            md_molecule_type_data_free(&sys->molecule.type, md_system_derived_alloc(sys));
         }
     }
 

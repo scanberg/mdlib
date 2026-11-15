@@ -498,6 +498,23 @@ void md_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
     }
 }
 
+// The DERIVED arrays and the reference state, with the allocator of the derived (md_system_t, ALLOCATORS)
+void md_system_derived_free(md_system_t* sys) {
+    MD_ASSERT(sys);
+    md_allocator_i* alloc = md_system_derived_alloc(sys);
+    if (!alloc) return;
+#define FREE_ARRAY(f) md_array_free(sys->f, alloc);
+#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_free_str(alloc, sys->f[i]); } md_array_free(sys->f, alloc);
+#define CLEAR_STRUCT(f) md_memset(&sys->f, 0, sizeof(sys->f));
+    MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
+    MD_SYSTEM_DERIVED_STRUCTS(CLEAR_STRUCT)
+#undef FREE_ARRAY
+#undef FREE_STRINGS
+#undef CLEAR_STRUCT
+    md_system_state_free(&sys->reference);
+}
+
 void md_system_free(md_system_t* sys) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->alloc);
@@ -509,11 +526,11 @@ void md_system_free(md_system_t* sys) {
         sys->nonbonded = NULL;
     }
 
+    // What inference writes, with the allocator of the derived
+    md_system_derived_free(sys);
+
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
-    md_array_free(sys->atom.flags, alloc);
-    md_array_free(sys->atom.formal_charge, alloc);
-    md_array_free(sys->atom.hydrogen_count, alloc);
 
     // PARTICLE TYPE
     md_array_free(sys->atom.type.name, alloc);
@@ -528,14 +545,6 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->residue.name, alloc);
     md_array_free(sys->residue.seq_id, alloc);
     md_array_free(sys->residue.atom_offset, alloc);
-    md_array_free(sys->residue.flags, alloc);
-    md_array_free(sys->residue.type_idx, alloc);
-
-    // RESIDUE TYPE
-    md_array_free(sys->residue.type.name, alloc);
-    md_array_free(sys->residue.type.kind, alloc);
-    md_array_free(sys->residue.type.monomer, alloc);
-    md_array_free(sys->residue.type.color, alloc);
 
     // INSTANCE
     md_array_free(sys->instance.id, alloc);
@@ -543,52 +552,6 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->instance.res_offset, alloc);
     md_array_free(sys->instance.part_type_idx, alloc);
     md_array_free(sys->instance.mol_type_idx, alloc);
-
-    // CHAIN
-    md_array_free(sys->chain.id, alloc);
-    md_array_free(sys->chain.run_offset, alloc);
-    md_array_free(sys->chain.run, alloc);
-    md_array_free(sys->chain.res_chain, alloc);
-
-    // PART
-    md_array_free(sys->part.res_offset, alloc);
-    md_array_free(sys->part.type_idx, alloc);
-    md_part_type_data_free(&sys->part.type, alloc);
-
-    // PROTEIN BACKBONE
-    md_array_free(sys->protein_backbone.range.offset, alloc);
-    md_array_free(sys->protein_backbone.range.part_idx, alloc);
-    md_array_free(sys->protein_backbone.segment.atoms, alloc);
-    md_array_free(sys->protein_backbone.segment.res_idx, alloc);
-
-    // NUCLEIC BACKBONE
-    md_array_free(sys->nucleic_backbone.range.offset, alloc);
-    md_array_free(sys->nucleic_backbone.range.part_idx, alloc);
-    md_array_free(sys->nucleic_backbone.segment.atoms, alloc);
-    md_array_free(sys->nucleic_backbone.segment.res_idx, alloc);
-
-    // LIPIDS
-    md_lipid_data_free(&sys->lipid, alloc);
-
-    // BONDS
-    md_array_free(sys->bond.pairs, alloc);
-    md_array_free(sys->bond.flags, alloc);
-    md_array_free(sys->bond.conn.atom_idx, alloc);
-    md_array_free(sys->bond.conn.bond_idx, alloc);
-    md_array_free(sys->bond.conn.offset, alloc);
-
-    md_ring_data_free(&sys->ring, sys->alloc);
-
-    md_array_free(sys->molecule.offset, alloc);
-    md_array_free(sys->molecule.atom_idx, alloc);
-    md_array_free(sys->molecule.parent_idx, alloc);
-    md_array_free(sys->molecule.atom_slot, alloc);
-    md_array_free(sys->molecule.type_idx, alloc);
-    md_molecule_type_data_free(&sys->molecule.type, alloc);
-    md_array_free(sys->molecule.structure_idx, alloc);
-    md_array_free(sys->molecule.structure_ref, alloc);
-
-    md_fragment_data_free(&sys->fragment, alloc);
 
     // ASSEMBLY
     md_system_assemblies_free(sys);
@@ -599,9 +562,6 @@ void md_system_free(md_system_t* sys) {
     if (!md_str_empty(sys->description)) {
         md_free_str(alloc, sys->description);
     }
-
-    // REFERENCE STATE
-    md_system_state_free(&sys->reference);
 
     // ATTRIBUTES
     md_attributes_free(&sys->attributes);
@@ -727,11 +687,15 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
         return false;
     }
     md_allocator_i* alloc = dst->alloc;
+    md_allocator_i* derived_alloc = dst->derived_alloc;
     md_system_free(dst);
 
-    // The counts and everything which is not an array, as they are; the arrays below anew
+    // The counts and everything which is not an array, as they are; the arrays below anew, the derived with dst's
+    // allocator of the derived
     *dst = *src;
     dst->alloc = alloc;
+    dst->derived_alloc = derived_alloc;
+    md_allocator_i* dalloc = md_system_derived_alloc(dst);
     dst->nonbonded = NULL;
     md_memset(&dst->attributes, 0, sizeof(dst->attributes));
     dst->attributes.alloc = alloc;
@@ -740,11 +704,15 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     // Every array, CORE and DERIVED (md_system_fields.h)
 #define COPY_FIELD(f) COPY_ARRAY(dst->f, src->f, alloc);
 #define COPY_STRINGS(f) copy_strings(&dst->f, src->f, alloc);
+#define COPY_DERIVED(f) COPY_ARRAY(dst->f, src->f, dalloc);
+#define COPY_DERIVED_STRINGS(f) copy_strings(&dst->f, src->f, dalloc);
     MD_SYSTEM_CORE_ARRAYS(COPY_FIELD)
-    MD_SYSTEM_DERIVED_ARRAYS(COPY_FIELD)
-    MD_SYSTEM_DERIVED_STRINGS(COPY_STRINGS)
+    MD_SYSTEM_DERIVED_ARRAYS(COPY_DERIVED)
+    MD_SYSTEM_DERIVED_STRINGS(COPY_DERIVED_STRINGS)
 #undef COPY_FIELD
 #undef COPY_STRINGS
+#undef COPY_DERIVED
+#undef COPY_DERIVED_STRINGS
 
     // GROUPS, each set with words of its own
     groups_copy(&dst->group, &src->group, alloc);
@@ -752,7 +720,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     // REFERENCE STATE
     md_memset(&dst->reference, 0, sizeof(dst->reference));
     if (src->reference.xyz || src->reference.num_atoms) {
-        dst->reference.alloc = alloc;
+        dst->reference.alloc = dalloc;
         md_system_state_copy(&dst->reference, &src->reference);
     }
     return true;
@@ -763,8 +731,10 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 void md_system_reset(md_system_t* sys) {
     MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
+    md_allocator_i* derived_alloc = sys->derived_alloc;
     md_system_free(sys);
     sys->alloc = alloc;
+    sys->derived_alloc = derived_alloc;
     // The table allocates through its own handle, so every loader gets a usable table without
     // having to remember to wire this up itself.
     sys->attributes.alloc = alloc;
@@ -774,7 +744,7 @@ void md_system_reset(md_system_t* sys) {
 
 void md_system_bond_build_connectivity(md_system_t* sys) {
     MD_ASSERT(sys);
-	md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+    md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
 }
 
 

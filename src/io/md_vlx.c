@@ -3709,7 +3709,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 	md_array_push(sys->residue.atom_offset, 0u, sys->alloc);
 	md_array_push(sys->residue.name,     md_label_make(MD_STR_LIT("QM")), sys->alloc);
 	md_array_push(sys->residue.seq_id, (md_sequence_id_t)0, sys->alloc);
-	md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
+	md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
 	sys->residue.count += 1;
 
 	for (size_t k = 0; k < pot->num_sites; ++k) {
@@ -3733,7 +3733,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 			md_array_push(sys->residue.atom_offset, (uint32_t)atom_idx, sys->alloc);
 			md_array_push(sys->residue.name,     md_label_make(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
 			md_array_push(sys->residue.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
-			md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
+			md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
 			sys->residue.count += 1;
 		}
 	}
@@ -5893,7 +5893,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	size_t capacity = MD_ROUND_UP(num_atoms, 16);
 
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_resize(sys->atom.flags,    capacity, sys->alloc);
+    md_array_resize(sys->atom.flags,    capacity, md_system_derived_alloc(sys));
 
 	md_memset(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     md_memset(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
@@ -5995,7 +5995,7 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	}
 	if (md_array_size(sys->atom.flags) < num_atoms) {
 		const size_t size = md_array_size(sys->atom.flags);
-		md_array_resize(sys->atom.flags, num_atoms, sys->alloc);
+		md_array_resize(sys->atom.flags, num_atoms, md_system_derived_alloc(sys));
 		md_memset(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
 	}
 	for (size_t i = 0; i < num_atoms; ++i) {

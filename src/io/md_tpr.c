@@ -1754,7 +1754,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // The predefined bead tables then add what they know about the beads (backbone, side chain...).
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags, capacity, alloc);
+    md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
     md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
@@ -1922,7 +1922,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         if (mb->nmol <= 0 || mt->num_atoms == 0) continue;
 
         if (moltype_mol_type[mb->moltype] == -1) {
-            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->molecule.type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, alloc);
+            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->molecule.type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
         }
 
         for (int32_t m = 0; m < mb->nmol; ++m) {
@@ -1942,7 +1942,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     md_array_push(sys->residue.atom_offset, (uint32_t)ai, alloc);
                     md_array_push(sys->residue.name, md_label_make(res->name), alloc);
                     md_array_push(sys->residue.seq_id, seq_id, alloc);
-                    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
+                    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
                     sys->residue.count += 1;
                     prev_res = atom->residue;
                 }
@@ -1991,8 +1991,8 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_tpr_moltype_t* mt = &data->moltypes[data->molblocks[b].moltype];
             count += (size_t)data->molblocks[b].nmol * (mt->num_bonds + mt->num_elastic_bonds);
         }
-        md_array_resize(sys->bond.pairs, count, alloc);
-        md_array_resize(sys->bond.flags, count, alloc);
+        md_array_resize(sys->bond.pairs, count, md_system_derived_alloc(sys));
+        md_array_resize(sys->bond.flags, count, md_system_derived_alloc(sys));
 
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
         const md_bond_flags_t elastic_flags = md_bond_flags_set_kind(flags, MD_BOND_KIND_ELASTIC);
@@ -2044,7 +2044,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_shrink(sys->bond.pairs, kept);
         md_array_shrink(sys->bond.flags, kept);
         sys->bond.count = kept;
-        md_bond_build_connectivity(&sys->bond, num_atoms, alloc);
+        md_bond_build_connectivity(&sys->bond, num_atoms, md_system_derived_alloc(sys));
     }
 
     md_system_infer_residue_flags(sys, state);

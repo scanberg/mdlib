@@ -70,10 +70,13 @@ bool md_system_infer(struct md_system_t* sys, const struct md_system_state_t* st
 //                                  else reading it. False, and nothing done, when the topology of the system changed
 //                                  after the work was prepared: the work is of a system which is no more.
 //
-// The arrays of the work are in alloc, which the caller keeps with the system once published (they become the system's)
-// and frees otherwise (the work is never md_system_free'd: it shares arrays of the system). The types of the atoms are
-// copied too (a few per system), so that the system's may be changed meanwhile (their colors, their radii): they stay
-// the system's when published.
+// What the work infers (its DERIVED arrays and its reference state) is allocated with the system's allocator of the
+// derived (md_system_t, ALLOCATORS), which must allow several threads (the heap does), and becomes the system's when
+// published, or is freed with md_system_infer_discard. The rest of the work, the types of the atoms (copied, a few per
+// system, so that the system's may be changed meanwhile: their colors, their radii), is in alloc, which the caller
+// frees after either. Of a system without an allocator of the derived, all of the work is in alloc, which the caller
+// then keeps with the system once published (its arrays become the system's). The work is never md_system_free'd: it
+// shares arrays of the system.
 typedef struct md_system_infer_work_t {
     struct md_system_t sys;     // Inferred on: md_system_infer_run
     uint64_t base_version;      // The topology version of the system it was prepared of
@@ -82,6 +85,8 @@ typedef struct md_system_infer_work_t {
 bool md_system_infer_prepare(md_system_infer_work_t* work, const struct md_system_t* sys, const struct md_system_state_t* state, struct md_allocator_i* alloc);
 bool md_system_infer_run(md_system_infer_work_t* work, md_infer_flags_t flags, const struct md_executor_t* executor);
 bool md_system_infer_publish(struct md_system_t* sys, md_system_infer_work_t* work);
+// A work not published (cancelled, or false from md_system_infer_publish): what it inferred freed
+void md_system_infer_discard(md_system_infer_work_t* work);
 
 #ifdef __cplusplus
 }

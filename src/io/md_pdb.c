@@ -441,8 +441,8 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
     }
 
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
-    md_array_ensure(sys->bond.pairs, sys->bond.count + num_bonds, sys->alloc);
-    md_array_ensure(sys->bond.flags, sys->bond.count + num_bonds, sys->alloc);
+    md_array_ensure(sys->bond.pairs, sys->bond.count + num_bonds, md_system_derived_alloc(sys));
+    md_array_ensure(sys->bond.flags, sys->bond.count + num_bonds, md_system_derived_alloc(sys));
     for (size_t i = 0; i < num_keys; ++i) {
         if (!keep[i]) continue;
         const md_atom_pair_t pair = {{ (md_atom_idx_t)(key[i] >> 32), (md_atom_idx_t)(key[i] & 0xFFFFFFFF) }};
@@ -450,7 +450,7 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
         md_array_push_no_grow(sys->bond.flags, file);
     }
     sys->bond.count += num_bonds;
-    md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+    md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
 }
 
 // What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),
@@ -1006,7 +1006,7 @@ static void pdb_place_pieces(pdb_load_t* L) {
     md_allocator_i* temp = L->temp;
     PDB_ROOM(L->state->xyz, num_atoms, L->state->alloc);
     PDB_ROOM(L->sys->atom.type_idx, num_atoms, L->sys->alloc);
-    PDB_ROOM(L->sys->atom.flags, num_atoms, L->sys->alloc);
+    PDB_ROOM(L->sys->atom.flags, num_atoms, md_system_derived_alloc(L->sys));
     PDB_ROOM(L->serial, num_atoms, temp);
     PDB_ROOM(L->atom_name, num_atoms, temp);
     for (int c = 0; c < PDB_NUM_COLUMNS; ++c) PDB_ROOM(L->column[c], num_atoms, temp);
@@ -1266,7 +1266,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     // The atoms' types and flags are written as they are read (pdb_parse_lines), the padding past them here
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     PDB_ROOM(sys->atom.type_idx, capacity, sys->alloc);
-    PDB_ROOM(sys->atom.flags, capacity, sys->alloc);
+    PDB_ROOM(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     if (capacity) {
         md_memset(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
         md_memset(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
@@ -1277,7 +1277,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
     md_array_resize(sys->residue.name,   num_res, sys->alloc);
     md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
-    md_array_resize(sys->residue.flags,  num_res, sys->alloc);
+    md_array_resize(sys->residue.flags,  num_res, md_system_derived_alloc(sys));
     sys->residue.count = num_res;
     pdb_residues_t rb = {
         .sys = sys,
@@ -1362,7 +1362,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     const size_t max_atoms = src_size >= 0 ? (size_t)src_size / 55 + 16 : 0;
     md_array_ensure(state->xyz, max_atoms, state->alloc);
     md_array_ensure(sys->atom.type_idx, MD_ROUND_UP(max_atoms, 16), sys->alloc);
-    md_array_ensure(sys->atom.flags, MD_ROUND_UP(max_atoms, 16), sys->alloc);
+    md_array_ensure(sys->atom.flags, MD_ROUND_UP(max_atoms, 16), md_system_derived_alloc(sys));
     md_array_ensure(L.res_starts, max_atoms, temp);
     md_array_ensure(L.serial, max_atoms, temp);
     md_array_ensure(L.atom_name, max_atoms, temp);

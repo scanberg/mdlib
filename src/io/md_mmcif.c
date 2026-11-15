@@ -1473,7 +1473,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         // The entities are the part types the file gives, added first so that the instances can name them
         size_t num_entities = md_array_size(entities);
         for (size_t i = 0; i < num_entities; ++i) {
-            md_part_type_data_push(&sys->part.type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, alloc);
+            md_part_type_data_push(&sys->part.type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, md_system_derived_alloc(sys));
         }
     }
     
@@ -1484,7 +1484,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
 
         md_array_ensure(out_state->xyz, reserve_size, out_state->alloc);
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
-        md_array_ensure(sys->atom.flags, reserve_size, alloc);
+        md_array_ensure(sys->atom.flags, reserve_size, md_system_derived_alloc(sys));
 
         md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc); // Ensure that index 0 is always unknown
         md_hashmap32_t type_map = { .allocator = temp_arena };
@@ -1571,7 +1571,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
                 md_array_push(sys->residue.name, md_label_make(comp_id), alloc);
                 md_array_push(sys->residue.seq_id, seq_id, alloc);
-                md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
+                md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
 
                 // Instance handling. An instance is what the file gives: an asym, a polymer chain or a branched
                 // glycan. The asym of a non-polymer entity may hold many molecules (the waters of a chain): each is an
@@ -1623,7 +1623,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             bool any_charge = false;
             for (size_t i = 0; i < sys->atom.count && !any_charge; ++i) any_charge = !float_bits_nan(formal_charge[i]);
             if (any_charge) {
-                md_array_resize(sys->atom.formal_charge, sys->atom.count, alloc);
+                md_array_resize(sys->atom.formal_charge, sys->atom.count, md_system_derived_alloc(sys));
                 for (size_t i = 0; i < sys->atom.count; ++i) {
                     const float q = formal_charge[i];
                     sys->atom.formal_charge[i] = float_bits_nan(q) ? 0 : (int8_t)MD_CLAMP(lroundf(q), -8, 8);

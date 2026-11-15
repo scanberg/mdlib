@@ -1774,7 +1774,7 @@ size_t md_system_infer_elastic_bonds(md_system_t* sys) {
 
     md_temp_end(temp);
     if (count) {
-        md_bond_build_connectivity(&sys->bond, N, sys->alloc);
+        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
         md_system_topology_changed(sys);
     }
     return count;

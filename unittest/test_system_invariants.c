@@ -4,6 +4,14 @@
 #include <md_gro.h>
 #include <md_mmcif.h>
 #include <md_lammps.h>
+#include <md_tpr.h>
+#include <md_xyz.h>
+#include <md_molden.h>
+#include <md_bond.h>
+#include <md_hierarchy.h>
+#include <md_ring.h>
+#include <md_fragment.h>
+#include <md_system_fields.h>
 #include <md_infer.h>
 
 #include <core/md_allocator.h>
@@ -241,4 +249,236 @@ UTEST(system_invariants, infer_write_set) {
     check_infer_write_set(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"));
     check_infer_write_set(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
     check_infer_write_set(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+}
+
+// ### THE ALLOCATOR OF THE DERIVED ###
+//
+// What inference writes (MD_SYSTEM_DERIVED_*, and the reference state) is allocated with the system's derived allocator,
+// one which frees (md_system_derived_alloc), and the core with its allocator, an arena: what inference replaces is given
+// back. Checked with an allocator which knows its blocks: after loading and inferring, every derived array is one of its
+// blocks, and nothing of the core is; inferring again, publishing a work, adding and removing a bond leave as much of it
+// alive as before, and the core's arena where it was; freed, the system leaves none of it.
+
+typedef struct tracked_t {
+    md_allocator_i alloc;
+    uintptr_t* key;         // Open addressing, 0 empty, 1 removed
+    size_t*    size;
+    size_t     cap;
+    size_t     used;        // Keys and removed slots
+    size_t     count;
+    size_t     live;        // Bytes
+} tracked_t;
+
+static size_t tracked_slot(const tracked_t* t, uintptr_t k) {
+    uint64_t h = (uint64_t)k * 0x9E3779B97F4A7C15ull;
+    return (size_t)(h >> 20) & (t->cap - 1);
+}
+
+static void tracked_insert(tracked_t* t, uintptr_t k, size_t size);
+
+static void tracked_grow(tracked_t* t) {
+    uintptr_t* key = t->key;
+    size_t* size = t->size;
+    const size_t cap = t->cap;
+    t->cap = cap ? cap * 2 : 1024;
+    t->key = (uintptr_t*)calloc(t->cap, sizeof(uintptr_t));
+    t->size = (size_t*)calloc(t->cap, sizeof(size_t));
+    t->used = t->count = 0;
+    for (size_t i = 0; i < cap; ++i) if (key[i] > 1) tracked_insert(t, key[i], size[i]);
+    free(key);
+    free(size);
+}
+
+static void tracked_insert(tracked_t* t, uintptr_t k, size_t size) {
+    if ((t->used + 1) * 2 > t->cap) tracked_grow(t);
+    size_t i = tracked_slot(t, k);
+    while (t->key[i] > 1) i = (i + 1) & (t->cap - 1);
+    if (t->key[i] == 0) t->used += 1;
+    t->key[i] = k;
+    t->size[i] = size;
+    t->count += 1;
+}
+
+static size_t tracked_find(const tracked_t* t, uintptr_t k) {
+    if (!t->cap) return SIZE_MAX;
+    size_t i = tracked_slot(t, k);
+    while (t->key[i]) {
+        if (t->key[i] == k) return i;
+        i = (i + 1) & (t->cap - 1);
+    }
+    return SIZE_MAX;
+}
+
+static void* tracked_realloc(md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
+    (void)file; (void)line;
+    tracked_t* t = (tracked_t*)inst;
+    if (ptr) {
+        const size_t i = tracked_find(t, (uintptr_t)ptr);
+        MD_ASSERT(i != SIZE_MAX);   // Given back to the allocator it came from
+        if (i == SIZE_MAX) return NULL;
+        MD_ASSERT(t->size[i] == old_size);
+        t->key[i] = 1;
+        t->count -= 1;
+        t->live -= t->size[i];
+    }
+    if (new_size == 0) {
+        free(ptr);
+        return NULL;
+    }
+    void* out = realloc(ptr, new_size);
+    tracked_insert(t, (uintptr_t)out, new_size);
+    t->live += new_size;
+    return out;
+}
+
+static void tracked_init(tracked_t* t) {
+    memset(t, 0, sizeof(*t));
+    t->alloc.inst = (md_allocator_o*)t;
+    t->alloc.realloc = tracked_realloc;
+}
+
+static void tracked_free(tracked_t* t) {
+    free(t->key);
+    free(t->size);
+}
+
+static bool tracked_owns_array(const tracked_t* t, const void* arr) {
+    return !arr || tracked_find(t, (uintptr_t)md_array_header(arr)) != SIZE_MAX;
+}
+
+// Every derived array of the system a block of t, its strings too, and the reference state's coordinates
+static void expect_derived_owned(int* utest_result, const char* what, const md_system_t* sys, const tracked_t* t) {
+#define OWNED(f) if (!tracked_owns_array(t, sys->f)) { printf("%s: " #f " is not of the derived allocator\n", what); *utest_result = UTEST_TEST_FAILURE; }
+#define OWNED_STRINGS(f) OWNED(f) for (size_t i_ = 0; i_ < md_array_size(sys->f); ++i_) { \
+        if (sys->f[i_].ptr && tracked_find(t, (uintptr_t)sys->f[i_].ptr) == SIZE_MAX) { printf("%s: a string of " #f " is not of the derived allocator\n", what); *utest_result = UTEST_TEST_FAILURE; break; } }
+    MD_SYSTEM_DERIVED_ARRAYS(OWNED)
+    MD_SYSTEM_DERIVED_STRINGS(OWNED_STRINGS)
+    OWNED(reference.xyz)
+#undef OWNED
+#undef OWNED_STRINGS
+}
+
+static bool load_tpr(md_system_t* sys, md_system_state_t* state, md_str_t path) {
+    return md_tpr_system_init_from_file(sys, state, path, NULL);
+}
+
+static bool load_xyz(md_system_t* sys, md_system_state_t* state, md_str_t path) {
+    return md_xyz_system_init_from_file(sys, state, path, NULL);
+}
+
+static bool load_molden(md_system_t* sys, md_system_state_t* state, md_str_t path) {
+    return md_molden_system_init_from_file(sys, state, path, NULL);
+}
+
+static void check_derived_alloc(int* utest_result, sys_load_fn load, md_str_t path) {
+    const char* what = (const char*)path.ptr;
+    tracked_t t;
+    tracked_init(&t);
+    md_allocator_i* core = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = { .alloc = core, .derived_alloc = &t.alloc };
+    md_system_state_t state = { .alloc = core };
+    if (!load(&sys, &state, path)) {
+        printf("failed to load '%s'\n", what);
+        *utest_result = UTEST_TEST_FAILURE;
+        md_vm_arena_destroy(core);
+        tracked_free(&t);
+        return;
+    }
+    EXPECT_TRUE(sys.derived_alloc == &t.alloc);     // Kept by the loader
+    expect_derived_owned(utest_result, what, &sys, &t);
+
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
+    expect_derived_owned(utest_result, what, &sys, &t);
+    const size_t pos  = md_vm_arena_get_pos(core);
+    const size_t live = t.live;
+
+    // Inferred again: the same, replaced
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    expect_derived_owned(utest_result, what, &sys, &t);
+    EXPECT_EQ(pos, md_vm_arena_get_pos(core));
+    EXPECT_EQ(live, t.live);
+
+    // In the background: the work's derived arrays are of the system's derived allocator, the rest of the work's
+    // (gone with its arena once published)
+    {
+        // Published twice: as much alive after each, about as much as inferred on the system itself (the copies of the
+        // work are of the size of what they copy, where arrays grown in place have room to spare)
+        size_t live_published = 0;
+        for (int k = 0; k < 2; ++k) {
+            md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
+            md_system_infer_work_t work;
+            EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
+            EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+            EXPECT_TRUE(md_system_infer_publish(&sys, &work));
+            md_vm_arena_destroy(a_work);
+            expect_derived_owned(utest_result, what, &sys, &t);
+            expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
+            EXPECT_EQ(pos, md_vm_arena_get_pos(core));
+            EXPECT_LE(t.live, live + live / 16 + 64);
+            if (k == 0) live_published = t.live;
+            else        EXPECT_EQ(live_published, t.live);
+        }
+        // A work not published is given back whole
+        md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
+        md_system_infer_work_t work;
+        EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
+        EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+        md_system_infer_discard(&work);
+        md_vm_arena_destroy(a_work);
+        EXPECT_EQ(live_published, t.live);
+    }
+
+    // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it
+    if (sys.atom.count > 1) {
+        const md_atom_idx_t a = 0, b = (md_atom_idx_t)(sys.atom.count - 1);
+        if (md_system_bond_find(&sys, a, b) == -1) {
+            md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
+            md_system_bond_build_connectivity(&sys);
+            md_system_infer(&sys, &state, MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_FRAGMENT_BIT, NULL);
+            expect_derived_owned(utest_result, what, &sys, &t);
+            md_system_bond_remove(&sys, md_system_bond_find(&sys, a, b));
+            md_system_bond_build_connectivity(&sys);
+            md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+            expect_derived_owned(utest_result, what, &sys, &t);
+            EXPECT_EQ(pos, md_vm_arena_get_pos(core));
+            // As much alive as before, give or take the capacity the bond arrays grew to
+            EXPECT_LE(t.live, live + live / 8);
+        }
+    }
+
+    // A copy has its derived arrays in its own derived allocator
+    {
+        tracked_t t2;
+        tracked_init(&t2);
+        md_allocator_i* core2 = md_vm_arena_create(MD_GIGABYTES(4));
+        md_system_t copy = { .alloc = core2, .derived_alloc = &t2.alloc };
+        EXPECT_TRUE(md_system_copy(&copy, &sys));
+        expect_derived_owned(utest_result, what, &copy, &t2);
+        md_system_free(&copy);
+        EXPECT_EQ((size_t)0, t2.live);
+        md_vm_arena_destroy(core2);
+        tracked_free(&t2);
+    }
+
+    md_system_free(&sys);
+    EXPECT_EQ((size_t)0, t.live);
+    if (t.live) printf("%s: %zu bytes of the derived left in %zu blocks\n", what, t.live, t.count);
+    md_vm_arena_destroy(core);
+    tracked_free(&t);
+}
+
+UTEST(system_invariants, derived_alloc) {
+    check_derived_alloc(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    check_derived_alloc(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"));
+    check_derived_alloc(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));
+    check_derived_alloc(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    check_derived_alloc(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    check_derived_alloc(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    check_derived_alloc(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
+    check_derived_alloc(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+    check_derived_alloc(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"));
+    check_derived_alloc(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"));
+    check_derived_alloc(utest_result, load_xyz, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz"));
+    check_derived_alloc(utest_result, load_molden, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));
 }

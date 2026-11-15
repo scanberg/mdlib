@@ -1209,7 +1209,7 @@ void md_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kin
     MD_ASSERT(sys->alloc);
     if (md_array_size(res->type_idx) < res->count) {
         const size_t size = md_array_size(res->type_idx);
-        md_array_resize(res->type_idx, res->count, sys->alloc);
+        md_array_resize(res->type_idx, res->count, md_system_derived_alloc(sys));
         for (size_t i = size; i < res->count; ++i) res->type_idx[i] = -1;
     }
     const md_label_t name = res->name[res_idx];
@@ -1229,7 +1229,7 @@ void md_system_set_residue_kind(md_system_t* sys, size_t res_idx, md_residue_kin
         const md_str_t name_str = MD_LABEL_STR(res->name[res_idx]);
         const md_monomer_t monomer = md_monomer_from_residue_name(name_str, kind);
         const uint32_t color = residue_type_default_color(sys, res_idx, name_str, kind, monomer);
-        type_idx = md_residue_type_add(&res->type, name_str, kind, monomer, color, sys->alloc);
+        type_idx = md_residue_type_add(&res->type, name_str, kind, monomer, color, md_system_derived_alloc(sys));
     }
     res->type_idx[res_idx] = type_idx;
 }

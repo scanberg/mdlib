@@ -798,7 +798,7 @@ static void perceive_polymer_atoms(md_system_t* sys, const md_system_state_t* st
     if (num_atoms == 0 || !sys->atom.type_idx) return;
     if (md_array_size(sys->atom.flags) < num_atoms) {
         const size_t size = md_array_size(sys->atom.flags);
-        md_array_resize(sys->atom.flags, num_atoms, sys->alloc);
+        md_array_resize(sys->atom.flags, num_atoms, md_system_derived_alloc(sys));
         md_memset(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
     }
 
@@ -1168,12 +1168,12 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
 
     if (md_array_size(sys->residue.flags) < sys->residue.count) {
         const size_t size = md_array_size(sys->residue.flags);
-        md_array_resize(sys->residue.flags, sys->residue.count, sys->alloc);
+        md_array_resize(sys->residue.flags, sys->residue.count, md_system_derived_alloc(sys));
         md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
     }
     if (md_array_size(sys->atom.flags) < sys->atom.count) {
         const size_t size = md_array_size(sys->atom.flags);
-        md_array_resize(sys->atom.flags, sys->atom.count, sys->alloc);
+        md_array_resize(sys->atom.flags, sys->atom.count, md_system_derived_alloc(sys));
         md_memset(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
     }
 
@@ -1851,7 +1851,7 @@ void md_system_set_chain_breaks(md_system_t* sys, const md_residue_idx_t breaks[
     if (sys->residue.count == 0) return;
     if (md_array_size(sys->residue.flags) < sys->residue.count) {
         const size_t size = md_array_size(sys->residue.flags);
-        md_array_resize(sys->residue.flags, sys->residue.count, sys->alloc);
+        md_array_resize(sys->residue.flags, sys->residue.count, md_system_derived_alloc(sys));
         md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
     }
     for (size_t i = 0; i < sys->residue.count; ++i) {

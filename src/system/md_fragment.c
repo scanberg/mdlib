@@ -907,7 +907,7 @@ void md_fragment_data_free(md_fragment_data_t* d, md_allocator_i* alloc) {
 
 bool md_system_infer_fragments(md_system_t* sys) {
     if (!sys || !sys->alloc) return false;
-    md_allocator_i* alloc = sys->alloc;
+    md_allocator_i* alloc = md_system_derived_alloc(sys);     // The fragments are of the derived
 
     // Scratch on a temporary arena other than the system's: the system may live on one (a scope begun on it would
     // take back what is given to the system when it ends). One scope, for all of it: a second, nested one would have

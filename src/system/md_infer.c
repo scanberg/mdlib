@@ -101,7 +101,8 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
     md_tick_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
     md_system_topology_changed(sys);
 
-    md_allocator_i* alloc = sys->alloc;
+    // What is written is of the derived (md_system_t, ALLOCATORS): everything below but the colors of the types
+    md_allocator_i* alloc = md_system_derived_alloc(sys);
 
     const bool cg = md_system_is_coarse_grained(sys);
     size_t num_particle_types = md_system_particle_type_count(sys);
@@ -151,15 +152,15 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         for (size_t i = 0; i < sys->bond.count && !given; ++i) given = md_bond_origin(sys->bond.flags[i]) != MD_BOND_ORIGIN_INFERRED;
         md_bond_data_t bonds = {0};
         if (given) {
-            md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+            md_temp_scope_t temp = md_temp_begin_avoid(alloc);
             md_bond_data_t inferred = {0};
             md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
-            md_bond_merge(&bonds, &sys->bond, &inferred, sys->atom.count, sys->alloc);
+            md_bond_merge(&bonds, &sys->bond, &inferred, sys->atom.count, alloc);
             md_temp_end(temp);
         } else {
-            md_bond_infer(&bonds, sys, state, sys->alloc, executor);
+            md_bond_infer(&bonds, sys, state, alloc, executor);
         }
-        md_bond_data_free(&sys->bond, sys->alloc);
+        md_bond_data_free(&sys->bond, alloc);
         sys->bond = bonds;
         md_system_topology_changed(sys);
         PROFILE_STEP("bonds");
@@ -181,12 +182,12 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
     // found from the instances the data gives, the bonds and the classified residues, which the molecules do not change.
     if (flags & MD_SYSTEM_INFER_PART_BIT) {
         md_chain_data_t chains = {0};
-        md_chain_infer(&chains, sys, sys->alloc);
-        md_chain_data_free(&sys->chain, sys->alloc);
+        md_chain_infer(&chains, sys, alloc);
+        md_chain_data_free(&sys->chain, alloc);
         sys->chain = chains;
         md_part_data_t parts = {0};
-        md_part_infer(&parts, sys, sys->alloc);
-        md_part_data_free(&sys->part, sys->alloc);
+        md_part_infer(&parts, sys, alloc);
+        md_part_data_free(&sys->part, alloc);
         sys->part = parts;
         PROFILE_STEP("chains, parts");
     }
@@ -206,7 +207,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             .backbone  = (flags & MD_SYSTEM_INFER_BACKBONE_BIT) != 0,
         };
         const bool chemistry = (flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) && sys->bond.count;
-        if ((br.rings || br.molecules || chemistry) && sys->bond.count && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
+        if ((br.rings || br.molecules || chemistry) && sys->bond.count && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
         PROFILE_STEP("connectivity");
 
         // Side by side on the executor the system's allocator, which is not for several threads, is the molecules' alone:
@@ -215,11 +216,11 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         // atoms). But for an allocator this thread's temporary scopes may use meanwhile (md_temp_is_thread_arena),
         // where the molecules take an arena of their own as well. Otherwise one after the other, in the system's allocator.
         const bool side_by_side = md_executor_num_threads(executor) > 1;
-        const bool molecules_own = side_by_side && md_temp_is_thread_arena(sys->alloc);
-        md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+        const bool molecules_own = side_by_side && md_temp_is_thread_arena(alloc);
+        md_temp_scope_t temp = md_temp_begin_avoid(alloc);
         for (int i = 0; i < 3; ++i) {
             const bool own = side_by_side && (i > 0 || molecules_own);
-            br.alloc[i] = own ? md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1)) : sys->alloc;
+            br.alloc[i] = own ? md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1)) : alloc;
         }
         md_parallel_for(side_by_side ? executor : NULL, 3, 1, infer_branch, &br);
         if (mdi_infer_profile) {
@@ -237,8 +238,8 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
 
         if (br.molecules) {
             molecules_inferred = true;
-            md_molecule_data_free(&sys->molecule, sys->alloc);
-            if (molecules_own) molecule_data_copy(&sys->molecule, &br.molecule, sys->alloc);
+            md_molecule_data_free(&sys->molecule, alloc);
+            if (molecules_own) molecule_data_copy(&sys->molecule, &br.molecule, alloc);
             else              sys->molecule = br.molecule;
             // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
             // (md_system_infer_fragments). Their types stay, for the colours to be kept.
@@ -255,9 +256,9 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
             md_array_shrink(sys->fragment.frag_slot, 0);
         }
         if (br.rings) {
-            md_ring_data_free(&sys->ring, sys->alloc);
+            md_ring_data_free(&sys->ring, alloc);
             sys->ring = (md_ring_data_t){0};
-            if (side_by_side) COPY_INTO(sys->ring.rings, br.ring.rings, sys->alloc);
+            if (side_by_side) COPY_INTO(sys->ring.rings, br.ring.rings, alloc);
             else              sys->ring = br.ring;
         }
         // After the rings, before the hydrogen bond roles which read the orders
@@ -266,26 +267,26 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         if (chem) PROFILE_STEP("chemistry write");
         if (br.backbone) {
             md_backbone_data_t old = { .protein = sys->protein_backbone, .nucleic = sys->nucleic_backbone };
-            md_backbone_data_free(&old, sys->alloc);
+            md_backbone_data_free(&old, alloc);
             if (side_by_side) {
                 sys->protein_backbone = (md_protein_backbone_data_t){ .range.count = br.backbone_data.protein.range.count, .segment.count = br.backbone_data.protein.segment.count };
                 sys->nucleic_backbone = (md_nucleic_backbone_data_t){ .range.count = br.backbone_data.nucleic.range.count, .segment.count = br.backbone_data.nucleic.segment.count };
-                COPY_INTO(sys->protein_backbone.range.offset,    br.backbone_data.protein.range.offset,    sys->alloc);
-                COPY_INTO(sys->protein_backbone.range.part_idx,  br.backbone_data.protein.range.part_idx,  sys->alloc);
-                COPY_INTO(sys->protein_backbone.segment.atoms,   br.backbone_data.protein.segment.atoms,   sys->alloc);
-                COPY_INTO(sys->protein_backbone.segment.res_idx, br.backbone_data.protein.segment.res_idx, sys->alloc);
-                COPY_INTO(sys->nucleic_backbone.range.offset,    br.backbone_data.nucleic.range.offset,    sys->alloc);
-                COPY_INTO(sys->nucleic_backbone.range.part_idx,  br.backbone_data.nucleic.range.part_idx,  sys->alloc);
-                COPY_INTO(sys->nucleic_backbone.segment.atoms,   br.backbone_data.nucleic.segment.atoms,   sys->alloc);
-                COPY_INTO(sys->nucleic_backbone.segment.res_idx, br.backbone_data.nucleic.segment.res_idx, sys->alloc);
+                COPY_INTO(sys->protein_backbone.range.offset,    br.backbone_data.protein.range.offset,    alloc);
+                COPY_INTO(sys->protein_backbone.range.part_idx,  br.backbone_data.protein.range.part_idx,  alloc);
+                COPY_INTO(sys->protein_backbone.segment.atoms,   br.backbone_data.protein.segment.atoms,   alloc);
+                COPY_INTO(sys->protein_backbone.segment.res_idx, br.backbone_data.protein.segment.res_idx, alloc);
+                COPY_INTO(sys->nucleic_backbone.range.offset,    br.backbone_data.nucleic.range.offset,    alloc);
+                COPY_INTO(sys->nucleic_backbone.range.part_idx,  br.backbone_data.nucleic.range.part_idx,  alloc);
+                COPY_INTO(sys->nucleic_backbone.segment.atoms,   br.backbone_data.nucleic.segment.atoms,   alloc);
+                COPY_INTO(sys->nucleic_backbone.segment.res_idx, br.backbone_data.nucleic.segment.res_idx, alloc);
             } else {
                 sys->protein_backbone = br.backbone_data.protein;
                 sys->nucleic_backbone = br.backbone_data.nucleic;
             }
             md_system_set_chain_breaks(sys, br.backbone_data.breaks, br.backbone_data.num_breaks);
-            if (!side_by_side) md_array_free(br.backbone_data.breaks, sys->alloc);
+            if (!side_by_side) md_array_free(br.backbone_data.breaks, alloc);
         }
-        for (int i = 0; i < 3; ++i) if (br.alloc[i] != sys->alloc) md_arena_allocator_destroy(br.alloc[i]);
+        for (int i = 0; i < 3; ++i) if (br.alloc[i] != alloc) md_arena_allocator_destroy(br.alloc[i]);
         md_temp_end(temp);
         PROFILE_STEP("write");
     }
@@ -293,8 +294,8 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
     if (flags & MD_SYSTEM_INFER_LIPID_BIT) {
         // After the bonds, the rings (a sterol is told by its fused rings) and the classification of the residues
         md_lipid_data_t lipids = {0};
-        md_lipid_infer(&lipids, sys, sys->alloc);
-        md_lipid_data_free(&sys->lipid, sys->alloc);
+        md_lipid_infer(&lipids, sys, alloc);
+        md_lipid_data_free(&sys->lipid, alloc);
         sys->lipid = lipids;
         md_system_infer_lipid_kinds(sys);
         PROFILE_STEP("lipids");
@@ -317,7 +318,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
     // Record the state the topology above was inferred from. Written here, as part of performing
     // the inference, so it cannot disagree with what it produced.
     if (state != &sys->reference) {
-        sys->reference.alloc = sys->alloc;
+        sys->reference.alloc = alloc;
         md_system_state_copy(&sys->reference, state);
     }
     PROFILE_STEP("reference");
@@ -336,9 +337,14 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         work->sys.f = NULL; \
         const size_t n = md_array_size(sys->f); \
         if (n) { \
-            md_array_resize(work->sys.f, n, alloc); \
-            for (size_t i = 0; i < n; ++i) work->sys.f[i] = md_str_empty(sys->f[i]) ? (md_str_t){0} : md_alloc_str(alloc, sys->f[i]); \
+            md_array_resize(work->sys.f, n, dalloc); \
+            for (size_t i = 0; i < n; ++i) work->sys.f[i] = md_str_empty(sys->f[i]) ? (md_str_t){0} : md_alloc_str(dalloc, sys->f[i]); \
         } \
+    } while (0);
+
+#define INFER_COPY_DERIVED(f) do { \
+        work->sys.f = NULL; \
+        if (md_array_size(sys->f)) md_array_push_array(work->sys.f, sys->f, md_array_size(sys->f), dalloc); \
     } while (0);
 
 bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
@@ -351,6 +357,10 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
     // (which its owner may add to meanwhile).
     work->sys = *sys;
     work->sys.alloc = alloc;
+    // What it infers, with the system's allocator of the derived, which the system frees it with once published: alloc
+    // where the system has none (md_system_t, ALLOCATORS), and then alloc is kept with the system
+    work->sys.derived_alloc = sys->derived_alloc;
+    md_allocator_i* dalloc = md_system_derived_alloc(&work->sys);
     work->sys.nonbonded = NULL;
     work->sys.description = (md_str_t){0};
     md_memset(&work->sys.attributes, 0, sizeof(work->sys.attributes));
@@ -368,7 +378,7 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
     INFER_COPY_ARRAY(atom.type.flags)
 
     // What inference writes, of its own: what the data gave of it is added to or replaced
-    MD_SYSTEM_DERIVED_ARRAYS(INFER_COPY_ARRAY)
+    MD_SYSTEM_DERIVED_ARRAYS(INFER_COPY_DERIVED)
     MD_SYSTEM_DERIVED_STRINGS(INFER_COPY_STRINGS)
 
     // The one attribute inference reads: the formal charges the data gives, which the chemistry starts from
@@ -384,14 +394,18 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
     // The coordinates, which the system's owner changes as it likes (a frame of a run): those inferred from, and kept
     // as the reference of what is inferred
     if (state && (state->xyz || state->num_atoms)) {
-        work->sys.reference.alloc = alloc;
-        if (!md_system_state_copy(&work->sys.reference, state)) return false;
+        work->sys.reference.alloc = dalloc;
+        if (!md_system_state_copy(&work->sys.reference, state)) {
+            md_system_infer_discard(work);
+            return false;
+        }
     }
     return true;
 }
 
 #undef INFER_COPY_ARRAY
 #undef INFER_COPY_STRINGS
+#undef INFER_COPY_DERIVED
 
 bool md_system_infer_run(md_system_infer_work_t* work, md_infer_flags_t flags, const md_executor_t* executor) {
     MD_ASSERT(work);
@@ -409,15 +423,10 @@ bool md_system_infer_publish(md_system_t* sys, md_system_infer_work_t* work) {
     MD_ASSERT(sys->atom.count == work->sys.atom.count && sys->atom.type_idx == work->sys.atom.type_idx);
     MD_ASSERT(sys->residue.count == work->sys.residue.count && sys->residue.atom_offset == work->sys.residue.atom_offset);
 
-    md_allocator_i* alloc = sys->alloc;
+    // Inferred with the system's allocator of the derived, which the system frees it with
+    MD_ASSERT(work->sys.derived_alloc == sys->derived_alloc);
     // What the system had of the derived: given back (to an arena, which frees nothing, this is nothing)
-#define FREE_ARRAY(f) md_array_free(sys->f, alloc);
-#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_free_str(alloc, sys->f[i]); } md_array_free(sys->f, alloc);
-    MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
-    MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
-#undef FREE_ARRAY
-#undef FREE_STRINGS
-    md_system_state_free(&sys->reference);
+    md_system_derived_free(sys);
 
 #define MOVE(f) sys->f = work->sys.f;
     MD_SYSTEM_DERIVED_STRUCTS(MOVE)
@@ -430,4 +439,11 @@ bool md_system_infer_publish(md_system_t* sys, md_system_infer_work_t* work) {
     md_memset(work, 0, sizeof(*work));
     md_system_topology_changed(sys);
     return true;
+}
+
+void md_system_infer_discard(md_system_infer_work_t* work) {
+    MD_ASSERT(work);
+    // Its derived arrays and its reference, its own (the core is the system's)
+    md_system_derived_free(&work->sys);
+    md_memset(work, 0, sizeof(*work));
 }

@@ -26,7 +26,15 @@
 // This represents the persistent portion (topology) of a system which does not change over time, such as the particle types, bonds, residues, etc.
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
+    // ALLOCATORS. What the data gives, the CORE of the system (md_system_fields.h: the atoms, their types, the residues,
+    // the instances, the assemblies), is allocated with alloc. What inference writes, the DERIVED (the bonds, the
+    // molecules, the rings, the chemistry, the fragments, ...) and the reference state, with derived_alloc: it is
+    // replaced whenever the system is inferred again or its bonds are changed, and what is replaced is freed with it. So
+    // alloc may be an arena, which frees nothing (the core is there as long as the system), while derived_alloc is one
+    // which frees (the heap): the system then holds one copy of the derived, however often it changes. NULL is alloc:
+    // the derived is allocated with it too (md_system_derived_alloc).
     md_allocator_i*             alloc;
+    md_allocator_i*             derived_alloc;
 
     // TOPOLOGY VERSION. Changes whenever the topology does: the atoms, their types (what the particles are), their
     // flags, the residues, the instances, the parts and their types, the bonds, and what is derived from them (rings,
@@ -89,6 +97,11 @@ typedef struct md_system_t {
 
     md_str_t                    description;
 } md_system_t;
+
+// The allocator of the system's DERIVED arrays and its reference state (md_system_t, ALLOCATORS)
+static inline md_allocator_i* md_system_derived_alloc(const md_system_t* sys) {
+    return sys->derived_alloc ? sys->derived_alloc : sys->alloc;
+}
 
 #ifdef __cplusplus
 extern "C" {
@@ -540,7 +553,7 @@ static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_
 
 static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
     MD_ASSERT(sys);
-    md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, sys->alloc);
+    md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, md_system_derived_alloc(sys));
     md_system_topology_changed(sys);
 }
 
@@ -569,8 +582,12 @@ static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bo
 // Initialize a system with an allocator. This helper records the allocator on the system so
 // subsequent calls that accept a NULL allocator may fall back to `sys->alloc`.
 
-void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
+void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocators
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
+
+// The DERIVED arrays of the system (md_system_fields.h) and its reference state freed, with md_system_derived_alloc, and
+// emptied: the rest of the system as it was. What replaces them is given to the system after.
+void md_system_derived_free(md_system_t* sys);
 
 // A copy of src in dst's allocator, which dst keeps: every array of the system, its reference state and description,
 // and its topology version (it is the same topology). Not the attribute table, which dst gets empty, nor the force

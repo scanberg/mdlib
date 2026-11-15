@@ -1458,16 +1458,16 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     md_system_topology_changed(sys);
     if (structures) sys->molecule.topology_version = sys->topology_version;
 
-    if (sys->bond.count && (structures || md_ring_data_count(&sys->ring) == 0) && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, sys->alloc);
+    if (sys->bond.count && (structures || md_ring_data_count(&sys->ring) == 0) && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
     if (sys->bond.count && md_ring_data_count(&sys->ring) == 0) {
         md_ring_data_t rings = {0};
-        md_ring_infer(&rings, sys, sys->alloc);
-        md_ring_data_free(&sys->ring, sys->alloc);
+        md_ring_infer(&rings, sys, md_system_derived_alloc(sys));
+        md_ring_data_free(&sys->ring, md_system_derived_alloc(sys));
         sys->ring = rings;
     }
 
     if (!sys->atom.flags) {
-        md_array_resize(sys->atom.flags, N, sys->alloc);
+        md_array_resize(sys->atom.flags, N, md_system_derived_alloc(sys));
         md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
 
@@ -1831,8 +1831,8 @@ mdi_chem_t* mdi_chem_compute(const md_system_t* sys, const md_ring_data_t* rings
 void mdi_chem_write(md_system_t* sys, const mdi_chem_t* chem) {
     const size_t N = chem->num_atoms;
     if (chem->num_bonds) md_memcpy(sys->bond.flags, chem->bond_flags, sizeof(md_bond_flags_t) * chem->num_bonds);
-    md_array_resize(sys->atom.formal_charge, N, sys->alloc);
-    md_array_resize(sys->atom.hydrogen_count, N, sys->alloc);
+    md_array_resize(sys->atom.formal_charge, N, md_system_derived_alloc(sys));
+    md_array_resize(sys->atom.hydrogen_count, N, md_system_derived_alloc(sys));
     md_memcpy(sys->atom.formal_charge, chem->formal_charge, N);
     md_memcpy(sys->atom.hydrogen_count, chem->hydrogen_count, N);
     md_memcpy(sys->atom.flags, chem->atom_flags, sizeof(md_atom_flags_t) * N);
