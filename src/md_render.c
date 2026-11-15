@@ -1316,7 +1316,6 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
 /* The main resolve, then its heavy twin over the spline and polygon pixels */
 static bool run_resolve(md_gpu_stream_t s, md_render_view_t v, bool splines) {
     gpu_args_t a = base_args(v);
-    a.src = md_gpu_texture_sampled(v->t.depth);  /* the heavy twin: which piece of a spline part */
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return false;
     if (!splines) return true;

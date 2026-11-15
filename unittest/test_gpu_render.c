@@ -1240,7 +1240,9 @@ UTEST(gpu_render, kernel_writes_indirect_commands) {
    from it. On the HD 530 (1.3.215) md_render's frame drew nothing that way
    in one submission and everything with a submission boundary before the
    pass; kernel_writes_indirect_commands (a kernel writing a constant command)
-   drew. The variants add md_render's steps one at a time. */
+   drew. The variants add md_render's steps one at a time: the kernels
+   launched indirectly drew nothing there, under md_gpu's implicit barrier
+   with its generic masks alone (md_vk_stream_full_masks names them now). */
 UTEST(gpu_render, kernel_chain_feeds_indirect_draw) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
