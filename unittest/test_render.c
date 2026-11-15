@@ -1068,6 +1068,12 @@ UTEST(render, spline_curves_match_the_sweep) {
     b.points.state[0] = f_buf(&fx, &sel, 4);
     f.content[MD_RENDER_CONTENT_STATE]++;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    /* against this frame's ids, which the mask is made from: it rasterised
+       again (the through pass changed the geometry and back), and where two
+       parts meet their surfaces tie, so which one a seam pixel shows follows
+       the order they were drawn in, which the cull's appends do not fix (the
+       HD 530 showed part 7 where the first frame had its neighbour) */
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8));
     uint32_t* m = malloc(W * H * 4);
     ASSERT_TRUE(f_read(&fx, tg.mask, m, W * H * 4));
     int mbad = 0, mvis = 0, many = 0;
