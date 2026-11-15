@@ -217,7 +217,9 @@ static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, 
         pd.color[0].blend.alpha_op      = MD_GPU_BLEND_OP_MAX;
         pd.color[0].write_disable       = MD_GPU_COLOR_R | MD_GPU_COLOR_B;   /* the visible part is the kernel's */
     } else {
+        pd.color_count     = 2;                         /* the ids, and the heavy kinds' normals (VisOut) */
         pd.color[0].format = MD_GPU_FORMAT_RG32_UINT;
+        pd.color[1].format = MD_GPU_FORMAT_RG16_FLOAT;
     }
     return md_gpu_pipeline_create(dev, &pd);
 }
@@ -525,7 +527,7 @@ static bool ensure_targets(md_gpu_stream_t s, md_render_view_t v, uint32_t w, ui
     v->t.depth  = make_target(s, MD_GPU_FORMAT_D32_FLOAT,   RT | SA,      w, h, "md_render.depth");
     v->t.id     = make_target(s, MD_GPU_FORMAT_RG32_UINT,   RT | SA | ST, w, h, "md_render.id");
     v->t.color  = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, SA | ST,      w, h, "md_render.color");
-    v->t.normal = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  SA | ST,      w, h, "md_render.normal");
+    v->t.normal = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  RT | SA | ST, w, h, "md_render.normal");
     v->t.motion = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  SA | ST,      w, h, "md_render.motion");
     v->t.mask   = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, RT | SA | ST, w, h, "md_render.mask");
     if (!v->t.depth || !v->t.id || !v->t.color || !v->t.normal || !v->t.motion || !v->t.mask) {
@@ -1283,10 +1285,13 @@ static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t pha
 static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bool compute, const bool has_kind[HW_KINDS]) {
     md_render_t r = v->r;
     md_gpu_render_desc_t rd = {0};
-    rd.color_count       = 1;
+    rd.color_count       = 2;
     rd.color[0].texture  = v->t.id;
     rd.color[0].load     = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
     rd.color[0].store    = MD_GPU_STORE;
+    rd.color[1].texture  = v->t.normal;                 /* the heavy kinds' hit normals (VisOut); the resolve's for the rest */
+    rd.color[1].load     = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
+    rd.color[1].store    = MD_GPU_STORE;
     rd.depth.texture     = v->t.depth;
     rd.depth.load        = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
     rd.depth.store       = MD_GPU_STORE;
@@ -1321,12 +1326,14 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
    The last pass is left for the caller to mark (md_render_debug_pass_hook). */
 static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f) {
     bool spl = false, poly = false;
+    /* (the heavy kernels: the raster's depth, the point of the hit it took) */
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         if (!batch_work(&f->batches[i])) continue;
         spl  |= f->batches[i].kind == MD_RENDER_SPLINES;
         poly |= f->batches[i].kind == MD_RENDER_POLYGONS;
     }
     gpu_args_t a = base_args(v);
+    a.src = md_gpu_texture_sampled(v->t.depth);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
     if (!spl && !poly) return "resolve";
