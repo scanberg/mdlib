@@ -381,12 +381,8 @@ float3 unproject(Mat inv_proj, float2 ndc, float z) {
 
 // The ray of pixel position `pix` (pixel units, top-left origin; a pixel's
 // centre is at +0.5), through the projection as it was rasterised.
-float2 pixel_ndc(ViewData v, float2 pix) {
-    return float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
-}
-
 Ray pixel_ray(ViewData v, float2 pix) {
-    float2 ndc = pixel_ndc(v, pix);
+    float2 ndc = float2(fma(pix.x, v.viewport.z * 2.0, -1.0), fma(-pix.y, v.viewport.w * 2.0, 1.0));
     Ray r;
     r.o = unproject(M(v, inv_proj), ndc, 1.0);          // near plane under reverse Z
     float3 f = unproject(M(v, inv_proj), ndc, 0.5);
@@ -3314,9 +3310,8 @@ float2 oct_encode(float3 n) {
 }
 
 // SPL 0: spheres and capsules; 1: splines and polygons (the other's pixels
-// come back invalid). zd: the raster's depth at the pixel when known (> 0),
-// which finds the piece of a spline part the raster drew there.
-Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, float zd) {
+// come back invalid)
+Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix) {
     Hit h;
     h.valid = false;
     uint slot1 = idv.y >> 20;
@@ -3408,35 +3403,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         Geo        g;
         g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u;
         spline_bounds(sp, g.a, g.b, g.r);                // as element_geo: the same pieces
-        uint       n  = spline_pieces(v, sp, g);
-        SplineHit  sh;
-        sh.t = -1.0;
-        sh.n = float3(0.0, 0.0, 1.0);
-        if (zd > 0.0 && n > 1u) {
-            // the piece under the raster's depth: the one whose chord passes
-            // nearest that point, tested alone. Its hit is the raster's (the
-            // same part, ray and arithmetic) when it is the piece; when not
-            // (a tight bend), every piece. Most of the part's pieces would
-            // get their full test otherwise: their bounding spheres are as
-            // wide as the ribbon.
-            float3 pz = unproject(M(v, inv_proj), pixel_ndc(v, pix), zd);
-            float  tz = dot(pz - r.o, r.d);
-            float3 ca = spline_centre(sp, sp.u0);
-            float  dbest = 1e30;
-            uint   kbest = 0u;
-            for (uint k = 1u; k <= n; ++k) {
-                float3 cb = spline_centre(sp, spline_piece_u(sp, k, n));
-                float3 ab = cb - ca, ap = pz - ca;
-                float  ll = dot(ab, ab);
-                float3 q  = ap - ab * (ll > 0.0 ? saturate(dot(ap, ab) / ll) : 0.0);
-                float  dd = dot(q, q);
-                if (dd < dbest) { dbest = dd; kbest = k - 1u; }
-                ca = cb;
-            }
-            sh = spline_hit_range(r, sp, n, kbest, kbest + 1u);
-            if (!(sh.t >= 0.0 && abs(sh.t - tz) <= 1e-5 * abs(tz) + 1e-6)) sh.t = -1.0;
-        }
-        if (sh.t < 0.0) sh = spline_hit(r, sp, n);
+        SplineHit  sh = spline_hit(r, sp, spline_pieces(v, sp, g));
         if (sh.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its control point
             sh.t = max(dot(sp.p2 - r.o, r.d), 0.0);
             sh.n = -r.d;
@@ -3514,7 +3481,7 @@ void resolve_body<let SPL : int>(uint3 tid) {
     }
     if (!kind_taken<SPL>(a.batches[(idv.y >> 20) - 1u].kind)) return;
     ViewData v = *a.view;
-    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5, SPL != 0 ? a.src.Load(int3(px, 0)) : 0.0);
+    Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5);
     if (!h.valid) return;       // EXTERNAL: the caller's
 
     Batch  b   = a.batches[h.batch];
@@ -3587,8 +3554,8 @@ void pick(uint3 tid : SV_DispatchThreadID) {
     ViewData v   = *a.view;
     float2   pix = float2(float(px), float(py)) + 0.5;
     Hit h;
-    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix, 0.0);
-    else                                                h = eval_hit<0>(v, a.batches, idv, pix, 0.0);
+    if (heavy_kind(a.batches[(idv.y >> 20) - 1u].kind)) h = eval_hit<1>(v, a.batches, idv, pix);
+    else                                                h = eval_hit<0>(v, a.batches, idv, pix);
     o[2] = h.id;
     o[3] = h.attr;
     if (h.valid) {

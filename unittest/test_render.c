@@ -6092,14 +6092,12 @@ UTEST(render, mol_ribbons) {
    A frame recorded in one go must draw what the same frame draws with the
    stream synced after each of its passes. On the HD 530 (Vulkan 1.3.215) it
    did not: synced pass by pass the rasters drew, in one go they left the
-   targets empty. Each variant draws on a view of its own (its first frame,
+   targets empty, until md_gpu's implicit barrier named its stages and
+   accesses (md_vk_stream_full_masks). Each variant draws on a view of its own (its first frame,
    as the tests' frames are); the lines it prints say where an ordering is
    missing: a flush (a submission boundary, no wait) or a sync after one pass
    alone that repairs the frame names the boundary. */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
-#if MD_GPU_BACKEND_VULKAN
-void md_gpu_debug_barrier_mode(int mode);
-#endif
 
 typedef struct order_probe_t {
     md_gpu_stream_t s;
@@ -6189,15 +6187,6 @@ UTEST(render, one_submission_draws_what_synced_passes_draw) {
     order_print("one submission:", one);
 
     if (one.ids != synced.ids || one.depth != synced.depth || one.color != synced.color) {
-#if MD_GPU_BACKEND_VULKAN
-        /* the implicit barriers encoded otherwise (md_gpu_vulkan.c) */
-        static const char* enc[4] = { "", "every stage and access named:", "vkCmdPipelineBarrier:", "vkCmdPipelineBarrier, all named:" };
-        for (int m = 1; m < 4; ++m) {
-            md_gpu_debug_barrier_mode(m);
-            order_print(enc[m], order_draw(&fx, &f, &p));
-        }
-        md_gpu_debug_barrier_mode(0);
-#endif
         p.mode = 2;
         order_print("each pass flushed (no wait):", order_draw(&fx, &f, &p));
         for (int i = 0; i < npass; ++i) {
