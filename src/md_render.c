@@ -161,6 +161,7 @@ enum {
     F_DISPLACED    = 1u << 23,
     F_SIDE         = 1u << 24,
     F_CIRCLE       = 1u << 25,
+    F_FADE_KEY     = 1u << 26,
 };
 
 typedef struct gpu_batch_t {
@@ -186,8 +187,10 @@ typedef struct gpu_batch_t {
     uint32_t      poly_dashes;                                    /* the dashes over each edge */
     float         cap_trim;                                       /* CAPSULES displaced: their ends pulled in */
     float         spl_scale;                                      /* SPLINES: of the profile */
+    md_gpu_addr_t fade_key;                                       /* F_FADE_KEY: the point standing for each point */
+    uint32_t      _bpad0, _bpad1;
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 336, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 352, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -757,6 +760,10 @@ static bool validate(const md_render_frame_t* f) {
                 MD_LOG_ERROR("md_render: batch %u: its fade's `in` band must end where `out` begins or nearer", i);
                 return false;
             }
+            if (b->fade.key && b->kind != MD_RENDER_SPHERES && b->kind != MD_RENDER_CAPSULES) {
+                MD_LOG_ERROR("md_render: batch %u: a fade's key is for spheres and capsules", i);
+                return false;
+            }
         }
         switch (b->kind) {
         case MD_RENDER_SPHERES:
@@ -983,7 +990,7 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
                              &g->visible0, &g->visible1, &g->state0, &g->state1, &g->index, &g->id, &g->radius_scale,
-                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side };
+                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
 
@@ -1080,6 +1087,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
         if (f & (F_FADE_OUT | F_FADE_IN)) {
             if (b->fade.mode & MD_RENDER_FADE_SHRINK) f |= F_FADE_SHRINK;
             if (b->fade.mode & MD_RENDER_FADE_THIN)   f |= F_FADE_THIN;
+            if (b->fade.key) { f |= F_FADE_KEY; g->fade_key = b->fade.key; }
         }
     }
     g->flags         = f;

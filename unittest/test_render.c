@@ -3488,6 +3488,161 @@ UTEST(render, fade_thin_hands_over) {
     f_close(&fx);
 }
 
+/* Keyed THIN: groups of spheres, each with its centroid as the key of its
+   members, fading out across a band, and the centroids themselves (a batch
+   over the tail of the same points, its clusters the tail of the same
+   offsets) fading in across it; sticks within the groups keyed alike. They
+   draw what the same batches draw unfaded with each group given by
+   visibility bits to the side its centroid's hash and depth put it on:
+   every group as its members or as its stand-in, never both or neither, to
+   the bit. A camera move hands groups over without a refit. */
+typedef struct key_scene_t {
+    uint32_t      groups, members;
+    float*        cz;              /* view-space z of each centroid, camera at rest */
+    md_gpu_addr_t vis[2];          /* the reference's bits over the attributes: members, stand-ins */
+} key_scene_t;
+
+static double key_split(fix_t* fx, key_scene_t* ks, const float band[2], float px, float dz, uint32_t* to_standin) {
+    const uint32_t G = ks->groups, M = ks->members, A = G * M + G, words = (A + 31) / 32;
+    uint32_t* bits = calloc(2 * words, 4);
+    float ab[2];
+    fade_ab(band, px, false, ab);
+    double margin = 1e30;
+    *to_standin = 0;
+    for (uint32_t g = 0; g < G; ++g) {
+        const uint32_t sp = G * M + g;              /* the stand-in's point and attribute */
+        float d = -(ks->cz[g] + dz);
+        float t = fade_t_cpu(ab, d), h = fade_h_cpu(sp);
+        if (h >= t) { for (uint32_t m = 0; m < M; ++m) bits[(g * M + m) / 32] |= 1u << ((g * M + m) % 32); }
+        else        { bits[words + sp / 32] |= 1u << (sp % 32); (*to_standin)++; }
+        if (t > 0.0f && t < 1.0f && fabs((double)h - t) < margin) margin = fabs((double)h - t);
+    }
+    md_gpu_upload(fx->gfx, ks->vis[0], bits, words * 4);
+    md_gpu_upload(fx->gfx, ks->vis[1], bits + words, words * 4);
+    free(bits);
+    return margin;
+}
+
+UTEST(render, fade_key_hands_over_groups) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
+    enum { G = 96, M = 8, NP = G * M + G, NS = G * (M - 1), PER = 8 };   /* PER groups a cluster */
+    key_scene_t ks = { .groups = G, .members = M };
+    ks.cz = malloc(G * sizeof(float));
+    float*    pos  = malloc(NP * 12);
+    float*    rad  = malloc(NP * 4);
+    uint32_t* key  = malloc(NP * 4);
+    uint32_t* attr = malloc(G * 4);
+    uint32_t* pair = malloc(NS * 8);
+    uint32_t  coff[G / PER + G / PER + 1];          /* the members' clusters, then the stand-ins' */
+    uint32_t  soff[G / PER + 1];                    /* the sticks' */
+    uint32_t  sel[(NP + 31) / 32];
+    memset(sel, 0x55, sizeof(sel));                 /* every other attribute selected: masks */
+    uint32_t seed = 7;
+    #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
+    for (uint32_t g = 0; g < G; ++g) {              /* farther with g */
+        float z = -4.0f - 40.0f * (float)g / G;
+        float cx = (RND() * 2.0f - 1.0f) * 0.5f * -z * c.tan_half * c.aspect;
+        float cy = (RND() * 2.0f - 1.0f) * 0.5f * -z * c.tan_half;
+        double sum[3] = { 0, 0, 0 };
+        for (uint32_t m = 0; m < M; ++m) {
+            uint32_t i = g * M + m;
+            pos[3 * i + 0] = cx + 0.4f * (RND() - 0.5f);
+            pos[3 * i + 1] = cy + 0.4f * (RND() - 0.5f);
+            pos[3 * i + 2] = z  + 0.4f * (RND() - 0.5f);
+            rad[i] = 0.06f + 0.06f * RND();
+            for (int k = 0; k < 3; ++k) sum[k] += pos[3 * i + k];
+            key[i] = G * M + g;
+        }
+        uint32_t sp = G * M + g;
+        for (int k = 0; k < 3; ++k) pos[3 * sp + k] = (float)(sum[k] / M);
+        rad[sp] = 0.25f;
+        key[sp] = sp;
+        attr[g] = sp;
+        ks.cz[g] = pos[3 * sp + 2];
+        for (uint32_t m = 0; m + 1 < M; ++m) { pair[2 * (g * (M - 1) + m) + 0] = g * M + m; pair[2 * (g * (M - 1) + m) + 1] = g * M + m + 1; }
+    }
+    #undef RND
+    for (uint32_t k = 0; k <= G / PER; ++k) { coff[k] = k * PER * M; soff[k] = k * PER * (M - 1); }
+    for (uint32_t k = 1; k <= G / PER; ++k) coff[G / PER + k] = G * M + k * PER;   /* coff[G / PER] = G M: the stand-ins' first */
+    md_gpu_addr_t P = f_buf(&fx, pos, NP * 12), R = f_buf(&fx, rad, NP * 4), K = f_buf(&fx, key, NP * 4);
+    md_gpu_addr_t AI = f_buf(&fx, attr, G * 4), PR = f_buf(&fx, pair, NS * 8), S = f_buf(&fx, sel, sizeof(sel));
+    md_gpu_addr_t CO = f_buf(&fx, coff, sizeof(coff)), SO = f_buf(&fx, soff, sizeof(soff));
+    ks.vis[0] = f_buf(&fx, NULL, sizeof(sel));
+    ks.vis[1] = f_buf(&fx, NULL, sizeof(sel));
+    md_render_camera_t cam = make_camera(&c);
+    const float px = fabsf(cam.proj[5]) * 0.5f * (float)H;
+    float band[2] = { px / -ks.cz[20], px / -ks.cz[70] };
+    uint32_t n_in = 0;
+    while (key_split(&fx, &ks, band, px, 0.0f, &n_in) < 1e-4) band[1] *= 0.9993f;
+
+    md_render_batch_t b[3], r[3];
+    memset(b, 0, sizeof(b));
+    for (int k = 0; k < 3; ++k) {
+        b[k].key = 1 + k;
+        b[k].points.position = P; b[k].points.radius = R; b[k].points.count = NP; b[k].points.attr_count = NP;
+        b[k].points.state[0] = S;
+        b[k].color.mode = MD_RENDER_COLOR_UNIFORM;
+        b[k].color.uniform = 0xFF0000FFu + 0x4000u * k;
+    }
+    /* 0: the members, keyed, fading out */
+    b[0].kind = MD_RENDER_SPHERES; b[0].count = G * M;
+    b[0].cluster_offset = CO; b[0].cluster_count = G / PER;
+    b[0].style.spheres.radius_scale = 1.0f;
+    /* 1: the stand-ins, the tail of the points and of the cluster offsets */
+    b[1].kind = MD_RENDER_SPHERES; b[1].count = G;
+    b[1].points.position = P + G * M * 12; b[1].points.radius = R + G * M * 4; b[1].points.count = G;
+    b[1].points.attr_index = AI;
+    b[1].cluster_offset = CO + (G / PER) * 4; b[1].cluster_count = G / PER;
+    b[1].style.spheres.radius_scale = 1.0f;
+    /* 2: sticks within the groups, keyed */
+    b[2].kind = MD_RENDER_CAPSULES; b[2].count = NS; b[2].index = PR;
+    b[2].cluster_offset = SO; b[2].cluster_count = G / PER;
+    b[2].style.capsules.radius = 0.03f;
+    memcpy(r, b, sizeof(b));
+    r[0].points.visible[0] = r[2].points.visible[0] = ks.vis[0];
+    r[1].points.visible[0] = ks.vis[1];
+    for (int k = 0; k < 3; ++k) {
+        b[k].fade.mode = MD_RENDER_FADE_THIN;
+        memcpy(k == 1 ? b[k].fade.in : b[k].fade.out, band, sizeof(band));
+        if (k != 1) b[k].fade.key = K;
+    }
+
+    md_render_view_t ref = md_render_view_create(fx.r, "visibility bits");
+    md_render_frame_t f  = frame_of(W, H, cam, b, 3);
+    md_render_frame_t fr = frame_of(W, H, cam, r, 3);
+    md_render_stats_t st;
+    int covered = 0, set = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {                              /* the camera moves in: groups change sides */
+            float dz = 5.0f;
+            while (key_split(&fx, &ks, band, px, dz, &n_in) < 1e-4) dz += 0.0137f;
+            f.camera.view[14] = fr.camera.view[14] = dz;
+            fr.content[MD_RENDER_CONTENT_GEOMETRY]++;     /* the reference's bits changed */
+        }
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        md_gpu_stream_sync(fx.gfx);
+        ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+        if (pass == 1) EXPECT_FALSE(st.refitted);
+        /* each group faded once: as members (and their sticks) or as its stand-in */
+        EXPECT_EQ(n_in * (M + (M - 1)) + (G - n_in), st.faded);
+        EXPECT_GT(n_in, 0u);
+        EXPECT_LT(n_in, (uint32_t)G);
+        EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+        EXPECT_GT(covered, (int)(W * H / 50));
+        EXPECT_EQ(0, compare_masks(&fx, fx.view, ref, W, H, &set));
+        EXPECT_GT(set, 0);
+        printf("    %u groups of %u, %u as their stand-in: %d pixels covered, %d masked, faded %u\n",
+               (unsigned)G, (unsigned)M, n_in, covered, set, st.faded);
+    }
+    md_render_view_destroy(fx.gfx, ref);
+    free(pos); free(rad); free(key); free(attr); free(pair); free(ks.cz);
+    f_close(&fx);
+}
+
 /* SHRINK: a sphere's radius scales down to 0 across `out` and up from 0
    across `in`, linearly in depth. Against analytic spheres of those radii
    (coverage, depth, a pick on one in the band), and the spheres past a band
