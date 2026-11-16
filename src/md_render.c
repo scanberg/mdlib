@@ -91,9 +91,16 @@ static uint32_t spline_group_for(uint32_t vendor_id) {
    fragment that writes depth against what the pass drew before it. 256
    buckets beat 64 by 2 to 5%, 64 beat 16 more; each box by its own centre
    or near face bought nothing; render passes of their own, nearest first,
-   nothing either (both removed). The other GPUs: to measure (the 3080's
-   earlier numbers were of a broken order, every part in two buckets). At
-   most 256. */
+   nothing either (both removed). On the 1060 (6f908220, 1 piece a box) a
+   wash: 10% off the 64-copy membrane near and fit, 2% off the protein near,
+   4 to 9% on the protein's and the nucleosome's mid and fit. It turns away
+   little there: the spline boxes drawn again over the final depth cost as
+   much as the first time (+30 ms on the protein's 64 copies near, where the
+   M4 shaded 39% again), where its own test of layers turns away 92 to 100%
+   (gpu_render.early_depth_rejection*): presumably only the coarse depth
+   cull, by tiles, for a stage that writes depth, which a sparse cartoon's
+   tiles, the background in each, defeat. On for all; the 3080 and AMD to
+   measure. At most 256. */
 static uint32_t g_spline_order = 256u;
 void md_render_debug_spline_order(uint32_t buckets) { g_spline_order = buckets > 256u ? 256u : buckets; }
 static uint32_t spline_order_on(void) { return g_spline_order != 0u; }
@@ -1509,25 +1516,34 @@ static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t element
 /* Whether this raster culls by occlusion. Its fixed cost -- two pyramids,
    phase 2's passes, its render pass (on the M4 the second raster pass alone
    loads and stores the targets, 0.3 ms at 1080p) -- is 0.3 to 0.7 ms on the
-   M4 at 1080p, where what it culls may be worth less. On the M4 (3280c3f0),
-   occlusion against none, ms (what it culled, weighed as below):
-     cartoon, one copy (2)                                       +0.3 to +0.5
-     64 copies' cartoon (0 to 270; the membrane 13855, 17549)    +0.2 to +0.5
-     100k atoms, licorice near (5163) / spacefill far (37.7k)    +0.5 / +0.35
-     100k atoms, spacefill near (72406)                          0
-     1M, licorice near (35k)                                     +0.55
-     1M, spacefill far (106k) / near (802k)                      -0.15 / -3.4
-     10M, spacefill and licorice (292k to 8.3M)                  0 to -30
-   So a raster that tested occlusion and culled little turns it off for the
-   next OCCL_OFF rasters; then it is tested again, sooner when the elements
-   drawn more than double. Little: the culled elements weighed as the drawn
-   ones go, those of the compute raster at an eighth (their raster is that
-   much cheaper: 1M spacefill far culled 850485 for 0.15 ms), under
-   OCCL_LITTLE_PER_PX a pixel of the target (about 104k at 1080p; the fixed
-   cost grows with the pixels; 10k a frame, the first take, kept it where it
-   cost 0.35 to 0.55 ms). The image does not depend on it. The counts are
-   the stats' (record_stats), read once complete, never waited for. */
-#define OCCL_LITTLE_PER_PX 0.05
+   M4 and the 1060 at 1080p, and its tests grow with the elements; what it
+   culls can be worth less. Occlusion always against none at 6f908220, ms
+   (M4 / 1060; the share of the elements it culled; their count weighed as
+   below):
+     cartoon, one copy and 64 (0 to 1%)                     +0.3..+0.5 / +0.3..+0.4
+     the 64-copy membrane (16%; 13855)                      +0.5 / 0
+     100k atoms, licorice (4 to 22%; 3k to 4k)              +0.5 / +0.5..+0.6
+     100k, spacefill far (76%; 38k)                         +0.35 / +0.15
+     100k, spacefill near (84%; 72k)                        0 / -1.7
+     1M, licorice near (8%; 35k)                            +0.55 / +0.6
+     1M, spacefill far (85%; 106k) / near (93%; 802k)       -0.15 / -1.0, -3.4 / -8.8
+     10M, licorice near (12 to 17%; 180k to 290k)           0 / +1.1..+1.5
+     10M, licorice into spacefill near (46 to 49%; 1M)      -4.9 / -8.2
+     10M, spacefill (78 to 97%; 1M to 8.3M)                 -4.3..-30 / -11..-66
+   So it pays where it culls a good share of the elements and many of them:
+   at least OCCL_SHARE of those it culls or draws, and OCCL_LITTLE_PER_PX a pixel of
+   the target (about 52k at 1080p: the fixed cost grows with the pixels),
+   the culled weighed as the drawn ones go, those of the compute raster at
+   an eighth (their raster is that much cheaper). A raster that tested it
+   and found less turns it off for the next OCCL_OFF rasters; then it is
+   tested again, sooner when the elements drawn more than double. (The
+   first takes, 10k culled a frame and then 0.05 a pixel without the share,
+   kept it on for the 10M licorice that the 1060 drew 1.5 ms faster without,
+   and off for the 100k spacefill near that it drew 1.7 ms faster with.)
+   The image does not depend on it. The counts are the stats' (record_stats),
+   read once complete, never waited for. */
+#define OCCL_SHARE         0.3
+#define OCCL_LITTLE_PER_PX 0.025
 #define OCCL_OFF           60u
 static bool occlusion_wanted(md_render_view_t v) {
     if (!g_occl_auto) return true;
@@ -1543,8 +1559,9 @@ static bool occlusion_wanted(md_render_view_t v) {
         const uint64_t drawn = hw + small;
         v->occl_seen = v->stats[best].raster;
         if (v->stats[best].occl_tested) {
+            const double culled = (double)c[C_OCCLUDED];
             const double weight = drawn ? ((double)hw + (double)small / 8.0) / (double)drawn : 1.0;
-            if ((double)c[C_OCCLUDED] * weight < OCCL_LITTLE_PER_PX * (double)v->width * (double)v->height) {
+            if (culled < OCCL_SHARE * (culled + (double)drawn) || culled * weight < OCCL_LITTLE_PER_PX * (double)v->width * (double)v->height) {
                 v->occl_off   = OCCL_OFF;
                 v->occl_drawn = drawn;
             }
