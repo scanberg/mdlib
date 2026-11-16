@@ -59,7 +59,10 @@ void md_render_debug_occlusion(float margin_radii, float min_px) { g_occl_margin
 
 /* A probe of the rasters' costs (the bench's, not in the header): 1, the
    spline and polygon fragments skip their hit and keep the proxy's depth
-   (what the vertex stage and the fill cost alone). Wrong pictures. */
+   (what the vertex stage and the fill cost alone). Wrong pictures. 2, the
+   spline fragments count themselves (md_render_debug_spline_counts), in a
+   pipeline of their own: atomics in a fragment stage cost it its early
+   depth test, so never in the one drawn otherwise. */
 static uint32_t g_raster_probe = 0u;
 void md_render_debug_raster_probe(uint32_t mode) { g_raster_probe = mode; }
 
@@ -86,6 +89,15 @@ void md_render_debug_spline_order(uint32_t on) { g_spline_order = on ? 1u : 0u; 
 static uint32_t g_spline_passes = 1u;
 void md_render_debug_spline_passes(uint32_t n) { g_spline_passes = n < 1u ? 1u : n > SPLINE_CHUNKS_MAX ? SPLINE_CHUNKS_MAX : n; }
 static uint32_t spline_order_on(void) { return g_spline_order || g_spline_passes > 1u; }
+
+/* Phase 1's spline boxes drawn again in a render pass after their own, over
+   the final depth (the bench's, not in the header): how much of their hit
+   work a depth test early could turn away, at best, with these boxes. 0: no
+   pass; 1: the pass, nothing drawn (what a pass costs); 2: the boxes again.
+   With the raster probe 2 the again pass counts the fragments that pass the
+   test at their box's depth and draws nothing. Wrong pictures with 2. */
+static uint32_t g_spline_again = 0u;
+void md_render_debug_spline_again(uint32_t mode) { g_spline_again = mode; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -185,6 +197,7 @@ enum {
     C_DBG = 272,                    /* md_render_debug_raster_probe(2)'s counts, 272..275 */
     C_ICMDS_CH = 276,               /* phase 1's spline boxes in passes: an indexed command each, 276..315 */
     C_ZRANGE = 316,                 /* phase 1's visible clusters' view depths, for the order: 316, 317 */
+    C_DBG_AGAIN = 318,              /* md_render_debug_spline_again(2) with the probe 2: the boxes' fragments passing the test */
     C_COUNT = 320,
 };
 #define IMPLICIT_CLUSTER 64u
@@ -217,13 +230,16 @@ struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, merge;
+    md_gpu_pipeline_t spline_count, spline_again;      /* the bench's probe 2: counting fragments */
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
     md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly, k_spline_order;
     bool              atomic_int64;    /* the compute raster is possible */
 };
 
-static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, md_gpu_shader_t fs, bool mask, const char* label) {
+enum { PIPE_VIS, PIPE_MASK, PIPE_VIS_NO_COLOR };
+static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, md_gpu_shader_t fs, int kind, const char* label) {
+    const bool mask = kind == PIPE_MASK;
     md_gpu_pipeline_desc_t pd = {0};
     pd.vertex       = vs;
     pd.fragment     = fs;
@@ -245,6 +261,7 @@ static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, 
         pd.color_count     = 2;                         /* the ids, and the heavy kinds' normals (VisOut) */
         pd.color[0].format = MD_GPU_FORMAT_RG32_UINT;
         pd.color[1].format = MD_GPU_FORMAT_RG16_FLOAT;
+        if (kind == PIPE_VIS_NO_COLOR) pd.color[0].write_disable = pd.color[1].write_disable = MD_GPU_COLOR_ALL;
     }
     return md_gpu_pipeline_create(dev, &pd);
 }
@@ -266,15 +283,17 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     r->dev   = device;
     r->alloc = alloc;
 
-    r->sphere_vis   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_fs_shader(),       false, "md_render.sphere");
-    r->sphere_mask  = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_mask_fs_shader(),  true,  "md_render.sphere_mask");
-    r->capsule_vis  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_fs_shader(),      false, "md_render.capsule");
-    r->capsule_mask = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_mask_fs_shader(), true,  "md_render.capsule_mask");
-    r->spline_vis   = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_fs_shader(),       false, "md_render.spline");
-    r->spline_mask  = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_mask_fs_shader(),  true,  "md_render.spline_mask");
-    r->polygon_vis  = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_fs_shader(),      false, "md_render.polygon");
-    r->polygon_mask = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_mask_fs_shader(), true,  "md_render.polygon_mask");
-    r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        false, "md_render.merge");
+    r->sphere_vis   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_fs_shader(),       PIPE_VIS,  "md_render.sphere");
+    r->sphere_mask  = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_mask_fs_shader(),  PIPE_MASK, "md_render.sphere_mask");
+    r->capsule_vis  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_fs_shader(),      PIPE_VIS,  "md_render.capsule");
+    r->capsule_mask = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_mask_fs_shader(), PIPE_MASK, "md_render.capsule_mask");
+    r->spline_vis   = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_fs_shader(),       PIPE_VIS,  "md_render.spline");
+    r->spline_mask  = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_mask_fs_shader(),  PIPE_MASK, "md_render.spline_mask");
+    r->polygon_vis  = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_fs_shader(),      PIPE_VIS,  "md_render.polygon");
+    r->polygon_mask = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_mask_fs_shader(), PIPE_MASK, "md_render.polygon_mask");
+    r->spline_count = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_count_fs_shader(), PIPE_VIS,  "md_render.spline_count");
+    r->spline_again = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_again_fs_shader(), PIPE_VIS_NO_COLOR, "md_render.spline_again");
+    r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
     r->atomic_int64 = info.supports_atomic_int64;
 
     md_gpu_kernel_desc_t kd;
@@ -296,7 +315,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
         if (!r->k_raster_small) r->atomic_int64 = false;
     }
 
-    if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
+    if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask || !r->spline_count || !r->spline_again ||
         !r->polygon_vis || !r->polygon_mask || !r->merge ||
         !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
         !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly || !r->k_spline_order) {
@@ -315,6 +334,8 @@ void md_render_destroy(md_render_t r) {
     if (r->capsule_mask)   md_gpu_pipeline_destroy(r->capsule_mask);
     if (r->spline_vis)     md_gpu_pipeline_destroy(r->spline_vis);
     if (r->spline_mask)    md_gpu_pipeline_destroy(r->spline_mask);
+    if (r->spline_count)   md_gpu_pipeline_destroy(r->spline_count);
+    if (r->spline_again)   md_gpu_pipeline_destroy(r->spline_again);
     if (r->polygon_vis)    md_gpu_pipeline_destroy(r->polygon_vis);
     if (r->polygon_mask)   md_gpu_pipeline_destroy(r->polygon_mask);
     if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
@@ -1336,6 +1357,7 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
     /* phase 1's spline boxes in passes, nearest first: the first with the
        rest, each after it alone, its targets loaded */
     const uint32_t chunks = (phase == 1 && has_kind[2]) ? g_spline_passes : 1u;
+    const md_gpu_pipeline_t spline_pipe = g_raster_probe == 2u ? r->spline_count : r->spline_vis;
     for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has_kind[k]) continue;
         ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
@@ -1344,7 +1366,7 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         a.list = k == 2 ? 4 : k == 3 ? 6 : k;
         if (k == 0)      md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
-        else if (k == 2) md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16,
+        else if (k == 2) md_gpu_draw_indexed_indirect(s, spline_pipe, v->box_idx, MD_GPU_INDEX_U16,
                                                       CTR(v, chunks > 1 ? C_ICMDS_CH : C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
         else             md_gpu_draw_indexed_indirect(s, r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
     }
@@ -1358,7 +1380,27 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         md_gpu_set_draw_state(s, &ds);
         a.mode = 0;
         a.list = 4;
-        md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS_CH + c * 5), 1, &a, sizeof(a));
+        md_gpu_draw_indexed_indirect(s, spline_pipe, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS_CH + c * 5), 1, &a, sizeof(a));
+    }
+    if (phase == 1 && has_kind[2] && g_spline_again) {
+        /* the boxes again, over the final depth (md_render_debug_spline_again) */
+        if (!md_gpu_render_end(s)) return false;
+        rd.color[0].load = MD_GPU_LOAD;
+        rd.color[1].load = MD_GPU_LOAD;
+        rd.depth.load    = MD_GPU_LOAD;
+        if (!md_gpu_render_begin(s, &rd)) return false;
+        if (g_spline_again == 2u) {
+            const bool count = g_raster_probe == 2u;
+            ds.cull        = MD_GPU_CULL_BACK;
+            ds.depth_write = !count;
+            md_gpu_set_draw_state(s, &ds);
+            a.mode = 0;
+            a.list = 4;
+            for (uint32_t c = 0; c < chunks; ++c) {
+                md_gpu_draw_indexed_indirect(s, count ? r->spline_again : r->spline_vis, v->box_idx, MD_GPU_INDEX_U16,
+                                             CTR(v, chunks > 1 ? C_ICMDS_CH + c * 5 : C_ICMDS), 1, &a, sizeof(a));
+            }
+        }
     }
     return md_gpu_render_end(s);
 }
@@ -1915,13 +1957,17 @@ bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name,
 /* After a frame drawn with the probe at 2: the spline fragments it shaded,
    their hits, their full piece tests, and the spline pixels it resolved (an
    atomic each: slow, for counting only). Waits for the stream. */
-bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[4]) {
+/* The raster probe 2's counts of the last draw: the spline fragments shaded,
+   their hits, their full piece tests, the spline pixels resolved, and with
+   md_render_debug_spline_again(2) the fragments of the boxes drawn again
+   that pass the depth test. */
+bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[5]) {
     if (!v || !v->counters) return false;
-    md_gpu_mem_t hm = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, 16u);
+    md_gpu_mem_t hm = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, 20u);
     if (!hm.gpu) return false;
-    bool ok = md_gpu_copy(s, hm.gpu, CTR(v, C_DBG), 16u);
+    bool ok = md_gpu_copy(s, hm.gpu, CTR(v, C_DBG), 16u) && md_gpu_copy(s, hm.gpu + 16u, CTR(v, C_DBG_AGAIN), 4u);
     md_gpu_stream_sync(s);
-    if (ok) memcpy(out, hm.cpu, 16u);
+    if (ok) memcpy(out, hm.cpu, 20u);
     md_gpu_free(s, hm.gpu);
     return ok;
 }
