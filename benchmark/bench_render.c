@@ -1486,7 +1486,7 @@ static int run_gpu(int argc, char** argv) {
    element and per pixel the same work as one system that large)
    ========================================================================= */
 
-enum { HV_CARTOON, HV_RIBBONS, HV_LICORICE, HV_LICORICE_ORDERS };
+enum { HV_CARTOON, HV_RIBBONS, HV_LICORICE, HV_LICORICE_ORDERS, HV_SPACEFILL, HV_SPACEFILL_RESIDUES };
 
 /* Looking down -z at (ctr x, ctr y) from `dist` in front of z = z_front */
 static md_render_camera_t camera_front(const double ctr[3], double z_front, double dist, float aspect) {
@@ -1542,6 +1542,8 @@ static int run_heavy(int argc, char** argv) {
         { "protein ribbons",                0, HV_RIBBONS },
         { "protein licorice",               0, HV_LICORICE },
         { "protein licorice + bond orders", 0, HV_LICORICE_ORDERS },
+        { "protein spacefill",              0, HV_SPACEFILL },
+        { "protein spacefill, residues over 1.5 to 0.75 px/A", 0, HV_SPACEFILL_RESIDUES },
         { "nucleosome cartoon",             1, HV_CARTOON },
         { "membrane cartoon",               2, HV_CARTOON },
     };
@@ -1675,6 +1677,8 @@ static int run_heavy(int argc, char** argv) {
                "bond orders: %u double, %u triple, %u ring circles, %u partners\n",
                scenes[si].name, scenes[si].file, n, (size_t)(sys.bond.count + sys.bond.noncovalent_count), topo.backbone_count, topo.backbone_chain_count,
                topo.nucleic_count, lipids, lip_tubes, topo.order_count[0], topo.order_count[1], aromatic, topo.partner_count);
+        printf("    spacefill's residues: %u points for %u atoms not of small molecules (%u of small molecules)\n",
+               topo.residue_point_count, topo.point_count - topo.small_atom_count, topo.small_atom_count);
         /* The per-frame update of this one copy (the copies share it) */
         {
             double* tu = malloc(reps * sizeof(double));
@@ -1686,6 +1690,11 @@ static int run_heavy(int argc, char** argv) {
             }
             print_times("md_render_mol_update of one copy (the copy, and what it derives)", tu, reps);
             free(tu);
+            pass_prof_t prof = { .s = s };
+            md_gpu_stream_sync(s);
+            prof.t = md_tick_now();
+            md_render_mol_update_hooked(mol, s, &topo, dyn, &atoms, 0, pass_hook, &prof);
+            print_prof("the update", &prof);
         }
 
         /* The block of copies: along the cell, or the bounds without one */
@@ -1735,6 +1744,14 @@ static int run_heavy(int argc, char** argv) {
                     rep.type = MD_RENDER_MOL_REP_RIBBONS;
                     rep.params.ribbons.half_width = 1.0f;
                     rep.atom_color = CC;
+                    break;
+                case HV_SPACEFILL_RESIDUES:
+                    rep.params.spacefill.residues[0] = 1.5f;
+                    rep.params.spacefill.residues[1] = 0.75f;
+                    /* fall through */
+                case HV_SPACEFILL:
+                    rep.type = MD_RENDER_MOL_REP_SPACEFILL;
+                    rep.params.spacefill.radius_scale = 1.0f;
                     break;
                 case HV_LICORICE_ORDERS:
                     rep.bond_orders = true;

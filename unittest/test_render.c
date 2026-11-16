@@ -4059,6 +4059,261 @@ static int radii_wrong(fix_t* fx, const md_render_mol_topo_t* topo, md_gpu_addr_
     return wrong;
 }
 
+/* Spacefill's level of detail. The residues' points of a protein with its
+   crystal waters:
+   each run of a residue's static points in one cluster, the key of each of
+   its atoms; their centroids and radii (sqrt(5/3 Rg^2 + mean r^2)) as the
+   update writes them. Emitted with a band: the static atoms keyed, the
+   water's atoms apart, the residues' spheres; drawn, they are the same
+   batches unfaded with each residue given by visibility bits to its atoms
+   or to its sphere by its point's depth and hash, to the bit, every residue
+   once. A pick on a sphere is its residue's. Seen from far, the spheres
+   cover about what their atoms do. */
+static int count_covered(fix_t* fx, md_render_view_t v, uint32_t W, uint32_t H) {
+    uint32_t* id = malloc(W * H * 8);
+    int n = -1;
+    if (f_read(fx, md_render_view_targets(v).id, id, W * H * 8)) { n = 0; for (uint32_t i = 0; i < W * H; ++i) n += id[2 * i + 1] != 0; }
+    free(id);
+    return n;
+}
+
+UTEST(render, mol_spacefill_residues) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/1a64.pdb"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    const md_render_mol_topo_t* T = &plan.layout;
+    const uint32_t n_static = T->point_count - T->small_atom_count, n_rp = T->residue_point_count, first = T->point_count + T->derived_count;
+    ASSERT_GT(n_rp, 0u);
+    ASSERT_GT(T->small_atom_count, 0u);
+    uint32_t* order = malloc((first + n_rp) * 4);   /* host copies: the image goes with the scope */
+    uint32_t* rp_off = malloc((n_rp + 1) * 4), *rp_res = malloc(n_rp * 4), *key = malloc(n_static * 4);
+    memcpy(order,  (const uint8_t*)plan.data + T->atom_order, (first + n_rp) * 4);
+    memcpy(rp_off, (const uint8_t*)plan.data + T->residue_point_offset, (n_rp + 1) * 4);
+    memcpy(rp_res, (const uint8_t*)plan.data + T->residue_point_residue, n_rp * 4);
+    memcpy(key,    (const uint8_t*)plan.data + T->residue_key, n_static * 4);
+    {
+        int bad = 0;
+        const uint32_t* coff = (const uint32_t*)((const uint8_t*)plan.data + T->atom_cluster_offset);
+        const uint32_t* rcof = (const uint32_t*)((const uint8_t*)plan.data + T->residue_cluster_offset);
+        uint32_t c = 0;
+        EXPECT_EQ(0u, rp_off[0]);
+        EXPECT_EQ(n_static, rp_off[n_rp]);
+        for (uint32_t k = 0; k < n_rp && bad < 5; ++k) {
+            const uint32_t p0 = rp_off[k], p1 = rp_off[k + 1], ra = order[first + k];
+            if (p1 <= p0) { bad++; printf("    residue point %u empty\n", k); continue; }
+            while (coff[c + 1] <= p0) ++c;
+            if (p1 > coff[c + 1]) { bad++; printf("    residue point %u crosses cluster %u\n", k, c); }
+            bool has = false;
+            for (uint32_t q = p0; q < p1; ++q) {
+                const uint32_t a = order[q];
+                const uint32_t r = rp_res[k];
+                if (r != UINT32_MAX && !(a >= sys.residue.atom_offset[r] && a < sys.residue.atom_offset[r + 1])) { bad++; printf("    atom %u not of residue %u\n", a, r); }
+                if (key[q] != first + k) { bad++; printf("    point %u keyed %u, not %u\n", q, key[q], first + k); }
+                has |= a == ra;
+            }
+            if (!has) { bad++; printf("    residue point %u stands for atom %u, not its own\n", k, ra); }
+        }
+        EXPECT_EQ(0, bad);
+        EXPECT_EQ(0u, rcof[0]);
+        EXPECT_EQ(n_rp, rcof[T->residue_cluster_count]);
+        for (uint32_t k = 0; k < T->residue_cluster_count; ++k) EXPECT_LE(rcof[k + 1] - rcof[k], 64u);
+        printf("    %u atoms, %u static: %u residue points in %u clusters\n", n, n_static, n_rp, T->residue_cluster_count);
+    }
+    md_gpu_mem_t mem = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size);
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, mem.gpu, content));
+    md_temp_end(temp);
+
+    md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (size_t)n * 12).gpu;
+    ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(mol != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    md_gpu_stream_sync(fx.gfx);
+
+    /* The update's points against the host's */
+    float* rp = malloc(n_rp * 16);
+    {
+        uint8_t* blk = read_block(&fx, dyn + (uint64_t)first * 16u, (uint64_t)n_rp * 16u);
+        ASSERT_TRUE(blk != NULL);
+        memcpy(rp, blk, n_rp * 16);
+        free(blk);
+        double worst_c = 0, worst_r = 0;
+        for (uint32_t k = 0; k < n_rp; ++k) {
+            const uint32_t p0 = rp_off[k], p1 = rp_off[k + 1], m = p1 - p0;
+            double s[3] = { 0, 0, 0 }, s2 = 0, r2 = 0;
+            const float* ref = &state.xyz[order[p0]].x;
+            for (uint32_t q = p0; q < p1; ++q) {
+                const float* x = &state.xyz[order[q]].x;
+                double d[3] = { x[0] - ref[0], x[1] - ref[1], x[2] - ref[2] };
+                for (int j = 0; j < 3; ++j) s[j] += d[j];
+                s2 += d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                const double r = sys.atom.type.radius[sys.atom.type_idx[order[q]]];
+                r2 += r * r;
+            }
+            double c[3], cc = 0;
+            for (int j = 0; j < 3; ++j) { c[j] = s[j] / m; cc += c[j] * c[j]; }
+            double rad = sqrt(5.0 / 3.0 * fmax(s2 / m - cc, 0.0) + r2 / m);
+            for (int j = 0; j < 3; ++j) worst_c = fmax(worst_c, fabs(ref[j] + c[j] - rp[4 * k + j]));
+            worst_r = fmax(worst_r, fabs(rad - rp[4 * k + 3]));
+        }
+        EXPECT_LT(worst_c, 1e-4);
+        EXPECT_LT(worst_r, 1e-4);
+        printf("    centroids within %.2g A, radii within %.2g A of the host's\n", worst_c, worst_r);
+    }
+
+    md_render_mol_rep_t rep = {0};
+    rep.key  = 7;
+    rep.type = MD_RENDER_MOL_REP_SPACEFILL;
+    rep.params.spacefill.radius_scale = 1.0f;
+    rep.color.mode = MD_RENDER_COLOR_UNIFORM;
+    rep.color.uniform = 0xFF8080FFu;
+    md_render_batch_t b[4];
+    ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &rep, b, 4));      /* no band: the atoms */
+    md_render_batch_t atoms_only = b[0];
+
+    /* A perspective view down -z at the protein from outside the box */
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.5f, .aspect = (float)W / H, .n = 1.0f };
+    md_render_camera_t cam = make_camera(&c);
+    double ctr[3] = { 0, 0, 0 }, zmax = -1e30;
+    for (uint32_t q = 0; q < n_static; ++q) for (int j = 0; j < 3; ++j) ctr[j] += (&state.xyz[order[q]].x)[j] / n_static;
+    for (uint32_t i = 0; i < n; ++i) zmax = fmax(zmax, state.xyz[i].z);
+    cam.view[12] = (float)-ctr[0]; cam.view[13] = (float)-ctr[1]; cam.view[14] = (float)-(zmax + 40.0);
+    const float px = fabsf(cam.proj[5]) * 0.5f * (float)H;
+    /* the residues' view depths; the band over their middle */
+    float* d = malloc(n_rp * 4);
+    float dmin = 1e30f, dmax = 0;
+    for (uint32_t k = 0; k < n_rp; ++k) {
+        d[k] = -(rp[4 * k + 2] + cam.view[14]);
+        dmin = fminf(dmin, d[k]); dmax = fmaxf(dmax, d[k]);
+    }
+    float band[2] = { px / (dmin + 0.3f * (dmax - dmin)), px / (dmin + 0.7f * (dmax - dmin)) };
+    const uint32_t words = (n + 31) / 32;
+    uint32_t* bits = malloc(2 * words * 4);
+    md_gpu_addr_t VA = f_buf(&fx, NULL, words * 4), VR = f_buf(&fx, NULL, words * 4);
+    uint32_t to_res = 0, faded = 0;
+    for (int tries = 0; ; ++tries) {
+        float ab[2];
+        fade_ab(band, px, false, ab);
+        double margin = 1e30;
+        memset(bits, 0, 2 * words * 4);
+        for (uint32_t i = 0; i < n; ++i) bits[i / 32] |= 1u << (i % 32);    /* the water's atoms, and the static ones kept */
+        to_res = faded = 0;
+        for (uint32_t k = 0; k < n_rp; ++k) {
+            const uint32_t ra = order[first + k];
+            const float t = fade_t_cpu(ab, d[k]), h = fade_h_cpu(ra);
+            if (t > 0.0f && t < 1.0f) margin = fmin(margin, fabs((double)h - t));
+            if (h < t) {
+                to_res++;
+                faded += rp_off[k + 1] - rp_off[k];
+                for (uint32_t q = rp_off[k]; q < rp_off[k + 1]; ++q) bits[order[q] / 32] &= ~(1u << (order[q] % 32));
+                bits[words + ra / 32] |= 1u << (ra % 32);
+            } else {
+                faded++;
+            }
+        }
+        if (margin >= 1e-4 || tries > 200) break;
+        band[1] *= 0.9993f;
+    }
+    md_gpu_upload(fx.gfx, VA, bits, words * 4);
+    md_gpu_upload(fx.gfx, VR, bits + words, words * 4);
+    memcpy(rep.params.spacefill.residues, band, sizeof(band));
+    const uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, b, 4);
+    ASSERT_EQ(3u, nb);
+    EXPECT_EQ((uint64_t)7 << 8 | MD_RENDER_MOL_PART_ATOMS, b[0].key);
+    EXPECT_EQ((uint64_t)7 << 8 | MD_RENDER_MOL_PART_SMALL_ATOMS, b[1].key);
+    EXPECT_EQ((uint64_t)7 << 8 | MD_RENDER_MOL_PART_RESIDUES, b[2].key);
+    EXPECT_EQ(n_static, b[0].count);
+    EXPECT_EQ(T->small_atom_count, b[1].count);
+    EXPECT_EQ(n_rp, b[2].count);
+    EXPECT_EQ(topo.residue_key, b[0].fade.key);
+    EXPECT_EQ(0u, b[1].fade.mode);
+    md_render_batch_t r[3];
+    memcpy(r, b, sizeof(r));
+    for (int k = 0; k < 3; ++k) memset(&r[k].fade, 0, sizeof(r[k].fade));
+    r[0].points.visible[0] = r[1].points.visible[0] = VA;
+    r[2].points.visible[0] = VR;
+
+    md_render_view_t ref = md_render_view_create(fx.r, "visibility bits");
+    md_render_frame_t f  = frame_of(W, H, cam, b, nb);
+    md_render_frame_t fr = frame_of(W, H, cam, r, nb);
+    memcpy(f.content, content, sizeof(content));
+    memcpy(fr.content, content, sizeof(content));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(fx.view, &st));
+    int covered = 0;
+    EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
+    EXPECT_EQ(faded, st.faded);
+    EXPECT_GT(to_res, n_rp / 10);
+    EXPECT_LT(to_res, n_rp - n_rp / 10);
+    printf("    band %.2f .. %.2f px/A: %u of %u residues as their sphere, %d pixels covered, faded %u\n",
+           band[0], band[1], to_res, n_rp, covered, st.faded);
+
+    /* All residues as spheres, the water hidden: a pick is a residue's, and
+       from far the spheres cover about what the atoms do */
+    rep.params.spacefill.residues[0] = 1e6f; rep.params.spacefill.residues[1] = 1e5f;
+    ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, b, 4));
+    md_render_batch_t only[2] = { b[2], atoms_only };
+    only[1].count = n_static;
+    only[1].cluster_count = topo.atom_cluster_count - topo.grid_cells;
+    cam.view[14] = (float)-(zmax + 250.0);
+    for (int k = 0; k < 2; ++k) {
+        md_render_frame_t fo = frame_of(W, H, cam, &only[k], 1);
+        memcpy(fo.content, content, sizeof(content));
+        fo.content[MD_RENDER_CONTENT_GEOMETRY] += 1 + k;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, k ? ref : fx.view, &fo, NULL));
+    }
+    md_gpu_stream_sync(fx.gfx);
+    const int cov_res = count_covered(&fx, fx.view, W, H), cov_atoms = count_covered(&fx, ref, W, H);
+    EXPECT_GT(cov_atoms, 200);
+    EXPECT_NEAR(1.0, (double)cov_res / cov_atoms, 0.15);
+    printf("    from %.0f A: the residues' spheres cover %d pixels, their atoms %d\n", zmax + 250.0 - ctr[2], cov_res, cov_atoms);
+    {
+        uint32_t* id = malloc(W * H * 8);
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).id, id, W * H * 8));
+        uint32_t picked = 0, seen = 0;
+        for (uint32_t i = 0; i < W * H && picked < 8; ++i) {
+            if (!id[2 * i + 1] || seen++ % 31) continue;           /* every 31st covered pixel */
+            md_render_pick_t pk;
+            md_render_mol_hit_t hit;
+            ASSERT_TRUE(f_pick(&fx, i % W, i / W, &pk));
+            ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+            EXPECT_EQ(MD_RENDER_MOL_HIT_RESIDUE, hit.kind);
+            ASSERT_LT(hit.residue, (uint32_t)sys.residue.count);
+            EXPECT_GE(hit.atom, sys.residue.atom_offset[hit.residue]);
+            EXPECT_LT(hit.atom, sys.residue.atom_offset[hit.residue + 1]);
+            picked++;
+        }
+        free(id);
+        EXPECT_EQ(8u, picked);
+    }
+
+    md_render_view_destroy(fx.gfx, ref);
+    free(order); free(rp_off); free(rp_res); free(key); free(rp); free(d); free(bits);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(mol);
+    md_system_free(&sys);
+    f_close(&fx);
+}
+
 UTEST(render, mol_radii_follow_their_source) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

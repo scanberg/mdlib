@@ -13,6 +13,8 @@
 //     --fade MODE S0 S1    the last --rep fades out across scales S0 > S1 (pixels per A),
 //                          MODE thin, shrink or both
 //     --fade-in MODE S0 S1 the last --rep fades in across S0 > S1
+//     --residues S0 S1     the last --rep (spacefill) hands its atoms over to a sphere per
+//                          residue across S0 > S1 (pixels per A)
 //     --view NAME          front, back, side, top or iso; repeatable (default front)
 //     --zoom Z             camera distance, 1 = the scene just fits (default 1)
 //     --replicate N        N x N x N copies along the cell (its box, or the bounds), as instances
@@ -226,6 +228,7 @@ typedef struct rep_arg_t {
     md_render_mol_rep_type_t type;
     float                    param;      /* < 0: the type's default */
     md_render_fade_t         fade;
+    float                    residues[2];
 } rep_arg_t;
 
 static bool parse_fade_mode(const char* s, uint32_t* mode) {
@@ -322,6 +325,10 @@ static int run(int argc, char** argv) {
             band[0] = (float)atof(argv[i + 2]);
             band[1] = (float)atof(argv[i + 3]);
             i += 3;
+        } else if (!strcmp(a, "--residues") && i + 2 < argc) {
+            if (n_reps == 0) { fprintf(stderr, "%s before any --rep\n", a); return 2; }
+            reps[n_reps - 1].residues[0] = (float)atof(argv[++i]);
+            reps[n_reps - 1].residues[1] = (float)atof(argv[++i]);
         } else { fprintf(stderr, "unknown option '%s'\n", a); return 2; }
     }
     if (n_reps == 0) { memset(&reps[0], 0, sizeof(reps[0])); reps[0].type = MD_RENDER_MOL_REP_SPACEFILL; reps[0].param = -1.0f; n_reps = 1; }
@@ -474,7 +481,10 @@ static int run(int argc, char** argv) {
         rep.type = reps[k].type;
         float p = reps[k].param;
         switch (rep.type) {
-        case MD_RENDER_MOL_REP_SPACEFILL:      rep.params.spacefill.radius_scale = p >= 0 ? p : 1.0f; break;
+        case MD_RENDER_MOL_REP_SPACEFILL:
+            rep.params.spacefill.radius_scale = p >= 0 ? p : 1.0f;
+            memcpy(rep.params.spacefill.residues, reps[k].residues, sizeof(reps[k].residues));
+            break;
         case MD_RENDER_MOL_REP_LICORICE:       rep.params.licorice.radius = p >= 0 ? p : 0.2f; break;
         case MD_RENDER_MOL_REP_BALL_AND_STICK: rep.params.ball_and_stick.ball_scale = p >= 0 ? p : 0.3f; rep.params.ball_and_stick.stick_radius = 0.12f; break;
         case MD_RENDER_MOL_REP_BONDS:          rep.params.bonds.radius = p >= 0 ? p : 0.15f; break;

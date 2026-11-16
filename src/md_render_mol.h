@@ -371,6 +371,33 @@ typedef struct md_render_mol_topo_t {
     md_gpu_addr_t derived_radius;          /* internal: float per derived point, the w
                                               it is written with (a sphere's radius)    */
 
+    /* The residues' points, spacefill's level of detail (its `residues`
+       band): a point per residue's static atoms in a cluster (one per piece
+       of a residue split over clusters; an atom of no residue alone), written
+       by every update after the derived points: points point_count +
+       derived_count + k. At the centroid of its atoms (their images nearest
+       the first's, as the derived points take theirs), its w the radius of
+       the sphere of their volume, sqrt(5/3 Rg^2 + mean r^2) of the centres'
+       radius of gyration Rg and the atoms' radii r (at scale 1). Each stands
+       for an atom (atom_order): one of its heavy atoms (or beads) by a hash,
+       else its first, so that over many residues the atoms' colours (by
+       element), filters and selections show in proportion (a filter of the
+       backbone shows about half the residues' spheres). None where they
+       would be more than half the atoms (a system without residues).
+       residue_key gives each static atom's point (points
+       0 .. point_count - small_atom_count - 1) the point of its residue:
+       the key of the atoms' fade (md_render_fade_t.key), so each residue
+       hands over whole. */
+    uint32_t      residue_point_count;
+    md_gpu_addr_t residue_point_offset;    /* internal: uint32 [count + 1], the first
+                                              static point of each                    */
+    md_gpu_addr_t residue_point_residue;   /* uint32 per residue point: its index in
+                                              sys->residue, UINT32_MAX for none (the
+                                              pick's id)                               */
+    uint32_t      residue_cluster_count;   /* up to 64 consecutive, within a molecule  */
+    md_gpu_addr_t residue_cluster_offset;  /* uint32 [residue_cluster_count + 1]       */
+    md_gpu_addr_t residue_key;             /* uint32 per static point                  */
+
     /* The small molecules, regrouped by md_render_mol_update */
     uint32_t      small_molecule_count;
     uint32_t      small_atom_count;        /* the tail of atom_order                    */
@@ -670,7 +697,15 @@ typedef struct md_render_mol_rep_t {
     uint64_t                 key;
     md_render_mol_rep_type_t type;
     union {
-        struct { float radius_scale; } spacefill;
+        /* residues: {start, end} in pixels per Angstrom (as the fade's
+           bands), across which the atoms (those not of small molecules) hand
+           over to a sphere per residue (the topology's residue points),
+           residue by residue, by THIN: the far level of detail; their
+           colour, visibility, selection and pick their residue's atom's
+           (MD_RENDER_MOL_HIT_RESIDUE). {0, 0}: atoms throughout. The
+           representation's own fade goes on: its `in` on the atoms, its
+           `out` on the residues' spheres, THIN only. */
+        struct { float radius_scale; float residues[2]; } spacefill;
         struct { float radius; } licorice;
         struct { float ball_scale; float stick_radius; } ball_and_stick;
         struct { float radius; } bonds;
@@ -739,7 +774,8 @@ typedef struct md_render_mol_rep_t {
        scales in pixels per Angstrom). The atom representations thin, keyed by
        atom: licorice thinning out across {2.5, 1.25} (a 0.2 A stick a pixel
        wide, then half) and a stand-in thinning in across the same band draw
-       each atom once through it. */
+       each atom once through it. Its key is not read: keys are the
+       topology's (spacefill's residues). */
     md_render_fade_t         fade;
 } md_render_mol_rep_t;
 
@@ -758,6 +794,8 @@ enum {
     MD_RENDER_MOL_PART_PARTNER  = MD_RENDER_MOL_PART_AROMATIC + 2 * MD_RENDER_MOL_RING_SIZES,  /* the partners */
     MD_RENDER_MOL_PART_LIPID_SPHERES,                           /* + 0 always, 1 the split heads' variant */
     MD_RENDER_MOL_PART_LIPID_TUBES = MD_RENDER_MOL_PART_LIPID_SPHERES + 2,  /* + 0 chains, 1 ring systems, 2 slabs */
+    MD_RENDER_MOL_PART_RESIDUES = MD_RENDER_MOL_PART_LIPID_TUBES + 3,       /* spacefill's residues' spheres */
+    MD_RENDER_MOL_PART_SMALL_ATOMS,     /* spacefill's atoms of small molecules, apart with residues */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -782,6 +820,8 @@ typedef enum md_render_mol_hit_kind_t {
     MD_RENDER_MOL_HIT_LIPID,       /* a lipid's sphere or tube: atom, the one its
                                       point stands for (a head's heaviest, a tail's
                                       spine atom)                                     */
+    MD_RENDER_MOL_HIT_RESIDUE,     /* a residue's sphere (spacefill's `residues`):
+                                      residue, and the atom it stands for            */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {
@@ -797,8 +837,9 @@ typedef struct md_render_mol_hit_t {
     uint32_t segment;              /* index in sys->protein_backbone.segment of a
                                       BACKBONE hit, in sys->nucleic_backbone.segment
                                       of a NUCLEOTIDE hit; UINT32_MAX for others      */
-    uint32_t residue;              /* index in sys->residue of the residue before the
-                                      break of a CHAIN_GAP hit; UINT32_MAX for others */
+    uint32_t residue;              /* index in sys->residue of a RESIDUE hit, of the
+                                      residue before the break of a CHAIN_GAP hit;
+                                      UINT32_MAX for others                          */
     uint32_t ring;                 /* index in sys->ring of a RING hit; UINT32_MAX for
                                       others                                         */
     float    position[3];
