@@ -3056,7 +3056,9 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
    first takes missed: a circle where off the centre of view the image is an
    ellipse (4% of the coverage, at the corners 25% short across), and a
    capsule's tilt against z where it is against the eye's direction (2% in
-   depth, 4 radii, end-on off the centre). */
+   depth, 4 radii, end-on off the centre). Every 7th sphere has a capsule
+   seen end-on, toward the eye: the depth along a line under a pixel that a
+   capsule's image is too short to give went far past its ends. */
 void md_render_debug_small_approx(bool on);
 
 UTEST(render, small_by_projection_close_to_the_rays) {
@@ -3067,10 +3069,10 @@ UTEST(render, small_by_projection_close_to_the_rays) {
     if (!info.supports_atomic_int64) { f_close(&fx); UTEST_SKIP("no compute raster without 64-bit atomics"); }
     const uint32_t W = 160, H = 120;
     cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
-    enum { NX = 40, NY = 30, NS = NX * NY };
-    float* pos = malloc(NS * 12);
+    enum { NX = 40, NY = 30, NS = NX * NY, NE = NS / 7 };   /* NE capsules seen end-on, toward the eye */
+    float* pos = malloc((NS + NE) * 12);
     float* rad = malloc(NS * 4);
-    uint32_t* idx = malloc(NS * 8);
+    uint32_t* idx = malloc((NS + NE) * 8);
     uint32_t seed = 777, nc = 0;
     #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
     for (int y = 0, i = 0; y < NY; ++y) for (int x = 0; x < NX; ++x, ++i) {
@@ -3081,11 +3083,19 @@ UTEST(render, small_by_projection_close_to_the_rays) {
         if (x + 1 < NX) { idx[2 * nc] = (uint32_t)i; idx[2 * nc + 1] = (uint32_t)i + 1; nc++; }
     }
     #undef RND
+    for (int k = 0; k < NE; ++k) {      /* from every 7th sphere 1.5 toward the eye, all but end-on: the image a disc */
+        const float* p = pos + 3 * (7 * k);
+        float l = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        for (int j = 0; j < 3; ++j) pos[3 * (NS + k) + j] = p[j] - 1.5f * p[j] / l;
+        pos[3 * (NS + k) + 0] += 0.01f * (float)(k % 5 - 2);
+        pos[3 * (NS + k) + 1] += 0.01f * (float)(k % 3 - 1);
+        idx[2 * nc] = (uint32_t)(7 * k); idx[2 * nc + 1] = (uint32_t)(NS + k); nc++;
+    }
     md_render_batch_t b[2] = {0};
     b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = NS; b[0].points.count = NS;
-    b[0].points.position = f_buf(&fx, pos, NS * 12); b[0].points.radius = f_buf(&fx, rad, NS * 4);
+    b[0].points.position = f_buf(&fx, pos, (NS + NE) * 12); b[0].points.radius = f_buf(&fx, rad, NS * 4);
     b[0].style.spheres.radius_scale = 1.0f;
-    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = nc; b[1].points.count = NS;
+    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = nc; b[1].points.count = NS + NE;
     b[1].points.position = b[0].points.position; b[1].index = f_buf(&fx, idx, (size_t)nc * 8);
     b[1].style.capsules.radius = 0.15f;
     md_render_frame_t f = frame_of(W, H, make_camera(&c), b, 2);
