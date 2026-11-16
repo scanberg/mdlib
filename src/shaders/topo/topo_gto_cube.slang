@@ -3,20 +3,21 @@
 // The octree levels of the certified critical-point search on a GTO electron density
 // (md_topo_compute_extremum_graph_gto_gpu), in fp32.
 //
-// Each cube c +- h is decided as the CPU reference decides it (see md_topo.c): a rigorous upper
-// bound of rho below rho_min, exclusion of grad rho along a few directions, the Newton-distance test,
-// or Krawczyk on the cube and on the 1.5x inflated cube. What changes in fp32 is that every quantity
-// a test uses carries a bound on its own rounding error, and a test decides only with those bounds
-// added. The error model assumes only what any conforming GPU guarantees:
+// Each cube c +- h is decided with the CPU reference's tests (see md_topo.c): a rigorous upper bound
+// of rho below rho_min, exclusion of grad rho along the axes, or Krawczyk on the 1.5x cube. What changes
+// in fp32 is that every quantity a test uses carries a bound on its own rounding error, and a test
+// decides only with those bounds added. The error model assumes only what any conforming GPU guarantees:
 //   * + - * correctly rounded; FMA contraction and reassociation only change which a priori bound
 //     gamma_k * sum|terms| applies, and the bounds below hold for any order of every sum;
 //   * exp(-t) relative error (6 + 8.1 t) u, u = 2^-24, including the rounding of t. The exp below is
 //     computed here from + - * only (Cody-Waite + polynomial, ~6u), so this holds on every backend;
+//   * division accurate to 2.5 ulp; no test relies on a square root;
 //   * denormals may be flushed, covered by an absolute floor per sum.
 // Each AO channel carries its value V, its magnitude MV (the same expression on |terms|) and an error
 // bound EV; downstream errors follow from |D| * (EV + n u MV), folded to one value per derivative order.
-// The bounds and decisions were validated against double evaluations by an fp32 C emulation
-// (Claude outputs/cp_prototype/gpu_fp32/cpg32_experiment.c in the viamd tree).
+// The bounds and decisions were validated against double evaluations by an fp32 C emulation during
+// development; that emulation is not kept in the tree. topo_gto.gpu_matches_cpu (unittest) holds the GPU
+// sweep to the CPU's topology.
 //
 // WORK UNIT. A batch is the 8 children of one cube that split (the root lattice is grouped the same
 // way, with a mask for the children that exist). The children share one local AO list, screened by
@@ -37,10 +38,10 @@
 //
 // Every sum runs in a fixed order, so a cube's result depends only on its batch, never on the chunk.
 //
-// Outcome per cube (low 4 bits): 0 discard, 1 root (Krawczyk certified; the CPU polishes it in
-// double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding noise and the
-// cube is too small for a Krawczyk proof at that noise, or h <= h_min; the CPU takes the cube and its
-// subtree in double). Bit 4: the inflated enclosure decided or was tried. Bits 8..15: which test.
+// Outcome per cube (low 4 bits): 0 discard, 1 root (Krawczyk certified on the 1.5x cube; the CPU
+// polishes it in double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding
+// noise and the cube is too small for a Krawczyk proof at that noise, or h <= h_min; the CPU takes the
+// cube and its subtree in double). Bit 4: Krawczyk was tried. Bits 8..15: which test.
 // Bits 16..23, for a split: the children that still need an evaluation (child_excluded below).
 
 #include "../md_gpu.slang"
@@ -49,28 +50,29 @@
 #define KA      7       // 1D derivative orders 0..6 (centre values to 5, sups 3..6)
 #define UF      5.9604644775390625e-8
 
-// phi channels per (row, child); column = channel * 8 + child
+// phi channels per (row, child); column = channel * 8 + child. Remainders of rho and grad rho (E1, E3,
+// Ea3) are over the cube, those of the Hessian (E2, Ea2, Eab2) over the 1.5x cube: Krawczyk's.
 #define PC_V    0       // 20 centre values                              (GEMM with D)
 #define PC_WV   20      // 4  error weights of the D-products, per order  (GEMM with |D|)
-#define PC_E    24      // 6  remainder terms E[0..5]                     (GEMM with |D|)
-#define PC_EI   30      // 4  inflated remainder terms E[1], E[3..5]      (GEMM with |D|)
-#define PC_MV   34      // 4  magnitudes, per order
-#define PC_EV   38      // 4  value errors, per order
-#define PC_E2   42      // 9  remainder terms E[6..14]
-#define PC_EI2  51      // 6  inflated remainder terms E[9..14]
-#define PHI_CH  57
+#define PC_E    24      // 2  remainder terms E1, E3                      (GEMM with |D|)
+#define PC_EI   26      // 4  remainder terms E2, Ea2 (1.5x cube)         (GEMM with |D|)
+#define PC_MV   30      // 4  magnitudes, per order
+#define PC_EV   34      // 4  value errors, per order
+#define PC_E2   38      // 3  remainder terms Ea3
+#define PC_EI2  41      // 6  remainder terms Eab2 (1.5x cube)
+#define PHI_CH  47
 #define PHI_W   (PHI_CH * 8)
-// dv channels: 0..19 D V, 20..23 |D| WV, 24..29 |D| E[0..5], 30..33 |D| Ei
-#define GEMM_CH 34
+// dv channels: 0..19 D V, 20..23 |D| WV, 24..25 |D| E1, E3, 26..29 |D| (E2, Ea2)
+#define GEMM_CH 30
 #define DV_W    (GEMM_CH * 8)
 #define GEMM_ABS_COL (20 * 8)   // first column multiplied by |D| (= 5 groups of 32)
 
 // ep fields per cube, structure of arrays: field f of cube c at ep[f * 8 * num_batches + c]
 #define EP_DOT  0       // 200 DOT[a][b]
 #define EP_EO   200     // 40  raw error sums per (order of a, b)
-#define EP_PART 240     // 11  enclosure AO sums: rho (2), gradient (3), Hessian (6)
-#define EP_PI   251     // 6   Hessian AO sums of the inflated cube
-#define EP_W    260
+#define EP_PART 240     // 5   enclosure AO sums over the cube: rho (2), gradient (3)
+#define EP_PI   245     // 6   Hessian AO sums over the 1.5x cube
+#define EP_W    251
 
 #define OUT_DISCARD  0u
 #define OUT_ROOT     1u
@@ -79,10 +81,7 @@
 #define OUT_INFLATED 16u
 
 #define WHY_RHO      1u
-#define WHY_EXCL     2u
-#define WHY_NEWT     3u
-#define WHY_KOUT     4u
-#define WHY_KOUT_I   5u
+#define WHY_EXCL     2u         // 3..5: tests no longer made (Newton distance, Krawczyk's "no zero")
 #define WHY_ROOT     6u
 #define WHY_SPLIT    7u
 #define WHY_NOISE    8u
@@ -90,7 +89,7 @@
 #define WHY_CHILDREN 11u        // split, but every child is excluded by this cube's own expansion
 
 struct GtoShell {
-    float4 A_r2;                // centre (Bohr), squared screening radius (unused here)
+    float4 A_r2;                // centre (Bohr), squared screening radius (trace_main's; the sweep screens on the host)
     uint4  info;                // prim_offset, num_prims, ao_offset, l | (ncart << 8)
 };
 
@@ -464,23 +463,22 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
         [ForceUnroll] for (int o = 0; o < 4; ++o) if (o >= ob && o < oe) { out[(PC_WV + o) * 8] = WVo[o]; out[(PC_MV + o) * 8] = MVo[o]; out[(PC_EV + o) * 8] = EVo[o]; }
     }
 
-    // ---- remainder vectors, cube and inflated cube: separable bounds (cpg_shell_rem in md_topo.c).
-    //      E[0] E1, [1] E2, [2] E3, [3..5] Ea2, [6..8] Ea3, [9..14] Eab2 (a <= b); the inflated cube
-    //      needs only the K = 2 slots (E2, Ea2, Eab2). Every term is a product of non-negative upper
-    //      bounds and every sum adds non-negative terms, so the rounding of the whole chain (at most
-    //      ~40 operations, plus the sum over primitives) is covered by one relative factor.
+    // ---- remainder vectors: separable bounds (cpg_shell_rem in md_topo.c). E1, E3, Ea3 (rho and grad
+    //      rho) over the cube, E2, Ea2, Eab2 (the Hessian) over the 1.5x cube. Every term is a product of
+    //      non-negative upper bounds and every sum adds non-negative terms, so the rounding of the whole
+    //      chain (at most ~40 operations, plus the sum over primitives) is covered by one relative factor.
     //      One loop over the primitives per group of slots, so only that group's terms are live.
     const float fE = 1.0 + float(2u * np + 96u) * UF;
     const float flush = float(np) * 1e-36;   // + what a flush may have lost
     const uint ei[3] = { uint(e.x), uint(e.y), uint(e.z) };
-    // K = 2: E2, Ea2, Eab2 from the factors (be, P) = (0,3) (1,3) (2,3) per axis; cube, then inflated cube
-    [loop] for (int pass = 0; pass < 2; ++pass) {
-        const float hh = pass == 0 ? h : 1.5 * h;
+    // K = 2: E2, Ea2, Eab2 from the factors (be, P) = (0,3) (1,3) (2,3) per axis, over the 1.5x cube
+    {
+        const float hh = 1.5 * h;
         float hp[7];
         hp[0] = 1.0;
         [ForceUnroll] for (int m = 1; m < 7; ++m) hp[m] = hp[m - 1] * hh;
-        const uint soff = 12u * l1 + 2u + uint(pass) * 4u * l1;
-        float E[10];                          // E[1], E[3..5], E[9..14]
+        const uint soff = 16u * l1 + 2u;      // the sups over the 1.5x cube
+        float E[10];                          // E2, Ea2, Eab2
         [ForceUnroll] for (int t = 0; t < 10; ++t) E[t] = 0.0;
         for (uint p = 0; p < np; ++p) {
             const float w = abs(coeff[sh.info.x + p]) * nrm;
@@ -502,17 +500,11 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
             E[9] += w * sep_bound(2, u[0][0], S[0][0], u[1][0], S[1][0], S[2][2]);   // zz
         }
         [ForceUnroll] for (int t = 0; t < 10; ++t) E[t] = E[t] * fE + flush;
-        if (pass == 0) {
-            out[(PC_E + 1) * 8] = E[0];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_E + 3 + a) * 8] = E[1 + a];
-            [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_E2 + 3 + t) * 8] = E[4 + t];
-        } else {
-            out[(PC_EI + 0) * 8] = E[0];
-            [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_EI + 1 + a) * 8] = E[1 + a];
-            [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_EI2 + t) * 8] = E[4 + t];
-        }
+        out[(PC_EI + 0) * 8] = E[0];
+        [ForceUnroll] for (int a = 0; a < 3; ++a) out[(PC_EI + 1 + a) * 8] = E[1 + a];
+        [ForceUnroll] for (int t = 0; t < 6; ++t) out[(PC_EI2 + t) * 8] = E[4 + t];
     }
-    // K = 1: E1 from (0,2); K = 3: E3, Ea3 from (0,4) (1,4); cube only
+    // K = 1: E1 from (0,2); K = 3: E3, Ea3 from (0,4) (1,4); over the cube
     {
         float hp[7];
         hp[0] = 1.0;
@@ -538,7 +530,7 @@ void ao_products(uint cs, uint ci, uint k, uint row, float h, uint n) {
         }
         [ForceUnroll] for (int t = 0; t < 5; ++t) E[t] = E[t] * fE + flush;
         out[(PC_E + 0) * 8] = E[0];
-        out[(PC_E + 2) * 8] = E[1];
+        out[(PC_E + 1) * 8] = E[1];
         [ForceUnroll] for (int t = 0; t < 3; ++t) out[(PC_E2 + t) * 8] = E[2 + t];
     }
 }
@@ -631,16 +623,17 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 
 // ================================================================================== gemm_main
 // dv[row][c] = sum_j X[row][j] phi[j][c] over the batch's local AOs j, X = D for the 160 columns of the
-// centre values and |D| for the 112 after them. One group per 64-row tile computes all 272 columns, so
+// centre values and |D| for the 80 after them. One group per 64-row tile computes all 240 columns, so
 // each D tile is gathered once: 32 x 8 threads, thread (tx, ty) owns rows 8 ty .. 8 ty + 7 and columns
-// tx + 32 j, j = 0..8 (j < 5 with D, j >= 5 with |D|): 17 groupshared reads per 72 multiply-adds. The
+// tx + 32 j, j = 0..7 (j < 5 with D, j >= 5 with |D|): 16 groupshared reads per 64 multiply-adds. The
 // sum over j runs in increasing j, so the result does not depend on the tiling.
 // Of seven tilings measured (64/32/16 rows, 128/256 threads, 288 or 96 columns per group, 24-72
-// accumulators), this one was within 11% of the fastest on an M4 Pro, an RTX 3080 and a UHD 770 alike.
+// accumulators), this one was within 11% of the fastest on an M4 Pro, an RTX 3080 and a UHD 770 alike;
+// that was with 272 columns (9 groups of 32), before the Hessian remainders over the cube itself left.
 
 #define GT  64                  // rows per tile
 #define GKC 16                  // j per chunk
-#define GCJ 9                   // column groups of 32: 9 * 32 = 288 >= DV_W
+#define GCJ 8                   // column groups of 32: 8 * 32 = 256 >= DV_W
 #define GR  8                   // rows per thread
 #define GEMM_WG 256
 
@@ -680,7 +673,7 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
             }
             gs_A[kk][r] = d;
         }
-        // phi tile: 16 j x 288 columns, 36 per thread, columns fastest (coalesced rows)
+        // phi tile: 16 j x 256 columns, 16 per thread, columns fastest (coalesced rows)
         [ForceUnroll] for (int q = 0; q < (GKC * GCJ * 32) / GEMM_WG; ++q) {
             const uint e = tid + uint(GEMM_WG * q);
             const uint kk = e / (GCJ * 32), c = e % (GCJ * 32);
@@ -712,23 +705,25 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
 //   DOT[a][b] = sum_i V_i[a] (D V)_i[b], a = 0..19, b = 0..9, and its error sum, which depends on a only
 //   through its derivative order o: e[o][b] = sum_i EV_i[o] (|DV_i[b]| + EDV_i[ob]) + MV_i[o] EDV_i[ob]
 //                                           + (n + 1) u MV_i[o] |DV_i[b]|;
-//   the enclosure's AO sums for the cube and the inflated cube.
+//   the enclosure's AO sums: of rho and grad rho over the cube, of the Hessian over the 1.5x cube.
 // 32 threads per batch, two batches per group; thread (g, k), g = 0..3, k = child: DOT rows a = 5g .. 5g + 4
 // and the error sums of order g, every row in increasing order; then the AO sums of rows i = g and g + 4
 // (mod 8), each its own lane, the 8 lanes summed in lane order at the end. Rows are read straight from
 // phi and dv (consecutive children are consecutive floats); no staging and one barrier.
 
 #define EPI_WG 64
+#define NPART  11       // rho (2) and gradient (3) over the cube, Hessian (6) over the 1.5x cube
 
-groupshared float gs_part[EPI_WG * 2][17];
+groupshared float gs_part[EPI_WG * 2][NPART];
 
 // One row of the quadratic form for child k, as the enclosure sums use it: ad = |X V| plus its error
-// bound, per channel; q = |X| E[0..5]; qs = |X| (inflated E2, Ea2) in the cube's slots 1, 3..5; the row's
-// own remainder terms e (cube) and ei (inflated cube: slots 1, 3..5, 9..14).
+// bound, per channel; q1, q3 = |X| E1, |X| E3 and q2i, qa2i = |X| E2, |X| Ea2 (1.5x cube); the row's own
+// remainder terms: E1, E3, Ea3 over the cube, E2, Ea2, Eab2 over the 1.5x cube.
 struct RowIn {
     float ad[20];
-    float q[6], qs[6];
-    float e[15], ei[15];
+    float q1, q3, q2i, qa2i[3];
+    float e1, e3, ea3[3];
+    float e2i, ea2i[3], eab2i[6];
 };
 
 // A local AO, X = D: dv and the |D| sums from gemm_main.
@@ -739,49 +734,47 @@ RowIn row_matrix(float* phi, float* dv, uint row, uint k, float safe, float fn) 
     float edv[4];
     [ForceUnroll] for (int o = 0; o < 4; ++o) edv[o] = Q[(20 + o) * 8] * safe + fn * 1e-36;
     [ForceUnroll] for (int m = 0; m < 20; ++m) ri.ad[m] = abs(Q[m * 8]) + edv[order_of(m)];
-    [ForceUnroll] for (int t = 0; t < 6; ++t) { ri.q[t] = Q[(24 + t) * 8] * safe; ri.qs[t] = 0.0; }
-    ri.qs[1] = Q[30 * 8] * safe;
-    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.qs[3 + a] = Q[(31 + a) * 8] * safe;
-    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.e[t] = P[(PC_E + t) * 8];
-    [ForceUnroll] for (int t = 0; t < 9; ++t) ri.e[6 + t] = P[(PC_E2 + t) * 8];
-    [ForceUnroll] for (int t = 0; t < 15; ++t) ri.ei[t] = 0.0;
-    ri.ei[1] = P[PC_EI * 8];
-    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.ei[3 + a] = P[(PC_EI + 1 + a) * 8];
-    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.ei[9 + t] = P[(PC_EI2 + t) * 8];
+    ri.q1 = Q[24 * 8] * safe;
+    ri.q3 = Q[25 * 8] * safe;
+    ri.q2i = Q[26 * 8] * safe;
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.qa2i[a] = Q[(27 + a) * 8] * safe;
+    ri.e1 = P[PC_E * 8];
+    ri.e3 = P[(PC_E + 1) * 8];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.ea3[a] = P[(PC_E2 + a) * 8];
+    ri.e2i = P[PC_EI * 8];
+    [ForceUnroll] for (int a = 0; a < 3; ++a) ri.ea2i[a] = P[(PC_EI + 1 + a) * 8];
+    [ForceUnroll] for (int t = 0; t < 6; ++t) ri.eab2i[t] = P[(PC_EI2 + t) * 8];
     return ri;
 }
 
-// The enclosure sums of one row added into part[17]: cube [0..10], inflated cube Hessian [11..16].
-void epi_row_parts(RowIn ri, float h, float hi, float h2, inout float part[17]) {
+// The enclosure sums of one row added into part: rho [0..1] and grad [2..4] over the cube, the Hessian
+// [5..10] over the 1.5x cube.
+void epi_row_parts(RowIn ri, float h, float hi, float h2, inout float part[NPART]) {
     float sum1 = 0.0, sum2 = 0.0;
     [ForceUnroll] for (int p = 0; p < 3; ++p) { sum1 += ri.ad[M1(p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) sum2 += ri.ad[M2(p, r)]; }
     const float W = ri.ad[0] + h * sum1 + 0.5 * h2 * sum2;
-    const float W1 = ri.ad[0] + h * sum1;
     const float W1i = ri.ad[0] + hi * sum1;
-    float Wa[3], W1a[3], W1ai[3], W1ab[6], W1abi[6];
+    float Wa[3], W1ai[3], W1abi[6];
     [ForceUnroll] for (int a = 0; a < 3; ++a) {
         float t1 = 0.0, t2 = 0.0;
         [ForceUnroll] for (int p = 0; p < 3; ++p) { t1 += ri.ad[M2(a, p)]; [ForceUnroll] for (int r = 0; r < 3; ++r) t2 += ri.ad[M3(a, p, r)]; }
         Wa[a] = ri.ad[M1(a)] + h * t1 + 0.5 * h2 * t2;
-        W1a[a] = ri.ad[M1(a)] + h * t1;
         W1ai[a] = ri.ad[M1(a)] + hi * t1;
     }
     [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
         if (bq >= a) {
             float t1 = 0.0;
             [ForceUnroll] for (int p = 0; p < 3; ++p) t1 += ri.ad[M3(a, bq, p)];
-            W1ab[ab_index(a, bq)] = ri.ad[M2(a, bq)] + h * t1;
             W1abi[ab_index(a, bq)] = ri.ad[M2(a, bq)] + hi * t1;
         }
     }
-    part[0] += ri.ad[0] * ri.e[0];
-    part[1] += ri.e[0] * ri.q[0];
-    [ForceUnroll] for (int a = 0; a < 3; ++a) part[2 + a] += ri.e[6 + a] * W + ri.e[2] * Wa[a] + ri.e[6 + a] * ri.q[2];
+    part[0] += ri.ad[0] * ri.e1;
+    part[1] += ri.e1 * ri.q1;
+    [ForceUnroll] for (int a = 0; a < 3; ++a) part[2 + a] += ri.ea3[a] * W + ri.e3 * Wa[a] + ri.ea3[a] * ri.q3;
     [ForceUnroll] for (int a = 0; a < 3; ++a) [ForceUnroll] for (int bq = 0; bq < 3; ++bq) {
         if (bq >= a) {
             const int t = ab_index(a, bq);
-            part[5 + t] += ri.e[9 + t] * W1 + W1ab[t] * ri.e[1] + ri.e[9 + t] * ri.q[1] + ri.e[3 + a] * W1a[bq] + W1a[a] * ri.e[3 + bq] + ri.e[3 + a] * ri.q[3 + bq];
-            part[11 + t] += ri.ei[9 + t] * W1i + W1abi[t] * ri.ei[1] + ri.ei[9 + t] * ri.qs[1] + ri.ei[3 + a] * W1ai[bq] + W1ai[a] * ri.ei[3 + bq] + ri.ei[3 + a] * ri.qs[3 + bq];
+            part[5 + t] += ri.eab2i[t] * W1i + W1abi[t] * ri.e2i + ri.eab2i[t] * ri.q2i + ri.ea2i[a] * W1ai[bq] + W1ai[a] * ri.ea2i[bq] + ri.ea2i[a] * ri.qa2i[bq];
         }
     }
 }
@@ -826,8 +819,8 @@ void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 
     // ---- enclosure sums: lanes g and g + 4 of the rows taken 8 at a time
-    float pa[17], pb[17];
-    [ForceUnroll] for (int t = 0; t < 17; ++t) { pa[t] = 0.0; pb[t] = 0.0; }
+    float pa[NPART], pb[NPART];
+    [ForceUnroll] for (int t = 0; t < NPART; ++t) { pa[t] = 0.0; pb[t] = 0.0; }
     for (uint i0 = 0; i0 < n; i0 += 8u) {
         const uint ia = i0 + g, ib = i0 + g + 4u;
         if (ia < n) epi_row_parts(row_matrix(phi, dv, rbase + ia, k, safe, fn), h, hi, h2, pa);
@@ -842,20 +835,20 @@ void epi_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         [ForceUnroll] for (int j = 0; j < 10; ++j) out[(EP_EO + g * 10u + uint(j)) * fs] = eo[j];
     }
     // lane L of child k sits at gs_part[slot * 64 + L * 8 + k]
-    [ForceUnroll] for (int t = 0; t < 17; ++t) {
+    [ForceUnroll] for (int t = 0; t < NPART; ++t) {
         gs_part[slot * 64u + g * 8u + k][t] = pa[t];
         gs_part[slot * 64u + (g + 4u) * 8u + k][t] = pb[t];
     }
     GroupMemoryBarrierWithGroupSync();
     if (live && g == 0u) {
-        float tot[17];
-        [ForceUnroll] for (int t = 0; t < 17; ++t) tot[t] = 0.0;
+        float tot[NPART];
+        [ForceUnroll] for (int t = 0; t < NPART; ++t) tot[t] = 0.0;
         for (uint L = 0; L < 8u; ++L) {
-            [ForceUnroll] for (int t = 0; t < 17; ++t) tot[t] += gs_part[slot * 64u + L * 8u + k][t];
+            [ForceUnroll] for (int t = 0; t < NPART; ++t) tot[t] += gs_part[slot * 64u + L * 8u + k][t];
         }
         float* o2 = args.ep + b * 8u + k;
-        [ForceUnroll] for (int t = 0; t < 11; ++t) o2[(EP_PART + t) * fs] = tot[t];
-        [ForceUnroll] for (int t = 0; t < 6; ++t) o2[(EP_PI + t) * fs] = tot[11 + t];
+        [ForceUnroll] for (int t = 0; t < 5; ++t) o2[(EP_PART + t) * fs] = tot[t];
+        [ForceUnroll] for (int t = 0; t < 6; ++t) o2[(EP_PI + t) * fs] = tot[5 + t];
     }
 }
 
@@ -865,56 +858,23 @@ struct Eval {
     float rho, e_rho;
     float g[3], e_g[3];
     float A[3][3], e_A[3][3];
-    float q_up[3], r_up[3], dH_up[3][3], rho_up;
-    float dH_i[3][3];           // inflated cube
+    float q_up[3], r_up[3], rho_up;     // over the cube
+    float dH_i[3][3];                   // the Hessian enclosure over the 1.5x cube
 };
 
-// decide_main and its helpers index a few small local arrays with runtime indices (the test directions,
-// the free coordinates of quad_box_min_lb, the eigenpair sort), which NVIDIA keeps in local memory (560
-// bytes per thread on the 3080). Selecting by value instead (tried in eeecb7d) moved them into registers,
-// 168 -> 247 on the 3080, and decide_main got 13-25% slower there and 4-6% on the M4: the L1-cached local
-// memory is the cheaper spill. Keep it this way unless the register count comes down otherwise.
-void eigen3(float M[3][3], out float val[3], out float vec[3][3]) {
-    float a[3][3] = M;
-    float v[3][3] = { { 1.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } };
-    for (int sweep = 0; sweep < 30; ++sweep) {
-        const float off = abs(a[0][1]) + abs(a[0][2]) + abs(a[1][2]);
-        const float scale = abs(a[0][0]) + abs(a[1][1]) + abs(a[2][2]);
-        if (off <= 1e-30 || off <= 1e-7 * scale) break;
-        [ForceUnroll] for (int p = 0; p < 2; ++p) [ForceUnroll] for (int q = 0; q < 3; ++q) {
-            if (q > p && a[p][q] != 0.0) {
-                const float theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-                const float t = (theta >= 0.0 ? 1.0 : -1.0) / (abs(theta) + sqrt(theta * theta + 1.0));
-                const float cs = 1.0 / sqrt(t * t + 1.0), sn = t * cs;
-                [ForceUnroll] for (int k = 0; k < 3; ++k) { const float x = a[k][p], y = a[k][q]; a[k][p] = cs * x - sn * y; a[k][q] = sn * x + cs * y; }
-                [ForceUnroll] for (int k = 0; k < 3; ++k) { const float x = a[p][k], y = a[q][k]; a[p][k] = cs * x - sn * y; a[q][k] = sn * x + cs * y; }
-                [ForceUnroll] for (int k = 0; k < 3; ++k) { const float x = v[k][p], y = v[k][q]; v[k][p] = cs * x - sn * y; v[k][q] = sn * x + cs * y; }
-            }
-        }
-    }
-    // sort ascending (3 elements, branch-free on the indices)
-    float d[3] = { a[0][0], a[1][1], a[2][2] };
-    int i0 = 0, i1 = 1, i2 = 2;
-    if (d[i1] < d[i0]) { const int t = i0; i0 = i1; i1 = t; }
-    if (d[i2] < d[i0]) { const int t = i0; i0 = i2; i2 = t; }
-    if (d[i2] < d[i1]) { const int t = i1; i1 = i2; i2 = t; }
-    const int idx[3] = { i0, i1, i2 };
-    [ForceUnroll] for (int i = 0; i < 3; ++i) {
-        val[i] = d[idx[i]];
-        [ForceUnroll] for (int k = 0; k < 3; ++k) vec[k][i] = v[k][idx[i]];
-    }
-}
+// decide_main and its helpers index a few small local arrays with runtime indices (the free coordinates
+// of quad_box_min_lb), which NVIDIA keeps in local memory (560 bytes per thread on the 3080, measured when
+// the eigenpair sort and seven test directions were still here). Selecting by value instead (tried in
+// eeecb7d) moved them into registers, 168 -> 247 on the 3080, and decide_main got 13-25% slower there and
+// 4-6% on the M4: the L1-cached local memory is the cheaper spill. Keep it this way unless the register
+// count comes down otherwise.
 
-bool excl_dir(Eval ev, float h, float3 w) {
-    float wg = 0.0, wgabs = 0.0, ewg = 0.0;
-    [ForceUnroll] for (int k = 0; k < 3; ++k) { wg += w[k] * ev.g[k]; wgabs += abs(w[k] * ev.g[k]); ewg += abs(w[k]) * ev.e_g[k]; }
-    const float lhs_lo = abs(wg) - ewg - 3.0 * UF * wgabs;
-    float rhs = 0.0;
-    [ForceUnroll] for (int j = 0; j < 3; ++j) {
-        float Aw = 0.0, Awabs = 0.0, eAw = 0.0;
-        [ForceUnroll] for (int k = 0; k < 3; ++k) { Aw += ev.A[j][k] * w[k]; Awabs += abs(ev.A[j][k] * w[k]); eAw += ev.e_A[j][k] * abs(w[k]); }
-        rhs += (abs(Aw) + eAw + 3.0 * UF * Awabs) * h + abs(w[j]) * (ev.q_up[j] + ev.r_up[j]);
-    }
+// Exclusion along axis k with the terms bounded one by one: over the cube, grad_k rho(c + d) lies within
+// g_k +- (sum_j |A_jk| h + q_up_k + r_up_k) (A symmetric), each term widened by its error.
+bool excl_dir(Eval ev, float h, int k) {
+    const float lhs_lo = abs(ev.g[k]) - ev.e_g[k] - 3.0 * UF * abs(ev.g[k]);
+    float rhs = ev.q_up[k] + ev.r_up[k];
+    [ForceUnroll] for (int j = 0; j < 3; ++j) rhs += (abs(ev.A[j][k]) + ev.e_A[j][k]) * h;
     rhs *= 1.0 + 16.0 * UF;
     return lhs_lo > rhs;
 }
@@ -1029,26 +989,22 @@ bool quad_box_min_lb(float c0, float b[3], float M[3][3], float h, out float lb)
     return true;
 }
 
-// Exclusion along w with the quadratic part of the model minimised over the box rather than bounded
-// term by term (excl_dir). w . grad rho(c + d) >= q(d) - Etot on the cube, q built from the computed
-// g, A, T; Etot covers their errors, the rounding of q's coefficients and the remainder r_up.
-bool excl_quad(Eval ev, float T[3][3][3], float eT[3][3][3], float h, float3 w) {
-    float c0 = 0.0, ec0 = 0.0, b[3], M[3][3], Etot = 0.0;
-    [ForceUnroll] for (int k = 0; k < 3; ++k) { c0 += w[k] * ev.g[k]; ec0 += abs(w[k]) * ev.e_g[k] + 3.0 * UF * abs(w[k] * ev.g[k]); }
-    Etot = ec0;
+// Exclusion along axis k with the quadratic part of the model minimised over the box rather than bounded
+// term by term (excl_dir). grad_k rho(c + d) >= q(d) - Etot on the cube, q built from the computed
+// g, A, T; Etot covers their errors and the remainder r_up (the coefficients are taken as they are).
+bool excl_quad(Eval ev, float T[3][3][3], float eT[3][3][3], float h, int k) {
+    float b[3], M[3][3];
+    const float c0 = ev.g[k];
+    float Etot = ev.e_g[k];
     [ForceUnroll] for (int j = 0; j < 3; ++j) {
-        float bj = 0.0, eb = 0.0;
-        [ForceUnroll] for (int k = 0; k < 3; ++k) { bj += w[k] * ev.A[k][j]; eb += abs(w[k]) * ev.e_A[k][j] + 3.0 * UF * abs(w[k] * ev.A[k][j]); }
-        b[j] = bj;
-        Etot += eb * h;
+        b[j] = ev.A[k][j];
+        Etot += ev.e_A[k][j] * h;
         [ForceUnroll] for (int l = 0; l < 3; ++l) {
-            float mj = 0.0, em = 0.0;
-            [ForceUnroll] for (int k = 0; k < 3; ++k) { mj += w[k] * T[k][j][l]; em += abs(w[k]) * eT[k][j][l] + 3.0 * UF * abs(w[k] * T[k][j][l]); }
-            M[j][l] = mj;
-            Etot += 0.5 * em * h * h;
+            M[j][l] = T[k][j][l];
+            Etot += 0.5 * eT[k][j][l] * h * h;
         }
-        Etot += abs(w[j]) * ev.r_up[j];
     }
+    Etot += ev.r_up[k];
     Etot *= 1.0 + 16.0 * UF;
     // The corners are candidates of both extremes: if one is within Etot of zero on a side, that
     // side cannot succeed, and the 27-face search is skipped (it is for most cubes and directions).
@@ -1069,66 +1025,55 @@ bool excl_quad(Eval ev, float T[3][3][3], float eT[3][3][3], float h, float3 w) 
     return quad_box_min_lb(-c0, nb, nM, h, lo_neg) && lo_neg > Etot;
 }
 
+// Krawczyk's linear part: Y ~ A^-1 (by cofactors, any accuracy), R = I - Y A with the bound eR of its error
+// (A's error and the rounding), and the Newton step m = -Y g with the bound em of its error: g's error and
+// the gradient tail tg of the screened shells (g is the local AOs' gradient; the full one differs by up to
+// tg per component). ok: R contracts (rhoR = max row sum of |R| + eR < 0.9).
 struct Lin {
     bool ok;
     float Y[3][3], R[3][3], eR[3][3];
-    float rhoR, zeta;
+    float rhoR;
     float m[3], em[3];
 };
 
-Lin linear(Eval ev, float val[3], float vec[3][3]) {
+Lin linear(Eval ev, float tg) {
     Lin L;
-    L.ok = false; L.rhoR = 0.0; L.zeta = 0.0;
+    L.ok = false; L.rhoR = 0.0;
     [ForceUnroll] for (int i = 0; i < 3; ++i) { L.m[i] = 0.0; L.em[i] = 0.0; [ForceUnroll] for (int j = 0; j < 3; ++j) { L.Y[i][j] = 0.0; L.R[i][j] = 0.0; L.eR[i][j] = 0.0; } }
-    const float amax = max(abs(val[0]), abs(val[2]));
-    if (amax == 0.0) return L;
-    [ForceUnroll] for (int i = 0; i < 3; ++i) if (!(abs(val[i]) > 1e-6 * amax)) return L;
-    [ForceUnroll] for (int r = 0; r < 3; ++r) [ForceUnroll] for (int c = 0; c < 3; ++c) {
-        float s = 0.0;
-        [ForceUnroll] for (int k = 0; k < 3; ++k) s += vec[r][k] * vec[c][k] / val[k];
-        L.Y[r][c] = s;
-    }
-    float Ynorm = 0.0;
+    const float c00 = ev.A[1][1] * ev.A[2][2] - ev.A[1][2] * ev.A[2][1];
+    const float c01 = ev.A[1][2] * ev.A[2][0] - ev.A[1][0] * ev.A[2][2];
+    const float c02 = ev.A[1][0] * ev.A[2][1] - ev.A[1][1] * ev.A[2][0];
+    const float det = ev.A[0][0] * c00 + ev.A[0][1] * c01 + ev.A[0][2] * c02;
+    if (!(abs(det) > 1e-30)) return L;
+    const float s = 1.0 / det;
+    L.Y[0][0] = c00 * s; L.Y[0][1] = (ev.A[0][2] * ev.A[2][1] - ev.A[0][1] * ev.A[2][2]) * s; L.Y[0][2] = (ev.A[0][1] * ev.A[1][2] - ev.A[0][2] * ev.A[1][1]) * s;
+    L.Y[1][0] = c01 * s; L.Y[1][1] = (ev.A[0][0] * ev.A[2][2] - ev.A[0][2] * ev.A[2][0]) * s; L.Y[1][2] = (ev.A[0][2] * ev.A[1][0] - ev.A[0][0] * ev.A[1][2]) * s;
+    L.Y[2][0] = c02 * s; L.Y[2][1] = (ev.A[0][1] * ev.A[2][0] - ev.A[0][0] * ev.A[2][1]) * s; L.Y[2][2] = (ev.A[0][0] * ev.A[1][1] - ev.A[0][1] * ev.A[1][0]) * s;
     [ForceUnroll] for (int i = 0; i < 3; ++i) {
-        float rs = 0.0, rowR = 0.0;
+        float rowR = 0.0;
         [ForceUnroll] for (int j = 0; j < 3; ++j) {
-            float s = (i == j) ? 1.0 : 0.0, sabs = (i == j) ? 1.0 : 0.0, yea = 0.0;
-            [ForceUnroll] for (int k = 0; k < 3; ++k) { s -= L.Y[i][k] * ev.A[k][j]; sabs += abs(L.Y[i][k] * ev.A[k][j]); yea += abs(L.Y[i][k]) * ev.e_A[k][j]; }
-            L.R[i][j] = s;
+            float r = (i == j) ? 1.0 : 0.0, sabs = (i == j) ? 1.0 : 0.0, yea = 0.0;
+            [ForceUnroll] for (int k = 0; k < 3; ++k) { r -= L.Y[i][k] * ev.A[k][j]; sabs += abs(L.Y[i][k] * ev.A[k][j]); yea += abs(L.Y[i][k]) * ev.e_A[k][j]; }
+            L.R[i][j] = r;
             L.eR[i][j] = (yea + 4.0 * UF * sabs) * 1.001;
-            rowR += abs(s) + L.eR[i][j];
-            rs += abs(L.Y[i][j]);
+            rowR += abs(r) + L.eR[i][j];
         }
         L.rhoR = max(L.rhoR, rowR * (1.0 + 4.0 * UF));
-        Ynorm = max(Ynorm, rs);
     }
-    if (!(L.rhoR < 0.9)) return L;
-    L.zeta = Ynorm * L.rhoR / (1.0 - L.rhoR) * (1.0 + 16.0 * UF);
+    if (!(L.rhoR < 0.9)) return L;     // also false where Y is not finite
     [ForceUnroll] for (int i = 0; i < 3; ++i) {
-        float s = 0.0, sabs = 0.0, e = 0.0;
-        [ForceUnroll] for (int k = 0; k < 3; ++k) { s += L.Y[i][k] * ev.g[k]; sabs += abs(L.Y[i][k] * ev.g[k]); e += abs(L.Y[i][k]) * ev.e_g[k]; }
-        L.m[i] = -s;
-        L.em[i] = (e + 3.0 * UF * sabs) * 1.001;
+        float sm = 0.0, sabs = 0.0, e = 0.0, ya = 0.0;
+        [ForceUnroll] for (int k = 0; k < 3; ++k) { sm += L.Y[i][k] * ev.g[k]; sabs += abs(L.Y[i][k] * ev.g[k]); e += abs(L.Y[i][k]) * ev.e_g[k]; ya += abs(L.Y[i][k]); }
+        L.m[i] = -sm;
+        L.em[i] = (e + 3.0 * UF * sabs + ya * tg) * 1.001;
     }
     L.ok = true;
     return L;
 }
 
-bool newton_dist(Eval ev, Lin L, float h) {
-    float gabs = 0.0;
-    [ForceUnroll] for (int k = 0; k < 3; ++k) gabs = max(gabs, abs(ev.g[k]) + ev.e_g[k]);
-    [ForceUnroll] for (int i = 0; i < 3; ++i) {
-        float rad = L.em[i] + L.zeta * 3.0 * gabs;
-        [ForceUnroll] for (int j = 0; j < 3; ++j) rad += (abs(L.Y[i][j]) + L.zeta) * (ev.q_up[j] + ev.r_up[j]);
-        rad *= 1.0 + 16.0 * UF;
-        if (abs(L.m[i]) - rad > h * (1.0 + 2.0 * UF)) return true;
-    }
-    return false;
-}
-
-// +1 unique zero in c +- hk, -1 none, 0 undecided
-int krawczyk(Lin L, float dH[3][3], float hk) {
-    bool inside = true, disjoint = false;
+// Whether c +- hk holds exactly one zero (K inside the box); dH encloses the Hessian over it.
+bool krawczyk(Lin L, float dH[3][3], float hk) {
+    bool inside = true;
     [ForceUnroll] for (int i = 0; i < 3; ++i) {
         float rad = 0.0;
         [ForceUnroll] for (int j = 0; j < 3; ++j) {
@@ -1137,20 +1082,18 @@ int krawczyk(Lin L, float dH[3][3], float hk) {
             rad += abs(L.R[i][j]) + L.eR[i][j] + yd;
         }
         rad *= hk * (1.0 + 16.0 * UF);
-        const float lo_out = abs(L.m[i]) - L.em[i] - rad;
         const float hi_in = (abs(L.m[i]) + L.em[i] + rad) * (1.0 + 4.0 * UF);
         if (!(hi_in < hk)) inside = false;
-        if (lo_out > hk * (1.0 + 2.0 * UF)) disjoint = true;
     }
-    return inside ? 1 : (disjoint ? -1 : 0);
+    return inside;
 }
 
 // Whether child s (centre c + (+-h/2)^3, s & 1: + side in x, s & 2: y, s & 4: z) is excluded by this
 // cube's expansion alone: g + A d + 1/2 T[d,d] re-centred at the child's centre (with the error bounds
 // of g, A, T carried through, and the rounding of the re-centring), the quadratic term over the child,
 // and this cube's remainder bound r_up, which holds on all of the cube. Then the exclusion tests the
-// cube itself got: the seven directions and the Newton distance. Skips an evaluation for 27-38% of the
-// children on the test systems; no child it excludes was ever undecided by its own evaluation.
+// cube itself got, along the axes. Skips an evaluation for 27-38% of the children on the test systems;
+// no child it excludes was ever undecided by its own evaluation.
 bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], float h, uint s, float safe) {
     const float hc = 0.5 * h;                   // exact; every product with it below is exact too
     float d[3];
@@ -1182,18 +1125,8 @@ bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], fl
         C.q_up[i] = 0.5 * hc * hc * qT[i] * safe;
         C.r_up[i] = P.r_up[i];
     }
-    float val[3], vec[3][3];
-    eigen3(C.A, val, vec);
-    float3 dirs[7];
-    dirs[0] = float3(1, 0, 0); dirs[1] = float3(0, 1, 0); dirs[2] = float3(0, 0, 1);
-    int nd = 3;
-    const float gn = sqrt(C.g[0] * C.g[0] + C.g[1] * C.g[1] + C.g[2] * C.g[2]);
-    if (gn > 0.0) { dirs[nd] = float3(C.g[0], C.g[1], C.g[2]) / gn; nd++; }
-    [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
-    for (int t = 0; t < nd; ++t) if (excl_dir(C, hc, dirs[t])) return true;
-    const Lin lin = linear(C, val, vec);
-    if (lin.ok && newton_dist(C, lin, hc)) return true;
-    for (int t = 0; t < nd; ++t) if (excl_quad(C, T, eT, hc, dirs[t])) return true;     // the costly one last
+    [ForceUnroll] for (int a = 0; a < 3; ++a) if (excl_dir(C, hc, a)) return true;
+    [ForceUnroll] for (int a = 0; a < 3; ++a) if (excl_quad(C, T, eT, hc, a)) return true;     // the costly one last
     return false;
 }
 
@@ -1243,7 +1176,7 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         if (a <= c) lT[ab_index(a, c)] += abs(T[a][c][d]) + eT[a][c][d];      // sum over d, a <= c
     }
 
-    // ---- enclosure over the cube (and the Hessian over the inflated cube)
+    // ---- enclosure over the cube (and of the Hessian over the 1.5x cube)
     [ForceUnroll] for (int a = 0; a < 3; ++a) {
         float d3u = 0.0, d4u = 0.0;
         [ForceUnroll] for (int p = 0; p < 3; ++p) [ForceUnroll] for (int qq = 0; qq < 3; ++qq) [ForceUnroll] for (int r = 0; r < 3; ++r) {
@@ -1262,52 +1195,25 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             qu += abs(x + y) + EDOT(M3(a, c, p), M1(qq)) + EDOT(M2(a, p), M2(c, qq)) + 2.0 * UF * (abs(x) + abs(y));
         }
         const int t = ab_index(a, c);
-        const float lu = lT[t];
-        const float vu = (h * lu + 2.0 * h2 * qu + 2.0 * E[(EP_PART + 5 + t) * fs] * safe + bt.tail.z) * safe;
-        const float vi = (hi * lu + 2.0 * hi2 * qu + 2.0 * E[(EP_PI + t) * fs] * safe + bt.tail.z) * safe;
-        ev.dH_up[a][c] = vu; ev.dH_up[c][a] = vu;
+        const float vi = (hi * lT[t] + 2.0 * hi2 * qu + 2.0 * E[(EP_PI + t) * fs] * safe + bt.tail.z) * safe;
         ev.dH_i[a][c] = vi; ev.dH_i[c][a] = vi;
     }
     ev.rho_up = (ev.rho + ev.e_rho + 2.0 * E[(EP_PART + 0) * fs] * safe + E[(EP_PART + 1) * fs] * safe + bt.tail.x) * safe;
     #undef DOT
     #undef EDOT
 
-    // ---- tests
+    // ---- tests: rho bound, exclusion along the axes term by term, Krawczyk on the 1.5x cube, then the
+    //      exact quadratic exclusion, the costliest, once the cheap ones have failed
     uint outc = OUT_SPLIT, why = WHY_SPLIT;
     bool decided = false, tried_infl = false;
     if (ev.rho_up < args.eps) { outc = OUT_DISCARD; why = WHY_RHO; decided = true; }
-    float val[3], vec[3][3];
-    eigen3(ev.A, val, vec);
-    float3 dirs[7];
-    dirs[0] = float3(1, 0, 0); dirs[1] = float3(0, 1, 0); dirs[2] = float3(0, 0, 1);
-    int nd = 3;
-    {
-        const float gn = sqrt(ev.g[0] * ev.g[0] + ev.g[1] * ev.g[1] + ev.g[2] * ev.g[2]);
-        if (gn > 0.0) { dirs[nd] = float3(ev.g[0], ev.g[1], ev.g[2]) / gn; nd++; }
-        [ForceUnroll] for (int e = 0; e < 3; ++e) { dirs[nd] = float3(vec[0][e], vec[1][e], vec[2][e]); nd++; }
-    }
-    if (!decided) {
-        for (int t = 0; t < nd && !decided; ++t) if (excl_dir(ev, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
-    }
-    const Lin lin = linear(ev, val, vec);
+    [ForceUnroll] for (int a = 0; a < 3; ++a) if (!decided && excl_dir(ev, h, a)) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
+    const Lin lin = linear(ev, bt.tail.y);
     if (!decided && lin.ok) {
-        if (newton_dist(ev, lin, h)) { outc = OUT_DISCARD; why = WHY_NEWT; decided = true; }
-        if (!decided) {
-            const int kr = krawczyk(lin, ev.dH_up, h);
-            if (kr == -1) { outc = OUT_DISCARD; why = WHY_KOUT; decided = true; }
-            else if (kr == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
-            else {
-                tried_infl = true;
-                const int ki = krawczyk(lin, ev.dH_i, hi);
-                if (ki == -1) { outc = OUT_DISCARD; why = WHY_KOUT_I; decided = true; }
-                else if (ki == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
-            }
-        }
+        tried_infl = true;
+        if (krawczyk(lin, ev.dH_i, hi)) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
     }
-    if (!decided) {
-        // the exact quadratic test, the costliest, once the cheap ones have failed
-        for (int t = 0; t < nd && !decided; ++t) if (excl_quad(ev, T, eT, h, dirs[t])) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
-    }
+    [ForceUnroll] for (int a = 0; a < 3; ++a) if (!decided && excl_quad(ev, T, eT, h, a)) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     if (!decided) {
         // fp32 noise: the gradient lies inside its own rounding bound and a Krawczyk proof would need a
         // larger cube than this one; refining in fp32 cannot help.
