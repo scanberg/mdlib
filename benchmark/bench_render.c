@@ -835,6 +835,21 @@ static timing_t time_draws(md_gpu_stream_t s, md_render_view_t v, md_render_fram
     return out;
 }
 
+/* Once a process, before its first measurement: draws for half a second.
+   The HD 530 drew the first row 5 to 7 ms slower than the same frame drawn
+   later (its clocks coming up), whatever the pipelines' warm-up draws. */
+static void warm_up_once(md_gpu_stream_t s, md_render_view_t v, md_render_frame_t* f) {
+    static bool warm = false;
+    if (warm) return;
+    warm = true;
+    md_tick_t t0 = md_tick_now();
+    while (md_tick_to_milliseconds(md_tick_now() - t0) < 500.0) {
+        f->content[MD_RENDER_CONTENT_GEOMETRY]++;
+        md_render_view_draw(s, v, f, NULL);
+        md_gpu_stream_sync(s);
+    }
+}
+
 static void print_times(const char* name, double* t, uint32_t reps) {
     qsort(t, reps, sizeof(double), cmp_d);
     printf("%s: %6.2f / %6.2f ms\n", name, t[0], t[reps / 2]);
@@ -1361,6 +1376,7 @@ static int run_gpu(int argc, char** argv) {
                     md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
                     md_render_debug_small_approx(opts[oi].options & BENCH_SMALL_APPROX);
                     f.small_pixels = smalls[pi];
+                    warm_up_once(s, v, &f);
                     /* warm up: the first raster has no pyramid */
                     time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);
                     timing_t tr = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
@@ -1753,6 +1769,7 @@ static int run_heavy(int argc, char** argv) {
                         md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
                         f.small_pixels = 6.0f;
                         memcpy(f.content, content, sizeof(content));
+                        warm_up_once(s, v, &f);
                         time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);     /* the first raster has no pyramid */
                         timing_t tr = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
                         md_render_stats_t st = {0};
