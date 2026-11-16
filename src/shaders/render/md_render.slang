@@ -3006,10 +3006,16 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
                     if (qb <= 1.0) d = max(d, eb.y + ec.w * sqrt(1.0 - qb));
                 }
                 // the body: the axis's line under the pixel, the point of
-                // the axis where it is nearest a little toward the nearer end
+                // the axis where it is nearest a little toward the nearer
+                // end; never nearer than the nearer end's front. Seen end-on
+                // (its image shorter than half a radius) the end spheres are
+                // all of it: there the line under the pixel is noise, and
+                // the depth along it extrapolated far past the ends (the
+                // 1060's 10M licorice near culled 4.6M by occlusion with
+                // that, against 1.9M by rays).
                 float2 ab = ea.zw - ea.xy;
                 float  ll = dot(ab, ab);
-                if (eb.w >= 0.5 && ll > 1e-12) {
+                if (eb.w >= 0.5 && ll > 0.25 * min(ec.x, ec.y) * min(ec.x, ec.y)) {
                     float  t  = dot(pa, ab) / ll;
                     float2 dp = pa - ab * t;
                     float  rr = lerp(ec.x, ec.y, saturate(t));
@@ -3018,7 +3024,8 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
                     if (q <= 1.0) {
                         float h  = sqrt(1.0 - q);
                         float ts = t + eb.z * h;
-                        if (ts >= 0.0 && ts <= 1.0) d = max(d, lerp(eb.x, eb.y, t) + lerp(ec.z, ec.w, saturate(t)) * h * ed.w);
+                        if (ts >= 0.0 && ts <= 1.0) d = max(d, min(lerp(eb.x, eb.y, t) + lerp(ec.z, ec.w, saturate(t)) * h * ed.w,
+                                                                   max(eb.x + ec.z, eb.y + ec.w)));
                     }
                 }
                 if (d < 0.0) continue;
