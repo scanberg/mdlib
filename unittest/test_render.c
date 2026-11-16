@@ -2851,6 +2851,7 @@ static void dense_scene(fix_t* fx, dense_t* d) {
    in its header) */
 void md_render_debug_occlusion(float margin_radii, float min_px);
 void md_render_debug_occlusion_auto(bool on);
+void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 
 /* ids and depths equal; with depth_only, depths (an index renumbers the elements) */
 static int compare_views_ex(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered, bool depth_only) {
