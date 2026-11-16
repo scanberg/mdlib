@@ -1125,7 +1125,10 @@ UTEST(render, spline_curves_match_the_sweep) {
     enum { NS = 24 };
     float spos[NS * 3];
     for (int k = 0; k < NS; ++k) {
-        int e = (k * 7) % N;                                /* by control points, in front and behind */
+        /* by control points, in front and behind; each its own (k * 7, the
+           first take, put k and k + 12 in one place: N is 28, and which of
+           two equal depths wins is the draw order's, no two views' alike) */
+        int e = (k * 5) % N;
         for (int i = 0; i < 3; ++i) spos[3 * k + i] = pos[3 * e + i];
         spos[3 * k + 0] += 0.3f * (float)((k % 3) - 1);
         spos[3 * k + 2] += (k % 2) ? 0.6f : -0.6f;
