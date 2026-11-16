@@ -41,6 +41,7 @@ typedef struct {
     md_gpu_device_t dev;
     md_gpu_stream_t gfx;
     bool            present;
+    md_gpu_texture_t tmp_u, tmp_d;  /* early_depth_rejection_by_what's targets */
 } rfix_t;
 
 static bool r_open(rfix_t* f) {
@@ -528,6 +529,101 @@ UTEST(gpu_render, early_depth_rejection) {
     free(ids);
     md_gpu_texture_destroy(u);
     md_gpu_texture_destroy(d);
+    r_close(&f);
+}
+
+/* What an expensive fragment stage that writes depth can be turned away by,
+   where it is not by an earlier draw of its own kind (the M4: every
+   depth-writing or discarding stage shaded nearly all of 8 layers behind;
+   a plain one, none, near first or not: its hidden surface removal). The
+   near layer is plain or md_render's (depth no nearer under reversed Z, with
+   a discard), in the same pass as the 8 behind or a pass before (its depth
+   loaded); the 8 behind are md_render's, or plain with the early tests
+   forced and a side effect, writing no depth (a visibility kept by atomics
+   would be). Printed as early_depth_rejection's are. */
+static double layer_time2(rfix_t* f, md_gpu_pipeline_t pn, md_gpu_pipeline_t pb, bool behind_writes, bool two_passes,
+                          md_gpu_addr_t scratch, uint32_t iters, int behind, bool behind_first, uint32_t* ids, uint32_t npx, bool* ok) {
+    double best = 1e30;
+    for (int rep = 0; rep < 5; ++rep) {
+        const utest_int64_t t0 = utest_ns();
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool near_now = (pass == 0) != behind_first;
+            if (!near_now && behind == 0) continue;
+            if (pass == 0 || two_passes) {
+                md_gpu_render_desc_t rd = {0};
+                rd.color_count = 1;
+                rd.color[0].texture = f->tmp_u;
+                rd.color[0].load = pass == 0 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD; rd.color[0].store = MD_GPU_STORE; rd.color[0].clear.u32[0] = 0u;
+                rd.depth.texture = f->tmp_d;
+                rd.depth.load = pass == 0 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD; rd.depth.store = MD_GPU_STORE; rd.depth.clear_depth = 0.0f;
+                if (!md_gpu_render_begin(f->gfx, &rd)) { *ok = false; return 0.0; }
+            }
+            md_gpu_draw_state_t ds = {0};
+            ds.depth_compare = MD_GPU_COMPARE_GREATER_EQUAL;
+            ds.depth_write   = near_now || behind_writes;
+            md_gpu_set_draw_state(f->gfx, &ds);
+            rargs_t a = {0};
+            a.width = iters;
+            a.cmds  = scratch;
+            a.id    = near_now ? 100u : 200u;
+            a.color = near_now ? f4(0.0f, 0.9f, 0.0f, 0.0f) : f4(0.0f, 0.5f, -0.01f, 0.0f);
+            if (!MD_GPU_DRAW(f->gfx, near_now ? pn : pb, 3, near_now ? 1u : (uint32_t)behind, a)) *ok = false;
+            if (pass == 1 || two_passes || behind == 0) { if (!md_gpu_render_end(f->gfx)) *ok = false; }
+        }
+        md_gpu_stream_sync(f->gfx);
+        const double ms = (double)(utest_ns() - t0) * 1e-6;
+        if (ms < best) best = ms;
+    }
+    if (!r_read(f, f->tmp_u, 0, 0, ids, npx * 4u)) *ok = false;
+    for (uint32_t i = 0; i < npx; ++i) if (ids[i] != 100u) { *ok = false; break; }
+    return best;
+}
+
+UTEST(gpu_render, early_depth_rejection_by_what) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+    enum { LW = 512, LH = 512, BEHIND = 8 };
+    f.tmp_u = r_target(&f, MD_GPU_FORMAT_R32_UINT, LW, LH, 0);
+    f.tmp_d = r_target(&f, MD_GPU_FORMAT_D32_FLOAT, LW, LH, 0);
+    ASSERT_TRUE(f.tmp_u && f.tmp_d);
+    uint32_t* ids = malloc(LW * LH * 4);
+    md_gpu_addr_t scratch = r_buffer(&f, NULL, 4096);
+    ASSERT_TRUE(scratch);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_R32_UINT;
+    md_gpu_shader_t vs = md_shader_gpu_render_test_layer_vs_shader();
+    md_gpu_pipeline_t plain = r_pipeline(&f, vs, md_shader_gpu_render_test_layer_plain_fs_shader(), MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    md_gpu_pipeline_t mdr   = r_pipeline(&f, vs, md_shader_gpu_render_test_layer_depth_less_discard_fs_shader(), MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    md_gpu_pipeline_t early = r_pipeline(&f, vs, md_shader_gpu_render_test_layer_early_fs_shader(), MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+    ASSERT_TRUE(plain && mdr && early);
+    bool ok = true;
+    uint32_t iters = 16;
+    while (iters < (1u << 16) && layer_time2(&f, plain, plain, true, false, scratch, iters, 0, false, ids, LW * LH, &ok) < 4.0) iters *= 2;
+    const struct { const char* name; md_gpu_pipeline_t pn, pb; bool writes, two; } vars[] = {
+        { "near plain, behind md_render's, one pass",          plain, mdr,   true,  false },
+        { "near plain, behind md_render's, a pass after",      plain, mdr,   true,  true  },
+        { "near md_render's, behind md_render's, a pass after", mdr,  mdr,   true,  true  },
+        { "near plain, behind early tests + atomics, one pass", plain, early, false, false },
+        { "near md_render's, behind early tests + atomics, one pass", mdr, early, false, false },
+    };
+    for (int vi = 0; vi < (int)(sizeof(vars) / sizeof(vars[0])); ++vi) {
+        bool okv = true;
+        const double one   = layer_time2(&f, vars[vi].pn, vars[vi].pb, vars[vi].writes, vars[vi].two, scratch, iters, 0,      false, ids, LW * LH, &okv);
+        const double front = layer_time2(&f, vars[vi].pn, vars[vi].pb, vars[vi].writes, vars[vi].two, scratch, iters, BEHIND, false, ids, LW * LH, &okv);
+        const double back  = layer_time2(&f, vars[vi].pn, vars[vi].pb, vars[vi].writes, vars[vi].two, scratch, iters, BEHIND, true,  ids, LW * LH, &okv);
+        const double turned = back - one > 1e-3 ? 1.0 - (front - one) / (back - one) : 0.0;
+        printf("    %-58s one layer %6.2f ms, +%d behind %7.2f ms near first, %7.2f ms behind first: %3.0f%% turned away early\n",
+               vars[vi].name, one, BEHIND, front, back, 100.0 * turned);
+        EXPECT_TRUE(okv);
+    }
+    printf("    (%u turns of the loop a fragment, %dx%d)\n", iters, LW, LH);
+    EXPECT_TRUE(ok);
+    free(ids);
+    md_gpu_free(f.gfx, scratch);
+    md_gpu_pipeline_destroy(plain);
+    md_gpu_pipeline_destroy(mdr);
+    md_gpu_pipeline_destroy(early);
+    md_gpu_texture_destroy(f.tmp_u);
+    md_gpu_texture_destroy(f.tmp_d);
     r_close(&f);
 }
 
