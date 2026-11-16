@@ -58,8 +58,7 @@ struct ViewData {
     uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
     uint   spl_order;           // phase 1's spline boxes drawn nearest first in so many depth buckets (spline_bucket); 0: the cull's order
     uint   small_approx;        // 1: the compute raster's shapes by their projection (raster_small; md_render_debug_small_approx)
-    uint   tiny_px;             // small elements of a rectangle up to so many pixels drawn by the cull itself (element_pass); 0: none
-    uint   _vpad5;
+    uint   _vpad4, _vpad5;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -206,7 +205,7 @@ struct Lists {
     uint*     hw2g;             // the boxes of the spline parts' pieces: record (hw2 entry) << 4 | group of pieces
     uint*     tiles;            // the resolve's 8 x 8 tiles with spline pixels, then (at tiles_cap) those with polygons: x | y << 16
     uint      tiles_cap;        // tiles of the target
-    uint      small_cap;        // the small list's entries: the cull's own (tiny_px) from the top down
+    uint      _lpad;
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -256,8 +255,7 @@ static const uint SPLINE_BUCKETS = 256u;   // at most (spl_order)
 static const uint C_BKT        = 320;  // phase 1's spline boxes by depth (spline_bucket): counts, 320..575
 static const uint C_BKO        = 576;  // and where each bucket's go next, 576..831
 static const uint C_TILES      = 832;  // the resolve's tiles with spline pixels, with polygon pixels (Lists.tiles): 832, 833
-static const uint C_TINY1      = 836;  // small elements the cull drew itself (tiny_px), phase 1, phase 2: 836, 837
-static const uint C_COUNT      = 840;
+static const uint C_COUNT      = 836;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -2581,24 +2579,6 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     }
 }
 
-// The compute raster's test of one pixel against a small sphere (kind 0)
-// or capsule: the same ray and intersection as the fragment stages; the
-// depth (reverse Z, the capsule's a hair behind), or < 0 for a miss.
-float small_pixel_depth(ViewData v, uint x, uint y, uint kind, float3 a, float3 b, float r) {
-    Ray   ry = pixel_ray(v, float2(float(x), float(y)) + 0.5);
-    float t  = kind == 0u ? sphere_hit(ry, a, r, false) : capsule_hit(ry, a, b, r);
-    if (t < 0.0) return -1.0;
-    float d = clip_depth(v, ry.o + ry.d * t);
-    return kind == 0u ? d : capsule_depth(d);
-}
-
-// A pixel's nearest of the compute raster: depth over the small list's index
-void small_pixel_write(Lists L, uint W, uint x, uint y, float d, uint idx) {
-    uint pix = y * W + x;
-    if (((uint*)L.vis64)[2u * pix + 1u] > asuint(d)) return;      // nearer already there
-    atomic_max_u64(L.vis64 + pix, (uint64_t(asuint(d)) << 32) | uint64_t(idx));
-}
-
 // The fate of one element, in phase 1 or 2 (phase 2: occlusion is final).
 // Every lane of a wave calls this together, those without an element with
 // valid false: the wave operations inside run converged. (Divergent wave
@@ -2625,13 +2605,12 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         else          g = element_geo(v, b, inst, e, !state_only);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
-    int4  rp  = int4(0);                // the pixels it can reach
     if (g.faded) {
         out = OUT_LOD;
     } else if (g.ok) {
         Bounds bd = geo_bounds(v, g);
         float ext = max(bd.pmax.x - bd.pmin.x, bd.pmax.y - bd.pmin.y) - 2.0;     // without the pad
-        rp = reach_px(v, bd);
+        int4  rp  = reach_px(v, bd);
         if (bd.outside || (!bd.near_clip && ext <= v.small_px && (rp.z < rp.x || rp.w < rp.y))) {
             out = OUT_OUTSIDE;          // off screen, or between pixel centres: no pixel to draw
         } else if (SPL == 0 && !state_only && v.occlusion != 0u && ext > v.occl_min_px && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
@@ -2697,34 +2676,9 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
     uint ih1 = wave_append(L.counters + c_hw + 1u, out == OUT_HW && k == 1u);
     if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else L.hw1[hw_base1 + ih1] = ent; }
 
-    // The small ones, to the compute raster (raster_small); those of a
-    // rectangle up to tiny_px pixels drawn here, at once, from what this
-    // lane holds (their entry from the top of the small list, for the
-    // merge): a pass after would decode the entry, fetch the element, find
-    // its rectangle and share out its pixels again, for a pixel or four.
-    // The 1060 at 10M licorice near: 21 ms for 13.4M elements, the same
-    // whether its pixels took rays or a cheap projection.
-    int4 rq = int4(0);
-    bool tiny = false;
-    if (out == OUT_SMALL && v.tiny_px != 0u) {
-        rq = int4(max(rp.xy, int2(0)), min(rp.zw, int2(int(v.viewport.x) - 1, int(v.viewport.y) - 1)));
-        tiny = uint(max(rq.z - rq.x + 1, 0) * max(rq.w - rq.y + 1, 0)) <= v.tiny_px;
-    }
     uint sm_base = phase == 2u ? L.counters[C_SMALL1] : 0u;
-    uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL && !tiny);
-    if (out == OUT_SMALL && !tiny) L.small[sm_base + ism] = ent;
-    uint tn_base = phase == 2u ? L.counters[C_TINY1] : 0u;
-    uint itn = wave_append(L.counters + (phase == 2u ? C_TINY1 + 1u : C_TINY1), tiny);
-    if (tiny) {
-        uint slot_t = L.small_cap - 1u - (tn_base + itn);
-        L.small[slot_t] = ent;
-        for (int y = rq.y; y <= rq.w; ++y) {
-            for (int x = rq.x; x <= rq.z; ++x) {
-                float d = small_pixel_depth(v, uint(x), uint(y), g.kind, g.a, g.b, g.r);
-                if (d >= 0.0) small_pixel_write(L, uint(v.viewport.x), uint(x), uint(y), d, slot_t);
-            }
-        }
-    }
+    uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL);
+    if (out == OUT_SMALL) L.small[sm_base + ism] = ent;
 
     uint ioc = wave_append(L.counters + C_OCC, phase == 1u && out == OUT_OCCLUDED);
     if (phase == 1u && out == OUT_OCCLUDED) L.occ[ioc] = ent;
@@ -2912,6 +2866,14 @@ void atomic_max_u64(uint64_t* p, uint64_t v) {
     }
 }
 
+// Tried and reverted: the cull drawing the smallest itself, in the lane that
+// held each (2e9685c8, rectangles up to 9 pixels): on the 1060 at 10M
+// licorice near its pass took 32 ms where cull and this pass took 12 + 21,
+// the frame 53 ms against 48; with the code there and unused the cull was
+// slower still. Nor did a cheap projection a pixel for the rays buy anything
+// there (md_render_debug_small_approx): this pass is bound by its elements
+// and their atomics, not by its pixels' arithmetic.
+//
 // Every pixel a small primitive can cover is tested against the exact shape,
 // with the same ray and intersection as the fragment stages, and the nearest
 // wins by a 64-bit max of (depth, index into the small list). Depth bits

@@ -35,8 +35,7 @@ typedef struct gpu_view_t {
     uint32_t      spl_group;      /* md_render_debug_spline_group */
     uint32_t      spl_order;      /* md_render_debug_spline_order: buckets */
     uint32_t      small_approx;   /* md_render_debug_small_approx */
-    uint32_t      tiny_px;        /* md_render_debug_tiny_px */
-    uint32_t      _vpad3;
+    uint32_t      _vpad3[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 560, "ViewData mirror");
 
@@ -119,12 +118,6 @@ static uint32_t spline_order_on(void) { return g_spline_order != 0u; }
    ray costs. */
 static uint32_t g_small_approx = 0u;
 void md_render_debug_small_approx(bool on) { g_small_approx = on ? 1u : 0u; }
-
-/* Small elements whose rectangle is at most this many pixels are drawn by
-   the cull itself, not by the compute raster's pass (element_pass; the
-   bench's, not in the header; 0: none). */
-static uint32_t g_tiny_px = 9u;
-void md_render_debug_tiny_px(uint32_t px) { g_tiny_px = px; }
 
 /* Occlusion culling by the view's own measure (occlusion_wanted; the bench's
    switch, not in the header: off, it always runs unless the frame's options
@@ -217,8 +210,7 @@ typedef struct gpu_lists_t {
     md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box, part, pieces' cuts: 20 float4 (SPLINE_RECORD) */
     md_gpu_addr_t hw2g;             /* boxes of groups of the parts' pieces: record << 4 | group, 16 at most a part */
     md_gpu_addr_t tiles;            /* the resolve's 8 x 8 tiles with spline pixels, then those with polygons */
-    uint32_t      tiles_cap;        /* tiles of the target */
-    uint32_t      small_cap;        /* the small list's entries: the cull's own from the top down */
+    uint32_t      tiles_cap, _lpad; /* tiles of the target */
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -244,8 +236,7 @@ enum {
     C_DBG_AGAIN = 318,              /* md_render_debug_spline_again(2) with the probe 2: the boxes' fragments passing the test */
     C_BKT = 320, C_BKO = 576,       /* phase 1's spline boxes' depth buckets: counts and starts, 256 each */
     C_TILES = 832,                  /* the resolve's tiles with spline, with polygon pixels: 832, 833 */
-    C_TINY1 = 836, C_TINY2 = 837,   /* small elements the cull drew itself, by phase */
-    C_COUNT = 840,
+    C_COUNT = 836,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -1279,7 +1270,7 @@ static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t w
     md_gpu_addr_t* dst[16] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g, &l.tiles };
     for (int i = 0; i < 16; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     l.tiles_cap = (uint32_t)sizes[15];
-    l.small_cap = (uint32_t)sizes[7];
+    l._lpad     = 0;
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
@@ -1578,7 +1569,7 @@ static bool occlusion_wanted(md_render_view_t v) {
     if (best >= 0) {
         const uint32_t* c = (const uint32_t*)v->stats[best].host.cpu;
         const uint64_t hw    = (uint64_t)c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1] + c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2];
-        const uint64_t small = (uint64_t)c[C_SMALL1] + c[C_SMALL2] + c[C_TINY1] + c[C_TINY2];
+        const uint64_t small = (uint64_t)c[C_SMALL1] + c[C_SMALL2];
         const uint64_t drawn = hw + small;
         v->occl_seen = v->stats[best].raster;
         if (v->stats[best].occl_tested) {
@@ -1614,8 +1605,8 @@ bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
     out->occluded    = c[C_OCCLUDED];
     out->hardware[0] = c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1];
     out->hardware[1] = c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2];
-    out->compute[0]  = c[C_SMALL1] + c[C_TINY1];     /* the cull's own (tiny_px) with them */
-    out->compute[1]  = c[C_SMALL2] + c[C_TINY2];
+    out->compute[0]  = c[C_SMALL1];
+    out->compute[1]  = c[C_SMALL2];
     out->occlusion_retested = c[C_OCC];
     out->clusters             = v->stats[best].clusters;
     out->clusters_expanded[0] = c[C_CVIS1];
@@ -1760,7 +1751,6 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.spl_group  = spline_group_for(v->r->vendor_id);
         gv.spl_order  = g_spline_order;
         gv.small_approx = g_small_approx;
-        gv.tiny_px      = g_tiny_px;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };

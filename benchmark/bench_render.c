@@ -795,18 +795,6 @@ void md_render_debug_occlusion_auto(bool on);
    (md_render_debug_small_approx) */
 void md_render_debug_small_approx(bool on);
 #define BENCH_SMALL_APPROX (1u << 30)
-/* and the small elements the cull draws itself: those of rectangles up to
-   N pixels (md_render_debug_tiny_px; the default 9) */
-void md_render_debug_tiny_px(uint32_t px);
-#define BENCH_TINY_0  (1u << 29)
-#define BENCH_TINY_4  (1u << 28)
-#define BENCH_TINY_16 (1u << 27)
-#define BENCH_ROW_BITS (BENCH_OCCLUSION_ALWAYS | BENCH_SMALL_APPROX | BENCH_TINY_0 | BENCH_TINY_4 | BENCH_TINY_16)
-static void bench_row_switches(uint32_t options) {
-    md_render_debug_occlusion_auto(!(options & BENCH_OCCLUSION_ALWAYS));
-    md_render_debug_small_approx(options & BENCH_SMALL_APPROX);
-    md_render_debug_tiny_px(options & BENCH_TINY_0 ? 0u : options & BENCH_TINY_4 ? 4u : options & BENCH_TINY_16 ? 16u : 9u);
-}
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1202,19 +1190,14 @@ static int run_gpu(int argc, char** argv) {
         { "licorice thinning into spacefill over 2.5 to 1.25 px/A, far",  true, 6.0f, FADE_TO_SPACEFILL },   /* licorice gone by its clusters */
     };
     /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
-       untested. Rows marked "x:" are experiments, with the defaults
-       otherwise: the compute raster's shapes by their projection
-       (md_render_debug_small_approx); the small elements the cull draws
-       itself, none, of up to 4 or 16 pixels (the default: 9;
-       md_render_debug_tiny_px). */
+       untested. Rows marked "x:" are experiments: the compute raster's
+       shapes by their projection (md_render_debug_small_approx), with the
+       defaults otherwise. */
     const struct { const char* name; uint32_t options; float margin, min_px; } opts[] = {
         { "all",                     0, 2.0f, 2.0f },
         { "occlusion always",        BENCH_OCCLUSION_ALWAYS, 2.0f, 2.0f },
         { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 2.0f, 2.0f },
         { "x: small by projection",  BENCH_SMALL_APPROX, 2.0f, 2.0f },
-        { "x: cull draws none",      BENCH_TINY_0, 2.0f, 2.0f },
-        { "x: cull draws <= 4 px",   BENCH_TINY_4, 2.0f, 2.0f },
-        { "x: cull draws <= 16 px",  BENCH_TINY_16, 2.0f, 2.0f },
         { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
         { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
     };
@@ -1389,8 +1372,9 @@ static int run_gpu(int argc, char** argv) {
                     f.camera = camera_at(&sc, looks[li].dist, (float)W / H);
                     f.batches = b; f.batch_count = nb;
                     f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                    f.options = opts[oi].options & ~BENCH_ROW_BITS;
-                    bench_row_switches(opts[oi].options);
+                    f.options = opts[oi].options & ~(BENCH_OCCLUSION_ALWAYS | BENCH_SMALL_APPROX);
+                    md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
+                    md_render_debug_small_approx(opts[oi].options & BENCH_SMALL_APPROX);
                     f.small_pixels = smalls[pi];
                     warm_up_once(s, v, &f);
                     /* warm up: the first raster has no pyramid */
@@ -1781,8 +1765,8 @@ static int run_heavy(int argc, char** argv) {
                         f.camera = camera_front(ctr, z_front, dist, aspect);
                         f.batches = b; f.batch_count = nb;
                         f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                        f.options = opts[oi].options & ~BENCH_ROW_BITS;
-                        bench_row_switches(opts[oi].options);
+                        f.options = opts[oi].options & ~BENCH_OCCLUSION_ALWAYS;
+                        md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
                         f.small_pixels = 6.0f;
                         memcpy(f.content, content, sizeof(content));
                         warm_up_once(s, v, &f);
