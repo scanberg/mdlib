@@ -139,7 +139,7 @@ _Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
 
 typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
-    md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box, part, pieces' slices: 16 float4 (SPLINE_RECORD) */
+    md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box, part, pieces' cuts: 20 float4 (SPLINE_RECORD) */
     md_gpu_addr_t hw2g;             /* boxes of groups of the parts' pieces: record << 4 | group, 16 at most a part */
 } gpu_lists_t;
 
@@ -1159,15 +1159,15 @@ static gpu_args_t base_args(const md_render_view_t v) {
 
 /* Lists sized for the worst case of this frame: every element in each list of
    its kind (hardware, state, small, occluded), 4 bytes an entry: 16 bytes per
-   element in all (8 for polygons: no compute raster, no retest; 328 for
+   element in all (8 for polygons: no compute raster, no retest; 392 for
    spline parts, whose hardware entries carry their box, the part itself and
-   its pieces' slices of the box, 256 bytes, and up to 16 boxes of their
+   its pieces' cuts of the box, 320 bytes, and up to 16 boxes of their
    pieces, 4 bytes each), plus 24 per cluster. */
 static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
     const uint64_t sizes[15] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2], 16u * work[2] };
-    const uint32_t esize[15] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 256, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
+    const uint32_t esize[15] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
     size_t need = 0;
     for (int i = 0; i < 15; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
