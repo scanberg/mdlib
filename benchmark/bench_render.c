@@ -791,6 +791,10 @@ void md_render_debug_occlusion_auto(bool on);
 /* a row's option of the bench's own: occlusion culling every raster, not the
    view's choice of it (md_render_debug_occlusion_auto) */
 #define BENCH_OCCLUSION_ALWAYS (1u << 31)
+/* and the compute raster's shapes by their projection, not a ray a pixel
+   (md_render_debug_small_approx) */
+void md_render_debug_small_approx(bool on);
+#define BENCH_SMALL_APPROX (1u << 30)
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1171,12 +1175,14 @@ static int run_gpu(int argc, char** argv) {
         { "licorice thinning into spacefill over 2.5 to 1.25 px/A, far",  true, 6.0f, FADE_TO_SPACEFILL },   /* licorice gone by its clusters */
     };
     /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
-       untested. Rows marked "x:" would be experiments with other settings
-       (md_render_debug_occlusion); none at the moment. */
+       untested. Rows marked "x:" are experiments: the compute raster's
+       shapes by their projection (md_render_debug_small_approx), with the
+       defaults otherwise. */
     const struct { const char* name; uint32_t options; float margin, min_px; } opts[] = {
         { "all",                     0, 2.0f, 2.0f },
         { "occlusion always",        BENCH_OCCLUSION_ALWAYS, 2.0f, 2.0f },
         { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 2.0f, 2.0f },
+        { "x: small by projection",  BENCH_SMALL_APPROX, 2.0f, 2.0f },
         { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
         { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
     };
@@ -1351,8 +1357,9 @@ static int run_gpu(int argc, char** argv) {
                     f.camera = camera_at(&sc, looks[li].dist, (float)W / H);
                     f.batches = b; f.batch_count = nb;
                     f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                    f.options = opts[oi].options & ~BENCH_OCCLUSION_ALWAYS;
+                    f.options = opts[oi].options & ~(BENCH_OCCLUSION_ALWAYS | BENCH_SMALL_APPROX);
                     md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
+                    md_render_debug_small_approx(opts[oi].options & BENCH_SMALL_APPROX);
                     f.small_pixels = smalls[pi];
                     /* warm up: the first raster has no pyramid */
                     time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);

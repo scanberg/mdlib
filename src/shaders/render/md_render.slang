@@ -57,7 +57,8 @@ struct ViewData {
     uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit; 2: the spline fragments count themselves, C_DBG)
     uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
     uint   spl_order;           // phase 1's spline boxes drawn nearest first in so many depth buckets (spline_bucket); 0: the cull's order
-    uint   _vpad3, _vpad4, _vpad5;
+    uint   small_approx;        // 1: the compute raster's shapes by their projection (raster_small; md_render_debug_small_approx)
+    uint   _vpad4, _vpad5;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -2877,8 +2878,10 @@ void atomic_max_u64(uint64_t* p, uint64_t v) {
 // exact rectangle widened by this raster's jitter). A pixel already holding a
 // nearer depth skips the atomic (the read is a plain one; a stale value only
 // costs an atomic that changes nothing).
-groupshared float4 gs_a[64];        // a, radius
-groupshared float4 gs_b[64];        // b, kind
+groupshared float4 gs_a[64];        // a, radius; approximate: the ends a, b on the target
+groupshared float4 gs_b[64];        // b, kind; approximate: their depths, 0, kind
+groupshared float4 gs_c[64];        // approximate: their radii on the target, their front's depth over the axis's
+groupshared float4 gs_d[64];        // approximate: the direction away from the target's centre, its stretch, the axis's tilt
 groupshared uint4  gs_box[64];      // x0, y0, width, index into the small list
 groupshared uint   gs_inc[64];      // inclusive prefix of the pixel counts
 
@@ -2915,6 +2918,50 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
                     box = uint4(uint(p0.x), uint(p0.y), w, idx);
                     ga  = float4(g.a, g.r);
                     gb  = float4(g.b, float(g.kind));
+                    if (v.small_approx != 0u) {
+                        // the shape by its projection: each end's centre and
+                        // radius on the target, the depth of its axis and how
+                        // much nearer its front is; a sphere is one end twice.
+                        // Off the axis of view a sphere's image is an ellipse,
+                        // longer away from the target's centre by 1 / cos of
+                        // the angle (the target's corners: 25% at 38 degrees);
+                        // its front is a radius toward the eye. A capsule is
+                        // the nearer of its end spheres and its body: the body
+                        // at a pixel is nearest a little toward its nearer
+                        // end of the point of the axis under it, and nearer
+                        // by sqrt(1 + m^2) than the axis's depth there plus
+                        // the profile (m: the axis's length along the view
+                        // over its length across it, the view the eye's
+                        // direction, not z: a capsule seen end-on off the
+                        // centre is steep to its rays, not to z), where that
+                        // point is on the axis.
+                        float3 b3 = g.kind == 0u ? g.a : g.b;
+                        Mat    P  = M(v, proj);
+                        bool   persp = abs(P.c2.w) > 0.5;
+                        float4 ca = mul4(P, float4(g.a, 1.0)), cb = mul4(P, float4(b3, 1.0));
+                        float2 sa = float2((ca.x / ca.w + 1.0) * 0.5 * v.viewport.x, (1.0 - ca.y / ca.w) * 0.5 * v.viewport.y);
+                        float2 sb = float2((cb.x / cb.w + 1.0) * 0.5 * v.viewport.x, (1.0 - cb.y / cb.w) * 0.5 * v.viewport.y);
+                        float  k  = abs(P.c0.x) * 0.5 * v.viewport.x * g.r;
+                        float  da = ca.z / ca.w, db = cb.z / cb.w;
+                        float3 eya = persp ? normalize(-g.a) : float3(0.0, 0.0, 1.0);
+                        float3 eyb = persp ? normalize(-b3)  : float3(0.0, 0.0, 1.0);
+                        float3 mid = 0.5 * (g.a + b3);
+                        float3 eym = persp ? normalize(-mid) : float3(0.0, 0.0, 1.0);
+                        float  cs  = eym.z;
+                        float2 off = 0.5 * (sa + sb) - 0.5 * v.viewport.xy;
+                        float  lo  = length(off);
+                        float3 ax  = b3 - g.a;
+                        float  la  = dot(ax, eym);                          // toward the eye: b the nearer end
+                        float  lxy = length(ax - eym * la);
+                        float  m    = lxy > 1e-6 * g.r ? la / lxy : 0.0;
+                        float  tilt = sqrt(1.0 + m * m);
+                        ga = float4(sa, sb);
+                        gb = float4(da, db, lxy > 1e-6 * g.r ? g.r * m / (tilt * lxy) : 0.0, float(g.kind));
+                        gs_c[gi] = float4(k / ca.w, k / cb.w,
+                                          clip_depth(v, g.a + eya * g.r) - da,
+                                          clip_depth(v, b3 + eyb * g.r) - db);
+                        gs_d[gi] = float4(lo > 1e-6 ? off / lo : float2(1.0, 0.0), 1.0 - cs * cs, g.kind == 0u ? 1.0 : tilt);
+                    }
                 }
             }
         }
@@ -2940,12 +2987,49 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
             uint  y     = bx.y + local / bx.z;
             float4 ea   = gs_a[e];
             float4 eb   = gs_b[e];
-            Ray   r = pixel_ray(v, float2(float(x), float(y)) + 0.5);
-            float t;
-            if (eb.w < 0.5) t = sphere_hit(r, ea.xyz, ea.w, false);
-            else            t = capsule_hit(r, ea.xyz, eb.xyz, ea.w);
-            if (t < 0.0) continue;
-            float d = clip_depth(v, r.o + r.d * t);
+            float  d;
+            if (v.small_approx != 0u) {
+                // the nearest point of the axis on the target, the distance
+                // to it in radii, the depth a round profile over the axis's
+                float4 ec = gs_c[e];
+                float4 ed = gs_d[e];
+                float2 pc = float2(float(x), float(y)) + 0.5;
+                // the end spheres (a sphere: the first alone)
+                float2 pa = pc - ea.xy;
+                float  ra = dot(pa, ed.xy);                         // away from the centre: the ellipse's long axis
+                float  qa = (dot(pa, pa) - ra * ra * ed.z) / (ec.x * ec.x);
+                d = qa <= 1.0 ? eb.x + ec.z * sqrt(1.0 - qa) : -1.0;
+                if (eb.w >= 0.5) {
+                    float2 pb = pc - ea.zw;
+                    float  rb = dot(pb, ed.xy);
+                    float  qb = (dot(pb, pb) - rb * rb * ed.z) / (ec.y * ec.y);
+                    if (qb <= 1.0) d = max(d, eb.y + ec.w * sqrt(1.0 - qb));
+                }
+                // the body: the axis's line under the pixel, the point of
+                // the axis where it is nearest a little toward the nearer end
+                float2 ab = ea.zw - ea.xy;
+                float  ll = dot(ab, ab);
+                if (eb.w >= 0.5 && ll > 1e-12) {
+                    float  t  = dot(pa, ab) / ll;
+                    float2 dp = pa - ab * t;
+                    float  rr = lerp(ec.x, ec.y, saturate(t));
+                    float  dr = dot(dp, ed.xy);
+                    float  q  = (dot(dp, dp) - dr * dr * ed.z) / (rr * rr);
+                    if (q <= 1.0) {
+                        float h  = sqrt(1.0 - q);
+                        float ts = t + eb.z * h;
+                        if (ts >= 0.0 && ts <= 1.0) d = max(d, lerp(eb.x, eb.y, t) + lerp(ec.z, ec.w, saturate(t)) * h * ed.w);
+                    }
+                }
+                if (d < 0.0) continue;
+            } else {
+                Ray   r = pixel_ray(v, float2(float(x), float(y)) + 0.5);
+                float t;
+                if (eb.w < 0.5) t = sphere_hit(r, ea.xyz, ea.w, false);
+                else            t = capsule_hit(r, ea.xyz, eb.xyz, ea.w);
+                if (t < 0.0) continue;
+                d = clip_depth(v, r.o + r.d * t);
+            }
             if (eb.w >= 0.5) d = capsule_depth(d);
             uint pix = y * uint(W) + x;
             if (depth_words[2u * pix + 1u] > asuint(d)) continue;      // nearer already there

@@ -3048,6 +3048,88 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     f_close(&fx);
 }
 
+/* The compute raster's shapes by their projection (md_render_debug_small_approx,
+   an experiment): a sheet of small spheres and capsules, a few pixels each,
+   drawn by rays and by projection. The coverage agrees but at a few edge
+   pixels (5893 by both, 10 by one of them, here), the nearest element at
+   98% of them, the depths to under 1% (relative; 0.13% on average). The
+   first takes missed: a circle where off the centre of view the image is an
+   ellipse (4% of the coverage, at the corners 25% short across), and a
+   capsule's tilt against z where it is against the eye's direction (2% in
+   depth, 4 radii, end-on off the centre). */
+void md_render_debug_small_approx(bool on);
+
+UTEST(render, small_by_projection_close_to_the_rays) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    if (!info.supports_atomic_int64) { f_close(&fx); UTEST_SKIP("no compute raster without 64-bit atomics"); }
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
+    enum { NX = 40, NY = 30, NS = NX * NY };
+    float* pos = malloc(NS * 12);
+    float* rad = malloc(NS * 4);
+    uint32_t* idx = malloc(NS * 8);
+    uint32_t seed = 777, nc = 0;
+    #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
+    for (int y = 0, i = 0; y < NY; ++y) for (int x = 0; x < NX; ++x, ++i) {
+        pos[3 * i + 0] = (x - NX / 2) * 1.0f + RND() * 0.4f;
+        pos[3 * i + 1] = (y - NY / 2) * 1.0f + RND() * 0.4f;
+        pos[3 * i + 2] = -30.0f - RND() * 4.0f;
+        rad[i] = 0.2f + 0.25f * RND();
+        if (x + 1 < NX) { idx[2 * nc] = (uint32_t)i; idx[2 * nc + 1] = (uint32_t)i + 1; nc++; }
+    }
+    #undef RND
+    md_render_batch_t b[2] = {0};
+    b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = NS; b[0].points.count = NS;
+    b[0].points.position = f_buf(&fx, pos, NS * 12); b[0].points.radius = f_buf(&fx, rad, NS * 4);
+    b[0].style.spheres.radius_scale = 1.0f;
+    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = nc; b[1].points.count = NS;
+    b[1].points.position = b[0].points.position; b[1].index = f_buf(&fx, idx, (size_t)nc * 8);
+    b[1].style.capsules.radius = 0.15f;
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), b, 2);
+    f.options = MD_RENDER_NO_OCCLUSION_CULLING;
+    f.small_pixels = 6.0f;
+    md_render_view_t vr = md_render_view_create(fx.r, "rays"), vp = md_render_view_create(fx.r, "projection");
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, vr, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(vr, &st));
+    EXPECT_GT(st.compute[0], (uint32_t)(NS + nc) * 9 / 10);
+    md_render_debug_small_approx(true);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, vp, &f, NULL));
+    md_gpu_stream_sync(fx.gfx);
+    md_render_debug_small_approx(false);
+    uint32_t* ir = malloc(W * H * 8); uint32_t* ip = malloc(W * H * 8);
+    float* dr = malloc(W * H * 4); float* dpj = malloc(W * H * 4);
+    md_render_targets_t tr = md_render_view_targets(vr), tp = md_render_view_targets(vp);
+    ASSERT_TRUE(f_read(&fx, tr.id, ir, W * H * 8) && f_read(&fx, tp.id, ip, W * H * 8));
+    ASSERT_TRUE(f_read(&fx, tr.depth, dr, W * H * 4) && f_read(&fx, tp.depth, dpj, W * H * 4));
+    int cov_r = 0, cov_p = 0, only = 0, other = 0, same = 0;
+    double dmax = 0.0, dsum = 0.0;
+    for (uint32_t i = 0; i < W * H; ++i) {
+        bool hr = ir[2 * i + 1] != 0, hp = ip[2 * i + 1] != 0;
+        cov_r += hr; cov_p += hp;
+        if (hr != hp) { only++; continue; }
+        if (!hr) continue;
+        if (ir[2 * i] != ip[2 * i] || ir[2 * i + 1] != ip[2 * i + 1]) { other++; continue; }
+        same++;
+        double dd = fabs((double)dr[i] - (double)dpj[i]) / (double)dr[i];   /* relative: 1/z under reverse Z */
+        dsum += dd; if (dd > dmax) dmax = dd;
+    }
+    printf("    covered: %d by rays, %d by projection, %d by one of them; the same element at %d, another at %d; depth off by %.2g on average, %.2g at most (relative)\n",
+           cov_r, cov_p, only, same, other, same ? dsum / same : 0.0, dmax);
+    EXPECT_GT(cov_r, (int)(W * H / 4));
+    EXPECT_LT(only * 100, cov_r);
+    EXPECT_LT(other * 20, cov_r);
+    EXPECT_LT(dmax, 0.015);
+    free(ir); free(ip); free(dr); free(dpj); free(pos); free(rad); free(idx);
+    md_render_view_destroy(fx.gfx, vr);
+    md_render_view_destroy(fx.gfx, vp);
+    f_close(&fx);
+}
+
 /* A view culls by occlusion only while it pays (occlusion_wanted): a raster
    that tested it and culled little turns it off for the rasters after,
    until the elements drawn more than double. Whether a raster culled is
