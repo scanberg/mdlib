@@ -98,6 +98,12 @@ static uint32_t g_spline_order = 256u;
 void md_render_debug_spline_order(uint32_t buckets) { g_spline_order = buckets > 256u ? 256u : buckets; }
 static uint32_t spline_order_on(void) { return g_spline_order != 0u; }
 
+/* Occlusion culling by the view's own measure (occlusion_wanted; the bench's
+   switch, not in the header: off, it always runs unless the frame's options
+   say MD_RENDER_NO_OCCLUSION_CULLING). */
+static bool g_occl_auto = true;
+void md_render_debug_occlusion_auto(bool on) { g_occl_auto = on; }
+
 /* Phase 1's spline boxes drawn again in a render pass after their own, over
    the final depth (the bench's, not in the header): how much of their hit
    work a depth test early could turn away, at best, with these boxes. 0: no
@@ -510,8 +516,12 @@ struct md_render_view {
         uint64_t        elements;
         uint32_t        clusters;
         bool            refitted;
+        bool            occl_tested;   /* occlusion was on, against a pyramid (occlusion_wanted) */
     } stats[STAT_SLOTS];
     uint32_t            stats_returned;
+    uint32_t            occl_seen;         /* the last raster occlusion_wanted read the counts of */
+    uint32_t            occl_off;          /* rasters left without occlusion */
+    uint64_t            occl_drawn;        /* elements drawn when it was turned off */
 
     pick_slot_t         picks[PICK_SLOTS];
     uint64_t            pick_seq;
@@ -1477,7 +1487,7 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     return md_gpu_render_end(s);
 }
 
-static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t elements, uint32_t clusters, bool refitted) {
+static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t elements, uint32_t clusters, bool refitted, bool occl_tested) {
     /* the slot not pending, else the oldest */
     uint32_t best = 0;
     for (uint32_t i = 0; i < STAT_SLOTS; ++i) {
@@ -1493,6 +1503,55 @@ static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t element
     v->stats[best].elements = elements;
     v->stats[best].clusters = clusters;
     v->stats[best].refitted = refitted;
+    v->stats[best].occl_tested = occl_tested;
+}
+
+/* Whether this raster culls by occlusion. Its fixed cost -- two pyramids,
+   phase 2's passes, its render pass (on the M4 the second raster pass alone
+   loads and stores the targets, 0.3 ms at 1080p) -- is 0.3 to 0.7 ms on the
+   M4 at 1080p, where what it culls may be worth less. On the M4 (c3e26c61),
+   occlusion against none, ms:
+     one copy of the protein's cartoon (2 culled)              +0.5 to +0.7
+     64 copies' cartoon (270 culled; the membrane 13855)       +0.3 to +0.9
+     100k atoms, licorice near (5163) / spacefill far (76158)  +0.5 / +0.3
+     1M, licorice near (116326)                                +0.5
+     1M, spacefill near (802318)                               -3.5
+     1M, spacefill far (850485, all small)                     -0.1
+     10M, spacefill near (8.3M) / far (7.8M)                   -30 / -4.3
+   So a raster that tested occlusion and culled little turns it off for the
+   next OCCL_OFF rasters; then it is tested again, sooner when the elements
+   drawn more than double. Little: the culled elements weighed as the drawn
+   ones go, those of the compute raster at an eighth (their raster is that
+   much cheaper: 1M spacefill far culled 850485 for 0.1 ms), under
+   OCCL_LITTLE. The image does not depend on it. The counts are the stats'
+   (record_stats), read once complete, never waited for. */
+#define OCCL_LITTLE 10000u
+#define OCCL_OFF    60u
+static bool occlusion_wanted(md_render_view_t v) {
+    if (!g_occl_auto) return true;
+    int best = -1;
+    for (uint32_t i = 0; i < STAT_SLOTS; ++i) {
+        if (!v->stats[i].host.cpu || v->stats[i].raster <= v->occl_seen || !md_gpu_sync_is_complete(v->stats[i].sync)) continue;
+        if (best < 0 || v->stats[i].raster > v->stats[best].raster) best = (int)i;
+    }
+    if (best >= 0) {
+        const uint32_t* c = (const uint32_t*)v->stats[best].host.cpu;
+        const uint64_t hw    = (uint64_t)c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1] + c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2];
+        const uint64_t small = (uint64_t)c[C_SMALL1] + c[C_SMALL2];
+        const uint64_t drawn = hw + small;
+        v->occl_seen = v->stats[best].raster;
+        if (v->stats[best].occl_tested) {
+            const double weight = drawn ? ((double)hw + (double)small / 8.0) / (double)drawn : 1.0;
+            if ((double)c[C_OCCLUDED] * weight < (double)OCCL_LITTLE) {
+                v->occl_off   = OCCL_OFF;
+                v->occl_drawn = drawn;
+            }
+        } else if (v->occl_off && drawn > 2u * v->occl_drawn + OCCL_LITTLE) {
+            v->occl_off = 0;
+        }
+    }
+    if (v->occl_off) { v->occl_off--; return false; }
+    return true;
 }
 
 bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
@@ -1578,7 +1637,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         break;
     }
 
-    const bool occlusion = !(f->options & MD_RENDER_NO_OCCLUSION_CULLING);
+    const bool occlusion = !(f->options & MD_RENDER_NO_OCCLUSION_CULLING) && (!raster || occlusion_wanted(v));
     const bool compute   = !(f->options & MD_RENDER_NO_COMPUTE_RASTER) && v->r->atomic_int64;
     bool hiz_valid = false;
     if (resized) v->hiz_ok = false;
@@ -1748,7 +1807,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             PASS_DONE("state lists");
         }
         v->raster_count++;
-        record_stats(s, v, total, gv.total_cluster_work, refit);
+        record_stats(s, v, total, gv.total_cluster_work, refit, hiz_valid);
 
         v->raster_time = f->time;
         memcpy(v->raster_view, f->camera.view, sizeof(v->raster_view));
