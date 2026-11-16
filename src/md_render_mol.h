@@ -379,10 +379,10 @@ typedef struct md_render_mol_topo_t {
        the first's, as the derived points take theirs), its w the radius of
        the sphere of their volume, sqrt(5/3 Rg^2 + mean r^2) of the centres'
        radius of gyration Rg and the atoms' radii r (at scale 1). Each stands
-       for an atom (atom_order): one of its heavy atoms (or beads) by a hash,
-       else its first, so that over many residues the atoms' colours (by
-       element), filters and selections show in proportion (a filter of the
-       backbone shows about half the residues' spheres). None where they
+       for an atom (atom_order): its CA, else its first carbon, else its
+       first heavy atom (or bead), else its first: coloured by element, a
+       carbon's grey is the colour nearest a residue's on average. A filter
+       of side chains leaves an amino acid's sphere out. None where they
        would be more than half the atoms (a system without residues).
        residue_key gives each static atom's point (points
        0 .. point_count - small_atom_count - 1) the point of its residue:
