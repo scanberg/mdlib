@@ -33,8 +33,10 @@ typedef struct gpu_view_t {
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
     uint32_t      dbg_probe;      /* md_render_debug_raster_probe */
     uint32_t      spl_group;      /* md_render_debug_spline_group */
+    uint32_t      spl_order;      /* md_render_debug_spline_order */
+    uint32_t      _vpad3[3];
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 544, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 560, "ViewData mirror");
 
 /* Occlusion settings, measured on the M4 at 10M atoms (camera moving):
    - Elements no wider than occl_min_px pixels are not tested one by one
@@ -65,6 +67,11 @@ void md_render_debug_raster_probe(uint32_t mode) { g_raster_probe = mode; }
    whose fragments test every piece their ray may hit. At most 16. */
 static uint32_t g_spline_group = 1u;
 void md_render_debug_spline_group(uint32_t pieces) { g_spline_group = pieces < 16u ? pieces : 16u; }
+
+/* Phase 1's spline boxes drawn nearest first (spline_order; the bench's,
+   not in the header). 0: in the cull's order. */
+static uint32_t g_spline_order = 1u;
+void md_render_debug_spline_order(uint32_t on) { g_spline_order = on ? 1u : 0u; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -160,7 +167,8 @@ enum {
     C_ICMDP = 120,    /* md_gpu_draw_indexed_cmd_t: polygons, phase 1 and 2: 120..129 */
     C_STICMDP = 130,  /* the state list's polygons: 130..134 */
     C_HWSG1 = 136, C_HWSG2 = 137,   /* boxes of the hardware spline parts' pieces (hw2g): phase 1 and 2 */
-    C_COUNT = 140,
+    C_GRID_ORD = 140,               /* spline_order's grid; then the depth buckets' counts and starts, 144..271 */
+    C_COUNT = 272,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -194,7 +202,7 @@ struct md_render {
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, merge;
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
-    md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly;
+    md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly, k_spline_order;
     bool              atomic_int64;    /* the compute raster is possible */
 };
 
@@ -265,6 +273,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     kd = md_shader_md_render_cull_heavy_kernel();    r->k_cull_heavy    = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_resolve_heavy_kernel(); r->k_resolve_heavy = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_resolve_poly_kernel();  r->k_resolve_poly  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_spline_order_kernel();  r->k_spline_order  = md_gpu_kernel_create(device, &kd);
     if (r->atomic_int64) {
         kd = md_shader_md_render_raster_small_kernel(); r->k_raster_small = md_gpu_kernel_create(device, &kd);
         if (!r->k_raster_small) r->atomic_int64 = false;
@@ -273,7 +282,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
         !r->polygon_vis || !r->polygon_mask || !r->merge ||
         !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
-        !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly) {
+        !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly || !r->k_spline_order) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
         md_render_destroy(r);
         return NULL;
@@ -295,6 +304,7 @@ void md_render_destroy(md_render_t r) {
     if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
     if (r->k_resolve_heavy)  md_gpu_kernel_destroy(r->k_resolve_heavy);
     if (r->k_resolve_poly)   md_gpu_kernel_destroy(r->k_resolve_poly);
+    if (r->k_spline_order)   md_gpu_kernel_destroy(r->k_spline_order);
     if (r->k_resolve)      md_gpu_kernel_destroy(r->k_resolve);
     if (r->k_mask_visible) md_gpu_kernel_destroy(r->k_mask_visible);
     if (r->k_pick)         md_gpu_kernel_destroy(r->k_pick);
@@ -1571,6 +1581,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.refit_mode = refit ? 0u : 1u;
         gv.dbg_probe  = g_raster_probe;
         gv.spl_group  = g_spline_group;
+        gv.spl_order  = g_spline_order;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };
@@ -1622,6 +1633,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         if (spl) PASS_DONE("cull1");
         if (spl && !pass(s, v, r->k_cull_heavy, 1, 0, C_GRID_CVIS)) return false;
         if (!fin(s, v, 12)) return false;
+        if (has_kind[2] && g_spline_order && !pass(s, v, r->k_spline_order, 1, 0, C_GRID_ORD)) return false;
         PASS_DONE(spl ? "cull1 heavy" : "cull1");
         if (compute && !run_raster_small(s, v, 1)) return false;
         if (compute) PASS_DONE("small1");
@@ -1844,7 +1856,7 @@ bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, m
         { "refit", r->k_refit }, { "cull_clusters", r->k_cull_clusters }, { "cull", r->k_cull }, { "finalize", r->k_finalize },
         { "raster_small", r->k_raster_small }, { "hiz", r->k_hiz }, { "resolve", r->k_resolve },
         { "mask_visible", r->k_mask_visible }, { "pick", r->k_pick },
-        { "refit_heavy", r->k_refit_heavy }, { "cull_heavy", r->k_cull_heavy }, { "resolve_heavy", r->k_resolve_heavy }, { "resolve_poly", r->k_resolve_poly },
+        { "refit_heavy", r->k_refit_heavy }, { "cull_heavy", r->k_cull_heavy }, { "resolve_heavy", r->k_resolve_heavy }, { "resolve_poly", r->k_resolve_poly }, { "spline_order", r->k_spline_order },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
