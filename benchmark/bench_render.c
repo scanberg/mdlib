@@ -53,7 +53,6 @@ Every run prints the mdlib revision it was built from, first.
 #include <md_run.h>
 #include <md_io.h>
 #include <md_attributes.h>
-#include <md_unitcell.h>
 #include <md_element.h>
 #include <md_backbone.h>
 #include <core/md_allocator.h>

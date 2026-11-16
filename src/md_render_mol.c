@@ -4,12 +4,11 @@
 #include <md_bond.h>
 #include <md_element.h>
 #include <md_system_state.h>
-#include <md_unitcell.h>
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <md_lipid.h>
 #include <md_ring.h>
 

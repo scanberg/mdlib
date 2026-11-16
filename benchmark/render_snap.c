@@ -30,7 +30,6 @@
 #include <md_system_state.h>
 #include <md_infer.h>
 #include <md_io.h>
-#include <md_unitcell.h>
 #include <md_element.h>
 #include <md_backbone.h>
 #include <md_render.h>
