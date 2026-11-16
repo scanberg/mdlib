@@ -54,7 +54,7 @@ struct ViewData {
     float  jitter_px;           // how far this raster's jitter moves the image (pixels)
     float  occl_margin;         // phase 1: occluded only when nearer by this many radii too
     float  occl_min_px;         // elements no wider are not tested for occlusion
-    uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit)
+    uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit; 2: the spline fragments count themselves, C_DBG)
     uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
     uint   spl_order;           // 1: phase 1's spline boxes drawn nearest first (spline_order); md_render_debug_spline_order
     uint   _vpad3, _vpad4, _vpad5;
@@ -246,7 +246,8 @@ static const uint C_HWSG2      = 137;  // and phase 2
 static const uint C_GRID_ORD   = 140;  // spline_order's grid: 140..142
 static const uint C_BKT        = 144;  // phase 1's spline boxes by depth (spline_bucket): counts, 144..207
 static const uint C_BKO        = 208;  // and where each bucket's go next, 208..271
-static const uint C_COUNT      = 272;
+static const uint C_DBG        = 272;  // dbg_probe 2: spline fragments shaded, their hits, full piece tests, pixels resolved: 272..275
+static const uint C_COUNT      = 276;
 static const uint SPLINE_BUCKETS = 64u;
 
 // One argument struct for every entry point (md_gpu shares one root between a
@@ -1206,6 +1207,10 @@ float spline_width_rate(SplinePart sp) {
 // sections, and the next piece reuses the one they share. A piece's hit is
 // the same in any range that holds it: the raster's boxes (a group of
 // pieces each) and the resolve (all of them) agree.
+// dbg_probe 2: count (C_DBG); set by the fragment that wants its tests counted
+static uint g_dbg_count = 0u;
+void dbg_count(uint c) { if (g_dbg_count != 0u) ((Atomic<uint>*)((*MD_ARGS.lists).counters + C_DBG + c))->add(1u); }
+
 SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) {
     SplineHit h;
     h.t = -1.0;
@@ -1238,6 +1243,7 @@ SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) 
         SplineFrame f1;
         f1.c = f1.w = f1.n = f1.fp = f1.fc = f1.fm = f1.bp = f1.bc = f1.bm = f1.tp = f1.tm = float3(0.0);
         if (hh >= 0.0 && (h.t < 0.0 || -bb - sqrt(hh) < h.t)) {
+            dbg_count(2u);
             if (!have0) { f0 = spline_frame(sp, spline_piece_u(sp, k - 1u, pieces), a0, au, lerp(sp.ru0, sp.ru1, float(k - 1u) / float(pieces))); have0 = true; }
             f1 = spline_frame(sp, u1, a1, au, lerp(sp.ru0, sp.ru1, float(k) / float(pieces))); have1 = true;
             float3 p0 = f0.c + f0.w * a0, m0 = f0.c - f0.w * a0;      // the rims' ends
@@ -3248,7 +3254,9 @@ VisOut spline_fs(SplineV i) {
     o.n  = float2(0.0);
     if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
     Ray       r = pixel_ray(v, i.pos.xy);
+    if (v.dbg_probe == 2u) { g_dbg_count = 1u; dbg_count(0u); }
     SplineHit h = spline_fragment_hit(v, r, i);
+    if (h.t >= 0.0) dbg_count(1u);
     if (h.t < 0.0) discard;
     o.n     = oct_encode(h.n);
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * h.t));
@@ -3573,6 +3581,7 @@ void resolve_body<let SPL : int>(uint3 tid) {
     ViewData v = *a.view;
     Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5, SPL >= 2 ? a.src.Load(int3(px, 0)) : 0.0);
     if (!h.valid) return;       // EXTERNAL: the caller's
+    if (SPL == 2 && v.dbg_probe == 2u) ((Atomic<uint>*)((*a.lists).counters + C_DBG + 3u))->add(1u);
 
     Batch  b   = a.batches[h.batch];
     float3 lin = srgb_to_linear(h.color.rgb);
