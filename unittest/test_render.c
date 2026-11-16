@@ -2846,9 +2846,11 @@ static void dense_scene(fix_t* fx, dense_t* d) {
     d->b[1].style.capsules.radius = 0.04f;
 }
 
-/* md_render's occlusion settings, for a test of the path its defaults skip
-   (in md_render.c, not in its header) */
+/* md_render's occlusion settings, for a test of the path its defaults skip,
+   and its own choice whether to cull by occlusion at all (in md_render.c, not
+   in its header) */
 void md_render_debug_occlusion(float margin_radii, float min_px);
+void md_render_debug_occlusion_auto(bool on);
 
 /* ids and depths equal; with depth_only, depths (an index renumbers the elements) */
 static int compare_views_ex(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered, bool depth_only) {
@@ -2880,6 +2882,7 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
     md_gpu_device_info_t info;
     md_gpu_device_info(fx.dev, &info);
+    md_render_debug_occlusion_auto(false);      /* the culling itself, every raster: not the view's choice of it */
     const uint32_t W = 160, H = 120;
     cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
     dense_t d;
@@ -3037,6 +3040,96 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     EXPECT_LE(visible, anywhere);
     free(m); free(sel);
     md_render_view_destroy(fx.gfx, ref);
+    md_render_debug_occlusion_auto(true);
+    f_close(&fx);
+}
+
+/* A view culls by occlusion only while it pays (occlusion_wanted): a raster
+   that tested it and culled little turns it off for the rasters after,
+   until the elements drawn more than double. Whether a raster culled is
+   whether it built a pyramid ("hiz1"). Nothing of the image changes. */
+static void count_hiz(void* user, const char* pass) { if (!strcmp(pass, "hiz1")) ++*(int*)user; }
+
+static int raster_with_hiz(fix_t* fx, md_render_view_t v, md_render_frame_t* f, int* hiz) {
+    const int before = *hiz;
+    f->content[MD_RENDER_CONTENT_GEOMETRY]++;
+    if (!md_render_view_draw(fx->gfx, v, f, NULL)) return -1;
+    md_gpu_stream_sync(fx->gfx);        /* its counts complete: the next raster reads them */
+    return *hiz - before;
+}
+
+UTEST(render, occlusion_off_where_it_culls_little) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
+    /* sparse: 10 x 8 spheres apart in one plane, nothing behind anything;
+       dense: a block of 32 x 24 x 24 overlapping ones, the front layer
+       hiding the rest. All in the hardware raster (no compute raster), so
+       every culled element weighs fully. */
+    enum { SX = 10, SY = 8, DX = 32, DY = 24, DZ = 24, NS = SX * SY, ND = DX * DY * DZ };
+    float* sp = malloc(NS * 12);
+    float* dp = malloc((size_t)ND * 12);
+    for (int y = 0; y < SY; ++y) for (int x = 0; x < SX; ++x) {
+        float* q = sp + 3 * (y * SX + x);
+        q[0] = (x - SX / 2) * 3.0f; q[1] = (y - SY / 2) * 3.0f; q[2] = -30.0f;
+    }
+    for (int z = 0; z < DZ; ++z) for (int y = 0; y < DY; ++y) for (int x = 0; x < DX; ++x) {
+        float* q = dp + 3 * ((z * DY + y) * DX + x);
+        q[0] = x - DX / 2 + 0.5f; q[1] = y - DY / 2 + 0.5f; q[2] = -35.0f - z;
+    }
+    md_render_batch_t bs = {0}, bd = {0};
+    bs.key = 1; bs.kind = MD_RENDER_SPHERES; bs.count = NS; bs.points.count = NS;
+    bs.points.position = f_buf(&fx, sp, NS * 12);
+    bs.style.spheres.radius_add = 0.5f;
+    bd = bs;
+    bd.count = ND; bd.points.count = ND;
+    bd.points.position = f_buf(&fx, dp, (size_t)ND * 12);
+    bd.style.spheres.radius_add = 0.8f;
+    md_render_frame_t fsp = frame_of(W, H, make_camera(&c), &bs, 1), fde = frame_of(W, H, make_camera(&c), &bd, 1);
+    fsp.options = fde.options = MD_RENDER_NO_COMPUTE_RASTER;
+    md_render_frame_t rsp = fsp, rde = fde;
+    rsp.options = rde.options = MD_RENDER_NO_COMPUTE_RASTER | MD_RENDER_NO_OCCLUSION_CULLING;
+    md_render_view_t ref_s = md_render_view_create(fx.r, "sparse, no occlusion"), ref_d = md_render_view_create(fx.r, "dense, no occlusion");
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref_s, &rsp, NULL));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, ref_d, &rde, NULL));
+
+    int hiz = 0, covered = 0;
+    md_render_debug_pass_hook(count_hiz, &hiz);
+    md_render_view_t v = md_render_view_create(fx.r, "occlusion as it pays");
+    /* sparse: the first raster builds the pyramid, the second tests it and
+       culls nothing, the ones after go without */
+    EXPECT_EQ(1, raster_with_hiz(&fx, v, &fsp, &hiz));
+    EXPECT_EQ(1, raster_with_hiz(&fx, v, &fsp, &hiz));
+    EXPECT_EQ(0, raster_with_hiz(&fx, v, &fsp, &hiz));
+    EXPECT_EQ(0, raster_with_hiz(&fx, v, &fsp, &hiz));
+    EXPECT_EQ(0, compare_views(&fx, v, ref_s, W, H, &covered));
+    EXPECT_GT(covered, 500);
+    /* dense, in the same view: drawn without (it was off), then the elements
+       drawn more than doubled, so on again: a pyramid, then culling with
+       it, which pays, so it stays */
+    EXPECT_EQ(0, raster_with_hiz(&fx, v, &fde, &hiz));
+    EXPECT_EQ(1, raster_with_hiz(&fx, v, &fde, &hiz));
+    EXPECT_EQ(1, raster_with_hiz(&fx, v, &fde, &hiz));
+    md_render_stats_t st;
+    ASSERT_TRUE(md_render_view_stats(v, &st));
+    EXPECT_GT(st.occluded, (uint32_t)ND / 2);
+    EXPECT_EQ(1, raster_with_hiz(&fx, v, &fde, &hiz));
+    EXPECT_EQ(1, raster_with_hiz(&fx, v, &fde, &hiz));
+    EXPECT_EQ(0, compare_views(&fx, v, ref_d, W, H, &covered));
+    EXPECT_GT(covered, (int)(W * H / 4));
+    printf("    dense: %u of %u culled by occlusion, %u drawn\n", st.occluded, (unsigned)ND, st.hardware[0] + st.hardware[1]);
+    /* the switch off: every raster culls, however little */
+    md_render_debug_occlusion_auto(false);
+    md_render_view_t va = md_render_view_create(fx.r, "occlusion always");
+    for (int k = 0; k < 4; ++k) EXPECT_EQ(1, raster_with_hiz(&fx, va, &fsp, &hiz));
+    md_render_debug_occlusion_auto(true);
+    md_render_debug_pass_hook(NULL, NULL);
+    md_render_view_destroy(fx.gfx, va);
+    md_render_view_destroy(fx.gfx, v);
+    md_render_view_destroy(fx.gfx, ref_s);
+    md_render_view_destroy(fx.gfx, ref_d);
+    free(sp); free(dp);
     f_close(&fx);
 }
 

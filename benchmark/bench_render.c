@@ -787,6 +787,10 @@ bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32
 void md_render_debug_spline_again(uint32_t mode);
 void md_render_debug_spline_group(uint32_t pieces);
 void md_render_debug_spline_order(uint32_t buckets);
+void md_render_debug_occlusion_auto(bool on);
+/* a row's option of the bench's own: occlusion culling every raster, not the
+   view's choice of it (md_render_debug_occlusion_auto) */
+#define BENCH_OCCLUSION_ALWAYS (1u << 31)
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1171,6 +1175,7 @@ static int run_gpu(int argc, char** argv) {
        (md_render_debug_occlusion); none at the moment. */
     const struct { const char* name; uint32_t options; float margin, min_px; } opts[] = {
         { "all",                     0, 2.0f, 2.0f },
+        { "occlusion always",        BENCH_OCCLUSION_ALWAYS, 2.0f, 2.0f },
         { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 2.0f, 2.0f },
         { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
         { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
@@ -1346,7 +1351,8 @@ static int run_gpu(int argc, char** argv) {
                     f.camera = camera_at(&sc, looks[li].dist, (float)W / H);
                     f.batches = b; f.batch_count = nb;
                     f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                    f.options = opts[oi].options;
+                    f.options = opts[oi].options & ~BENCH_OCCLUSION_ALWAYS;
+                    md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
                     f.small_pixels = smalls[pi];
                     /* warm up: the first raster has no pyramid */
                     time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);
@@ -1520,7 +1526,7 @@ static int run_heavy(int argc, char** argv) {
     /* the scale at the front of the block, px/A; 0: the whole block in view */
     const struct { const char* name; float px_per_a; } views[] = { { "near", 4.0f }, { "mid", 1.0f }, { "fit", 0.0f } };
     const struct { const char* name; uint32_t options; } opts[] = {
-        { "all", 0 }, { "no occlusion", MD_RENDER_NO_OCCLUSION_CULLING },
+        { "all", 0 }, { "occlusion always", BENCH_OCCLUSION_ALWAYS }, { "no occlusion", MD_RENDER_NO_OCCLUSION_CULLING },
     };
 
     md_gpu_device_desc_t dd = {0};
@@ -1719,7 +1725,7 @@ static int run_heavy(int argc, char** argv) {
                 md_render_batch_t b[64];
                 const uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, b, 64);
                 printf("-- %s (%u batches)\n", looks[li].name, nb);
-                printf("  %-4s %-13s %7s | %17s %17s %17s %17s | %10s %9s %9s %9s %9s %9s | %8s %8s %8s\n", "view", "options", "px/A",
+                printf("  %-4s %-16s %7s | %17s %17s %17s %17s | %10s %9s %9s %9s %9s %9s | %8s %8s %8s\n", "view", "options", "px/A",
                        "raster (refit)", "raster (camera)", "resolve", "mask", "elements", "outside", "faded", "occluded", "hw", "compute",
                        "clusters", "expanded", "c.occl");
                 for (size_t vi = 0; vi < sizeof(views) / sizeof(views[0]); ++vi) {
@@ -1736,7 +1742,8 @@ static int run_heavy(int argc, char** argv) {
                         f.camera = camera_front(ctr, z_front, dist, aspect);
                         f.batches = b; f.batch_count = nb;
                         f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                        f.options = opts[oi].options;
+                        f.options = opts[oi].options & ~BENCH_OCCLUSION_ALWAYS;
+                        md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
                         f.small_pixels = 6.0f;
                         memcpy(f.content, content, sizeof(content));
                         time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);     /* the first raster has no pyramid */
@@ -1756,7 +1763,7 @@ static int run_heavy(int argc, char** argv) {
                         free(tc);
                         timing_t tv = time_draws(s, v, &f, MD_RENDER_CONTENT_APPEARANCE, reps, NULL);
                         timing_t tm = time_draws(s, v, &f, MD_RENDER_CONTENT_STATE, reps, NULL);
-                        printf("  %-4s %-13s %7.2f | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %10llu %9u %9u %9u %9u %9u | %8u %8u %8u\n",
+                        printf("  %-4s %-16s %7.2f | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %10llu %9u %9u %9u %9u %9u | %8u %8u %8u\n",
                                views[vi].name, opts[oi].name, scale, tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
                                (unsigned long long)st.elements, st.outside, st.faded, st.occluded, st.hardware[0] + st.hardware[1], st.compute[0] + st.compute[1],
                                st.clusters, st.clusters_expanded[0] + st.clusters_expanded[1], st.clusters_occluded);
