@@ -52,10 +52,10 @@ static bool bench_esp_load(bench_esp_t* b) {
     }
     b->num_atoms = md_attribute_value_count(&c->format);
     double* xyz = md_arena_allocator_push(b->arena, sizeof(double) * 3 * b->num_atoms);
-    md_attribute_extract_f64(xyz, 3 * b->num_atoms, c, md_attribute_slice_all(), md_unit_none());
+    md_attribute_extract_f64(xyz, 3 * b->num_atoms, &sys.attributes, c, md_attribute_slice_all(), md_unit_none());
     b->atom_xyz = md_arena_allocator_push(b->arena, sizeof(float) * 3 * b->num_atoms);
     b->atom_z   = md_arena_allocator_push(b->arena, sizeof(double) * b->num_atoms);
-    md_attribute_extract_f64(b->atom_z, b->num_atoms, z, md_attribute_slice_all(), md_unit_none());
+    md_attribute_extract_f64(b->atom_z, b->num_atoms, &sys.attributes, z, md_attribute_slice_all(), md_unit_none());
 
     md_float3_t lo = md_float3_set1(FLT_MAX), hi = md_float3_set1(-FLT_MAX);
     for (size_t i = 0; i < b->num_atoms; ++i) {
@@ -66,7 +66,7 @@ static bool bench_esp_load(bench_esp_t* b) {
     }
     const size_t n = md_gto_basis_num_ao(&b->basis);
     b->D = md_arena_allocator_push(b->arena, sizeof(double) * n * n);
-    md_attribute_extract_f64(b->D, n * n, d, md_attribute_slice_all(), md_unit_none());
+    md_attribute_extract_f64(b->D, n * n, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
 
     const float h = 0.4f, margin = 6.0f;
     lo = md_float3_sub1(lo, margin);

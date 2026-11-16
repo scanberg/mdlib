@@ -4,15 +4,16 @@
 #include <stddef.h>
 
 struct md_allocator_i;
-struct md_coord_stream_t;
 struct md_unitcell_t;
+struct md_executor_t;
 
 typedef enum {
     MD_SPATIAL_ACC_FLAG_NONE = 0,
 
-    // If this flag is not set, the internal idx is used for the callback, which is a dense range of 0..count-1.
-    // If this flag is set, the supplied idx is used for the callback, which can be any arbitrary integer value per point.
-    MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX = 0x1,
+    // Without it a point is reported by its position among the points given, 0 .. count-1. With it, by its entry in
+    // the idx given with them (md_spatial_acc_desc_t.idx, or the idx of the external points): the index of the point
+    // in its source, say the atom index.
+    MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX = 0x1,
 } md_spatial_acc_flags_t;
 
 #define MD_SPATIAL_ACC_MAX_TIERS 10
@@ -61,8 +62,12 @@ typedef struct md_spatial_acc_t {
 // applies: zero is a valid default for every field but the coordinates, so fields can be added without touching
 // callers which do not need them.
 typedef struct md_spatial_acc_desc_t {
-    // The points, in cartesian coordinates. Required.
-    const struct md_coord_stream_t* coords;
+    // The points, in cartesian coordinates: count of them, xyz stride bytes apart (0: packed), of the entries of idx
+    // in order (NULL: the first count). Required.
+    const float*   xyz;
+    size_t         stride;
+    const int32_t* idx;
+    size_t         count;
 
     // The largest cutoff the structure will be queried with. The cells follow from it and from how the points are
     // spread: as large as the cutoff where the points are dense, larger (up to 4 times the cutoff) where they are
@@ -81,6 +86,10 @@ typedef struct md_spatial_acc_desc_t {
     // costs more than building the cells for a few thousand points, and the spread changes little from frame to
     // frame. Raised to the cutoff when less. 0 to estimate.
     double cell_ext;
+
+    // Where the building runs (md_executor.h): its passes over the points are spread over the executor's threads, with
+    // the same result. NULL builds on the calling thread.
+    const struct md_executor_t* executor;
 } md_spatial_acc_desc_t;
 
 #ifdef __cplusplus
@@ -117,7 +126,7 @@ void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t*
 
 // The same, a range of the structure's pieces at a time, to spread over threads (md_executor.h): every pair is in one
 // piece, and the pieces [0, md_spatial_acc_num_pieces) in order give the pairs in the order of the call above. Each
-// piece is a block of cells (many are empty). Calls with disjoint ranges may run at the same time.
+// piece is a block of 4x4x4 cells, of which at least one is occupied. Calls with disjoint ranges may run at the same time.
 size_t md_spatial_acc_num_pieces(const md_spatial_acc_t* acc);
 void   md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_spatial_acc_t* acc, double cutoff, size_t piece_beg, size_t piece_end, md_spatial_acc_pair_callback_t callback, void* user_param);
 
@@ -125,7 +134,9 @@ void   md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_sp
 
 // Test external points against internal points within the spatial acceleration structure for a supplied cutoff
 // The external points are not part of the spatial acceleration structure and will be represented in the callback as the 'i' indices and the internal points are the 'j' indices in the callback
-void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const struct md_coord_stream_t* ext_coords, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags);
+// The external points are given as those of the structure (md_spatial_acc_desc_t): ext_count of them, ext_stride
+// bytes apart (0: packed), of the entries of ext_idx (NULL: the first ext_count).
+void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const float* ext_xyz, size_t ext_stride, const int32_t* ext_idx, size_t ext_count, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags);
 
 // Perform a spatial query for points within the spatial acceleration structure within a bounding box defined by center and half extent (radius)
 // The coordinates handed to the callback are cartesian, in the periodic images nearest the image of aabb_cen

@@ -277,10 +277,10 @@ UTEST(amber_netcdf, trajectory_with_records) {
         const md_attribute_t* frc = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/atom/force"));
         ASSERT_TRUE(vel && frc);
         float v[3];
-        ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_2(1, 2), md_unit_none()));
+        ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, &sys.attributes, vel, md_attribute_slice_2(1, 2), md_unit_none()));
         EXPECT_NEAR(7.0f, v[0], 1e-4f);     // k = 6: (6 + 1) / 20.455 * 20.455
         EXPECT_NEAR(9.0f, v[2], 1e-4f);
-        ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, frc, md_attribute_slice_2(3, 1), md_unit_none()));
+        ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, &sys.attributes, frc, md_attribute_slice_2(3, 1), md_unit_none()));
         EXPECT_EQ(-3.0f, v[0]);
 
         const md_attribute_t* temp0 = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/remd/temp0"));

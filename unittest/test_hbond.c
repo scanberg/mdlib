@@ -6,8 +6,8 @@
 #include <md_pdb.h>
 #include <md_xyz.h>
 #include <md_infer.h>
-#include <md_geom.h>
-#include <md_unitcell.h>
+#include <core/md_geom.h>
+#include <core/md_unitcell.h>
 #include <md_element.h>
 
 #include <core/md_allocator.h>

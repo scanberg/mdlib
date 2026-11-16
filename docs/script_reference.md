@@ -5,7 +5,7 @@ system: selections of atoms, geometric quantities, distributions and volumes. Yo
 mdlib compiles them against a loaded system and evaluates them over the trajectory.
 
 This document is the reference for every procedure the language provides. It lives next to the implementation
-(`src/md_script.c`, `src/md_script_functions.inl`) and is meant to be the single source of truth for both the
+(`src/script/md_script.c`, `src/script/md_script_functions.inl`) and is meant to be the single source of truth for both the
 in-application help and the wiki.
 
 - [Quick start](#quick-start)
@@ -604,7 +604,7 @@ fragment(sel: atomset[])   -> atomset[]     # grow to whole fragments
 ```
 
 One selection per fragment: the chemically meaningful pieces each molecule is cut into, every atom in exactly one
-(`src/md_fragment.h`). A fragment is one of these kinds:
+(`src/system/md_fragment.h`). A fragment is one of these kinds:
 
 - `"backbone"`: of a protein, the `"alpha carbon"` of each amino acid, the `"peptide"` group (C, O and the next N)
   between two, and the termini; of a nucleic acid, the sugar of each nucleotide (`"deoxyribose"`, `"ribose"`) and the
@@ -1003,7 +1003,7 @@ n = count(all(), "part");
 These find where a structure occurs in the bonds of the system, written as a SMILES pattern or given as a selection
 of the system to use as a reference. They return a `atomset[]` with one selection per occurrence. The occurrences
 depend on the bonds only, so they are found once, when the script is compiled. Inside a context only the atoms of
-the context are searched. The full semantics are in `src/md_match.h`.
+the context are searched. The full semantics are in `src/system/md_match.h`.
 
 Both take two named arguments:
 

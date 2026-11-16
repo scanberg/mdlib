@@ -227,6 +227,16 @@ md_temp_scope_t md_temp_begin_avoid(const md_allocator_i* avoid) {
     return temp_begin(thread_temp_allocator_avoid(avoid));
 }
 
+bool md_temp_is_thread_arena(const md_allocator_i* alloc) {
+    if (!alloc) return false;
+    thread_local_data_t* thread_data = thread_local_data_get();
+    if (!thread_data) return false;
+    for (size_t i = 0; i < MD_TEMP_ALLOCATOR_COUNT; ++i) {
+        if (allocator_matches(thread_data->allocator[i], (md_allocator_i*)alloc)) return true;
+    }
+    return false;
+}
+
 md_temp_scope_t md_temp_begin_in(md_allocator_i* arena) {
     return temp_begin(arena);
 }

@@ -23,6 +23,24 @@ UTEST(atomic, enum_constants) {
     EXPECT_EQ(MD_Z_Og, 118); // Oganesson
 }
 
+UTEST(atomic, vdw_radii_main_group) {
+    // The van der Waals radii of the main group elements, as Mantina et al. (J. Phys. Chem. A 2009, 113, 5806) give
+    // them, which the table cites. In, Sn and Sb were once shifted by an entry.
+    static const struct { md_atomic_number_t z; float r; } ref[] = {
+        {MD_Z_H, 1.10f},  {MD_Z_He, 1.40f}, {MD_Z_Li, 1.81f}, {MD_Z_Be, 1.53f}, {MD_Z_B, 1.92f},  {MD_Z_C, 1.70f},
+        {MD_Z_N, 1.55f},  {MD_Z_O, 1.52f},  {MD_Z_F, 1.47f},  {MD_Z_Ne, 1.54f}, {MD_Z_Na, 2.27f}, {MD_Z_Mg, 1.73f},
+        {MD_Z_Al, 1.84f}, {MD_Z_Si, 2.10f}, {MD_Z_P, 1.80f},  {MD_Z_S, 1.80f},  {MD_Z_Cl, 1.75f}, {MD_Z_Ar, 1.88f},
+        {MD_Z_K, 2.75f},  {MD_Z_Ca, 2.31f}, {MD_Z_Ga, 1.87f}, {MD_Z_Ge, 2.11f}, {MD_Z_As, 1.85f}, {MD_Z_Se, 1.90f},
+        {MD_Z_Br, 1.83f}, {MD_Z_Kr, 2.02f}, {MD_Z_Rb, 3.03f}, {MD_Z_Sr, 2.49f}, {MD_Z_In, 1.93f}, {MD_Z_Sn, 2.17f},
+        {MD_Z_Sb, 2.06f}, {MD_Z_Te, 2.06f}, {MD_Z_I, 1.98f},  {MD_Z_Xe, 2.16f}, {MD_Z_Cs, 3.43f}, {MD_Z_Ba, 2.68f},
+        {MD_Z_Tl, 1.96f}, {MD_Z_Pb, 2.02f}, {MD_Z_Bi, 2.07f}, {MD_Z_Po, 1.97f}, {MD_Z_At, 2.02f}, {MD_Z_Rn, 2.20f},
+        {MD_Z_Fr, 3.48f}, {MD_Z_Ra, 2.83f},
+    };
+    for (size_t i = 0; i < sizeof(ref) / sizeof(ref[0]); ++i) {
+        EXPECT_NEAR(ref[i].r, md_atomic_number_vdw_radius(ref[i].z), 1e-6f);
+    }
+}
+
 UTEST(atomic, symbol_lookup) {
     // Test symbol lookup functions
     EXPECT_EQ(md_atomic_number_from_symbol(MD_STR_LIT("H"), false), MD_Z_H);

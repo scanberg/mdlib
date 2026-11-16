@@ -169,14 +169,14 @@ static bool input_load(input_t* in, const char* path) {
         return false;
     }
     in->density = (double*)md_alloc(in->alloc, sizeof(double) * in->num_ao * in->num_ao);
-    if (md_attribute_extract_f64(in->density, in->num_ao * in->num_ao, d, md_attribute_slice_all(), md_unit_none()) != in->num_ao * in->num_ao) {
+    if (md_attribute_extract_f64(in->density, in->num_ao * in->num_ao, &in->sys.attributes, d, md_attribute_slice_all(), md_unit_none()) != in->num_ao * in->num_ao) {
         fprintf(stderr, "%s: density matrix could not be read\n", path);
         return false;
     }
 
     const md_attribute_t* c = md_attributes_find(&in->sys.attributes, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom
     double* xyz = (double*)md_alloc(in->alloc, sizeof(double) * 3 * MD_MAX(in->num_atoms, 1));
-    if (!c || md_attribute_extract_f64(xyz, 3 * in->num_atoms, c, md_attribute_slice_all(), md_unit_none()) < 3 * in->num_atoms) {
+    if (!c || md_attribute_extract_f64(xyz, 3 * in->num_atoms, &in->sys.attributes, c, md_attribute_slice_all(), md_unit_none()) < 3 * in->num_atoms) {
         fprintf(stderr, "%s: no coordinates for the %zu basis atoms\n", path, in->num_atoms);
         return false;
     }

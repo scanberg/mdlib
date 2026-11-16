@@ -158,10 +158,10 @@ function(compile_gpu_shaders OUT_HEADER)
         message(FATAL_ERROR "compile_gpu_shaders: at least one of ENTRIES, VERTEX, FRAGMENT is required")
     endif()
     set(MATH_ARGS "")               # build script: precise_math descriptors, debug information
-    set(METAL_FLAGS "")             # offline Metal compiler
+    set(METAL_FLAGS "-Wno-unused-variable")             # offline Metal compiler
     if (G2_PRECISE_MATH)
         set(MATH_ARGS --precise-math)
-        set(METAL_FLAGS -fno-fast-math)
+        list(APPEND METAL_FLAGS -fno-fast-math)
     endif()
     if (MD_GPU_SHADER_DEBUG_INFO)
         list(APPEND MATH_ARGS --debug-info)

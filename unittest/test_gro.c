@@ -353,9 +353,9 @@ UTEST(gro, blocks_and_pieces) {
     const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
     float v[3] = {0};
     // Water 3 has none, water 4 has them
-    ASSERT_EQ((size_t)3, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_1(3 * 3 + 1), nm_per_ps));
+    ASSERT_EQ((size_t)3, md_attribute_extract_f32(v, 3, &sys.attributes, vel, md_attribute_slice_1(3 * 3 + 1), nm_per_ps));
     EXPECT_TRUE(gro_test_absent(v[0]));
-    ASSERT_EQ((size_t)3, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_1(4 * 3 + 1), nm_per_ps));
+    ASSERT_EQ((size_t)3, md_attribute_extract_f32(v, 3, &sys.attributes, vel, md_attribute_slice_1(4 * 3 + 1), nm_per_ps));
     EXPECT_TRUE(gro_test_same(v[0], 0.1f));
     EXPECT_TRUE(gro_test_same(v[1], -0.2f));
 

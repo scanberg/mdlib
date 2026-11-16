@@ -38,7 +38,6 @@ set (SRC_FILES
     test_dcd.c
     test_amber.c
     test_psf.c
-    test_fifo.c
     test_intrinsics.c
     test_simd.c
     test_simd_ops.c
@@ -60,7 +59,11 @@ set (SRC_FILES
     test_ring.c
     test_lipid.c
     test_monomer.c
-    test_util.c
+    test_geom.c
+    test_sort.c
+    test_hierarchy.c
+    test_backbone.c
+    test_martini.c
     test_secondary_structure.c
     test_unit.c
     test_script.c
@@ -83,8 +86,6 @@ set (SRC_FILES
     test_pot.c
     test_parse.c
     test_json.c
-    test_vector_graphics.c
-    test_flow.c
     test_linalg.c
     test_qm_ct.c
     test_fragment.c

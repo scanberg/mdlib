@@ -8,7 +8,7 @@
 #include <md_gro.h>
 #include <md_system.h>
 #include <md_infer.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -234,12 +234,12 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/mass"));
     ASSERT_TRUE(mass_attr != NULL);
     float masses[SLICES * 7 * MOLS + 2];
-    ASSERT_EQ(md_attribute_extract_f32(masses, MD_COUNTOF(masses), mass_attr, md_attribute_slice_all(), md_unit_dalton()), MD_COUNTOF(masses));
+    ASSERT_EQ(md_attribute_extract_f32(masses, MD_COUNTOF(masses), &sys.attributes, mass_attr, md_attribute_slice_all(), md_unit_dalton()), MD_COUNTOF(masses));
     EXPECT_NEAR(masses[0], 3981.33f, 0.01f);
     EXPECT_NEAR(masses[7], 3885.336f, 0.01f);
 
     // Unwrap now makes each fibril whole: consecutive hubs 21.9 A apart along x
-    md_geom_unwrap_system(&state, &sys);
+    md_system_unwrap(&state, &sys);
     for (int m = 0; m < MOLS; ++m) {
         for (int s = 0; s + 1 < SLICES; ++s) {
             const size_t a = (size_t)(m * SLICES * 7 + s * 7);
@@ -512,7 +512,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
         const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         ASSERT_TRUE(charge != NULL);
         float q[3];
-        ASSERT_EQ(3u, md_attribute_extract_f32(q, 3, charge, md_attribute_slice_all(), md_unit_elementary_charge()));
+        ASSERT_EQ(3u, md_attribute_extract_f32(q, 3, &sys.attributes, charge, md_attribute_slice_all(), md_unit_elementary_charge()));
         EXPECT_NEAR((float)atof(charges[k][0]), q[0], 1e-5f);
     }
     md_vm_arena_destroy(alloc);

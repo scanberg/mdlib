@@ -2067,23 +2067,25 @@ md_mutex_t md_mutex_create(void) {
 #endif
 }
 
-bool md_mutex_destroy(md_mutex_t* mutex) {
+void md_mutex_destroy(md_mutex_t* mutex) {
 #if MD_PLATFORM_WINDOWS
     DeleteCriticalSection((CRITICAL_SECTION*)mutex);
-    return true;
 #elif MD_PLATFORM_UNIX
-    return pthread_mutex_destroy((pthread_mutex_t*)mutex) == 0;
+    const int res = pthread_mutex_destroy((pthread_mutex_t*)mutex);
+    MD_ASSERT(res == 0);
+    (void)res;
 #else
     MD_ASSERT(false);
 #endif
 }
 
-bool md_mutex_lock(md_mutex_t* mutex) {
+void md_mutex_lock(md_mutex_t* mutex) {
 #if MD_PLATFORM_WINDOWS
     EnterCriticalSection((CRITICAL_SECTION*)mutex);
-    return true;
 #elif MD_PLATFORM_UNIX
-    return pthread_mutex_lock((pthread_mutex_t*)mutex) == 0;
+    const int res = pthread_mutex_lock((pthread_mutex_t*)mutex);
+    MD_ASSERT(res == 0);
+    (void)res;
 #else
     MD_ASSERT(false);
 #endif
@@ -2099,12 +2101,13 @@ bool md_mutex_try_lock(md_mutex_t* mutex) {
 #endif
 }
 
-bool md_mutex_unlock(md_mutex_t* mutex) {
+void md_mutex_unlock(md_mutex_t* mutex) {
 #if MD_PLATFORM_WINDOWS
     LeaveCriticalSection((CRITICAL_SECTION*)mutex);
-    return true;
 #elif MD_PLATFORM_UNIX
-    return pthread_mutex_unlock((pthread_mutex_t*)mutex) == 0;
+    const int res = pthread_mutex_unlock((pthread_mutex_t*)mutex);
+    MD_ASSERT(res == 0);
+    (void)res;
 #else
     MD_ASSERT(false);
 #endif
@@ -2118,7 +2121,7 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
     MD_ASSERT(initial_count < INT32_MAX);
 #if MD_PLATFORM_WINDOWS
     semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
-    return semaphore != NULL;
+    return semaphore->_data[0] != NULL;
 #elif MD_PLATFORM_LINUX
     return sem_init((sem_t*)semaphore, 0, (uint32_t)initial_count) == 0;
 #elif MD_PLATFORM_OSX
@@ -2133,29 +2136,36 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
 #endif
 }
 
-bool md_semaphore_destroy(md_semaphore_t* semaphore) {
+void md_semaphore_destroy(md_semaphore_t* semaphore) {
 #if MD_PLATFORM_WINDOWS
-    return CloseHandle((HANDLE)semaphore->_data[0]);
+    const bool ok = CloseHandle((HANDLE)semaphore->_data[0]);
 #elif MD_PLATFORM_LINUX
-    return sem_destroy((sem_t*)semaphore) == 0;
+    const bool ok = sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
     md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     mach_port_t self = mach_task_self();
-    return semaphore_destroy(self, sema) == KERN_SUCCESS;
+    const bool ok = semaphore_destroy(self, sema) == KERN_SUCCESS;
 #endif
+    MD_ASSERT(ok);
+    (void)ok;
 }
 
-bool md_semaphore_aquire(md_semaphore_t* semaphore) {
+void md_semaphore_aquire(md_semaphore_t* semaphore) {
 #if MD_PLATFORM_WINDOWS
-    return WaitForSingleObjectEx((HANDLE)semaphore->_data[0], INFINITE, FALSE) == WAIT_OBJECT_0;
+    const bool ok = WaitForSingleObjectEx((HANDLE)semaphore->_data[0], INFINITE, FALSE) == WAIT_OBJECT_0;
 #elif MD_PLATFORM_LINUX
-    return sem_wait((sem_t*)semaphore) == 0;
+    // A signal interrupts the wait, which is then waited again
+    int res;
+    while ((res = sem_wait((sem_t*)semaphore)) != 0 && errno == EINTR) {}
+    const bool ok = res == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
     md_memcpy(&sema, semaphore, sizeof(semaphore_t));
-    return semaphore_wait(sema) == KERN_SUCCESS;
+    const bool ok = semaphore_wait(sema) == KERN_SUCCESS;
 #endif
+    MD_ASSERT(ok);
+    (void)ok;
 }
 
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
@@ -2206,16 +2216,18 @@ bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count) {
 #endif
 }
 
-bool md_semaphore_release(md_semaphore_t* semaphore) {
+void md_semaphore_release(md_semaphore_t* semaphore) {
 #if MD_PLATFORM_WINDOWS
-    return ReleaseSemaphore((HANDLE)semaphore->_data[0], 1, NULL);
+    const bool ok = ReleaseSemaphore((HANDLE)semaphore->_data[0], 1, NULL);
 #elif MD_PLATFORM_LINUX
-    return sem_post((sem_t*)semaphore) == 0;
+    const bool ok = sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
     md_memcpy(&sema, semaphore, sizeof(semaphore_t));
-    return semaphore_signal(sema) == KERN_SUCCESS;
+    const bool ok = semaphore_signal(sema) == KERN_SUCCESS;
 #endif
+    MD_ASSERT(ok);
+    (void)ok;
 }
 
 // Common high level Semaphore operations
@@ -2243,16 +2255,16 @@ bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
     return false;
 }
 
-bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
+void md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
+    if (count == 0) return;
 #if MD_PLATFORM_WINDOWS
-    return ReleaseSemaphore((HANDLE)semaphore->_data[0], (LONG)count, NULL);
+    const bool ok = ReleaseSemaphore((HANDLE)semaphore->_data[0], (LONG)count, NULL);
+    MD_ASSERT(ok);
+    (void)ok;
 #else
     for (size_t i = 0; i < count; ++i) {
-        if (!md_semaphore_release(semaphore)) {
-            return false;
-        }
+        md_semaphore_release(semaphore);
     }
-    return true;
 #endif
 }
 

@@ -89,7 +89,7 @@ static size_t count_smiles_ex(const char* smiles, const md_match_desc_t* base, c
     md_match_desc_t desc = *base;
     desc.query = &query;
     size_t count = 0;
-    const bool ok = md_match_for_each(&count, NULL, &desc, sys, NULL, NULL);
+    const bool ok = md_match_for_each(&count, NULL, &desc, sys, NULL, NULL, NULL);
     md_match_query_free(&query);
     return ok ? count : SIZE_MAX;
 }
@@ -102,7 +102,7 @@ static size_t count_smiles(const char* smiles, md_match_level_t level, md_match_
 // md_match_for_each as a count, SIZE_MAX for an invalid query or description
 static size_t count_matches(const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param) {
     size_t count = 0;
-    return md_match_for_each(&count, NULL, desc, sys, callback, user_param) ? count : SIZE_MAX;
+    return md_match_for_each(&count, NULL, desc, sys, callback, user_param, NULL) ? count : SIZE_MAX;
 }
 
 static bool atoms_bonded(const md_system_t* sys, int32_t a, int32_t b) {
@@ -362,14 +362,14 @@ UTEST(match, query_validation) {
     desc.query = &empty;
     EXPECT_FALSE(md_match_find(&res, &desc, sys, alloc));
     size_t count = 7;
-    EXPECT_FALSE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL));
+    EXPECT_FALSE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL, NULL));
     EXPECT_EQ(0, (int)count);
 
     // A valid search which finds nothing is not a failure
     md_match_atom_t gold = {.flags = MD_MATCH_ATOM_ELEMENT, .z = 79};
     md_match_query_t none = {.num_atoms = 1, .atoms = &gold};
     desc.query = &none;
-    EXPECT_TRUE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL));
+    EXPECT_TRUE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL, NULL));
     EXPECT_EQ(0, (int)count);
 }
 
@@ -485,17 +485,17 @@ UTEST(match, max_steps) {
 
     size_t count = 0;
     bool incomplete = true;
-    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL, NULL));
     EXPECT_FALSE(incomplete);
     EXPECT_EQ((size_t)(45 * 44 / 2), count);
 
     desc.max_steps = 1000000000;
-    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL, NULL));
     EXPECT_FALSE(incomplete);
     EXPECT_EQ((size_t)(45 * 44 / 2), count);
 
     desc.max_steps = 100;
-    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL, NULL));
     EXPECT_TRUE(incomplete);
     EXPECT_LT(count, (size_t)(45 * 44 / 2));
 
@@ -1379,6 +1379,47 @@ UTEST(match, script_match) {
     EXPECT_TRUE(filter_fails_with("match(name('CA'))", "the reference is in 15 parts", SYS_ALA));
     EXPECT_TRUE(filter_fails_with("smiles('C.C.C.C.C')", "the SMILES is in 5 parts", SYS_ALA));
     EXPECT_TRUE(filter_fails_with("match(residue(5), by='type')", "Unknown label", SYS_ALA));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// What md_match keeps of a system between calls is of its topology version: a bond inserted is seen by the next
+// search, and so is its kind changed to coordination, which leaves it out of the graph (between residues)
+UTEST(match, topology_changes) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_GT(sys.residue.count, 5u);
+
+    // The CB of the first residue and of the sixth: not bonded
+    int32_t cb[2] = {-1, -1};
+    const size_t res[2] = {0, 5};
+    for (int k = 0; k < 2; ++k) {
+        const md_urange_t r = md_system_residue_atom_range(&sys, res[k]);
+        for (uint32_t a = r.beg; a < r.end; ++a) if (md_str_eq(md_atom_name(&sys.atom, a), MD_STR_LIT("CB"))) cb[k] = (int32_t)a;
+    }
+    ASSERT_TRUE(cb[0] >= 0 && cb[1] >= 0);
+    const uint32_t idx[2] = {(uint32_t)cb[0], (uint32_t)cb[1]};
+    const md_bitset_t unit = md_bitset_from_indices(idx, 2, alloc);
+
+    md_match_query_t q = {0};
+    ASSERT_TRUE(md_match_query_init_smiles(&q, MD_STR_LIT("CC"), alloc, NULL));
+    const md_match_desc_t desc = {.query = &q, .mode = MD_MATCH_MODE_UNIQUE, .units = &unit, .num_units = 1,
+                                  .hydrogens = MD_MATCH_RESOLVE_NEVER, .bond_orders = MD_MATCH_RESOLVE_NEVER, .charges = MD_MATCH_RESOLVE_NEVER};
+    EXPECT_EQ(0, (int)count_matches(&desc, &sys, NULL, NULL));
+
+    // The connectivity is not kept up to date by an insertion (md_bond_find): built again, as code which inserts does
+    md_system_bond_insert(&sys, cb[0], cb[1], MD_BOND_FLAG_NONE);
+    md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
+    EXPECT_EQ(1, (int)count_matches(&desc, &sys, NULL, NULL));
+
+    const md_bond_idx_t b = md_system_bond_find(&sys, cb[0], cb[1]);
+    ASSERT_TRUE(b >= 0);
+    sys.bond.flags[b] = md_bond_flags_set_kind(sys.bond.flags[b], MD_BOND_KIND_COORDINATE);
+    md_system_topology_changed(&sys);
+    EXPECT_EQ(0, (int)count_matches(&desc, &sys, NULL, NULL));
 
     md_arena_allocator_destroy(alloc);
 }

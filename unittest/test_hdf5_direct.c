@@ -8,7 +8,7 @@
 #include <md_hdf5.h>
 #include <md_hdf5_direct.h>
 #include <md_attributes.h>
-#include "../src/md_attributes_internal.h"
+#include "../src/system/md_attributes_internal.h"
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_file.h>

@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 
 #include <md_dcd.h>
 #include <md_system.h>
@@ -228,13 +228,13 @@ UTEST(dcd, run_matches_the_trajectory) {
     // A fixed atom at a later frame, alone: where the first frame put it.
     float xyz[3];
     md_attribute_slice_t one = md_attribute_slice_2(4, 6);
-    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, t, pos, one, md_unit_none()));
     EXPECT_EQ(dcd_coord(0, 6, 0), xyz[0]);
 
     // The cell of one frame on its own
     float box[9];
     md_attribute_slice_t fr = md_attribute_slice_1(3);
-    ASSERT_EQ(9u, md_attribute_extract_f32(box, 9, cell, fr, md_unit_none()));
+    ASSERT_EQ(9u, md_attribute_extract_f32(box, 9, t, cell, fr, md_unit_none()));
     EXPECT_NEAR(33.0f, box[0], 1.0e-4f);
     EXPECT_NEAR(20.0f, box[8], 1.0e-4f);
 
@@ -312,7 +312,7 @@ UTEST(dcd, cell_in_every_convention) {
         const md_attribute_t* cell = md_attributes_find(&sys.attributes, MD_STR_LIT("run/dcd/unitcell"));
         ASSERT_TRUE(cell != NULL);
         float A[9];
-        ASSERT_EQ(9u, md_attribute_extract_f32(A, 9, cell, md_attribute_slice_1(1), md_unit_none()));
+        ASSERT_EQ(9u, md_attribute_extract_f32(A, 9, &sys.attributes, cell, md_attribute_slice_1(1), md_unit_none()));
         const md_unitcell_t uc = md_unitcell_from_matrix_float((const float(*)[3])A);
         double a, b, c, alpha, beta, gamma;
         md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &uc);

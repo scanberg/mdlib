@@ -10,7 +10,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_file.h>
-#include <md_unitcell.h>
+#include <core/md_unitcell.h>
 #include <md_element.h>
 #include <stdio.h>
 
@@ -364,7 +364,7 @@ UTEST(lammps, run_triclinic) {
     const md_attribute_t* pos = md_attributes_find(&sys.attributes, MD_STR_LIT("run/dump/atom/position"));
     float xyz[3];
     md_attribute_slice_t one = md_attribute_slice_2(9, 17);
-    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, &sys.attributes, pos, one, md_unit_none()));
     EXPECT_EQ(st.xyz[17].x, xyz[0]);
     EXPECT_EQ(st.xyz[17].z, xyz[2]);
 

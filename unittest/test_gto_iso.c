@@ -327,18 +327,17 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         iso_field_t f;
         ASSERT_TRUE(iso_field_init(&f, &basis, xyz, num_atoms, c, tc->name));
 
-        const size_t num_gto = md_gto_pgto_count(&basis);
-        md_gto_t* gtos = (md_gto_t*)malloc(sizeof(md_gto_t) * num_gto);
-        const size_t n_gto = md_gto_expand_with_ao_coeffs(gtos, &basis, xyz, 0, c, 0.0);
-
         enum { N = 2000 };
         float* pts = (float*)malloc(sizeof(float) * 3 * N);
-        float* ref = (float*)malloc(sizeof(float) * N);
+        double* ref = (double*)malloc(sizeof(double) * N);
         iso_rng_t rng = {7};
         for (int i = 0; i < N; ++i) {
             for (int a = 0; a < 3; ++a) pts[3 * i + a] = (float)iso_rng_range(&rng, f.atom_min[a] - 3.0, f.atom_max[a] + 3.0);
         }
-        md_gto_xyz_evaluate(ref, pts, N, 0, gtos, n_gto, MD_GTO_EVAL_MODE_PSI);
+        for (int i = 0; i < N; ++i) {
+            const double p[3] = {pts[3 * i], pts[3 * i + 1], pts[3 * i + 2]};
+            ref[i] = qm_test_orbital_at(&basis, xyz, c, p);
+        }
 
         double max_ref = 0.0, max_err = 0.0, max_gerr = 0.0, max_herr = 0.0, max_g = 0.0, max_h = 0.0;
         for (int i = 0; i < N; ++i) {
@@ -371,7 +370,7 @@ UTEST(gto_iso, point_eval_matches_mdlib) {
         EXPECT_LT(max_gerr, 1.0e-5 * max_g);
         EXPECT_LT(max_herr, 1.0e-4 * max_h);
 
-        free(pts); free(ref); free(gtos); free(c); free(xyz);
+        free(pts); free(ref); free(c); free(xyz);
         iso_field_free(&f);
         qm_test_free(&t);
     }
@@ -1372,7 +1371,7 @@ static bool iso_dens_src_load_ex(iso_dens_src_t* s, const char* file, bool need_
     if (!la || !pa || !ha) return !need_nto;
     const size_t lmax = la->format.shape[1];
     double* lam = (double*)calloc(lmax, sizeof(double));
-    if (md_attribute_extract_f64(lam, lmax, la, md_attribute_slice_1(0), md_unit_none()) != lmax) return false;
+    if (md_attribute_extract_f64(lam, lmax, &s->t.sys.attributes, la, md_attribute_slice_1(0), md_unit_none()) != lmax) return false;
     s->lambda = (double*)calloc(lmax, sizeof(double));
     s->hole = (double*)calloc(lmax * s->num_ao, sizeof(double));
     s->particle = (double*)calloc(lmax * s->num_ao, sizeof(double));
@@ -1380,8 +1379,8 @@ static bool iso_dens_src_load_ex(iso_dens_src_t* s, const char* file, bool need_
         if (!(lam[k] > 1.0e-6)) continue;
         const size_t n = s->num_nto++;
         s->lambda[n] = lam[k];
-        if (md_attribute_extract_f64(s->hole + n * s->num_ao, s->num_ao, ha, md_attribute_slice_2(0, (uint32_t)k), md_unit_none()) != s->num_ao) return false;
-        if (md_attribute_extract_f64(s->particle + n * s->num_ao, s->num_ao, pa, md_attribute_slice_2(0, (uint32_t)k), md_unit_none()) != s->num_ao) return false;
+        if (md_attribute_extract_f64(s->hole + n * s->num_ao, s->num_ao, &s->t.sys.attributes, ha, md_attribute_slice_2(0, (uint32_t)k), md_unit_none()) != s->num_ao) return false;
+        if (md_attribute_extract_f64(s->particle + n * s->num_ao, s->num_ao, &s->t.sys.attributes, pa, md_attribute_slice_2(0, (uint32_t)k), md_unit_none()) != s->num_ao) return false;
     }
     free(lam);
     return s->num_nto > 0 || !need_nto;
@@ -1524,7 +1523,7 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
             const md_attribute_t* a = qm_test_attr(&s.t, md_str_from_cstr(vlx_path[k]));
             ASSERT_TRUE(a != NULL);
             double* ref = (double*)malloc(sizeof(double) * nao * nao);
-            ASSERT_EQ(md_attribute_extract_f64(ref, nao * nao, a, md_attribute_slice_1(0), md_unit_none()), nao * nao);
+            ASSERT_EQ(md_attribute_extract_f64(ref, nao * nao, &s.t.sys.attributes, a, md_attribute_slice_1(0), md_unit_none()), nao * nao);
             const double e = iso_rel_diff(ref, D, nao * nao);
             printf("            %-6s NTO products vs %s: %.1e\n", iso_d_name[ISO_D_ATTACH + k], vlx_path[k], e);
             // the NTOs kept are those with lambda > 1e-6, so this agrees to about that
@@ -4905,7 +4904,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     const md_attribute_t* da = qm_test_attr(&t, MD_STR_LIT("orbital/total/density"));
     ASSERT_TRUE(da != NULL);
     double* D = (double*)malloc(sizeof(double) * nao * nao);
-    ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, da, md_attribute_slice_all(), NULL), nao);
+    ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, &t.sys.attributes, da, md_attribute_slice_all(), NULL), nao);
     double tr = 0.0;
     for (size_t i = 0; i < nao; ++i) tr += D[i * nao + i];
     printf("  density matrix (orbital/total/density): %.2f s (trace %.6g)\n", md_tick_to_seconds(md_tick_now() - t0), tr);

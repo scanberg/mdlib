@@ -195,7 +195,7 @@ UTEST(os, mutex) {
     EXPECT_TRUE(md_mutex_try_lock(&mutex));
     md_mutex_unlock(&mutex);
 
-    EXPECT_TRUE(md_mutex_destroy(&mutex));
+    md_mutex_destroy(&mutex);
 }
 
 UTEST(os, semaphore) {
@@ -213,17 +213,17 @@ UTEST(os, semaphore) {
     EXPECT_TRUE(md_semaphore_try_aquire(&sema));
     EXPECT_TRUE(md_semaphore_try_aquire(&sema));
 
-    EXPECT_TRUE(md_semaphore_release(&sema));
-    EXPECT_TRUE(md_semaphore_release(&sema));
-    EXPECT_TRUE(md_semaphore_release(&sema));
-    EXPECT_TRUE(md_semaphore_release(&sema));
+    md_semaphore_release(&sema);
+    md_semaphore_release(&sema);
+    md_semaphore_release(&sema);
+    md_semaphore_release(&sema);
 
-    EXPECT_TRUE(md_semaphore_release(&sema));
-    EXPECT_TRUE(md_semaphore_release(&sema));
-    EXPECT_TRUE(md_semaphore_release(&sema));
-    EXPECT_TRUE(md_semaphore_release(&sema));
+    md_semaphore_release(&sema);
+    md_semaphore_release(&sema);
+    md_semaphore_release(&sema);
+    md_semaphore_release(&sema);
 
-    EXPECT_TRUE(md_semaphore_destroy(&sema));
+    md_semaphore_destroy(&sema);
 }
 
 // The three converters are one scale expressed three ways, so they are checked against each

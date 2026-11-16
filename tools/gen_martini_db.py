@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generates src/md_martini_db.inl: the residues of the Martini force fields, with the mass, size and particle kind of
-each bead and the bonds within each residue, and the links (bonds) between consecutive residues of the polymers and of
-the molecules of several residues, for md_util_system_infer_atom_types and the coarse grained bond inference.
+"""Generates src/system/md_martini_db.inl: the residues of the Martini force fields, with the mass, size and particle
+kind of each bead and the bonds within each residue, and the links (bonds) between consecutive residues of the polymers
+and of the molecules of several residues, for md_util_system_infer_atom_types and the coarse grained bond inference.
 
 Every value is read from the force field files themselves:
 - masses from the [ atoms ] of a molecule where it gives them, else from the [ atomtypes ] of the main itp
