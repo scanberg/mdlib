@@ -34,7 +34,8 @@ typedef struct gpu_view_t {
     uint32_t      dbg_probe;      /* md_render_debug_raster_probe */
     uint32_t      spl_group;      /* md_render_debug_spline_group */
     uint32_t      spl_order;      /* md_render_debug_spline_order */
-    uint32_t      _vpad3[3];
+    uint32_t      spl_chunks;     /* md_render_debug_spline_passes */
+    uint32_t      _vpad3[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 560, "ViewData mirror");
 
@@ -74,6 +75,17 @@ void md_render_debug_spline_group(uint32_t pieces) { g_spline_group = pieces < 1
    pass) at the 64 and 512 copies; kept to measure the other GPUs. */
 static uint32_t g_spline_order = 0u;
 void md_render_debug_spline_order(uint32_t on) { g_spline_order = on ? 1u : 0u; }
+
+/* Phase 1's spline boxes in this many render passes, nearest first (they are
+   ordered for it; the bench's, not in the header). Within one pass the M4
+   turns away no fragment of a stage that writes depth, however near what was
+   drawn before it (6%); a pass after, all of them (100%: the test
+   gpu_render.early_depth_rejection_by_what). Each pass more stores and loads
+   the targets. 1: one pass. */
+#define SPLINE_CHUNKS_MAX 8u
+static uint32_t g_spline_passes = 1u;
+void md_render_debug_spline_passes(uint32_t n) { g_spline_passes = n < 1u ? 1u : n > SPLINE_CHUNKS_MAX ? SPLINE_CHUNKS_MAX : n; }
+static uint32_t spline_order_on(void) { return g_spline_order || g_spline_passes > 1u; }
 
 enum {
     F_INDEX        = 1u << 0,
@@ -171,7 +183,8 @@ enum {
     C_HWSG1 = 136, C_HWSG2 = 137,   /* boxes of the hardware spline parts' pieces (hw2g): phase 1 and 2 */
     C_GRID_ORD = 140,               /* spline_order's grid; then the depth buckets' counts and starts, 144..271 */
     C_DBG = 272,                    /* md_render_debug_raster_probe(2)'s counts, 272..275 */
-    C_COUNT = 276,
+    C_ICMDS_CH = 276,               /* phase 1's spline boxes in passes: an indexed command each, 276..315 */
+    C_COUNT = 316,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -1319,6 +1332,9 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         md_gpu_set_draw_state(s, &ds);
         md_gpu_draw(s, r->merge, 3, 1, &a, sizeof(a));
     }
+    /* phase 1's spline boxes in passes, nearest first: the first with the
+       rest, each after it alone, its targets loaded */
+    const uint32_t chunks = (phase == 1 && has_kind[2]) ? g_spline_passes : 1u;
     for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has_kind[k]) continue;
         ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
@@ -1327,8 +1343,21 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         a.list = k == 2 ? 4 : k == 3 ? 6 : k;
         if (k == 0)      md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
-        else if (k == 2) md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
+        else if (k == 2) md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16,
+                                                      CTR(v, chunks > 1 ? C_ICMDS_CH : C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
         else             md_gpu_draw_indexed_indirect(s, r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
+    }
+    for (uint32_t c = 1; c < chunks; ++c) {
+        if (!md_gpu_render_end(s)) return false;
+        rd.color[0].load = MD_GPU_LOAD;
+        rd.color[1].load = MD_GPU_LOAD;
+        rd.depth.load    = MD_GPU_LOAD;
+        if (!md_gpu_render_begin(s, &rd)) return false;
+        ds.cull = MD_GPU_CULL_BACK;
+        md_gpu_set_draw_state(s, &ds);
+        a.mode = 0;
+        a.list = 4;
+        md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS_CH + c * 5), 1, &a, sizeof(a));
     }
     return md_gpu_render_end(s);
 }
@@ -1584,7 +1613,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.refit_mode = refit ? 0u : 1u;
         gv.dbg_probe  = g_raster_probe;
         gv.spl_group  = g_spline_group;
-        gv.spl_order  = g_spline_order;
+        gv.spl_order  = spline_order_on();
+        gv.spl_chunks = g_spline_passes;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };
@@ -1636,7 +1666,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         if (spl) PASS_DONE("cull1");
         if (spl && !pass(s, v, r->k_cull_heavy, 1, 0, C_GRID_CVIS)) return false;
         if (!fin(s, v, 12)) return false;
-        if (has_kind[2] && g_spline_order && !pass(s, v, r->k_spline_order, 1, 0, C_GRID_ORD)) return false;
+        if (has_kind[2] && spline_order_on() && !pass(s, v, r->k_spline_order, 1, 0, C_GRID_ORD)) return false;
         PASS_DONE(spl ? "cull1 heavy" : "cull1");
         if (compute && !run_raster_small(s, v, 1)) return false;
         if (compute) PASS_DONE("small1");

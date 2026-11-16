@@ -57,7 +57,8 @@ struct ViewData {
     uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit; 2: the spline fragments count themselves, C_DBG)
     uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
     uint   spl_order;           // 1: phase 1's spline boxes drawn nearest first (spline_order); md_render_debug_spline_order
-    uint   _vpad3, _vpad4, _vpad5;
+    uint   spl_chunks;          // with it, in so many render passes, nearest first (C_ICMDS_CH); md_render_debug_spline_passes
+    uint   _vpad4, _vpad5;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -247,7 +248,9 @@ static const uint C_GRID_ORD   = 140;  // spline_order's grid: 140..142
 static const uint C_BKT        = 144;  // phase 1's spline boxes by depth (spline_bucket): counts, 144..207
 static const uint C_BKO        = 208;  // and where each bucket's go next, 208..271
 static const uint C_DBG        = 272;  // dbg_probe 2: spline fragments shaded, their hits, full piece tests, pixels resolved: 272..275
-static const uint C_COUNT      = 276;
+static const uint C_ICMDS_CH   = 276;  // phase 1's spline boxes in spl_chunks passes: an indexed command each, 5 words, 276..315
+static const uint SPLINE_CHUNKS_MAX = 8u;
+static const uint C_COUNT      = 316;
 static const uint SPLINE_BUCKETS = 64u;
 
 // One argument struct for every entry point (md_gpu shares one root between a
@@ -2747,6 +2750,16 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
         uint o = 0u;
         for (uint k = 0u; k < SPLINE_BUCKETS; ++k) { c[C_BKO + k] = o; o += c[C_BKT + k]; }
         c[C_HWSG1] = o;
+        // and in passes: as many boxes each, nearest first (the depth test of
+        // a pass turns away the fragments behind what the passes before drew,
+        // where within one pass the M4 turns away none of a stage that
+        // writes depth: gpu_render.early_depth_rejection_by_what)
+        uint nc = clamp(a.view->spl_chunks, 1u, SPLINE_CHUNKS_MAX);
+        for (uint k = 0u; k < nc; ++k) {
+            uint* ch = c + C_ICMDS_CH + 5u * k;
+            uint  f0 = uint((uint64_t(o) * k) / nc), f1 = uint((uint64_t(o) * (k + 1u)) / nc);
+            ch[0] = 36u; ch[1] = f1 - f0; ch[2] = 0u; ch[3] = 0u; ch[4] = f0;
+        }
         c[C_GRID_ORD] = min((c[C_HWS1] + 63u) / 64u, 65535u); c[C_GRID_ORD + 1u] = 1u; c[C_GRID_ORD + 2u] = 1u;
     }
     uint* cmd = c + C_CMD + (phase - 1u) * 2u * 4u;
