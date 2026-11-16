@@ -1406,12 +1406,17 @@ struct SplineBox {
     float3 x, y, z;             // half axes
 };
 
-// With it, each piece's extent along the chord (sl: per piece a low and a
-// high byte, fractions of the box's length, rounded outward; piece k in
-// bits 16 (k & 1) of word k / 2): the slice of the box between them bounds
-// the piece (the balls at its two sections' rim points), which is what the
-// raster draws for it (spline_vs). The sections are this loop's already.
-SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8]) {
+// With it, each piece's extent in the box, a low and a high byte along each
+// of its axes (fractions of the box's, rounded outward): along z (sl, piece
+// k in bits 16 (k & 1) of word k / 2) and across, x and y (sxy, word k:
+// x low, x high, y low, y high). The box they cut bounds the piece (the
+// balls at its two sections' rim points), which is what the raster draws
+// for it (spline_vs). The sections are this loop's already. Across matters:
+// the part's box spans the ribbon as it turns over the part (a helix's
+// twists by a right angle), a piece's only as it is there; with z alone the
+// pieces' boxes took 1.7 to 1.9 times the whole part's fragments (lavapipe,
+// one protein copy).
+SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8], out uint sxy[16]) {
     SplineBox bx;
     float3 ca = spline_centre(sp, sp.u0), cb = spline_centre(sp, sp.u1);
     SplineSection sm = spline_section(sp, 0.5 * (sp.u0 + sp.u1));
@@ -1429,18 +1434,18 @@ SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8]) {
     float3 y  = cross(z, x);                            // (x, y, z) right-handed
     float3 lo = float3(1e30), hi = float3(-1e30);
     float  n  = float(max(pieces, 1u));
-    float  zlo[16], zhi[16];                            // each piece's extent along z
-    float  pl = 0.0, ph = 0.0;                          // the previous section's
+    float3 plo[16], phi[16];                            // each piece's extent
+    float3 pl = float3(0.0), ph = float3(0.0);          // the previous section's
     for (uint k = 0u; k <= pieces; ++k) {
         float  f = float(k) / n;
         SplineSection s = spline_section(sp, spline_piece_u(sp, k, pieces));
         float  a = lerp(sp.a0, sp.a1, f), r = lerp(sp.r0, sp.r1, f);
         float3 p = s.c + s.w * a, m = s.c - s.w * a;     // the rim points (spline_hit's)
         float3 qp = float3(dot(p, x), dot(p, y), dot(p, z)), qm = float3(dot(m, x), dot(m, y), dot(m, z));
-        lo = min(lo, min(qp, qm) - r);
-        hi = max(hi, max(qp, qm) + r);
-        float  sl0 = min(qp.z, qm.z) - r, sh0 = max(qp.z, qm.z) + r;
-        if (k > 0u) { zlo[k - 1u] = min(pl, sl0); zhi[k - 1u] = max(ph, sh0); }
+        float3 sl0 = min(qp, qm) - r, sh0 = max(qp, qm) + r;
+        lo = min(lo, sl0);
+        hi = max(hi, sh0);
+        if (k > 0u) { plo[k - 1u] = min(pl, sl0); phi[k - 1u] = max(ph, sh0); }
         pl = sl0; ph = sh0;
     }
     float3 h = 0.5 * (hi - lo);
@@ -1450,19 +1455,21 @@ SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8]) {
     bx.x = x * h.x;
     bx.y = y * h.y;
     bx.z = z * h.z;
-    float zb = q.z - h.z, zs = 255.0 / (2.0 * h.z);
+    float3 qb = q - h, qs = 255.0 / (2.0 * h);
     for (uint i = 0u; i < 8u; ++i) sl[i] = 0u;
+    for (uint i = 0u; i < 16u; ++i) sxy[i] = 0u;
     for (uint k = 0u; k < pieces; ++k) {
-        uint l = uint(clamp(floor((zlo[k] - zb) * zs - 0.01), 0.0, 255.0));
-        uint u = uint(clamp(ceil((zhi[k] - zb) * zs + 0.01), 0.0, 255.0));
-        sl[k >> 1] |= (l | (u << 8)) << ((k & 1u) * 16u);
+        uint3 l = uint3(clamp(floor((plo[k] - qb) * qs - 0.01), 0.0, 255.0));
+        uint3 u = uint3(clamp(ceil((phi[k] - qb) * qs + 0.01), 0.0, 255.0));
+        sl[k >> 1] |= (l.z | (u.z << 8)) << ((k & 1u) * 16u);
+        sxy[k] = l.x | (u.x << 8) | (l.y << 16) | (u.y << 24);
     }
     return bx;
 }
 
 // The boxes of a part of n pieces in the hardware raster: one per group of
-// spl_group pieces (0: one), the slice of the part's box that bounds the
-// group (spline_box's sl). A fragment of a box tests its group's pieces
+// spl_group pieces (0: one), the cut of the part's box that bounds the
+// group (spline_box's sl and sxy). A fragment of a box tests its group's pieces
 // alone (spline_hit_range): of a whole part's box it tested every piece whose
 // bounding sphere its ray met, and on a ribbon those spheres are as wide as
 // the ribbon, which put most of a part's pieces under every fragment.
@@ -1477,9 +1484,9 @@ uint spline_groups(ViewData v, uint n) {
 // profiles and a transform, dependent loads all, for every fragment). The
 // part as spline_part made it, to the bit: the resolve and the pick rebuild
 // it with spline_part, as the raster did.
-static const uint SPLINE_RECORD = 16u;
+static const uint SPLINE_RECORD = 20u;
 
-void spline_record_write(Lists L, uint i, SplineBox bx, uint sl[8], uint pieces, uint st, SplinePart sp) {
+void spline_record_write(Lists L, uint i, SplineBox bx, uint sl[8], uint sxy[16], uint pieces, uint st, SplinePart sp) {
     float4* r = L.hw2b + SPLINE_RECORD * i;
     r[0]  = float4(bx.c, asfloat(pieces));
     r[1]  = float4(bx.x, asfloat(st));
@@ -1497,14 +1504,22 @@ void spline_record_write(Lists L, uint i, SplineBox bx, uint sl[8], uint pieces,
     r[13] = float4(sp.w4, asfloat(sp.ok ? 1u : 0u));
     r[14] = asfloat(uint4(sl[0], sl[1], sl[2], sl[3]));
     r[15] = asfloat(uint4(sl[4], sl[5], sl[6], sl[7]));
+    for (uint j = 0u; j < 4u; ++j) r[16u + j] = asfloat(uint4(sxy[4u * j], sxy[4u * j + 1u], sxy[4u * j + 2u], sxy[4u * j + 3u]));
 }
 
-// Piece k's slice of its part's box (spline_box's sl): low, high byte
-uint2 spline_record_slice(float4* r, uint k) {
-    uint4 q = asuint(r[14u + (k >> 3)]);
-    uint  j = (k >> 1) & 3u;
-    uint  w = (j == 0u ? q.x : j == 1u ? q.y : j == 2u ? q.z : q.w) >> ((k & 1u) * 16u);
-    return uint2(w & 255u, (w >> 8) & 255u);
+uint record_word(float4* r, uint w) {
+    uint4 q = asuint(r[w >> 2]);
+    uint  j = w & 3u;
+    return j == 0u ? q.x : j == 1u ? q.y : j == 2u ? q.z : q.w;
+}
+
+// Piece k's cut of its part's box (spline_box's sl and sxy): the low bytes
+// along x, y, z, then the high ones
+void spline_record_cut(float4* r, uint k, out uint3 lo, out uint3 hi) {
+    uint z  = record_word(r, 56u + (k >> 1)) >> ((k & 1u) * 16u);
+    uint xy = record_word(r, 64u + k);
+    lo = uint3(xy & 255u, (xy >> 16) & 255u, z & 255u);
+    hi = uint3((xy >> 8) & 255u, xy >> 24, (z >> 8) & 255u);
 }
 
 SplinePart spline_record_part(Lists L, uint i) {
@@ -2534,9 +2549,9 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
             Batch      b  = batches[slot];
             SplinePart sp = spline_part(v, b, inst, e, true);
             uint       n  = spline_pieces(v, sp, g);
-            uint       sl[8];
-            SplineBox  bx = spline_box(sp, n, sl);
-            spline_record_write(L, base2 + ih2, bx, sl, n, g.st, sp);
+            uint       sl[8], sxy[16];
+            SplineBox  bx = spline_box(sp, n, sl, sxy);
+            spline_record_write(L, base2 + ih2, bx, sl, sxy, n, g.st, sp);
             ng = spline_groups(v, n);
         }
         // and a box per group of its pieces (converged: every lane reserves)
@@ -3141,7 +3156,7 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  li  = base_instance + md_draw_instance(iid, base_instance);
     if (a.list == 4u) {
         // the hardware list: a box per group of a part's pieces (hw2g), the
-        // group's slice of the part's box in its record (spline_box)
+        // group's cut of the part's box in its record (spline_box)
         Lists   L   = *a.lists;
         uint    ge  = L.hw2g[li];
         uint    rec = ge >> 4u;
@@ -3151,16 +3166,22 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
         uint    n   = asuint(r0.w);
         uint    k0  = v.spl_group == 0u ? 0u : (ge & 15u) * v.spl_group;
         uint    k1  = v.spl_group == 0u ? n : min(k0 + v.spl_group, n);
-        float3  c   = r0.xyz, Z = rc[3].xyz;
-        if (!(k0 == 0u && k1 == n)) {                   // the group's slice of the part's box
-            uint lo = 255u, hi = 0u;
-            for (uint k = k0; k < k1; ++k) { uint2 s = spline_record_slice(rc, k); lo = min(lo, s.x); hi = max(hi, s.y); }
-            float fl = float(lo) * (1.0 / 255.0), fh = float(hi) * (1.0 / 255.0);
-            c += Z * (fl + fh - 1.0);
-            Z *= fh - fl;
+        float3  c   = r0.xyz, X = r1.xyz, Y = rc[2].xyz, Z = rc[3].xyz;
+        if (!(k0 == 0u && k1 == n)) {                   // the group's cut of the part's box
+            uint3 lo = uint3(255u), hi = uint3(0u);
+            for (uint k = k0; k < k1; ++k) {
+                uint3 l, u;
+                spline_record_cut(rc, k, l, u);
+                lo = min(lo, l); hi = max(hi, u);
+            }
+            float3 fl = float3(lo) * (1.0 / 255.0), fh = float3(hi) * (1.0 / 255.0);
+            c += X * (fl.x + fh.x - 1.0) + Y * (fl.y + fh.y - 1.0) + Z * (fl.z + fh.z - 1.0);
+            X *= fh.x - fl.x;
+            Y *= fh.y - fl.y;
+            Z *= fh.z - fl.z;
         }
-        float3  p   = c + r1.xyz * (((vk & 1u) != 0u) ? 1.0 : -1.0)
-                        + rc[2].xyz * (((vk & 2u) != 0u) ? 1.0 : -1.0)
+        float3  p   = c + X * (((vk & 1u) != 0u) ? 1.0 : -1.0)
+                        + Y * (((vk & 2u) != 0u) ? 1.0 : -1.0)
                         + Z * (((vk & 4u) != 0u) ? 1.0 : -1.0);
         o.rec   = rec + 1u;
         o.pos   = mul4(M(v, proj), float4(p, 1.0));
