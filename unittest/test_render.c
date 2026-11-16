@@ -5,7 +5,6 @@
 
 #include <md_system.h>
 #include <md_system_state.h>
-#include <md_unitcell.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_mmcif.h>
