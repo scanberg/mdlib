@@ -1807,7 +1807,7 @@ static int run_heavy(int argc, char** argv) {
                                     printf("%s %s: %.2f / %.2f", oi ? "," : "", oi ? "nearest first" : "in the cull's order", to.best, to.median);
                                 }
                                 printf(" ms\n");
-                                md_render_debug_spline_order(1);
+                                md_render_debug_spline_order(0);
                             }
                         }
                         md_render_view_destroy(s, v);
