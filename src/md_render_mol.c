@@ -924,23 +924,25 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
                 const uint32_t res = res_of[order[k]];
                 uint32_t e = k + 1;
                 if (res != UINT32_MAX) while (e < coff[c + 1] && res_of[order[e]] == res) ++e;
-                /* its atom: one of its heavy atoms (or beads) by a hash of its
-                   first point, else its first; so over many residues the
-                   atoms' colours (by element), filters and selections show
-                   in proportion (its CA would grey a protein coloured by
-                   element, its first atom make a nucleic acid all P) */
-                uint32_t n_heavy = 0;
-                for (uint32_t j = k; j < e; ++j) n_heavy += md_atom_atomic_number(&sys->atom, order[j]) != 1;
-                uint32_t rep = order[k];
-                if (n_heavy) {
-                    uint32_t h = k * 0x9E3779B1u;
-                    h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16;
-                    uint32_t pick = h % n_heavy;
-                    for (uint32_t j = k; j < e; ++j) {
-                        if (md_atom_atomic_number(&sys->atom, order[j]) == 1) continue;
-                        if (pick-- == 0) { rep = order[j]; break; }
+                /* its atom: the CA, else its first carbon, else its first
+                   heavy atom (or bead), else its first. Coloured by element,
+                   a carbon's grey is the one colour nearest a residue's mix
+                   on average (one of its atoms by a hash kept the mix over
+                   many residues, but at this scale each sphere is seen, and
+                   the speckle is the larger error; its first atom made a
+                   nucleic acid all P). */
+                uint32_t ca = UINT32_MAX, carbon = UINT32_MAX, heavy = UINT32_MAX;
+                for (uint32_t j = k; j < e && ca == UINT32_MAX; ++j) {
+                    const uint32_t a = order[j];
+                    const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, a);
+                    if (z == 6 || z == 0) {
+                        const md_str_t nm = md_atom_name(&sys->atom, a);
+                        if (nm.len == 2 && nm.ptr[0] == 'C' && nm.ptr[1] == 'A') ca = a;
                     }
+                    if (carbon == UINT32_MAX && z == 6) carbon = a;
+                    if (heavy == UINT32_MAX && z != 1) heavy = a;
                 }
+                const uint32_t rep = ca != UINT32_MAX ? ca : carbon != UINT32_MAX ? carbon : heavy != UINT32_MAX ? heavy : order[k];
                 const int32_t mol = mol_of[order[k]];
                 if (mol != rc_mol || rc_fill == CLUSTER) { rc_off[n_rc++] = n_rp; rc_fill = 0; rc_mol = mol; }
                 rc_fill++;
