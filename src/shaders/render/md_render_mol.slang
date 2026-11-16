@@ -123,6 +123,7 @@ struct Args {
     uint* lip_tubes;            // the sterols' slabs: per control point its point | flags
     uint* lip_side;             // the point its axis points at (UINT32_MAX: none)
     uint* lip_axis;             // float4: its axis (md_render's)
+    uint* res_offset;           // the residues' points: each one's first static point, [res_count + 1]
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -163,7 +164,7 @@ struct Args {
     uint  ord_count;            // double bonds
     uint  prt_count;            // partners
     uint  lip_count;            // control points of the sterols' slabs
-    uint  _pad4;
+    uint  res_count;            // the residues' points
 };
 MD_SHADER_ARGS(Args);
 
@@ -897,6 +898,53 @@ void derive(uint3 tid : SV_DispatchThreadID) {
         uint q = a.atom_count + d;
         store_point(a.points, q, asuint(x), a.der_radius[d]);
         if (vel) storeAligned<8>((uint2*)a.vel_out + q, uint2(md_float_to_half(v.x) | (md_float_to_half(v.y) << 16u), md_float_to_half(v.z)));
+    }
+}
+
+// The residues' points (md_render_mol_topo_t): each the centroid of its run
+// of static points, at their images nearest the first's where the update has
+// a cell (as derive), with the radius of the sphere of their volume as its
+// w: sqrt(5/3 Rg^2 + mean r^2), Rg the centres' radius of gyration, r the
+// points' radii (the caller's, or their types'); its velocity their mean.
+// Written after the derived points. A thread a residue: its points are
+// consecutive, and the next thread's follow them.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void residues(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.res_count;
+    bool vel = a.has_velocity != 0u || a.has_fvel != 0u;
+    CellP cell;
+    cell.ax = cell.bx = cell.by = cell.cx = cell.cy = cell.cz = 0.0;
+    cell.r  = float3(0.0);
+    if (a.der_cell != 0u) cell = cell_p(a.der_cell == 1u ? a.fpar0 : a.fpar1);
+    for (uint k = tid.x; k < n; k += grid_threads(n)) {
+        uint   p0  = a.res_offset[k], p1 = a.res_offset[k + 1u];
+        float3 ref = ld3(a.points, 4u * p0);
+        float3 s = float3(0.0), v = float3(0.0);
+        float  s2 = 0.0, r2 = 0.0;
+        for (uint p = p0; p < p1; ++p) {
+            float3 d = mi(cell, ld3(a.points, 4u * p) - ref);
+            s  += d;
+            s2 += dot(d, d);
+            uint  w = a.points[4u * p + 3u];
+            uint  t = w & POINT_TYPE_MASK;
+            float r = a.has_radius != 0u ? asfloat(w) : (t < a.type_count ? asfloat(a.type_radius[t]) : 0.0);
+            r2 += r * r;
+            if (vel) {
+                uint2 h = loadAligned<8>((uint2*)a.vel_out + p);
+                v += float3(md_half_to_float(h.x & 0xFFFFu), md_half_to_float(h.x >> 16u), md_half_to_float(h.y & 0xFFFFu));
+            }
+        }
+        float  inv = 1.0 / float(max(p1 - p0, 1u));
+        float3 m   = s * inv;
+        float  rad = sqrt(max(5.0 / 3.0 * (s2 * inv - dot(m, m)), 0.0) + r2 * inv);
+        uint   q   = a.atom_count + a.der_count + k;
+        store_point(a.points, q, asuint(ref + m), asuint(rad));
+        if (vel) {
+            v *= inv;
+            storeAligned<8>((uint2*)a.vel_out + q, uint2(md_float_to_half(v.x) | (md_float_to_half(v.y) << 16u), md_float_to_half(v.z)));
+        }
     }
 }
 
