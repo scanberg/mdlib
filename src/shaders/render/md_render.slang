@@ -700,6 +700,15 @@ bool fade_keeps(float2 t, uint attr) {
 // hashes; unkeyed, pi itself. Spheres take their depth here whether keyed or
 // not, so a keyed batch and one of the stand-ins themselves compute it with
 // the same instructions from the same position: the same t to the bit.
+// Whether a stage after the cull applies the fade again: for the state lists
+// (listed without it: the mask's raster drops the faded) always; for the
+// visibility lists only where it scales (SHRINK), as THIN only drops and the
+// cull has dropped those (a keyed fade's two dependent loads would be paid
+// per corner in a vertex stage).
+bool fade_again(Batch b, uint list) {
+    return list == 2u || list == 3u || list == 5u || list == 7u || (b.flags & F_FADE_SHRINK) != 0u;
+}
+
 uint fade_point(Batch b, uint pi) {
     return (b.flags & F_FADE_KEY) != 0u ? b.fade_key[gated(b, F_FADE_KEY, pi)] : pi;
 }
@@ -2558,14 +2567,20 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         // sphere (t grows with depth): gone if its nearest point is past the
         // far band or its farthest short of the near band. Shrinking, its
         // pad shrinks by the largest factor it can have.
-        bool faded = false;
+        // Wholly short of the far band and past the near one, no element of
+        // it is touched by the fade: its entry says so (bit 0), and the
+        // element pass leaves the fade out (a keyed one's two dependent
+        // loads an element).
+        bool faded = false, plain = false;
         if (cs.count > 0u && mode != 3u && (b.flags & F_FADE) != 0u) {
             float  d  = -cs.c.z;
             float2 tn = fade_ts(b, d - cs.r);
             float2 tf = fade_ts(b, d + cs.r);
             faded = tn.x >= 1.0 || tf.y <= 0.0;
+            plain = tf.x <= 0.0 && tn.y >= 1.0;
             if ((b.flags & F_FADE_SHRINK) != 0u) cs.r -= cs.pad * (1.0 - (1.0 - tn.x) * tf.y) * 0.999;
         }
+        ent.y = (ent.y & ~1u) | (plain ? 1u : 0u);
         if (cs.count > 0u && faded) {
             out = OUT_LOD;
         } else if (cs.count > 0u) {
@@ -2617,7 +2632,7 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 // Spline parts (SPL 1) are not tested for occlusion one by one (their
 // clusters are; a part's own test would need a retest list of their own in
 // phase 2, for few elements) and have no compute raster.
-void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e) {
+void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e, bool plain) {
     Geo   g;
     g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
     uint ent = 0u;                      // the list entry: global work index
@@ -2627,9 +2642,11 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         ent = b.work_offset + inst * b.count + e;
         dashed = (b.flags & F_DASHED) != 0u;
         // the fade: not for the state lists, which do not depend on the
-        // camera (the mask's raster applies it)
-        if (SPL != 0) g = b.kind == KIND_POLYGONS ? poly_geo(v, b, inst, e, !state_only) : spline_geo(v, b, inst, e, !state_only);
-        else          g = element_geo(v, b, inst, e, !state_only);
+        // camera (the mask's raster applies it), nor in a cluster it does
+        // not touch (plain)
+        bool fade = !state_only && !plain;
+        if (SPL != 0) g = b.kind == KIND_POLYGONS ? poly_geo(v, b, inst, e, fade) : spline_geo(v, b, inst, e, fade);
+        else          g = element_geo(v, b, inst, e, fade);
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
     if (g.faded) {
@@ -2746,7 +2763,7 @@ void cull_body<let SPL : int>(uint3 tid, uint3 gid, uint gi) {
             Elem el;
             el.slot = 0u; el.inst = 0u; el.e = 0u;
             if (valid) el = decode_work(a.batches, v.batch_count, L.occ[i]);
-            element_pass<0>(a.batches, v, L, 2u, false, valid, el.slot, el.inst, el.e);
+            element_pass<0>(a.batches, v, L, 2u, false, valid, el.slot, el.inst, el.e, false);
         }
         return;
     }
@@ -2766,7 +2783,7 @@ void cull_body<let SPL : int>(uint3 tid, uint3 gid, uint gi) {
             uint  inst = ent.x / max(b.cluster_count, 1u);
             uint  c    = ent.x - inst * b.cluster_count;
             uint2 rng  = cluster_range(b, c);
-            cl  = uint4(slot, inst, rng.x, 0u);
+            cl  = uint4(slot, inst, rng.x, ent.y & 1u);         // w: untouched by the fade
             cnt = kind_taken<SPL>(b.kind) ? rng.y - rng.x : 0u;     // the other kernel's: none here
         }
         gc_cl[gi]  = cl;
@@ -2786,7 +2803,7 @@ void cull_body<let SPL : int>(uint3 tid, uint3 gid, uint gi) {
             while (lo < hi) { uint mid = (lo + hi) >> 1; if (gc_inc[mid] > k) hi = mid; else lo = mid + 1u; }
             uint4 c = gc_cl[lo];
             uint  e = c.z + (k - (lo > 0u ? gc_inc[lo - 1u] : 0u));
-            element_pass<SPL>(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, valid, c.x, c.y, e);
+            element_pass<SPL>(a.batches, v, L, mode == 4u ? 2u : 1u, mode == 3u, valid, c.x, c.y, e, c.w != 0u);
         }
         GroupMemoryBarrierWithGroupSync();                  // the arrays are free for the next 64
     }
@@ -2941,7 +2958,7 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         if (i < n) {
             Elem  el = decode_work(a.batches, v.batch_count, L.small[idx]);
             Batch b  = a.batches[el.slot];
-            Geo   g  = element_geo(v, b, el.inst, el.e, true);
+            Geo   g  = element_geo(v, b, el.inst, el.e, fade_again(b, 0u));   // the visibility list
             if (g.ok) {
                 Bounds bd = geo_bounds(v, g);
                 int4 rp = reach_px(v, bd);
@@ -3177,7 +3194,7 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  corner = md_draw_vertex(vid, base_vertex);
     Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent    = elem_id(a.batches, el);
-    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e, true);   // the state lists' fade here
+    Geo   g      = element_geo(v, a.batches[el.slot], el.inst, el.e, fade_again(a.batches[el.slot], a.list));   // the state lists' fade here
     if (!g.ok) return o;
     float3 c   = g.a;
     float  rad = g.r;
@@ -3295,7 +3312,7 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     uint  vk  = md_draw_vertex(vid, base_vertex);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     uint2 ent = elem_id(a.batches, el);
-    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e, true);   // the state lists' fade here
+    Geo   g   = element_geo(v, a.batches[el.slot], el.inst, el.e, fade_again(a.batches[el.slot], a.list));   // the state lists' fade here
     if (!g.ok) return o;
     float4 corner = capsule_box_corner(v, g, vk);
     Batch  b = a.batches[el.slot];
@@ -3412,7 +3429,7 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     }
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, li));
     Batch b   = a.batches[el.slot];
-    Geo   g   = spline_geo(v, b, el.inst, el.e, true);     // the state lists' fade here
+    Geo   g   = spline_geo(v, b, el.inst, el.e, fade_again(b, a.list));     // the state lists' fade here
     if (!g.ok) return o;
     o.pos   = capsule_box_corner(v, g, vk);
     o.pe    = uint4(spline_element_pieces(v, b, el.inst, el.e, g), el.inst, el.e, el.slot);
@@ -3500,7 +3517,7 @@ SplineV polygon_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
     Batch b   = a.batches[el.slot];
     PolyPart pp;
-    Geo   g   = poly_geo_part(v, b, el.inst, el.e, true, pp);     // the state lists' fade here
+    Geo   g   = poly_geo_part(v, b, el.inst, el.e, fade_again(b, a.list), pp);     // the state lists' fade here
     if (!g.ok) return o;
     o.pos   = poly_box_corner(v, pp, vk);
     o.pe    = uint4(0u, el.inst, el.e, el.slot);
