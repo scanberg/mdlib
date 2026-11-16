@@ -250,7 +250,8 @@ static const uint C_BKO        = 208;  // and where each bucket's go next, 208..
 static const uint C_DBG        = 272;  // dbg_probe 2: spline fragments shaded, their hits, full piece tests, pixels resolved: 272..275
 static const uint C_ICMDS_CH   = 276;  // phase 1's spline boxes in spl_chunks passes: an indexed command each, 5 words, 276..315
 static const uint SPLINE_CHUNKS_MAX = 8u;
-static const uint C_COUNT      = 316;
+static const uint C_ZRANGE     = 316;  // phase 1's visible clusters' view depths (spl_order): ~nearest (max), farthest (max)
+static const uint C_COUNT      = 320;
 static const uint SPLINE_BUCKETS = 64u;
 
 // One argument struct for every entry point (md_gpu shares one root between a
@@ -1486,11 +1487,16 @@ SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8], out uint sxy[16
 // depth test turns away the fragments of most of what is behind before their
 // hit: the parts' fragments are the frame's cost, and in a sparse cartoon the
 // copies behind show through it, which the pyramid's coarse farthest depths
-// cannot cull. A coarse order is enough: SPLINE_BUCKETS of the view depth,
-// three to an octave from the near plane.
-uint spline_bucket(ViewData v, float3 c) {
-    float d = max(-c.z, 1e-6) / max(v.near_z, 1e-6);
-    return uint(clamp(floor(log2(max(d, 1.0)) * 3.0), 0.0, float(SPLINE_BUCKETS - 1u)));
+// cannot cull. A coarse order is enough: SPLINE_BUCKETS even steps of the
+// view depth over phase 1's visible clusters' (C_ZRANGE, cull_clusters).
+// (Steps of the depth's octaves from the near plane, the first take, put a
+// whole scene in two buckets: from a camera 1000 A away its 100 A of depth
+// is a seventh of an octave.)
+uint spline_bucket(Lists L, float3 c) {
+    uint  qn = L.counters[C_ZRANGE], qf = L.counters[C_ZRANGE + 1u];
+    float zn = qn != 0u ? asfloat(~qn) : 0.0, zf = asfloat(qf);
+    float t  = (-c.z - zn) / max(zf - zn, 1e-6);
+    return uint(clamp(floor(t * float(SPLINE_BUCKETS)), 0.0, float(SPLINE_BUCKETS - 1u)));
 }
 
 // The boxes of a part of n pieces in the hardware raster: one per group of
@@ -2503,6 +2509,17 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
         uint vbase = mode == 2u ? L.counters[C_CVIS1] : 0u;
         uint iv = wave_append(L.counters + (mode == 2u ? C_CVIS2 : C_CVIS1), out == OUT_HW);
         if (out == OUT_HW) L.cvis[vbase + iv] = ent;
+        if (mode == 1u && v.spl_order != 0u) {
+            // the visible clusters' depths, for the spline boxes' order
+            // (spline_bucket): the nearest as ~bits under max, floats >= 0
+            bool  vis = out == OUT_HW;
+            float dn  = WaveActiveMin(vis ? max(-cs.c.z - cs.r, 0.0) : 3.0e38);
+            float df  = WaveActiveMax(vis ? max(-cs.c.z + cs.r, 0.0) : 0.0);
+            if (WaveIsFirstLane() && dn <= df) {
+                ((Atomic<uint>*)(L.counters + C_ZRANGE))->max(~asuint(dn));
+                ((Atomic<uint>*)(L.counters + C_ZRANGE + 1u))->max(asuint(df));
+            }
+        }
         uint io = wave_append(L.counters + C_COCC, mode == 1u && out == OUT_OCCLUDED);
         if (mode == 1u && out == OUT_OCCLUDED) L.cocc[io] = ent;
 
@@ -2582,7 +2599,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
             ng = spline_groups(v, n);
             if (order) {
                 // its boxes go out by depth (spline_order); here, their count
-                uint bk = spline_bucket(v, bx.c);
+                uint bk = spline_bucket(L, bx.c);
                 L.hw2b[SPLINE_RECORD * (base2 + ih2) + 2u].w = asfloat(bk);
                 ((Atomic<uint>*)(L.counters + C_BKT + bk))->add(ng);
             }

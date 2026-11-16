@@ -184,7 +184,8 @@ enum {
     C_GRID_ORD = 140,               /* spline_order's grid; then the depth buckets' counts and starts, 144..271 */
     C_DBG = 272,                    /* md_render_debug_raster_probe(2)'s counts, 272..275 */
     C_ICMDS_CH = 276,               /* phase 1's spline boxes in passes: an indexed command each, 276..315 */
-    C_COUNT = 316,
+    C_ZRANGE = 316,                 /* phase 1's visible clusters' view depths, for the order: 316, 317 */
+    C_COUNT = 320,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
