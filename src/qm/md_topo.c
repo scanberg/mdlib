@@ -661,9 +661,6 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 #include <stdlib.h>
 
 #define CPG_LMAX    MD_GTO_MAX_ANGULAR_MOMENTUM
-#define CPG_KI      (CPG_LMAX + 8)
-#define CPG_KA      7               // 1D derivative orders 0..6 (the GPU kernel's separable remainders)
-#define CPG_KM      (CPG_KI + CPG_KA + 1)
 #define CPG_NMI     35              // multi-indices of order 0..4
 #define CPG_NV      20              // centre values: orders 0..3
 #define CPG_NDV     20              // D-products: orders 0..3
@@ -724,8 +721,7 @@ typedef struct cpg_ctx_t {
     double  rung_tau[CPG_RUNGS];
     double* rung_r2;
     double eps;
-    double kappa[CPG_KI][CPG_KA][CPG_KM];
-    double kap_sep[CPG_LMAX + 1][CPG_SEP_A][CPG_LMAX + CPG_SEP_A];  // d^a [x^i E] = sum_m kap_sep[i][a][m] alpha^((m-i+a)/2) x^m E
+    double kappa[CPG_LMAX + 1][CPG_SEP_A][CPG_LMAX + CPG_SEP_A];  // d^a [x^i E] = sum_m kappa[i][a][m] alpha^((m-i+a)/2) x^m E
     int    mi[CPG_NMI][3];
     int    mi_idx[5][5][5];
     int    m1[3], m2[3][3], m3[3][3][3], m4[3][3][3][3];
@@ -843,27 +839,17 @@ static bool cpg_inverse_sym3(double out[3][3], const double val[3], double vec[3
 // ----------------------------------------------------------------------------------------------- setup
 
 static void cpg_init_tables(cpg_ctx_t* ctx) {
+    // kappa: d^a/dx^a [x^i E] = sum_m kappa[i][a][m] alpha^((m - i + a) / 2) x^m E, E = exp(-alpha x^2), from
+    // d/dx [x^m E] = m x^(m-1) E - 2 alpha x^(m+1) E. The tail bounds use orders a <= 2, the separable
+    // remainders a < CPG_SEP_A.
     memset(ctx->kappa, 0, sizeof(ctx->kappa));
-    for (int i = 0; i < CPG_KI; ++i) ctx->kappa[i][0][i] = 1.0;
-    for (int a = 0; a < CPG_KA - 1; ++a) {
-        for (int i = 0; i < CPG_KI - 1 - a; ++i) {
-            for (int m = 0; m < CPG_KM; ++m) {
-                double v = -2.0 * ctx->kappa[i + 1][a][m];
-                if (i >= 1) v += i * ctx->kappa[i - 1][a][m];
-                ctx->kappa[i][a + 1][m] = v;
-            }
-        }
-    }
-    // the same expansion with the recurrence in a at fixed i (d/dx [x^m E] = m x^(m-1) E - 2 alpha x^(m+1) E),
-    // to the higher orders the separable remainders need
-    memset(ctx->kap_sep, 0, sizeof(ctx->kap_sep));
     for (int i = 0; i <= CPG_LMAX; ++i) {
-        ctx->kap_sep[i][0][i] = 1.0;
+        ctx->kappa[i][0][i] = 1.0;
         for (int a = 0; a + 1 < CPG_SEP_A; ++a) {
             for (int m = 0; m <= i + a + 1; ++m) {
-                double v = m + 1 <= i + a ? (m + 1) * ctx->kap_sep[i][a][m + 1] : 0.0;
-                if (m >= 1) v -= 2.0 * ctx->kap_sep[i][a][m - 1];
-                ctx->kap_sep[i][a + 1][m] = v;
+                double v = m + 1 <= i + a ? (m + 1) * ctx->kappa[i][a][m + 1] : 0.0;
+                if (m >= 1) v -= 2.0 * ctx->kappa[i][a][m - 1];
+                ctx->kappa[i][a + 1][m] = v;
             }
         }
     }
@@ -900,7 +886,7 @@ static void cpg_init_tables(cpg_ctx_t* ctx) {
 #define M3(a,b,c)   (ctx->m3[a][b][c])
 #define M4(a,b,c,d) (ctx->m4[a][b][c][d])
 
-// sup over |x - centre| >= d of |d^(p,q,w) [x^i y^j z^k exp(-alpha r^2)]|, by monomial terms.
+// sup over |x - centre| >= d of |d^(p,q,w) [x^i y^j z^k exp(-alpha r^2)]|, by monomial terms (p, q, w <= 2).
 static double cpg_tail_prim(const cpg_ctx_t* ctx, int i, int j, int k, int p, int q, int w, double alpha, double d) {
     double acc = 0.0;
     for (int m1 = 0; m1 <= i + p; ++m1) {
@@ -959,8 +945,9 @@ static double cpg_tail_ao(const cpg_ctx_t* ctx, const cpg_shell_t* s, int ci, in
 
 // ----------------------------------------------------------------------------------------------- AO evaluation
 
-// 1D tables g[i][a] = d^a/dx^a [x^i exp(-alpha x^2)] for i <= imax - a.
-static void cpg_tables_1d(double g[CPG_LMAX + 5][4], double x, double alpha, int imax, int amax) {
+// 1D tables g[i][a] = d^a/dx^a [x^i exp(-alpha x^2)] for a <= amax, i <= imax - a, by the recurrence
+// g[i][a+1] = i g[i-1][a] - 2 alpha g[i+1][a] (imax < CPG_LMAX + CPG_SEP_A, amax < CPG_SEP_A - 1).
+static void cpg_tables_1d(double g[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1], double x, double alpha, int imax, int amax) {
     const double E = exp(-alpha * x * x);
     double xp = 1.0;
     for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= x; }
@@ -978,7 +965,7 @@ static void cpg_shell_eval(const cpg_ctx_t* ctx, const cpg_shell_t* s, const dou
     const int nmi = deriv == 0 ? 1 : deriv == 1 ? 4 : deriv == 2 ? 10 : 20;
     const double dx = x[0] - s->A[0], dy = x[1] - s->A[1], dz = x[2] - s->A[2];
     for (int ci = 0; ci < s->ncart; ++ci) for (int m = 0; m < nmi; ++m) out[ci * stride + m] = 0.0;
-    double gx[CPG_LMAX + 5][4], gy[CPG_LMAX + 5][4], gz[CPG_LMAX + 5][4];
+    double gx[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1], gy[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1], gz[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1];
     for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
         const double al = ctx->alpha[s->prim_offset + ip];
         const double cf = ctx->coeff[s->prim_offset + ip];
@@ -1011,19 +998,8 @@ static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, dou
         0.01110899653824231, 0.00673794699908547,
     };
     MD_STATIC_ASSERT(CPG_LMAX + CPG_SEP_A <= 11, "exp(-m/2) table");
-    // centre values by the recurrence g[i][a+1] = i g[i-1][a] - 2 alpha g[i+1][a]
     double g[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1];
-    const int imax = l + CPG_SEP_A - 2;
-    const double E = exp(-alpha * xc * xc);
-    double xp = 1.0;
-    for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= xc; }
-    for (int a = 0; a < CPG_SEP_A - 2; ++a) {
-        for (int i = 0; i < imax - a; ++i) {
-            double v = -2.0 * alpha * g[i + 1][a];
-            if (i >= 1) v += i * g[i - 1][a];
-            g[i][a + 1] = v;
-        }
-    }
+    cpg_tables_1d(g, xc, alpha, l + CPG_SEP_A - 2, CPG_SEP_A - 2);
     for (int i = 0; i <= l; ++i) for (int a = 0; a < CPG_SEP_A - 1; ++a) val[i][a] = g[i][a];
     // monomial sups Sm[m] = sup over the interval of |t|^m exp(-alpha t^2)
     const double x0 = xc - h, x1 = xc + h, ax0 = fabs(x0), ax1 = fabs(x1);
@@ -1047,7 +1023,7 @@ static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, dou
         for (int a = 3; a < CPG_SEP_A; ++a) {
             double acc = 0.0;
             for (int m = (i + a) & 1; m <= i + a; m += 2) {      // only the parity of i + a occurs
-                const double k = ctx->kap_sep[i][a][m];
+                const double k = ctx->kappa[i][a][m];
                 if (k != 0.0) acc += fabs(k) * ap[(m - i + a) / 2] * Sm[m];
             }
             sup[i][a] = acc;
