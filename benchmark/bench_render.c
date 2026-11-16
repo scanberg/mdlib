@@ -786,6 +786,7 @@ void md_render_debug_raster_probe(uint32_t mode);
 bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[4]);
 void md_render_debug_spline_group(uint32_t pieces);
 void md_render_debug_spline_order(uint32_t on);
+void md_render_debug_spline_passes(uint32_t n);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1800,15 +1801,20 @@ static int run_heavy(int argc, char** argv) {
                                 }
                                 printf(" ms\n");
                                 md_render_debug_spline_group(1);
-                                /* phase 1's spline boxes nearest first, or in the cull's order */
-                                printf("    refit raster, spline boxes");
-                                for (int oi = 0; oi < 2; ++oi) {
+                                /* phase 1's spline boxes in the cull's order, or nearest
+                                   first in 1, 2, 4 or 8 render passes */
+                                printf("    refit raster, spline boxes in the cull's order");
+                                static const uint32_t npass[5] = { 0, 1, 2, 4, 8 };
+                                for (int oi = 0; oi < 5; ++oi) {
                                     md_render_debug_spline_order(oi == 0 ? 0u : 1u);
+                                    md_render_debug_spline_passes(oi == 0 ? 1u : npass[oi]);
                                     timing_t to = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
-                                    printf("%s %s: %.2f / %.2f", oi ? "," : "", oi ? "nearest first" : "in the cull's order", to.best, to.median);
+                                    if (oi == 0) printf(": %.2f / %.2f, nearest first in", to.best, to.median);
+                                    else         printf("%s %u pass%s: %.2f / %.2f", oi > 1 ? "," : "", npass[oi], npass[oi] > 1 ? "es" : "", to.best, to.median);
                                 }
                                 printf(" ms\n");
                                 md_render_debug_spline_order(0);
+                                md_render_debug_spline_passes(1);
                                 /* what the spline fragments cost, counted: shaded per pixel
                                    resolved (how much of what is behind the depth test turned
                                    away first), and full piece tests per fragment */
