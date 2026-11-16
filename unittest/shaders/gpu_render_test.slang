@@ -236,6 +236,18 @@ LDepthLess layer_depth_less_discard_fs(LOut i) {
     return o;
 }
 
+// Forced early tests: the depth test before the stage, which then may not
+// write depth (the pipeline does not), and a side effect (a.cmds: an
+// atomic max a pixel, 1024 slots), as a visibility kept by atomics would.
+[earlydepthstencil]
+[shader("fragment")]
+uint layer_early_fs(LOut i) : SV_Target {
+    RArgs a = MD_ARGS;
+    uint  id = layer_work(i);
+    InterlockedMax(a.cmds[(uint(i.pos.y) * 512u + uint(i.pos.x)) & 1023u], id);
+    return id;
+}
+
 // standard Z (LESS_EQUAL): no nearer is larger
 [shader("fragment")]
 LDepthMore layer_depth_greater_fs(LOut i) {
