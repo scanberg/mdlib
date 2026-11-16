@@ -92,6 +92,7 @@ static const uint F_DASHED       = 1u << 22;  // CAPSULES: dashed (dash_hit)
 static const uint F_DISPLACED    = 1u << 23;  // CAPSULES: moved off their points (capsule_side)
 static const uint F_SIDE         = 1u << 24;  // ... along cap_side
 static const uint F_CIRCLE       = 1u << 25;  // POLYGONS: the circle inside each (poly_inset, poly_dashes)
+static const uint F_FADE_KEY     = 1u << 26;  // SPHERES, CAPSULES: each point's fade by the point fade_key gives
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -179,6 +180,8 @@ struct Batch {
     uint    poly_dashes;        // the dashes over each edge (0: solid)
     float   cap_trim;           // CAPSULES displaced: their ends pulled in by this of their length
     float   spl_scale;          // SPLINES: the profile's a and r times this
+    uint*   fade_key;           // F_FADE_KEY: per point, the point that stands for it in the fade
+    uint    _bpad0, _bpad1;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -690,6 +693,18 @@ uint fade_hash(uint x) {
 bool fade_keeps(float2 t, uint attr) {
     float h = float(fade_hash(attr) >> 8) * (1.0 / 16777216.0);
     return h >= t.x && h < t.y;
+}
+
+// Keyed (md_render_fade_t.key): the point that stands for point pi, whose
+// depth decides how far through the bands it is and whose attribute THIN
+// hashes; unkeyed, pi itself. Spheres take their depth here whether keyed or
+// not, so a keyed batch and one of the stand-ins themselves compute it with
+// the same instructions from the same position: the same t to the bit.
+uint fade_point(Batch b, uint pi) {
+    return (b.flags & F_FADE_KEY) != 0u ? b.fade_key[gated(b, F_FADE_KEY, pi)] : pi;
+}
+float fade_depth(ViewData v, Batch b, Mat T, uint kp) {
+    return -mulp(M(v, view), mulp(T, load_pos(b, kp))).z;
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,9 +1372,10 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, pi)));
         g.b  = g.a;
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
-            float2 t = fade_ts(b, -g.a.z);
+            uint   kp = fade_point(b, pi);
+            float2 t  = fade_ts(b, fade_depth(v, b, T, kp));
             if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
-            g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !fade_keeps(t, ai));
+            g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !fade_keeps(t, attr_of(b, kp)));
         }
     } else if (b.kind == KIND_CAPSULES) {
         uint p0 = point_of(b, e, 0u, 2u);
@@ -1374,9 +1390,17 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, e, g.a, g.b) : float3(0.0);
         if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.r, g.a, g.b)) return g;   // the spheres meet
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
-            float2 t = fade_ts(b, -0.5 * (g.a.z + g.b.z));      // the midpoint
-            if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
-            g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t, a0) && fade_keeps(t, a1)));
+            if ((b.flags & F_FADE_KEY) != 0u) {                  // each end by its own key
+                uint   k0 = fade_point(b, p0), k1 = fade_point(b, p1);
+                float2 t0 = fade_ts(b, fade_depth(v, b, T, k0));
+                float2 t1 = fade_ts(b, fade_depth(v, b, T, k1));
+                if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= min(fade_size(t0), fade_size(t1));
+                g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t0, attr_of(b, k0)) && fade_keeps(t1, attr_of(b, k1))));
+            } else {
+                float2 t = fade_ts(b, -0.5 * (g.a.z + g.b.z));  // the midpoint
+                if ((b.flags & F_FADE_SHRINK) != 0u) g.r *= fade_size(t);
+                g.faded = g.r <= 0.0 || ((b.flags & F_FADE_THIN) != 0u && !(fade_keeps(t, a0) && fade_keeps(t, a1)));
+            }
         }
         if ((b.flags & F_DISPLACED) != 0u) capsule_displace(b, e, side, g.r, g.a, g.b);   // by its radius as drawn
     } else {
@@ -2274,7 +2298,10 @@ uint find_batch_cluster(Batch* batches, uint count, uint i) {
 
 uint2 cluster_range(Batch b, uint c) {
     uint cg = gated(b, F_CLUSTERS, c);
-    if ((b.flags & F_CLUSTERS) != 0u) return uint2(b.cluster_offset[cg], b.cluster_offset[cg + 1u]);
+    if ((b.flags & F_CLUSTERS) != 0u) {         // less the first: a tail of another batch's offsets
+        uint o = b.cluster_offset[0];
+        return uint2(b.cluster_offset[cg] - o, b.cluster_offset[cg + 1u] - o);
+    }
     uint beg = c * 64u;
     return uint2(beg, min(beg + 64u, b.count));
 }
@@ -3604,7 +3631,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         float3 cwp = mulp(Tp, lc - load_vel(b, pi) * v.dt);
         float3 c   = mulp(M(v, view), cw);
         float  rad = sphere_radius(b, pi) * s;
-        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -c.z));   // as element_geo
+        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, fade_depth(v, b, T, fade_point(b, pi))));   // as element_geo
         float  t   = sphere_hit(r, c, rad, true);
         h.p_view   = r.o + r.d * t;
         h.n_view   = normalize(h.p_view - c);
@@ -3628,7 +3655,12 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, h.element, pa, pb) : float3(0.0);
         float3 qa  = pa, qb = pb;               // a dash's: trimmed
         bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, rad, qa, qb);
-        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) rad *= fade_size(fade_ts(b, -0.5 * (qa.z + qb.z)));
+        if ((b.flags & F_FADE) != 0u && (b.flags & F_FADE_SHRINK) != 0u) {     // as element_geo
+            if ((b.flags & F_FADE_KEY) != 0u)
+                rad *= min(fade_size(fade_ts(b, fade_depth(v, b, T, fade_point(b, p0)))), fade_size(fade_ts(b, fade_depth(v, b, T, fade_point(b, p1)))));
+            else
+                rad *= fade_size(fade_ts(b, -0.5 * (qa.z + qb.z)));
+        }
         if ((b.flags & F_DISPLACED) != 0u) {        // as element_geo
             capsule_displace(b, h.element, side, rad, qa, qb);
             if (dashed) { float3 dsp = side * (b.cap_offset * rad); pa += dsp; pb += dsp; } else { pa = qa; pb = qb; }

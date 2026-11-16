@@ -389,16 +389,29 @@ typedef struct md_render_color_t {
    unread. Which batches hand over to which is the caller's. The instance
    transform's scale does not enter; with an orthographic projection every
    element is equally far through a band. Elements dropped are counted in
-   md_render_stats_t.faded. */
+   md_render_stats_t.faded.
+   Keyed (SPHERES and CAPSULES): `key` gives each point another point of the
+   batch's that stands for it (a group's centroid for its members), and that
+   point decides its fade: its depth how far through the bands, its attribute
+   what THIN hashes. A group fades as one, and a batch of the stand-ins
+   themselves (unkeyed, over the same positions and attributes, with the same
+   instances) fading the other way across the same band draws exactly the
+   groups the keyed batch leaves out: a level of detail. A capsule is kept
+   while both its ends are (each by its own key), and SHRINK scales it by the
+   smaller of their factors. Clusters are dropped by the bounds of their
+   visible elements: every key point must lie within them (a group's
+   centroid does, when its whole group is in the cluster). */
 enum {
     MD_RENDER_FADE_SHRINK = 1u << 0,
     MD_RENDER_FADE_THIN   = 1u << 1,
 };
 
 typedef struct md_render_fade_t {
-    uint32_t mode;                 /* MD_RENDER_FADE_* or'ed; 0: no fading            */
-    float    in[2];                /* {start, end}, start > end; {0, 0}: none          */
-    float    out[2];
+    uint32_t      mode;            /* MD_RENDER_FADE_* or'ed; 0: no fading            */
+    float         in[2];           /* {start, end}, start > end; {0, 0}: none          */
+    float         out[2];
+    md_gpu_addr_t key;             /* uint32 per point: the point that stands for it
+                                      (an index into the same points); 0: itself  */
 } md_render_fade_t;
 
 typedef struct md_render_batch_t {
@@ -427,7 +440,9 @@ typedef struct md_render_batch_t {
 
     /* Clusters: the first level of the cull. Cluster c is the elements
        cluster_offset[c] .. cluster_offset[c + 1] (uint32 [cluster_count + 1],
-       in element order, as `index` orders them), best at most 64 and
+       in element order, as `index` orders them), less cluster_offset[0] (a
+       batch over the tail of another's elements, its points moved to start
+       there, can point into the middle of the other's offsets), best at most 64 and
        spatially compact: md_render_mol makes them from the topology for
        bonded structures and from a grid for solvent. 0: runs of 64
        consecutive elements, which is only as good as the element order.
