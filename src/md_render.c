@@ -1509,24 +1509,26 @@ static void record_stats(md_gpu_stream_t s, md_render_view_t v, uint64_t element
 /* Whether this raster culls by occlusion. Its fixed cost -- two pyramids,
    phase 2's passes, its render pass (on the M4 the second raster pass alone
    loads and stores the targets, 0.3 ms at 1080p) -- is 0.3 to 0.7 ms on the
-   M4 at 1080p, where what it culls may be worth less. On the M4 (c3e26c61),
-   occlusion against none, ms:
-     one copy of the protein's cartoon (2 culled)              +0.5 to +0.7
-     64 copies' cartoon (270 culled; the membrane 13855)       +0.3 to +0.9
-     100k atoms, licorice near (5163) / spacefill far (76158)  +0.5 / +0.3
-     1M, licorice near (116326)                                +0.5
-     1M, spacefill near (802318)                               -3.5
-     1M, spacefill far (850485, all small)                     -0.1
-     10M, spacefill near (8.3M) / far (7.8M)                   -30 / -4.3
+   M4 at 1080p, where what it culls may be worth less. On the M4 (3280c3f0),
+   occlusion against none, ms (what it culled, weighed as below):
+     cartoon, one copy (2)                                       +0.3 to +0.5
+     64 copies' cartoon (0 to 270; the membrane 13855, 17549)    +0.2 to +0.5
+     100k atoms, licorice near (5163) / spacefill far (37.7k)    +0.5 / +0.35
+     100k atoms, spacefill near (72406)                          0
+     1M, licorice near (35k)                                     +0.55
+     1M, spacefill far (106k) / near (802k)                      -0.15 / -3.4
+     10M, spacefill and licorice (292k to 8.3M)                  0 to -30
    So a raster that tested occlusion and culled little turns it off for the
    next OCCL_OFF rasters; then it is tested again, sooner when the elements
    drawn more than double. Little: the culled elements weighed as the drawn
    ones go, those of the compute raster at an eighth (their raster is that
-   much cheaper: 1M spacefill far culled 850485 for 0.1 ms), under
-   OCCL_LITTLE. The image does not depend on it. The counts are the stats'
-   (record_stats), read once complete, never waited for. */
-#define OCCL_LITTLE 10000u
-#define OCCL_OFF    60u
+   much cheaper: 1M spacefill far culled 850485 for 0.15 ms), under
+   OCCL_LITTLE_PER_PX a pixel of the target (about 104k at 1080p; the fixed
+   cost grows with the pixels; 10k a frame, the first take, kept it where it
+   cost 0.35 to 0.55 ms). The image does not depend on it. The counts are
+   the stats' (record_stats), read once complete, never waited for. */
+#define OCCL_LITTLE_PER_PX 0.05
+#define OCCL_OFF           60u
 static bool occlusion_wanted(md_render_view_t v) {
     if (!g_occl_auto) return true;
     int best = -1;
@@ -1542,11 +1544,11 @@ static bool occlusion_wanted(md_render_view_t v) {
         v->occl_seen = v->stats[best].raster;
         if (v->stats[best].occl_tested) {
             const double weight = drawn ? ((double)hw + (double)small / 8.0) / (double)drawn : 1.0;
-            if ((double)c[C_OCCLUDED] * weight < (double)OCCL_LITTLE) {
+            if ((double)c[C_OCCLUDED] * weight < OCCL_LITTLE_PER_PX * (double)v->width * (double)v->height) {
                 v->occl_off   = OCCL_OFF;
                 v->occl_drawn = drawn;
             }
-        } else if (v->occl_off && drawn > 2u * v->occl_drawn + OCCL_LITTLE) {
+        } else if (v->occl_off && (double)drawn > 2.0 * (double)v->occl_drawn + OCCL_LITTLE_PER_PX * (double)v->width * (double)v->height) {
             v->occl_off = 0;
         }
     }
