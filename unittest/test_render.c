@@ -1170,6 +1170,45 @@ UTEST(render, spline_curves_match_the_sweep) {
     EXPECT_GT(from[1], 1000);
     printf("    with spheres: %d pixels theirs, %d the splines'\n", from[0], from[1]);
     for (int k = 0; k < 3; ++k) { free(ids[k]); free(dps[k]); free(cols[k]); free(nrms[k]); md_render_view_destroy(fx.gfx, views[k]); }
+
+    /* every spline pixel coloured, by the heavy resolve over the tiles the
+       main one listed: a target of whole tiles, and one whose last row and
+       column of tiles are partial */
+    {
+        md_render_batch_t bc = b;
+        bc.color.mode    = MD_RENDER_COLOR_UNIFORM;
+        bc.color.uniform = 0xFF4080C0u;
+        md_render_batch_t both_c[2] = { bs, bc };
+        const uint32_t sz[2][2] = { { W, H }, { W - 3, H - 5 } };
+        for (int k = 0; k < 2; ++k) {
+            const uint32_t w = sz[k][0], h = sz[k][1];
+            md_render_view_t vc = md_render_view_create(fx.r, "colours");
+            md_render_frame_t fc2 = frame_of(w, h, cam, both_c, 2);
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, vc, &fc2, NULL));
+            md_gpu_stream_sync(fx.gfx);
+            uint32_t* idc = malloc((size_t)w * h * 8);
+            uint32_t* cc  = malloc((size_t)w * h * 4);
+            md_render_targets_t t = md_render_view_targets(vc);
+            ASSERT_TRUE(f_read(&fx, t.id, idc, (size_t)w * h * 8) && f_read(&fx, t.color, cc, (size_t)w * h * 4));
+            int spl = 0, sph = 0, wrong = 0;
+            for (uint32_t i = 0; i < w * h; ++i) {
+                uint32_t slot = idc[2 * i + 1] >> 20;
+                if (slot == 0) continue;
+                uint32_t want = slot == 2 ? 0xFF4080C0u : 0xFF30C030u;
+                if (slot == 2) spl++; else sph++;
+                if (!near_rgba(cc[i], want)) {
+                    if (wrong < 4) printf("    %ux%u, pixel (%u, %u) of %s: colour %08x\n", w, h, i % w, i / w, slot == 2 ? "the splines" : "a sphere", cc[i]);
+                    wrong++;
+                }
+            }
+            EXPECT_EQ(0, wrong);
+            EXPECT_GT(spl, 1000);
+            EXPECT_GT(sph, 200);
+            printf("    %ux%u: %d spline pixels and %d sphere pixels coloured\n", w, h, spl, sph);
+            free(idc); free(cc);
+            md_render_view_destroy(fx.gfx, vc);
+        }
+    }
     free(id); free(dp); free(sw.part);
     f_close(&fx);
 }

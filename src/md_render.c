@@ -182,6 +182,8 @@ typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
     md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box, part, pieces' cuts: 20 float4 (SPLINE_RECORD) */
     md_gpu_addr_t hw2g;             /* boxes of groups of the parts' pieces: record << 4 | group, 16 at most a part */
+    md_gpu_addr_t tiles;            /* the resolve's 8 x 8 tiles with spline pixels, then those with polygons */
+    uint32_t      tiles_cap, _lpad; /* tiles of the target */
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -206,7 +208,8 @@ enum {
     C_ZRANGE = 316,                 /* phase 1's visible clusters' view depths, for the order: 316, 317 */
     C_DBG_AGAIN = 318,              /* md_render_debug_spline_again(2) with the probe 2: the boxes' fragments passing the test */
     C_BKT = 320, C_BKO = 576,       /* phase 1's spline boxes' depth buckets: counts and starts, 256 each */
-    C_COUNT = 832,
+    C_TILES = 832,                  /* the resolve's tiles with spline, with polygon pixels: 832, 833 */
+    C_COUNT = 836,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -1224,15 +1227,19 @@ static gpu_args_t base_args(const md_render_view_t v) {
 static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
-    const uint64_t sizes[15] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2], 16u * work[2] };
-    const uint32_t esize[15] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
+    const uint64_t tiles = (uint64_t)((v->width + 7u) / 8u) * ((v->height + 7u) / 8u);
+    const uint64_t sizes[16] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2], 16u * work[2],
+                                 (work[2] || work[3]) ? 2u * tiles : 0u };
+    const uint32_t esize[16] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
     size_t need = 0;
-    for (int i = 0; i < 15; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
+    for (int i = 0; i < 16; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[15] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g };
-    for (int i = 0; i < 15; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    md_gpu_addr_t* dst[16] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g, &l.tiles };
+    for (int i = 0; i < 16; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    l.tiles_cap = (uint32_t)sizes[15];
+    l._lpad     = 0;
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
@@ -1414,14 +1421,17 @@ static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_r
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
     if (!spl && !poly) return "resolve";
     PASS_DONE("resolve");
+    /* the heavy ones over the tiles the main one listed (C_TILES): a group a
+       tile, so many groups taking them in turn (Args.mode) */
+    const uint32_t tiles  = ((v->width + 7u) / 8u) * ((v->height + 7u) / 8u);
+    const uint32_t groups = tiles < 4096u ? tiles : 4096u;
+    a.mode = groups;
     if (spl) {
-        g = md_gpu_grid_for(v->r->k_resolve_heavy, v->width, v->height, 1);
-        if (!md_gpu_launch(s, v->r->k_resolve_heavy, g, &a, sizeof(a))) return NULL;
+        if (!md_gpu_launch(s, v->r->k_resolve_heavy, md_gpu_grid(groups, 1, 1), &a, sizeof(a))) return NULL;
         if (!poly) return "resolve splines";
         PASS_DONE("resolve splines");
     }
-    g = md_gpu_grid_for(v->r->k_resolve_poly, v->width, v->height, 1);
-    if (!md_gpu_launch(s, v->r->k_resolve_poly, g, &a, sizeof(a))) return NULL;
+    if (!md_gpu_launch(s, v->r->k_resolve_poly, md_gpu_grid(groups, 1, 1), &a, sizeof(a))) return NULL;
     return "resolve polygons";
 }
 
