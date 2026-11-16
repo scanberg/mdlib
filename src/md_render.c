@@ -72,11 +72,12 @@ void md_render_debug_raster_probe(uint32_t mode) { g_raster_probe = mode; }
 static uint32_t g_spline_group = ~0u;
 void md_render_debug_spline_group(uint32_t pieces) { g_spline_group = pieces; }
 
-/* Measured with the boxes in the cull's order on NVIDIA (1060, 3080: 1 piece
-   took 15 to 21% off the whole part's at 64 protein copies near), nearest
-   first on the M4 (4 pieces and the whole part tied, 1 piece 4% behind),
-   in the cull's order on Intel's HD 530 (the whole part and 4 pieces tied,
-   1 piece 4 to 7% behind). AMD and the rest: unmeasured, NVIDIA's. */
+/* Nearest first (6f908220): on the 1060 1 piece took 27 to 37% off the
+   others at 64 protein copies near (36 ms against 49 to 56; the 3080, in
+   the cull's order: 21%); on the M4 4 pieces and the whole part tied, 1
+   piece 4% behind; on the HD 530 4 pieces and the whole part tied, 1 piece
+   4 to 12% behind at 64 copies mid, fit and the membrane. AMD and the rest:
+   unmeasured, NVIDIA's. */
 static uint32_t spline_group_for(uint32_t vendor_id) {
     if (g_spline_group <= 16u) return g_spline_group;
     return vendor_id == 0x106Bu || vendor_id == 0x8086u ? 4u : 1u;
@@ -91,16 +92,15 @@ static uint32_t spline_group_for(uint32_t vendor_id) {
    fragment that writes depth against what the pass drew before it. 256
    buckets beat 64 by 2 to 5%, 64 beat 16 more; each box by its own centre
    or near face bought nothing; render passes of their own, nearest first,
-   nothing either (both removed). On the 1060 (6f908220, 1 piece a box) a
-   wash: 10% off the 64-copy membrane near and fit, 2% off the protein near,
-   4 to 9% on the protein's and the nucleosome's mid and fit. It turns away
-   little there: the spline boxes drawn again over the final depth cost as
-   much as the first time (+30 ms on the protein's 64 copies near, where the
-   M4 shaded 39% again), where its own test of layers turns away 92 to 100%
-   (gpu_render.early_depth_rejection*): presumably only the coarse depth
-   cull, by tiles, for a stage that writes depth, which a sparse cartoon's
-   tiles, the background in each, defeat. On for all; the 3080 and AMD to
-   measure. At most 256. */
+   nothing either (both removed). On the HD 530 (6f908220, 4 pieces a box)
+   it took 26 to 29% off the protein's 64 copies, 18 to 22% off the
+   nucleosome's, 5 to 8% off the membrane's, up to 11% off one copy. On the
+   1060 (1 piece a box) a wash: 10% off the 64-copy membrane near and fit,
+   2% off the protein near, 4 to 9% on the protein's and the nucleosome's
+   mid and fit. (On both the spline boxes drawn again over the final depth,
+   in a pass after, cost as much as the first time, where the M4 shaded 39%
+   of them again: that line does not tell what one pass turns away there.)
+   On for all; the 3080 and AMD to measure. At most 256. */
 static uint32_t g_spline_order = 256u;
 void md_render_debug_spline_order(uint32_t buckets) { g_spline_order = buckets > 256u ? 256u : buckets; }
 static uint32_t spline_order_on(void) { return g_spline_order != 0u; }
