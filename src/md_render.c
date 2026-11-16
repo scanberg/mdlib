@@ -170,7 +170,8 @@ enum {
     C_STICMDP = 130,  /* the state list's polygons: 130..134 */
     C_HWSG1 = 136, C_HWSG2 = 137,   /* boxes of the hardware spline parts' pieces (hw2g): phase 1 and 2 */
     C_GRID_ORD = 140,               /* spline_order's grid; then the depth buckets' counts and starts, 144..271 */
-    C_COUNT = 272,
+    C_DBG = 272,                    /* md_render_debug_raster_probe(2)'s counts, 272..275 */
+    C_COUNT = 276,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -1877,4 +1878,19 @@ bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name,
     if (name) *name = ps[i].n;
     if (info && !ps[i].p) { memset(info, 0, sizeof(*info)); return true; }
     return info ? md_gpu_pipeline_info(ps[i].p, info) : true;
+}
+
+
+/* After a frame drawn with the probe at 2: the spline fragments it shaded,
+   their hits, their full piece tests, and the spline pixels it resolved (an
+   atomic each: slow, for counting only). Waits for the stream. */
+bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[4]) {
+    if (!v || !v->counters) return false;
+    md_gpu_mem_t hm = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, 16u);
+    if (!hm.gpu) return false;
+    bool ok = md_gpu_copy(s, hm.gpu, CTR(v, C_DBG), 16u);
+    md_gpu_stream_sync(s);
+    if (ok) memcpy(out, hm.cpu, 16u);
+    md_gpu_free(s, hm.gpu);
+    return ok;
 }

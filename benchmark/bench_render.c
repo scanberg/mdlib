@@ -783,6 +783,7 @@ void md_render_mol_debug_frame_groups(uint32_t groups);
 bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
 void md_render_debug_raster_probe(uint32_t mode);
+bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[4]);
 void md_render_debug_spline_group(uint32_t pieces);
 void md_render_debug_spline_order(uint32_t on);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
@@ -1808,6 +1809,21 @@ static int run_heavy(int argc, char** argv) {
                                 }
                                 printf(" ms\n");
                                 md_render_debug_spline_order(0);
+                                /* what the spline fragments cost, counted: shaded per pixel
+                                   resolved (how much of what is behind the depth test turned
+                                   away first), and full piece tests per fragment */
+                                for (int gi = 0; gi < 2; ++gi) {
+                                    uint32_t cnt[4] = {0};
+                                    md_render_debug_spline_group(gi == 0 ? 0u : 1u);
+                                    md_render_debug_raster_probe(2);
+                                    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+                                    bool okc = md_render_view_draw(s, v, &f, NULL) && md_render_debug_spline_counts(s, v, cnt);
+                                    md_render_debug_raster_probe(0);
+                                    if (okc) printf("    spline fragments, boxes of %s: %u shaded for %u pixels (%.2f a pixel), %u hits, %u full piece tests (%.2f a fragment)\n",
+                                                    gi == 0 ? "the whole part" : "1 piece", cnt[0], cnt[3], cnt[3] ? (double)cnt[0] / cnt[3] : 0.0,
+                                                    cnt[1], cnt[2], cnt[0] ? (double)cnt[2] / cnt[0] : 0.0);
+                                }
+                                md_render_debug_spline_group(1);
                             }
                         }
                         md_render_view_destroy(s, v);
