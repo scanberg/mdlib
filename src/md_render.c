@@ -69,8 +69,10 @@ static uint32_t g_spline_group = 1u;
 void md_render_debug_spline_group(uint32_t pieces) { g_spline_group = pieces < 16u ? pieces : 16u; }
 
 /* Phase 1's spline boxes drawn nearest first (spline_order; the bench's,
-   not in the header). 0: in the cull's order. */
-static uint32_t g_spline_order = 1u;
+   not in the header). 0: in the cull's order. Off: on the 3080 it bought
+   nothing in the raster and cost 0.3 to 1.2 ms (the buckets' atomics, the
+   pass) at the 64 and 512 copies; kept to measure the other GPUs. */
+static uint32_t g_spline_order = 0u;
 void md_render_debug_spline_order(uint32_t on) { g_spline_order = on ? 1u : 0u; }
 
 enum {
