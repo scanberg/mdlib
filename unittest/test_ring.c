@@ -386,7 +386,8 @@ UTEST_F(ring, script_ring_index) {
 }
 
 UTEST(ring, rings_common) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     int64_t num_rings = 0;
 
     num_rings = md_ring_data_count(&refsys.mol_nucleotides.ring);

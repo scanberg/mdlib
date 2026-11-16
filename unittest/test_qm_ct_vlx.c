@@ -35,16 +35,16 @@ static bool ct_vlx_compute(ct_vlx_t* out, vlx_test_t* t, uint32_t state) {
     const size_t num_mo = coeff->format.shape[0];
     if (coeff->format.shape[1] != num_ao) return false;
     double* C = md_alloc(alloc, sizeof(double) * num_mo * num_ao);
-    if (md_attribute_extract_f64(C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) return false;
+    if (md_attribute_extract_f64(C, num_mo * num_ao, &t->sys.attributes, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) return false;
 
     const md_attribute_slice_t slice = md_attribute_slice_1(state);
     const size_t K = lam_a->format.shape[1];
     double* lambda = md_alloc(alloc, sizeof(double) * K);
     double* hole   = md_alloc(alloc, sizeof(double) * K * num_ao);
     double* part   = md_alloc(alloc, sizeof(double) * K * num_ao);
-    if (md_attribute_extract_f64(lambda, K, lam_a, slice, md_unit_none()) != K) return false;
-    if (md_attribute_extract_f64(hole, K * num_ao, hole_a, slice, md_unit_none()) != K * num_ao) return false;
-    if (md_attribute_extract_f64(part, K * num_ao, part_a, slice, md_unit_none()) != K * num_ao) return false;
+    if (md_attribute_extract_f64(lambda, K, &t->sys.attributes, lam_a, slice, md_unit_none()) != K) return false;
+    if (md_attribute_extract_f64(hole, K * num_ao, &t->sys.attributes, hole_a, slice, md_unit_none()) != K * num_ao) return false;
+    if (md_attribute_extract_f64(part, K * num_ao, &t->sys.attributes, part_a, slice, md_unit_none()) != K * num_ao) return false;
 
     md_gto_basis_t basis = {0};
     if (!qm_test_basis(&basis, t) || md_gto_basis_num_ao(&basis) != num_ao) return false;

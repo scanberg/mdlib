@@ -65,7 +65,7 @@ static bool v1_values(const char* src, const md_system_t* sys, uint32_t nf, doub
     if (!md_unit_is_none(unit) && md_unit_conversion_factor(&factor, unit, md_unit_degree())) unit = md_unit_degree();
     for (uint32_t f = 0; f < nf; ++f) {
         float v = 0.0f;
-        if (md_attribute_extract_f32(&v, 1, attr, md_attribute_slice_1(f), unit) != 1) return false;
+        if (md_attribute_extract_f32(&v, 1, md_script_eval_attributes(eval), attr, md_attribute_slice_1(f), unit) != 1) return false;
         out[f] = v;
     }
     md_script_eval_free(eval);
@@ -90,7 +90,7 @@ static bool v2_values(const char* src, const md_system_t* sys, uint32_t nf, doub
     ok = ok && attr && (attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) && attr->format.shape[0] == nf;
     for (uint32_t f = 0; ok && f < nf; ++f) {
         double v = 0.0;
-        ok = md_attribute_extract_f64(&v, 1, attr, md_attribute_slice_1(f), attr->unit) == 1;
+        ok = md_attribute_extract_f64(&v, 1, md_vial_eval_attributes(eval), attr, md_attribute_slice_1(f), attr->unit) == 1;
         out[f] = v;
     }
     md_vial_eval_free(eval);

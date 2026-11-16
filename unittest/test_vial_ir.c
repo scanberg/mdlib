@@ -603,10 +603,10 @@ UTEST(vial_ir, eval_api) {
     double sum = 0.0, mean = 0.0;
     for (int64_t f = 0; f < nf; ++f) {
         double v;
-        md_attribute_extract_f64(&v, 1, ends, md_attribute_slice_1((uint32_t)f), ends->unit);
+        md_attribute_extract_f64(&v, 1, attrs, ends, md_attribute_slice_1((uint32_t)f), ends->unit);
         sum += v;
     }
-    md_attribute_extract_f64(&mean, 1, m, md_attribute_slice_all(), m->unit);
+    md_attribute_extract_f64(&mean, 1, attrs, m, md_attribute_slice_all(), m->unit);
     EXPECT_NEAR(sum / nf, mean, 1e-4);
 
     // Hover: an expression's value at a frame, the bits the evaluation published
@@ -615,7 +615,7 @@ UTEST(vial_ir, eval_api) {
         const uint32_t call = (uint32_t)(strstr(src, "distance(ca[0]") - src) + 8;     // its '('
         for (int64_t f = 0; f < nf; f += nf / 3) {
             float v;
-            md_attribute_extract_f32(&v, 1, ends, md_attribute_slice_1((uint32_t)f), ends->unit);
+            md_attribute_extract_f32(&v, 1, attrs, ends, md_attribute_slice_1((uint32_t)f), ends->unit);
             vial_print_float(want, sizeof(want), v, true);
             EXPECT_TRUE(md_vial_eval_hover(eval, call, f, hv, sizeof(hv)));
             EXPECT_STREQ(want, hv);
@@ -629,7 +629,7 @@ UTEST(vial_ir, eval_api) {
         // rest, the mean included, was computed and published
         {
             double mv;
-            md_attribute_extract_f64(&mv, 1, m, md_attribute_slice_all(), m->unit);
+            md_attribute_extract_f64(&mv, 1, attrs, m, md_attribute_slice_all(), m->unit);
             char wm[64];
             vial_print_float(wm, sizeof(wm), (float)mv, true);
             EXPECT_TRUE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "mean(") - src) + 4, 0, hv, sizeof(hv)));
@@ -853,7 +853,7 @@ UTEST(vial_ir, eval_aggregate) {
         const md_attribute_t* ar = md_attributes_find(attr, MD_STR_LIT("script/h/range"));
         ASSERT_TRUE(ar != NULL);
         double rr[2];
-        ASSERT_EQ(2u, md_attribute_extract_f64(rr, 2, ar, md_attribute_slice_all(), ar->unit));
+        ASSERT_EQ(2u, md_attribute_extract_f64(rr, 2, attr, ar, md_attribute_slice_all(), ar->unit));
         EXPECT_EQ(0.0, rr[0]);
         EXPECT_EQ(20.0, rr[1]);
         EXPECT_TRUE(md_unit_base_equal(ar->unit, ad->unit));
@@ -1776,8 +1776,8 @@ UTEST(vial_ir, periodic_outputs) {
     ASSERT_TRUE(per && seam);
     EXPECT_TRUE(md_attributes_find(at, MD_STR_LIT("script/d/period")) == NULL);
     double p[2], sm;
-    ASSERT_EQ(2u, md_attribute_extract_f64(p, 2, per, md_attribute_slice_all(), per->unit));
-    ASSERT_EQ(1u, md_attribute_extract_f64(&sm, 1, seam, md_attribute_slice_all(), seam->unit));
+    ASSERT_EQ(2u, md_attribute_extract_f64(p, 2, at, per, md_attribute_slice_all(), per->unit));
+    ASSERT_EQ(1u, md_attribute_extract_f64(&sm, 1, at, seam, md_attribute_slice_all(), seam->unit));
     EXPECT_LT(p[0], p[1]);
     EXPECT_GE(sm, p[0]);
     EXPECT_LT(sm, p[1]);

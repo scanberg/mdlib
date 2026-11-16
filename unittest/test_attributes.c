@@ -151,7 +151,7 @@ UTEST(attributes, reserve) {
     for (int i = 0; i < 1000; ++i) x[i] = (float)i * 0.5f;
     EXPECT_NE(version, md_attributes_touch(&t, id));
     float got[1000];
-    ASSERT_EQ(1000u, md_attribute_extract_f32(got, 1000, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()));
+    ASSERT_EQ(1000u, md_attribute_extract_f32(got, 1000, &t, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()));
     EXPECT_EQ(499.5f, got[999]);
 
     // Of numbers, without data or a provider; not at a path taken
@@ -342,12 +342,12 @@ UTEST(attributes, extract_converts_type) {
 
     float dst[8];
 
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, f64), md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, f64), md_attribute_slice_all(), md_unit_none()), 4u);
     for (int i = 0; i < 4; ++i) {
         EXPECT_NEAR(dst[i], (float)src[i], 1.0e-12f);
     }
 
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, i16), md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, i16), md_attribute_slice_all(), md_unit_none()), 4u);
     for (int i = 0; i < 4; ++i) {
         EXPECT_EQ(dst[i], (float)ints[i]);
     }
@@ -355,11 +355,11 @@ UTEST(attributes, extract_converts_type) {
     // the whole attribute, components included: {N,3} yields N*3 floats
     const float vecs[6] = {1,2,3, 4,5,6};
     md_attribute_id_t v = md_attributes_create(&t, &(md_attribute_desc_t){.path = MD_STR_INIT("a/vec"), .format = fmt_vec(MD_ATTRIBUTE_TYPE_F32, 2, 3), .unit = md_unit_none(), .data = vecs, .byte_size = sizeof(vecs)});
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, v), md_attribute_slice_all(), md_unit_none()), 6u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, v), md_attribute_slice_all(), md_unit_none()), 6u);
     EXPECT_EQ(dst[5], 6.0f);
 
     // a destination which cannot hold it writes nothing
-    EXPECT_EQ(md_attribute_extract_f32(dst, 3, md_attributes_get(&t, v), md_attribute_slice_all(), md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, 3, &t, md_attributes_get(&t, v), md_attribute_slice_all(), md_unit_none()), 0u);
 
     md_attributes_free(&t);
 }
@@ -373,16 +373,16 @@ UTEST(attributes, extract_converts_unit) {
     float dst[4];
 
     // Angstrom into nanometre is a factor of ten
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, len), md_attribute_slice_all(), md_unit_nanometer()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, len), md_attribute_slice_all(), md_unit_nanometer()), 2u);
     EXPECT_NEAR(dst[0], 1.0f,  1.0e-6f);
     EXPECT_NEAR(dst[1], 0.25f, 1.0e-6f);
 
     // same unit is the identity
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, len), md_attribute_slice_all(), md_unit_angstrom()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, len), md_attribute_slice_all(), md_unit_angstrom()), 2u);
     EXPECT_NEAR(dst[0], 10.0f, 1.0e-6f);
 
     // none as the target means as stored, whatever the attribute carries
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, len), md_attribute_slice_all(), md_unit_none()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, len), md_attribute_slice_all(), md_unit_none()), 2u);
     EXPECT_NEAR(dst[0], 10.0f, 1.0e-6f);
 
     md_attributes_free(&t);
@@ -402,14 +402,14 @@ UTEST(attributes, extract_refuses_incompatible_units) {
     float dst[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
 
     // a dipole is not a length
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, d), md_attribute_slice_all(), md_unit_angstrom()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, d), md_attribute_slice_all(), md_unit_angstrom()), 0u);
     EXPECT_EQ(dst[0], -1.0f);   // nothing written
 
     // and a dimensionless quantity cannot be given one
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, o), md_attribute_slice_all(), md_unit_angstrom()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, o), md_attribute_slice_all(), md_unit_angstrom()), 0u);
 
     // but the dipole does convert to Debye
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, d), md_attribute_slice_all(), md_unit_debye()), 3u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, d), md_attribute_slice_all(), md_unit_debye()), 3u);
     EXPECT_NEAR(dst[2], 0.7273f * 2.541746473f, 1.0e-4f);
 
     md_attributes_free(&t);
@@ -429,19 +429,19 @@ UTEST(attributes, extract_from_pdb) {
     float* dst = (float*)md_alloc(alloc, sys.atom.count * sizeof(float));
     md_unit_t angstrom_sq = md_unit_pow(md_unit_angstrom(), 2);
 
-    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, bfc, md_attribute_slice_all(), angstrom_sq), sys.atom.count);
+    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, &sys.attributes, bfc, md_attribute_slice_all(), angstrom_sq), sys.atom.count);
     EXPECT_NEAR(dst[0],   201.24f, 1.0e-3f);
     EXPECT_NEAR(dst[980], 150.42f, 1.0e-3f);
 
     // into nm^2, a factor of 1/100
-    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, bfc, md_attribute_slice_all(), md_unit_pow(md_unit_nanometer(), 2)), sys.atom.count);
+    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, &sys.attributes, bfc, md_attribute_slice_all(), md_unit_pow(md_unit_nanometer(), 2)), sys.atom.count);
     EXPECT_NEAR(dst[0], 2.0124f, 1.0e-4f);
 
     // and the occupancy alongside it is dimensionless, so Angstrom squared is a refusal
     const md_attribute_t* occ = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/occupancy"));
     ASSERT_TRUE(occ != NULL);
-    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, occ, md_attribute_slice_all(), angstrom_sq), 0u);
-    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, occ, md_attribute_slice_all(), md_unit_none()), sys.atom.count);
+    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, &sys.attributes, occ, md_attribute_slice_all(), angstrom_sq), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, sys.atom.count, &sys.attributes, occ, md_attribute_slice_all(), md_unit_none()), sys.atom.count);
     EXPECT_NEAR(dst[980], 0.50f, 1.0e-5f);
 
     md_system_free(&sys);
@@ -713,24 +713,24 @@ UTEST(attributes, multi_axis_slice) {
     EXPECT_EQ(slice_fmt.components, 1u);
 
     float dst[16] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, state1, md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, state1, md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 1.0f, 1.0e-6f);
     EXPECT_NEAR(dst[3], 1.3f, 1.0e-6f);
 
     // fixing nothing is the whole attribute, which is exactly md_attribute_extract_f32
     const md_attribute_slice_t all = md_attribute_slice_all();
     EXPECT_EQ(md_attribute_slice_count(a, all), 12u);
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, all, md_unit_none()), 12u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, all, md_unit_none()), 12u);
     EXPECT_NEAR(dst[11], 2.3f, 1.0e-6f);
 
     // out of range is a refusal, not a clamp; so is asking for more axes than there are
     const md_attribute_slice_t state9 = md_attribute_slice_1(9);
     EXPECT_EQ(md_attribute_slice_count(a, state9), 0u);
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, state9, md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, state9, md_unit_none()), 0u);
 
     md_attribute_slice_t three = {0};
     three.num_idx = 3;
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, three, md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, three, md_unit_none()), 0u);
 
     md_attributes_free(&t);
 }
@@ -756,7 +756,7 @@ UTEST(attributes, slice_keeps_components) {
     float dst[32] = {0};
     const md_attribute_slice_t mode1 = md_attribute_slice_1(1);
     // one mode is 3 atoms x 3 components = 9 floats, starting at flat 9
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, mode1, md_unit_none()), 9u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, mode1, md_unit_none()), 9u);
     EXPECT_NEAR(dst[0],  9.0f, 1.0e-6f);
     EXPECT_NEAR(dst[8], 17.0f, 1.0e-6f);
 
@@ -766,7 +766,7 @@ UTEST(attributes, slice_keeps_components) {
     ASSERT_TRUE(md_attribute_slice_format(&one_value, a, mode1_atom2));
     EXPECT_EQ(one_value.rank, 0u);
     EXPECT_EQ(one_value.components, 3u);
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, mode1_atom2, md_unit_none()), 3u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, mode1_atom2, md_unit_none()), 3u);
     EXPECT_NEAR(dst[0], 15.0f, 1.0e-6f);
     EXPECT_NEAR(dst[2], 17.0f, 1.0e-6f);
 
@@ -822,13 +822,13 @@ UTEST(attributes, extract_f64_keeps_precision) {
     const md_attribute_t* a = md_attributes_get(&t, id);
 
     double d[2] = {0};
-    EXPECT_EQ(md_attribute_extract_f64(d, MD_COUNTOF(d), a, md_attribute_slice_all(), md_unit_none()), 2u);
+    EXPECT_EQ(md_attribute_extract_f64(d, MD_COUNTOF(d), &t, a, md_attribute_slice_all(), md_unit_none()), 2u);
     EXPECT_EQ(d[0], src[0]);
     EXPECT_EQ(d[1], src[1]);
     EXPECT_TRUE(d[0] != d[1]);
 
     float f[2] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(f, MD_COUNTOF(f), a, md_attribute_slice_all(), md_unit_none()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(f, MD_COUNTOF(f), &t, a, md_attribute_slice_all(), md_unit_none()), 2u);
     EXPECT_TRUE(f[0] == f[1]);  // the loss the f64 path exists to avoid
 
     md_attributes_free(&t);
@@ -855,14 +855,14 @@ UTEST(attributes, extract_slice_f64_row) {
     double row[8] = {0};
     const md_attribute_slice_t mo = md_attribute_slice_1(2);
     EXPECT_EQ(md_attribute_slice_count(a, mo), 4u);
-    EXPECT_EQ(md_attribute_extract_f64(row, MD_COUNTOF(row), a, mo, md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f64(row, MD_COUNTOF(row), &t, a, mo, md_unit_none()), 4u);
     EXPECT_EQ(row[0], 2.0);
     EXPECT_EQ(row[3], 2.3);
 
     // the same slice against a sibling of the same shape: nothing about it is bound to one attribute
     const md_attribute_slice_t bad = md_attribute_slice_1(3);
     EXPECT_EQ(md_attribute_slice_count(a, bad), 0u);
-    EXPECT_EQ(md_attribute_extract_f64(row, MD_COUNTOF(row), a, bad, md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f64(row, MD_COUNTOF(row), &t, a, bad, md_unit_none()), 0u);
 
     md_attributes_free(&t);
 }
@@ -872,7 +872,8 @@ UTEST(attributes, extract_slice_f64_row) {
 // 3 states x 4 atoms, value(state, atom) = state + atom / 10. Computed rather than stored, so the
 // same formula must come back whether asked for whole or one state's row - that agreement is the
 // point of the test, not the formula itself.
-static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     (void)user_data;
     float* out = (float*)dst;
     size_t num_atoms = attr->format.shape[1];
@@ -890,7 +891,8 @@ static size_t provider_state_ramp_f32(void* dst, size_t cap, const md_attribute_
 }
 
 // Reads a single constant out of user_data, so the provider itself carries no state.
-static size_t provider_constant_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_constant_f32(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     (void)attr;
     (void)slice;
     float value = *(const float*)user_data;
@@ -904,7 +906,8 @@ static size_t provider_constant_f32(void* dst, size_t cap, const md_attribute_t*
 // A provider that never honours cap, to exercise the "provider lied" error path.
 // Records where it was asked to write, so a test can tell whether the extract handed it the
 // caller's own buffer or a scratch copy.
-static size_t provider_record_dst(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_record_dst(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     (void)attr; (void)slice;
     *(void**)user_data = dst;
     float* out = (float*)dst;
@@ -912,7 +915,8 @@ static size_t provider_record_dst(void* dst, size_t cap, const md_attribute_t* a
     return cap;
 }
 
-static size_t provider_wrong_count(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_wrong_count(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     (void)dst;
     (void)attr;
     (void)slice;
@@ -958,13 +962,13 @@ UTEST(attributes, virtual_create_and_reject) {
 // attribute through it hands it on (md_attribute_extract_io_f64): a total density from its spin densities
 // builds them on the caller's executor.
 typedef struct io_probe_t {
-    md_attributes_t* table;
     const md_executor_t* seen_inner;
     const md_executor_t* seen_outer;
     int inner_calls, outer_calls;
 } io_probe_t;
 
-static size_t provider_inner_f64(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_inner_f64(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     (void)attr; (void)slice;
     io_probe_t* p = (io_probe_t*)user_data;
     p->inner_calls += 1;
@@ -973,13 +977,13 @@ static size_t provider_inner_f64(void* dst, size_t cap, const md_attribute_t* at
     return cap;
 }
 
-static size_t provider_outer_f64(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_outer_f64(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)attr; (void)slice;
     io_probe_t* p = (io_probe_t*)user_data;
     p->outer_calls += 1;
     p->seen_outer = md_attribute_io_executor(io);
-    const md_attribute_t* inner = md_attributes_find(p->table, MD_STR_LIT("probe/inner"));
-    if (!inner || md_attribute_extract_io_f64((double*)dst, cap, inner, md_attribute_slice_all(), md_unit_none(), io) != cap) return 0;
+    const md_attribute_t* inner = md_attributes_find(table, MD_STR_LIT("probe/inner"));
+    if (!inner || md_attribute_extract_io_f64((double*)dst, cap, table, inner, md_attribute_slice_all(), md_unit_none(), io) != cap) return 0;
     for (size_t i = 0; i < cap; ++i) ((double*)dst)[i] *= 2.0;
     return cap;
 }
@@ -992,7 +996,7 @@ static bool probe_parallel_for(void* user, uint32_t count, uint32_t grain, md_ra
 
 UTEST(attributes, extraction_context_hands_its_executor_on) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
-    io_probe_t probe = {.table = &t};
+    io_probe_t probe = {0};
     const md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {5}};
     md_attribute_virtual_t inner = {.provider = provider_inner_f64, .user_data = &probe};
     md_attribute_virtual_t outer = {.provider = provider_outer_f64, .user_data = &probe};
@@ -1007,14 +1011,14 @@ UTEST(attributes, extraction_context_hands_its_executor_on) {
     EXPECT_TRUE(md_attribute_io_executor(io) == &ex);
 
     double v[5] = {0};
-    EXPECT_EQ(5u, md_attribute_extract_io_f64(v, 5, a, md_attribute_slice_all(), md_unit_none(), io));
+    EXPECT_EQ(5u, md_attribute_extract_io_f64(v, 5, &t, a, md_attribute_slice_all(), md_unit_none(), io));
     EXPECT_EQ(8.0, v[4]);
     EXPECT_TRUE(probe.seen_outer == &ex);
     EXPECT_TRUE(probe.seen_inner == &ex);
 
     // Without a context: none, all the way down
     probe.seen_inner = probe.seen_outer = &ex;
-    EXPECT_EQ(5u, md_attribute_extract_f64(v, 5, a, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(5u, md_attribute_extract_f64(v, 5, &t, a, md_attribute_slice_all(), md_unit_none()));
     EXPECT_TRUE(probe.seen_outer == NULL);
     EXPECT_TRUE(probe.seen_inner == NULL);
     EXPECT_TRUE(md_attribute_io_executor(NULL) == NULL);
@@ -1037,13 +1041,13 @@ UTEST(attributes, virtual_extract_whole_and_slice_agree) {
     const md_attribute_t* a = md_attributes_get(&t, id);
 
     float whole[12] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(whole, MD_COUNTOF(whole), a, md_attribute_slice_all(), md_unit_none()), 12u);
+    EXPECT_EQ(md_attribute_extract_f32(whole, MD_COUNTOF(whole), &t, a, md_attribute_slice_all(), md_unit_none()), 12u);
     EXPECT_NEAR(whole[0],  0.0f, 1.0e-6f);
     EXPECT_NEAR(whole[11], 2.3f, 1.0e-6f);
 
     float row[4] = {0};
     const md_attribute_slice_t state1 = md_attribute_slice_1(1);
-    EXPECT_EQ(md_attribute_extract_f32(row, MD_COUNTOF(row), a, state1, md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(row, MD_COUNTOF(row), &t, a, state1, md_unit_none()), 4u);
     EXPECT_NEAR(row[0], whole[4], 1.0e-6f);
     EXPECT_NEAR(row[3], whole[7], 1.0e-6f);
 
@@ -1065,11 +1069,11 @@ UTEST(attributes, virtual_extract_converts_unit) {
     const md_attribute_t* a = md_attributes_get(&t, id);
 
     float dst[2] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, md_attribute_slice_all(), md_unit_nanometer()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, md_attribute_slice_all(), md_unit_nanometer()), 2u);
     EXPECT_NEAR(dst[0], 1.0f, 1.0e-6f);
 
     // a dipole is not a length, virtual or otherwise
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), a, md_attribute_slice_all(), md_unit_debye()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, md_attribute_slice_all(), md_unit_debye()), 0u);
 
     md_attributes_free(&t);
 }
@@ -1084,7 +1088,7 @@ UTEST(attributes, virtual_provider_lying_about_count_fails) {
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
 
     float dst[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()), 0u);
     EXPECT_EQ(dst[0], -1.0f);   // nothing written
 
     md_attributes_free(&t);
@@ -1125,7 +1129,7 @@ UTEST(attributes, virtual_user_data_lifecycle) {
     ASSERT_NE(owned_id, MD_ATTRIBUTE_INVALID);
 
     float dst[1] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, 1, md_attributes_get(&t, owned_id), md_attribute_slice_all(), md_unit_none()), 1u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, 1, &t, md_attributes_get(&t, owned_id), md_attribute_slice_all(), md_unit_none()), 1u);
     EXPECT_EQ(dst[0], 42.0f);
 
     // a borrowed pointer (user_data_size 0) must not be freed by remove or by md_attributes_free
@@ -1178,7 +1182,7 @@ UTEST(attributes, alias_shares_storage) {
 
     // and it reads as data, through the name a consumer of the neutral path would use
     float dst[4] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), b, md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, b, md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[1], -0.25f, 1.0e-6f);
 
     // Both names are in the table and the prefix queries see each under its own group.
@@ -1232,7 +1236,7 @@ UTEST(attributes, removing_an_alias_leaves_the_target) {
     EXPECT_EQ(md_attributes_count(&t), 1u);
 
     float dst[2] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, src), md_attribute_slice_all(), md_unit_none()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, src), md_attribute_slice_all(), md_unit_none()), 2u);
     EXPECT_NEAR(dst[0], 3.0f, 1.0e-6f);
 
     // A duplicate path is refused whichever way it is published, and so is a missing target.
@@ -1308,7 +1312,7 @@ UTEST(attributes, slice_format_narrows_rank_3_to_a_matrix) {
     EXPECT_EQ(md_attribute_slice_count(attr, slice), 9u);
 
     double dst[9] = {0};
-    EXPECT_EQ(md_attribute_extract_f64(dst, MD_COUNTOF(dst), attr, slice, md_unit_none()), 9u);
+    EXPECT_EQ(md_attribute_extract_f64(dst, MD_COUNTOF(dst), &t, attr, slice, md_unit_none()), 9u);
     EXPECT_NEAR(dst[0], 9.0, 1.0e-12);   // plane 1 starts at 1 * 3 * 3
     EXPECT_NEAR(dst[8], 17.0, 1.0e-12);
 
@@ -1330,26 +1334,25 @@ UTEST(attributes, slice_format_narrows_rank_3_to_a_matrix) {
 // the SCF total/difference densities have: a derivation over derivations, which is legal as long as
 // the graph stays acyclic.
 typedef struct combine_ctx_t {
-    md_attributes_t* table;
     md_str_t            lhs;
     md_str_t            rhs;
     double           rhs_scale;
 } combine_ctx_t;
 
-static size_t provider_combine_f32(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t provider_combine_f32(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)attr;
     (void)slice;
     combine_ctx_t* ctx = (combine_ctx_t*)user_data;
 
-    const md_attribute_t* lhs = md_attributes_find(ctx->table, ctx->lhs);
-    const md_attribute_t* rhs = md_attributes_find(ctx->table, ctx->rhs);
+    const md_attribute_t* lhs = md_attributes_find(table, ctx->lhs);
+    const md_attribute_t* rhs = md_attributes_find(table, ctx->rhs);
     if (!lhs || !rhs) return 0;
 
     md_temp_scope_t temp = md_temp_begin();
     float* rhs_data = md_temp_alloc_array(temp, float, cap);
     bool ok = rhs_data
-           && md_attribute_extract_f32((float*)dst, cap, lhs, md_attribute_slice_all(), md_unit_none()) == cap
-           && md_attribute_extract_f32(rhs_data,    cap, rhs, md_attribute_slice_all(), md_unit_none()) == cap;
+           && md_attribute_extract_f32((float*)dst, cap, table, lhs, md_attribute_slice_all(), md_unit_none()) == cap
+           && md_attribute_extract_f32(rhs_data,    cap, table, rhs, md_attribute_slice_all(), md_unit_none()) == cap;
     if (ok) {
         float* out = (float*)dst;
         for (size_t i = 0; i < cap; ++i) out[i] += (float)ctx->rhs_scale * rhs_data[i];
@@ -1377,14 +1380,14 @@ UTEST(attributes, alias_of_a_virtual_attribute_reads_through_its_provider) {
     ASSERT_NE(beta, MD_ATTRIBUTE_INVALID);
 
     float dst[4] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, beta), md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, beta), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 2.5f, 1.0e-6f);
     EXPECT_NEAR(dst[3], 2.5f, 1.0e-6f);
 
     // And through a slice, which takes the same path.
     md_attribute_slice_t all = md_attribute_slice_all();
     md_memset(dst, 0, sizeof(dst));
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, beta), all, md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, beta), all, md_unit_none()), 4u);
     EXPECT_NEAR(dst[2], 2.5f, 1.0e-6f);
 
     // Writing still goes through the owner, and neither name has resident storage to hand out.
@@ -1408,8 +1411,8 @@ UTEST(attributes, virtual_over_an_alias_of_a_virtual) {
         .path = MD_STR_INIT("orbital/alpha/density"), .format = fmt, .unit = md_unit_none(), .virt = &spin_virt});
     ASSERT_NE(md_attributes_alias(&t, alpha, MD_STR_LIT("orbital/beta/density"), (md_str_t){0}, (md_str_t){0}), MD_ATTRIBUTE_INVALID);
 
-    combine_ctx_t total_ctx = {&t, MD_STR_INIT("orbital/alpha/density"), MD_STR_INIT("orbital/beta/density"),  1.0};
-    combine_ctx_t diff_ctx  = {&t, MD_STR_INIT("orbital/alpha/density"), MD_STR_INIT("orbital/beta/density"), -1.0};
+    combine_ctx_t total_ctx = {MD_STR_INIT("orbital/alpha/density"), MD_STR_INIT("orbital/beta/density"),  1.0};
+    combine_ctx_t diff_ctx  = {MD_STR_INIT("orbital/alpha/density"), MD_STR_INIT("orbital/beta/density"), -1.0};
 
     md_attribute_virtual_t total_virt = {.provider = provider_combine_f32, .user_data = &total_ctx};
     md_attribute_virtual_t diff_virt  = {.provider = provider_combine_f32, .user_data = &diff_ctx};
@@ -1422,11 +1425,11 @@ UTEST(attributes, virtual_over_an_alias_of_a_virtual) {
     ASSERT_NE(diff,  MD_ATTRIBUTE_INVALID);
 
     float dst[4] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, total), md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, total), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 6.0f, 1.0e-6f);
     EXPECT_NEAR(dst[3], 6.0f, 1.0e-6f);
 
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, diff), md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, diff), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 0.0f, 1.0e-6f);
     EXPECT_NEAR(dst[3], 0.0f, 1.0e-6f);
 
@@ -1463,7 +1466,7 @@ UTEST(attributes, publish_atom_column_rules) {
     EXPECT_EQ(attr->format.components, 1u);
 
     float dst[12] = {0};
-    ASSERT_EQ(md_attribute_extract_f32(dst, 4, attr, md_attribute_slice_all(), md_unit_none()), 4u);
+    ASSERT_EQ(md_attribute_extract_f32(dst, 4, &t, attr, md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 0.5f, 1.0e-6f);
     EXPECT_TRUE(is_nan_f32(dst[1]));    // still absent
     EXPECT_NEAR(dst[2], 1.0f, 1.0e-6f);
@@ -1477,7 +1480,7 @@ UTEST(attributes, publish_atom_column_rules) {
     const float leading_gap[4] = {nan_v, 0.5f, 1.0f, 0.25f};
     id = md_attributes_publish_atom_column(&t, MD_STR_LIT("atom/occupancy"), md_unit_none(), 1, leading_gap, 4);
     ASSERT_NE(id, MD_ATTRIBUTE_INVALID);
-    ASSERT_EQ(md_attribute_extract_f32(dst, 4, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()), 4u);
+    ASSERT_EQ(md_attribute_extract_f32(dst, 4, &t, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_TRUE(is_nan_f32(dst[0]));
     EXPECT_NEAR(dst[1], 0.5f, 1.0e-6f);
 
@@ -1485,7 +1488,7 @@ UTEST(attributes, publish_atom_column_rules) {
     // unit conversion, and widened into a double. The bytes were never the problem; only the test
     // for them was.
     double wide[4] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(wide, 4, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()), 4u);
+    ASSERT_EQ(md_attribute_extract_f64(wide, 4, &t, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_TRUE(is_nan_f64(wide[0]));
     EXPECT_NEAR(wide[1], 0.5, 1.0e-12);
 
@@ -1494,7 +1497,7 @@ UTEST(attributes, publish_atom_column_rules) {
     const float gro_vel[6] = {nan_v, nan_v, nan_v, 1.0f, 2.0f, 3.0f};
     md_attribute_id_t gap_vel = md_attributes_publish_atom_column(&t, MD_STR_LIT("atom/force"), md_unit_none(), 3, gro_vel, 2);
     ASSERT_NE(gap_vel, MD_ATTRIBUTE_INVALID);
-    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, gap_vel), md_attribute_slice_all(), md_unit_none()), 6u);
+    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, gap_vel), md_attribute_slice_all(), md_unit_none()), 6u);
     EXPECT_TRUE(is_nan_f32(dst[0]));
     EXPECT_NEAR(dst[3], 1.0f, 1.0e-6f);
     md_attributes_remove(&t, gap_vel);
@@ -1511,7 +1514,7 @@ UTEST(attributes, publish_atom_column_rules) {
     const md_attribute_t* v = md_attributes_get(&t, vel);
     EXPECT_EQ(v->format.components, 3u);
     EXPECT_EQ(v->format.shape[0], 2u);
-    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), v, md_attribute_slice_all(), md_unit_none()), 6u);
+    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, v, md_attribute_slice_all(), md_unit_none()), 6u);
     EXPECT_NEAR(dst[4], 9.0f, 1.0e-6f);
 
     // A unit is carried, not applied: the loader stores what the file said and the extract converts.
@@ -1519,7 +1522,7 @@ UTEST(attributes, publish_atom_column_rules) {
     const float nm_ps[6] = {1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f};
     vel = md_attributes_publish_atom_column(&t, MD_STR_LIT("atom/velocity"), md_unit_div(md_unit_nanometer(), md_unit_picosecond()), 3, nm_ps, 2);
     ASSERT_NE(vel, MD_ATTRIBUTE_INVALID);
-    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, vel), md_attribute_slice_all(),
+    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, vel), md_attribute_slice_all(),
         md_unit_div(md_unit_angstrom(), md_unit_picosecond())), 6u);
     EXPECT_NEAR(dst[0], 10.0f, 1.0e-4f);   // 1 nm/ps is 10 A/ps
     EXPECT_NEAR(dst[3], 20.0f, 1.0e-4f);
@@ -1670,31 +1673,31 @@ UTEST(attributes, axis_map_matches_by_value) {
     const md_attribute_t* ord    = md_attributes_find(&t, MD_STR_LIT("run/b/time"));
 
     size_t idx = 999;
-    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 2, run));
+    EXPECT_TRUE(md_attribute_axis_map(&idx, &t, run, 2, &t, run));
     EXPECT_EQ(idx, 2u);
 
     // Float noise on the frame time still finds its row, including far out where a float's ulp is
     // larger than any fixed margin would be.
-    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 1, fine_a));
+    EXPECT_TRUE(md_attribute_axis_map(&idx, &t, run, 1, &t, fine_a));
     EXPECT_EQ(idx, 2u);
-    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 3, fine_a));
+    EXPECT_TRUE(md_attribute_axis_map(&idx, &t, run, 3, &t, fine_a));
     EXPECT_EQ(idx, 6u);
 
     // Converted between units rather than compared as numbers.
-    EXPECT_TRUE(md_attribute_axis_map(&idx, run, 2, ns_a));
+    EXPECT_TRUE(md_attribute_axis_map(&idx, &t, run, 2, &t, ns_a));
     EXPECT_EQ(idx, 2u);
 
     // No coordinate there is an answer, not an invitation to take the neighbour.
     idx = 999;
-    EXPECT_FALSE(md_attribute_axis_map(&idx, run, 1, sp_a));
+    EXPECT_FALSE(md_attribute_axis_map(&idx, &t, run, 1, &t, sp_a));
     EXPECT_EQ(idx, 999u);
 
     // Ordinals are not picoseconds, whatever their values happen to be.
-    EXPECT_FALSE(md_attribute_axis_map(&idx, ord, 1, run));
-    EXPECT_FALSE(md_attribute_axis_map(&idx, run, 1, ord));
+    EXPECT_FALSE(md_attribute_axis_map(&idx, &t, ord, 1, &t, run));
+    EXPECT_FALSE(md_attribute_axis_map(&idx, &t, run, 1, &t, ord));
 
     // Out of range on the source.
-    EXPECT_FALSE(md_attribute_axis_map(&idx, run, 4, fine_a));
+    EXPECT_FALSE(md_attribute_axis_map(&idx, &t, run, 4, &t, fine_a));
 
     md_attributes_free(&t);
 }
@@ -1715,20 +1718,20 @@ UTEST(attributes, provider_writes_into_dst_when_nothing_converts) {
     float  f[4] = {0};
     double d[4] = {0};
 
-    ASSERT_EQ(md_attribute_extract_f32(f, 4, attr, md_attribute_slice_all(), md_unit_none()), 4u);
+    ASSERT_EQ(md_attribute_extract_f32(f, 4, &t, attr, md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_EQ(seen, (void*)f);
     EXPECT_EQ(f[3], 3.0f);
 
-    ASSERT_EQ(md_attribute_extract_f32(f, 4, attr, md_attribute_slice_all(), md_unit_angstrom()), 4u);
+    ASSERT_EQ(md_attribute_extract_f32(f, 4, &t, attr, md_attribute_slice_all(), md_unit_angstrom()), 4u);
     EXPECT_EQ(seen, (void*)f);
 
     // Converting: through scratch, and the values arrive converted.
-    ASSERT_EQ(md_attribute_extract_f32(f, 4, attr, md_attribute_slice_all(), md_unit_nanometer()), 4u);
+    ASSERT_EQ(md_attribute_extract_f32(f, 4, &t, attr, md_attribute_slice_all(), md_unit_nanometer()), 4u);
     EXPECT_NE(seen, (void*)f);
     EXPECT_NEAR(f[3], 0.3f, 1.0e-6f);
 
     // Another type: through scratch as well.
-    ASSERT_EQ(md_attribute_extract_f64(d, 4, attr, md_attribute_slice_all(), md_unit_none()), 4u);
+    ASSERT_EQ(md_attribute_extract_f64(d, 4, &t, attr, md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NE(seen, (void*)d);
     EXPECT_EQ(d[2], 2.0);
 
@@ -1774,7 +1777,7 @@ UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
     ASSERT_NE(time_id, MD_ATTRIBUTE_INVALID);
 
     double dst[8] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(dst, MD_COUNTOF(dst), md_attributes_get(&t, time_id), md_attribute_slice_all(), md_unit_none()), 4u);
+    ASSERT_EQ(md_attribute_extract_f64(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, time_id), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[3], 3.0, 1.0e-12);
 
     // The same quantity computed on demand is the case the rule exists for: all of it means
@@ -1788,11 +1791,11 @@ UTEST(attributes, whole_extract_refused_only_when_producing_every_frame) {
     ASSERT_NE(vir_id, MD_ATTRIBUTE_INVALID);
 
     float fdst[24] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(fdst, MD_COUNTOF(fdst), md_attributes_get(&t, vir_id), md_attribute_slice_all(), md_unit_none()), 0u);
+    EXPECT_EQ(md_attribute_extract_f32(fdst, MD_COUNTOF(fdst), &t, md_attributes_get(&t, vir_id), md_attribute_slice_all(), md_unit_none()), 0u);
 
     // Fixing the frame is all it takes.
     md_attribute_slice_t frame1 = md_attribute_slice_1(1);
-    EXPECT_EQ(md_attribute_extract_f32(fdst, MD_COUNTOF(fdst), md_attributes_get(&t, vir_id), frame1, md_unit_none()), 6u);
+    EXPECT_EQ(md_attribute_extract_f32(fdst, MD_COUNTOF(fdst), &t, md_attributes_get(&t, vir_id), frame1, md_unit_none()), 6u);
 
     md_attributes_free(&t);
 }
@@ -1877,7 +1880,7 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
     EXPECT_EQ(attr->format.type, MD_ATTRIBUTE_TYPE_F64);
 
     float dst[3] = {0};
-    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), attr, md_attribute_slice_all(), md_unit_none()), 3u);
+    ASSERT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, attr, md_attribute_slice_all(), md_unit_none()), 3u);
     EXPECT_NEAR(dst[0], 10.0f, 1.0e-6f);
 
     // A path nothing occupies is a plain create.
@@ -1934,7 +1937,7 @@ UTEST(attributes, replace_in_place) {
     EXPECT_EQ(id, after->id);
     EXPECT_GT(after->version, version);
     float v = 0;
-    ASSERT_EQ(1u, md_attribute_extract_f32(&v, 1, after, md_attribute_slice_all(), md_unit_none()));
+    ASSERT_EQ(1u, md_attribute_extract_f32(&v, 1, &t, after, md_attribute_slice_all(), md_unit_none()));
     EXPECT_EQ(18.0f, v);
     // Found by id and by path alike, the index standing
     EXPECT_TRUE(md_attributes_get(&t, next) == md_attributes_find(&t, MD_STR_LIT("script/x170")));
@@ -1992,7 +1995,7 @@ UTEST(attributes, touch_reaches_every_name_of_the_datum) {
     // The value really did change through both names, so a consumer re-reading on the new version
     // sees the write rather than a version bump over stale bytes.
     float dst[4] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, alias), md_attribute_slice_all(), md_unit_none()), 4u);
+    EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, md_attributes_get(&t, alias), md_attribute_slice_all(), md_unit_none()), 4u);
     EXPECT_NEAR(dst[0], 99.0f, 1.0e-6f);
 
     // A neighbour is untouched: the sweep is over the datum, not over the table.
@@ -2135,7 +2138,7 @@ UTEST(attributes, ownership_is_derived) {
     EXPECT_TRUE(md_attribute_is_virtual(a));
 
     float out[2] = {0};
-    EXPECT_EQ(md_attribute_extract_f32(out, 2, a, md_attribute_slice_all(), md_unit_none()), 2u);
+    EXPECT_EQ(md_attribute_extract_f32(out, 2, &t, a, md_attribute_slice_all(), md_unit_none()), 2u);
     EXPECT_EQ(out[1], 1.0f);
 
     md_attributes_free(&t);
@@ -2241,14 +2244,14 @@ UTEST(attributes, extract_alloc) {
     const md_attribute_t* attr = md_attributes_get(&t, id);
 
     size_t count = 0;
-    float* row = md_attribute_extract_alloc_f32(&count, attr, md_attribute_slice_1(1), md_unit_none(), alloc);
+    float* row = md_attribute_extract_alloc_f32(&count, &t, attr, md_attribute_slice_1(1), md_unit_none(), alloc);
     ASSERT_TRUE(row);
     EXPECT_EQ(count, 3u);
     EXPECT_EQ(row[0], 4.0f);
     EXPECT_EQ(row[2], 6.0f);
     md_free(alloc, row, count * sizeof(float));
 
-    double* all = md_attribute_extract_alloc_f64(&count, attr, md_attribute_slice_all(), md_unit_none(), alloc);
+    double* all = md_attribute_extract_alloc_f64(&count, &t, attr, md_attribute_slice_all(), md_unit_none(), alloc);
     ASSERT_TRUE(all);
     EXPECT_EQ(count, 6u);
     EXPECT_EQ(all[5], 6.0);
@@ -2256,10 +2259,10 @@ UTEST(attributes, extract_alloc) {
 
     // Out of range: nothing allocated, count zeroed
     count = 123;
-    EXPECT_FALSE(md_attribute_extract_alloc_f64(&count, attr, md_attribute_slice_1(2), md_unit_none(), alloc));
+    EXPECT_FALSE(md_attribute_extract_alloc_f64(&count, &t, attr, md_attribute_slice_1(2), md_unit_none(), alloc));
     EXPECT_EQ(count, 0u);
     // Unit refusal fails the same way
-    EXPECT_FALSE(md_attribute_extract_alloc_f64(NULL, attr, md_attribute_slice_all(), md_unit_angstrom(), alloc));
+    EXPECT_FALSE(md_attribute_extract_alloc_f64(NULL, &t, attr, md_attribute_slice_all(), md_unit_angstrom(), alloc));
 
     md_attributes_free(&t);
 }

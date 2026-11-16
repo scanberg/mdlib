@@ -40,7 +40,7 @@ UTEST(vlx, parse) {
 	ASSERT_EQ(md_attribute_value_count(&coord->format), 26u);
 
 	double xyz[3 * 26] = {0};
-	ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
+	ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), &t.sys.attributes, coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
 	EXPECT_NEAR(-3.259400000000, xyz[0], 1.0e-5);
 	EXPECT_NEAR( 0.145200000000, xyz[1], 1.0e-5);
 	EXPECT_NEAR(-0.048400000000, xyz[2], 1.0e-5);
@@ -326,9 +326,9 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 	double* D = (double*)md_alloc(t.alloc, sizeof(double) * plane);
 	double* ref = (double*)md_alloc(t.alloc, sizeof(double) * plane);
 
-	ASSERT_EQ(md_attribute_extract_f64(C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()), num_mo * num_ao);
-	ASSERT_EQ(md_attribute_extract_f64(occ, num_mo, occup, md_attribute_slice_all(), md_unit_none()), num_mo);
-	ASSERT_EQ(md_attribute_extract_f64(D, plane, dens, md_attribute_slice_all(), md_unit_none()), plane);
+	ASSERT_EQ(md_attribute_extract_f64(C, num_mo * num_ao, &t.sys.attributes, coeff, md_attribute_slice_all(), md_unit_none()), num_mo * num_ao);
+	ASSERT_EQ(md_attribute_extract_f64(occ, num_mo, &t.sys.attributes, occup, md_attribute_slice_all(), md_unit_none()), num_mo);
+	ASSERT_EQ(md_attribute_extract_f64(D, plane, &t.sys.attributes, dens, md_attribute_slice_all(), md_unit_none()), plane);
 
 	// D = sum over molecular orbitals of occ_i * c_i c_i^T, which is the definition and not a
 	// restatement of the provider: it reads the same two attributes any consumer would.
@@ -403,7 +403,7 @@ UTEST(vlx, combined_spin_densities_h2o) {
 		EXPECT_EQ(a->format.shape[1], (uint32_t)num_ao);
 
 		mat[i] = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, a, md_attribute_slice_all(), md_unit_none()), plane);
+		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, &t.sys.attributes, a, md_attribute_slice_all(), md_unit_none()), plane);
 	}
 
 	// Restricted: beta is a second NAME for alpha, not a second reconstruction.
@@ -490,7 +490,7 @@ static void check_transition_density_attributes(int* utest_result, md_str_t file
 		ASSERT_EQ(md_attribute_slice_count(attr[i], slice), plane);
 
 		mat[i] = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, attr[i], slice, md_unit_none()), plane);
+		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, &t.sys.attributes, attr[i], slice, md_unit_none()), plane);
 	}
 
 	double max_asym = 0.0;
@@ -530,7 +530,7 @@ static void check_transition_density_attributes(int* utest_result, md_str_t file
 		ASSERT_EQ(md_attribute_element_count(&attr[i]->format), total);
 
 		double* all = (double*)md_alloc(t.alloc, sizeof(double) * total);
-		ASSERT_EQ(md_attribute_extract_f64(all, total, attr[i], md_attribute_slice_all(), md_unit_none()), total);
+		ASSERT_EQ(md_attribute_extract_f64(all, total, &t.sys.attributes, attr[i], md_attribute_slice_all(), md_unit_none()), total);
 
 		for (size_t v = 0; v < plane; ++v) {
 			ASSERT_NEAR(mat[i][v], all[v], 1.0e-12);
@@ -540,7 +540,7 @@ static void check_transition_density_attributes(int* utest_result, md_str_t file
 	// A state past the end selects nothing rather than reading past the array.
 	const md_attribute_slice_t past_end = md_attribute_slice_1((uint32_t)num_states);
 	EXPECT_EQ(md_attribute_slice_count(attr[0], past_end), 0u);
-	EXPECT_EQ(md_attribute_extract_f64(mat[0], plane, attr[0], past_end, md_unit_none()), 0u);
+	EXPECT_EQ(md_attribute_extract_f64(mat[0], plane, &t.sys.attributes, attr[0], past_end, md_unit_none()), 0u);
 
 	qm_test_free(&t);
 }
@@ -623,7 +623,7 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 	double* vec = (double*)md_alloc(t.alloc, sizeof(double) * num_ao);
 
 	const md_attribute_slice_t leading = md_attribute_slice_2(0, 0);
-	ASSERT_EQ(md_attribute_extract_f64(vec, num_ao, particle, leading, md_unit_none()), num_ao);
+	ASSERT_EQ(md_attribute_extract_f64(vec, num_ao, &t.sys.attributes, particle, leading, md_unit_none()), num_ao);
 
 	double norm = 0.0;
 	for (size_t i = 0; i < num_ao; ++i) {
@@ -1489,11 +1489,11 @@ static bool vlx_test_write_density_property_h5(md_str_t dst, vlx_test_density_fi
 // or not symmetric; *out_n receives N.
 static float* vlx_test_packed(size_t* out_n, const vlx_test_t* t, md_str_t path) {
 	const md_attribute_t* attr = qm_test_attr(t, path);
-	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, attr, md_attribute_slice_all(), NULL);
+	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, &t->sys.attributes, attr, md_attribute_slice_all(), NULL);
 	if (n == 0) return NULL;
 	const size_t len = n * (n + 1) / 2;
 	float* dst = (float*)md_alloc(t->alloc, sizeof(float) * len);
-	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, md_attribute_slice_all(), NULL) != n) return NULL;
+	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, &t->sys.attributes, attr, md_attribute_slice_all(), NULL) != n) return NULL;
 	*out_n = n;
 	return dst;
 }
@@ -1530,7 +1530,7 @@ UTEST(vlx, density_property_is_read_from_the_file) {
 	ASSERT_TRUE(packed != NULL);
 	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n);
 	double full[VLX_TEST_H2O_NUM_CART * VLX_TEST_H2O_NUM_CART];
-	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, MD_COUNTOF(full), attr, md_attribute_slice_all(), NULL));
+	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, MD_COUNTOF(full), &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
 	size_t k = 0;
 	double max_diff = 0.0;
 	for (size_t i = 0; i < n; ++i) {
@@ -1543,7 +1543,7 @@ UTEST(vlx, density_property_is_read_from_the_file) {
 
 	// Gone with its file
 	remove(h5.ptr);
-	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, attr, md_attribute_slice_all(), NULL));
+	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
 
 	qm_test_free(&t);
 }
@@ -1692,7 +1692,7 @@ UTEST(vlx, density_property_refuses_a_different_calculation) {
 	// Padded as well, so the change is seen by size even where the file system keeps coarse times
 	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true, .move_atom = true }));
 	const md_attribute_t* attr = qm_test_attr(&t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, attr, md_attribute_slice_all(), NULL);
+	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, &t.sys.attributes, attr, md_attribute_slice_all(), NULL);
 	remove(h5.ptr);
 	EXPECT_EQ(0u, got);
 
@@ -1796,17 +1796,17 @@ static void vlx_test_check_solutions(int32_t* utest_result, const vlx_test_t* t,
 
 	double* row   = (double*)malloc(sizeof(double) * len);
 	double* whole = (double*)malloc(sizeof(double) * len * num_states);
-	ASSERT_EQ(md_attribute_extract_f64(whole, len * num_states, sol, md_attribute_slice_all(), md_unit_none()), len * num_states);
+	ASSERT_EQ(md_attribute_extract_f64(whole, len * num_states, &t->sys.attributes, sol, md_attribute_slice_all(), md_unit_none()), len * num_states);
 	for (uint32_t s = 0; s < num_states; ++s) {
 		size_t ref_len = 0;
 		double* ref = vlx_test_h5_solution(&ref_len, file, s);
 		ASSERT_TRUE(ref != NULL);
 		ASSERT_EQ(ref_len, len);
-		ASSERT_EQ(md_attribute_extract_f64(row, len, sol, md_attribute_slice_1(s), md_unit_none()), len);
+		ASSERT_EQ(md_attribute_extract_f64(row, len, &t->sys.attributes, sol, md_attribute_slice_1(s), md_unit_none()), len);
 		EXPECT_EQ(0, memcmp(row, ref, sizeof(double) * len));
 		EXPECT_EQ(0, memcmp(whole + s * len, ref, sizeof(double) * len));
 		double elem = 0.0;
-		ASSERT_EQ(md_attribute_extract_f64(&elem, 1, sol, md_attribute_slice_2(s, (uint32_t)(len / 2)), md_unit_none()), 1u);
+		ASSERT_EQ(md_attribute_extract_f64(&elem, 1, &t->sys.attributes, sol, md_attribute_slice_2(s, (uint32_t)(len / 2)), md_unit_none()), 1u);
 		EXPECT_EQ(ref[len / 2], elem);
 		free(ref);
 	}
@@ -1841,8 +1841,8 @@ UTEST(vlx, response_vectors_chunked_are_read_through_hdf5) {
 	size_t n = la ? md_attribute_element_count(&la->format) : 0;
 	double* a = (double*)malloc(sizeof(double) * (n + 1));
 	double* b = (double*)malloc(sizeof(double) * (n + 1));
-	const size_t got_a = la ? md_attribute_extract_f64(a, n, la, md_attribute_slice_all(), md_unit_none()) : 0;
-	const size_t got_b = lb ? md_attribute_extract_f64(b, n, lb, md_attribute_slice_all(), md_unit_none()) : 0;
+	const size_t got_a = la ? md_attribute_extract_f64(a, n, &plain.sys.attributes, la, md_attribute_slice_all(), md_unit_none()) : 0;
+	const size_t got_b = lb ? md_attribute_extract_f64(b, n, &chunked.sys.attributes, lb, md_attribute_slice_all(), md_unit_none()) : 0;
 	remove(chunk_path.ptr);
 	ASSERT_TRUE(loaded);
 	ASSERT_TRUE(n > 0);
@@ -1891,8 +1891,8 @@ UTEST(vlx, nto_are_the_transition_decomposed) {
 	double* first = (double*)malloc(sizeof(double) * lmax * num_ao);
 	double* So    = (double*)malloc(sizeof(double) * num_ao);
 	for (uint32_t s = 0; s < num_states; ++s) {
-		ASSERT_EQ(md_attribute_extract_f64(lam, lmax, la, md_attribute_slice_1(s), md_unit_none()), lmax);
-		ASSERT_EQ(md_attribute_extract_f64(x, len, sol, md_attribute_slice_1(s), md_unit_none()), len);
+		ASSERT_EQ(md_attribute_extract_f64(lam, lmax, &t.sys.attributes, la, md_attribute_slice_1(s), md_unit_none()), lmax);
+		ASSERT_EQ(md_attribute_extract_f64(x, len, &t.sys.attributes, sol, md_attribute_slice_1(s), md_unit_none()), len);
 		double norm2 = 0.0, sum = 0.0;
 		for (size_t k = 0; k < nocc * nvir; ++k) norm2 += (x[k] - x[nocc * nvir + k]) * (x[k] - x[nocc * nvir + k]);
 		for (size_t k = 0; k < lmax; ++k) {
@@ -1903,7 +1903,7 @@ UTEST(vlx, nto_are_the_transition_decomposed) {
 
 		const md_attribute_t* orbs[2] = { ha, pa };
 		for (int o = 0; o < 2; ++o) {
-			ASSERT_EQ(md_attribute_extract_f64(orb, lmax * num_ao, orbs[o], md_attribute_slice_1(s), md_unit_none()), lmax * num_ao);
+			ASSERT_EQ(md_attribute_extract_f64(orb, lmax * num_ao, &t.sys.attributes, orbs[o], md_attribute_slice_1(s), md_unit_none()), lmax * num_ao);
 			if (s == 0 && o == 0) memcpy(first, orb, sizeof(double) * lmax * num_ao);
 			double worst = 0.0;
 			for (size_t k = 0; k < lmax; ++k) {
@@ -1927,12 +1927,12 @@ UTEST(vlx, nto_are_the_transition_decomposed) {
 		// one pair's orbital alone is that row of the state's
 		double one[4096];
 		ASSERT_TRUE(num_ao <= MD_COUNTOF(one));
-		ASSERT_EQ(md_attribute_extract_f64(one, num_ao, pa, md_attribute_slice_2(s, 0), md_unit_none()), num_ao);
+		ASSERT_EQ(md_attribute_extract_f64(one, num_ao, &t.sys.attributes, pa, md_attribute_slice_2(s, 0), md_unit_none()), num_ao);
 		EXPECT_EQ(0, memcmp(one, orb, sizeof(double) * num_ao));
 	}
 
 	// the first state again, after the others
-	ASSERT_EQ(md_attribute_extract_f64(orb, lmax * num_ao, ha, md_attribute_slice_1(0), md_unit_none()), lmax * num_ao);
+	ASSERT_EQ(md_attribute_extract_f64(orb, lmax * num_ao, &t.sys.attributes, ha, md_attribute_slice_1(0), md_unit_none()), lmax * num_ao);
 	EXPECT_EQ(0, memcmp(orb, first, sizeof(double) * lmax * num_ao));
 
 	free(lam);

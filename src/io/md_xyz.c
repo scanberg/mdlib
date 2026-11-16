@@ -1086,15 +1086,14 @@ static size_t xyz_parse_frame_coords(float* xyz, md_str_t text, uint32_t flags, 
     return written;
 }
 
-static size_t xyz_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
+static size_t xyz_position_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
+    if (!md_run_source(&src, table, attr, MD_STR_LIT("atom/position"))) return 0;
 
-    const int32_t* layout = (const int32_t*)md_attribute_view(md_attributes_find_in(&sys->attributes, src.run, MD_STR_LIT("source/layout")), MD_ATTRIBUTE_TYPE_I32, 1, 0);
+    const int32_t* layout = (const int32_t*)md_attribute_view(md_attributes_find_in(table, src.run, MD_STR_LIT("source/layout")), MD_ATTRIBUTE_TYPE_I32, 1, 0);
     if (!layout) {
         MD_LOG_ERROR("XYZ: the run '" MD_STR_FMT "' has lost its layout", MD_STR_ARG(src.run));
         return 0;
@@ -1151,7 +1150,7 @@ bool md_xyz_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
         sizes[i] = index.offsets[i + 1] - index.offsets[i];
     }
 
-    const md_attribute_virtual_t virt = { .provider = xyz_position_provider, .user_data = sys };
+    const md_attribute_virtual_t virt = { .provider = xyz_position_provider };
     const md_run_desc_t desc = {
         .num_frames    = F,
         .num_atoms     = index.header.num_atoms,

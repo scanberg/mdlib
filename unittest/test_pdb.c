@@ -1,6 +1,7 @@
 ﻿#include "utest.h"
 #include <md_io.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <md_pdb.h>
 #include <md_gro.h>
@@ -421,10 +422,42 @@ UTEST(pdb, run_matches_reference) {
     float xyz[3];
     ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 9));
     md_attribute_slice_t one = md_attribute_slice_2(9, 100);
-    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, &sys.attributes, pos, one, md_unit_none()));
     EXPECT_EQ(got.xyz[100].x, xyz[0]);
     EXPECT_EQ(got.xyz[100].z, xyz[2]);
 
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+}
+
+// A system is a value, and its owner copies and moves it as it likes (returned by value, in an array that grows): a run
+// published on it reads from the copy. The providers are handed the table they are read from, and keep no address of
+// the system they were published on, which once read a dead stack frame wherever a compiler copied the struct.
+UTEST(pdb, run_of_a_moved_system) {
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
+    const md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    md_system_t* before = malloc(sizeof(md_system_t));
+    ASSERT_TRUE(before != NULL);
+    *before = (md_system_t){.alloc = arena};
+    md_system_state_t state = {.alloc = arena};
+    ASSERT_TRUE(md_pdb_system_init_from_file(before, &state, path, NULL));
+    ASSERT_TRUE(md_pdb_system_publish_run(before, path, PDB_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+
+    md_system_state_t expected = {.alloc = arena};
+    md_system_state_init(&expected, before->atom.count);
+    ASSERT_TRUE(run_extract_one(&expected, before, PDB_RUN, 5));
+
+    // Moved, and where it was is garbage (volatile: a store to what is never read again is otherwise dropped)
+    md_system_t sys = *before;
+    volatile unsigned char* poison = (volatile unsigned char*)before;
+    for (size_t i = 0; i < sizeof(md_system_t); ++i) poison[i] = 0xcd;
+
+    md_system_state_t got = {.alloc = arena};
+    md_system_state_init(&got, sys.atom.count);
+    ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 5));
+    EXPECT_EQ(0, md_memcmp(expected.xyz, got.xyz, sys.atom.count * sizeof(md_float3_t)));
+
+    free(before);
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
 }

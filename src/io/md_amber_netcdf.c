@@ -740,10 +740,9 @@ static const struct {
 enum { AMBER_LAYOUT_STRIDE = 4 };
 
 // <run>/atom/{position,velocity,force}: frame f of the section is at begin + f * stride
-static size_t amber_section_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
-    const md_attributes_t* attributes = &sys->attributes;
+static size_t amber_section_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
+    const md_attributes_t* attributes = table;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     int kind = -1;
@@ -899,7 +898,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, md_str_t filename, md_
         sizes[f]   = (int64_t)layout.coordinates.bytes;
     }
 
-    const md_attribute_virtual_t virt = { .provider = amber_section_provider, .user_data = sys };
+    const md_attribute_virtual_t virt = { .provider = amber_section_provider };
     const md_run_desc_t desc = {
         .num_frames    = F,
         .num_atoms     = N,

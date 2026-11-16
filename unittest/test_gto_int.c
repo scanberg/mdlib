@@ -687,7 +687,7 @@ UTEST(gto_int, vlx_h2o_dipole_matches_published) {
         UTEST_SKIP("h2o.h5 carries no ground state dipole");
     }
     double dip[3];
-    ASSERT_EQ(3u, md_attribute_extract_f64(dip, 3, a, md_attribute_slice_all(), md_unit_elementary_charge_bohr()));
+    ASSERT_EQ(3u, md_attribute_extract_f64(dip, 3, &t.sys.attributes, a, md_attribute_slice_all(), md_unit_elementary_charge_bohr()));
     printf("vlx h2o dipole: published (%.6f %.6f %.6f), from the density (%.6f %.6f %.6f) e bohr\n",
            dip[0], dip[1], dip[2], mom.dipole[0], mom.dipole[1], mom.dipole[2]);
     for (int k = 0; k < 3; ++k) EXPECT_NEAR(dip[k], mom.dipole[k], 1e-4);

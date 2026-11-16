@@ -39,7 +39,8 @@ static void unpack_xyz(float* x, float* y, float* z, const md_float3_t* src, siz
 }
 
 UTEST(geom, rmsd) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     md_allocator_i* alloc = refsys.alloc;
     md_system_t* mol = &refsys.mol_ala;
     ASSERT_TRUE(mol);

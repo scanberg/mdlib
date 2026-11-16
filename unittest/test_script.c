@@ -1665,12 +1665,12 @@ UTEST_F(script, property_attributes) {
         // One frame out of the middle, through the attribute rather than the pointer.
         float value = 0;
         md_attribute_slice_t slice = md_attribute_slice_1(num_frames / 2);
-        EXPECT_EQ(1, md_attribute_extract_f32(&value, 1, attr, slice, md_unit_none()));
+        EXPECT_EQ(1, md_attribute_extract_f32(&value, 1, attributes, attr, slice, md_unit_none()));
         EXPECT_EQ(((const float*)attr->data)[num_frames / 2], value);
 
         // The range covers every value that was evaluated.
         float minmax[2] = {0, 0};
-        EXPECT_EQ(2, md_attribute_extract_f32(minmax, 2, range, md_attribute_slice_all(), md_unit_none()));
+        EXPECT_EQ(2, md_attribute_extract_f32(minmax, 2, attributes, range, md_attribute_slice_all(), md_unit_none()));
         for (uint32_t i = 0; i < num_frames; ++i) {
             const float v = ((const float*)attr->data)[i];
             EXPECT_TRUE(minmax[0] <= v && v <= minmax[1]);
@@ -1715,7 +1715,7 @@ UTEST_F(script, property_attributes) {
 
         float minmax[2] = {0, 0};
         md_attribute_slice_t slice = md_attribute_slice_1(0);
-        EXPECT_EQ(2, md_attribute_extract_f32(minmax, 2, ext, slice, md_unit_none()));
+        EXPECT_EQ(2, md_attribute_extract_f32(minmax, 2, attributes, ext, slice, md_unit_none()));
         EXPECT_TRUE(minmax[0] <= minmax[1]);
 
         // The per frame summary agrees with the population it summarises.
@@ -1770,9 +1770,9 @@ UTEST_F(script, property_attributes) {
 
         // The bin coordinates are computed from the range the evaluation settled on.
         md_array(float) coords = md_array_create(float, num_bins, alloc);
-        EXPECT_EQ(num_bins, md_attribute_extract_f32(coords, num_bins, bin, md_attribute_slice_all(), md_unit_none()));
+        EXPECT_EQ(num_bins, md_attribute_extract_f32(coords, num_bins, attributes, bin, md_attribute_slice_all(), md_unit_none()));
         float x_range[2] = {0, 0};
-        EXPECT_EQ(2, md_attribute_extract_f32(x_range, 2, range, md_attribute_slice_all(), md_unit_none()));
+        EXPECT_EQ(2, md_attribute_extract_f32(x_range, 2, attributes, range, md_attribute_slice_all(), md_unit_none()));
         const float x_min = x_range[0];
         const float x_max = x_range[1];
         EXPECT_NEAR(0.0f,  x_min, 1.0e-4f);
@@ -7459,8 +7459,8 @@ UTEST_F(script, periodic_propagation) {
     EXPECT_TRUE(md_unit_equal(values->unit, period->unit));
     EXPECT_TRUE(md_unit_equal(values->unit, seam->unit));
     float pv[2] = {0}, sv = 1;
-    EXPECT_EQ(2, md_attribute_extract_f32(pv, 2, period, md_attribute_slice_all(), md_unit_none()));
-    EXPECT_EQ(1, md_attribute_extract_f32(&sv, 1, seam, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(2, md_attribute_extract_f32(pv, 2, attributes, period, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(1, md_attribute_extract_f32(&sv, 1, attributes, seam, md_attribute_slice_all(), md_unit_none()));
     EXPECT_NEAR(-180.0f, pv[0], 1.0e-3f);
     EXPECT_NEAR( 180.0f, pv[1], 1.0e-3f);
     EXPECT_NEAR(   0.0f, sv,    1.0e-3f);

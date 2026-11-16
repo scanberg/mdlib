@@ -19,7 +19,8 @@
 #include "system_util.h"
 
 UTEST(backbone, backbone) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
 	EXPECT_EQ(0,        refsys.mol_pftaa.protein_backbone.range.count);
 	EXPECT_EQ(0,        refsys.mol_nucleotides.protein_backbone.range.count);
     EXPECT_EQ(1,        refsys.mol_ala.protein_backbone.range.count);

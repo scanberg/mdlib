@@ -126,6 +126,7 @@ static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) 
 }
 
 typedef struct md_attribute_t md_attribute_t;
+typedef struct md_attributes_t md_attributes_t;
 
 // The context an extraction hands its providers: the files a provider streaming from disk reads through
 // (md_attribute_io_read_at), kept open across calls, and the executor a provider spreads heavy work over
@@ -141,17 +142,23 @@ typedef struct md_attribute_io_t md_attribute_io_t;
 // num_idx >= 1) and writes cap elements of the STORED type in the STORED unit into dst; conversion
 // happens centrally afterwards. It returns cap on success and 0 on failure.
 //
+// table is the one attr is read from, handed in on every call: what a provider reads besides attr (the
+// source of a run, the orbitals a density is made of) it finds there, and never through a system or a
+// table it kept the address of. Those are values, which their owners copy and move as they like.
+//
 // It may read other attributes, but the dependency graph must be acyclic: nothing detects a cycle.
 // Scratch comes from the calling thread's temp allocator. io is NULL outside an extraction context.
 typedef size_t (*md_attribute_provider_fn)(
-    void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io
+    void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io
 );
 
 typedef struct md_attribute_virtual_t {
     md_attribute_provider_fn provider;
 
-    // Either BORROWED (NULL, the system, a trajectory owned elsewhere; user_data_size 0), or OWNED:
-    // allocated with md_attributes_alloc_user_data and freed by size with the owning attribute.
+    // Either OWNED: allocated with md_attributes_alloc_user_data and freed by size with the owning
+    // attribute, or BORROWED (user_data_size 0): something which outlives the table, and never what holds
+    // the table (a system), which may be copied or moved under it. NULL for a provider which needs nothing
+    // but the table.
     void*  user_data;
     size_t user_data_size;
 } md_attribute_virtual_t;
@@ -281,6 +288,9 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
 size_t md_attribute_packed_symmetric_dim(size_t extent);
 
 // EXTRACTION
+// table is the one attr was found in: a virtual attribute is computed by its provider, which reads what
+// else it needs from there (md_attribute_provider_fn).
+//
 // Copies a slice into dst, converting the stored type and the stored unit to dst_unit. Returns the
 // number of elements written, 0 on failure; cap must be at least md_attribute_slice_count.
 //
@@ -293,18 +303,18 @@ size_t md_attribute_packed_symmetric_dim(size_t extent);
 //
 // f64 is not a convenience: quantum chemistry data is double at the boundary on purpose. Use f32 for
 // what heads for a colour ramp or a plot, f64 for what heads back into a computation.
-size_t md_attribute_extract_f32(float  dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
-size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
+size_t md_attribute_extract_f32(float  dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
+size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
 
 // The same through an extraction context (md_attribute_io_t), handed to the providers of virtual attributes: their
 // files are kept open in it, and their heavy loops run on its executor. io may be NULL.
-size_t md_attribute_extract_io_f32(float  dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
-size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
+size_t md_attribute_extract_io_f32(float  dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
+size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
 
 // The same, into a buffer allocated from alloc (count * sizeof(float|double) bytes). NULL on
 // failure, with nothing left allocated. out_count, when given, receives the element count.
-float*  md_attribute_extract_alloc_f32(size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, struct md_allocator_i* alloc);
-double* md_attribute_extract_alloc_f64(size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, struct md_allocator_i* alloc);
+float*  md_attribute_extract_alloc_f32(size_t* out_count, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, struct md_allocator_i* alloc);
+double* md_attribute_extract_alloc_f64(size_t* out_count, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, struct md_allocator_i* alloc);
 
 // Text. The table is needed because the pool lives there. The returned strings are NUL terminated
 // views into the pool, and follow the invalidation rule of md_attributes_get.
@@ -427,11 +437,11 @@ void* md_attributes_data(md_attributes_t* attributes, md_attribute_id_t id, md_a
 // NULL when attr is not temporal or its axis has been removed. Same invalidation rule as get.
 const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, const md_attribute_t* attr);
 
-// Where frame src_index of src_axis lands on dst_axis, matched by coordinate VALUE (converted to
-// dst_axis' unit) within float precision or a thousandth of the local spacing. Axes must be non
-// decreasing; an axis without a unit holds ordinals and only matches another such axis. False, and
-// out_index untouched, when nothing matches.
-bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis);
+// Where frame src_index of src_axis (of src_table) lands on dst_axis (of dst_table, which may be the
+// same table), matched by coordinate VALUE (converted to dst_axis' unit) within float precision or a
+// thousandth of the local spacing. Axes must be non decreasing; an axis without a unit holds ordinals
+// and only matches another such axis. False, and out_index untouched, when nothing matches.
+bool md_attribute_axis_map(size_t* out_index, const md_attributes_t* src_table, const md_attribute_t* src_axis, size_t src_index, const md_attributes_t* dst_table, const md_attribute_t* dst_axis);
 
 // An extraction context of its own, for extractions outside a pass over frames: executor (may be NULL) is what the
 // providers of what is extracted through it run their loops on, and must outlive it. Not to be used by two threads

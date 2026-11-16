@@ -32,7 +32,8 @@ static bool test_infer_parts(md_system_t* sys) {
 }
 
 UTEST(hierarchy, part) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     EXPECT_EQ(1,        refsys.mol_ala.part.count);
 	EXPECT_EQ(1,        refsys.mol_pftaa.part.count);
 	EXPECT_EQ(2,        refsys.mol_nucleotides.part.count);
@@ -53,7 +54,8 @@ UTEST(hierarchy, part) {
 }
 
 UTEST(hierarchy, molecule_count) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     size_t num_molecules_pftaa = md_system_molecule_count(&refsys.mol_pftaa);
     EXPECT_EQ(1, num_molecules_pftaa);
     size_t num_molecules_nucleotides = md_system_molecule_count(&refsys.mol_nucleotides);
@@ -66,7 +68,8 @@ UTEST(hierarchy, molecule_count) {
 }
 
 UTEST(hierarchy, molecules) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     size_t num_molecules = 0;
 
     num_molecules = md_system_molecule_count(&refsys.mol_nucleotides);
@@ -1385,7 +1388,8 @@ UTEST(hierarchy, find_by_index) {
 // The walk keeps a per atom depth in temp memory, where zero means 'not reached'. Temp memory is not cleared on
 // allocation, so a walk which followed some other use of temp memory used to see stale depths and stop early.
 UTEST(hierarchy, mask_grow_by_bonds_dirty_temp) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     const md_system_t* sys = &refsys.mol_ala;
     md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys->atom.count, refsys.alloc);
     md_bitmask_t ref  = md_bitmask_create(0, (uint32_t)sys->atom.count, refsys.alloc);

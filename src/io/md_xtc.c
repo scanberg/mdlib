@@ -1047,10 +1047,9 @@ done:
 
 // <run>/atom/position. Everything it needs beyond the slice is in the table: the run is the path
 // minus "/atom/position", and the file, offset and size of the frame are its source attributes.
-static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
-    const md_attributes_t* attributes = &sys->attributes;
+static size_t xtc_position_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
+    const md_attributes_t* attributes = table;
 
     // A whole temporal virtual attribute is refused before it gets here, so the frame is fixed.
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) {
@@ -1133,7 +1132,7 @@ bool md_xtc_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
         boxes[i] = index.frame_boxes[i] * 10.0f;   // nm to Angstrom, as the coordinates
     }
 
-    const md_attribute_virtual_t virt = { .provider = xtc_position_provider, .user_data = sys };
+    const md_attribute_virtual_t virt = { .provider = xtc_position_provider };
     const md_run_desc_t desc = {
         .num_frames    = F,
         .num_atoms     = N,

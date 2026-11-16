@@ -45,7 +45,8 @@ extern "C" {
 // OWNERSHIP AND LIFETIME. The context belongs to the caller and to ONE thread at a time; a thread
 // pool keeps one per thread. It holds attribute ids rather than pointers and looks each up again on
 // every frame, so an attribute removed underneath it fails the extract instead of being read. It must
-// still be ENDED before the run it reads is removed, since the files it holds are that run's.
+// still be ENDED before the run it reads is removed, since the files it holds are that run's, and it
+// reads the system it was begun on: that one stays where it is until the context is ended.
 typedef struct md_system_extract_t md_system_extract_t;
 
 // NULL when the run, or any of the paths in it, does not exist. alloc is what the context lives in;

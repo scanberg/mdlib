@@ -218,7 +218,8 @@ static double nc4_scale(hid_t file, const char* name) {
 
 // ## A frame
 
-static size_t nc4_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t nc4_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     const nc4_source_t* src = (const nc4_source_t*)user_data;
     if (!src || !slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
     const size_t frame = slice->idx[0];

@@ -1615,13 +1615,12 @@ static size_t pdb_parse_model_coords(float* xyz, md_str_t str, size_t first, siz
 
 // <run>/atom/position: one read of the model's text, parsed into the caller's buffer. One atom asks
 // for the text up to that atom only.
-static size_t pdb_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
+static size_t pdb_position_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
+    if (!md_run_source(&src, table, attr, MD_STR_LIT("atom/position"))) return 0;
 
     const uint32_t frame = slice->idx[0];
     const size_t N = attr->format.shape[1];
@@ -1681,7 +1680,7 @@ bool md_pdb_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
         md_memcpy(boxes + i * 9, A, sizeof(A));
     }
 
-    const md_attribute_virtual_t virt = { .provider = pdb_position_provider, .user_data = sys };
+    const md_attribute_virtual_t virt = { .provider = pdb_position_provider };
     const md_run_desc_t desc = {
         .num_frames    = F,
         .num_atoms     = N,

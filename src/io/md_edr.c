@@ -996,10 +996,10 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 		const md_attribute_t* edr_axis = md_attributes_get(&probe, probe_id);
 		for (size_t f = 0; f < run_axis->format.shape[0]; ++f) {
 			size_t row;
-			if (!md_attribute_axis_map(&row, run_axis, f, edr_axis)) {
+			if (!md_attribute_axis_map(&row, attributes, run_axis, f, &probe, edr_axis)) {
 				double t = 0;
 				const md_attribute_slice_t s = md_attribute_slice_1((uint32_t)f);
-				md_attribute_extract_f64(&t, 1, run_axis, s, md_unit_picosecond());
+				md_attribute_extract_f64(&t, 1, attributes, run_axis, s, md_unit_picosecond());
 				MD_LOG_ERROR("EDR: frame %zu of '" MD_STR_FMT "' (%g ps) has no matching time in the energy file (%g - %g ps)",
 					f, MD_STR_ARG(run), t, energies->frame_time[0], energies->frame_time[R - 1]);
 				goto done;

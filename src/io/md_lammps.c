@@ -1863,15 +1863,14 @@ enum {
 
 // <run>/atom/position: one read of the frame's text, the atoms put in id order into the caller's
 // buffer. Atom lines are in no particular order in a dump, so one atom costs the whole frame.
-static size_t lammps_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-	const md_system_t* sys = (const md_system_t*)user_data;
-	MD_ASSERT(sys);
+static size_t lammps_position_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
 	if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
 	md_run_source_t src;
-	if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
+	if (!md_run_source(&src, table, attr, MD_STR_LIT("atom/position"))) return 0;
 
-	const md_attribute_t* layout_attr = md_attributes_find_in(&sys->attributes, src.run, MD_STR_LIT("source/layout"));
+	const md_attribute_t* layout_attr = md_attributes_find_in(table, src.run, MD_STR_LIT("source/layout"));
 	const int32_t* layout = (const int32_t*)md_attribute_view(layout_attr, MD_ATTRIBUTE_TYPE_I32, 1, 1);
 	if (!layout || layout_attr->format.shape[0] != LAMMPS_LAYOUT_COUNT) {
 		MD_LOG_ERROR("LAMMPS: the run '" MD_STR_FMT "' has lost its layout", MD_STR_ARG(src.run));
@@ -1940,7 +1939,7 @@ bool md_lammps_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t 
 		sizes[i] = index.frame_offsets[i + 1] - index.frame_offsets[i];
 	}
 
-	const md_attribute_virtual_t virt = { .provider = lammps_position_provider, .user_data = sys };
+	const md_attribute_virtual_t virt = { .provider = lammps_position_provider };
 	const md_run_desc_t desc = {
 		.num_frames    = F,
 		.num_atoms     = index.header.num_atoms,

@@ -4475,23 +4475,22 @@ static bool vlx_centre_of_charge(md_double3_t* out_angstrom, const vlx_t* vlx) {
 // A whole (unsliced) request reconstructs every state one after another into 'dst'; expensive, but
 // no more so than the vlx-based accessor doing the same loop, and slicing by state is how a caller
 // avoids paying for states it does not need.
-static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, vlx_transition_type_t type) {
-	md_system_t* sys = (md_system_t*)user_data;
+static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, vlx_transition_type_t type) {
 
-	const md_attribute_t* sol   = md_attributes_find(&sys->attributes, MD_STR_LIT("vlx/rsp/solution_matrix"));
-	const md_attribute_t* coeff = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/coefficient"));
-	const md_attribute_t* core  = md_attributes_find(&sys->attributes, MD_STR_LIT("vlx/rsp/num_core"));
-	const md_attribute_t* val   = md_attributes_find(&sys->attributes, MD_STR_LIT("vlx/rsp/num_valence"));
-	const md_attribute_t* vir   = md_attributes_find(&sys->attributes, MD_STR_LIT("vlx/rsp/num_virtual"));
+	const md_attribute_t* sol   = md_attributes_find(table, MD_STR_LIT("vlx/rsp/solution_matrix"));
+	const md_attribute_t* coeff = md_attributes_find(table, MD_STR_LIT("orbital/alpha/coefficient"));
+	const md_attribute_t* core  = md_attributes_find(table, MD_STR_LIT("vlx/rsp/num_core"));
+	const md_attribute_t* val   = md_attributes_find(table, MD_STR_LIT("vlx/rsp/num_valence"));
+	const md_attribute_t* vir   = md_attributes_find(table, MD_STR_LIT("vlx/rsp/num_virtual"));
 	if (!sol || !coeff || !core || !val || !vir) {
 		MD_LOG_ERROR("'" MD_STR_FMT "' is missing the response data it reconstructs from", MD_STR_ARG(attr->path));
 		return 0;
 	}
 
 	double num_core = 0.0, num_valence = 0.0, num_virtual = 0.0;
-	md_attribute_extract_f64(&num_core,    1, core, md_attribute_slice_all(), md_unit_none());
-	md_attribute_extract_f64(&num_valence, 1, val, md_attribute_slice_all(),  md_unit_none());
-	md_attribute_extract_f64(&num_virtual, 1, vir, md_attribute_slice_all(),  md_unit_none());
+	md_attribute_extract_f64(&num_core,    1, table, core, md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_valence, 1, table, val, md_attribute_slice_all(),  md_unit_none());
+	md_attribute_extract_f64(&num_virtual, 1, table, vir, md_attribute_slice_all(),  md_unit_none());
 
 	const size_t nocc       = num_core > 0.0 ? (size_t)num_core : (size_t)num_valence;
 	const size_t nvir       = (size_t)num_virtual;
@@ -4541,7 +4540,7 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	// Every step below gets its own report. An '&&' chain here costs nothing to write and tells a
 	// reader of the log only that the provider produced nothing, which is exactly the position this
 	// was debugged from - and there are five separate attributes it can be let down by.
-	if (md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) {
+	if (md_attribute_extract_f64(coeff_data, num_mo * num_ao, table, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) {
 		MD_LOG_ERROR("'" MD_STR_FMT "': could not read the %zu x %zu coefficients from '" MD_STR_FMT "'",
 			MD_STR_ARG(attr->path), num_mo, num_ao, MD_STR_ARG(coeff->path));
 		goto done;
@@ -4551,7 +4550,7 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 		const uint32_t state_idx = (slice && slice->num_idx > 0) ? slice->idx[0] : (uint32_t)s;
 		const md_attribute_slice_t row_slice = md_attribute_slice_1(state_idx);
 
-		if (md_attribute_extract_f64(row, vec_len, sol, row_slice, md_unit_none()) != vec_len) {
+		if (md_attribute_extract_f64(row, vec_len, table, sol, row_slice, md_unit_none()) != vec_len) {
 			MD_LOG_ERROR("'" MD_STR_FMT "': could not read state %u's %zu element solution vector from '" MD_STR_FMT "' (%u x %u)",
 				MD_STR_ARG(attr->path), state_idx, vec_len, MD_STR_ARG(sol->path), sol->format.shape[0], sol->format.shape[1]);
 			goto done;
@@ -4569,16 +4568,22 @@ done:
 	return result;
 }
 
-static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_ATTACHMENT);
+static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)user_data;
+	(void)io;
+	return vlx_transition_density_provide(dst, cap, table, attr, slice, VLX_TRANSITION_ATTACHMENT);
 }
 
-static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_DETACHMENT);
+static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)user_data;
+	(void)io;
+	return vlx_transition_density_provide(dst, cap, table, attr, slice, VLX_TRANSITION_DETACHMENT);
 }
 
-static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_DIFFERENCE);
+static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)user_data;
+	(void)io;
+	return vlx_transition_density_provide(dst, cap, table, attr, slice, VLX_TRANSITION_DIFFERENCE);
 }
 
 // ---------------------------------------------------------------------------
@@ -4804,7 +4809,8 @@ static bool vlx_density_source_read_cart(double* cart, vlx_density_source_t* src
 
 // Reads one density property from its file into the packed upper triangle of its Cartesian matrix.
 // Read whole only - an element of a packed triangle is not worth reading the file for.
-static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)table;
 	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
 	if (!src || !dst) {
 		return 0;
@@ -4840,7 +4846,8 @@ static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attri
 // straight into dst. What orbital/{alpha,beta}/density are for a file that holds them: reading the
 // matrix the calculation wrote costs one read of it, where computing it from the orbitals costs
 // num_occ * A^2 / 2 multiply-adds.
-static size_t vlx_scf_density_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_scf_density_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)table;
 	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
 	if (!src || !dst) {
 		return 0;
@@ -5009,7 +5016,8 @@ static bool vlx_rsp_source_read_hdf5(double* out, vlx_rsp_source_t* src, uint32_
 }
 
 // Rows of the solution matrix, {rows, len}: whole, one row (slice by state) or one element.
-static size_t vlx_rsp_solution_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_rsp_solution_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)table;
 	vlx_rsp_source_t* src = (vlx_rsp_source_t*)user_data;
 	if (!src || !dst) {
 		return 0;
@@ -5114,9 +5122,9 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 		return false;
 	}
 	double num_core = 0.0, num_valence = 0.0, num_virtual = 0.0;
-	md_attribute_extract_f64(&num_core,    1, core, md_attribute_slice_all(), md_unit_none());
-	md_attribute_extract_f64(&num_valence, 1, val,  md_attribute_slice_all(), md_unit_none());
-	md_attribute_extract_f64(&num_virtual, 1, vir,  md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_core,    1, &sys->attributes, core, md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_valence, 1, &sys->attributes, val,  md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_virtual, 1, &sys->attributes, vir,  md_attribute_slice_all(), md_unit_none());
 	const size_t nocc    = num_core > 0.0 ? (size_t)num_core : (size_t)num_valence;
 	const size_t nvir    = (size_t)num_virtual;
 	const size_t vec_len = sol->format.shape[1];
@@ -5155,7 +5163,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 		MD_LOG_ERROR("Natural transition orbitals of state %u: out of memory", state + 1);
 		goto done;
 	}
-	if (md_attribute_extract_f64(x, vec_len, sol, md_attribute_slice_1(state), md_unit_none()) != vec_len) {
+	if (md_attribute_extract_f64(x, vec_len, &sys->attributes, sol, md_attribute_slice_1(state), md_unit_none()) != vec_len) {
 		MD_LOG_ERROR("Natural transition orbitals of state %u: could not read the response vector", state + 1);
 		goto done;
 	}
@@ -5260,7 +5268,7 @@ static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size
 	// read once for every pair, over blocks of AOs that keep every pair's block of output in cache.
 	{
 		double* C = md_temp_alloc_array(temp, double, num_mo * num_ao);
-		if (!C || md_attribute_extract_f64(C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) {
+		if (!C || md_attribute_extract_f64(C, num_mo * num_ao, &sys->attributes, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) {
 			MD_LOG_ERROR("Natural transition orbitals of state %u: could not read the orbitals", state + 1);
 			goto done;
 		}
@@ -5414,15 +5422,16 @@ static size_t vlx_nto_provide(void* dst, size_t cap, const md_attribute_t* attr,
 	return vlx_nto_cache_fetch((double*)dst, c, state, part, offset, cap) ? cap : 0;
 }
 
-static size_t vlx_nto_lambda_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_nto_lambda_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)table;
+	(void)user_data;
 	(void)io;
 	return vlx_nto_provide(dst, cap, attr, slice, (vlx_nto_cache_t*)user_data, VLX_NTO_LAMBDA);
 }
 
 // The orbitals' providers find the cache through the weights, which own it.
-static vlx_nto_cache_t* vlx_nto_cache_of(void* user_data) {
-	const md_system_t* sys = (const md_system_t*)user_data;
-	const md_attribute_t* lambda = sys ? md_attributes_find(&sys->attributes, MD_STR_LIT("vlx/rsp/nto/lambda")) : NULL;
+static vlx_nto_cache_t* vlx_nto_cache_of(const md_attributes_t* table) {
+	const md_attribute_t* lambda = md_attributes_find(table, MD_STR_LIT("vlx/rsp/nto/lambda"));
 	if (!lambda || lambda->virt.provider != vlx_nto_lambda_provider) {
 		MD_LOG_ERROR("Natural transition orbitals: 'vlx/rsp/nto/lambda', which holds them, is missing");
 		return NULL;
@@ -5430,14 +5439,16 @@ static vlx_nto_cache_t* vlx_nto_cache_of(void* user_data) {
 	return (vlx_nto_cache_t*)lambda->virt.user_data;
 }
 
-static size_t vlx_nto_hole_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_nto_hole_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)user_data;
 	(void)io;
-	return vlx_nto_provide(dst, cap, attr, slice, vlx_nto_cache_of(user_data), VLX_NTO_HOLE);
+	return vlx_nto_provide(dst, cap, attr, slice, vlx_nto_cache_of(table), VLX_NTO_HOLE);
 }
 
-static size_t vlx_nto_particle_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_nto_particle_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)user_data;
 	(void)io;
-	return vlx_nto_provide(dst, cap, attr, slice, vlx_nto_cache_of(user_data), VLX_NTO_PARTICLE);
+	return vlx_nto_provide(dst, cap, attr, slice, vlx_nto_cache_of(table), VLX_NTO_PARTICLE);
 }
 
 // orbital/{alpha,beta}/density read from D_alpha and D_beta (beta a second name for alpha in a
@@ -5698,9 +5709,9 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
 				.shape = { (uint32_t)num_states, (uint32_t)num_ao, (uint32_t)num_ao },
 			};
-			md_attribute_virtual_t attach_virt = { .provider = vlx_transition_density_attachment_provider, .user_data = sys };
-			md_attribute_virtual_t detach_virt = { .provider = vlx_transition_density_detachment_provider, .user_data = sys };
-			md_attribute_virtual_t diff_virt   = { .provider = vlx_transition_density_difference_provider, .user_data = sys };
+			md_attribute_virtual_t attach_virt = { .provider = vlx_transition_density_attachment_provider };
+			md_attribute_virtual_t detach_virt = { .provider = vlx_transition_density_detachment_provider };
+			md_attribute_virtual_t diff_virt   = { .provider = vlx_transition_density_difference_provider };
 			md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/transition_density/attachment"), MD_STR_LIT("Attachment Density"), md_unit_none(), density_format, &attach_virt);
 			md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/transition_density/detachment"), MD_STR_LIT("Detachment Density"), md_unit_none(), density_format, &detach_virt);
 			md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/transition_density/difference"), MD_STR_LIT("Difference Density"), md_unit_none(), density_format, &diff_virt);
@@ -5741,8 +5752,8 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 					.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
 					.shape = { (uint32_t)num_states, (uint32_t)lmax, (uint32_t)num_ao },
 				};
-				const md_attribute_virtual_t particle_virt = { .provider = vlx_nto_particle_provider, .user_data = sys };
-				const md_attribute_virtual_t hole_virt     = { .provider = vlx_nto_hole_provider,     .user_data = sys };
+				const md_attribute_virtual_t particle_virt = { .provider = vlx_nto_particle_provider };
+				const md_attribute_virtual_t hole_virt     = { .provider = vlx_nto_hole_provider };
 				md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/nto/particle/coefficient"), MD_STR_LIT("Particle"), md_unit_none(), format, &particle_virt);
 				md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/nto/hole/coefficient"),     MD_STR_LIT("Hole"),     md_unit_none(), format, &hole_virt);
 			}

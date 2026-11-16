@@ -199,7 +199,7 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
         const md_attribute_t* vel = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/atom/velocity"));
         ASSERT_TRUE(vel != NULL);
         float v[3];
-        ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_2(3, 20), md_unit_none()));
+        ASSERT_EQ(3u, md_attribute_extract_f32(v, 3, &sys.attributes, vel, md_attribute_slice_2(3, 20), md_unit_none()));
         EXPECT_NEAR((float)nc4_vel(3, 20, 0), v[0], 1e-5f);
         EXPECT_NEAR((float)nc4_vel(3, 20, 2), v[2], 1e-5f);
 

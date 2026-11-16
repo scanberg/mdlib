@@ -73,7 +73,7 @@ static double* run_times(const md_system_t* sys, md_str_t run, md_allocator_i* a
     double* times = md_alloc(alloc, (n ? n : 1) * sizeof(double));
     double f;
     const md_unit_t unit = !md_unit_is_none(time->unit) && md_unit_conversion_factor(&f, time->unit, md_unit_picosecond()) ? md_unit_picosecond() : time->unit;
-    if (md_attribute_extract_f64(times, (size_t)n, time, md_attribute_slice_all(), unit) != (size_t)n) {
+    if (md_attribute_extract_f64(times, (size_t)n, &sys->attributes, time, md_attribute_slice_all(), unit) != (size_t)n) {
         for (int64_t i = 0; i < n; ++i) times[i] = (double)i;
     }
     *num_frames = n;

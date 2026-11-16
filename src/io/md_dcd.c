@@ -737,10 +737,9 @@ static bool dcd_has_cell_block(int32_t charmm) {
 // <run>/atom/position. One read of the frame; the file stores x, y and z as three planes, which are
 // interleaved here into the packed layout the attribute has. Fixed atoms keep their first frame
 // position, which the run holds as source/first_frame.
-static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
-    const md_attributes_t* attributes = &sys->attributes;
+static size_t dcd_position_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
+    const md_attributes_t* attributes = table;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
@@ -853,10 +852,9 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
 }
 
 // <run>/unitcell, for a file whose frames carry a cell block: 48 bytes at the start of the frame
-static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
-    const md_attributes_t* attributes = &sys->attributes;
+static size_t dcd_cell_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
+    const md_attributes_t* attributes = table;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
@@ -930,7 +928,7 @@ bool md_dcd_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
 
     // The cell: read from each frame when the file keeps one per frame; otherwise the system's own at
     // every frame.
-    const md_attribute_virtual_t cell_virt = { .provider = dcd_cell_provider, .user_data = sys };
+    const md_attribute_virtual_t cell_virt = { .provider = dcd_cell_provider };
     float* boxes = NULL;
     if (!dcd_has_cell_block(dcd.header.charmm)) {
         float A[3][3] = {0};
@@ -941,7 +939,7 @@ bool md_dcd_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
         }
     }
 
-    const md_attribute_virtual_t pos_virt = { .provider = dcd_position_provider, .user_data = sys };
+    const md_attribute_virtual_t pos_virt = { .provider = dcd_position_provider };
     const md_run_desc_t desc = {
         .num_frames    = F,
         .num_atoms     = N,

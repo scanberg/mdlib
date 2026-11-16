@@ -921,7 +921,8 @@ UTEST(bonds, threads_molecules) {
 }
 
 UTEST(bonds, reference_systems) {
-    reference_systems_t refsys = reference_systems_load();
+    reference_systems_t refsys;
+    reference_systems_load(&refsys);
     EXPECT_EQ(152,      refsys.mol_ala.bond.count);
     EXPECT_EQ(55,       refsys.mol_pftaa.bond.count);
     EXPECT_EQ(40,       refsys.mol_nucleotides.bond.count);

@@ -97,14 +97,23 @@ md_str_t md_attribute_leaf(const md_attribute_t* attr) {
     return md_str_substr(attr->path, loc + 1, SIZE_MAX);
 }
 
+// Whether attr is an entry of table: what is read is read from the table it was found in, or a provider
+// would look for its siblings in another.
+static bool attr_of_table(const md_attributes_t* table, const md_attribute_t* attr) {
+    const size_t n = md_array_size(table->attr);
+    return n > 0 && attr >= table->attr && attr < table->attr + n;
+}
+
 // The shared core, generated once per destination type: the one place where a stored type becomes a
 // number and a unit becomes a factor. first and count are the window in ELEMENTS (components folded
 // in); slice is the selection that produced them, forwarded to a provider as asked (NULL for the
 // whole attribute) rather than as an offset it would have to reverse back into indices.
 #define MD_ATTR_DEFINE_EXTRACT_RANGE(SUFFIX, DST_T)                                                 \
-static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_t* attr,      \
+static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, \
                                           size_t first, size_t count, const md_attribute_slice_t* slice, md_unit_t dst_unit, md_attribute_io_t* io) { \
+    MD_ASSERT(table);                                                                                  \
     MD_ASSERT(attr);                                                                                   \
+    MD_ASSERT(attr_of_table(table, attr));                                                             \
                                                                                                     \
     if (!dst) {                                                                                     \
         return 0;                                                                                   \
@@ -138,7 +147,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
     /* extra copy was 5-8% of decoding the frame.                                                 */ \
     const bool as_stored = (attr->format.type == MD_ATTRIBUTE_TYPE_##SUFFIX && factor == 1.0);      \
     if (md_attribute_is_virtual(attr) && as_stored) {                                               \
-        size_t written = attr->virt.provider(dst, count, attr, slice, attr->virt.user_data, io);    \
+        size_t written = attr->virt.provider(dst, count, table, attr, slice, attr->virt.user_data, io); \
         if (written != count) {                                                                     \
             MD_LOG_ERROR("Attribute '" MD_STR_FMT "' provider wrote %zu of %zu requested values", MD_STR_ARG(attr->path), written, count); \
             return 0;                                                                               \
@@ -157,7 +166,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
             md_temp_end(temp);                                                                      \
             return 0;                                                                               \
         }                                                                                           \
-        size_t written = attr->virt.provider(buf, count, attr, slice, attr->virt.user_data, io);    \
+        size_t written = attr->virt.provider(buf, count, table, attr, slice, attr->virt.user_data, io); \
         if (written != count) {                                                                     \
             MD_LOG_ERROR("Attribute '" MD_STR_FMT "' provider wrote %zu of %zu requested values", MD_STR_ARG(attr->path), written, count); \
             md_temp_end(temp);                                                                      \
@@ -290,15 +299,15 @@ static bool attr_reject_whole_temporal(const md_attribute_t* attr, md_attribute_
 }
 
 #define MD_ATTR_DEFINE_EXTRACT(SUFFIX, suffix, DST_T)                                                     \
-static size_t attr_extract_##SUFFIX(DST_T dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) { \
+static size_t attr_extract_##SUFFIX(DST_T dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) { \
     MD_ASSERT(attr);                                                                                   \
     if (attr_reject_whole_temporal(attr, slice)) return 0;                                          \
     size_t first, count;                                                                            \
     if (!md_attribute_slice_window(&first, &count, attr, slice)) return 0;                          \
-    return attr_extract_range_##SUFFIX(dst, cap, attr, first, count, slice.num_idx ? &slice : NULL, dst_unit, io); \
+    return attr_extract_range_##SUFFIX(dst, cap, table, attr, first, count, slice.num_idx ? &slice : NULL, dst_unit, io); \
 }                                                                                                   \
                                                                                                     \
-DST_T* md_attribute_extract_alloc_##suffix(size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_allocator_i* alloc) { \
+DST_T* md_attribute_extract_alloc_##suffix(size_t* out_count, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_allocator_i* alloc) { \
     MD_ASSERT(attr);                                                                                   \
     MD_ASSERT(alloc);                                                                                  \
     if (out_count) *out_count = 0;                                                                  \
@@ -306,7 +315,7 @@ DST_T* md_attribute_extract_alloc_##suffix(size_t* out_count, const md_attribute
     if (count == 0) return NULL;                                                                    \
     DST_T* dst = (DST_T*)md_alloc(alloc, count * sizeof(DST_T));                                    \
     if (!dst) return NULL;                                                                          \
-    if (attr_extract_##SUFFIX(dst, count, attr, slice, dst_unit, NULL) != count) {                  \
+    if (attr_extract_##SUFFIX(dst, count, table, attr, slice, dst_unit, NULL) != count) {                  \
         md_free(alloc, dst, count * sizeof(DST_T));                                                 \
         return NULL;                                                                                \
     }                                                                                               \
@@ -319,31 +328,33 @@ MD_ATTR_DEFINE_EXTRACT(F64, f64, double)
 
 #undef MD_ATTR_DEFINE_EXTRACT
 
-size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit) {
-    return attr_extract_F32(dst, cap, attr, slice, dst_unit, NULL);
+size_t md_attribute_extract_f32(float dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit) {
+    return attr_extract_F32(dst, cap, table, attr, slice, dst_unit, NULL);
 }
 
-size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit) {
-    return attr_extract_F64(dst, cap, attr, slice, dst_unit, NULL);
+size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit) {
+    return attr_extract_F64(dst, cap, table, attr, slice, dst_unit, NULL);
 }
 
-size_t md_attribute_extract_io_f32(float dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) {
-    return attr_extract_F32(dst, cap, attr, slice, dst_unit, io);
+size_t md_attribute_extract_io_f32(float dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) {
+    return attr_extract_F32(dst, cap, table, attr, slice, dst_unit, io);
 }
 
-size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) {
-    return attr_extract_F64(dst, cap, attr, slice, dst_unit, io);
+size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) {
+    return attr_extract_F64(dst, cap, table, attr, slice, dst_unit, io);
 }
 
-bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
+bool md_attribute_read_stored(void* dst, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
     MD_ASSERT(dst);
+    MD_ASSERT(table);
     MD_ASSERT(attr);
+    MD_ASSERT(attr_of_table(table, attr));
     size_t first, count;
     if (!md_attribute_slice_window(&first, &count, attr, slice)) {
         return false;
     }
     if (md_attribute_is_virtual(attr)) {
-        return attr->virt.provider(dst, count, attr, slice.num_idx ? &slice : NULL, attr->virt.user_data, io) == count;
+        return attr->virt.provider(dst, count, table, attr, slice.num_idx ? &slice : NULL, attr->virt.user_data, io) == count;
     }
     if (!attr->data) {
         return false;
@@ -1517,12 +1528,14 @@ static inline double attr_abs(double x) {
 
 // One coordinate, read through the extract so a computed axis works exactly like a resident one.
 // unit is md_unit_none() for "as stored".
-static bool attr_axis_value(double* out, const md_attribute_t* axis, size_t i, md_unit_t unit) {
-    return md_attribute_extract_f64(out, 1, axis, md_attribute_slice_1((uint32_t)i), unit) == 1;
+static bool attr_axis_value(double* out, const md_attributes_t* table, const md_attribute_t* axis, size_t i, md_unit_t unit) {
+    return md_attribute_extract_f64(out, 1, table, axis, md_attribute_slice_1((uint32_t)i), unit) == 1;
 }
 
-bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis) {
+bool md_attribute_axis_map(size_t* out_index, const md_attributes_t* src_table, const md_attribute_t* src_axis, size_t src_index, const md_attributes_t* dst_table, const md_attribute_t* dst_axis) {
     MD_ASSERT(out_index);
+    MD_ASSERT(src_table);
+    MD_ASSERT(dst_table);
     MD_ASSERT(src_axis);
     MD_ASSERT(dst_axis);
 
@@ -1549,7 +1562,7 @@ bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, si
     }
 
     double t;
-    if (!attr_axis_value(&t, src_axis, src_index, dst_axis->unit)) {
+    if (!attr_axis_value(&t, src_table, src_axis, src_index, dst_axis->unit)) {
         return false;
     }
 
@@ -1559,7 +1572,7 @@ bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, si
     while (lo < hi) {
         const size_t mid = lo + (hi - lo) / 2;
         double v;
-        if (!attr_axis_value(&v, dst_axis, mid, md_unit_none())) {
+        if (!attr_axis_value(&v, dst_table, dst_axis, mid, md_unit_none())) {
             return false;
         }
         if (v < t) {
@@ -1574,7 +1587,7 @@ bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, si
     double best_val  = 0.0;
     for (size_t c = (lo > 0 ? lo - 1 : 0); c <= lo && c < dst_count; ++c) {
         double v;
-        if (!attr_axis_value(&v, dst_axis, c, md_unit_none())) {
+        if (!attr_axis_value(&v, dst_table, dst_axis, c, md_unit_none())) {
             return false;
         }
         const double d = attr_abs(v - t);
@@ -1595,13 +1608,13 @@ bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, si
     double spacing = 0.0;
     if (best + 1 < dst_count) {
         double v;
-        if (attr_axis_value(&v, dst_axis, best + 1, md_unit_none())) {
+        if (attr_axis_value(&v, dst_table, dst_axis, best + 1, md_unit_none())) {
             spacing = attr_abs(v - best_val);
         }
     }
     if (best > 0) {
         double v;
-        if (attr_axis_value(&v, dst_axis, best - 1, md_unit_none())) {
+        if (attr_axis_value(&v, dst_table, dst_axis, best - 1, md_unit_none())) {
             const double s = attr_abs(best_val - v);
             if (s > 0.0 && (spacing == 0.0 || s < spacing)) {
                 spacing = s;

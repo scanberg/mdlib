@@ -73,7 +73,7 @@ static bool bench_gto_load(bench_gto_t* b) {
 
     b->num_atoms = md_attribute_value_count(&c->format);
     double* xyz = md_arena_allocator_push(b->arena, sizeof(double) * 3 * b->num_atoms);
-    md_attribute_extract_f64(xyz, 3 * b->num_atoms, c, md_attribute_slice_all(), md_unit_none());
+    md_attribute_extract_f64(xyz, 3 * b->num_atoms, &sys.attributes, c, md_attribute_slice_all(), md_unit_none());
     b->atom_xyz = md_arena_allocator_push(b->arena, sizeof(float) * 3 * b->num_atoms);
 
     md_float3_t lo = md_float3_set1(FLT_MAX), hi = md_float3_set1(-FLT_MAX);
@@ -88,16 +88,16 @@ static bool bench_gto_load(bench_gto_t* b) {
     b->num_ao = n;
     b->D  = md_arena_allocator_push(b->arena, sizeof(double) * n * n);
     b->mo = md_arena_allocator_push(b->arena, sizeof(double) * n);
-    md_attribute_extract_f64(b->D, n * n, d, md_attribute_slice_all(), md_unit_none());
+    md_attribute_extract_f64(b->D, n * n, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
 
     // The HOMO: the last occupied orbital
     const size_t num_mo = md_attribute_value_count(&occ->format);
     double* occupation = md_arena_allocator_push(b->arena, sizeof(double) * num_mo);
-    md_attribute_extract_f64(occupation, num_mo, occ, md_attribute_slice_all(), md_unit_none());
+    md_attribute_extract_f64(occupation, num_mo, &sys.attributes, occ, md_attribute_slice_all(), md_unit_none());
     for (size_t i = num_mo; i-- > 0;) {
         if (occupation[i] > 0.0) { b->mo_idx = (int)i; break; }
     }
-    md_attribute_extract_f64(b->mo, n, mo, md_attribute_slice_1((uint32_t)b->mo_idx), md_unit_none());
+    md_attribute_extract_f64(b->mo, n, &sys.attributes, mo, md_attribute_slice_1((uint32_t)b->mo_idx), md_unit_none());
 
     const float h = 0.4f, margin = 6.0f;
     lo = md_float3_sub1(lo, margin);

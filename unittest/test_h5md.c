@@ -53,8 +53,8 @@ static const md_attribute_t* attr(const md_system_t* sys, const char* path) {
 }
 
 // The values of a resident or virtual attribute's slice as doubles, in its own unit
-static size_t slice_f64(double* dst, size_t cap, const md_attribute_t* a, md_attribute_slice_t slice) {
-    return a ? md_attribute_extract_f64(dst, cap, a, slice, md_unit_none()) : 0;
+static size_t slice_f64(double* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* a, md_attribute_slice_t slice) {
+    return a ? md_attribute_extract_f64(dst, cap, table, a, slice, md_unit_none()) : 0;
 }
 
 static bool has_bond(const md_system_t* sys, int a, int b) {
@@ -285,7 +285,7 @@ UTEST(h5md, spec_system) {
     EXPECT_TRUE(has_bond(&t.sys, 1, 3));
 
     double q[4];
-    ASSERT_EQ(4u, slice_f64(q, 4, attr(&t.sys, "atom/charge"), md_attribute_slice_all()));
+    ASSERT_EQ(4u, slice_f64(q, 4, &t.sys.attributes, attr(&t.sys, "atom/charge"), md_attribute_slice_all()));
     EXPECT_NEAR(-0.8, q[1], 1.0e-6);
 
     // The first frame, nm to Angstrom
@@ -329,12 +329,12 @@ UTEST(h5md, spec_run) {
     EXPECT_GT(((const int64_t*)attr(&t.sys, "run/spec/source/offset")->data)[0], 0);
     double x[12];
     for (size_t f = 0; f < 6; ++f) {
-        ASSERT_EQ(12u, slice_f64(x, 12, pos, md_attribute_slice_1((uint32_t)f)));
+        ASSERT_EQ(12u, slice_f64(x, 12, &t.sys.attributes, pos, md_attribute_slice_1((uint32_t)f)));
         for (size_t i = 0; i < 4; ++i) for (size_t k = 0; k < 3; ++k) {
             EXPECT_NEAR(10.0 * spec_position(f, i, k), x[i * 3 + k], 1.0e-5);
         }
     }
-    ASSERT_EQ(3u, slice_f64(x, 3, pos, md_attribute_slice_2(5, 3)));
+    ASSERT_EQ(3u, slice_f64(x, 3, &t.sys.attributes, pos, md_attribute_slice_2(5, 3)));
     EXPECT_NEAR(10.0 * spec_position(5, 3, 1), x[1], 1.0e-5);
 
     md_system_state_t st = { .alloc = t.arena };
@@ -349,7 +349,7 @@ UTEST(h5md, spec_run) {
     const md_attribute_t* force = attr(&t.sys, "run/spec/atom/force");
     ASSERT_TRUE(force != NULL);
     EXPECT_GT(((const int64_t*)attr(&t.sys, "run/spec/h5md/particles/force/source/offset")->data)[0], 0);
-    ASSERT_EQ(12u, slice_f64(x, 12, force, md_attribute_slice_1(3)));
+    ASSERT_EQ(12u, slice_f64(x, 12, &t.sys.attributes, force, md_attribute_slice_1(3)));
     EXPECT_NEAR(-spec_position(3, 1, 2), x[5], 1.0e-6);
 
     // Velocity at steps 100, 120, 140 and no time of its own: the run's time step gives it one.
@@ -360,26 +360,26 @@ UTEST(h5md, spec_run) {
     EXPECT_TRUE(md_unit_equal(vel_time->unit, md_unit_picosecond()));
     EXPECT_NEAR(0.24, ((const double*)vel_time->data)[1], 1.0e-12);
     EXPECT_GT(((const int64_t*)attr(&t.sys, "run/spec/h5md/particles/velocity/source/offset")->data)[2], 0);
-    ASSERT_EQ(12u, slice_f64(x, 12, vel, md_attribute_slice_1(2)));
+    ASSERT_EQ(12u, slice_f64(x, 12, &t.sys.attributes, vel, md_attribute_slice_1(2)));
     EXPECT_NEAR(2.0 * spec_position(2, 3, 0), x[9], 1.0e-6);
     size_t row = 0;
-    EXPECT_TRUE(md_attribute_axis_map(&row, time, 4, vel_time));
+    EXPECT_TRUE(md_attribute_axis_map(&row, &t.sys.attributes, time, 4, &t.sys.attributes, vel_time));
     EXPECT_EQ(2u, row);
-    EXPECT_FALSE(md_attribute_axis_map(&row, time, 3, vel_time));
+    EXPECT_FALSE(md_attribute_axis_map(&row, &t.sys.attributes, time, 3, &t.sys.attributes, vel_time));
 
     // Observables, as the file has them
     const md_attribute_t* energy = attr(&t.sys, "run/spec/h5md/observables/potential_energy/value");
     ASSERT_TRUE(energy != NULL);
     EXPECT_TRUE(energy->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
     double e[3];
-    ASSERT_EQ(2u, slice_f64(e, 2, energy, md_attribute_slice_all()));
+    ASSERT_EQ(2u, slice_f64(e, 2, &t.sys.attributes, energy, md_attribute_slice_all()));
     EXPECT_EQ(-11.25, e[1]);
     EXPECT_TRUE(md_attributes_axis(&t.sys.attributes, energy) == attr(&t.sys, "run/spec/h5md/observables/potential_energy/time"));
 
     const md_attribute_t* com = attr(&t.sys, "run/spec/h5md/observables/center/of_mass/value");
     ASSERT_TRUE(com != NULL);
     EXPECT_EQ(2u, com->format.rank);
-    ASSERT_EQ(3u, slice_f64(e, 3, com, md_attribute_slice_1(5)));
+    ASSERT_EQ(3u, slice_f64(e, 3, &t.sys.attributes, com, md_attribute_slice_1(5)));
     EXPECT_EQ(15.0, e[0]);
     EXPECT_NEAR(0.3, ((const double*)attr(&t.sys, "run/spec/h5md/observables/center/of_mass/time")->data)[5], 1.0e-12);
 
@@ -387,7 +387,7 @@ UTEST(h5md, spec_run) {
     ASSERT_TRUE(volume != NULL);
     EXPECT_EQ(0u, volume->format.rank);
     double vol = 0;
-    ASSERT_EQ(1u, md_attribute_extract_f64(&vol, 1, volume, md_attribute_slice_all(), md_unit_pow(md_unit_angstrom(), 3)));
+    ASSERT_EQ(1u, md_attribute_extract_f64(&vol, 1, &t.sys.attributes, volume, md_attribute_slice_all(), md_unit_pow(md_unit_angstrom(), 3)));
     EXPECT_NEAR(24000.0, vol, 1.0e-6);
     EXPECT_TRUE(attr(&t.sys, "run/spec/h5md/observables/label/value") == NULL);
 
@@ -436,7 +436,7 @@ UTEST(h5md, spec_bare) {
     const md_attribute_t* image = attr(&t.sys, "run/bare/atom/image");
     ASSERT_TRUE(image != NULL);
     double img[12];
-    ASSERT_EQ(12u, slice_f64(img, 12, image, md_attribute_slice_1(4)));
+    ASSERT_EQ(12u, slice_f64(img, 12, &t.sys.attributes, image, md_attribute_slice_1(4)));
     EXPECT_EQ(1.0, img[7]);
     h5md_test_free(&t);
 }
@@ -701,7 +701,7 @@ UTEST(h5md, box_in_any_orientation) {
         }
         // The velocities, the same numbers without a unit, turn the same way
         double vel[N * 3];
-        ASSERT_EQ((size_t)(N * 3), slice_f64(vel, N * 3, attr(&t.sys, "run/turned/atom/velocity"), md_attribute_slice_1((uint32_t)f)));
+        ASSERT_EQ((size_t)(N * 3), slice_f64(vel, N * 3, &t.sys.attributes, attr(&t.sys, "run/turned/atom/velocity"), md_attribute_slice_1((uint32_t)f)));
         for (int i = 0; i < N; ++i) {
             EXPECT_NEAR(st.xyz[i].x, 10.0 * vel[i * 3 + 0], 1.0e-3);
             EXPECT_NEAR(st.xyz[i].z, 10.0 * vel[i * 3 + 2], 1.0e-3);

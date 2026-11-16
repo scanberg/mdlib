@@ -39,4 +39,4 @@ void md_attribute_io_close_all(md_attribute_io_t* io);
 bool md_attribute_slice_window(size_t* out_first, size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice);
 
 // The slice in its STORED type and unit, unconverted: resident storage is copied, a provider asked.
-bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
+bool md_attribute_read_stored(void* dst, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);

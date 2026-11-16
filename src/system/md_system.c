@@ -899,7 +899,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
         }
 
         size_t row = (size_t)frame;
-        if (e->axis_id != ex->run_axis_id && !md_attribute_axis_map(&row, run_axis, (size_t)frame, axis)) {
+        if (e->axis_id != ex->run_axis_id && !md_attribute_axis_map(&row, attributes, run_axis, (size_t)frame, attributes, axis)) {
             if (e->kind != EXTRACT_OTHER) {
                 MD_LOG_ERROR("'" MD_STR_FMT "' has no value at frame %" PRId64, MD_STR_ARG(e->path), frame);
                 result = false;
@@ -925,7 +925,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
                 result = false;
                 break;
             }
-            if (md_attribute_extract_io_f32((float*)out->xyz, N * 3, attr, slice, md_unit_angstrom(), &ex->io) != N * 3) {
+            if (md_attribute_extract_io_f32((float*)out->xyz, N * 3, attributes, attr, slice, md_unit_angstrom(), &ex->io) != N * 3) {
                 result = false;
                 break;
             }
@@ -934,7 +934,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
         }
         case EXTRACT_CELL: {
             float box[3][3];
-            if (md_attribute_extract_io_f32(&box[0][0], 9, attr, slice, md_unit_angstrom(), &ex->io) != 9) {
+            if (md_attribute_extract_io_f32(&box[0][0], 9, attributes, attr, slice, md_unit_angstrom(), &ex->io) != 9) {
                 result = false;
                 break;
             }
@@ -952,7 +952,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
             md_attribute_slice_format(&fmt, attr, slice);
             const size_t bytes = md_attribute_byte_size(&fmt);
             void* data = md_temp_alloc(temp, MD_MAX(bytes, 1));
-            if (!data || !md_attribute_read_stored(data, attr, slice, &ex->io)) {
+            if (!data || !md_attribute_read_stored(data, attributes, attr, slice, &ex->io)) {
                 result = false;
                 break;
             }
@@ -1237,7 +1237,7 @@ bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_d
         if (!axis) goto done;
         for (size_t f = 0; f < F; ++f) {
             size_t row;
-            if (!md_attribute_axis_map(&row, run_axis, f, axis)) {
+            if (!md_attribute_axis_map(&row, attributes, run_axis, f, &probe, axis)) {
                 MD_LOG_ERROR("'" MD_STR_FMT "' has no row at the time of frame %zu of '" MD_STR_FMT "'; it belongs to another run", MD_STR_ARG(d->group), f, MD_STR_ARG(run));
                 goto done;
             }

@@ -195,20 +195,20 @@ bool md_qm_publish_overlap(struct md_system_t* sys);
 // published one of two ways: square ({A,A}, or {S,A,A} indexed by state), or as its packed upper
 // triangle (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC, {A(A+1)/2} or {S,A(A+1)/2}) when it is large and read
 // from disk on demand. These two read either one, so a consumer never has to know which it was given.
-// 'slice' narrows 'attr' to ONE matrix. Both return N, or 0 on failure; with dst NULL they return N
-// and extract nothing. cap is in elements.
+// 'slice' narrows 'attr' (of 'table') to ONE matrix. Both return N, or 0 on failure; with dst NULL they
+// return N and extract nothing. cap is in elements.
 
 // The packed upper triangle as float - row i holding columns i..N-1, N(N+1)/2 values - which is the
 // layout the GTO density kernels take. A packed attribute is extracted straight into dst, so nothing
 // larger than the triangle is ever made; a square one is extracted whole into scratch first.
-size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
+size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
 
 // The whole N x N matrix as double, row major: a packed attribute is extracted into scratch and its
 // lower half mirrored from the upper; a square one is extracted as it is.
 //
 // Both through io (may be NULL): a density computed on demand (orbital/*/density, from the orbitals) is built on
 // its executor (md_attribute_io_create).
-size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
+size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
 
 // S[a][b] over the basis's Cartesian AOs, row major, md_gto_basis_num_ao(basis) on a side.
 // 'atom_coord_bohr' holds one position per atom the shell list indexes, in BOHR - the unit the

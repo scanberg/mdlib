@@ -51,7 +51,7 @@ UTEST(ase_traj, fixed_atoms_and_time) {
     const md_attribute_t* pos = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ase/atom/position"));
     ASSERT_TRUE(pos != NULL);
     float xyz[3];
-    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, md_attribute_slice_2(2, 1), md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, &sys.attributes, pos, md_attribute_slice_2(2, 1), md_unit_none()));
     EXPECT_NEAR(1.2, xyz[0], 1.0e-6);
 
     md_system_state_free(&frame);
@@ -89,7 +89,7 @@ UTEST(ase_traj, float32_positions) {
     const md_attribute_t* pos = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ase/atom/position"));
     ASSERT_TRUE(pos != NULL);
     float xyz[3];
-    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, md_attribute_slice_2(1, 1), md_unit_none()));
+    ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, &sys.attributes, pos, md_attribute_slice_2(1, 1), md_unit_none()));
     EXPECT_EQ(8.0f, xyz[1]);
 
     md_system_state_free(&frame);

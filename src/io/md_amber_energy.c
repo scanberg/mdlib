@@ -418,9 +418,9 @@ bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t file
         const md_attribute_t* axis = md_attributes_get(&probe, probe_id);
         for (size_t f = 0; f < run_axis->format.shape[0]; ++f) {
             size_t row;
-            if (!md_attribute_axis_map(&row, run_axis, f, axis)) {
+            if (!md_attribute_axis_map(&row, attributes, run_axis, f, &probe, axis)) {
                 double time = 0;
-                md_attribute_extract_f64(&time, 1, run_axis, md_attribute_slice_1((uint32_t)f), md_unit_picosecond());
+                md_attribute_extract_f64(&time, 1, attributes, run_axis, md_attribute_slice_1((uint32_t)f), md_unit_picosecond());
                 MD_LOG_ERROR("Amber energy: frame %zu of '" MD_STR_FMT "' (%g ps) has no record in '" MD_STR_FMT "' (%g - %g ps); the file belongs to another run, or was written at another interval",
                     f, MD_STR_ARG(run), time, MD_STR_ARG(filename), t.time[0], t.time[R - 1]);
                 goto done;

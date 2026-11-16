@@ -1257,7 +1257,8 @@ static const md_hdf5_direct_t* h5md_source_direct(const h5md_source_t* src) {
     return (const md_hdf5_direct_t*)(src + 1);
 }
 
-static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t h5md_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     (void)attr;
     const h5md_source_t* src = (const h5md_source_t*)user_data;
     // A whole temporal virtual attribute is refused before it gets here, so the frame is fixed

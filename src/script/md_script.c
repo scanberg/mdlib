@@ -3543,7 +3543,7 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
         }
 
         size_t row;
-        if (!md_attribute_axis_map(&row, run_ax, frame, attr_ax)) {
+        if (!md_attribute_axis_map(&row, attributes, run_ax, frame, attributes, attr_ax)) {
             MD_LOG_ERROR("attr: '"MD_STR_FMT"' has no value at frame %zu", MD_STR_ARG(member->path), frame);
             return false;
         }
@@ -3554,7 +3554,7 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
             MD_LOG_ERROR("attr: '"MD_STR_FMT"' changed shape since the script was compiled", MD_STR_ARG(member->path));
             return false;
         }
-        if (md_attribute_extract_f32(out, count, attr, slice, md_unit_none()) != count) {
+        if (md_attribute_extract_f32(out, count, attributes, attr, slice, md_unit_none()) != count) {
             return false;
         }
         out += count;
@@ -6840,7 +6840,8 @@ static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* a
 // The bin coordinates of a distribution are its range cut into equal bins, and that range is not
 // known until frames have been evaluated - it may be widened by the data itself. Computing them on
 // demand keeps them correct without anyone having to remember to rewrite them.
-static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)table;
     const eval_property_t* prop = (const eval_property_t*)user_data;
     if (!prop || !prop->range || attr->format.rank != 1) {
         return 0;

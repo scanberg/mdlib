@@ -48,7 +48,7 @@ UTEST(molden, parse) {
     ASSERT_EQ(md_attribute_value_count(&coord->format), 3u);
 
     double xyz[9] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), &t.sys.attributes, coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
     EXPECT_NEAR(4.999999640091, xyz[0], 1.0e-6);
     EXPECT_NEAR(7.147076485541, xyz[1], 1.0e-6);
     EXPECT_NEAR(7.650970449270, xyz[2], 1.0e-6);
@@ -61,7 +61,7 @@ UTEST(molden, parse) {
     const md_attribute_t* z = qm_test_attr(&t, MD_STR_LIT("qm/atom/atomic_number"));
     ASSERT_TRUE(z != NULL);
     double zz[3] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(zz, 3, z, md_attribute_slice_all(), md_unit_none()), 3u);
+    ASSERT_EQ(md_attribute_extract_f64(zz, 3, &t.sys.attributes, z, md_attribute_slice_all(), md_unit_none()), 3u);
     EXPECT_EQ(8.0, zz[0]);
     EXPECT_EQ(1.0, zz[1]);
     EXPECT_EQ(1.0, zz[2]);
@@ -71,7 +71,7 @@ UTEST(molden, parse) {
     const md_attribute_t* nq = qm_test_attr(&t, MD_STR_LIT("qm/atom/nuclear_charge"));
     ASSERT_TRUE(nq != NULL);
     double qq[3] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(qq, 3, nq, md_attribute_slice_all(), md_unit_elementary_charge()), 3u);
+    ASSERT_EQ(md_attribute_extract_f64(qq, 3, &t.sys.attributes, nq, md_attribute_slice_all(), md_unit_elementary_charge()), 3u);
     EXPECT_EQ(8.0, qq[0]);
     EXPECT_EQ(1.0, qq[1]);
     EXPECT_EQ(1.0, qq[2]);
@@ -220,7 +220,7 @@ static double molden_density_difference(const char* file_a, const char* file_b) 
     if (molden_load(&a, file_a, MD_MEGABYTES(32)) && molden_load(&b, file_b, MD_MEGABYTES(32))) {
         const md_attribute_t* ca = qm_test_attr(&a, MD_STR_LIT("qm/atom/coordinate"));
         double xyz[9] = {0};
-        if (ca && md_attribute_extract_f64(xyz, 9, ca, md_attribute_slice_all(), md_unit_none()) == 9) {
+        if (ca && md_attribute_extract_f64(xyz, 9, &a.sys.attributes, ca, md_attribute_slice_all(), md_unit_none()) == 9) {
             float atom[9];
             for (int i = 0; i < 9; ++i) atom[i] = (float)(xyz[i] * 1.8897261246257702);
             enum { N = 2000 };
@@ -447,7 +447,7 @@ UTEST(molden, vibrational_blocks) {
     double xyz[9] = {0};
     const md_attribute_t* coord = qm_test_attr(&t, MD_STR_LIT("qm/atom/coordinate"));
     ASSERT_TRUE(coord != NULL);
-    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
+    ASSERT_EQ(md_attribute_extract_f64(xyz, MD_COUNTOF(xyz), &t.sys.attributes, coord, md_attribute_slice_all(), md_unit_none()), MD_COUNTOF(xyz));
     EXPECT_NEAR(1.43 * 0.529177210903, xyz[4], 1.0e-9);
 
     double freq[3] = {0};

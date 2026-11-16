@@ -371,13 +371,12 @@ static bool ase_positions_read(float* dst, size_t count, size_t width, md_attrib
 }
 
 // <run>/atom/position: one read of the frame, or of the one atom asked for
-static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-    const md_system_t* sys = (const md_system_t*)user_data;
-    MD_ASSERT(sys);
+static size_t ase_position_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)user_data;
     if (!slice || slice->num_idx == 0 || slice->num_idx > 2) return 0;
 
     md_run_source_t src;
-    if (!md_run_source(&src, &sys->attributes, attr, MD_STR_LIT("atom/position"))) return 0;
+    if (!md_run_source(&src, table, attr, MD_STR_LIT("atom/position"))) return 0;
 
     const size_t frame = slice->idx[0];
     const size_t N = attr->format.shape[1];
@@ -395,7 +394,7 @@ static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t*
         return 0;
     }
     // A cell in another orientation than md_unitcell_t's: its frame's positions turn with it
-    const md_attribute_t* rot = md_attributes_find_in(&sys->attributes, src.run, MD_STR_LIT("source/rotation"));
+    const md_attribute_t* rot = md_attributes_find_in(table, src.run, MD_STR_LIT("source/rotation"));
     if (rot && rot->data && rot->format.type == MD_ATTRIBUTE_TYPE_F32 && md_attribute_value_count(&rot->format) == src.num_frames * 9) {
         ase_rotate((float*)dst, count, (const float*)rot->data + frame * 9);
     }
@@ -469,7 +468,7 @@ bool md_ase_traj_system_publish_run(md_system_t* sys, md_str_t filename, md_str_
         result = false;
     }
     if (result) {
-        const md_attribute_virtual_t virt = { .provider = ase_position_provider, .user_data = sys };
+        const md_attribute_virtual_t virt = { .provider = ase_position_provider };
         const md_run_desc_t desc = {
             .num_frames    = idx.num_frames,
             .num_atoms     = idx.num_atoms,
