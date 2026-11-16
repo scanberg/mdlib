@@ -4,9 +4,10 @@
 // (md_topo_compute_extremum_graph_gto_gpu), in fp32.
 //
 // Each cube c +- h is decided with the CPU reference's tests (see md_topo.c): a rigorous upper bound
-// of rho below rho_min, exclusion of grad rho along the axes, or Krawczyk on the 1.5x cube. What changes
-// in fp32 is that every quantity a test uses carries a bound on its own rounding error, and a test
-// decides only with those bounds added. The error model assumes only what any conforming GPU guarantees:
+// of rho below rho_min, exclusion of grad rho along the axes, or Krawczyk on the 1.5x cube (one zero, or
+// none). What changes in fp32 is that every quantity a test uses carries a bound on its own rounding
+// error, and a test decides only with those bounds added. The error model assumes only what any
+// conforming GPU guarantees:
 //   * + - * correctly rounded; FMA contraction and reassociation only change which a priori bound
 //     gamma_k * sum|terms| applies, and the bounds below hold for any order of every sum;
 //   * exp(-t) relative error (6 + 8.1 t) u, u = 2^-24, including the rounding of t. The exp below is
@@ -81,7 +82,8 @@
 #define OUT_INFLATED 16u
 
 #define WHY_RHO      1u
-#define WHY_EXCL     2u         // 3..5: tests no longer made (Newton distance, Krawczyk's "no zero")
+#define WHY_EXCL     2u         // 3, 4: tests no longer made (Newton distance, Krawczyk on the cube itself)
+#define WHY_KOUT_I   5u         // Krawczyk on the 1.5x cube: no zero
 #define WHY_ROOT     6u
 #define WHY_SPLIT    7u
 #define WHY_NOISE    8u
@@ -1071,9 +1073,10 @@ Lin linear(Eval ev, float tg) {
     return L;
 }
 
-// Whether c +- hk holds exactly one zero (K inside the box); dH encloses the Hessian over it.
-bool krawczyk(Lin L, float dH[3][3], float hk) {
-    bool inside = true;
+// Krawczyk on c +- hk, dH enclosing the Hessian over it: +1 exactly one zero (K inside the box), -1 none
+// (K disjoint from it in some component), 0 undecided.
+int krawczyk(Lin L, float dH[3][3], float hk) {
+    bool inside = true, disjoint = false;
     [ForceUnroll] for (int i = 0; i < 3; ++i) {
         float rad = 0.0;
         [ForceUnroll] for (int j = 0; j < 3; ++j) {
@@ -1082,10 +1085,12 @@ bool krawczyk(Lin L, float dH[3][3], float hk) {
             rad += abs(L.R[i][j]) + L.eR[i][j] + yd;
         }
         rad *= hk * (1.0 + 16.0 * UF);
+        const float lo_out = abs(L.m[i]) - L.em[i] - rad;
         const float hi_in = (abs(L.m[i]) + L.em[i] + rad) * (1.0 + 4.0 * UF);
         if (!(hi_in < hk)) inside = false;
+        if (lo_out > hk * (1.0 + 2.0 * UF)) disjoint = true;
     }
-    return inside;
+    return inside ? 1 : (disjoint ? -1 : 0);
 }
 
 // Whether child s (centre c + (+-h/2)^3, s & 1: + side in x, s & 2: y, s & 4: z) is excluded by this
@@ -1211,7 +1216,9 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     const Lin lin = linear(ev, bt.tail.y);
     if (!decided && lin.ok) {
         tried_infl = true;
-        if (krawczyk(lin, ev.dH_i, hi)) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
+        const int kr = krawczyk(lin, ev.dH_i, hi);
+        if (kr == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
+        else if (kr == -1) { outc = OUT_DISCARD; why = WHY_KOUT_I; decided = true; }
     }
     [ForceUnroll] for (int a = 0; a < 3; ++a) if (!decided && excl_quad(ev, T, eT, h, a)) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     if (!decided) {

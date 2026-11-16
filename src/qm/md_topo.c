@@ -644,14 +644,20 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 //               every cube sharing it, and deduplicated). Inflating is what catches roots on or near faces:
 //               the root lattice is anchored to the world, so symmetric inputs put CPs exactly on its planes,
 //               where no cube's own K could lie inside the cube (without it, water in its symmetry frame
-//               leaves all 5 CPs unresolved).
+//               leaves all 5 CPs unresolved). K disjoint from X' in some component => no zero in X'.
 // A cube that splits passes its expansion on: a child that g + A d + 1/2 T[d,d] +- r of the parent excludes
 // already is not evaluated.
 //
-// Tests this search had before decided no cube that the ones above did not, on RHF densities of water,
-// the water dimer, benzene and cubane, each axis-aligned and rotated: Krawczyk on X itself and its "no zero"
-// outcome on X and X', a Newton-distance exclusion, and exclusion along the gradient and the Hessian's
-// eigenvectors. Without them every CP and edge stayed the same, at 0.02-0.5% more cubes.
+// The axes' exclusion fails along a soft direction of a near-degenerate CP (a small Hessian eigenvalue): the
+// planes where the components of grad rho vanish nearly coincide along it, so all three cross every cube
+// near that line, down to a size set by the eigenvalue. Krawczyk's "no zero" outcome (or a Newton-distance
+// test, or exclusion along the eigenvectors) excludes those cubes. The CPU sweep alone rarely makes such cubes
+// (it decides the region earlier), but the GPU sweep, whose fp32 margins split it finer, escalates them:
+// without the "no zero" outcome they ran to h_min unresolved (a stacked benzene dimer), and the GPU sweep
+// evaluated 14% more children. Tests this search had besides decided almost nothing on
+// RHF densities of water, its dimer, benzene, cubane and the stacked benzene dimer, CPU and GPU: Krawczyk
+// on X itself, a Newton-distance exclusion (~2% fewer cubes in the GPU sweep), and exclusion along the
+// gradient and the Hessian's eigenvectors.
 //
 // Contributions of AOs screened away from a cube are bounded, so screening does not break rigour: those
 // of the shells between the cube's local radius and their far radius by their tails at the cube's
@@ -1485,10 +1491,11 @@ static bool cpg_exclude(const cpg_eval_t* ev, double h) {
 
 // Krawczyk on X' = c +- hk: K = c - Y g + (I - Y [H]) (X' - c), [H] = A +- dH enclosing the Hessian over X',
 // and g, the gradient at c, known to within tg per component (the shells screened away). With R = I - Y A,
-// K - c lies in -Y g +- (|Y| tg + (|R| + |Y| dH) hk). Returns true if that lies inside X': then X' holds
-// exactly one zero of grad rho and every matrix in [H] is nonsingular. R is formed, so Y need not be the
-// exact inverse. (K disjoint from X', which proves no zero, decided no cube that exclusion had not.)
-static bool cpg_krawczyk(const double g[3], double Y[3][3], const double A[3][3], double dH[3][3], double hk, double tg) {
+// K - c lies in -Y g +- (|Y| tg + (|R| + |Y| dH) hk). Returns +1 if that lies inside X' (then X' holds
+// exactly one zero of grad rho and every matrix in [H] is nonsingular), -1 if it is disjoint from X' in some
+// component (then X' holds no zero), 0 otherwise. R is formed, so Y need not be the exact inverse.
+static int cpg_krawczyk(const double g[3], double Y[3][3], const double A[3][3], double dH[3][3], double hk, double tg) {
+    bool inside = true, disjoint = false;
     for (int i = 0; i < 3; ++i) {
         double m = 0.0, rad = 0.0;
         for (int j = 0; j < 3; ++j) {
@@ -1497,9 +1504,10 @@ static bool cpg_krawczyk(const double g[3], double Y[3][3], const double A[3][3]
             for (int k = 0; k < 3; ++k) { r -= Y[i][k] * A[k][j]; yd += fabs(Y[i][k]) * dH[k][j]; }
             rad += (fabs(r) + yd) * hk + fabs(Y[i][j]) * tg;
         }
-        if (!(fabs(m) + rad < hk)) return false;
+        if (!(fabs(m) + rad < hk)) inside = false;
+        if (fabs(m) - rad > hk) disjoint = true;
     }
-    return true;
+    return inside ? 1 : (disjoint ? -1 : 0);
 }
 
 // ----------------------------------------------------------------------------------------------- Newton polish
@@ -1926,7 +1934,9 @@ static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_
     double Y[3][3];
     if (cpg_inverse3(Y, ev.A)) {
         w->inflated++;
-        if (cpg_krawczyk(ev.g, Y, ev.A, ev.dH, 1.5 * box->h, ev.tg)) {
+        const int kr = cpg_krawczyk(ev.g, Y, ev.A, ev.dH, 1.5 * box->h, ev.tg);
+        if (kr == -1) return CPG_DISCARD;
+        if (kr == 1) {
             const int r = cpg_polish_root(ctx, &w->sc, box, out_cp);
             if (r == 1) return CPG_ROOT;
             if (r == 0) return CPG_DISCARD;
