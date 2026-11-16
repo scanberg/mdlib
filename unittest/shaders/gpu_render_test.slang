@@ -175,6 +175,73 @@ DepthLessOut depth_less_fs(VOut i) {
     return o;
 }
 
+// Early depth rejection (gpu_render.early_depth_rejection): full-screen
+// layers whose fragments run a long loop (a.width turns), at depth
+// a.color.y + a.color.z * instance. They write a.id + instance, so the
+// image shows which layer won, and the loop's result decides nothing but
+// cannot be dropped. One fragment stage per way of ending: as md_render's
+// spline and polygon fragments end (a depth no nearer than the box's, and a
+// discard where the ray misses) and the ways around it.
+struct LOut {
+    float4 pos : SV_Position;
+    nointerpolation uint inst : INST;
+};
+
+[shader("vertex")]
+LOut layer_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
+    RArgs a = MD_ARGS;
+    LOut  o;
+    o.pos  = float4(vid == 1u ? 3.0 : -1.0, vid == 2u ? 3.0 : -1.0, a.color.y + a.color.z * float(iid), 1.0);
+    o.inst = iid;
+    return o;
+}
+
+uint layer_work(LOut i) {
+    RArgs a = MD_ARGS;
+    float v = i.pos.x * 0.37 + i.pos.y * 0.11;
+    for (uint k = 0u; k < a.width; ++k) v = sin(v) * 1.3 + cos(v * 0.7) + 0.01;
+    return a.id + i.inst + (asuint(v) == 0x7FC00001u ? 1u : 0u);   // (never: a NaN of its own)
+}
+
+[shader("fragment")]
+uint layer_plain_fs(LOut i) : SV_Target { return layer_work(i); }
+
+[shader("fragment")]
+uint layer_discard_fs(LOut i) : SV_Target {
+    uint id = layer_work(i);
+    if (id == 0xFFFFFFFFu) discard;
+    return id;
+}
+
+struct LDepthAny  { uint id : SV_Target; float depth : SV_Depth; };
+struct LDepthLess { uint id : SV_Target; float depth : SV_DepthLessEqual; };
+struct LDepthMore { uint id : SV_Target; float depth : SV_DepthGreaterEqual; };
+
+[shader("fragment")]
+LDepthAny layer_depth_any_fs(LOut i) {
+    LDepthAny o; o.id = layer_work(i); o.depth = i.pos.z; return o;
+}
+
+// reversed Z (GREATER_EQUAL): no nearer is smaller
+[shader("fragment")]
+LDepthLess layer_depth_less_fs(LOut i) {
+    LDepthLess o; o.id = layer_work(i); o.depth = i.pos.z * 0.999; return o;
+}
+
+[shader("fragment")]
+LDepthLess layer_depth_less_discard_fs(LOut i) {
+    LDepthLess o; o.id = layer_work(i);
+    if (o.id == 0xFFFFFFFFu) discard;
+    o.depth = i.pos.z * 0.999;
+    return o;
+}
+
+// standard Z (LESS_EQUAL): no nearer is larger
+[shader("fragment")]
+LDepthMore layer_depth_greater_fs(LOut i) {
+    LDepthMore o; o.id = layer_work(i); o.depth = min(i.pos.z * 1.001 + 1e-6, 1.0); return o;
+}
+
 // Rendered texture -> buffer, through the bindless heap.
 [shader("compute")]
 [numthreads(8, 8, 1)]
