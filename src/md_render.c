@@ -34,7 +34,8 @@ typedef struct gpu_view_t {
     uint32_t      dbg_probe;      /* md_render_debug_raster_probe */
     uint32_t      spl_group;      /* md_render_debug_spline_group */
     uint32_t      spl_order;      /* md_render_debug_spline_order: buckets */
-    uint32_t      _vpad3[3];
+    uint32_t      small_approx;   /* md_render_debug_small_approx */
+    uint32_t      _vpad3[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 560, "ViewData mirror");
 
@@ -104,6 +105,19 @@ static uint32_t spline_group_for(uint32_t vendor_id) {
 static uint32_t g_spline_order = 256u;
 void md_render_debug_spline_order(uint32_t buckets) { g_spline_order = buckets > 256u ? 256u : buckets; }
 static uint32_t spline_order_on(void) { return g_spline_order != 0u; }
+
+/* The compute raster's small spheres and capsules by their projection, not
+   a ray a pixel (the bench's, not in the header): once a primitive, each
+   end's centre and radius on the target, its depth and its front's, the
+   ellipse a sphere's image is off the centre of view, a capsule's tilt to
+   the eye; a pixel, the end spheres' and the body's distance in radii and a
+   round profile of depth (raster_small). The resolve keeps the exact shapes
+   (normals, colours); against the rays the coverage agrees but at a few
+   edge pixels, the nearest element at 98% of them, the depth to under 1%
+   (render.small_by_projection_close_to_the_rays). An experiment: what the
+   ray costs. */
+static uint32_t g_small_approx = 0u;
+void md_render_debug_small_approx(bool on) { g_small_approx = on ? 1u : 0u; }
 
 /* Occlusion culling by the view's own measure (occlusion_wanted; the bench's
    switch, not in the header: off, it always runs unless the frame's options
@@ -1736,6 +1750,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.dbg_probe  = g_raster_probe;
         gv.spl_group  = spline_group_for(v->r->vendor_id);
         gv.spl_order  = g_spline_order;
+        gv.small_approx = g_small_approx;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };
