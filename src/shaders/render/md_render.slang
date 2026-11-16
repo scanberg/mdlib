@@ -202,6 +202,9 @@ struct Lists {
     uint*     st3;              // polygons with a state bit
     float4*   hw2b;             // per hw2 entry, its part's record (spline_record_write): SPLINE_RECORD float4
     uint*     hw2g;             // the boxes of the spline parts' pieces: record (hw2 entry) << 4 | group of pieces
+    uint*     tiles;            // the resolve's 8 x 8 tiles with spline pixels, then (at tiles_cap) those with polygons: x | y << 16
+    uint      tiles_cap;        // tiles of the target
+    uint      _lpad;
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -250,7 +253,8 @@ static const uint C_DBG_AGAIN  = 318;  // dbg_probe 2 with the spline boxes draw
 static const uint SPLINE_BUCKETS = 256u;   // at most (spl_order)
 static const uint C_BKT        = 320;  // phase 1's spline boxes by depth (spline_bucket): counts, 320..575
 static const uint C_BKO        = 576;  // and where each bucket's go next, 576..831
-static const uint C_COUNT      = 832;
+static const uint C_TILES      = 832;  // the resolve's tiles with spline pixels, with polygon pixels (Lists.tiles): 832, 833
+static const uint C_COUNT      = 836;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -2225,7 +2229,13 @@ void wave_count(uint* counter, bool want) { wave_add(counter, want ? 1u : 0u); }
 
 uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
 uint grid_groups(uint n)  { return min(n, 65535u); }
-uint cluster_groups(uint n) { return min((n + 63u) / 64u, 65535u); }   // the element cull: 64 clusters a group
+// The element cull's clusters a group (cull_body): as many as keep about 256
+// groups, from one to 64. 64 always, the first take, gave one protein
+// copy's 31 visible clusters to one group, its 1850 parts in 29 rounds of
+// 64 on one core (the heavy cull 0.7 ms on the M4, 1.25 at 64 copies), and
+// 64 copies' 1968 clusters to 31 groups.
+uint cluster_span(uint n)   { return clamp((n + 255u) / 256u, 1u, 64u); }
+uint cluster_groups(uint n) { uint s = cluster_span(n); return min((n + s - 1u) / s, 65535u); }
 
 // The batch of work item i: the last with offset <= i (batches without work
 // share their offset with the next one, which wins)
@@ -2686,10 +2696,10 @@ uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
 // 1 found occluded (a thread each). mode 4: of the clusters phase 2 found
 // visible. mode 3: the state lists, from the clusters of the state pass.
 //
-// For the clusters, a group takes 64 of them and its threads walk all their
-// elements together (a prefix sum of the sizes, then a binary search per
-// element): a cluster of 40 no longer leaves 24 lanes idle, nor one of 70 a
-// second round of 58.
+// For the clusters, a group takes up to 64 of them (cluster_span) and its
+// threads walk all their elements together (a prefix sum of the sizes, then a
+// binary search per element): a cluster of 40 no longer leaves 24 lanes idle,
+// nor one of 70 a second round of 58.
 groupshared uint4 gc_cl[64];        // slot, instance, first element
 groupshared uint  gc_inc[64];       // inclusive prefix of the sizes
 
@@ -2715,12 +2725,13 @@ void cull_body<let SPL : int>(uint3 tid, uint3 gid, uint gi) {
     uint2* src  = mode == 3u ? L.cst : L.cvis;
     uint   base = mode == 4u ? L.counters[C_CVIS1] : 0u;
     uint   n    = mode == 1u ? L.counters[C_CVIS1] : mode == 4u ? L.counters[C_CVIS2] : L.counters[C_CST];
+    uint   span   = cluster_span(n);
     uint   groups = cluster_groups(n);
-    for (uint c0 = gid.x * 64u; c0 < n; c0 += groups * 64u) {
+    for (uint c0 = gid.x * span; c0 < n; c0 += groups * span) {
         uint  ci  = c0 + gi;
         uint4 cl  = uint4(0u);
         uint  cnt = 0u;
-        if (ci < n) {
+        if (gi < span && ci < n) {
             uint2 ent  = src[base + ci];
             uint  slot = (ent.y >> 20) - 1u;
             Batch b    = a.batches[slot];
@@ -3632,25 +3643,28 @@ float2 to_pixels(ViewData v, float4 clip) {
 }
 
 // Each pixel by the twin that takes its kind: the main one clears the empty
-// ones, the heavy twin (run after it, when the frame has splines or
-// polygons) passes over all but theirs
-void resolve_body<let SPL : int>(uint3 tid) {
+// ones, the heavy twins (run after it, when the frame has splines or
+// polygons) take theirs, in the tiles the main one listed. The light kinds'
+// (SPL 0) returns what heavy kind the pixel holds, for its tile: 1 splines,
+// 2 polygons, else 0.
+uint resolve_body<let SPL : int>(uint3 tid) {
     Args a = MD_ARGS;
-    if (tid.x >= a.width || tid.y >= a.height) return;
+    if (tid.x >= a.width || tid.y >= a.height) return 0u;
     int2  px  = int2(tid.xy);
     uint2 idv = a.id.Load(int3(px, 0));
     if ((idv.y >> 20) == 0u) {
-        if (SPL != 0) return;
+        if (SPL != 0) return 0u;
         a.color[px]  = float4(0.0);
         a.normal[px] = float2(0.0);
         a.motion[px] = float2(0.0);
-        return;
+        return 0u;
     }
     uint kind = a.batches[(idv.y >> 20) - 1u].kind;
-    if (SPL == 0 ? heavy_kind(kind) : SPL == 2 ? kind != KIND_SPLINES : kind != KIND_POLYGONS) return;
+    if (SPL == 0 && heavy_kind(kind)) return kind == KIND_SPLINES ? 1u : kind == KIND_POLYGONS ? 2u : 0u;
+    if (SPL == 2 ? kind != KIND_SPLINES : SPL == 3 ? kind != KIND_POLYGONS : false) return 0u;
     ViewData v = *a.view;
     Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5, SPL >= 2 ? a.src.Load(int3(px, 0)) : 0.0);
-    if (!h.valid) return;       // EXTERNAL: the caller's
+    if (!h.valid) return 0u;    // EXTERNAL: the caller's
     if (SPL == 2 && v.dbg_probe == 2u) ((Atomic<uint>*)((*a.lists).counters + C_DBG + 3u))->add(1u);
 
     Batch  b   = a.batches[h.batch];
@@ -3664,19 +3678,52 @@ void resolve_body<let SPL : int>(uint3 tid) {
     float4 cur  = mul4(M(v, proj_cur),  mul4(M(v, view),      float4(h.p_world, 1.0)));
     float4 prev = mul4(M(v, proj_prev), mul4(M(v, view_prev), float4(h.p_world_prev, 1.0)));
     a.motion[px] = to_pixels(v, cur) - to_pixels(v, prev);
+    return 0u;
+}
+
+// The light kinds' resolve, which lists the 8 x 8 tiles that hold spline or
+// polygon pixels (Lists.tiles, C_TILES): the heavy kinds' resolves visit
+// those alone. Each over the whole target took 0.1 to 0.25 ms on the M4 at
+// one protein copy, a few percent of whose pixels are splines (on the HD 530
+// 1.7 ms each).
+groupshared uint gs_heavy;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resolve(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
+    if (gi == 0u) gs_heavy = 0u;
+    GroupMemoryBarrierWithGroupSync();
+    uint f = resolve_body<0>(tid);
+    if (f != 0u) InterlockedOr(gs_heavy, f);
+    GroupMemoryBarrierWithGroupSync();
+    if (gi == 0u && gs_heavy != 0u) {
+        Lists L = *MD_ARGS.lists;
+        uint  t = gid.x | (gid.y << 16);
+        if ((gs_heavy & 1u) != 0u) { uint k = ((Atomic<uint>*)(L.counters + C_TILES))->add(1u);      if (k < L.tiles_cap) L.tiles[k] = t; }
+        if ((gs_heavy & 2u) != 0u) { uint k = ((Atomic<uint>*)(L.counters + C_TILES + 1u))->add(1u); if (k < L.tiles_cap) L.tiles[L.tiles_cap + k] = t; }
+    }
+}
+
+// A heavy kind's resolve over the tiles the light one listed: a group a tile
+// at a time, Args.mode groups (run_resolve's)
+void resolve_tiles<let SPL : int>(uint3 gid, uint3 gtid) {
+    Args  a = MD_ARGS;
+    Lists L = *a.lists;
+    uint  n = min(L.counters[C_TILES + (SPL == 3 ? 1u : 0u)], L.tiles_cap);
+    uint* t = L.tiles + (SPL == 3 ? L.tiles_cap : 0u);
+    for (uint i = gid.x; i < n; i += max(a.mode, 1u)) {
+        uint tl = t[i];
+        resolve_body<SPL>(uint3((tl & 0xFFFFu) * 8u + gtid.x, (tl >> 16) * 8u + gtid.y, 0u));
+    }
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void resolve(uint3 tid : SV_DispatchThreadID) { resolve_body<0>(tid); }
+void resolve_heavy(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) { resolve_tiles<2>(gid, gtid); }   // splines
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void resolve_heavy(uint3 tid : SV_DispatchThreadID) { resolve_body<2>(tid); }      // splines
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void resolve_poly(uint3 tid : SV_DispatchThreadID) { resolve_body<3>(tid); }
+void resolve_poly(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) { resolve_tiles<3>(gid, gtid); }
 
 // Phase 1's spline boxes, nearest first: a thread a part puts its boxes in
 // its depth bucket's run of hw2g (spline_bucket; the finalize's starts)
