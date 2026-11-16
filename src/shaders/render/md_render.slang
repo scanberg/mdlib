@@ -251,6 +251,7 @@ static const uint C_DBG        = 272;  // dbg_probe 2: spline fragments shaded, 
 static const uint C_ICMDS_CH   = 276;  // phase 1's spline boxes in spl_chunks passes: an indexed command each, 5 words, 276..315
 static const uint SPLINE_CHUNKS_MAX = 8u;
 static const uint C_ZRANGE     = 316;  // phase 1's visible clusters' view depths (spl_order): ~nearest (max), farthest (max)
+static const uint C_DBG_AGAIN  = 318;  // dbg_probe 2 with the spline boxes drawn again (spline_again_fs): those that pass the depth test
 static const uint C_COUNT      = 320;
 static const uint SPLINE_BUCKETS = 64u;
 
@@ -1211,11 +1212,15 @@ float spline_width_rate(SplinePart sp) {
 // sections, and the next piece reuses the one they share. A piece's hit is
 // the same in any range that holds it: the raster's boxes (a group of
 // pieces each) and the resolve (all of them) agree.
-// dbg_probe 2: count (C_DBG); set by the fragment that wants its tests counted
-static uint g_dbg_count = 0u;
-void dbg_count(uint c) { if (g_dbg_count != 0u) ((Atomic<uint>*)((*MD_ARGS.lists).counters + C_DBG + c))->add(1u); }
+// COUNT 1 (spline_count_fs alone, the bench's raster probe 2): the full piece
+// tests counted (C_DBG + 2). A compile-time switch, never a run-time one: a
+// fragment stage that can write memory at all loses its early depth test
+// (Metal, and the APIs' rules), whether or not the write ever runs.
+void dbg_count(uint c) { ((Atomic<uint>*)((*MD_ARGS.lists).counters + c))->add(1u); }
 
-SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) {
+SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) { return spline_hit_range_c<0>(r, sp, pieces, k0, k1); }
+
+SplineHit spline_hit_range_c<let COUNT : int>(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) {
     SplineHit h;
     h.t = -1.0;
     h.n = float3(0.0, 0.0, 1.0);
@@ -1247,7 +1252,7 @@ SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) 
         SplineFrame f1;
         f1.c = f1.w = f1.n = f1.fp = f1.fc = f1.fm = f1.bp = f1.bc = f1.bm = f1.tp = f1.tm = float3(0.0);
         if (hh >= 0.0 && (h.t < 0.0 || -bb - sqrt(hh) < h.t)) {
-            dbg_count(2u);
+            if (COUNT != 0) dbg_count(C_DBG + 2u);
             if (!have0) { f0 = spline_frame(sp, spline_piece_u(sp, k - 1u, pieces), a0, au, lerp(sp.ru0, sp.ru1, float(k - 1u) / float(pieces))); have0 = true; }
             f1 = spline_frame(sp, u1, a1, au, lerp(sp.ru0, sp.ru1, float(k) / float(pieces))); have1 = true;
             float3 p0 = f0.c + f0.w * a0, m0 = f0.c - f0.w * a0;      // the rims' ends
@@ -3271,22 +3276,21 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     return o;
 }
 
-SplineHit spline_fragment_hit(ViewData v, Ray r, SplineV i) {
-    if (i.rec != 0u) return spline_hit_range(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x, i.pe.y, i.pe.z);
-    return spline_hit(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x);
+SplineHit spline_fragment_hit<let COUNT : int>(ViewData v, Ray r, SplineV i) {
+    if (i.rec != 0u) return spline_hit_range_c<COUNT>(r, spline_record_part(*MD_ARGS.lists, i.rec - 1u), i.pe.x, i.pe.y, i.pe.z);
+    return spline_hit_range_c<COUNT>(r, spline_part(v, MD_ARGS.batches[i.pe.w], i.pe.y, i.pe.z, true), i.pe.x, 0u, i.pe.x);
 }
 
-[shader("fragment")]
-VisOut spline_fs(SplineV i) {
+VisOut spline_vis<let COUNT : int>(SplineV i) {
     ViewData v = *MD_ARGS.view;
     VisOut o;
     o.id = i.idv;
     o.n  = float2(0.0);
-    if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
+    if (COUNT == 0 && v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
     Ray       r = pixel_ray(v, i.pos.xy);
-    if (v.dbg_probe == 2u) { g_dbg_count = 1u; dbg_count(0u); }
-    SplineHit h = spline_fragment_hit(v, r, i);
-    if (h.t >= 0.0) dbg_count(1u);
+    if (COUNT != 0) dbg_count(C_DBG);
+    SplineHit h = spline_fragment_hit<COUNT>(v, r, i);
+    if (COUNT != 0 && h.t >= 0.0) dbg_count(C_DBG + 1u);
     if (h.t < 0.0) discard;
     o.n     = oct_encode(h.n);
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * h.t));
@@ -3294,10 +3298,38 @@ VisOut spline_fs(SplineV i) {
 }
 
 [shader("fragment")]
+VisOut spline_fs(SplineV i) { return spline_vis<0>(i); }
+
+// The bench's raster probe 2: spline_fs counting its fragments, their hits
+// and full piece tests (C_DBG). Its atomics cost it the early depth test, so
+// what it counts is every fragment the boxes cover.
+[shader("fragment")]
+VisOut spline_count_fs(SplineV i) { return spline_vis<1>(i); }
+
+// The bench's raster probe 2, the boxes drawn again after the raster (the
+// depth final, its writes off): the fragments that pass the depth test at
+// their box's own depth (C_DBG_AGAIN), what any order of the boxes, or
+// anything drawn before them, could at best leave to be shaded. The depth
+// test early by force, so the count is the test's.
+struct IdOut {
+    uint2  id : SV_Target0;
+    float2 n  : SV_Target1;
+};
+[shader("fragment")]
+[earlydepthstencil]
+IdOut spline_again_fs(SplineV i) {
+    dbg_count(C_DBG_AGAIN);
+    IdOut o;
+    o.id = i.idv;
+    o.n  = float2(0.0);
+    return o;
+}
+
+[shader("fragment")]
 MaskOut spline_mask_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
-    float t = spline_fragment_hit(v, r, i).t;
+    float t = spline_fragment_hit<0>(v, r, i).t;
     if (t < 0.0) discard;
     MaskOut o;
     o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
