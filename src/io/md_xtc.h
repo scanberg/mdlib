@@ -22,8 +22,11 @@ typedef struct md_xtc_header_t {
 size_t md_xtc_read_frame_offsets_and_times(md_file_t xdr_file, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, struct md_allocator_i* alloc);
 
 // Bytes past the end of a frame that the decoder may read (and never uses): a buffer holding a frame
-// of frame_bytes must be readable up to frame_ptr + frame_bytes + MD_XTC_DECODE_PADDING.
-#define MD_XTC_DECODE_PADDING 16
+// of frame_bytes must be readable up to frame_ptr + frame_bytes + MD_XTC_DECODE_PADDING. The decoder
+// checks that it is still inside the frame after each group of atoms, not after each read, so this is
+// what one group may read past the end when the frame is corrupt: 10 numbers of up to 72 bits, and its
+// first number and flag, each read with an 8 byte load (110 bytes).
+#define MD_XTC_DECODE_PADDING 128
 
 // This is an internal procedure exposed to enable testing and profiling.
 // Returns true if the frame was decoded into `out_header` and `out_xyz`, which has room for three floats per atom.
