@@ -786,8 +786,7 @@ void md_render_debug_raster_probe(uint32_t mode);
 bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[5]);
 void md_render_debug_spline_again(uint32_t mode);
 void md_render_debug_spline_group(uint32_t pieces);
-void md_render_debug_spline_order(uint32_t on);
-void md_render_debug_spline_passes(uint32_t n);
+void md_render_debug_spline_order(uint32_t buckets, uint32_t key);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1790,10 +1789,15 @@ static int run_heavy(int argc, char** argv) {
                                 }
                             }
                             if (looks[li].kind == HV_CARTOON || looks[li].kind == HV_RIBBONS) {
-                                /* a spline part's boxes in the hardware raster: one per
-                                   group of so many pieces, or one the part (0) */
+                                /* a spline part's boxes in the hardware raster (one per
+                                   group of so many pieces, or one the part: 0), in the
+                                   cull's order or nearest first: in so many buckets of
+                                   view depth, by their part's box's centre (key 0), their
+                                   own box's centre (1) or its near face (2) */
                                 static const uint32_t groups[] = { 0, 1, 2, 4 };
-                                printf("    refit raster, spline boxes of");
+                                static const char* const keys[] = { "their part's centre", "their own box's centre", "their own box's near face" };
+                                printf("    refit raster, spline boxes in the cull's order, of");
+                                md_render_debug_spline_order(0, 0);
                                 for (int gi = 0; gi < 4; ++gi) {
                                     md_render_debug_spline_group(groups[gi]);
                                     timing_t tg = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
@@ -1802,20 +1806,27 @@ static int run_heavy(int argc, char** argv) {
                                 }
                                 printf(" ms\n");
                                 md_render_debug_spline_group(1);
-                                /* phase 1's spline boxes in the cull's order, or nearest
-                                   first in 1, 2, 4 or 8 render passes */
-                                printf("    refit raster, spline boxes in the cull's order");
-                                static const uint32_t npass[5] = { 0, 1, 2, 4, 8 };
-                                for (int oi = 0; oi < 5; ++oi) {
-                                    md_render_debug_spline_order(oi == 0 ? 0u : 1u);
-                                    md_render_debug_spline_passes(oi == 0 ? 1u : npass[oi]);
-                                    timing_t to = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
-                                    if (oi == 0) printf(": %.2f / %.2f, nearest first in", to.best, to.median);
-                                    else         printf("%s %u pass%s: %.2f / %.2f", oi > 1 ? "," : "", npass[oi], npass[oi] > 1 ? "es" : "", to.best, to.median);
+                                printf("    refit raster, spline boxes of 1 piece nearest first by their part's centre, in");
+                                static const uint32_t nbk[] = { 16, 64, 256 };
+                                for (int bi = 0; bi < 3; ++bi) {
+                                    md_render_debug_spline_order(nbk[bi], 0);
+                                    timing_t tb = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
+                                    printf("%s %u buckets: %.2f / %.2f", bi ? "," : "", nbk[bi], tb.best, tb.median);
                                 }
                                 printf(" ms\n");
-                                md_render_debug_spline_order(0);
-                                md_render_debug_spline_passes(1);
+                                for (uint32_t key = 0; key < 3; ++key) {
+                                    md_render_debug_spline_order(256, key);
+                                    printf("    refit raster, spline boxes nearest first by %s, 256 buckets, of", keys[key]);
+                                    for (int gi = 0; gi < 4; ++gi) {
+                                        md_render_debug_spline_group(groups[gi]);
+                                        timing_t tg = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
+                                        if (groups[gi]) printf("%s %u piece%s: %.2f / %.2f", gi ? "," : "", groups[gi], groups[gi] > 1 ? "s" : "", tg.best, tg.median);
+                                        else            printf(" the whole part: %.2f / %.2f", tg.best, tg.median);
+                                    }
+                                    printf(" ms\n");
+                                }
+                                md_render_debug_spline_group(1);
+                                md_render_debug_spline_order(64, 0);       /* the defaults */
                                 /* the boxes drawn again in a pass after their own, over
                                    the final depth: what a depth test early could turn
                                    away of their hit work at best (an empty pass, what

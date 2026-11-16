@@ -33,8 +33,8 @@ typedef struct gpu_view_t {
     float         occl_min_px;      /* elements no wider are not tested for occlusion (clusters are) */
     uint32_t      dbg_probe;      /* md_render_debug_raster_probe */
     uint32_t      spl_group;      /* md_render_debug_spline_group */
-    uint32_t      spl_order;      /* md_render_debug_spline_order */
-    uint32_t      spl_chunks;     /* md_render_debug_spline_passes */
+    uint32_t      spl_order;      /* md_render_debug_spline_order: buckets */
+    uint32_t      spl_key;        /* and their key */
     uint32_t      _vpad3[2];
 } gpu_view_t;
 _Static_assert(sizeof(gpu_view_t) == 560, "ViewData mirror");
@@ -72,23 +72,20 @@ void md_render_debug_raster_probe(uint32_t mode) { g_raster_probe = mode; }
 static uint32_t g_spline_group = 1u;
 void md_render_debug_spline_group(uint32_t pieces) { g_spline_group = pieces < 16u ? pieces : 16u; }
 
-/* Phase 1's spline boxes drawn nearest first (spline_order; the bench's,
-   not in the header). 0: in the cull's order. Off: on the 3080 it bought
-   nothing in the raster and cost 0.3 to 1.2 ms (the buckets' atomics, the
-   pass) at the 64 and 512 copies; kept to measure the other GPUs. */
-static uint32_t g_spline_order = 0u;
-void md_render_debug_spline_order(uint32_t on) { g_spline_order = on ? 1u : 0u; }
-
-/* Phase 1's spline boxes in this many render passes, nearest first (they are
-   ordered for it; the bench's, not in the header). Within one pass the M4
-   turns away no fragment of a stage that writes depth, however near what was
-   drawn before it (6%); a pass after, all of them (100%: the test
-   gpu_render.early_depth_rejection_by_what). Each pass more stores and loads
-   the targets. 1: one pass. */
-#define SPLINE_CHUNKS_MAX 8u
-static uint32_t g_spline_passes = 1u;
-void md_render_debug_spline_passes(uint32_t n) { g_spline_passes = n < 1u ? 1u : n > SPLINE_CHUNKS_MAX ? SPLINE_CHUNKS_MAX : n; }
-static uint32_t spline_order_on(void) { return g_spline_order || g_spline_passes > 1u; }
+/* Phase 1's spline boxes drawn nearest first, in this many buckets of view
+   depth (spline_order, spline_bucket; the bench's, not in the header), each
+   box by key: 0 its part's box's centre, 1 its own box's centre, 2 the near
+   face of its own box. 0 buckets: the cull's order. On the M4 (fd48edc5, 64
+   buckets, key 0) nearest first took 17 to 19% off the raster of 64 protein
+   copies, 11 to 14% off the nucleosome's, 5 to 7% off the membrane's, a
+   little off one copy's: the depth test turns away a fragment that writes
+   depth against what the pass drew before it. Render passes of their own,
+   nearest first, bought nothing more (removed). The other GPUs: to measure
+   (the 3080's earlier numbers were of a broken order, every part in two
+   buckets). At most 256 buckets. */
+static uint32_t g_spline_order = 64u, g_spline_key = 0u;
+void md_render_debug_spline_order(uint32_t buckets, uint32_t key) { g_spline_order = buckets > 256u ? 256u : buckets; g_spline_key = key > 2u ? 2u : key; }
+static uint32_t spline_order_on(void) { return g_spline_order != 0u; }
 
 /* Phase 1's spline boxes drawn again in a render pass after their own, over
    the final depth (the bench's, not in the header): how much of their hit
@@ -193,12 +190,12 @@ enum {
     C_ICMDP = 120,    /* md_gpu_draw_indexed_cmd_t: polygons, phase 1 and 2: 120..129 */
     C_STICMDP = 130,  /* the state list's polygons: 130..134 */
     C_HWSG1 = 136, C_HWSG2 = 137,   /* boxes of the hardware spline parts' pieces (hw2g): phase 1 and 2 */
-    C_GRID_ORD = 140,               /* spline_order's grid; then the depth buckets' counts and starts, 144..271 */
+    C_GRID_ORD = 140,               /* spline_order's grid: 140..142 */
     C_DBG = 272,                    /* md_render_debug_raster_probe(2)'s counts, 272..275 */
-    C_ICMDS_CH = 276,               /* phase 1's spline boxes in passes: an indexed command each, 276..315 */
     C_ZRANGE = 316,                 /* phase 1's visible clusters' view depths, for the order: 316, 317 */
     C_DBG_AGAIN = 318,              /* md_render_debug_spline_again(2) with the probe 2: the boxes' fragments passing the test */
-    C_COUNT = 320,
+    C_BKT = 320, C_BKO = 576,       /* phase 1's spline boxes' depth buckets: counts and starts, 256 each */
+    C_COUNT = 832,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -1215,7 +1212,7 @@ static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t w
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
     const uint64_t sizes[15] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2], 16u * work[2] };
-    const uint32_t esize[15] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
+    const uint32_t esize[15] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 336, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
     size_t need = 0;
     for (int i = 0; i < 15; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
@@ -1354,9 +1351,6 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         md_gpu_set_draw_state(s, &ds);
         md_gpu_draw(s, r->merge, 3, 1, &a, sizeof(a));
     }
-    /* phase 1's spline boxes in passes, nearest first: the first with the
-       rest, each after it alone, its targets loaded */
-    const uint32_t chunks = (phase == 1 && has_kind[2]) ? g_spline_passes : 1u;
     const md_gpu_pipeline_t spline_pipe = g_raster_probe == 2u ? r->spline_count : r->spline_vis;
     for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has_kind[k]) continue;
@@ -1366,21 +1360,8 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         a.list = k == 2 ? 4 : k == 3 ? 6 : k;
         if (k == 0)      md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
-        else if (k == 2) md_gpu_draw_indexed_indirect(s, spline_pipe, v->box_idx, MD_GPU_INDEX_U16,
-                                                      CTR(v, chunks > 1 ? C_ICMDS_CH : C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
+        else if (k == 2) md_gpu_draw_indexed_indirect(s, spline_pipe, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
         else             md_gpu_draw_indexed_indirect(s, r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
-    }
-    for (uint32_t c = 1; c < chunks; ++c) {
-        if (!md_gpu_render_end(s)) return false;
-        rd.color[0].load = MD_GPU_LOAD;
-        rd.color[1].load = MD_GPU_LOAD;
-        rd.depth.load    = MD_GPU_LOAD;
-        if (!md_gpu_render_begin(s, &rd)) return false;
-        ds.cull = MD_GPU_CULL_BACK;
-        md_gpu_set_draw_state(s, &ds);
-        a.mode = 0;
-        a.list = 4;
-        md_gpu_draw_indexed_indirect(s, spline_pipe, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS_CH + c * 5), 1, &a, sizeof(a));
     }
     if (phase == 1 && has_kind[2] && g_spline_again) {
         /* the boxes again, over the final depth (md_render_debug_spline_again) */
@@ -1396,10 +1377,7 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
             md_gpu_set_draw_state(s, &ds);
             a.mode = 0;
             a.list = 4;
-            for (uint32_t c = 0; c < chunks; ++c) {
-                md_gpu_draw_indexed_indirect(s, count ? r->spline_again : r->spline_vis, v->box_idx, MD_GPU_INDEX_U16,
-                                             CTR(v, chunks > 1 ? C_ICMDS_CH + c * 5 : C_ICMDS), 1, &a, sizeof(a));
-            }
+            md_gpu_draw_indexed_indirect(s, count ? r->spline_again : r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS), 1, &a, sizeof(a));
         }
     }
     return md_gpu_render_end(s);
@@ -1656,8 +1634,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.refit_mode = refit ? 0u : 1u;
         gv.dbg_probe  = g_raster_probe;
         gv.spl_group  = g_spline_group;
-        gv.spl_order  = spline_order_on();
-        gv.spl_chunks = g_spline_passes;
+        gv.spl_order  = g_spline_order;
+        gv.spl_key    = g_spline_key;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };

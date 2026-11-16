@@ -540,7 +540,14 @@ UTEST(gpu_render, early_depth_rejection) {
    a discard), in the same pass as the 8 behind or a pass before (its depth
    loaded); the 8 behind are md_render's, or plain with the early tests
    forced and a side effect, writing no depth (a visibility kept by atomics
-   would be). Printed as early_depth_rejection's are. */
+   would be). Printed as early_depth_rejection's are.
+   What these layers show of one pass is not what md_render's frames get:
+   on the M4 (fd48edc5) the membrane of 64 copies, 70 to 100 spline
+   fragments a pixel, costs 2 ms over the probe that skips their hit, and
+   drawing the spline boxes nearest first took 17 to 19% off 64 protein
+   copies' raster, all in one pass. Presumably (not tested) a full-screen
+   layer of long fragments right after another is where the depth they
+   write comes too late for the next, and many small boxes are not. */
 static double layer_time2(rfix_t* f, md_gpu_pipeline_t pn, md_gpu_pipeline_t pb, bool behind_writes, bool two_passes,
                           md_gpu_addr_t scratch, uint32_t iters, int behind, bool behind_first, uint32_t* ids, uint32_t npx, bool* ok) {
     double best = 1e30;
