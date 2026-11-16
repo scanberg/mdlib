@@ -785,6 +785,7 @@ bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, m
 bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
 void md_render_debug_raster_probe(uint32_t mode);
 void md_render_debug_spline_group(uint32_t pieces);
+void md_render_debug_spline_order(uint32_t on);
 bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 void md_render_debug_occlusion(float margin_radii, float min_px);
 
@@ -1799,6 +1800,15 @@ static int run_heavy(int argc, char** argv) {
                                 }
                                 printf(" ms\n");
                                 md_render_debug_spline_group(1);
+                                /* phase 1's spline boxes nearest first, or in the cull's order */
+                                printf("    refit raster, spline boxes");
+                                for (int oi = 0; oi < 2; ++oi) {
+                                    md_render_debug_spline_order(oi == 0 ? 0u : 1u);
+                                    timing_t to = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
+                                    printf("%s %s: %.2f / %.2f", oi ? "," : "", oi ? "nearest first" : "in the cull's order", to.best, to.median);
+                                }
+                                printf(" ms\n");
+                                md_render_debug_spline_order(1);
                             }
                         }
                         md_render_view_destroy(s, v);

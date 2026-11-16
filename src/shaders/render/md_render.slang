@@ -56,6 +56,8 @@ struct ViewData {
     float  occl_min_px;         // elements no wider are not tested for occlusion
     uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit)
     uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
+    uint   spl_order;           // 1: phase 1's spline boxes drawn nearest first (spline_order); md_render_debug_spline_order
+    uint   _vpad3, _vpad4, _vpad5;
 };
 
 Mat mat_of(float4 a, float4 b, float4 c, float4 d) { Mat m; m.c0 = a; m.c1 = b; m.c2 = c; m.c3 = d; return m; }
@@ -241,7 +243,11 @@ static const uint C_ICMDP      = 120;  // md_gpu_draw_indexed_cmd_t, polygons [p
 static const uint C_STICMDP    = 130;  // the state list's polygons: 130..134
 static const uint C_HWSG1      = 136;  // the boxes of the hardware spline parts' pieces (hw2g), phase 1
 static const uint C_HWSG2      = 137;  // and phase 2
-static const uint C_COUNT      = 140;
+static const uint C_GRID_ORD   = 140;  // spline_order's grid: 140..142
+static const uint C_BKT        = 144;  // phase 1's spline boxes by depth (spline_bucket): counts, 144..207
+static const uint C_BKO        = 208;  // and where each bucket's go next, 208..271
+static const uint C_COUNT      = 272;
+static const uint SPLINE_BUCKETS = 64u;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -1467,6 +1473,17 @@ SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8], out uint sxy[16
     return bx;
 }
 
+// Phase 1 draws the spline parts' boxes nearest first (v.spl_order), so the
+// depth test turns away the fragments of most of what is behind before their
+// hit: the parts' fragments are the frame's cost, and in a sparse cartoon the
+// copies behind show through it, which the pyramid's coarse farthest depths
+// cannot cull. A coarse order is enough: SPLINE_BUCKETS of the view depth,
+// three to an octave from the near plane.
+uint spline_bucket(ViewData v, float3 c) {
+    float d = max(-c.z, 1e-6) / max(v.near_z, 1e-6);
+    return uint(clamp(floor(log2(max(d, 1.0)) * 3.0), 0.0, float(SPLINE_BUCKETS - 1u)));
+}
+
 // The boxes of a part of n pieces in the hardware raster: one per group of
 // spl_group pieces (0: one), the cut of the part's box that bounds the
 // group (spline_box's sl and sxy). A fragment of a box tests its group's pieces
@@ -2544,6 +2561,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         uint ih3 = wave_append(L.counters + (phase == 2u ? C_HWP2 : C_HWP1), out == OUT_HW && poly);
         if (out == OUT_HW) { if (poly) L.hw3[base3 + ih3] = ent; else L.hw2[base2 + ih2] = ent; }
         uint ng = 0u;
+        bool order = phase == 1u && v.spl_order != 0u;
         if (out == OUT_HW && !poly) {
             // its record, once: the vertex and fragment stages read it
             Batch      b  = batches[slot];
@@ -2553,11 +2571,19 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
             SplineBox  bx = spline_box(sp, n, sl, sxy);
             spline_record_write(L, base2 + ih2, bx, sl, sxy, n, g.st, sp);
             ng = spline_groups(v, n);
+            if (order) {
+                // its boxes go out by depth (spline_order); here, their count
+                uint bk = spline_bucket(v, bx.c);
+                L.hw2b[SPLINE_RECORD * (base2 + ih2) + 2u].w = asfloat(bk);
+                ((Atomic<uint>*)(L.counters + C_BKT + bk))->add(ng);
+            }
         }
         // and a box per group of its pieces (converged: every lane reserves)
-        uint gbase = phase == 2u ? L.counters[C_HWSG1] : 0u;
-        uint ig    = wave_reserve(L.counters + (phase == 2u ? C_HWSG2 : C_HWSG1), ng);
-        for (uint j = 0u; j < ng; ++j) L.hw2g[gbase + ig + j] = ((base2 + ih2) << 4) | j;
+        if (!order) {
+            uint gbase = phase == 2u ? L.counters[C_HWSG1] : 0u;
+            uint ig    = wave_reserve(L.counters + (phase == 2u ? C_HWSG2 : C_HWSG1), ng);
+            for (uint j = 0u; j < ng; ++j) L.hw2g[gbase + ig + j] = ((base2 + ih2) << 4) | j;
+        }
         wave_count(L.counters + C_OUTSIDE, out == OUT_OUTSIDE);
         wave_count(L.counters + C_LOD,     out == OUT_LOD);
         return;
@@ -2709,6 +2735,14 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
         return;
     }
     uint phase = mode == 12u ? 1u : 2u;
+    if (phase == 1u && a.view->spl_order != 0u) {
+        // the spline boxes by depth: where each bucket starts, their count,
+        // and a thread a part to put them there (spline_order)
+        uint o = 0u;
+        for (uint k = 0u; k < SPLINE_BUCKETS; ++k) { c[C_BKO + k] = o; o += c[C_BKT + k]; }
+        c[C_HWSG1] = o;
+        c[C_GRID_ORD] = min((c[C_HWS1] + 63u) / 64u, 65535u); c[C_GRID_ORD + 1u] = 1u; c[C_GRID_ORD + 2u] = 1u;
+    }
     uint* cmd = c + C_CMD + (phase - 1u) * 2u * 4u;
     cmd[0] = 6u;
     cmd[1] = phase == 1u ? c[C_HW1] : c[C_HW2];
@@ -3564,6 +3598,24 @@ void resolve_heavy(uint3 tid : SV_DispatchThreadID) { resolve_body<2>(tid); }   
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void resolve_poly(uint3 tid : SV_DispatchThreadID) { resolve_body<3>(tid); }
+
+// Phase 1's spline boxes, nearest first: a thread a part puts its boxes in
+// its depth bucket's run of hw2g (spline_bucket; the finalize's starts)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void spline_order(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Lists    L = *a.lists;
+    uint     n = L.counters[C_HWS1];
+    for (uint i = tid.x; i < n; i += 65535u * 64u) {
+        float4* rc = L.hw2b + SPLINE_RECORD * i;
+        uint ng = spline_groups(v, asuint(rc[0].w));
+        uint bk = asuint(rc[2].w);
+        uint at = ((Atomic<uint>*)(L.counters + C_BKO + bk))->add(ng);
+        for (uint j = 0u; j < ng; ++j) L.hw2g[at + j] = (i << 4) | j;
+    }
+}
 
 // The visible part of the masks, from the ids: r state 0, b state 1. The
 // raster pass that follows adds g and a (anywhere, hidden too) by max.
