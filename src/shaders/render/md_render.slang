@@ -56,8 +56,8 @@ struct ViewData {
     float  occl_min_px;         // elements no wider are not tested for occlusion
     uint   dbg_probe;           // md_render_debug_raster_probe (1: spline and polygon fragments skip their hit; 2: the spline fragments count themselves, C_DBG)
     uint   spl_group;           // pieces per box of a spline part in the hardware raster; 0: one box the part (md_render_debug_spline_group)
-    uint   spl_order;           // 1: phase 1's spline boxes drawn nearest first (spline_order); md_render_debug_spline_order
-    uint   spl_chunks;          // with it, in so many render passes, nearest first (C_ICMDS_CH); md_render_debug_spline_passes
+    uint   spl_order;           // phase 1's spline boxes drawn nearest first in so many depth buckets (spline_bucket); 0: the cull's order
+    uint   spl_key;             // their depth: 0 their part's box centre, 1 their own box's centre, 2 its near face (spline_box_key)
     uint   _vpad4, _vpad5;
 };
 
@@ -245,15 +245,13 @@ static const uint C_STICMDP    = 130;  // the state list's polygons: 130..134
 static const uint C_HWSG1      = 136;  // the boxes of the hardware spline parts' pieces (hw2g), phase 1
 static const uint C_HWSG2      = 137;  // and phase 2
 static const uint C_GRID_ORD   = 140;  // spline_order's grid: 140..142
-static const uint C_BKT        = 144;  // phase 1's spline boxes by depth (spline_bucket): counts, 144..207
-static const uint C_BKO        = 208;  // and where each bucket's go next, 208..271
 static const uint C_DBG        = 272;  // dbg_probe 2: spline fragments shaded, their hits, full piece tests, pixels resolved: 272..275
-static const uint C_ICMDS_CH   = 276;  // phase 1's spline boxes in spl_chunks passes: an indexed command each, 5 words, 276..315
-static const uint SPLINE_CHUNKS_MAX = 8u;
 static const uint C_ZRANGE     = 316;  // phase 1's visible clusters' view depths (spl_order): ~nearest (max), farthest (max)
 static const uint C_DBG_AGAIN  = 318;  // dbg_probe 2 with the spline boxes drawn again (spline_again_fs): those that pass the depth test
-static const uint C_COUNT      = 320;
-static const uint SPLINE_BUCKETS = 64u;
+static const uint SPLINE_BUCKETS = 256u;   // at most (spl_order)
+static const uint C_BKT        = 320;  // phase 1's spline boxes by depth (spline_bucket): counts, 320..575
+static const uint C_BKO        = 576;  // and where each bucket's go next, 576..831
+static const uint C_COUNT      = 832;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -1489,19 +1487,23 @@ SplineBox spline_box(SplinePart sp, uint pieces, out uint sl[8], out uint sxy[16
 }
 
 // Phase 1 draws the spline parts' boxes nearest first (v.spl_order), so the
-// depth test turns away the fragments of most of what is behind before their
+// depth test turns away the fragments of much of what is behind before their
 // hit: the parts' fragments are the frame's cost, and in a sparse cartoon the
 // copies behind show through it, which the pyramid's coarse farthest depths
-// cannot cull. A coarse order is enough: SPLINE_BUCKETS even steps of the
-// view depth over phase 1's visible clusters' (C_ZRANGE, cull_clusters).
-// (Steps of the depth's octaves from the near plane, the first take, put a
-// whole scene in two buckets: from a camera 1000 A away its 100 A of depth
-// is a seventh of an octave.)
-uint spline_bucket(Lists L, float3 c) {
+// cannot cull. Within one pass: the M4 turns away a stage's fragments that
+// write depth (depth(less)) against what the pass drew before them, nearest
+// first 17 to 19% of the raster at 64 protein copies; render passes of their
+// own, nearest first, bought nothing more. A coarse order: spl_order even
+// steps of the view depth (d, positive) over phase 1's visible clusters'
+// (C_ZRANGE, cull_clusters). (Steps of the depth's octaves from the near
+// plane, the first take, put a whole scene in two buckets: from a camera
+// 1000 A away its 100 A of depth is a seventh of an octave.)
+uint spline_bucket(ViewData v, Lists L, float d) {
     uint  qn = L.counters[C_ZRANGE], qf = L.counters[C_ZRANGE + 1u];
     float zn = qn != 0u ? asfloat(~qn) : 0.0, zf = asfloat(qf);
-    float t  = (-c.z - zn) / max(zf - zn, 1e-6);
-    return uint(clamp(floor(t * float(SPLINE_BUCKETS)), 0.0, float(SPLINE_BUCKETS - 1u)));
+    float t  = (d - zn) / max(zf - zn, 1e-6);
+    float nb = float(min(v.spl_order, SPLINE_BUCKETS));
+    return uint(clamp(floor(t * nb), 0.0, nb - 1.0));
 }
 
 // The boxes of a part of n pieces in the hardware raster: one per group of
@@ -1521,7 +1523,9 @@ uint spline_groups(ViewData v, uint n) {
 // profiles and a transform, dependent loads all, for every fragment). The
 // part as spline_part made it, to the bit: the resolve and the pick rebuild
 // it with spline_part, as the raster did.
-static const uint SPLINE_RECORD = 20u;
+// With the order (spl_order), r[20]: each box's depth bucket, a byte a box
+// (spline_box_key, spline_bucket): the cull's and spline_order's, the same.
+static const uint SPLINE_RECORD = 21u;
 
 void spline_record_write(Lists L, uint i, SplineBox bx, uint sl[8], uint sxy[16], uint pieces, uint st, SplinePart sp) {
     float4* r = L.hw2b + SPLINE_RECORD * i;
@@ -1557,6 +1561,43 @@ void spline_record_cut(float4* r, uint k, out uint3 lo, out uint3 hi) {
     uint xy = record_word(r, 64u + k);
     lo = uint3(xy & 255u, (xy >> 16) & 255u, z & 255u);
     hi = uint3((xy >> 8) & 255u, xy >> 24, (z >> 8) & 255u);
+}
+
+// The box of pieces k0 + 1 .. k1 of the part of record r: the cut of the
+// part's box that bounds their cuts (the whole box for all of them)
+SplineBox spline_record_group_box(float4* r, uint n, uint k0, uint k1) {
+    SplineBox b;
+    b.c = r[0].xyz; b.x = r[1].xyz; b.y = r[2].xyz; b.z = r[3].xyz;
+    if (k0 == 0u && k1 == n) return b;
+    uint3 lo = uint3(255u), hi = uint3(0u);
+    for (uint k = k0; k < k1; ++k) {
+        uint3 l, u;
+        spline_record_cut(r, k, l, u);
+        lo = min(lo, l); hi = max(hi, u);
+    }
+    float3 fl = float3(lo) * (1.0 / 255.0), fh = float3(hi) * (1.0 / 255.0);
+    b.c += b.x * (fl.x + fh.x - 1.0) + b.y * (fl.y + fh.y - 1.0) + b.z * (fl.z + fh.z - 1.0);
+    b.x *= fh.x - fl.x;
+    b.y *= fh.y - fl.y;
+    b.z *= fh.z - fl.z;
+    return b;
+}
+
+// The pieces of the part's box j (spl_group of them; 0: all)
+void spline_group_range(ViewData v, uint n, uint j, out uint k0, out uint k1) {
+    k0 = v.spl_group == 0u ? 0u : j * v.spl_group;
+    k1 = v.spl_group == 0u ? n : min(k0 + v.spl_group, n);
+}
+
+// The view depth (positive) box j of the part of record r is ordered by
+// (spl_key): 0 the part's box's centre, 1 its own box's centre, 2 the near
+// face of its own box
+float spline_box_key(ViewData v, float4* r, uint n, uint j) {
+    if (v.spl_key == 0u) return -r[0].z;
+    uint k0, k1;
+    spline_group_range(v, n, j, k0, k1);
+    SplineBox b = spline_record_group_box(r, n, k0, k1);
+    return -b.c.z - (v.spl_key == 2u ? abs(b.x.z) + abs(b.y.z) + abs(b.z.z) : 0.0);
 }
 
 SplinePart spline_record_part(Lists L, uint i) {
@@ -2603,10 +2644,20 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
             spline_record_write(L, base2 + ih2, bx, sl, sxy, n, g.st, sp);
             ng = spline_groups(v, n);
             if (order) {
-                // its boxes go out by depth (spline_order); here, their count
-                uint bk = spline_bucket(L, bx.c);
-                L.hw2b[SPLINE_RECORD * (base2 + ih2) + 2u].w = asfloat(bk);
-                ((Atomic<uint>*)(L.counters + C_BKT + bk))->add(ng);
+                // its boxes go out by depth (spline_order): their buckets,
+                // once, for it to read, and their counts, a run of boxes
+                // in one bucket at a time
+                float4* rc = L.hw2b + SPLINE_RECORD * (base2 + ih2);
+                uint    bks[4] = { 0u, 0u, 0u, 0u };
+                uint    run = 0u, rb = 0u;
+                for (uint j = 0u; j < ng; ++j) {
+                    uint bk = spline_bucket(v, L, spline_box_key(v, rc, n, j));
+                    bks[j >> 2] |= bk << ((j & 3u) * 8u);
+                    if (run != 0u && bk != rb) { ((Atomic<uint>*)(L.counters + C_BKT + rb))->add(run); run = 0u; }
+                    rb = bk; ++run;
+                }
+                if (run != 0u) ((Atomic<uint>*)(L.counters + C_BKT + rb))->add(run);
+                rc[20] = asfloat(uint4(bks[0], bks[1], bks[2], bks[3]));
             }
         }
         // and a box per group of its pieces (converged: every lane reserves)
@@ -2769,19 +2820,9 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     if (phase == 1u && a.view->spl_order != 0u) {
         // the spline boxes by depth: where each bucket starts, their count,
         // and a thread a part to put them there (spline_order)
-        uint o = 0u;
-        for (uint k = 0u; k < SPLINE_BUCKETS; ++k) { c[C_BKO + k] = o; o += c[C_BKT + k]; }
+        uint o = 0u, nb = min(a.view->spl_order, SPLINE_BUCKETS);
+        for (uint k = 0u; k < nb; ++k) { c[C_BKO + k] = o; o += c[C_BKT + k]; }
         c[C_HWSG1] = o;
-        // and in passes: as many boxes each, nearest first (the depth test of
-        // a pass turns away the fragments behind what the passes before drew,
-        // where within one pass the M4 turns away none of a stage that
-        // writes depth: gpu_render.early_depth_rejection_by_what)
-        uint nc = clamp(a.view->spl_chunks, 1u, SPLINE_CHUNKS_MAX);
-        for (uint k = 0u; k < nc; ++k) {
-            uint* ch = c + C_ICMDS_CH + 5u * k;
-            uint  f0 = uint((uint64_t(o) * k) / nc), f1 = uint((uint64_t(o) * (k + 1u)) / nc);
-            ch[0] = 36u; ch[1] = f1 - f0; ch[2] = 0u; ch[3] = 0u; ch[4] = f0;
-        }
         c[C_GRID_ORD] = min((c[C_HWS1] + 63u) / 64u, 65535u); c[C_GRID_ORD + 1u] = 1u; c[C_GRID_ORD + 2u] = 1u;
     }
     uint* cmd = c + C_CMD + (phase - 1u) * 2u * 4u;
@@ -3239,25 +3280,12 @@ SplineV spline_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
         float4* rc  = L.hw2b + SPLINE_RECORD * rec;
         float4  r0  = rc[0], r1 = rc[1];
         uint    n   = asuint(r0.w);
-        uint    k0  = v.spl_group == 0u ? 0u : (ge & 15u) * v.spl_group;
-        uint    k1  = v.spl_group == 0u ? n : min(k0 + v.spl_group, n);
-        float3  c   = r0.xyz, X = r1.xyz, Y = rc[2].xyz, Z = rc[3].xyz;
-        if (!(k0 == 0u && k1 == n)) {                   // the group's cut of the part's box
-            uint3 lo = uint3(255u), hi = uint3(0u);
-            for (uint k = k0; k < k1; ++k) {
-                uint3 l, u;
-                spline_record_cut(rc, k, l, u);
-                lo = min(lo, l); hi = max(hi, u);
-            }
-            float3 fl = float3(lo) * (1.0 / 255.0), fh = float3(hi) * (1.0 / 255.0);
-            c += X * (fl.x + fh.x - 1.0) + Y * (fl.y + fh.y - 1.0) + Z * (fl.z + fh.z - 1.0);
-            X *= fh.x - fl.x;
-            Y *= fh.y - fl.y;
-            Z *= fh.z - fl.z;
-        }
-        float3  p   = c + X * (((vk & 1u) != 0u) ? 1.0 : -1.0)
-                        + Y * (((vk & 2u) != 0u) ? 1.0 : -1.0)
-                        + Z * (((vk & 4u) != 0u) ? 1.0 : -1.0);
+        uint    k0, k1;
+        spline_group_range(v, n, ge & 15u, k0, k1);
+        SplineBox bx = spline_record_group_box(rc, n, k0, k1);    // the group's cut of the part's box
+        float3  p   = bx.c + bx.x * (((vk & 1u) != 0u) ? 1.0 : -1.0)
+                           + bx.y * (((vk & 2u) != 0u) ? 1.0 : -1.0)
+                           + bx.z * (((vk & 4u) != 0u) ? 1.0 : -1.0);
         o.rec   = rec + 1u;
         o.pos   = mul4(M(v, proj), float4(p, 1.0));
         o.pe    = uint4(n, k0, k1, 0u);
@@ -3680,11 +3708,23 @@ void spline_order(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     Lists    L = *a.lists;
     uint     n = L.counters[C_HWS1];
     for (uint i = tid.x; i < n; i += 65535u * 64u) {
-        float4* rc = L.hw2b + SPLINE_RECORD * i;
-        uint ng = spline_groups(v, asuint(rc[0].w));
-        uint bk = asuint(rc[2].w);
-        uint at = ((Atomic<uint>*)(L.counters + C_BKO + bk))->add(ng);
-        for (uint j = 0u; j < ng; ++j) L.hw2g[at + j] = (i << 4) | j;
+        float4* rc  = L.hw2b + SPLINE_RECORD * i;
+        uint    ng  = spline_groups(v, asuint(rc[0].w));
+        uint4   bks = asuint(rc[20]);
+        uint    j0  = 0u;
+        while (j0 < ng) {           // a run of boxes in one bucket at a time
+            uint w  = j0 >> 2;
+            uint bk = ((w == 0u ? bks.x : w == 1u ? bks.y : w == 2u ? bks.z : bks.w) >> ((j0 & 3u) * 8u)) & 255u;
+            uint j1 = j0 + 1u;
+            while (j1 < ng) {
+                uint w1 = j1 >> 2;
+                if ((((w1 == 0u ? bks.x : w1 == 1u ? bks.y : w1 == 2u ? bks.z : bks.w) >> ((j1 & 3u) * 8u)) & 255u) != bk) break;
+                ++j1;
+            }
+            uint at = ((Atomic<uint>*)(L.counters + C_BKO + bk))->add(j1 - j0);
+            for (uint j = j0; j < j1; ++j) L.hw2g[at + j - j0] = (i << 4) | j;
+            j0 = j1;
+        }
     }
 }
 
