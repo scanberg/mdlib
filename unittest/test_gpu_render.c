@@ -442,6 +442,95 @@ UTEST(gpu_render, conservative_depth_reverse_z) {
     r_close(&f);
 }
 
+/* Whether the depth test turns a fragment away before its shader runs, for
+   each way a fragment stage can end. md_render's spline and polygon
+   fragments write a depth no nearer than their box's (SV_DepthLessEqual
+   under reversed Z: Metal's [[depth(less)]]) and discard where the ray
+   misses; on the M4 their hit cost 15 times the 3080's, which shading all
+   of what lies behind the nearest surface would explain. A full-screen
+   layer of heavy fragments, then 8 more behind it: where the test runs
+   early those cost next to nothing; drawn behind-first (nothing to turn
+   away) they cost 8 layers. The fraction of that turned away is printed.
+   The image must show the near layer either way. Timed by the wall clock
+   around a sync, the best of 5; the loop is lengthened until one layer
+   takes 4 ms. */
+typedef struct layer_variant_t { const char* name; md_gpu_shader_t fs; bool reversed; } layer_variant_t;
+
+static double layer_time(rfix_t* f, md_gpu_pipeline_t p, md_gpu_texture_t u, md_gpu_texture_t d, bool reversed,
+                         uint32_t iters, int behind, bool behind_first, uint32_t* ids, uint32_t npx, bool* ok) {
+    double best = 1e30;
+    for (int rep = 0; rep < 5; ++rep) {
+        md_gpu_render_desc_t rd = {0};
+        rd.color_count = 1;
+        rd.color[0].texture = u; rd.color[0].load = MD_GPU_LOAD_CLEAR; rd.color[0].store = MD_GPU_STORE; rd.color[0].clear.u32[0] = 0u;
+        rd.depth.texture = d; rd.depth.load = MD_GPU_LOAD_CLEAR; rd.depth.store = MD_GPU_STORE; rd.depth.clear_depth = reversed ? 0.0f : 1.0f;
+        const utest_int64_t t0 = utest_ns();
+        if (!md_gpu_render_begin(f->gfx, &rd)) { *ok = false; return 0.0; }
+        md_gpu_draw_state_t ds = {0};
+        ds.depth_compare = reversed ? MD_GPU_COMPARE_GREATER_EQUAL : MD_GPU_COMPARE_LESS_EQUAL;
+        ds.depth_write   = true;
+        md_gpu_set_draw_state(f->gfx, &ds);
+        rargs_t a = {0};
+        a.width = iters;
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool near_now = (pass == 0) != behind_first;
+            if (!near_now && behind == 0) continue;
+            a.id    = near_now ? 100u : 200u;
+            a.color = near_now ? f4(0.0f, reversed ? 0.9f : 0.1f, 0.0f, 0.0f)
+                               : f4(0.0f, 0.5f, reversed ? -0.01f : 0.01f, 0.0f);
+            if (!MD_GPU_DRAW(f->gfx, p, 3, near_now ? 1u : (uint32_t)behind, a)) *ok = false;
+        }
+        if (!md_gpu_render_end(f->gfx)) *ok = false;
+        md_gpu_stream_sync(f->gfx);
+        const double ms = (double)(utest_ns() - t0) * 1e-6;
+        if (ms < best) best = ms;
+    }
+    if (!r_read(f, u, 0, 0, ids, npx * 4u)) *ok = false;
+    for (uint32_t i = 0; i < npx; ++i) if (ids[i] != 100u) { *ok = false; break; }
+    return best;
+}
+
+UTEST(gpu_render, early_depth_rejection) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+    enum { LW = 512, LH = 512, BEHIND = 8 };
+    md_gpu_texture_t u = r_target(&f, MD_GPU_FORMAT_R32_UINT, LW, LH, 0);
+    md_gpu_texture_t d = r_target(&f, MD_GPU_FORMAT_D32_FLOAT, LW, LH, 0);
+    ASSERT_TRUE(u && d);
+    uint32_t* ids = malloc(LW * LH * 4);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_R32_UINT;
+    const layer_variant_t vars[] = {
+        { "plain (no depth written, no discard)",           md_shader_gpu_render_test_layer_plain_fs_shader(),              true  },
+        { "discard",                                        md_shader_gpu_render_test_layer_discard_fs_shader(),            true  },
+        { "depth any (SV_Depth)",                           md_shader_gpu_render_test_layer_depth_any_fs_shader(),          true  },
+        { "depth no nearer, reversed Z (md_render's, no discard)", md_shader_gpu_render_test_layer_depth_less_fs_shader(),  true  },
+        { "depth no nearer, reversed Z, discard (md_render's)", md_shader_gpu_render_test_layer_depth_less_discard_fs_shader(), true },
+        { "depth no nearer, standard Z",                    md_shader_gpu_render_test_layer_depth_greater_fs_shader(),      false },
+    };
+    uint32_t iters = 16;
+    for (int vi = 0; vi < (int)(sizeof(vars) / sizeof(vars[0])); ++vi) {
+        md_gpu_pipeline_t p = r_pipeline(&f, md_shader_gpu_render_test_layer_vs_shader(), vars[vi].fs, MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_D32_FLOAT);
+        ASSERT_TRUE(p);
+        bool ok = true;
+        if (vi == 0) {                          /* the loop's length: one layer about 4 ms */
+            while (iters < (1u << 16) && layer_time(&f, p, u, d, vars[vi].reversed, iters, 0, false, ids, LW * LH, &ok) < 4.0) iters *= 2;
+        }
+        const double one    = layer_time(&f, p, u, d, vars[vi].reversed, iters, 0,      false, ids, LW * LH, &ok);
+        const double front  = layer_time(&f, p, u, d, vars[vi].reversed, iters, BEHIND, false, ids, LW * LH, &ok);
+        const double back   = layer_time(&f, p, u, d, vars[vi].reversed, iters, BEHIND, true,  ids, LW * LH, &ok);
+        const double turned = back - one > 1e-3 ? 1.0 - (front - one) / (back - one) : 0.0;
+        printf("    %-55s one layer %6.2f ms, +%d behind %7.2f ms near first, %7.2f ms behind first: %3.0f%% turned away early\n",
+               vars[vi].name, one, BEHIND, front, back, 100.0 * turned);
+        EXPECT_TRUE(ok);
+        md_gpu_pipeline_destroy(p);
+    }
+    printf("    (%u turns of the loop a fragment, %dx%d)\n", iters, LW, LH);
+    free(ids);
+    md_gpu_texture_destroy(u);
+    md_gpu_texture_destroy(d);
+    r_close(&f);
+}
+
 UTEST(gpu_render, depth_only_pass_without_fragment_shader) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
