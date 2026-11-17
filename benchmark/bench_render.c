@@ -63,6 +63,7 @@ Every run prints the mdlib revision it was built from, first.
 #if MD_ENABLE_GPU
 #include <md_render.h>
 #include <md_render_mol.h>
+#include <md_render_debug.h>
 #include <core/md_gpu.h>
 #endif
 
@@ -774,29 +775,10 @@ bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stre
                                        md_render_mol_frames_t* frames, uint32_t slot, const md_render_mol_frame_t* frame,
                                        md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
-/* md_render's per-pass hook and the phase-1 occlusion margin experiment: in
-   md_render.c, not in its header */
-void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
-void md_render_mol_debug_prefetch(uint32_t windows_ahead);
-void md_render_mol_debug_write(uint32_t leave_out);
-void md_render_mol_debug_frame_groups(uint32_t groups);
-bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
-bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
-void md_render_debug_raster_probe(uint32_t mode);
-bool md_render_debug_spline_counts(md_gpu_stream_t s, md_render_view_t v, uint32_t out[5]);
-void md_render_debug_spline_again(uint32_t mode);
-void md_render_debug_spline_group(uint32_t pieces);
-void md_render_debug_spline_order(uint32_t buckets);
-void md_render_debug_occlusion_auto(bool on);
-/* a row's option of the bench's own: occlusion culling every raster, not the
-   view's choice of it (md_render_debug_occlusion_auto) */
+/* a row's option of the bench's own, beside md_render_debug_view's:
+   occlusion culling every raster, not the view's choice of it
+   (md_render_debug_occlusion_auto) */
 #define BENCH_OCCLUSION_ALWAYS (1u << 31)
-/* and the compute raster's shapes by their projection, not a ray a pixel
-   (md_render_debug_small_approx) */
-void md_render_debug_small_approx(bool on);
-#define BENCH_SMALL_APPROX (1u << 30)
-bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
-void md_render_debug_occlusion(float margin_radii, float min_px);
 
 typedef struct pass_prof_t {
     md_gpu_stream_t s;
@@ -1190,16 +1172,13 @@ static int run_gpu(int argc, char** argv) {
         { "licorice thinning into spacefill over 2.5 to 1.25 px/A, far",  true, 6.0f, FADE_TO_SPACEFILL },   /* licorice gone by its clusters */
     };
     /* md_render's occlusion defaults: margin 2 radii, elements up to 2 px
-       untested. Rows marked "x:" are experiments: the compute raster's
-       shapes by their projection (md_render_debug_small_approx), with the
-       defaults otherwise. */
+       untested */
     const struct { const char* name; uint32_t options; float margin, min_px; } opts[] = {
         { "all",                     0, 2.0f, 2.0f },
         { "occlusion always",        BENCH_OCCLUSION_ALWAYS, 2.0f, 2.0f },
-        { "no occlusion",            MD_RENDER_NO_OCCLUSION_CULLING, 2.0f, 2.0f },
-        { "x: small by projection",  BENCH_SMALL_APPROX, 2.0f, 2.0f },
-        { "no compute raster",       MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
-        { "neither (plain raster)",  MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER, 2.0f, 2.0f },
+        { "no occlusion",            MD_RENDER_DEBUG_NO_OCCLUSION, 2.0f, 2.0f },
+        { "no compute raster",       MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 2.0f, 2.0f },
+        { "neither (plain raster)",  MD_RENDER_DEBUG_NO_OCCLUSION | MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 2.0f, 2.0f },
     };
 
     for (uint32_t ai = 0; ai < n_atoms; ++ai) {
@@ -1363,7 +1342,7 @@ static int run_gpu(int argc, char** argv) {
             printf("  %-24s %6s | %17s %17s %17s %17s | %9s %9s %9s %9s %9s %9s | %8s %8s %8s\n", "options", "small", "raster (refit)", "raster (camera)", "resolve", "mask",
                    "outside", "faded", "occluded", "hw", "compute", "retested", "clusters", "expanded", "c.occl");
             for (size_t oi = 0; oi < sizeof(opts) / sizeof(opts[0]); ++oi) {
-                for (uint32_t pi = 0; pi < (opts[oi].options & MD_RENDER_NO_COMPUTE_RASTER ? 1u : n_small); ++pi) {
+                for (uint32_t pi = 0; pi < (opts[oi].options & MD_RENDER_DEBUG_NO_COMPUTE_RASTER ? 1u : n_small); ++pi) {
                     md_render_debug_occlusion(opts[oi].margin, opts[oi].min_px);
                     md_render_view_t v = md_render_view_create(r, "bench");
                     md_render_frame_t f;
@@ -1372,10 +1351,8 @@ static int run_gpu(int argc, char** argv) {
                     f.camera = camera_at(&sc, looks[li].dist, (float)W / H);
                     f.batches = b; f.batch_count = nb;
                     f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                    f.options = opts[oi].options & ~(BENCH_OCCLUSION_ALWAYS | BENCH_SMALL_APPROX);
+                    md_render_debug_view(v, opts[oi].options & ~BENCH_OCCLUSION_ALWAYS, smalls[pi]);
                     md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
-                    md_render_debug_small_approx(opts[oi].options & BENCH_SMALL_APPROX);
-                    f.small_pixels = smalls[pi];
                     warm_up_once(s, v, &f);
                     /* warm up: the first raster has no pyramid */
                     time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);
@@ -1397,7 +1374,7 @@ static int run_gpu(int argc, char** argv) {
                     timing_t tv = time_draws(s, v, &f, MD_RENDER_CONTENT_APPEARANCE, reps, NULL);
                     timing_t tm = time_draws(s, v, &f, MD_RENDER_CONTENT_STATE, reps, NULL);
                     char small_s[16];
-                    if (opts[oi].options & MD_RENDER_NO_COMPUTE_RASTER) snprintf(small_s, sizeof(small_s), "-");
+                    if (opts[oi].options & MD_RENDER_DEBUG_NO_COMPUTE_RASTER) snprintf(small_s, sizeof(small_s), "-");
                     else snprintf(small_s, sizeof(small_s), "%.0f", smalls[pi]);
                     printf("  %-24s %6s | %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f %7.2f / %7.2f | %9u %9u %9u %9u %9u %9u | %8u %8u %8u\n", opts[oi].name, small_s,
                            tr.best, tr.median, tcam.best, tcam.median, tv.best, tv.median, tm.best, tm.median,
@@ -1551,7 +1528,7 @@ static int run_heavy(int argc, char** argv) {
     /* the scale at the front of the block, px/A; 0: the whole block in view */
     const struct { const char* name; float px_per_a; } views[] = { { "near", 4.0f }, { "mid", 1.0f }, { "fit", 0.0f } };
     const struct { const char* name; uint32_t options; } opts[] = {
-        { "all", 0 }, { "occlusion always", BENCH_OCCLUSION_ALWAYS }, { "no occlusion", MD_RENDER_NO_OCCLUSION_CULLING },
+        { "all", 0 }, { "occlusion always", BENCH_OCCLUSION_ALWAYS }, { "no occlusion", MD_RENDER_DEBUG_NO_OCCLUSION },
     };
 
     md_gpu_device_desc_t dd = {0};
@@ -1782,9 +1759,8 @@ static int run_heavy(int argc, char** argv) {
                         f.camera = camera_front(ctr, z_front, dist, aspect);
                         f.batches = b; f.batch_count = nb;
                         f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
-                        f.options = opts[oi].options & ~BENCH_OCCLUSION_ALWAYS;
+                        md_render_debug_view(v, opts[oi].options & ~BENCH_OCCLUSION_ALWAYS, 6.0f);
                         md_render_debug_occlusion_auto(!(opts[oi].options & BENCH_OCCLUSION_ALWAYS));
-                        f.small_pixels = 6.0f;
                         memcpy(f.content, content, sizeof(content));
                         warm_up_once(s, v, &f);
                         time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, 2, NULL);     /* the first raster has no pyramid */
@@ -1855,39 +1831,6 @@ static int run_heavy(int argc, char** argv) {
                                 }
                                 md_render_debug_spline_group(~0u);         /* the defaults: the device's, */
                                 md_render_debug_spline_order(256);         /* 256 buckets */
-                                /* the boxes drawn again in a pass after their own, over
-                                   the final depth: what a depth test early could turn
-                                   away of their hit work at best (an empty pass, what
-                                   a pass costs alone) */
-                                printf("    refit raster, spline boxes as by default");
-                                for (uint32_t ai = 0; ai < 3; ++ai) {
-                                    md_render_debug_spline_again(ai);
-                                    timing_t ta = time_draws(s, v, &f, MD_RENDER_CONTENT_GEOMETRY, reps, NULL);
-                                    printf("%s: %.2f / %.2f", ai == 0 ? "" : ai == 1 ? ", and a pass after with nothing" : ", and drawn again in it", ta.best, ta.median);
-                                }
-                                printf(" ms\n");
-                                md_render_debug_spline_again(0);
-                                /* what the spline fragments cost, counted: shaded per pixel
-                                   resolved, and full piece tests per fragment; and of the
-                                   boxes drawn again over the final depth, the fragments
-                                   that pass the test at their box's depth: what any order,
-                                   or anything drawn before, would leave to be shaded */
-                                for (int gi = 0; gi < 2; ++gi) {
-                                    uint32_t cnt[5] = {0};
-                                    md_render_debug_spline_group(gi == 0 ? 0u : 1u);
-                                    md_render_debug_raster_probe(2);
-                                    md_render_debug_spline_again(2);
-                                    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
-                                    bool okc = md_render_view_draw(s, v, &f, NULL) && md_render_debug_spline_counts(s, v, cnt);
-                                    md_render_debug_raster_probe(0);
-                                    md_render_debug_spline_again(0);
-                                    if (okc) printf("    spline fragments, boxes of %s: %u shaded for %u pixels (%.2f a pixel), %u hits, %u full piece tests (%.2f a fragment); "
-                                                    "drawn again, %u pass the depth test (%.2f a pixel, %.0f%%)\n",
-                                                    gi == 0 ? "the whole part" : "1 piece", cnt[0], cnt[3], cnt[3] ? (double)cnt[0] / cnt[3] : 0.0,
-                                                    cnt[1], cnt[2], cnt[0] ? (double)cnt[2] / cnt[0] : 0.0,
-                                                    cnt[4], cnt[3] ? (double)cnt[4] / cnt[3] : 0.0, cnt[0] ? 100.0 * cnt[4] / cnt[0] : 0.0);
-                                }
-                                md_render_debug_spline_group(~0u);
                             }
                         }
                         md_render_view_destroy(s, v);

@@ -1,4 +1,5 @@
 #include "md_render_mol.h"
+#include "md_render_debug.h"
 
 #include <md_system.h>
 #include <md_bond.h>
@@ -236,7 +237,7 @@ typedef struct dyn_layout_t {
 } dyn_layout_t;
 
 /* The points in cluster order, what is drawn: float4 (position, w),
-   written whole by every update; w is the point's type and flags (the
+   written whole by every update; w is the point's type (the
    topology's point_type) or the caller's radius for its atom. Then the
    scratch of the regroup. Then the backbone's axes (float4 per control
    point, md_render's) and the orientation's memory: per control point
@@ -2747,7 +2748,7 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     p.stride          = 16;
     p.radius          = dynamic + D.points + 12;
     p.radius_stride   = 16;
-    if (!atoms->radius) {                      /* w: the type and flags, the radius from the types' table */
+    if (!atoms->radius) {                      /* w: the type, the radius from the types' table */
         p.radius_table       = topo->type_radius;
         p.radius_table_count = topo->type_count;
     }

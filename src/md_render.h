@@ -18,20 +18,18 @@ The model, in full
   * A BATCH is a set of primitives of one KIND over a stream of POINTS that
     live in the caller's GPU memory, read in place:
 
-        SPHERES     one point each                                [implemented]
-        CAPSULES    two points: a cylinder between them           [implemented: round caps,
-                                                                   dashes, displacement]
-                    (flat caps and periodic halves: declared, not
-                    yet implemented)
-        POLYGONS    3..8 points around: a rounded slab            [implemented]
-        SPLINES     chains of control points, swept stadium       [implemented]
-        TRIANGLES   meshes                                        [declared]
+        SPHERES     one point each
+        CAPSULES    two points: a cylinder between them, round caps
+                    (dashed, displaced)
+        POLYGONS    3..8 points around: a rounded slab
+        SPLINES     chains of control points, swept stadium
         EXTERNAL    no primitives: a reserved id range for
-                    something the caller renders itself           [implemented]
+                    something the caller renders itself
 
-    Every primitive but the triangle is raycast exactly; nothing is
-    tessellated. Where a sphere and a capsule are the same surface (licorice
-    joints), the sphere wins, whatever the order of the batches.
+    Every primitive is raycast exactly; nothing is tessellated. Where a
+    sphere and a capsule are the same surface (licorice joints), the sphere
+    wins, whatever the order of the batches. Not yet: triangle meshes, flat
+    caps, capsules across a periodic boundary, transparency (below).
 
   * Points carry positions and, optionally, a VELOCITY. Through an optional
     index they also carry ATTRIBUTES (usually per atom): a colour or a palette
@@ -165,16 +163,15 @@ typedef struct md_render_points_t {
     md_gpu_addr_t velocity;        /* packed half3 (see conventions); 0: at rest      */
     md_gpu_addr_t radius;          /* float per point (SPHERES), `radius_stride` bytes
                                       apart; 0: radius 0. With radius_table: uint32
-                                      per point instead, the low 16 bits an index into
-                                      the table (past its count: radius 0), the high
-                                      16 the point's flags (none read yet). Read only
-                                      by spheres with a radius_scale other than 0     */
+                                      per point instead, an index into the table (past
+                                      its count: radius 0). Read only by spheres with
+                                      a radius_scale other than 0                     */
     uint32_t      radius_stride;   /* multiple of 4; 0: 4. Points stored as float4
                                       (x, y, z, radius or type): position with stride
                                       16 and radius = position + 12 with stride 16    */
     md_gpu_addr_t radius_table;    /* float per type: the radius of a point is
                                       radius_table[type]; 0: `radius` holds radii     */
-    uint32_t      radius_table_count; /* entries; at most 65536 are read            */
+    uint32_t      radius_table_count; /* entries                                    */
 
     uint32_t      attr_count;      /* entries of the attribute arrays; 0: count       */
     md_gpu_addr_t attr_index;      /* uint32 per point; 0: the point itself           */
@@ -194,7 +191,6 @@ typedef enum md_render_kind_t {
     MD_RENDER_CAPSULES,
     MD_RENDER_POLYGONS,            /* rounded flat polygons: md_render_polygon_style_t */
     MD_RENDER_SPLINES,             /* tubes and ribbons along cubic splines: md_render_spline_style_t */
-    MD_RENDER_TRIANGLES,           /* not yet implemented */
     MD_RENDER_EXTERNAL,            /* an id range for the caller's own renderer */
 } md_render_kind_t;
 
@@ -204,16 +200,11 @@ typedef struct md_render_sphere_style_t {
     float radius_add;
 } md_render_sphere_style_t;
 
-typedef enum md_render_cap_t {
-    MD_RENDER_CAP_ROUND = 0,       /* half sphere: capsules join smoothly at a point */
-    MD_RENDER_CAP_FLAT,            /* not yet implemented                            */
-} md_render_cap_t;
-
 typedef struct md_render_capsule_style_t {
     /* Radius of every capsule, times its own scale when `radius_scale` is
-       given (a weak bond fading out; <= 0 hides it). */
+       given (a weak bond fading out; <= 0 hides it). Round caps: capsules
+       join smoothly at a point. */
     float           radius;
-    md_render_cap_t cap[2];
     md_gpu_addr_t   radius_scale;  /* float per capsule, optional                      */
 
     /* Dashed (dash_length > 0): flat-ended cylinders of the radius between
@@ -223,7 +214,7 @@ typedef struct md_render_capsule_style_t {
        by one (md_gl's); zero dash_ends: from the points. Given by lengths,
        never by a count: as many dashes as come closest, at least two,
        stretched alike to fill the length. Nothing where not half a dash is
-       left between the spheres. `cap` does not apply. Only the hardware
+       left between the spheres. Only the hardware
        raster draws them (no compute raster for small ones). dash_length 0:
        solid. */
     float           dash_length;
@@ -249,10 +240,6 @@ typedef struct md_render_capsule_style_t {
     float           offset;
     md_gpu_addr_t   side;
     float           trim;
-
-    /* Not yet implemented. Periodic capsules: each point joined to the
-       nearest image of the other, drawn as two halves. All zero: none. */
-    float           cell[9];
 } md_render_capsule_style_t;
 
 /* SPLINES: a profile swept along a uniform cubic B-spline through control
@@ -506,14 +493,8 @@ typedef enum md_render_jitter_t {
    a depth pyramid in two phases (the previous raster's pyramid first, then
    this raster's for what that found occluded, so the result is exact even
    when the camera or the geometry moved). Survivors go to the hardware
-   raster, or, when they are at most `small_pixels` across, to a compute
-   raster (64-bit atomics; the hardware raster when the device lacks them).
-   The image does not depend on these options, only the cost; they exist for
-   measuring and debugging. */
-enum {
-    MD_RENDER_NO_OCCLUSION_CULLING = 1u << 0,
-    MD_RENDER_NO_COMPUTE_RASTER    = 1u << 1,
-};
+   raster, or, when they are a few pixels across, to a compute raster
+   (64-bit atomics; the hardware raster when the device lacks them). */
 
 typedef struct md_render_frame_t {
     uint32_t                 width, height;   /* of the targets, in pixels            */
@@ -526,9 +507,6 @@ typedef struct md_render_frame_t {
     double                   time;            /* of the positions, in the velocities'
                                                  time unit                           */
     uint64_t                 content[MD_RENDER_CONTENT_COUNT];
-    uint32_t                 options;         /* MD_RENDER_NO_* */
-    float                    small_pixels;    /* compute raster up to this extent
-                                                 in pixels; 0: 6                  */
 } md_render_frame_t;
 
 typedef uint32_t md_render_work_t;
@@ -575,14 +553,13 @@ md_render_targets_t md_render_view_targets(md_render_view_t view);
 
 /* ---- Ids --------------------------------------------------------------------
        id.y  bits 31..20  1 + the batch's position in the frame (0: background)
-             bits 19..18  part (reserved: halves of periodic capsules, ...)
-             bits 17..0   linear index, high 18 bits
+             bits 19..0   linear index, high 20 bits
        id.x               linear index, low 32 bits
-   linear = instance * count + element: 4095 batches per frame, 2^50 elements
+   linear = instance * count + element: 4095 batches per frame, 2^52 elements
    times instances per batch. An EXTERNAL batch's renderer writes ids made by
    md_render_encode_id with its own position in the frame. */
 
-void md_render_encode_id(uint32_t batch_index, uint32_t part, uint64_t linear, uint32_t out_id[2]);
+void md_render_encode_id(uint32_t batch_index, uint64_t linear, uint32_t out_id[2]);
 
 /* ---- Picking ----------------------------------------------------------------
    Reads what the targets show after the last draw. Asynchronous: the result
