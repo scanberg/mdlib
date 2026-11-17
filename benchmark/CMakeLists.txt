@@ -79,3 +79,12 @@ target_link_libraries(md_infer_bench PRIVATE mdlib $<$<PLATFORM_ID:Windows>:psap
 add_dependencies(md_infer_bench md_topo_gto_bench_rev)
 target_include_directories(md_infer_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(md_infer_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" ${MD_DEFINES})
+
+# The procedures with a wide version (md_executor.h, lanes) against their fork-join version over threads, on the same
+# pool: best and median of each, their ratio and a hash of what each produced (see bench_lanes.c). Its own executable.
+add_executable(md_lanes_bench bench_lanes.c bench_common.h)
+target_compile_options(md_lanes_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+target_link_options(md_lanes_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+target_link_libraries(md_lanes_bench PRIVATE mdlib $<$<PLATFORM_ID:Windows>:psapi>)
+add_dependencies(md_lanes_bench md_topo_gto_bench_rev)
+target_include_directories(md_lanes_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

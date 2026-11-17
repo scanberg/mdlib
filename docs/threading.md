@@ -50,6 +50,36 @@ What a procedure must keep in return:
 - **Reproducible where it matters.** Results do not depend on which piece ran where: outputs are addressed by index,
   and per thread accumulators are merged in a fixed order, or are exact (integers).
 
+## Wide sections (experiment)
+
+A procedure of the third kind may also be written *wide*: one function which every thread of a group runs, the
+multi-core-by-default (SPMD) model, rather than a sequence of loops handed to the executor one at a time.
+`md_run_lanes(ex, max_lanes, fn, arg)` runs `fn(lane, arg)` on up to `max_lanes` lanes; inside it, work is split with
+`MD_LANE_FOR(lane, count, grain, r)` (pieces claimed from a shared counter, a sync at the end), serial parts are narrowed
+to a lane (`md_lane_idx(lane) == 0`), and lanes meet at `md_lane_sync` and exchange values with `md_lane_bcast_u64`.
+Locals live on each lane's stack, and the procedure's control flow reads top to bottom: no phase is a function of its
+own, and no context struct is passed between them.
+
+The lanes are the pieces of one `md_parallel_for` on the executor, so any executor runs them. Membership is elastic:
+a piece joins when it starts, until the group's first sync closes it, and one which starts later returns at once. A
+lane therefore only waits for lanes which have started, and an executor which runs its pieces one after another runs
+the group with a single lane. What follows from it, for the one writing a wide function:
+
+- **Open with a loop.** Lanes which start late join only before the first sync. Do setup before going wide (on the
+  calling thread), not on lane 0 behind a broadcast at the top, which would close the group before the executor's
+  threads have woken.
+- **Every lane reaches the same syncs.** A sync inside a branch not every lane takes waits forever; every sync records
+  its line, and a group which meets at different ones stops with an assertion instead. A body of `MD_LANE_FOR` is left
+  by its end only.
+- **Results by piece, not by lane**, where they are to be reproducible: how many lanes a group gets depends on timing.
+  `md_lane_count` is known after the first sync, and the even split `md_lane_split` with it, for uniform work only.
+- **A lane waits for nothing but its group**: no `md_parallel_for` inside, no other wait that could run pieces.
+- **Cancellation is decided at syncs**, the same for every lane.
+
+`md_spatial_acc_init` (the sort of its points into cells) and `md_linalg_sym_eigen_ex` (its tridiagonalization) have a
+wide version next to their fork-join one, chosen by `md_executor_t.fork_join` while the two are compared:
+`md_lanes_bench` times both on the same pool.
+
 ## Tests
 
 `unittest/test_executor.h` has two executors for tests: real threads (`test_executor_threads`), and one thread
