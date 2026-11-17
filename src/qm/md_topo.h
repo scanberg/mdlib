@@ -122,8 +122,8 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 // ---------------------------------------------------------------------------
 // Grid-free alternative to the volume based extraction above. Works directly on
 //     rho(r) = sum_{mu,nu} D_{mu nu} phi_mu(r) phi_nu(r)
-// and PROVES, cube by cube, that a region holds no critical point or exactly one (Krawczyk on the cube
-// grown 1.5x; its type is proven with it). Every non-degenerate critical point with rho >= rho_min is found;
+// and PROVES, cube by cube, that a region holds no critical point or exactly one (Krawczyk on the cube or
+// on the cube grown 1.5x; its type is proven with it). Every non-degenerate critical point with rho >= rho_min is found;
 // near-degenerate topology that cannot be resolved down to h_min is reported, never guessed.
 // Newton polishes each certified CP until its step is below 1e-13 Bohr, on the field screened as the search
 // screens it (what is left out adds at most ~1e-12 to the gradient: weak CPs, whose Hessian eigenvalues are
@@ -174,7 +174,7 @@ typedef struct md_topo_gto_cluster_t {
 
 typedef struct md_topo_gto_info_t {
     uint64_t num_box_evals;
-    uint64_t num_inflated_evals;         // cubes Krawczyk was tried on (on the cube grown 1.5x)
+    uint64_t num_inflated_evals;         // cubes Krawczyk left undecided on the cube, tried on the cube grown 1.5x
     uint32_t num_levels;
     uint32_t num_threads;
     uint32_t num_unresolved_boxes;

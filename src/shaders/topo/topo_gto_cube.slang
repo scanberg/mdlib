@@ -4,10 +4,10 @@
 // (md_topo_compute_extremum_graph_gto_gpu), in fp32.
 //
 // Each cube c +- h is decided with the CPU reference's tests (see md_topo.c): a rigorous upper bound
-// of rho below rho_min, exclusion of grad rho along the axes, or Krawczyk on the 1.5x cube (one zero, or
-// none). What changes in fp32 is that every quantity a test uses carries a bound on its own rounding
-// error, and a test decides only with those bounds added. The error model assumes only what any
-// conforming GPU guarantees:
+// of rho below rho_min, exclusion of grad rho along the axes, the Newton distance, or Krawczyk on the
+// cube or the 1.5x cube (one zero, or none). What changes in fp32 is that every quantity a test uses
+// carries a bound on its own rounding error, and a test decides only with those bounds added. The error
+// model assumes only what any conforming GPU guarantees:
 //   * + - * correctly rounded; FMA contraction and reassociation only change which a priori bound
 //     gamma_k * sum|terms| applies, and the bounds below hold for any order of every sum;
 //   * exp(-t) relative error (6 + 8.1 t) u, u = 2^-24, including the rounding of t. The exp below is
@@ -39,10 +39,11 @@
 //
 // Every sum runs in a fixed order, so a cube's result depends only on its batch, never on the chunk.
 //
-// Outcome per cube (low 4 bits): 0 discard, 1 root (Krawczyk certified on the 1.5x cube; the CPU
-// polishes it in double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding
+// Outcome per cube (low 4 bits): 0 discard, 1 root (Krawczyk certified, on the cube or the 1.5x cube;
+// the CPU polishes it in double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding
 // noise and the cube is too small for a Krawczyk proof at that noise, or h <= h_min; the CPU takes the
-// cube and its subtree in double). Bit 4: Krawczyk was tried. Bits 8..15: which test.
+// cube and its subtree in double). Bit 4: Krawczyk was tried on the 1.5x cube (a root then certified there,
+// else on the cube). Bits 8..15: which test.
 // Bits 16..23, for a split: the children that still need an evaluation (child_excluded below).
 
 #include "../md_gpu.slang"
@@ -82,7 +83,9 @@
 #define OUT_INFLATED 16u
 
 #define WHY_RHO      1u
-#define WHY_EXCL     2u         // 3, 4: tests no longer made (Newton distance, Krawczyk on the cube itself)
+#define WHY_EXCL     2u
+#define WHY_NEWT     3u
+#define WHY_KOUT     4u         // Krawczyk on the cube: no zero
 #define WHY_KOUT_I   5u         // Krawczyk on the 1.5x cube: no zero
 #define WHY_ROOT     6u
 #define WHY_SPLIT    7u
@@ -871,6 +874,7 @@ struct Eval {
     float A[3][3], e_A[3][3];
     float q_up[3], r_up[3], rho_up;     // over the cube
     float dH_i[3][3];                   // the Hessian enclosure over the 1.5x cube
+    float dH_c[3][3];                   // ... over the cube: its polynomial terms, the 1.5x cube's remainder sums
 };
 
 // decide_main and its helpers index a few small local arrays with runtime indices (the free coordinates
@@ -1039,17 +1043,17 @@ bool excl_quad(Eval ev, float T[3][3][3], float eT[3][3][3], float h, int k) {
 // Krawczyk's linear part: Y ~ A^-1 (by cofactors, any accuracy), R = I - Y A with the bound eR of its error
 // (A's error and the rounding), and the Newton step m = -Y g with the bound em of its error: g's error and
 // the gradient tail tg of the screened shells (g is the local AOs' gradient; the full one differs by up to
-// tg per component). ok: R contracts (rhoR = max row sum of |R| + eR < 0.9).
+// tg per component). ok: R contracts (rhoR = max row sum of |R| + eR < 0.9); then ||A^-1 - Y|| <= zeta.
 struct Lin {
     bool ok;
     float Y[3][3], R[3][3], eR[3][3];
-    float rhoR;
+    float rhoR, zeta;
     float m[3], em[3];
 };
 
 Lin linear(Eval ev, float tg) {
     Lin L;
-    L.ok = false; L.rhoR = 0.0;
+    L.ok = false; L.rhoR = 0.0; L.zeta = 0.0;
     [ForceUnroll] for (int i = 0; i < 3; ++i) { L.m[i] = 0.0; L.em[i] = 0.0; [ForceUnroll] for (int j = 0; j < 3; ++j) { L.Y[i][j] = 0.0; L.R[i][j] = 0.0; L.eR[i][j] = 0.0; } }
     const float c00 = ev.A[1][1] * ev.A[2][2] - ev.A[1][2] * ev.A[2][1];
     const float c01 = ev.A[1][2] * ev.A[2][0] - ev.A[1][0] * ev.A[2][2];
@@ -1060,18 +1064,22 @@ Lin linear(Eval ev, float tg) {
     L.Y[0][0] = c00 * s; L.Y[0][1] = (ev.A[0][2] * ev.A[2][1] - ev.A[0][1] * ev.A[2][2]) * s; L.Y[0][2] = (ev.A[0][1] * ev.A[1][2] - ev.A[0][2] * ev.A[1][1]) * s;
     L.Y[1][0] = c01 * s; L.Y[1][1] = (ev.A[0][0] * ev.A[2][2] - ev.A[0][2] * ev.A[2][0]) * s; L.Y[1][2] = (ev.A[0][2] * ev.A[1][0] - ev.A[0][0] * ev.A[1][2]) * s;
     L.Y[2][0] = c02 * s; L.Y[2][1] = (ev.A[0][1] * ev.A[2][0] - ev.A[0][0] * ev.A[2][1]) * s; L.Y[2][2] = (ev.A[0][0] * ev.A[1][1] - ev.A[0][1] * ev.A[1][0]) * s;
+    float Ynorm = 0.0;
     [ForceUnroll] for (int i = 0; i < 3; ++i) {
-        float rowR = 0.0;
+        float rowR = 0.0, rowY = 0.0;
         [ForceUnroll] for (int j = 0; j < 3; ++j) {
             float r = (i == j) ? 1.0 : 0.0, sabs = (i == j) ? 1.0 : 0.0, yea = 0.0;
             [ForceUnroll] for (int k = 0; k < 3; ++k) { r -= L.Y[i][k] * ev.A[k][j]; sabs += abs(L.Y[i][k] * ev.A[k][j]); yea += abs(L.Y[i][k]) * ev.e_A[k][j]; }
             L.R[i][j] = r;
             L.eR[i][j] = (yea + 4.0 * UF * sabs) * 1.001;
             rowR += abs(r) + L.eR[i][j];
+            rowY += abs(L.Y[i][j]);
         }
         L.rhoR = max(L.rhoR, rowR * (1.0 + 4.0 * UF));
+        Ynorm = max(Ynorm, rowY);
     }
     if (!(L.rhoR < 0.9)) return L;     // also false where Y is not finite
+    L.zeta = Ynorm * L.rhoR / (1.0 - L.rhoR) * (1.0 + 16.0 * UF);
     [ForceUnroll] for (int i = 0; i < 3; ++i) {
         float sm = 0.0, sabs = 0.0, e = 0.0, ya = 0.0;
         [ForceUnroll] for (int k = 0; k < 3; ++k) { sm += L.Y[i][k] * ev.g[k]; sabs += abs(L.Y[i][k] * ev.g[k]); e += abs(L.Y[i][k]) * ev.e_g[k]; ya += abs(L.Y[i][k]); }
@@ -1080,6 +1088,21 @@ Lin linear(Eval ev, float tg) {
     }
     L.ok = true;
     return L;
+}
+
+// Newton distance (cpg_newton_dist in md_topo.c): no zero in the cube c +- h if, for some i, the Newton step
+// m_i = -(Y g)_i lies beyond h by more than what A^-1 - Y (zeta), the errors of m and the model's quadratic
+// term and remainder over the cube (q_up + r_up) can move a zero.
+bool newton_dist(Eval ev, Lin L, float h) {
+    float gabs = 0.0;
+    [ForceUnroll] for (int k = 0; k < 3; ++k) gabs = max(gabs, abs(ev.g[k]) + ev.e_g[k]);
+    [ForceUnroll] for (int i = 0; i < 3; ++i) {
+        float rad = L.em[i] + L.zeta * gabs;
+        [ForceUnroll] for (int j = 0; j < 3; ++j) rad += (abs(L.Y[i][j]) + L.zeta) * (ev.q_up[j] + ev.r_up[j]);
+        rad *= 1.0 + 16.0 * UF;
+        if (abs(L.m[i]) - rad > h * (1.0 + 2.0 * UF)) return true;
+    }
+    return false;
 }
 
 // Krawczyk on c +- hk, dH enclosing the Hessian over it: +1 exactly one zero (K inside the box), -1 none
@@ -1106,8 +1129,7 @@ int krawczyk(Lin L, float dH[3][3], float hk) {
 // cube's expansion alone: g + A d + 1/2 T[d,d] re-centred at the child's centre (with the error bounds
 // of g, A, T carried through, and the rounding of the re-centring), the quadratic term over the child,
 // and this cube's remainder bound r_up, which holds on all of the cube. Then the exclusion tests the
-// cube itself got, along the axes. Skips an evaluation for 27-38% of the children on the test systems;
-// no child it excludes was ever undecided by its own evaluation.
+// cube itself got: along the axes, and the Newton distance.
 bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], float h, uint s, float safe) {
     const float hc = 0.5 * h;                   // exact; every product with it below is exact too
     float d[3];
@@ -1140,6 +1162,10 @@ bool child_excluded(Eval P, float T[3][3][3], float eT[3][3][3], float qT[3], fl
         C.r_up[i] = P.r_up[i];
     }
     [ForceUnroll] for (int a = 0; a < 3; ++a) if (excl_dir(C, hc, a)) return true;
+    {
+        const Lin lc = linear(C, 0.0);      // the tail is in r_up
+        if (lc.ok && newton_dist(C, lc, hc)) return true;
+    }
     [ForceUnroll] for (int a = 0; a < 3; ++a) if (excl_quad(C, T, eT, hc, a)) return true;     // the costly one last
     return false;
 }
@@ -1209,25 +1235,37 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             qu += abs(x + y) + EDOT(M3(a, c, p), M1(qq)) + EDOT(M2(a, p), M2(c, qq)) + 2.0 * UF * (abs(x) + abs(y));
         }
         const int t = ab_index(a, c);
-        const float vi = (hi * lT[t] + 2.0 * hi2 * qu + 2.0 * E[(EP_PI + t) * fs] * safe + bt.tail.z) * safe;
+        // The remainder sums (EP_PI) hold over the 1.5x cube, so over the cube too: the cube's enclosure takes
+        // them with its own polynomial terms, and needs no sums of its own.
+        const float rest = 2.0 * E[(EP_PI + t) * fs] * safe + bt.tail.z;
+        const float vi = (hi * lT[t] + 2.0 * hi2 * qu + rest) * safe;
+        const float vc = (h * lT[t] + 2.0 * h2 * qu + rest) * safe;
         ev.dH_i[a][c] = vi; ev.dH_i[c][a] = vi;
+        ev.dH_c[a][c] = vc; ev.dH_c[c][a] = vc;
     }
     ev.rho_up = (ev.rho + ev.e_rho + 2.0 * E[(EP_PART + 0) * fs] * safe + E[(EP_PART + 1) * fs] * safe + bt.tail.x) * safe;
     #undef DOT
     #undef EDOT
 
-    // ---- tests: rho bound, exclusion along the axes term by term, Krawczyk on the 1.5x cube, then the
-    //      exact quadratic exclusion, the costliest, once the cheap ones have failed
+    // ---- tests: rho bound, exclusion along the axes term by term, the Newton distance, Krawczyk on the
+    //      cube and then the 1.5x cube, then the exact quadratic exclusion, the costliest, once the cheap ones
+    //      have failed
     uint outc = OUT_SPLIT, why = WHY_SPLIT;
     bool decided = false, tried_infl = false;
     if (ev.rho_up < args.eps) { outc = OUT_DISCARD; why = WHY_RHO; decided = true; }
     [ForceUnroll] for (int a = 0; a < 3; ++a) if (!decided && excl_dir(ev, h, a)) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     const Lin lin = linear(ev, bt.tail.y);
+    if (!decided && lin.ok && newton_dist(ev, lin, h)) { outc = OUT_DISCARD; why = WHY_NEWT; decided = true; }
     if (!decided && lin.ok) {
-        tried_infl = true;
-        const int kr = krawczyk(lin, ev.dH_i, hi);
-        if (kr == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
-        else if (kr == -1) { outc = OUT_DISCARD; why = WHY_KOUT_I; decided = true; }
+        const int kc = krawczyk(lin, ev.dH_c, h);
+        if (kc == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
+        else if (kc == -1) { outc = OUT_DISCARD; why = WHY_KOUT; decided = true; }
+        else {
+            tried_infl = true;      // the host polishes a root certified here against the 1.5x cube
+            const int ki = krawczyk(lin, ev.dH_i, hi);
+            if (ki == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
+            else if (ki == -1) { outc = OUT_DISCARD; why = WHY_KOUT_I; decided = true; }
+        }
     }
     [ForceUnroll] for (int a = 0; a < 3; ++a) if (!decided && excl_quad(ev, T, eT, h, a)) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     if (!decided) {

@@ -636,28 +636,33 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 //               component g_k + (A d)_k + 1/2 T_k[d,d] keeps its sign with margin r_k: bounded term by term
 //               first (a fast path: the exact test below implies it, up to its 1e-12 margin), then
 //               minimised exactly over the box.
-//   Krawczyk  : on the 1.5x cube X' = c +- 1.5h, with Y ~ A^-1 and [H] = A +- dH enclosing the Hessian over
-//               X': K = c - Y g + (I - Y [H]) (X' - c), g known to within the screened shells' gradient tail.
-//               K inside X' => exactly one zero in X', and every matrix in [H] is nonsingular, so the
-//               Hessian's inertia (the CP's type) is the same throughout X'. Newton from c polishes it; the
-//               cube keeps it if it lies in the cube itself (closed, plus 1e-9: a root on a face is found by
-//               every cube sharing it, and deduplicated). Inflating is what catches roots on or near faces:
-//               the root lattice is anchored to the world, so symmetric inputs put CPs exactly on its planes,
-//               where no cube's own K could lie inside the cube (without it, water in its symmetry frame
-//               leaves all 5 CPs unresolved). K disjoint from X' in some component => no zero in X'.
+//   Newton    : with Y ~ A^-1 (cofactors) and R = I - Y A, ||R|| < 1 puts every zero c + d of grad rho in X
+//   distance    within a computable distance of d = -Y g; none in X if that ball misses X in some component.
+//   Krawczyk  : on X, then (if undecided) on the 1.5x cube X' = c +- 1.5h. With [H] = A +- dH enclosing the
+//               Hessian over the box B: K = c - Y g + (I - Y [H]) (B - c), g known to within the screened
+//               shells' gradient tail. K inside B => exactly one zero in B, and every matrix in [H] is
+//               nonsingular, so the Hessian's inertia (the CP's type) is the same throughout B. Newton from c
+//               polishes it; the cube keeps it if it lies in the cube itself (closed, plus 1e-9: a root on a
+//               face is found by every cube sharing it, and deduplicated). K disjoint from B in some component
+//               => no zero in B. X' is what catches roots on or near faces: the root lattice is anchored to the
+//               world, so symmetric inputs put CPs exactly on its planes, where no cube's own K could lie
+//               inside the cube (without it, water in its symmetry frame leaves all 5 CPs unresolved). X
+//               costs no extra evaluation: its [H] takes X's own polynomial terms and X''s remainder sums,
+//               which bound on X too.
 // A cube that splits passes its expansion on: a child that g + A d + 1/2 T[d,d] +- r of the parent excludes
-// already is not evaluated.
+// (by the axes or the Newton distance) already is not evaluated.
 //
 // The axes' exclusion fails along a soft direction of a near-degenerate CP (a small Hessian eigenvalue): the
 // planes where the components of grad rho vanish nearly coincide along it, so all three cross every cube
-// near that line, down to a size set by the eigenvalue. Krawczyk's "no zero" outcome (or a Newton-distance
-// test, or exclusion along the eigenvectors) excludes those cubes. The CPU sweep alone rarely makes such cubes
-// (it decides the region earlier), but the GPU sweep, whose fp32 margins split it finer, escalates them:
-// without the "no zero" outcome they ran to h_min unresolved (a stacked benzene dimer), and the GPU sweep
-// evaluated 14% more children. Tests this search had besides decided almost nothing on
-// RHF densities of water, its dimer, benzene, cubane and the stacked benzene dimer, CPU and GPU: Krawczyk
-// on X itself, a Newton-distance exclusion (~2% fewer cubes in the GPU sweep), and exclusion along the
-// gradient and the Hessian's eigenvectors.
+// near that line, down to a size set by the eigenvalue. The Newton distance and Krawczyk's "no zero" outcome
+// exclude those cubes, and near such a CP a certificate on X does not imply one on X' (X' reaches closer to
+// where the Hessian is near-singular, so [H] there may contain a singular matrix; 3 cubes of the stacked
+// benzene dimer's CPU sweep). The CPU sweep alone rarely makes such cubes (it decides the region earlier),
+// but the GPU sweep, whose fp32 margins split it finer, escalates them: without the "no zero" outcome they
+// ran to h_min unresolved (the stacked benzene dimer). Exclusion along the gradient and the Hessian's
+// eigenvectors is not done: it took an eigendecomposition per cube, and the search without it evaluated at
+// most 0.3% more cubes on the CPU, 1.9% on the GPU, on the test inputs (RHF densities of water, its dimer,
+// benzene, cubane, the stacked benzene dimer, Ne2, a methane dimer, and the test_data files), with the same CPs.
 //
 // Contributions of AOs screened away from a cube are bounded, so screening does not break rigour: those
 // of the shells between the cube's local radius and their far radius by their tails at the cube's
@@ -779,6 +784,7 @@ typedef struct cpg_eval_t {
     double r[3];        // remainder of grad beyond g + A d + 1/2 T[d,d] over the cube
     double quadT[3];    // bound of 1/2 T[d,d] over the cube
     double dH[3][3];    // Hessian enclosure half-width over the 1.5x cube
+    double dHc[3][3];   // ... over the cube: its own polynomial terms, the 1.5x cube's remainder sums (also bounds there)
     double rho_up;      // upper bound of rho over the cube
     double tg;          // the screened shells' gradient tail (per component), over the 1.5x cube
 } cpg_eval_t;
@@ -1402,7 +1408,9 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
             for (int q = 0; q < 3; ++q) quad += fabs(DOT[M3(a, b, p)][M1(q)] + DOT[M2(a, p)][M2(b, q)]);
         }
         const double v = hi * lin + 2.0 * hi * hi * quad + 2.0 * err_H[ab_idx[a][b]] + tail[2];
+        const double vc = h * lin + 2.0 * h2 * quad + 2.0 * err_H[ab_idx[a][b]] + tail[2];
         ev->dH[a][b] = ev->dH[b][a] = v;
+        ev->dHc[a][b] = ev->dHc[b][a] = vc;
     }
     ev->rho_up = ev->rho + 2.0 * rho_lin + rho_quad + tail[0];
     ev->tg = tail[1];
@@ -1857,16 +1865,17 @@ typedef struct cpg_worker_t {
     double sep_rho_lo, sep_rho_hi;      // the lowest minimum's density and the highest maximum's (cpg_trace)
     // polish
     const cpg_box_t* pboxes;
+    const double* phk;                  // the half-width each was certified on
     cpg_polish_t* pres;
 } cpg_worker_t;
 
-// The root of a cube whose 1.5x cube Krawczyk certified (exactly one root there): double Newton from the
-// cube centre. Returns 1 if the root belongs to this cube (written to out_cp), 0 if it lies in the 1.5x cube
-// but outside this one (a neighbour's) or below rho_min, -1 if Newton failed or ended outside the 1.5x cube.
+// The root of a cube Krawczyk certified on c +- hk (exactly one root there; hk = h, the cube, or 1.5 h): double
+// Newton from the cube centre. Returns 1 if the root belongs to this cube (written to out_cp), 0 if it lies in
+// c +- hk but outside the cube (a neighbour's) or below rho_min, -1 if Newton failed or ended outside c +- hk.
 // The certificate proves convergence of the simplified iteration with Y fixed, not of this full Newton; one
-// that ends outside the 1.5x cube has not found the certified root, and discarding the cube would lose it,
-// so it stays undecided (split, or escalated by the GPU sweep).
-static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_box_t* box, cpg_cp_t* out_cp) {
+// that ends outside c +- hk has not found the certified root, and discarding the cube would lose it, so it
+// stays undecided (split, or escalated by the GPU sweep).
+static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_box_t* box, double hk, cpg_cp_t* out_cp) {
     cpg_cp_t cp = {0};
     md_memcpy(cp.x, box->c, sizeof(cp.x));
     if (!cpg_newton(ctx, sc, cp.x, &cp.rho, cp.ev, cp.evec)) return -1;
@@ -1874,8 +1883,8 @@ static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_bo
     // symmetry, e.g. a ring CP at the origin) is polished by several cubes whose Newton results differ in
     // the last bits, so a half-open test per cube can reject it everywhere. Accept it in the closed cube
     // plus a tolerance and deduplicate afterwards. The Krawczyk certificate makes the root unique in the
-    // 1.5x cube, so a duplicate can only be the same CP.
-    const double tol = 1e-9, hk = 1.5 * box->h;
+    // certified box, so a duplicate can only be the same CP.
+    const double tol = 1e-9;
     bool inside = true, certified = true;
     for (int k = 0; k < 3; ++k) {
         inside &= (cp.x[k] >= box->c[k] - box->h - tol) && (cp.x[k] <= box->c[k] + box->h + tol);
@@ -1889,12 +1898,45 @@ static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_bo
     return 1;
 }
 
+// Newton distance: no zero of grad rho in the cube c +- h if the model puts every zero outside it. A zero
+// c + d in the cube solves A d = -(g + e), |e_j| <= quadT_j + r_j (the quadratic term and the remainder over the
+// cube; r holds the screened shells' gradient tail). With Y ~ A^-1 and R = I - Y A, ||R||_inf < 1 makes A
+// invertible with ||A^-1 - Y||_inf <= zeta = ||Y||_inf ||R||_inf / (1 - ||R||_inf), so with m = -Y g,
+// |d_i - m_i| <= zeta max_j |g_j| + sum_j (|Y_ij| + zeta) (quadT_j + r_j). If |m_i| exceeds h by more than that
+// for some i, the cube holds no zero. It decides cubes near a soft direction of a near-degenerate CP, which
+// the axes' exclusion cannot, without the eigendecomposition its earlier form took.
+static bool cpg_newton_dist(const cpg_eval_t* ev, double Y[3][3], double h) {
+    double nR = 0.0, nY = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        double sr = 0.0, sy = 0.0;
+        for (int j = 0; j < 3; ++j) {
+            double r = i == j ? 1.0 : 0.0;
+            for (int k = 0; k < 3; ++k) r -= Y[i][k] * ev->A[k][j];
+            sr += fabs(r);
+            sy += fabs(Y[i][j]);
+        }
+        nR = fmax(nR, sr);
+        nY = fmax(nY, sy);
+    }
+    if (!(nR < 0.9)) return false;
+    const double zeta = nY * nR / (1.0 - nR);
+    const double gmax = fmax(fabs(ev->g[0]), fmax(fabs(ev->g[1]), fabs(ev->g[2])));
+    for (int i = 0; i < 3; ++i) {
+        double m = 0.0, rad = zeta * gmax;
+        for (int j = 0; j < 3; ++j) {
+            m -= Y[i][j] * ev->g[j];
+            rad += (fabs(Y[i][j]) + zeta) * (ev->quadT[j] + ev->r[j]);
+        }
+        if (fabs(m) - rad > h) return true;
+    }
+    return false;
+}
+
 // Children of a cube that splits which the cube's own expansion already excludes: g + A d + 1/2 T[d,d]
 // re-centred at the child's centre, the quadratic term over the child, and the cube's remainder bound,
-// which holds on all of the cube; then the cube's exclusion test (cpg_exclude). Returns the mask
-// of the children that still need an evaluation (bit s: child s, + side in x if s & 1, y if s & 2, z if
-// s & 4). On the test systems 27-38% of all children are excluded this way, and no child excluded so was
-// left undecided by its own evaluation.
+// which holds on all of the cube; then the cube's exclusion tests (cpg_exclude, cpg_newton_dist). Returns
+// the mask of the children that still need an evaluation (bit s: child s, + side in x if s & 1, y if s & 2,
+// z if s & 4).
 static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
     const double hc = 0.5 * h;
     uint32_t mask = 0;
@@ -1918,7 +1960,10 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
             C.r[i] = P->r[i];
         }
         md_memcpy(C.T, P->T, sizeof(C.T));           // a quadratic re-centred: the same T (the exact quadratic test uses it)
-        if (!cpg_exclude(&C, hc)) mask |= 1u << s;
+        if (cpg_exclude(&C, hc)) continue;
+        double Y[3][3];
+        if (cpg_inverse3(Y, C.A) && cpg_newton_dist(&C, Y, hc)) continue;
+        mask |= 1u << s;
     }
     return mask;
 }
@@ -1933,11 +1978,18 @@ static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_
     if (cpg_exclude(&ev, box->h)) return CPG_DISCARD;
     double Y[3][3];
     if (cpg_inverse3(Y, ev.A)) {
-        w->inflated++;
-        const int kr = cpg_krawczyk(ev.g, Y, ev.A, ev.dH, 1.5 * box->h, ev.tg);
+        if (cpg_newton_dist(&ev, Y, box->h)) return CPG_DISCARD;
+        // Krawczyk on the cube, then on the 1.5x cube
+        double hk = box->h;
+        int kr = cpg_krawczyk(ev.g, Y, ev.A, ev.dHc, hk, ev.tg);
+        if (kr == 0) {
+            w->inflated++;
+            hk = 1.5 * box->h;
+            kr = cpg_krawczyk(ev.g, Y, ev.A, ev.dH, hk, ev.tg);
+        }
         if (kr == -1) return CPG_DISCARD;
         if (kr == 1) {
-            const int r = cpg_polish_root(ctx, &w->sc, box, out_cp);
+            const int r = cpg_polish_root(ctx, &w->sc, box, hk, out_cp);
             if (r == 1) return CPG_ROOT;
             if (r == 0) return CPG_DISCARD;
             // Newton did not reach the certified root (should not happen): the cube stays undecided
@@ -1984,7 +2036,7 @@ static uint32_t cpg_worker_item(cpg_worker_t* w, uint32_t i) {
         if (w->ends[2 * s + e] < 0) w->sep_open++;
         return 1;
     } else {
-        w->pres[i].r = cpg_polish_root(w->ctx, &w->sc, &w->pboxes[i], &w->pres[i].cp);
+        w->pres[i].r = cpg_polish_root(w->ctx, &w->sc, &w->pboxes[i], w->phk[i], &w->pres[i].cp);
         return 1;
     }
 }
@@ -3192,6 +3244,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
 
     md_array(cpg_box_t)       esc = 0;        // cubes for the CPU, in the order met
     md_array(cpg_box_t)       proots = 0;     // cubes with a certified root, polished after the sweep
+    md_array(double)          proots_hk = 0;  // the half-width each was certified on (the cube, or 1.5x)
     md_array(cpg_hbatch_t)    q = 0;          // batches, first in first out: level by level, each level in
                                               // the order the previous level's outcomes made it
     md_array(uint32_t)        pool = 0;       // local shells of the batches in q, in the same order
@@ -3458,6 +3511,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                     break;
                 case 1:
                     md_array_push(proots, box, heap);
+                    md_array_push(proots_hk, (o & CPG_GPU_OUT_INFLATED) ? 1.5 * box.h : box.h, heap);
                     break;
                 case 2: {
                     // the children the cube's own expansion could not exclude (topo_gto_cube.slang: child_excluded)
@@ -3516,6 +3570,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         for (int t = 0; t < R->nthreads; ++t) {
             R->workers[t].job = 2;
             R->workers[t].pboxes = proots;
+            R->workers[t].phk = proots_hk;
             R->workers[t].pres = pres;
         }
         cpg_run_loop(R, (uint32_t)npr, 0.0, (double)npr);
@@ -3556,6 +3611,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         }
     }
     md_array_free(proots, heap);
+    md_array_free(proots_hk, heap);
     md_array_free(q, heap);
     md_array_free(pool, heap);
     md_array_free(hb, heap);
