@@ -208,6 +208,7 @@ UTEST(pdb, cryst_record_without_its_1) {
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_GE(md_bond_find(&sys.bond, 0, 1), 0);    // N-CA, across the boundary in x
     EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 0));
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 

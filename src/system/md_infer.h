@@ -62,8 +62,8 @@ void md_system_infer_type_colors(struct md_system_t* sys);
 //                                  after the work was prepared: the work is of a system which is no more.
 //
 // What the work infers (its DERIVED arrays and its reference state) is in its derived arena (md_system_t, ALLOCATORS),
-// whose pages come from the system's derived backing on the thread which runs it (the heap allows that), and which
-// becomes the system's when published, or is destroyed with md_system_infer_discard. The rest of the work, the types of
+// whose pages come from where the system's alloc takes its own, on the thread which runs it (the heap allows that), and
+// which becomes the system's when published, or is destroyed with md_system_infer_discard. The rest of the work, the types of
 // the atoms (copied, a few per system, so that the system's may be changed meanwhile: their colors, their radii), is in
 // alloc, which the caller frees after either. The work is never md_system_free'd: it shares arrays of the system.
 typedef struct md_system_infer_work_t {

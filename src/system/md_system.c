@@ -501,7 +501,9 @@ void md_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
 md_allocator_i* md_system_derived_alloc(md_system_t* sys) {
     MD_ASSERT(sys);
     if (!sys->derived_arena) {
-        sys->derived_arena = md_arena_allocator_create(sys->derived_backing ? sys->derived_backing : sys->alloc, MD_MEGABYTES(1));
+        // Where alloc takes its pages from (md_system_t, ALLOCATORS)
+        md_allocator_i* backing = md_arena_allocator_backing_of(sys->alloc);
+        sys->derived_arena = md_arena_allocator_create(backing ? backing : sys->alloc, MD_MEGABYTES(1));
     }
     return sys->derived_arena;
 }
@@ -707,14 +709,12 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
         return false;
     }
     md_allocator_i* alloc = dst->alloc;
-    md_allocator_i* derived_backing = dst->derived_backing;
     md_system_free(dst);
 
     // The counts and everything which is not an array, as they are; the arrays below anew, the derived in an arena of
-    // dst's own (of its backing) where src has any
+    // dst's own where src has any
     *dst = *src;
     dst->alloc = alloc;
-    dst->derived_backing = derived_backing;
     dst->derived_arena = NULL;
     md_allocator_i* dalloc = src->derived_arena ? md_system_derived_alloc(dst) : NULL;
     dst->nonbonded = NULL;
@@ -757,10 +757,8 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 void md_system_reset(md_system_t* sys) {
     MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
-    md_allocator_i* derived_backing = sys->derived_backing;
     md_system_free(sys);
     sys->alloc = alloc;
-    sys->derived_backing = derived_backing;
     // The table allocates through its own handle, so every loader gets a usable table without
     // having to remember to wire this up itself.
     sys->attributes.alloc = alloc;

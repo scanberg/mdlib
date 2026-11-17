@@ -178,6 +178,7 @@ UTEST(tpr, system_tip3p) {
     md_system_infer(&sys, &state, NULL);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
     EXPECT_EQ(1u + 509u + 4u, md_system_molecule_count(&sys));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(arena);
 }
@@ -230,6 +231,7 @@ UTEST(tpr, virtual_sites) {
     EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
     compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.gro"));
+    md_system_free(&sys);
     md_arena_allocator_destroy(arena);
 }
 
@@ -424,10 +426,12 @@ UTEST(tpr, martini) {
             EXPECT_EQ(md_atom_flags(&sys.atom, i) & roles, md_atom_flags(&gro.atom, i) & roles);
             EXPECT_EQ(0, md_atom_atomic_number(&gro.atom, i));
         }
+        md_system_free(&gro);
     }
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
     EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(arena);
 }
@@ -624,6 +628,7 @@ UTEST(tpr, martini_no_elastic_bonds) {
         ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_EQ(0u, count_elastic(&sys));
         if (count_elastic(&sys)) printf("%s: %zu bonds taken for elastic ones\n", files[f], count_elastic(&sys));
+        md_system_free(&sys);
         md_arena_allocator_destroy(arena);
     }
 }
@@ -704,6 +709,8 @@ UTEST(tpr, elastic_bonds) {
     // Inferring the bonds anew keeps the elastic bonds: nothing infers them
     md_system_infer(&sys, &state, NULL);
     EXPECT_EQ(2u, count_elastic(&sys));
+    md_system_free(&sys);
+    md_system_free(&base);
 
     md_arena_allocator_destroy(arena);
 }

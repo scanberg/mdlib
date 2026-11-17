@@ -32,13 +32,13 @@ typedef struct md_system_t {
     // fragments, ...), and the reference state are in derived_arena, the system's own: md_system_infer infers into a
     // new arena and destroys the one before, so the derived is replaced whole and the system holds one copy of it,
     // however often it is inferred. NULL until something of the derived is written (md_system_derived_alloc); destroyed
-    // with the system. Its pages come from derived_backing, alloc when NULL: where alloc is an arena, which keeps what
-    // is freed, the pages of every inference stay until it is reset, so a system inferred again and again (edited by
-    // hand, in a viewer) is given a backing which frees (the heap). One which allows another thread, for an inference
-    // in the background (md_system_infer_prepare).
+    // with the system. Its pages come from where alloc takes its own: the backing of alloc when that is an arena of
+    // md_arena_allocator_create (the heap, for one over the heap: the pages of an inference replaced are given back),
+    // else alloc itself (an arena of the OS, md_vm_arena_create, which keeps them until it is reset). A system of the
+    // former needs md_system_free to give the derived back; one of the latter is gone with its arena. Whatever it is
+    // allows another thread, for an inference in the background (md_system_infer_prepare).
     md_allocator_i*             alloc;
     md_allocator_i*             derived_arena;
-    md_allocator_i*             derived_backing;
 
     // TOPOLOGY VERSION. Changes whenever the topology does: the atoms, their types (what the particles are), their
     // flags, the residues, the instances, the parts and their types, the bonds, and what is derived from them (rings,

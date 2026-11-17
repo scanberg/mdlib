@@ -203,5 +203,6 @@ UTEST(mcs, nucleotides) {
     EXPECT_FALSE(r.by_residue);
     EXPECT_GE(r.count, 12u);
     EXPECT_LT(r.rmsd, 1.5);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }

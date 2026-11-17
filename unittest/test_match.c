@@ -1420,6 +1420,7 @@ UTEST(match, topology_changes) {
     sys.bond.flags[b] = md_bond_flags_set_kind(sys.bond.flags[b], MD_BOND_KIND_COORDINATE);
     md_system_topology_changed(&sys);
     EXPECT_EQ(0, (int)count_matches(&desc, &sys, NULL, NULL));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }

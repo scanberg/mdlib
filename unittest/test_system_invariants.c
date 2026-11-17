@@ -253,12 +253,12 @@ UTEST(system_invariants, infer_write_set) {
 
 // ### THE ALLOCATOR OF THE DERIVED ###
 //
-// What inference writes (MD_SYSTEM_DERIVED_*, and the reference state) is in the system's derived arena, whose pages are
-// of its derived backing (md_system_t, ALLOCATORS), and the core with its allocator, an arena: an inference replaces the
-// derived arena whole. Checked with a backing which knows its blocks: a loaded system has no derived; after inferring,
-// every derived array is within one of its blocks, and nothing of the core grew; inferring again, publishing a work,
-// adding and removing a bond leave as much of it alive as before, and the core's arena where it was (but for the bond
-// given); freed, the system leaves none of it.
+// What inference writes (MD_SYSTEM_DERIVED_*, and the reference state) is in the system's derived arena, whose pages
+// come from where the system's alloc takes its own (md_system_t, ALLOCATORS), and the core is in alloc: an inference
+// replaces the derived arena whole. Checked with an arena of the core over a backing which knows its blocks: a loaded
+// system has no derived; after inferring, every derived array is within one of its blocks; inferring again, publishing
+// a work, adding and removing a bond leave as much of it alive as before; the derived freed, as much as the core alone
+// had (inference wrote nothing of the core); freed, the system leaves none of it.
 
 typedef struct tracked_t {
     md_allocator_i alloc;
@@ -384,35 +384,33 @@ static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t pa
     const char* what = (const char*)path.ptr;
     tracked_t t;
     tracked_init(&t);
-    md_allocator_i* core = md_vm_arena_create(MD_GIGABYTES(4));
-    md_system_t sys = { .alloc = core, .derived_backing = &t.alloc };
-    md_system_state_t state = { .alloc = core };
+    md_allocator_i* core = md_arena_allocator_create(&t.alloc, MD_MEGABYTES(1));
+    md_allocator_i* coords = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = { .alloc = core };
+    md_system_state_t state = { .alloc = coords };
     if (!load(&sys, &state, path)) {
         printf("failed to load '%s'\n", what);
         *utest_result = UTEST_TEST_FAILURE;
-        md_vm_arena_destroy(core);
+        md_arena_allocator_destroy(core);
+        md_vm_arena_destroy(coords);
         tracked_free(&t);
         return;
     }
     // A loader writes nothing of the derived
-    EXPECT_TRUE(sys.derived_backing == &t.alloc);     // Kept by the loader
     EXPECT_TRUE(sys.derived_arena == NULL);
-    EXPECT_EQ((size_t)0, t.live);
-    const size_t pos = md_vm_arena_get_pos(core);
+    const size_t base = t.live;
 
     md_system_infer(&sys, &state, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
     expect_derived_owned(utest_result, what, &sys, &t);
-    EXPECT_EQ(pos, md_vm_arena_get_pos(core));
+    ASSERT_TRUE(sys.derived_arena != NULL);
+    EXPECT_TRUE(md_arena_allocator_backing(sys.derived_arena) == &t.alloc);    // Where the core's pages come from
     const size_t live = t.live;
-    EXPECT_GT(live, (size_t)0);
+    EXPECT_GT(live, base);
 
     // Inferred again: the same, in an arena of its own, and the one before given back
-    const md_allocator_i* first = sys.derived_arena;
     md_system_infer(&sys, &state, NULL);
     expect_derived_owned(utest_result, what, &sys, &t);
-    EXPECT_TRUE(sys.derived_arena != first || t.live == live);
-    EXPECT_EQ(pos, md_vm_arena_get_pos(core));
     EXPECT_EQ(live, t.live);
 
     // In the background: the work's arena becomes the system's, the rest of the work's is gone with its own arena
@@ -420,12 +418,12 @@ static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t pa
         md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
         md_system_infer_work_t work;
         EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
+        EXPECT_TRUE(md_arena_allocator_backing(work.sys.derived_arena) == &t.alloc);    // The system's, not the work's
         EXPECT_TRUE(md_system_infer_run(&work, NULL));
         EXPECT_TRUE(md_system_infer_publish(&sys, &work));
         md_vm_arena_destroy(a_work);
         expect_derived_owned(utest_result, what, &sys, &t);
         expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
-        EXPECT_EQ(pos, md_vm_arena_get_pos(core));
         EXPECT_EQ(live, t.live);
     }
     // A work not published is given back whole
@@ -439,8 +437,14 @@ static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t pa
         EXPECT_EQ(live, t.live);
     }
 
+    // The derived freed: as much alive as the core alone had, which inference wrote nothing of
+    md_system_derived_free(&sys);
+    EXPECT_EQ(base, t.live);
+    md_system_infer(&sys, &state, NULL);
+    EXPECT_EQ(live, t.live);
+
     // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it.
-    // The bond is of the core (given_bond), which grows by it; the derived is inferred anew.
+    // The bond is of the core (given_bond), which may grow by a page; the derived is inferred anew.
     if (sys.atom.count > 1) {
         const md_atom_idx_t a = 0, b = (md_atom_idx_t)(sys.atom.count - 1);
         if (md_system_bond_find(&sys, a, b) == -1) {
@@ -452,33 +456,32 @@ static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t pa
             md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
             EXPECT_EQ(-1, md_system_bond_find(&sys, a, b));
-            EXPECT_EQ(live, t.live);
+            EXPECT_LE(t.live, live + MD_MEGABYTES(2));
         }
     }
 
-    // A copy has its derived in an arena of its own, of its own backing
+    // A copy has its derived in an arena of its own, of its own core's pages
     {
         tracked_t t2;
         tracked_init(&t2);
-        md_allocator_i* core2 = md_vm_arena_create(MD_GIGABYTES(4));
-        md_system_t copy = { .alloc = core2, .derived_backing = &t2.alloc };
+        md_allocator_i* core2 = md_arena_allocator_create(&t2.alloc, MD_MEGABYTES(1));
+        md_system_t copy = { .alloc = core2 };
         EXPECT_TRUE(md_system_copy(&copy, &sys));
         EXPECT_TRUE(copy.derived_arena != NULL && copy.derived_arena != sys.derived_arena);
+        EXPECT_TRUE(md_arena_allocator_backing(copy.derived_arena) == &t2.alloc);
         expect_derived_owned(utest_result, what, &copy, &t2);
         md_system_free(&copy);
+        md_arena_allocator_destroy(core2);
         EXPECT_EQ((size_t)0, t2.live);
-        md_vm_arena_destroy(core2);
         tracked_free(&t2);
     }
 
-    // The derived freed, and then the system: none of it left
-    md_system_derived_free(&sys);
-    EXPECT_EQ((size_t)0, t.live);
-    md_system_infer(&sys, &state, NULL);
+    // Freed, and its arena: none of it left
     md_system_free(&sys);
+    md_arena_allocator_destroy(core);
     EXPECT_EQ((size_t)0, t.live);
-    if (t.live) printf("%s: %zu bytes of the derived left in %zu blocks\n", what, t.live, t.count);
-    md_vm_arena_destroy(core);
+    if (t.live) printf("%s: %zu bytes left in %zu blocks\n", what, t.live, t.count);
+    md_vm_arena_destroy(coords);
     tracked_free(&t);
 }
 

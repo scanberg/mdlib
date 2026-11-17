@@ -26,8 +26,7 @@
 // What md_system_infer gives the system of its molecules and parts
 static bool test_infer_molecules(md_system_t* sys) {
     md_molecule_data_t molecules = {0};
-    const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
-    md_molecule_data_free(&sys->molecule, sys->alloc);
+    const bool ok = md_molecule_infer(&molecules, sys, md_system_derived_alloc(sys));
     sys->molecule = molecules;
     return ok;
 }
@@ -172,6 +171,7 @@ static bool frag_case(frag_case_t* t, const char* smiles) {
 }
 
 static void frag_case_free(frag_case_t* t) {
+    md_system_free(&t->sys);
     md_arena_allocator_destroy(t->alloc);
 }
 
@@ -447,6 +447,7 @@ UTEST(fragment, the_backbone_of_a_peptide) {
     EXPECT_NE(md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[0]), ca);
     const md_fragment_idx_t cterm = md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[6]);
     EXPECT_EQ(frag_heavy_count(&sys, cterm), (size_t)3);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -477,6 +478,7 @@ UTEST(fragment, the_alpha_carbon_is_of_the_backbone_alone) {
             EXPECT_EQ((int)md_system_fragment_kind(&sys, f), (int)MD_FRAGMENT_ALKYL);
         }
     }
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -504,6 +506,7 @@ UTEST(fragment, a_group_across_residues_is_of_both) {
         for (size_t i = 0; i < n; ++i) has |= frags[i] == ester;
         EXPECT_TRUE(has);
     }
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -528,6 +531,7 @@ UTEST(fragment, no_molecules_no_fragments) {
     ASSERT_TRUE(md_system_infer_fragments(&sys));
     EXPECT_EQ(md_system_fragment_count(&sys), (size_t)0);
     EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, 0), MD_FRAGMENT_NONE);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 

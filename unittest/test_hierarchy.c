@@ -25,8 +25,7 @@
 // What md_system_infer gives the system of its parts
 static bool test_infer_parts(md_system_t* sys) {
     md_part_data_t parts = {0};
-    const bool ok = md_part_infer(&parts, sys, sys->alloc);
-    md_part_data_free(&sys->part, sys->alloc);
+    const bool ok = md_part_infer(&parts, sys, md_system_derived_alloc(sys));
     sys->part = parts;
     return ok;
 }
@@ -138,9 +137,9 @@ UTEST(hierarchy, molecule_hierarchy) {
         sys.alloc = alloc;
         sys.atom.count = 3;
         md_atom_pair_t pair = {1, 2};
-        md_array_push(sys.bond.pairs, pair, alloc);
+        md_array_push(sys.bond.pairs, pair, md_system_derived_alloc(&sys));
         sys.bond.count = 1;
-        md_bond_build_connectivity(&sys.bond, 3, alloc);
+        md_bond_build_connectivity(&sys.bond, 3, md_system_derived_alloc(&sys));
         ASSERT_TRUE(test_infer_molecules(&sys));
 
         ASSERT_EQ(md_system_molecule_count(&sys), 2);

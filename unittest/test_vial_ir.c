@@ -1545,12 +1545,14 @@ UTEST(vial_ir, anatomy_sets) {
         md_vial_program_free(p);
     }
 
+    md_system_free(&sys);
     ASSERT_TRUE(vial_ir__load_file(&sys, &st, "nucl-dna.gro", alloc));
     const uint32_t base = vial_ir__count("nucleobase", &sys, &st, alloc), side = vial_ir__count("nucleoside", &sys, &st, alloc);
     EXPECT_GT(base, 0u);
     EXPECT_GT(side, base);
     EXPECT_EQ(base, vial_ir__count("nucleobase and nucleoside", &sys, &st, alloc));
     EXPECT_EQ(0u, vial_ir__count("nucleoside and not nucleic", &sys, &st, alloc));
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 

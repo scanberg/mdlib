@@ -241,6 +241,7 @@ UTEST(secondary_structure, martini_trace_backbone) {
         EXPECT_EQ(0.0f, angles[i].psi);
         EXPECT_EQ(MD_RAMACHANDRAN_TYPE_UNKNOWN, types[i]);
     }
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -271,6 +272,7 @@ UTEST(secondary_structure, martini_cg_dssp) {
     for (size_t i = 23; i < 33; ++i) EXPECT_EQ('H', three[i]);
     for (size_t i = 2; i < 6; ++i) EXPECT_EQ('E', three[i]);
     for (size_t i = 11; i < 15; ++i) EXPECT_EQ('E', three[i]);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -301,6 +303,7 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
     for (size_t i = 0; i < n; ++i) {
         EXPECT_EQ(whole[i], split[i]);
     }
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -324,6 +327,7 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
     for (size_t i = 0; i < n; ++i) {
         EXPECT_EQ(expected[i], ss_letters[ss[i]]);
     }
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -356,6 +360,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     size_t differ = 0;
     for (size_t i = 0; i < n; ++i) differ += whole[i] != split[i];
     EXPECT_EQ((size_t)0, differ);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -424,6 +429,8 @@ UTEST(secondary_structure, mixed_trace_and_atomistic) {
     size_t differ = 0;
     for (size_t i = 0; i < n; ++i) differ += ss[i] != ref[i];
     EXPECT_EQ((size_t)0, differ);
+    md_system_free(&aa);
+    md_system_free(&cg);
 
     md_arena_allocator_destroy(alloc);
 }

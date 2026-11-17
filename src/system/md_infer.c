@@ -339,11 +339,11 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
     // The core and the counts, shared. Not what is the system's alone: its description, its force field, its attributes
     // (which its owner may add to meanwhile).
     work->sys = *sys;
-    work->sys.alloc = alloc;
-    // Of the derived nothing: what it infers is in an arena of its own (of the system's backing), which the system takes
-    // once published (md_system_t, ALLOCATORS)
+    // Of the derived nothing: what it infers is in an arena of its own (of the system's pages, made before alloc is the
+    // work's), which the system takes once published (md_system_t, ALLOCATORS)
     md_system_derived_clear(&work->sys);
     md_allocator_i* dalloc = md_system_derived_alloc(&work->sys);
+    work->sys.alloc = alloc;
     work->sys.nonbonded = NULL;
     work->sys.description = (md_str_t){0};
     md_memset(&work->sys.attributes, 0, sizeof(work->sys.attributes));

@@ -33,6 +33,7 @@ UTEST(filter, centered) {
 
     EXPECT_TRUE(TEST("resname('ALA')"));
     EXPECT_TRUE(TEST("within(10, residue(1))"));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -76,6 +77,7 @@ UTEST(filter, variable_length) {
     md_array(md_bitset_t) arr = 0;
     EXPECT_TRUE(md_filter_sets(&arr, MD_STR_LIT("residue(within(5, residue(1)))"), &fctx, alloc).success);
     EXPECT_EQ(num_residues, md_array_size(arr));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -100,6 +102,7 @@ UTEST(filter, qm_regions_need_a_qm_system) {
     EXPECT_FALSE(TEST("environment"));
     EXPECT_TRUE(strstr(res.error, "no QM region") != NULL);
     EXPECT_FALSE(TEST("within(5, qm)"));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -161,6 +164,7 @@ UTEST(filter, errors_say_where) {
     res = md_filter(&bf, MD_STR_LIT("resname('ALA')"), &reference, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_FALSE(res.is_dynamic);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -242,6 +246,7 @@ UTEST(filter, in_context) {
     EXPECT_TRUE(md_filter(&bf, MD_STR_LIT("element('C')"), &around, alloc).success);
     EXPECT_TRUE(md_bitset_count(bf) > 0);
     EXPECT_TRUE(md_bitset_equal(carbons, bf));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -278,6 +283,7 @@ UTEST(filter, completion_within_context) {
     c = md_filter_complete(expr, cursor, &chain, alloc);
     EXPECT_FALSE(completes_with(c, "\"PFT\""));
     EXPECT_TRUE(completes_with(c, "\"ALA\""));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -410,6 +416,7 @@ UTEST(filter, bonds) {
         EXPECT_TRUE(res.success);
         EXPECT_FALSE(has_pair(pairs, 8, 9));
     }
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -476,6 +483,7 @@ UTEST(filter, bonds_as_atoms) {
     EXPECT_TRUE(strstr(res.error, "atom(b)") != NULL);
     res = md_filter(&atoms, MD_STR_LIT("within(3.0, atom(bond(kind='hydrogen')))"), &fctx, alloc);
     EXPECT_TRUE(res.success);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -569,6 +577,7 @@ UTEST(filter, chains_by_author_id) {
     md_array(md_bitset_t) per_chain = 0;
     ASSERT_TRUE(md_filter_sets(&per_chain, MD_STR_LIT("smiles('NCC=O', level='chain', mode='one_per_unit')"), &fctx, alloc).success);
     EXPECT_EQ(2, (int)md_array_size(per_chain));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -617,6 +626,7 @@ UTEST(filter, chains_without_ids) {
     EXPECT_EQ(r.end - r.beg, md_bitset_count(bf));
     res = md_filter(&bf, MD_STR_LIT("nucleic(1)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -659,6 +669,7 @@ UTEST(filter, molecules) {
     md_filter_result_t res = md_filter(&bf, md_str_from_cstr("molecule(100000)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
     EXPECT_TRUE(strstr(res.error, "past the last molecule") != NULL);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -749,5 +760,6 @@ UTEST(filter, parts_and_glycans) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, MD_STR_LIT("n = count(all(), \"part\");"), &sys, NULL));
     md_script_ir_free(ir);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
