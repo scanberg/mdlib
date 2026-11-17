@@ -804,8 +804,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         const size_t old_count = old->count;
         const size_t num_noncovalent = old->noncovalent_count;
         md_bond_data_t given = {0};
-        md_array_ensure(given.pairs, old_count + num_topology_bonds + num_noncovalent, sys->alloc);
-        md_array_ensure(given.flags, old_count + num_topology_bonds + num_noncovalent, sys->alloc);
+        md_bond_given_reserve(&given, old_count + num_topology_bonds + num_noncovalent, sys->alloc);
 
         for (int pass = 0; pass < 2; ++pass) {
             for (size_t i = 0; i < old_count; ++i) {

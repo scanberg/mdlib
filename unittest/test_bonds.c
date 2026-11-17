@@ -1005,3 +1005,27 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
 
     md_vm_arena_destroy(alloc);
 }
+
+// The bonds given have room for those a user adds (MD_BOND_GIVEN_SLACK): a topology's many bonds are not copied for a
+// few more, which in the arena of the system would keep the old copy
+UTEST(bonds, user_bonds_take_the_room_given) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"), NULL));
+    const size_t count = sys.given_bond.count;
+    ASSERT_GT(count, (size_t)0);
+    EXPECT_GE(md_array_capacity(sys.given_bond.pairs), count + MD_BOND_GIVEN_SLACK);
+    EXPECT_GE(md_array_capacity(sys.given_bond.flags), count + MD_BOND_GIVEN_SLACK);
+    const md_atom_pair_t* pairs = sys.given_bond.pairs;
+    const md_bond_flags_t* flags = sys.given_bond.flags;
+    const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_TRUE(md_system_bond_insert(&sys, i, (md_atom_idx_t)(sys.atom.count - 1 - i), user));
+    }
+    EXPECT_EQ(count + 8, sys.given_bond.count);
+    EXPECT_TRUE(pairs == sys.given_bond.pairs);
+    EXPECT_TRUE(flags == sys.given_bond.flags);
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
+}

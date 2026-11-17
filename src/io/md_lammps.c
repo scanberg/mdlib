@@ -1169,8 +1169,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	if (data->num_bonds > 0 && data->bonds) {
 		// The bonds of the force field: the atoms have those and no others
 		md_bond_data_t* given = &sys->given_bond;
-		md_array_ensure(given->pairs, data->num_bonds, sys->alloc);
-		md_array_ensure(given->flags, data->num_bonds, sys->alloc);
+		md_bond_given_reserve(given, data->num_bonds, sys->alloc);
 
 		const size_t N = data->num_atoms;
 		const bool dense = N > 0 && data->atoms[0].id == 1 && data->atoms[N - 1].id == (int32_t)N;

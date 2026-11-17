@@ -236,6 +236,13 @@ void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, 
 // Frees the arrays of the bond data, allocated with alloc, and empties it
 void md_bond_data_free(md_bond_data_t* bond, md_allocator_i* alloc);
 
+// Room in the arrays of the bonds given (md_system_t::given_bond) for count bonds and MD_BOND_GIVEN_SLACK more: the few
+// a user adds (md_system_bond_insert) then take no growth of them. The system's allocator may be an arena, where an
+// array which grows is copied and the old copy kept, and the bonds a topology gives are many. A loader reserves before
+// it writes them.
+#define MD_BOND_GIVEN_SLACK 64
+void md_bond_given_reserve(md_bond_data_t* given, size_t count, md_allocator_i* alloc);
+
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     MD_ASSERT(bond_data);
     return bond_data->conn.offset[atom_idx + 1] - bond_data->conn.offset[atom_idx];

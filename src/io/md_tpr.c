@@ -1989,6 +1989,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             count += (size_t)data->molblocks[b].nmol * (mt->num_bonds + mt->num_elastic_bonds);
         }
         md_bond_data_t* given = &sys->given_bond;
+        md_bond_given_reserve(given, count, sys->alloc);
         md_array_resize(given->pairs, count, sys->alloc);
         md_array_resize(given->flags, count, sys->alloc);
 
