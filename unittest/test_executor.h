@@ -89,9 +89,14 @@ static bool test_executor_shuffled_for(void* user, uint32_t count, uint32_t grai
     return all;
 }
 
+static bool test_executor_cancelled(void* user) {
+    return ((test_executor_t*)user)->cancel != 0;
+}
+
 static inline test_executor_t test_executor_threads(uint32_t num_threads) {
     test_executor_t te = {0};
     te.ex.parallel_for = test_executor_threads_for;
+    te.ex.cancelled = test_executor_cancelled;
     te.ex.num_threads = num_threads < 1 ? 1 : (num_threads > TEST_EXECUTOR_MAX_THREADS ? TEST_EXECUTOR_MAX_THREADS : num_threads);
     return te;
 }
@@ -99,6 +104,7 @@ static inline test_executor_t test_executor_threads(uint32_t num_threads) {
 static inline test_executor_t test_executor_shuffled(uint32_t num_threads) {
     test_executor_t te = {0};
     te.ex.parallel_for = test_executor_shuffled_for;
+    te.ex.cancelled = test_executor_cancelled;
     te.ex.num_threads = num_threads < 1 ? 1 : num_threads;
     return te;
 }

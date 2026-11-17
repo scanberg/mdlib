@@ -88,6 +88,7 @@ set (SRC_FILES
     test_gto_int.c
     test_topo_gto.c
     test_executor.c
+    test_lanes.c
 )
 
 if (MD_ENABLE_HDF5)
