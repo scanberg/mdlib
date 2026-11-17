@@ -894,7 +894,7 @@ UTEST(vlx, pe_regions_are_selectable) {
 	ASSERT_EQ(3u + 5u, t.sys.atom.count);
 
 	for (size_t i = 0; i < t.sys.atom.count; ++i) {
-		EXPECT_EQ(i < 3, (md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+		EXPECT_EQ(i < 3, md_atom_is_qm(&t.sys.atom, i));
 	}
 
 	const md_filter_context_t fctx = {&t.sys, &t.state, NULL};
@@ -1153,7 +1153,7 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("atom/charge")));
 	// Without a map the supplement's atoms are the system's own, and they stay its QM region
 	for (size_t i = 0; i < t.sys.atom.count; ++i) {
-		EXPECT_TRUE((md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+		EXPECT_TRUE(md_atom_is_qm(&t.sys.atom, i));
 	}
 
 	qm_test_free(&t);

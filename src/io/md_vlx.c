@@ -5904,10 +5904,11 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	size_t capacity = MD_ROUND_UP(num_atoms, 16);
 
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_resize(sys->atom.flags,    capacity, md_system_derived_alloc(sys));
-
 	md_memset(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
-    md_memset(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
+    // The calculation's own atoms are its QM region (md_atom_data_t::qm); the sites of an embedding, appended after them,
+    // are its environment
+    md_array_resize(sys->atom.qm, num_atoms, sys->alloc);
+    md_memset(sys->atom.qm, 0, num_atoms);
 
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
@@ -5922,8 +5923,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 
 		md_particle_type_idx_t type_idx = md_particle_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
 		sys->atom.type_idx[i] = type_idx;
-		// The calculation's own atoms; the sites of an embedding, appended after them, are its environment
-		sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
+		sys->atom.qm[i] = 1;
 	}
 
 	if (vlx->mm.count > 0) {
@@ -6004,20 +6004,14 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	if (num_atoms == 0 || num_qm_atoms == 0) {
 		return;
 	}
-	if (md_array_size(sys->atom.flags) < num_atoms) {
-		const size_t size = md_array_size(sys->atom.flags);
-		md_array_resize(sys->atom.flags, num_atoms, md_system_derived_alloc(sys));
-		md_memset(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
-	}
-	for (size_t i = 0; i < num_atoms; ++i) {
-		sys->atom.flags[i] &= ~MD_ATOM_FLAG_QM;
-	}
+	md_array_resize(sys->atom.qm, num_atoms, sys->alloc);
+	md_memset(sys->atom.qm, 0, num_atoms);
 
 	const int* local_to_global = vlx_local_to_global_atom_idx(vlx);
 	for (size_t i = 0; i < num_qm_atoms; ++i) {
 		const int idx = local_to_global ? local_to_global[i] : (int)i;
 		if (idx >= 0 && (size_t)idx < num_atoms) {
-			sys->atom.flags[idx] |= MD_ATOM_FLAG_QM;
+			sys->atom.qm[idx] = 1;
 		}
 	}
 }

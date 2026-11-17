@@ -531,6 +531,7 @@ void md_system_free(md_system_t* sys) {
 
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
+    md_array_free(sys->atom.qm, alloc);
 
     // PARTICLE TYPE
     md_array_free(sys->atom.type.name, alloc);

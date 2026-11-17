@@ -63,11 +63,7 @@ typedef enum {
     MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
     MD_ATOM_FLAG_AROMATIC               = 0x400,    // In an aromatic ring
 
-    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, set by its loader.
-    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
-    // QM region flagged, and the atoms without the flag are its environment. Nothing infers it: a system no
-    // loader said it of has no QM region. Selected in scripts by 'qm' and 'environment'.
-    MD_ATOM_FLAG_QM                     = 0x800,
+    // 0x800 unused: the QM region is what the data gives, not inferred (md_atom_data_t::qm, md_atom_is_qm)
 
     // Hydrogen bond roles are not flags: they depend on the hydrogen bond model and its options, and a donor is a
     // D-H pair rather than an atom. See md_hbond_perceive_roles and md_hbond_query_t.
@@ -129,7 +125,13 @@ typedef struct md_atom_data_t {
     // Coordinates live in md_system_state_t, not here. A system is time invariant; where the atoms
     // are is not.
     md_particle_type_idx_t* type_idx;
-    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_atom_flags_t above
+    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_atom_flags_t above (inferred)
+
+    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, as its loader says.
+    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
+    // QM region marked, and the other atoms are its environment. Nothing infers it: a system no loader said it of
+    // has no QM region (NULL). Of the core: what the data gives. Selected in scripts by 'qm' and 'environment'.
+    uint8_t* qm;                // [count] 1 in the QM region, 0 not; NULL: no QM region
 
     // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
     // and not per type, as particle types are shared by name (the OD1 of Asp and of Asn).
@@ -142,6 +144,11 @@ typedef struct md_atom_data_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Whether the atom is in the QM region of the calculation the system was loaded from (md_atom_data_t::qm)
+static inline bool md_atom_is_qm(const md_atom_data_t* atom, size_t atom_idx) {
+    return atom && atom->qm && atom_idx < atom->count && atom->qm[atom_idx];
+}
 
 // Particle type table helper functions
 static inline size_t md_particle_type_count(const md_particle_type_data_t* particle_type) {
