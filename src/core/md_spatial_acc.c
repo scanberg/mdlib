@@ -251,29 +251,34 @@ static inline void bin_cell(uint32_t out[3], float sx, float sy, float sz, md_fl
     out[2] = tmp[2];
 }
 
+// A pass of the counting sorts of build_cells
+typedef struct build_pass_t {
+    uint32_t    pass;
+    bool        top_pass;
+    size_t      num_buckets;
+    int         src;                // The buffer the pass reads
+} build_pass_t;
+
 // The passes of build_cells over chunks of the elements, which run on an executor
 typedef struct build_task_t {
     md_spatial_acc_t*        acc;
     const points_t*          coords;
     size_t      N;
     uint32_t    num_chunks;
+    uint32_t    num_local_passes;
+    size_t      num_top;
     elem_t*     buf[2];
-    int         src;                // The buffer the pass reads
     uint32_t*   digit;              // [N] Of each element in the pass
     uint32_t*   hist;               // [num_chunks][num_buckets] The counts, then the places of each chunk in each bucket
-    size_t      num_buckets;
-    uint32_t    pass;
-    bool        top_pass;
     bool        stream_idx;
     md_float4_t fcell_dim;
     ivec4_t     icell_max;
+    build_pass_t cur;               // The pass under way, of the fork-join version
 } build_task_t;
 
 static inline size_t chunk_beg(const build_task_t* t, uint32_t c) { return t->N * c / t->num_chunks; }
 
-static void build_fractional(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
-    (void)thread_idx;
-    const build_task_t* t = (const build_task_t*)arg;
+static void build_fractional_chunks(const build_task_t* t, uint32_t beg, uint32_t end) {
     const md_spatial_acc_t* acc = t->acc;
     float val;
     md_memset(&val, 0xFF, sizeof(val));
@@ -298,16 +303,14 @@ static void build_fractional(void* arg, uint32_t beg, uint32_t end, uint32_t thr
 }
 
 // The digit of each element of the chunks in the pass, and the chunk's counts of them
-static void build_count(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
-    (void)thread_idx;
-    const build_task_t* t = (const build_task_t*)arg;
-    const elem_t* src = t->buf[t->src];
+static void build_count_chunks(const build_task_t* t, const build_pass_t* p, uint32_t beg, uint32_t end) {
+    const elem_t* src = t->buf[p->src];
     uint32_t* digit = t->digit;
     const md_float4_t fcell_dim = t->fcell_dim;
     const ivec4_t icell_max = t->icell_max;
-    const size_t num_buckets = t->num_buckets;
-    const bool top_pass = t->top_pass;
-    const uint32_t t0 = 2 * t->pass;
+    const size_t num_buckets = p->num_buckets;
+    const bool top_pass = p->top_pass;
+    const uint32_t t0 = 2 * p->pass;
     const bool two = t0 + 1 < t->acc->num_tiers;
     const uint32_t top_shift = 2 * t->acc->num_tiers;
     const size_t top_x = t->acc->top_dim[0], top_xy = top_x * t->acc->top_dim[1];
@@ -333,16 +336,14 @@ static void build_count(void* arg, uint32_t beg, uint32_t end, uint32_t thread_i
 }
 
 // The elements of the chunks into their places: the other buffer, or the elements of the structure in the last pass
-static void build_scatter(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
-    (void)thread_idx;
-    const build_task_t* t = (const build_task_t*)arg;
-    const elem_t* src = t->buf[t->src];
+static void build_scatter_chunks(const build_task_t* t, const build_pass_t* p, uint32_t beg, uint32_t end) {
+    const elem_t* src = t->buf[p->src];
     const uint32_t* digit = t->digit;
     for (uint32_t ch = beg; ch < end; ++ch) {
-        uint32_t* place = t->hist + ch * t->num_buckets;
+        uint32_t* place = t->hist + ch * p->num_buckets;
         const size_t i_beg = chunk_beg(t, ch), i_end = chunk_beg(t, ch + 1);
-        if (!t->top_pass) {
-            elem_t* dst = t->buf[t->src ^ 1];
+        if (!p->top_pass) {
+            elem_t* dst = t->buf[p->src ^ 1];
             for (size_t i = i_beg; i < i_end; ++i) dst[place[digit[i]]++] = src[i];
         } else {
             float* ex = t->acc->elem_x;
@@ -359,6 +360,96 @@ static void build_scatter(void* arg, uint32_t beg, uint32_t end, uint32_t thread
                 ei[dst] = stream_idx ? (uint32_t)stream_idx[e.idx] : e.idx;
             }
         }
+    }
+}
+
+// Each chunk's counts into the place of its first element of each bucket
+static void build_places(const build_task_t* t, const build_pass_t* p) {
+    const uint32_t num_chunks = t->num_chunks;
+    uint32_t off = 0;
+    for (size_t d = 0; d < p->num_buckets; ++d) {
+        for (uint32_t c = 0; c < num_chunks; ++c) {
+            uint32_t* h = &t->hist[c * p->num_buckets + d];
+            const uint32_t n = *h;
+            *h = off;
+            off += n;
+        }
+    }
+}
+
+static inline build_pass_t build_pass(const build_task_t* t, uint32_t pass, int src) {
+    const bool top_pass = pass == t->num_local_passes;
+    return (build_pass_t){ pass, top_pass, top_pass ? t->num_top : 4096, src };
+}
+
+// The elements of the structure, which the last pass scatters into
+static void build_alloc_elems(md_spatial_acc_t* acc, size_t N) {
+    const size_t alloc_len = MD_ALIGN_TO(N + 8, 16);
+    md_array_resize(acc->elem_x,   alloc_len, acc->alloc);
+    md_array_resize(acc->elem_y,   alloc_len, acc->alloc);
+    md_array_resize(acc->elem_z,   alloc_len, acc->alloc);
+    md_array_resize(acc->elem_idx, alloc_len, acc->alloc);
+    // The padding is read (masked) by the vectorized loops
+    md_memset(acc->elem_x + N, 0, (alloc_len - N) * sizeof(float));
+    md_memset(acc->elem_y + N, 0, (alloc_len - N) * sizeof(float));
+    md_memset(acc->elem_z + N, 0, (alloc_len - N) * sizeof(float));
+    md_memset(acc->elem_idx + N, 0, (alloc_len - N) * sizeof(uint32_t));
+}
+
+// Fork-join: each phase a loop of its own on the executor, the serial parts between them on the calling thread
+static void build_fractional(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    build_fractional_chunks((const build_task_t*)arg, beg, end);
+}
+
+static void build_count(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const build_task_t* t = (const build_task_t*)arg;
+    build_count_chunks(t, &t->cur, beg, end);
+}
+
+static void build_scatter(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const build_task_t* t = (const build_task_t*)arg;
+    build_scatter_chunks(t, &t->cur, beg, end);
+}
+
+static void build_sort_fork_join(build_task_t* t, const md_executor_t* ex) {
+    // 1) Fractional coordinates, periodic axes wrapped into [0,1). The record keeps the position in the stream.
+    md_parallel_for(ex, t->num_chunks, 1, build_fractional, t);
+    build_alloc_elems(t->acc, t->N);
+
+    // 2) Stable counting sorts, least significant first: the local positions two tiers at a time, then the top node.
+    //    The last pass scatters into the elements.
+    for (uint32_t pass = 0; pass <= t->num_local_passes; ++pass) {
+        t->cur = build_pass(t, pass, t->cur.src);
+        md_parallel_for(ex, t->num_chunks, 1, build_count, t);
+        build_places(t, &t->cur);
+        md_parallel_for(ex, t->num_chunks, 1, build_scatter, t);
+        t->cur.src ^= 1;
+    }
+}
+
+// Wide: the same phases in one function run by every lane. Lane 0 allocates the elements while the others start on the
+// fractional coordinates, and counts the places between the passes' loops.
+static void build_sort_wide(md_lane_t* lane, void* arg) {
+    const build_task_t* t = (const build_task_t*)arg;
+    if (md_lane_idx(lane) == 0) build_alloc_elems(t->acc, t->N);
+    MD_LANE_FOR(lane, t->num_chunks, 1, r) {
+        build_fractional_chunks(t, r.beg, r.end);
+    }
+    int src = 0;
+    for (uint32_t pass = 0; pass <= t->num_local_passes; ++pass) {
+        const build_pass_t p = build_pass(t, pass, src);
+        MD_LANE_FOR(lane, t->num_chunks, 1, r) {
+            build_count_chunks(t, &p, r.beg, r.end);
+        }
+        if (md_lane_idx(lane) == 0) build_places(t, &p);
+        md_lane_sync(lane);
+        MD_LANE_FOR(lane, t->num_chunks, 1, r) {
+            build_scatter_chunks(t, &p, r.beg, r.end);
+        }
+        src ^= 1;
     }
 }
 
@@ -401,6 +492,8 @@ static void build_cells(md_spatial_acc_t* acc, const points_t* coords, md_spatia
         .coords = coords,
         .N = N,
         .num_chunks = num_chunks,
+        .num_local_passes = (L + 1) / 2,
+        .num_top = num_top,
         .buf = {
             (elem_t*)md_temp_alloc(temp_scope, MD_MAX(N, 1) * sizeof(elem_t)),
             (elem_t*)md_temp_alloc(temp_scope, MD_MAX(N, 1) * sizeof(elem_t)),
@@ -412,40 +505,13 @@ static void build_cells(md_spatial_acc_t* acc, const points_t* coords, md_spatia
         .stream_idx = (in_flags & MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX) != 0,
     };
 
-    // 1) Fractional coordinates, periodic axes wrapped into [0,1). The record keeps the position in the stream.
-    md_parallel_for(ex, num_chunks, 1, build_fractional, &task);
-
-    // 2) Stable counting sorts, least significant first: the local positions two tiers at a time, then the top node.
-    //    The last pass scatters into the elements.
-    const size_t alloc_len = MD_ALIGN_TO(N + 8, 16);
-    md_array_resize(acc->elem_x,   alloc_len, acc->alloc);
-    md_array_resize(acc->elem_y,   alloc_len, acc->alloc);
-    md_array_resize(acc->elem_z,   alloc_len, acc->alloc);
-    md_array_resize(acc->elem_idx, alloc_len, acc->alloc);
-    // The padding is read (masked) by the vectorized loops
-    md_memset(acc->elem_x + N, 0, (alloc_len - N) * sizeof(float));
-    md_memset(acc->elem_y + N, 0, (alloc_len - N) * sizeof(float));
-    md_memset(acc->elem_z + N, 0, (alloc_len - N) * sizeof(float));
-    md_memset(acc->elem_idx + N, 0, (alloc_len - N) * sizeof(uint32_t));
-
-    const uint32_t num_local_passes = (L + 1) / 2;
-    for (uint32_t pass = 0; pass <= num_local_passes; ++pass) {
-        task.pass = pass;
-        task.top_pass = pass == num_local_passes;
-        task.num_buckets = task.top_pass ? num_top : 4096;
-        md_parallel_for(ex, num_chunks, 1, build_count, &task);
-        // Each chunk's counts into the place of its first element of each bucket
-        uint32_t off = 0;
-        for (size_t d = 0; d < task.num_buckets; ++d) {
-            for (uint32_t c = 0; c < num_chunks; ++c) {
-                uint32_t* h = &task.hist[c * task.num_buckets + d];
-                const uint32_t n = *h;
-                *h = off;
-                off += n;
-            }
-        }
-        md_parallel_for(ex, num_chunks, 1, build_scatter, &task);
-        task.src ^= 1;
+    // 1) Fractional coordinates, periodic axes wrapped into [0,1), and 2) stable counting sorts of them, least
+    //    significant first: the local positions two tiers at a time, then the top node. The last pass scatters into
+    //    the elements.
+    if (ex && ex->fork_join) {
+        build_sort_fork_join(&task, ex);
+    } else {
+        md_run_lanes(ex, num_chunks, build_sort_wide, &task);
     }
     acc->num_elems = N;
 

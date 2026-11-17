@@ -360,80 +360,167 @@ static void la_trd_update_only(double* T, size_t ld, size_t m, const double* pv,
     }
 }
 
-// y, w: [2n] each; ypart: [LA_TRD_PIECES * n]
-static bool la_tridiag(double* a, size_t n, double* d, double* e, double* tau, double* y, double* w, double* ypart, const la_par_t* par) {
-#define A_(r, c) a[(size_t)(c) * n + (size_t)(r)]
+// The reduction's state between its steps: the pending update, and where the steps put their vectors
+typedef struct la_trd_t {
+    double* a;
+    size_t  n;
+    double* d;
+    double* e;
+    double* tau;
+    double* ypart;          // [LA_TRD_PIECES * n]
+    double* vbuf[2];        // v of this and the previous step, alternating
+    double* wbuf[2];        // w alike
     // Pending rank-2 update of the trailing matrix from the previous step: A -= pv pw^T + pw pv^T over
     // rows/columns [i, n). Applied lazily, column by column, inside the next step's pass.
-    const double* pv = NULL;
-    const double* pw = NULL;
-    // v and w of this and the previous step, alternating
-    double* vbuf[2] = { y, y + n };
-    double* wbuf[2] = { w, w + n };
+    const double* pv;
+    const double* pw;
+} la_trd_t;
+
+#define A_(r, c) s->a[(size_t)(c) * s->n + (size_t)(r)]
+
+// Step i up to its pass: the previous step's update of column i (rows i..n), the column this step reduces, and its
+// reflector, in vbuf[i & 1] with its leading 1. Returns tau (0: no reflector, nothing pending after this step).
+static double la_trd_head(la_trd_t* s, size_t i) {
+    const size_t m = s->n - i - 1;           // the reflector's length, rows i+1 .. n-1
+    if (s->pv) {
+        const double vi = s->pv[0], wi = s->pw[0];
+        double* col = &A_(i, i);
+        for (size_t r = 0; r <= m; ++r) col[r] -= s->pv[r] * wi + s->pw[r] * vi;
+        s->pv += 1;      // the update's vectors now start at row i+1
+        s->pw += 1;
+    }
+    s->d[i] = A_(i, i);
+    double* x = &A_(i + 1, i);
+    const double t = la_householder(x, m);
+    s->e[i] = x[0];
+    s->tau[i] = t;
+    if (t == 0.0) {
+        if (s->pv) la_trd_update_only(&A_(i + 1, i + 1), s->n, m, s->pv, s->pw);
+        s->pv = s->pw = NULL;
+        return 0.0;
+    }
+    double* v = s->vbuf[i & 1];
+    v[0] = 1.0;
+    memcpy(v + 1, x + 1, sizeof(double) * (m - 1));
+    return t;
+}
+
+// The pieces of a pass over a trailing block of size m: equal areas of the lower triangle, fixed by m alone
+static size_t la_trd_pieces(size_t m, uint32_t cb[LA_TRD_PIECES + 1]) {
+    const size_t P = MD_CLAMP(m / LA_TRD_COLS, (size_t)1, (size_t)LA_TRD_PIECES);
+    cb[0] = 0;
+    for (size_t p = 1; p < P; ++p) {
+        const size_t c = m - (size_t)((double)m * sqrt(1.0 - (double)p / (double)P) + 0.5);
+        cb[p] = (uint32_t)MD_CLAMP(c, (size_t)cb[p - 1], m);
+    }
+    cb[P] = (uint32_t)m;
+    return P;
+}
+
+static inline la_trd_args_t la_trd_args(const la_trd_t* s, size_t i, const double* pv, const double* pw, const uint32_t* cb) {
+    return (la_trd_args_t){ &A_(i + 1, i + 1), s->n, s->n - i - 1, s->vbuf[i & 1], pv, pw, s->ypart, cb };
+}
+
+// Step i after its pass: y = the pieces' partials in order, w from it, and the update A -= v w^T + w v^T pending
+static void la_trd_tail(la_trd_t* s, size_t i, double t, size_t P, const uint32_t* cb) {
+    const size_t n = s->n, m = n - i - 1;
+    const double* v = s->vbuf[i & 1];
+    double* yv = s->wbuf[i & 1];
+    memcpy(yv, s->ypart, sizeof(double) * m);
+    for (size_t p = 1; p < P; ++p) {
+        const double* yp = s->ypart + p * n;
+        for (size_t r = cb[p]; r < m; ++r) yv[r] += yp[r];
+    }
+    // w = tau y - (tau^2 / 2) (y . v) v
+    double yv_dot = 0.0;
+    for (size_t r = 0; r < m; ++r) {
+        yv[r] *= t;
+        yv_dot += yv[r] * v[r];
+    }
+    const double al = -0.5 * t * yv_dot;
+    for (size_t r = 0; r < m; ++r) yv[r] += al * v[r];
+    s->pv = v;
+    s->pw = yv;
+}
+
+// Steps [i0, i1), each pass a loop of its own on the executor (fork-join), or on the calling thread where it is a piece
+static bool la_trd_steps(la_trd_t* s, size_t i0, size_t i1, const la_par_t* par) {
     uint32_t cb[LA_TRD_PIECES + 1];
-
-    for (size_t i = 0; i + 1 < n; ++i) {
-        const size_t m = n - i - 1;           // the reflector's length, rows i+1 .. n-1
-        // the previous step's update of column i (rows i..n), the column this step reduces
-        if (pv) {
-            const double vi = pv[0], wi = pw[0];
-            double* col = &A_(i, i);
-            for (size_t r = 0; r <= m; ++r) col[r] -= pv[r] * wi + pw[r] * vi;
-            pv += 1;      // the update's vectors now start at row i+1
-            pw += 1;
-        }
-        d[i] = A_(i, i);
-        double* x = &A_(i + 1, i);
-        const double t = la_householder(x, m);
-        e[i] = x[0];
-        tau[i] = t;
-        if (t == 0.0) {
-            if (pv) la_trd_update_only(&A_(i + 1, i + 1), n, m, pv, pw);
-            pv = pw = NULL;
-            continue;
-        }
-
-        // v, explicit with its leading 1
-        double* v = vbuf[i & 1];
-        v[0] = 1.0;
-        memcpy(v + 1, x + 1, sizeof(double) * (m - 1));
-
-        // the pieces: equal areas of the lower triangle, fixed by m alone
-        const size_t P = MD_CLAMP(m / LA_TRD_COLS, (size_t)1, (size_t)LA_TRD_PIECES);
-        cb[0] = 0;
-        for (size_t p = 1; p < P; ++p) {
-            const size_t c = m - (size_t)((double)m * sqrt(1.0 - (double)p / (double)P) + 0.5);
-            cb[p] = (uint32_t)MD_CLAMP(c, (size_t)cb[p - 1], m);
-        }
-        cb[P] = (uint32_t)m;
-        la_trd_args_t args = { &A_(i + 1, i + 1), n, m, v, pv, pw, ypart, cb };
+    for (size_t i = i0; i < i1; ++i) {
+        const double t = la_trd_head(s, i);
+        if (t == 0.0) continue;
+        const size_t P = la_trd_pieces(s->n - i - 1, cb);
+        la_trd_args_t args = la_trd_args(s, i, s->pv, s->pw, cb);
         if (P == 1) la_trd_piece(&args, 0, 1, 0);
         else if (!md_parallel_for(par->ex, (uint32_t)P, 1, la_trd_piece, &args)) return false;
-
-        // y = the pieces' partials, in order
-        double* yv = wbuf[i & 1];
-        memcpy(yv, ypart, sizeof(double) * m);
-        for (size_t p = 1; p < P; ++p) {
-            const double* yp = ypart + p * n;
-            for (size_t r = cb[p]; r < m; ++r) yv[r] += yp[r];
-        }
-
-        // w = tau y - (tau^2 / 2) (y . v) v, and the update A -= v w^T + w v^T is pending
-        double yv_dot = 0.0;
-        for (size_t r = 0; r < m; ++r) {
-            yv[r] *= t;
-            yv_dot += yv[r] * v[r];
-        }
-        const double al = -0.5 * t * yv_dot;
-        for (size_t r = 0; r < m; ++r) yv[r] += al * v[r];
-        pv = v;
-        pw = yv;
+        la_trd_tail(s, i, t, P, cb);
     }
+    return true;
+}
+
+// Wide: the steps whose pass has more than one piece, in one function run by every lane. Each step is its pass
+// (MD_LANE_FOR) and then lane 0's serial part: this step's tail and the next one's head, then a sync. The head of the
+// first step is done before going wide, so that the group opens with a pass and lanes can join during it. What lane 0
+// leaves for the others (tau, the pending update) alternates between two slots: a lane may still read a step's while
+// lane 0 writes the next one's.
+typedef struct la_trd_wide_t {
+    la_trd_t*     s;
+    size_t        i_end;
+    double        t[2];
+    const double* pv[2];
+    const double* pw[2];
+} la_trd_wide_t;
+
+static void la_trd_wide(md_lane_t* lane, void* arg) {
+    la_trd_wide_t* w = (la_trd_wide_t*)arg;
+    la_trd_t* s = w->s;
+    uint32_t cb[LA_TRD_PIECES + 1];
+    for (size_t i = 0; i < w->i_end; ++i) {
+        const int k = (int)(i & 1);
+        const double t = w->t[k];
+        size_t P = 0;
+        if (t != 0.0) {
+            P = la_trd_pieces(s->n - i - 1, cb);
+            la_trd_args_t args = la_trd_args(s, i, w->pv[k], w->pw[k], cb);
+            MD_LANE_FOR(lane, (uint32_t)P, 1, r) {
+                la_trd_piece(&args, r.beg, r.end, 0);
+            }
+            if (md_lane_cancelled(lane)) return;
+        }
+        if (md_lane_idx(lane) == 0) {
+            if (t != 0.0) la_trd_tail(s, i, t, P, cb);
+            if (i + 1 < w->i_end) {
+                w->t[k ^ 1]  = la_trd_head(s, i + 1);
+                w->pv[k ^ 1] = s->pv;
+                w->pw[k ^ 1] = s->pw;
+            }
+        }
+        if (!md_lane_sync(lane)) return;
+    }
+}
+
+// y, w: [2n] each; ypart: [LA_TRD_PIECES * n]
+static bool la_tridiag(double* a, size_t n, double* d, double* e, double* tau, double* y, double* w, double* ypart, const la_par_t* par) {
+    la_trd_t st = { a, n, d, e, tau, ypart, { y, y + n }, { w, w + n }, NULL, NULL };
+    la_trd_t* s = &st;
+
+    // The steps of more than one piece (m >= 2 LA_TRD_COLS) wide, the rest on the calling thread
+    const size_t i_wide = (n > 2 * LA_TRD_COLS) ? n - 2 * LA_TRD_COLS : 0;
+    size_t i0 = 0;
+    if (i_wide > 0 && md_executor_num_threads(par->ex) > 1 && !par->ex->fork_join) {
+        la_trd_wide_t wide = { s, i_wide, {0}, {0}, {0} };
+        wide.t[0]  = la_trd_head(s, 0);
+        wide.pv[0] = s->pv;
+        wide.pw[0] = s->pw;
+        if (!md_run_lanes(par->ex, LA_TRD_PIECES, la_trd_wide, &wide)) return false;
+        i0 = i_wide;
+    }
+    if (!la_trd_steps(s, i0, n - 1, par)) return false;
     d[n - 1] = A_(n - 1, n - 1);
     e[n - 1] = 0.0;
     return true;
-#undef A_
 }
+#undef A_
 
 // ---------------------------------------------------------------------------------------------------
 // 3. Z <- Q Z, the reflectors applied in blocks of LA_NB as I - Y T Y^T (dlarft forward/columnwise,

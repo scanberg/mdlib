@@ -202,3 +202,85 @@ UTEST(lanes, cancelled_before_it_starts) {
     EXPECT_FALSE(md_run_lanes(test_executor(&te), 4, cancel_fn, &c));
 }
 
+// ### The procedures with a wide version: the same result, to the bit, wide, fork-join and on the calling thread
+
+#include <core/md_linalg.h>
+#include <core/md_spatial_acc.h>
+#include <core/md_unitcell.h>
+#include <core/md_allocator.h>
+
+static void lanes_sym_random(double* a, size_t n, unsigned seed) {
+    unsigned s = seed;
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j <= i; ++j) {
+            s = s * 1664525u + 1013904223u;
+            const double v = (double)(s >> 8) / (double)(1u << 24) - 0.5;
+            a[i * n + j] = v;
+            a[j * n + i] = v;
+        }
+        a[i * n + i] += (double)i * 0.1;
+    }
+}
+
+UTEST(lanes, sym_eigen_wide_is_bitwise) {
+    const size_t sizes[] = { 390, 900 };
+    for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        const size_t n = sizes[s];
+        double* A0 = malloc(sizeof(double) * n * n);
+        double* A  = malloc(sizeof(double) * n * n);
+        double* w0 = malloc(sizeof(double) * n);
+        double* w  = malloc(sizeof(double) * n);
+        lanes_sym_random(A0, n, 11u + (unsigned)n);
+        memcpy(A, A0, sizeof(double) * n * n);
+        ASSERT_TRUE(md_linalg_sym_eigen_ex(A0, w0, n, NULL));
+        for (uint32_t t = 2; t <= 8; t *= 2) {
+            for (int fj = 0; fj < 2; ++fj) {
+                test_executor_t te = test_executor_threads(t);
+                te.ex.fork_join = fj != 0;
+                lanes_sym_random(A, n, 11u + (unsigned)n);
+                ASSERT_TRUE(md_linalg_sym_eigen_ex(A, w, n, test_executor(&te)));
+                EXPECT_EQ(0, memcmp(A0, A, sizeof(double) * n * n));
+                EXPECT_EQ(0, memcmp(w0, w, sizeof(double) * n));
+            }
+        }
+        free(A0); free(A); free(w0); free(w);
+    }
+}
+
+static void check_acc_equal(int* utest_result, const md_spatial_acc_t* a, const md_spatial_acc_t* b) {
+    ASSERT_EQ(a->num_elems, b->num_elems);
+    ASSERT_EQ(a->num_cells, b->num_cells);
+    const size_t n = a->num_elems;
+    EXPECT_EQ(0, memcmp(a->elem_x, b->elem_x, n * sizeof(float)));
+    EXPECT_EQ(0, memcmp(a->elem_y, b->elem_y, n * sizeof(float)));
+    EXPECT_EQ(0, memcmp(a->elem_z, b->elem_z, n * sizeof(float)));
+    EXPECT_EQ(0, memcmp(a->elem_idx, b->elem_idx, n * sizeof(uint32_t)));
+    EXPECT_EQ(0, memcmp(a->cell_off, b->cell_off, (a->num_cells + 1) * sizeof(uint32_t)));
+}
+
+UTEST(lanes, spatial_acc_wide_is_bitwise) {
+    const size_t N = 300000;
+    float* xyz = malloc(sizeof(float) * 3 * N);
+    unsigned s = 7;
+    for (size_t i = 0; i < 3 * N; ++i) {
+        s = s * 1664525u + 1013904223u;
+        xyz[i] = (float)((double)(s >> 8) / (double)(1u << 24)) * 140.0f - 10.0f;   // some outside the cell
+    }
+    const md_unitcell_t cells[2] = { md_unitcell_from_extent(120, 120, 120), md_unitcell_from_basis_parameters(120, 110, 100, 20, 10, 5) };
+    for (int c = 0; c < 2; ++c) {
+        md_spatial_acc_t ref = { .alloc = md_get_heap_allocator() };
+        md_spatial_acc_init(&ref, &(md_spatial_acc_desc_t){ .xyz = xyz, .count = N, .cutoff = 5.0, .unitcell = &cells[c] });
+        for (uint32_t t = 2; t <= 8; t *= 2) {
+            for (int fj = 0; fj < 2; ++fj) {
+                test_executor_t te = test_executor_threads(t);
+                te.ex.fork_join = fj != 0;
+                md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+                md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .xyz = xyz, .count = N, .cutoff = 5.0, .unitcell = &cells[c], .executor = test_executor(&te) });
+                check_acc_equal(utest_result, &ref, &acc);
+                md_spatial_acc_free(&acc);
+            }
+        }
+        md_spatial_acc_free(&ref);
+    }
+    free(xyz);
+}
