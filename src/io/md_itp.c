@@ -983,8 +983,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     // makes molecules of. A structure which gave units (the chains of a PDB file) keeps them. The residues between
     // the matched molecules are units of their own, of no type.
     if (sys->instance.count == 0 && sys->residue.count > 0) {
-        // Without units every molecule type there is was inferred, and the given come first
-        md_molecule_type_data_free(&sys->molecule.type, md_system_derived_alloc(sys));
+        // Without units there are no given molecule types: those of the topology are
+        md_molecule_type_data_free(&sys->instance.mol_type, sys->alloc);
         md_molecule_type_idx_t* mol_type = md_temp_alloc_array(temp, md_molecule_type_idx_t, num_types + 1);
         for (size_t t = 0; t < num_types; ++t) mol_type[t] = -1;
         const size_t num_res = sys->residue.count;
@@ -1011,7 +1011,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
                 sys->instance.count += 1;
             }
             if (mol_type[t] < 0) {
-                mol_type[t] = md_molecule_type_data_push(&sys->molecule.type, data->moleculetypes[t].name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
+                mol_type[t] = md_molecule_type_data_push(&sys->instance.mol_type, data->moleculetypes[t].name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
             }
             md_array_push(sys->instance.id, (md_label_t){0}, sys->alloc);
             md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
@@ -1037,8 +1037,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             md_array_free(sys->instance.res_offset, sys->alloc);
             md_array_free(sys->instance.part_type_idx, sys->alloc);
             md_array_free(sys->instance.mol_type_idx, sys->alloc);
+            md_molecule_type_data_free(&sys->instance.mol_type, sys->alloc);
             md_memset(&sys->instance, 0, sizeof(sys->instance));
-            md_molecule_type_data_free(&sys->molecule.type, md_system_derived_alloc(sys));
         }
     }
 

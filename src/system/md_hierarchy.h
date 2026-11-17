@@ -181,6 +181,27 @@ typedef struct md_residue_data_t {
 // SHARED by the small molecules of one asym: mmCIF puts all the waters of a chain in one asym. Look up instances by
 // index, not by id. The id is not what a chain is called: that is the auth_id, which the chains are made from
 // (md_chain_data_t).
+// Part type: the parts of the system of one kind and one sequence of residues. Given by the data (an mmCIF entity:
+// a polymer sequence, a chemical component, a branched glycan), else inferred with the parts
+// (MD_PART_TYPE_FLAG_INFERRED), which gives a kind and a sequence of residue names one type. What a part is lives in the
+// flags of its type (md_part_kind_t). The given types are the instances' (md_instance_data_t::part_type); the parts'
+// (md_part_data_t::type) are those, in their order, then the inferred.
+typedef struct md_part_type_data_t {
+    size_t count;
+    md_label_t* id;                     // [count] The data's id (an mmCIF entity id), else its position
+    md_part_type_flags_t* flags;        // [count] Kind (peptide, DNA, water, ...) and whether it was inferred, see md_types.h
+    md_str_t* description;                 // [count]
+} md_part_type_data_t;
+
+// Molecule type: given by a topology (its molecule types), else inferred with the molecules
+// (MD_MOLECULE_TYPE_FLAG_INFERRED). The given types are the instances' (md_instance_data_t::mol_type); the molecules'
+// (md_molecule_data_t::type) are those, in their order, then the inferred.
+typedef struct md_molecule_type_data_t {
+    size_t count;
+    md_str_t* name;                        // [count] The topology's name of it, else what its parts are
+    md_molecule_type_flags_t* flags;    // [count]
+} md_molecule_type_data_t;
+
 typedef struct md_instance_data_t {
     size_t count;
     md_label_t* id;
@@ -189,6 +210,10 @@ typedef struct md_instance_data_t {
     md_part_type_idx_t* part_type_idx;      // [count] The part type the data gives it (an mmCIF entity), -1 for none
     md_molecule_type_idx_t* mol_type_idx;   // [count] The molecule type the data gives it (a molecule type of a topology),
                                             // -1 for none. Such an instance is one molecule, whatever its bonds.
+    // The types the data gives, which part_type_idx and mol_type_idx index: the first types of the parts and of the
+    // molecules, which inference gives them (md_part_infer, md_molecule_infer), followed by those it infers
+    md_part_type_data_t     part_type;
+    md_molecule_type_data_t mol_type;
 } md_instance_data_t;
 
 // Chain: the atoms which the data files under one chain identifier, the author's: the chain id of a PDB file, the
@@ -206,17 +231,6 @@ typedef struct md_chain_data_t {
     md_urange_t* run;               // Runs of consecutive residues, ascending within each chain
     md_chain_idx_t* res_chain;      // [residue count] The chain of each residue, -1 for one in none
 } md_chain_data_t;
-
-// Part type: the parts of the system of one kind and one sequence of residues. Given by the data (an mmCIF entity:
-// a polymer sequence, a chemical component, a branched glycan), else inferred with the parts
-// (MD_PART_TYPE_FLAG_INFERRED), which gives a kind and a sequence of residue names one type. What a part is lives in the
-// flags of its type (md_part_kind_t). The given types come first, the inferred after them.
-typedef struct md_part_type_data_t {
-    size_t count;
-    md_label_t* id;                     // [count] The data's id (an mmCIF entity id), else its position
-    md_part_type_flags_t* flags;        // [count] Kind (peptide, DNA, water, ...) and whether it was inferred, see md_types.h
-    md_str_t* description;                 // [count]
-} md_part_type_data_t;
 
 // Part: one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water: the parts the molecules are
 // built of, each a run of consecutive residues, within one instance where the system has instances. A molecule may hold several (a
@@ -307,12 +321,6 @@ typedef struct md_molecule_t {
 // A system without bonds has them too (of the particle types and residues); one whose bonds have no connectivity for every
 // atom has none (structure_idx NULL).
 // They are of the system as it was when inferred: md_system_molecule_structures_valid tells whether they still are.
-typedef struct md_molecule_type_data_t {
-    size_t count;
-    md_str_t* name;                        // [count] The topology's name of it, else what its parts are
-    md_molecule_type_flags_t* flags;    // [count]
-} md_molecule_type_data_t;
-
 typedef struct md_molecule_data_t {
     size_t count;
     uint32_t* offset;    // [count + 1] The slots of molecule m: [offset[m], offset[m + 1])

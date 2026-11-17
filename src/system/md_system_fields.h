@@ -20,6 +20,7 @@
     X(atom.type.name) X(atom.type.ff_type) X(atom.type.z) X(atom.type.mass) X(atom.type.radius) X(atom.type.color) X(atom.type.flags) \
     X(residue.name) X(residue.seq_id) X(residue.atom_offset) \
     X(instance.id) X(instance.auth_id) X(instance.res_offset) X(instance.part_type_idx) X(instance.mol_type_idx) \
+    X(instance.part_type.id) X(instance.part_type.flags) X(instance.mol_type.flags) \
     X(assembly.id) X(assembly.group_offset) X(assembly.group_inst_offset) X(assembly.inst) X(assembly.group_oper_offset) \
     X(assembly.oper) X(assembly.oper_id) X(assembly.oper_transform)
 
@@ -42,6 +43,10 @@
     X(fragment.mol_template) X(fragment.frag_offset) X(fragment.template_molecule) X(fragment.template_slot_offset) \
     X(fragment.slot_frag) X(fragment.template_frag_offset) X(fragment.frag_type) X(fragment.frag_slot_offset) \
     X(fragment.frag_slot) X(fragment.type.kind) X(fragment.type.color)
+
+// Arrays of strings of CORE, each string allocated of its own
+#define MD_SYSTEM_CORE_STRINGS(X) \
+    X(instance.part_type.description) X(instance.mol_type.name)
 
 #define MD_SYSTEM_DERIVED_STRINGS(X) \
     X(part.type.description) X(molecule.type.name) X(fragment.type.name)

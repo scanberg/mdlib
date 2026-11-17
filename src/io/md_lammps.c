@@ -1006,10 +1006,10 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 			char buf[64];
 			md_str_t name = lammps_formula(buf, sizeof(buf), sys, range);
 			if (md_str_empty(name)) {
-				const int len = md_snprintf(buf, sizeof(buf), "molecule type %zu", sys->molecule.type.count + 1);
+				const int len = md_snprintf(buf, sizeof(buf), "molecule type %zu", sys->instance.mol_type.count + 1);
 				name = (md_str_t){ buf, (size_t)len };
 			}
-			type_idx = md_molecule_type_data_push(&sys->molecule.type, name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
+			type_idx = md_molecule_type_data_push(&sys->instance.mol_type, name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
 			md_hashmap_add(&type_map, key, (uint32_t)type_idx);
 		}
 

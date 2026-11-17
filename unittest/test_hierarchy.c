@@ -684,7 +684,15 @@ UTEST(hierarchy, part_type_instance_mmcif) {
             {MD_PART_KIND_PEPTIDE, "PHOSPHONOACETALDEHYDE HYDROLASE"}, {MD_PART_KIND_NON_POLYMER, "MAGNESIUM ION"},
             {MD_PART_KIND_NON_POLYMER, "TUNGSTATE(VI)ION"}, {MD_PART_KIND_WATER, "water"},
         };
-        ASSERT_EQ(md_system_part_type_count(&sys), MD_COUNTOF(types));
+        // Given: the instances' (md_instance_data_t::part_type), and after inference the first of the parts'
+        const md_part_type_data_t* given = &sys.instance.part_type;
+        ASSERT_EQ(given->count, MD_COUNTOF(types));
+        for (size_t i = 0; i < MD_COUNTOF(types); ++i) {
+            EXPECT_EQ(md_part_type_flags_kind(given->flags[i]), types[i].kind);
+            EXPECT_TRUE(md_str_eq(given->description[i], md_str_from_cstr(types[i].desc)));
+        }
+        md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_PART_BIT, NULL);
+        ASSERT_GE(md_system_part_type_count(&sys), MD_COUNTOF(types));
         for (size_t i = 0; i < MD_COUNTOF(types); ++i) {
             EXPECT_EQ(md_system_part_type_kind(&sys, i), types[i].kind);
             EXPECT_TRUE(md_str_eq(md_system_part_type_description(&sys, i), md_str_from_cstr(types[i].desc)));
@@ -1028,11 +1036,13 @@ UTEST(hierarchy, molecule_type_topology) {
         static const struct { md_part_kind_t kind; const char* name; size_t count; } types[] = {
             {MD_PART_KIND_PEPTIDE, "Protein_chain_U", 1}, {MD_PART_KIND_WATER, "SOL", 506}, {MD_PART_KIND_NON_POLYMER, "NA", 2}, {MD_PART_KIND_NON_POLYMER, "CL", 2},
         };
-        ASSERT_EQ(md_system_molecule_type_count(&sys), MD_COUNTOF(types));
+        // Given: the instances' (md_instance_data_t::mol_type), which the molecules' types begin with once inferred
+        const md_molecule_type_data_t* given = &sys.instance.mol_type;
+        ASSERT_EQ(given->count, MD_COUNTOF(types));
         size_t inst = 0;
         for (size_t t = 0; t < MD_COUNTOF(types); ++t) {
-            EXPECT_EQ(md_system_molecule_type_flags(&sys, t), MD_MOLECULE_TYPE_FLAG_NONE);
-            EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, t), md_str_from_cstr(types[t].name)));
+            EXPECT_EQ(given->flags[t], MD_MOLECULE_TYPE_FLAG_NONE);
+            EXPECT_TRUE(md_str_eq(given->name[t], md_str_from_cstr(types[t].name)));
             for (size_t k = 0; k < types[t].count; ++k, ++inst) {
                 EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, inst), (int)t);
                 EXPECT_TRUE(md_str_empty(md_system_instance_id(&sys, inst)));
@@ -1063,7 +1073,7 @@ UTEST(hierarchy, molecule_type_topology) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/martini3.tpr"), NULL));
         // The peptide, two lipids, four ions and 583 waters, as the structures are
-        ASSERT_EQ(md_system_molecule_type_count(&sys), 5);
+        ASSERT_EQ(sys.instance.mol_type.count, 5);
         EXPECT_EQ(md_system_instance_count(&sys), 1 + 2 + 4 + 583);
         ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
         EXPECT_EQ(md_system_part_kind(&sys, (size_t)md_system_part_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 0).beg)), MD_PART_KIND_PEPTIDE);
@@ -1079,9 +1089,9 @@ UTEST(hierarchy, molecule_type_topology) {
         md_system_state_t sys_state = { .alloc = alloc };
         const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
         ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), &(md_load_desc_t){ .format = md_str_from_cstr(atom_format) }));
-        ASSERT_EQ(md_system_molecule_type_count(&sys), 2);
-        EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 0), MD_STR_LIT("C2H6")));
-        EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 1), MD_STR_LIT("H2O")));
+        ASSERT_EQ(sys.instance.mol_type.count, 2);
+        EXPECT_TRUE(md_str_eq(sys.instance.mol_type.name[0], MD_STR_LIT("C2H6")));
+        EXPECT_TRUE(md_str_eq(sys.instance.mol_type.name[1], MD_STR_LIT("H2O")));
         ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, 0), 0);
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, md_system_instance_count(&sys) - 1), 1);

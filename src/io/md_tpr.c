@@ -1922,7 +1922,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         if (mb->nmol <= 0 || mt->num_atoms == 0) continue;
 
         if (moltype_mol_type[mb->moltype] == -1) {
-            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->molecule.type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
+            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->instance.mol_type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, alloc);
         }
 
         for (int32_t m = 0; m < mb->nmol; ++m) {

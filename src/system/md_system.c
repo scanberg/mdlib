@@ -553,6 +553,8 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->instance.res_offset, alloc);
     md_array_free(sys->instance.part_type_idx, alloc);
     md_array_free(sys->instance.mol_type_idx, alloc);
+    md_part_type_data_free(&sys->instance.part_type, alloc);
+    md_molecule_type_data_free(&sys->instance.mol_type, alloc);
 
     // ASSEMBLY
     md_system_assemblies_free(sys);
@@ -708,6 +710,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 #define COPY_DERIVED(f) COPY_ARRAY(dst->f, src->f, dalloc);
 #define COPY_DERIVED_STRINGS(f) copy_strings(&dst->f, src->f, dalloc);
     MD_SYSTEM_CORE_ARRAYS(COPY_FIELD)
+    MD_SYSTEM_CORE_STRINGS(COPY_STRINGS)
     MD_SYSTEM_DERIVED_ARRAYS(COPY_DERIVED)
     MD_SYSTEM_DERIVED_STRINGS(COPY_DERIVED_STRINGS)
 #undef COPY_FIELD

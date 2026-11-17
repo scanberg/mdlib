@@ -1467,7 +1467,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         // The entities are the part types the file gives, added first so that the instances can name them
         size_t num_entities = md_array_size(entities);
         for (size_t i = 0; i < num_entities; ++i) {
-            md_part_type_data_push(&sys->part.type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, md_system_derived_alloc(sys));
+            md_part_type_data_push(&sys->instance.part_type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, alloc);
         }
     }
     
@@ -1528,7 +1528,13 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             const int seq_id = entry->label_seq_id != INT32_MIN ? entry->label_seq_id : entry->auth_seq_id;
 
             if (!have_prev || entity != prev_entity) {
-                entity_idx = md_system_part_type_find_by_id(sys, md_str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id)));
+                // Among the entities, the part types the data gives (md_instance_data_t::part_type)
+                const md_str_t id = md_str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id));
+                const md_part_type_data_t* given = &sys->instance.part_type;
+                entity_idx = -1;
+                for (size_t t = 0; t < given->count && entity_idx == -1; ++t) {
+                    if (md_str_eq(MD_LABEL_STR(given->id[t]), id)) entity_idx = (md_part_type_idx_t)t;
+                }
             }
 
             md_particle_type_idx_t particle_type_idx = 0;
@@ -1570,7 +1576,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 // Instance handling. An instance is what the file gives: an asym, a polymer chain or a branched
                 // glycan. The asym of a non-polymer entity may hold many molecules (the waters of a chain): each is an
                 // instance of its own, sharing the asym id.
-                const md_part_kind_t entity_kind = entity_idx != -1 ? md_system_part_type_kind(sys, entity_idx) : MD_PART_KIND_UNKNOWN;
+                const md_part_kind_t entity_kind = entity_idx != -1 ? md_part_type_flags_kind(sys->instance.part_type.flags[entity_idx]) : MD_PART_KIND_UNKNOWN;
                 const bool one_per_residue = entity_kind == MD_PART_KIND_WATER || entity_kind == MD_PART_KIND_NON_POLYMER;
                 if (sys->instance.count == 0 || new_inst || one_per_residue) {
                     md_array_push(sys->instance.id, md_label_make(label_asym_id), alloc);

@@ -101,9 +101,10 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     }
 
     // The molecules are the topology's, the same as the tpr's
-    ASSERT_EQ(md_system_molecule_type_count(&tpr), md_system_molecule_type_count(&h.sys));
-    for (size_t t = 0; t < md_system_molecule_type_count(&tpr); ++t) {
-        EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&tpr, t), md_system_molecule_type_name(&h.sys, t)));
+    ASSERT_GT(tpr.instance.mol_type.count, (size_t)0);
+    ASSERT_EQ(tpr.instance.mol_type.count, h.sys.instance.mol_type.count);
+    for (size_t t = 0; t < tpr.instance.mol_type.count; ++t) {
+        EXPECT_TRUE(md_str_eq(tpr.instance.mol_type.name[t], h.sys.instance.mol_type.name[t]));
     }
     ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
     for (size_t k = 0; k < tpr.instance.count; ++k) {
