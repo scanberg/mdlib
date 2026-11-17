@@ -961,14 +961,18 @@ static double xtc_test_rand(void) {
 }
 
 UTEST(xtc, decode_matches_what_was_written) {
-    const struct { float prec; float box; bool planar; } cases[] = {
-        {1e3f,   6.0f, false},
-        {1e4f,   6.0f, false},
-        {1e5f,   6.0f, false},     // 58 bits
-        {3e5f,   6.0f, false},     // 63 bits
-        {1e6f,   6.0f, false},     // 68 bits
-        {1e3f,   6.0f, true},
-        {1e5f, 200.0f, false},     // ranges beyond 24 bits
+    // spread: how far the two atoms after the first of each group of three lie from it, in nm
+    const struct { float prec; float box; float spread; bool planar; } cases[] = {
+        {1e3f,   6.0f, 0.1f, false},
+        {1e4f,   6.0f, 0.1f, false},
+        {1e5f,   6.0f, 0.1f, false},     // 58 bits
+        {3e5f,   6.0f, 0.1f, false},     // 63 bits
+        {1e6f,   6.0f, 0.1f, false},     // 68 bits
+        {1e6f,   1.0f, 0.4f, false},     // 62 bits, small coordinates past smallidx 48
+        {1e7f,   1.0f, 0.1f, false},     // 71 bits, small coordinates past smallidx 48
+        {1e7f,   1.0f, 0.9f, false},     // ranges beyond 24 bits, small coordinates past smallidx 63
+        {1e3f,   6.0f, 0.1f, true},
+        {1e5f, 200.0f, 0.1f, false},     // ranges beyond 24 bits
     };
     const int natoms = 3 * 200;
     const int nframes = 3;
@@ -986,7 +990,7 @@ UTEST(xtc, decode_matches_what_was_written) {
                 for (int a = 0; a < 3; ++a) o[a] = (float)(cases[c].box * xtc_test_rand());
                 for (int k = 0; k < 3; ++k) {
                     for (int a = 0; a < 3; ++a) {
-                        x[9 * w + 3 * k + a] = (cases[c].planar && a == 2) ? 1.5f : o[a] + (k ? (float)(0.1 * (xtc_test_rand() - 0.5)) : 0.0f);
+                        x[9 * w + 3 * k + a] = (cases[c].planar && a == 2) ? 1.5f : o[a] + (k ? (float)(cases[c].spread * (xtc_test_rand() - 0.5)) : 0.0f);
                     }
                 }
             }

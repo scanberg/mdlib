@@ -173,8 +173,8 @@ typedef struct xtc_bits_t {
     uint32_t num_bits;
 } xtc_bits_t;
 
-// The layout as a constant expression. Beyond 64 bits it is that of 64, which xtc_read_slow, the only
-// reader of such numbers, does not look at.
+// The layout as a constant expression. Beyond 64 bits it is that of 64, which the readers of such numbers
+// (xtc_read_long, xtc_read_slow) do not look at.
 #define XTC_BYTES(n)  ((MD_MIN(n, 64) - 1) / 8)
 #define XTC_LAST(n)   (MD_MIN(n, 64) - 8 * XTC_BYTES(n))
 #define XTC_BITS(n)   {(1ull << (8 * XTC_BYTES(n))) - 1, ((1ull << XTC_LAST(n)) - 1) << (8 * XTC_BYTES(n)), 8 - XTC_LAST(n), (n)}
@@ -193,9 +193,9 @@ static MD_FORCE_INLINE uint64_t xtc_value(const uint8_t* stream, size_t bit_offs
     return (bytes & bits.lo_mask) | ((bytes >> bits.hi_shift) & bits.hi_mask);
 }
 
-// Any number with plain divisions: those the multiplications cannot take (see the callers), up to 72
-// bits, divided by size_z in limbs of 32 bits, the top one first.
-static XTC_NOINLINE v4i_t xtc_read_slow(const uint8_t* stream, size_t bit_offset, uint32_t num_bits, uint64_t size_y, uint64_t size_z) {
+// Small coordinates beyond XTC_SMALL_LIMB_MAX (64 to 72 bits, s > 2^21), which only a precision of 10^7
+// or so reaches, with plain divisions: v / s in limbs of 32 bits, the top one first, as xtc_read_long.
+static XTC_NOINLINE v4i_t xtc_read_slow(const uint8_t* stream, size_t bit_offset, uint32_t num_bits, uint64_t s) {
     MD_ASSERT(num_bits <= 72);
     uint64_t lo, hi = 0;
     if (num_bits <= 64) {
@@ -204,10 +204,10 @@ static XTC_NOINLINE v4i_t xtc_read_slow(const uint8_t* stream, size_t bit_offset
         lo = xtc_bytes_wide(stream, bit_offset);
         hi = xtc_bits(stream, bit_offset + 64, num_bits - 64);
     }
-    const uint64_t a = (hi << 32) | (lo >> 32);                    // < 2^40
-    const uint64_t b = ((a % size_z) << 32) | (lo & 0xFFFFFFFF);    // < size_z * 2^32
-    const uint64_t t = ((a / size_z) << 32) | (b / size_z);         // x * size_y + y
-    return v4i_set((uint32_t)(t / size_y), (uint32_t)(t % size_y), (uint32_t)(b % size_z), 0);
+    const uint64_t a = (hi << 32) | (lo >> 32);             // < 2^40
+    const uint64_t b = ((a % s) << 32) | (lo & 0xFFFFFFFF);  // < s * 2^32
+    const uint64_t t = ((a / s) << 32) | (b / s);            // x * s + y
+    return v4i_set((uint32_t)(t / s), (uint32_t)(t % s), (uint32_t)(b % s), 0);
 }
 
 // Ranges beyond 24 bits: then the three are sent one after the other (sendbits), num_bits[i] bits each
@@ -237,7 +237,7 @@ static uint32_t xtc_sizeofint(uint32_t size) {
 //
 // Its x and x * size_y + y each in one division of v, rather than one after the other, which leaves the
 // next group less to wait for. Below 2^63 (63 bits); more, which takes ranges of 2^21 along all three
-// axes, take xtc_read_slow.
+// axes, take xtc_read_long.
 #define XTC_NARROW_BITS 57
 #define XTC_WIDE_BITS   63
 
@@ -245,6 +245,7 @@ typedef struct xtc_big_t {
     xtc_bits_t bits;
     xtc_div_t  div_yz;      // by size_y * size_z: x
     xtc_div_t  div_z;       // by size_z: x * size_y + y
+    xtc_div_t  div_y;       // by size_y: only beyond XTC_WIDE_BITS
     uint64_t   size_y;
     uint64_t   size_z;
 } xtc_big_t;
@@ -254,6 +255,7 @@ static inline xtc_big_t xtc_big_init(uint32_t num_bits, uint32_t size_y, uint32_
         .bits   = xtc_bits_init(num_bits),
         .div_yz = xtc_div_init((uint64_t)size_y * size_z),
         .div_z  = xtc_div_init(size_z),
+        .div_y  = num_bits > XTC_WIDE_BITS ? xtc_div_init(size_y) : xtc_div_init(1),
         .size_y = size_y,
         .size_z = size_z,
     };
@@ -266,15 +268,31 @@ static MD_FORCE_INLINE v4i_t xtc_digits_big(uint64_t v, xtc_big_t big) {
     return v4i_set((uint32_t)x, (uint32_t)(t - x * big.size_y), (uint32_t)(v - t * big.size_z), 0);
 }
 
-// The width is the same for the whole frame, so the branches are predicted.
+// Up to XTC_WIDE_BITS. The width is the same for the whole frame, so the branch is predicted.
 static MD_FORCE_INLINE v4i_t xtc_read_big(const uint8_t* stream, size_t bit_offset, xtc_big_t big) {
     if (big.bits.num_bits <= XTC_NARROW_BITS) {
         return xtc_digits_big(xtc_value(stream, bit_offset, big.bits, false), big);
     }
-    if (big.bits.num_bits <= XTC_WIDE_BITS) {
-        return xtc_digits_big(xtc_value(stream, bit_offset, big.bits, true), big);
+    return xtc_digits_big(xtc_value(stream, bit_offset, big.bits, true), big);
+}
+
+// 64 to 72 bits, v = hi * 2^64 + lo: v / size_z in two limbs of 32 bits, the top one first, then the
+// quotient, x * size_y + y < 2^48, by size_y. With size_z <= 2^24 every dividend is below 2^56.
+static MD_FORCE_INLINE v4i_t xtc_read_long(const uint8_t* stream, size_t bit_offset, xtc_big_t big) {
+    uint64_t lo, hi = 0;
+    if (big.bits.num_bits == 64) {
+        lo = xtc_value(stream, bit_offset, big.bits, true);
+    } else {
+        lo = xtc_bytes_wide(stream, bit_offset);
+        hi = xtc_bits(stream, bit_offset + 64, big.bits.num_bits - 64);
     }
-    return xtc_read_slow(stream, bit_offset, big.bits.num_bits, big.size_y, big.size_z);
+    const uint64_t a  = (hi << 32) | (lo >> 32);                                 // < 2^40
+    const uint64_t qa = xtc_div(a, big.div_z);
+    const uint64_t b  = ((a - qa * big.size_z) << 32) | (lo & 0xFFFFFFFF);       // < size_z * 2^32
+    const uint64_t qb = xtc_div(b, big.div_z);
+    const uint64_t t  = (qa << 32) | qb;                                         // x * size_y + y
+    const uint64_t x  = xtc_div(t, big.div_y);
+    return v4i_set((uint32_t)x, (uint32_t)(t - x * big.size_y), (uint32_t)(b - qb * big.size_z), 0);
 }
 
 // ### Small coordinates ###
@@ -285,7 +303,9 @@ static MD_FORCE_INLINE v4i_t xtc_read_big(const uint8_t* stream, size_t bit_offs
 // v < s^3. For x = v / s^2 directly, it holds up to XTC_SMALL_PAIR_MAX; past it x comes from v / s, one
 // division after the other, which holds up to XTC_SMALL_CHAIN_MAX (s^4 <= 2^64 would do). In one step x
 // is ready sooner, which counts on cores whose window is too short to cover the chain (Skylake). Beyond,
-// xtc_read_slow: only files of a precision of 10^6 or so come there.
+// where only files of a precision of 10^6 or so come, up to XTC_SMALL_LIMB_MAX (s <= 2^21, v < 2^63), v / s
+// is taken in two limbs of 21 bits, the top one first, and then x from v / s < s^2: every dividend u is
+// below 2^42, where the same multiplier holds ((u + 1) * f <= 2^42 * 2^21). Beyond, xtc_read_slow.
 typedef struct xtc_small_t {
     xtc_bits_t bits;
     uint64_t   size;
@@ -295,6 +315,8 @@ typedef struct xtc_small_t {
 
 #define XTC_SMALL_PAIR_MAX  38
 #define XTC_SMALL_CHAIN_MAX 48
+#define XTC_SMALL_LIMB_MAX  63
+#define XTC_SMALL_LIMB_BITS 21
 #define XTC_SMALL(i, s) {XTC_BITS(i), (s), UINT64_MAX / (s), UINT64_MAX / ((uint64_t)(s) * (s))}
 
 #define FIRSTIDX 9
@@ -321,12 +343,23 @@ static const xtc_small_t xtc_small[] = {
 enum {
     XTC_SMALL_PAIR,
     XTC_SMALL_CHAIN,
+    XTC_SMALL_LIMB,
     XTC_SMALL_SLOW,
 };
 
 static MD_FORCE_INLINE v4i_t xtc_read_small(const uint8_t* stream, size_t bit_offset, xtc_small_t sml, const int kind) {
     if (kind == XTC_SMALL_SLOW) {
-        return xtc_read_slow(stream, bit_offset, sml.bits.num_bits, sml.size, sml.size);
+        return xtc_read_slow(stream, bit_offset, sml.bits.num_bits, sml.size);
+    }
+    if (kind == XTC_SMALL_LIMB) {
+        const uint64_t v  = xtc_value(stream, bit_offset, sml.bits, true);
+        const uint64_t a  = v >> XTC_SMALL_LIMB_BITS;
+        const uint64_t qa = xtc_mulhi(a + 1, sml.m);
+        const uint64_t b  = ((a - qa * sml.size) << XTC_SMALL_LIMB_BITS) | (v & ((1ull << XTC_SMALL_LIMB_BITS) - 1));
+        const uint64_t qb = xtc_mulhi(b + 1, sml.m);
+        const uint64_t t  = (qa << XTC_SMALL_LIMB_BITS) | qb;      // x * s + y
+        const uint64_t x  = xtc_mulhi(t + 1, sml.m);
+        return v4i_set((uint32_t)x, (uint32_t)(t - x * sml.size), (uint32_t)(b - qb * sml.size), 0);
     }
     const uint64_t v = xtc_value(stream, bit_offset, sml.bits, false);
     const uint64_t t = xtc_mulhi(v + 1, sml.m);     // x * s + y
@@ -364,15 +397,21 @@ static MD_FORCE_INLINE v4i_t xtc_decode_run(const uint8_t* stream, size_t* bit_o
     return thiscoord;
 }
 
+enum {
+    XTC_FORM_ONE,       // one number of up to XTC_WIDE_BITS
+    XTC_FORM_LONG,      // one number of more
+    XTC_FORM_THREE,     // three numbers
+};
+
 // The coordinates of a compressed frame from its stream of bits, in groups: the first coordinate of a
-// group is one number (big), or when a range is beyond 24 bits three numbers of bitsizeint[i] bits
-// ('three'), and a run of small coordinates may follow. Force inlined into its two callers below with
-// 'three' a constant in each: the loop that decodes the frames of every ordinary trajectory is then
-// compiled with no trace of the three numbers none of them has.
+// group is one number (big), or when a range is beyond 24 bits three numbers of bitsizeint[i] bits, and
+// a run of small coordinates may follow. Force inlined into its three callers below with 'form' a
+// constant in each: the loop that decodes the frames of every ordinary trajectory is then compiled with
+// no trace of the forms none of them has.
 static MD_FORCE_INLINE bool xtc_decode_coords(const uint8_t* stream, uint64_t num_bytes, int natoms, int smallidx, const int32_t minint[3], float scale,
-                                              float precision, xtc_big_t big, const uint32_t bitsizeint[3], float* out_coords, const bool three) {
+                                              float precision, xtc_big_t big, const uint32_t bitsizeint[3], float* out_coords, const int form) {
     const size_t max_bits = (size_t)num_bytes * 8;
-    const size_t big_bits = three ? (size_t)bitsizeint[0] + bitsizeint[1] + bitsizeint[2] : big.bits.num_bits;
+    const size_t big_bits = form == XTC_FORM_THREE ? (size_t)bitsizeint[0] + bitsizeint[1] + bitsizeint[2] : big.bits.num_bits;
     size_t bit_offset = 0;
 
     xtc_small_t sml = xtc_small[smallidx - FIRSTIDX];
@@ -399,7 +438,8 @@ static MD_FORCE_INLINE bool xtc_decode_coords(const uint8_t* stream, uint64_t nu
             limit = natoms;
         }
         while (atom_idx < limit) {
-            v4i_t thiscoord = three ? xtc_read_three(stream, bit_offset, bitsizeint) : xtc_read_big(stream, bit_offset, big);
+            v4i_t thiscoord = form == XTC_FORM_THREE ? xtc_read_three(stream, bit_offset, bitsizeint) :
+                              form == XTC_FORM_LONG  ? xtc_read_long(stream, bit_offset, big) : xtc_read_big(stream, bit_offset, big);
             thiscoord = v4i_add(thiscoord, vminint);
             bit_offset += big_bits;
 
@@ -428,6 +468,8 @@ static MD_FORCE_INLINE bool xtc_decode_coords(const uint8_t* stream, uint64_t nu
                     thiscoord = xtc_decode_run(stream, &bit_offset, thiscoord, vsmall, sml, invp, &lfp, run_count, XTC_SMALL_PAIR);
                 } else if (smallidx <= XTC_SMALL_CHAIN_MAX) {
                     thiscoord = xtc_decode_run(stream, &bit_offset, thiscoord, vsmall, sml, invp, &lfp, run_count, XTC_SMALL_CHAIN);
+                } else if (smallidx <= XTC_SMALL_LIMB_MAX) {
+                    thiscoord = xtc_decode_run(stream, &bit_offset, thiscoord, vsmall, sml, invp, &lfp, run_count, XTC_SMALL_LIMB);
                 } else {
                     thiscoord = xtc_decode_run(stream, &bit_offset, thiscoord, vsmall, sml, invp, &lfp, run_count, XTC_SMALL_SLOW);
                 }
@@ -464,7 +506,14 @@ done:
 static XTC_NOINLINE bool xtc_decode_coords_three(const uint8_t* stream, uint64_t num_bytes, int natoms, int smallidx, const int32_t minint[3],
                                                  float scale, float precision, const uint32_t bitsizeint[3], float* out_coords) {
     const xtc_big_t no_big = {0};
-    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, no_big, bitsizeint, out_coords, true);
+    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, no_big, bitsizeint, out_coords, XTC_FORM_THREE);
+}
+
+static XTC_NOINLINE bool xtc_decode_coords_long(const uint8_t* stream, uint64_t num_bytes, int natoms, int smallidx, const int32_t minint[3],
+                                                float scale, float precision, uint32_t num_bits, uint32_t size_y, uint32_t size_z, float* out_coords) {
+    const xtc_big_t big = xtc_big_init(num_bits, size_y, size_z);
+    const uint32_t no_bitsizeint[3] = {0};
+    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, big, no_bitsizeint, out_coords, XTC_FORM_LONG);
 }
 
 static inline bool decode_header(const uint8_t* frame_ptr, md_xtc_header_t* out_header) {
@@ -727,9 +776,13 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
         return xtc_decode_coords_three(stream, num_bytes, natoms, smallidx, minint, scale, precision, bitsizeint, out_coords);
     }
     // Three ranges of at most 24 bits: one number of at most 72
-    const xtc_big_t big = xtc_big_init(xtc_sizeofints(sizeint), sizeint[1], sizeint[2]);
+    const uint32_t num_bits = xtc_sizeofints(sizeint);
+    if (XTC_UNLIKELY(num_bits > XTC_WIDE_BITS)) {
+        return xtc_decode_coords_long(stream, num_bytes, natoms, smallidx, minint, scale, precision, num_bits, sizeint[1], sizeint[2], out_coords);
+    }
+    const xtc_big_t big = xtc_big_init(num_bits, sizeint[1], sizeint[2]);
     const uint32_t no_bitsizeint[3] = {0};
-    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, big, no_bitsizeint, out_coords, false);
+    return xtc_decode_coords(stream, num_bytes, natoms, smallidx, minint, scale, precision, big, no_bitsizeint, out_coords, XTC_FORM_ONE);
 }
 
 bool md_xtc_decode_frame_data(const uint8_t* frame_ptr, size_t frame_bytes, md_xtc_header_t* out_header, float* out_coords, size_t num_atoms) {
