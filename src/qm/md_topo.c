@@ -618,10 +618,9 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 //     rho(r) = sum_{mu,nu} D_{mu nu} phi_mu(r) phi_nu(r)
 //
 // with rho >= rho_min, without sampling the field on a grid. Space is partitioned by an octree of
-// cubes and every cube is PROVEN to contain either no critical point, or exactly one (which Newton
-// from the cube centre then converges to). Cubes that reach h_min without either proof are reported
-// as unresolved (genuinely near-degenerate topology), grouped into clusters, each with the Brouwer
-// degree of grad rho on its boundary (0: a cancelling pair or nothing, +-1: at least one CP).
+// cubes and every cube is PROVEN to contain either no critical point, or exactly one. Cubes that reach
+// h_min without either proof are reported as unresolved (genuinely near-degenerate topology), grouped
+// into clusters with the degree of grad rho on each cluster's box, sampled (a diagnostic, not a proof).
 //
 // The proofs need rigorous enclosures of grad rho and of the Hessian over a cube. They are built from
 // the structure of the basis:
@@ -631,27 +630,56 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 //     density matrix only ever multiplies exact centre data, so its (large) core/valence cancellations
 //     survive. Only a sixth order term ever sees |D|.
 //
-// Tests per cube (centre c, half-width h; g, A, T = grad, Hessian, third derivatives of rho at c):
-//   exclusion : grad rho(c+d) in g + A d + 1/2 T[d,d] +- r. No zero if, along some direction w,
-//               |w.g| > sum_j |(A w)_j| h + sum_k |w_k| (q_k + r_k), or if the Newton point lies far
-//               enough outside the cube.
-//   Krawczyk  : K = c - A^-1 g + (I - A^-1 [H]) (X - c), [H] = A +- dH. K inside X => exactly one zero.
-//               K disjoint from X => no zero. Run on a 1.5x inflated cube so roots on faces are caught;
-//               a root is accepted by any cube that (closed, plus 1e-9) contains it and deduplicated.
+// Tests per cube X = c +- h, in this order (g, A, T = grad, Hessian, third derivatives of rho at c):
+//   rho bound : rho <= rho_up < rho_min over X => no CP sought there.
+//   exclusion : grad rho(c+d) in g + A d + 1/2 T[d,d] +- r over X. No zero if, for some axis k, the
+//               component g_k + (A d)_k + 1/2 T_k[d,d] keeps its sign with margin r_k: bounded term by term
+//               first (a fast path: the exact test below implies it, up to its 1e-12 margin), then
+//               minimised exactly over the box.
+//   Newton    : with Y ~ A^-1 (cofactors) and R = I - Y A, ||R|| < 1 puts every zero c + d of grad rho in X
+//   distance    within a computable distance of d = -Y g; none in X if that ball misses X in some component.
+//   Krawczyk  : on the 1.5x cube X' = c +- 1.5h, with [H] = A +- dH enclosing the Hessian over X':
+//               K = c - Y g + (I - Y [H]) (X' - c), g known to within the screened shells' gradient tail.
+//               K inside X' => exactly one zero in X', and every matrix in [H] is nonsingular, so the
+//               Hessian's inertia (the CP's type) is the same throughout X'. Newton from c polishes it; the
+//               cube keeps it if it lies in the cube itself (closed, plus 1e-9: a root on a face is found by
+//               every cube sharing it, and deduplicated). Inflating is what catches roots on or near faces:
+//               the root lattice is anchored to the world, so symmetric inputs put CPs exactly on its planes,
+//               where no cube's own K could lie inside the cube (without it, water in its symmetry frame
+//               leaves all 5 CPs unresolved). K disjoint from X' in some component => no zero in X'.
+// A cube that splits passes its expansion on: a child that g + A d + 1/2 T[d,d] +- r of the parent excludes
+// (by the axes or the Newton distance) already is not evaluated.
+//
+// The axes' exclusion fails along a soft direction of a near-degenerate CP (a small Hessian eigenvalue): the
+// planes where the components of grad rho vanish nearly coincide along it, so all three cross every cube
+// near that line, down to a size set by the eigenvalue. The Newton distance and Krawczyk's "no zero" outcome
+// exclude those cubes. The CPU sweep alone rarely makes such cubes (it decides the region earlier), but the
+// GPU sweep, whose fp32 margins split it finer, escalates them: without the "no zero" outcome they ran to
+// h_min unresolved (a stacked benzene dimer).
+//
+// What the optional tests are worth in the GPU sweep: without the exact quadratic exclusion it evaluates 27%
+// more cubes (the test inputs), without the Newton distance 0.7% more (a 72-atom system, infinitene in
+// def2-SVP: 489k cubes, 2000 of them escalated to the CPU). Not made, as worth less than their code: exclusion
+// along the gradient and the Hessian's eigenvectors (on that system 0.25% of the cubes and 72 escalations,
+// for an eigendecomposition per cube) and Krawczyk on the cube itself before the 1.5x cube (52 escalations;
+// near a soft CP it certifies cubes whose 1.5x cube it cannot).
+//
 // Contributions of AOs screened away from a cube are bounded, so screening does not break rigour: those
 // of the shells between the cube's local radius and their far radius by their tails at the cube's
 // distance, charged to the cube; all the others by one global term. The search domain is derived from
 // the same tail bounds (rho <= rho_min outside).
 //
-// Separatrices (bond paths BCP -> 2 maxima, RCP attractor paths RCP -> CCP or infinity) are traced from the
-// saddles along their unique eigen-directions with adaptive Dormand-Prince RK45; they become the graph
-// edges (from = saddle, to = extremum), exactly the edges the voxel pipeline produces.
+// Separatrices (bond paths BCP -> 2 maxima, RCP attractor paths RCP -> CCP) are traced from the saddles
+// along their unique eigen-directions with adaptive Dormand-Prince RK45; they become the graph edges
+// (from = saddle, to = extremum), exactly the edges the voxel pipeline produces. They are a numerical
+// integration, outside the certificate.
 //
-// Rigour holds up to floating-point rounding (no outward rounding; the enclosures carry far more slack
-// than rounding error, and mdlib builds with -ffast-math, so no infinities are used as sentinels).
+// Rigour holds up to floating-point rounding: there is no outward rounding here (the GPU sweep has
+// rounding margins), and the enclosures carry far more slack than rounding error. mdlib builds with IEEE
+// semantics and contracted multiply-adds (-ffp-contract=fast, not -ffast-math).
 // Units: Bohr. Multithreaded over cubes (fixed interleaved chunks, results merged in cube order), so the
-// output is bit-identical for any thread count. Atomic core zones (a ~20-25% optimisation, see the design
-// notes) are not part of this reference.
+// output is bit-identical for any thread count. Atomic core zones (estimated at 20-25% during development;
+// those notes are not in the tree) are not implemented.
 
 #include <md_gto.h>
 #include <core/md_os.h>
@@ -661,9 +689,6 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 #include <stdlib.h>
 
 #define CPG_LMAX    MD_GTO_MAX_ANGULAR_MOMENTUM
-#define CPG_KI      (CPG_LMAX + 8)
-#define CPG_KA      7               // 1D derivative orders 0..6 (the GPU kernel's separable remainders)
-#define CPG_KM      (CPG_KI + CPG_KA + 1)
 #define CPG_NMI     35              // multi-indices of order 0..4
 #define CPG_NV      20              // centre values: orders 0..3
 #define CPG_NDV     20              // D-products: orders 0..3
@@ -724,8 +749,7 @@ typedef struct cpg_ctx_t {
     double  rung_tau[CPG_RUNGS];
     double* rung_r2;
     double eps;
-    double kappa[CPG_KI][CPG_KA][CPG_KM];
-    double kap_sep[CPG_LMAX + 1][CPG_SEP_A][CPG_LMAX + CPG_SEP_A];  // d^a [x^i E] = sum_m kap_sep[i][a][m] alpha^((m-i+a)/2) x^m E
+    double kappa[CPG_LMAX + 1][CPG_SEP_A][CPG_LMAX + CPG_SEP_A];  // d^a [x^i E] = sum_m kappa[i][a][m] alpha^((m-i+a)/2) x^m E
     int    mi[CPG_NMI][3];
     int    mi_idx[5][5][5];
     int    m1[3], m2[3][3], m3[3][3][3], m4[3][3][3][3];
@@ -754,12 +778,14 @@ typedef struct cpg_scratch_t {
     size_t  tc_cap;     // doubles allocated for tc_B
 } cpg_scratch_t;
 
+// A cube c +- h and its 1.5x cube c +- 1.5h, from one local AO list screened against the latter.
 typedef struct cpg_eval_t {
     double rho, g[3], A[3][3], T[3][3][3];
-    double r[3];        // remainder of grad beyond g + A d + 1/2 T[d,d]
-    double quadT[3];    // bound of 1/2 T[d,d]
-    double dH[3][3];    // Hessian enclosure half-width
+    double r[3];        // remainder of grad beyond g + A d + 1/2 T[d,d] over the cube
+    double quadT[3];    // bound of 1/2 T[d,d] over the cube
+    double dH[3][3];    // Hessian enclosure half-width over the 1.5x cube
     double rho_up;      // upper bound of rho over the cube
+    double tg;          // the screened shells' gradient tail (per component), over the 1.5x cube
 } cpg_eval_t;
 
 // ----------------------------------------------------------------------------------------------- small math
@@ -840,30 +866,35 @@ static bool cpg_inverse_sym3(double out[3][3], const double val[3], double vec[3
     return true;
 }
 
+// A^-1 by cofactors. Returns false if A is singular (or not finite). Krawczyk forms I - Y A from the Y
+// returned, so it need not be the exact inverse.
+static bool cpg_inverse3(double Y[3][3], const double A[3][3]) {
+    const double c00 = A[1][1] * A[2][2] - A[1][2] * A[2][1];
+    const double c01 = A[1][2] * A[2][0] - A[1][0] * A[2][2];
+    const double c02 = A[1][0] * A[2][1] - A[1][1] * A[2][0];
+    const double det = A[0][0] * c00 + A[0][1] * c01 + A[0][2] * c02;
+    if (!(fabs(det) > 0.0) || !isfinite(det)) return false;
+    const double s = 1.0 / det;
+    Y[0][0] = c00 * s; Y[0][1] = (A[0][2] * A[2][1] - A[0][1] * A[2][2]) * s; Y[0][2] = (A[0][1] * A[1][2] - A[0][2] * A[1][1]) * s;
+    Y[1][0] = c01 * s; Y[1][1] = (A[0][0] * A[2][2] - A[0][2] * A[2][0]) * s; Y[1][2] = (A[0][2] * A[1][0] - A[0][0] * A[1][2]) * s;
+    Y[2][0] = c02 * s; Y[2][1] = (A[0][1] * A[2][0] - A[0][0] * A[2][1]) * s; Y[2][2] = (A[0][0] * A[1][1] - A[0][1] * A[1][0]) * s;
+    return isfinite(s);
+}
+
 // ----------------------------------------------------------------------------------------------- setup
 
 static void cpg_init_tables(cpg_ctx_t* ctx) {
+    // kappa: d^a/dx^a [x^i E] = sum_m kappa[i][a][m] alpha^((m - i + a) / 2) x^m E, E = exp(-alpha x^2), from
+    // d/dx [x^m E] = m x^(m-1) E - 2 alpha x^(m+1) E. The tail bounds use orders a <= 2, the separable
+    // remainders a < CPG_SEP_A.
     memset(ctx->kappa, 0, sizeof(ctx->kappa));
-    for (int i = 0; i < CPG_KI; ++i) ctx->kappa[i][0][i] = 1.0;
-    for (int a = 0; a < CPG_KA - 1; ++a) {
-        for (int i = 0; i < CPG_KI - 1 - a; ++i) {
-            for (int m = 0; m < CPG_KM; ++m) {
-                double v = -2.0 * ctx->kappa[i + 1][a][m];
-                if (i >= 1) v += i * ctx->kappa[i - 1][a][m];
-                ctx->kappa[i][a + 1][m] = v;
-            }
-        }
-    }
-    // the same expansion with the recurrence in a at fixed i (d/dx [x^m E] = m x^(m-1) E - 2 alpha x^(m+1) E),
-    // to the higher orders the separable remainders need
-    memset(ctx->kap_sep, 0, sizeof(ctx->kap_sep));
     for (int i = 0; i <= CPG_LMAX; ++i) {
-        ctx->kap_sep[i][0][i] = 1.0;
+        ctx->kappa[i][0][i] = 1.0;
         for (int a = 0; a + 1 < CPG_SEP_A; ++a) {
             for (int m = 0; m <= i + a + 1; ++m) {
-                double v = m + 1 <= i + a ? (m + 1) * ctx->kap_sep[i][a][m + 1] : 0.0;
-                if (m >= 1) v -= 2.0 * ctx->kap_sep[i][a][m - 1];
-                ctx->kap_sep[i][a + 1][m] = v;
+                double v = m + 1 <= i + a ? (m + 1) * ctx->kappa[i][a][m + 1] : 0.0;
+                if (m >= 1) v -= 2.0 * ctx->kappa[i][a][m - 1];
+                ctx->kappa[i][a + 1][m] = v;
             }
         }
     }
@@ -900,7 +931,7 @@ static void cpg_init_tables(cpg_ctx_t* ctx) {
 #define M3(a,b,c)   (ctx->m3[a][b][c])
 #define M4(a,b,c,d) (ctx->m4[a][b][c][d])
 
-// sup over |x - centre| >= d of |d^(p,q,w) [x^i y^j z^k exp(-alpha r^2)]|, by monomial terms.
+// sup over |x - centre| >= d of |d^(p,q,w) [x^i y^j z^k exp(-alpha r^2)]|, by monomial terms (p, q, w <= 2).
 static double cpg_tail_prim(const cpg_ctx_t* ctx, int i, int j, int k, int p, int q, int w, double alpha, double d) {
     double acc = 0.0;
     for (int m1 = 0; m1 <= i + p; ++m1) {
@@ -959,8 +990,9 @@ static double cpg_tail_ao(const cpg_ctx_t* ctx, const cpg_shell_t* s, int ci, in
 
 // ----------------------------------------------------------------------------------------------- AO evaluation
 
-// 1D tables g[i][a] = d^a/dx^a [x^i exp(-alpha x^2)] for i <= imax - a.
-static void cpg_tables_1d(double g[CPG_LMAX + 5][4], double x, double alpha, int imax, int amax) {
+// 1D tables g[i][a] = d^a/dx^a [x^i exp(-alpha x^2)] for a <= amax, i <= imax - a, by the recurrence
+// g[i][a+1] = i g[i-1][a] - 2 alpha g[i+1][a] (imax < CPG_LMAX + CPG_SEP_A, amax < CPG_SEP_A - 1).
+static void cpg_tables_1d(double g[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1], double x, double alpha, int imax, int amax) {
     const double E = exp(-alpha * x * x);
     double xp = 1.0;
     for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= x; }
@@ -978,7 +1010,7 @@ static void cpg_shell_eval(const cpg_ctx_t* ctx, const cpg_shell_t* s, const dou
     const int nmi = deriv == 0 ? 1 : deriv == 1 ? 4 : deriv == 2 ? 10 : 20;
     const double dx = x[0] - s->A[0], dy = x[1] - s->A[1], dz = x[2] - s->A[2];
     for (int ci = 0; ci < s->ncart; ++ci) for (int m = 0; m < nmi; ++m) out[ci * stride + m] = 0.0;
-    double gx[CPG_LMAX + 5][4], gy[CPG_LMAX + 5][4], gz[CPG_LMAX + 5][4];
+    double gx[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1], gy[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1], gz[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1];
     for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
         const double al = ctx->alpha[s->prim_offset + ip];
         const double cf = ctx->coeff[s->prim_offset + ip];
@@ -999,10 +1031,10 @@ static void cpg_shell_eval(const cpg_ctx_t* ctx, const cpg_shell_t* s, const dou
 }
 
 // 1D factor of a primitive, X_{i,a}(x) = d^a/dx^a [x^i exp(-alpha x^2)], i <= l, on [xc - h, xc + h]:
-// centre values for a <= CPG_SEP_A - 2 and interval sups for 3 <= a <= CPG_SEP_A - 1 (the orders the
-// remainders below use). A sup adds up the monomial terms of the expansion, each at its own maximum on
-// the interval: sup |t|^m exp(-alpha t^2) sits at t = sqrt(m / 2 alpha), where it is (m / 2 alpha)^(m/2)
-// exp(-m/2), or at the nearer end of the interval.
+// centre values for a <= CPG_SEP_A - 2 (if val is not NULL) and interval sups for 3 <= a <= CPG_SEP_A - 1
+// (the orders the remainders below use). A sup adds up the monomial terms of the expansion, each at its
+// own maximum on the interval: sup |t|^m exp(-alpha t^2) sits at t = sqrt(m / 2 alpha), where it is
+// (m / 2 alpha)^(m/2) exp(-m/2), or at the nearer end of the interval.
 static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, double h,
                        double val[CPG_LMAX + 1][CPG_SEP_A], double sup[CPG_LMAX + 1][CPG_SEP_A]) {
     static const double exp_neg_half[CPG_LMAX + CPG_SEP_A] = {
@@ -1011,20 +1043,11 @@ static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, dou
         0.01110899653824231, 0.00673794699908547,
     };
     MD_STATIC_ASSERT(CPG_LMAX + CPG_SEP_A <= 11, "exp(-m/2) table");
-    // centre values by the recurrence g[i][a+1] = i g[i-1][a] - 2 alpha g[i+1][a]
-    double g[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1];
-    const int imax = l + CPG_SEP_A - 2;
-    const double E = exp(-alpha * xc * xc);
-    double xp = 1.0;
-    for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= xc; }
-    for (int a = 0; a < CPG_SEP_A - 2; ++a) {
-        for (int i = 0; i < imax - a; ++i) {
-            double v = -2.0 * alpha * g[i + 1][a];
-            if (i >= 1) v += i * g[i - 1][a];
-            g[i][a + 1] = v;
-        }
+    if (val) {
+        double g[CPG_LMAX + CPG_SEP_A][CPG_SEP_A - 1];
+        cpg_tables_1d(g, xc, alpha, l + CPG_SEP_A - 2, CPG_SEP_A - 2);
+        for (int i = 0; i <= l; ++i) for (int a = 0; a < CPG_SEP_A - 1; ++a) val[i][a] = g[i][a];
     }
-    for (int i = 0; i <= l; ++i) for (int a = 0; a < CPG_SEP_A - 1; ++a) val[i][a] = g[i][a];
     // monomial sups Sm[m] = sup over the interval of |t|^m exp(-alpha t^2)
     const double x0 = xc - h, x1 = xc + h, ax0 = fabs(x0), ax1 = fabs(x1);
     const double tlo = (x0 <= 0.0 && x1 >= 0.0) ? 0.0 : fmin(ax0, ax1);
@@ -1047,7 +1070,7 @@ static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, dou
         for (int a = 3; a < CPG_SEP_A; ++a) {
             double acc = 0.0;
             for (int m = (i + a) & 1; m <= i + a; m += 2) {      // only the parity of i + a occurs
-                const double k = ctx->kap_sep[i][a][m];
+                const double k = ctx->kappa[i][a][m];
                 if (k != 0.0) acc += fabs(k) * ap[(m - i + a) / 2] * Sm[m];
             }
             sup[i][a] = acc;
@@ -1055,9 +1078,10 @@ static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, dou
     }
 }
 
-// Per-AO remainder bounds over the cube c +- h, in the layout cpg_box_eval uses: E[0] E1, 1 E2, 2 E3,
-// 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a <= b). E_K of f = d^beta phi bounds |f(c + d) - T_{K-1} f (d)|,
-// T_{K-1} the Taylor polynomial of degree K - 1 at the centre.
+// Per-AO remainder bounds, in the layout cpg_box_eval uses: E[0] E1, 1 E2, 2 E3, 3..5 Ea2, 6..8 Ea3,
+// 9..14 Eab2 (a <= b). E_K of f = d^beta phi bounds |f(c + d) - T_{K-1} f (d)|, T_{K-1} the Taylor
+// polynomial of degree K - 1 at the centre: over the cube c +- h for the slots of rho and grad rho (K = 1, 3),
+// over the 1.5x cube c +- hi for those of the Hessian (K = 2).
 //
 // Each primitive is a product of 1D factors X_k = d^beta_k/dx^beta_k [x^i exp(-alpha x^2)]. Each factor
 // is written as its Taylor polynomial at the centre of degree P = K - 1 + CPG_SEP_EXTRA (exact
@@ -1077,9 +1101,10 @@ static void cpg_sep_1d(const cpg_ctx_t* ctx, int l, double alpha, double xc, dou
 // axis k and S_k[r] = sum over m >= r of u_k[m],
 //   sum over m0 + m1 + m2 >= K = sum over m0 of u_0[m0] T12[K - m0],  T12[j] = sum over m1 + m2 >= j,
 //   T12[j] = S_1[j] S_2[0] + sum over m1 < j of u_1[m1] S_2[j - m1]   (T12[j <= 0] = S_1[0] S_2[0]).
-static void cpg_shell_rem(const cpg_ctx_t* ctx, const cpg_shell_t* s, const double c[3], double h, double* E, int stride) {
+static void cpg_shell_rem(const cpg_ctx_t* ctx, const cpg_shell_t* s, const double c[3], double h, double hi, double* E, int stride) {
     enum { NBP = 6 };   // (beta, P) per axis: (0,2) (0,3) (1,3) (2,3) (0,4) (1,4)
     static const int bp_beta[NBP] = { 0, 0, 1, 2, 0, 1 }, bp_P[NBP] = { 2, 3, 3, 3, 4, 4 };
+    static const int bp_wide[NBP] = { 0, 1, 1, 1, 0, 0 };   // the factors of the K = 2 slots: over c +- hi
     // per slot: K and the (beta, P) index per axis
     static const int slot_K[15] = { 1, 2, 3, 2, 2, 2, 3, 3, 3, 2, 2, 2, 2, 2, 2 };
     static const int slot_bp[15][3] = {
@@ -1091,22 +1116,23 @@ static void cpg_shell_rem(const cpg_ctx_t* ctx, const cpg_shell_t* s, const doub
     static const double inv_fact[CPG_SEP_A] = { 1.0, 1.0, 1.0 / 2, 1.0 / 6, 1.0 / 24, 1.0 / 120, 1.0 / 720 };
     MD_STATIC_ASSERT(CPG_SEP_EXTRA == 2 && CPG_SEP_A == 7, "the (beta, P) table assumes two extra terms");
     for (int ci = 0; ci < s->ncart; ++ci) for (int t = 0; t < 15; ++t) E[ci * stride + t] = 0.0;
-    double val[CPG_LMAX + 1][CPG_SEP_A], sup[CPG_LMAX + 1][CPG_SEP_A], hp[CPG_SEP_A];
+    double val[CPG_LMAX + 1][CPG_SEP_A], sup[2][CPG_LMAX + 1][CPG_SEP_A], hp[2][CPG_SEP_A];
     double u[3][CPG_LMAX + 1][NBP][CPG_SEP_A], S[3][CPG_LMAX + 1][NBP][CPG_SEP_A + 1];
-    hp[0] = 1.0;
-    for (int m = 1; m < CPG_SEP_A; ++m) hp[m] = hp[m - 1] * h;
+    hp[0][0] = hp[1][0] = 1.0;
+    for (int m = 1; m < CPG_SEP_A; ++m) { hp[0][m] = hp[0][m - 1] * h; hp[1][m] = hp[1][m - 1] * hi; }
     for (uint32_t ip = 0; ip < s->num_prims; ++ip) {
         const double al = ctx->alpha[s->prim_offset + ip];
         const double cf = fabs(ctx->coeff[s->prim_offset + ip]);
         for (int k = 0; k < 3; ++k) {
-            cpg_sep_1d(ctx, s->l, al, c[k] - s->A[k], h, val, sup);
+            cpg_sep_1d(ctx, s->l, al, c[k] - s->A[k], h, val, sup[0]);
+            cpg_sep_1d(ctx, s->l, al, c[k] - s->A[k], hi, NULL, sup[1]);
             for (int i = 0; i <= s->l; ++i) {
                 for (int b = 0; b < NBP; ++b) {
-                    const int be = bp_beta[b], P = bp_P[b];
+                    const int be = bp_beta[b], P = bp_P[b], wd = bp_wide[b];
                     double* uu = u[k][i][b];
                     double* SS = S[k][i][b];
-                    for (int m = 0; m <= P; ++m) uu[m] = fabs(val[i][be + m]) * hp[m] * inv_fact[m];
-                    uu[P + 1] = sup[i][be + P + 1] * hp[P + 1] * inv_fact[P + 1];
+                    for (int m = 0; m <= P; ++m) uu[m] = fabs(val[i][be + m]) * hp[wd][m] * inv_fact[m];
+                    uu[P + 1] = sup[wd][i][be + P + 1] * hp[wd][P + 1] * inv_fact[P + 1];
                     SS[P + 2] = 0.0;
                     for (int m = P + 1; m >= 0; --m) SS[m] = SS[m + 1] + uu[m];
                 }
@@ -1263,17 +1289,21 @@ static void cpg_point(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[3]
 
 // ----------------------------------------------------------------------------------------------- cube enclosures
 
+// The cube c +- h and its 1.5x cube (Krawczyk's) from one local AO list, screened against the 1.5x cube (the
+// tails then hold over both): the enclosures of rho and grad rho over the cube, that of the Hessian over the
+// 1.5x cube. The GPU sweep's batches are screened the same way, against the union of their children's 1.5x cubes.
 static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c[3], double h, cpg_eval_t* ev) {
+    const double hi = 1.5 * h;
     int ns = 0;
     double tail[3];
-    const int n = cpg_local_aos_region(ctx, sc, c, h, &ns, tail);
+    const int n = cpg_local_aos_region(ctx, sc, c, hi, &ns, tail);
     memset(ev, 0, sizeof(*ev));
-    // centre values (orders 0..3) and per-AO remainder bounds over the cube
+    // centre values (orders 0..3) and per-AO remainder bounds
     int k = 0;
     for (int t = 0; t < ns; ++t) {
         const cpg_shell_t* s = &ctx->shell[sc->shells[t]];
         cpg_shell_eval(ctx, s, c, 3, sc->V + (size_t)k * CPG_NV, CPG_NV);
-        cpg_shell_rem(ctx, s, c, h, sc->E + (size_t)k * 16, 16);
+        cpg_shell_rem(ctx, s, c, h, hi, sc->E + (size_t)k * 16, 16);
         k += s->ncart;
     }
     // The rows of rho = sum_ij D_ij phi_i phi_j, per local AO: V (Vr), the remainder vector (Er), Dv = D V
@@ -1319,7 +1349,8 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
     for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) for (int cc = 0; cc < 3; ++cc) {
         ev->T[a][b][cc] = 2.0 * (DOT[M3(a, b, cc)][0] + DOT[M2(a, b)][M1(cc)] + DOT[M2(a, cc)][M1(b)] + DOT[M2(b, cc)][M1(a)]);
     }
-    // per-AO remainder vectors (cpg_shell_rem above). E[i*16 + .]: 0 E1, 1 E2, 2 E3, 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a<=b)
+    // per-AO remainder vectors (cpg_shell_rem above). E[i*16 + .]: 0 E1, 1 E2, 2 E3, 3..5 Ea2, 6..8 Ea3, 9..14 Eab2 (a<=b);
+    // E2, Ea2, Eab2 (and so Q[1], Q[3..5]) over the 1.5x cube
     const double h2 = h * h, h3 = h2 * h;
     int ab_idx[3][3];
     { int t = 0; for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) { ab_idx[a][b] = ab_idx[b][a] = t++; } }
@@ -1335,18 +1366,18 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
         double sum1 = 0, sum2 = 0;
         for (int p = 0; p < 3; ++p) { sum1 += ad[M1(p)]; for (int r = 0; r < 3; ++r) sum2 += ad[M2(p, r)]; }
         const double W  = ad[0] + h * sum1 + 0.5 * h2 * sum2;
-        const double W1 = ad[0] + h * sum1;
+        const double W1 = ad[0] + hi * sum1;
         double Wa[3], W1a[3], W1ab[6];
         for (int a = 0; a < 3; ++a) {
             double s1 = 0, s2 = 0;
             for (int p = 0; p < 3; ++p) { s1 += ad[M2(a, p)]; for (int r = 0; r < 3; ++r) s2 += ad[M3(a, p, r)]; }
             Wa[a]  = ad[M1(a)] + h * s1 + 0.5 * h2 * s2;
-            W1a[a] = ad[M1(a)] + h * s1;
+            W1a[a] = ad[M1(a)] + hi * s1;
         }
         for (int a = 0; a < 3; ++a) for (int b = a; b < 3; ++b) {
             double s1 = 0;
             for (int p = 0; p < 3; ++p) s1 += ad[M3(a, b, p)];
-            W1ab[ab_idx[a][b]] = ad[M2(a, b)] + h * s1;
+            W1ab[ab_idx[a][b]] = ad[M2(a, b)] + hi * s1;
         }
         rho_lin  += ad[0] * e[0];
         rho_quad += e[0] * q[0];
@@ -1375,10 +1406,11 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
             lin += fabs(ev->T[a][b][p]);
             for (int q = 0; q < 3; ++q) quad += fabs(DOT[M3(a, b, p)][M1(q)] + DOT[M2(a, p)][M2(b, q)]);
         }
-        const double v = h * lin + 2.0 * h2 * quad + 2.0 * err_H[ab_idx[a][b]] + tail[2];
+        const double v = hi * lin + 2.0 * hi * hi * quad + 2.0 * err_H[ab_idx[a][b]] + tail[2];
         ev->dH[a][b] = ev->dH[b][a] = v;
     }
     ev->rho_up = ev->rho + 2.0 * rho_lin + rho_quad + tail[0];
+    ev->tg = tail[1];
 }
 
 // ----------------------------------------------------------------------------------------------- tests
@@ -1439,66 +1471,45 @@ static void cpg_quad_box_range(double c0, const double b[3], double M[3][3], dou
     *out_max = hi;
 }
 
-static bool cpg_exclude(const cpg_eval_t* ev, double h, const double val[3], double vec[3][3]) {
-    double res[3];
-    for (int k = 0; k < 3; ++k) res[k] = ev->r[k] + ev->quadT[k];
-    double dirs[7][3] = {{1,0,0},{0,1,0},{0,0,1}};
-    int nd = 3;
-    const double gn = sqrt(ev->g[0] * ev->g[0] + ev->g[1] * ev->g[1] + ev->g[2] * ev->g[2]);
-    if (gn > 0.0) { for (int k = 0; k < 3; ++k) dirs[nd][k] = ev->g[k] / gn; nd++; }
-    for (int e = 0; e < 3; ++e) { for (int k = 0; k < 3; ++k) dirs[nd][k] = vec[k][e]; nd++; }
-    for (int t = 0; t < nd; ++t) {
-        const double* w = dirs[t];
-        const double lhs = fabs(w[0] * ev->g[0] + w[1] * ev->g[1] + w[2] * ev->g[2]);
-        double rhs = 0.0;
+// No zero of grad rho in the cube c +- h if some component of it keeps its sign there: over the cube
+// grad_k rho(c + d) = g_k + (A d)_k + 1/2 T_k[d,d] + e, |e| <= r_k (A is symmetric). The quadratic is
+// first bounded term by term (a fast path: the exact test below implies it, up to its 1e-12 margin), then
+// its range over the box is found exactly. Axes only (see the top of this section).
+static bool cpg_exclude(const cpg_eval_t* ev, double h) {
+    for (int k = 0; k < 3; ++k) {
+        double rhs = ev->r[k] + ev->quadT[k];
+        for (int j = 0; j < 3; ++j) rhs += fabs(ev->A[j][k]) * h;
+        if (fabs(ev->g[k]) > rhs) return true;
+        double b[3], M[3][3], qlo, qhi, scale = fabs(ev->g[k]);
         for (int j = 0; j < 3; ++j) {
-            const double Aw = ev->A[j][0] * w[0] + ev->A[j][1] * w[1] + ev->A[j][2] * w[2];
-            rhs += fabs(Aw) * h + fabs(w[j]) * res[j];
-        }
-        if (lhs > rhs) return true;
-        // the same direction with the quadratic part of the model minimised exactly over the box rather
-        // than bounded term by term (which ignores where on the box each term peaks)
-        double b[3], M[3][3], qlo, qhi, Rw = 0.0, scale = lhs;
-        for (int j = 0; j < 3; ++j) {
-            b[j] = ev->A[j][0] * w[0] + ev->A[j][1] * w[1] + ev->A[j][2] * w[2];
-            for (int k = 0; k < 3; ++k) M[j][k] = w[0] * ev->T[0][j][k] + w[1] * ev->T[1][j][k] + w[2] * ev->T[2][j][k];
-            Rw += fabs(w[j]) * ev->r[j];
+            b[j] = ev->A[j][k];
             scale += fabs(b[j]) * h;
-            for (int k = 0; k < 3; ++k) scale += 0.5 * fabs(M[j][k]) * h * h;
+            for (int l = 0; l < 3; ++l) { M[j][l] = ev->T[k][j][l]; scale += 0.5 * fabs(M[j][l]) * h * h; }
         }
-        cpg_quad_box_range(w[0] * ev->g[0] + w[1] * ev->g[1] + w[2] * ev->g[2], b, M, h, &qlo, &qhi);
-        const double margin = Rw + 1e-12 * scale;     // the extremes are found by small solves in double
+        cpg_quad_box_range(ev->g[k], b, M, h, &qlo, &qhi);
+        const double margin = ev->r[k] + 1e-12 * scale;     // the extremes are found by small solves in double
         if (qlo > margin || qhi < -margin) return true;
-    }
-    // Newton point far outside the cube
-    const double smin = fmin(fabs(val[0]), fmin(fabs(val[1]), fabs(val[2])));
-    if (smin > 0.0) {
-        double dstar[3] = {0, 0, 0};
-        for (int e = 0; e < 3; ++e) {
-            const double proj = vec[0][e] * ev->g[0] + vec[1][e] * ev->g[1] + vec[2][e] * ev->g[2];
-            for (int k = 0; k < 3; ++k) dstar[k] -= vec[k][e] * proj / val[e];
-        }
-        double dist2 = 0.0;
-        for (int k = 0; k < 3; ++k) { const double t = fabs(dstar[k]) - h; if (t > 0) dist2 += t * t; }
-        const double rn = sqrt(res[0] * res[0] + res[1] * res[1] + res[2] * res[2]);
-        if (smin * sqrt(dist2) > rn) return true;
     }
     return false;
 }
 
-// Krawczyk on X = c +- h with Y = A^-1: returns +1 (unique zero), -1 (no zero), 0 (undecided).
-static int cpg_krawczyk(const double g[3], double Y[3][3], double dH[3][3], double h) {
-    double m[3], rad[3];
-    for (int i = 0; i < 3; ++i) {
-        m[i] = -(Y[i][0] * g[0] + Y[i][1] * g[1] + Y[i][2] * g[2]);
-        double s = 0.0;
-        for (int j = 0; j < 3; ++j) s += fabs(Y[i][j]) * (dH[j][0] + dH[j][1] + dH[j][2]) * h;
-        rad[i] = s;
-    }
+// Krawczyk on X' = c +- hk: K = c - Y g + (I - Y [H]) (X' - c), [H] = A +- dH enclosing the Hessian over X',
+// and g, the gradient at c, known to within tg per component (the shells screened away). With R = I - Y A,
+// K - c lies in -Y g +- (|Y| tg + (|R| + |Y| dH) hk). Returns +1 if that lies inside X' (then X' holds
+// exactly one zero of grad rho and every matrix in [H] is nonsingular), -1 if it is disjoint from X' in some
+// component (then X' holds no zero), 0 otherwise. R is formed, so Y need not be the exact inverse.
+static int cpg_krawczyk(const double g[3], double Y[3][3], const double A[3][3], double dH[3][3], double hk, double tg) {
     bool inside = true, disjoint = false;
     for (int i = 0; i < 3; ++i) {
-        if (!(fabs(m[i]) + rad[i] < h)) inside = false;
-        if (fabs(m[i]) - rad[i] > h) disjoint = true;
+        double m = 0.0, rad = 0.0;
+        for (int j = 0; j < 3; ++j) {
+            m -= Y[i][j] * g[j];
+            double r = i == j ? 1.0 : 0.0, yd = 0.0;
+            for (int k = 0; k < 3; ++k) { r -= Y[i][k] * A[k][j]; yd += fabs(Y[i][k]) * dH[k][j]; }
+            rad += (fabs(r) + yd) * hk + fabs(Y[i][j]) * tg;
+        }
+        if (!(fabs(m) + rad < hk)) inside = false;
+        if (fabs(m) - rad > hk) disjoint = true;
     }
     return inside ? 1 : (disjoint ? -1 : 0);
 }
@@ -1712,7 +1723,9 @@ static double cpg_solid_angle(const double a[3], const double b[3], const double
     return 2.0 * atan2(num, den);
 }
 
-// Brouwer degree of grad rho on the boundary of [lo,hi] (solid angle of grad/|grad| over a triangulated surface).
+// Degree of grad rho on the boundary of [lo,hi], estimated: the solid angle swept by grad/|grad| over the
+// boundary sampled on an n x n grid per face, each triangle taken as the spherical triangle of its corners'
+// directions. Exact only where the sampling resolves how grad turns; a diagnostic, not a proof.
 static double cpg_degree(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double lo[3], const double hi[3], int n, double* out_min_grad) {
     double total = 0.0, gmin = DBL_MAX;
     double* grid = (double*)md_alloc(md_get_heap_allocator(), sizeof(double) * 3 * (n + 1) * (n + 1));
@@ -1851,9 +1864,12 @@ typedef struct cpg_worker_t {
     cpg_polish_t* pres;
 } cpg_worker_t;
 
-// The root of a cube Krawczyk certified (unique in the 1.5x inflated cube): double Newton from the cube
-// centre. Returns 1 if the root belongs to this cube (written to out_cp), 0 if it lies outside it or
-// below rho_min, -1 if Newton failed.
+// The root of a cube whose 1.5x cube Krawczyk certified (exactly one root there): double Newton from the
+// cube centre. Returns 1 if the root belongs to this cube (written to out_cp), 0 if it lies in the 1.5x cube
+// but outside this one (a neighbour's) or below rho_min, -1 if Newton failed or ended outside the 1.5x cube.
+// The certificate proves convergence of the simplified iteration with Y fixed, not of this full Newton; one
+// that ends outside the 1.5x cube has not found the certified root, and discarding the cube would lose it,
+// so it stays undecided (split, or escalated by the GPU sweep).
 static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_box_t* box, cpg_cp_t* out_cp) {
     cpg_cp_t cp = {0};
     md_memcpy(cp.x, box->c, sizeof(cp.x));
@@ -1862,10 +1878,14 @@ static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_bo
     // symmetry, e.g. a ring CP at the origin) is polished by several cubes whose Newton results differ in
     // the last bits, so a half-open test per cube can reject it everywhere. Accept it in the closed cube
     // plus a tolerance and deduplicate afterwards. The Krawczyk certificate makes the root unique in the
-    // inflated cube, so a duplicate can only be the same CP.
-    const double tol = 1e-9;
-    bool inside = true;
-    for (int k = 0; k < 3; ++k) inside &= (cp.x[k] >= box->c[k] - box->h - tol) && (cp.x[k] <= box->c[k] + box->h + tol);
+    // 1.5x cube, so a duplicate can only be the same CP.
+    const double tol = 1e-9, hk = 1.5 * box->h;
+    bool inside = true, certified = true;
+    for (int k = 0; k < 3; ++k) {
+        inside &= (cp.x[k] >= box->c[k] - box->h - tol) && (cp.x[k] <= box->c[k] + box->h + tol);
+        certified &= (cp.x[k] >= box->c[k] - hk - tol) && (cp.x[k] <= box->c[k] + hk + tol);
+    }
+    if (!certified) return -1;
     if (!inside || cp.rho < ctx->eps) return 0;
     cp.h = box->h;
     cp.type = cpg_classify(cp.ev);
@@ -1873,12 +1893,45 @@ static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_bo
     return 1;
 }
 
+// Newton distance: no zero of grad rho in the cube c +- h if the model puts every zero outside it. A zero
+// c + d in the cube solves A d = -(g + e), |e_j| <= quadT_j + r_j (the quadratic term and the remainder over the
+// cube; r holds the screened shells' gradient tail). With Y ~ A^-1 and R = I - Y A, ||R||_inf < 1 makes A
+// invertible with ||A^-1 - Y||_inf <= zeta = ||Y||_inf ||R||_inf / (1 - ||R||_inf), so with m = -Y g,
+// |d_i - m_i| <= zeta max_j |g_j| + sum_j (|Y_ij| + zeta) (quadT_j + r_j). If |m_i| exceeds h by more than that
+// for some i, the cube holds no zero. It decides cubes near a soft direction of a near-degenerate CP, which
+// the axes' exclusion cannot, without the eigendecomposition its earlier form took.
+static bool cpg_newton_dist(const cpg_eval_t* ev, double Y[3][3], double h) {
+    double nR = 0.0, nY = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        double sr = 0.0, sy = 0.0;
+        for (int j = 0; j < 3; ++j) {
+            double r = i == j ? 1.0 : 0.0;
+            for (int k = 0; k < 3; ++k) r -= Y[i][k] * ev->A[k][j];
+            sr += fabs(r);
+            sy += fabs(Y[i][j]);
+        }
+        nR = fmax(nR, sr);
+        nY = fmax(nY, sy);
+    }
+    if (!(nR < 0.9)) return false;
+    const double zeta = nY * nR / (1.0 - nR);
+    const double gmax = fmax(fabs(ev->g[0]), fmax(fabs(ev->g[1]), fabs(ev->g[2])));
+    for (int i = 0; i < 3; ++i) {
+        double m = 0.0, rad = zeta * gmax;
+        for (int j = 0; j < 3; ++j) {
+            m -= Y[i][j] * ev->g[j];
+            rad += (fabs(Y[i][j]) + zeta) * (ev->quadT[j] + ev->r[j]);
+        }
+        if (fabs(m) - rad > h) return true;
+    }
+    return false;
+}
+
 // Children of a cube that splits which the cube's own expansion already excludes: g + A d + 1/2 T[d,d]
 // re-centred at the child's centre, the quadratic term over the child, and the cube's remainder bound,
-// which holds on all of the cube; then the exclusion tests (directions, Newton distance). Returns the mask
-// of the children that still need an evaluation (bit s: child s, + side in x if s & 1, y if s & 2, z if
-// s & 4). On the test systems 27-38% of all children are excluded this way, and no child excluded so was
-// left undecided by its own evaluation.
+// which holds on all of the cube; then the cube's exclusion tests (cpg_exclude, cpg_newton_dist). Returns
+// the mask of the children that still need an evaluation (bit s: child s, + side in x if s & 1, y if s & 2,
+// z if s & 4).
 static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
     const double hc = 0.5 * h;
     uint32_t mask = 0;
@@ -1902,10 +1955,10 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
             C.r[i] = P->r[i];
         }
         md_memcpy(C.T, P->T, sizeof(C.T));           // a quadratic re-centred: the same T (the exact quadratic test uses it)
-        double val[3], vec[3][3], M[3][3];
-        md_memcpy(M, C.A, sizeof(M));
-        cpg_eigen_sym3(val, vec, M);
-        if (!cpg_exclude(&C, hc, val, vec)) mask |= 1u << s;
+        if (cpg_exclude(&C, hc)) continue;
+        double Y[3][3];
+        if (cpg_inverse3(Y, C.A) && cpg_newton_dist(&C, Y, hc)) continue;
+        mask |= 1u << s;
     }
     return mask;
 }
@@ -1914,27 +1967,22 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
 // the children to evaluate in bits 8..15 (cpg_child_mask); a split with no child left is a discard.
 static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_cp) {
     const cpg_ctx_t* ctx = w->ctx;
-    cpg_eval_t ev, evi;
+    cpg_eval_t ev;
     cpg_box_eval(ctx, &w->sc, box->c, box->h, &ev);
     if (ev.rho_up < ctx->eps) return CPG_DISCARD;
-    double val[3], vec[3][3], Y[3][3];
-    cpg_eigen_sym3(val, vec, ev.A);
-    if (cpg_exclude(&ev, box->h, val, vec)) return CPG_DISCARD;
-    const bool invertible = cpg_inverse_sym3(Y, val, vec);
-    int kr = invertible ? cpg_krawczyk(ev.g, Y, ev.dH, box->h) : 0;
-    if (kr == -1) return CPG_DISCARD;
-    if (invertible && kr == 0) {
-        const double hi = 1.5 * box->h;
+    if (cpg_exclude(&ev, box->h)) return CPG_DISCARD;
+    double Y[3][3];
+    if (cpg_inverse3(Y, ev.A)) {
+        if (cpg_newton_dist(&ev, Y, box->h)) return CPG_DISCARD;
         w->inflated++;
-        cpg_box_eval(ctx, &w->sc, box->c, hi, &evi);   // centre data is identical; only the enclosure differs
-        kr = cpg_krawczyk(ev.g, Y, evi.dH, hi);
+        const int kr = cpg_krawczyk(ev.g, Y, ev.A, ev.dH, 1.5 * box->h, ev.tg);
         if (kr == -1) return CPG_DISCARD;
-    }
-    if (kr == 1) {
-        const int r = cpg_polish_root(ctx, &w->sc, box, out_cp);
-        if (r == 1) return CPG_ROOT;
-        if (r == 0) return CPG_DISCARD;
-        // Newton failed despite the certificate (should not happen): treat the cube as undecided
+        if (kr == 1) {
+            const int r = cpg_polish_root(ctx, &w->sc, box, out_cp);
+            if (r == 1) return CPG_ROOT;
+            if (r == 0) return CPG_DISCARD;
+            // Newton did not reach the certified root (should not happen): the cube stays undecided
+        }
     }
     if (box->h <= w->h_min) return CPG_UNRESOLVED;
     const uint32_t children = cpg_child_mask(&ev, box->h);
@@ -2652,7 +2700,8 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
     info->ms_separatrices = md_tick_to_milliseconds(md_tick_now() - t_phase);
     t_phase = md_tick_now();
 
-    // --- unresolved cubes -> clusters with their boundary degree
+    // --- unresolved cubes -> clusters with their boundary degree (the box also holds whatever certified CPs
+    //     lie in it)
     const int nu = (int)md_array_size(unres);
     info->num_unresolved_boxes = (uint32_t)nu;
     if (nu > 0 && !info->cancelled) {
@@ -2873,9 +2922,10 @@ typedef struct cpg_gpu_keep_t {
 } cpg_gpu_keep_t;
 
 // Layout constants shared with topo_gto_cube.slang.
-#define CPG_GPU_PHI_W          456             // floats per row of phi: 57 channels x 8 children
-#define CPG_GPU_DV_W           272             // floats per row of dv: 34 x 8
-#define CPG_GPU_EP_W           260             // floats per cube of ep
+#define CPG_GPU_PHI_W          376             // floats per row of phi: 47 channels x 8 children
+#define CPG_GPU_DV_W           240             // floats per row of dv: 30 x 8
+#define CPG_GPU_EP_W           251             // floats per cube of ep
+#define CPG_GPU_GEMM_COLS      256             // gemm_main's columns per group (GCJ x 32 >= CPG_GPU_DV_W)
 #define CPG_GPU_TAB_CAP        3584            // floats of 1D tables per chunk of shells (ao_main: TAB_CAP)
 #define CPG_GPU_DEC_WG         64              // decide_main group size
 
@@ -3294,7 +3344,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 rows += n;
                 tiles += nt;
                 count++;
-                R->info.gpu_gemm_flop += (double)nt * 2.0 * gemm_rows * 288.0 * (double)((n + 15) / 16 * 16);
+                R->info.gpu_gemm_flop += (double)nt * 2.0 * gemm_rows * (double)CPG_GPU_GEMM_COLS * (double)((n + 15) / 16 * 16);
             }
             cpg_gpu_chunk_t ch = { qh, b, count, count == chunk, true, slot, 0, md_gpu_sync_none(), 0, 0.0 };
             for (int i = 0; i < nfl; ++i) ch.gpu_idle &= fl[i].count == 0;
