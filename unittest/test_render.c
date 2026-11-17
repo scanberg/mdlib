@@ -298,9 +298,9 @@ UTEST(render, sphere_coverage_depth_pick_perspective) {
     f_close(&fx);
 }
 
-/* Radii from a table: float4 points whose w is a type (low 16 bits) with
-   flags above it; the spheres as drawn are those of the table's radii, and a
-   type past the table's end is radius 0 (not drawn) */
+/* Radii from a table: float4 points whose w is a type, an index into it;
+   the spheres as drawn are those of the table's radii, and a type past the
+   table's end is radius 0 (not drawn) */
 UTEST(render, sphere_radius_table) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -310,7 +310,7 @@ UTEST(render, sphere_radius_table) {
     const double ctr[2][3] = { { 0.5, 0.2, -10 }, { -1.0, -1.0, -20 } };
     const double rad[2]    = { 1.2, 2.5 };
     const float table[3]   = { 0.0f, 2.5f, 1.2f };
-    const uint32_t type[3] = { 2u | (0xABCDu << 16), 1u | (0x1234u << 16), 7u };   /* the third: past the table */
+    const uint32_t type[3] = { 2u, 1u, 7u };   /* the third: past the table */
     float pts[12];
     for (int i = 0; i < 3; ++i) {
         for (int k = 0; k < 3; ++k) pts[4 * i + k] = i < 2 ? (float)ctr[i][k] : (k == 2 ? -10.0f : 2.0f);
@@ -3136,8 +3136,7 @@ UTEST(render, occlusion_off_where_it_culls_little) {
 }
 
 /* Radii from tables: six tables over seven batches (one read by two, one of
-   600 entries), types past a table's end among them, flags above the type,
-   small spheres for the compute raster and large ones for the hardware. They
+   600 entries), types past a table's end among them, small spheres for the compute raster and large ones for the hardware. They
    draw what float radii draw, to the bit; a sphere style that ignores radii
    (radius_scale 0, licorice's) draws what no radii do. */
 UTEST(render, radius_tables_change_nothing) {
@@ -3172,8 +3171,7 @@ UTEST(render, radius_tables_change_nothing) {
             pts[4 * i + 1] = (RND() * 2.0f - 1.0f) * 0.55f * -z;
             pts[4 * i + 2] = z;
             uint32_t type = i % 11 == 10 ? tsize[t] + i : (uint32_t)(RND() * tsize[t]) % tsize[t];   /* some past the end: radius 0 */
-            uint32_t word = type | ((i * 2654435761u) & 0xFFFF0000u);                           /* flags above, ignored */
-            memcpy(&pts[4 * i + 3], &word, 4);
+            memcpy(&pts[4 * i + 3], &type, 4);
             rad[i] = type < tsize[t] ? table[t][type] : 0.0f;
         }
         md_gpu_addr_t P = f_buf(&fx, pts, sizeof(pts));
