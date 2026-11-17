@@ -588,6 +588,7 @@ int main(int argc, char** argv) {
                        (unsigned long long)sk, ev + sk ? 100.0 * (double)sk / (double)(ev + sk) : 0.0, (unsigned long long)(ev + sk));
                 if (gpu && i0->num_gpu_batches) printf(", %llu GPU batches, %.0f local AOs on average", (unsigned long long)i0->num_gpu_batches,
                                                        (double)i0->num_gpu_rows / (double)i0->num_gpu_batches);
+                if (gpu) printf(", %llu cubes on the CPU (escalated subtrees)", (unsigned long long)(i0->num_box_evals - i0->num_gpu_box_evals));
                 printf(", local AOs <= %u", i0->local_ao_bound);
                 if (gpu && i0->gpu_density_bytes) {
                     const double dense = 4.0 * (double)in.num_ao * (double)in.num_ao;
