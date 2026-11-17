@@ -195,6 +195,8 @@ static MD_FORCE_INLINE uint64_t xtc_value(const uint8_t* stream, size_t bit_offs
 
 // Small coordinates beyond XTC_SMALL_LIMB_MAX (64 to 72 bits, s > 2^21), which only a precision of 10^7
 // or so reaches, with plain divisions: v / s in limbs of 32 bits, the top one first, as xtc_read_long.
+// Out of line, as its run loop is inlined into the loop of every file: inlined, its divisions cost the
+// ordinary files 1-3% (gcc 11) and gained the files that take it nothing.
 static XTC_NOINLINE v4i_t xtc_read_slow(const uint8_t* stream, size_t bit_offset, uint32_t num_bits, uint64_t s) {
     MD_ASSERT(num_bits <= 72);
     uint64_t lo, hi = 0;
@@ -211,7 +213,7 @@ static XTC_NOINLINE v4i_t xtc_read_slow(const uint8_t* stream, size_t bit_offset
 }
 
 // Ranges beyond 24 bits: then the three are sent one after the other (sendbits), num_bits[i] bits each
-static XTC_NOINLINE v4i_t xtc_read_three(const uint8_t* stream, size_t bit_offset, const uint32_t num_bits[3]) {
+static MD_FORCE_INLINE v4i_t xtc_read_three(const uint8_t* stream, size_t bit_offset, const uint32_t num_bits[3]) {
     uint32_t xyz[4] = {0};
     for (int i = 0; i < 3; ++i) {
         xyz[i] = (uint32_t)xtc_bits(stream, bit_offset, num_bits[i]);
@@ -503,6 +505,8 @@ done:
     return atom_idx == natoms;
 }
 
+// Out of line, each with its copy of the loop: inlined into xtc_decode_frame_data_scaled (as gcc does when
+// let), the ordinary files gained 0-1% and frames of precision 1e6 lost some 10% (clang 18).
 static XTC_NOINLINE bool xtc_decode_coords_three(const uint8_t* stream, uint64_t num_bytes, int natoms, int smallidx, const int32_t minint[3],
                                                  float scale, float precision, const uint32_t bitsizeint[3], float* out_coords) {
     const xtc_big_t no_big = {0};
