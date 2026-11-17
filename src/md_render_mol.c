@@ -1946,10 +1946,10 @@ _Static_assert(sizeof(gpu_mol_args_t) == 66 * 8 + 48 * 4, "gpu_mol_args_t mirror
 static uint32_t g_write_dbg = 0u;
 void md_render_mol_debug_write(uint32_t leave_out) { g_write_dbg = leave_out; }
 
-md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
+md_render_mol_ctx_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc) {
     if (!device) return NULL;
     if (!alloc) alloc = md_get_heap_allocator();
-    md_render_mol_t r = md_alloc(alloc, sizeof(struct md_render_mol));
+    md_render_mol_ctx_t r = md_alloc(alloc, sizeof(struct md_render_mol));
     if (!r) return NULL;
     memset(r, 0, sizeof(*r));
     r->alloc = alloc;
@@ -1987,7 +1987,7 @@ md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* all
     return r;
 }
 
-void md_render_mol_destroy(md_render_mol_t r) {
+void md_render_mol_destroy(md_render_mol_ctx_t r) {
     if (!r) return;
     md_gpu_kernel_t* k[] = { &r->k_clear, &r->k_bounds, &r->k_dims, &r->k_count, &r->k_scan, &r->k_write, &r->k_offsets,
                              &r->k_mixed, &r->k_gather, &r->k_fr_gather[0], &r->k_fr_gather[1], &r->k_fr_gather[2],
@@ -2110,7 +2110,7 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
 }
 
 /* The small molecules into grid cells, by the positions `a` points at */
-static bool run_regroup(md_render_mol_t r, md_gpu_stream_t s, gpu_mol_args_t* a, const md_render_mol_topo_t* topo, pass_hook_t hook, void* user) {
+static bool run_regroup(md_render_mol_ctx_t r, md_gpu_stream_t s, gpu_mol_args_t* a, const md_render_mol_topo_t* topo, pass_hook_t hook, void* user) {
     const uint32_t cells = topo->grid_cells, n_mol = topo->small_molecule_count;
     const dyn_layout_t D = dyn_of(topo);
     bool ok = true;
@@ -2166,7 +2166,7 @@ static bool has_velocity(const md_render_mol_atoms_t* atoms) {
 
 static bool frame_param_words(uint32_t out[32], const md_render_mol_frame_t* f);
 
-static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
+static bool update_impl(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
                         md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                         md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT],
                         pass_hook_t hook, void* user) {
@@ -2292,7 +2292,7 @@ uint64_t md_render_mol_cartoon_size(const md_render_mol_topo_t* topo) {
     return topo ? align256((uint64_t)topo->backbone_count * 16u) : 0;
 }
 
-bool md_render_mol_cartoon_profile(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
+bool md_render_mol_cartoon_profile(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
                                    md_gpu_addr_t out, md_gpu_addr_t secondary_structure, const float scale[3],
                                    uint64_t content[MD_RENDER_CONTENT_COUNT]) {
     if (!r || !s || !topo || !out || !scale) {
@@ -2311,7 +2311,7 @@ bool md_render_mol_cartoon_profile(md_render_mol_t r, md_gpu_stream_t s, const m
     return true;
 }
 
-bool md_render_mol_update(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
+bool md_render_mol_update(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                           md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]) {
     return update_impl(r, s, topo, dynamic, atoms, flags, content, NULL, NULL);
@@ -2319,7 +2319,7 @@ bool md_render_mol_update(md_render_mol_t r, md_gpu_stream_t s, const md_render_
 
 /* Not in the header: for md_render_bench, which declares it. The same work
    with hook(user, pass) after each launch. */
-bool md_render_mol_update_hooked(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
+bool md_render_mol_update_hooked(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo,
                                  md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                                  md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user) {
     return update_impl(r, s, topo, dynamic, atoms, flags, NULL, hook, user);
@@ -2605,7 +2605,7 @@ bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_
     return true;
 }
 
-static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+static bool frame_upload_impl(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                               md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
                               md_render_mol_update_flags_t flags, pass_hook_t hook, void* user) {
     if (!r || !s || !topo || !topo->base || !fr || !f || (topo->point_count && !f->q && !f->q_gpu)) {
@@ -2683,7 +2683,7 @@ static bool frame_upload_impl(md_render_mol_t r, md_gpu_stream_t s, const md_ren
     return ok;
 }
 
-bool md_render_mol_frame_upload(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+bool md_render_mol_frame_upload(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                                 md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
                                 md_render_mol_update_flags_t flags) {
     return frame_upload_impl(r, s, topo, dynamic, fr, slot, f, flags, NULL, NULL);
@@ -2691,7 +2691,7 @@ bool md_render_mol_frame_upload(md_render_mol_t r, md_gpu_stream_t s, const md_r
 
 /* For md_render_bench: the compiled kernels, by index, with what the driver
    reports of each (registers, ...). False past the last. Not in the header. */
-bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
+bool md_render_mol_debug_kernel_info(md_render_mol_ctx_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
     if (!r) return false;
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "sol_count", r->k_count }, { "sol_write", r->k_write }, { "sol_gather", r->k_gather },
@@ -2706,7 +2706,7 @@ bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char**
 }
 
 /* Not in the header: for md_render_bench, as md_render_mol_update_hooked */
-bool md_render_mol_frame_upload_hooked(md_render_mol_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+bool md_render_mol_frame_upload_hooked(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                                        md_render_mol_frames_t* fr, uint32_t slot, const md_render_mol_frame_t* f,
                                        md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user) {
     return frame_upload_impl(r, s, topo, dynamic, fr, slot, f, flags, hook, user);

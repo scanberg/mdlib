@@ -279,7 +279,7 @@ static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, 
     return md_gpu_pipeline_create(dev, &pd);
 }
 
-md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* desc) {
+md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t* desc) {
     if (!device) {
         MD_LOG_ERROR("md_render: no device");
         return NULL;
@@ -290,7 +290,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
         return NULL;
     }
     md_allocator_i* alloc = (desc && desc->alloc) ? desc->alloc : md_get_heap_allocator();
-    md_render_t r = md_alloc(alloc, sizeof(struct md_render));
+    md_render_ctx_t r = md_alloc(alloc, sizeof(struct md_render));
     if (!r) return NULL;
     memset(r, 0, sizeof(*r));
     r->dev   = device;
@@ -338,7 +338,7 @@ md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* des
     return r;
 }
 
-void md_render_destroy(md_render_t r) {
+void md_render_destroy(md_render_ctx_t r) {
     if (!r) return;
     if (r->sphere_vis)     md_gpu_pipeline_destroy(r->sphere_vis);
     if (r->sphere_mask)    md_gpu_pipeline_destroy(r->sphere_mask);
@@ -450,7 +450,7 @@ typedef struct pick_slot_t {
 } pick_slot_t;
 
 struct md_render_view {
-    md_render_t         r;
+    md_render_ctx_t     r;
     char                label[64];
 
     uint32_t            width, height;
@@ -525,7 +525,7 @@ struct md_render_view {
     uint64_t            pick_returned;
 };
 
-md_render_view_t md_render_view_create(md_render_t r, const char* label) {
+md_render_view_t md_render_view_create(md_render_ctx_t r, const char* label) {
     if (!r) return NULL;
     md_render_view_t v = md_alloc(r->alloc, sizeof(struct md_render_view));
     if (!v) return NULL;
@@ -1336,7 +1336,7 @@ static bool fin(md_gpu_stream_t s, md_render_view_t v, uint32_t mode) {
 /* The state lists, for the masks: clusters with a state bit in the frustum,
    then their elements with one, occluded or not */
 static bool run_state_lists(md_gpu_stream_t s, md_render_view_t v, uint32_t cluster_work, bool splines) {
-    md_render_t r = v->r;
+    md_render_ctx_t r = v->r;
     return pass(s, v, r->k_cull_clusters, 3, cluster_work, 0) && fin(s, v, 31) &&
            pass(s, v, r->k_cull, 3, 0, C_GRID_CST) && (!splines || pass(s, v, r->k_cull_heavy, 3, 0, C_GRID_CST)) && fin(s, v, 32);
 }
@@ -1351,7 +1351,7 @@ static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t pha
    depth and ids, then each kind in one indirect draw whose instance count the
    cull wrote. The CPU's cost is independent of the number of batches. */
 static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bool compute, const bool has_kind[HW_KINDS]) {
-    md_render_t r = v->r;
+    md_render_ctx_t r = v->r;
     md_gpu_render_desc_t rd = {0};
     rd.color_count       = 2;
     rd.color[0].texture  = v->t.id;
@@ -1740,7 +1740,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
 
         /* Cluster bounds: refitted when the geometry changed, else only their
            state bits when those did. Not when only the camera moved. */
-        md_render_t r = v->r;
+        md_render_ctx_t r = v->r;
         if ((refit || state_changed) && !pass_per_cluster(s, v, r->k_refit, 0, gv.total_clusters)) return false;
         if (refit || state_changed) PASS_DONE("refit");
         if ((refit || state_changed) && spl && !pass_per_cluster(s, v, r->k_refit_heavy, 0, gv.total_clusters)) return false;
@@ -1973,7 +1973,7 @@ void md_render_pack_velocity(const float v[3], uint32_t out[2]) {
 
 /* For md_render_bench: the compiled kernels, by index, with what the driver
    reports of each (registers, ...). False past the last. Not in the header. */
-bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
+bool md_render_debug_kernel_info(md_render_ctx_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
     if (!r) return false;
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "refit", r->k_refit }, { "cull_clusters", r->k_cull_clusters }, { "cull", r->k_cull }, { "finalize", r->k_finalize },
@@ -1988,7 +1988,7 @@ bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, m
 }
 
 /* The same for the raster pipelines: per stage, what the driver says */
-bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info) {
+bool md_render_debug_pipeline_info(md_render_ctx_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info) {
     if (!r) return false;
     const struct { const char* n; md_gpu_pipeline_t p; } ps[] = {
         { "sphere", r->sphere_vis }, { "capsule", r->capsule_vis }, { "spline", r->spline_vis }, { "polygon", r->polygon_vis },

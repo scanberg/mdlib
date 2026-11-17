@@ -38,8 +38,8 @@ lifetime:
     diffuse, so their clusters are cells of a grid, rebuilt on the GPU by
     md_render_mol_update when the caller asks:
 
-        md_render_mol_t kernels = md_render_mol_create(device, NULL);   // once per device
-        md_gpu_addr_t   dyn     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+        md_render_mol_ctx_t kernels = md_render_mol_create(device, NULL);   // once per device
+        md_gpu_addr_t       dyn     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
         ...
         md_render_mol_upload_state(s, positions, &state, content);
         md_render_mol_update(kernels, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content);
@@ -183,10 +183,10 @@ typedef enum md_render_mol_dashes_t {
 /* The GPU work of the layer (md_render_mol_update) needs compiled kernels: a
    context holding those and nothing else. One per device, shared by every
    system and view. */
-typedef struct md_render_mol* md_render_mol_t;
+typedef struct md_render_mol* md_render_mol_ctx_t;
 
-md_render_mol_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc);
-void            md_render_mol_destroy(md_render_mol_t kernels);
+md_render_mol_ctx_t md_render_mol_create(md_gpu_device_t device, md_allocator_i* alloc);
+void                md_render_mol_destroy(md_render_mol_ctx_t kernels);
 
 /* =========================================================================
    Topology: one caller-owned block per system
@@ -529,7 +529,7 @@ enum {
    curve and the way to the base (the point the band faces), so that its
    flat faces face the base. That side is the same all along a strand: no
    sign to decide, no memory. */
-bool md_render_mol_update(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+bool md_render_mol_update(md_render_mol_ctx_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                           md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                           md_render_mol_update_flags_t flags, uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
@@ -548,7 +548,7 @@ bool md_render_mol_update(md_render_mol_t kernels, md_gpu_stream_t stream, const
    holds it), in GPU memory; 0: all coil. Bumps
    content[MD_RENDER_CONTENT_GEOMETRY]. */
 uint64_t md_render_mol_cartoon_size(const md_render_mol_topo_t* topo);
-bool     md_render_mol_cartoon_profile(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+bool     md_render_mol_cartoon_profile(md_render_mol_ctx_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                                        md_gpu_addr_t out, md_gpu_addr_t secondary_structure, const float scale[3],
                                        uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
@@ -665,7 +665,7 @@ bool md_render_mol_frames_init(md_render_mol_frames_t* out, const md_render_mol_
    frames along; then update before drawing. GPU work only, ordered in
    `stream`. A frame on the host is copied before this returns; one in GPU
    memory is read when the stream gets to it. */
-bool md_render_mol_frame_upload(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+bool md_render_mol_frame_upload(md_render_mol_ctx_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                                 md_gpu_addr_t dynamic, md_render_mol_frames_t* frames, uint32_t slot,
                                 const md_render_mol_frame_t* frame, md_render_mol_update_flags_t flags);
 

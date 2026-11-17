@@ -31,7 +31,7 @@
 typedef struct {
     md_gpu_device_t  dev;
     md_gpu_stream_t  gfx;
-    md_render_t      r;
+    md_render_ctx_t  r;
     md_render_view_t view;
 } fix_t;
 
@@ -3658,7 +3658,7 @@ UTEST(render, mol_licorice_emit_and_pick) {
     for (int i = 0; i < 9; ++i) colors[i] = 0xFF000000u | (uint32_t)(i * 20);
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));   /* the copy that is drawn */
@@ -3856,7 +3856,7 @@ UTEST(render, mol_plan_clusters) {
     const char* files[] = { MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb", MD_UNITTEST_DATA_DIR "/1a64.pdb", MD_UNITTEST_DATA_DIR "/tryptophan-md.gro" };
     fix_t fx;
     bool gpu = f_open(&fx);
-    md_render_mol_t kernels = gpu ? md_render_mol_create(fx.dev, NULL) : NULL;
+    md_render_mol_ctx_t kernels = gpu ? md_render_mol_create(fx.dev, NULL) : NULL;
     for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
         md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
@@ -4041,7 +4041,7 @@ UTEST(render, mol_spacefill_residues) {
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
@@ -4232,7 +4232,7 @@ UTEST(render, mol_radii_follow_their_source) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_render_mol_rep_t rep = {0};
@@ -4342,7 +4342,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     EXPECT_EQ(2156u, topo.small_molecule_count);            /* the waters */
     ASSERT_GT(topo.dynamic_size, 0u);
 
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
 
@@ -4603,7 +4603,7 @@ static void frames_case(int* utest_result, bool partial) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
 
@@ -4844,7 +4844,7 @@ UTEST(render, mol_resident_set_draws_what_hiding_draws) {
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
     EXPECT_EQ(nres, topo.point_count);
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = f_buf(&fx, state.xyz, (size_t)n * 12);
@@ -4992,7 +4992,7 @@ UTEST(render, mol_cartoon_backbone) {
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
@@ -5262,7 +5262,7 @@ UTEST(render, mol_cartoon_nucleic) {
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
@@ -5487,7 +5487,7 @@ UTEST(render, mol_derived_points) {
         free(sph); free(rad);
     }
 
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
     const uint32_t np = topo.point_count;
@@ -5593,7 +5593,7 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     md_temp_end(temp);
     const uint32_t ncoord = topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE + 1] - topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE];
     ASSERT_GT(ncoord, 0u);
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
@@ -5785,7 +5785,7 @@ UTEST(render, mol_chain_gaps) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
     md_temp_end(temp);
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
@@ -6068,7 +6068,7 @@ UTEST(render, mol_bond_orders) {
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
@@ -6422,7 +6422,7 @@ UTEST(render, mol_bond_orders) {
 UTEST(render, mol_cartoon_coarse_grained) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
     {
@@ -6582,7 +6582,7 @@ UTEST(render, mol_ribbons) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
     md_temp_end(temp);
-    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
