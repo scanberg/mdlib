@@ -371,8 +371,8 @@ static int run(int argc, char** argv) {
     printf("device: %s (%s)\n", info.name, info.driver);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
     md_render_t r = md_render_create(dev, NULL);
-    md_render_mol_t mol = md_render_mol_create(dev, NULL);
-    if (!s || !r || !mol) { fprintf(stderr, "md_render could not start\n"); return 1; }
+    md_render_mol_t kernels = md_render_mol_create(dev, NULL);
+    if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     md_temp_scope_t temp = md_temp_begin();
     md_render_mol_plan_t plan;
@@ -406,7 +406,7 @@ static int run(int argc, char** argv) {
     atoms.position = P;
     md_render_mol_frame_cell(atoms.cell, md_unitcell_flags(&state.unitcell) ? &state.unitcell : NULL);   /* the lipids whole across it */
     if (n_sel) atoms.selection = S;
-    if (!md_render_mol_update(mol, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
+    if (!md_render_mol_update(kernels, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
 
     /* Instances along the cell (or the bounds) */
     double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
@@ -491,7 +491,7 @@ static int run(int argc, char** argv) {
         case MD_RENDER_MOL_REP_CARTOON: {
             const float sc = p >= 0 ? p : 1.0f, scale[3] = { sc, sc, sc };
             md_gpu_addr_t prof = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, md_render_mol_cartoon_size(&topo) ? md_render_mol_cartoon_size(&topo) : 256).gpu;
-            if (topo.backbone_count && !md_render_mol_cartoon_profile(mol, s, &topo, prof, SSB, scale, content)) { fprintf(stderr, "md_render_mol_cartoon_profile failed\n"); return 1; }
+            if (topo.backbone_count && !md_render_mol_cartoon_profile(kernels, s, &topo, prof, SSB, scale, content)) { fprintf(stderr, "md_render_mol_cartoon_profile failed\n"); return 1; }
             rep.params.cartoon.profile = prof;
             break;
         }
@@ -580,7 +580,7 @@ static int run(int argc, char** argv) {
     }
     md_gpu_stream_sync(s);
     free(rgb); free(xf); free(colors); free(sel);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_render_destroy(r);
     md_gpu_device_destroy(dev);
     md_system_free(&sys);
