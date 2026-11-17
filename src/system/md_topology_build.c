@@ -97,9 +97,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Particle types: one per name, force field type, element, mass and kind
     const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
@@ -134,7 +132,6 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         md_array_push(sys->residue.atom_offset, d.res_offset[r], alloc);
         md_array_push(sys->residue.name, md_label_make(d.res_name[r]), alloc);
         md_array_push(sys->residue.seq_id, (md_sequence_id_t)(d.res_number ? d.res_number[r] : (int64_t)r + 1), alloc);
-        md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
     }
     md_array_push(sys->residue.atom_offset, (uint32_t)N, alloc);
     sys->residue.count = R;

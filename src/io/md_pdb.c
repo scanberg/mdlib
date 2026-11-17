@@ -810,7 +810,6 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     const pdb_load_t* L = (const pdb_load_t*)arg;
     md_float3_t* xyz = L->state->xyz;
     md_particle_type_idx_t* type_idx = L->sys->atom.type_idx;
-    md_atom_flags_t* flags = L->sys->atom.flags;
     for (uint32_t p = beg; p < end; ++p) {
         pdb_piece_t* piece = &L->pieces[p];
         pdb_types_t* types = piece->types;
@@ -871,7 +870,6 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             }
 
             pdb_coords(xyz[atom].elem, line);
-            flags[atom] = MD_ATOM_FLAG_NONE;
             const md_label_t name = pdb_label(line, 12, 4);
             const md_label_t element = pdb_label(line, 76, 2);
             if (element.buf[0] == 0) {
@@ -1007,7 +1005,6 @@ static void pdb_place_pieces(pdb_load_t* L) {
     md_allocator_i* temp = L->temp;
     PDB_ROOM(L->state->xyz, num_atoms, L->state->alloc);
     PDB_ROOM(L->sys->atom.type_idx, num_atoms, L->sys->alloc);
-    PDB_ROOM(L->sys->atom.flags, num_atoms, md_system_derived_alloc(L->sys));
     PDB_ROOM(L->serial, num_atoms, temp);
     PDB_ROOM(L->atom_name, num_atoms, temp);
     for (int c = 0; c < PDB_NUM_COLUMNS; ++c) PDB_ROOM(L->column[c], num_atoms, temp);
@@ -1153,7 +1150,6 @@ static void pdb_first_model(pdb_load_t* L) {
     const size_t n = L->num_atoms - beg;
     md_memmove(L->state->xyz,         L->state->xyz + beg,         n * sizeof(md_float3_t));
     md_memmove(L->sys->atom.type_idx, L->sys->atom.type_idx + beg, n * sizeof(md_particle_type_idx_t));
-    md_memmove(L->sys->atom.flags,    L->sys->atom.flags + beg,    n * sizeof(md_atom_flags_t));
     md_memmove(L->serial,             L->serial + beg,             n * sizeof(int32_t));
     if (L->unassigned) md_memmove(L->atom_name, L->atom_name + beg, n * sizeof(md_label_t));
     for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
@@ -1236,7 +1232,6 @@ static void pdb_build_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
         res->atom_offset[r] = rs->atom;
         res->name[r]   = rs->name;
         res->seq_id[r] = rs->seq_id;
-        res->flags[r]  = MD_RESIDUE_FLAG_NONE;
         rb->chain_chars[r] = rs->chain_id;
         rb->chain_ids[r] = md_str_trim((md_str_t){ &rb->chain_chars[r], 1 });
         rb->after_ter[r] = rs->after_ter;
@@ -1264,13 +1259,11 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     md_array_resize(state->xyz, num_atoms, state->alloc);
     state->num_atoms = num_atoms;
     sys->atom.count = num_atoms;
-    // The atoms' types and flags are written as they are read (pdb_parse_lines), the padding past them here
+    // The atoms' types are written as they are read (pdb_parse_lines), the padding past them here
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     PDB_ROOM(sys->atom.type_idx, capacity, sys->alloc);
-    PDB_ROOM(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     if (capacity) {
         md_memset(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
-        md_memset(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
     }
     pdb_lap(L, PDB_PHASE_ATOMS, &t);
 
@@ -1278,7 +1271,6 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
     md_array_resize(sys->residue.name,   num_res, sys->alloc);
     md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
-    md_array_resize(sys->residue.flags,  num_res, md_system_derived_alloc(sys));
     sys->residue.count = num_res;
     pdb_residues_t rb = {
         .sys = sys,
@@ -1363,7 +1355,6 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     const size_t max_atoms = src_size >= 0 ? (size_t)src_size / 55 + 16 : 0;
     md_array_ensure(state->xyz, max_atoms, state->alloc);
     md_array_ensure(sys->atom.type_idx, MD_ROUND_UP(max_atoms, 16), sys->alloc);
-    md_array_ensure(sys->atom.flags, MD_ROUND_UP(max_atoms, 16), md_system_derived_alloc(sys));
     md_array_ensure(L.res_starts, max_atoms, temp);
     md_array_ensure(L.serial, max_atoms, temp);
     md_array_ensure(L.atom_name, max_atoms, temp);

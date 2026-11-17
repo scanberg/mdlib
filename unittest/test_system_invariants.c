@@ -482,3 +482,51 @@ UTEST(system_invariants, derived_alloc) {
     check_derived_alloc(utest_result, load_xyz, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz"));
     check_derived_alloc(utest_result, load_molden, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));
 }
+
+// ### THE DERIVED FROM THE CORE ALONE ###
+//
+// Everything inference writes (MD_SYSTEM_DERIVED_*) follows from the core: what the data gives (md_system_fields.h) and
+// the coordinates. So the derived freed (md_system_derived_free) and inferred again is what it was: nothing the data
+// gives is kept only in the derived, where inference had to carry it over from what it replaces. That is what lets the
+// derived be replaced whole (an arena of its own, reset) rather than array by array.
+
+static void check_derived_from_core(int* utest_result, sys_load_fn load, md_str_t path) {
+    const char* what = (const char*)path.ptr;
+    md_allocator_i* a_sys = md_vm_arena_create(MD_GIGABYTES(4));
+    md_allocator_i* a_ref = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = { .alloc = a_sys };
+    md_system_state_t state = { .alloc = a_sys };
+    md_system_t ref = { .alloc = a_ref };
+    md_system_state_t ref_state = { .alloc = a_ref };
+    if (!load(&sys, &state, path) || !load(&ref, &ref_state, path)) {
+        printf("failed to load '%s'\n", what);
+        *utest_result = UTEST_TEST_FAILURE;
+    } else {
+        md_system_infer(&ref, &ref_state, NULL);
+        md_system_derived_free(&sys);
+        md_system_infer(&sys, &state, NULL);
+        expect_same_core(utest_result, __FILE__, __LINE__, what, &sys, &ref);
+        expect_same_derived(utest_result, __FILE__, __LINE__, what, &sys, &ref);
+        // And once more, from what was inferred
+        md_system_derived_free(&sys);
+        md_system_infer(&sys, &state, NULL);
+        expect_same_derived(utest_result, __FILE__, __LINE__, what, &sys, &ref);
+    }
+    md_vm_arena_destroy(a_sys);
+    md_vm_arena_destroy(a_ref);
+}
+
+UTEST(system_invariants, derived_from_core) {
+    check_derived_from_core(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    check_derived_from_core(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));     // CONECT
+    check_derived_from_core(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"));
+    check_derived_from_core(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));            // Entities
+    check_derived_from_core(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
+    check_derived_from_core(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    check_derived_from_core(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
+    check_derived_from_core(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+    check_derived_from_core(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"));     // Topology
+    check_derived_from_core(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"));
+    check_derived_from_core(utest_result, load_xyz, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz"));
+    check_derived_from_core(utest_result, load_molden, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));  // QM
+}

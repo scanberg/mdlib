@@ -240,11 +240,41 @@ static particle_type_t* find_predefined_particle_type(md_str_t res_name, md_str_
     return NULL;
 }
 
-// The residue kind a predefined type tells, applied when the residue has none yet
+// The residue kind a predefined type tells, applied when the residue has none yet (md_residue_data_t::typed_kind)
 static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
-    if (kind != MD_RESIDUE_KIND_OTHER && md_system_residue_kind(sys, res_idx) == MD_RESIDUE_KIND_OTHER) {
-        md_system_set_residue_kind(sys, res_idx, kind);
+    if (kind != MD_RESIDUE_KIND_OTHER && sys->residue.typed_kind[res_idx] == MD_RESIDUE_KIND_OTHER) {
+        sys->residue.typed_kind[res_idx] = (uint8_t)kind;
     }
+}
+
+// What the typing writes besides the types, of the core: the roles of the atoms and the kinds of the residues it tells
+static void typed_begin(md_system_t* sys) {
+    MD_STATIC_ASSERT(MD_RESIDUE_KIND_OTHER == 0, "A residue of no kind told is 0");
+    if (md_array_size(sys->atom.typed_role) != sys->atom.count) {
+        const size_t size = md_array_size(sys->atom.typed_role);
+        md_array_resize(sys->atom.typed_role, sys->atom.count, sys->alloc);
+        if (sys->atom.count > size) md_memset(sys->atom.typed_role + size, 0, sys->atom.count - size);
+    }
+    if (md_array_size(sys->residue.typed_kind) != sys->residue.count) {
+        const size_t size = md_array_size(sys->residue.typed_kind);
+        md_array_resize(sys->residue.typed_kind, sys->residue.count, sys->alloc);
+        if (sys->residue.count > size) md_memset(sys->residue.typed_kind + size, 0, sys->residue.count - size);
+    }
+}
+
+// Of none: not kept
+static void typed_end(md_system_t* sys) {
+    bool any = false;
+    for (size_t i = 0; i < sys->atom.count && !any; ++i) any = sys->atom.typed_role[i] != 0;
+    if (!any) md_array_free(sys->atom.typed_role, sys->alloc);
+    any = false;
+    for (size_t i = 0; i < sys->residue.count && !any; ++i) any = sys->residue.typed_kind[i] != MD_RESIDUE_KIND_OTHER;
+    if (!any) md_array_free(sys->residue.typed_kind, sys->alloc);
+}
+
+static inline void add_typed_role(md_system_t* sys, size_t atom_idx, md_atom_flags_t role) {
+    MD_ASSERT(((uint32_t)role & ~0xFFu) == 0);
+    sys->atom.typed_role[atom_idx] |= (uint8_t)role;
 }
 
 typedef struct residue_template_t {
@@ -259,7 +289,7 @@ static void add_residue_template(md_hashmap32_t* cache, md_array(residue_templat
     const md_urange_t range = md_system_residue_atom_range(sys, tmpl->res_idx);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         md_atom_flags_t* role = &roles[tmpl->role_offset + (i - range.beg)];
-        const md_atom_flags_t now = sys->atom.flags ? sys->atom.flags[i] : 0;
+        const md_atom_flags_t now = (md_atom_flags_t)sys->atom.typed_role[i];
         *role = (md_atom_flags_t)((uint32_t)now & ~(uint32_t)*role);
     }
     md_hashmap_add(cache, key, (uint32_t)md_array_size(*templates));
@@ -333,9 +363,7 @@ static void infer_apply_templates(void* arg, uint32_t beg, uint32_t end, uint32_
         const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
         const size_t res_size = range.end - range.beg;
         md_memcpy(sys->atom.type_idx + range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
-        if (sys->atom.flags) {
-            for (size_t k = 0; k < res_size; ++k) sys->atom.flags[range.beg + k] |= t->roles[tmpl->role_offset + k];
-        }
+        for (size_t k = 0; k < res_size; ++k) add_typed_role(sys, range.beg + k, t->roles[tmpl->role_offset + k]);
         apply_predefined_res_kind(sys, res_idx, tmpl->kind);
     }
 }
@@ -353,6 +381,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
     }
     md_allocator_i* alloc = sys->alloc;
     md_system_topology_changed(sys);
+    typed_begin(sys);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
@@ -429,7 +458,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
             residue_template_t tmpl = { .res_idx = res_idx, .role_offset = md_array_size(template_roles), .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
             if (untyped) {
                 for (size_t i = res_range.beg; i < res_range.end; ++i) {
-                    md_array_push(template_roles, sys->atom.flags ? sys->atom.flags[i] : 0, temp_alloc);
+                    md_array_push(template_roles, (md_atom_flags_t)sys->atom.typed_role[i], temp_alloc);
                 }
             }
 
@@ -538,7 +567,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
                     md_hashmap_add(&particle_type_cache, key, (uint32_t)type | (entry << 16));
                 }
                 if (predef) {
-                    if (sys->atom.flags) sys->atom.flags[i] |= predef->role;
+                    add_typed_role(sys, i, predef->role);
                     if (predef->res_kind != MD_RESIDUE_KIND_OTHER) res_kind = predef->res_kind;
                 }
             }
@@ -585,6 +614,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
         }
     }
 
+    typed_end(sys);
     md_temp_end(temp);
 }
 
@@ -609,6 +639,7 @@ void md_system_augment_particle_types(md_system_t* sys) {
         return;
     }
     md_system_topology_changed(sys);
+    typed_begin(sys);
 
     const size_t num_types = sys->atom.type.count;
 
@@ -660,10 +691,11 @@ void md_system_augment_particle_types(md_system_t* sys) {
             if (sys->atom.type.flags && md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_ATOM) {
                 sys->atom.type.flags[t] = md_particle_type_flags_set_particle_kind(sys->atom.type.flags[t], entry->particle);
             }
-            if (sys->atom.flags) sys->atom.flags[i] |= entry->role;
+            add_typed_role(sys, i, entry->role);
             if (entry->res_kind != MD_RESIDUE_KIND_OTHER) res_kind = entry->res_kind;
         }
         apply_predefined_res_kind(sys, res_idx, res_kind);
     }
+    typed_end(sys);
     md_temp_end(temp);
 }

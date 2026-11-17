@@ -132,11 +132,19 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
     const bool cg = md_system_is_coarse_grained(sys);
     const size_t N = sys->atom.count;
 
-    // The flags of the atoms: what the typing of the particles at load gave them (the roles of Martini beads, kept
-    // here as the kinds it gave the residues are), and what the steps below find
-    if (!sys->atom.flags) {
-        md_array_resize(sys->atom.flags, N, alloc);
-        md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+    // The flags of the atoms anew from the roles the typing of the particles gave them (md_atom_data_t::typed_role),
+    // with what the steps below find; and the kinds it tells the residues, which the bonds of beads and waters are found by
+    md_array_resize(sys->atom.flags, N, alloc);
+    if (sys->atom.typed_role) {
+        for (size_t i = 0; i < N; ++i) sys->atom.flags[i] = (md_atom_flags_t)sys->atom.typed_role[i];
+    } else {
+        md_memset(sys->atom.flags, 0, N * sizeof(md_atom_flags_t));
+    }
+    if (sys->residue.typed_kind) {
+        for (size_t r = 0; r < sys->residue.count; ++r) {
+            const md_residue_kind_t kind = (md_residue_kind_t)sys->residue.typed_kind[r];
+            if (kind != MD_RESIDUE_KIND_OTHER && md_system_residue_kind(sys, r) == MD_RESIDUE_KIND_OTHER) md_system_set_residue_kind(sys, r, kind);
+        }
     }
     PROFILE_STEP("setup");
 

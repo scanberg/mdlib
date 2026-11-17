@@ -1048,7 +1048,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	md_array_ensure(state->xyz,		capacity, state->alloc);
 	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
-	md_array_ensure(sys->atom.flags,    capacity, md_system_derived_alloc(sys));
 
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
 
@@ -1126,7 +1125,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				// No name in the file: the generic one (a number would not fit a residue name past 99, and a formula
 				// may read as a residue of its own, "C" a cytidine)
 				md_array_push(sys->residue.name, md_label_make(MD_STR_LIT("MOL")), sys->alloc);
-				md_array_push(sys->residue.flags, 0, md_system_derived_alloc(sys));
 				sys->residue.count += 1;
 			}
 		}
@@ -1138,7 +1136,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 		md_array_push_no_grow(sys->atom.type_idx, type_idx);
 		md_array_push_no_grow(state->xyz, xyz);
-		md_array_push_no_grow(sys->atom.flags, 0);
 		sys->atom.count +=1;
 
 		prev_resid = resid;

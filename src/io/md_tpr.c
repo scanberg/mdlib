@@ -1754,9 +1754,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // The predefined bead tables then add what they know about the beads (backbone, side chain...).
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
@@ -1942,7 +1940,6 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     md_array_push(sys->residue.atom_offset, (uint32_t)ai, alloc);
                     md_array_push(sys->residue.name, md_label_make(res->name), alloc);
                     md_array_push(sys->residue.seq_id, seq_id, alloc);
-                    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
                     sys->residue.count += 1;
                     prev_res = atom->residue;
                 }

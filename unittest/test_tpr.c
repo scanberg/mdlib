@@ -386,10 +386,14 @@ UTEST(tpr, martini) {
     EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, 3));
 
     // The bead tables know the protein backbone: one BB bead in each residue, and every other bead side chain, Trp's
-    // SC4 and SC5 (Martini 3 has five) included
-    EXPECT_TRUE(md_atom_flags(&sys.atom, 0) & MD_ATOM_FLAG_BACKBONE);
-    EXPECT_FALSE(md_atom_flags(&sys.atom, 1) & MD_ATOM_FLAG_BACKBONE);
+    // SC4 and SC5 (Martini 3 has five) included. What the typing gives (typed_role, typed_kind) the system has once
+    // inferred.
+    ASSERT_TRUE(sys.atom.typed_role && sys.residue.typed_kind);
+    EXPECT_TRUE(sys.atom.typed_role[0] & MD_ATOM_FLAG_BACKBONE);
+    EXPECT_FALSE(sys.atom.typed_role[1] & MD_ATOM_FLAG_BACKBONE);
+    md_system_infer(&sys, &state, NULL);
     for (size_t c = 0; c < 2; ++c) {
+        EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, (md_residue_kind_t)sys.residue.typed_kind[c]);
         EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(&sys, c));
         const md_urange_t range = md_system_residue_atom_range(&sys, c);
         size_t num_backbone = 0;
@@ -415,13 +419,12 @@ UTEST(tpr, martini) {
             EXPECT_EQ(md_atom_mass(&sys.atom, i), md_atom_mass(&gro.atom, i));
             EXPECT_NEAR(md_atom_radius(&sys.atom, i), md_atom_radius(&gro.atom, i), 0.01f);
             EXPECT_EQ(md_atom_particle_kind(&sys.atom, i), md_atom_particle_kind(&gro.atom, i));
-            EXPECT_EQ(md_atom_flags(&sys.atom, i), md_atom_flags(&gro.atom, i));
+            EXPECT_EQ(sys.atom.typed_role[i], gro.atom.typed_role[i]);
             EXPECT_EQ(0, md_atom_atomic_number(&gro.atom, i));
         }
     }
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
-    md_system_infer(&sys, &state, NULL);
     EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);

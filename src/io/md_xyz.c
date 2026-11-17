@@ -730,7 +730,6 @@ static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_stat
     const size_t reserve_size = MD_ALIGN_TO(num_atoms, 16);
     md_array_ensure(state->xyz, reserve_size, state->alloc);
     md_array_ensure(sys->atom.type_idx, reserve_size, sys->alloc);
-    md_array_ensure(sys->atom.flags, reserve_size, md_system_derived_alloc(sys));
 
     // Setup particle types including unknown type
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
@@ -760,7 +759,6 @@ static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
 
     sys->atom.count += 1;
     md_array_push_no_grow(b->state->xyz, b->rotate ? xyz_rotate(b->R, c->x, c->y, c->z) : md_float3_set(c->x, c->y, c->z));
-    md_array_push_no_grow(sys->atom.flags, 0);
     md_array_push_no_grow(sys->atom.type_idx, type);
 }
 

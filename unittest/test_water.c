@@ -274,6 +274,9 @@ UTEST(water, martini_bead_unchanged) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(text), NULL));
     EXPECT_EQ(MD_PARTICLE_BEAD, particle(&sys, 0));
+    ASSERT_TRUE(sys.residue.typed_kind != NULL);
+    EXPECT_EQ(MD_RESIDUE_KIND_WATER, (md_residue_kind_t)sys.residue.typed_kind[0]);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_system_residue_kind(&sys, 0));
     md_vm_arena_destroy(alloc);
 }

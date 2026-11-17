@@ -147,6 +147,9 @@ typedef struct md_residue_data_t {
     md_sequence_id_t* seq_id;
     uint32_t* atom_offset;          // [count + 1]
     md_residue_flags_t* flags;      // Place in the chain and whether its backbone was found, see md_residue_flags_t
+    // What the typing of its particles tells the residue is, as the system is loaded (a Martini lipid, water, an ion, an
+    // amino acid of beads): of the core, as the types are; md_system_infer gives the residues these kinds first
+    uint8_t* typed_kind;            // [count] md_residue_kind_t, MD_RESIDUE_KIND_OTHER where it tells none; NULL: none
 
     md_residue_type_idx_t* type_idx;    // [count] -1 (or short of count, or NULL) for a residue of no type yet
     md_residue_type_data_t type;

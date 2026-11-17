@@ -1478,7 +1478,6 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
 
         md_array_ensure(out_state->xyz, reserve_size, out_state->alloc);
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
-        md_array_ensure(sys->atom.flags, reserve_size, md_system_derived_alloc(sys));
 
         md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc); // Ensure that index 0 is always unknown
         md_hashmap32_t type_map = { .allocator = temp_arena };
@@ -1571,7 +1570,6 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
                 md_array_push(sys->residue.name, md_label_make(comp_id), alloc);
                 md_array_push(sys->residue.seq_id, seq_id, alloc);
-                md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
 
                 // Instance handling. An instance is what the file gives: an asym, a polymer chain or a branched
                 // glycan. The asym of a non-polymer entity may hold many molecules (the waters of a chain): each is an
@@ -1597,7 +1595,6 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
  
             md_array_push_no_grow(out_state->xyz, md_float3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
-            md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
             if (occupancy && b_iso && formal_charge) {
                 occupancy[sys->atom.count]     = atom_entries[i].occupancy;
                 b_iso[sys->atom.count]         = atom_entries[i].b_iso_or_equiv;
