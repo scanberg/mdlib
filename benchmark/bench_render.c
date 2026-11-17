@@ -767,11 +767,11 @@ static int cmp_d(const void* a, const void* b) { double x = *(const double*)a, y
 
 /* md_render_mol_update with a hook after each launch: in md_render_mol.c,
    not in its header (it is for this profile only) */
-bool md_render_mol_update_hooked(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+bool md_render_mol_update_hooked(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                                  md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                                  md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
-bool md_render_mol_frame_upload_hooked(md_render_mol_t mol, md_gpu_stream_t stream, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+bool md_render_mol_frame_upload_hooked(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                                        md_render_mol_frames_t* frames, uint32_t slot, const md_render_mol_frame_t* frame,
                                        md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
@@ -845,14 +845,14 @@ static void print_times(const char* name, double* t, uint32_t reps) {
    unified memory, nothing is copied); the upload from host memory, through
    the stream, is timed beside it. */
 /* The best of `reps` frame updates from the given slots (velocities when dt) */
-static double time_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, md_render_mol_atoms_t* atoms,
+static double time_frames(md_gpu_stream_t s, md_render_mol_t kernels, scene_t* sc, md_render_mol_atoms_t* atoms,
                           uint32_t count, const uint32_t slot[4], float dt, double* t, uint32_t reps) {
     atoms->frame_count = count;
     for (uint32_t k = 0; k < 4; ++k) atoms->frame_slot[k] = slot[k];
     for (uint32_t rr = 0; rr < reps + 2; ++rr) {
         md_render_mol_frame_weights(atoms->frame_w, atoms->frame_dw, count, (rr % 8) / 8.0f, dt, 0.5f);
         md_tick_t t0 = md_tick_now();
-        md_render_mol_update(mol, s, &sc->topo, sc->dyn, atoms, 0, NULL);
+        md_render_mol_update(kernels, s, &sc->topo, sc->dyn, atoms, 0, NULL);
         md_gpu_stream_sync(s);
         if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
     }
@@ -860,7 +860,7 @@ static double time_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, m
     return t[0];
 }
 
-static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, uint32_t reps) {
+static void bench_frames(md_gpu_stream_t s, md_render_mol_t kernels, scene_t* sc, uint32_t reps) {
     const uint32_t n = sc->atoms;
     float cell[9] = { sc->box, 0, 0, 0, sc->box, 0, 0, 0, sc->box };
     md_gpu_mem_t up = md_gpu_malloc(s, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&sc->topo));
@@ -907,7 +907,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
     }
     md_render_mol_frame_quantize(&fh, host_q, sc->host_pos, 0, n, cell, res);
 
-    for (uint32_t k = 0; k < 4; ++k) md_render_mol_frame_upload(mol, s, &sc->topo, 0, &fr, k, &f, 0);
+    for (uint32_t k = 0; k < 4; ++k) md_render_mol_frame_upload(kernels, s, &sc->topo, 0, &fr, k, &f, 0);
     md_gpu_stream_sync(s);
     const struct { const char* name; const md_render_mol_frame_t* f; md_render_mol_update_flags_t flags; } ups[] = {
         { "frame upload (reorder)               ", &f,  0 },
@@ -917,7 +917,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
     for (int ui = 0; ui < 3; ++ui) {
         for (uint32_t rr = 0; rr < reps + 2; ++rr) {
             md_tick_t t0 = md_tick_now();
-            md_render_mol_frame_upload(mol, s, &sc->topo, sc->dyn, &fr, rr % 4, ups[ui].f, ups[ui].flags);
+            md_render_mol_frame_upload(kernels, s, &sc->topo, sc->dyn, &fr, rr % 4, ups[ui].f, ups[ui].flags);
             md_gpu_stream_sync(s);
             if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
         }
@@ -926,7 +926,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
     pass_prof_t prof = { .s = s };
     md_gpu_stream_sync(s);
     prof.t = md_tick_now();
-    md_render_mol_frame_upload_hooked(mol, s, &sc->topo, sc->dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
+    md_render_mol_frame_upload_hooked(kernels, s, &sc->topo, sc->dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
     printf("  passes, each synced (the first: the parameters and the clear):");
     for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
     printf("\n");
@@ -946,7 +946,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         for (uint32_t rr = 0; rr < reps + 2; ++rr) {
             md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, ints[ii].count, (rr % 8) / 8.0f, ints[ii].dt, 0.5f);
             md_tick_t t0 = md_tick_now();
-            md_render_mol_update(mol, s, &sc->topo, sc->dyn, &atoms, 0, NULL);
+            md_render_mol_update(kernels, s, &sc->topo, sc->dyn, &atoms, 0, NULL);
             md_gpu_stream_sync(s);
             if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
         }
@@ -964,9 +964,9 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
             uint32_t g = groups[gi], full = (np + 63) / 64;
             if (g > full) g = full;
             md_render_mol_debug_frame_groups(g);
-            const double a1 = time_frames(s, mol, sc, &atoms, 1, s0123, 0.0f, t, reps);
-            const double a2 = time_frames(s, mol, sc, &atoms, 2, s0123, 0.0f, t, reps);
-            const double a4 = time_frames(s, mol, sc, &atoms, 4, s0123, 1.0f, t, reps);
+            const double a1 = time_frames(s, kernels, sc, &atoms, 1, s0123, 0.0f, t, reps);
+            const double a2 = time_frames(s, kernels, sc, &atoms, 2, s0123, 0.0f, t, reps);
+            const double a4 = time_frames(s, kernels, sc, &atoms, 4, s0123, 1.0f, t, reps);
             printf("    %5u (%6.1f)               %6.2f  %6.2f  %6.2f\n", g, (double)np / (64.0 * g), a1, a2, a4);
         }
         md_render_mol_debug_frame_groups(0);
@@ -977,7 +977,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
         ap.position = sc->pos;
         for (uint32_t rr = 0; rr < reps + 2; ++rr) {
             md_tick_t t0 = md_tick_now();
-            md_render_mol_update(mol, s, &sc->topo, sc->dyn, &ap, 0, NULL);
+            md_render_mol_update(kernels, s, &sc->topo, sc->dyn, &ap, 0, NULL);
             md_gpu_stream_sync(s);
             if (rr >= 2) t[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
         }
@@ -995,7 +995,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t mol, scene_t* sc, ui
    instead (md_render_mol's override; the copy writes it). Three rounds of
    the two, their draws pooled: a GPU clock that drifts during the run moves
    both. */
-static void bench_radii(md_gpu_stream_t s, md_render_t r, md_render_mol_t mol, scene_t* sc, const md_render_mol_atoms_t* atoms, uint32_t W, uint32_t H, uint32_t reps) {
+static void bench_radii(md_gpu_stream_t s, md_render_t r, md_render_mol_t kernels, scene_t* sc, const md_render_mol_atoms_t* atoms, uint32_t W, uint32_t H, uint32_t reps) {
     float* hr = malloc((size_t)sc->atoms * 4);
     md_gpu_addr_t arad = hr ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu : 0;
     if (!arad) { free(hr); return; }
@@ -1019,7 +1019,7 @@ static void bench_radii(md_gpu_stream_t s, md_render_t r, md_render_mol_t mol, s
             for (int vi = 0; vi < VARS; ++vi) {
                 md_render_mol_atoms_t at = *atoms;
                 if (vi == 1) at.radius = arad;
-                md_render_mol_update(mol, s, &sc->topo, sc->dyn, &at, 0, NULL);     /* the copy: w a type, or a radius */
+                md_render_mol_update(kernels, s, &sc->topo, sc->dyn, &at, 0, NULL);     /* the copy: w a type, or a radius */
                 md_render_mol_rep_t rep = {0};
                 rep.key = 1;
                 rep.type = MD_RENDER_MOL_REP_SPACEFILL;
@@ -1086,7 +1086,7 @@ static void bench_radii(md_gpu_stream_t s, md_render_t r, md_render_mol_t mol, s
         for (int vi = 0; vi < VARS; ++vi) md_render_view_destroy(s, views[vi]);
     }
     free(t);
-    md_render_mol_update(mol, s, &sc->topo, sc->dyn, atoms, 0, NULL);
+    md_render_mol_update(kernels, s, &sc->topo, sc->dyn, atoms, 0, NULL);
     md_gpu_stream_sync(s);
     md_gpu_free(s, arad);
 }
@@ -1141,8 +1141,8 @@ static int run_gpu(int argc, char** argv) {
     md_gpu_device_info(dev, &info);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
     md_render_t r = md_render_create(dev, NULL);
-    md_render_mol_t mol = md_render_mol_create(dev, NULL);
-    if (!s || !r || !mol) { fprintf(stderr, "md_render could not start\n"); return 1; }
+    md_render_mol_t kernels = md_render_mol_create(dev, NULL);
+    if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
@@ -1152,7 +1152,7 @@ static int run_gpu(int argc, char** argv) {
         const char* kn; md_gpu_kernel_info_t ki;
         for (uint32_t i = 0; md_render_debug_kernel_info(r, i, &kn, &ki); ++i)
             if (ki.stats[0]) printf("  kernel md_render %-15s %s\n", kn, ki.stats);
-        for (uint32_t i = 0; md_render_mol_debug_kernel_info(mol, i, &kn, &ki); ++i)
+        for (uint32_t i = 0; md_render_mol_debug_kernel_info(kernels, i, &kn, &ki); ++i)
             if (ki.stats[0]) printf("  kernel md_render_mol %-10s %s\n", kn, ki.stats);
     }
     printf("\n");
@@ -1204,7 +1204,7 @@ static int run_gpu(int argc, char** argv) {
             for (int ui = 1; ui >= 0; --ui) {          /* the regroup first: the copy then times the grouping it leaves */
                 for (uint32_t rr = 0; rr < reps + 2; ++rr) {
                     md_tick_t t0 = md_tick_now();
-                    md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, ups[ui].flags, NULL);
+                    md_render_mol_update(kernels, s, &sc.topo, sc.dyn, &atoms, ups[ui].flags, NULL);
                     md_gpu_stream_sync(s);
                     if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
                 }
@@ -1233,7 +1233,7 @@ static int run_gpu(int argc, char** argv) {
                 aj.position = pj;
                 for (uint32_t rr = 0; rr < reps + 2; ++rr) {
                     md_tick_t t0 = md_tick_now();
-                    md_render_mol_update(mol, s, &sc.topo, sc.dyn, (rr & 1) ? &aj : &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                    md_render_mol_update(kernels, s, &sc.topo, sc.dyn, (rr & 1) ? &aj : &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
                     md_gpu_stream_sync(s);
                     if (rr >= 2) tu[rr - 2] = md_tick_to_milliseconds(md_tick_now() - t0);
                 }
@@ -1244,13 +1244,13 @@ static int run_gpu(int argc, char** argv) {
                     md_render_mol_write(s, &sc.topo, &sc.plan, sc.topo.base, NULL);
                     md_gpu_stream_sync(s);
                     md_tick_t t0 = md_tick_now();
-                    md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                    md_render_mol_update(kernels, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
                     md_gpu_stream_sync(s);
                     tu[rr] = md_tick_to_milliseconds(md_tick_now() - t0);
                 }
                 qsort(tu, nf, sizeof(double), cmp_d);
                 printf("md_render_mol_update (the first regroup after the plan + copy): %6.2f / %6.2f ms\n", tu[0], tu[nf / 2]);
-                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                md_render_mol_update(kernels, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
                 md_gpu_stream_sync(s);
                 md_gpu_free(s, pj);
             }
@@ -1259,7 +1259,7 @@ static int run_gpu(int argc, char** argv) {
             pass_prof_t prof = { .s = s };
             md_gpu_stream_sync(s);
             prof.t = md_tick_now();
-            md_render_mol_update_hooked(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
+            md_render_mol_update_hooked(kernels, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &prof);
             printf("  passes, each synced:");
             for (uint32_t k = 0; k < prof.n; ++k) printf(" %s %.2f", prof.name[k], prof.ms[k]);
             {
@@ -1278,20 +1278,20 @@ static int run_gpu(int argc, char** argv) {
                         pass_prof_t pw = { .s = s };
                         md_gpu_stream_sync(s);
                         pw.t = md_tick_now();
-                        md_render_mol_update_hooked(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &pw);
+                        md_render_mol_update_hooked(kernels, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, pass_hook, &pw);
                         for (uint32_t k = 0; k < pw.n; ++k) if (!strcmp(pw.name[k], "write") && pw.ms[k] < best) best = pw.ms[k];
                     }
                     printf("%s %s %.2f", wi ? "," : "", wp[wi].name, best);
                 }
                 md_render_mol_debug_write(0);
-                md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
+                md_render_mol_update(kernels, s, &sc.topo, sc.dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL);
                 md_gpu_stream_sync(s);
             }
             printf("\n  %u grid cells (capacity), %.1f MB topology, %.1f MB per-frame block (%.1f MB with velocities)\n",
                    sc.topo.grid_cells, sc.topo.size / 1048576.0, sc.topo.dynamic_size / 1048576.0, sc.topo.dynamic_size_velocity / 1048576.0);
-            bench_frames(s, mol, &sc, reps);
+            bench_frames(s, kernels, &sc, reps);
             /* the copy drawn below: from the positions, as before */
-            md_render_mol_update(mol, s, &sc.topo, sc.dyn, &atoms, 0, NULL);
+            md_render_mol_update(kernels, s, &sc.topo, sc.dyn, &atoms, 0, NULL);
             md_gpu_stream_sync(s);
         }
         for (size_t li = 0; li < sizeof(looks) / sizeof(looks[0]); ++li) {
@@ -1439,7 +1439,7 @@ static int run_gpu(int argc, char** argv) {
                 }
             }
         }
-        if (src == SRC_MOL && (!only_look || strstr("radii", only_look))) bench_radii(s, r, mol, &sc, &atoms, W, H, reps);
+        if (src == SRC_MOL && (!only_look || strstr("radii", only_look))) bench_radii(s, r, kernels, &sc, &atoms, W, H, reps);
         md_gpu_memory_stats_t ms;
         md_gpu_stream_sync(s);   /* releases the last view's targets: "held now" is what stays */
         if (md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &ms))
@@ -1449,7 +1449,7 @@ static int run_gpu(int argc, char** argv) {
         scene_free(s, &sc);
         md_gpu_stream_sync(s);
     }
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_render_destroy(r);
     md_gpu_device_destroy(dev);
     return 0;
@@ -1539,8 +1539,8 @@ static int run_heavy(int argc, char** argv) {
     md_gpu_device_info(dev, &info);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
     md_render_t r = md_render_create(dev, NULL);
-    md_render_mol_t mol = md_render_mol_create(dev, NULL);
-    if (!s || !r || !mol) { fprintf(stderr, "md_render could not start\n"); return 1; }
+    md_render_mol_t kernels = md_render_mol_create(dev, NULL);
+    if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
@@ -1639,9 +1639,9 @@ static int run_heavy(int argc, char** argv) {
         atoms.position  = P;
         atoms.selection = S;
         md_render_mol_frame_cell(atoms.cell, md_unitcell_flags(&state.unitcell) ? &state.unitcell : NULL);
-        if (!md_render_mol_update(mol, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
+        if (!md_render_mol_update(kernels, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
         const float unit[3] = { 1.0f, 1.0f, 1.0f };
-        if (topo.backbone_count && !md_render_mol_cartoon_profile(mol, s, &topo, PROF, SSB, unit, content)) { fprintf(stderr, "md_render_mol_cartoon_profile failed\n"); return 1; }
+        if (topo.backbone_count && !md_render_mol_cartoon_profile(kernels, s, &topo, PROF, SSB, unit, content)) { fprintf(stderr, "md_render_mol_cartoon_profile failed\n"); return 1; }
         md_gpu_stream_sync(s);
 
         /* lipid spheres: [0] whole heads, [1] split heads as one, [2] their
@@ -1661,7 +1661,7 @@ static int run_heavy(int argc, char** argv) {
             double* tu = malloc(reps * sizeof(double));
             for (uint32_t k = 0; k < reps; ++k) {
                 md_tick_t t0 = md_tick_now();
-                md_render_mol_update(mol, s, &topo, dyn, &atoms, 0, NULL);
+                md_render_mol_update(kernels, s, &topo, dyn, &atoms, 0, NULL);
                 md_gpu_stream_sync(s);
                 tu[k] = md_tick_to_milliseconds(md_tick_now() - t0);
             }
@@ -1670,7 +1670,7 @@ static int run_heavy(int argc, char** argv) {
             pass_prof_t prof = { .s = s };
             md_gpu_stream_sync(s);
             prof.t = md_tick_now();
-            md_render_mol_update_hooked(mol, s, &topo, dyn, &atoms, 0, pass_hook, &prof);
+            md_render_mol_update_hooked(kernels, s, &topo, dyn, &atoms, 0, pass_hook, &prof);
             print_prof("the update", &prof);
         }
 
@@ -1852,7 +1852,7 @@ static int run_heavy(int argc, char** argv) {
         md_system_free(&sys);
         md_vm_arena_destroy(alloc);
     }
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_render_destroy(r);
     md_gpu_device_destroy(dev);
     return 0;

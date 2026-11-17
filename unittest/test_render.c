@@ -3658,10 +3658,10 @@ UTEST(render, mol_licorice_emit_and_pick) {
     for (int i = 0; i < 9; ++i) colors[i] = 0xFF000000u | (uint32_t)(i * 20);
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));   /* the copy that is drawn */
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));   /* the copy that is drawn */
 
     md_render_mol_rep_t rep = {0};
     rep.key  = 42;
@@ -3738,7 +3738,7 @@ UTEST(render, mol_licorice_emit_and_pick) {
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -3856,7 +3856,7 @@ UTEST(render, mol_plan_clusters) {
     const char* files[] = { MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb", MD_UNITTEST_DATA_DIR "/1a64.pdb", MD_UNITTEST_DATA_DIR "/tryptophan-md.gro" };
     fix_t fx;
     bool gpu = f_open(&fx);
-    md_render_mol_t mol = gpu ? md_render_mol_create(fx.dev, NULL) : NULL;
+    md_render_mol_t kernels = gpu ? md_render_mol_create(fx.dev, NULL) : NULL;
     for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
         md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = alloc };
@@ -3873,7 +3873,7 @@ UTEST(render, mol_plan_clusters) {
                T->small_atom_count, T->small_molecule_count, T->kind_count, T->grid_cells, T->bond_count, T->mixed_bond_count);
         EXPECT_LE(T->kind_count, T->small_molecule_count);
         if (n_static > 1000) EXPECT_GT((double)n_static / cl_static, 40.0);   /* residues pack well */
-        if (mol) {
+        if (kernels) {
             md_render_mol_topo_t topo;
             ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
             md_gpu_addr_t P   = f_buf(&fx, state.xyz, T->atom_count * 12);
@@ -3887,7 +3887,7 @@ UTEST(render, mol_plan_clusters) {
             /* twice: the second from the first's records (the other buffer),
                mixed bonds and all */
             for (int rg = 0; rg < 2; ++rg) {
-                ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
+                ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
                 uint8_t* img = read_block(&fx, topo.base, topo.size);
                 EXPECT_EQ(0, check_topo_image(&sys, &rel, img, NULL));
                 free(img);
@@ -3898,7 +3898,7 @@ UTEST(render, mol_plan_clusters) {
         md_system_free(&sys);
         md_vm_arena_destroy(alloc);
     }
-    if (mol) md_render_mol_destroy(mol);
+    if (kernels) md_render_mol_destroy(kernels);
     if (gpu) f_close(&fx);
 }
 
@@ -4041,10 +4041,10 @@ UTEST(render, mol_spacefill_residues) {
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
     md_gpu_stream_sync(fx.gfx);
 
     /* The update's points against the host's */
@@ -4213,7 +4213,7 @@ UTEST(render, mol_spacefill_residues) {
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -4232,8 +4232,8 @@ UTEST(render, mol_radii_follow_their_source) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_render_mol_rep_t rep = {0};
     rep.key = 1; rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f;
@@ -4258,7 +4258,7 @@ UTEST(render, mol_radii_follow_their_source) {
         { &types, RG, by_type, "types, regroup" },
     };
     for (size_t k = 0; k < sizeof(steps) / sizeof(steps[0]); ++k) {
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, steps[k].atoms, steps[k].flags, NULL));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, steps[k].atoms, steps[k].flags, NULL));
         const int wrong = radii_wrong(&fx, &topo, dyn, steps[k].atoms, &rep, steps[k].expect);
         if (wrong) printf("    %s: %d points with a wrong radius\n", steps[k].what, wrong);
         EXPECT_EQ(0, wrong);
@@ -4282,7 +4282,7 @@ UTEST(render, mol_radii_follow_their_source) {
         md_gpu_addr_t dyn2 = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, MD_MAX(pa.layout.dynamic_size, pb.layout.dynamic_size)).gpu;
         md_render_mol_topo_t ta, tb;
         ASSERT_TRUE(md_render_mol_write(fx.gfx, &ta, &pa, base, NULL));
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &ta, dyn2, &types, 0, NULL));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &ta, dyn2, &types, 0, NULL));
         EXPECT_EQ(0, radii_wrong(&fx, &ta, dyn2, &types, &rep, by_type));
         md_render_mol_frames_t fr;
         md_gpu_addr_t frb = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&ta, 1)).gpu;
@@ -4293,22 +4293,22 @@ UTEST(render, mol_radii_follow_their_source) {
             uint16_t* q = malloc((size_t)n * 6);
             md_render_mol_frame_t f;
             md_render_mol_frame_quantize(&f, q, (const float*)state.xyz, 0, n, cell, &sa);
-            ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &ta, dyn2, &fr, 0, &f, 0));
+            ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &ta, dyn2, &fr, 0, &f, 0));
             md_render_mol_atoms_t af = {0};
             af.frames = &fr; af.frame_count = 1;
-            EXPECT_TRUE(md_render_mol_update(mol, fx.gfx, &ta, dyn2, &af, 0, NULL));
+            EXPECT_TRUE(md_render_mol_update(kernels, fx.gfx, &ta, dyn2, &af, 0, NULL));
             md_gpu_stream_sync(fx.gfx);
             free(q);
         }
         ASSERT_TRUE(md_render_mol_write(fx.gfx, &tb, &pb, base, NULL));
         EXPECT_NE(ta.instance, tb.instance);
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &tb, dyn2, &types, 0, NULL));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &tb, dyn2, &types, 0, NULL));
         const int wrong = radii_wrong(&fx, &tb, dyn2, &types, &rep, by_type);
         if (wrong) printf("    written again at the same base: %d points with a wrong radius\n", wrong);
         EXPECT_EQ(0, wrong);
         md_render_mol_atoms_t af = {0};
         af.frames = &fr; af.frame_count = 1;
-        EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &tb, dyn2, &af, 0, NULL));   /* frames of the other one */
+        EXPECT_FALSE(md_render_mol_update(kernels, fx.gfx, &tb, dyn2, &af, 0, NULL));   /* frames of the other one */
         md_temp_end(t2);
         md_gpu_free(fx.gfx, frb); md_gpu_free(fx.gfx, dyn2); md_gpu_free(fx.gfx, base);
         md_bitmask_free(&ra); md_bitmask_free(&rb);
@@ -4316,7 +4316,7 @@ UTEST(render, mol_radii_follow_their_source) {
     free(by_type); free(own);
     md_gpu_free(fx.gfx, types.position); md_gpu_free(fx.gfx, mine.radius);
     md_gpu_free(fx.gfx, dyn); md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     md_vm_arena_destroy(alloc);
     f_close(&fx);
@@ -4342,8 +4342,8 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     EXPECT_EQ(2156u, topo.small_molecule_count);            /* the waters */
     ASSERT_GT(topo.dynamic_size, 0u);
 
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
 
     /* Shuffle */
@@ -4368,7 +4368,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     atoms.position = P;
 
     uint8_t* before = read_block(&fx, topo.base, topo.size);
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint8_t* after = read_block(&fx, topo.base, topo.size);
     /* the block's own image: rebase the addresses to offsets */
     md_render_mol_topo_t rel = topo;
@@ -4379,7 +4379,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     printf("    grid clusters: mean extent %.1f A in molecule order, %.1f A after the update\n", e0, e1);
     EXPECT_LT(e1, 0.4 * e0);
     /* again from the regrouped order: the same cells (the order within one is the atomics') */
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint8_t* again = read_block(&fx, topo.base, topo.size);
     EXPECT_EQ(0, check_topo_image(&sys, &rel, again, NULL));
     EXPECT_EQ(0, memcmp(after + rel.atom_cluster_offset, again + rel.atom_cluster_offset, (topo.atom_cluster_count + 1) * 4));
@@ -4393,7 +4393,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
         md_render_mol_atoms_t av = atoms;
         av.velocity = f_buf(&fx, vel, (size_t)n * 8);
         /* no regroup: that would reorder the topology under `dyn`, whose copy is drawn below */
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn_v, &av, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn_v, &av, 0, content));
         md_render_mol_rep_t rv = {0};
         rv.key = 9; rv.type = MD_RENDER_MOL_REP_SPACEFILL; rv.params.spacefill.radius_scale = 1.0f;
         md_render_batch_t bv;
@@ -4495,10 +4495,10 @@ UTEST(render, mol_clusters_follow_the_solvent) {
             for (size_t t = 0; t < sys.atom.type.count; ++t) table[t] = sys.atom.type.radius[t] * scale;
             atoms.radius_table = f_buf(&fx, table, sys.atom.type.count * 4);
             free(table);
-            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RADII, content));   /* refills the copy too */
+            ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RADII, content));   /* refills the copy too */
         }
         /* a plain update (positions only) keeps the copy's radii: its w, not the source */
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
         for (uint32_t i = 0; i < n; ++i) rad[i] = sys.atom.type.radius[sys.atom.type_idx[i]] * scale;
         md_gpu_addr_t R = f_buf(&fx, rad, n * 4);
         rep.type = MD_RENDER_MOL_REP_SPACEFILL;
@@ -4530,7 +4530,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -4603,8 +4603,8 @@ static void frames_case(int* utest_result, bool partial) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
 
     /* Five frames: x(k) = x + v k + c k^2, wrapped; the waters shuffled
@@ -4684,11 +4684,11 @@ static void frames_case(int* utest_result, bool partial) {
     const md_render_mol_update_flags_t RG = MD_RENDER_MOL_UPDATE_REGROUP;
     /* frames 0..3 into slots 0..3, regrouping with the first and the last */
     uint8_t* order0 = read_block(&fx, topo.atom_order, (size_t)nres * 4);
-    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &frames[0], RG));
+    ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, dyn, &fr, 0, &frames[0], RG));
     uint8_t* order1 = read_block(&fx, topo.atom_order, (size_t)nres * 4);
-    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0,   &fr, 1, &frames[1], 0));
-    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0,   &fr, 2, &frames[2], 0));
-    ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 3, &frames[3], RG));
+    ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, 0,   &fr, 1, &frames[1], 0));
+    ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, 0,   &fr, 2, &frames[2], 0));
+    ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, dyn, &fr, 3, &frames[3], RG));
     uint8_t* order2 = read_block(&fx, topo.atom_order, (size_t)nres * 4);
     EXPECT_NE(0, memcmp(order0, order1, (size_t)nres * 4));
     EXPECT_NE(0, memcmp(order1, order2, (size_t)nres * 4));
@@ -4711,13 +4711,13 @@ static void frames_case(int* utest_result, bool partial) {
     };
     for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
         if (cases[ci].replace) {
-            ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &frames[4], RG));
+            ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, dyn, &fr, 0, &frames[4], RG));
             held[0] = 4;
         }
         atoms.frame_count = cases[ci].count;
         memcpy(atoms.frame_slot, cases[ci].slot, sizeof(atoms.frame_slot));
         md_render_mol_frame_weights(atoms.frame_w, atoms.frame_dw, cases[ci].count, cases[ci].t, cases[ci].dt, 0.5f);
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, NULL));
         md_render_batch_t b;
         ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &rep, &b, 1));
         const bool with_v = cases[ci].count > 1;
@@ -4768,7 +4768,7 @@ static void frames_case(int* utest_result, bool partial) {
         {
             /* the same from one group, its threads striding over every point */
             md_render_mol_debug_frame_groups(1);
-            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+            ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, NULL));
             md_render_mol_debug_frame_groups(0);
             uint8_t* blk1 = read_block(&fx, dyn, topo.dynamic_size_velocity);
             const size_t po = (size_t)(b.points.position - dyn);
@@ -4786,16 +4786,16 @@ static void frames_case(int* utest_result, bool partial) {
     EXPECT_EQ(0, check_topo_image(&sys, &rel, img, resident));
     /* refused: a regroup in the update, a slot without a frame, a cell with a
        not along x (the minimum image is GROMACS's, for that form) */
-    EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, RG, NULL));
+    EXPECT_FALSE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, RG, NULL));
     {
         md_render_mol_frame_t tilted = frames[0];
         tilted.cell[1] = 0.5f;
-        EXPECT_FALSE(md_render_mol_frame_upload(mol, fx.gfx, &topo, 0, &fr, 0, &tilted, 0));
+        EXPECT_FALSE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, 0, &fr, 0, &tilted, 0));
     }
     md_render_mol_frames_t empty;
     ASSERT_TRUE(md_render_mol_frames_init(&empty, &topo, fr.base, 4));
     atoms.frames = &empty;
-    EXPECT_FALSE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+    EXPECT_FALSE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, NULL));
     #undef RND
 
     md_gpu_stream_sync(fx.gfx);
@@ -4806,7 +4806,7 @@ static void frames_case(int* utest_result, bool partial) {
     md_gpu_free(fx.gfx, fr.base);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     md_bitmask_free(&mask);
     free(rlist);
@@ -4844,13 +4844,13 @@ UTEST(render, mol_resident_set_draws_what_hiding_draws) {
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
     md_temp_end(temp);
     EXPECT_EQ(nres, topo.point_count);
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = f_buf(&fx, state.xyz, (size_t)n * 12);
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, NULL));
 
     md_render_mol_rep_t rep = {0};
     rep.key  = 7;
@@ -4927,7 +4927,7 @@ UTEST(render, mol_resident_set_draws_what_hiding_draws) {
     free(bits); free(pairs); free(ids);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     md_bitmask_free(&mask);
     f_close(&fx);
@@ -4992,17 +4992,17 @@ UTEST(render, mol_cartoon_backbone) {
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
     ASSERT_TRUE(md_system_state_backbone_compute(&state, &sys));
     const md_secondary_structure_t* ss = md_system_state_secondary_structure(&state, &sys);
     ASSERT_TRUE(ss != NULL);
     md_gpu_addr_t SS = f_buf(&fx, ss, PB->segment.count * sizeof(int32_t));
     md_gpu_addr_t prof = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_cartoon_size(&topo)).gpu;
     const float scale[3] = { 1.0f, 1.0f, 1.0f };
-    ASSERT_TRUE(md_render_mol_cartoon_profile(mol, fx.gfx, &topo, prof, SS, scale, content));
+    ASSERT_TRUE(md_render_mol_cartoon_profile(kernels, fx.gfx, &topo, prof, SS, scale, content));
 
     /* The profile: md_gl's shapes inside runs of one structure, and parts
        meeting without a step (md_render would cap them) */
@@ -5134,7 +5134,7 @@ UTEST(render, mol_cartoon_backbone) {
         int turned[2] = { 0, 0 };
         for (int mode = 0; mode < 2; ++mode) {
             uint32_t rng = 12345u;
-            ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RESET_BACKBONE, content));
+            ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RESET_BACKBONE, content));
             free(last);
             last = (float*)read_block(&fx, axes, (uint64_t)ncp * 16);
             for (int step = 0; step < 40; ++step) {
@@ -5144,7 +5144,7 @@ UTEST(render, mol_cartoon_backbone) {
                     xyz[i].z = state.xyz[i].z + 0.15f * lcg_gauss(&rng);
                 }
                 md_gpu_upload(fx.gfx, P, xyz, (size_t)na * 12);
-                ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, mode ? MD_RENDER_MOL_UPDATE_RESET_BACKBONE : 0, content));
+                ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, mode ? MD_RENDER_MOL_UPDATE_RESET_BACKBONE : 0, content));
                 float* now = (float*)read_block(&fx, axes, (uint64_t)ncp * 16);
                 bool prev_over = false;
                 for (uint32_t j = 0; j < ncp; ++j) {
@@ -5168,7 +5168,7 @@ UTEST(render, mol_cartoon_backbone) {
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, prof);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -5262,10 +5262,10 @@ UTEST(render, mol_cartoon_nucleic) {
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
 
     /* The batches: the protein's band, the nucleic band, rings of 5 and 6, sticks */
     md_render_mol_rep_t rep = {0};
@@ -5375,7 +5375,7 @@ UTEST(render, mol_cartoon_nucleic) {
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, dyn);
     md_gpu_free(fx.gfx, topo.base);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -5487,8 +5487,8 @@ UTEST(render, mol_derived_points) {
         free(sph); free(rad);
     }
 
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
     const uint32_t np = topo.point_count;
     #define CHECK_DERIVED(cellL, tol, label) do { \
@@ -5515,7 +5515,7 @@ UTEST(render, mol_derived_points) {
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
     atoms.velocity = f_buf(&fx, vel, (size_t)n * 8);
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
     CHECK_DERIVED(NULL, 1e-4, "as given");
     {
         uint16_t* pv = (uint16_t*)read_block(&fx, dyn + (topo.dynamic_size), ((size_t)np + nd) * 8);
@@ -5533,7 +5533,7 @@ UTEST(render, mol_derived_points) {
     }
     /* regrouped: the small lipids' beads elsewhere among the points, the derived where they were */
     uint32_t* ord0 = (uint32_t*)read_block(&fx, topo.atom_order, (size_t)np * 4);
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
     uint32_t* ord1 = (uint32_t*)read_block(&fx, topo.atom_order, (size_t)np * 4);
     EXPECT_NE(0, memcmp(ord0, ord1, (size_t)np * 4));
     CHECK_DERIVED(NULL, 1e-4, "after a regroup");
@@ -5543,7 +5543,7 @@ UTEST(render, mol_derived_points) {
     {
         md_render_mol_atoms_t ac = atoms;
         md_render_mol_frame_cell(ac.cell, &state.unitcell);
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &ac, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &ac, 0, content));
         CHECK_DERIVED(L, 1e-4, "with the positions' cell, whole");
     }
     /* from a frame with the cell: whole */
@@ -5555,12 +5555,12 @@ UTEST(render, mol_derived_points) {
         md_render_mol_frame_quantize(&f, q, &state.xyz[0].x, 0, n, cell, NULL);
         md_render_mol_frames_t fr;
         ASSERT_TRUE(md_render_mol_frames_init(&fr, &topo, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&topo, 1)).gpu, 1));
-        ASSERT_TRUE(md_render_mol_frame_upload(mol, fx.gfx, &topo, dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP));
+        ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, dyn, &fr, 0, &f, MD_RENDER_MOL_UPDATE_REGROUP));
         md_render_mol_atoms_t af = {0};
         af.frames = &fr;
         af.frame_count = 1;
         af.frame_w[0] = 1.0f;
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &af, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &af, 0, content));
         const double qtol = 2.0 * fmax(fmax(f.scale[0], f.scale[1]), f.scale[2]);
         CHECK_DERIVED(L, qtol, "from a frame, whole");
         free(q);
@@ -5568,7 +5568,7 @@ UTEST(render, mol_derived_points) {
     #undef CHECK_DERIVED
     free((void*)D.offset); free((void*)D.member); free((void*)D.weight);
     free(vel); free(velf);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -5593,14 +5593,14 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     md_temp_end(temp);
     const uint32_t ncoord = topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE + 1] - topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE];
     ASSERT_GT(ncoord, 0u);
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
 
     const float r = 0.2f;
     md_render_mol_rep_t rep = {0};
@@ -5666,7 +5666,7 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     EXPECT_GT(nd, ns / 5);
     EXPECT_LT(nd, ns * 3 / 4);
     free(ids[0]); free(ids[1]);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
@@ -5785,14 +5785,14 @@ UTEST(render, mol_chain_gaps) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
     md_temp_end(temp);
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
 
     /* who emits them */
     md_render_mol_rep_t rep = {0};
@@ -5874,7 +5874,7 @@ UTEST(render, mol_chain_gaps) {
     EXPECT_GT(hits, 30);
     EXPECT_GT(misses, 30);
     EXPECT_GE(runs, (int)nd - 1);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     free(ca);
     md_system_free(&sys);
     f_close(&fx);
@@ -6068,14 +6068,14 @@ UTEST(render, mol_bond_orders) {
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
 
     /* the sides against the reference */
     uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size);
@@ -6355,7 +6355,7 @@ UTEST(render, mol_bond_orders) {
         ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, YP, &yst, content));
         md_render_mol_atoms_t yat = {0};
         yat.position = YP;
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &yt, ydyn, &yat, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &yt, ydyn, &yat, 0, content));
         md_render_mol_rep_t yr = {0};
         yr.key = 8; yr.type = MD_RENDER_MOL_REP_LICORICE; yr.params.licorice.radius = 0.2f; yr.bond_orders = true;
         md_render_batch_t yb[16];
@@ -6406,7 +6406,7 @@ UTEST(render, mol_bond_orders) {
         md_vm_arena_destroy(a2);
     }
     md_temp_end(temp);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     free(is_ord);
     md_system_free(&sys);
     f_close(&fx);
@@ -6422,8 +6422,8 @@ UTEST(render, mol_bond_orders) {
 UTEST(render, mol_cartoon_coarse_grained) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
     {
         md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
@@ -6462,7 +6462,7 @@ UTEST(render, mol_cartoon_coarse_grained) {
         md_render_mol_atoms_t atoms = {0};
         atoms.position = P;
         md_render_mol_frame_cell(atoms.cell, &state.unitcell);
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
         float* pts = (float*)read_block(&fx, dyn, ((size_t)topo.point_count + topo.derived_count) * 16);
         double lmin = 1e9, lmax = 0, worst_plane = 0;
         for (uint32_t r = 0; r < n6; ++r) {
@@ -6508,7 +6508,7 @@ UTEST(render, mol_cartoon_coarse_grained) {
         md_render_mol_atoms_t atoms = {0};
         atoms.position = P;
         md_render_mol_frame_cell(atoms.cell, &state.unitcell);
-        ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
         md_render_mol_rep_t rep = {0};
         rep.key = 12; rep.type = MD_RENDER_MOL_REP_CARTOON;
         md_render_batch_t bt[16];
@@ -6560,7 +6560,7 @@ UTEST(render, mol_cartoon_coarse_grained) {
         md_system_free(&sys);
         md_vm_arena_destroy(alloc);
     }
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     f_close(&fx);
 }
 
@@ -6582,14 +6582,14 @@ UTEST(render, mol_ribbons) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
     md_temp_end(temp);
-    md_render_mol_t mol = md_render_mol_create(fx.dev, NULL);
-    ASSERT_TRUE(mol != NULL);
+    md_render_mol_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)sys.atom.count * 12).gpu;
     ASSERT_TRUE(md_render_mol_upload_state(fx.gfx, P, &state, content));
     md_render_mol_atoms_t atoms = {0};
     atoms.position = P;
-    ASSERT_TRUE(md_render_mol_update(mol, fx.gfx, &topo, dyn, &atoms, 0, content));
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, content));
     md_render_mol_rep_t rep = {0};
     rep.key = 13; rep.type = MD_RENDER_MOL_REP_RIBBONS; rep.chain_gaps = true;
     md_render_batch_t bt[4];
@@ -6629,7 +6629,7 @@ UTEST(render, mol_ribbons) {
     EXPECT_EQ(MD_RENDER_MOL_HIT_BACKBONE, hit.kind);
     EXPECT_LT(hit.segment, (uint32_t)sys.protein_backbone.segment.count);
     free(id);
-    md_render_mol_destroy(mol);
+    md_render_mol_destroy(kernels);
     md_system_free(&sys);
     f_close(&fx);
 }
