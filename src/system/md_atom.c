@@ -247,14 +247,9 @@ static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, m
     }
 }
 
-// What the typing writes besides the types, of the core: the roles of the atoms and the kinds of the residues it tells
+// What the typing writes besides the types, of the core: the kinds of the residues it tells
 static void typed_begin(md_system_t* sys) {
     MD_STATIC_ASSERT(MD_RESIDUE_KIND_OTHER == 0, "A residue of no kind told is 0");
-    if (md_array_size(sys->atom.typed_role) != sys->atom.count) {
-        const size_t size = md_array_size(sys->atom.typed_role);
-        md_array_resize(sys->atom.typed_role, sys->atom.count, sys->alloc);
-        if (sys->atom.count > size) md_memset(sys->atom.typed_role + size, 0, sys->atom.count - size);
-    }
     if (md_array_size(sys->residue.typed_kind) != sys->residue.count) {
         const size_t size = md_array_size(sys->residue.typed_kind);
         md_array_resize(sys->residue.typed_kind, sys->residue.count, sys->alloc);
@@ -265,33 +260,18 @@ static void typed_begin(md_system_t* sys) {
 // Of none: not kept
 static void typed_end(md_system_t* sys) {
     bool any = false;
-    for (size_t i = 0; i < sys->atom.count && !any; ++i) any = sys->atom.typed_role[i] != 0;
-    if (!any) md_array_free(sys->atom.typed_role, sys->alloc);
-    any = false;
     for (size_t i = 0; i < sys->residue.count && !any; ++i) any = sys->residue.typed_kind[i] != MD_RESIDUE_KIND_OTHER;
     if (!any) md_array_free(sys->residue.typed_kind, sys->alloc);
 }
 
-static inline void add_typed_role(md_system_t* sys, size_t atom_idx, md_atom_flags_t role) {
-    MD_ASSERT(((uint32_t)role & ~0xFFu) == 0);
-    sys->atom.typed_role[atom_idx] |= (uint8_t)role;
-}
 
 typedef struct residue_template_t {
     size_t            res_idx;          // The first residue of the key: its atoms' types are the template's
-    size_t            role_offset;      // In the roles: the atom flags of the residue before it was typed
     md_residue_kind_t kind;             // What the typing said the residue is
     int32_t           unknown_variant;  // The Martini molecule of no topology it was, -1 if none
 } residue_template_t;
 
-// The roles the typing gave the template residue's atoms: their flags now, without what they had before
-static void add_residue_template(md_hashmap32_t* cache, md_array(residue_template_t)* templates, md_atom_flags_t* roles, residue_template_t* tmpl, uint64_t key, const md_system_t* sys, md_allocator_i* alloc) {
-    const md_urange_t range = md_system_residue_atom_range(sys, tmpl->res_idx);
-    for (uint32_t i = range.beg; i < range.end; ++i) {
-        md_atom_flags_t* role = &roles[tmpl->role_offset + (i - range.beg)];
-        const md_atom_flags_t now = (md_atom_flags_t)sys->atom.typed_role[i];
-        *role = (md_atom_flags_t)((uint32_t)now & ~(uint32_t)*role);
-    }
+static void add_residue_template(md_hashmap32_t* cache, md_array(residue_template_t)* templates, residue_template_t* tmpl, uint64_t key, md_allocator_i* alloc) {
     md_hashmap_add(cache, key, (uint32_t)md_array_size(*templates));
     md_array_push(*templates, *tmpl, alloc);
 }
@@ -343,12 +323,11 @@ static void infer_residue_keys(void* arg, uint32_t beg, uint32_t end, uint32_t t
     }
 }
 
-// The residues of a key seen before: the types and roles of the first of it (its template), and what it is
+// The residues of a key seen before: the types of the first of it (its template), and what it is
 typedef struct infer_apply_t {
     md_system_t* sys;
     const uint32_t* tmpl_of;    // [residues] The template of each, UINT32_MAX for none
     const residue_template_t* templates;
-    const md_atom_flags_t* roles;
 } infer_apply_t;
 
 static void infer_apply_templates(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
@@ -363,7 +342,6 @@ static void infer_apply_templates(void* arg, uint32_t beg, uint32_t end, uint32_
         const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
         const size_t res_size = range.end - range.beg;
         md_memcpy(sys->atom.type_idx + range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
-        for (size_t k = 0; k < res_size; ++k) add_typed_role(sys, range.beg + k, t->roles[tmpl->role_offset + k]);
         apply_predefined_res_kind(sys, res_idx, tmpl->kind);
     }
 }
@@ -387,7 +365,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     // Maps (residue name and size, atom label) to the type in the low 16 bits and the predefined type it came from
-    // (its index + 1, 0 for none) in the high 16 bits: the predefined type also gives the atom its role.
+    // (its index + 1, 0 for none) in the high 16 bits: the predefined type also gives the residue its kind.
     md_hashmap32_t particle_type_cache = {.allocator = temp_alloc };
     md_hashmap_reserve(&particle_type_cache, 256);
     MD_STATIC_ASSERT(sizeof(md_particle_type_idx_t) == 2, "The cache packs a type index in 16 bits");
@@ -400,10 +378,9 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
         typedef struct { md_str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
         md_array(unknown_variant_t) unknown_variants = 0;
         md_array(md_str_t) res_labels = 0;
-        // The residues whose atoms were typed by a look at each: by their key, the types and roles their atoms got
+        // The residues whose atoms were typed by a look at each: by their key, the types their atoms got
         md_hashmap32_t residue_template_cache = {.allocator = temp_alloc };
         md_array(residue_template_t) templates = 0;
-        md_array(md_atom_flags_t) template_roles = 0;
 
         const size_t num_res = sys->residue.count;
         const uint32_t num_chunks = (uint32_t)MD_DIV_UP(num_res, INFER_KEY_CHUNK);
@@ -455,12 +432,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
             const md_str_t* labels = res_labels;
 
             // What the residue's atoms got, for those to follow of its key
-            residue_template_t tmpl = { .res_idx = res_idx, .role_offset = md_array_size(template_roles), .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
-            if (untyped) {
-                for (size_t i = res_range.beg; i < res_range.end; ++i) {
-                    md_array_push(template_roles, (md_atom_flags_t)sys->atom.typed_role[i], temp_alloc);
-                }
-            }
+            residue_template_t tmpl = { .res_idx = res_idx, .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
 
             // A Martini molecule (a lipid, water, an ion, ...): its residue name and all its bead names tell it, and give
             // every bead its mass, size and particle kind. A residue of a single bead is one only in a Martini system:
@@ -483,7 +455,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
                 apply_predefined_res_kind(sys, res_idx, mol->kind);
                 if (untyped) {
                     tmpl.kind = mol->kind;
-                    add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                    add_residue_template(&residue_template_cache, &templates, &tmpl, res_key, temp_alloc);
                 }
                 continue;
             }
@@ -511,7 +483,7 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
                     if (untyped) {
                         tmpl.kind = like->kind;
                         tmpl.unknown_variant = (int32_t)u;
-                        add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                        add_residue_template(&residue_template_cache, &templates, &tmpl, res_key, temp_alloc);
                     }
                     continue;
                 }
@@ -566,19 +538,16 @@ static void infer_particle_types(md_system_t* sys, md_str_t (*label)(const void*
                     const uint32_t entry = predef ? (uint32_t)(predef - predefined_particle_types) + 1 : 0;
                     md_hashmap_add(&particle_type_cache, key, (uint32_t)type | (entry << 16));
                 }
-                if (predef) {
-                    add_typed_role(sys, i, predef->role);
-                    if (predef->res_kind != MD_RESIDUE_KIND_OTHER) res_kind = predef->res_kind;
-                }
+                if (predef && predef->res_kind != MD_RESIDUE_KIND_OTHER) res_kind = predef->res_kind;
             }
             apply_predefined_res_kind(sys, res_idx, res_kind);
             if (untyped) {
                 tmpl.kind = res_kind;
-                add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                add_residue_template(&residue_template_cache, &templates, &tmpl, res_key, temp_alloc);
             }
         }
         if (num_hits > 0) {
-            infer_apply_t task = { sys, tmpl_of, templates, template_roles };
+            infer_apply_t task = { sys, tmpl_of, templates };
             md_parallel_for(ex, num_chunks, 1, infer_apply_templates, &task);
         }
         for (size_t u = 0; u < md_array_size(unknown_variants); ++u) {
@@ -634,13 +603,10 @@ void md_system_infer_particle_types_from_labels(md_system_t* sys, const md_label
     infer_particle_types(sys, label_of_labels, atom_labels, ex);
 }
 
-void md_system_augment_particle_types(md_system_t* sys) {
-    if (!sys || !sys->atom.type_idx || sys->residue.count == 0) {
-        return;
-    }
-    md_system_topology_changed(sys);
-    typed_begin(sys);
-
+// The predefined types (the tables above) of the atoms whose types have no element, by the names of their types and
+// residues. As the system is loaded (md_system_augment_particle_types): the particle kinds of the types and the kinds
+// of the residues, of the core. As it is inferred (md_system_infer_particle_roles): the roles of the atoms, into roles.
+static void predefined_walk(md_system_t* sys, md_atom_flags_t* roles) {
     const size_t num_types = sys->atom.type.count;
 
     // The entry of an atom depends on its residue's name and its type alone, of which a system has few: each pair is
@@ -687,15 +653,36 @@ void md_system_augment_particle_types(md_system_t* sys) {
             if (slot_entry[t] == 0) continue;
             const particle_type_t* entry = &predefined_particle_types[slot_entry[t] - 1];
 
+            if (roles) {
+                roles[i] |= entry->role;
+                continue;
+            }
             // The loader's word on what the particle is (a tpr knows its virtual sites) stands over the table's
             if (sys->atom.type.flags && md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_ATOM) {
                 sys->atom.type.flags[t] = md_particle_type_flags_set_particle_kind(sys->atom.type.flags[t], entry->particle);
             }
-            add_typed_role(sys, i, entry->role);
             if (entry->res_kind != MD_RESIDUE_KIND_OTHER) res_kind = entry->res_kind;
         }
-        apply_predefined_res_kind(sys, res_idx, res_kind);
+        if (!roles) apply_predefined_res_kind(sys, res_idx, res_kind);
     }
-    typed_end(sys);
     md_temp_end(temp);
+}
+
+void md_system_augment_particle_types(md_system_t* sys) {
+    if (!sys || !sys->atom.type_idx || sys->residue.count == 0) {
+        return;
+    }
+    md_system_topology_changed(sys);
+    typed_begin(sys);
+    predefined_walk(sys, NULL);
+    typed_end(sys);
+}
+
+void md_system_infer_particle_roles(md_system_t* sys) {
+    MD_ASSERT(sys);
+    if (!sys->atom.type_idx || sys->residue.count == 0 || md_array_size(sys->atom.flags) < sys->atom.count) return;
+    // Of the beads only: a system of atoms (all of its types of an element) has none, without a look at its residues
+    bool any = false;
+    for (size_t t = 1; t < sys->atom.type.count && !any; ++t) any = sys->atom.type.z[t] == 0;
+    if (any) predefined_walk(sys, sys->atom.flags);
 }

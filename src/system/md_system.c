@@ -533,7 +533,6 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->atom.type_idx, alloc);
     md_array_free(sys->atom.qm, alloc);
     md_array_free(sys->atom.bonds_complete, alloc);
-    md_array_free(sys->atom.typed_role, alloc);
 
     // BONDS GIVEN
     md_bond_data_free(&sys->given_bond, alloc);

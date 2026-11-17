@@ -138,12 +138,6 @@ typedef struct md_atom_data_t {
     // (md_system_t::given_bond), and a metal ion a non-bonded force field leaves without any has none. Of the core.
     uint8_t* bonds_complete;    // [count] 1 its bonds are given complete, 0 not; NULL: of no atom
 
-    // The roles the typing of the particles gives the atoms as the system is loaded (md_system_infer_particle_types,
-    // md_system_augment_particle_types): those of the predefined types and of the beads of the Martini molecules (the
-    // backbone bead of an amino acid). Of the core, as the types are; md_system_infer starts the flags of the atoms from
-    // them. The roles are md_atom_flags_t of the low byte.
-    uint8_t* typed_role;        // [count] md_atom_flags_t; NULL: none
-
     // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
     // and not per type, as particle types are shared by name (the OD1 of Asp and of Asn).
     int8_t*  formal_charge;     // [count]
@@ -405,8 +399,8 @@ md_particle_type_idx_t md_system_particle_type_find_or_add(struct md_system_t* s
 // come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
 // residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
 // the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
-// one label with a different element, mass, size or particle kind are of different types. The roles the tables give
-// the atoms and the kinds they give the residues are md_atom_data_t::typed_role and md_residue_data_t::typed_kind.
+// one label with a different element, mass, size or particle kind are of different types. The kinds the tables and
+// the Martini molecules give the residues are md_residue_data_t::typed_kind.
 void md_system_infer_particle_types(struct md_system_t* sys, const md_str_t atom_labels[], const struct md_executor_t* ex);
 // The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
 void md_system_infer_particle_types_from_labels(struct md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
@@ -414,10 +408,16 @@ void md_system_infer_particle_types_from_labels(struct md_system_t* sys, const m
 // Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
 // parameters of every bead). Only types without an element (z == 0) are considered. The table gives
-// the atoms their role (backbone, side chain: typed_role), the residues their kind (amino acid, water: typed_kind)
-// where they have none, and the types their particle kind where the loader did not say. Mass and radius
+// the residues their kind (amino acid, water: typed_kind) where they have none, and the types their particle kind
+// where the loader did not say. Mass and radius
 // are left alone: they are the loader's.
 void md_system_augment_particle_types(struct md_system_t* sys);
+
+// The roles of the beads (atoms of types without an element) the predefined types give them by the names of their
+// types and residues, ORed into the flags of the atoms (which the system has, sized to its atoms): the backbone bead of
+// an amino acid (BB) and of a nucleotide (BB1, BB2, BB3), the side chain beads (SC1, ...), the nucleobase. A system
+// of atoms alone has none. Of the derived: md_system_infer does it first.
+void md_system_infer_particle_roles(struct md_system_t* sys);
 
 #ifdef __cplusplus
 }

@@ -132,14 +132,12 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
     const bool cg = md_system_is_coarse_grained(sys);
     const size_t N = sys->atom.count;
 
-    // The flags of the atoms anew from the roles the typing of the particles gave them (md_atom_data_t::typed_role),
-    // with what the steps below find; and the kinds it tells the residues, which the bonds of beads and waters are found by
+    // The flags of the atoms anew: the roles of the beads the predefined types give them (md_system_infer_particle_roles)
+    // with what the steps below find; and the kinds the typing of the particles told the residues
+    // (md_residue_data_t::typed_kind), which the bonds of beads and waters are found by
     md_array_resize(sys->atom.flags, N, alloc);
-    if (sys->atom.typed_role) {
-        for (size_t i = 0; i < N; ++i) sys->atom.flags[i] = (md_atom_flags_t)sys->atom.typed_role[i];
-    } else {
-        md_memset(sys->atom.flags, 0, N * sizeof(md_atom_flags_t));
-    }
+    md_memset(sys->atom.flags, 0, N * sizeof(md_atom_flags_t));
+    md_system_infer_particle_roles(sys);
     if (sys->residue.typed_kind) {
         for (size_t r = 0; r < sys->residue.count; ++r) {
             const md_residue_kind_t kind = (md_residue_kind_t)sys->residue.typed_kind[r];

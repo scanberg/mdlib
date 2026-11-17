@@ -16,7 +16,7 @@
 // fails when inference writes an array of CORE.
 
 #define MD_SYSTEM_CORE_ARRAYS(X) \
-    X(atom.type_idx) X(atom.qm) X(atom.bonds_complete) X(atom.typed_role) \
+    X(atom.type_idx) X(atom.qm) X(atom.bonds_complete) \
     X(atom.type.name) X(atom.type.ff_type) X(atom.type.z) X(atom.type.mass) X(atom.type.radius) X(atom.type.color) X(atom.type.flags) \
     X(residue.name) X(residue.seq_id) X(residue.atom_offset) X(residue.typed_kind) \
     X(instance.id) X(instance.auth_id) X(instance.res_offset) X(instance.part_type_idx) X(instance.mol_type_idx) \
